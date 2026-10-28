@@ -391,3 +391,23 @@ describe("selection helpers", () => {
     expect([...toggleId(added, "a")]).toEqual(["b"]);
   });
 });
+
+describe("flat results (groupBy none)", () => {
+  const options = { ...DEFAULT_OPTIONS, groupBy: "none" as const, headerHeight: 0, sectionGap: 0 };
+  const at = (day: number) => ({ takenAt: `2026-10-${String(day).padStart(2, "0")}T12:00:00Z`, addedAt: "2026-10-30T00:00:00Z", width: 4000, height: 3000, rotation: 0 });
+
+  it("puts items from different days in one section, in the order given", () => {
+    const layout = layoutGallery([at(5), at(28), at(5), at(1)], options);
+    expect(layout.sections).toHaveLength(1);
+    expect(layout.sections[0]).toMatchObject({ key: "all", start: 0, count: 4 });
+  });
+
+  it("starts the first row at the top, with no header", () => {
+    const layout = layoutGallery([at(5), at(28)], options);
+    expect(layout.sections[0]!.rows[0]!.top).toBe(0);
+  });
+
+  it("keeps the sections of the days when grouped by day", () => {
+    expect(layoutGallery([at(5), at(28), at(5)], { ...options, groupBy: "day", headerHeight: 40 }).sections).toHaveLength(3);
+  });
+});

@@ -1,7 +1,21 @@
-import { A, useSearchParams } from "@solidjs/router";
+import { A, useNavigate, useSearchParams } from "@solidjs/router";
 import { createEffect, createMemo, createResource, createSignal, on, onCleanup, Show } from "solid-js";
-import { batch, listMonths, listSources, type GalleryItem, type GalleryKind, type GalleryQuery, type SourceKind } from "../api/gallery";
+import {
+  batch,
+  getAlbum,
+  getEmbeddingStatus,
+  listMonths,
+  listSimilar,
+  listSources,
+  searchSmart,
+  type EmbeddingStatus,
+  type GalleryItem,
+  type GalleryKind,
+  type GalleryQuery,
+  type SourceKind,
+} from "../api/gallery";
 import { AlbumPicker } from "../components/gallery/AlbumPicker";
+import { AlbumTools } from "../components/gallery/albums/AlbumTools";
 import { DeleteDialog, type DeleteResult } from "../components/gallery/DeleteDialog";
 import { GalleryViewer } from "../components/gallery/GalleryViewer";
 import { createGalleryFeed, SEEK_PAGE } from "../components/gallery/GridFeed";
@@ -10,11 +24,15 @@ import { SelectionBar } from "../components/gallery/SelectionBar";
 import { ArchiveBoxIcon, PlacesIcon } from "../components/gallery/browse/BrowseIcons";
 import { MemoriesStrip } from "../components/gallery/browse/MemoriesStrip";
 import { SourceBar } from "../components/gallery/SourceBar";
+import { SmartHeader } from "../components/gallery/smart/SmartHeader";
+import { AlbumIcon } from "../components/gallery/ViewerIcons";
 import { LabIcon } from "../components/gallery/lab/LabIcons";
 import { ShareSheet } from "../components/gallery/share/ShareSheet";
 import { BackIcon, LinkIcon, SearchIcon, TrashIcon } from "../components/Icons";
 import { t } from "../i18n";
+import { ALBUMS_PATH } from "../lib/galleryAlbums";
 import { rangeIds, sectionKey, sourceIdOf, toggleId, type GroupBy } from "../lib/galleryLayout";
+import { lookedAt, smartPager, smartReady, usesSmart, withSearch, type SearchMode } from "../lib/gallerySmart";
 import { supportsJxl } from "../lib/jxl";
 import { desktopDevice } from "../lib/desktopViewer";
 import { readString, writeString } from "../lib/storage";
@@ -26,12 +44,17 @@ import "../styles/gallery.css";
 
 const ORIGIN_KEY = "secretary.gallery.origin";
 const GROUP_KEY = "secretary.gallery.group";
+const MODE_KEY = "secretary.gallery.search";
 const DOWNLOAD_GAP_MS = 350;
 
 type KindFilter = GalleryKind | "all";
 
 function storedGroup(): GroupBy {
   return readString("local", GROUP_KEY) === "month" ? "month" : "day";
+}
+
+function storedMode(): SearchMode {
+  return readString("local", MODE_KEY) === "words" ? "words" : "smart";
 }
 
 /** The source the Gallery opens on: this Mac's own pictures in the Mac app, else everything. */
@@ -42,11 +65,12 @@ function initialOrigin(): string {
   return mac ? `device:${mac.id}` : "all";
 }
 
-export default function GalleryView(props: { trash?: boolean; archive?: boolean }) {
+export default function GalleryView(props: { trash?: boolean; archive?: boolean; album?: string }) {
   const trash = () => !!props.trash;
   const archive = () => !!props.archive;
-  // Both shelves list everything, whatever source the Gallery was last switched to.
-  const shelf = () => trash() || archive();
+  const albumId = () => props.album;
+  // The shelves and an album list everything of theirs, whatever source the Gallery was last switched to.
+  const shelf = () => trash() || archive() || !!albumId();
   // `?bbox=w,s,e,n` shows the pictures of one Places cluster.
   const [params, setParams] = useSearchParams<{ bbox?: string }>();
   const bbox = () => (typeof params.bbox === "string" && params.bbox ? params.bbox : undefined);
@@ -62,6 +86,19 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean 
 
   const [sources, { refetch: refetchSources }] = createResource(() => !trash() || undefined, () => listSources());
   const [jxl] = createResource(supportsJxl);
+  const navigate = useNavigate();
+  const [album, { mutate: setAlbum }] = createResource(albumId, (id) => getAlbum(id).catch(() => null));
+  const albumGone = () => !!albumId() && !album.loading && !album();
+
+  // ---- smart search: the box asks by meaning when the server can, else by words ---------------------------------------
+  const smartAllowed = () => !trash() && !archive();
+  const [fetchedStatus] = createResource(() => smartAllowed() || undefined, () => getEmbeddingStatus());
+  const [latestStatus, setLatestStatus] = createSignal<EmbeddingStatus | null>(null);
+  const smartStatus = () => latestStatus() ?? fetchedStatus() ?? null;
+  // The server answered 503 (smart search off): words from now on, without a word about it.
+  const [refused, setRefused] = createSignal(false);
+  const [mode, setMode] = createSignal<SearchMode>(storedMode());
+  const [similar, setSimilar] = createSignal<{ id: string; title: string } | null>(null);
 
   // A device that isn't in the library (this Mac has not uploaded yet, or the choice is stale) falls back to All.
   createEffect(() => {
@@ -78,23 +115,43 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean 
     }, { defer: true }),
   );
 
-  const query = createMemo<GalleryQuery>(() => ({
-    origin: shelf() ? "all" : origin(),
-    kind: kind(),
-    from: from() || undefined,
-    to: to() || undefined,
-    q: q() || undefined,
-    favorite: favorite() || undefined,
-    trashed: trash() || undefined,
-    archived: archive() || undefined,
-    bbox: bbox(),
-  }));
-  const feed = createGalleryFeed(query);
+  const smartOn = createMemo(() => smartAllowed() && usesSmart({ q: q(), mode: mode(), status: smartStatus(), refused: refused() }));
+  const similarOn = createMemo(() => smartAllowed() && !refused() && similar() !== null);
+  // Results by meaning are ordered by relevance, not by date: one flat list with no day headers.
+  const flat = () => smartOn() || similarOn();
+  createEffect(on(q, () => setSimilar(null), { defer: true }));
+
+  const query = createMemo<GalleryQuery>(() =>
+    withSearch(
+      {
+        origin: shelf() ? "all" : origin(),
+        kind: kind(),
+        from: from() || undefined,
+        to: to() || undefined,
+        q: q() || undefined,
+        favorite: favorite() || undefined,
+        trashed: trash() || undefined,
+        archived: archive() || undefined,
+        bbox: bbox(),
+        album: albumId(),
+      },
+      { smart: smartOn(), similarTo: similarOn() ? similar()!.id : null },
+    ),
+  );
+  const pager = smartPager((request) => (request.similarTo ? listSimilar(request.similarTo, request) : searchSmart(request)), {
+    onUnavailable: () => {
+      setRefused(true);
+      setSimilar(null);
+    },
+    onStatus: setLatestStatus,
+  });
+  const feed = createGalleryFeed(query, pager);
   const items = feed.items;
-  const filtered = () => kind() !== "all" || favorite() || !!from() || !!to() || !!q() || !!bbox();
+  const filtered = () => kind() !== "all" || favorite() || !!from() || !!to() || !!q() || !!bbox() || similarOn();
 
   const [months, { refetch: refetchMonths }] = createResource(
-    () => ({ origin: shelf() ? "all" : origin(), kind: kind(), favorite: favorite(), trashed: trash(), archived: archive() }),
+    // The scrubber counts the whole library, so an album doesn't ask for it.
+    () => (albumId() ? false : { origin: shelf() ? "all" : origin(), kind: kind(), favorite: favorite(), trashed: trash(), archived: archive() }),
     (key) => listMonths(key).catch(() => []),
   );
 
@@ -188,10 +245,10 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean 
   const [albumFor, setAlbumFor] = createSignal<string[] | null>(null);
   const [sharing, setSharing] = createSignal<GalleryItem[] | null>(null);
 
-  async function run(op: "favorite" | "unfavorite" | "restore" | "archive" | "unarchive", items: GalleryItem[]): Promise<string[]> {
+  async function run(op: "favorite" | "unfavorite" | "restore" | "archive" | "unarchive" | "album_remove", items: GalleryItem[], inAlbum?: string): Promise<string[]> {
     setBusy(true);
     try {
-      const result = await batch(op, items.map((i) => i.id));
+      const result = await batch(op, items.map((i) => i.id), inAlbum ? { album: inAlbum } : {});
       if (result.failed.length) say(t("gallery.partialFail", { count: result.failed.length }), true);
       return result.done;
     } catch {
@@ -223,6 +280,20 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean 
     feed.remove(done);
     setSelected((s) => new Set([...s].filter((id) => !done.includes(id))));
     say(t(archive() ? "browse.unarchived" : "browse.archived", { count: done.length }));
+    refreshCounts();
+  }
+
+  // Inside an album: the chosen photos leave the album, never the Gallery.
+  async function removeFromAlbum() {
+    const chosen = selectedItems();
+    const id = albumId();
+    if (!chosen.length || !id || busy()) return;
+    const done = await run("album_remove", chosen, id);
+    if (!done.length) return;
+    feed.remove(done);
+    setSelected((s) => new Set([...s].filter((x) => !done.includes(x))));
+    setAlbum((a) => (a ? { ...a, count: Math.max(0, a.count - done.length) } : a));
+    say(t("galleryAlbums.removed", { count: done.length }));
     refreshCounts();
   }
 
@@ -273,6 +344,11 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean 
     const at = viewer();
     if (at !== null && at >= items().length - 20 && feed.hasMore() && !feed.loading() && !feed.failed()) void feed.loadMore();
   });
+  // "Similar photos": the grid shows the pictures closest to this one, and the viewer closes over it.
+  function showSimilar(item: GalleryItem) {
+    setViewer(null);
+    setSimilar({ id: item.id, title: item.title || item.origin.filename || "" });
+  }
   function removedInViewer(id: string) {
     const left = items().length - 1;
     const at = viewer();
@@ -300,6 +376,10 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean 
     setOrigin(id);
     writeString("session", ORIGIN_KEY, id);
   };
+  const chooseMode = (m: SearchMode) => {
+    setMode(m);
+    writeString("local", MODE_KEY, m);
+  };
   const chooseGroup = (g: GroupBy) => {
     setGroup(g);
     writeString("local", GROUP_KEY, g);
@@ -311,11 +391,26 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean 
     setTo("");
     setDraft("");
     setQ("");
+    setSimilar(null);
     if (bbox()) setParams({ bbox: undefined });
   };
 
   const emptyText = () =>
-    trash() ? t("gallery.emptyTrash") : archive() && !filtered() ? t("browse.emptyArchive") : filtered() ? t("gallery.emptyFiltered") : t("gallery.empty");
+    trash()
+      ? t("gallery.emptyTrash")
+      : archive() && !filtered()
+        ? t("browse.emptyArchive")
+        : similarOn()
+          ? t("gallerySmart.emptySimilar")
+          : smartOn()
+            ? t("gallerySmart.emptySearch")
+            : filtered()
+              ? t("gallery.emptyFiltered")
+              : albumGone()
+                ? t("galleryAlbums.albumMissing")
+                : albumId()
+                  ? t("galleryAlbums.emptyAlbum")
+                  : t("gallery.empty");
   const settled = () => !feed.loading() && feed.items().length === 0 && !feed.hasMore();
   const seg = (value: KindFilter, label: string) => (
     <button type="button" class="g-seg__btn" aria-pressed={kind() === value} onClick={() => setKind(value)}>
@@ -324,19 +419,19 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean 
   );
 
   return (
-    <section class="gallery" classList={{ "gallery--trash": trash(), "gallery--archive": archive() }} aria-labelledby="gallery-title">
+    <section class="gallery" classList={{ "gallery--trash": trash(), "gallery--archive": archive(), "gallery--album": !!albumId() }} aria-labelledby="gallery-title">
       <div class="g-top">
         <Show
           when={selected().size > 0}
           fallback={
             <header class="g-bar">
               <Show when={shelf()}>
-                <A class="g-back" href="/gallery" aria-label={t("gallery.backToGallery")}>
+                <A class="g-back" href={albumId() ? ALBUMS_PATH : "/gallery"} aria-label={albumId() ? t("galleryAlbums.title") : t("gallery.backToGallery")}>
                   <BackIcon />
                 </A>
               </Show>
               <h1 class="g-title" id="gallery-title">
-                {trash() ? t("gallery.trashTitle") : archive() ? t("browse.archiveTitle") : t("gallery.title")}
+                {trash() ? t("gallery.trashTitle") : archive() ? t("browse.archiveTitle") : albumId() ? album()?.title || t("galleryAlbums.title") : t("gallery.title")}
               </h1>
               <label class="g-search">
                 <SearchIcon />
@@ -351,7 +446,11 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean 
                   }}
                 />
               </label>
+              <Show when={album()}>{(a) => <AlbumTools album={a()} onRenamed={setAlbum} onDeleted={() => navigate(ALBUMS_PATH)} />}</Show>
               <Show when={!shelf()}>
+                <A class="g-iconbtn" href="/gallery/albums" aria-label={t("galleryAlbums.link")} title={t("galleryAlbums.link")}>
+                  <AlbumIcon />
+                </A>
                 <A class="g-iconbtn" href="/gallery/places" aria-label={t("browse.placesLink")} title={t("browse.placesLink")}>
                   <PlacesIcon />
                 </A>
@@ -387,6 +486,7 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean 
             onRestore={() => void restoreSelected()}
             archive={archive()}
             onArchive={() => void archiveSelected()}
+            onRemoveFromAlbum={albumId() ? () => void removeFromAlbum() : undefined}
           />
         </Show>
         <Show when={!shelf() && (sources()?.sources.length ?? 0) > 0}>
@@ -441,15 +541,28 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean 
               {t("gallery.clearFilters")}
             </button>
           </Show>
-          <div class="g-seg g-seg--end" role="group" aria-label={t("gallery.groupLabel")}>
-            <button type="button" class="g-seg__btn" aria-pressed={group() === "day"} onClick={() => chooseGroup("day")}>
-              {t("gallery.groupDay")}
-            </button>
-            <button type="button" class="g-seg__btn" aria-pressed={group() === "month"} onClick={() => chooseGroup("month")}>
-              {t("gallery.groupMonth")}
-            </button>
-          </div>
+          <Show when={!flat()}>
+            <div class="g-seg g-seg--end" role="group" aria-label={t("gallery.groupLabel")}>
+              <button type="button" class="g-seg__btn" aria-pressed={group() === "day"} onClick={() => chooseGroup("day")}>
+                {t("gallery.groupDay")}
+              </button>
+              <button type="button" class="g-seg__btn" aria-pressed={group() === "month"} onClick={() => chooseGroup("month")}>
+                {t("gallery.groupMonth")}
+              </button>
+            </div>
+          </Show>
         </div>
+        <Show when={smartAllowed() && !refused() && (similarOn() || (!!q() && smartReady(smartStatus())))}>
+          <SmartHeader
+            query={similarOn() ? null : q()}
+            similarTo={similarOn() ? similar()!.title : null}
+            mode={mode()}
+            smart={smartOn()}
+            looked={smartOn() || similarOn() ? lookedAt(smartStatus()) : null}
+            onMode={chooseMode}
+            onClearSimilar={() => setSimilar(null)}
+          />
+        </Show>
         <Show when={trash()}>
           <p class="g-note">{t("gallery.trashNote")}</p>
         </Show>
@@ -475,7 +588,7 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean 
           items={items()}
           epoch={feed.epoch()}
           resetKey={JSON.stringify(query())}
-          groupBy={group()}
+          groupBy={flat() ? "none" : group()}
           selected={selected()}
           jxl={jxl() ?? false}
           showSource={!shelf() && origin() === "all"}
@@ -485,7 +598,7 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean 
           hasMore={feed.hasMore()}
           failed={feed.failed()}
           months={months() ?? []}
-          scrubber={!q() && !from() && !to() && !bbox()}
+          scrubber={!q() && !from() && !to() && !bbox() && !albumId() && !similarOn()}
           onNeedMore={() => void feed.loadMore()}
           onRetry={() => void feed.loadMore()}
           onSeek={loadUntil}
@@ -539,6 +652,7 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean 
           onRemoved={removedInViewer}
           trash={trash()}
           archive={archive()}
+          onSimilar={smartAllowed() && !refused() && smartReady(smartStatus()) ? showSimilar : undefined}
         />
       </Show>
       <Show when={deleting()}>

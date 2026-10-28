@@ -1,8 +1,9 @@
-import { createEffect, createMemo, createResource, createSignal, Match, on, Show, Switch } from "solid-js";
+import { createEffect, createMemo, createResource, createSignal, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
 import { Portal } from "solid-js/web";
 import { batch, patchItem, previewUrl, type GalleryItem, type ItemEdit } from "../../api/gallery";
 import { t } from "../../i18n";
 import { nextRotation } from "../../lib/galleryInfo";
+import { isLive } from "../../lib/galleryLive";
 import { supportsJxl } from "../../lib/jxl";
 import { PhotoViewer, type ViewerItem } from "../PhotoViewer";
 import "../../styles/gallery-viewer.css";
@@ -16,6 +17,10 @@ import { PhotoEditor } from "./editor/PhotoEditor";
 import { RenameDialog } from "./RenameDialog";
 import { ArchiveIcon, UnarchiveIcon } from "./browse/BrowseIcons";
 import { GalleryVideo } from "./browse/GalleryVideo";
+import { createLive, trackHold } from "./live/liveController";
+import { LiveIcon } from "./live/LiveIcons";
+import { LiveVideo } from "./live/LiveVideo";
+import { SimilarIcon } from "./smart/SmartIcons";
 import { ShareSheet } from "./share/ShareSheet";
 import { AlbumIcon, DownloadIcon, HeartIcon, InfoIcon, RenameIcon, RestoreIcon, RotateIcon, TrashIcon } from "./ViewerIcons";
 
@@ -32,6 +37,8 @@ export interface GalleryViewerProps {
   trash?: boolean;
   /** The list is the Archive: Unarchive instead of Archive. */
   archive?: boolean;
+  /** Show "Similar photos" (smart search is on): called with the photo to look for pictures like it. */
+  onSimilar?: (item: GalleryItem) => void;
 }
 
 type Dialog = "delete" | "album" | "rename" | "share" | "lab" | null;
@@ -70,6 +77,7 @@ export function GalleryViewer(props: GalleryViewerProps) {
   const [dialog, setDialog] = createSignal<Dialog>(null);
   const [error, setError] = createSignal<string | null>(null);
   const [editing, setEditing] = createSignal(false);
+  const live = createLive();
 
   // ---- optimistic edits ------------------------------------------------------------------------------------------
   // `base` is the list's item the edit started from: once the list holds another object for that id (the parent applied
@@ -217,6 +225,29 @@ export function GalleryViewer(props: GalleryViewerProps) {
     rememberInfoOpen(open);
   };
 
+  // ---- Live Photos: the motion plays on the LIVE button, a hold on the picture, or the L key ---------------------------
+
+  const liveOf = (id: string | undefined) => {
+    const item = id ? listed(id) : undefined;
+    return isLive(item) ? item.livePair : null;
+  };
+  createEffect(on(() => current()?.id, () => live.dispatch({ type: "reset" }), { defer: true }));
+  onMount(() => {
+    const release = (e: KeyboardEvent) => {
+      if (e.key === "l" || e.key === "L") live.release("key");
+    };
+    window.addEventListener("keyup", release);
+    const stopHold = trackHold(document, {
+      enabled: () => isLive(current()) && !editing() && !dialog(),
+      onHold: () => live.press("hold"),
+      onRelease: () => live.release("hold"),
+    });
+    onCleanup(() => {
+      window.removeEventListener("keyup", release);
+      stopHold();
+    });
+  });
+
   // A list that lost its current item (deleted, restored): stay on the one that moved up, close when none is left.
   createEffect(
     on(
@@ -257,6 +288,12 @@ export function GalleryViewer(props: GalleryViewerProps) {
       case "R":
         e.preventDefault();
         rotate();
+        return true;
+      case "l":
+      case "L":
+        if (!isLive(current())) return false;
+        e.preventDefault();
+        if (!e.repeat) live.press("key");
         return true;
       case "e":
       case "E":
@@ -308,6 +345,27 @@ export function GalleryViewer(props: GalleryViewerProps) {
           >
             <InfoIcon />
           </button>
+          <Show when={isLive(item())}>
+            <button
+              type="button"
+              class="pv-btn gl-btn"
+              classList={{ "gl-btn--on": live.state().phase !== "idle" }}
+              aria-label={t("galleryLive.play")}
+              aria-pressed={live.state().phase === "playing"}
+              title={t("galleryLive.playHint")}
+              onClick={() => live.press("button")}
+              onPointerEnter={(e) => e.pointerType === "mouse" && live.press("hover")}
+              onPointerLeave={(e) => e.pointerType === "mouse" && live.release("hover")}
+            >
+              <LiveIcon />
+              <span class="gl-btn__label">{t("galleryLive.label")}</span>
+            </button>
+          </Show>
+          <Show when={props.onSimilar && item().kind === "photo"}>
+            <button type="button" class="pv-btn" aria-label={t("gallerySmart.similar")} title={t("gallerySmart.similar")} onClick={() => props.onSimilar?.(item())}>
+              <SimilarIcon />
+            </button>
+          </Show>
           <Show when={!props.trash}>
             <button
               type="button"
@@ -401,6 +459,9 @@ export function GalleryViewer(props: GalleryViewerProps) {
         toolbar={<Toolbar />}
         panel={infoOpen() ? <Panel /> : undefined}
         onKeyDown={onKeyDown}
+        renderOverlay={({ item, current: here, style, placed }) => (
+          <Show when={here() && liveOf(item()?.id)}>{(pair) => <LiveVideo pairId={pair()} live={live} style={style} placed={placed} />}</Show>
+        )}
         renderVideo={({ item, current }) => (
           <GalleryVideo id={item.id ?? ""} poster={item.poster} durationMs={listed(item.id ?? "")?.durationMs} active={current} />
         )}

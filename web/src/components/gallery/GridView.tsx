@@ -28,7 +28,9 @@ import {
   type Window,
 } from "../../lib/galleryLayout";
 import { thumbHashToImage } from "../../lib/thumbhash";
+import { isLive } from "../../lib/galleryLive";
 import { GridScrubber } from "./GridScrubber";
+import { LiveIcon } from "./live/LiveIcons";
 import { SourceIcon } from "./SourceBar";
 
 // The Gallery's virtual grid: its own scroll container (a definite box inside the app shell), sticky day or month
@@ -84,14 +86,15 @@ interface Pad {
 /** Layout options for a content width: squares on a phone, justified rows elsewhere. */
 export function optionsFor(width: number, groupBy: GroupBy): LayoutOptions {
   const narrow = width < 520;
+  const flat = groupBy === "none";
   return {
     width,
     gap: narrow ? 2 : 3,
     target: narrow ? 118 : width < 900 ? 160 : 210,
     mode: narrow ? "square" : "justified",
     groupBy,
-    headerHeight: narrow ? 36 : 42,
-    sectionGap: narrow ? 8 : 14,
+    headerHeight: flat ? 0 : narrow ? 36 : 42,
+    sectionGap: flat ? 0 : narrow ? 8 : 14,
   };
 }
 
@@ -138,7 +141,7 @@ interface Ctx {
 
 function tileLabel(item: GalleryItem, trash: boolean): string {
   const loc = locale();
-  const parts: string[] = [t(item.kind === "video" ? "gallery.video" : "gallery.photo")];
+  const parts: string[] = [t(item.kind === "video" ? "gallery.video" : isLive(item) ? "galleryLive.photo" : "gallery.photo")];
   if (item.kind === "video" && item.durationMs !== null) parts.push(formatDuration(item.durationMs));
   const day = formatDay(item.takenAt ?? item.addedAt, loc);
   if (day) parts.push(day);
@@ -272,6 +275,11 @@ function Tile(props: { cell: Cell; ctx: Ctx; rowHeight: number }) {
                 <Show when={it().durationMs !== null}>{formatDuration(it().durationMs)}</Show>
               </span>
             </Show>
+            <Show when={isLive(it())}>
+              <span class="g-badge g-badge--live" aria-hidden="true">
+                <LiveIcon class="g-badge__live" />
+              </span>
+            </Show>
             <Show when={ctx.showSource()}>
               <span class="g-badge g-badge--source" aria-hidden="true" title={it().deviceName ?? undefined}>
                 <SourceIcon kind={ctx.sourceKind(it())} />
@@ -314,7 +322,8 @@ function Tile(props: { cell: Cell; ctx: Ctx; rowHeight: number }) {
 
 function SectionView(props: { section: Section; win: Accessor<Window>; ctx: Ctx; onSection: GridViewProps["onSection"] }) {
   const rows = createMemo(() => visibleRows(props.section, props.win()));
-  const label = () => formatSectionLabel(props.section.key, locale()) || t("gallery.noDate");
+  const flat = () => props.section.key === "all";
+  const label = () => (flat() ? t("gallery.title") : formatSectionLabel(props.section.key, locale()) || t("gallery.noDate"));
   const allSelected = createMemo(() => {
     const sel = props.ctx.selected();
     if (!sel.size) return false;
@@ -328,25 +337,27 @@ function SectionView(props: { section: Section; win: Accessor<Window>; ctx: Ctx;
     <section
       class="g-section"
       style={{ top: `${props.section.top}px`, height: `${props.section.height}px` }}
-      aria-labelledby={`${listId}-h`}
+      aria-labelledby={flat() ? undefined : `${listId}-h`}
       data-section={props.section.id}
     >
-      <h2 class="g-head" id={`${listId}-h`}>
-        <button
-          type="button"
-          class="g-head__check"
-          role="checkbox"
-          aria-checked={allSelected()}
-          aria-label={t("gallery.selectSection", { label: label() })}
-          onClick={() => props.onSection(props.section.start, props.section.count, !allSelected())}
-        >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="m6 12.5 4 4 8-9" />
-          </svg>
-        </button>
-        <span class="g-head__label">{label()}</span>
-        <span class="g-head__count">{t("gallery.itemCount", { count: props.section.count })}</span>
-      </h2>
+      <Show when={!flat()}>
+        <h2 class="g-head" id={`${listId}-h`}>
+          <button
+            type="button"
+            class="g-head__check"
+            role="checkbox"
+            aria-checked={allSelected()}
+            aria-label={t("gallery.selectSection", { label: label() })}
+            onClick={() => props.onSection(props.section.start, props.section.count, !allSelected())}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m6 12.5 4 4 8-9" />
+            </svg>
+          </button>
+          <span class="g-head__label">{label()}</span>
+          <span class="g-head__count">{t("gallery.itemCount", { count: props.section.count })}</span>
+        </h2>
+      </Show>
       <div role="list" aria-label={label()}>
         <For each={rows()}>
           {(row) => (

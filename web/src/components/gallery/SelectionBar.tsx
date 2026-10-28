@@ -1,6 +1,7 @@
 import { Show, type JSX } from "solid-js";
 import { CloseIcon, DownloadIcon, RefreshIcon, TrashIcon } from "../Icons";
 import { t } from "../../i18n";
+import { RemoveFromAlbumIcon } from "./albums/AlbumIcons";
 import { ArchiveBoxIcon } from "./browse/BrowseIcons";
 
 export interface SelectionBarProps {
@@ -22,6 +23,8 @@ export interface SelectionBarProps {
   /** The Archive view: the button says Unarchive. */
   archive?: boolean;
   onArchive?: () => void;
+  /** Inside an album: takes the selected photos out of it (they stay in the Gallery); no button without it. */
+  onRemoveFromAlbum?: () => void;
   /** Opens the Share sheet for the selection (components/gallery/share/ShareSheet.tsx); no button without it. */
   onShare?: () => void;
 }
@@ -86,6 +89,7 @@ export function SelectionBar(props: SelectionBarProps) {
         {act(props.allFavorite ? t("gallery.unfavorite") : t("gallery.favorite"), () => <HeartIcon filled={props.allFavorite} />, props.onFavorite)}
         {props.onShare ? act(t("galleryShare.shareSelection"), () => <ShareIcon />, props.onShare) : null}
         {act(t("gallery.addToAlbum"), () => <AlbumIcon />, props.onAlbum)}
+        {props.onRemoveFromAlbum && act(t("galleryAlbums.removeFromAlbum"), () => <RemoveFromAlbumIcon />, props.onRemoveFromAlbum)}
         {props.onArchive && act(props.archive ? t("browse.unarchive") : t("browse.archive"), () => <ArchiveBoxIcon />, props.onArchive)}
         {act(t("gallery.download"), () => <DownloadIcon />, props.onDownload)}
         {act(t("gallery.delete"), () => <TrashIcon />, props.onDelete, true)}
