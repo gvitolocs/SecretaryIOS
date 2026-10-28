@@ -2,6 +2,7 @@ import { A, useNavigate, useSearchParams } from "@solidjs/router";
 import { createEffect, createMemo, createResource, createSignal, on, onCleanup, Show } from "solid-js";
 import {
   batch,
+  createStack,
   getAlbum,
   getEmbeddingStatus,
   listMonths,
@@ -28,6 +29,7 @@ import { SmartHeader } from "../components/gallery/smart/SmartHeader";
 import { AlbumIcon } from "../components/gallery/ViewerIcons";
 import { LabIcon } from "../components/gallery/lab/LabIcons";
 import { ShareSheet } from "../components/gallery/share/ShareSheet";
+import { DuplicatesIcon } from "../components/gallery/stacks/StackIcons";
 import { BackIcon, LinkIcon, SearchIcon, TrashIcon } from "../components/Icons";
 import { t } from "../i18n";
 import { ALBUMS_PATH } from "../lib/galleryAlbums";
@@ -284,6 +286,35 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
   }
 
   // Inside an album: the chosen photos leave the album, never the Gallery.
+  // Stack: the selected photos become one tile (the first selected stands for it); the others leave the grid.
+  async function stackSelected() {
+    const chosen = selectedItems();
+    if (chosen.length < 2 || busy()) return;
+    setBusy(true);
+    try {
+      const stack = await createStack(chosen.map((i) => i.id));
+      const primary = stack.items.find((i) => i.id === stack.primary);
+      const others = chosen.map((i) => i.id).filter((id) => id !== stack.primary);
+      feed.remove(others);
+      if (primary) feed.replace(primary);
+      clearSelection();
+      say(t("galleryDedup.selectionStacked", { count: chosen.length }));
+      refreshCounts();
+    } catch {
+      say(t("galleryDedup.stackFailed"), true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // The viewer changed a stack (made primary, unstacked, a member deleted): the grid shows other tiles now.
+  function stackChanged(change: "primary" | "unstack" | "member") {
+    setViewer(null);
+    feed.reload();
+    refreshCounts();
+    if (change !== "member") say(t(change === "primary" ? "galleryDedup.primaryChanged" : "galleryDedup.unstacked"));
+  }
+
   async function removeFromAlbum() {
     const chosen = selectedItems();
     const id = albumId();
@@ -457,6 +488,9 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
                 <A class="g-iconbtn" href="/gallery/archive" aria-label={t("browse.archiveLink")} title={t("browse.archiveLink")}>
                   <ArchiveBoxIcon />
                 </A>
+                <A class="g-iconbtn" href="/gallery/duplicates" aria-label={t("galleryDedup.link")} title={t("galleryDedup.link")}>
+                  <DuplicatesIcon />
+                </A>
                 <A class="g-iconbtn" href="/gallery/lab" aria-label={t("lab.labLink")} title={t("lab.labLink")}>
                   <LabIcon />
                 </A>
@@ -481,6 +515,7 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
             onFavorite={() => void favoriteSelected()}
             onAlbum={() => setAlbumFor(selectedItems().map((i) => i.id))}
             onShare={() => setSharing(selectedItems())}
+            onStack={trash() || archive() ? undefined : () => void stackSelected()}
             onDownload={downloadSelected}
             onDelete={() => onCommand("delete")}
             onRestore={() => void restoreSelected()}
@@ -650,6 +685,7 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
           onClose={() => setViewer(null)}
           onChanged={feed.replace}
           onRemoved={removedInViewer}
+          onStackChanged={stackChanged}
           trash={trash()}
           archive={archive()}
           onSimilar={smartAllowed() && !refused() && smartReady(smartStatus()) ? showSimilar : undefined}

@@ -3,6 +3,7 @@ import { CloseIcon, DownloadIcon, RefreshIcon, TrashIcon } from "../Icons";
 import { t } from "../../i18n";
 import { RemoveFromAlbumIcon } from "./albums/AlbumIcons";
 import { ArchiveBoxIcon } from "./browse/BrowseIcons";
+import { StackIcon } from "./stacks/StackIcons";
 
 export interface SelectionBarProps {
   count: number;
@@ -27,6 +28,8 @@ export interface SelectionBarProps {
   onRemoveFromAlbum?: () => void;
   /** Opens the Share sheet for the selection (components/gallery/share/ShareSheet.tsx); no button without it. */
   onShare?: () => void;
+  /** Stacks the selected photos into one tile; the button shows only with two or more selected, and not without this. */
+  onStack?: () => void;
 }
 
 function HeartIcon(props: { filled: boolean }) {
@@ -89,6 +92,7 @@ export function SelectionBar(props: SelectionBarProps) {
         {act(props.allFavorite ? t("gallery.unfavorite") : t("gallery.favorite"), () => <HeartIcon filled={props.allFavorite} />, props.onFavorite)}
         {props.onShare ? act(t("galleryShare.shareSelection"), () => <ShareIcon />, props.onShare) : null}
         {act(t("gallery.addToAlbum"), () => <AlbumIcon />, props.onAlbum)}
+        {props.onStack && props.count >= 2 && act(t("galleryDedup.selectionStack"), () => <StackIcon />, props.onStack)}
         {props.onRemoveFromAlbum && act(t("galleryAlbums.removeFromAlbum"), () => <RemoveFromAlbumIcon />, props.onRemoveFromAlbum)}
         {props.onArchive && act(props.archive ? t("browse.unarchive") : t("browse.archive"), () => <ArchiveBoxIcon />, props.onArchive)}
         {act(t("gallery.download"), () => <DownloadIcon />, props.onDownload)}

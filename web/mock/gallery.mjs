@@ -16,8 +16,9 @@
 // `archived` and `bbox` on the listing, POST items/{id}/play (a tokenised file URL) and GET s/{token}/{id}/file, which
 // serves MOCK_GALLERY_VIDEO (an mp4 on disk) for every video.
 // Albums, Live Photos and smart search (the albums API, `live_pair` on some phone photos with a hidden motion clip,
-// embeddings/status, items/search, items/{id}/similar): mock/galleryMl.mjs.
+// embeddings/status, items/search, items/{id}/similar): mock/galleryMl.mjs. Duplicates and stacks: mock/galleryDedup.mjs.
 
+import { handleGalleryDedup, seedDedup, stackRef } from "./galleryDedup.mjs";
 import { handleGalleryMl } from "./galleryMl.mjs";
 import { handleLab } from "./lab.mjs";
 
@@ -242,6 +243,7 @@ function build() {
 }
 
 let items = build();
+seedDedup(items);
 const byId = () => new Map(items.map((i) => [i.id, i]));
 
 function expires(it) {
@@ -277,6 +279,7 @@ function out(it) {
     trash_expires_at: expires(it),
     thumbhash: hashFor(it.hue, aspect),
     live_pair: it.live_pair ?? null,
+    stack: stackRef(it),
     urls: {
       thumb: `${base}/thumb?size=256`,
       large: `${base}/thumb?size=1024`,
@@ -622,6 +625,7 @@ export async function handleGallery(req, res, { path, method, url, send, fail, r
   }
 
   if (await handleGalleryMl(req, res, { rest, method, url, send, fail, readJson }, { albums, items: () => items, matcher, out })) return true;
+  if (await handleGalleryDedup(req, res, { rest, method, url, send, fail, readJson }, { items: () => items, out })) return true;
   if (await handleLab(req, res, { rest, method, url, send, fail, readJson }, labEnv)) return true;
 
   const one = rest.match(/^items\/([^/]+)(?:\/(.*))?$/);
