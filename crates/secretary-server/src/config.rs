@@ -39,6 +39,9 @@
 //! | `SECRETARY_TODOIST_REDIRECT_URI` | `https://getsecretary.tech/v1/links/todoist/callback` | must match the app's OAuth redirect URL |
 //! | `SECRETARY_TODOIST_API_URL` | `https://api.todoist.com` | Todoist API origin (tests point it at a mock) |
 //! | `SECRETARY_TODOIST_AUTH_URL` | `https://app.todoist.com` | Todoist authorize origin |
+//! | `SECRETARY_MCP_AGENTS_TOKEN_FILE` | — | the MCP's `svc_…` token for `/v1/agents/*` (origin `mcp:<tokenId>`, see `agents`) |
+//! | `SECRETARY_AGENTS_BROKER_TOKEN_FILE` | — | the Infisical broker's `svc_…` token: external permission requests only |
+//! | `SECRETARY_MCP_DEVICE_IDS` | — | comma-separated device ids whose token the MCP holds: always `mcp:` on `/v1/agents/*` |
 
 use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt;
@@ -133,6 +136,8 @@ pub struct Config {
     pub ics_allow_local: bool,
     /// Todoist (Tasks): API origin, OAuth app, sync interval.
     pub todoist: crate::todoist::TodoistConfig,
+    /// `/v1/agents/*`: the MCP's and the broker's tokens, the MCP's devices.
+    pub agents: crate::agents::AgentsConfig,
 }
 
 impl std::fmt::Debug for Config {
@@ -194,6 +199,7 @@ impl Config {
             mcp_status: None,
             ics_allow_local: false,
             todoist: crate::todoist::TodoistConfig::default(),
+            agents: crate::agents::AgentsConfig::default(),
         }
     }
 
@@ -327,6 +333,18 @@ impl Config {
                     .unwrap_or_else(|| "http://127.0.0.1:8810/internal/status".into()),
                 token: read_secret_file(&path, "SECRETARY_MCP_STATUS_TOKEN_FILE")?,
             });
+        }
+        for (var, slot) in [
+            ("SECRETARY_MCP_AGENTS_TOKEN_FILE", &mut cfg.agents.mcp_token),
+            ("SECRETARY_AGENTS_BROKER_TOKEN_FILE", &mut cfg.agents.broker_token),
+        ] {
+            if let Some(path) = get(var) {
+                let token = read_secret_file(&path, var)?;
+                *slot = Some(crate::service::ServiceToken::from_secret(&token).with_context(|| var.to_owned())?);
+            }
+        }
+        if let Some(ids) = get("SECRETARY_MCP_DEVICE_IDS") {
+            cfg.agents.mcp_devices = ids.split(',').map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()).collect();
         }
         if let Some(v) = get("SECRETARY_TODOIST_SYNC_SECS") {
             let n: u64 = v
