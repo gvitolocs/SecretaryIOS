@@ -148,9 +148,10 @@ impl View {
 
 /// A one-finger drag shorter than this (points) has no direction yet.
 pub const AXIS_SLOP: f32 = 10.0;
-/// Fitted picture: the drag is the viewer's own (out or info) when it is this much steeper than
-/// horizontal; flatter drags belong to the pager.
-const STEEP: f32 = 1.2;
+/// Tangent of 40°: drags within this cone of vertical belong to the viewer (out or info).
+const OUT_CONE: f32 = 0.839;
+/// Tangent of 50°: downward drags in this band belong to the viewer unless velocity is horizontal-dominant.
+const OUT_BAND: f32 = 1.192;
 /// The picture shrinks by up to this while dragged down, as in Google Photos.
 const SHRINK: f32 = 0.25;
 /// Released past this share of the viewport height (or flung past [`FLING_OUT`]) → close.
@@ -159,6 +160,10 @@ const FLING_OUT: f32 = 0.3;
 /// Released this far up (points), or flung past [`FLING_INFO`] of the height → the details sheet.
 const INFO_AT: f32 = 80.0;
 const FLING_INFO: f32 = 0.25;
+/// Minimum travel in points for a velocity-triggered flick.
+const FLICK_MIN: f32 = 16.0;
+/// Minimum finger speed in points per second for a velocity-triggered flick.
+const FLICK_V: f32 = 500.0;
 
 /// Who owns a one-finger drag, decided once from its first movement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -205,15 +210,17 @@ impl View {
         self.scale > 1.01
     }
 
-    /// Who owns a drag that has moved (`dx`, `dy`) so far.
-    pub fn drag_axis(&self, dx: f32, dy: f32) -> DragAxis {
+    /// Who owns a drag that has moved (`dx`, `dy`), with finger velocity in points per second.
+    pub fn drag_axis(&self, dx: f32, dy: f32, vx: f32, vy: f32) -> DragAxis {
         if self.zoomed() {
             return DragAxis::Pan;
         }
         let (ax, ay) = (dx.abs(), dy.abs());
         if ax.max(ay) < AXIS_SLOP {
             DragAxis::Undecided
-        } else if ay > ax * STEEP {
+        } else if ax <= ay * OUT_CONE {
+            DragAxis::Out
+        } else if dy > 0.0 && ax <= dy * OUT_BAND && vy.abs() >= vx.abs() {
             DragAxis::Out
         } else {
             DragAxis::Pager
@@ -230,12 +237,12 @@ impl View {
         DragOut { offset_x: dx, offset_y: dy, scale: 1.0 - SHRINK * progress, backdrop: 1.0 - progress }
     }
 
-    /// The release of a drag-out at (`dy`), with the platform's predicted end of the throw.
-    pub fn drag_end(&self, dy: f32, predicted_dy: f32) -> DragEnd {
+    /// The release at `dy`, with the predicted end and finger velocity in points per second.
+    pub fn drag_end(&self, dy: f32, predicted_dy: f32, vy: f32) -> DragEnd {
         let h = self.viewport_h.max(1.0);
-        if dy > 0.0 && (dy > OUT_AT * h || predicted_dy > FLING_OUT * h) {
+        if dy > 0.0 && (dy > OUT_AT * h || predicted_dy > FLING_OUT * h || (dy >= FLICK_MIN && vy >= FLICK_V)) {
             DragEnd::Dismiss
-        } else if dy < 0.0 && (-dy > INFO_AT || -predicted_dy > FLING_INFO * h) {
+        } else if dy < 0.0 && (-dy > INFO_AT || -predicted_dy > FLING_INFO * h || (-dy >= FLICK_MIN && -vy >= FLICK_V)) {
             DragEnd::Info
         } else {
             DragEnd::Back
@@ -262,6 +269,10 @@ struct DragRequest {
     dx: f32,
     dy: f32,
     #[serde(default)]
+    vx: f32,
+    #[serde(default)]
+    vy: f32,
+    #[serde(default)]
     predicted_dy: f32,
     #[serde(default)]
     ended: bool,
@@ -278,7 +289,8 @@ fn default_screen_scale() -> f32 {
 /// the web through `secretary-image-wasm`):
 /// `{"new":[image_w,image_h,viewport_w,viewport_h]}` or `{"view":{...},"gesture":{"op":"pinch",
 /// "factor":1.2,"x":..,"y":..}}` → `{"ok":true,"view":{...},"rect":{x,y,w,h},"wants_original":bool}`.
-/// With `"drag":{"dx","dy","predicted_dy","ended"}` the answer also has `"drag":{"axis":"undecided"|
+/// With `"drag":{"dx","dy","vx","vy","predicted_dy","ended"}` (`vx`, `vy` in points per second),
+/// the answer also has `"drag":{"axis":"undecided"|
 /// "pager"|"out"|"pan","out":{offset_x,offset_y,scale,backdrop}}`, plus `"end":"dismiss"|"info"|"back"`
 /// on a released drag-out.
 pub fn handle_json(json: &str) -> serde_json::Value {
@@ -302,10 +314,10 @@ pub fn handle_json(json: &str) -> serde_json::Value {
         "wants_original": view.wants_original(req.preview_px, req.screen_scale),
     });
     if let Some(d) = req.drag {
-        let axis = view.drag_axis(d.dx, d.dy);
+        let axis = view.drag_axis(d.dx, d.dy, d.vx, d.vy);
         let mut drag = serde_json::json!({"axis": axis, "out": view.drag_out(d.dx, d.dy)});
         if d.ended && axis == DragAxis::Out {
-            drag["end"] = serde_json::json!(view.drag_end(d.dy, d.predicted_dy));
+            drag["end"] = serde_json::json!(view.drag_end(d.dy, d.predicted_dy, d.vy));
         }
         answer["drag"] = drag;
     }
@@ -371,14 +383,93 @@ mod tests {
     }
 
     #[test]
-    fn drag_axis_splits_pager_out_and_pan() {
+    fn drag_axis_waits_for_slop() {
         let v = View::new(1440.0, 960.0, 390.0, 844.0);
-        assert_eq!(v.drag_axis(3.0, 4.0), DragAxis::Undecided);
-        assert_eq!(v.drag_axis(30.0, 10.0), DragAxis::Pager);
-        assert_eq!(v.drag_axis(20.0, 20.0), DragAxis::Pager, "diagonal stays with the pager");
-        assert_eq!(v.drag_axis(5.0, 40.0), DragAxis::Out);
-        assert_eq!(v.drag_axis(-5.0, -40.0), DragAxis::Out);
-        assert_eq!(v.double_tap(195.0, 422.0).drag_axis(0.0, 100.0), DragAxis::Pan, "zoomed: the drag pans");
+        assert_eq!(v.drag_axis(3.0, 4.0, 0.0, 900.0), DragAxis::Undecided, "velocity does not bypass slop");
+        assert_eq!(v.drag_axis(0.0, AXIS_SLOP, 0.0, 0.0), DragAxis::Out, "slop boundary decides direction");
+    }
+
+    #[test]
+    fn straight_down_is_out() {
+        let v = View::new(1440.0, 960.0, 390.0, 844.0);
+        for (dx, dy) in [(0.0, 40.0), (5.0, 40.0), (-5.0, -40.0)] {
+            assert_eq!(v.drag_axis(dx, dy, 0.0, 0.0), DragAxis::Out, "within the vertical cone: ({dx}, {dy})");
+        }
+    }
+
+    #[test]
+    fn diagonal_down_is_out() {
+        let v = View::new(1440.0, 960.0, 390.0, 844.0);
+        assert_eq!(v.drag_axis(28.0, 40.0, 0.0, 0.0), DragAxis::Out, "35 degrees is within the cone");
+        assert_eq!(v.drag_axis(30.0, 30.0, 0.0, 0.0), DragAxis::Out, "45 degrees with zero velocity uses the band");
+        assert_eq!(v.drag_axis(30.0, 30.0, 400.0, 600.0), DragAxis::Out, "vertical-dominant velocity uses the band");
+        assert_eq!(v.drag_axis(30.0, 30.0, 900.0, 300.0), DragAxis::Pager, "horizontal-dominant velocity pages in the band");
+    }
+
+    #[test]
+    fn diagonal_up_in_band_pages() {
+        let v = View::new(1440.0, 960.0, 390.0, 844.0);
+        assert_eq!(v.drag_axis(30.0, -30.0, 0.0, -900.0), DragAxis::Pager, "upward band drags page even with vertical velocity");
+        assert_eq!(v.drag_axis(20.0, -40.0, 0.0, 0.0), DragAxis::Out, "26.6 degrees up is within the cone");
+    }
+
+    #[test]
+    fn horizontal_swipe_pages() {
+        let v = View::new(1440.0, 960.0, 390.0, 844.0);
+        for (dx, dy) in [(40.0, 10.0), (-40.0, 12.0), (35.0, 20.0)] {
+            assert_eq!(v.drag_axis(dx, dy, 0.0, 0.0), DragAxis::Pager, "flatter than 50 degrees: ({dx}, {dy})");
+        }
+    }
+
+    #[test]
+    fn zoomed_drag_always_pans() {
+        let v = View::new(1440.0, 960.0, 390.0, 844.0).double_tap(195.0, 422.0);
+        for (dx, dy, vx, vy) in [
+            (0.0, 100.0, 0.0, 900.0),
+            (30.0, 30.0, 900.0, 300.0),
+            (30.0, -30.0, 0.0, -900.0),
+            (40.0, 10.0, -900.0, 0.0),
+            (0.0, 0.0, 0.0, 0.0),
+        ] {
+            assert_eq!(v.drag_axis(dx, dy, vx, vy), DragAxis::Pan, "zoomed drag pans at ({dx}, {dy}), velocity ({vx}, {vy})");
+        }
+    }
+
+    #[test]
+    fn fast_short_flick_closes() {
+        let v = View::new(1440.0, 960.0, 390.0, 844.0);
+        assert_eq!(v.drag_end(24.0, 30.0, 900.0), DragEnd::Dismiss, "short fast downward flick closes");
+        assert_eq!(v.drag_end(20.0, 20.0, -300.0), DragEnd::Back, "pulled back up before release");
+        assert_eq!(v.drag_end(120.0, 120.0, -300.0), DragEnd::Dismiss, "distance still closes after reversing");
+        assert_eq!(v.drag_end(10.0, 10.0, 2000.0), DragEnd::Back, "velocity needs minimum travel");
+        assert_eq!(v.drag_end(10.0, 400.0, 2000.0), DragEnd::Dismiss, "predicted end can close below minimum flick travel");
+        assert_eq!(v.drag_end(16.0, 16.0, 500.0), DragEnd::Dismiss, "flick thresholds are inclusive");
+        assert_eq!(v.drag_end(16.0, 16.0, 499.0), DragEnd::Back, "speed below the flick threshold springs back");
+    }
+
+    #[test]
+    fn slow_short_drag_springs_back() {
+        let v = View::new(1440.0, 960.0, 390.0, 844.0);
+        assert_eq!(v.drag_end(60.0, 70.0, 40.0), DragEnd::Back, "slow short drag springs back");
+    }
+
+    #[test]
+    fn fast_short_flick_up_shows_info() {
+        let v = View::new(1440.0, 960.0, 390.0, 844.0);
+        assert_eq!(v.drag_end(-20.0, -20.0, -800.0), DragEnd::Info, "short fast upward flick shows info");
+    }
+
+    #[test]
+    fn drag_while_opening() {
+        let moving = handle_json(r#"{"new":[1,1,390,844],"drag":{"dx":20,"dy":30,"vx":0,"vy":700}}"#);
+        assert_eq!(moving["ok"], true, "placeholder image accepts a drag while opening");
+        assert_eq!(moving["drag"]["axis"], "out", "opening view routes downward drag out");
+        let ended = handle_json(r#"{"new":[1,1,390,844],"drag":{"dx":20,"dy":30,"ended":true,"predicted_dy":40,"vy":900}}"#);
+        assert_eq!(ended["drag"]["end"], "dismiss", "opening view accepts quick flick with omitted vx");
+        let legacy = handle_json(r#"{"new":[1,1,390,844],"drag":{"dx":30,"dy":30,"ended":true,"predicted_dy":40}}"#);
+        assert_eq!(legacy["ok"], true, "old callers can omit both velocities");
+        assert_eq!(legacy["drag"]["axis"], "out", "omitted velocities count as vertical in the band");
+        assert_eq!(legacy["drag"]["end"], "back", "omitted velocities do not trigger a flick");
     }
 
     #[test]
@@ -397,13 +488,13 @@ mod tests {
     #[test]
     fn release_closes_far_or_fast_and_springs_back_otherwise() {
         let v = View::new(1440.0, 960.0, 390.0, 844.0);
-        assert_eq!(v.drag_end(120.0, 130.0), DragEnd::Dismiss, "past 12% of 844");
-        assert_eq!(v.drag_end(40.0, 400.0), DragEnd::Dismiss, "a quick flick down");
-        assert_eq!(v.drag_end(60.0, 70.0), DragEnd::Back);
-        assert_eq!(v.drag_end(60.0, -50.0), DragEnd::Back, "pulled back up before letting go");
-        assert_eq!(v.drag_end(-90.0, -90.0), DragEnd::Info);
-        assert_eq!(v.drag_end(-30.0, -300.0), DragEnd::Info, "a quick flick up");
-        assert_eq!(v.drag_end(-30.0, -40.0), DragEnd::Back);
-        assert_eq!(v.drag_end(0.0, 0.0), DragEnd::Back);
+        assert_eq!(v.drag_end(120.0, 130.0, 0.0), DragEnd::Dismiss, "past 12% of 844");
+        assert_eq!(v.drag_end(40.0, 400.0, 0.0), DragEnd::Dismiss, "a quick flick down");
+        assert_eq!(v.drag_end(60.0, 70.0, 0.0), DragEnd::Back, "short travel springs back");
+        assert_eq!(v.drag_end(60.0, -50.0, 0.0), DragEnd::Back, "pulled back up before letting go");
+        assert_eq!(v.drag_end(-90.0, -90.0, 0.0), DragEnd::Info, "past info distance");
+        assert_eq!(v.drag_end(-30.0, -300.0, 0.0), DragEnd::Info, "a quick flick up");
+        assert_eq!(v.drag_end(-30.0, -40.0, 0.0), DragEnd::Back, "short travel springs back");
+        assert_eq!(v.drag_end(0.0, 0.0, 0.0), DragEnd::Back, "short travel springs back");
     }
 }
