@@ -129,6 +129,7 @@ pub fn router(lib: Library, extra: Option<Router>) -> Router {
         .merge(crate::share_sel::routes())
         .merge(crate::renditions::routes())
         .merge(crate::lab_http::routes())
+        .merge(crate::smart::routes())
         .with_state(lib.clone())
         .merge(extra.unwrap_or_default())
         .layer(middleware::from_fn_with_state(lib, upstream_guard))

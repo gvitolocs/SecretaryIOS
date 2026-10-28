@@ -16,6 +16,8 @@ path = "src/main.rs"
 secretary-media-stream = { path = "../secretary-media-stream" }
 # The photo editor: the edit list and its renderer, the same code the web editor previews with.
 secretary-image = { path = "../secretary-image" }
+# Smart search: SigLIP2 image vectors and their index (`smart.rs`).
+lucina-media-ml = { path = "../lucina-media-ml" }
 axum = "0.8"
 tokio = { workspace = true }
 tokio-util = { version = "0.7", features = ["io"] }

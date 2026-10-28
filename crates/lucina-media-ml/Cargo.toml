@@ -1,0 +1,20 @@
+[package]
+name = "lucina-media-ml"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Lucina media library: image embeddings for smart search (SigLIP2 on ONNX Runtime) and their vector index"
+
+[dependencies]
+# ONNX Runtime is loaded at run time from LUCINA_MEDIA_ML_ORT_LIB (the same pin as lucina-memo's
+# diarizer); nothing is downloaded or linked at build time.
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["load-dynamic", "std"] }
+tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+half = "2"
+rusqlite = { version = "0.32", features = ["bundled"] }
+thiserror = { workspace = true }
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"

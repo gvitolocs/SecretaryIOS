@@ -46,6 +46,7 @@ pub mod renditions;
 pub mod share;
 pub mod share_http;
 pub mod share_sel;
+pub mod smart;
 pub mod source;
 pub mod store;
 pub mod thumbs;

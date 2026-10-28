@@ -419,6 +419,10 @@ async fn serve(cfg: Config) -> anyhow::Result<()> {
         lib.clone(),
         lucina_media::lab_run::LabConfig::from_env(),
     ));
+    tokio::spawn(lucina_media::smart::worker(
+        lib.clone(),
+        lucina_media::smart::SmartConfig::from_env(),
+    ));
     {
         let l = lib.clone();
         tokio::spawn(async move {
