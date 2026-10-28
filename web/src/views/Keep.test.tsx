@@ -6,6 +6,7 @@ import { dismissSnackbar, keep } from "../state/keep";
 import { applyInput } from "../state/keep";
 import { clearSelection, setSearch, setSearchOpen } from "../state/keepUi";
 import { emptySearch } from "../lib/keepFilter";
+import { png, transfer } from "../test/clipboard";
 import { stubFetch, type Call } from "../test/fetch";
 import { note } from "../test/keepFixtures";
 import { renderAt } from "../test/router";
@@ -55,6 +56,12 @@ function server(notes: KeepNote[] = seed()) {
       return { body: applyInput({ ...base, rev: 20 }, c.body as never, NOW) };
     }
     if (c.method === "POST" && url.pathname === "/v1/notes/batch") return { body: { notes: [] } };
+    const att = /^\/v1\/notes\/([^/]+)\/attachments$/.exec(url.pathname);
+    if (c.method === "POST" && att) {
+      const base = notes.find((n) => n.id === att[1]) ?? note({ id: att[1]! });
+      const file = `${att[1]}-${calls.length}.png`;
+      return { status: 201, body: { ...base, rev: 21, attachments: [...base.attachments, { id: file, file, mimetype: "image/png", size: 4, createdAt: NOW }] } };
+    }
     if (c.method === "DELETE") return { body: { ok: true } };
     return { status: 404, body: { error: { code: "not_found", message: "no" } } };
   });
@@ -470,3 +477,83 @@ describe("Keep: a title repeated as the text's first heading", () => {
   });
 });
 
+
+describe("Keep: pasting and dropping images", () => {
+  const uploads = () => calls.filter((c) => c.method === "POST" && /\/attachments(\?|$)/.test(c.url));
+  beforeEach(() => {
+    URL.createObjectURL ??= () => "blob:preview";
+    URL.revokeObjectURL ??= () => {};
+  });
+
+  it("pastes a screenshot into the open composer: it shows on top, and uploads with the note on Close", async () => {
+    server();
+    renderKeep();
+    await screen.findByText("Revision plan", { selector: ".kp-card-title" });
+    fireEvent.click(screen.getByRole("button", { name: "Take a note…" }));
+    const body = screen.getByRole("textbox", { name: "Take a note…" });
+    const paste = fireEvent.paste(body, { clipboardData: transfer({ files: [png()], itemsOnly: true }) });
+    expect(paste).toBe(false);
+    expect(document.querySelectorAll(".kp-composer .kp-editor-image img")).toHaveLength(1);
+    expect(body.textContent).toBe("");
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(uploads()).toHaveLength(1));
+    expect(uploads()[0]!.url).toMatch(/^\/v1\/notes\/n_created\/attachments\?name=Image%20\d{4}-\d\d-\d\d%20/);
+  });
+
+  it("pastes several images into the title field too", async () => {
+    server();
+    renderKeep();
+    await screen.findByText("Revision plan", { selector: ".kp-card-title" });
+    fireEvent.click(screen.getByRole("button", { name: "Take a note…" }));
+    fireEvent.paste(screen.getByRole("textbox", { name: "Title" }), { clipboardData: transfer({ files: [png(), png("b.jpg", "image/jpeg")] }) });
+    expect(document.querySelectorAll(".kp-composer .kp-editor-image img")).toHaveLength(2);
+  });
+
+  it("keeps a text paste a text paste", async () => {
+    server();
+    renderKeep();
+    await screen.findByText("Revision plan", { selector: ".kp-card-title" });
+    fireEvent.click(screen.getByRole("button", { name: "Take a note…" }));
+    fireEvent.paste(screen.getByRole("textbox", { name: "Take a note…" }), { clipboardData: transfer({ files: [png()], text: "Oats\t3", html: "<table><tr><td>Oats</td></tr></table>" }) });
+    expect(document.querySelector(".kp-composer .kp-editor-image")).toBeNull();
+  });
+
+  it("starts a note when an image is pasted with nothing focused, or dropped on the bar", async () => {
+    server();
+    renderKeep();
+    await screen.findByText("Revision plan", { selector: ".kp-card-title" });
+    fireEvent.paste(document.body, { clipboardData: transfer({ files: [png()] }) });
+    expect(screen.getByRole("group", { name: "New note" })).toBeInTheDocument();
+    expect(document.querySelectorAll(".kp-composer .kp-editor-image img")).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(uploads()).toHaveLength(1));
+
+    const bar = screen.getByRole("group", { name: "Take a note…" });
+    fireEvent.dragEnter(bar, { dataTransfer: transfer({ files: [png("photo.png")] }) });
+    expect(bar).toHaveClass("kp-dropping");
+    fireEvent.drop(bar, { dataTransfer: transfer({ files: [png("photo.png")] }) });
+    expect(document.querySelectorAll(".kp-composer .kp-editor-image img")).toHaveLength(1);
+  });
+
+  it("uploads images pasted or dropped into an open note", async () => {
+    server();
+    renderKeep("/keep/note/n_text");
+    const dialog = await screen.findByRole("dialog", { name: "Active recall" });
+    fireEvent.paste(within(dialog).getByRole("textbox", { name: "Take a note…" }), { clipboardData: transfer({ files: [png(), png()] }) });
+    await waitFor(() => expect(uploads()).toHaveLength(2));
+    expect(uploads().every((c) => c.url.startsWith("/v1/notes/n_text/attachments?name="))).toBe(true);
+    fireEvent.drop(dialog, { dataTransfer: transfer({ files: [png("photo.png")] }) });
+    await waitFor(() => expect(uploads()).toHaveLength(3));
+    expect(uploads()[2]!.url).toBe("/v1/notes/n_text/attachments?name=photo.png");
+    await waitFor(() => expect(dialog.querySelectorAll(".kp-editor-image img").length).toBeGreaterThan(0));
+  });
+
+  it("says so when the image type is not one Keep takes", async () => {
+    server();
+    renderKeep("/keep/note/n_text");
+    const dialog = await screen.findByRole("dialog", { name: "Active recall" });
+    fireEvent.paste(within(dialog).getByRole("textbox", { name: "Title" }), { clipboardData: transfer({ files: [png("scan.tiff", "image/tiff")] }) });
+    expect(await screen.findByText(/Only PNG, JPEG, GIF, WebP and HEIC/)).toBeInTheDocument();
+    expect(uploads()).toHaveLength(0);
+  });
+});
