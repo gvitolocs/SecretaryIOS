@@ -25,6 +25,7 @@ pub mod meetings;
 pub mod model;
 pub mod notify;
 pub mod obsidian;
+pub mod prompter;
 pub mod render;
 pub mod search;
 pub mod store;
@@ -54,6 +55,8 @@ pub struct Config {
     pub public_url: String,
     pub timezone: Tz,
     pub whisper: transcribe::WhisperConfig,
+    /// Lucina Prompter's live speech-to-text and judge ([`prompter`]).
+    pub prompter: prompter::PrompterConfig,
     pub vault: Option<obsidian::VaultTarget>,
     pub notify: notify::NotifyConfig,
     pub calendar_url: Option<String>,
@@ -111,6 +114,7 @@ impl Config {
                 .and_then(|z| z.trim().parse().ok())
                 .unwrap_or(chrono_tz::Europe::Copenhagen),
             whisper: transcribe::WhisperConfig::from_lookup(get),
+            prompter: prompter::PrompterConfig::from_lookup(get, &transcribe::WhisperConfig::from_lookup(get)),
             vault: obsidian::VaultTarget::from_lookup(get),
             notify: notify::NotifyConfig::from_lookup(get),
             calendar_url: get("LUCINA_SECRETARY_SERVER_URL"),
@@ -189,6 +193,8 @@ pub struct App {
     pub voices: diarize::profiles::VoiceBook,
     /// Lucina's memory (meeting entries); None when off.
     pub memory: Option<lucina_memory::Memory>,
+    /// Lucina Prompter: the live speech-to-text engine and the judge client.
+    pub prompter: prompter::Live,
     meetings: std::sync::Mutex<Option<Arc<meetings::store::MeetingStore>>>,
     diarizer: std::sync::Mutex<Option<Arc<dyn diarize::Diarizer>>>,
     gateway_token: Option<String>,
@@ -230,6 +236,7 @@ impl App {
             stt: Arc::new(transcribe::Whisper(cfg.whisper.clone())),
             voices,
             memory,
+            prompter: prompter::Live::new(&cfg.prompter),
             meetings: std::sync::Mutex::new(None),
             diarizer: std::sync::Mutex::new(None),
             calendar: calendar::CalendarCache::open(&cfg.data_dir)?,

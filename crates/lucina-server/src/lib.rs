@@ -39,6 +39,7 @@ pub mod owner_secrets;
 pub mod parity;
 pub mod places;
 pub mod planner;
+pub mod prompter;
 pub mod prompts;
 pub mod reminder_delivery;
 pub mod rich;

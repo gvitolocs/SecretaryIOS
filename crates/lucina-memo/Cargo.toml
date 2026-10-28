@@ -15,7 +15,8 @@ path = "src/main.rs"
 [dependencies]
 fs4 = { workspace = true }
 lucina-llm = { path = "../lucina-llm" }
-axum = "0.8"
+lucina-prompter = { path = "../lucina-prompter" }
+axum = { version = "0.8", features = ["ws"] }
 tokio = { workspace = true }
 tokio-util = { version = "0.7", features = ["io"] }
 futures-util = { workspace = true }
@@ -38,6 +39,8 @@ lucina-memory = { path = "../lucina-memory" }
 ort = { version = "=2.0.0-rc.10", default-features = false, features = ["load-dynamic", "std"] }
 realfft = "3.5"
 async-trait = "0.1"
+# Lucina Prompter replay client (src/prompter/replay.rs).
+tokio-tungstenite = "0.29"
 
 [dev-dependencies]
 # The upload protocol model (tests/upload_model.rs).

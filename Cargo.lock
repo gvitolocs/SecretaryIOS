@@ -2749,6 +2749,7 @@ dependencies = [
  "http-body-util",
  "lucina-llm",
  "lucina-memory",
+ "lucina-prompter",
  "ort",
  "realfft",
  "reqwest 0.12.28",
@@ -2760,6 +2761,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-tungstenite",
  "tokio-util",
  "tower",
  "tracing",
@@ -2878,6 +2880,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "lucina-prompter"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "lucina-jev",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "lucina-secrets"
 version = "0.1.0"
 dependencies = [
@@ -2936,6 +2949,7 @@ dependencies = [
  "lucina-meshy",
  "lucina-ops",
  "lucina-phone-core",
+ "lucina-prompter",
  "lucina-secrets",
  "lucina-store",
  "lucina-telegram",

@@ -18,6 +18,7 @@ members = [
     "crates/lucina-approvals",
     "crates/lucina-llm",
     "crates/lucina-jev",
+    "crates/lucina-prompter",
     "crates/lucina-store",
     "crates/lucina-memory",
     "crates/lucina-ops",

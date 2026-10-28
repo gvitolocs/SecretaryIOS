@@ -20,6 +20,7 @@ lucina-secrets = { path = "../lucina-secrets" }
 lucina-approvals = { path = "../lucina-approvals" }
 lucina-llm = { path = "../lucina-llm" }
 lucina-jev = { path = "../lucina-jev" }
+lucina-prompter = { path = "../lucina-prompter" }
 lucina-store = { path = "../lucina-store" }
 lucina-memory = { path = "../lucina-memory" }
 lucina-ops = { path = "../lucina-ops" }

@@ -453,6 +453,10 @@ async fn route(
     if resource == Some("agentd") {
         return Ok(crate::agentd::forward(method, uri, headers, body).await);
     }
+    // Lucina Prompter's judge (crate::prompter), for lucina-memo's live stream.
+    if resource == Some("prompter") {
+        return crate::prompter::route(method, &parts[1..], body).await;
+    }
     // The ops record (crate::ops): records, search, Map/ pages.
     if resource == Some("ops") && parts.len() <= 3 {
         return crate::ops::route(st, method, uri, headers, &parts[1..], body).await;

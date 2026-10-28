@@ -151,6 +151,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/health", get(health))
         .merge(api)
         .merge(crate::meetings::api::routes(app.clone()))
+        .merge(crate::prompter::routes(app.clone()))
         .with_state(app)
 }
 
