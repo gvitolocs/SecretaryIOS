@@ -19,6 +19,7 @@ use rmcp::service::RequestContext;
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler};
 use serde_json::{json, Value};
 
+use crate::agents;
 use crate::format;
 use crate::scope::{Caller, CallerKind, Scope};
 use crate::tools::{self, ToolError, Tools};
@@ -36,7 +37,12 @@ To hand Lucina a briefing, document or anything long or worth keeping, save it a
 instead of pasting it into ask_lucina; the owner sees notes in the Secretary app and Lucina recalls them by slug (note_get, notes_search). \
 Notes are Google-Keep style: labels, colours, pinned/archived, checklists (note_get shows item numbers; note_update checks items off, adds or removes them, and changes labels, colour, archive and reminder), and note_labels lists the labels. \
 The owner's tasks (Todoist) are in tasks_list, task_add and task_complete. \
-Lucina's computer is an isolated Linux desktop sandbox (container `lucina-workspace` on nezopt; not nezopt's host, not the owner's Mac). Its only browser is Chromium. Use the Lucina MCP tools: `computer_screenshot` to see it, `computer_call` with the driver's `browser_*` tools (`start_session` {session}, `browser_prepare` {session, allow_launch: true, profile: {mode: isolated_named, name: lucina}} to open Chromium, `get_browser_state` {session, pid, window_id} on that window for its target_id and tab_id, then `browser_navigate` and the other browser_* tools with session, target_id and tab_id) or click/type_text/press_key, `computer_bash` for shell work, or `computer_task` to have Lucina do the whole job. Never install or launch Firefox.\n\n\
+Lucina's computer is an isolated Linux desktop sandbox (container `lucina-workspace` on nezopt; not nezopt's host, not the owner's Mac). Its only browser is Chromium. Use the Lucina MCP tools: `computer_screenshot` to see it, `computer_call` with the driver's `browser_*` tools (`start_session` {session}, `browser_prepare` {session, allow_launch: true, profile: {mode: isolated_named, name: lucina}} to open Chromium, `get_browser_state` {session, pid, window_id} on that window for its target_id and tab_id, then `browser_navigate` and the other browser_* tools with session, target_id and tab_id) or click/type_text/press_key, `computer_bash` for shell work, or `computer_task` to have Lucina do the whole job. Never install or launch Firefox. \
+With the `agents` scope you can also drive Lucina Agents, the owner's coding agents on nezopt (Claude Code, Codex, OpenCode, Cursor, Copilot): \
+make a git worktree with workspace_create, start an agent in it with agent_run (provider + task), follow it with agent_wait and agent_logs, \
+steer it with agent_send, read its changes with workspace_diff, files_list and file_read, and agent_stop / agent_archive it when done; agents_list and agents_search find agents. \
+Agents ask the owner before risky steps: those permission requests (permissions_list) are answered only by the owner in the Secretary app, never through this MCP; \
+pushing, opening PRs and merging are the owner's too. Agents you start can't start further agents, and each connection has a budget of running agents and runs per hour.\n\n\
 Times are in the owner's time zone (see lucina_status). Never use these tools to buy things or contact other people; ask the owner first.";
 
 #[derive(Clone)]
@@ -136,6 +142,47 @@ impl LucinaMcp {
                 _ = ctx.ct.cancelled() => break Err(ToolError("cancelled".into())),
             }
         }
+    }
+
+    /// Lucina Agents (crate::agents): progress while an agent is awaited, and
+    /// one audit line per call in `agents-audit.jsonl`.
+    async fn run_agents(
+        &self,
+        name: &str,
+        args: &JsonObject,
+        c: &Caller,
+        ctx: &RequestContext<RoleServer>,
+    ) -> Result<String, ToolError> {
+        let t = Tools {
+            app: &self.app,
+            caller: c,
+        };
+        let progress = ctx.meta.get_progress_token();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<u64>();
+        let mut tick = move |secs: u64| {
+            let _ = tx.send(secs);
+        };
+        let fut = t.agents(name, args, &mut tick);
+        tokio::pin!(fut);
+        let out = loop {
+            tokio::select! {
+                r = &mut fut => break r,
+                Some(secs) = rx.recv() => {
+                    if let Some(p) = progress.clone() {
+                        let _ = ctx.peer.notify_progress(
+                            ProgressNotificationParam::new(p, secs as f64).with_message("The coding agent is working…"),
+                        ).await;
+                    }
+                }
+                _ = ctx.ct.cancelled() => break Err(ToolError("cancelled".into())),
+            }
+        };
+        let dir = &self.app.cfg.data_dir;
+        match &out {
+            Ok(o) => agents::audit(dir, name, c, args, Ok(o.target.as_deref())),
+            Err(e) => agents::audit(dir, name, c, args, Err(&e.0)),
+        }
+        out.map(|o| o.text)
     }
 
     async fn run_tool(
@@ -324,11 +371,19 @@ impl ServerHandler for LucinaMcp {
         if !c.has(spec.scope) {
             audit("tool_call", &name, &c, started, false);
             tracing::warn!(target: "secretary_mcp::audit", event = "scope_denied", name = %name, caller = %c.name, need = %spec.scope);
+            if spec.scope == Scope::Agents {
+                let args = request.arguments.unwrap_or_default();
+                agents::audit(&self.app.cfg.data_dir, &name, &c, &args, Err("scope_denied"));
+            }
             return Ok(self.insufficient(&c, spec.scope, &name).into());
         }
         let args = request.arguments.unwrap_or_default();
         let out = if spec.scope == Scope::Computer {
             self.run_computer(&name, &args, &c, &ctx).await
+        } else if spec.scope == Scope::Agents {
+            self.run_agents(&name, &args, &c, &ctx)
+                .await
+                .map(|text| vec![ContentBlock::text(text)])
         } else {
             self.run_tool(&name, &args, &c, &ctx)
                 .await

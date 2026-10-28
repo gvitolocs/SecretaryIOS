@@ -292,6 +292,7 @@ impl OAuth {
                 kind: CallerKind::OAuth,
                 scopes: t.scopes.clone(),
                 id: g.id.clone(),
+                depth: 0,
             })
         })
     }
@@ -988,10 +989,10 @@ pub async fn authorize_get(
     }
     let mut scopes = match q.scope.as_deref() {
         Some(s) => Scopes::parse_lenient(s),
-        None => Scopes::all(),
+        None => Scopes::default_grant(),
     };
     if scopes.is_empty() {
-        scopes = Scopes::all();
+        scopes = Scopes::default_grant();
     }
     let request_id = match random_secret() {
         Ok(id) => id,
@@ -1050,6 +1051,8 @@ pub struct AuthorizeForm {
     scope_write: Option<String>,
     #[serde(default)]
     scope_computer: Option<String>,
+    #[serde(default)]
+    scope_agents: Option<String>,
 }
 
 pub async fn authorize_post(
@@ -1105,6 +1108,7 @@ pub async fn authorize_post(
             (Scope::Chat, &f.scope_chat),
             (Scope::Write, &f.scope_write),
             (Scope::Computer, &f.scope_computer),
+            (Scope::Agents, &f.scope_agents),
         ]
         .into_iter()
         .filter(|(_, v)| v.is_some())

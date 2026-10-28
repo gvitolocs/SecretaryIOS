@@ -14,6 +14,7 @@ members = [
     "crates/secretary-gym",
     "crates/secretary-body",
     "crates/secretary-ffi",
+    "crates/lucina-agents",
     "crates/secretary-mcp",
     "crates/secretary-calendar",
     "crates/secretary-tasks",
