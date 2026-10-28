@@ -592,3 +592,9 @@
     transform: none;
   }
 }
+
+/* Rail source rows keep their names and access details visible above actions. */
+.pg.links-desk .links-source-row { flex-wrap: wrap; gap: 8px; }
+.pg.links-desk .links-source-row > .pg-row-main { flex-basis: 100%; }
+.pg.links-desk .links-source-row .pg-row-sub { white-space: normal; overflow-wrap: anywhere; }
+.pg.links-desk .links-source-row .pg-row-meta { margin-right: auto; }
