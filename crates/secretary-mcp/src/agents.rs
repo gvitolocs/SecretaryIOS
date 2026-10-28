@@ -23,8 +23,9 @@
 //! - Every call, refusals included, is appended to `$SECRETARY_MCP_DATA_DIR/agents-audit.jsonl`
 //!   ([`audit`], called from `crate::mcp`), with the prompt's length and hash, not its text.
 //!
-//! Terminals and scripts (phase 5) answer "not available yet"; schedules and full-text
-//! search (phase 6) do until their routes exist.
+//! Terminals and scripts (phase 5) answer "not available yet". Schedules, full-text search
+//! and schedule counts in `agents_usage` use agentd's phase-6 routes; against an older daemon
+//! schedules say "not available yet" and search falls back to names only.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fs::OpenOptions;
@@ -573,9 +574,41 @@ fn pick_mode(provider: &Value, asked: Option<&str>) -> Result<Option<String>, To
         .ok_or_else(|| bad(format!("{id} has no mode that keeps permission prompts, so it can't run from the MCP.")))
 }
 
-/// May this caller change or remove `schedule`? Only its own (fail closed).
+/// May this caller change or remove `schedule`? Only its own (fail closed). agentd
+/// checks again: it records the creator (`createdBy: mcp:<token id>`).
 pub fn may_change_schedule(c: &Caller, schedule: &Value) -> bool {
     schedule["labels"][LABEL_TOKEN].as_str() == Some(c.id.as_str())
+}
+
+/// `0 7 * * 1-5 (Europe/Rome)` or `every 5m`, from agentd's schedule `cadence`.
+fn cadence_text(s: &Value) -> Option<String> {
+    let c = &s["cadence"];
+    match c["type"].as_str()? {
+        "cron" => Some(match c["timezone"].as_str() {
+            Some(tz) => format!("{} ({tz})", str_of(c, "expression")),
+            None => str_of(c, "expression").to_owned(),
+        }),
+        "every" => Some(format!("every {} min", c["everyMs"].as_u64().unwrap_or(0) / 60_000)),
+        _ => None,
+    }
+}
+
+/// One `schedules_list` line.
+fn schedule_line(c: &Caller, s: &Value) -> String {
+    let mine = if may_change_schedule(c, s) { " (yours)" } else { "" };
+    let target = match s["target"]["type"].as_str() {
+        Some("agent") => "heartbeat".to_owned(),
+        _ => s["target"]["config"]["provider"].as_str().unwrap_or("agent").to_owned(),
+    };
+    format!(
+        "- {} · {} · {} · {} · next {} · {}{mine}",
+        str_of(s, "id"),
+        cadence_text(s).unwrap_or_default(),
+        target,
+        str_of(s, "status"),
+        s["nextRunAt"].as_str().unwrap_or("-"),
+        s["name"].as_str().or_else(|| s["prompt"].as_str()).unwrap_or("").chars().take(120).collect::<String>()
+    )
 }
 
 fn wait_secs(v: Option<u64>, default: u64) -> u64 {
@@ -896,6 +929,22 @@ impl Tools<'_> {
             .await
     }
 
+    /// The permission mode for an MCP run of `provider` (from `/providers`, see [`pick_mode`]).
+    async fn safe_mode(&self, provider: &str, mode: Option<&str>) -> Result<Option<String>, ToolError> {
+        let providers = self.aget("/providers", &[]).await?;
+        let info = providers.as_array().into_iter().flatten().find(|p| p["id"] == provider).ok_or_else(|| {
+            let ids: Vec<&str> = providers
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|p| p["id"].as_str())
+                .filter(|id| !UNSUPERVISED.contains(id))
+                .collect();
+            bad(format!("No provider {provider:?}. Available: {}.", ids.join(", ")))
+        })?;
+        pick_mode(info, mode)
+    }
+
     async fn aget(&self, path: &str, query: &[(&str, String)]) -> Result<Value, ToolError> {
         self.areq(Method::GET, path, query, None, CALL_TIMEOUT).await.map_err(refusal)
     }
@@ -965,6 +1014,33 @@ impl Tools<'_> {
             "agents_search" => {
                 let a: SearchArgs = parse(args)?;
                 let q = text("q", &a.q, 200)?.to_lowercase();
+                let limit = a.limit.unwrap_or(20).clamp(1, 100);
+                // agentd's search (phase 6): names with typos, plus what was said.
+                let query = [("q", q.clone()), ("limit", limit.to_string()), ("archived", a.archived.unwrap_or(true).to_string())];
+                match self.areq(Method::GET, "/search", &query, None, CALL_TIMEOUT).await {
+                    Ok(v) => {
+                        let results = v["results"].as_array().cloned().unwrap_or_default();
+                        if results.is_empty() {
+                            return Ok(Outcome::text(format!("No agent matches {q:?}.")));
+                        }
+                        let mut out = format!("{} match(es):\n", results.len());
+                        for r in &results {
+                            out.push_str(&format!(
+                                "- {} {} · {} · {}\n",
+                                str_of(r, "agentId").chars().take(8).collect::<String>(),
+                                r["title"].as_str().unwrap_or("(untitled)"),
+                                str_of(r, "provider"),
+                                str_of(r, "status")
+                            ));
+                            for m in r["matches"].as_array().into_iter().flatten().take(3) {
+                                out.push_str(&format!("    {}: {}\n", str_of(m, "field"), str_of(m, "snippet").replace('\n', " ")));
+                            }
+                        }
+                        return Ok(Outcome::text(clip(&out)));
+                    }
+                    Err(e) if route_missing(&e, "") => {}
+                    Err(e) => return Err(refusal(e)),
+                }
                 let mut items = self.items(false).await?;
                 if a.archived.unwrap_or(true) {
                     items.extend(self.items(true).await?);
@@ -1021,23 +1097,7 @@ impl Tools<'_> {
                     ));
                 }
                 let labels = run_labels(c, a.labels)?;
-                let providers = self.aget("/providers", &[]).await?;
-                let info = providers
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .find(|p| p["id"] == provider.as_str())
-                    .ok_or_else(|| {
-                        let ids: Vec<&str> = providers
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .filter_map(|p| p["id"].as_str())
-                            .filter(|id| !UNSUPERVISED.contains(id))
-                            .collect();
-                        bad(format!("No provider {provider:?}. Available: {}.", ids.join(", ")))
-                    })?;
-                let mode = pick_mode(info, mode)?;
+                let mode = self.safe_mode(&provider, mode).await?;
                 let running = self
                     .items(false)
                     .await?
@@ -1304,7 +1364,13 @@ impl Tools<'_> {
                 let _: NoArgs = parse(args)?;
                 let agents = self.aget("", &[]).await?;
                 let providers = self.aget("/providers", &[]).await?;
-                Ok(Outcome::text(usage_text(&agents, &providers)))
+                let mut out = usage_text(&agents, &providers);
+                // Schedules, from agentd's `/usage` (phase 6; left out on an older daemon).
+                if let Ok(u) = self.areq(Method::GET, "/usage", &[], None, CALL_TIMEOUT).await {
+                    let n = |k: &str| u["schedules"][k].as_u64().unwrap_or(0);
+                    out.push_str(&format!("Schedules: {} active, {} paused, {} completed.\n", n("active"), n("paused"), n("completed")));
+                }
+                Ok(Outcome::text(out))
             }
             "terminal_list" | "terminal_read" | "terminal_send" | "scripts_list" | "script_start" | "script_stop" => {
                 Err(bad(PHASE5))
@@ -1318,14 +1384,8 @@ impl Tools<'_> {
                 let list = v["schedules"].as_array().cloned().unwrap_or_default();
                 let mut out = format!("{} schedule(s):\n", list.len());
                 for s in &list {
-                    let mine = if may_change_schedule(c, s) { " (yours)" } else { "" };
-                    out.push_str(&format!(
-                        "- {} · {} · {} · {}{mine}\n",
-                        str_of(s, "id"),
-                        str_of(s, "cron"),
-                        str_of(s, "provider"),
-                        s["title"].as_str().or_else(|| s["prompt"].as_str()).unwrap_or("").chars().take(120).collect::<String>()
-                    ));
+                    out.push_str(&schedule_line(c, s));
+                    out.push('\n');
                 }
                 Ok(Outcome::text(clip(&out)))
             }
@@ -1335,7 +1395,12 @@ impl Tools<'_> {
                 let cron = text("cron", &a.cron, 100)?;
                 let provider = provider_id(&a.provider)?.to_owned();
                 let prompt = text("prompt", &a.prompt, MAX_PROMPT_CHARS)?;
+                // Each run is unattended: never a mode that skips the owner's permission answers.
+                let mode = self.safe_mode(&provider, None).await?;
                 let mut body = json!({"cron": cron, "provider": provider, "prompt": prompt, "labels": run_labels(c, None)?});
+                if let Some(m) = mode {
+                    body["modeId"] = json!(m);
+                }
                 if let Some(w) = a.workspace_id.as_deref().map(workspace_ref).transpose()? {
                     body["workspaceId"] = json!(w);
                 }
@@ -1350,7 +1415,8 @@ impl Tools<'_> {
                     r => r.map_err(refusal)?,
                 };
                 let id = str_of(&v, "id").to_owned();
-                Ok(Outcome { text: format!("Added schedule {id} ({cron})."), target: Some(id) })
+                let next = v["nextRunAt"].as_str().map(|n| format!(", next run {n}")).unwrap_or_default();
+                Ok(Outcome { text: format!("Added schedule {id} ({}{next}).", cadence_text(&v).unwrap_or_else(|| cron.to_owned())), target: Some(id) })
             }
             "schedule_remove" => {
                 let a: ScheduleArgs = parse(args)?;
