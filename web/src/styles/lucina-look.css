@@ -48,12 +48,6 @@ samp {
   font-family: var(--lu-font-mono);
 }
 
-/* Cards: flat dark grey, no borders or glass. */
-.glass {
-  border-color: transparent;
-  box-shadow: none;
-}
-
 /* The floating tab bar: a glass capsule, the active tab in the accent on a soft pill. */
 .tabbar {
   border-radius: var(--lu-radius-pill);
