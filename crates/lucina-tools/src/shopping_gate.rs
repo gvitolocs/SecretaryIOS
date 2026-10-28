@@ -23,6 +23,8 @@ pub const PLAUSIBLE_MIN: f64 = 0.4;
 pub const BIND_MIN: f64 = 0.75;
 /// A section is set from this confidence up.
 pub const SECTION_MIN: f64 = 0.5;
+/// An implausible item Jev reads as a chore from this probability up is offered as a reminder or task.
+pub const CHORE_MIN: f64 = 0.5;
 /// A closest item is suggested from this confidence up.
 pub const SUGGEST_MIN: f64 = 0.3;
 
@@ -93,6 +95,14 @@ pub fn questions(idx: &CatalogIndex) -> Vec<(String, Question)> {
             "No: an appliance, furniture, electronics, clothes, a person, a place, a task, or a mis-heard word that names no product.",
         ),
     )];
+    qs.push((
+        "chore".to_owned(),
+        Question::noul_with(
+            "Is `item` rather a chore or something to do or remember (take the laundry out, call someone, pay a bill) than a product to buy?",
+            "Yes: a task, chore or reminder.",
+            "No: a product, or nonsense.",
+        ),
+    ));
     let sections: Vec<(String, String)> = idx
         .sections()
         .iter()
@@ -133,7 +143,14 @@ pub fn questions(idx: &CatalogIndex) -> Vec<(String, Question)> {
     qs
 }
 
-fn ask_text(lang: &str, text: &str, suggestion: Option<&str>) -> String {
+fn ask_text(lang: &str, text: &str, suggestion: Option<&str>, chore: bool) -> String {
+    if chore {
+        return match lang {
+            "it" => format!("«{text}» sembra più una cosa da fare che da comprare, quindi non l'ho messo nella lista della spesa. Vuoi un promemoria o un'attività?"),
+            "da" => format!("“{text}” lyder mere som noget, der skal gøres, end noget, der skal købes, så det kom ikke på indkøbslisten. Vil du have en påmindelse eller en opgave?"),
+            _ => format!("“{text}” sounds like something to do rather than to buy, so I didn't put it on the shopping list. Want a reminder or a task instead?"),
+        };
+    }
     match (lang, suggestion) {
         ("it", Some(s)) => format!("«{text}» non mi sembra una cosa da lista della spesa, quindi non l'ho aggiunto. Intendevi «{s}»?"),
         ("it", None) => format!("«{text}» non mi sembra una cosa da lista della spesa, quindi non l'ho aggiunto. Cosa intendevi?"),
@@ -175,8 +192,9 @@ pub fn decide(
                     .or_else(|| i.display_name())
                     .unwrap_or_else(|| i.id.clone())
             });
+        let chore = d.yes("chore").is_some_and(|p| p >= CHORE_MIN);
         return Gate::Ask {
-            question: ask_text(lang, text, suggestion.as_deref()),
+            question: ask_text(lang, text, suggestion.as_deref(), chore),
             suggestion,
         };
     }
@@ -291,6 +309,17 @@ mod tests {
     }
 
     #[test]
+    fn a_chore_is_offered_as_a_reminder_or_task() {
+        let mut d = decision(0.05, ("laundry-detergent", 0.5));
+        d.answers.insert("chore".into(), Answer::Noul(0.9));
+        let Gate::Ask { question, .. } = decide(&idx(), &d, "Lavatrici", "it") else {
+            panic!()
+        };
+        assert!(question.contains("cosa da fare"), "{question}");
+        assert!(question.contains("promemoria"));
+    }
+
+    #[test]
     fn a_plausible_item_is_bound_only_when_jev_is_sure() {
         let g = decide(&idx(), &decision(0.95, ("laundry-detergent", 0.9)), "Pastiglie bucato", "it");
         assert_eq!(
@@ -317,8 +346,8 @@ mod tests {
     fn questions_cover_every_section_with_a_none_option() {
         let qs = questions(&idx());
         let names: Vec<&str> = qs.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(names, ["plausible", "section", "item_household", "item_deli"]);
-        let Question::Choice { options, .. } = &qs[2].1 else {
+        assert_eq!(names, ["plausible", "chore", "section", "item_household", "item_deli"]);
+        let Question::Choice { options, .. } = &qs[3].1 else {
             panic!()
         };
         assert_eq!(options.last().unwrap().0, "none");
