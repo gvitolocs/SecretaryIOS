@@ -754,7 +754,7 @@ async fn event_candidates(State(app): State<Arc<App>>, Path(id): Path<String>) -
         .await
         .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, "calendar_unreachable", &e))?;
     Ok(Json(
-        json!({"current":m.event,"eventSource":m.event_source,"candidates":candidates}),
+        json!({"current":m.event,"eventSource":m.event_source,"candidates":candidates.items,"stale":candidates.stale}),
     ))
 }
 #[derive(Deserialize)]
