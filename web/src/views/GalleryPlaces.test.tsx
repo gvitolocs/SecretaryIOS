@@ -5,6 +5,7 @@ import { setLocale } from "../i18n";
 import type { LucinaMapProps } from "../components/LucinaMap";
 import { type Call, stubFetch } from "../test/fetch";
 import { renderAt } from "../test/router";
+import { stubWide } from "../test/wide";
 import GalleryPlaces from "./GalleryPlaces";
 
 // jsdom has no WebGL: the map is a stand-in that records its props, so the view's conversation with the server is
@@ -76,7 +77,10 @@ beforeEach(() => {
     // ignore
   }
 });
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
 
 describe("Places", () => {
   it("asks for the world first and draws a pin per cluster", async () => {
@@ -149,6 +153,43 @@ describe("Places", () => {
     backend({ empty: true });
     const { unmount } = mount();
     expect(await screen.findByText("No photos with a location yet.")).toBeInTheDocument();
+    unmount();
+    backend({ fail: true });
+    mount();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't load the places.");
+  });
+});
+
+describe("Places on the page system (desktop)", () => {
+  it("uses the shared Gallery header with Places current and the map on a card", async () => {
+    stubWide();
+    backend();
+    mount();
+    await waitFor(() => expect(lastMap()?.pins).toHaveLength(2));
+    expect(screen.getByRole("heading", { level: 1, name: "Gallery" })).toBeInTheDocument();
+    const nav = screen.getByRole("navigation", { name: "Gallery sections" });
+    expect(within(nav).getByRole("link", { name: "Places" })).toHaveAttribute("aria-current", "page");
+    expect(document.querySelectorAll(".pg-cta").length).toBeLessThanOrEqual(1);
+    expect(document.querySelector(".g-bar")).toBeNull();
+    expect(screen.getByRole("region", { name: "Map of where your photos were taken" })).toHaveClass("pg-card");
+    expect(screen.getByRole("group", { name: "Show" })).toBeInTheDocument();
+  });
+
+  it("lists the places on a list card without map tiles", async () => {
+    stubWide();
+    available.off = true;
+    backend();
+    mount();
+    const rows = await screen.findAllByRole("link", { name: /Copenhagen|Rome/ });
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.closest(".pg-card--list")).not.toBeNull();
+  });
+
+  it("shows the empty state and the error state", async () => {
+    stubWide();
+    backend({ empty: true });
+    const { unmount } = mount();
+    await waitFor(() => expect(document.querySelector(".pg-empty")).toHaveTextContent("No photos with a location yet."));
     unmount();
     backend({ fail: true });
     mount();

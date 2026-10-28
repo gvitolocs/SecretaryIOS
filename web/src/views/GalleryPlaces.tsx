@@ -1,6 +1,8 @@
 import { A, useNavigate } from "@solidjs/router";
 import { createEffect, createMemo, createResource, createSignal, For, on, onCleanup, Show } from "solid-js";
 import { listPlaces, listSources, tileUrl, type GalleryKind, type PlaceCluster } from "../api/gallery";
+import { Card, EmptyState, ErrorState, ListRow, Page, PageGrid, RowList, useWide } from "../components/page";
+import { GalleryHeader } from "../components/gallery/GalleryHeader";
 import { SourceBar } from "../components/gallery/SourceBar";
 import { BackIcon } from "../components/Icons";
 import { LucinaMap } from "../components/LucinaMap";
@@ -20,6 +22,7 @@ const ORIGIN_KEY = "secretary.gallery.origin";
 const MOVE_DEBOUNCE_MS = 250;
 
 export default function GalleryPlaces() {
+  const { wide, track } = useWide();
   const navigate = useNavigate();
   const [origin, setOrigin] = createSignal(readString("session", ORIGIN_KEY) ?? "all");
   const [kind, setKind] = createSignal<GalleryKind | "all">("all");
@@ -128,71 +131,138 @@ export default function GalleryPlaces() {
     </button>
   );
 
+  const typeSeg = (end: boolean) => (
+    <div class="g-seg" classList={{ "g-seg--end": end }} role="group" aria-label={t("gallery.typeLabel")}>
+      {seg("all", t("gallery.typeAll"))}
+      {seg("photo", t("gallery.typePhotos"))}
+      {seg("video", t("gallery.typeVideos"))}
+    </div>
+  );
+  const sourceBar = () => (
+    <Show when={(sources()?.sources.length ?? 0) > 0}>
+      <SourceBar sources={sources()!.sources} all={sources()!.all} value={effectiveOrigin()} onChange={setOrigin} />
+    </Show>
+  );
+  const noMap = () => (
+    <Show when={mapOk() === false}>
+      <p class="g-note">{t("browse.placesNoMap")}</p>
+    </Show>
+  );
+  const map = () => (
+    <Show when={mapOk() !== false}>
+      <LucinaMap
+        class="g-places__map"
+        label={t("browse.placesMap")}
+        pins={pins()}
+        renderPin={renderPin}
+        fit="first"
+        onViewport={moved}
+        onAvailable={setMapOk}
+        onSelect={(id) => {
+          const c = byId().get(id);
+          if (c) open(c);
+        }}
+      />
+    </Show>
+  );
+  const phoneList = () => (
+    <Show when={mapOk() === false}>
+      <ul class="g-places__list">
+        <For each={clusters()}>
+          {(c) => (
+            <li>
+              <A class="g-place-row" href={clusterHref(c)}>
+                <Show when={tileUrl(c.cover, jxl() ?? false)}>{(src) => <img src={src()} alt="" loading="lazy" draggable={false} />}</Show>
+                <span>
+                  <strong>{clusterName(c) || t("browse.placesTitle")}</strong>
+                  <span>{t("browse.placesCount", { count: c.count })}</span>
+                </span>
+              </A>
+            </li>
+          )}
+        </For>
+      </ul>
+    </Show>
+  );
+  // Without map tiles the same clusters are a list card on the page system.
+  const wideList = () => (
+    <Show when={mapOk() === false && clusters().length > 0}>
+      <Card list label={t("browse.placesTitle")}>
+        <RowList>
+          <For each={clusters()}>
+            {(c) => (
+              <ListRow
+                href={clusterHref(c)}
+                title={clusterName(c) || t("browse.placesTitle")}
+                sub={t("browse.placesCount", { count: c.count })}
+                leading={<Show when={tileUrl(c.cover, jxl() ?? false)}>{(src) => <img class="g-place-thumb" src={src()} alt="" loading="lazy" draggable={false} />}</Show>}
+              />
+            )}
+          </For>
+        </RowList>
+      </Card>
+    </Show>
+  );
+  const states = () => (
+    <>
+      <Show when={failed()}>
+        <Show when={wide()} fallback={<p class="g-places__state" role="alert">{t("browse.placesLoadError")}</p>}>
+          <ErrorState message={t("browse.placesLoadError")} retryLabel={t("gallery.retry")} onRetry={() => { setSettled(false); void fetchClusters(view()); }} />
+        </Show>
+      </Show>
+      <Show when={settled() && !failed() && nothingAnywhere()}>
+        <Show when={wide()} fallback={<p class="g-places__state">{t("browse.placesEmpty")}</p>}>
+          <EmptyState text={t("browse.placesEmpty")} />
+        </Show>
+      </Show>
+    </>
+  );
+
   return (
-    <section class="gallery g-places" aria-labelledby="places-title">
-      <div class="g-top">
-        <header class="g-bar">
-          <A class="g-back" href="/gallery" aria-label={t("gallery.backToGallery")}>
-            <BackIcon />
-          </A>
-          <h1 class="g-title" id="places-title">
-            {t("browse.placesTitle")}
-          </h1>
-          <div class="g-seg g-seg--end" role="group" aria-label={t("gallery.typeLabel")}>
-            {seg("all", t("gallery.typeAll"))}
-            {seg("photo", t("gallery.typePhotos"))}
-            {seg("video", t("gallery.typeVideos"))}
-          </div>
-        </header>
-        <Show when={(sources()?.sources.length ?? 0) > 0}>
-          <SourceBar sources={sources()!.sources} all={sources()!.all} value={effectiveOrigin()} onChange={setOrigin} />
-        </Show>
-        <Show when={mapOk() === false}>
-          <p class="g-note">{t("browse.placesNoMap")}</p>
-        </Show>
-      </div>
-      <div class="g-main g-places__main">
-        <Show when={mapOk() !== false}>
-          <LucinaMap
-            class="g-places__map"
-            label={t("browse.placesMap")}
-            pins={pins()}
-            renderPin={renderPin}
-            fit="first"
-            onViewport={moved}
-            onAvailable={setMapOk}
-            onSelect={(id) => {
-              const c = byId().get(id);
-              if (c) open(c);
-            }}
-          />
-        </Show>
-        <Show when={mapOk() === false}>
-          <ul class="g-places__list">
-            <For each={clusters()}>
-              {(c) => (
-                <li>
-                  <A class="g-place-row" href={clusterHref(c)}>
-                    <Show when={tileUrl(c.cover, jxl() ?? false)}>{(src) => <img src={src()} alt="" loading="lazy" draggable={false} />}</Show>
-                    <span>
-                      <strong>{clusterName(c) || t("browse.placesTitle")}</strong>
-                      <span>{t("browse.placesCount", { count: c.count })}</span>
-                    </span>
-                  </A>
-                </li>
-              )}
-            </For>
-          </ul>
-        </Show>
-        <Show when={failed()}>
-          <p class="g-places__state" role="alert">
-            {t("browse.placesLoadError")}
-          </p>
-        </Show>
-        <Show when={settled() && !failed() && nothingAnywhere()}>
-          <p class="g-places__state">{t("browse.placesEmpty")}</p>
-        </Show>
-      </div>
+    <section class="gallery g-places" classList={{ "g-page-root": wide(), "gallery--wide": wide() }} ref={track} aria-labelledby={wide() ? undefined : "places-title"} aria-label={wide() ? t("browse.placesTitle") : undefined}>
+      <Show
+        when={wide()}
+        fallback={
+          <>
+            <div class="g-top">
+              <header class="g-bar">
+                <A class="g-back" href="/gallery" aria-label={t("gallery.backToGallery")}>
+                  <BackIcon />
+                </A>
+                <h1 class="g-title" id="places-title">
+                  {t("browse.placesTitle")}
+                </h1>
+                {typeSeg(true)}
+              </header>
+              {sourceBar()}
+              {noMap()}
+            </div>
+            <div class="g-main g-places__main">
+              {map()}
+              {phoneList()}
+              {states()}
+            </div>
+          </>
+        }
+      >
+        <Page class="g-lib">
+          <GalleryHeader />
+          <PageGrid layout="full">
+            <div class="g-desktop-tools">
+              {typeSeg(false)}
+              {sourceBar()}
+            </div>
+            {noMap()}
+            <Show when={mapOk() !== false}>
+              <Card class="g-places-card" label={t("browse.placesMap")}>
+                <div class="g-places__main">{map()}</div>
+              </Card>
+            </Show>
+            {wideList()}
+            {states()}
+          </PageGrid>
+        </Page>
+      </Show>
     </section>
   );
 }
