@@ -23,6 +23,7 @@ members = [
     "verification/models",
     "crates/secretary-media-stream",
     "crates/lucina-media",
+    "crates/lucina-media-ml",
     "crates/secretary-image",
 ]
 
