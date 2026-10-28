@@ -1,0 +1,38 @@
+# p1 (getsecretary.tech), inside the site block, BEFORE the catch-all `handle`.
+# Signed image URLs carry their own HMAC and skip forward_auth (like /v1/media/s/* and
+# /v1/nclient/s/*). GET/HEAD only; the service checks the signature, the expiry and that the
+# URL it stands for is on i.pximg.net.
+@pixiv_img {
+	path /v1/pixiv/s/*
+	method GET HEAD
+}
+handle @pixiv_img {
+	reverse_proxy 100.107.164.33:8872 {
+		header_up -Authorization
+		header_up -Cookie
+	}
+}
+@pixiv path /v1/pixiv /v1/pixiv/*
+handle @pixiv {
+	route {
+		# Same CSRF gate as the memo routes: cookie writes need X-Secretary-CSRF: 1.
+		@pixiv_csrf {
+			not method GET HEAD
+			not header Authorization *
+			not header X-Secretary-CSRF 1
+		}
+		respond @pixiv_csrf `{"ok":false,"error":"csrf"}` 403
+		# Owner only: 204 for a device session, 401 without auth, 403 `owner_only` for Lucina's
+		# service token (replaces /v1/avatar, which also admits svc_ tokens).
+		forward_auth 127.0.0.1:8800 {
+			uri /v1/auth/owner
+		}
+		reverse_proxy 100.107.164.33:8872 {
+			# The same value as PIXIV_GATEWAY_SECRET_FILE on nezopt, kept in a root-readable file
+			# on p1 (never in git).
+			header_up X-Lucina-Gateway {file./etc/caddy/pixiv-gateway.key}
+			header_up -Authorization
+			header_up -Cookie
+		}
+	}
+}
