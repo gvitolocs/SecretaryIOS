@@ -23,8 +23,14 @@
 //! - Every call, refusals included, is appended to `$SECRETARY_MCP_DATA_DIR/agents-audit.jsonl`
 //!   ([`audit`], called from `crate::mcp`), with the prompt's length and hash, not its text.
 //!
-//! Terminals and scripts (phase 5) answer "not available yet"; schedules and full-text
-//! search (phase 6) do until their routes exist.
+//! - Terminals and scripts (phase 5): agentd shows a token only the terminals of agents
+//!   it started and of the scripts it ran, and the scripts of workspaces it made or runs
+//!   agents in. It can read and type into those terminals, never open or kill one, and
+//!   never open a service (the proxy is the owner's). Against an agentd without these
+//!   routes the tools say "not available yet".
+//!
+//! Schedules and full-text search (phase 6) answer "not available yet" until their
+//! routes exist.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fs::OpenOptions;
@@ -290,6 +296,9 @@ pub struct WorkspaceArgs {
 #[serde(deny_unknown_fields)]
 pub struct TerminalArgs {
     pub terminal_id: String,
+    /// How many of the last lines to show (default 200, at most 2000).
+    #[serde(default)]
+    pub lines: Option<u32>,
 }
 
 /// Arguments of `terminal_send`.
@@ -298,8 +307,13 @@ pub struct TerminalArgs {
 pub struct TerminalSendArgs {
     /// A terminal an agent owns.
     pub terminal_id: String,
-    /// Text and keys to type, e.g. "y\n".
+    /// Text to type (e.g. "y\n"), or one key token: Enter, Tab, Escape, Space, BSpace,
+    /// Up, Down, Left, Right, Home, End, PageUp, PageDown, F1-F12, with C-/M-/S-
+    /// prefixes (C-c, S-Tab).
     pub keys: String,
+    /// Type `keys` exactly as given, even when it looks like a key token.
+    #[serde(default)]
+    pub literal: Option<bool>,
 }
 
 /// Arguments of `script_start` and `script_stop`.
@@ -443,6 +457,74 @@ fn agent_ref(s: &str) -> Result<&str, ToolError> {
     } else {
         Err(bad("`agent_id` is an agent id (or a unique prefix) from agents_list"))
     }
+}
+
+fn terminal_ref(s: &str) -> Result<&str, ToolError> {
+    let s = s.trim();
+    if word(s, 64, b"-_") {
+        Ok(s)
+    } else {
+        Err(bad("`terminal_id` is a terminal id (term_…) from terminal_list"))
+    }
+}
+
+fn script_ref(s: &str) -> Result<&str, ToolError> {
+    let s = s.trim();
+    if word(s, 64, b"-_.:") {
+        Ok(s)
+    } else {
+        Err(bad("`script` is a script name from scripts_list"))
+    }
+}
+
+/// An older agentd without the phase 5 routes.
+fn no_terminals(e: BackendError, found: &[&str]) -> ToolError {
+    if (e.status == 404 || e.status == 405) && !found.contains(&e.code.as_str()) {
+        bad(PHASE5)
+    } else {
+        refusal(e)
+    }
+}
+
+fn terminal_line(t: &Value) -> String {
+    let mut out = format!("- {} · {} · {}", str_of(t, "id"), str_of(t, "name"), str_of(t, "status"));
+    if let Some(code) = t["exitCode"].as_i64() {
+        out.push_str(&format!(" (exit {code})"));
+    }
+    out.push_str(&format!(" · {}", str_of(t, "cwd")));
+    if let Some(s) = t["scriptName"].as_str() {
+        out.push_str(&format!(" · script {s}"));
+    } else if let Some(a) = t["agentId"].as_str() {
+        out.push_str(&format!(" · agent {}", a.chars().take(8).collect::<String>()));
+    }
+    if let Some(a) = t["activity"].as_str() {
+        out.push_str(&format!(" · {a}"));
+    }
+    let ports: Vec<String> = t["ports"].as_array().into_iter().flatten().filter_map(|p| p["port"].as_u64()).map(|p| p.to_string()).collect();
+    if !ports.is_empty() {
+        out.push_str(&format!(" · listening on {}", ports.join(", ")));
+    }
+    out
+}
+
+fn script_line(x: &Value) -> String {
+    let mut out = format!("- {} · {} · {}", str_of(x, "scriptName"), str_of(x, "type"), str_of(x, "lifecycle"));
+    if let Some(p) = x["port"].as_u64() {
+        out.push_str(&format!(" · port {p}"));
+    }
+    if let Some(h) = x["health"].as_str() {
+        out.push_str(&format!(" · {h}"));
+    }
+    if let Some(c) = x["exitCode"].as_i64() {
+        out.push_str(&format!(" · exit {c}"));
+    }
+    if let Some(t) = x["terminalId"].as_str() {
+        out.push_str(&format!(" · terminal {t}"));
+    }
+    if let Some(c) = x["command"].as_str() {
+        out.push_str(&format!(" · `{}`", c.chars().take(120).collect::<String>()));
+    }
+    out
 }
 
 fn workspace_ref(s: &str) -> Result<&str, ToolError> {
@@ -846,6 +928,8 @@ fn refusal(e: BackendError) -> ToolError {
         "AGENT_NOT_FOUND" => format!("{msg}. agents_list (or agents_search) shows the ids."),
         "AGENT_AMBIGUOUS" => format!("{msg}. Give more characters of the id."),
         "WORKSPACE_NOT_FOUND" => format!("{msg}. workspaces_list shows the workspaces."),
+        "TERMINAL_NOT_FOUND" => format!("{msg}. terminal_list shows the terminals you can use."),
+        "TERMINAL_FORBIDDEN" | "TERMINAL_EXITED" | "WORKSPACE_SCRIPT_START_FAILED" | "WORKSPACE_SCRIPT_STOP_FAILED" => msg,
         "WORKSPACE_GUARD" => format!(
             "{msg}. From the MCP, agents run in a worktree: create one with workspace_create and pass its workspace_id."
         ),
@@ -1306,8 +1390,87 @@ impl Tools<'_> {
                 let providers = self.aget("/providers", &[]).await?;
                 Ok(Outcome::text(usage_text(&agents, &providers)))
             }
-            "terminal_list" | "terminal_read" | "terminal_send" | "scripts_list" | "script_start" | "script_stop" => {
-                Err(bad(PHASE5))
+            "terminal_list" => {
+                let a: WorkspaceArgs = parse(args)?;
+                let q: Vec<(&str, String)> = match a.workspace_id.as_deref() {
+                    Some(w) => vec![("workspaceId", workspace_ref(w)?.to_owned())],
+                    None => Vec::new(),
+                };
+                let v = self.areq(Method::GET, "/terminals", &q, None, CALL_TIMEOUT).await.map_err(|e| no_terminals(e, &[]))?;
+                let list = v["terminals"].as_array().cloned().unwrap_or_default();
+                if list.is_empty() {
+                    return Ok(Outcome::text(
+                        "No terminals you can use. You see the terminals of agents you started and of scripts you ran (script_start).".into(),
+                    ));
+                }
+                let mut out = format!("{} terminal(s):\n", list.len());
+                for t in &list {
+                    out.push_str(&terminal_line(t));
+                    out.push('\n');
+                }
+                Ok(Outcome::text(clip(&out)))
+            }
+            "terminal_read" => {
+                let a: TerminalArgs = parse(args)?;
+                let id = terminal_ref(&a.terminal_id)?;
+                let n = a.lines.unwrap_or(200).clamp(1, 2000);
+                let v = self
+                    .areq(Method::GET, &format!("/terminals/{}/capture", seg(id)), &[("start", format!("-{n}"))], None, CALL_TIMEOUT)
+                    .await
+                    .map_err(|e| no_terminals(e, &["TERMINAL_NOT_FOUND"]))?;
+                let mut lines: Vec<&str> = v["lines"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+                while lines.last().is_some_and(|l| l.is_empty()) {
+                    lines.pop();
+                }
+                let body = clip_tail(&lines.join("\n"), MAX_TEXT);
+                Ok(Outcome { text: format!("Terminal {id}, last {} line(s) of {}:\n{body}", lines.len(), v["totalLines"].as_u64().unwrap_or(0)), target: Some(id.to_owned()) })
+            }
+            "terminal_send" => {
+                let a: TerminalSendArgs = parse(args)?;
+                let id = terminal_ref(&a.terminal_id)?;
+                if a.keys.is_empty() || a.keys.chars().count() > 4000 {
+                    return Err(bad("`keys` is 1 to 4000 characters"));
+                }
+                let body = json!({"keys": a.keys, "literal": a.literal.unwrap_or(false)});
+                let v = self
+                    .areq(Method::POST, &format!("/terminals/{}/input", seg(id)), &[], Some(&body), CALL_TIMEOUT)
+                    .await
+                    .map_err(|e| no_terminals(e, &["TERMINAL_NOT_FOUND", "TERMINAL_EXITED"]))?;
+                Ok(Outcome {
+                    text: format!("Typed {} character(s) into terminal {id}. terminal_read shows what it printed.", v["keysSent"].as_u64().unwrap_or(0)),
+                    target: Some(id.to_owned()),
+                })
+            }
+            "scripts_list" => {
+                let a: WorkspaceArgs = parse(args)?;
+                let id = workspace_ref(a.workspace_id.as_deref().ok_or_else(|| bad("`workspace_id` is required"))?)?;
+                let v = self
+                    .areq(Method::GET, &format!("/workspaces/{}/scripts", seg(id)), &[], None, CALL_TIMEOUT)
+                    .await
+                    .map_err(|e| no_terminals(e, &["WORKSPACE_NOT_FOUND"]))?;
+                let list = v["scripts"].as_array().cloned().unwrap_or_default();
+                if list.is_empty() {
+                    return Ok(Outcome::text(format!("Workspace {id} defines no scripts (paseo.json `scripts`, .lucina/agents.toml `[scripts.*]`).")));
+                }
+                let mut out = format!("{} script(s) in {id}:\n", list.len());
+                for x in &list {
+                    out.push_str(&script_line(x));
+                    out.push('\n');
+                }
+                out.push_str("Services are opened by the owner in the Secretary app; their output is in terminal_read.");
+                Ok(Outcome { text: clip(&out), target: Some(id.to_owned()) })
+            }
+            "script_start" | "script_stop" => {
+                let a: ScriptArgs = parse(args)?;
+                let id = workspace_ref(&a.workspace_id)?;
+                let script = script_ref(&a.script)?;
+                let verb = if name == "script_start" { "start" } else { "stop" };
+                let v = self
+                    .areq(Method::POST, &format!("/workspaces/{}/scripts/{}/{verb}", seg(id), seg(script)), &[], Some(&json!({})), CALL_TIMEOUT)
+                    .await
+                    .map_err(|e| no_terminals(e, &["WORKSPACE_NOT_FOUND"]))?;
+                let what = if verb == "start" { "Started" } else { "Stopped" };
+                Ok(Outcome { text: format!("{what} {script} in {id}:\n{}", script_line(&v)), target: Some(format!("{id}/{script}")) })
             }
             "schedules_list" => {
                 let _: NoArgs = parse(args)?;

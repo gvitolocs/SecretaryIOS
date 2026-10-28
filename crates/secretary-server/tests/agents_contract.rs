@@ -71,6 +71,22 @@ async fn lucina(State(l): State<Arc<Lucina>>, method: Method, uri: Uri, headers:
                 .chain(futures_util::stream::pending());
             ([("content-type", "text/event-stream")], Body::from_stream(events)).into_response()
         }
+        "/api/secretary/agentd/terminals/term_1/stream" => {
+            let first = format!("event: output\nid: 64\ndata: {{\"b64\":\"aGk=\",\"after\":\"{}\"}}\n\n", seen.last_event_id.unwrap_or_default());
+            let events = futures_util::stream::iter(vec![Ok::<_, std::io::Error>(Bytes::from(first))]).chain(futures_util::stream::pending());
+            ([("content-type", "text/event-stream")], Body::from_stream(events)).into_response()
+        }
+        p if p.starts_with("/api/secretary/agentd/workspaces/wks_1/services/web/") => (
+            [
+                ("content-type", "application/javascript"),
+                ("etag", "\"abc\""),
+                ("set-cookie", "dev=1; Path=/"),
+                ("location", "/v1/agents/workspaces/wks_1/services/web/next"),
+                ("x-dev-secret", "nope"),
+            ],
+            format!("// {p} if-none-match={}", h("if-none-match").unwrap_or_default()),
+        )
+            .into_response(),
         "/api/secretary/agentd/agents/missing" => {
             (StatusCode::NOT_FOUND, Json(json!({"error": {"code": "AGENT_NOT_FOUND", "message": "No agent found matching: missing"}})))
                 .into_response()
@@ -294,4 +310,51 @@ async fn streams_pass_last_event_id_and_are_limited() {
     let (status, v) = h.send(h.req(Method::GET, "/v1/agents/stream", Some(&h.mac))).await;
     assert_eq!((status, code(&v)), (429, "too_many_streams"));
     drop(open);
+}
+
+#[tokio::test]
+async fn terminal_streams_and_owner_only_services() {
+    let h = harness().await;
+    // A terminal's output streams like /v1/agents/stream, with Last-Event-ID.
+    let resp = h.req(Method::GET, "/v1/agents/terminals/term_1/stream", Some(&h.mac)).header("last-event-id", "10").send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.headers()["x-accel-buffering"], "no");
+    let mut body = resp.bytes_stream();
+    let chunk = tokio::time::timeout(Duration::from_secs(5), body.next()).await.unwrap().unwrap().unwrap();
+    assert!(String::from_utf8_lossy(&chunk).contains("\"after\":\"10\""));
+    drop(body);
+    for (public, daemon) in [
+        ("/v1/agents/terminals?workspaceId=wks_1", "/api/secretary/agentd/terminals"),
+        ("/v1/agents/terminals/term_1/capture", "/api/secretary/agentd/terminals/term_1/capture"),
+        ("/v1/agents/workspaces/wks_1/scripts", "/api/secretary/agentd/workspaces/wks_1/scripts"),
+    ] {
+        let (status, _) = h.send(h.req(Method::GET, public, Some(MCP_TOKEN)).header("x-lucina-mcp-caller", "tok_1:hermes")).await;
+        assert_eq!(status, 200, "{public}");
+        assert_eq!(h.last().path, daemon);
+    }
+
+    // A service: the owner's device gets it sandboxed, without its cookies or other headers.
+    let r = h
+        .req(Method::GET, "/v1/agents/workspaces/wks_1/services/web/assets/index-a+b=.js", Some(&h.mac))
+        .header("if-none-match", "\"abc\"")
+        .header("cookie", "secretary_session=s3cret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    assert!(r.headers()["content-security-policy"].to_str().unwrap().starts_with("sandbox allow-scripts"));
+    assert_eq!(r.headers()["etag"], "\"abc\"");
+    assert_eq!(r.headers()["location"], "/v1/agents/workspaces/wks_1/services/web/next");
+    assert!(r.headers().get("set-cookie").is_none() && r.headers().get("x-dev-secret").is_none());
+    let text = r.text().await.unwrap();
+    assert!(text.contains("/services/web/assets/index-a+b=.js") && text.contains("if-none-match=\"abc\""), "{text}");
+    assert_eq!(h.last().origin.as_deref(), Some(format!("device:{}", h.mac_id).as_str()));
+    let (status, _) = h.send(h.req(Method::GET, "/v1/agents/workspaces/wks_1/services/web/", Some(&h.mac))).await;
+    assert_eq!(status, 200, "a trailing slash is the app's root");
+    // Not for the MCP.
+    let before = h.count();
+    let (status, _) = h.send(h.req(Method::GET, "/v1/agents/workspaces/wks_1/services/web/", Some(MCP_TOKEN)).header("x-lucina-mcp-caller", "tok_1:hermes")).await;
+    assert_eq!(status, 403);
+    // (Dot segments are refused by `daemon_path`'s unit tests: an HTTP client resolves them first.)
+    assert_eq!(h.count(), before, "refused before Lucina");
 }

@@ -342,20 +342,43 @@ async fn follow_up_logs_stop_archive_and_workspaces() {
 }
 
 #[tokio::test]
+async fn terminals_and_scripts() {
+    let h = start().await;
+    let t = h.issue("hermes", "read,agents");
+    let (err, text) = h.call(&t, "terminal_list", json!({"workspace_id": WS})).await;
+    assert!(!err && text.contains("term_9f1c2a7b3d4e5f60 · dev · running") && text.contains("script dev") && text.contains("listening on 4173"), "{text}");
+    let (err, text) = h.call(&t, "terminal_read", json!({"terminal_id": "term_9f1c2a7b3d4e5f60", "lines": 50})).await;
+    assert!(!err && text.contains("ready in 412 ms") && text.ends_with("http://127.0.0.1:4173/"), "{text}");
+    let (err, text) = h.call(&t, "terminal_send", json!({"terminal_id": "term_9f1c2a7b3d4e5f60", "keys": "C-c"})).await;
+    assert!(!err && text.contains("Typed 1 character"), "{text}");
+    let (err, text) = h.call(&t, "terminal_read", json!({"terminal_id": "term_other"})).await;
+    assert!(err && text.contains("No terminal found"), "{text}");
+    let (err, text) = h.call(&t, "terminal_send", json!({"terminal_id": "../x", "keys": "y"})).await;
+    assert!(err && text.contains("terminal id"), "{text}");
+    let (err, text) = h.call(&t, "scripts_list", json!({"workspace_id": WS})).await;
+    assert!(!err && text.contains("- dev · service · running · port 4173 · healthy") && text.contains("- lint · script · stopped"), "{text}");
+    let (err, text) = h.call(&t, "scripts_list", json!({})).await;
+    assert!(err && text.contains("workspace_id"), "{text}");
+    let (err, text) = h.call(&t, "script_start", json!({"workspace_id": WS, "script": "lint"})).await;
+    assert!(!err && text.starts_with("Started lint"), "{text}");
+    let (err, text) = h.call(&t, "script_stop", json!({"workspace_id": WS, "script": "dev"})).await;
+    assert!(!err && text.starts_with("Stopped dev") && text.contains("stopped"), "{text}");
+    let (err, text) = h.call(&t, "script_start", json!({"workspace_id": "wks_ownersonly", "script": "dev"})).await;
+    assert!(err && text.contains("not yours"), "{text}");
+    let reqs = agent_requests(&h);
+    let send = reqs.iter().find(|r| r.path.ends_with("/input")).expect("input");
+    assert_eq!(send.body, json!({"keys": "C-c", "literal": false}));
+    assert!(reqs.iter().any(|r| r.path == "/v1/agents/terminals/term_9f1c2a7b3d4e5f60/capture" && r.query.contains("start=-50")));
+    assert!(reqs.iter().any(|r| r.path == "/v1/agents/terminals" && r.query.contains(WS)));
+    assert!(reqs.iter().any(|r| r.method == "POST" && r.path == format!("/v1/agents/workspaces/{WS}/scripts/dev/stop")));
+    // Nothing that kills a terminal or opens a service.
+    assert!(reqs.iter().all(|r| r.method != "DELETE" && !r.path.contains("/services/")));
+}
+
+#[tokio::test]
 async fn later_phases_say_not_available_yet() {
     let h = start().await;
     let t = h.issue("hermes", "read,agents");
-    for (tool, args) in [
-        ("terminal_list", json!({})),
-        ("terminal_read", json!({"terminal_id": "t1"})),
-        ("terminal_send", json!({"terminal_id": "t1", "keys": "y\n"})),
-        ("scripts_list", json!({"workspace_id": WS})),
-        ("script_start", json!({"workspace_id": WS, "script": "dev"})),
-        ("script_stop", json!({"workspace_id": WS, "script": "dev"})),
-    ] {
-        let (err, text) = h.call(&t, tool, args).await;
-        assert!(err && text.contains("phase 5") && text.contains("not available yet"), "{tool}: {text}");
-    }
     for (tool, args) in [
         ("schedules_list", json!({})),
         ("schedule_add", json!({"cron": "0 7 * * 1-5", "provider": "claude", "prompt": "x", "workspace_id": WS})),

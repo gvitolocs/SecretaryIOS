@@ -69,6 +69,26 @@ fn workspace() -> Value {
         "workspaceId": "wks_42a3dadd481e4d7f"})
 }
 
+fn terminal() -> Value {
+    json!({"id": "term_9f1c2a7b3d4e5f60", "name": "dev", "title": "dev", "cwd": "/home/nez/Projects/.worktrees/demo/fix-it",
+        "workspaceId": "wks_42a3dadd481e4d7f", "agentId": "a0000001-bacb-49c7-ad38-5727b4ae2c94", "owner": "agent:a0000001-bacb-49c7-ad38-5727b4ae2c94",
+        "scriptName": "dev", "command": "systemd-run --user --scope --quiet --collect -p CPUQuota=200% -- /bin/sh -c npm run dev",
+        "rows": 24, "cols": 80, "pid": 2601234, "status": "running", "exitCode": null, "activity": null,
+        "ports": [{"port": 4173, "host": "127.0.0.1", "pid": 2601240}], "createdAt": "2026-10-28T11:12:23.101Z", "exitedAt": null})
+}
+
+fn script(name: &str, lifecycle: &str) -> Value {
+    let service = name == "dev";
+    json!({"scriptName": name, "type": if service { "service" } else { "script" },
+        "hostname": if service { "dev--fix-it--demo-1a2b3c4d.localhost" } else { name },
+        "port": if service && lifecycle == "running" { json!(4173) } else { Value::Null },
+        "proxyUrl": if service { json!("https://getsecretary.tech/v1/agents/workspaces/wks_42a3dadd481e4d7f/services/dev/") } else { Value::Null },
+        "lifecycle": lifecycle, "health": if service && lifecycle == "running" { json!("healthy") } else { Value::Null },
+        "exitCode": null, "terminalId": if lifecycle == "running" { json!("term_9f1c2a7b3d4e5f60") } else { Value::Null },
+        "command": if service { "npm run dev" } else { "cargo clippy" }, "source": "paseo.json",
+        "servicePath": if service { json!("/v1/agents/workspaces/wks_42a3dadd481e4d7f/services/dev/") } else { Value::Null }})
+}
+
 fn rows() -> Value {
     let row = |seq: u64, item: Value| json!({"seq": seq, "timestamp": "2026-10-28T08:37:32.738Z", "turnId": "t1", "item": item});
     json!({"epoch": "97a22cf8", "nextSeq": 4, "rows": [
@@ -139,6 +159,27 @@ pub fn route(st: &mut MockState, method: &str, rest: &[&str], query: &str, heade
             "content": "hello\nchanged\n", "encoding": "utf-8", "kind": "text", "mimeType": "text/plain",
             "path": "src/a.txt", "size": 14}))
         .into_response(),
+        // Phase 5, shapes from a real lucina-agentd (tests/terminals.rs) on 2026-10-28.
+        ("GET", ["terminals"]) => Json(json!({"terminals": [terminal()]})).into_response(),
+        ("GET", ["terminals", "term_9f1c2a7b3d4e5f60", "capture"]) => Json(json!({
+            "terminalId": "term_9f1c2a7b3d4e5f60", "totalLines": 24,
+            "lines": ["$ npm run dev", "", "  VITE v6.3.1  ready in 412 ms", "  ➜  Local:   http://127.0.0.1:4173/", "", ""]}))
+        .into_response(),
+        ("POST", ["terminals", "term_9f1c2a7b3d4e5f60", "input"]) => {
+            let n = body["keys"].as_str().map(|k| if k == "C-c" { 1 } else { k.encode_utf16().count() }).unwrap_or(0);
+            Json(json!({"terminalId": "term_9f1c2a7b3d4e5f60", "keysSent": n})).into_response()
+        }
+        (_, ["terminals", ..]) => err(StatusCode::NOT_FOUND, "TERMINAL_NOT_FOUND", "No terminal found matching: term_x"),
+        ("GET", ["workspaces", "wks_42a3dadd481e4d7f", "scripts"]) => {
+            Json(json!({"workspaceId": "wks_42a3dadd481e4d7f", "scripts": [script("dev", "running"), script("lint", "stopped")]})).into_response()
+        }
+        ("POST", ["workspaces", "wks_42a3dadd481e4d7f", "scripts", name, verb]) => match *name {
+            "dev" | "lint" => Json(script(name, if *verb == "start" { "running" } else { "stopped" })).into_response(),
+            _ => err(StatusCode::BAD_REQUEST, "WORKSPACE_SCRIPT_START_FAILED", &format!("Script '{name}' is not configured in paseo.json or .lucina/agents.toml")),
+        },
+        ("GET" | "POST", ["workspaces", _, "scripts", ..]) => {
+            err(StatusCode::FORBIDDEN, "TERMINAL_FORBIDDEN", "This workspace's scripts are not yours to use")
+        }
         ("GET", ["workspaces", ..]) => err(StatusCode::NOT_FOUND, "WORKSPACE_NOT_FOUND", "Workspace not found"),
         ("GET", ["schedules", ..]) | ("POST", ["schedules"]) | ("DELETE", ["schedules", ..]) if st.schedules.is_some() => {
             let list = st.schedules.as_mut().unwrap();
