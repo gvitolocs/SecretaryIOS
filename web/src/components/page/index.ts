@@ -14,3 +14,4 @@ export {
   type SectionNavItem,
 } from "./Page";
 export { Sheet } from "./Sheet";
+export { useWide, WIDE_MIN_PX } from "./useWide";
