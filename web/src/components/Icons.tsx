@@ -662,3 +662,23 @@ export function BulbIcon() {
     </svg>
   );
 }
+
+/** Pixiv: a picture with a hill and a sun. */
+export function PixivIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
+      <circle cx="9" cy="10" r="1.6" />
+      <path d="m4 17.5 5-4.5 3.5 3 3-2.5 5 4" />
+    </svg>
+  );
+}
+
+/** A bookmark ribbon, filled when `filled`. */
+export function BookmarkIcon(props: { filled?: boolean }) {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill={props.filled ? "currentColor" : "none"}>
+      <path d="M7 4.5h10a1 1 0 0 1 1 1V20l-6-4-6 4V5.5a1 1 0 0 1 1-1z" />
+    </svg>
+  );
+}

@@ -51,6 +51,7 @@
 //   bun", "torna automatica" make Lucina change (an avatar_outfit timeline item, like the real one).
 // Gallery (mock/gallery.mjs): /v1/media/* over synthetic items unless MOCK_MEDIA_URL proxies a real library;
 //   MOCK_GALLERY_ITEMS sets how many items (default 6000).
+// Pixiv (mock/pixiv.mjs): /v1/pixiv/* over generated works (SVG pictures); R-18 needs adult=1 like the real service.
 // Maps (mock/maps.mjs): /v1/maps/config (tiles null unless MOCK_MAPS_TILES=<file.pmtiles>, then
 //   served with Range; MOCK_MAPS_ASSETS=<dir> serves fonts/ and sprites/), /v1/maps/geocode (a
 //   fixed table: "Folkehuset Møllestien", "Skejbygårdsvej 3"), and /v1/maps/routes (four modes).
@@ -1917,6 +1918,8 @@ async function route(req, res) {
     return send(res, 200, { down: mockServerDown });
   }
 
+  // Pixiv images are signed URLs (no session needed, like on p1); the rest of /v1/pixiv needs the session.
+  if (path.startsWith("/v1/pixiv/s/") && (await (await import("./pixiv.mjs")).handlePixiv(req, res, { path, method, url, send, fail, readJson }))) return;
   // Play URLs carry their own token (on p1 they skip the gateway's auth too).
   if (path.startsWith("/v1/media/s/")) return (await import("./media.mjs")).proxyMedia(req, res, url, fail);
   if (!currentSession(req)) {
@@ -1927,6 +1930,7 @@ async function route(req, res) {
     if (!process.env.MOCK_MEDIA_URL && (await (await import("./gallery.mjs")).handleGallery(req, res, { path, method, url, send, fail, readJson }))) return;
     return (await import("./media.mjs")).proxyMedia(req, res, url, fail);
   }
+  if (path.startsWith("/v1/pixiv/") && (await (await import("./pixiv.mjs")).handlePixiv(req, res, { path, method, url, send, fail, readJson }))) return;
   if (handleMaps(req, res, url, path)) return;
   if (await (await import("./shopping-v2.mjs")).handleShoppingV2(req, res, { path, method, url, send, fail, readJson })) return;
   if (await handleNotifications(req, res, { path, method, url, send, fail, readJson })) return;

@@ -1,0 +1,208 @@
+import { showAdult } from "../lib/adult";
+import { ApiError, request } from "./client";
+
+// The Pixiv plugin's service (docs/pixiv.md, `/v1/pixiv`). Answers are {ok:true,data}; every image URL is a
+// signed /v1/pixiv/s/... path the <img> tag can load as it is. `adult=1` goes out only while "Show adult
+// plugins" is on, and only the service decides what that unlocks (R-18 modes, works and list items).
+
+const BASE = "/v1/pixiv";
+
+export const RANKING_MODES = ["day", "week", "month", "day_male", "day_female", "original", "rookie"] as const;
+export const RANKING_MODES_R18 = ["day_r18", "week_r18", "day_male_r18", "day_female_r18"] as const;
+export type RankingMode = (typeof RANKING_MODES)[number] | (typeof RANKING_MODES_R18)[number];
+export type SearchOrder = "date_d" | "date";
+export type SearchType = "all" | "illust" | "manga" | "ugoira";
+export type SearchSafety = "safe" | "all" | "r18";
+
+export interface PixivItem {
+  id: string;
+  title: string;
+  author: string;
+  authorId: string;
+  tags: string[];
+  thumbUrl: string;
+  pages: number;
+  r18: boolean;
+  bookmarked: boolean;
+  addedAt?: number;
+}
+
+export interface PixivListing {
+  items: PixivItem[];
+  page: number;
+  hasMore: boolean;
+  total: number | null;
+  numPages: number | null;
+}
+
+export interface PixivTag {
+  tag: string;
+  en: string;
+}
+
+export interface PixivPage {
+  index: number;
+  thumbUrl: string;
+  url: string;
+  originalUrl: string;
+}
+
+export interface PixivIllust {
+  id: string;
+  title: string;
+  author: string;
+  authorId: string;
+  created: string;
+  kind: "illust" | "manga" | "ugoira";
+  ugoira: boolean;
+  r18: boolean;
+  description: string;
+  stats: { views: number; likes: number; bookmarks: number; comments: number };
+  pageCount: number;
+  coverUrl: string;
+  tags: PixivTag[];
+  pages: PixivPage[];
+  bookmarked: boolean;
+}
+
+export interface SaveResult {
+  saved: { page: number; itemId: string; duplicate: boolean }[];
+  failed: { page: number; error: string }[];
+}
+
+export interface SearchParams {
+  q: string;
+  order?: SearchOrder;
+  type?: SearchType;
+  mode?: SearchSafety;
+  page?: number;
+}
+
+const str = (v: unknown): string => (typeof v === "string" ? v : "");
+const num = (v: unknown, d = 0): number => (typeof v === "number" && Number.isFinite(v) ? v : d);
+
+export function parseItem(v: unknown): PixivItem {
+  const o = (v ?? {}) as Record<string, unknown>;
+  return {
+    id: str(o.id),
+    title: str(o.title),
+    author: str(o.author),
+    authorId: str(o.authorId),
+    tags: Array.isArray(o.tags) ? o.tags.filter((t): t is string => typeof t === "string") : [],
+    thumbUrl: str(o.thumbUrl),
+    pages: Math.max(1, num(o.pages, 1)),
+    r18: o.r18 === true,
+    bookmarked: o.bookmarked === true,
+    ...(typeof o.addedAt === "number" ? { addedAt: o.addedAt } : {}),
+  };
+}
+
+export function parseListing(v: unknown): PixivListing {
+  const o = (v ?? {}) as Record<string, unknown>;
+  return {
+    items: (Array.isArray(o.items) ? o.items : []).map(parseItem).filter((i) => i.id),
+    page: num(o.page, 1),
+    hasMore: o.hasMore === true,
+    total: typeof o.total === "number" ? o.total : null,
+    numPages: typeof o.numPages === "number" ? o.numPages : null,
+  };
+}
+
+export function parseIllust(v: unknown): PixivIllust {
+  const o = (v ?? {}) as Record<string, unknown>;
+  const stats = (o.stats ?? {}) as Record<string, unknown>;
+  const kind = o.kind === "manga" || o.kind === "ugoira" ? o.kind : "illust";
+  return {
+    id: str(o.id),
+    title: str(o.title),
+    author: str(o.author),
+    authorId: str(o.authorId),
+    created: str(o.created),
+    kind,
+    ugoira: o.ugoira === true,
+    r18: o.r18 === true,
+    description: str(o.description),
+    stats: { views: num(stats.views), likes: num(stats.likes), bookmarks: num(stats.bookmarks), comments: num(stats.comments) },
+    pageCount: Math.max(1, num(o.pageCount, 1)),
+    coverUrl: str(o.coverUrl),
+    tags: (Array.isArray(o.tags) ? o.tags : []).map((t) => ({ tag: str((t as PixivTag)?.tag), en: str((t as PixivTag)?.en) })).filter((t) => t.tag),
+    pages: (Array.isArray(o.pages) ? o.pages : []).map((p, i) => {
+      const q = (p ?? {}) as Record<string, unknown>;
+      return { index: num(q.index, i), thumbUrl: str(q.thumbUrl), url: str(q.url), originalUrl: str(q.originalUrl) };
+    }),
+    bookmarked: o.bookmarked === true,
+  };
+}
+
+/** `?adult=1` (or `&adult=1`) only while the switch is on. */
+function withAdult(params: URLSearchParams): string {
+  if (showAdult()) params.set("adult", "1");
+  const q = params.toString();
+  return q ? `?${q}` : "";
+}
+
+async function data<T>(promise: Promise<{ ok?: boolean; data?: unknown }>, parse: (v: unknown) => T): Promise<T> {
+  const body = await promise;
+  if (!body || body.ok === false) throw new ApiError(502, "pixiv_bad_answer", "Pixiv answered unexpectedly.");
+  return parse(body.data);
+}
+
+/** The service refuses R-18 with 403 `adult_off`; the screens show a gentler message for it. */
+export function isAdultOff(e: unknown): boolean {
+  return e instanceof ApiError && e.status === 403 && /adult_off/.test(e.message);
+}
+
+export const pixivApi = {
+  ranking(mode: RankingMode, page = 1): Promise<PixivListing> {
+    const p = new URLSearchParams({ mode, page: String(page) });
+    return data(request("GET", `${BASE}/ranking${withAdult(p)}`), parseListing);
+  },
+
+  search(params: SearchParams): Promise<PixivListing> {
+    const p = new URLSearchParams({
+      q: params.q,
+      order: params.order ?? "date_d",
+      type: params.type ?? "all",
+      mode: params.mode ?? "safe",
+      page: String(params.page ?? 1),
+    });
+    return data(request("GET", `${BASE}/search${withAdult(p)}`), parseListing);
+  },
+
+  illust(id: string): Promise<PixivIllust> {
+    return data(request("GET", `${BASE}/illust/${encodeURIComponent(id)}${withAdult(new URLSearchParams())}`), parseIllust);
+  },
+
+  bookmarks(): Promise<PixivItem[]> {
+    return data(request("GET", `${BASE}/bookmarks${withAdult(new URLSearchParams())}`), (v) =>
+      parseListing(v).items,
+    );
+  },
+
+  addBookmark(id: string): Promise<boolean> {
+    return data(request("PUT", `${BASE}/bookmarks/${encodeURIComponent(id)}${withAdult(new URLSearchParams())}`), () => true);
+  },
+
+  removeBookmark(id: string): Promise<boolean> {
+    return data(request("DELETE", `${BASE}/bookmarks/${encodeURIComponent(id)}`), () => false);
+  },
+
+  /** Saves the whole work, or only the given zero-based pages, into Lucina's Gallery (album "Pixiv"). */
+  save(id: string, pages?: number[]): Promise<SaveResult> {
+    const body: { id: string; pages?: number[] } = { id };
+    if (pages && pages.length > 0) body.pages = pages;
+    return data(request("POST", `${BASE}/save${withAdult(new URLSearchParams())}`, { body, timeoutMs: 180_000 }), (v) => {
+      const o = (v ?? {}) as Record<string, unknown>;
+      return {
+        saved: (Array.isArray(o.saved) ? o.saved : []).map((s) => {
+          const q = s as Record<string, unknown>;
+          return { page: num(q.page), itemId: str(q.itemId), duplicate: q.duplicate === true };
+        }),
+        failed: (Array.isArray(o.failed) ? o.failed : []).map((s) => {
+          const q = s as Record<string, unknown>;
+          return { page: num(q.page), error: str(q.error) };
+        }),
+      };
+    });
+  },
+};

@@ -20,3 +20,19 @@ html[data-shell="desktop"]
 html[data-shell="desktop"] .dock.dock--offstage {
   display: none !important;
 }
+
+/* Pixiv (views/Pixiv.tsx) inside Secretary Code: the rail names the page, so its link and title step aside. */
+html[data-shell="desktop"] .content a.pixiv-back {
+  display: none;
+}
+html[data-shell="desktop"] #pixiv-title {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
