@@ -126,3 +126,30 @@ fn dumps_travel_gzipped() {
     assert_eq!(gunzip_base64(&b64), ANDROID);
     assert_eq!(gunzip_base64("not base64!"), "");
 }
+
+#[test]
+fn account_switching_is_never_offered_and_accounts_are_named() {
+    for l in ["Switch account", "Skift konto", "Cambia account", "Use another account"] {
+        assert!(risky(l), "{l}");
+    }
+    let s = Screen {
+        title: "Takeout".into(),
+        text: "Signed in as gvitolofoto0@gmail.com".into(),
+        elements: vec![Element {
+            key: "e1".into(),
+            role: "push button".into(),
+            label: "Google-konto: Giuseppe (givi@au.dk)".into(),
+            editable: false,
+            handle: "s1:1".into(),
+        }],
+    };
+    assert_eq!(accounts(&s), ["givi@au.dk", "gvitolofoto0@gmail.com"]);
+}
+
+#[test]
+fn only_sandbox_hiccups_are_retried() {
+    assert!(transient(&Error::Sandbox("HTTP 503 sandbox_unavailable".into())));
+    assert!(!transient(&Error::Sandbox("tool reported an error: stale element token".into())));
+    assert!(!transient(&Error::OwnerDriving));
+    assert!(!transient(&Error::Sandbox("{\"code\":\"background_unavailable\"} HTTP 503".into())));
+}
