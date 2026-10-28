@@ -1189,7 +1189,9 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
         if let Some(p) = &original {
             job.parts[i].path = Some(work_path(dir, i, p).await?);
         }
-        let lang = owner_language(st, &job.session, &job.note).code().to_owned();
+        let lang = owner_language(st, &job.session, &job.note)
+            .code()
+            .to_owned();
         let result = tokio::time::timeout(
             Duration::from_secs(seconds),
             extract::read(

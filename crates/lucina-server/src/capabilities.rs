@@ -310,7 +310,12 @@ mod tests {
 
     #[test]
     fn the_block_says_she_reads_outlook_on_her_computer() {
-        let b = caps(&[("LUCINA_COMPUTER_USE_ENABLED", "true"), ("SECRETARY_API_ENABLED", "true"), ("LUCINA_MCP_TRUSTED", "true")]).block();
+        let b = caps(&[
+            ("LUCINA_COMPUTER_USE_ENABLED", "true"),
+            ("SECRETARY_API_ENABLED", "true"),
+            ("LUCINA_MCP_TRUSTED", "true"),
+        ])
+        .block();
         assert!(!b.contains("No email"), "{b}");
         assert!(b.contains("no email API"));
         assert!(b.contains("Outlook (givi@au.dk)"));
@@ -325,7 +330,9 @@ mod tests {
     fn with_the_computer_off_the_block_is_honest_about_email() {
         let b = caps(&[]).block();
         assert!(!b.contains("No email: the Gmail integration"), "{b}");
-        assert!(b.contains("my own computer is off on this runtime, so I cannot open Giuseppe's Outlook"));
+        assert!(b.contains(
+            "my own computer is off on this runtime, so I cannot open Giuseppe's Outlook"
+        ));
     }
 
     #[test]
@@ -342,7 +349,14 @@ mod tests {
     fn every_reply_prompt_knows_about_outlook_on_her_computer() {
         let p = crate::prompts::Prompts::minimal("Lucina");
         let now = chrono::Utc::now();
-        let sys = p.reply_system("Secretary app", "has Giuseppe sent an email?", "", "", "", now);
+        let sys = p.reply_system(
+            "Secretary app",
+            "has Giuseppe sent an email?",
+            "",
+            "",
+            "",
+            now,
+        );
         assert!(!sys.contains("cannot read, search, or send email"), "{sys}");
         assert!(!sys.contains("has no email access"));
         assert!(!sys.contains("even if earlier chat turns claimed otherwise"));

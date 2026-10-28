@@ -32,7 +32,12 @@ pub const ORIGIN_HEADER: &str = "x-lucina-origin";
 const PREFIX: &str = "/api/secretary/agentd";
 /// Agent registrations, events and file writes stay well under this.
 const MAX_BODY: usize = 2 * 1024 * 1024;
-const PASS: [&str; 4] = ["content-type", "accept", "last-event-id", "x-lucina-delegation-depth"];
+const PASS: [&str; 4] = [
+    "content-type",
+    "accept",
+    "last-event-id",
+    "x-lucina-delegation-depth",
+];
 
 /// `LUCINA_AGENTD_SOCKET`, else the daemon's default under `$XDG_RUNTIME_DIR` (or
 /// `~/.local/state`), as `lucina-agentd`'s `config::default_socket`.
@@ -43,14 +48,18 @@ pub fn socket_path() -> PathBuf {
     match std::env::var_os("XDG_RUNTIME_DIR") {
         Some(dir) => PathBuf::from(dir).join("lucina-agentd").join("agentd.sock"),
         None => {
-            let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/tmp"));
+            let home = std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("/tmp"));
             home.join(".local/state/lucina-agentd/agentd.sock")
         }
     }
 }
 
 fn token(s: &str, max: usize, extra: &[u8]) -> bool {
-    (1..=max).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric() || extra.contains(&b))
+    (1..=max).contains(&s.len())
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || extra.contains(&b))
 }
 
 /// The origins secretary-server sends.
@@ -75,7 +84,12 @@ pub fn daemon_path(path: &str) -> Option<&str> {
     let ok = !segs.is_empty()
         && rest.len() <= 512
         && segs.split('/').all(|seg| {
-            !seg.is_empty() && seg != "." && seg != ".." && seg.bytes().all(|b| b.is_ascii_alphanumeric() || b"-._~%:@".contains(&b))
+            !seg.is_empty()
+                && seg != "."
+                && seg != ".."
+                && seg
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-._~%:@".contains(&b))
         });
     ok.then_some(rest)
 }
@@ -84,8 +98,13 @@ pub fn daemon_path(path: &str) -> Option<&str> {
 /// passes one kind of error body on whether it came from here or from the daemon.
 fn error(status: u16, code: &str, message: &str) -> Response {
     let status = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
-    let mut resp = (status, axum::Json(serde_json::json!({"error": {"code": code, "message": message}}))).into_response();
-    resp.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    let mut resp = (
+        status,
+        axum::Json(serde_json::json!({"error": {"code": code, "message": message}})),
+    )
+        .into_response();
+    resp.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     resp
 }
 
@@ -94,13 +113,27 @@ pub async fn forward(method: &Method, uri: &Uri, headers: &HeaderMap, body: Body
 }
 
 /// [`forward`] to a given socket (tests).
-pub async fn forward_to(socket: &std::path::Path, method: &Method, uri: &Uri, headers: &HeaderMap, body: Body) -> Response {
+pub async fn forward_to(
+    socket: &std::path::Path,
+    method: &Method,
+    uri: &Uri,
+    headers: &HeaderMap,
+    body: Body,
+) -> Response {
     let Some(path) = daemon_path(uri.path()) else {
         return error(404, "not_found", "");
     };
-    let origin = headers.get(ORIGIN_HEADER).and_then(|v| v.to_str().ok()).map(str::trim).unwrap_or("");
+    let origin = headers
+        .get(ORIGIN_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .unwrap_or("");
     if !valid_origin(origin) {
-        return error(400, "bad_request", "X-Lucina-Origin: device:<id>, mcp:<id> or service:<name>");
+        return error(
+            400,
+            "bad_request",
+            "X-Lucina-Origin: device:<id>, mcp:<id> or service:<name>",
+        );
     }
     let target = match uri.query() {
         Some(q) if q.len() > 4096 || q.bytes().any(|b| b.is_ascii_control() || b == b' ') => {
@@ -123,19 +156,30 @@ pub async fn forward_to(socket: &std::path::Path, method: &Method, uri: &Uri, he
             req = req.header(name, v);
         }
     }
-    let req = match req.header(header::CONTENT_LENGTH, body.len()).body(http_body_util::Full::new(body)) {
+    let req = match req
+        .header(header::CONTENT_LENGTH, body.len())
+        .body(http_body_util::Full::new(body))
+    {
         Ok(r) => r,
         Err(_) => return error(400, "bad_request", ""),
     };
-    let stream = match tokio::time::timeout(Duration::from_secs(5), UnixStream::connect(socket)).await {
-        Ok(Ok(s)) => s,
-        Ok(Err(e)) => {
-            tracing::warn!(error = %e, socket = %socket.display(), "agentd unreachable");
-            return error(503, "agentd_unavailable", "lucina-agentd is not running");
-        }
-        Err(_) => return error(503, "agentd_unavailable", "lucina-agentd did not accept the connection"),
-    };
-    let (mut sender, conn) = match hyper::client::conn::http1::handshake(TokioIo::new(stream)).await {
+    let stream =
+        match tokio::time::timeout(Duration::from_secs(5), UnixStream::connect(socket)).await {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, socket = %socket.display(), "agentd unreachable");
+                return error(503, "agentd_unavailable", "lucina-agentd is not running");
+            }
+            Err(_) => {
+                return error(
+                    503,
+                    "agentd_unavailable",
+                    "lucina-agentd did not accept the connection",
+                )
+            }
+        };
+    let (mut sender, conn) = match hyper::client::conn::http1::handshake(TokioIo::new(stream)).await
+    {
         Ok(v) => v,
         Err(e) => {
             tracing::warn!(error = %e, "agentd handshake failed");
@@ -172,8 +216,10 @@ pub async fn forward_to(socket: &std::path::Path, method: &Method, uri: &Uri, he
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.starts_with("text/event-stream"));
     if sse {
-        out.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-        out.headers_mut().insert("x-accel-buffering", HeaderValue::from_static("no"));
+        out.headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        out.headers_mut()
+            .insert("x-accel-buffering", HeaderValue::from_static("no"));
     }
     out
 }
@@ -184,10 +230,26 @@ mod tests {
 
     #[test]
     fn origins_secretary_server_sends() {
-        for ok in ["device:dev_1", "mcp:hermes", "mcp:tok:abc", "service:infisical-broker"] {
+        for ok in [
+            "device:dev_1",
+            "mcp:hermes",
+            "mcp:tok:abc",
+            "service:infisical-broker",
+        ] {
             assert!(valid_origin(ok), "{ok}");
         }
-        for bad in ["", "local", "mcp", "device:", "device:a b", "device:a/b", "service:Broker", "service:", "owner:x", &format!("device:{}", "a".repeat(65))] {
+        for bad in [
+            "",
+            "local",
+            "mcp",
+            "device:",
+            "device:a b",
+            "device:a/b",
+            "service:Broker",
+            "service:",
+            "owner:x",
+            &format!("device:{}", "a".repeat(65)),
+        ] {
             assert!(!valid_origin(bad), "{bad}");
         }
     }
@@ -195,8 +257,14 @@ mod tests {
     #[test]
     fn daemon_paths() {
         assert_eq!(daemon_path("/api/secretary/agentd/agents"), Some("/agents"));
-        assert_eq!(daemon_path("/api/secretary/agentd/agents/abc-1/send"), Some("/agents/abc-1/send"));
-        assert_eq!(daemon_path("/api/secretary/agentd/permissions/ext_1"), Some("/permissions/ext_1"));
+        assert_eq!(
+            daemon_path("/api/secretary/agentd/agents/abc-1/send"),
+            Some("/agents/abc-1/send")
+        );
+        assert_eq!(
+            daemon_path("/api/secretary/agentd/permissions/ext_1"),
+            Some("/permissions/ext_1")
+        );
         for bad in [
             "/api/secretary/agentd",
             "/api/secretary/agentd/",

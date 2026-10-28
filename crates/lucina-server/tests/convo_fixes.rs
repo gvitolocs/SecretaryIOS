@@ -120,7 +120,10 @@ async fn paused_game_and_failed_plans() {
     assert!(plans[1]["messages"]
         .to_string()
         .contains("Return only the JSON object for this turn"));
-    assert!(!ks.contains(&"reply"), "no tool-less guess after two failed plans: {ks:?}");
+    assert!(
+        !ks.contains(&"reply"),
+        "no tool-less guess after two failed plans: {ks:?}"
+    );
 }
 
 /// 10:59: "Explode outlook in your sandbox" (speech-to-text for "Explore ...") is routed to her computer before

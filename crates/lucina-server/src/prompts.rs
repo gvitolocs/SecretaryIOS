@@ -738,13 +738,19 @@ mod tests {
         let now = Utc.with_ymd_and_hms(2026, 10, 28, 11, 0, 0).unwrap();
         let p = Prompts::minimal("Lucina");
         let line = Prompts::current_date_line(now, p.tz);
-        assert!(line.contains("12:00 (Europe/Copenhagen timezone)"), "{line}");
+        assert!(
+            line.contains("12:00 (Europe/Copenhagen timezone)"),
+            "{line}"
+        );
         let sys = p.reply_system("Secretary app", "ciao", "", "", "", now);
         assert!(sys.contains("Europe/Copenhagen timezone"));
         assert!(sys.contains("never write UTC, GMT or a trailing Z unless the owner asks for UTC"));
         let plan = p.plan_system_for("hello", now);
         assert!(plan.contains("never write UTC, GMT or a trailing Z"));
-        assert!(plan.starts_with(&p.plan_system()), "the cached prefix stays first");
+        assert!(
+            plan.starts_with(&p.plan_system()),
+            "the cached prefix stays first"
+        );
     }
 
     #[test]
@@ -794,7 +800,9 @@ mod tests {
     async fn the_turn_language_line_beats_the_text_of_the_prompt() {
         let line = Prompts::language_line(lucina_intent::lang::Lang::It);
         let rule = crate::planner::TURN_LANG
-            .scope(line.clone(), async { Prompts::language_rule("the weather") })
+            .scope(line.clone(), async {
+                Prompts::language_rule("the weather")
+            })
             .await;
         assert_eq!(rule, line);
     }

@@ -209,7 +209,8 @@ pub const PLAN_JSON_REMINDER: &str = "Output format: reply with exactly one JSON
 pub const NO_TOOL_MARKUP_RULE: &str = "You have no tools in this reply. Answer in plain text only; never write tool calls, function-call tags or other markup.";
 
 /// What the owner sees when the model keeps answering in tool-call markup.
-pub const TOOL_MARKUP_FAILURE: &str = "I couldn't put that into words just now. Please send it once more.";
+pub const TOOL_MARKUP_FAILURE: &str =
+    "I couldn't put that into words just now. Please send it once more.";
 
 /// Sent after a plan answer that was not JSON.
 pub const PLAN_REPAIR_PROMPT: &str = "Your previous output was not a valid JSON object. Return only the JSON object for this turn, using the schema above, for the owner's latest message only. No text outside the JSON.";
@@ -472,7 +473,10 @@ impl Planner {
     }
 
     /// One plan call (JSON mode): the text and the finish reason.
-    async fn plan_call(&self, messages: Vec<Message>) -> Result<(String, Option<String>), LlmError> {
+    async fn plan_call(
+        &self,
+        messages: Vec<Message>,
+    ) -> Result<(String, Option<String>), LlmError> {
         let r = self
             .model
             .complete(ChatRequest {
@@ -491,7 +495,10 @@ impl Planner {
     pub async fn plan_response(&self, t: &TurnInput<'_>) -> Result<Value, LlmError> {
         let system = format!(
             "{}\n\n{PLAN_JSON_REMINDER}",
-            with_turn_system(self.prompts.plan_system_for(t.user_text, Utc::now()), "plan")
+            with_turn_system(
+                self.prompts.plan_system_for(t.user_text, Utc::now()),
+                "plan"
+            )
         );
         let user = Prompts::plan_user(t.platform, t.user_label, t.memory, t.user_text);
         let mut messages = vec![Message::system(system), Message::user(user)];
@@ -520,8 +527,8 @@ impl Planner {
             }
             content = again;
         }
-        let parsed =
-            parsed.ok_or_else(|| LlmError::Decode("No JSON object found in model response".into()))?;
+        let parsed = parsed
+            .ok_or_else(|| LlmError::Decode("No JSON object found in model response".into()))?;
         let action = parsed["action"].as_str().unwrap_or("reply").to_owned();
         let s = |k: &str| parsed[k].as_str().unwrap_or("").trim().to_owned();
         if looks_like_reminder_request(t.user_text)
@@ -711,7 +718,10 @@ mod tests {
         let plan = TURN_SYSTEM
             .scope(game, async {
                 planner(&model)
-                    .plan_response(&turn("You know what time is the meeting therese è teresa", MEMORY))
+                    .plan_response(&turn(
+                        "You know what time is the meeting therese è teresa",
+                        MEMORY,
+                    ))
                     .await
             })
             .await
@@ -722,14 +732,24 @@ mod tests {
         assert!(reqs[0].json_object, "JSON mode");
         assert_eq!(reqs[0].purpose, "plan");
         let system = reqs[0].messages[0].text();
-        assert!(system.ends_with(PLAN_JSON_REMINDER), "the last words are the format");
+        assert!(
+            system.ends_with(PLAN_JSON_REMINDER),
+            "the last words are the format"
+        );
         assert!(system.contains("Reply language: English"));
-        assert!(system.contains("CHAMPIONS_ROOM"), "the paused game stays as information");
+        assert!(
+            system.contains("CHAMPIONS_ROOM"),
+            "the paused game stays as information"
+        );
         assert!(!system.contains("This Pokémon Red run is YOU: your own playing self"));
         assert!(system.contains("Never flatly deny what you said earlier"));
         // Size of what a failing turn sent: the verbatim system prompt is most of it.
         let user = reqs[0].messages[1].text();
-        eprintln!("plan prompt chars: system={} user={}", system.chars().count(), user.chars().count());
+        eprintln!(
+            "plan prompt chars: system={} user={}",
+            system.chars().count(),
+            user.chars().count()
+        );
         assert!(user.contains("Message:\nYou know what time is the meeting therese è teresa"));
     }
 
@@ -739,7 +759,10 @@ mod tests {
         model.push_text("Alle 12:00 hai Therese zoom, non Teresa.");
         model.push_text(r#"{"action":"reply","text":"Therese zoom is at 12:00."}"#);
         let plan = planner(&model)
-            .plan_response(&turn("You know what time is the meeting therese è teresa", MEMORY))
+            .plan_response(&turn(
+                "You know what time is the meeting therese è teresa",
+                MEMORY,
+            ))
             .await
             .unwrap();
         assert_eq!(plan["action"], "reply");
@@ -748,9 +771,15 @@ mod tests {
         assert_eq!(reqs.len(), 2);
         assert!(reqs.iter().all(|r| r.json_object));
         let retry = &reqs[1].messages;
-        assert_eq!(retry.len(), 4, "system, user, her previous output, the repair request");
+        assert_eq!(
+            retry.len(),
+            4,
+            "system, user, her previous output, the repair request"
+        );
         assert_eq!(retry[2].text(), "Alle 12:00 hai Therese zoom, non Teresa.");
-        assert!(retry[3].text().contains("Return only the JSON object for this turn"));
+        assert!(retry[3]
+            .text()
+            .contains("Return only the JSON object for this turn"));
     }
 
     #[tokio::test]
@@ -790,16 +819,35 @@ mod tests {
         let none: [&str; 0] = [];
         // His own text wins, whatever came before.
         assert_eq!(
-            resolve_reply_language("You know what time is the meeting therese è teresa", &["Di cosa stai parlando?"]),
+            resolve_reply_language(
+                "You know what time is the meeting therese è teresa",
+                &["Di cosa stai parlando?"]
+            ),
             Lang::En
         );
-        assert_eq!(resolve_reply_language("Explode outlook in your sandbox", &["Cancella"]), Lang::En);
-        assert_eq!(resolve_reply_language("Di cosa stai parlando?", &["hello there my friend"]), Lang::It);
-        assert_eq!(resolve_reply_language("hvad har jeg i kalenderen i morgen", &none), Lang::Da);
+        assert_eq!(
+            resolve_reply_language("Explode outlook in your sandbox", &["Cancella"]),
+            Lang::En
+        );
+        assert_eq!(
+            resolve_reply_language("Di cosa stai parlando?", &["hello there my friend"]),
+            Lang::It
+        );
+        assert_eq!(
+            resolve_reply_language("hvad har jeg i kalenderen i morgen", &none),
+            Lang::Da
+        );
         // No text of its own (a bare link, a photo, a file): his recent messages, newest first, then English.
-        let recent = ["ok", "Ho fatto la lavanderia, poi vado alla posta per il pacco", "hello there my friend"];
+        let recent = [
+            "ok",
+            "Ho fatto la lavanderia, poi vado alla posta per il pacco",
+            "hello there my friend",
+        ];
         assert_eq!(resolve_reply_language("", &recent), Lang::It);
-        assert_eq!(resolve_reply_language("📎 The Little Mermaid (statue)", &recent[..1]), Lang::En);
+        assert_eq!(
+            resolve_reply_language("📎 The Little Mermaid (statue)", &recent[..1]),
+            Lang::En
+        );
         assert_eq!(resolve_reply_language("", &none), Lang::En);
         // The exact texts that came back in Danish on 2026-10-26/27.
         for t in [
@@ -809,7 +857,13 @@ mod tests {
         ] {
             assert_eq!(resolve_reply_language(t, &none), Lang::It, "{t}");
         }
-        assert_eq!(resolve_reply_language("https://en.wikipedia.org/wiki/The_Little_Mermaid_(statue)", &none), Lang::En);
+        assert_eq!(
+            resolve_reply_language(
+                "https://en.wikipedia.org/wiki/The_Little_Mermaid_(statue)",
+                &none
+            ),
+            Lang::En
+        );
     }
 
     #[test]
@@ -818,7 +872,12 @@ mod tests {
         let now = Utc::now();
         recent.append("s", "user", "Ho fatto la lavanderia", now);
         recent.append("s", "assistant", "Hello there, how are you my friend", now);
-        recent.append("s", "user", "Owner's question or note: \"\"\n\n<Shared content>the and of</Shared content>", now);
+        recent.append(
+            "s",
+            "user",
+            "Owner's question or note: \"\"\n\n<Shared content>the and of</Shared content>",
+            now,
+        );
         let texts = recent_owner_texts(&recent, "s");
         assert_eq!(texts, vec!["Ho fatto la lavanderia".to_owned()]);
         assert!(reply_language_line(&recent, "s", "").contains("Reply language: Italian"));
@@ -850,7 +909,10 @@ mod tests {
         assert_eq!(text, TOOL_MARKUP_FAILURE);
         // A plan whose text is markup is an error, so the caller falls back.
         let model = Arc::new(ScriptedModel::new());
-        model.push_text(&format!("{{\"action\":\"reply\",\"text\":{}}}", serde_json::to_string(markup).unwrap()));
+        model.push_text(&format!(
+            "{{\"action\":\"reply\",\"text\":{}}}",
+            serde_json::to_string(markup).unwrap()
+        ));
         assert!(planner(&model).plan_response(&t).await.is_err());
     }
 }

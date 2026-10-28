@@ -60,8 +60,16 @@ pub struct LanConfig {
 
 impl LanConfig {
     fn from_env() -> Option<Self> {
-        let text = |k: &str| std::env::var(k).ok().map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
-        let bind = text("LUCINA_LAN_BIND")?.parse().map_err(|e| tracing::warn!(error = %e, "LUCINA_LAN_BIND")).ok()?;
+        let text = |k: &str| {
+            std::env::var(k)
+                .ok()
+                .map(|v| v.trim().to_owned())
+                .filter(|v| !v.is_empty())
+        };
+        let bind = text("LUCINA_LAN_BIND")?
+            .parse()
+            .map_err(|e| tracing::warn!(error = %e, "LUCINA_LAN_BIND"))
+            .ok()?;
         let url = text("LUCINA_LAN_URL")?.trim_end_matches('/').to_owned();
         if !url.starts_with("https://") {
             tracing::warn!("LUCINA_LAN_URL must be https://; the home-network door stays closed");
@@ -71,8 +79,12 @@ impl LanConfig {
         Some(Self {
             bind,
             url,
-            cert_dir: text("LUCINA_LAN_CERT_DIR").map_or_else(|| PathBuf::from(home).join(".config/lucina-rs/lan"), PathBuf::from),
-            page_origin: text("LUCINA_LAN_PAGE_ORIGIN").unwrap_or_else(|| "https://getsecretary.tech".into()),
+            cert_dir: text("LUCINA_LAN_CERT_DIR").map_or_else(
+                || PathBuf::from(home).join(".config/lucina-rs/lan"),
+                PathBuf::from,
+            ),
+            page_origin: text("LUCINA_LAN_PAGE_ORIGIN")
+                .unwrap_or_else(|| "https://getsecretary.tech".into()),
         })
     }
 }
@@ -96,19 +108,24 @@ impl CertFiles {
     fn load(&self) -> Result<Arc<CertifiedKey>, String> {
         use rustls::pki_types::pem::PemObject;
         use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-        let chain: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(self.dir.join("fullchain.pem"))
-            .and_then(|it| it.collect())
-            .map_err(|e| format!("fullchain.pem: {e}"))?;
+        let chain: Vec<CertificateDer<'static>> =
+            CertificateDer::pem_file_iter(self.dir.join("fullchain.pem"))
+                .and_then(|it| it.collect())
+                .map_err(|e| format!("fullchain.pem: {e}"))?;
         if chain.is_empty() {
             return Err("fullchain.pem has no certificate".into());
         }
-        let key = PrivateKeyDer::from_pem_file(self.dir.join("key.pem")).map_err(|e| format!("key.pem: {e}"))?;
-        let signer = rustls::crypto::ring::sign::any_supported_type(&key).map_err(|e| format!("key.pem: {e}"))?;
+        let key = PrivateKeyDer::from_pem_file(self.dir.join("key.pem"))
+            .map_err(|e| format!("key.pem: {e}"))?;
+        let signer = rustls::crypto::ring::sign::any_supported_type(&key)
+            .map_err(|e| format!("key.pem: {e}"))?;
         Ok(Arc::new(CertifiedKey::new(chain, signer)))
     }
 
     fn current(&self) -> Option<Arc<CertifiedKey>> {
-        let mtime = std::fs::metadata(self.dir.join("fullchain.pem")).and_then(|m| m.modified()).ok();
+        let mtime = std::fs::metadata(self.dir.join("fullchain.pem"))
+            .and_then(|m| m.modified())
+            .ok();
         let mut cur = self.current.lock().unwrap_or_else(|e| e.into_inner());
         if let (Some(m), Some((seen, key))) = (mtime, cur.as_ref()) {
             if *seen == m {
@@ -137,7 +154,14 @@ impl ResolvesServerCert for CertFiles {
 
 /// Whether the door can actually serve (configured, certificate readable).
 pub fn ready() -> bool {
-    config().is_some_and(|c| CertFiles { dir: c.cert_dir.clone(), current: Mutex::new(None) }.load().is_ok())
+    config().is_some_and(|c| {
+        CertFiles {
+            dir: c.cert_dir.clone(),
+            current: Mutex::new(None),
+        }
+        .load()
+        .is_ok()
+    })
 }
 
 // ---------------------------------------------------------------- the house's public IP
@@ -161,8 +185,20 @@ pub async fn public_ip() -> Option<String> {
         }
     }
     static HTTP: OnceLock<reqwest::Client> = OnceLock::new();
-    let http = HTTP.get_or_init(|| reqwest::Client::builder().timeout(Duration::from_secs(5)).build().expect("lan http client"));
-    let text = http.get("https://1.1.1.1/cdn-cgi/trace").send().await.ok()?.text().await.ok()?;
+    let http = HTTP.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .expect("lan http client")
+    });
+    let text = http
+        .get("https://1.1.1.1/cdn-cgi/trace")
+        .send()
+        .await
+        .ok()?
+        .text()
+        .await
+        .ok()?;
     let ip = parse_trace(&text)?;
     *ip_slot().lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), ip.clone()));
     Some(ip)
@@ -172,8 +208,10 @@ pub async fn public_ip() -> Option<String> {
 
 /// The view's CSP, with the page origin allowed to frame it.
 fn view_csp(page_origin: &str) -> HeaderValue {
-    HeaderValue::from_str(&format!("sandbox allow-scripts allow-pointer-lock; frame-ancestors {page_origin}"))
-        .unwrap_or_else(|_| HeaderValue::from_static(crate::computer_view::VIEW_CSP))
+    HeaderValue::from_str(&format!(
+        "sandbox allow-scripts allow-pointer-lock; frame-ancestors {page_origin}"
+    ))
+    .unwrap_or_else(|_| HeaderValue::from_static(crate::computer_view::VIEW_CSP))
 }
 
 /// CORS for the page origin, plus the Private Network Access answer.
@@ -202,8 +240,14 @@ async fn private_network_preflight(State(page): State<Page>, req: Request, next:
         }
         let mut resp = StatusCode::NO_CONTENT.into_response();
         allow_page(resp.headers_mut(), &page);
-        resp.headers_mut().insert(header::ACCESS_CONTROL_ALLOW_METHODS, HeaderValue::from_static("GET"));
-        resp.headers_mut().insert(header::ACCESS_CONTROL_MAX_AGE, HeaderValue::from_static("600"));
+        resp.headers_mut().insert(
+            header::ACCESS_CONTROL_ALLOW_METHODS,
+            HeaderValue::from_static("GET"),
+        );
+        resp.headers_mut().insert(
+            header::ACCESS_CONTROL_MAX_AGE,
+            HeaderValue::from_static("600"),
+        );
         return resp;
     }
     next.run(req).await
@@ -212,16 +256,22 @@ async fn private_network_preflight(State(page): State<Page>, req: Request, next:
 /// `GET /v1/computer/lan-probe`: the page's "is the door reachable from here" check.
 async fn probe(State(page): State<Page>, req: Request) -> Response {
     let mut resp = StatusCode::NO_CONTENT.into_response();
-    resp.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    resp.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     if from_page(req.headers(), &page) {
         allow_page(resp.headers_mut(), &page);
     }
     resp
 }
 
-async fn view(State(page): State<Page>, Path((view_id, rest)): Path<(String, String)>, req: Request) -> Response {
+async fn view(
+    State(page): State<Page>,
+    Path((view_id, rest)): Path<(String, String)>,
+    req: Request,
+) -> Response {
     let mut resp = crate::computer_view::serve_capability(&view_id, &rest, req).await;
-    resp.headers_mut().insert(header::CONTENT_SECURITY_POLICY, view_csp(&page));
+    resp.headers_mut()
+        .insert(header::CONTENT_SECURITY_POLICY, view_csp(&page));
     resp
 }
 
@@ -246,23 +296,34 @@ pub fn router(page_origin: &str) -> Router {
         .route("/v1/computer/viewer-assets/{version}/{file}", get(asset))
         .route("/v1/computer/desk/ws", get(desk))
         .fallback(|| async { StatusCode::NOT_FOUND })
-        .layer(middleware::from_fn_with_state(page.clone(), private_network_preflight))
+        .layer(middleware::from_fn_with_state(
+            page.clone(),
+            private_network_preflight,
+        ))
         .with_state(page)
 }
 
 // ---------------------------------------------------------------- the listener
 
 /// Serves the door until `stop` turns true. HTTP/1.1 only (the media WebSocket upgrades on it).
-pub async fn serve(cfg: &'static LanConfig, mut stop: tokio::sync::watch::Receiver<bool>) -> std::io::Result<()> {
-    let certs = Arc::new(CertFiles { dir: cfg.cert_dir.clone(), current: Mutex::new(None) });
+pub async fn serve(
+    cfg: &'static LanConfig,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+) -> std::io::Result<()> {
+    let certs = Arc::new(CertFiles {
+        dir: cfg.cert_dir.clone(),
+        current: Mutex::new(None),
+    });
     if certs.current().is_none() {
         tracing::warn!(dir = %cfg.cert_dir.display(), "home-network door: no certificate yet (run lan-cert); serving once it appears");
     }
-    let mut tls = rustls::ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-        .with_safe_default_protocol_versions()
-        .map_err(std::io::Error::other)?
-        .with_no_client_auth()
-        .with_cert_resolver(certs);
+    let mut tls = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(std::io::Error::other)?
+    .with_no_client_auth()
+    .with_cert_resolver(certs);
     tls.alpn_protocols = vec![b"http/1.1".to_vec()];
     let acceptor = TlsAcceptor::from(Arc::new(tls));
     let listener = TcpListener::bind(cfg.bind).await?;
@@ -286,13 +347,16 @@ pub async fn serve(cfg: &'static LanConfig, mut stop: tokio::sync::watch::Receiv
         let acceptor = acceptor.clone();
         let app = app.clone();
         tokio::spawn(async move {
-            let Ok(Ok(stream)) = tokio::time::timeout(Duration::from_secs(10), acceptor.accept(tcp)).await else {
+            let Ok(Ok(stream)) =
+                tokio::time::timeout(Duration::from_secs(10), acceptor.accept(tcp)).await
+            else {
                 return;
             };
-            let svc = hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
-                let app = app.clone();
-                async move { tower::ServiceExt::oneshot(app, req.map(Body::new)).await }
-            });
+            let svc =
+                hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                    let app = app.clone();
+                    async move { tower::ServiceExt::oneshot(app, req.map(Body::new)).await }
+                });
             let _ = hyper::server::conn::http1::Builder::new()
                 .serve_connection(TokioIo::new(stream), svc)
                 .with_upgrades()
@@ -306,7 +370,13 @@ mod tests {
     use super::*;
     use lucina_computer_use::{control, SandboxId, ViewMode};
 
-    async fn call(app: &Router, method: &str, path: &str, origin: Option<&str>, pna: bool) -> Response {
+    async fn call(
+        app: &Router,
+        method: &str,
+        path: &str,
+        origin: Option<&str>,
+        pna: bool,
+    ) -> Response {
         let mut req = Request::builder().method(method).uri(path);
         if let Some(o) = origin {
             req = req.header(header::ORIGIN, o);
@@ -314,7 +384,9 @@ mod tests {
         if pna {
             req = req.header(PNA_REQUEST, "true");
         }
-        tower::ServiceExt::oneshot(app.clone(), req.body(Body::empty()).unwrap()).await.unwrap()
+        tower::ServiceExt::oneshot(app.clone(), req.body(Body::empty()).unwrap())
+            .await
+            .unwrap()
     }
 
     #[tokio::test]
@@ -322,23 +394,88 @@ mod tests {
         let page = "https://getsecretary.tech";
         let app = router(page);
         // Nothing of Lucina's API, not even health.
-        for path in ["/", "/health", "/api/secretary/computer", "/api/secretary/computer/view/x/viewer/", "/v1/computer/control", "/v1/computer/view"] {
-            assert_eq!(call(&app, "GET", path, None, false).await.status(), StatusCode::NOT_FOUND, "{path}");
+        for path in [
+            "/",
+            "/health",
+            "/api/secretary/computer",
+            "/api/secretary/computer/view/x/viewer/",
+            "/v1/computer/control",
+            "/v1/computer/view",
+        ] {
+            assert_eq!(
+                call(&app, "GET", path, None, false).await.status(),
+                StatusCode::NOT_FOUND,
+                "{path}"
+            );
         }
         // A live view: its viewer is served, its ticket re-issue never is (that is the owner's, on p1).
         let sb = SandboxId::Workspace;
-        let id = crate::computer_view::open(sb, ViewMode::Watch, "lan-test", control().epoch(sb), "http://127.0.0.1:1");
-        let r = call(&app, "POST", &format!("/v1/computer/view/{id}/ticket"), Some(page), false).await;
+        let id = crate::computer_view::open(
+            sb,
+            ViewMode::Watch,
+            "lan-test",
+            control().epoch(sb),
+            "http://127.0.0.1:1",
+        );
+        let r = call(
+            &app,
+            "POST",
+            &format!("/v1/computer/view/{id}/ticket"),
+            Some(page),
+            false,
+        )
+        .await;
         assert_eq!(r.status(), StatusCode::FORBIDDEN);
-        assert_eq!(r.headers()[header::CONTENT_SECURITY_POLICY], "sandbox allow-scripts allow-pointer-lock; frame-ancestors https://getsecretary.tech");
+        assert_eq!(
+            r.headers()[header::CONTENT_SECURITY_POLICY],
+            "sandbox allow-scripts allow-pointer-lock; frame-ancestors https://getsecretary.tech"
+        );
         assert_eq!(r.headers()[header::CACHE_CONTROL], "no-store");
-        for rest in ["files", "cua.env.v1.SystemService/CreateViewerTicket", "cua.env.v1.FilesService/Read"] {
-            assert_eq!(call(&app, "POST", &format!("/v1/computer/view/{id}/{rest}"), None, false).await.status(), StatusCode::FORBIDDEN, "{rest}");
+        for rest in [
+            "files",
+            "cua.env.v1.SystemService/CreateViewerTicket",
+            "cua.env.v1.FilesService/Read",
+        ] {
+            assert_eq!(
+                call(
+                    &app,
+                    "POST",
+                    &format!("/v1/computer/view/{id}/{rest}"),
+                    None,
+                    false
+                )
+                .await
+                .status(),
+                StatusCode::FORBIDDEN,
+                "{rest}"
+            );
         }
         // An unknown view is gone, like on p1.
-        assert_eq!(call(&app, "GET", &format!("/v1/computer/view/{}/viewer/", "a".repeat(64)), None, false).await.status(), StatusCode::GONE);
+        assert_eq!(
+            call(
+                &app,
+                "GET",
+                &format!("/v1/computer/view/{}/viewer/", "a".repeat(64)),
+                None,
+                false
+            )
+            .await
+            .status(),
+            StatusCode::GONE
+        );
         // Asset names outside the bundle are 404 before anything is fetched.
-        assert_eq!(call(&app, "GET", "/v1/computer/viewer-assets/0123456789abcdef/index.html", None, false).await.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            call(
+                &app,
+                "GET",
+                "/v1/computer/viewer-assets/0123456789abcdef/index.html",
+                None,
+                false
+            )
+            .await
+            .status(),
+            StatusCode::NOT_FOUND
+        );
     }
 
     #[tokio::test]
@@ -348,13 +485,46 @@ mod tests {
         let r = call(&app, "GET", "/v1/computer/lan-probe", Some(page), false).await;
         assert_eq!(r.status(), StatusCode::NO_CONTENT);
         assert_eq!(r.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN], page);
-        let r = call(&app, "GET", "/v1/computer/lan-probe", Some("https://evil.example"), false).await;
-        assert!(r.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none(), "no CORS for another site");
+        let r = call(
+            &app,
+            "GET",
+            "/v1/computer/lan-probe",
+            Some("https://evil.example"),
+            false,
+        )
+        .await;
+        assert!(
+            r.headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .is_none(),
+            "no CORS for another site"
+        );
         let r = call(&app, "OPTIONS", "/v1/computer/lan-probe", Some(page), true).await;
-        assert_eq!((r.status(), r.headers()[PNA_ALLOW].clone()), (StatusCode::NO_CONTENT, HeaderValue::from_static("true")));
-        let r = call(&app, "OPTIONS", "/v1/computer/view/x/viewer/", Some(page), true).await;
-        assert_eq!(r.status(), StatusCode::NO_CONTENT, "the frame's navigation preflight");
-        let r = call(&app, "OPTIONS", "/v1/computer/lan-probe", Some("https://evil.example"), true).await;
+        assert_eq!(
+            (r.status(), r.headers()[PNA_ALLOW].clone()),
+            (StatusCode::NO_CONTENT, HeaderValue::from_static("true"))
+        );
+        let r = call(
+            &app,
+            "OPTIONS",
+            "/v1/computer/view/x/viewer/",
+            Some(page),
+            true,
+        )
+        .await;
+        assert_eq!(
+            r.status(),
+            StatusCode::NO_CONTENT,
+            "the frame's navigation preflight"
+        );
+        let r = call(
+            &app,
+            "OPTIONS",
+            "/v1/computer/lan-probe",
+            Some("https://evil.example"),
+            true,
+        )
+        .await;
         assert_eq!(r.status(), StatusCode::FORBIDDEN);
     }
 
@@ -363,11 +533,23 @@ mod tests {
         let page = "https://getsecretary.tech";
         let app = router(page);
         for origin in [None, Some("https://evil.example")] {
-            assert_eq!(call(&app, "GET", "/v1/computer/desk/ws", origin, false).await.status(), StatusCode::FORBIDDEN, "{origin:?}");
+            assert_eq!(
+                call(&app, "GET", "/v1/computer/desk/ws", origin, false)
+                    .await
+                    .status(),
+                StatusCode::FORBIDDEN,
+                "{origin:?}"
+            );
         }
         // From the page it reaches the desk, which wants a real WebSocket upgrade (and then a ticket).
         let r = call(&app, "GET", "/v1/computer/desk/ws", Some(page), false).await;
-        assert!(r.status().is_client_error() && r.status() != StatusCode::FORBIDDEN && r.status() != StatusCode::NOT_FOUND, "{}", r.status());
+        assert!(
+            r.status().is_client_error()
+                && r.status() != StatusCode::FORBIDDEN
+                && r.status() != StatusCode::NOT_FOUND,
+            "{}",
+            r.status()
+        );
     }
 
     #[test]
@@ -382,12 +564,21 @@ mod tests {
     fn only_the_page_origin_is_allowed_and_may_frame_the_view() {
         let page = "https://getsecretary.tech";
         let mut h = HeaderMap::new();
-        h.insert(header::ORIGIN, HeaderValue::from_static("https://getsecretary.tech"));
+        h.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://getsecretary.tech"),
+        );
         assert!(from_page(&h, page));
-        h.insert(header::ORIGIN, HeaderValue::from_static("https://evil.example"));
+        h.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://evil.example"),
+        );
         assert!(!from_page(&h, page));
         assert!(!from_page(&HeaderMap::new(), page));
-        assert_eq!(view_csp(page), "sandbox allow-scripts allow-pointer-lock; frame-ancestors https://getsecretary.tech");
+        assert_eq!(
+            view_csp(page),
+            "sandbox allow-scripts allow-pointer-lock; frame-ancestors https://getsecretary.tech"
+        );
         let mut h = HeaderMap::new();
         allow_page(&mut h, page);
         assert_eq!(h[header::ACCESS_CONTROL_ALLOW_ORIGIN], page);

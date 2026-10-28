@@ -321,14 +321,20 @@ pub fn router(state: AppState) -> Router {
             get(crate::computer_view::assets),
         )
         // Files to and from her desktop while the owner drives (crate::computer_files).
-        .route("/api/secretary/computer/files", any(crate::computer_files::files_route))
+        .route(
+            "/api/secretary/computer/files",
+            any(crate::computer_files::files_route),
+        )
         .route(
             "/api/secretary/computer/clipboard/files",
             any(crate::computer_files::clipboard_route),
         )
         // LucinaDesk (crate::desk): ticket minting and the owner's socket.
         .route("/api/secretary/computer/desk", any(crate::desk::mint_route))
-        .route("/api/secretary/computer/desk/ws", any(crate::desk::ws_route))
+        .route(
+            "/api/secretary/computer/desk/ws",
+            any(crate::desk::ws_route),
+        )
         .route("/api/secretary/{*rest}", any(secretary))
         .with_state(state)
 }

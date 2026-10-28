@@ -537,7 +537,10 @@ async fn the_device_locale_never_sets_the_reply_language() {
         Form::new()
             .text("shareId", "share-lang-it-001")
             .text("lang", "da-DK")
-            .text("note", "[selftest] Comprare: latte, uova, pane integrale, 2 limoni")
+            .text(
+                "note",
+                "[selftest] Comprare: latte, uova, pane integrale, 2 limoni",
+            )
             .text("text", "Lista di prova"),
     )
     .await;
@@ -561,7 +564,10 @@ async fn the_device_locale_never_sets_the_reply_language() {
         Form::new()
             .text("shareId", "share-lang-en-001")
             .text("lang", "da-DK")
-            .text("text", "https://en.wikipedia.org/wiki/The_Little_Mermaid_(statue)"),
+            .text(
+                "text",
+                "https://en.wikipedia.org/wiki/The_Little_Mermaid_(statue)",
+            ),
     )
     .await;
     assert_eq!(r.status(), 202);
@@ -901,7 +907,10 @@ async fn failed_or_empty_voice_transcription_asks_to_repeat_without_model() {
         let lines = h.timeline_lines();
         assert_eq!(lines.len(), 2);
         // The device locale (`lang=it`) is ignored: no words of his own and no recent messages: English.
-        assert_eq!(lines[1]["text"], "I couldn't hear you. Could you repeat that?");
+        assert_eq!(
+            lines[1]["text"],
+            "I couldn't hear you. Could you repeat that?"
+        );
         assert_eq!(lines[1]["meta"]["voiceReply"], true);
         assert!(h.fake.requests().is_empty());
     }
@@ -915,7 +924,12 @@ async fn the_repeat_request_follows_the_language_of_his_caption() {
     assert_eq!(
         submit(
             &h,
-            voice_form("voice-caption-1", bytes, Some("  "), "Non si sente niente, cosa dice?")
+            voice_form(
+                "voice-caption-1",
+                bytes,
+                Some("  "),
+                "Non si sente niente, cosa dice?"
+            )
         )
         .await
         .status(),
@@ -924,7 +938,10 @@ async fn the_repeat_request_follows_the_language_of_his_caption() {
     let done = finished(&h, "voice-caption-1").await;
     assert_eq!(done["status"], "done", "{done}");
     let lines = h.timeline_lines();
-    assert_eq!(lines[1]["text"], "Non sono riuscita a sentirti. Puoi ripetere?");
+    assert_eq!(
+        lines[1]["text"],
+        "Non sono riuscita a sentirti. Puoi ripetere?"
+    );
 }
 
 #[tokio::test]

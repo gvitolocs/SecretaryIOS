@@ -680,7 +680,9 @@ pub async fn calendar_context(s: &Secretary, prompt: &str, now: DateTime<Utc>, t
 /// the other state of this server (`LUCINA_DATA_DIR`, as in [`crate::config`]).
 fn person_aliases_path() -> PathBuf {
     let dir = std::env::var("LUCINA_DATA_DIR").unwrap_or_else(|_| "data".into());
-    PathBuf::from(dir).join("lucina-rs").join("person-aliases.json")
+    PathBuf::from(dir)
+        .join("lucina-rs")
+        .join("person-aliases.json")
 }
 
 /// The names the owner said are one person, read on every event question. When the question
@@ -1172,11 +1174,17 @@ mod game_tests {
     #[test]
     fn a_paused_run_is_information_not_a_routing_rule() {
         let state = json!({"running": false, "actions": 17274, "events": ["a", "b", "c"]});
-        let obs = format!("MODE: Dialog\nLOCATION: CHAMPIONS_ROOM\n{}\nSCREEN TEXT:\nx", "y".repeat(2000));
+        let obs = format!(
+            "MODE: Dialog\nLOCATION: CHAMPIONS_ROOM\n{}\nSCREEN TEXT:\nx",
+            "y".repeat(2000)
+        );
         let b = game_block(&state, &obs, false);
         assert!(b.contains("paused"));
         assert!(b.contains("CHAMPIONS_ROOM"));
-        assert!(!b.contains(GAME_IDENTITY), "no rule that pushes game actions");
+        assert!(
+            !b.contains(GAME_IDENTITY),
+            "no rule that pushes game actions"
+        );
         assert!(!b.contains(GAME_OVERRIDE));
         assert!(b.contains("do not choose game_hint, game_start or game_pause"));
         assert!(b.chars().count() < 1800, "clipped: {}", b.chars().count());
