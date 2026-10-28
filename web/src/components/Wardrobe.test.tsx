@@ -76,6 +76,33 @@ describe("Wardrobe", () => {
     expect(within(grid()).getAllByRole("button").map((b) => b.getAttribute("aria-label"))).toEqual(["Put on Chef", "Put on Maid"]);
   });
 
+  it("scrolls only the body under a fixed header, with full names on the tiles", async () => {
+    await show();
+    const dialog = screen.getByRole("dialog", { name: "Wardrobe" });
+    const body = dialog.querySelector(".wardrobe-body")!;
+    expect(body).toContainElement(grid());
+    expect(body).not.toContainElement(screen.getByRole("heading", { name: "Wardrobe" }));
+    expect(screen.getByRole("button", { name: "Put on Maid" })).toHaveAttribute("title", "Maid");
+  });
+
+  it("fades the edge of the chip row that has more chips behind it", async () => {
+    await show();
+    const chips = screen.getByRole("radiogroup", { name: "Categories" });
+    const size = (scrollLeft: number) => {
+      Object.defineProperty(chips, "scrollWidth", { configurable: true, value: 500 });
+      Object.defineProperty(chips, "clientWidth", { configurable: true, value: 300 });
+      chips.scrollLeft = scrollLeft;
+      fireEvent.scroll(chips);
+    };
+    size(0);
+    expect(chips).toHaveClass("wchips--more-end");
+    expect(chips).not.toHaveClass("wchips--more-start");
+    size(100);
+    expect(chips).toHaveClass("wchips--more-start", "wchips--more-end");
+    size(200);
+    expect(chips).not.toHaveClass("wchips--more-end");
+  });
+
   it("styles her hair from the Hair tab, her own hair first", async () => {
     const calls = await show();
     fireEvent.click(tab("Hair"));
