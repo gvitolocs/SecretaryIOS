@@ -411,6 +411,18 @@ pub async fn run(st: &AppState, plan: &Value, job_id: &str) -> Result<(String, S
         if !cfg.zcode {
             return Err(anyhow::anyhow!("turned off (LUCINA_VIDEO_ZCODE=false)"));
         }
+        if let Some(z) = reuse::<Value>(&folder.join("transcript.zcode.json")) {
+            let transcript: Vec<Seg> =
+                serde_json::from_value(z["segments"].clone()).unwrap_or_default();
+            let result: ZcodeResult =
+                reuse(&folder.join("zcode").join("zcode-result.json")).unwrap_or_default();
+            if !transcript.is_empty() || !result.visual.is_empty() {
+                return Ok(ZcodeResult {
+                    transcript,
+                    ..result
+                });
+            }
+        }
         zcode::run(cfg, &meta, &files.video, &work, &folder).await
     };
     let whisper = async {
