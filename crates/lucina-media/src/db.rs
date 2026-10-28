@@ -256,6 +256,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         }
     }
     crate::edits::init_schema(conn)?;
+    crate::browse::migrate(conn)?;
     Ok(())
 }
 
@@ -591,6 +592,10 @@ pub struct ListQuery {
     pub doc_type: Option<String>,
     pub favorite: Option<bool>,
     pub trashed: Option<bool>,
+    /// `true`: only the archived (hidden from the main Gallery, not deleted); otherwise the archived are left out.
+    pub archived: Option<bool>,
+    /// `west,south,east,north` in degrees: only items with a position inside it (`west > east` crosses the date line).
+    pub bbox: Option<String>,
     pub cursor: Option<String>,
     pub limit: Option<u32>,
 }
@@ -676,7 +681,7 @@ fn add(
 }
 
 /// The WHERE conditions of a listing (on `items i`) and their arguments, without the cursor.
-fn list_filters(q: &ListQuery) -> (Vec<String>, Vec<rusqlite::types::Value>) {
+pub(crate) fn list_filters(q: &ListQuery) -> (Vec<String>, Vec<rusqlite::types::Value>) {
     let mut wh: Vec<String> = Vec::new();
     let mut args: Vec<rusqlite::types::Value> = Vec::new();
     if q.trashed.unwrap_or(false) {
@@ -684,6 +689,28 @@ fn list_filters(q: &ListQuery) -> (Vec<String>, Vec<rusqlite::types::Value>) {
     } else {
         wh.push("i.trashed_at IS NULL".into());
         wh.push("i.hidden = 0".into());
+        wh.push(
+            if q.archived == Some(true) {
+                "i.archived = 1"
+            } else {
+                "i.archived = 0"
+            }
+            .into(),
+        );
+    }
+    if let Some((w, s, e, n)) = q.bbox.as_deref().and_then(crate::browse::parse_bbox) {
+        add(&mut wh, &mut args, "i.lat >= ?", s.into());
+        add(&mut wh, &mut args, "i.lat <= ?", n.into());
+        if w <= e {
+            add(&mut wh, &mut args, "i.lon >= ?", w.into());
+            add(&mut wh, &mut args, "i.lon <= ?", e.into());
+        } else {
+            args.push(w.into());
+            let a = args.len();
+            args.push(e.into());
+            let b = args.len();
+            wh.push(format!("(i.lon >= ?{a} OR i.lon <= ?{b})"));
+        }
     }
     let kinds = parse_kinds(q.kind.as_deref());
     if !kinds.is_empty() {
@@ -962,9 +989,9 @@ pub fn list_devices(c: &Connection) -> rusqlite::Result<Vec<DeviceOut>> {
     let mut st = c.prepare(
         "WITH ids AS (SELECT id FROM devices UNION SELECT DISTINCT device FROM items WHERE device IS NOT NULL) \
          SELECT ids.id, d.name, d.kind, d.created_at, d.last_seen_at, \
-           (SELECT COUNT(*) FROM items i WHERE i.device = ids.id AND i.kind = 'photo' AND i.trashed_at IS NULL AND i.hidden = 0), \
-           (SELECT COUNT(*) FROM items i WHERE i.device = ids.id AND i.kind = 'video' AND i.trashed_at IS NULL AND i.hidden = 0), \
-           (SELECT MAX(i.taken_at) FROM items i WHERE i.device = ids.id AND i.trashed_at IS NULL AND i.hidden = 0) \
+           (SELECT COUNT(*) FROM items i WHERE i.device = ids.id AND i.kind = 'photo' AND i.trashed_at IS NULL AND i.hidden = 0 AND i.archived = 0), \
+           (SELECT COUNT(*) FROM items i WHERE i.device = ids.id AND i.kind = 'video' AND i.trashed_at IS NULL AND i.hidden = 0 AND i.archived = 0), \
+           (SELECT MAX(i.taken_at) FROM items i WHERE i.device = ids.id AND i.trashed_at IS NULL AND i.hidden = 0 AND i.archived = 0) \
          FROM ids LEFT JOIN devices d ON d.id = ids.id",
     )?;
     let rows = st.query_map([], |r| {

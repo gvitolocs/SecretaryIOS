@@ -53,7 +53,7 @@ impl<E: std::fmt::Display> From<E> for ApiError {
     }
 }
 
-fn bad(msg: impl Into<String>) -> ApiError {
+pub(crate) fn bad(msg: impl Into<String>) -> ApiError {
     ApiError(StatusCode::BAD_REQUEST, msg.into())
 }
 fn not_found() -> ApiError {
@@ -119,6 +119,7 @@ pub fn router(lib: Library, extra: Option<Router>) -> Router {
             post(ack_deletions),
         )
         .route("/v1/media/sources", get(list_sources))
+        .merge(crate::browse::routes())
         .route("/v1/media/events", get(events))
         .merge(uploads)
         .merge(crate::edits::routes())
@@ -315,6 +316,12 @@ async fn list_items(
         .is_some_and(|o| gallery::Origin::parse(o).is_none())
     {
         return Err(bad("origin must be all, device:<id>, chat or lucina"));
+    }
+    if q.bbox
+        .as_deref()
+        .is_some_and(|b| crate::browse::parse_bbox(b).is_none())
+    {
+        return Err(bad("bbox must be west,south,east,north in degrees"));
     }
     if q.doc_type
         .as_deref()
@@ -1932,6 +1939,12 @@ async fn list_months(
         .is_some_and(|o| gallery::Origin::parse(o).is_none())
     {
         return Err(bad("origin must be all, device:<id>, chat or lucina"));
+    }
+    if q.bbox
+        .as_deref()
+        .is_some_and(|b| crate::browse::parse_bbox(b).is_none())
+    {
+        return Err(bad("bbox must be west,south,east,north in degrees"));
     }
     let months = lib.db.call(move |c| db::list_months(c, &q)).await?;
     Ok(Json(json!({

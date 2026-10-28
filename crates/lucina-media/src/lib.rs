@@ -14,6 +14,7 @@
 
 pub mod archive;
 pub mod batch;
+pub mod browse;
 pub mod config;
 pub mod db;
 pub mod deletions;
