@@ -12,6 +12,12 @@
 //! - **Tools:** before the agent loop's first model call, Jev guesses the first
 //!   tool the request needs (or none), and a confident guess becomes a short
 //!   hint for the model. It never removes tools: a wrong guess costs nothing.
+//! - **JEV-first** (`LUCINA_JEV_FIRST`): from [`JEV_FIRST_MIN`] up (per intent,
+//!   `LUCINA_JEV_FIRST_INTENT_MIN`) Jev routes the turn before the tier-0 rules,
+//!   except a deterministic route ([`deterministic_intent`]). Each decision is
+//!   one `event="jev_first"` log line. `POST /api/secretary/jev/route` replays a
+//!   text through the same path. The weekly check is `lucina-rs jev drift-report`
+//!   (`docs/lucina-rust/JEV-ROUTING.md`); it only suggests new thresholds.
 
 use std::sync::Arc;
 
@@ -237,8 +243,13 @@ pub fn jev_first_min_from(intent: &str, global: Option<&str>, per_intent: Option
 /// Tier-0 routes that parse their own arguments and that Jev has no option for (her computer,
 /// groceries, the log inspector, study focus): they keep precedence over JEV-first.
 pub fn deterministic_rule(c: &lucina_intent::tier0::Classification) -> bool {
-    c.intent.starts_with("grocery.")
-        || matches!(c.intent.as_str(), "computer_task" | "lucina_log_inspect" | "study_focus_reminders")
+    deterministic_intent(&c.intent)
+}
+
+/// [`deterministic_rule`] by the rule's intent name (the drift report's replay).
+pub fn deterministic_intent(intent: &str) -> bool {
+    intent.starts_with("grocery.")
+        || matches!(intent, "computer_task" | "lucina_log_inspect" | "study_focus_reminders")
 }
 
 /// Does JEV-first route this turn? `Err` names why not (for the drift log).
