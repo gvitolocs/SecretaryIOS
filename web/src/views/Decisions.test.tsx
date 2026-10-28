@@ -27,6 +27,7 @@ function detailApi(opts: { failSend?: boolean; failRefresh?: boolean } = {}) {
   let answered = false;
   let reads = 0;
   const calls = stubFetch(c => {
+    if (c.method === "GET" && c.url.includes("?")) return { body: { items: [] } }; // the pending list the nav badge reloads
     if (c.method === "GET") {
       reads++;
       if (answered && opts.failRefresh) return { status: 500, body: {} };
@@ -61,6 +62,34 @@ describe("Decisions", () => {
     expect(earlier.open).toBe(false);
     expect(earlier.querySelectorAll("li")).toHaveLength(20);
     expect(screen.queryByText("Old expired")).toBeNull();
+  });
+
+  it("shows what loaded when a history list fails (the server once answered 400 to status=withdrawn)", async () => {
+    stubFetch(c => {
+      const status = new URL(c.url, "http://localhost").searchParams.get("status");
+      if (status === "withdrawn") return { status: 400, body: { error: { code: "bad_request", message: "no" } } };
+      return { body: { items: status === "pending" ? [decision()] : status === "decided" ? [decision({ decision_id: "dc-aaaaaaaaaaaa", status: "decided", question: "Was shipped" })] : [] } };
+    });
+    const { container } = renderAt("/decisions", routes);
+    await screen.findByRole("heading", { name: "Ship today?" });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(container.querySelectorAll('a[href^="/decisions/"]')).toHaveLength(2);
+    expect(screen.getByText("Earlier", { selector: "summary" })).toBeInTheDocument();
+  });
+
+  it("shows the error only when the pending list itself fails, and retries", async () => {
+    let fail = true;
+    stubFetch(c => {
+      const status = new URL(c.url, "http://localhost").searchParams.get("status");
+      if (status === "pending" && fail) return { status: 500, body: {} };
+      return { body: { items: status === "pending" ? [decision()] : [] } };
+    });
+    renderAt("/decisions", routes);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't load decisions.");
+    fail = false;
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await screen.findByRole("heading", { name: "Ship today?" });
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("offers Decisions alongside Approvals in Plugins", async () => {

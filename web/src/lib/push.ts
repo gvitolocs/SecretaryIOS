@@ -8,8 +8,8 @@
 
 import { notificationsApi } from "../api/notifications";
 
-export type PushSupport = "supported" | "needs-install" | "unsupported";
-export type PushState = "on" | "off" | "denied" | "needs-install" | "unsupported";
+export type PushSupport = "supported" | "needs-install" | "unsupported" | "desktop-app";
+export type PushState = "on" | "off" | "denied" | "needs-install" | "unsupported" | "desktop-app";
 
 export const SW_URL = "/sw.js";
 
@@ -33,7 +33,17 @@ export function isStandalone(): boolean {
   }
 }
 
+/**
+ * Secretary Code (the Mac app) runs this page in Electron, which has no push service: Web Push registration
+ * fails there ("push service not available"). The app shows Lucina's notifications as Mac notifications itself.
+ */
+export function isDesktopApp(n: Navigator | null = nav()): boolean {
+  if (typeof window !== "undefined" && window.secretaryShell) return true;
+  return /\bElectron\//.test(n?.userAgent ?? "");
+}
+
 export function pushSupport(): PushSupport {
+  if (isDesktopApp()) return "desktop-app";
   const n = nav();
   const hasSw = !!n && "serviceWorker" in n;
   const hasPush = typeof window !== "undefined" && "PushManager" in window && "Notification" in window;

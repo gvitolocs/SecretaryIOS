@@ -5,6 +5,7 @@ import { DecisionSummary } from "../components/DecisionSummary";
 import { Card, EmptyState, ErrorState, ListRow, LoadingState, Page, PageGrid, PageHeader, RowList, useWide } from "../components/page";
 import { relativeTime } from "../components/NotificationBell";
 import { t } from "../i18n";
+import { setPendingDecisions } from "../state/decisions";
 
 export default function Decisions() {
   const { wide, track } = useWide();
@@ -15,18 +16,20 @@ export default function Decisions() {
   async function load() {
     setLoading(true);
     setError(false);
-    try {
-      // Fetch pending separately so a busy settled history cannot hide unanswered questions.
-      const [waiting, ...settled] = await Promise.all([
-        decisionsApi.list("pending"),
-        decisionsApi.list("decided", 20),
-        decisionsApi.list("expired", 20),
-        decisionsApi.list("withdrawn", 20),
-      ]);
-      setPending(waiting);
-      setEarlier(settled.flat().sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at)).slice(0, 20));
-    } catch { setError(true); }
-    finally { setLoading(false); }
+    // Fetch pending separately so a busy settled history cannot hide unanswered questions, and load the lists
+    // independently: one failing history list (or an older server) must not hide the rest.
+    const [waiting, ...settled] = await Promise.allSettled([
+      decisionsApi.list("pending"),
+      decisionsApi.list("decided", 20),
+      decisionsApi.list("expired", 20),
+      decisionsApi.list("withdrawn", 20),
+    ]);
+    if (waiting.status === "fulfilled") {
+      setPending(waiting.value);
+      setPendingDecisions(waiting.value);
+    } else setError(true);
+    setEarlier(settled.flatMap(r => r.status === "fulfilled" ? r.value : []).sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at)).slice(0, 20));
+    setLoading(false);
   }
   onMount(() => void load());
   const rows = (items: Decision[]) => <ul class="apv-list"><For each={items}>{item => <li><A class="apv-card dc-link" href={`/decisions/${item.decision_id}`}><DecisionSummary item={item} /></A></li>}</For></ul>;

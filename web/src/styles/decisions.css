@@ -14,3 +14,48 @@
 .pg .apv-summary { font-size: 16px; font-weight: 600; color: var(--pg-text); }
 .pg .apv-asking, .pg .apv-expiry { color: var(--pg-muted); font-size: 13px; }
 .pg .apv-badge { background: var(--pg-fill); color: var(--pg-muted); border-color: var(--pg-border); font-size: 12px; font-weight: 600; }
+
+/* The navigation entry's count: a red dot on the tab (hidden at 0), like the Plugins cards. */
+.tab-badge {
+  position: absolute;
+  top: 2px;
+  left: calc(50% + 6px);
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  box-sizing: border-box;
+  border-radius: 999px;
+  background: #ff3b30;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  pointer-events: none;
+}
+
+/* "Lucina needs your decision": above the phone's tab bar, bottom-centre elsewhere. */
+.dc-banner {
+  position: fixed;
+  z-index: 30;
+  left: max(12px, var(--safe-left));
+  right: max(12px, var(--safe-right));
+  bottom: calc(var(--dock-h) + var(--safe-bottom) + 24px);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 10px 12px;
+  border-radius: var(--radius-lg);
+  background: var(--glass-strong);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+  color: var(--text);
+}
+.dc-banner-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.dc-banner-text small { display: block; color: var(--text-muted); }
+@media (min-width: 768px) {
+  .dc-banner { bottom: 16px; }
+}
+:root[data-shell="desktop"] .dc-banner { bottom: 16px; }

@@ -6,6 +6,7 @@ import { CHAT_MAX_CHARS } from "../api/secretary";
 import { DecisionSummary } from "../components/DecisionSummary";
 import { Card, EmptyState, ErrorState, LoadingState, Page, PageGrid, PageHeader, useWide } from "../components/page";
 import { t, type MessageKey } from "../i18n";
+import { refreshDecisions } from "../state/decisions";
 
 const TIERS: Record<number, MessageKey> = { 1: "decisions.tier1", 2: "decisions.tier2", 3: "decisions.tier3", 4: "decisions.tier4" };
 
@@ -60,6 +61,7 @@ export default function DecisionDetail() {
     if (generation !== version) return;
     // A successful send must never be repeated because the following GET failed.
     setSent(true);
+    void refreshDecisions();
     try {
       const updated = await decisionsApi.get(current.decision_id);
       if (generation !== version) return;
