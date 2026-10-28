@@ -1,0 +1,49 @@
+[package]
+name = "secretary-pixiv"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "The owner's Pixiv plugin: HTTP around the pixiv-rust core (ranking, search, illust pages), signed image URLs, a capped disk cache, local bookmarks and save-to-gallery"
+
+# Standalone: the pixiv core exists only on nezopt (absolute path below), so this crate is NOT
+# a member of the repository workspace and carries its own Cargo.lock.
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "secretary-pixiv"
+path = "src/main.rs"
+
+[dependencies]
+pixiv = { path = "/home/nez/Projects/ReverseEngineering/pixiv-rust" }
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
+base64 = "0.22"
+url = "2"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2"
+anyhow = "1"
+subtle = "2"
+getrandom = "0.3"
+chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+tempfile = "3"
+wiremock = "0.6"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
