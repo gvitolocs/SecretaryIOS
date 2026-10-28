@@ -17,6 +17,9 @@
 //! photo whose item changed after it was embedded (an edit) is embedded again. Nothing in the
 //! library is changed: the vectors go to their own tables (`lucina_media_ml::store`).
 //!
+//! The same thread also keeps the perceptual hashes of new photos current (`dedup_hash.rs`, first
+//! in each round) and, when the owner turned it on, scans faces (`faces.rs`, last).
+//!
 //! The same thread runs the face scan (`faces::step`) whenever there is nothing left to embed, so
 //! one background worker, with these pauses, does all the machine learning.
 
@@ -301,6 +304,7 @@ fn embed_loop(
     nice_this_thread(19);
     let mut paused = false;
     let mut last_prune = Instant::now() - Duration::from_secs(3600);
+    let mut hash_skip = std::collections::HashSet::new();
     loop {
         if let Some(s) = &siglip {
             s.release_idle(Duration::from_secs(600), false);
@@ -314,6 +318,15 @@ fn embed_loop(
         if paused || busy {
             std::thread::sleep(Duration::from_secs(60));
             continue;
+        }
+        // Perceptual hashes first: milliseconds each, and the duplicate review waits for them.
+        match crate::dedup_hash::hash_pending(&lib, &mut hash_skip) {
+            Ok(0) => {}
+            Ok(_) => {
+                std::thread::sleep(Duration::from_millis(100));
+                continue;
+            }
+            Err(e) => tracing::warn!(error = %e, "perceptual hash step failed"),
         }
         match embed_pending(&lib, &smart) {
             Ok(0) => {

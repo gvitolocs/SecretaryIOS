@@ -23,6 +23,7 @@ pub mod config;
 pub mod db;
 pub mod dedup;
 pub mod dedup_cli;
+pub mod dedup_hash;
 pub mod dedup_merge;
 pub mod dedup_review;
 pub mod deletions;
