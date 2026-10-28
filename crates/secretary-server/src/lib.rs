@@ -5,6 +5,7 @@
 //! `secretary-core`), forwarding with the server-held Lucina token, error
 //! mapping and static file serving. It owns no product logic.
 
+pub mod agents;
 pub mod assets;
 pub mod auth;
 pub mod avatar;
@@ -100,6 +101,8 @@ pub const WEB_CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 's
 
 pub struct Inner {
     pub lucina: Option<LucinaClient>,
+    /// `/v1/agents/*` (`None` without a Lucina token).
+    pub agents: Option<agents::Agents>,
     pub devices: DeviceAuth,
     pub sessions: SessionAuth,
     pub limiter: RateLimiter,
@@ -172,8 +175,13 @@ impl AppState {
             Some(u) => Some(upstream::Upstream::new(u, cfg.upstream_timeout)?),
             None => None,
         };
+        let agents = match &cfg.lucina_token {
+            Some(t) => Some(agents::Agents::new(&cfg.lucina_url, t, cfg.agents.clone())?),
+            None => None,
+        };
         Ok(Self(Arc::new(Inner {
             lucina,
+            agents,
             devices: DeviceAuth::new(DeviceStore::new(&cfg.data_dir)),
             sessions: SessionAuth::new(SessionStore::new(&cfg.data_dir)),
             limiter: RateLimiter::new(cfg.rate_limit_per_minute),
@@ -323,6 +331,7 @@ pub fn app(state: AppState) -> Router {
         .merge(notes::routes(state.clone()))
         .merge(library::routes(state.clone()))
         .merge(models::routes(state.clone()))
+        .merge(agents::routes())
         .route_layer(SetResponseHeaderLayer::if_not_present(
             header::CACHE_CONTROL,
             HeaderValue::from_static("no-store"),
