@@ -7,7 +7,7 @@ import WidgetKit
 /// in the app at their Home Screen and Lock Screen sizes from the cached sections, so a device
 /// screenshot shows them without placing them by hand. Run `-SecretaryWidgetSelfTest YES` first
 /// to fill the cache. Pages: 0 Ask + appointment, 1 shopping, 2 weight + training,
-/// 3 tasks + countdown, 4 Pokémon, 5 films + memo, 6 Lock Screen, 7 Lock Screen while locked (privacy redaction).
+/// 3 tasks + countdown, 4 Pokémon, 5 films + memo + server, 6 Lock Screen, 7 Lock Screen while locked (privacy redaction).
 struct WidgetGallery: View {
     let page: Int
 
@@ -110,6 +110,12 @@ struct WidgetGallery: View {
                 home(Self.small) { TasksWidgetView(familyOverride: .systemSmall,
                                                    entry: SectionEntry(date: now, section: WidgetStore.read(TasksSection.self), state: .signedOut)) }
             }
+            let server = SectionEntry(date: now, section: WidgetStore.read(ServerSection.self), state: .ok)
+            HStack(spacing: 22) {
+                home(Self.small) { ServerWidgetView(familyOverride: .systemSmall, entry: server) }
+                home(Self.small) { ServerWidgetView(familyOverride: .systemSmall, entry: SectionEntry<ServerSection>(date: now, section: nil, state: .offline)) }
+            }
+            home(Self.medium) { ServerWidgetView(familyOverride: .systemMedium, entry: server) }
         default:
             lockScreen(redacted: page >= 7)
         }
@@ -126,6 +132,7 @@ struct WidgetGallery: View {
         let pokemon = PokemonWidget.Entry(date: now, section: WidgetStore.read(PokemonSection.self), state: .ok)
         let films = FilmsWidget.Entry(date: now, section: WidgetStore.read(FilmsSection.self), state: .ok)
         let countdown = Self.countdown(now)
+        let server = SectionEntry(date: now, section: WidgetStore.read(ServerSection.self), state: .ok)
         Group {
             lock(Self.inline) { AppointmentWidgetView(familyOverride: .accessoryInline, entry: next) }
             lock(Self.inline) { WeightWidgetView(familyOverride: .accessoryInline, entry: weight) }
@@ -157,7 +164,10 @@ struct WidgetGallery: View {
                 lock(Self.rectangular) { FilmsWidgetView(familyOverride: .accessoryRectangular, entry: films) }
             }
             lock(Self.inline) { CountdownWidgetView(familyOverride: .accessoryInline, entry: countdown) }
-            lock(Self.rectangular) { CountdownWidgetView(familyOverride: .accessoryRectangular, entry: countdown) }
+            HStack(spacing: 10) {
+                lock(Self.rectangular) { CountdownWidgetView(familyOverride: .accessoryRectangular, entry: countdown) }
+                lock(Self.rectangular) { ServerWidgetView(familyOverride: .accessoryRectangular, entry: server) }
+            }
         }
         .redacted(reason: redacted ? .privacy : [])
     }

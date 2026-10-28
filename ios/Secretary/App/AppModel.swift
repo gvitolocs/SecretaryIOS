@@ -49,6 +49,8 @@ final class AppModel {
     var showTasks = false
     /// Lucina Agents (the coding agents on nezopt), a plugin pushed on the Plugins tab.
     var showAgents = false
+    /// The Server plugin: hosts, what needs attention, services, incidents and deploys (/v1/system/overview).
+    var showServer = false
     /// Scan a QR sign-in code and approve it (Features/Login/QrSignIn.swift), a sheet from Plugins.
     var showQrSignIn = false
     /// The Countdown plugin (pinned events for the countdown widget, `/countdowns`).
@@ -104,6 +106,8 @@ final class AppModel {
     let tasks: TasksStore
     /// Lucina Agents: the list and the live stream (/v1/agents).
     let agents: AgentsStore
+    /// The homelab's status (/v1/system/overview), for the Server plugin and its widget.
+    let server: ServerStore
     let health: HealthStore
     let lucina: LucinaStageController
     /// Lucina's outfit (GET/PUT /v1/avatar), applied to the stage.
@@ -174,6 +178,7 @@ final class AppModel {
         notes = PerfLog.measure("notes") { NotesStore(api: { NotesAPI(client: client) }) }
         tasks = PerfLog.measure("tasks") { TasksStore(api: { TasksAPI(client: client) }) }
         agents = PerfLog.measure("agents") { AgentsStore(api: { client.accessKey?.isEmpty == false ? AgentsAPI(client: client) : nil }) }
+        server = ServerStore(api: { client.accessKey?.isEmpty == false ? ServerAPI(client: client) : nil })
         health = HealthStore(api: { SecretaryAPI(client: client) })
         // Cheap: no web view, model or voice engine until the Lucina tab first opens.
         lucina = PerfLog.measure("lucina") { LucinaStageController(client: client, chat: chat) }
@@ -276,6 +281,10 @@ final class AppModel {
             selectedTab = .plugins
             showAgents = true
         }
+        if launch.openServer {
+            selectedTab = .plugins
+            showServer = true
+        }
         if launch.openMemos {
             selectedTab = .plugins
             showMemos = true
@@ -326,6 +335,7 @@ final class AppModel {
         approvals.onTransportError = onError
         approvals.onPendingChanged = { items in AppModel.publishApprovals(items) }
         agents.onTransportError = onError
+        server.onTransportError = onError
         shopping.onTransportError = onError
         shopping.onTransportSuccess = onSuccess
         shoppingV2.onTransportError = onError
@@ -448,6 +458,8 @@ final class AppModel {
         approvals.reset()
         agents.reset()
         showAgents = false
+        server.reset()
+        showServer = false
         memos.reset()
         showMemos = false
         lucinaNotice = nil
@@ -488,6 +500,13 @@ final class AppModel {
     /// A decision ("" or nil: the pending list).
     func openDecision(_ id: String?) {
         decisions.open(id?.isEmpty == true ? nil : id)
+    }
+
+    /// The Server plugin, at a tab or with an item, component or host open (pushes, widget, routes).
+    func openServer(_ link: ServerLink) {
+        selectedTab = .plugins
+        showServer = true
+        server.open(link)
     }
 
     func openMemo(_ id: String?) {
@@ -623,6 +642,8 @@ struct LaunchOptions {
     var openGallery = false
     /// `-SecretaryInitialTab memos`: start on the voice memos.
     var openMemos = false
+    /// `-SecretaryInitialTab server`: start on the Server plugin.
+    var openServer = false
     /// `-SecretaryInitialTab pokemon`: start on Lucina's Pokémon game.
     var openPokemon = false
     /// `-SecretaryInitialTab approval | approval-plain | approval-done | approval-already`: the approval prompt with fixture data.
@@ -639,6 +660,7 @@ struct LaunchOptions {
         openMedia = ["media", "films"].contains(defaults.string(forKey: "SecretaryInitialTab") ?? "")
         openGallery = defaults.string(forKey: "SecretaryInitialTab") == "gallery"
         openMemos = defaults.string(forKey: "SecretaryInitialTab") == "memos"
+        openServer = defaults.string(forKey: "SecretaryInitialTab") == "server"
         openPokemon = defaults.string(forKey: "SecretaryInitialTab") == "pokemon"
         approvalFixture = defaults.string(forKey: "SecretaryInitialTab").flatMap { $0.hasPrefix("approval") ? $0 : nil }
         #endif

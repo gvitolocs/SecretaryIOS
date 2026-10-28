@@ -48,6 +48,9 @@ enum WidgetSelfTest {
         let screen = (try? await fetcher.pokemonScreen()) != nil
         note("pokemonScreen ok=\(screen)")
         passed = await check("films", { try await fetcher.films() }) { "films=\($0.films.count) posters=\($0.films.filter { $0.posterPath != nil }.count)" } && passed
+        passed = await check("server", { try await fetcher.server() }) {
+            "overall=\($0.overall) attention=\($0.attentionCount) titles=\($0.titles.count)"
+        } && passed
         if let film = WidgetStore.read(FilmsSection.self)?.films.first {
             note("poster ok=\(await fetcher.poster(film) != nil)")
         }
@@ -104,6 +107,8 @@ enum WidgetSelfTest {
         app.showPokemon = false
         expect("tasks") { app.selectedTab == .plugins && app.showTasks }
         app.showTasks = false
+        expect("server-health") { app.selectedTab == .plugins && app.showServer }
+        app.showServer = false
         expect("films/play/selftest") { app.showMedia && app.openFilmID == "selftest" }
         app.showMedia = false
         app.openFilmID = nil

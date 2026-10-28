@@ -12,6 +12,8 @@ import Foundation
 //   map/place?title=&address=&when=&end=&eventId=   the in-app place map for an event
 //   films/play/<id>   play a film where it stopped
 //   countdowns        the Countdown plugin (pinned events of the countdown widget)
+//   server-health     the Server plugin
+//   chat/compose?text=<encoded>   compose a message with context from a plugin
 enum WidgetRoute {
     static let scheme = "secretary"
 

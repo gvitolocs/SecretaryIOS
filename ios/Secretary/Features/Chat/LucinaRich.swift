@@ -539,8 +539,18 @@ struct RichActionsView: View {
 extension AppModel {
     /// In-app navigation for a `route` button (web paths mapped to tabs).
     func open(route path: String) {
+        if let text = ChatComposeRoute.text(path) {
+            selectedTab = .chat
+            chat.requestPrefill(text)
+            return
+        }
         if let place = Place.fromRoute(path) {
             showPlace(place, navigate: PlaceLinks.navigates(path))
+            return
+        }
+        // `/server-health…` and the catalog's outage push `/agents/map/<component>`.
+        if let link = ServerLink.parse(path) {
+            openServer(link)
             return
         }
         let first = path.split(separator: "/").first.map(String.init) ?? ""

@@ -17,6 +17,7 @@ struct SecretaryWidgets: WidgetBundle {
         MemoWidget()
         PokemonWidget()
         FilmsWidget()
+        ServerWidget()
         AskLucinaControl()
         AddToShoppingControl()
         MemoRecordControl()

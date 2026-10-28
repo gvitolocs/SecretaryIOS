@@ -18,6 +18,7 @@ enum WidgetKind: String, CaseIterable, Sendable {
     case films = "tech.getsecretary.widget.films"
     case countdown = "tech.getsecretary.widget.countdown"
     case approvals = "tech.getsecretary.widget.approvals"
+    case server = "tech.getsecretary.widget.server"
 }
 
 protocol WidgetSection: Codable, Equatable, Sendable {
@@ -217,4 +218,17 @@ struct ApprovalsSection: WidgetSection {
 
     /// Without the ones that ran out (a widget entry outlives its fetch).
     func live(at now: Date = Date()) -> [Item] { items.filter { ($0.expiresAt ?? .distantFuture) > now } }
+}
+
+/// The homelab's status (`GET /v1/system/overview`): worst state, how many things need attention, the first titles.
+struct ServerSection: WidgetSection {
+    static let key = "server"
+    var fetchedAt: Date
+    /// `ok`, `warn`, `crit` (or `unknown`).
+    var overall: String
+    var attentionCount: Int
+    /// The first attention items, worst first.
+    var titles: [String]
+    /// When the server built the overview.
+    var generatedAt: Date?
 }
