@@ -2504,6 +2504,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "lucina-approvals"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "clap",
+ "libc",
+ "lucina-approvals",
+ "reqwest 0.12.28",
+ "ring",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "lucina-computer-use"
 version = "0.1.0"
 dependencies = [
@@ -2828,6 +2849,7 @@ dependencies = [
  "hyper-util",
  "libc",
  "lopdf",
+ "lucina-approvals",
  "lucina-computer-use",
  "lucina-deals",
  "lucina-delegate",
@@ -2919,6 +2941,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "jsonschema",
+ "lucina-approvals",
  "lucina-computer-use",
  "lucina-delegate",
  "lucina-discord",

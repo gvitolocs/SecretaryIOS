@@ -236,6 +236,25 @@ impl AppState {
         env.secretary_url = cfg.secretary_url.clone();
         env.secretary_service_token_file = cfg.secretary_service_token_file.clone();
         env.secrets = secret_store.clone();
+        // Instagram / Pixiv plugin services (loopback; gateway secrets are read per call).
+        {
+            let (c, p) = (&cfg.plugins, &mut env.plugins);
+            if let Some(v) = &c.instagram_url {
+                p.instagram.url = v.clone();
+            }
+            if let Some(v) = &c.instagram_secret_file {
+                p.instagram.secret_file = v.clone();
+            }
+            if let Some(v) = &c.pixiv_url {
+                p.pixiv.url = v.clone();
+            }
+            if let Some(v) = &c.pixiv_secret_file {
+                p.pixiv.secret_file = v.clone();
+            }
+            if let Some(v) = &c.public_url {
+                p.public_url = v.trim_end_matches('/').to_owned();
+            }
+        }
         // Voice memos (lucina-memo on this host): on when its service token is readable.
         let memo_token = std::env::var("LUCINA_MEMO_SERVICE_TOKEN_FILE")
             .ok()
@@ -288,6 +307,18 @@ impl AppState {
                 }
             }
         }
+        // Owner approvals: on when secretary-server, the service token and the pinned grant key are all there.
+        let approvals = match lucina_approvals::Approvals::new(cfg.approvals.clone()) {
+            Ok(a) => {
+                tracing::info!("owner approvals: ready (secrets guard for MCP, root_exec)");
+                Some(Arc::new(a))
+            }
+            Err(e) => {
+                tracing::info!(reason = %e, "owner approvals: off");
+                None
+            }
+        };
+        env.approvals = approvals.clone();
         let env_http = env.http.clone();
         let jobs = Arc::new(
             JobStore::new(&cfg.jobs_path).with_node_file(Some(cfg.node_jobs_path.clone())),
@@ -337,6 +368,12 @@ impl AppState {
             registry
                 .register(Arc::new(lucina_tools::tools::computer::ComputerTool))
                 .expect("computer tool registers");
+        }
+        // Root commands after the owner's approval of the exact commands (crate lucina_approvals).
+        if approvals.is_some() && cfg.tools.allows("root_exec") {
+            registry
+                .register(Arc::new(lucina_tools::tools::root_exec::RootExecTool))
+                .expect("root_exec tool registers");
         }
         let meshy_registry = meshy.as_ref().map(|svc| {
             let tool = Arc::new(lucina_tools::tools::meshy::MeshyTool::new(svc.clone()));

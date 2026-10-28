@@ -28,6 +28,17 @@ pub enum WriterKind {
     Local,
 }
 
+/// `LUCINA_INSTAGRAM_URL`, `LUCINA_INSTAGRAM_GATEWAY_SECRET_FILE`, `LUCINA_PIXIV_URL`,
+/// `LUCINA_PIXIV_GATEWAY_SECRET_FILE`, `LUCINA_PUBLIC_URL` (the owner-only plugin tools).
+#[derive(Debug, Clone, Default)]
+pub struct PluginsConfig {
+    pub instagram_url: Option<String>,
+    pub instagram_secret_file: Option<PathBuf>,
+    pub pixiv_url: Option<String>,
+    pub pixiv_secret_file: Option<PathBuf>,
+    pub public_url: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct Config {
     pub share: crate::share::ShareConfig,
@@ -167,6 +178,9 @@ pub struct Config {
     pub secrets_config: Option<PathBuf>,
     /// Meshy 3D (`LUCINA_MESHY`, `MESHY_*`, `LUCINA_MESHY_*`).
     pub meshy: lucina_meshy::MeshyConfig,
+    /// Where the owner's Instagram and Pixiv plugin services are (all optional;
+    /// defaults in `lucina_tools::tools::plugins::Plugins`).
+    pub plugins: PluginsConfig,
     /// `LUCINA_DRIVE` (default false): Lucina's own Google Drive, read-only.
     pub drive_enabled: bool,
     /// `LUCINA_GOOGLE_CLIENT_FILE` (default: the Lucina Gmail OAuth client).
@@ -184,6 +198,9 @@ pub struct Config {
     pub otp: crate::otp::OtpConfig,
     /// infisical-brokerd for "Add secret" (`LUCINA_BROKER_*`).
     pub broker: crate::owner_secrets::BrokerConfig,
+    /// Owner approvals (`LUCINA_APPROVAL_*`, `LUCINA_ROOT_*`, `LUCINA_SECRETARY_SERVER_URL`): the secrets
+    /// guard for MCP callers and the `root_exec` tool. Off until the pinned grant key file exists.
+    pub approvals: lucina_approvals::ApprovalsConfig,
     /// Bot Hospital daily Poko-news audit (`BOT_HOSPITAL_*`), see [`crate::bot_hospital`].
     pub hospital: crate::bot_hospital::HospitalConfig,
     /// `LUCINA_DELIVERY_ALERT_AFTER_MIN` (default 5): a delivery path down this long alerts the owner.
@@ -496,10 +513,18 @@ impl Config {
             delegate_config: get("LUCINA_DELEGATE_CONFIG").map(PathBuf::from),
             otp: crate::otp::OtpConfig::from_lookup(&get),
             broker: crate::owner_secrets::BrokerConfig::from_lookup(&get),
+            approvals: lucina_approvals::ApprovalsConfig::from_lookup(&get),
             hospital,
             delivery_alert_after: Duration::from_secs(
                 num("LUCINA_DELIVERY_ALERT_AFTER_MIN", 5).max(1) * 60,
             ),
+            plugins: PluginsConfig {
+                instagram_url: get("LUCINA_INSTAGRAM_URL"),
+                instagram_secret_file: get("LUCINA_INSTAGRAM_GATEWAY_SECRET_FILE").map(PathBuf::from),
+                pixiv_url: get("LUCINA_PIXIV_URL"),
+                pixiv_secret_file: get("LUCINA_PIXIV_GATEWAY_SECRET_FILE").map(PathBuf::from),
+                public_url: get("LUCINA_PUBLIC_URL"),
+            },
             drive_enabled: flag("LUCINA_DRIVE", false),
             google_client_file: PathBuf::from(
                 get("LUCINA_GOOGLE_CLIENT_FILE")
