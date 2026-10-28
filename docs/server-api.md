@@ -878,6 +878,7 @@ Commands (fields are required unless marked `?`; weights as above):
 | `finish_workout` | — | needs ≥ 1 completed set |
 | `cancel_workout` | — | |
 | `save_routine` | `name`, `exercise_ids?: [catalog id]`, `from_active?: bool` | |
+| `update_routine` | `routine_id`, `name?`, `exercise_ids?: [catalog id]` | Rename and/or replace the exercises in order; kept exercises keep their sets, reps and weight, new ones start at 3 × 8. At least one of the two. |
 | `delete_routine` | `routine_id` | |
 | `delete_workout` | `workout_id` | |
 | `create_exercise` | `name`, `muscle`, `equipment` (1–120 bytes each), `kind: "weight_reps"\|"reps_only"\|"timed"\|"distance_time"` | |

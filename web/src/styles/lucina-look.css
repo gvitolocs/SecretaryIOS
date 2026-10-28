@@ -48,12 +48,6 @@ samp {
   font-family: var(--lu-font-mono);
 }
 
-/* Cards: flat dark grey, no borders or glass. */
-.glass {
-  border-color: transparent;
-  box-shadow: none;
-}
-
 /* The floating tab bar: a glass capsule, the active tab in the accent on a soft pill. */
 .tabbar {
   border-radius: var(--lu-radius-pill);
@@ -242,6 +236,14 @@ samp {
 .training-page {
   display: flex;
   flex-direction: column;
+}
+
+/* On /weight the weight view scrolls itself (styles.css .weight); on /training it is one block of a longer page
+   that scrolls as a whole, so it takes its full height instead of a clipped scroll box of its own. */
+.training-page > .weight {
+  flex: none;
+  min-height: auto;
+  overflow: visible;
 }
 
 .weight-all-link {
