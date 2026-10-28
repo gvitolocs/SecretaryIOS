@@ -18,7 +18,7 @@ export type Inline =
   | { t: "strong"; children: Inline[] }
   | { t: "em"; children: Inline[] }
   | { t: "del"; children: Inline[] }
-  | { t: "link"; href: string; children: Inline[] };
+  | { t: "link"; href: string; children: Inline[]; /** An in-app route (a citation like [note:slug]): opened in the app, not in a new tab. */ route?: true };
 
 export interface ListItem {
   children: Block[];
@@ -36,6 +36,9 @@ export type Block =
   | { t: "table"; head: Inline[][]; rows: Inline[][][]; align: ("left" | "center" | "right" | null)[] };
 
 const MAX_DEPTH = 8;
+
+/** `[note:<slug>]`, a slug being `[a-z0-9-]{1,64}`. */
+const NOTE_CITE = /^\[note:([a-z0-9-]{1,64})\]/;
 
 /** `mailto:` with an address, or what `safeHref` accepts. */
 export function safeLink(raw: string): string | null {
@@ -157,6 +160,14 @@ export function parseInline(src: string, depth = 0): Inline[] {
       }
     }
     if (c === "[") {
+      // Lucina cites a note as [note:<slug>]: a link that opens it in Keep.
+      const cite = NOTE_CITE.exec(rest);
+      if (cite && src[i + cite[0].length] !== "(") {
+        flush();
+        out.push({ t: "link", href: `/keep/note/${cite[1]}`, route: true, children: [{ t: "text", text: `note:${cite[1]}` }] });
+        i += cite[0].length;
+        continue;
+      }
       const close = closeBracket(src, i);
       const target = close > 0 ? linkTarget(src, close + 1) : null;
       if (target) {

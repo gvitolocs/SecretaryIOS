@@ -26,6 +26,7 @@ const ChatsView = lazy(() => import("./views/Chats"));
 const PluginsView = lazy(() => import("./views/Plugins"));
 const LibraryView = lazy(() => import("./views/Library"));
 const NotesView = lazy(() => import("./views/Notes"));
+const KeepView = lazy(() => import("./views/Keep"));
 const LinksView = lazy(() => import("./views/Links"));
 const TasksView = lazy(() => import("./views/Tasks"));
 const DeskView = lazy(() => import("./views/Desk"));
@@ -81,6 +82,7 @@ render(
       <Route path="/links" component={LinksView} />
       <Route path="/library/:id?" component={LibraryView} />
       <Route path="/notes/:key?" component={NotesView} />
+      <Route path="/keep/*rest" component={KeepView} />
       <Route path="/tasks/:section?/:id?" component={TasksView} />
       <Route path="/desk" component={DeskView} />
       <Route path="/models/:id?" component={ModelsView} />

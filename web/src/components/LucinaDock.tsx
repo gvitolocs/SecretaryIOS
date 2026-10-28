@@ -41,8 +41,12 @@ export function LucinaDock() {
   // Inside Secretary Code she is on stage only in the chat (and All chats); plugin pages get the whole window.
   // Hidden, not unmounted: the stage and its WebGL context survive, like the float layout.
   const inShell = embedded();
+  // Keep (/keep) is a full-width page everywhere: its grid wants the whole window, like Google Keep.
   const offstage = createMemo(
-    () => inShell && !wardrobeOpen() && location.pathname !== "/" && !location.pathname.startsWith("/chats"),
+    () =>
+      !wardrobeOpen() &&
+      (location.pathname === "/keep" || location.pathname.startsWith("/keep/") ||
+        (inShell && location.pathname !== "/" && !location.pathname.startsWith("/chats"))),
   );
   const layout = createMemo<DockLayout>(() => (wide() ? "side" : onChat() ? "strip" : "float"));
   const [expanded, setExpanded] = createSignal(false);

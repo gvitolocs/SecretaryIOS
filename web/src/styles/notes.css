@@ -646,3 +646,16 @@
 .md .md-right {
   text-align: right;
 }
+
+/* A [note:<slug>] citation in Lucina's text, and the "Open note" link under a note message. */
+.md a.md-note-link,
+.msg-note-link {
+  font-weight: 600;
+}
+
+.msg-note-link {
+  display: inline-block;
+  align-self: flex-start;
+  margin: 4px 4px 0;
+  font-size: var(--fs-sm);
+}

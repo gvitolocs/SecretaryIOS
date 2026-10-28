@@ -21,6 +21,12 @@ describe("Plugins", () => {
     }
   });
 
+  it("has a Keep card that opens /keep", () => {
+    renderPlugins();
+    expect(screen.getByRole("button", { name: /^Keep/ })).toBeInTheDocument();
+    expect(PLUGINS.find((p) => p.id === "keep")?.href).toBe("/keep");
+  });
+
   it("opens Films from its card and has no Media card", () => {
     renderPlugins();
     expect(screen.getByRole("button", { name: /Films.*Film and Dansk film/ })).toBeInTheDocument();

@@ -1,3 +1,4 @@
+import { InAppLink } from "../components/InAppLink";
 import { useLocation, useNavigate } from "@solidjs/router";
 import { createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
 import { outreachFromSearch, sendOutreachFeedback } from "../api/proactive";
@@ -496,6 +497,14 @@ export function MessageItem(props: { message: ChatMessage; focused?: boolean; in
             </p>
           </Show>
         </div>
+      </Show>
+      {/* The note Lucina saved or read (meta.kind "note"): one tap into Keep. */}
+      <Show when={props.message.meta?.kind === "note" && props.message.meta.slug}>
+        {(slug) => (
+          <InAppLink href={`/keep/note/${slug()}`} class="msg-note-link">
+            {t("chat.openNote")}
+          </InAppLink>
+        )}
       </Show>
       <For each={props.message.meta?.blocks ?? []}>{(b) => <Model3dViewer block={b} />}</For>
       <Show when={props.message.job}>{(job) => <JobCard job={job()} />}</Show>

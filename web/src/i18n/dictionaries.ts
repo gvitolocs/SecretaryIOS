@@ -18,6 +18,7 @@ import { memos } from "./dict/memos";
 import { secrets } from "./dict/secrets";
 import { models } from "./dict/models";
 import { notify } from "./dict/notify";
+import { keep } from "./dict/keep";
 import { library } from "./dict/library";
 import { notes } from "./dict/notes";
 import { plugins } from "./dict/plugins";
@@ -31,6 +32,6 @@ import { gallery } from "./dict/gallery";
 import { galleryInfo } from "./dict/galleryInfo";
 import { weight } from "./dict/weight";
 
-export const dictionaries = { chats, library, common, computer, desk, shell, share, chat, login, weight, gym, wardrobe, notify, links, maps, notes, tasks, studio, models, memos, media, films, drive, plugins, serverHealth, viewer, secrets, gallery, galleryInfo };
+export const dictionaries = { chats, library, common, computer, desk, shell, share, chat, login, weight, gym, wardrobe, notify, links, maps, notes, keep, tasks, studio, models, memos, media, films, drive, plugins, serverHealth, viewer, secrets, gallery, galleryInfo };
 
 export type Dictionaries = typeof dictionaries;

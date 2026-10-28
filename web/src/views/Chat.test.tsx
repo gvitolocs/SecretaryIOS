@@ -280,6 +280,34 @@ describe("Chat", () => {
     expect(screen.queryByText("Couldn't load the conversation.")).toBeNull();
   });
 
+  describe("notes in the conversation", () => {
+    it("cites [note:<slug>] as a link into Keep and leaves the rest of the text", async () => {
+      serve(() => ({ status: 404 }), () => ({
+        body: { items: [{ id: "30", ts: at(500), channel: "web", role: "lucina", text: "Done, it is in [note:gift-ideas] with **bold** words.", meta: {} }], nextBefore: null },
+      }));
+      render(() => <ChatView />);
+      const link = await screen.findByRole("link", { name: "note:gift-ideas" });
+      expect(link).toHaveAttribute("href", "/keep/note/gift-ideas");
+      expect(link.closest(".bubble")).toHaveTextContent("Done, it is in note:gift-ideas with bold words.");
+    });
+
+    it("shows an Open note link under a message with meta.kind note and a slug", async () => {
+      serve(() => ({ status: 404 }), () => ({
+        body: {
+          items: [
+            { id: "32", ts: at(400), channel: "web", role: "lucina", text: "Saved.", meta: { kind: "note", slug: "rome-weekend" } },
+            { id: "31", ts: at(500), channel: "web", role: "lucina", text: "No slug here.", meta: { kind: "note", slug: "Not A Slug!" } },
+          ],
+          nextBefore: null,
+        },
+      }));
+      render(() => <ChatView />);
+      const link = await screen.findByRole("link", { name: "Open note" });
+      expect(link).toHaveAttribute("href", "/keep/note/rome-weekend");
+      expect(screen.getAllByRole("link", { name: "Open note" })).toHaveLength(1);
+    });
+  });
+
   describe("Lucina reached out", () => {
     const ID = "po_01K85Z3Q4X5Y6Z7A8B9C0D1E2F";
     const PROACTIVE = {

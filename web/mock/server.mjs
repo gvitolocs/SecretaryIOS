@@ -1838,7 +1838,9 @@ async function route(req, res) {
   if (writes && !(method === "POST" && path === "/v1/session") && req.headers["x-secretary-csrf"] !== "1") {
     return fail(res, 403, "csrf", "missing X-Secretary-CSRF header");
   }
-  if (["POST", "PUT", "PATCH"].includes(method) && !String(req.headers["content-type"] ?? "").startsWith("application/json")) {
+  // Keep's raw bodies (an attachment, the Takeout zip) are not JSON.
+  const rawNotesBody = method === "POST" && (/^\/v1\/notes\/[^/]+\/attachments$/.test(path) || path === "/v1/notes/import/google-keep");
+  if (["POST", "PUT", "PATCH"].includes(method) && !rawNotesBody && !String(req.headers["content-type"] ?? "").startsWith("application/json")) {
     return fail(res, 415, "unsupported_media_type", "Content-Type must be application/json");
   }
 
