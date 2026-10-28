@@ -177,7 +177,7 @@ Every other page (release b). Screenshots are named after the route in `page-sys
 | Plugins (`/plugins`) | Everything else | count · — · — | full tile grid | ![](page-system/plugins.jpg) |
 | Agents (`/agents/*`) | Coding agents | running / permission counts · Runs · Permissions · Schedules · Usage · Map · **New run** | split: runs · the agent | ![](page-system/agents.jpg) |
 | Lucina's computer (`/computer`) | Watch and take over her desktop | connection status · Desktop · Android · **Take over** | full viewer | ![](page-system/computer.jpg) |
-| Server health (`/server-health`) | Services, disks, alerts | last report, refresh icon · — · — | rail: needs attention, metrics · hosts | ![](page-system/server-health.jpg) |
+| Server (`/server-health`) | Hosts, services, incidents, deploys (owner ops dashboard, server-v2-web) | status line · Overview · Services · Incidents · Deploys, refresh icon · — | per section; host details in a sheet | ![](page-system/server-health.jpg) |
 | Secrets (`/secrets`) | Secret names by location | — · — · **Add secret** (sheet) | single | ![](page-system/secrets.jpg) |
 | Account (`/account`) | Settings of this device | device · General · Notification settings · Import · — | rail: settings cards · device, log out | ![](page-system/account.jpg) |
 | Notifications (`/notifications`) | What Lucina told you | unread count, Mark all read, settings icon · — · — | single: one card per day | ![](page-system/notifications.jpg) |
