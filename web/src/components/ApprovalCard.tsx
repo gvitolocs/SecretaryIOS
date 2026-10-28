@@ -2,13 +2,17 @@
 // stays open, and Approve / Deny. Used by the global pop-up and by the /approvals pages.
 //
 // The web has no Face ID key, so a sensitive request can only be denied here: Approve stays disabled and says
-// where to approve it.
+// where to approve it. Inside Secretary Code, a Mac with a Touch ID key approves it too (the desktop app asks
+// for the fingerprint and sends the answer); a Mac without one points to the account section to set it up.
 
+import { A } from "@solidjs/router";
 import { createEffect, createSignal, onCleanup, onMount, Show, type JSX } from "solid-js";
 import { Button, Card } from "./page";
 import type { Approval } from "../api/approvals";
+import { desktopApprover } from "../api/desktopApprover";
 import { t, type MessageKey } from "../i18n";
-import { CLOSED, decideApproval, skipApproval, type Outcome } from "../state/approvals";
+import { approveWithTouchId, CLOSED, decideApproval, skipApproval, type Outcome } from "../state/approvals";
+import { macApproverStatus, macCanApprove, refreshMacApprover } from "../state/macApprover";
 import "../styles/approvals.css";
 
 const RISK_LABEL: Record<Approval["risk"], MessageKey> = {
@@ -66,6 +70,7 @@ export function ApprovalCard(props: {
 
   onMount(() => {
     timer = setInterval(() => setNow(Date.now()), 1000);
+    if (props.item.sensitive && desktopApprover()) void refreshMacApprover();
   });
   onCleanup(() => timer !== undefined && clearInterval(timer));
 
@@ -84,19 +89,31 @@ export function ApprovalCard(props: {
     if (busy() || closed) return;
     setBusy(decision);
     setNote(null);
-    const outcome = await decideApproval(props.item, decision);
+    const outcome = macApprove(decision) ? await approveWithTouchId(props.item) : await decideApproval(props.item, decision);
     setBusy(null);
     if (CLOSED.includes(outcome.kind)) {
       if (closed) return;
       closed = true;
       props.onDone(outcome);
+    } else if (outcome.kind === "cancelled") return;
+    else if (outcome.kind === "needsSetup" || outcome.kind === "unavailable") {
+      // The Mac's key is gone or Touch ID stopped working: look again, so the card shows what is true now.
+      void refreshMacApprover();
+      setNote(outcome.kind === "needsSetup" ? "approvals.errNeedsSetup" : "approvals.errTouchId");
     } else if (outcome.kind === "needsFaceId") setNote("approvals.faceId");
     else if (outcome.kind === "notMain") setNote("approvals.errNotMain");
     else if (outcome.kind === "changed") setNote("approvals.errChanged");
     else setNote("approvals.errSend");
   }
 
-  const canApprove = () => !props.item.sensitive && !busy() && !expired();
+  /** A sensitive request approved with Touch ID on this Mac. */
+  const macApprove = (decision: "approve" | "deny") => decision === "approve" && props.item.sensitive && macCanApprove();
+  /** Inside Secretary Code, with Touch ID available on this Mac but no key yet. */
+  const needsMacSetup = () => {
+    const s = macApproverStatus();
+    return props.item.sensitive && !!desktopApprover() && !!s && s.available && !s.hasKey;
+  };
+  const canApprove = () => (!props.item.sensitive || macCanApprove()) && !busy() && !expired();
   const initial = () => (props.item.requester.name.trim()[0] ?? "?").toUpperCase();
 
   const content = () => <>
@@ -143,7 +160,14 @@ export function ApprovalCard(props: {
 
       <Show when={props.item.sensitive}>
         <p class="apv-faceid" id={`apv-face-${props.item.id}`} role="note">
-          {t("approvals.faceId")}
+          {macCanApprove() ? t("approvals.touchId") : t("approvals.faceId")}
+          <Show when={needsMacSetup()}>
+            {" "}
+            {/* The pop-up covers the page: put this one off so the account section can be reached. */}
+            <A class="apv-setup" href="/account?section=approvals" onClick={() => props.onLater?.()}>
+              {t("approvals.macSetupLink")}
+            </A>
+          </Show>
         </p>
       </Show>
       <Show when={note()}>

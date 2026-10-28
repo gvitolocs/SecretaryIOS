@@ -49,7 +49,7 @@ export function AccountView() {
       <AccountDialog
         desktop={wide()}
         open
-        section={params.section === "notifications" ? "notifications" : params.section === "import" ? "import" : null}
+        section={params.section === "notifications" || params.section === "approvals" || params.section === "import" ? params.section : null}
         onClose={() => navigate("/", { replace: true })}
         signingOut={signingOut()}
         onSignOut={async () => {
