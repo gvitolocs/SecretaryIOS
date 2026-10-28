@@ -1918,7 +1918,11 @@ async function route(req, res) {
   }
 
   // Play URLs carry their own token (on p1 they skip the gateway's auth too).
-  if (path.startsWith("/v1/media/s/")) return (await import("./media.mjs")).proxyMedia(req, res, url, fail);
+  if (path.startsWith("/v1/media/s/")) {
+    // The synthetic Gallery serves its videos itself (mock/gallery.mjs, MOCK_GALLERY_VIDEO).
+    if (!process.env.MOCK_MEDIA_URL && (await (await import("./gallery.mjs")).handleGallery(req, res, { path, method, url, send, fail, readJson }))) return;
+    return (await import("./media.mjs")).proxyMedia(req, res, url, fail);
+  }
   if (!currentSession(req)) {
     return fail(res, 401, "unauthorized", "session expired or invalid", { "WWW-Authenticate": "Bearer" });
   }

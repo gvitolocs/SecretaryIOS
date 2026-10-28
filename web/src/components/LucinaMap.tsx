@@ -114,6 +114,13 @@ export interface LucinaMapProps {
   /** Shown instead of the map when no tiles are available. */
   fallback?: JSX.Element;
   onAvailable?: (available: boolean) => void;
+  /** The map's window after every move (and once it has loaded): west, south, east, north and MapLibre's zoom. */
+  onViewport?: (view: { bbox: [number, number, number, number]; zoom: number }) => void;
+  /**
+   * `pins` (default): frame the pins whenever the set of pins changes. `first`: only the first time there are pins; a
+   * map whose pins follow the viewport (Places) must not fight the owner's panning.
+   */
+  fit?: "pins" | "first";
   class?: string;
   label?: string;
 }
@@ -194,6 +201,14 @@ export function LucinaMap(props: LucinaMapProps) {
     m.addControl(new ml.AttributionControl({ compact: true }), "bottom-right");
     if (interactive) m.addControl(new ml.NavigationControl({ showCompass: false }), "top-right");
     m.on("style.load", () => drawLines(m));
+    if (props.onViewport) {
+      const emit = () => {
+        const b = m.getBounds();
+        props.onViewport?.({ bbox: [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()], zoom: m.getZoom() });
+      };
+      m.on("moveend", emit);
+      m.once("load", emit);
+    }
     setMap(m);
   }
 
@@ -283,9 +298,14 @@ export function LucinaMap(props: LucinaMapProps) {
   }));
 
   // Fit whenever the set of pin ids changes (not on selection or label changes).
+  let framedOnce = false;
   createEffect(
     on([map, () => pinSetKey(props.pins)], ([m], prev) => {
       if (!m) return;
+      if (props.fit === "first") {
+        if (framedOnce || !props.pins.length) return;
+        framedOnce = true;
+      }
       frame([...props.pins, ...(props.lines ?? []).flat().map(([lat, lng]) => ({ lat, lng }))], prev !== undefined && prev[0] === m);
     }),
   );

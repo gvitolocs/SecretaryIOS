@@ -12,6 +12,9 @@
 // GET items/months, GET sources, GET/POST albums, GET items/{id}, GET items/{id}/details, PATCH items/{id},
 // DELETE items/{id} (trash), POST items/{id}/restore, POST items/batch, GET items/{id}/(thumb|large|r/grid|
 // r/preview|original) (SVG), GET devices/{id}/deletions, POST devices/{id}/deletions/ack.
+// Browse (Places, memories, archive): GET items/places, GET items/on-this-day, GET items/recent, batch archive/unarchive,
+// `archived` and `bbox` on the listing, POST items/{id}/play (a tokenised file URL) and GET s/{token}/{id}/file, which
+// serves MOCK_GALLERY_VIDEO (an mp4 on disk) for every video.
 
 const COUNT = Math.max(0, Number(process.env.MOCK_GALLERY_ITEMS ?? 6000) || 0);
 const TRASH_DAYS = 30;
@@ -159,7 +162,9 @@ function build() {
       : device?.kind === "mac" ? `Screenshot ${n}.png`
       : device ? `DSC${String(n).padStart(5, "0")}.${video ? "AVI" : "JPG"}`
       : source === "ios-chat" ? `photo_${n}.jpg` : `lucina_${n}.png`;
-    const place = rand() < 0.3 ? PLACES[Math.floor(rand() * PLACES.length)] : null;
+    const base = rand() < 0.3 ? PLACES[Math.floor(rand() * PLACES.length)] : null;
+    // A position a few kilometres around the town, so clusters split as the map zooms.
+    const place = base ? { ...base, lat: base.lat + (rand() - 0.5) * 0.12, lon: base.lon + (rand() - 0.5) * 0.2 } : null;
     items.push({
       id: `itm_${i.toString(16).padStart(6, "0")}`,
       index: i,
@@ -188,6 +193,7 @@ function build() {
       rotation: 0,
       albums: [],
       trashed_at: null,
+      archived: rand() < 0.02,
       hue: Math.floor(rand() * 360),
     });
     if (rand() < 0.04) items[items.length - 1].albums.push(albums[Math.floor(rand() * albums.length)].id);
@@ -258,6 +264,8 @@ function matcher(p) {
   const kinds = new Set((p.get("kind") ?? "photo,video").split(",").filter(Boolean));
   const origin = p.get("origin");
   const trashed = p.get("trashed") === "true";
+  const archived = p.get("archived") === "true";
+  const bbox = p.get("bbox")?.split(",").map(Number);
   const favorite = p.get("favorite") === "true";
   const q = (p.get("q") ?? "").trim().toLowerCase();
   const album = p.get("album");
@@ -266,6 +274,13 @@ function matcher(p) {
   return (it) => {
     if (!kinds.has(it.kind)) return false;
     if (trashed !== (it.trashed_at !== null)) return false;
+    if (!trashed && archived !== it.archived) return false;
+    if (bbox?.length === 4) {
+      if (!it.place) return false;
+      const [w, s, e, n] = bbox;
+      const inLon = w <= e ? it.place.lon >= w && it.place.lon <= e : it.place.lon >= w || it.place.lon <= e;
+      if (!inLon || it.place.lat < s || it.place.lat > n) return false;
+    }
     if (!originMatches(it, origin)) return false;
     if (favorite && !it.favorite) return false;
     if (album && !it.albums.includes(album)) return false;
@@ -368,6 +383,15 @@ function applyBatch(op, ids, body) {
       case "unfavorite": it.favorite = false; break;
       case "album_add": if (!it.albums.includes(body.album)) it.albums.push(body.album); break;
       case "album_remove": it.albums = it.albums.filter((a) => a !== body.album); break;
+      case "archive":
+        if (it.trashed_at) { failed.push({ id, error: "trashed" }); continue; }
+        if (it.archived) { failed.push({ id, error: "already_archived" }); continue; }
+        it.archived = true;
+        break;
+      case "unarchive":
+        if (!it.archived) { failed.push({ id, error: "not_archived" }); continue; }
+        it.archived = false;
+        break;
     }
     done.push(id);
   }
@@ -409,6 +433,81 @@ export async function handleGallery(req, res, { path, method, url, send, fail, r
     return true;
   }
 
+  if (rest === "items/places" && method === "GET") {
+    const keep = matcher(p);
+    const bbox = p.get("bbox")?.split(",").map(Number);
+    const zoom = Math.min(24, Math.max(0, Number(p.get("zoom") ?? 3)));
+    const world = 256 * 2 ** zoom;
+    const lonCell = (360 * 72) / world;
+    const yCell = (2 * Math.PI * 72) / world;
+    const mercY = (lat) => Math.log(Math.tan(Math.PI / 4 + (Math.max(-85.0511, Math.min(85.0511, lat)) * Math.PI) / 360));
+    const cells = new Map();
+    let total = 0;
+    for (const it of items) {
+      if (!it.place || !keep(it)) continue;
+      total++;
+      const key = `${Math.floor((it.place.lon + 180) / lonCell)}:${Math.floor(mercY(it.place.lat) / yCell)}`;
+      const c = cells.get(key) ?? { id: key, count: 0, sumLat: 0, sumLon: 0, bbox: [180, 90, -180, -90], cover: it };
+      c.count++;
+      c.sumLat += it.place.lat;
+      c.sumLon += it.place.lon;
+      c.bbox = [Math.min(c.bbox[0], it.place.lon), Math.min(c.bbox[1], it.place.lat), Math.max(c.bbox[2], it.place.lon), Math.max(c.bbox[3], it.place.lat)];
+      if ((it.favorite && !c.cover.favorite) || (it.favorite === c.cover.favorite && it.sort_at > c.cover.sort_at)) c.cover = it;
+      cells.set(key, c);
+    }
+    const limit = Math.min(500, Number(p.get("limit")) || 300);
+    const clusters = [...cells.values()].sort((a, b) => b.count - a.count).slice(0, limit);
+    send(res, 200, { ok: true, zoom, total, clusters: clusters.map((c) => ({ id: c.id, count: c.count, lat: c.sumLat / c.count, lon: c.sumLon / c.count, bbox: c.bbox, cover: out(c.cover) })) });
+    return true;
+  }
+
+  if (rest === "items/on-this-day" && method === "GET") {
+    const keep = matcher(p);
+    const today = new Date().toISOString();
+    const md = p.get("date") ?? today.slice(5, 10);
+    const year = Number(p.get("year") ?? today.slice(0, 4));
+    const perYear = Math.min(20, Number(p.get("per_year")) || 6);
+    const byYear = new Map();
+    for (const it of items) {
+      if (!it.taken_at || it.taken_at.slice(5, 10) !== md || Number(it.taken_at.slice(0, 4)) >= year || !keep(it)) continue;
+      const y = Number(it.taken_at.slice(0, 4));
+      byYear.set(y, [...(byYear.get(y) ?? []), it]);
+    }
+    const years = [...byYear].sort((a, b) => b[0] - a[0]).map(([y, list]) => ({
+      year: y,
+      years_ago: year - y,
+      total: list.length,
+      items: [...list].sort((a, b) => Number(b.favorite) - Number(a.favorite) || b.width * b.height - a.width * a.height).slice(0, perYear).sort((a, b) => (a.taken_at < b.taken_at ? -1 : 1)).map(out),
+    }));
+    send(res, 200, { ok: true, date: md, year, years });
+    return true;
+  }
+
+  if (rest === "items/recent" && method === "GET") {
+    const keep = matcher(p);
+    const days = Number(p.get("days"));
+    const since = days ? Date.now() - days * DAY : 0;
+    const limit = Math.min(200, Number(p.get("limit")) || 30);
+    const all = items.filter((i) => keep(i) && Date.parse(i.created_at) >= since).sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+    send(res, 200, { ok: true, total: all.length, items: all.slice(0, limit).map(out) });
+    return true;
+  }
+
+  const sFile = rest.match(/^s\/[^/]+\/([^/]+)\/file$/);
+  if (sFile && (method === "GET" || method === "HEAD")) {
+    const file = process.env.MOCK_GALLERY_VIDEO;
+    if (!file) return fail(res, 404, "no_video", "set MOCK_GALLERY_VIDEO to an mp4 on disk"), true;
+    const { statSync, createReadStream } = await import("node:fs");
+    const size = statSync(file).size;
+    const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range ?? "");
+    const start = range && range[1] ? Number(range[1]) : 0;
+    const end = range && range[2] ? Number(range[2]) : size - 1;
+    res.writeHead(range ? 206 : 200, { "Content-Type": "video/mp4", "Accept-Ranges": "bytes", "Content-Length": end - start + 1, ...(range ? { "Content-Range": `bytes ${start}-${end}/${size}` } : {}) });
+    if (method === "HEAD") return res.end(), true;
+    createReadStream(file, { start, end }).pipe(res);
+    return true;
+  }
+
   if (rest === "sources" && method === "GET") {
     const groups = new Map();
     const add = (id, label, kind, it) => {
@@ -419,7 +518,7 @@ export async function handleGallery(req, res, { path, method, url, send, fail, r
     };
     const all = { photos: 0, videos: 0 };
     for (const it of items) {
-      if (it.trashed_at) continue;
+      if (it.trashed_at || it.archived) continue;
       if (it.kind === "video") all.videos++; else all.photos++;
       if (it.device) {
         const d = DEVICES.find((x) => x.id === it.device);
@@ -449,7 +548,7 @@ export async function handleGallery(req, res, { path, method, url, send, fail, r
 
   if (rest === "items/batch" && method === "POST") {
     const body = await readJson(req);
-    const ops = ["trash", "restore", "purge", "favorite", "unfavorite", "album_add", "album_remove"];
+    const ops = ["trash", "restore", "purge", "favorite", "unfavorite", "album_add", "album_remove", "archive", "unarchive"];
     if (!ops.includes(body.op)) return fail(res, 400, "bad_op", "unknown op"), true;
     if (!Array.isArray(body.ids) || body.ids.length === 0 || body.ids.length > BATCH_MAX || body.ids.some((x) => typeof x !== "string")) {
       return fail(res, 400, "bad_ids", `ids: 1 to ${BATCH_MAX} item ids`), true;
@@ -493,6 +592,13 @@ export async function handleGallery(req, res, { path, method, url, send, fail, r
       return send(res, 200, out(it)), true;
     }
     if (sub === "" && method === "DELETE") return trashIt(it, false), send(res, 200, { ok: true }), true;
+    if (sub === "play" && method === "POST" && it.kind === "video") {
+      return send(res, 200, {
+        id: it.id, kind: "video", title: it.title, mode: "direct", url: `/v1/media/s/mock/${it.id}/file`, file_url: `/v1/media/s/mock/${it.id}/file`,
+        hls_url: null, poster_url: `/v1/media/items/${it.id}/thumb?size=1024`, duration_ms: 12_000, subtitles: [], bitmap_subtitles: 0,
+        expires_at: Date.now() + 3_600_000, progress: null, resume_ms: 0,
+      }), true;
+    }
     if (sub === "restore" && method === "POST") return (it.trashed_at = null), send(res, 200, out(it)), true;
     if (method === "GET" && (sub === "thumb" || sub === "r/grid" || sub === "r/preview" || sub === "original")) {
       const size = sub === "original" ? 1600 : Math.min(2000, Math.max(32, Number(p.get("size")) || (sub === "r/preview" ? 1440 : 256)));

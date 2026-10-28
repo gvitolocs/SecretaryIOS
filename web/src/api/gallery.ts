@@ -84,6 +84,10 @@ export interface GalleryQuery {
   q?: string;
   favorite?: boolean;
   trashed?: boolean;
+  /** Only the archived (hidden from the main Gallery); otherwise they are left out. */
+  archived?: boolean;
+  /** `west,south,east,north` in degrees: only pictures with a position inside it (a Places cluster). */
+  bbox?: string;
   album?: string;
   cursor?: string;
   limit?: number;
@@ -115,7 +119,7 @@ export interface ItemDetails {
   people: string[];
 }
 
-export type BatchOp = "trash" | "restore" | "purge" | "favorite" | "unfavorite" | "album_add" | "album_remove";
+export type BatchOp = "trash" | "restore" | "purge" | "favorite" | "unfavorite" | "album_add" | "album_remove" | "archive" | "unarchive";
 
 export interface BatchResult {
   done: string[];
@@ -238,6 +242,8 @@ export function galleryQueryString(q: GalleryQuery): string {
   if (q.q?.trim()) params.set("q", q.q.trim());
   if (q.favorite) params.set("favorite", "true");
   if (q.trashed) params.set("trashed", "true");
+  if (q.archived) params.set("archived", "true");
+  if (q.bbox) params.set("bbox", q.bbox);
   if (q.album) params.set("album", q.album);
   if (q.cursor) params.set("cursor", q.cursor);
   params.set("limit", String(Math.min(500, Math.max(1, q.limit ?? 200))));
@@ -259,10 +265,11 @@ export async function listSources(): Promise<{ sources: GallerySource[]; all: { 
   };
 }
 
-export async function listMonths(q: Pick<GalleryQuery, "origin" | "kind" | "trashed" | "favorite"> = {}): Promise<{ month: string; count: number }[]> {
+export async function listMonths(q: Pick<GalleryQuery, "origin" | "kind" | "trashed" | "favorite" | "archived"> = {}): Promise<{ month: string; count: number }[]> {
   const params = new URLSearchParams({ origin: q.origin ?? "all", kind: !q.kind || q.kind === "all" ? "photo,video" : q.kind });
   if (q.trashed) params.set("trashed", "true");
   if (q.favorite) params.set("favorite", "true");
+  if (q.archived) params.set("archived", "true");
   const body = obj(await request<unknown>("GET", `/v1/media/items/months?${params}`));
   return (Array.isArray(body.months) ? body.months : [])
     .map((m) => ({ month: str(obj(m).month) ?? "", count: num(obj(m).count) ?? 0 }))
@@ -341,4 +348,88 @@ export function tileUrl(item: GalleryItem, jxl: boolean): string | null {
 /** The viewer image: the 1440 px preview (JXL) where supported, else the 1024 px JPEG. */
 export function previewUrl(item: GalleryItem, jxl: boolean): string | null {
   return (jxl ? item.urls.preview : undefined) ?? item.urls.large ?? item.urls.thumb ?? null;
+}
+
+// ---- browse (places, memories, archive) ----------------------------------------------------------------------------
+
+/** `west, south, east, north` in degrees. */
+export type BBox = [number, number, number, number];
+
+/** Pictures near each other on the map: how many, their centre, the box around them and the one that stands for them. */
+export interface PlaceCluster {
+  id: string;
+  count: number;
+  lat: number;
+  lon: number;
+  bbox: BBox;
+  cover: GalleryItem;
+}
+
+export interface PlacesResult {
+  zoom: number;
+  /** All pictures with a position under the filters, in the whole `bbox`. */
+  total: number;
+  clusters: PlaceCluster[];
+}
+
+/** One past year of "On this day": a few of the best pictures, in time order, and how many there were that day. */
+export interface MemoryYear {
+  year: number;
+  yearsAgo: number;
+  total: number;
+  items: GalleryItem[];
+}
+
+const parseItems = (v: unknown): GalleryItem[] => (Array.isArray(v) ? v : []).map(parseItem).filter((i): i is GalleryItem => i !== null);
+
+function parseBBox(v: unknown): BBox | null {
+  if (!Array.isArray(v) || v.length !== 4) return null;
+  const n = v.map(num);
+  return n.every((x) => x !== null) ? (n as BBox) : null;
+}
+
+/** Map clusters for the visible window (`bbox`) at a map zoom; sources and kinds as in the grid. */
+export async function listPlaces(q: { origin?: string; kind?: GalleryKind | "all"; bbox?: BBox; zoom?: number; limit?: number } = {}): Promise<PlacesResult> {
+  const params = new URLSearchParams({ origin: q.origin ?? "all", kind: !q.kind || q.kind === "all" ? "photo,video" : q.kind });
+  if (q.bbox) params.set("bbox", q.bbox.join(","));
+  if (q.zoom !== undefined) params.set("zoom", String(q.zoom));
+  if (q.limit) params.set("limit", String(q.limit));
+  const body = obj(await request<unknown>("GET", `/v1/media/items/places?${params}`));
+  const clusters = (Array.isArray(body.clusters) ? body.clusters : [])
+    .map((raw): PlaceCluster | null => {
+      const c = obj(raw);
+      const id = str(c.id);
+      const cover = parseItem(c.cover);
+      const lat = num(c.lat);
+      const lon = num(c.lon);
+      const bbox = parseBBox(c.bbox);
+      return id && cover && lat !== null && lon !== null && bbox ? { id, count: num(c.count) ?? 0, lat, lon, bbox, cover } : null;
+    })
+    .filter((c): c is PlaceCluster => c !== null);
+  return { zoom: num(body.zoom) ?? q.zoom ?? 0, total: num(body.total) ?? 0, clusters };
+}
+
+/** The pictures taken on this calendar day (`MM-DD`, today by default) in previous years, newest year first. */
+export async function listOnThisDay(q: { date?: string; origin?: string; perYear?: number } = {}): Promise<MemoryYear[]> {
+  const params = new URLSearchParams({ origin: q.origin ?? "all" });
+  if (q.date) params.set("date", q.date);
+  if (q.perYear) params.set("per_year", String(q.perYear));
+  const body = obj(await request<unknown>("GET", `/v1/media/items/on-this-day?${params}`));
+  return (Array.isArray(body.years) ? body.years : [])
+    .map((raw): MemoryYear | null => {
+      const y = obj(raw);
+      const year = num(y.year);
+      const list = parseItems(y.items);
+      return year !== null && list.length ? { year, yearsAgo: num(y.years_ago) ?? 0, total: num(y.total) ?? list.length, items: list } : null;
+    })
+    .filter((y): y is MemoryYear => y !== null);
+}
+
+/** The newest arrivals (by when they were added to the library). */
+export async function listRecent(q: { origin?: string; days?: number; limit?: number } = {}): Promise<{ items: GalleryItem[]; total: number }> {
+  const params = new URLSearchParams({ origin: q.origin ?? "all" });
+  if (q.days) params.set("days", String(q.days));
+  params.set("limit", String(q.limit ?? 30));
+  const body = obj(await request<unknown>("GET", `/v1/media/items/recent?${params}`));
+  return { items: parseItems(body.items), total: num(body.total) ?? 0 };
 }
