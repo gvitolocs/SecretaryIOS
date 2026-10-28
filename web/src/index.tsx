@@ -37,6 +37,7 @@ const PokemonView = lazy(() => import("./views/Pokemon"));
 const ComputerView = lazy(() => import("./views/Computer"));
 const MediaView = lazy(() => import("./views/Media"));
 const GalleryView = lazy(() => import("./views/Gallery"));
+const GalleryPlaces = lazy(() => import("./views/GalleryPlaces"));
 const FilmsView = lazy(() => import("./views/Films"));
 const PixivView = lazy(() => import("./views/Pixiv"));
 const InstagramView = lazy(() => import("./views/Instagram"));
@@ -99,6 +100,8 @@ render(
       <Route path="/gallery" component={GalleryView} />
       <Route path="/gallery/trash" component={() => <GalleryView trash />} />
       <Route path="/instagram/:username?" component={InstagramView} />
+      <Route path="/gallery/archive" component={() => <GalleryView archive />} />
+      <Route path="/gallery/places" component={GalleryPlaces} />
       <Route path="/films" component={FilmsView} />
       <Route path="/films/play/:id" component={FilmsView} />
       <Route path="/pixiv/:id?" component={PixivView} />

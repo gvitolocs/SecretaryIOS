@@ -1,4 +1,4 @@
-import { A } from "@solidjs/router";
+import { A, useSearchParams } from "@solidjs/router";
 import { createEffect, createMemo, createResource, createSignal, on, onCleanup, Show } from "solid-js";
 import { batch, listMonths, listSources, type GalleryItem, type GalleryKind, type GalleryQuery, type SourceKind } from "../api/gallery";
 import { AlbumPicker } from "../components/gallery/AlbumPicker";
@@ -7,6 +7,8 @@ import { GalleryViewer } from "../components/gallery/GalleryViewer";
 import { createGalleryFeed, SEEK_PAGE } from "../components/gallery/GridFeed";
 import { GridView, type GridCommand, type TileClick } from "../components/gallery/GridView";
 import { SelectionBar } from "../components/gallery/SelectionBar";
+import { ArchiveBoxIcon, PlacesIcon } from "../components/gallery/browse/BrowseIcons";
+import { MemoriesStrip } from "../components/gallery/browse/MemoriesStrip";
 import { SourceBar } from "../components/gallery/SourceBar";
 import { BackIcon, SearchIcon, TrashIcon } from "../components/Icons";
 import { t } from "../i18n";
@@ -38,8 +40,14 @@ function initialOrigin(): string {
   return mac ? `device:${mac.id}` : "all";
 }
 
-export default function GalleryView(props: { trash?: boolean }) {
+export default function GalleryView(props: { trash?: boolean; archive?: boolean }) {
   const trash = () => !!props.trash;
+  const archive = () => !!props.archive;
+  // Both shelves list everything, whatever source the Gallery was last switched to.
+  const shelf = () => trash() || archive();
+  // `?bbox=w,s,e,n` shows the pictures of one Places cluster.
+  const [params, setParams] = useSearchParams<{ bbox?: string }>();
+  const bbox = () => (typeof params.bbox === "string" && params.bbox ? params.bbox : undefined);
   const [origin, setOrigin] = createSignal(initialOrigin());
   const [kind, setKind] = createSignal<KindFilter>("all");
   const [favorite, setFavorite] = createSignal(false);
@@ -69,20 +77,22 @@ export default function GalleryView(props: { trash?: boolean }) {
   );
 
   const query = createMemo<GalleryQuery>(() => ({
-    origin: trash() ? "all" : origin(),
+    origin: shelf() ? "all" : origin(),
     kind: kind(),
     from: from() || undefined,
     to: to() || undefined,
     q: q() || undefined,
     favorite: favorite() || undefined,
     trashed: trash() || undefined,
+    archived: archive() || undefined,
+    bbox: bbox(),
   }));
   const feed = createGalleryFeed(query);
   const items = feed.items;
-  const filtered = () => kind() !== "all" || favorite() || !!from() || !!to() || !!q();
+  const filtered = () => kind() !== "all" || favorite() || !!from() || !!to() || !!q() || !!bbox();
 
   const [months, { refetch: refetchMonths }] = createResource(
-    () => ({ origin: trash() ? "all" : origin(), kind: kind(), favorite: favorite(), trashed: trash() }),
+    () => ({ origin: shelf() ? "all" : origin(), kind: kind(), favorite: favorite(), trashed: trash(), archived: archive() }),
     (key) => listMonths(key).catch(() => []),
   );
 
@@ -175,7 +185,7 @@ export default function GalleryView(props: { trash?: boolean }) {
   const [deleting, setDeleting] = createSignal<GalleryItem[] | null>(null);
   const [albumFor, setAlbumFor] = createSignal<string[] | null>(null);
 
-  async function run(op: "favorite" | "unfavorite" | "restore", items: GalleryItem[]): Promise<string[]> {
+  async function run(op: "favorite" | "unfavorite" | "restore" | "archive" | "unarchive", items: GalleryItem[]): Promise<string[]> {
     setBusy(true);
     try {
       const result = await batch(op, items.map((i) => i.id));
@@ -198,6 +208,18 @@ export default function GalleryView(props: { trash?: boolean }) {
     if (!make && favorite()) feed.remove(done);
     else feed.update(done, (i) => ({ ...i, favorite: make }));
     say(t(make ? "gallery.favorited" : "gallery.unfavorited", { count: done.length }));
+    refreshCounts();
+  }
+
+  // Archive / Unarchive: the pictures leave this list (the Gallery or the Archive) for the other.
+  async function archiveSelected() {
+    const chosen = selectedItems();
+    if (!chosen.length || busy()) return;
+    const done = await run(archive() ? "unarchive" : "archive", chosen);
+    if (!done.length) return;
+    feed.remove(done);
+    setSelected((s) => new Set([...s].filter((id) => !done.includes(id))));
+    say(t(archive() ? "browse.unarchived" : "browse.archived", { count: done.length }));
     refreshCounts();
   }
 
@@ -286,9 +308,11 @@ export default function GalleryView(props: { trash?: boolean }) {
     setTo("");
     setDraft("");
     setQ("");
+    if (bbox()) setParams({ bbox: undefined });
   };
 
-  const emptyText = () => (trash() ? t("gallery.emptyTrash") : filtered() ? t("gallery.emptyFiltered") : t("gallery.empty"));
+  const emptyText = () =>
+    trash() ? t("gallery.emptyTrash") : archive() && !filtered() ? t("browse.emptyArchive") : filtered() ? t("gallery.emptyFiltered") : t("gallery.empty");
   const settled = () => !feed.loading() && feed.items().length === 0 && !feed.hasMore();
   const seg = (value: KindFilter, label: string) => (
     <button type="button" class="g-seg__btn" aria-pressed={kind() === value} onClick={() => setKind(value)}>
@@ -297,19 +321,19 @@ export default function GalleryView(props: { trash?: boolean }) {
   );
 
   return (
-    <section class="gallery" classList={{ "gallery--trash": trash() }} aria-labelledby="gallery-title">
+    <section class="gallery" classList={{ "gallery--trash": trash(), "gallery--archive": archive() }} aria-labelledby="gallery-title">
       <div class="g-top">
         <Show
           when={selected().size > 0}
           fallback={
             <header class="g-bar">
-              <Show when={trash()}>
+              <Show when={shelf()}>
                 <A class="g-back" href="/gallery" aria-label={t("gallery.backToGallery")}>
                   <BackIcon />
                 </A>
               </Show>
               <h1 class="g-title" id="gallery-title">
-                {trash() ? t("gallery.trashTitle") : t("gallery.title")}
+                {trash() ? t("gallery.trashTitle") : archive() ? t("browse.archiveTitle") : t("gallery.title")}
               </h1>
               <label class="g-search">
                 <SearchIcon />
@@ -324,7 +348,13 @@ export default function GalleryView(props: { trash?: boolean }) {
                   }}
                 />
               </label>
-              <Show when={!trash()}>
+              <Show when={!shelf()}>
+                <A class="g-iconbtn" href="/gallery/places" aria-label={t("browse.placesLink")} title={t("browse.placesLink")}>
+                  <PlacesIcon />
+                </A>
+                <A class="g-iconbtn" href="/gallery/archive" aria-label={t("browse.archiveLink")} title={t("browse.archiveLink")}>
+                  <ArchiveBoxIcon />
+                </A>
                 <A class="g-iconbtn" href="/gallery/trash" aria-label={t("gallery.trashLink")} title={t("gallery.trashLink")}>
                   <TrashIcon />
                 </A>
@@ -345,9 +375,11 @@ export default function GalleryView(props: { trash?: boolean }) {
             onDownload={downloadSelected}
             onDelete={() => onCommand("delete")}
             onRestore={() => void restoreSelected()}
+            archive={archive()}
+            onArchive={() => void archiveSelected()}
           />
         </Show>
-        <Show when={!trash() && (sources()?.sources.length ?? 0) > 0}>
+        <Show when={!shelf() && (sources()?.sources.length ?? 0) > 0}>
           <SourceBar sources={sources()!.sources} all={sources()!.all} value={origin()} onChange={chooseOrigin} />
         </Show>
         <div class="g-filters" role="group" aria-label={t("gallery.filters")}>
@@ -411,6 +443,21 @@ export default function GalleryView(props: { trash?: boolean }) {
         <Show when={trash()}>
           <p class="g-note">{t("gallery.trashNote")}</p>
         </Show>
+        <Show when={archive()}>
+          <p class="g-note">{t("browse.archiveNote")}</p>
+        </Show>
+        <Show when={bbox()}>
+          <p class="g-note g-place">
+            <PlacesIcon />
+            <span>{t("browse.placeFilter")}</span>
+            <button type="button" class="g-chip" onClick={() => setParams({ bbox: undefined })}>
+              {t("browse.placeFilterClear")}
+            </button>
+          </p>
+        </Show>
+        <Show when={!shelf() && !filtered()}>
+          <MemoriesStrip origin={origin()} onMutated={() => feed.reload()} />
+        </Show>
       </div>
 
       <div class="g-main">
@@ -421,14 +468,14 @@ export default function GalleryView(props: { trash?: boolean }) {
           groupBy={group()}
           selected={selected()}
           jxl={jxl() ?? false}
-          showSource={!trash() && origin() === "all"}
+          showSource={!shelf() && origin() === "all"}
           sourceKind={sourceKind}
           trash={trash()}
           loading={feed.loading()}
           hasMore={feed.hasMore()}
           failed={feed.failed()}
           months={months() ?? []}
-          scrubber={!q() && !from() && !to()}
+          scrubber={!q() && !from() && !to() && !bbox()}
           onNeedMore={() => void feed.loadMore()}
           onRetry={() => void feed.loadMore()}
           onSeek={loadUntil}
@@ -481,6 +528,7 @@ export default function GalleryView(props: { trash?: boolean }) {
           onChanged={feed.replace}
           onRemoved={removedInViewer}
           trash={trash()}
+          archive={archive()}
         />
       </Show>
       <Show when={deleting()}>

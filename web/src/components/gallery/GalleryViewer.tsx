@@ -12,6 +12,8 @@ import { PhotoInfo } from "./PhotoInfo";
 import { EditIcon } from "./editor/EditorIcons";
 import { PhotoEditor } from "./editor/PhotoEditor";
 import { RenameDialog } from "./RenameDialog";
+import { ArchiveIcon, UnarchiveIcon } from "./browse/BrowseIcons";
+import { GalleryVideo } from "./browse/GalleryVideo";
 import { AlbumIcon, DownloadIcon, HeartIcon, InfoIcon, RenameIcon, RestoreIcon, RotateIcon, TrashIcon } from "./ViewerIcons";
 
 export interface GalleryViewerProps {
@@ -25,6 +27,8 @@ export interface GalleryViewerProps {
   onRemoved: (id: string) => void;
   /** The list is the Trash: Restore and Delete forever instead of the edit actions. */
   trash?: boolean;
+  /** The list is the Archive: Unarchive instead of Archive. */
+  archive?: boolean;
 }
 
 type Dialog = "delete" | "album" | "rename" | null;
@@ -155,6 +159,20 @@ export function GalleryViewer(props: GalleryViewerProps) {
     setDialog(null);
   };
 
+  // Archive / Unarchive: the item leaves this list (the main Gallery or the Archive) and lives in the other.
+  const archiveToggle = async () => {
+    const item = current();
+    if (!item || props.trash) return;
+    setError(null);
+    try {
+      const result = await batch(props.archive ? "unarchive" : "archive", [item.id]);
+      if (!result.done.includes(item.id)) throw new Error(result.failed[0]?.error ?? "failed");
+      props.onRemoved(item.id);
+    } catch {
+      setError(t("browse.archiveFailed"));
+    }
+  };
+
   const restore = async () => {
     const item = current();
     if (!item) return;
@@ -214,7 +232,14 @@ export function GalleryViewer(props: GalleryViewerProps) {
     // A dialog owns the keyboard; so does a text field, and the editor over the viewer.
     if (editing() || dialog() || typing(e.target)) return true;
     if (e.metaKey || e.ctrlKey || e.altKey) return false;
+    // On a focused video the arrows seek; they must not also page.
+    if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && e.target instanceof HTMLVideoElement) return true;
     switch (e.key) {
+      case "A":
+        if (!e.shiftKey || props.trash) return false;
+        e.preventDefault();
+        void archiveToggle();
+        return true;
       case "i":
       case "I":
         e.preventDefault();
@@ -258,6 +283,8 @@ export function GalleryViewer(props: GalleryViewerProps) {
         mime: item.mime,
         kind: item.kind,
         rotation: item.rotation,
+        id: item.id,
+        poster: item.urls.poster ?? item.urls.large ?? item.urls.thumb ?? null,
       };
     }),
   );
@@ -305,6 +332,15 @@ export function GalleryViewer(props: GalleryViewerProps) {
             </button>
             <button type="button" class="pv-btn" aria-label={t("galleryInfo.addToAlbum")} title={t("galleryInfo.addToAlbum")} onClick={() => setDialog("album")}>
               <AlbumIcon />
+            </button>
+            <button
+              type="button"
+              class="pv-btn"
+              aria-label={props.archive ? t("browse.unarchive") : t("browse.archive")}
+              title={`${props.archive ? t("browse.unarchive") : t("browse.archive")} (Shift+A)`}
+              onClick={() => void archiveToggle()}
+            >
+              {props.archive ? <UnarchiveIcon /> : <ArchiveIcon />}
             </button>
           </Show>
           <Show when={item().urls.download ?? item().urls.original}>
@@ -357,6 +393,9 @@ export function GalleryViewer(props: GalleryViewerProps) {
         toolbar={<Toolbar />}
         panel={infoOpen() ? <Panel /> : undefined}
         onKeyDown={onKeyDown}
+        renderVideo={({ item, current }) => (
+          <GalleryVideo id={item.id ?? ""} poster={item.poster} durationMs={listed(item.id ?? "")?.durationMs} active={current} />
+        )}
       />
       <Show when={error()}>
         {(message) => (

@@ -27,6 +27,10 @@ export interface ViewerItem {
   blob?: Blob;
   /** Drawn turned clockwise by this many degrees (the Gallery's saved rotation); 0 by default. */
   rotation?: 0 | 90 | 180 | 270;
+  /** The library's id, for a `renderVideo` that has to ask the server for a playable URL. */
+  id?: string;
+  /** A video's still frame. */
+  poster?: string | null;
 }
 
 export interface SaveResult {
@@ -55,6 +59,12 @@ export interface PhotoViewerProps {
   toolbar?: JSX.Element;
   /** A panel beside the picture (a bottom sheet on phones); the stage shrinks to make room for it. */
   panel?: JSX.Element;
+  /**
+   * Draws a video item instead of the plain `<video src>` (the Gallery plays through a tokenised URL, with resume).
+   * Only the current item has `current` set: neighbours must not start loading. With it, a horizontal drag that starts
+   * on a video (outside its control strip) pages like on a picture, and a tap is left to the video itself.
+   */
+  renderVideo?: (ctx: { item: ViewerItem; index: number; current: boolean }) => JSX.Element;
   /** Called first for every key; return true to say the key is handled and the viewer must ignore it. */
   onKeyDown?: (e: KeyboardEvent) => boolean | void;
 }
@@ -225,10 +235,25 @@ export function PhotoViewer(props: PhotoViewerProps) {
     return { distance: Math.hypot(a!.x - b!.x, a!.y - b!.y), mid: { x: (a!.x + b!.x) / 2, y: (a!.y + b!.y) / 2 } };
   };
 
+  // A drag that began on a video: the stage takes the pointer only once it turns out to be a page swipe, so taps and
+  // the video's own controls keep working.
+  let onVideo = false;
+  let captured = false;
+  const CONTROL_STRIP = 64;
+
   const onPointerDown = (e: PointerEvent) => {
-    if ((e.target as Element | null)?.closest?.("video, button")) return;
+    const target = e.target as Element | null;
+    if (target?.closest?.("button")) return;
+    const video = target?.closest?.("video");
+    onVideo = false;
+    if (video) {
+      if (!props.renderVideo) return;
+      if (e.clientY > video.getBoundingClientRect().bottom - CONTROL_STRIP) return;
+      onVideo = true;
+    }
     if (animating() || closing()) return;
-    stage?.setPointerCapture?.(e.pointerId);
+    captured = !onVideo;
+    if (captured) stage?.setPointerCapture?.(e.pointerId);
     pointers.set(e.pointerId, local(e));
     if (pointers.size === 1) {
       const p = local(e);
@@ -271,6 +296,10 @@ export function PhotoViewer(props: PhotoViewerProps) {
       // Without the core (still loading): horizontal drags page, the rest waits.
       axis = decided ?? (Math.abs(dx) >= 10 && Math.abs(dx) > Math.abs(dy) ? "pager" : "undecided");
       if (isVideo(current()) && axis === "pan") axis = "pager";
+      if (axis === "pager" && !captured) {
+        captured = true;
+        stage?.setPointerCapture?.(e.pointerId);
+      }
     }
     if (axis === "pan") {
       apply({ op: "pan", dx: p.x - last.x, dy: p.y - last.y });
@@ -331,7 +360,7 @@ export function PhotoViewer(props: PhotoViewerProps) {
       const answer = v ? ask({ view: v, drag: { dx, dy, predicted_dy: dy + vy * 250, ended: true } }) : null;
       if (answer?.drag?.end === "dismiss") dismiss();
       else settle(() => setOut(null));
-    } else if (axis === "undecided" && quick && Math.hypot(dx, dy) < TAP_SLOP) {
+    } else if (axis === "undecided" && quick && Math.hypot(dx, dy) < TAP_SLOP && !onVideo) {
       tap(p);
     }
     axis = "undecided";
@@ -554,7 +583,13 @@ export function PhotoViewer(props: PhotoViewerProps) {
                 <div class="pv-slot" style={slotStyle(s.slot)}>
                   <Show
                     when={!isVideo(item())}
-                    fallback={<video class="pv-video" src={item()?.src ?? undefined} controls playsinline preload="metadata" />}
+                    fallback={
+                      props.renderVideo ? (
+                        props.renderVideo({ item: item()!, index: s.index, current: isCurrent() })
+                      ) : (
+                        <video class="pv-video" src={item()?.src ?? undefined} controls playsinline preload="metadata" />
+                      )
+                    }
                   >
                     <Show when={shownSrc(item(), isCurrent())}>
                       {(src) => (

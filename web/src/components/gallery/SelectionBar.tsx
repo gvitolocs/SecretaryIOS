@@ -1,6 +1,7 @@
 import { Show, type JSX } from "solid-js";
 import { CloseIcon, DownloadIcon, RefreshIcon, TrashIcon } from "../Icons";
 import { t } from "../../i18n";
+import { ArchiveBoxIcon } from "./browse/BrowseIcons";
 
 export interface SelectionBarProps {
   count: number;
@@ -18,6 +19,9 @@ export interface SelectionBarProps {
   onDownload: () => void;
   onDelete: () => void;
   onRestore: () => void;
+  /** The Archive view: the button says Unarchive. */
+  archive?: boolean;
+  onArchive?: () => void;
 }
 
 function HeartIcon(props: { filled: boolean }) {
@@ -70,6 +74,7 @@ export function SelectionBar(props: SelectionBarProps) {
       >
         {act(props.allFavorite ? t("gallery.unfavorite") : t("gallery.favorite"), () => <HeartIcon filled={props.allFavorite} />, props.onFavorite)}
         {act(t("gallery.addToAlbum"), () => <AlbumIcon />, props.onAlbum)}
+        {props.onArchive && act(props.archive ? t("browse.unarchive") : t("browse.archive"), () => <ArchiveBoxIcon />, props.onArchive)}
         {act(t("gallery.download"), () => <DownloadIcon />, props.onDownload)}
         {act(t("gallery.delete"), () => <TrashIcon />, props.onDelete, true)}
       </Show>

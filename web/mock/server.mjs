@@ -1924,7 +1924,11 @@ async function route(req, res) {
   // Pixiv images are signed URLs (no session needed, like on p1); the rest of /v1/pixiv needs the session.
   if (path.startsWith("/v1/pixiv/s/") && (await (await import("./pixiv.mjs")).handlePixiv(req, res, { path, method, url, send, fail, readJson }))) return;
   // Play URLs carry their own token (on p1 they skip the gateway's auth too).
-  if (path.startsWith("/v1/media/s/")) return (await import("./media.mjs")).proxyMedia(req, res, url, fail);
+  if (path.startsWith("/v1/media/s/")) {
+    // The synthetic Gallery serves its videos itself (mock/gallery.mjs, MOCK_GALLERY_VIDEO).
+    if (!process.env.MOCK_MEDIA_URL && (await (await import("./gallery.mjs")).handleGallery(req, res, { path, method, url, send, fail, readJson }))) return;
+    return (await import("./media.mjs")).proxyMedia(req, res, url, fail);
+  }
   // NClient's signed image URLs likewise carry their own HMAC (mock/nclient.mjs).
   if (path.startsWith("/v1/nclient/s/")) return (await import("./nclient.mjs")).serveImage(req, res, path);
   // Instagram media URLs are signed too and need no session (mock/instagram.mjs).
