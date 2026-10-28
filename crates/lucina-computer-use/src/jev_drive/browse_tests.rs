@@ -553,3 +553,14 @@ fn a_dialog_button_survives_the_cap_next_to_a_calendar() {
     assert!(s.elements.iter().any(|e| e.label == "Done."));
     assert_eq!(s.elements[0].label, "Back", "buttons before the bulk of day cells");
 }
+
+#[test]
+fn the_opened_host_is_checked() {
+    assert_eq!(host_of("https://wolt.com/en/dnk/aarhus/search?q=Holy%20Pizza"), Some("wolt.com"));
+    assert_eq!(host_of("https://www.google.com/travel/flights?hl=en"), Some("google.com"));
+    assert_eq!(host_of("flights Billund London"), None);
+    let at = |title: &str| Screen { title: title.into(), ..Screen::default() };
+    assert!(missed("wolt.com", &at("DuckDuckGo Private Search Engine - Chromium")));
+    assert!(missed("wolt.com", &at("New Tab - Chromium")));
+    assert!(!missed("wolt.com", &at("Search | Wolt - Chromium")));
+}
