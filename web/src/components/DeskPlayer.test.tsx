@@ -6,6 +6,26 @@ import { encodeVideo } from "../lib/deskWire";
 const ticket = vi.fn();
 vi.mock("../api/desk", () => ({ deskApi: { ticket: (...a: unknown[]) => ticket(...a) } }));
 
+// Files go through lib/desktopFiles (computer-mobile's endpoints): recorded here.
+const files = {
+  sent: [] as { names: string[] }[],
+  offer: null as ((f: { path: string; name: string; bytes: number }[]) => void) | null,
+  soon: vi.fn(),
+  downloaded: [] as string[],
+};
+vi.mock("../lib/desktopFiles", () => ({
+  sendFiles: async (_s: string, list: File[]) => {
+    files.sent.push({ names: list.map((f) => f.name) });
+    return list.map((f) => `/home/cua/Desktop/From Mac/${f.name}`);
+  },
+  tooLarge: () => [],
+  watchCopiedFiles: (_s: unknown, _a: unknown, onOffer: (f: { path: string; name: string; bytes: number }[]) => void) => {
+    files.offer = onOffer;
+    return { soon: files.soon, reset() {}, stop() {} };
+  },
+  downloadFile: (_s: string, f: { name: string }) => files.downloaded.push(f.name),
+}));
+
 import DeskPlayer from "./DeskPlayer";
 
 // A WebSocket the test drives by hand.
@@ -431,6 +451,70 @@ describe("DeskPlayer", () => {
         watch.image([0x89]);
         await new Promise((r) => setTimeout(r, 300));
         expect(write).not.toHaveBeenCalled();
+      });
+    });
+
+    describe("files", () => {
+      beforeEach(() => {
+        files.sent = [];
+        files.downloaded = [];
+        files.soon.mockClear();
+        // The Clipboard API refuses here; the browser's paste event brings Finder's files.
+        Object.defineProperty(navigator, "clipboard", { configurable: true, value: { readText: vi.fn(async () => Promise.reject(new Error("denied"))) } });
+      });
+      const pasteEvent = (data: { files?: File[]; text?: string }) => {
+        const e = new Event("paste", { bubbles: true, cancelable: true });
+        Object.defineProperty(e, "clipboardData", { value: { files: data.files ?? [], getData: () => data.text ?? "" } });
+        return e;
+      };
+
+      it("⌘V of Finder files: uploaded to From Mac, on her clipboard, then Ctrl+V", async () => {
+        const control = await drive();
+        const canvas = screen.getByRole("img");
+        canvas.focus();
+        fireEvent.keyDown(canvas, { key: "v", metaKey: true });
+        canvas.dispatchEvent(pasteEvent({ files: [new File(["a"], "report.pdf"), new File(["b"], "notes.txt")] }));
+        await waitFor(() => expect(nonAcks(control)).toEqual([{ type: "key", char: "v", modifiers: ["Control"] }]));
+        expect(files.sent).toEqual([{ names: ["report.pdf", "notes.txt"] }]);
+        expect(screen.getByText("2 files are in From Mac on her desktop.")).toBeInTheDocument();
+      });
+
+      it("a pasted screenshot (one image.png) is an image, not a file", async () => {
+        const control = await drive();
+        const canvas = screen.getByRole("img");
+        canvas.focus();
+        fireEvent.keyDown(canvas, { key: "v", metaKey: true });
+        canvas.dispatchEvent(pasteEvent({ files: [new File([new Uint8Array([0x89, 0x50])], "image.png", { type: "image/png" })] }));
+        await waitFor(() => expect(nonAcks(control)).toHaveLength(2));
+        expect(nonAcks(control)[0]).toEqual({ binary: [2, 1, 0, 0, 0x89, 0x50] });
+        expect(files.sent).toEqual([]);
+      });
+
+      it("dropping files on the stream sends them without pasting", async () => {
+        const control = await drive();
+        const stage = document.querySelector(".ldesk-stage")!;
+        fireEvent.drop(stage, { dataTransfer: { types: ["Files"], files: [new File(["x"], "photo.jpg")] } });
+        await waitFor(() => expect(files.sent).toEqual([{ names: ["photo.jpg"] }]));
+        expect(nonAcks(control)).toEqual([]);
+      });
+
+      it("files she copies are offered; Download saves them; Ctrl+C looks right away", async () => {
+        await drive();
+        fireEvent.keyDown(screen.getByRole("img"), { key: "c", metaKey: true });
+        expect(files.soon).toHaveBeenCalled();
+        files.offer!([{ path: "/home/cua/a.zip", name: "a.zip", bytes: 2048 }]);
+        fireEvent.click(await screen.findByRole("button", { name: "Download" }));
+        expect(files.downloaded).toEqual(["a.zip"]);
+        expect(screen.queryByRole("button", { name: "Download" })).toBeNull();
+      });
+
+      it("watching: a drop does nothing", async () => {
+        render(() => <DeskPlayer sandbox="workspace" state={idle} onFallback={() => undefined} />);
+        await waitFor(() => expect(FakeWS.all).toHaveLength(1));
+        await live(FakeWS.all[0]!);
+        fireEvent.drop(document.querySelector(".ldesk-stage")!, { dataTransfer: { types: ["Files"], files: [new File(["x"], "photo.jpg")] } });
+        await new Promise((r) => setTimeout(r, 50));
+        expect(files.sent).toEqual([]);
       });
     });
 

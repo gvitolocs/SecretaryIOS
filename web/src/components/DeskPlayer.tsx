@@ -1,6 +1,7 @@
 import { createEffect, createSignal, on, onCleanup, onMount, Show, For } from "solid-js";
 import { toApiError } from "../api/client";
-import { releaseOnExit, type ControlState, type Sandbox } from "../api/computer";
+import { releaseOnExit, type ControlState, type CopiedFile, type Sandbox } from "../api/computer";
+import { downloadFile, sendFiles, tooLarge, watchCopiedFiles } from "../lib/desktopFiles";
 import { t } from "../i18n";
 import { decodableCodecs, DeskSocket, type DeskMode, type DeskPhase } from "../lib/deskClient";
 import { createDeskPipe, type DeskPipe } from "../lib/deskPipe";
@@ -42,7 +43,9 @@ import "../styles/lucinadesk.css";
 // Clipboard (control only, CONTRACT §8): ⌘V (or the iPhone's Paste) puts the Mac's text on Lucina's
 // clipboard, then presses Ctrl+V there; what she copies comes back as a `clipboard` frame and goes on the
 // Mac's clipboard, or, where the browser refuses that, on a "tap to copy" chip. Watching, none of it.
-// The text is never logged. On a touch screen nothing raises the keyboard but the Keyboard button,
+// The text is never logged. Files (lib/desktopFiles, computer-mobile's endpoints): a ⌘V of Finder files
+// uploads them to `~/Desktop/From Mac/`, puts them on her clipboard and presses Ctrl+V; dropping files on
+// the stream only uploads them (on her clipboard too); files she copies are offered as downloads. On a touch screen nothing raises the keyboard but the Keyboard button,
 // which focuses a hidden textarea and reads its `input` events (what the iPhone keyboard produces).
 //
 // Touch: tap = click, long press = right click, drag = left drag, two fingers = scroll, two-finger
@@ -87,6 +90,13 @@ const KEYS: { label: string; key: string; modifiers?: string[] }[] = [
   { label: "Ctrl+V", key: "v", modifiers: ["Control"] },
 ];
 
+/** "1.2 MB" (the page's own `byteSize` lives in views/Computer.tsx, which loads this lazily). */
+function sizeOf(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(n < 10 * 1024 ? 1 : 0)} KB`;
+  return `${(n / 1024 / 1024).toFixed(n < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+}
+
 function touchScreen(): boolean {
   return typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches === true;
 }
@@ -123,6 +133,8 @@ export default function DeskPlayer(props: DeskPlayerProps) {
   const [zoom, setZoom] = createSignal({ scale: 1, dx: 0, dy: 0 });
   const [cursor, setCursor] = createSignal<{ x: number; y: number } | null>(null);
   /** What Lucina copied that the browser would not let us put on the clipboard: tap to copy. */
+  /** Files Lucina copied in her file manager, offered as downloads. */
+  const [offer, setOffer] = createSignal<CopiedFile[] | null>(null);
   const [copied, setCopied] = createSignal<{ text?: string; png?: Uint8Array; thumb?: string } | null>(null);
   const [stats, setStats] = createSignal<{ codec: string; fps: number; rtt: number; firstFrameMs: number | null }>({
     codec: "",
@@ -160,6 +172,12 @@ export default function DeskPlayer(props: DeskPlayerProps) {
   let pinchBase: { scale: number; dx: number; dy: number } | null = null;
   let disposed = false;
   let codecRetried = false;
+  // Only while this player drives (the server checks the lease too).
+  const copiedFiles = watchCopiedFiles(
+    () => props.sandbox,
+    () => driving() && cur?.mode === "control",
+    (files) => setOffer(files),
+  );
   const step = createWheel();
 
   // ------------------------------------------------------------------ sockets
@@ -235,6 +253,8 @@ export default function DeskPlayer(props: DeskPlayerProps) {
     next = null;
     s.makeCurrent();
     old?.close();
+    // A new takeover starts fresh: her clipboard's files as they are now are not "just copied".
+    if (s.mode === "control" && old?.mode !== "control") copiedFiles.reset();
     setDriving(s.mode === "control");
     setSwitching(null);
     setPhase("live");
@@ -528,8 +548,25 @@ export default function DeskPlayer(props: DeskPlayerProps) {
     input(PASTE_KEY);
   };
 
-  type MacClip = { text: string } | { png: Uint8Array };
-  const pasteClip = (c: MacClip) => ("png" in c ? pasteImage(c.png) : pasteText(c.text));
+  /** Files onto her desktop (`From Mac`) and her clipboard; `paste` also presses Ctrl+V there. */
+  const sendToLucina = async (files: File[], paste: boolean) => {
+    if (!driving() || !files.length) return;
+    const big = tooLarge(files);
+    if (big.length) {
+      setNotice(t("computer.filesTooBig", { name: big[0]!.name }));
+      return;
+    }
+    try {
+      await sendFiles(props.sandbox, files, (f) => setNotice(t("computer.filesSending", { name: f.name })));
+      setNotice(files.length === 1 ? t("computer.filesSent", { name: files[0]!.name }) : t("computer.filesSentMany", { n: String(files.length) }));
+      if (paste && driving()) input(PASTE_KEY);
+    } catch (e) {
+      setNotice(t("computer.filesFailed", { why: toApiError(e).message }));
+    }
+  };
+
+  type MacClip = { text: string } | { png: Uint8Array } | { files: File[] };
+  const pasteClip = (c: MacClip) => ("files" in c ? void sendToLucina(c.files, true) : "png" in c ? pasteImage(c.png) : pasteText(c.text));
 
   /** The Mac's clipboard through the Clipboard API: an image first (PNG), else text; null if refused. */
   const readMacClipboard = async (): Promise<MacClip | null> => {
@@ -582,12 +619,15 @@ export default function DeskPlayer(props: DeskPlayerProps) {
   const onPaste = (e: ClipboardEvent) => {
     if (!pendingPaste || (document.activeElement !== canvas && document.activeElement !== kbd)) return;
     const data = e.clipboardData;
-    const image = Array.from(data?.files ?? []).find((f) => f.type === "image/png");
+    const files = Array.from(data?.files ?? []);
+    // A screenshot comes as one `image.png`: an image to paste, not a file to send.
+    const image = files.length === 1 && files[0]!.type === "image/png" && files[0]!.name === "image.png" ? files[0]! : null;
     const text = data?.getData("text/plain") ?? "";
-    if (!image && !text) return;
+    if (!files.length && !text) return;
     e.preventDefault();
     const finish = pendingPaste;
     if (image) void image.arrayBuffer().then((b) => finish({ png: new Uint8Array(b) }));
+    else if (files.length) finish({ files });
     else finish({ text });
   };
 
@@ -675,6 +715,7 @@ export default function DeskPlayer(props: DeskPlayerProps) {
     if (!msg) return;
     e.preventDefault();
     input(msg, { kind: "msg", msg });
+    afterKey(msg);
   };
 
   const resetKbd = () => {
@@ -717,9 +758,29 @@ export default function DeskPlayer(props: DeskPlayerProps) {
     kbd?.blur();
   };
 
+  /** Files dragged onto the stream while driving: into `From Mac` and onto her clipboard (no paste). */
+  const dragsFiles = (e: DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes("Files");
+  const onDragOver = (e: DragEvent) => {
+    if (!driving() || !dragsFiles(e)) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+  };
+  const onDrop = (e: DragEvent) => {
+    if (!dragsFiles(e)) return;
+    e.preventDefault();
+    if (!driving()) return;
+    void sendToLucina(Array.from(e.dataTransfer?.files ?? []), false);
+  };
+
+  /** Ctrl+C / Ctrl+X went to her: look for copied files now rather than at the next 2 s poll. */
+  const afterKey = (msg: ClientMessage) => {
+    if (driving() && msg.type === "key" && (msg.char === "c" || msg.char === "x") && msg.modifiers?.includes("Control")) copiedFiles.soon();
+  };
+
   const pressKey = (k: (typeof KEYS)[number]) => {
     const msg = keyButton(k.key, k.modifiers);
     input(msg, { kind: "msg", msg });
+    afterKey(msg);
   };
 
   // ------------------------------------------------------------------ focus & full screen
@@ -744,6 +805,7 @@ export default function DeskPlayer(props: DeskPlayerProps) {
 
   createEffect(on([focus, driving, switching], () => peekPill()));
   createEffect(on(driving, (d) => props.onDriving?.(d)));
+  createEffect(on(driving, (d) => !d && setOffer(null)));
 
   // Over a live picture a notice is a toast that goes by itself (before that, the overlay shows it).
   createEffect(
@@ -842,6 +904,7 @@ export default function DeskPlayer(props: DeskPlayerProps) {
       window.clearTimeout(copiedTimer);
       window.clearTimeout(incomingTimer);
       clearCopied();
+      copiedFiles.stop();
       unFocus();
       window.removeEventListener("pagehide", exitPage);
       exitPage();
@@ -905,6 +968,8 @@ export default function DeskPlayer(props: DeskPlayerProps) {
       data-driving={driving() ? "yes" : "no"}
       data-phase={phase()}
       data-peek={peek() || !!confirm() || !!error() ? "yes" : "no"}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
     >
       <div class="ldesk-screen" ref={screenEl}>
         <canvas
@@ -1021,6 +1086,31 @@ export default function DeskPlayer(props: DeskPlayerProps) {
             )}
           </For>
         </div>
+      </Show>
+
+      <Show when={offer()}>
+        {(files) => (
+          <div class="ldesk-files" role="status">
+            <span>
+              {files().length === 1
+                ? t("computer.filesOffer", { name: files()[0]!.name, size: sizeOf(files()[0]!.bytes) })
+                : t("computer.filesOfferMany", { n: String(files().length) })}
+            </span>
+            <button
+              type="button"
+              class="ldesk-btn ldesk-btn--primary"
+              onClick={() => {
+                for (const f of files()) downloadFile(props.sandbox, f);
+                setOffer(null);
+              }}
+            >
+              {t("computer.download")}
+            </button>
+            <button type="button" class="ldesk-btn" aria-label={t("computer.dismiss")} onClick={() => setOffer(null)}>
+              ✕
+            </button>
+          </div>
+        )}
       </Show>
 
       <Show when={notice() && phase() === "live"}>
