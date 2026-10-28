@@ -18,8 +18,8 @@ use crate::models::{
     Agenda, AgendaQuery, CancelledReminder, ChatReply, ChatRequest, CommandResult, CreateList,
     CreateReminder, CreatedReminder, DeviceEvents, DeviceState, Envelope, Health, Job, ListState,
     OpsBatch, OpsResult, ReminderList, ReminderQuery, ReminderScope, ShoppingItem, ShoppingList,
-    ShoppingListData, ShoppingListsData, ShoppingOp, TimelineConversations, TimelinePage, TimelineQuery,
-    UpdateList,
+    ShoppingListData, ShoppingListsData, ShoppingOp, TimelineConversations, TimelinePage,
+    TimelineQuery, UpdateList,
 };
 use crate::validate;
 
@@ -185,7 +185,10 @@ impl Call {
     pub fn computer_task(task: &str) -> Result<Self> {
         let task = task.trim();
         if task.is_empty() || task.chars().count() > 16_000 {
-            return Err(Error::Invalid { field: "task", message: "must be 1..16000 chars".into() });
+            return Err(Error::Invalid {
+                field: "task",
+                message: "must be 1..16000 chars".into(),
+            });
         }
         Ok(Self::new(Method::POST, &["computer", "task"])
             .with_body(serde_json::json!({"task": task, "async": true})))
@@ -213,14 +216,16 @@ impl Call {
     /// `GET /computer/screenshot?sandbox=`: PNG (use [`LucinaClient::bytes`]).
     pub fn computer_screenshot(sandbox: &str) -> Result<Self> {
         let mut c = Self::new(Method::GET, &["computer", "screenshot"]);
-        c.query.push(("sandbox", computer_sandbox(sandbox)?.to_owned()));
+        c.query
+            .push(("sandbox", computer_sandbox(sandbox)?.to_owned()));
         Ok(c)
     }
 
     /// `GET /computer/control?sandbox=`: who drives, and the recent takeover/input log.
     pub fn computer_control_state(sandbox: &str) -> Result<Self> {
         let mut c = Self::new(Method::GET, &["computer", "control"]);
-        c.query.push(("sandbox", computer_sandbox(sandbox)?.to_owned()));
+        c.query
+            .push(("sandbox", computer_sandbox(sandbox)?.to_owned()));
         Ok(c)
     }
 
@@ -611,7 +616,10 @@ impl Call {
 fn computer_sandbox(s: &str) -> Result<&str> {
     match s {
         "workspace" | "android" => Ok(s),
-        _ => Err(Error::Invalid { field: "sandbox", message: "must be workspace or android".into() }),
+        _ => Err(Error::Invalid {
+            field: "sandbox",
+            message: "must be workspace or android".into(),
+        }),
     }
 }
 
@@ -988,6 +996,12 @@ impl LucinaClient {
 }
 
 /// Envelope handling, separate from I/O so it can be unit-tested.
+/// Lucina's `{ok, data}` envelope (or its error) from an answer read some other way
+/// than [`LucinaClient::call_with_status`], e.g. a streamed passthrough.
+pub fn decode_envelope(status: u16, bytes: &[u8]) -> Result<Value> {
+    decode_response(status, bytes)
+}
+
 fn decode_response<T: DeserializeOwned>(status: u16, bytes: &[u8]) -> Result<T> {
     if (200..300).contains(&status) {
         let env: Envelope<Value> =
