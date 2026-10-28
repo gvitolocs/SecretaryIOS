@@ -298,3 +298,52 @@
 .ag-cat-cmd { margin: 0; padding: var(--lu-space-sm) var(--lu-space-md); border-radius: var(--lu-radius-field); background: var(--lu-field); overflow-x: auto; max-width: 100%; font-size: 12px; white-space: pre; }
 .ag-cat-runbook { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--lu-type-footnote); }
 .ag-cat code { font-family: var(--lu-font-mono, monospace); font-size: 0.92em; }
+
+/* Desktop page system (components/page): list + detail under one header. */
+.ag--desk {
+  display: block;
+  padding: 0;
+  min-height: 0;
+}
+.ag-desk-list {
+  display: grid;
+  gap: 12px;
+  min-height: 0;
+}
+.ag-desk-search .pg-input {
+  width: 100%;
+}
+.ag-desk-archived {
+  font-size: 13px;
+  color: var(--pg-muted, var(--lu-text-secondary));
+}
+.pg .ag-desk-row--current {
+  background: color-mix(in srgb, var(--pg-data, var(--lu-accent)) 12%, transparent);
+}
+.pg .ag-desk-page,
+.pg .ag-desk-detail,
+.pg .ag-desk-map {
+  min-height: 0;
+  min-width: 0;
+}
+.pg .ag-desk-page .ag-page h2,
+.pg .ag-desk-detail .ag-detail--desk .ag-head .ag-back {
+  display: none;
+}
+.pg .ag-desk-detail {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.pg .ag-desk-detail .ag-detail {
+  min-height: 0;
+  flex: 1;
+}
+.pg .ag-desk-detail .ag-body {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+}
+.pg .ag-ring {
+  flex: none;
+}
