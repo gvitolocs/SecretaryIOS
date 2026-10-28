@@ -79,6 +79,16 @@ describe("page system", () => {
     ));
     expect(single.container.querySelector(".pg-grid--single")).not.toBeNull();
     expect(screen.queryByRole("complementary")).toBeNull();
+    single.unmount();
+    const split = render(() => (
+      <PageGrid layout="split" rail={<p>List</p>} railLabel="Notes">
+        <p>Detail</p>
+      </PageGrid>
+    ));
+    const side = screen.getByRole("navigation", { name: "Notes" });
+    expect(side).toHaveClass("pg-side");
+    // The list comes first, then the selected item.
+    expect(split.container.querySelector(".pg-grid--split")!.firstElementChild).toBe(side);
   });
 
   it("names a card's region by its title and lists rows edge to edge", () => {

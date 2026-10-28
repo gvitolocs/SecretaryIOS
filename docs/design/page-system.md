@@ -32,6 +32,8 @@ browser with Lucina's stage hidden). Below that the phone layouts stay as they a
 3. **Content grid** (`PageGrid`):
    - `rail`: a main column and a sticky rail, 62 / 38, 24 px gutter. The default for a page with a
      primary list plus context (stats, filters, a form).
+   - `split`: a list column on the left (280-340 px, scrolls by itself) and the selected item on the
+     right. For list + detail pages (notes, chats, agents, stores and a map).
    - `single`: one column up to 880 px. For one list, one form or one document.
    - `full`: the whole width. For media grids, maps, a canvas, a terminal.
 4. **Cards** (`Card`): one surface for every block. 1 px border, 16 px radius, 24 px padding (16 on a

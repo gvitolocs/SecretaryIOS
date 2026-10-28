@@ -250,7 +250,8 @@
 }
 
 .pg-main,
-.pg-rail {
+.pg-rail,
+.pg-side {
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -269,6 +270,19 @@
   .pg-rail {
     position: sticky;
     top: 16px;
+  }
+
+  .pg-grid--split {
+    grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
+  }
+
+  /* The list column scrolls by itself, so the selected item stays in view. */
+  .pg-side {
+    position: sticky;
+    top: 16px;
+    max-height: calc(100dvh - 160px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
 }
 
