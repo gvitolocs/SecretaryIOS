@@ -148,6 +148,33 @@ export function parseKeepText(md: string): KBlock[] {
   return blocks;
 }
 
+const foldTitle = (s: string): string =>
+  s
+    .replace(/<\/?u>/g, "")
+    .replace(/[*_~`]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+
+/**
+ * Notes saved by Lucina or ChatGPT start with `# <the title>`. Cards and the dialog show the title once: this
+ * splits such a leading `#` / `##` line (and the blank lines after it) off the text. The stored content is not
+ * changed; `head + body` is the original.
+ */
+export function splitTitleHeading(md: string, title: string): { head: string; body: string } {
+  const t = foldTitle(title);
+  if (!t) return { head: "", body: md };
+  const lines = md.split("\n");
+  let i = 0;
+  while (i < lines.length && !lines[i]!.trim()) i++;
+  const m = /^#{1,2}\s+(.*?)\s*#*\s*$/.exec((lines[i] ?? "").replace(/\r$/, ""));
+  if (!m || foldTitle(m[1] ?? "") !== t) return { head: "", body: md };
+  let end = i + 1;
+  while (end < lines.length && !lines[end]!.trim()) end++;
+  const head = lines.slice(0, end).join("\n");
+  return { head: end < lines.length ? `${head}\n` : head, body: lines.slice(end).join("\n") };
+}
+
 /** Plain text of markdown (search, link detection, accessible names). */
 export function plainText(md: string): string {
   return md

@@ -10,7 +10,7 @@ import { EditorImages, NoteFields } from "./Editors";
 import { CloseIcon, ClockIcon, DeleteForeverIcon, LinkIcon, PinFilledIcon, PinOutlineIcon, RestoreIcon, TextFormatIcon } from "./icons";
 import { labelsConfig } from "./NoteCard";
 import { NoteToolbar } from "./NoteToolbar";
-import { hostOf } from "../../lib/keepText";
+import { hostOf, splitTitleHeading } from "../../lib/keepText";
 
 const SAVE_DELAY_MS = 600;
 
@@ -19,7 +19,10 @@ function DialogBody(props: { id: string; onClose: () => void }) {
   const n = () => keep.note(props.id)!;
   const readOnly = () => !!n().deletedAt;
   const [title, setTitle] = createSignal(n().title);
-  const [content, setContent] = createSignal(n().content);
+  // The "# <title>" line some notes start with is not shown (it repeats the title) but is kept when saving.
+  const split = splitTitleHeading(n().content, n().title);
+  let head = split.head;
+  const [content, setContent] = createSignal(split.body);
   const [items, setItems] = createSignal<ChecklistItem[] | undefined>(n().items?.map((i) => ({ ...i })));
   const [resetKey, setResetKey] = createSignal(0);
   const [showFormat, setShowFormat] = createSignal(false);
@@ -35,7 +38,7 @@ function DialogBody(props: { id: string; onClose: () => void }) {
     if (dirty.body) {
       const it = items();
       if (it) input.items = it;
-      else input.content = content().replace(/\s+$/, "");
+      else input.content = (head + content()).replace(/\s+$/, "");
     }
     dirty = {};
     void keep.update(props.id, input);
@@ -71,7 +74,8 @@ function DialogBody(props: { id: string; onClose: () => void }) {
       setResetKey(resetKey() + 1);
       void keep.update(props.id, { convert: "text" });
     } else {
-      const next = contentToItems(content());
+      const next = contentToItems(head + content());
+      head = "";
       const list = next.length ? next : [{ id: `i_${Math.random().toString(16).slice(2, 14).padEnd(12, "0")}`, text: "", checked: false, indent: 0 as const }];
       setItems(list);
       setContent(itemsToContent(list));

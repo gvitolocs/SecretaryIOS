@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { domToMd, hostOf, linksIn, mdToDom, parseInline, parseKeepText, plainText } from "./keepText";
+import { domToMd, hostOf, linksIn, mdToDom, parseInline, parseKeepText, plainText, splitTitleHeading } from "./keepText";
 
 const html = (s: string): HTMLElement => {
   const d = document.createElement("div");
@@ -103,3 +103,30 @@ describe("the editor DOM and markdown", () => {
     expect(holder.textContent).toBe("<img src=x onerror=alert(1)>");
   });
 });
+
+describe("splitTitleHeading", () => {
+  it("splits off a leading # line that repeats the title, with the blank lines after it", () => {
+    const md = "# CRAFT-IT4SD: meeting\n\nBriefing text\n## Questions";
+    const { head, body } = splitTitleHeading(md, "CRAFT-IT4SD: meeting");
+    expect(body).toBe("Briefing text\n## Questions");
+    expect(head + body).toBe(md);
+  });
+
+  it("matches ## too, ignores case, emphasis and surrounding spaces", () => {
+    expect(splitTitleHeading("## **Gift Ideas**\nbook", "  gift ideas ").body).toBe("book");
+    expect(splitTitleHeading("# *Rome* <u>trip</u>\nx", "Rome trip").body).toBe("x");
+    expect(splitTitleHeading("\n\n# Plan #\nx", "plan").body).toBe("x");
+  });
+
+  it("keeps a heading that differs from the title, a later heading, and notes without a title", () => {
+    expect(splitTitleHeading("# Other\nx", "Plan")).toEqual({ head: "", body: "# Other\nx" });
+    expect(splitTitleHeading("text\n# Plan", "Plan").head).toBe("");
+    expect(splitTitleHeading("# Plan\nx", "").head).toBe("");
+    expect(splitTitleHeading("### Plan\nx", "Plan").head).toBe("");
+  });
+
+  it("handles a note that is only the heading", () => {
+    expect(splitTitleHeading("# Plan", "Plan")).toEqual({ head: "# Plan", body: "" });
+  });
+});
+

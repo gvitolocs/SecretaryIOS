@@ -437,3 +437,36 @@ describe("Keep: layout controls", () => {
     expect(kp.dataset.nav).toBe("open");
   });
 });
+
+describe("Keep: a title repeated as the text's first heading", () => {
+  const dup = () => [
+    note({ id: "n_dup", title: "CRAFT-IT4SD meeting", content: "# CRAFT-IT4SD meeting\n\nBriefing line one\n## Questions\nAsk about hours", position: 900, rev: 4 }),
+    note({ id: "n_other", title: "Plan", content: "# Not the title\nbody", position: 800, rev: 3 }),
+  ];
+
+  it("shows the title once on the card, and keeps other headings", async () => {
+    server(dup());
+    renderKeep();
+    await screen.findByText("CRAFT-IT4SD meeting", { selector: ".kp-card-title" });
+    const c = within(card("CRAFT-IT4SD meeting"));
+    expect(c.getAllByText("CRAFT-IT4SD meeting")).toHaveLength(1);
+    expect(c.getByText("Briefing line one")).toBeInTheDocument();
+    expect(c.getByText("Questions")).toBeInTheDocument();
+    expect(within(card("Plan")).getByText("Not the title")).toBeInTheDocument();
+  });
+
+  it("hides it in the dialog too, and saves the stored text with the heading intact", async () => {
+    server(dup());
+    renderKeep("/keep/note/n_dup");
+    const dialog = await screen.findByRole("dialog", { name: "CRAFT-IT4SD meeting" });
+    const body = within(dialog).getByRole("textbox", { name: "Take a note…" });
+    expect(body.textContent).toBe("Briefing line oneQuestionsAsk about hours");
+    expect(body.querySelector("h1")).toBeNull();
+    body.insertBefore(Object.assign(document.createElement("div"), { textContent: "Added line" }), body.firstChild);
+    fireEvent.input(body);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(calls.some((c) => c.method === "PATCH")).toBe(true));
+    expect((calls.find((c) => c.method === "PATCH")!.body as { content: string }).content).toBe("# CRAFT-IT4SD meeting\n\nAdded line\nBriefing line one\n## Questions\nAsk about hours");
+  });
+});
+

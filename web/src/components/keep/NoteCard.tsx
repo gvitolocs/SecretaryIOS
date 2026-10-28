@@ -2,7 +2,7 @@ import { createMemo, For, Show } from "solid-js";
 import { attachmentUrl, isAudio, isImage, type ChecklistItem, type KeepNote } from "../../api/keep";
 import { t } from "../../i18n";
 import { cardBackground, cardBorder } from "../../lib/keepColors";
-import { hostOf } from "../../lib/keepText";
+import { hostOf, splitTitleHeading } from "../../lib/keepText";
 import { reminderLabel } from "../../lib/keepTime";
 import { keep } from "../../state/keep";
 import { archive, copyNote, deleteForever, restore, setColor, setPinned, trash, unarchive } from "../../state/keepActions";
@@ -95,7 +95,9 @@ export function NoteCard(props: { note: KeepNote; draggable?: boolean; onDragSta
   const selected = () => selection().has(n().id);
   const inTrash = () => !!n().deletedAt;
   const anySelected = () => selection().size > 0;
-  const hasText = () => (n().items ? false : n().content.trim() !== "");
+  // A leading "# <title>" line only repeats the title: the card shows it once.
+  const body = () => splitTitleHeading(n().content, n().title).body;
+  const hasText = () => (n().items ? false : body().trim() !== "");
   const bg = () => cardBackground(n().color, ctx.theme());
   const border = () => cardBorder(n().color, ctx.theme());
   const audios = createMemo(() => n().attachments.filter(isAudio));
@@ -161,7 +163,7 @@ export function NoteCard(props: { note: KeepNote; draggable?: boolean; onDragSta
           <CardList note={n()} readOnly={inTrash()} />
         </Show>
         <Show when={hasText()}>
-          <KeepText class="kp-card-text" text={n().content} />
+          <KeepText class="kp-card-text" text={body()} />
         </Show>
         <Show when={hasChips()}>
           <div class="kp-chips">

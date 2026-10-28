@@ -1026,6 +1026,7 @@
   overflow-wrap: anywhere;
 }
 
+/* Keep clips a card's text at about 18 lines of 20 px. */
 .kp-card-text {
   position: relative;
   max-height: 360px;
@@ -1050,14 +1051,17 @@
   text-underline-offset: 2px;
 }
 
+/* Headings in cards stay small: a long briefing must not dominate the grid. */
+.kp-card .kp-h1,
 .kp-h1 {
   font-size: 18px;
-  line-height: 26px;
+  line-height: 24px;
   font-weight: 500;
 }
 
+.kp-card .kp-h2,
 .kp-h2 {
-  font-size: 15px;
+  font-size: 16px;
   line-height: 22px;
   font-weight: 500;
 }
