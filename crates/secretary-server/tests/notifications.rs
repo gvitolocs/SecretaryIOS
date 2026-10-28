@@ -574,6 +574,8 @@ async fn inbox_settings_and_auth() {
     assert_eq!((s, b["status"].as_str()), (200, Some("disabled")));
 
     for i in 0..3 {
+        // Inbox ids sort by milliseconds, then a random suffix: avoid timestamp ties.
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
         let (s, _) = h
             .notify(json!({"category": "lucina_message", "title": "Lucina", "body": format!("m{i}"), "channel": "telegram"}))
             .await;

@@ -21,8 +21,12 @@ impl T {
     /// `lucina_token`: `None` leaves Lucina unconfigured; with one, Lucina is
     /// a closed port.
     async fn new(lucina_token: Option<&str>) -> Self {
+        Self::at("http://127.0.0.1:9", lucina_token).await
+    }
+
+    async fn at(url: &str, lucina_token: Option<&str>) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let mut cfg = Config::new("http://127.0.0.1:9", lucina_token.map(str::to_owned));
+        let mut cfg = Config::new(url, lucina_token.map(str::to_owned));
         cfg.data_dir = dir.path().join("state");
         std::fs::create_dir_all(&cfg.data_dir).unwrap();
         let path = dir.path().join("service.token");
@@ -105,6 +109,27 @@ async fn needs_an_owner_device() {
     assert_eq!(t.overview(Some(&t.svc), "").await.0, 401);
     assert_eq!(t.overview(Some("sec_wrong"), "").await.0, 401);
     assert_eq!(t.overview(Some(&t.token), "").await.0, 200);
+    let login = t
+        .http
+        .post(format!("{}/v1/session", t.base))
+        .json(&json!({"token": t.token}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(login.status(), 200);
+    let cookie = login.headers()["set-cookie"]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap();
+    let (status, _) = T::send(
+        t.http
+            .get(format!("{}/v1/system/overview", t.base))
+            .header("cookie", cookie),
+    )
+    .await;
+    assert_eq!(status, 200, "owner browser sessions may read the overview");
 }
 
 #[tokio::test]
@@ -118,13 +143,20 @@ async fn sentinel_only_when_lucina_is_unreachable() {
         .await;
         let (s, v) = t.overview(Some(&t.token), "").await;
         assert_eq!(s, 200, "{v}");
-        let want = if token.is_some() { "Lucina unreachable" } else { "Lucina is not configured" };
+        let want = if token.is_some() {
+            "Lucina unreachable"
+        } else {
+            "Lucina is not configured"
+        };
         assert_eq!(v["sources"]["catalog"]["ok"], false);
         assert_eq!(v["sources"]["catalog"]["error"], want);
         assert_eq!(v["sources"]["ops"]["ok"], false);
         assert_eq!(v["sources"]["sentinel"]["ok"], true);
         assert_eq!(v["overall"], "crit");
-        assert_eq!((v["checks_ok"].as_u64(), v["checks_total"].as_u64()), (Some(1), Some(2)));
+        assert_eq!(
+            (v["checks_ok"].as_u64(), v["checks_total"].as_u64()),
+            (Some(1), Some(2))
+        );
         assert_eq!(v["attention_count"], 1);
         let a = &v["attention"][0];
         assert_eq!(a["key"], "sentinel:nezopt:unit:gmaps-server");
@@ -132,7 +164,10 @@ async fn sentinel_only_when_lucina_is_unreachable() {
         assert_eq!(a["summary"], "Not running");
         assert_eq!(a["details"], json!(["sentinel: inactive (dead) token=•••"]));
         let h = &v["hosts"][0];
-        assert_eq!((h["id"].as_str(), h["state"].as_str()), (Some("nezopt"), Some("ok")));
+        assert_eq!(
+            (h["id"].as_str(), h["state"].as_str()),
+            (Some("nezopt"), Some("ok"))
+        );
         assert_eq!(h["load"], json!([1.2, 1.4, 1.6]));
         assert_eq!(v["services"], json!([]));
         assert_eq!(v["timeline"], json!([]));
@@ -162,5 +197,93 @@ async fn nothing_cached_when_every_source_failed() {
     assert_eq!(v["sources"]["sentinel"]["ok"], false);
     t.snapshot(vec![check("a", "ok", "active")]).await;
     let (_, v) = t.overview(Some(&t.token), "").await;
-    assert_eq!(v["sources"]["sentinel"]["ok"], true, "the empty answer was not cached");
+    assert_eq!(
+        v["sources"]["sentinel"]["ok"], true,
+        "the empty answer was not cached"
+    );
+}
+
+#[tokio::test]
+async fn upstream_contract_and_concurrent_fresh_requests_share_a_fetch() {
+    use axum::{extract::Request, Json, Router};
+    use std::sync::{Arc, Mutex};
+
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let captured = seen.clone();
+    let upstream = Router::new().fallback(move |req: Request| {
+        let captured = captured.clone();
+        async move {
+            captured
+                .lock()
+                .unwrap()
+                .push((req.uri().to_string(), req.headers().clone()));
+            // Keep the first fetch in flight while concurrent refreshes arrive.
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            let v = match req.uri().path() {
+                "/api/secretary/agentd/catalog/status" => json!({
+                    "generated_at": "2026-10-28T21:45:00Z", "hosts": {},
+                    "counts": {"total": 1, "ok": 1}, "problems": []
+                }),
+                "/api/secretary/agentd/catalog" => json!({"groups": []}),
+                "/api/secretary/ops/search" => json!({"items": [{
+                    "id": "e8e10d40c994d9f0", "kind": "incident", "project": "secretary",
+                    "title": "Incident", "body": "secret=value", "at": "2026-10-28T21:39:00Z",
+                    "host": "nezopt", "severity": "high"
+                }], "honcho": "off"}),
+                other => panic!("unexpected upstream path: {other}"),
+            };
+            Json(if req.uri().path().contains("/ops/") {
+                json!({"ok": true, "data": v})
+            } else {
+                v
+            })
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let handle = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+    let t = T::at(&url, Some("lucina-token")).await;
+    let (a, b, c) = tokio::join!(
+        t.overview(Some(&t.token), "?fresh=1"),
+        t.overview(Some(&t.token), "?fresh=1"),
+        t.overview(Some(&t.token), "?fresh=1")
+    );
+    assert_eq!(a.0, 200);
+    assert_eq!(a, b);
+    assert_eq!(a, c);
+    assert_eq!(a.1["sources"]["catalog"]["ok"], true);
+    assert_eq!(a.1["sources"]["ops"]["ok"], true);
+    assert_eq!(a.1["timeline"].as_array().unwrap().len(), 1);
+    assert_eq!(a.1["timeline"][0]["detail"], "secret=•••");
+    assert_eq!(t.overview(Some(&t.token), "").await, a);
+    {
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 5, "one status, one tree and three ops searches");
+        let mut kinds = Vec::new();
+        for (uri, headers) in seen.iter() {
+            assert_eq!(headers["authorization"], "Bearer lucina-token");
+            if uri.contains("/agentd/") {
+                assert!(headers["x-lucina-origin"]
+                    .to_str()
+                    .unwrap()
+                    .starts_with("device:"));
+            } else {
+                assert_eq!(headers["x-lucina-caller"], "system-overview");
+                let parsed = reqwest::Url::parse(&format!("{url}{uri}")).unwrap();
+                let params: std::collections::HashMap<_, _> =
+                    parsed.query_pairs().into_owned().collect();
+                assert_eq!(params["limit"], "30");
+                assert_eq!(
+                    params["since"],
+                    (chrono::Utc::now() - chrono::Duration::days(14))
+                        .format("%Y-%m-%d")
+                        .to_string()
+                );
+                kinds.push(params["kind"].clone());
+            }
+        }
+        kinds.sort();
+        assert_eq!(kinds, ["decision", "deploy", "incident"]);
+    }
+    handle.abort();
 }
