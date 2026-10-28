@@ -388,7 +388,7 @@ async fn shopping_add_relays_lucinas_question() {
     assert!(!err, "{text}");
     assert!(text.contains("Added on list default: latte."), "{text}");
     assert!(
-        text.contains("Not added: lavatrici. Lucina asks: «Intendevi Detersivo per lavatrice?»"),
+        text.contains("Not added: lavatrici. Lucina asks: Intendevi Detersivo per lavatrice?"),
         "{text}"
     );
     assert!(

@@ -376,7 +376,7 @@ pub fn add_result(items: &[(String, String)], list_id: &str, r: &Value) -> Strin
         let error = s(rej, "error").unwrap_or("rejected");
         match (error, s(rej, "question")) {
             ("needs_confirmation", Some(q)) => {
-                out.push_str(&format!("\nNot added: {name}. Lucina asks: «{q}» "));
+                out.push_str(&format!("\nNot added: {name}. Lucina asks: {q} "));
                 match s(rej, "suggestion").filter(|x| !x.trim().is_empty()) {
                     Some(sug) => out.push_str(&format!(
                         "Ask the owner; if they agree, call shopping_add again with the suggested item ({sug})."
@@ -1390,7 +1390,7 @@ mod tests {
             add_result(&items, "default", &r),
             "Added on list default: latte, pane. (1 already applied before.) \
              The list now has 2 item(s) to buy.\n\
-             Not added: lavatrici. Lucina asks: «Intendevi Detersivo per lavatrice?» \
+             Not added: lavatrici. Lucina asks: Intendevi Detersivo per lavatrice? \
              Ask the owner; if they agree, call shopping_add again with the suggested item \
              (Detersivo per lavatrice)."
         );
@@ -1410,7 +1410,7 @@ mod tests {
             add_result(&items, "l2", &r),
             "Nothing was added to list l2. The list now has 0 item(s) to buy.\n\
              Not added: latte (duplicate_item).\n\
-             Not added: lavatrici. Lucina asks: «Cosa intendevi?» Ask the owner what they meant.\n\
+             Not added: lavatrici. Lucina asks: Cosa intendevi? Ask the owner what they meant.\n\
              Not added: pane (item_not_found)."
         );
 
