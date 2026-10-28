@@ -150,18 +150,45 @@ impl Signer {
     /// The CDN URL behind a signed path's parts, or why it is refused.
     pub fn verify(&self, exp: i64, sig: &str, token: &str) -> Result<String, SignError> {
         let expected = self.mac(&format!("{exp}/{token}"));
-        let ok = sig.len() == expected.len() && bool::from(sig.as_bytes().ct_eq(expected.as_bytes()));
+        let ok =
+            sig.len() == expected.len() && bool::from(sig.as_bytes().ct_eq(expected.as_bytes()));
         if !ok {
             return Err(SignError::BadSignature);
         }
         if exp < chrono::Utc::now().timestamp() {
             return Err(SignError::Expired);
         }
-        let bytes = URL_SAFE_NO_PAD.decode(token).map_err(|_| SignError::BadToken)?;
+        let bytes = URL_SAFE_NO_PAD
+            .decode(token)
+            .map_err(|_| SignError::BadToken)?;
         let cdn = String::from_utf8(bytes).map_err(|_| SignError::BadToken)?;
         // Defence in depth: a valid signature on a foreign host (a key leak, a bug) still
         // never reaches the network.
         allowed_cdn_url(&cdn).ok_or(SignError::HostNotAllowed)
+    }
+
+    /// A signed URL for a saved item (`/v1/instagram/a/<exp>/<sig>/<item id>`), served from the
+    /// Gallery's file.
+    pub fn archive_url(&self, media_id: &str) -> String {
+        let exp = chrono::Utc::now().timestamp() + URL_LIFETIME_SECS;
+        let exp = exp - exp % 3600 + 3600;
+        format!(
+            "{PREFIX}/a/{exp}/{}/{media_id}",
+            self.mac(&format!("a/{exp}/{media_id}"))
+        )
+    }
+
+    pub fn verify_archive(&self, exp: i64, sig: &str, media_id: &str) -> Result<(), SignError> {
+        let expected = self.mac(&format!("a/{exp}/{media_id}"));
+        let ok =
+            sig.len() == expected.len() && bool::from(sig.as_bytes().ct_eq(expected.as_bytes()));
+        if !ok {
+            return Err(SignError::BadSignature);
+        }
+        if exp < chrono::Utc::now().timestamp() {
+            return Err(SignError::Expired);
+        }
+        Ok(())
     }
 
     /// Verify a signed URL as a client sends it back (`/v1/instagram/s/…`, optionally with a
@@ -190,7 +217,8 @@ impl Signer {
 mod tests {
     use super::*;
 
-    const CDN: &str = "https://scontent-gmp1-1.cdninstagram.com/v/t51.82787-15/a_n.jpg?stp=dst-jpg_e35&oh=1&oe=2";
+    const CDN: &str =
+        "https://scontent-gmp1-1.cdninstagram.com/v/t51.82787-15/a_n.jpg?stp=dst-jpg_e35&oh=1&oe=2";
 
     fn worker(inner: &str) -> String {
         let enc: String = url::form_urlencoded::byte_serialize(inner.as_bytes()).collect();
@@ -217,8 +245,14 @@ mod tests {
         assert_eq!(inner_cdn_url(&worker(CDN)).as_deref(), Some(CDN));
         assert_eq!(inner_cdn_url(CDN).as_deref(), Some(CDN));
         assert!(inner_cdn_url(&worker("https://evil.test/a.jpg")).is_none());
-        assert!(inner_cdn_url("https://evil.test/cdn?url=https%3A%2F%2Fa.cdninstagram.com%2Fx").is_none());
-        assert!(inner_cdn_url("https://x.workers.dev/other?url=https%3A%2F%2Fa.cdninstagram.com%2Fx").is_none());
+        assert!(
+            inner_cdn_url("https://evil.test/cdn?url=https%3A%2F%2Fa.cdninstagram.com%2Fx")
+                .is_none()
+        );
+        assert!(inner_cdn_url(
+            "https://x.workers.dev/other?url=https%3A%2F%2Fa.cdninstagram.com%2Fx"
+        )
+        .is_none());
         assert!(inner_cdn_url("not a url").is_none());
     }
 
@@ -238,7 +272,8 @@ mod tests {
         assert!(u.starts_with("/v1/instagram/s/"));
         assert_eq!(s.verify_url(&u).as_deref(), Ok(CDN));
         assert_eq!(
-            s.verify_url(&format!("https://getsecretary.tech{u}?x=1")).as_deref(),
+            s.verify_url(&format!("https://getsecretary.tech{u}?x=1"))
+                .as_deref(),
             Ok(CDN)
         );
         // Other key, tampered signature, tampered token, expired.
@@ -246,7 +281,7 @@ mod tests {
             Signer::new(vec![8; 32]).verify_url(&u),
             Err(SignError::BadSignature)
         );
-        let bad = u.replacen("/s/", "/s/", 1);
+        let bad = u.clone();
         let mut parts: Vec<&str> = bad.split('/').collect();
         let n = parts.len();
         let mut tok = parts[n - 1].to_string();
@@ -258,7 +293,10 @@ mod tests {
         // A valid signature on a foreign host is still refused.
         let evil = s.url_for("https://evil.test/x.jpg");
         assert_eq!(s.verify_url(&evil), Err(SignError::HostNotAllowed));
-        assert_eq!(s.verify_url("/v1/instagram/s/1/2"), Err(SignError::BadToken));
+        assert_eq!(
+            s.verify_url("/v1/instagram/s/1/2"),
+            Err(SignError::BadToken)
+        );
         assert_eq!(s.verify_url("/v1/other/s/1/2/3"), Err(SignError::BadToken));
     }
 
@@ -270,10 +308,18 @@ mod tests {
 
     #[test]
     fn video_and_content_type_guesses() {
-        assert!(is_video_url("https://a.fbcdn.net/o1/v/t2/f2/m78/x.mp4?efg=1"));
+        assert!(is_video_url(
+            "https://a.fbcdn.net/o1/v/t2/f2/m78/x.mp4?efg=1"
+        ));
         assert!(!is_video_url(CDN));
-        assert_eq!(ctype_from_url("https://a.fbcdn.net/x.mp4?y=1"), Some("video/mp4"));
-        assert_eq!(ctype_from_url("https://a.fbcdn.net/x.jpeg"), Some("image/jpeg"));
+        assert_eq!(
+            ctype_from_url("https://a.fbcdn.net/x.mp4?y=1"),
+            Some("video/mp4")
+        );
+        assert_eq!(
+            ctype_from_url("https://a.fbcdn.net/x.jpeg"),
+            Some("image/jpeg")
+        );
         assert_eq!(ctype_from_url("https://a.fbcdn.net/x"), None);
     }
 }

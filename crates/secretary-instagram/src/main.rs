@@ -13,6 +13,12 @@
 //! | `INSTAGRAM_BASE_URL` | `https://storyview.yodams.com` | the backend |
 //! | `INSTAGRAM_INGEST_URL` | `http://127.0.0.1:8830` | lucina-media's loopback |
 //! | `INSTAGRAM_SPOOL_DIR` | `$INSTAGRAM_DATA_DIR/spool` | saved items wait here until lucina-media takes them |
+//! | `INSTAGRAM_WATCH` | `1` | `0` turns the warmer off (no refreshes, no auto-save, no change notices) |
+//! | `INSTAGRAM_WATCH_INTERVAL_MIN_SECS` / `_MAX_SECS` | `1200` / `2400` | each watched account is refreshed after a random time in this range |
+//! | `INSTAGRAM_WATCH_PAUSE_SECS` | `1800` | the warmer's rest after the backend says 429 |
+//! | `INSTAGRAM_WATCH_DAILY_MAX_BYTES` | `524288000` | auto-saved bytes per account per UTC day |
+//! | `INSTAGRAM_NOTIFY_URL` | unset | secretary-server's base URL, for the owner's change notices (`POST /v1/notify`) |
+//! | `INSTAGRAM_NOTIFY_TOKEN_FILE` | unset | the file with Lucina's `svc_…` service token (0600; from the broker, never in git) |
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -23,7 +29,7 @@ use secretary_instagram::cache::DiskCache;
 use secretary_instagram::http::{router, Http};
 use secretary_instagram::media::Signer;
 use secretary_instagram::recent::Recent;
-use secretary_instagram::service::{Service, ServiceConfig};
+use secretary_instagram::service::{Service, ServiceConfig, WatchConfig};
 use secretary_instagram::upstream::{Upstream, UpstreamConfig};
 
 fn env(name: &str) -> Option<String> {
@@ -31,7 +37,12 @@ fn env(name: &str) -> Option<String> {
 }
 
 fn millis(name: &str, default: u64, floor: u64) -> Duration {
-    Duration::from_millis(env(name).and_then(|v| v.parse().ok()).unwrap_or(default).max(floor))
+    Duration::from_millis(
+        env(name)
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default)
+            .max(floor),
+    )
 }
 
 fn read_secret(path: &str) -> anyhow::Result<Vec<u8>> {
@@ -105,7 +116,8 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(2 * 1024 * 1024 * 1024);
     let gateway = read_secret(
-        &env("INSTAGRAM_GATEWAY_SECRET_FILE").context("INSTAGRAM_GATEWAY_SECRET_FILE is required")?,
+        &env("INSTAGRAM_GATEWAY_SECRET_FILE")
+            .context("INSTAGRAM_GATEWAY_SECRET_FILE is required")?,
     )?;
     let key_path = env("INSTAGRAM_SIGNING_KEY_FILE")
         .map(PathBuf::from)
@@ -118,18 +130,43 @@ async fn main() -> anyhow::Result<()> {
     if let Some(b) = env("INSTAGRAM_BASE_URL") {
         up_cfg.base = b;
     }
+    let secs = |name: &str, default: u64| {
+        Duration::from_secs(env(name).and_then(|v| v.parse().ok()).unwrap_or(default))
+    };
+    let interval_min = secs("INSTAGRAM_WATCH_INTERVAL_MIN_SECS", 1200);
+    let mut watch = WatchConfig {
+        enabled: env("INSTAGRAM_WATCH").is_none_or(|v| v != "0"),
+        interval_min,
+        interval_max: secs("INSTAGRAM_WATCH_INTERVAL_MAX_SECS", 2400).max(interval_min),
+        pause: secs("INSTAGRAM_WATCH_PAUSE_SECS", 1800),
+        ..Default::default()
+    };
+    if let Some(n) = env("INSTAGRAM_WATCH_DAILY_MAX_BYTES").and_then(|v| v.parse().ok()) {
+        watch.daily_cap_bytes = n;
+    }
+    let mut svc_cfg = ServiceConfig::new(
+        env("INSTAGRAM_SPOOL_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| data.join("spool")),
+        env("INSTAGRAM_INGEST_URL").unwrap_or_else(|| "http://127.0.0.1:8830".into()),
+        data.clone(),
+    );
+    svc_cfg.notify_url = env("INSTAGRAM_NOTIFY_URL");
+    svc_cfg.notify_token_file = env("INSTAGRAM_NOTIFY_TOKEN_FILE").map(PathBuf::from);
+    svc_cfg.watch = watch;
     let service = Service::new(
         Upstream::new(up_cfg)?,
         DiskCache::new(cache_dir, max_bytes)?,
         Recent::open(data.join("recent.json")),
         Signer::new(signing_key(&key_path)?),
-        ServiceConfig {
-            spool_dir: env("INSTAGRAM_SPOOL_DIR")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| data.join("spool")),
-            ingest_url: env("INSTAGRAM_INGEST_URL").unwrap_or_else(|| "http://127.0.0.1:8830".into()),
-        },
+        svc_cfg,
     )?;
+    let service = Arc::new(service);
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let warmer = {
+        let service = service.clone();
+        tokio::spawn(async move { service.run_warmer(stop_rx).await })
+    };
     let st = Arc::new(Http {
         service,
         gateway_secret: gateway,
@@ -138,8 +175,12 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     tracing::info!(%bind, "secretary-instagram listening");
     axum::serve(listener, router(st))
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(async move {
+            shutdown_signal().await;
+            let _ = stop_tx.send(true);
+        })
         .await?;
+    let _ = warmer.await;
     tracing::info!("stopped");
     Ok(())
 }

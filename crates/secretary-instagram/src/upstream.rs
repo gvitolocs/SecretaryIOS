@@ -11,7 +11,7 @@
 //!   and enforces a size limit while it goes.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use tokio::io::AsyncWriteExt;
@@ -113,6 +113,9 @@ pub struct Upstream {
     blocked_until: std::sync::Mutex<Option<Instant>>,
     media_limiter: Limiter,
     media_slots: Semaphore,
+    /// Requests from the owner that are waiting for (or holding) the API gate; the warmer yields
+    /// to them.
+    users_waiting: AtomicUsize,
     pub api_requests: AtomicU64,
 }
 
@@ -150,6 +153,7 @@ impl Upstream {
             blocked_until: std::sync::Mutex::new(None),
             media_limiter: Limiter::new(cfg.media_interval),
             media_slots: Semaphore::new(cfg.media_concurrency.max(1)),
+            users_waiting: AtomicUsize::new(0),
             api_requests: AtomicU64::new(0),
             cfg,
             http,
@@ -157,7 +161,7 @@ impl Upstream {
     }
 
     /// Seconds left of a block set by an earlier 429.
-    fn blocked_for(&self) -> Option<u64> {
+    pub fn blocked_for(&self) -> Option<u64> {
         let g = self.blocked_until.lock().unwrap_or_else(|e| e.into_inner());
         let until = (*g)?;
         let now = Instant::now();
@@ -169,8 +173,30 @@ impl Upstream {
         *g = Some(Instant::now() + Duration::from_secs(secs));
     }
 
-    /// `GET <base><path_and_query>`, the body as text.
+    /// `GET <base><path_and_query>` for the owner, the body as text. Owner requests go first:
+    /// the background warmer (`api_get_low`) waits until none is pending.
     pub async fn api_get(&self, path_and_query: &str) -> Result<String, UpstreamError> {
+        struct Pending<'a>(&'a AtomicUsize);
+        impl Drop for Pending<'_> {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+        self.users_waiting.fetch_add(1, Ordering::SeqCst);
+        let _pending = Pending(&self.users_waiting);
+        self.api_get_inner(path_and_query).await
+    }
+
+    /// The same request for the background warmer: yields to any owner request, and shares the
+    /// one gate, spacing, backoff and 429 block.
+    pub async fn api_get_low(&self, path_and_query: &str) -> Result<String, UpstreamError> {
+        while self.users_waiting.load(Ordering::SeqCst) > 0 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        self.api_get_inner(path_and_query).await
+    }
+
+    async fn api_get_inner(&self, path_and_query: &str) -> Result<String, UpstreamError> {
         if let Some(s) = self.blocked_for() {
             return Err(UpstreamError::RateLimited(s));
         }
@@ -217,7 +243,7 @@ impl Upstream {
                         (self.cfg.backoff_base.as_millis() as u64 / 4).max(1),
                     ));
                 let wait = match hinted {
-                    Some(s) => Duration::from_secs(s).max(Duration::ZERO),
+                    Some(s) => Duration::from_secs(s),
                     None => backoff,
                 };
                 // A Retry-After beyond the cap is not waited out inside a request.
@@ -294,7 +320,9 @@ impl Upstream {
             .map_err(|_| UpstreamError::Network)?;
         let status = resp.status().as_u16();
         if status == 429 {
-            return Err(UpstreamError::RateLimited(retry_after(&resp).unwrap_or(30).max(1)));
+            return Err(UpstreamError::RateLimited(
+                retry_after(&resp).unwrap_or(30).max(1),
+            ));
         }
         if !resp.status().is_success() {
             return Err(UpstreamError::Status(status));
@@ -303,7 +331,13 @@ impl Upstream {
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
-            .map(|v| v.split(';').next().unwrap_or("").trim().to_ascii_lowercase())
+            .map(|v| {
+                v.split(';')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_ascii_lowercase()
+            })
             .unwrap_or_default();
         // The CDN sometimes answers `binary/octet-stream` or `application/octet-stream` for
         // video; then the path extension decides. Anything else (HTML error pages…) is refused.
@@ -312,10 +346,9 @@ impl Upstream {
             .find(|(_, t)| *t == header_ctype)
             .map(|(_, t)| *t)
             .or_else(|| {
-                (header_ctype.is_empty()
-                    || header_ctype.contains("octet-stream"))
-                .then(|| ctype_from_url(cdn))
-                .flatten()
+                (header_ctype.is_empty() || header_ctype.contains("octet-stream"))
+                    .then(|| ctype_from_url(cdn))
+                    .flatten()
             })
             .ok_or(UpstreamError::NotMedia)?;
         let limit = if ctype.starts_with("video/") {
@@ -335,7 +368,9 @@ impl Upstream {
             if written > limit {
                 return Err(UpstreamError::TooLarge);
             }
-            file.write_all(&chunk).await.map_err(|_| UpstreamError::Network)?;
+            file.write_all(&chunk)
+                .await
+                .map_err(|_| UpstreamError::Network)?;
         }
         file.flush().await.map_err(|_| UpstreamError::Network)?;
         if written == 0 {

@@ -36,7 +36,10 @@ impl Recent {
     }
 
     pub fn list(&self) -> Vec<RecentEntry> {
-        self.entries.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     pub fn add(&self, entry: RecentEntry) {
@@ -54,31 +57,8 @@ impl Recent {
     }
 
     fn save(&self, entries: &[RecentEntry]) {
-        let Ok(bytes) = serde_json::to_vec(entries) else {
-            return;
-        };
-        let tmp = self.path.with_extension("tmp");
-        #[cfg(unix)]
-        {
-            use std::io::Write;
-            use std::os::unix::fs::OpenOptionsExt;
-            let f = std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&tmp);
-            if let Ok(mut f) = f {
-                if f.write_all(&bytes).is_ok() {
-                    let _ = std::fs::rename(&tmp, &self.path);
-                }
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            if std::fs::write(&tmp, &bytes).is_ok() {
-                let _ = std::fs::rename(&tmp, &self.path);
-            }
+        if let Ok(bytes) = serde_json::to_vec(entries) {
+            crate::cache::write_private_atomic(&self.path, &bytes);
         }
     }
 }
@@ -113,7 +93,10 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+            assert_eq!(
+                std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
         }
         assert_eq!(Recent::open(p).list(), l);
     }

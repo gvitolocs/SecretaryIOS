@@ -13,7 +13,7 @@ use axum::extract::{Path, Query, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -22,10 +22,10 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
 
 use crate::media::PREFIX;
-use crate::service::{SaveItem, Service, ServiceError, SignedError};
+use crate::service::{MediaFile, SaveItem, Service, ServiceError, SignedError};
 
 pub struct Http {
-    pub service: Service,
+    pub service: Arc<Service>,
     pub gateway_secret: Vec<u8>,
 }
 
@@ -33,9 +33,18 @@ type St = Arc<Http>;
 
 fn no_store(mut r: Response) -> Response {
     let h = r.headers_mut();
-    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
-    h.insert("x-robots-tag", HeaderValue::from_static("noindex, nofollow"));
-    h.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+    h.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
+    h.insert(
+        "x-robots-tag",
+        HeaderValue::from_static("noindex, nofollow"),
+    );
+    h.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
     r
 }
 
@@ -111,8 +120,16 @@ pub fn router(st: St) -> Router {
         .route("/resolve", get(resolve))
         .route("/recent", get(recent))
         .route("/save", post(save))
+        .route("/watch", get(watch_list))
+        .route("/watch/{username}", put(watch_put).delete(watch_delete))
+        .route("/watch/{username}/new", get(watch_new))
+        .route("/watch/{username}/opened", post(watch_opened))
+        .route("/badges", get(badges))
+        .route("/archive/{username}", get(archive))
         .route_layer(middleware::from_fn_with_state(st.clone(), gateway));
-    let signed = Router::new().route("/s/{exp}/{sig}/{token}", get(media));
+    let signed = Router::new()
+        .route("/s/{exp}/{sig}/{token}", get(media))
+        .route("/a/{exp}/{sig}/{id}", get(archived));
     Router::new()
         .nest(PREFIX, api.merge(signed))
         .layer(middleware::from_fn(access_log))
@@ -136,21 +153,33 @@ async fn profile(State(st): State<St>, Path(username): Path<String>) -> Response
     }
 }
 
-async fn posts(State(st): State<St>, Path(username): Path<String>, Query(q): Query<CursorQ>) -> Response {
+async fn posts(
+    State(st): State<St>,
+    Path(username): Path<String>,
+    Query(q): Query<CursorQ>,
+) -> Response {
     match st.service.posts(&username, &q.cursor).await {
         Ok(v) => ok(v),
         Err(e) => e.into_response(),
     }
 }
 
-async fn reels(State(st): State<St>, Path(username): Path<String>, Query(q): Query<CursorQ>) -> Response {
+async fn reels(
+    State(st): State<St>,
+    Path(username): Path<String>,
+    Query(q): Query<CursorQ>,
+) -> Response {
     match st.service.reels(&username, &q.cursor).await {
         Ok(v) => ok(v),
         Err(e) => e.into_response(),
     }
 }
 
-async fn stories(State(st): State<St>, Path(username): Path<String>, Query(q): Query<CursorQ>) -> Response {
+async fn stories(
+    State(st): State<St>,
+    Path(username): Path<String>,
+    Query(q): Query<CursorQ>,
+) -> Response {
     match st.service.stories(&username, &q.cursor).await {
         Ok(v) => ok(v),
         Err(e) => e.into_response(),
@@ -211,6 +240,68 @@ async fn save(State(st): State<St>, body: Bytes) -> Response {
     }
 }
 
+async fn watch_list(State(st): State<St>) -> Response {
+    ok(st.service.watch_list())
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct WatchBody {
+    #[serde(default)]
+    auto_save: Option<bool>,
+}
+
+async fn watch_put(State(st): State<St>, Path(username): Path<String>, body: Bytes) -> Response {
+    let b: WatchBody = if body.iter().all(u8::is_ascii_whitespace) {
+        WatchBody::default()
+    } else {
+        match serde_json::from_slice(&body) {
+            Ok(b) => b,
+            Err(_) => return err(StatusCode::BAD_REQUEST, "bad_request"),
+        }
+    };
+    match st.service.watch_put(&username, b.auto_save) {
+        Ok(v) => ok(v),
+        Err(e) => e.into_response(),
+    }
+}
+
+async fn watch_delete(State(st): State<St>, Path(username): Path<String>) -> Response {
+    match st.service.watch_delete(&username) {
+        Ok(()) => ok(json!({"removed": true})),
+        Err(e) => e.into_response(),
+    }
+}
+
+async fn watch_new(State(st): State<St>, Path(username): Path<String>) -> Response {
+    match st.service.watch_new(&username) {
+        Ok(v) => ok(v),
+        Err(e) => e.into_response(),
+    }
+}
+
+async fn watch_opened(State(st): State<St>, Path(username): Path<String>) -> Response {
+    match st.service.watch_opened(&username) {
+        Ok(v) => ok(v),
+        Err(e) => e.into_response(),
+    }
+}
+
+async fn badges(State(st): State<St>) -> Response {
+    ok(st.service.badges_json())
+}
+
+async fn archive(
+    State(st): State<St>,
+    Path(username): Path<String>,
+    Query(q): Query<CursorQ>,
+) -> Response {
+    match st.service.archive_json(&username, &q.cursor) {
+        Ok(v) => ok(v),
+        Err(e) => e.into_response(),
+    }
+}
+
 /// `bytes=a-b`, `bytes=a-`, `bytes=-n` against a file of `len` bytes.
 enum Sel {
     Full,
@@ -231,14 +322,18 @@ fn parse_range(h: Option<&str>, len: u64) -> Sel {
     };
     let (start, end) = match (a.trim(), b.trim()) {
         ("", n) => {
-            let Ok(n) = n.parse::<u64>() else { return Sel::Bad };
+            let Ok(n) = n.parse::<u64>() else {
+                return Sel::Bad;
+            };
             if n == 0 {
                 return Sel::Bad;
             }
             (len.saturating_sub(n), len - 1)
         }
         (s, "") => {
-            let Ok(s) = s.parse::<u64>() else { return Sel::Bad };
+            let Ok(s) = s.parse::<u64>() else {
+                return Sel::Bad;
+            };
             (s, len - 1)
         }
         (s, e) => {
@@ -267,6 +362,26 @@ async fn media(
         Err(SignedError::Sign(_)) => return err(StatusCode::FORBIDDEN, "forbidden"),
         Err(SignedError::Service(e)) => return e.into_response(),
     };
+    serve_file(file, &headers).await
+}
+
+async fn archived(
+    State(st): State<St>,
+    Path((exp, sig, id)): Path<(String, String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    let Ok(exp) = exp.parse::<i64>() else {
+        return err(StatusCode::FORBIDDEN, "forbidden");
+    };
+    match st.service.archive_file(exp, &sig, &id).await {
+        Ok(f) => serve_file(f, &headers).await,
+        Err(SignedError::Sign(_)) => err(StatusCode::FORBIDDEN, "forbidden"),
+        Err(SignedError::Service(e)) => e.into_response(),
+    }
+}
+
+/// A file with Range support (a browser's video player asks for pieces).
+async fn serve_file(file: MediaFile, headers: &HeaderMap) -> Response {
     let range = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
     let (status, start, end) = match parse_range(range, file.len) {
         Sel::Full => (StatusCode::OK, 0, file.len.saturating_sub(1)),
@@ -298,11 +413,23 @@ async fn media(
             h.insert(header::CONTENT_RANGE, v);
         }
     }
-    h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
-    h.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
-    h.insert("x-robots-tag", HeaderValue::from_static("noindex, nofollow"));
+    h.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    h.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    h.insert(
+        "x-robots-tag",
+        HeaderValue::from_static("noindex, nofollow"),
+    );
     // The URL is signed and expires on its own, so the browser may keep the bytes meanwhile.
-    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("private, max-age=21600"));
+    h.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, max-age=21600"),
+    );
     r
 }
 
@@ -313,10 +440,22 @@ mod tests {
     #[test]
     fn ranges() {
         assert!(matches!(parse_range(None, 100), Sel::Full));
-        assert!(matches!(parse_range(Some("bytes=0-9"), 100), Sel::Part(0, 9)));
-        assert!(matches!(parse_range(Some("bytes=90-"), 100), Sel::Part(90, 99)));
-        assert!(matches!(parse_range(Some("bytes=-10"), 100), Sel::Part(90, 99)));
-        assert!(matches!(parse_range(Some("bytes=50-500"), 100), Sel::Part(50, 99)));
+        assert!(matches!(
+            parse_range(Some("bytes=0-9"), 100),
+            Sel::Part(0, 9)
+        ));
+        assert!(matches!(
+            parse_range(Some("bytes=90-"), 100),
+            Sel::Part(90, 99)
+        ));
+        assert!(matches!(
+            parse_range(Some("bytes=-10"), 100),
+            Sel::Part(90, 99)
+        ));
+        assert!(matches!(
+            parse_range(Some("bytes=50-500"), 100),
+            Sel::Part(50, 99)
+        ));
         assert!(matches!(parse_range(Some("bytes=100-"), 100), Sel::Bad));
         assert!(matches!(parse_range(Some("bytes=5-2"), 100), Sel::Bad));
         assert!(matches!(parse_range(Some("bytes=0-1,5-6"), 100), Sel::Bad));

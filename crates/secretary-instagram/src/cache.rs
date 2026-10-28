@@ -27,7 +27,12 @@ pub const MEDIA_TYPES: &[(&str, &str)] = &[
 ];
 
 pub fn ext_for_ctype(ctype: &str) -> Option<&'static str> {
-    let c = ctype.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    let c = ctype
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
     MEDIA_TYPES.iter().find(|(_, t)| *t == c).map(|(e, _)| *e)
 }
 
@@ -217,6 +222,31 @@ fn touch(p: &Path) {
     }
 }
 
+/// Write a file that only the owner may read (state files: watch list, archive index).
+pub fn write_private_atomic(path: &Path, bytes: &[u8]) {
+    let tmp = path.with_extension("tmp");
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp);
+        if let Ok(mut f) = f {
+            if f.write_all(bytes).is_ok() {
+                let _ = std::fs::rename(&tmp, path);
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    if std::fs::write(&tmp, bytes).is_ok() {
+        let _ = std::fs::rename(&tmp, path);
+    }
+}
+
 pub fn write_atomic(path: &Path, bytes: &[u8]) {
     let tmp = path.with_extension(format!("tmp{}", std::process::id()));
     if std::fs::write(&tmp, bytes).is_ok() {
@@ -243,7 +273,10 @@ mod tests {
         put_media(&c, "b", 1_000);
         std::thread::sleep(Duration::from_millis(20));
         put_media(&c, "c", 1_000);
-        assert!(c.find_media("a").is_some(), "exactly at the cap: nothing evicted");
+        assert!(
+            c.find_media("a").is_some(),
+            "exactly at the cap: nothing evicted"
+        );
         std::thread::sleep(Duration::from_millis(20));
         put_media(&c, "d", 1_000); // 4000 > 3000: evict down to 2700 -> drops the two oldest
         assert!(c.total_bytes() <= 3_000);
@@ -271,7 +304,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let c = DiskCache::new(dir.path(), 1 << 20).unwrap();
         c.put("k", &"v".to_string());
-        assert_eq!(c.get::<String>("k", Duration::from_secs(60)), Some("v".into()));
+        assert_eq!(
+            c.get::<String>("k", Duration::from_secs(60)),
+            Some("v".into())
+        );
         assert_eq!(c.get::<String>("nope", Duration::from_secs(60)), None);
         assert_eq!(c.get::<String>("../x", Duration::from_secs(60)), None);
     }

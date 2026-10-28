@@ -58,6 +58,62 @@ caption:"@username <caption>", taken_at, move:true}`. Failures: `bad_url`, `forb
 `bad_request`, `download_failed`, `rate_limited`, `spool_failed`, `ingest_failed`,
 `ingest_unavailable`. A refused ingest removes its spool file.
 
+## Watching (auto-save, badges, change notices, Archive)
+
+`PUT /watch/{user}` puts an account on the watch list. A background **warmer** then refreshes each
+watched account every 20-40 minutes (a random time per refresh, so accounts drift apart; a new account
+is first checked within seconds), through the same single queue, spacing, backoff and 429 block as the
+owner's requests. Owner requests go first: the warmer waits while one is pending. When the backend says
+429 (to the warmer or to the owner) the warmer stays quiet for at least `INSTAGRAM_WATCH_PAUSE_SECS`
+(30 min) and the account is rescheduled after the pause. A refresh is the profile bundle plus, for a
+public account, the stories: two backend calls, both read-only (nothing is ever sent that Instagram
+could count as "seen"). Both answers are written to the cache, so the owner's next visit is instant.
+
+**Auto-save.** Each refresh saves the stories that are up and not saved yet (images and videos, the
+original file through our CDN fetcher) into the Gallery through lucina-media's `POST /internal/v1/ingest`:
+source `instagram`, album `Instagram · @user`, caption `@user …`, `taken_at` from the story, `move: true`.
+Dedupe is by the Instagram story id: the account keeps the ids it saved (the last 5000, in `watch.json`),
+so nothing is saved twice even after a restart. lucina-media also dedupes by content hash (`duplicate:
+true`). Its `PUT /internal/v1/external/{source}/{ext_id}` registers a file in place (it does not move
+it) and the upload `asset_id` belongs to phone devices, so neither fits a moved ingest; the saved-ids
+store is the dedupe key. A story whose save fails (lucina-media down, a refused ingest) stays unsaved
+and is retried at the next refresh while it is still up (stories last 24 h). The per-account switch
+(`autoSave`, default on) and a daily size cap (`INSTAGRAM_WATCH_DAILY_MAX_BYTES`, default 500 MiB per
+account per UTC day; a story that does not fit is skipped) limit it. The first refresh saves the stories
+that are up at that moment.
+
+**Badges.** The first refresh is a baseline (what is there is not "new"). After it, a story or post id not
+seen before is *unseen* until the owner opens the account: `POST /watch/{user}/opened` clears it. A story that
+expired is no longer unseen. `GET /badges` -> `{total, accounts:{user:n}}` (n = unseen stories + unseen
+posts; only accounts with n > 0). The web shows a dot on the account's chip and on the Plugins card and calls
+`window.secretaryShell?.setBadge?.("instagram", total)` (the Mac rail).
+
+**Change notices.** A refresh that sees the account turn private or public, the user id behind the name
+change, the name answer 404 after it had answered, or come back, queues one notice per detected change; it
+is pushed to the owner through secretary-server (`POST /v1/notify`, category `lucina_message`, route
+`/instagram/<user>`, with Lucina's `svc_…` service token read from `INSTAGRAM_NOTIFY_TOKEN_FILE`, the way
+lucina-meshy does it) and shows up as an iPhone push and in the app's inbox. A notice has its own
+`dedupKey` (`instagram:<user>:<change>:<time>`): a delivery that failed is retried at the next pass, and
+secretary-server drops a repeat, so one change notifies once. Not configured: the change is logged and
+dropped. The backend has no lookup by user id, so a renamed account shows as "gone" (404), not as a rename;
+a name taken over by another account shows as "now belongs to a different account" (the user id changed).
+
+| Route | `data` |
+|---|---|
+| `GET /watch` | `[{username, autoSave, lastCheck, newStories, newPosts, private, fullName, picUrl, isVerified, gone, status, archived}]` |
+| `PUT /watch/{user} {autoSave?}` | the entry (creates it; an empty body keeps the switch) |
+| `DELETE /watch/{user}` | `{removed:true}` (the archive index stays) |
+| `GET /watch/{user}/new` | `{username, since, stories:[item], posts:[item]}`: what is unseen, as media items |
+| `POST /watch/{user}/opened` | the badges after clearing this account |
+| `GET /badges` | `{total, accounts}` |
+| `GET /archive/{user}?cursor=` | `{items:[{id, mediaId, kind, url, thumbUrl, takenAt, savedAt, caption, auto}], nextCursor}`, newest saved first, 30 a page, cursor = offset |
+| `GET /a/{exp}/{sig}/{mediaId}` | a saved item's file (signed like `/s/*`, no gateway header, Range supported) |
+
+The Archive lists what lucina-media took (auto-saves and the owner's own Save to Lucina taps for that
+account). The file is read from where lucina-media keeps it (its loopback `GET /internal/v1/items/{id}/path`),
+so the Archive shows the original even after the CDN link is gone; `thumbUrl` is the Gallery's own 256 px
+thumbnail (`/v1/media/items/{id}/thumb?size=256`, the owner's session).
+
 ## Safety and limits
 
 - Every route but `/s/*` needs `X-Lucina-Gateway` (constant-time compare). `/s/*` verifies an
