@@ -55,6 +55,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state_dir = args.state_dir.unwrap_or_else(default_state_dir);
     let socket = args.socket.unwrap_or_else(default_socket);
 
+    // `lagent mcp`, which agents run, finds this socket through the environment.
+    std::env::set_var(lucina_agentd::config::SOCKET_ENV, &socket);
     std::fs::create_dir_all(&state_dir)?;
     let registry = Registry::open(&state_dir)?;
     let reaped = registry.reap_leftovers();
@@ -82,6 +84,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let manager = Manager::open_with(Store::open(&state_dir)?, providers, lanes, options)?;
     manager.spawn_sweeper();
     manager.spawn_command_sweeper();
+    manager.spawn_scheduler();
+    manager.spawn_finish_watcher();
+    manager.spawn_indexer();
 
     if let Some(dir) = socket.parent() {
         std::fs::create_dir_all(dir)?;

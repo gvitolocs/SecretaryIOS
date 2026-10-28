@@ -20,6 +20,9 @@
 //! - [`providers`]: Claude (stream-json), Codex (app-server), the ACP agents
 //!   (Cursor, OpenCode, Copilot, custom), Pi (rpc) and ZCode, launched through
 //!   [`process`] and [`jsonrpc`]; defaults come from the owner's [`lane`] config.
+//! - Phase 6: [`schedules`] (cron and run bookkeeping; the scheduler is in
+//!   [`manager`]), and [`mcp`]: `lagent mcp`, the tools agents use to start subagents,
+//!   message them, set heartbeats and search.
 
 #![forbid(unsafe_code)]
 
@@ -32,12 +35,14 @@ pub mod journal;
 pub mod jsonrpc;
 pub mod lane;
 pub mod manager;
+pub mod mcp;
 pub mod mock;
 pub mod notify;
 pub mod peer;
 pub mod process;
 pub mod provider;
 pub mod providers;
+pub mod schedules;
 pub mod store;
 pub mod workspaces;
 

@@ -198,7 +198,9 @@ impl Manager {
             .clone()
             .and_then(|v| serde_json::from_value(v).ok())
             .unwrap_or_default();
-        let preapproved = request.kind == lucina_agents::permission::PermissionKind::Tool && policy.preapproves(&request.name);
+        // agentd's own MCP tools (`lagent mcp`) enforce their limits themselves.
+        let preapproved = request.kind == lucina_agents::permission::PermissionKind::Tool
+            && (policy.preapproves(&request.name) || crate::mcp::is_own_tool(&request.name));
         let mut resolved_at_ms = None;
         if preapproved {
             let step = pg::answer(&gate, Origin::Policy, Verdict::Allow, now);
@@ -517,8 +519,19 @@ impl Manager {
         if reason == AttentionReason::Error || agent.record.internal {
             return;
         }
+        // A heartbeat's turn, or a subagent whose parent hears about it, stays quiet;
+        // permission requests always reach the owner (only the owner answers).
+        if reason == AttentionReason::Finished && (self.take_quiet_turn(&agent.record.id) || self.parent_hears(&agent.record.id)) {
+            return;
+        }
         let id = &agent.record.id;
         let mut data = json!({"kind": "agent", "agentId": id, "reason": reason, "agentTitle": agent.record.title});
+        if let Some(s) = agent.record.labels.get(super::SCHEDULE_LABEL) {
+            data["scheduleId"] = json!(s);
+        }
+        if let Some(p) = agent.record.labels.get(super::PARENT_LABEL) {
+            data["parentAgentId"] = json!(p);
+        }
         let dedup = match (reason, agent.pending.last()) {
             (AttentionReason::Permission, Some(p)) => {
                 data["requestId"] = json!(p.id);

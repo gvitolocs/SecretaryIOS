@@ -34,6 +34,11 @@
 //! gets its waiting commands (without ids).
 //!
 //! Projects, workspaces, diffs, files and checkout operations: [`workspaces`].
+//! Schedules, heartbeats, search, prompts, detach and usage: [`orch`].
+//!
+//! A process an agent started acts as that agent ([`Caller::Agent`]): its `create`
+//! makes a subagent (depth-limited, supervised), its `send` is a queued agent message,
+//! and it may stop, archive, rename or delete only its own subagents.
 //!
 //! Answers and external requests check the caller ([`crate::peer`]): only the owner
 //! answers, never an MCP token or a process an agent started.
@@ -58,11 +63,12 @@ use tokio_stream::wrappers::ReceiverStream;
 use lucina_agents::permission_gate::{Origin, Verdict};
 use lucina_agents::PermissionResponse;
 
-use crate::manager::{ActiveTurnBehavior, CreateRequest, ExternalRequest, Manager, ManagerError};
+use crate::manager::{ActiveTurnBehavior, Caller, CreateRequest, ExternalRequest, Manager, ManagerError};
 use crate::journal::{Sequenced, Subscription};
 use crate::peer::{self, origin, Peer};
 use crate::workspaces::WsError;
 
+mod orch;
 mod workspaces;
 
 pub struct ApiError(StatusCode, String, String);
@@ -88,6 +94,9 @@ impl From<ManagerError> for ApiError {
             ManagerError::NotOwner(_) => StatusCode::FORBIDDEN,
             ManagerError::CommandNotFound(_) => StatusCode::NOT_FOUND,
             ManagerError::CommandExpired(_) => StatusCode::GONE,
+            ManagerError::DelegationDepth(_) | ManagerError::NotYourAgent(_) | ManagerError::ScheduleForbidden(_) => StatusCode::FORBIDDEN,
+            ManagerError::ScheduleNotFound(_) => StatusCode::NOT_FOUND,
+            ManagerError::ScheduleConflict(_) => StatusCode::CONFLICT,
         };
         ApiError(status, e.code().to_string(), e.to_string())
     }
@@ -128,6 +137,7 @@ pub fn router(manager: Manager) -> Router {
         .route("/permissions/{id}", get(permission).post(answer_permission))
         .route("/stream", get(stream))
         .merge(workspaces::routes())
+        .merge(orch::routes())
         .with_state(manager)
 }
 
@@ -153,15 +163,48 @@ async fn items(State(m): State<Manager>, Query(q): Query<ListQuery>) -> ApiResul
     to_json(json!({"agents": m.list(q.archived)}))
 }
 
-async fn create(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Json(mut req): Json<CreateRequest>) -> ApiResult {
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateBody {
+    #[serde(flatten)]
+    req: CreateRequest,
+    /// The calling agent hears when the child's run ends (default: yes for an agent).
+    #[serde(default)]
+    notify_on_finish: Option<bool>,
+}
+
+/// An owner's text that looks like an agent envelope is quoted as the owner's
+/// (Paseo `prepareAgentMessage`), so nobody can pose as an agent or a schedule.
+fn quote(text: String) -> String {
+    lucina_agents::envelope::quote_reserved(&text, &uuid::Uuid::new_v4().to_string())
+}
+
+async fn create(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Json(body): Json<CreateBody>) -> ApiResult {
+    let CreateBody { mut req, notify_on_finish } = body;
     // Only the owner may run an agent in a main checkout (worktree guard).
-    let who = caller(&m, &peer, &headers);
-    if req.allow_main_checkout && !matches!(who, Origin::Local | Origin::OwnerDevice) {
+    let origin = caller(&m, &peer, &headers);
+    if req.allow_main_checkout && !matches!(origin, Origin::Local | Origin::OwnerDevice) {
         req.allow_main_checkout = false;
     }
     // An external agent belongs to the device registering it, never to a body field.
-    req.owner_device_id = peer::device(who, &headers);
-    to_json(m.create(req).await?)
+    req.owner_device_id = peer::device(origin, &headers);
+    req.prompt = req.prompt.map(quote);
+    let caller = who(&m, &peer, &headers);
+    let notify = m.prepare_create(&caller, &mut req)? && notify_on_finish.unwrap_or(true);
+    let prompted = req.prompt.as_deref().is_some_and(|p| !p.trim().is_empty());
+    let snap = m.create(req).await?;
+    if let (Caller::Agent(parent), true) = (&caller, notify) {
+        m.subscribe_finish(parent, &snap.id, prompted);
+    }
+    to_json(snap)
+}
+
+/// Who is calling, with the agent behind an agent's process.
+pub(super) fn who(m: &Manager, peer: &Peer, headers: &HeaderMap) -> Caller {
+    let origin = caller(m, peer, headers);
+    let header = headers.get(peer::ORIGIN_HEADER).and_then(|v| v.to_str().ok());
+    let agent = if origin == Origin::Agent { m.calling_agent(peer.pid) } else { None };
+    Caller::from_origin(origin, header, agent)
 }
 
 async fn inspect(State(m): State<Manager>, Path(id): Path<String>) -> ApiResult {
@@ -174,8 +217,9 @@ struct RenameBody {
     title: String,
 }
 
-async fn rename(State(m): State<Manager>, Path(id): Path<String>, Json(body): Json<RenameBody>) -> ApiResult {
+async fn rename(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Path(id): Path<String>, Json(body): Json<RenameBody>) -> ApiResult {
     let id = m.resolve(&id)?;
+    m.may_touch(&who(&m, &peer, &headers), &id)?;
     to_json(m.rename(&id, &body.title)?)
 }
 
@@ -216,33 +260,53 @@ struct SendBody {
     prompt: String,
     #[serde(default)]
     active_turn_behavior: ActiveTurnBehavior,
+    /// From an agent: hear when the recipient's run ends (default: yes for a subagent).
+    #[serde(default)]
+    notify_on_finish: Option<bool>,
 }
 
-async fn send(State(m): State<Manager>, Path(id): Path<String>, Json(body): Json<SendBody>) -> ApiResult {
+async fn send(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Path(id): Path<String>, Json(body): Json<SendBody>) -> ApiResult {
     let id = m.resolve(&id)?;
-    let disposition = m.send(&id, &body.prompt, body.active_turn_behavior).await?;
-    to_json(json!({"agentId": id, "disposition": disposition}))
+    match who(&m, &peer, &headers) {
+        Caller::Agent(from) => {
+            if body.prompt.trim().is_empty() {
+                return Err(ManagerError::Invalid("A prompt is required".into()).into());
+            }
+            m.may_message(&from, &id)?;
+            let notify = body.notify_on_finish.unwrap_or(true) && m.is_child_of(&id, &from);
+            let message_id = m.send_from_agent(&from, &id, &body.prompt, notify)?;
+            to_json(json!({"agentId": id, "disposition": crate::manager::Disposition::Queued, "deliveryStatus": "queued", "messageId": message_id}))
+        }
+        _ => {
+            let disposition = m.send(&id, &quote(body.prompt), body.active_turn_behavior).await?;
+            to_json(json!({"agentId": id, "disposition": disposition}))
+        }
+    }
 }
 
-async fn stop(State(m): State<Manager>, Path(id): Path<String>) -> ApiResult {
+async fn stop(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Path(id): Path<String>) -> ApiResult {
     let id = m.resolve(&id)?;
+    m.may_touch(&who(&m, &peer, &headers), &id)?;
     let stopped = m.stop(&id).await?;
     to_json(json!({"agentId": id, "stopped": stopped}))
 }
 
-async fn archive(State(m): State<Manager>, Path(id): Path<String>) -> ApiResult {
+async fn archive(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Path(id): Path<String>) -> ApiResult {
     let id = m.resolve(&id)?;
+    m.may_touch(&who(&m, &peer, &headers), &id)?;
     let archived_at = m.archive(&id).await?;
     to_json(json!({"agentId": id, "archivedAt": archived_at}))
 }
 
-async fn unarchive(State(m): State<Manager>, Path(id): Path<String>) -> ApiResult {
+async fn unarchive(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Path(id): Path<String>) -> ApiResult {
     let id = m.resolve(&id)?;
+    m.may_touch(&who(&m, &peer, &headers), &id)?;
     to_json(m.unarchive(&id)?)
 }
 
-async fn delete(State(m): State<Manager>, Path(id): Path<String>) -> ApiResult {
+async fn delete(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Path(id): Path<String>) -> ApiResult {
     let id = m.resolve(&id)?;
+    m.may_touch(&who(&m, &peer, &headers), &id)?;
     m.delete(&id).await?;
     to_json(json!({"agentId": id, "deleted": true}))
 }

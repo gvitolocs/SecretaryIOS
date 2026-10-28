@@ -1,0 +1,110 @@
+[
+  {
+    "expression": "* * * * *",
+    "error": null
+  },
+  {
+    "expression": "0 7 * * 1-5",
+    "error": null
+  },
+  {
+    "expression": "*/15 * * * *",
+    "error": null
+  },
+  {
+    "expression": "0 0 1 1 *",
+    "error": null
+  },
+  {
+    "expression": "5,10,15 9-17/2 * * *",
+    "error": null
+  },
+  {
+    "expression": " 0  7 * *  * ",
+    "error": null
+  },
+  {
+    "expression": "* * * *",
+    "error": "Cron expressions must have 5 fields"
+  },
+  {
+    "expression": "* * * * * *",
+    "error": "Cron expressions must have 5 fields"
+  },
+  {
+    "expression": "",
+    "error": "Cron expressions must have 5 fields"
+  },
+  {
+    "expression": "60 * * * *",
+    "error": "Invalid cron minute value"
+  },
+  {
+    "expression": "* 24 * * *",
+    "error": "Invalid cron hour value"
+  },
+  {
+    "expression": "* * 0 * *",
+    "error": "Invalid cron day-of-month value"
+  },
+  {
+    "expression": "* * 32 * *",
+    "error": "Invalid cron day-of-month value"
+  },
+  {
+    "expression": "* * * 13 *",
+    "error": "Invalid cron month value"
+  },
+  {
+    "expression": "* * * * 7",
+    "error": "Invalid cron day-of-week value"
+  },
+  {
+    "expression": "*/0 * * * *",
+    "error": "Invalid cron minute step"
+  },
+  {
+    "expression": "*/ * * * *",
+    "error": "Invalid cron minute step"
+  },
+  {
+    "expression": "*/05 * * * *",
+    "error": "Invalid cron minute step"
+  },
+  {
+    "expression": "1-2-3 * * * *",
+    "error": "Invalid cron minute value"
+  },
+  {
+    "expression": "9-7 * * * *",
+    "error": "Invalid cron minute range"
+  },
+  {
+    "expression": "a * * * *",
+    "error": "Invalid cron minute value"
+  },
+  {
+    "expression": "1,,2 * * * *",
+    "error": "Invalid cron minute field"
+  },
+  {
+    "expression": "1/2/3 * * * *",
+    "error": "Invalid cron minute step"
+  },
+  {
+    "expression": "-1 * * * *",
+    "error": "Invalid cron minute value"
+  },
+  {
+    "expression": "0-59/30 */6 1,15 */3 0",
+    "error": null
+  },
+  {
+    "expression": "00 07 * * *",
+    "error": null
+  },
+  {
+    "expression": "5/2 * * * *",
+    "error": null
+  }
+]
