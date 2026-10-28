@@ -30,8 +30,10 @@ import { wardrobe } from "./dict/wardrobe";
 import { viewer } from "./dict/viewer";
 import { gallery } from "./dict/gallery";
 import { galleryInfo } from "./dict/galleryInfo";
+import { galleryShare } from "./dict/galleryShare";
+import { galleryCompare } from "./dict/galleryCompare";
 import { weight } from "./dict/weight";
 
-export const dictionaries = { chats, library, common, computer, desk, shell, share, chat, login, weight, gym, wardrobe, notify, links, maps, notes, keep, tasks, studio, models, memos, media, films, drive, plugins, serverHealth, viewer, secrets, gallery, galleryInfo };
+export const dictionaries = { chats, library, common, computer, desk, shell, share, chat, login, weight, gym, wardrobe, notify, links, maps, notes, keep, tasks, studio, models, memos, media, films, drive, plugins, serverHealth, viewer, secrets, gallery, galleryInfo, galleryShare, galleryCompare };
 
 export type Dictionaries = typeof dictionaries;

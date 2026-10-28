@@ -18,12 +18,23 @@ export interface SelectionBarProps {
   onDownload: () => void;
   onDelete: () => void;
   onRestore: () => void;
+  /** Opens the Share sheet for the selection (components/gallery/share/ShareSheet.tsx); no button without it. */
+  onShare?: () => void;
 }
 
 function HeartIcon(props: { filled: boolean }) {
   return (
     <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" style={props.filled ? { fill: "currentColor" } : undefined}>
       <path d="M12 20.4s-7.5-4.6-7.5-10.2A4.3 4.3 0 0 1 12 7.6a4.3 4.3 0 0 1 7.5 2.6c0 5.6-7.5 10.2-7.5 10.2z" />
+    </svg>
+  );
+}
+
+function ShareIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 15V4M8 7.5 12 3.5l4 4" />
+      <path d="M6 11.5H5.5A1.5 1.5 0 0 0 4 13v6a1.5 1.5 0 0 0 1.5 1.5h13A1.5 1.5 0 0 0 20 19v-6a1.5 1.5 0 0 0-1.5-1.5H18" />
     </svg>
   );
 }
@@ -69,6 +80,7 @@ export function SelectionBar(props: SelectionBarProps) {
         }
       >
         {act(props.allFavorite ? t("gallery.unfavorite") : t("gallery.favorite"), () => <HeartIcon filled={props.allFavorite} />, props.onFavorite)}
+        {props.onShare ? act(t("galleryShare.shareSelection"), () => <ShareIcon />, props.onShare) : null}
         {act(t("gallery.addToAlbum"), () => <AlbumIcon />, props.onAlbum)}
         {act(t("gallery.download"), () => <DownloadIcon />, props.onDownload)}
         {act(t("gallery.delete"), () => <TrashIcon />, props.onDelete, true)}

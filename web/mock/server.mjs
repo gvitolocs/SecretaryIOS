@@ -1924,6 +1924,7 @@ async function route(req, res) {
   }
   if (path.startsWith("/v1/media")) {
     // A real library when MOCK_MEDIA_URL is set, else the synthetic Gallery (mock/gallery.mjs).
+    if (!process.env.MOCK_MEDIA_URL && (await (await import("./galleryParity.mjs")).handleGalleryParity(req, res, { path, method, url, send, fail, readJson }))) return;
     if (!process.env.MOCK_MEDIA_URL && (await (await import("./gallery.mjs")).handleGallery(req, res, { path, method, url, send, fail, readJson }))) return;
     return (await import("./media.mjs")).proxyMedia(req, res, url, fail);
   }
