@@ -23,8 +23,9 @@
 //! keeps from MCP callers. Lucina's own service token is refused here.
 //!
 //! Paths: `/v1/agents` and `/v1/agents/{id}…` are the daemon's `/agents…`;
-//! `/v1/agents/{permissions,workspaces,projects,clone,providers,stream,commands,files,health}…`
-//! are the daemon's top-level routes; `/v1/agents/items` is `/agents/items`.
+//! `/v1/agents/{permissions,workspaces,projects,clone,providers,stream,commands,files,health,schedules,usage}…`
+//! are the daemon's top-level routes; `/v1/agents/items` and `/v1/agents/search` are `/agents/items` and
+//! `/agents/search`.
 //!
 //! Streams: at most [`STREAMS_PER_CALLER`] open `/v1/agents/stream`s per caller and
 //! [`STREAMS_TOTAL`] in all; each ends on shutdown, when Lucina goes quiet for
@@ -68,7 +69,7 @@ pub const STREAM_IDLE: Duration = Duration::from_secs(90);
 const LONG_POLL: Duration = Duration::from_secs(15 * 60);
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 /// The daemon's top-level routes.
-const TOP: [&str; 9] = ["permissions", "workspaces", "projects", "clone", "providers", "stream", "commands", "files", "health"];
+const TOP: [&str; 11] = ["permissions", "workspaces", "projects", "clone", "providers", "stream", "commands", "files", "health", "schedules", "usage"];
 const PASS: [HeaderName; 3] = [header::CONTENT_TYPE, header::ACCEPT, HeaderName::from_static("last-event-id")];
 
 /// Credentials for the callers that are not devices.
@@ -381,6 +382,12 @@ mod tests {
             ("/v1/agents/stream", "/stream"),
             ("/v1/agents/commands", "/commands"),
             ("/v1/agents/files/download", "/files/download"),
+            ("/v1/agents/schedules", "/schedules"),
+            ("/v1/agents/schedules/ab12cd34/run-once", "/schedules/ab12cd34/run-once"),
+            ("/v1/agents/usage", "/usage"),
+            ("/v1/agents/search", "/agents/search"),
+            ("/v1/agents/0b6e/prompts", "/agents/0b6e/prompts"),
+            ("/v1/agents/0b6e/detach", "/agents/0b6e/detach"),
         ] {
             assert_eq!(daemon_path(public).as_deref(), Some(daemon), "{public}");
         }

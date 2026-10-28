@@ -80,6 +80,14 @@ The agent routes are agentd's routes, prefixed. The table below adds what phase 
 | POST | `/v1/agents/{id}/events` | **phase 7:** `{events: [StreamEvent]}` (up to 200; not `attention_required`): an external agent's owner device posts its session's events → `{agentId, applied}`; anyone else 403 `NOT_OWNER` |
 | POST | `/v1/agents/{id}/commands/{commandId}/ack` | **phase 7:** the owner device confirms an `agent_command` → `{agentId, commandId, acked}`; again is fine; another device 403, unknown 404 `COMMAND_NOT_FOUND`, expired 410 `COMMAND_EXPIRED` |
 | GET | `/v1/agents/commands` | **phase 7:** `{commands: [AgentCommand]}` still waiting for the calling device (after a `stream.reset`) |
+| GET/POST | `/v1/agents/schedules` | **phase 6:** `{schedules: [Schedule]}` / create → Schedule (201). Body: Paseo's (`prompt, name?, cadence, target, maxRuns?, expiresAt?, runOnCreate?`) or the short form (`cron, timezone?` or `everyMs`; `provider, model?, modeId?, cwd \| workspaceId, isolation?, archiveOnFinish?` for a new agent, `agentId` for a heartbeat; `title` = name; `labels`, `expiresInMs`) |
+| GET/PATCH/DELETE | `/v1/agents/schedules/{id}` | **phase 6:** one schedule with its runs / `{name, prompt, cadence \| cron \| timezone \| everyMs, maxRuns, expiresAt, newAgentConfig}` (null clears) / `{scheduleId, deleted}` |
+| GET | `/v1/agents/schedules/{id}/logs` | **phase 6:** `{runs}`, oldest first |
+| POST | `/v1/agents/schedules/{id}/{pause,resume,run-once}` | **phase 6:** → Schedule; 409 `SCHEDULE_CONFLICT` when completed or already running |
+| GET | `/v1/agents/search?q=&limit=&archived=` | **phase 6:** `{query, results: [{agentId, title, provider, status, cwd, updatedAt, archivedAt?, score, matches: [{field: title\|workspace\|branch\|project\|timeline, seq?, kind?, snippet}]}]}` |
+| GET | `/v1/agents/{id}/prompts` | **phase 6:** `{epoch, prompts: [{seq, timestamp, preview}]}` (Paseo's prompt index) |
+| POST | `/v1/agents/{id}/detach` | **phase 6:** drop the parent labels → snapshot |
+| GET | `/v1/agents/usage` | **phase 6:** `{providers: [{provider, agents, running, inputTokens, cachedInputTokens, outputTokens, totalCostUsd}], schedules: {active, paused, completed}, since}` |
 
 **External agents:** `POST /v1/agents` with `provider: "secretary-code"`, `external: true`, `host: "mac"` registers
 one. Its `ownerDeviceId` is the registering device. Sends, steers, stops and permission answers for it become
@@ -101,6 +109,39 @@ the permission book like any agent, survive a daemon restart, and the queue surv
 - Commands: `{type: "agent_command", commandId, agentId, command: {kind: send|steer|stop|permission_response, …},
   createdAt, expiresAt}`, the shape Secretary Code's mirror reads (`agents/wire.ts`). It is `agent_command`, not
   `agent.command`, like the other event types.
+
+## Schedules, subagents, search (phase 6)
+
+- **Schedules** live in agentd's SQLite (`schedules`), wire type `lucina-agents::schedule::Schedule` (Paseo's
+  `StoredSchedule` plus `labels` and `createdBy`). The scheduler ticks every second; next runs follow Paseo's
+  `computeNextRunAt` (whole minutes in the cadence's zone; checked against Paseo on 143 cases). A short-form `cron`
+  without a zone runs in the owner's zone (`LUCINA_AGENTD_TIMEZONE`, else `LUCINA_TIMEZONE`, else Europe/Rome).
+  A restart fails the run it cut off and skips missed fires.
+- **Ownership:** `createdBy` is the caller's origin (`local`, `device:<id>`, `mcp:<tokenId>`, `agent:<id>`). The
+  owner's devices and `lagent` change every schedule; an MCP token or an agent only its own (403
+  `SCHEDULE_FORBIDDEN`). The MCP checks too (`labels["lucina.mcp-token"]`). Schedules from an MCP token or an agent
+  never run a provider without permission prompts or a mode that skips them (the daemon picks a safe mode).
+- **Heartbeats** are schedules whose target is an agent: only that agent (`agentId: "self"`, from inside it) or the
+  owner sets them. A fire is a `<lucina-system>` notice sent with steer, hidden on the timeline, and its turn doesn't
+  push "finished". Archiving the agent completes them.
+- **Subagents:** a process an agent started acts as that agent (agentd reads `LUCINA_AGENT_ID` from its provider's
+  launch environment). Its `POST /agents` makes a child labelled `lucina.parent-agent-id` and
+  `lucina.delegation-depth`; a child (depth 1) can't start agents (403 `DELEGATION_DEPTH`), as in lucina-delegate.
+  An agent may stop, archive, rename, delete or detach only its children (403 `NOT_YOUR_AGENT`), and message only
+  its children and parent: `send` from an agent returns `{disposition: "queued", messageId}` and arrives after 2 quiet
+  seconds as a `<lucina-system kind="agent-message">` envelope (an `agent_message` tool call on the timeline).
+- **Notify on finish:** the parent hears once when the child finishes, errors, is closed or needs permission: one
+  `<lucina-system kind="agent-notification" event="…">` message with the child's last answer (Paseo's text, 4,000
+  characters). Kept in SQLite (`finish_subs`), so a restart doesn't lose it. A child its parent hears about doesn't
+  push "finished" to the phone; its permission pushes always go. Text from the owner that looks like an envelope is
+  quoted as the owner's (`kind="user-message"`).
+- **Agents' MCP:** agentd attaches `lagent mcp` (server `lucina-agents`, tools `create_agent`, `send_agent_prompt`,
+  `list_agents`, `get_agent_status`, `get_agent_activity`, `wait_for_agent`, `cancel_agent`, `archive_agent`,
+  `detach_agent`, `create_heartbeat`, `create_schedule`, `list_schedules`, `delete_schedule`, `delete_heartbeat`,
+  `search_agents`) to Claude (`--mcp-config`) and ACP agents (`mcpServers`), and preapproves them: the daemon
+  enforces the rules above. Codex isn't attached yet. `LUCINA_AGENTD_MCP=0` turns it off.
+- **Search:** Paseo's typo-tolerant ranking over title, workspace, branch and project, plus SQLite FTS5 over prompts,
+  answers and agent messages (indexed when an agent is idle).
 
 ## Stream
 
@@ -132,7 +173,7 @@ past that the client gets `stream.reset` and refetches.
 ## Pushes
 
 agentd sends `POST /v1/notify` with category `agent` and `data: {kind, agentId | permissionId, reason, requestId?,
-actions?}` (phase 3). The apps' notification actions (Allow/Deny) call
+actions?}` (phase 3), plus `scheduleId` and `parentAgentId` when they apply (phase 6). Route `/agents/<agentId>`. The apps' notification actions (Allow/Deny) call
 `POST /v1/agents/{id}/permissions/{requestId}` or `POST /v1/agents/permissions/{id}`.
 
 ## MCP tools (phase 9)
@@ -140,10 +181,11 @@ actions?}` (phase 3). The apps' notification actions (Allow/Deny) call
 The tools are thin wrappers over these routes, with the caller's `mcp:<tokenId>` origin:
 
 - agents: `agents_list`, `agent_run`, `agent_send`, `agent_logs`, `agent_wait`, `agent_stop`, `agent_archive`,
-  `agent_inspect`, `agents_search` (phase 6);
+  `agent_inspect`, `agents_search` (phase 6: agentd's `/search`, names-only against an older daemon);
 - workspaces: `workspaces_list`, `workspace_create`, `workspace_diff`, `files_list`, `file_read`;
 - terminals: `terminal_*` (phase 5);
-- schedules: `schedule_*` (phase 6);
+- schedules: `schedules_list`, `schedule_add` (a new agent per run, in a safe mode), `schedule_remove` (own only)
+  (phase 6);
 - `permissions_list` (read only), `agents_usage`.
 
 Scope: `agents`, plus `read` for reads. Hermes gets a token with `read` + `agents`, stored in Infisical as `agents/prod`

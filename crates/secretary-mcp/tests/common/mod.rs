@@ -50,6 +50,8 @@ pub struct MockState {
     pub agents: Vec<Value>,
     /// Agent schedules; `None`: the route is not there yet (phase 6).
     pub schedules: Option<Vec<Value>>,
+    /// agentd's `/agents/search` answer (phase 6); `None` answers as an older agentd.
+    pub search: Option<Value>,
 }
 
 #[derive(Clone)]

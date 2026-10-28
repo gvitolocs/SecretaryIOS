@@ -153,13 +153,18 @@ pub fn route(st: &mut MockState, method: &str, rest: &[&str], query: &str, heade
                     Json(json!({"deleted": true})).into_response()
                 }
                 _ => {
-                    let mut s = body.clone();
-                    s["id"] = json!("sch_new");
+                    // agentd's answer to the short form (phase 6).
+                    let s = json!({
+                        "id": "sch_new", "name": body["title"], "prompt": body["prompt"], "labels": body["labels"],
+                        "cadence": {"type": "cron", "expression": body["cron"], "timezone": "Europe/Rome"},
+                        "target": {"type": "new-agent", "config": {"provider": body["provider"], "modeId": body["modeId"], "cwd": body["cwd"]}},
+                        "status": "active", "nextRunAt": "2026-10-29T06:00:00.000Z", "createdBy": "mcp:tok", "runs": []});
                     list.push(s.clone());
-                    Json(s).into_response()
+                    (StatusCode::CREATED, Json(s)).into_response()
                 }
             }
         }
+        ("GET", ["search"]) if st.search.is_some() => Json(st.search.clone()).into_response(),
         // agentd today: `/agents/schedules` reads as an agent id.
         (_, ["schedules", ..]) => err(StatusCode::NOT_FOUND, "AGENT_NOT_FOUND", "No agent found matching: schedules"),
         ("GET", [id]) => match find(st, id) {
