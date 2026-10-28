@@ -1,3 +1,4 @@
+import { Sheet } from "../../page";
 import { createSignal, Show } from "solid-js";
 import { createAlbum, deleteAlbum, renameAlbum, type AlbumCard } from "../../../api/gallery";
 import { t } from "../../../i18n";
@@ -34,53 +35,33 @@ function Errors(props: { message: string | null }) {
 }
 
 /** A name for an album: used to make one and to rename one. */
-function NameDialog(props: { id: string; heading: string; submit: string; initial: string; onSave: (title: string) => Promise<void>; onCancel: () => void }) {
+function NameDialog(props: { wide?: boolean; id: string; heading: string; submit: string; initial: string; onSave: (title: string) => Promise<void>; onCancel: () => void }) {
   const [title, setTitle] = createSignal(props.initial);
   const { busy, error, run } = useAction();
-  return (
-    <Modal labelledBy={`${props.id}-title`} busy={busy()} onClose={props.onCancel}>
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          const name = title().trim();
-          if (name) void run(() => props.onSave(name));
-        }}
-      >
-        <h2 id={`${props.id}-title`} class="gv-dialog-title">
-          {props.heading}
-        </h2>
-        <div class="gv-dialog-body">
-          <label class="field-label" for={`${props.id}-name`}>
-            {t("galleryAlbums.nameLabel")}
-          </label>
-          <input
-            id={`${props.id}-name`}
-            class="text-input"
-            type="text"
-            maxLength={120}
-            placeholder={t("galleryAlbums.namePlaceholder")}
-            value={title()}
-            disabled={busy()}
-            onInput={(e) => setTitle(e.currentTarget.value)}
-          />
+  const form = () => (
+      <form id={`${props.id}-form`}
+        onSubmit={(e) => { e.preventDefault(); const name = title().trim(); if (name) void run(() => props.onSave(name)); }}>
+        <Show when={!props.wide}><h2 id={`${props.id}-title`} class="gv-dialog-title">{props.heading}</h2></Show>
+        <div class={props.wide ? "pg-field" : "gv-dialog-body"}>
+          <label class={props.wide ? "pg-field-label" : "field-label"} for={`${props.id}-name`}>{t("galleryAlbums.nameLabel")}</label>
+          <input id={`${props.id}-name`} class={props.wide ? "pg-input" : "text-input"} type="text" maxLength={120} placeholder={t("galleryAlbums.namePlaceholder")} value={title()} disabled={busy()} onInput={(e) => setTitle(e.currentTarget.value)} />
           <Errors message={error()} />
         </div>
-        <div class="gv-dialog-actions">
-          <button type="button" class="btn" disabled={busy()} onClick={() => props.onCancel()}>
-            {t("common.cancel")}
-          </button>
-          <button type="submit" class="btn btn--primary" disabled={busy() || !title().trim()}>
-            {busy() ? t("common.saving") : props.submit}
-          </button>
-        </div>
+        <Show when={!props.wide}><div class="gv-dialog-actions">{actions()}</div></Show>
       </form>
-    </Modal>
+  );
+  const actions = () => <><button type="button" class={props.wide ? "pg-btn" : "btn"} disabled={busy()} onClick={() => props.onCancel()}>{t("common.cancel")}</button><button type="submit" form={`${props.id}-form`} class={props.wide ? "pg-cta" : "btn btn--primary"} disabled={busy() || !title().trim()}>{busy() ? t("common.saving") : props.submit}</button></>;
+  return (
+    <Show when={props.wide} fallback={<Modal labelledBy={`${props.id}-title`} busy={busy()} onClose={props.onCancel}>{form()}</Modal>}>
+      <Sheet open title={props.heading} onClose={() => { if (!busy()) props.onCancel(); }} footer={actions()}>{form()}</Sheet>
+    </Show>
   );
 }
 
-export function NewAlbumDialog(props: { onCreated: (album: { id: string; title: string }) => void; onCancel: () => void }) {
+export function NewAlbumDialog(props: { wide?: boolean; onCreated: (album: { id: string; title: string }) => void; onCancel: () => void }) {
   return (
     <NameDialog
+      wide={props.wide}
       id="al-new"
       heading={t("galleryAlbums.newTitle")}
       submit={t("galleryAlbums.create")}

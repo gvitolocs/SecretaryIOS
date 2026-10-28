@@ -1,3 +1,4 @@
+import { stubWide } from "../test/wide";
 import { Route, useParams } from "@solidjs/router";
 import { fireEvent, screen, waitFor, within } from "@solidjs/testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -127,4 +128,15 @@ describe("the albums page", () => {
     expect(within(dialog).getByRole("button", { name: "Create" })).toBeDisabled();
     expect(calls.some((c) => c.method === "POST")).toBe(false);
   });
+});
+
+it("uses the shared desktop header and an album surface, including the empty state", async () => {
+  stubWide(); backend(); mount();
+  expect(await screen.findByRole("heading", { level: 1, name: "Gallery" })).toBeInTheDocument();
+  const nav = screen.getByRole("navigation", { name: "Gallery sections" });
+  expect(within(nav).getByRole("link", { name: "Albums" })).toHaveAttribute("aria-current", "page");
+  expect(document.querySelectorAll(".pg-cta")).toHaveLength(1);
+  expect(document.querySelector(".al-head")).toBeNull();
+  expect(screen.getByRole("region", { name: "Albums" })).toHaveClass("pg-card");
+  await waitFor(() => expect(document.querySelector(".pg-empty")).toHaveTextContent("No albums yet."));
 });

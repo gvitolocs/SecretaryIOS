@@ -5,6 +5,8 @@ import type { FeatureDictionary } from "../types";
 
 const en = {
   title: "Gallery",
+  sections: "Gallery sections",
+  sharedSection: "Shared",
   trashTitle: "Trash",
   loading: "Loading…",
   empty: "No photos here yet.",
@@ -77,6 +79,8 @@ export const gallery: FeatureDictionary<typeof en> = {
   en,
   it: {
     title: "Galleria",
+    sections: "Sezioni della galleria",
+    sharedSection: "Condivisi",
     trashTitle: "Cestino",
     loading: "Caricamento…",
     empty: "Ancora nessuna foto qui.",
@@ -140,6 +144,8 @@ export const gallery: FeatureDictionary<typeof en> = {
     dismiss: "Chiudi",
   },
   da: {
+    sections: "Gallerisektioner",
+    sharedSection: "Delt",
     title: "Galleri",
     trashTitle: "Papirkurv",
     loading: "Indlæser…",

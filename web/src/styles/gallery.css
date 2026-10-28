@@ -875,3 +875,9 @@ html[data-shell="desktop"] .g-title {
     animation: none;
   }
 }
+
+/* Desktop Gallery frames share the page system's spacing and surfaces. */
+.pg .g-detail-title { font-size: 20px; font-weight: 600; }
+.g-page-root { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; }
+.pg .al-grid { max-width: none; gap: 16px; margin: 0; }
+.pg .al-section { margin: 24px 0 16px; color: var(--pg-muted); font-size: 16px; font-weight: 600; }

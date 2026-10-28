@@ -1,3 +1,5 @@
+import { Card, EmptyState, ErrorState, LoadingState, Page, PageGrid, PrimaryAction, useWide } from "../components/page";
+import { GalleryHeader } from "../components/gallery/GalleryHeader";
 import { A, useNavigate } from "@solidjs/router";
 import { createMemo, createResource, createSignal, For, Show } from "solid-js";
 import { getCategoryStatus, listAlbumCards } from "../api/gallery";
@@ -15,6 +17,7 @@ import "../styles/gallery-albums.css";
  * in a small section after. The hidden albums behind photo-selection share links are never listed.
  */
 export default function GalleryAlbumsView() {
+  const { wide, track } = useWide();
   const navigate = useNavigate();
   const [albums, { refetch }] = createResource(listAlbumCards);
   const [jxl] = createResource(supportsJxl);
@@ -28,31 +31,20 @@ export default function GalleryAlbumsView() {
   // Reading a failed resource throws: the list is empty then, and the error shows below.
   const sections = createMemo(() => sectionAlbums(albums.error ? [] : (albums() ?? []), { things: things() === true }));
 
-  return (
-    <div class="al-page">
-      <header class="al-head">
-        <A class="g-back" href="/gallery" aria-label={t("gallery.backToGallery")}>
-          <BackIcon />
-        </A>
-        <h1 class="al-h1">{t("galleryAlbums.title")}</h1>
-        <button type="button" class="btn btn--primary" onClick={() => setCreating(true)}>
-          <PlusIcon /> {t("galleryAlbums.newAlbum")}
-        </button>
-      </header>
-
-      <Show when={!albums.loading} fallback={<p class="al-empty" role="status">{t("gallery.loading")}</p>}>
+  const body = () => (<>
+      <Show when={!albums.loading} fallback={<Show when={wide()} fallback={<p class="al-empty" role="status">{t("gallery.loading")}</p>}><LoadingState label={t("gallery.loading")} /></Show>}>
         <Show
           when={!albums.error}
           fallback={
-            <p class="al-empty" role="alert">
+<Show when={wide()} fallback={            <p class="al-empty" role="alert">
               {t("galleryAlbums.loadError")}{" "}
               <button type="button" class="btn" onClick={() => void refetch()}>
                 {t("galleryAlbums.retry")}
               </button>
-            </p>
+            </p>}><ErrorState message={t("galleryAlbums.loadError")} retryLabel={t("galleryAlbums.retry")} onRetry={() => void refetch()} /></Show>
           }
         >
-          <Show when={sections().own.length > 0} fallback={<Show when={sections().builtIn.length === 0}><p class="al-empty">{t("galleryAlbums.empty")}<br />{t("galleryAlbums.emptyHint")}</p></Show>}>
+          <Show when={sections().own.length > 0} fallback={<Show when={sections().builtIn.length === 0}><Show when={wide()} fallback={<p class="al-empty">{t("galleryAlbums.empty")}<br />{t("galleryAlbums.emptyHint")}</p>}><EmptyState title={t("galleryAlbums.empty")} text={t("galleryAlbums.emptyHint")} /></Show></Show>}>
             <ul class="al-grid" aria-label={t("galleryAlbums.title")}>
               <For each={sections().own}>{(album) => <li><AlbumTile album={album} jxl={jxl() ?? false} /></li>}</For>
             </ul>
@@ -67,8 +59,28 @@ export default function GalleryAlbumsView() {
         <ThingsSection />
       </Show>
 
+  </>);
+
+  return (
+    <div class={wide() ? "g-page-root" : "al-page"} ref={track}>
+      <Show when={wide()} fallback={<>
+      <header class="al-head">
+        <A class="g-back" href="/gallery" aria-label={t("gallery.backToGallery")}>
+          <BackIcon />
+        </A>
+        <h1 class="al-h1">{t("galleryAlbums.title")}</h1>
+        <button type="button" class="btn btn--primary" onClick={() => setCreating(true)}>
+          <PlusIcon /> {t("galleryAlbums.newAlbum")}
+        </button>
+      </header>
+{body()}
+</>}>
+        <Page><GalleryHeader count={albums.loading || albums.error ? undefined : sections().own.length + sections().builtIn.length} action={<PrimaryAction icon={<PlusIcon />} onClick={() => setCreating(true)}>{t("galleryAlbums.newAlbum")}</PrimaryAction>} />
+          <PageGrid layout="full"><Card label={t("galleryAlbums.title")}>{body()}</Card></PageGrid>
+        </Page>
+      </Show>
       <Show when={creating()}>
-        <NewAlbumDialog onCreated={(album) => navigate(albumPath(album.id))} onCancel={() => setCreating(false)} />
+        <NewAlbumDialog wide={wide()} onCreated={(album) => navigate(albumPath(album.id))} onCancel={() => setCreating(false)} />
       </Show>
     </div>
   );
