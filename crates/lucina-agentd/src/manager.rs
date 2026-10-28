@@ -36,13 +36,15 @@ mod external_agents;
 mod gate;
 mod orch;
 mod permissions;
+mod rewind;
 mod schedules;
 mod search;
 mod workspaces;
 
 pub use gate::{GateConfig, GateRequest, CONFIG_FILE};
-pub use orch::{Caller, DEPTH_LABEL, MAX_DEPTH, ORIGIN_LABEL};
+pub use orch::{Caller, DEPTH_LABEL, MAX_DEPTH, MCP_TOKEN_LABEL, ORIGIN_LABEL};
 pub use schedules::{owner_timezone, ScheduleInput, RUN_LABEL, SCHEDULE_LABEL};
+pub use rewind::{ForkOutcome, ForkRequest, RewindOutcome, RewindRequest};
 pub use search::{PromptEntry, SearchMatch, SearchResult};
 pub use permissions::{ApprovalCandidate, ExternalRequest, PermissionView, Resolution, EXPIRED_MESSAGE};
 pub use workspaces::{metadata_provider, SWEEP_EVERY};
@@ -129,6 +131,22 @@ pub enum ManagerError {
     /// An MCP token or an agent changing a schedule it didn't create.
     #[error("{0}")]
     ScheduleForbidden(String),
+    /// The provider can't rewind this way (Paseo `RewindCapabilityError`), or the agent
+    /// isn't one a provider runs.
+    #[error("{0}")]
+    RewindUnsupported(String),
+    /// The message to rewind to isn't a user message of the agent.
+    #[error("{0}")]
+    RewindTargetNotFound(String),
+    /// A rewind of files the caller may not touch.
+    #[error("{0}")]
+    RewindForbidden(String),
+    /// The fork boundary is gone or changed (Paseo's `fork_context` errors).
+    #[error("{0}")]
+    ForkBoundary(String),
+    /// A rewind or a lane run holds the agent right now.
+    #[error("{0}")]
+    Busy(String),
 }
 
 impl ManagerError {
@@ -159,6 +177,11 @@ impl ManagerError {
             ManagerError::ScheduleNotFound(_) => "SCHEDULE_NOT_FOUND",
             ManagerError::ScheduleConflict(_) => "SCHEDULE_CONFLICT",
             ManagerError::ScheduleForbidden(_) => "SCHEDULE_FORBIDDEN",
+            ManagerError::RewindUnsupported(_) => "REWIND_UNSUPPORTED",
+            ManagerError::RewindTargetNotFound(_) => "REWIND_TARGET_NOT_FOUND",
+            ManagerError::RewindForbidden(_) => "REWIND_FORBIDDEN",
+            ManagerError::ForkBoundary(_) => "FORK_BOUNDARY_UNAVAILABLE",
+            ManagerError::Busy(_) => "AGENT_BUSY",
         }
     }
 }
@@ -180,6 +203,12 @@ pub enum BusEvent {
     },
     AgentDeleted {
         agent_id: String,
+    },
+    /// A rewind replaced the timeline (Paseo `agent.timeline.replacement`): clients drop
+    /// what they hold for the agent and fetch it again under the new epoch.
+    TimelineReplacement {
+        agent_id: String,
+        epoch: String,
     },
     /// Lucina only: a permission request (agent or external) was raised or changed.
     Permission {
@@ -293,6 +322,10 @@ pub struct CreateRequest {
     /// from the body.
     #[serde(skip)]
     pub owner_device_id: Option<String>,
+    /// A fork's chat history, sent ahead of the first prompt (set by `fork`, never from
+    /// the body).
+    #[serde(skip)]
+    pub seed_context: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
@@ -348,6 +381,8 @@ struct Agent {
     gate_running: bool,
     /// A turn completed while the gate task ran: check again.
     gate_again: bool,
+    /// A rewind is changing the agent: no new turn starts until it is done.
+    rewinding: bool,
 }
 
 impl Agent {
@@ -509,6 +544,7 @@ impl Manager {
                 gate_pending: false,
                 gate_running: false,
                 gate_again: false,
+                rewinding: false,
             };
             manager.lock().insert(agent.record.id.clone(), agent);
         }
@@ -719,7 +755,15 @@ impl Manager {
     }
 
     fn append_row(&self, agent: &mut Agent, item: TimelineItem, turn_id: Option<String>) {
-        let row =TimelineRow { seq: agent.next_seq(), timestamp: now_iso(), item, turn_id };
+        // Every user message has an id, so a rewind can name it (a provider that echoes
+        // the message brings its own).
+        let item = match item {
+            TimelineItem::UserMessage { text, message_id: None, client_message_id } => {
+                TimelineItem::UserMessage { text, message_id: Some(uuid::Uuid::new_v4().to_string()), client_message_id }
+            }
+            other => other,
+        };
+        let row = TimelineRow { seq: agent.next_seq(), timestamp: now_iso(), item, turn_id };
         if let Err(e) = self.inner.store.append_row(&agent.record.id, &row) {
             tracing::error!(agent = %agent.record.id, error = %e, "failed to append timeline row");
         }
@@ -1015,6 +1059,7 @@ impl Manager {
             external: req.external,
             owner_device_id: req.owner_device_id.clone(),
             host: req.host.clone(),
+            seed_context: req.seed_context.clone().filter(|c| !c.trim().is_empty()),
         };
         self.inner.store.save(&record)?;
         let id = record.id.clone();
@@ -1052,6 +1097,7 @@ impl Manager {
                 gate_pending: false,
                 gate_running: false,
                 gate_again: false,
+                rewinding: false,
             };
             self.persist(&mut agent);
             self.publish_state(&agent);
@@ -1140,7 +1186,9 @@ impl Manager {
     async fn start_turn(&self, id: &str, prompt: &str) -> Result<(), ManagerError> {
         let session = self.ensure_loaded(id).await?;
         self.note_base(id).await;
-        {
+        // A fork's chat history goes ahead of its first prompt, once; the timeline shows
+        // the prompt as typed (a provider that echoes it shows what it was sent).
+        let (sent, seed) = {
             let mut agents = self.lock();
             let agent = agents.get_mut(id).ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
             self.transition(agent, Event::TurnStarted, None)?;
@@ -1148,11 +1196,17 @@ impl Manager {
                 self.append(agent, TimelineItem::UserMessage { text: prompt.to_string(), message_id: None, client_message_id: None }, None);
             }
             agent.record.last_user_message_at = Some(now_iso());
+            let seed = agent.record.seed_context.take();
+            let sent = match &seed {
+                Some(context) => format!("{context}\n\n{prompt}"),
+                None => prompt.to_string(),
+            };
             self.persist(agent);
             self.publish_state(agent);
-        }
+            (sent, seed)
+        };
         self.bump();
-        match session.start_turn(prompt, None).await {
+        match session.start_turn(&sent, None).await {
             Ok(turn_id) => {
                 let mut agents = self.lock();
                 if let Some(agent) = agents.get_mut(id) {
@@ -1168,6 +1222,8 @@ impl Manager {
                 if let Some(agent) = agents.get_mut(id) {
                     let _ = self.transition(agent, Event::TurnFailed, Some(&message));
                     agent.record.last_error = Some(e.0.clone());
+                    // The history wasn't delivered: the next prompt carries it.
+                    agent.record.seed_context = seed;
                     self.persist(agent);
                     self.publish_state(agent);
                 }
@@ -1193,6 +1249,9 @@ impl Manager {
                 self.inner.commands.enqueue(id, &owner, body)?;
             }
             return Ok(Disposition::Queued);
+        }
+        if self.lock().get(id).is_some_and(|a| a.rewinding) {
+            return Err(ManagerError::Busy("The agent is being rewound; send again when it is done".into()));
         }
         let session = self.ensure_loaded(id).await?;
         if let Some(events) = session.out_of_band(prompt) {

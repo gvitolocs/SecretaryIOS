@@ -35,6 +35,9 @@
 //!   and when a worktree may be removed (`verification/verus/worktree_guard.rs`).
 //! - Lucina only: [`external`] (agents another host runs, their owner device and
 //!   queued commands) and [`stream`] (event ids and `Last-Event-ID` resume).
+//! - Rewind and fork (A16): [`rewind`] (modes, the capability each needs, finding the target
+//!   user message; `agent/rewind/rewind.js`) and [`fork_context`] (the chat-history
+//!   attachment of a fork; `buildAgentForkContextAttachment`).
 //! - Orchestration (phase 6): [`schedule`] (schedules, heartbeats, cron;
 //!   `protocol/schedule/*`), [`envelope`] (messages between agents and finish
 //!   notices; `agent-messages/envelope.js`, `finish-subscriptions/internal/notification.js`)
@@ -53,12 +56,14 @@ pub mod display;
 pub mod envelope;
 pub mod events;
 pub mod external;
+pub mod fork_context;
 pub mod jsstr;
 pub mod lifecycle;
 pub mod notification;
 pub mod permission;
 pub mod permission_gate;
 pub mod projection;
+pub mod rewind;
 pub mod run_gate;
 pub mod schedule;
 pub mod stream;

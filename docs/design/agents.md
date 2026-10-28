@@ -437,7 +437,7 @@ they are, so the matrix rows keep their phase.
 | 7 | secretary-server `/v1/agents`, streams. The QR login is already live (the QR session, server-live), so it is reused, not rebuilt | the Mac app's agents mirror (SecretaryCode c1cd168) talks to it |
 | 9 | MCP tools (`agents` scope), Hermes token | Hermes runs an agent |
 | 5 | Terminals, scripts, ports, service proxy | rows T1-T3, S1, S2, W3 green; diff h same as Paseo (built 2026-10-28, branches agents-p5 / agents-p5-server) |
-| 6 | Schedules, heartbeats, subagents, notify-on-finish, search | C1, A15, O1 green, A13, C2, C3 built (2026-10-28); A16 rewind/fork, O2 loops, O3 chat rooms and P7 provider subagents follow |
+| 6 | Schedules, heartbeats, subagents, notify-on-finish, search | C1, A15, O1 green, A13, C2, C3 built (2026-10-28); A16 rewind/fork built (2026-10-28; mock only, real providers follow), O2 loops, O3 chat rooms and P7 provider subagents follow |
 | 8 | UIs: web plugin, Secretary Code panel, iOS, Android | screenshots on each |
 | 10 | Connected hosts, plugins and catalog | |
 | 11 | Soak: the owner uses it for real work; then Paseo is retired (unit off, `expected-active.txt`, `~/.paseo` checked for unpushed work and archived to the MyBook, `@getpaseo/cli` uninstalled, Codex rules changed) | owner sign-off |
