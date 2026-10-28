@@ -670,6 +670,168 @@ async fn requests_expire() {
 }
 
 #[tokio::test]
+async fn a_requester_can_withdraw_its_pending_request() {
+    let h = harness(|_| {}).await;
+    let phone = h.device("iPhone");
+    let other = h.device("Other requester");
+    let id = h.ask("agent.permission").await;
+    let path = format!("/v1/approvals/{id}/withdraw");
+
+    // A long poll that is already waiting wakes up with `expired`.
+    let waiter = {
+        let (http, url, svc, id) = (
+            h.http.clone(),
+            h.url(&format!("/v1/approvals/{id}/wait?timeout=20")),
+            h.svc.clone(),
+            id.clone(),
+        );
+        tokio::spawn(async move {
+            let t = std::time::Instant::now();
+            let v: Value = http
+                .get(url)
+                .bearer_auth(svc)
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            (v, t.elapsed(), id)
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Anyone but the requester sees nothing: 404, and the request stays open.
+    let (s, v) = h.call("POST", &path, Some(&other.token), None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{v}");
+    let (s, _) = h.call("POST", &path, Some(&phone.token), None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _) = h.call("POST", &path, None, None).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let (_, v) = h.wait(&id, 0).await;
+    assert_eq!(v["status"], "pending");
+    let (_, v) = h
+        .call(
+            "GET",
+            "/v1/approvals?status=pending",
+            Some(&phone.token),
+            None,
+        )
+        .await;
+    assert_eq!(v["approvals"].as_array().unwrap().len(), 1);
+
+    // The requester withdraws; again is the same answer.
+    for _ in 0..2 {
+        let (s, v) = h.call("POST", &path, Some(&h.svc), None).await;
+        assert_eq!(
+            (s, v["status"].as_str()),
+            (StatusCode::OK, Some("expired")),
+            "{v}"
+        );
+    }
+    let (v, took, wid) = waiter.await.unwrap();
+    assert_eq!(wid, id);
+    assert_eq!(v["status"], "expired", "{v}");
+    assert!(took < Duration::from_secs(5), "the poll woke: {took:?}");
+    assert!(v.get("grant").is_none());
+
+    // Waiting afterwards says expired; GET says expired; the pending list drops it.
+    let (_, v) = h.wait(&id, 0).await;
+    assert_eq!(v["status"], "expired");
+    let (s, v) = h
+        .call(
+            "GET",
+            &format!("/v1/approvals/{id}"),
+            Some(&phone.token),
+            None,
+        )
+        .await;
+    assert_eq!((s, v["status"].as_str()), (StatusCode::OK, Some("expired")));
+    let (_, v) = h
+        .call(
+            "GET",
+            "/v1/approvals?status=pending",
+            Some(&phone.token),
+            None,
+        )
+        .await;
+    assert_eq!(v["approvals"].as_array().unwrap().len(), 0);
+
+    // Deciding it afterwards: 410, for approve and deny alike.
+    for d in ["approve", "deny"] {
+        let (s, v) = h.decide(&phone, &id, d, None).await;
+        assert_eq!(
+            (s, v["error"]["code"].as_str()),
+            (StatusCode::GONE, Some("approval_expired")),
+            "{d}: {v}"
+        );
+    }
+
+    // One `withdrawn` line, no `expired` one, never decided.
+    let ev = h.audit_events(&id);
+    assert_eq!(ev.iter().filter(|e| *e == "withdrawn").count(), 1, "{ev:?}");
+    assert!(!ev.contains(&"expired".to_owned()) && !ev.contains(&"decided".to_owned()));
+
+    // An unknown id is 404 too.
+    let (s, _) = h
+        .call(
+            "POST",
+            "/v1/approvals/apr_nope/withdraw",
+            Some(&h.svc),
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn withdrawing_a_decided_request_changes_nothing() {
+    let h = harness(|_| {}).await;
+    let phone = h.device("iPhone");
+
+    let approved = h.ask("agent.permission").await;
+    let (s, _) = h.decide(&phone, &approved, "approve", None).await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, v) = h
+        .call(
+            "POST",
+            &format!("/v1/approvals/{approved}/withdraw"),
+            Some(&h.svc),
+            None,
+        )
+        .await;
+    assert_eq!(
+        (s, v["status"].as_str()),
+        (StatusCode::OK, Some("approved")),
+        "{v}"
+    );
+    let (_, v) = h.wait(&approved, 0).await;
+    assert_eq!(v["status"], "approved");
+    assert!(v["grant"].is_string(), "the grant is still handed out");
+
+    let denied = h.ask("agent.permission").await;
+    let (s, _) = h.decide(&phone, &denied, "deny", None).await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, v) = h
+        .call(
+            "POST",
+            &format!("/v1/approvals/{denied}/withdraw"),
+            Some(&h.svc),
+            None,
+        )
+        .await;
+    assert_eq!(
+        (s, v["status"].as_str()),
+        (StatusCode::OK, Some("denied")),
+        "{v}"
+    );
+    let (_, v) = h.wait(&denied, 0).await;
+    assert_eq!(v["status"], "denied");
+    assert!(!h.audit_events(&denied).contains(&"withdrawn".to_owned()));
+    assert!(!h.audit_events(&approved).contains(&"withdrawn".to_owned()));
+}
+
+#[tokio::test]
 async fn a_second_decision_is_refused_and_the_grant_is_stable() {
     let h = harness(|c| c.approvals.min_ttl = Duration::from_secs(1)).await;
     let (a, b) = (h.device("iPhone"), h.device("iPad"));
