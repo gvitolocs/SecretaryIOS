@@ -18,6 +18,7 @@
 //! the catalog's items and renditions; this crate knows nothing about them.
 
 pub mod categories;
+pub mod categories_jev;
 pub mod categories_store;
 pub mod cluster;
 pub mod faces;

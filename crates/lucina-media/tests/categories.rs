@@ -978,3 +978,86 @@ async fn the_rules_decider_is_the_default_and_a_decider_can_be_chosen() {
     let other = setup();
     assert_eq!(categories::decider(&other.lib).kind(), DeciderKind::Rules);
 }
+
+/// A decider that can be out (a JEV outage): while `up` is false it is not ready and every call
+/// is an outage; `flaky` makes it answer an outage even while ready (a timeout).
+struct Toggle {
+    up: std::sync::atomic::AtomicBool,
+    flaky: std::sync::atomic::AtomicBool,
+}
+
+impl Decider for Toggle {
+    fn kind(&self) -> DeciderKind {
+        DeciderKind::Jev
+    }
+    fn id(&self) -> String {
+        "jev-toggle".into()
+    }
+    fn ready(&self) -> bool {
+        self.up.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    fn decide(&self, _f: &Features) -> Result<Decision, MlError> {
+        if !self.ready() || self.flaky.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(MlError::Unavailable("jev is out".into()));
+        }
+        Ok(Decision {
+            category: Category::Map,
+            confidence: 0.8,
+            reason: "toggle".into(),
+        })
+    }
+}
+
+fn decided_by(env: &Env, id: &str) -> Option<cs::DecidedBy> {
+    env.lib
+        .db
+        .with(|c| cs::get(c, id))
+        .unwrap()
+        .map(|r| r.decided_by)
+}
+
+#[tokio::test]
+async fn during_an_outage_the_rules_only_fill_gaps() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let env = setup();
+    let a = add(&env, &spec("a1", GREEN, "2024-01-01T10:00:00Z"));
+    let b = add(&env, &spec("b1", BLUE, "2024-02-01T10:00:00Z"));
+    let s = start(&env, look("look-1", Category::Receipt));
+    let toggle = Arc::new(Toggle {
+        up: false.into(),
+        flaky: false.into(),
+    });
+    categories::install_decider(&env.lib, toggle.clone());
+
+    // JEV out from the start: the rules decide, so nothing waits undecided.
+    assert_eq!(decide_all(&env, &s), 2);
+    assert_eq!(decided_by(&env, &a), Some(cs::DecidedBy::Rules));
+    assert_eq!(category_of(&env, &a), Some(Category::Food));
+    let (_, st) = get(&env.app, "/v1/media/categories/status").await;
+    assert_eq!(st["decider"]["ready"], false, "{st}");
+
+    // JEV back: it decides every photo again.
+    toggle.up.store(true, SeqCst);
+    assert_eq!(decide_all(&env, &s), 2);
+    assert_eq!(decided_by(&env, &a), Some(cs::DecidedBy::Jev));
+    assert_eq!(category_of(&env, &b), Some(Category::Map));
+
+    // Out again: its answers stay; a new photo is decided by the rules.
+    toggle.up.store(false, SeqCst);
+    let c = add(&env, &spec("c1", GREEN, "2024-03-01T10:00:00Z"));
+    embed_all(&env, &s);
+    assert_eq!(decide_all(&env, &s), 1);
+    assert_eq!(category_of(&env, &a), Some(Category::Map));
+    assert_eq!(decided_by(&env, &c), Some(cs::DecidedBy::Rules));
+
+    // Ready but timing out: nothing is decided, nothing is skipped for good.
+    toggle.up.store(true, SeqCst);
+    toggle.flaky.store(true, SeqCst);
+    let mut skip = HashSet::new();
+    assert_eq!(categories::step(&env.lib, &s, &mut skip).unwrap(), 0);
+    assert!(skip.is_empty());
+    assert_eq!(decided_by(&env, &c), Some(cs::DecidedBy::Rules));
+    toggle.flaky.store(false, SeqCst);
+    assert_eq!(categories::step(&env.lib, &s, &mut skip).unwrap(), 1);
+    assert_eq!(decided_by(&env, &c), Some(cs::DecidedBy::Jev));
+}

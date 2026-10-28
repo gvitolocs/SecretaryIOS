@@ -674,8 +674,15 @@ pub trait Decider: Send + Sync {
     /// Stored with every decision: `kind` and the version of the rules or model. A decision made
     /// by another id is made again.
     fn id(&self) -> String;
-    /// An error leaves the photo undecided (the service tries again after a restart).
+    /// An error leaves the photo undecided (the service tries again after a restart), except
+    /// [`MlError::Unavailable`]: the decider is temporarily out (quota, outage), the photo stays
+    /// pending and the step stops for this round.
     fn decide(&self, features: &Features) -> Result<Decision, MlError>;
+    /// Whether it can decide now. While it cannot, the step decides with the rules, but only
+    /// photos that have no decision yet: an outage never replaces this decider's answers.
+    fn ready(&self) -> bool {
+        true
+    }
 }
 
 /// The thresholds of the rules, in one place so tests and tuning see them.

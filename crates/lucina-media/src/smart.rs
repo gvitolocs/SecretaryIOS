@@ -34,6 +34,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
+use lucina_media_ml::categories::Decider;
 use lucina_media_ml::index::{Hit, VectorIndex};
 use lucina_media_ml::siglip::{Siglip, SiglipConfig};
 use lucina_media_ml::{store, thermal, Embedder};
@@ -442,6 +443,14 @@ pub async fn worker(lib: Library, cfg: SmartConfig) {
     );
     // Face recognition rides on this thread; it stays off until the owner turns it on.
     crate::faces::install_real(lib.clone()).await;
+    // Photo categories: JEV decides when the service has a key (`JEV_API_KEY`, `LUCINA_JEV`).
+    match lucina_media_ml::categories_jev::JevDecider::from_env() {
+        Some(d) => {
+            tracing::info!(decider = %d.id(), "categories: JEV decides");
+            crate::categories::install_decider(&lib, Arc::new(d));
+        }
+        None => tracing::info!("categories: no JEV key, the rules decide"),
+    }
     let (limit, max_load) = (cfg.temp_limit, cfg.max_load);
     if let Err(e) = std::thread::Builder::new()
         .name("smart-embed".into())

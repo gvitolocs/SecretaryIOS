@@ -19,5 +19,10 @@ thiserror = { workspace = true }
 tracing = "0.1"
 uuid = { workspace = true }
 
+# Photo categories decided by JEV (TypeSafe), with the client Lucina uses (`categories_jev.rs`).
+lucina-jev = { path = "../lucina-jev" }
+tokio = { workspace = true }
+
 [dev-dependencies]
 tempfile = "3"
+wiremock = "0.6"

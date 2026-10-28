@@ -21,9 +21,10 @@
 //!   queries in `browse.rs` and `db::list_filters` add. "On this day" keeps real photos only
 //!   ([`REAL_PHOTOS_SQL`]).
 //! - **Which decider.** The service decides with [`RulesDecider`] until a decider is installed
-//!   with [`install_decider`]; a decider with another id decides every photo again.
-//! - Nothing leaves nezopt: the record has no file names and no pixels, and no decider here
-//!   makes a network call.
+//!   with [`install_decider`]; a decider with another id decides every photo again. With a JEV
+//!   key the service installs `lucina_media_ml::categories_jev::JevDecider`; while JEV is out
+//!   (quota, credits, overload) the rules decide only the photos that have no decision yet.
+//! - Only the feature record leaves nezopt, and only to JEV: no file names, no pixels, no places.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -35,7 +36,7 @@ use lucina_media_ml::categories::{
     Category, Decider, Facts, Features, PromptVectors, RulesDecider, SourceKind, FEATURES_VERSION,
 };
 use lucina_media_ml::categories_store::{self as cs, DecidedBy, NewDecision};
-use lucina_media_ml::{store, Embedder};
+use lucina_media_ml::{store, Embedder, MlError};
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 
@@ -81,6 +82,13 @@ pub fn filter_sql(cat: Category, args: &mut Vec<rusqlite::types::Value>) -> Stri
 
 // ---- the decider and the cached prompts --------------------------------------------------------
 
+/// The decider a step uses ([`Categories::active`]).
+struct Active {
+    decider: Arc<dyn Decider>,
+    /// The rules standing in: any earlier decision counts as current, so they only fill gaps.
+    stand_in: bool,
+}
+
 /// Categories for one catalog: the decider and the prompt vectors of the current model.
 pub struct Categories {
     decider: RwLock<Arc<dyn Decider>>,
@@ -104,6 +112,23 @@ impl Categories {
             .read()
             .unwrap_or_else(|p| p.into_inner())
             .clone()
+    }
+
+    /// The decider to use now and whether it is the chosen one. While the chosen decider is not
+    /// [`Decider::ready`] (a JEV outage), the rules stand in for photos with no decision yet.
+    fn active(&self) -> Active {
+        let chosen = self.decider();
+        if chosen.ready() {
+            Active {
+                decider: chosen,
+                stand_in: false,
+            }
+        } else {
+            Active {
+                decider: Arc::new(RulesDecider::default()),
+                stand_in: true,
+            }
+        }
     }
 
     /// The prompt vectors of `embedder`'s model: cached per model, built on first use. `None`
@@ -249,15 +274,16 @@ fn facts_of(c: &Connection, id: &str) -> rusqlite::Result<Option<ItemFacts>> {
 
 /// Photos with a ready rendition and a current vector of the model that have no current decision:
 /// none, or one by another model, features version or decider, or one older than the photo's last
-/// change. The owner's choices are never pending. `?4`: ids to leave out (JSON array), the ones
-/// that failed in this process.
+/// change. The owner's choices are never pending. `?3` NULL: a decision by any decider counts
+/// (the rules standing in during an outage only fill gaps). `?4`: ids to leave out (JSON
+/// array), the ones that failed in this process.
 const PENDING_WHERE: &str = "i.kind = 'photo' AND i.thumb_state = 'ready' \
      AND i.trashed_at IS NULL AND i.hidden = 0 \
      AND EXISTS (SELECT 1 FROM ml_embeddings e WHERE e.item_id = i.id AND e.model = ?1 \
                  AND e.created_at >= i.updated_at) \
      AND NOT EXISTS (SELECT 1 FROM ml_categories c WHERE c.item_id = i.id AND \
                      (c.decided_by = 'owner' OR (c.model = ?1 AND c.features_version = ?2 \
-                      AND c.decider_id = ?3 AND c.decided_at >= i.updated_at))) \
+                      AND (?3 IS NULL OR c.decider_id = ?3) AND c.decided_at >= i.updated_at))) \
      AND i.id NOT IN (SELECT value FROM json_each(?4))";
 
 fn skip_json(skip: &HashSet<String>) -> String {
@@ -267,7 +293,7 @@ fn skip_json(skip: &HashSet<String>) -> String {
 fn pending_batch(
     c: &Connection,
     model: &str,
-    decider_id: &str,
+    decider_id: Option<&str>,
     skip: &HashSet<String>,
     n: usize,
 ) -> rusqlite::Result<Vec<ItemFacts>> {
@@ -295,11 +321,14 @@ fn pending_count(c: &Connection, model: &str, decider_id: &str) -> rusqlite::Res
     )
 }
 
-/// Decides `batch` and stores the decisions. Photos that cannot be decided (no vector, the
-/// decider failed) go into `skip` so the step does not return to them in this process.
+/// Decides `batch` with `decider` and stores the decisions. Photos that cannot be decided (no
+/// vector, the decider failed) go into `skip` so the step does not return to them in this
+/// process. When the decider is temporarily out ([`MlError::Unavailable`]) the rest of the batch
+/// stays pending and the batch ends.
 fn decide_batch(
     lib: &Library,
     smart: &Smart,
+    decider: &Arc<dyn Decider>,
     batch: &[ItemFacts],
     skip: &mut HashSet<String>,
 ) -> anyhow::Result<usize> {
@@ -309,7 +338,6 @@ fn decide_batch(
         return Ok(0);
     };
     let model = embedder.model().to_string();
-    let decider = st.decider();
     let decider_id = decider.id();
     let vectors: Vec<Option<Vec<f32>>> = lib.db.with(|c| {
         batch
@@ -318,17 +346,24 @@ fn decide_batch(
             .collect::<rusqlite::Result<_>>()
     })?;
     let mut decided = Vec::new();
+    let mut skipped = 0;
     for (facts, vector) in batch.iter().zip(vectors) {
         let Some(zs) = vector.as_deref().and_then(|v| prompts.score(v)) else {
             skip.insert(facts.id.clone());
+            skipped += 1;
             continue;
         };
         let features = facts.features(&zs);
         match decider.decide(&features) {
             Ok(d) => decided.push((facts.id.clone(), d, features)),
+            Err(MlError::Unavailable(e)) => {
+                tracing::info!(error = %e, decider = %decider_id, "categories: the decider is temporarily out");
+                break;
+            }
             Err(e) => {
                 tracing::warn!(error = %e, decider = %decider_id, "categories: the decider failed");
                 skip.insert(facts.id.clone());
+                skipped += 1;
             }
         }
     }
@@ -355,23 +390,25 @@ fn decide_batch(
             tx.commit()
         })?;
     }
-    Ok(batch.len())
+    Ok(decided.len() + skipped)
 }
 
-/// Decides the category of the next pending photos; how many were looked at (0 = nothing to do).
-/// A step of smart search's background thread, after the embedding and before the face scan.
+/// Decides the category of the next pending photos; how many were handled (0 = nothing to do,
+/// or the decider is temporarily out). A step of smart search's background thread, after the
+/// embedding and before the face scan.
 pub fn step(lib: &Library, smart: &Smart, skip: &mut HashSet<String>) -> anyhow::Result<usize> {
     let st = state(lib);
     let model = smart.embedder().model().to_string();
-    let decider_id = st.decider().id();
+    let active = st.active();
+    let decider_id = (!active.stand_in).then(|| active.decider.id());
     let batch = lib
         .db
-        .with(|c| pending_batch(c, &model, &decider_id, skip, BATCH))?;
+        .with(|c| pending_batch(c, &model, decider_id.as_deref(), skip, BATCH))?;
     if batch.is_empty() {
         st.running.store(false, Ordering::Relaxed);
         return Ok(0);
     }
-    let n = decide_batch(lib, smart, &batch, skip)?;
+    let n = decide_batch(lib, smart, &active.decider, &batch, skip)?;
     st.running.store(n > 0, Ordering::Relaxed);
     Ok(n)
 }
@@ -388,7 +425,9 @@ pub fn decide_now(lib: &Library, item_id: &str) -> anyhow::Result<Option<cs::Row
     if facts.kind != "photo" {
         return Ok(None);
     }
-    decide_batch(lib, &smart, &[facts], &mut HashSet::new())?;
+    // The owner just took a label back: the chosen decider, or the rules while it is out.
+    let active = state(lib).active();
+    decide_batch(lib, &smart, &active.decider, &[facts], &mut HashSet::new())?;
     Ok(lib.db.with(|c| cs::get(c, item_id))?)
 }
 
@@ -533,7 +572,8 @@ pub fn status_json(lib: &Library) -> anyhow::Result<Value> {
         "enabled": smart.is_some(),
         "model": model,
         "features_version": FEATURES_VERSION,
-        "decider": { "kind": decider.kind().as_str(), "id": decider.id() },
+        // `ready` false: the chosen decider is temporarily out and the rules fill the gaps.
+        "decider": { "kind": decider.kind().as_str(), "id": decider.id(), "ready": decider.ready() },
         "decided": n.decided,
         "pending": if smart.is_some() { n.pending } else { 0 },
         "stale": n.stale,
