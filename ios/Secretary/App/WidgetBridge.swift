@@ -32,6 +32,11 @@ extension AppModel {
         case "memos/record":
             openMemo(nil)
             Task { if !memos.recorder.isActive { await memos.record() } }
+        case "approvals":
+            Task { await approvals.poll() }
+        case let r where r.hasPrefix("approvals/"):
+            let id = String(r.dropFirst("approvals/".count)).removingPercentEncoding ?? ""
+            Task { await approvals.open(id: id) }
         case "pokemon":
             selectedTab = .plugins
             showPokemon = true
@@ -41,6 +46,16 @@ extension AppModel {
         default:
             open(route: route)
         }
+    }
+
+    /// The approvals widget shows what the app just learned (a poll, or an approval push that woke it).
+    static func publishApprovals(_ items: [ApprovalItem], now: Date = Date()) {
+        let section = ApprovalsSection(fetchedAt: now, items: items.map {
+            .init(id: $0.id, requester: $0.requester.displayName, summary: $0.summary, details: $0.details,
+                  sensitive: $0.sensitive, payloadHash: $0.payloadHash, expiresAt: $0.expiresAt)
+        })
+        WidgetStore.write(section)
+        WidgetStore.reload([.approvals])
     }
 
     /// Called when the tabs appear: the link that launched the app before sign-in was checked.

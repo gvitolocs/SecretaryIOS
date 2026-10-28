@@ -11,10 +11,13 @@ protocol NotificationScheduling: AnyObject, Sendable {
     func setBadge(_ count: Int) async
     /// Takes notifications off the lock screen and Notification Center (an approval answered elsewhere).
     func removeDelivered(_ identifiers: [String]) async
+    /// The identifiers of delivered notifications (local or APNs) about these approval ids.
+    func deliveredApprovals(_ ids: Set<String>) async -> [String]
 }
 
 extension NotificationScheduling {
     func removeDelivered(_ identifiers: [String]) async {}
+    func deliveredApprovals(_ ids: Set<String>) async -> [String] { [] }
 }
 
 final class SystemNotificationCenter: NotificationScheduling, @unchecked Sendable {
@@ -37,6 +40,14 @@ final class SystemNotificationCenter: NotificationScheduling, @unchecked Sendabl
     func removeDelivered(_ identifiers: [String]) async {
         center.removeDeliveredNotifications(withIdentifiers: identifiers)
         center.removePendingNotificationRequests(withIdentifiers: identifiers)
+    }
+
+    /// The identifiers of delivered notifications (local or APNs) about these approval ids.
+    func deliveredApprovals(_ ids: Set<String>) async -> [String] {
+        await center.deliveredNotifications().compactMap { n in
+            guard let id = n.request.content.userInfo[ApprovalNotifier.idKey] as? String, ids.contains(id) else { return nil }
+            return n.request.identifier
+        }
     }
 }
 
