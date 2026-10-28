@@ -3,6 +3,7 @@ import { For, type JSX } from "solid-js";
 import { BookIcon, BulbIcon, BubbleIcon, CheckCircleIcon, CodeIcon, ComputerIcon, DriveIcon, FilmIcon, GamepadIcon, GridIcon, HangerIcon, LinkIcon, MicIcon, NoteIcon, PhoneIcon, PulseIcon, QrIcon } from "../components/Icons";
 import { t } from "../i18n";
 import { desktopShell } from "../lib/desktopShell";
+import { setShowAdult, showAdult } from "../lib/adult";
 import { openWardrobe } from "../state/wardrobe";
 
 // The Plugins page (owner, 2026-10-24): every feature that is not Chat, Shopping or
@@ -19,7 +20,14 @@ export type Plugin = {
   run?: (navigate: (to: string) => void) => void;
   /** Hidden where the plugin can't run (the native phone screens exist only in the Android app). */
   visible?: () => boolean;
+  /** Adult content: owner-only on the server, hidden here when "Show adult plugins" is off. */
+  adult?: boolean;
 };
+
+/** The cards this device shows. */
+export function visiblePlugins(): Plugin[] {
+  return PLUGINS.filter((plugin) => (plugin.visible?.() ?? true) && (!plugin.adult || showAdult()));
+}
 
 /** The Android Secretary app's WebView adds "SecretaryAndroid/<version>" to its user agent. */
 export function inAndroidApp(): boolean {
@@ -78,7 +86,7 @@ export default function PluginsView() {
     <section class="plugins-page" aria-labelledby="plugins-title">
       <h1 id="plugins-title">{t("plugins.title")}</h1>
       <div class="plugins-grid">
-        <For each={PLUGINS.filter((plugin) => plugin.visible?.() ?? true)}>
+        <For each={visiblePlugins()}>
           {(plugin) => (
             <button
               type="button"
@@ -93,6 +101,10 @@ export default function PluginsView() {
           )}
         </For>
       </div>
+      <label class="plugins-adult">
+        <input type="checkbox" checked={showAdult()} onChange={(e) => setShowAdult(e.currentTarget.checked)} />
+        <span>{t("plugins.showAdult")}</span>
+      </label>
     </section>
   );
 }
