@@ -69,7 +69,11 @@ fn materialize(
     Ok(att)
 }
 
-fn imported(n: &ParsedNote, attachments: Vec<Attachment>) -> ImportedNote {
+fn imported(
+    n: &ParsedNote,
+    attachments: Vec<Attachment>,
+    extra_label: Option<&str>,
+) -> ImportedNote {
     ImportedNote {
         key: n.key.clone(),
         edited_usec: n.edited_usec,
@@ -80,7 +84,7 @@ fn imported(n: &ParsedNote, attachments: Vec<Attachment>) -> ImportedNote {
         pinned: n.pinned,
         archived: n.archived,
         trashed: n.trashed,
-        labels: n.labels.clone(),
+        labels: with_extra(&n.labels, extra_label),
         attachments,
         annotations: n
             .annotations
@@ -98,6 +102,18 @@ fn imported(n: &ParsedNote, attachments: Vec<Attachment>) -> ImportedNote {
     }
 }
 
+/// The note's labels plus `extra` (a second account's import is labelled
+/// after it), once.
+fn with_extra(labels: &[String], extra: Option<&str>) -> Vec<String> {
+    let mut out = labels.to_vec();
+    if let Some(x) = extra {
+        if !out.iter().any(|l| l.eq_ignore_ascii_case(x)) {
+            out.push(x.to_owned());
+        }
+    }
+    out
+}
+
 /// Import (or, with `dry_run`, only check) Takeout zips into `store`.
 /// `Err` only when a zip cannot be opened or the label registry cannot be
 /// read; everything per note ends up in the report's `errors`.
@@ -107,6 +123,20 @@ pub fn import_takeout(
     dry_run: bool,
     caller: Caller,
 ) -> Result<ImportReport, String> {
+    import_takeout_labelled(store, paths, dry_run, caller, None)
+}
+
+/// [`import_takeout`], adding `extra_label` to every note (e.g. the Google
+/// account the export came from). The label is part of the import, so a
+/// re-import with the same label still finds the notes unchanged.
+pub fn import_takeout_labelled(
+    store: &NoteStore,
+    paths: &[PathBuf],
+    dry_run: bool,
+    caller: Caller,
+    extra_label: Option<&str>,
+) -> Result<ImportReport, String> {
+    let extra_label = extra_label.map(str::trim).filter(|l| !l.is_empty());
     let mut t = Takeout::open(paths)?;
     let scan = t.scan();
     let mut rep = ImportReport {
@@ -124,6 +154,7 @@ pub fn import_takeout(
         .label_names
         .iter()
         .chain(scan.notes.iter().flat_map(|n| n.labels.iter()))
+        .chain(extra_label.map(str::to_owned).iter())
     {
         if seen_labels.insert(name.to_lowercase()) {
             label_names.push(name.clone());
@@ -183,14 +214,14 @@ pub fn import_takeout(
             continue;
         }
 
-        match store.import_note(imported(pn, atts), dry_run, caller) {
+        match store.import_note(imported(pn, atts, extra_label), dry_run, caller) {
             Ok(o) => match o {
                 ImportOutcome::New => {
                     rep.notes.new += 1;
                     if rep.sample.len() < SAMPLE_LEN {
                         rep.sample.push(SampleNote {
                             title: pn.title.clone(),
-                            labels: pn.labels.clone(),
+                            labels: with_extra(&pn.labels, extra_label),
                             color: pn.color.clone(),
                             kind: pn.kind().to_owned(),
                         });

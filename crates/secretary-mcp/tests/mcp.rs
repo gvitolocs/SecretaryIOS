@@ -5,10 +5,11 @@ mod common;
 use common::*;
 use serde_json::{json, Value};
 
-const ALL_TOOLS: [&str; 38] = [
+const ALL_TOOLS: [&str; 39] = [
     "ask_lucina",
     "lucina_decide",
     "lucina_decision_status",
+    "lucina_decision_withdraw",
     "lucina_job_status",
     "lucina_timeline",
     "shopping_list",
@@ -90,6 +91,16 @@ async fn initialize_and_tools_list() {
         );
         assert_eq!(tool["annotations"]["destructiveHint"], false);
     }
+    let withdraw = tools
+        .iter()
+        .find(|t| t["name"] == "lucina_decision_withdraw")
+        .unwrap();
+    assert_eq!(withdraw["inputSchema"]["required"], json!(["decision_id"]));
+    assert!(withdraw["inputSchema"]["properties"]["reason"].is_object());
+    assert_eq!(withdraw["inputSchema"]["additionalProperties"], false);
+    assert_eq!(withdraw["annotations"]["readOnlyHint"], false);
+    assert_eq!(withdraw["annotations"]["destructiveHint"], false);
+    assert_eq!(withdraw["annotations"]["idempotentHint"], true);
     let decide = tools.iter().find(|t| t["name"] == "lucina_decide").unwrap();
     assert!(decide["inputSchema"]["properties"]["wait_seconds"].is_object());
     assert!(decide["inputSchema"]["properties"]
@@ -235,7 +246,13 @@ async fn scopes_are_enforced() {
     let chat_only = h.issue("bot", "chat");
     assert_eq!(
         h.tool_names(&chat_only).await,
-        vec!["ask_lucina".to_string(), "lucina_decide".to_string(), "lucina_decision_status".to_string(), "lucina_job_status".to_string()]
+        vec![
+            "ask_lucina".to_string(),
+            "lucina_decide".to_string(),
+            "lucina_decision_status".to_string(),
+            "lucina_decision_withdraw".to_string(),
+            "lucina_job_status".to_string()
+        ]
     );
     let r = h.rpc(&chat_only, "resources/list", json!({})).await;
     assert_eq!(r["resources"], json!([]));
@@ -1822,6 +1839,32 @@ async fn decisions_validate_forward_and_stop_polling() {
     ] {
         assert!(h.call(&t, "lucina_decision_status", args).await.0);
     }
+    let (err, text) = h
+        .call(
+            &t,
+            "lucina_decision_withdraw",
+            json!({"decision_id":"dc-012345abcdef","reason":" settled & done "}),
+        )
+        .await;
+    assert!(!err, "{text}");
+    assert!(text.starts_with("Withdrawn: decision dc-012345abcdef needs no answer. Withdrawn by the asker: settled elsewhere"), "{text}");
+    let sent = h.mock.requests("/v1/decisions/dc-012345abcdef");
+    let sent = sent.last().unwrap();
+    assert_eq!(sent.method, "DELETE");
+    assert_eq!(sent.query, "reason=settled+%26+done");
+    let count = h.mock.requests("/v1/decisions/dc-012345abcdef").len();
+    for args in [
+        json!({}),
+        json!({"decision_id":"bad"}),
+        json!({"decision_id":"dc-012345abcdef","reason":"x".repeat(501)}),
+        json!({"decision_id":"dc-012345abcdef","extra":true}),
+    ] {
+        assert!(h.call(&t, "lucina_decision_withdraw", args).await.0);
+    }
+    assert_eq!(
+        h.mock.requests("/v1/decisions/dc-012345abcdef").len(),
+        count
+    );
     let (err, text) = h
         .call(&t, "lucina_job_status", json!({"job_id":"j1"}))
         .await;

@@ -385,18 +385,20 @@ impl Call {
 
     /// `GET /decisions/{id}` with a contract decision id.
     pub fn decision(id: &str) -> Result<Self> {
-        if id.len() != 15
-            || !id.starts_with("dc-")
-            || !id.as_bytes()[3..]
-                .iter()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b))
-        {
-            return Err(Error::Invalid {
-                field: "id",
-                message: "must be dc- followed by 12 lowercase hex digits".into(),
-            });
-        }
+        decision_id(id)?;
         Ok(Self::new(Method::GET, &["decisions", id]))
+    }
+
+    /// `DELETE /decisions/{id}?reason=`: the asker takes back a pending
+    /// decision. The reason is trimmed, optional, at most 500 characters.
+    pub fn withdraw_decision(id: &str, reason: Option<&str>) -> Result<Self> {
+        decision_id(id)?;
+        let mut call = Self::new(Method::DELETE, &["decisions", id]);
+        if let Some(reason) = reason.map(str::trim).filter(|r| !r.is_empty()) {
+            validate::text("reason", reason, 500)?;
+            call.query.push(("reason", reason.to_owned()));
+        }
+        Ok(call)
     }
 
     /// `GET /decisions?status=&limit=`.
@@ -742,6 +744,22 @@ impl Call {
 /// A query parameter that was given and is not blank, trimmed.
 fn present(s: Option<&str>) -> Option<&str> {
     s.map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// A contract decision id: `dc-` and 12 lowercase hex digits.
+fn decision_id(id: &str) -> Result<()> {
+    if id.len() != 15
+        || !id.starts_with("dc-")
+        || !id.as_bytes()[3..]
+            .iter()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b))
+    {
+        return Err(Error::Invalid {
+            field: "id",
+            message: "must be dc- followed by 12 lowercase hex digits".into(),
+        });
+    }
+    Ok(())
 }
 
 /// `workspace` | `android` (Lucina also accepts their aliases; the apps use these two).
@@ -1208,6 +1226,29 @@ mod tests {
                 .contains('?'),
             "no query without a radius"
         );
+    }
+
+    #[test]
+    fn withdraw_decision_calls() {
+        let c = client("http://h:1");
+        let w = Call::withdraw_decision("dc-012345abcdef", Some("  settled & done ")).unwrap();
+        assert_eq!(w.method(), &Method::DELETE);
+        assert_eq!(
+            c.url(&w).as_str(),
+            "http://h:1/api/secretary/decisions/dc-012345abcdef?reason=settled+%26+done"
+        );
+        for reason in [None, Some(" ")] {
+            let w = Call::withdraw_decision("dc-012345abcdef", reason).unwrap();
+            assert_eq!(
+                c.url(&w).as_str(),
+                "http://h:1/api/secretary/decisions/dc-012345abcdef"
+            );
+        }
+        assert!(Call::withdraw_decision("dc-012345abcdef", Some(&"x".repeat(500))).is_ok());
+        assert!(Call::withdraw_decision("dc-012345abcdef", Some(&"x".repeat(501))).is_err());
+        assert!(Call::withdraw_decision("dc-012345abcdef", Some(&"é".repeat(500))).is_ok());
+        assert!(Call::withdraw_decision("dc-012345abcdef", Some(&"é".repeat(501))).is_err());
+        assert!(Call::withdraw_decision("dc-012345ABCDEF", None).is_err());
     }
 
     #[test]

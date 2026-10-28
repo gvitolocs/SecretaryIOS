@@ -2449,7 +2449,7 @@ origins, so the web build must not use inline `<script>`, remote scripts or font
 remote images (`imageUrl` from a `generate_image` job will not render in an
 `<img>` under this CSP; open it as a link instead).
 
-### Decisions: `POST /v1/decisions`, `GET /v1/decisions/{id}`, `GET /v1/decisions`
+### Decisions: `POST /v1/decisions`, `GET /v1/decisions/{id}`, `DELETE /v1/decisions/{id}`, `GET /v1/decisions`
 
 Device-token routes forwarded to Lucina's `/api/secretary/decisions…` with the
 server's Lucina credential. See [the decision contract](design/decisions-api.md)
@@ -2459,6 +2459,9 @@ for request and response fields and the go-ahead policy.
   60 s upstream timeout (allow at least 65 s in clients).
 - GET by id requires `dc-` followed by exactly 12 lowercase hexadecimal digits;
   invalid ids return 400. Lucina's `404 decision_not_found` passes through.
+- DELETE by id (same id rule) withdraws a pending decision; optional `reason`
+  (trimmed, at most 500 characters, else 400) is forwarded URL-encoded. Returns
+  the decision with status `withdrawn`.
 - GET list accepts only `status=pending|decided|expired` and `limit=1..100`
   (default 20); unknown query parameters return 400. Returns `{"items": [...]}`,
   newest first.

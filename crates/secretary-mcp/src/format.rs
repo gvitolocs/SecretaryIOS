@@ -132,6 +132,7 @@ pub fn decision(r: &Value) -> String {
     let line = match s(r, "status").unwrap_or("") {
         "pending" => format!("Pending: Lucina asked the owner on his phone (decision {id}). Do not act on this yet; check with lucina_decision_status {{\"decision_id\": \"{id}\"}}."),
         "expired" => format!("Expired: the owner did not answer within 24 h (decision {id}). Ask again or leave it."),
+        "withdrawn" => format!("Withdrawn: decision {id} needs no answer. {reason}"),
         _ if s(r, "decision") == Some("owner_reply") => format!("The owner answered: \"{reason}\""),
         _ => {
             let who = if s(r, "decided_by") == Some("owner") { "The owner" } else { "Lucina" };
@@ -1506,6 +1507,9 @@ mod decision_tests {
         assert_eq!(decision(&r).lines().next().unwrap(), "Pending: Lucina asked the owner on his phone (decision dc-012345abcdef). Do not act on this yet; check with lucina_decision_status {\"decision_id\": \"dc-012345abcdef\"}.");
         r["status"] = json!("expired");
         assert_eq!(decision(&r).lines().next().unwrap(), "Expired: the owner did not answer within 24 h (decision dc-012345abcdef). Ask again or leave it.");
+        r["status"] = json!("withdrawn");
+        r["reason"] = json!("Withdrawn by the asker: settled\nelsewhere");
+        assert_eq!(decision(&r).lines().next().unwrap(), "Withdrawn: decision dc-012345abcdef needs no answer. Withdrawn by the asker: settled elsewhere");
     }
 
     #[test]

@@ -343,6 +343,7 @@ async fn handle(
         ("GET", ["v1", "session"]) => Json(json!({"authenticated": true, "deviceName": "lucina-mcp"})).into_response(),
         ("POST", ["v1", "decisions"]) => Json(json!({"decision_id":"dc-012345abcdef", "status":"pending"})).into_response(),
         ("GET", ["v1", "decisions", id]) => Json(json!({"decision_id":id, "status":"decided", "decision":"go", "chosen_option":"Ship", "reason":"Small fix", "decided_by":"lucina", "confidence":0.86})).into_response(),
+        ("DELETE", ["v1", "decisions", id]) => Json(json!({"decision_id":id, "status":"withdrawn", "reason":"Withdrawn by the asker: settled elsewhere"})).into_response(),
         ("GET", ["v1", "jobs", id]) => Json(json!({"id":id,"status":"done","action":"research","result":"Found it","error":null,"createdAt":"t0","startedAt":"t1","finishedAt":"t2"})).into_response(),
         ("POST", ["v1", "chat"]) => {
             let msg = body["message"].as_str().unwrap_or("");

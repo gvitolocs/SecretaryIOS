@@ -1224,3 +1224,61 @@ async fn decisions_forward_and_validate() {
     );
     assert_eq!(h.mock.count(), count);
 }
+
+#[tokio::test]
+async fn decision_withdraw_forwards_and_validates() {
+    let h = Harness::default().await;
+    assert_eq!(
+        h.send(h.http.delete(h.url("/v1/decisions/dc-012345abcdef")))
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(h.mock.count(), 0);
+    let (status, _, _) = h
+        .send(h.req(
+            Method::DELETE,
+            "/v1/decisions/dc-012345abcdef?reason=%20settled%20%26%20done%20",
+        ))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let seen = h.mock.last();
+    assert_eq!(seen.method, "DELETE");
+    assert_eq!(seen.path, "/api/secretary/decisions/dc-012345abcdef");
+    assert_eq!(seen.query.as_deref(), Some("reason=settled+%26+done"));
+    assert_eq!(seen.auth.as_deref(), Some("Bearer lucina-server-secret"));
+
+    let (status, _, _) = h
+        .send(h.req(Method::DELETE, "/v1/decisions/dc-012345abcdef"))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(h.mock.last().query, None);
+
+    let (status, _, _) = h
+        .send(h.req(Method::DELETE, "/v1/decisions/dc-012345abcdef?reason=%20%20"))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(h.mock.last().query, None);
+
+    let at_max = format!("/v1/decisions/dc-012345abcdef?reason={}", "x".repeat(500));
+    assert_eq!(
+        h.send(h.req(Method::DELETE, &at_max)).await.0,
+        StatusCode::OK
+    );
+    let count = h.mock.count();
+    let too_long = format!("/v1/decisions/dc-012345abcdef?reason={}", "x".repeat(501));
+    for path in [
+        "/v1/decisions/nope",
+        "/v1/decisions/dc-012345ABCDEF",
+        "/v1/decisions/a%2F..%2Fadmin",
+        "/v1/decisions/dc-012345abcdef?other=x",
+        too_long.as_str(),
+    ] {
+        assert_eq!(
+            h.send(h.req(Method::DELETE, path)).await.0,
+            StatusCode::BAD_REQUEST,
+            "{path}"
+        );
+    }
+    assert_eq!(h.mock.count(), count);
+}
