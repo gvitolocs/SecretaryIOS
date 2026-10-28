@@ -412,6 +412,19 @@
   text-decoration: none;
 }
 
+/* A row title that acts in place (play, open a profile) is a button that reads as the title. */
+button.pg-row-name,
+button.pg-row-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+button.pg-row-name:hover,
 .pg-row-link:hover {
   text-decoration: underline;
   text-underline-offset: 3px;
