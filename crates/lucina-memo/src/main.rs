@@ -115,6 +115,8 @@ async fn main() -> anyhow::Result<()> {
                 } => {}
             }
             tracing::info!("lucina-memo stopping");
+            // The prompter's whisper-server holds a VRAM lease: give it back now.
+            app.prompter.engine.shutdown().await;
             Ok(())
         }
         Cmd::Import {
