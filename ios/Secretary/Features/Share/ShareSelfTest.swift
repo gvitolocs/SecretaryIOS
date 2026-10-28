@@ -638,16 +638,25 @@ final class ShareSelfTestRunner {
 
     // MARK: - Cases: message actions (reply, read aloud, share items)
 
-    /// A text replying to Lucina's newest message through the swipe's path (`beginReply` → the composer's
-    /// `takeReply` → `ask(_:replyTo:)`). PASS: her answer arrives and the server's copy of the user item has
-    /// `replyTo` set to that message.
+    /// A text replying to Lucina's newest message of the self-test conversation through the swipe's path
+    /// (`beginReply` → the composer's `takeReply` → `ask(_:replyTo:)`). `[selftest]` turns run in the server's
+    /// self-test conversation (`GET /v1/timeline?conversation=selftest`), never the owner's chat; one seed turn
+    /// is sent there first when it has no Lucina message yet. PASS: her answer arrives, the self-test copy of
+    /// the user item has `replyTo` set to that message, and the owner's timeline doesn't have it.
     private func caseReply() async throws -> Outcome {
         let chat = app.chat
-        await chat.refresh()
-        guard let target = chat.items.last(where: { $0.role == .lucina && !$0.isLocal }) else {
-            return Outcome(pass: false, reason: "no Lucina message with a server id in the timeline")
+        var target = try await selftestLucinaItem()
+        if target == nil {
+            let seed = ChatRequest(message: "[selftest] dimmi in una frase com'è l'autunno a Copenaghen.",
+                                   sessionId: chat.sessionId, clientMessageId: UUID().uuidString)
+            let seeded = try await app.api.chat(seed)
+            log("reply: seeded the self-test conversation: \"\(seeded.reply.prefix(120))\"")
+            target = try await selftestLucinaItem()
         }
-        log("reply: target \(target.id) \"\(ChatQuote.summary(target).prefix(120))\"")
+        guard let target else {
+            return Outcome(pass: false, reason: "no Lucina message in the self-test conversation")
+        }
+        log("reply: target \(target.id) (conversation selftest) \"\(ChatQuote.summary(target).prefix(120))\"")
         guard chat.beginReply(target) else { return Outcome(pass: false, reason: "beginReply refused the target") }
         log("reply: quote bar \(chat.replyingTo?.id ?? "nil") sender \(ChatQuote.sender(target))")
         let text = "[selftest] rispondo a questo messaggio: di cosa parlava, in una frase?"
@@ -668,13 +677,28 @@ final class ShareSelfTestRunner {
         guard let user = chat.items.last(where: { $0.role == .user && !$0.isLocal && $0.text == cleaned }) else {
             return Outcome(pass: false, reason: "the user item has no server id", reply: answer)
         }
-        let page = try await app.api.timeline(limit: 30)
-        let server = page.items.first { $0.id == user.id }
-        log("reply: server user item \(server?.id ?? "missing from the newest page") replyTo \(server?.replyTo ?? "nil")")
-        guard server?.replyTo == target.id else {
-            return Outcome(pass: false, reason: "the server's user item has replyTo \(server?.replyTo ?? "nil"), want \(target.id)", reply: answer)
+        // The two bubbles `ask` added belong to the self-test conversation: off this phone's chat afterwards.
+        defer {
+            for item in chat.items where item.id == user.id || item.role == .lucina && item.replyTo == user.id {
+                chat.hide(item.id)
+            }
         }
-        return Outcome(pass: true, reason: "answer arrived, server user item replyTo \(target.id)", reply: answer)
+        let page = try await app.api.timeline(limit: 30, conversation: "selftest")
+        let server = page.items.first { $0.id == user.id }
+        log("reply: self-test user item \(server?.id ?? "missing from the newest page") replyTo \(server?.replyTo ?? "nil")")
+        let owner = try await app.api.timeline(limit: 30)
+        let leaked = owner.items.contains { $0.id == user.id }
+        log("reply: in the owner's timeline: \(leaked ? "yes" : "no")")
+        guard !leaked else { return Outcome(pass: false, reason: "the self-test turn reached the owner's timeline", reply: answer) }
+        guard server?.replyTo == target.id else {
+            return Outcome(pass: false, reason: "the self-test user item has replyTo \(server?.replyTo ?? "nil"), want \(target.id)", reply: answer)
+        }
+        return Outcome(pass: true, reason: "answer arrived in the self-test conversation, user item replyTo \(target.id)", reply: answer)
+    }
+
+    /// Lucina's newest message in the server's self-test conversation.
+    private func selftestLucinaItem() async throws -> TimelineItem? {
+        try await app.api.timeline(limit: 30, conversation: "selftest").items.first { $0.role == .lucina }
     }
 
     /// The right swipe's action on Lucina's newest message, twice (a TTS fetch, then the cache), muted.
