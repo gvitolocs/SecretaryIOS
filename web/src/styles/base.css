@@ -1198,6 +1198,10 @@ select.text-input option {
 
 .shell-body > .content {
   min-width: 0;
+  /* Pages that scroll themselves (chat, shopping, gym) fill it exactly; the rest (server, gallery, films, chats)
+     scroll here, since the shell body is clipped (overflow: hidden) on wide screens and inside Secretary Code. */
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 @media (max-width: 420px) {
