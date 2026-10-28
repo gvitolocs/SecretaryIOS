@@ -156,6 +156,31 @@ export async function handleAgents(req, res, { path, method, url, send, readJson
   if (absent && isPhase56) return gone(), true;
   const ok = (body) => (send(res, 200, body), true);
 
+  // The Homelab catalog (/v1/agents/catalog/*): with MOCK_CATALOG_BIN (the real `catalog` CLI on nezopt) the routes
+  // answer from the live scan; without it they are absent, as against an agentd without them.
+  if (rest.startsWith("/catalog")) {
+    const bin = process.env.MOCK_CATALOG_BIN;
+    if (!bin) return gone(), true;
+    const parts = rest.split("/").filter(Boolean).map(decodeURIComponent);
+    const q = url.searchParams;
+    let args;
+    if (parts.length === 1) args = ["tree"];
+    else if (parts[1] === "components" && parts[2]) args = ["get", parts[2]];
+    else if (parts[1] === "impact" && parts[2]) args = ["impact", ...parts[2].split(",")];
+    else if (parts[1] === "health") args = ["health", ...(q.get("id") ? [q.get("id")] : []), ...(q.get("live") === "true" ? ["--live"] : [])];
+    else if (["status", "drift", "graph", "events"].includes(parts[1])) args = [parts[1]];
+    else return gone(), true;
+    const { execFile } = await import("node:child_process");
+    const out = await new Promise((resolve) => execFile(bin, ["--json", ...args], { maxBuffer: 64 << 20 }, (e, stdout, stderr) => resolve(e ? { e: String(stderr || e) } : { stdout })));
+    if (out.e) return err(out.e.includes("no component") ? 404 : 502, out.e.includes("no component") ? "CATALOG_NOT_FOUND" : "CATALOG_UNAVAILABLE", out.e.trim().split("\n").pop()), true;
+    const body = JSON.parse(out.stdout);
+    if (args[0] === "tree") {
+      // agentd adds the agents working in each project; the mock adds its own when one's cwd matches.
+      for (const g of body.groups) for (const p of g.projects) p.agents = Object.values(AGENTS).filter((a) => p.paths.some((x) => a.cwd === x || a.cwd?.startsWith(`${x}/`))).map((a) => ({ id: a.id, shortId: a.shortId, title: a.title, provider: a.provider, status: a.status }));
+    }
+    return ok(body);
+  }
+
   if (rest === "/stream" && method === "GET") {
     res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", Connection: "keep-alive" });
     res.write(": ok\n\n");
