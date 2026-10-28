@@ -159,6 +159,12 @@ impl Capabilities {
         } else {
             "My reasoning runs on the planner chain: hosted providers first, local fallbacks after, DeepSeek last.".to_owned()
         };
+        // TypeSafe Jev (crate lucina_jev), when its key is present.
+        let reasoning = if lucina_jev::shared().configured() {
+            format!("{reasoning} Routine decisions (which kind of request a message is, which tool to try first, each click or tap on my computer and phone) are made by TypeSafe Jev, a fast decision model; DeepSeek writes my words, and takes over whenever Jev is unsure or unavailable.")
+        } else {
+            reasoning
+        };
         add(
             self.telegram,
             "Telegram chat with Giuseppe (text, voice notes, photos with vision).".into(),
