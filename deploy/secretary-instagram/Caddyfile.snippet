@@ -1,8 +1,9 @@
 # p1 (getsecretary.tech), inside the site block, BEFORE the catch-all `handle`.
-# Signed media URLs carry their own HMAC and skip forward_auth (like /v1/nclient/s/* and /v1/media/s/*).
+# Signed media URLs (/s/ = Instagram pictures, /a/ = saved items from the Gallery) carry their own HMAC and skip
+# forward_auth (like /v1/nclient/s/* and /v1/media/s/*).
 # GET/HEAD only, so the signed route can never write anything.
 @instagram_media {
-	path /v1/instagram/s/*
+	path /v1/instagram/s/* /v1/instagram/a/*
 	method GET HEAD
 }
 handle @instagram_media {
