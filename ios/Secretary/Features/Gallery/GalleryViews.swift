@@ -564,42 +564,44 @@ struct GalleryViewer: View {
         NavigationStack {
             pager
             // Google Photos: swipe down to close, up for the details.
-            // Swipe down closes into the grid tile (the zoom transition, iOS 18), swipe up shows the details.
-            .photoDragOut(enabled: zoomedID != current, systemDismiss: true, dragging: $dragging,
+            // Our pan owns both directions, including while the zoom transition opens.
+            .photoDragOut(enabled: zoomedID != current, systemDismiss: false, dragging: $dragging,
                           onDismiss: { dismiss() }, onInfo: { showInfo = true })
-            .interactiveDismissDisabled(zoomedID == current)
-            // Google Photos: the photo is always full screen; the bars float over it on dark
-            // gradients (its bottom_dark_gradient: clear to 75% black), so nothing resizes on a tap.
+            .interactiveDismissDisabled(true)
+            // The top bar floats over a dark gradient; the bottom stays free.
             .overlay(alignment: .top) { ViewerScrim(top: true).opacity(bare ? 0 : 1) }
-            .overlay(alignment: .bottom) { ViewerScrim(top: false).opacity(bare ? 0 : 1) }
             .clearNavigationBackground()
             .ignoresSafeArea()
-            .toolbarBackground(.hidden, for: .navigationBar, .bottomBar)
+            .toolbarBackground(.hidden, for: .navigationBar)
             // White date and buttons on the scrims, in light mode too.
-            .toolbarColorScheme(.dark, for: .navigationBar, .bottomBar)
-            .toolbar(bare ? .hidden : .visible, for: .navigationBar, .bottomBar)
+            .toolbarColorScheme(.dark, for: .navigationBar)
+            .toolbar(bare ? .hidden : .visible, for: .navigationBar)
             .statusBarHidden(bare)
             .animation(.easeInOut(duration: 0.2), value: bare)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { dismiss() } label: { Image(systemName: "chevron.left") }
+                        .accessibilityLabel("Close")
+                }
                 ToolbarItem(placement: .principal) {
                     VStack(spacing: 0) {
                         Text(item.date.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? item.title).font(.subheadline.weight(.semibold))
                         if let p = item.place { Text(p.name).font(.caption).foregroundStyle(.secondary) }
                     }
                 }
-                ToolbarItemGroup(placement: .bottomBar) {
-                    Button { toggleFavorite(item) } label: { Image(systemName: item.favorite == true ? "heart.fill" : "heart") }
-                        .accessibilityLabel("Favourite")
-                    Spacer()
+                ToolbarItemGroup(placement: .topBarTrailing) {
                     Button { showInfo = true } label: { Image(systemName: "info.circle") }
                         .accessibilityLabel("Info")
-                    Spacer()
-                    Button { addToAlbum = true } label: { Image(systemName: "rectangle.stack.badge.plus") }
-                        .accessibilityLabel("Add to album")
-                    Spacer()
+                    Button { toggleFavorite(item) } label: { Image(systemName: item.favorite == true ? "heart.fill" : "heart") }
+                        .accessibilityLabel("Favourite")
                     Button(role: .destructive) { confirmTrash = true } label: { Image(systemName: "trash") }
                         .accessibilityLabel("Move to the server's trash")
+                    Menu {
+                        Button { addToAlbum = true } label: { Label("Add to album", systemImage: "rectangle.stack.badge.plus") }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                    .accessibilityLabel("More")
                 }
             }
         }

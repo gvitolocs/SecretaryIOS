@@ -194,6 +194,10 @@ struct DragRequest {
     dx: f32,
     dy: f32,
     #[serde(default)]
+    vx: f32,
+    #[serde(default)]
+    vy: f32,
+    #[serde(default)]
     predicted_dy: f32,
     #[serde(default)]
     ended: bool,
@@ -209,7 +213,8 @@ fn default_screen_scale() -> f32 {
 /// Zoom and pan, JSON in and out:
 /// `{"new":[image_w,image_h,viewport_w,viewport_h]}` or `{"view":{...},"gesture":{"op":"pinch",
 /// "factor":1.2,"x":..,"y":..}}` → `{"ok":true,"view":{...},"rect":{x,y,w,h},"wants_original":bool}`.
-/// With `"drag":{"dx","dy","predicted_dy","ended"}` the answer also has `"drag":{"axis":"undecided"|
+/// With `"drag":{"dx","dy","vx","vy","predicted_dy","ended"}` (`vx`, `vy` in points per second),
+/// the answer also has `"drag":{"axis":"undecided"|
 /// "pager"|"out"|"pan","out":{offset_x,offset_y,scale,backdrop}}`, plus `"end":"dismiss"|"info"|"back"`
 /// on a released drag-out.
 /// Free the answer with `secretary_string_free`.
@@ -242,10 +247,10 @@ pub unsafe extern "C" fn secretary_image_view(json: *const c_char) -> *mut c_cha
             "wants_original": view.wants_original(req.preview_px, req.screen_scale),
         });
         if let Some(d) = req.drag {
-            let axis = view.drag_axis(d.dx, d.dy);
+            let axis = view.drag_axis(d.dx, d.dy, d.vx, d.vy);
             let mut drag = serde_json::json!({"axis": axis, "out": view.drag_out(d.dx, d.dy)});
             if d.ended && axis == DragAxis::Out {
-                drag["end"] = serde_json::json!(view.drag_end(d.dy, d.predicted_dy));
+                drag["end"] = serde_json::json!(view.drag_end(d.dy, d.predicted_dy, d.vy));
             }
             answer["drag"] = drag;
         }
@@ -253,4 +258,32 @@ pub unsafe extern "C" fn secretary_image_view(json: *const c_char) -> *mut c_cha
     }))
     .unwrap_or_else(|_| serde_json::json!({"ok": false, "error": "panic in the image core"}));
     super::output(answer.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn handle_json(json: &str) -> serde_json::Value {
+        let input = std::ffi::CString::new(json).unwrap();
+        unsafe {
+            let raw = secretary_image_view(input.as_ptr());
+            let answer = serde_json::from_str(CStr::from_ptr(raw).to_str().unwrap()).unwrap();
+            crate::secretary_string_free(raw);
+            answer
+        }
+    }
+
+    #[test]
+    fn drag_while_opening() {
+        let moving = handle_json(r#"{"new":[1,1,390,844],"drag":{"dx":20,"dy":30,"vx":0,"vy":700}}"#);
+        assert_eq!(moving["ok"], true, "placeholder image accepts a drag while opening");
+        assert_eq!(moving["drag"]["axis"], "out", "opening view routes downward drag out");
+        let ended = handle_json(r#"{"new":[1,1,390,844],"drag":{"dx":20,"dy":30,"ended":true,"predicted_dy":40,"vy":900}}"#);
+        assert_eq!(ended["drag"]["end"], "dismiss", "opening view accepts quick flick with omitted vx");
+        let legacy = handle_json(r#"{"new":[1,1,390,844],"drag":{"dx":30,"dy":30,"ended":true,"predicted_dy":40}}"#);
+        assert_eq!(legacy["ok"], true, "old callers can omit both velocities");
+        assert_eq!(legacy["drag"]["axis"], "out", "omitted velocities count as vertical in the band");
+        assert_eq!(legacy["drag"]["end"], "back", "omitted velocities do not trigger a flick");
+    }
 }
