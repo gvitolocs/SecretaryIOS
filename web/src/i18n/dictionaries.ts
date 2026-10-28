@@ -39,13 +39,13 @@ import { lab } from "./dict/lab";
 import { galleryAlbums } from "./dict/galleryAlbums";
 import { galleryLive } from "./dict/galleryLive";
 import { gallerySmart } from "./dict/gallerySmart";
-import { galleryDedup } from "./dict/galleryDedup";
+export const dictionaries = { approvals, chats, library, common, computer, desk, shell, share, chat, login, weight, gym, wardrobe, notify, links, maps, notes, keep, tasks, studio, models, memos, media, films, drive, plugins, serverHealth, viewer, secrets, gallery, galleryInfo, nclient, pixiv, instagram, agents, editor, browse, galleryShare, galleryCompare, lab, galleryAlbums, galleryLive, gallerySmart, galleryPeople, galleryDedup };
 import { weight } from "./dict/weight";
 import { nclient } from "./dict/nclient";
 import { pixiv } from "./dict/pixiv";
 import { instagram } from "./dict/instagram";
 import { agents } from "./dict/agents";
 
-export const dictionaries = { approvals, chats, library, common, computer, desk, shell, share, chat, login, weight, gym, wardrobe, notify, links, maps, notes, keep, tasks, studio, models, memos, media, films, drive, plugins, serverHealth, viewer, secrets, gallery, galleryInfo, nclient, pixiv, instagram, agents, editor, browse, galleryShare, galleryCompare, lab, galleryAlbums, galleryLive, gallerySmart, galleryDedup };
+export const dictionaries = { approvals, chats, library, common, computer, desk, shell, share, chat, login, weight, gym, wardrobe, notify, links, maps, notes, keep, tasks, studio, models, memos, media, films, drive, plugins, serverHealth, viewer, secrets, gallery, galleryInfo, nclient, pixiv, instagram, agents, editor, browse, galleryShare, galleryCompare, lab, galleryAlbums, galleryLive, gallerySmart, galleryPeople, galleryDedup };
 
 export type Dictionaries = typeof dictionaries;

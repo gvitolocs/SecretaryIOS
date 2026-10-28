@@ -121,7 +121,7 @@ describe("GalleryViewer", () => {
         place: { name: "Aarhus", admin1: "Central Denmark", country: "Denmark", lat: 56.15, lon: 10.2 },
         origin: { filename: "IMG_0001.JPG", folder: "DCIM/2019/Summer", importedFrom: "DCIM/2019/Summer" },
       });
-      getDetails.mockResolvedValue(details(item, { exif: exif({ offset: "+02:00" }), people: ["Alice", "Bob"] }));
+      getDetails.mockResolvedValue(details(item, { exif: exif({ offset: "+02:00" }), people: [{ id: "p_alice", name: "Alice" }, { id: "p_bob", name: "Bob" }] }));
       listAlbums.mockResolvedValue([{ id: "trip", title: "Summer trip", count: 3, system: false }]);
       listSources.mockResolvedValue({
         sources: [{ id: "device:dev-1", label: "Test iPhone", kind: "iphone", photos: 1, videos: 0, latestTakenAt: null }],
