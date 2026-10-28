@@ -413,7 +413,10 @@ fn system_albums_for(kind: &str, source: &str, client: &ClientMeta) -> Vec<&'sta
 pub fn find_or_create_album(c: &Connection, title: &str) -> rusqlite::Result<String> {
     if let Some(id) = c
         .query_row(
-            "SELECT id FROM albums WHERE title = ?1 COLLATE NOCASE ORDER BY created_at LIMIT 1",
+            &format!(
+                "SELECT id FROM albums a WHERE title = ?1 COLLATE NOCASE AND {} ORDER BY created_at LIMIT 1",
+                db::not_share_album("a")
+            ),
             [title],
             |r| r.get(0),
         )

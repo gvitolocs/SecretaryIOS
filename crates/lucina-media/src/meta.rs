@@ -30,6 +30,8 @@ pub struct ClientMeta {
     pub favorite: Option<bool>,
     pub screenshot: Option<bool>,
     pub source: Option<String>,
+    /// The type identifier the device reports for the original (`public.heic`), shown in the compare view.
+    pub uti: Option<String>,
     pub title: Option<String>,
     pub caption: Option<String>,
     pub album: Option<String>,

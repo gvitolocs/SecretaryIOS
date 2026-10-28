@@ -205,6 +205,39 @@ kernel DK3).
     ```
     A link is `https://getsecretary.tech/a/<token>`. Checked from outside: the page, the items and a thumbnail
     (no EXIF) answer 200, an original without permission 403, a revoked link 410, `/v1/media/items` still 401.
+- Links over chosen photos and the owner's list (2026-10-28, `share_sel.rs`, `share_http.rs`):
+  - `POST shares {item_ids, title?, expires_in_days?, allow_original?}` (1 to 500 ids; photos and videos that exist and
+    are not in the Trash, the rest come back in `skipped`; none left: 400; `title` at most 200 characters, default
+    "Shared photos") makes a link over a hidden system album `share:<token>` that holds the chosen items. The public
+    side is the album-share machinery above, unchanged: `decide` (Verus AS1, `verification/verus/album_share.rs`) and
+    the kernel file were not touched. Answer 201: the row as below plus `skipped`.
+  - The hidden album has `system_key` `share:<token>`. It is not in `GET albums`, not counted, not in an item's
+    `albums` or `album` title, not in search text, not found by `?album=<title>`, and an upload's `meta.album` with
+    the same title makes its own album; `GET|PATCH|DELETE albums/{id}`, `albums/{id}/items`, `albums/{id}/shares` and
+    batch `album_add|album_remove` answer 404 for it (`db::get_album`, `db::not_share_album`).
+  - `GET shares` and `GET albums/{id}/shares` rows: `{token, url_path, public_path ("/a/<token>"), kind
+    ("album"|"selection"), album_id (null for a selection), title, count (items served now), cover_item, cover_thumb,
+    created_at, expires_at, revoked_at, allow_original, views, last_view_at, live}`. `DELETE shares/{token}` revokes
+    either kind.
+  - `expires_in_days` is clamped to 1..3650 (it used to be unbounded and could overflow) for both kinds of link.
+- One item's stored forms, for the compare view (`renditions.rs`):
+  - `GET items/{id}/renditions` → `{item_id, kind, original, versions, renditions, device}`. `original`: `{version,
+    format, mime, bytes, blake3, width, height, stored ("store"|"spool"|"external"), reachable, url}`; `versions`: the
+    older originals (`item_versions`) with `{version, format, mime, bytes, blake3, replaced_at, stored, reachable,
+    url ("original?version=N")}`; `renditions`: those that exist of `grid` (JPEG XL 256 px), `preview` (JPEG XL
+    1440 px), `thumb` (`s.jpg`), `large` (`l.jpg`), `poster`, `device_preview` (the JPEG the phone sent with the
+    upload), each `{name, format, mime, bytes, width, height, url}` (JPEG XL sizes come from the codestream header).
+    A host path is never in the answer. 404 for an unknown or malformed id; a trashed item still answers.
+  - `device` is `null` unless the item has a device (`items.device`, or one named in an upload's meta). Otherwise
+    `{id, name, kind, last_seen_at, asset_id, uploads, latest}`: one `uploads` entry per finished upload row of the
+    item (an edit adds one), each `{filename, mime, uti, bytes (the size the app declared), blake3 (the hash the app
+    sent, null when it sent none), width, height, taken_at, uploaded_at, matches_version (the stored version whose
+    hash equals the reported one)}`. `uti` is a new optional upload `meta` field (the type identifier, `public.heic`).
+    This is only what the upload carried; the file on the phone cannot be read from the server. An upload that was
+    skipped as a duplicate before it started leaves no row.
+  - `GET items/{id}/original?version=N` serves an older version (404 for a version that does not exist), with the
+    type its blob's extension names; the current version's number gives the current original.
+    `GET items/{id}/device-preview` serves the phone's JPEG (404 when none). Index `uploads_item` on `uploads(item_id)`.
 - Internal: `PUT|DELETE /internal/v1/external/{source}/{id}` indexes a file in place (voice memos, the film folders), `POST /internal/v1/import {path, source, album}`.
 
 The upload protocol's decisions (chunk offsets, finish once, dedupe or version) are pure functions in `protocol.rs`.
