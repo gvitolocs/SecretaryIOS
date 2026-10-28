@@ -103,6 +103,24 @@ pub struct RecordArgs {
     /// A key that makes repeats of the same event one record (up to 200 characters), e.g. "deploy:secretary-server:3f2a9c1".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dedup_key: Option<String>,
+    /// Decisions: who decided: owner, lucina (Lucina decided for the session that asked her) or session (you decided).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_by: Option<DecidedBy>,
+    /// Decisions: the question that was decided, up to 4000 characters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
+    /// Decisions: who asked, e.g. your session or agent name (up to 100 characters).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked_by: Option<String>,
+}
+
+/// Who made a decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum DecidedBy {
+    Owner,
+    Lucina,
+    Session,
 }
 
 /// Arguments of `ops_search`.
@@ -236,6 +254,12 @@ fn check_record(a: &RecordArgs) -> Result<(), ToolError> {
     if let Some(k) = &a.dedup_key {
         max_chars("dedup_key", k, 200)?;
     }
+    if let Some(q) = &a.question {
+        max_chars("question", q, 4000)?;
+    }
+    if let Some(s) = &a.asked_by {
+        max_chars("asked_by", s, 100)?;
+    }
     Ok(())
 }
 
@@ -331,15 +355,22 @@ fn format_search(v: &Value, tz: chrono_tz::Tz) -> String {
 /// The whole record.
 fn format_record(v: &Value, tz: chrono_tz::Tz) -> String {
     let mut out = head(v, tz);
-    let facts: Vec<String> = ["severity", "commit", "host", "source"]
-        .iter()
-        .filter_map(|k| {
-            v.get(*k)
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())
-                .map(|s| format!("{k}: {s}"))
-        })
-        .collect();
+    let facts: Vec<String> = [
+        "severity",
+        "commit",
+        "host",
+        "source",
+        "decided_by",
+        "asked_by",
+    ]
+    .iter()
+    .filter_map(|k| {
+        v.get(*k)
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("{k}: {s}"))
+    })
+    .collect();
     if !facts.is_empty() {
         out.push('\n');
         out.push_str(&facts.join(" · "));
@@ -364,7 +395,7 @@ fn format_record(v: &Value, tz: chrono_tz::Tz) -> String {
     if !timeline.is_empty() {
         out.push_str(&format!("\n\nTimeline:\n{}", timeline.join("\n")));
     }
-    for (key, title) in [("cause", "Cause"), ("fix", "Fix")] {
+    for (key, title) in [("question", "Question"), ("cause", "Cause"), ("fix", "Fix")] {
         let s = str_of(v, key).trim();
         if !s.is_empty() {
             out.push_str(&format!("\n\n{title}: {s}"));
@@ -491,6 +522,16 @@ mod tests {
         assert_eq!(v["severity"], "high");
         assert_eq!(v["timeline"], json!(["10:00 down"]));
         assert!(v.get("links").is_none() && v.get("body").is_none());
+        let a = record(json!({"kind": "decision", "project": "lucina", "title": "merge now", "decided_by": "lucina",
+            "question": "May I merge?", "asked_by": "gallery-viewer-feel"}))
+        .unwrap();
+        let v = serde_json::to_value(&a).unwrap();
+        assert_eq!(v["decided_by"], "lucina");
+        assert_eq!(v["asked_by"], "gallery-viewer-feel");
+        assert!(record(
+            json!({"kind": "decision", "project": "lucina", "title": "x", "decided_by": "boss"})
+        )
+        .is_err());
     }
 
     #[test]
