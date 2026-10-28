@@ -368,6 +368,13 @@ impl Notifier {
                     digest: false,
                     url: approval.as_ref().map(|_| n.route.clone()),
                     sensitive: approval.as_ref().map(|(_, s)| *s),
+                    // The exact commands, for the lock screen's expanded view; hidden with previews off.
+                    detail: approval
+                        .as_ref()
+                        .filter(|_| settings.previews)
+                        .and_then(|_| n.data.as_ref()?["details"].as_str())
+                        .filter(|d| !d.trim().is_empty())
+                        .map(str::to_owned),
                     approval_id: approval.map(|(id, _)| id),
                 };
                 (s, payload)
@@ -529,6 +536,7 @@ impl Notifier {
                 url: None,
                 approval_id: None,
                 sensitive: None,
+                detail: None,
             };
             targets.push((s, payload));
         }
@@ -566,6 +574,7 @@ impl Notifier {
                     url: None,
                     approval_id: None,
                     sensitive: None,
+                    detail: None,
                 };
                 (s, payload)
             })

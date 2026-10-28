@@ -428,6 +428,9 @@ pub struct Payload {
     pub approval_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sensitive: Option<bool>,
+    /// Approvals only, with previews on: the request's `details` (a root plan's commands), clipped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 /// Result of one delivery (after retries).
@@ -718,17 +721,41 @@ pub async fn deliver_all(
     out
 }
 
+/// Bytes of an approval's commands an APNs body carries (the whole body must stay under 4 KB).
+const APNS_DETAIL_BYTES: usize = 2400;
+
+/// The first `max` bytes of `s`, cut at a line (or else a character) boundary, with `…` when cut.
+fn clip_bytes(s: &str, max: usize) -> String {
+    let s = s.trim();
+    if s.len() <= max {
+        return s.to_owned();
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    let head = &s[..end];
+    let head = head.rfind('\n').map_or(head, |i| &head[..i]);
+    format!("{}\n…", head.trim_end())
+}
+
 /// JSON for the APNs body (`aps` + our fields).
 pub fn apns_body(payload: &Payload) -> Value {
-    // The app registers the notification category "APPROVAL" (Approve/Deny actions).
-    let aps_category = if payload.approval_id.is_some() {
-        "APPROVAL"
-    } else {
-        payload.category.as_str()
+    // The app registers the notification categories "APPROVAL" and "APPROVAL_SENSITIVE" (Approve/Deny actions).
+    let aps_category = match (payload.approval_id.is_some(), payload.sensitive) {
+        (true, Some(true)) => "APPROVAL_SENSITIVE",
+        (true, _) => "APPROVAL",
+        (false, _) => payload.category.as_str(),
+    };
+    // An approval's body is the summary, then its commands: the lock screen shows a few lines, and
+    // long-pressing the notification shows all of them.
+    let alert_body = match (&payload.approval_id, &payload.detail) {
+        (Some(_), Some(d)) => format!("{}\n{}", payload.body, clip_bytes(d, APNS_DETAIL_BYTES)),
+        _ => payload.body.clone(),
     };
     let mut body = json!({
         "aps": {
-            "alert": {"title": payload.title, "body": payload.body},
+            "alert": {"title": payload.title, "body": alert_body},
             "sound": "default",
             "badge": payload.unread,
             "thread-id": payload.category,
@@ -739,8 +766,15 @@ pub fn apns_body(payload: &Payload) -> Value {
         "category": payload.category,
     });
     if let Some(id) = &payload.approval_id {
+        let sensitive = payload.sensitive.unwrap_or(false);
         body["approvalId"] = json!(id);
-        body["sensitive"] = json!(payload.sensitive.unwrap_or(false));
+        body["sensitive"] = json!(sensitive);
+        // The key the app's own approval notifications use.
+        body["approvalSensitive"] = json!(sensitive);
+        // Wake the app too, so it refreshes its approvals and the Lock Screen widget; and let the
+        // request through a Focus (the app has the time-sensitive entitlement).
+        body["aps"]["content-available"] = json!(1);
+        body["aps"]["interruption-level"] = json!("time-sensitive");
     }
     body
 }
@@ -751,6 +785,52 @@ mod tests {
 
     fn cfg() -> PushConfig {
         PushConfig::default()
+    }
+
+    fn approval_payload(sensitive: bool, detail: Option<String>) -> Payload {
+        Payload {
+            id: Some("n_1".into()),
+            category: "approval".into(),
+            title: "Approval needed".into(),
+            body: "Run 2 commands as root on nezopt: test".into(),
+            route: "/approvals/apr_1".into(),
+            tag: None,
+            ts: 0,
+            unread: 1,
+            digest: false,
+            url: Some("/approvals/apr_1".into()),
+            approval_id: Some("apr_1".into()),
+            sensitive: Some(sensitive),
+            detail,
+        }
+    }
+
+    #[test]
+    fn apns_approval_body_has_the_commands_and_the_right_category() {
+        let b = apns_body(&approval_payload(false, Some("true\nid -u".into())));
+        assert_eq!(b["aps"]["category"], "APPROVAL");
+        assert_eq!(
+            b["aps"]["alert"]["body"],
+            "Run 2 commands as root on nezopt: test\ntrue\nid -u"
+        );
+        assert_eq!(b["aps"]["content-available"], 1);
+        assert_eq!(b["approvalSensitive"], false);
+        let b = apns_body(&approval_payload(true, None));
+        assert_eq!(b["aps"]["category"], "APPROVAL_SENSITIVE");
+        assert_eq!(b["aps"]["alert"]["body"], "Run 2 commands as root on nezopt: test");
+        // A long plan is cut at a line, and the whole body stays well under APNs' 4 KB.
+        let long: String = (0..400).map(|i| format!("echo line-{i}\n")).collect();
+        let b = apns_body(&approval_payload(true, Some(long)));
+        let text = b["aps"]["alert"]["body"].as_str().unwrap();
+        assert!(text.ends_with("\n…"), "{text}");
+        assert!(text.lines().all(|l| l == "…" || l.starts_with("echo line-") || l.starts_with("Run ")));
+        assert!(serde_json::to_vec(&b).unwrap().len() < 4096);
+        // Not an approval: unchanged.
+        let mut p = approval_payload(false, Some("x".into()));
+        p.approval_id = None;
+        let b = apns_body(&p);
+        assert_eq!(b["aps"]["category"], "approval");
+        assert!(b["aps"].get("content-available").is_none());
     }
 
     #[test]

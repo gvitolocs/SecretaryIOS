@@ -403,6 +403,7 @@ pub struct Created {
     pub sensitive: bool,
     pub expires_ms: i64,
     summary: String,
+    details: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -649,6 +650,7 @@ impl Approvals {
             sensitive,
             expires_ms: a.expires_ms,
             summary: a.summary.clone(),
+            details: a.details.clone(),
         };
         map.insert(a.id.clone(), a);
         Ok(created)
@@ -1115,7 +1117,11 @@ async fn announce(st: &AppState, c: &Created, main: Option<String>) {
     let mut n = NewNotification::new(Category::Approval, clip(&c.summary, 160));
     n.route = Some(format!("/approvals/{}", c.id));
     n.dedup_key = Some(format!("approval:{}", c.id));
-    n.data = Some(json!({"approvalId": c.id, "sensitive": c.sensitive}));
+    n.data = Some(json!({
+        "approvalId": c.id,
+        "sensitive": c.sensitive,
+        "details": clip(&c.details, 2000),
+    }));
     let audience = main.clone().map_or(Audience::All, Audience::Only);
     let scope = if main.is_some() { "main" } else { "all" };
     let stored = match st.notify.publish_to(n, &audience).await {
@@ -2043,9 +2049,11 @@ mod tests {
         assert_eq!(p.url.as_deref(), Some("/approvals/apr_1"));
         assert_eq!(p.route, "/approvals/apr_1");
         let apns = crate::notify::push::apns_body(p);
-        assert_eq!(apns["aps"]["category"], "APPROVAL");
+        assert_eq!(apns["aps"]["category"], "APPROVAL_SENSITIVE");
         assert_eq!(apns["approvalId"], "apr_1");
         assert_eq!(apns["sensitive"], true);
+        assert_eq!(apns["approvalSensitive"], true);
+        assert_eq!(apns["aps"]["content-available"], 1);
         // Quiet hours and DND do not hold it, and no switch mutes it.
         notifier
             .settings
