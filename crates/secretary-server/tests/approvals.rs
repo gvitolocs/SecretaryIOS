@@ -77,6 +77,23 @@ fn sign(sk: &SigningKey, id: &str, hash: &str, decision: &str) -> String {
     STANDARD.encode(sig.to_der().as_bytes())
 }
 
+/// The proof of possession for registering `sk` on `device_id`.
+fn key_proof(sk: &SigningKey, device_id: &str, pk_b64: &str) -> Value {
+    let msg = format!("secretary-approval-key-v1\n{device_id}\n{pk_b64}");
+    let sig: Signature = sk.sign(msg.as_bytes());
+    json!({"signature": STANDARD.encode(sig.to_der().as_bytes())})
+}
+
+/// The proof that lets a device change its PIN without the current one.
+fn pin_proof(sk: &SigningKey, device_id: &str) -> Value {
+    let sig: Signature = sk.sign(format!("secretary-approval-pin-v1\n{device_id}").as_bytes());
+    json!({"signature": STANDARD.encode(sig.to_der().as_bytes())})
+}
+
+fn pk_b64(sk: &SigningKey) -> String {
+    STANDARD.encode(sk.verifying_key().to_encoded_point(false).as_bytes())
+}
+
 fn key(seed: u8) -> SigningKey {
     SigningKey::from_slice(&[seed; 32]).unwrap()
 }
@@ -169,20 +186,59 @@ impl H {
         .await
     }
 
-    async fn register_key(
-        &self,
-        dev: &Dev,
-        sk: &SigningKey,
-        password: &str,
-    ) -> (StatusCode, Value) {
-        let pk = STANDARD.encode(sk.verifying_key().to_encoded_point(false).as_bytes());
+    /// Register `sk` as `dev`'s key, with a valid proof of possession.
+    async fn register_key(&self, dev: &Dev, sk: &SigningKey) -> (StatusCode, Value) {
+        let pk = pk_b64(sk);
         self.call(
             "POST",
             "/v1/approvals/keys",
             Some(&dev.token),
-            Some(json!({"publicKey": pk, "label": "Face ID on iPhone", "password": password})),
+            Some(json!({
+                "publicKey": pk,
+                "label": "Face ID on iPhone",
+                "proof": key_proof(sk, &dev.id, &pk),
+            })),
         )
         .await
+    }
+
+    /// Approve with the app PIN instead of a proof.
+    async fn decide_pin(&self, dev: &Dev, id: &str, pin: &str) -> (StatusCode, Value) {
+        self.call(
+            "POST",
+            &format!("/v1/approvals/{id}/decide"),
+            Some(&dev.token),
+            Some(json!({"decision": "approve", "payloadHash": HASH, "pin": pin})),
+        )
+        .await
+    }
+
+    async fn put_pin(&self, dev: &Dev, body: Value) -> (StatusCode, Value) {
+        self.call("PUT", "/v1/approvals/pin", Some(&dev.token), Some(body))
+            .await
+    }
+
+    async fn has_pin(&self, dev: &Dev) -> bool {
+        let (_, v) = self
+            .call("GET", "/v1/approvals/settings", Some(&dev.token), None)
+            .await;
+        v["hasPin"].as_bool().unwrap()
+    }
+
+    /// Inbox bodies of the approval-category notices (not prompts).
+    async fn notices(&self, dev: &Dev) -> Vec<String> {
+        let (_, v) = self
+            .call("GET", "/v1/notifications", Some(&dev.token), None)
+            .await;
+        v["items"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter(|n| n["category"] == "approval")
+                    .map(|n| n["body"].as_str().unwrap().to_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn audit(&self) -> Vec<Value> {
@@ -512,10 +568,17 @@ async fn the_service_token_asks_but_never_decides() {
             "POST",
             "/v1/approvals/keys",
             Some(&h.svc),
-            Some(json!({"publicKey": "x", "password": PASSWORD})),
+            Some(json!({"publicKey": "x", "proof": {"signature": "x"}})),
         )
         .await;
     assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    for (m, p, b) in [
+        ("PUT", "/v1/approvals/pin", Some(json!({"pin": "123456"}))),
+        ("DELETE", "/v1/approvals/pin", None),
+    ] {
+        let (s, v) = h.call(m, p, Some(&h.svc), b).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{m} {p}: {v}");
+    }
     // Still undecided.
     let (_, v) = h.wait(&id, 0).await;
     assert_eq!(v["status"], "pending");
@@ -793,13 +856,55 @@ async fn sensitive_approval_needs_this_devices_biometric_key() {
     let (a, b) = (h.device("iPhone"), h.device("iPad"));
     let (ka, kb) = (key(1), key(2));
 
-    // Registering a key takes the owner's password, not just a device token.
-    let (s, v) = h.register_key(&a, &ka, "wrong password").await;
-    assert_eq!(
-        (s, v["error"]["code"].as_str()),
-        (StatusCode::FORBIDDEN, Some("invalid_credentials")),
-        "{v}"
+    // Registering a key takes a proof of possession by the new key, no password.
+    let pka = pk_b64(&ka);
+    let register = |dev: &Dev, body: Value| {
+        let (h, token) = (&h, dev.token.clone());
+        async move {
+            h.call("POST", "/v1/approvals/keys", Some(&token), Some(body))
+                .await
+        }
+    };
+    let invalid = |r: (StatusCode, Value)| {
+        assert_eq!(
+            (r.0, r.1["error"]["code"].as_str()),
+            (StatusCode::BAD_REQUEST, Some("proof_invalid")),
+            "{}",
+            r.1
+        );
+    };
+    // No proof (a password is ignored); a proof by another key; a proof for
+    // another device; a proof over another public key; garbage.
+    invalid(register(&a, json!({"publicKey": pka, "password": PASSWORD})).await);
+    invalid(
+        register(
+            &a,
+            json!({"publicKey": pka, "proof": key_proof(&kb, &a.id, &pka)}),
+        )
+        .await,
     );
+    invalid(
+        register(
+            &a,
+            json!({"publicKey": pka, "proof": key_proof(&ka, &b.id, &pka)}),
+        )
+        .await,
+    );
+    invalid(
+        register(
+            &a,
+            json!({"publicKey": pka, "proof": key_proof(&ka, &a.id, &pk_b64(&kb))}),
+        )
+        .await,
+    );
+    invalid(
+        register(
+            &a,
+            json!({"publicKey": pka, "proof": {"signature": "AAAA"}}),
+        )
+        .await,
+    );
+    assert!(h.notices(&a).await.is_empty(), "nothing was set up yet");
     let (_, v) = h
         .call("GET", "/v1/approvals/settings", Some(&a.token), None)
         .await;
@@ -808,12 +913,13 @@ async fn sensitive_approval_needs_this_devices_biometric_key() {
         .unwrap()
         .iter()
         .all(|d| d["hasBiometricKey"] == false));
+    assert_eq!(v["hasPin"], false);
     let (s, v) = h
         .call(
             "POST",
             "/v1/approvals/keys",
             Some(&a.token),
-            Some(json!({"publicKey": "AAAA", "password": PASSWORD})),
+            Some(json!({"publicKey": "AAAA", "proof": {"signature": "AAAA"}})),
         )
         .await;
     assert_eq!(
@@ -821,12 +927,12 @@ async fn sensitive_approval_needs_this_devices_biometric_key() {
         (StatusCode::BAD_REQUEST, Some("bad_request")),
         "{v}"
     );
-    let (s, v) = h.register_key(&a, &ka, PASSWORD).await;
+    let (s, v) = h.register_key(&a, &ka).await;
     assert_eq!(s, StatusCode::OK, "{v}");
     let (ia, ib) = {
         let ia = v["keyId"].as_str().unwrap().to_owned();
         assert_eq!(ia.len(), 8);
-        let (s, v) = h.register_key(&b, &kb, PASSWORD).await;
+        let (s, v) = h.register_key(&b, &kb).await;
         assert_eq!(s, StatusCode::OK, "{v}");
         (ia, v["keyId"].as_str().unwrap().to_owned())
     };
@@ -839,8 +945,18 @@ async fn sensitive_approval_needs_this_devices_biometric_key() {
         .unwrap()
         .iter()
         .all(|d| d["hasBiometricKey"] == true));
-    let keys_file = std::fs::read_to_string(h.data.join("approval-keys.json")).unwrap();
-    assert!(!keys_file.contains(PASSWORD));
+    // Both devices were told, and the audit log has the registrations.
+    assert_eq!(
+        h.notices(&a).await,
+        ["Approvals set up on iPad", "Approvals set up on iPhone"]
+    );
+    assert_eq!(
+        h.audit()
+            .iter()
+            .filter(|e| e["event"] == "key_registered")
+            .count(),
+        2
+    );
 
     let (s, v) = h
         .call(
@@ -928,6 +1044,7 @@ async fn sensitive_approval_needs_this_devices_biometric_key() {
     let (_, w) = h.wait(&id, 0).await;
     let g = h.verify_grant(w["grant"].as_str().unwrap()).await;
     assert_eq!(g["biometric"], true);
+    assert_eq!(g["verifiedBy"], "device_key");
     assert_eq!(g["action"], "root.exec");
     assert_eq!(g["decidedBy"], a.id.as_str());
     let decided = h
@@ -1121,4 +1238,401 @@ async fn requests_are_validated_and_rate_limited() {
     // The public key needs no sign-in and is stable.
     assert_eq!(h.grant_key().await, h.grant_key().await);
     assert_eq!(h.grant_key().await.len(), 32);
+}
+
+const PIN: &str = "123456";
+
+fn code(r: &(StatusCode, Value)) -> (StatusCode, Option<&str>) {
+    (r.0, r.1["error"]["code"].as_str())
+}
+
+#[tokio::test]
+async fn the_pin_is_set_replaced_and_removed() {
+    use std::os::unix::fs::PermissionsExt;
+    let h = harness(|_| {}).await;
+    let (a, b) = (h.device("iPhone"), h.device("iPad"));
+    let ka = key(1);
+    assert!(!h.has_pin(&a).await);
+
+    // Exactly six ASCII digits.
+    for bad in ["12345", "1234567", "12a456", "", "١٢٣٤٥٦", " 12345"] {
+        let r = h.put_pin(&a, json!({"pin": bad})).await;
+        assert_eq!(
+            code(&r),
+            (StatusCode::BAD_REQUEST, Some("bad_request")),
+            "{bad:?}"
+        );
+    }
+    let r = h.put_pin(&a, json!({})).await;
+    assert_eq!(r.0, StatusCode::BAD_REQUEST);
+    assert!(!h.has_pin(&a).await);
+
+    // The first PIN needs nothing beyond the device itself.
+    let r = h.put_pin(&a, json!({"pin": PIN})).await;
+    assert_eq!(r, (StatusCode::OK, json!({"hasPin": true})));
+    assert!(h.has_pin(&b).await);
+    let path = h.data.join("approval-pin.json");
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let file = std::fs::read_to_string(&path).unwrap();
+    assert!(file.contains("$argon2id$") && !file.contains(PIN), "{file}");
+
+    // Replacing needs the current PIN or a proof from this device's key.
+    let r = h.put_pin(&b, json!({"pin": "654321"})).await;
+    assert_eq!(
+        code(&r),
+        (StatusCode::FORBIDDEN, Some("pin_auth_required")),
+        "{}",
+        r.1
+    );
+    let r = h
+        .put_pin(&b, json!({"pin": "654321", "currentPin": "000000"}))
+        .await;
+    assert_eq!(
+        code(&r),
+        (StatusCode::FORBIDDEN, Some("pin_wrong")),
+        "{}",
+        r.1
+    );
+    assert_eq!(r.1["error"]["attemptsLeft"], 4);
+    let r = h
+        .put_pin(&b, json!({"pin": "654321", "currentPin": PIN}))
+        .await;
+    assert_eq!(r, (StatusCode::OK, json!({"hasPin": true})));
+    // The old PIN is gone; the count was reset by the right one.
+    let id = h.ask("root.exec").await;
+    let r = h.decide_pin(&a, &id, PIN).await;
+    assert_eq!(code(&r), (StatusCode::FORBIDDEN, Some("pin_wrong")));
+    assert_eq!(r.1["error"]["attemptsLeft"], 4);
+
+    // A proof needs a registered key on this device, made by that key.
+    let proof_a = pin_proof(&ka, &a.id);
+    let r = h
+        .put_pin(&a, json!({"pin": "111222", "proof": proof_a}))
+        .await;
+    assert_eq!(
+        code(&r),
+        (StatusCode::FORBIDDEN, Some("pin_auth_required")),
+        "no key yet"
+    );
+    assert_eq!(h.register_key(&a, &ka).await.0, StatusCode::OK);
+    for proof in [
+        pin_proof(&key(2), &a.id),
+        pin_proof(&ka, &b.id),
+        json!({"signature": "AAAA"}),
+    ] {
+        let r = h
+            .put_pin(&a, json!({"pin": "111222", "proof": proof}))
+            .await;
+        assert_eq!(
+            code(&r),
+            (StatusCode::FORBIDDEN, Some("pin_auth_required")),
+            "{}",
+            r.1
+        );
+    }
+    // b has no key of its own: a's proof does not carry over.
+    let r = h
+        .put_pin(&b, json!({"pin": "111222", "proof": pin_proof(&ka, &b.id)}))
+        .await;
+    assert_eq!(code(&r), (StatusCode::FORBIDDEN, Some("pin_auth_required")));
+    let r = h
+        .put_pin(&a, json!({"pin": "111222", "proof": proof_a}))
+        .await;
+    assert_eq!(r, (StatusCode::OK, json!({"hasPin": true})));
+    let id2 = h.ask("root.exec").await;
+    assert_eq!(h.decide_pin(&b, &id2, "111222").await.0, StatusCode::OK);
+
+    // Removing follows the same rule.
+    let del = |dev: &Dev, body: Option<Value>| {
+        let (h, token) = (&h, dev.token.clone());
+        async move {
+            h.call("DELETE", "/v1/approvals/pin", Some(&token), body)
+                .await
+        }
+    };
+    assert_eq!(
+        code(&del(&b, None).await),
+        (StatusCode::FORBIDDEN, Some("pin_auth_required"))
+    );
+    assert_eq!(
+        code(&del(&b, Some(json!({"currentPin": "999999"}))).await),
+        (StatusCode::FORBIDDEN, Some("pin_wrong"))
+    );
+    assert!(h.has_pin(&a).await);
+    let r = del(&b, Some(json!({"currentPin": "111222"}))).await;
+    assert_eq!(r, (StatusCode::OK, json!({"hasPin": false})));
+    assert!(!h.has_pin(&a).await);
+    assert!(!std::fs::read_to_string(&path).unwrap().contains("argon2"));
+    // Nothing to remove any more, and it needs no proof.
+    assert_eq!(
+        del(&a, None).await,
+        (StatusCode::OK, json!({"hasPin": false}))
+    );
+    // A proof removes it too.
+    assert_eq!(h.put_pin(&b, json!({"pin": PIN})).await.0, StatusCode::OK);
+    let r = del(&a, Some(json!({"proof": proof_a}))).await;
+    assert_eq!(r, (StatusCode::OK, json!({"hasPin": false})));
+    // With no PIN, a PIN decides nothing.
+    let id3 = h.ask("root.exec").await;
+    let r = h.decide_pin(&a, &id3, PIN).await;
+    assert_eq!(
+        code(&r),
+        (StatusCode::FORBIDDEN, Some("biometric_required"))
+    );
+
+    // Every change told the owner's devices.
+    let notices = h.notices(&a).await;
+    assert_eq!(
+        notices
+            .iter()
+            .filter(
+                |n| *n == "Approval PIN changed on iPad" || *n == "Approval PIN changed on iPhone"
+            )
+            .count(),
+        6,
+        "{notices:?}"
+    );
+    let ev: Vec<String> = h
+        .audit()
+        .iter()
+        .map(|e| e["event"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(
+        ev.iter().any(|e| e == "pin_set") && ev.iter().any(|e| e == "pin_removed"),
+        "{ev:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_sensitive_approve_can_use_the_pin_and_the_grant_says_so() {
+    let h = harness(|_| {}).await;
+    let a = h.device("iPhone");
+    assert_eq!(h.put_pin(&a, json!({"pin": PIN})).await.0, StatusCode::OK);
+    let id = h.ask("root.exec").await;
+
+    let r = h.decide_pin(&a, &id, "000000").await;
+    assert_eq!(code(&r), (StatusCode::FORBIDDEN, Some("pin_wrong")));
+    assert_eq!(
+        r.1,
+        json!({"error": {"code": "pin_wrong", "message": "the PIN is wrong", "attemptsLeft": 4}})
+    );
+    let r = h.decide_pin(&a, &id, "111111").await;
+    assert_eq!(r.1["error"]["attemptsLeft"], 3);
+    // A malformed PIN is a 400 and costs no attempt.
+    let r = h.decide_pin(&a, &id, "12").await;
+    assert_eq!(code(&r), (StatusCode::BAD_REQUEST, Some("bad_request")));
+    // Neither does a denial (it needs nothing).
+    assert_eq!(
+        h.decide(&a, &h.ask("secret.reveal").await, "deny", None)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    let (_, w) = h.wait(&id, 0).await;
+    assert_eq!(w["status"], "pending");
+
+    let r = h.decide_pin(&a, &id, PIN).await;
+    assert_eq!(r, (StatusCode::OK, json!({"status": "approved"})));
+    let (_, w) = h.wait(&id, 0).await;
+    let g = h.verify_grant(w["grant"].as_str().unwrap()).await;
+    assert_eq!(g["biometric"], true);
+    assert_eq!(g["verifiedBy"], "pin");
+    assert_eq!(g["decidedBy"], a.id.as_str());
+    let decided = h
+        .audit()
+        .into_iter()
+        .find(|e| e["event"] == "decided" && e["id"] == id.as_str())
+        .unwrap();
+    assert_eq!(
+        (decided["biometric"].clone(), decided["verifiedBy"].clone()),
+        (json!(true), json!("pin"))
+    );
+    let (_, item) = h
+        .call("GET", &format!("/v1/approvals/{id}"), Some(&a.token), None)
+        .await;
+    assert_eq!(item["verifiedBy"], "pin");
+
+    // The right PIN reset the count.
+    let id2 = h.ask("secret.reveal").await;
+    let r = h.decide_pin(&a, &id2, "000000").await;
+    assert_eq!(r.1["error"]["attemptsLeft"], 4);
+
+    // A valid device-key proof wins: the wrong PIN next to it costs nothing.
+    let ka = key(1);
+    let (_, v) = h.register_key(&a, &ka).await;
+    let ia = v["keyId"].as_str().unwrap().to_owned();
+    let r = h
+        .call(
+            "POST",
+            &format!("/v1/approvals/{id2}/decide"),
+            Some(&a.token),
+            Some(json!({
+                "decision": "approve", "payloadHash": HASH, "pin": "000000",
+                "proof": proof(&ka, &ia, &id2, HASH, "approve"),
+            })),
+        )
+        .await;
+    assert_eq!(r.0, StatusCode::OK, "{}", r.1);
+    let (_, w) = h.wait(&id2, 0).await;
+    let g = h.verify_grant(w["grant"].as_str().unwrap()).await;
+    assert_eq!(
+        (g["biometric"].clone(), g["verifiedBy"].clone()),
+        (json!(true), json!("device_key"))
+    );
+    let id3 = h.ask("root.exec").await;
+    let r = h.decide_pin(&a, &id3, "000000").await;
+    assert_eq!(
+        r.1["error"]["attemptsLeft"], 3,
+        "the id2 wrong PIN counted, the proof one did not"
+    );
+
+    // An unverified approve of a plain request has no verifiedBy.
+    let id4 = h.ask("agent.permission").await;
+    assert_eq!(h.decide(&a, &id4, "approve", None).await.0, StatusCode::OK);
+    let (_, w) = h.wait(&id4, 0).await;
+    let g = h.verify_grant(w["grant"].as_str().unwrap()).await;
+    assert_eq!(g["biometric"], false);
+    assert!(g.get("verifiedBy").is_none());
+}
+
+#[tokio::test]
+async fn five_wrong_pins_lock_it_for_fifteen_minutes_and_the_lock_persists() {
+    let h = harness(|_| {}).await;
+    let a = h.device("iPhone");
+    let ka = key(1);
+    assert_eq!(h.put_pin(&a, json!({"pin": PIN})).await.0, StatusCode::OK);
+    let (_, v) = h.register_key(&a, &ka).await;
+    let ia = v["keyId"].as_str().unwrap().to_owned();
+    let id = h.ask("root.exec").await;
+
+    for left in [4, 3, 2, 1] {
+        let r = h.decide_pin(&a, &id, "000000").await;
+        assert_eq!(code(&r), (StatusCode::FORBIDDEN, Some("pin_wrong")));
+        assert_eq!(r.1["error"]["attemptsLeft"], left);
+    }
+    // The fifth locks it: 429 with Retry-After, even for the right PIN next.
+    let raw = |base: &str, pin: &str| {
+        let rb = h
+            .http
+            .post(format!("{base}/v1/approvals/{id}/decide"))
+            .bearer_auth(&a.token)
+            .json(&json!({"decision": "approve", "payloadHash": HASH, "pin": pin}));
+        async move {
+            let r = rb.send().await.unwrap();
+            let retry = r
+                .headers()
+                .get("retry-after")
+                .map(|v| v.to_str().unwrap().parse::<u64>().unwrap());
+            (r.status(), retry, r.json::<Value>().await.unwrap())
+        }
+    };
+    let (s, retry, v) = raw(&h.base, "000000").await;
+    assert_eq!(
+        (s, v["error"]["code"].as_str()),
+        (StatusCode::TOO_MANY_REQUESTS, Some("pin_locked"))
+    );
+    assert!((890..=900).contains(&retry.unwrap()), "{retry:?}");
+    assert!(v["error"].get("attemptsLeft").is_none());
+    let (s, retry, v) = raw(&h.base, PIN).await;
+    assert_eq!(
+        (s, v["error"]["code"].as_str()),
+        (StatusCode::TOO_MANY_REQUESTS, Some("pin_locked"))
+    );
+    assert!(retry.unwrap() <= 900);
+
+    // The lock is on disk (the unit tests reopen the store and see it).
+    let state = std::fs::read_to_string(h.data.join("approval-pin.json")).unwrap();
+    assert!(state.contains("lockedUntilMs"), "{state}");
+
+    // The device key is not locked out, and the PIN cannot be changed with the PIN meanwhile.
+    let r = h
+        .put_pin(&a, json!({"pin": "222333", "currentPin": PIN}))
+        .await;
+    assert_eq!(
+        code(&r),
+        (StatusCode::TOO_MANY_REQUESTS, Some("pin_locked"))
+    );
+    let r = h
+        .decide(
+            &a,
+            &id,
+            "approve",
+            Some(proof(&ka, &ia, &id, HASH, "approve")),
+        )
+        .await;
+    assert_eq!(r.0, StatusCode::OK, "{}", r.1);
+}
+
+#[tokio::test]
+async fn a_pin_never_helps_with_the_other_checks() {
+    let h = harness(|_| {}).await;
+    let (a, b) = (h.device("iPhone"), h.device("iPad"));
+    assert_eq!(h.put_pin(&a, json!({"pin": PIN})).await.0, StatusCode::OK);
+
+    // Its own request: refused before the PIN is looked at (right or wrong).
+    let (s, v) = h
+        .call(
+            "POST",
+            "/v1/approvals",
+            Some(&a.token),
+            Some(H::req_body("root.exec")),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let own = v["id"].as_str().unwrap().to_owned();
+    for pin in [PIN, "000000"] {
+        let r = h.decide_pin(&a, &own, pin).await;
+        assert_eq!(
+            code(&r),
+            (StatusCode::FORBIDDEN, Some("self_approval")),
+            "{pin}"
+        );
+    }
+    // Another device may still answer it with the PIN: no attempt was spent.
+    let id = h.ask("root.exec").await;
+    let r = h.decide_pin(&a, &id, "000000").await;
+    assert_eq!(r.1["error"]["attemptsLeft"], 4);
+
+    // Payload mismatch.
+    let r = h
+        .call(
+            "POST",
+            &format!("/v1/approvals/{id}/decide"),
+            Some(&a.token),
+            Some(json!({"decision": "approve", "payloadHash": format!("sha256:{}", "00".repeat(32)), "pin": PIN})),
+        )
+        .await;
+    assert_eq!(code(&r), (StatusCode::CONFLICT, Some("payload_mismatch")));
+
+    // The main-device window.
+    let (s, _) = h
+        .call(
+            "PUT",
+            "/v1/approvals/settings",
+            Some(&b.token),
+            Some(json!({"mainDeviceId": b.id})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let r = h.decide_pin(&a, &id, PIN).await;
+    assert_eq!(code(&r), (StatusCode::FORBIDDEN, Some("not_main_device")));
+    let r = h.decide_pin(&a, &id, "000000").await;
+    assert_eq!(code(&r), (StatusCode::FORBIDDEN, Some("not_main_device")));
+
+    // None of that spent an attempt (one wrong PIN earlier), and a decided request stays decided.
+    let (s, _) = h
+        .call(
+            "PUT",
+            "/v1/approvals/settings",
+            Some(&b.token),
+            Some(json!({"mainDeviceId": null})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(h.decide_pin(&a, &id, PIN).await.0, StatusCode::OK);
+    let r = h.decide_pin(&a, &id, PIN).await;
+    assert_eq!(code(&r), (StatusCode::CONFLICT, Some("approval_decided")));
 }
