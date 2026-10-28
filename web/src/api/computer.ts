@@ -81,8 +81,9 @@ export const computerApi = {
     ),
   take: (sandbox: Sandbox) =>
     request<{ state: ControlState; stoppedTask: string | null }>("POST", "/v1/computer/control", { body: { sandbox, action: "take" } }),
-  heartbeat: (sandbox: Sandbox) =>
-    request<{ state: ControlState }>("POST", "/v1/computer/control", { body: { sandbox, action: "heartbeat" } }),
+  /** `active`: real input (keys, mouse, touch) since the last one; two idle minutes give the desktop back. */
+  heartbeat: (sandbox: Sandbox, active: boolean) =>
+    request<{ state: ControlState }>("POST", "/v1/computer/control", { body: { sandbox, action: "heartbeat", active } }),
   release: (sandbox: Sandbox) =>
     request<{ state: ControlState }>("POST", "/v1/computer/control", { body: { sandbox, action: "release" } }),
   view: (sandbox: Sandbox, mode: "watch" | "control") => request<View>("POST", "/v1/computer/view", { body: { sandbox, mode } }),

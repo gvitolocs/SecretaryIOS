@@ -871,6 +871,154 @@ describe("files while driving", () => {
   });
 });
 
+describe("giving the desktop back", () => {
+  let listener: ((on: boolean) => void) | null = null;
+  const setFocus = vi.fn((on: boolean) => setTimeout(() => listener?.(on), 0));
+  beforeEach(() => {
+    setLocale("en");
+    localStorage.clear();
+    listener = null;
+    window.secretaryShell = {
+      version: 1,
+      showCode: vi.fn(),
+      setFocusMode: setFocus,
+      onFocusModeChange: (l: (on: boolean) => void) => {
+        listener = l;
+        return () => (listener = null);
+      },
+    } as unknown as typeof window.secretaryShell;
+  });
+  afterEach(() => {
+    delete window.secretaryShell;
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    Object.defineProperty(document, "hidden", { configurable: true, value: false });
+  });
+
+  function fromFrame(frame: HTMLIFrameElement, data: unknown) {
+    const ev = new MessageEvent("message", { data });
+    Object.defineProperty(ev, "source", { value: frame.contentWindow });
+    window.dispatchEvent(ev);
+  }
+
+  /** A Lucina that lets this page drive; `beat` answers heartbeats (an error code, or fine). */
+  function lucina(beat: () => string | null = () => null) {
+    let s = state();
+    return stubFetch((c: Call) => {
+      if (c.url.startsWith("/v1/computer/control") && c.method === "GET") return { body: { state: s, recent: [] } };
+      if (c.url === "/v1/computer/control") {
+        const action = (c.body as { action: string }).action;
+        if (action === "take") s = state({ driver: "owner", epoch: 1, owner: { device: "web", since: 1, expiresInMs: 45000 } });
+        if (action === "release") s = state({ epoch: 2 });
+        if (action === "heartbeat") {
+          const code = beat();
+          if (code) {
+            s = state({ epoch: 2 });
+            return { status: 409, body: { error: { code, message: code } } };
+          }
+        }
+        return { body: { state: s, stoppedTask: null } };
+      }
+      if (c.url === "/v1/computer/view") {
+        const mode = (c.body as { mode: string }).mode;
+        return { body: { viewId: VIEW_ID, viewUrl: `/v1/computer/view/${VIEW_ID}/viewer/#ticket=t&mode=${mode}`, sandbox: "workspace", mode, ttlSecs: 600 } };
+      }
+      if (c.url === `/v1/computer/view/${VIEW_ID}/ticket`) {
+        const mode = (c.body as { mode: string }).mode;
+        return { body: { ticket: `t-${mode}`, mode, sandbox: "workspace", ttlSecs: 600, epoch: 1, changed: true } };
+      }
+      return { status: 404, body: { error: { code: "not_found", message: "no" } } };
+    });
+  }
+  const released = (calls: Call[]) => calls.some((c) => c.url === "/v1/computer/control" && (c.body as { action: string }).action === "release");
+  const beats = (calls: Call[]) =>
+    calls.filter((c) => c.url === "/v1/computer/control" && (c.body as { action: string }).action === "heartbeat").map((c) => (c.body as { active: boolean }).active);
+
+  async function drive() {
+    renderComputer();
+    await screen.findByText("Idle");
+    fireEvent.click(screen.getAllByRole("button", { name: "Take over" })[0]!);
+    await screen.findByText("You are driving");
+    const frame = document.querySelector("iframe")!;
+    watchFrame(frame);
+    return frame;
+  }
+
+  it("leaving focus mode gives control back, even when it was taken before", async () => {
+    const calls = lucina();
+    await drive();
+    fireEvent.click(screen.getByRole("button", { name: "Full screen" }));
+    await waitFor(() => expect(document.querySelector(".computer-page")?.getAttribute("data-full")).toBe("yes"));
+    listener?.(false); // Esc or the shell's Exit focus
+    await waitFor(() => expect(released(calls)).toBe(true));
+    await waitFor(() => expect(screen.queryByText("You are driving")).toBeNull());
+  });
+
+  it("heartbeats say whether there was real input; the stream's own counts, clipboard sync does not", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const calls = lucina();
+    const frame = await drive();
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(beats(calls).at(-1)).toBe(true); // the takeover itself
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(beats(calls).at(-1)).toBe(false);
+    fromFrame(frame, { type: "lucina:clipboard", id: 1, text: "x" });
+    fromFrame(frame, { type: "lucina:copied" });
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(beats(calls).at(-1)).toBe(false);
+    fromFrame(frame, { type: "lucina:active" });
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(beats(calls).at(-1)).toBe(true);
+    fireEvent.keyDown(window, { key: "a" });
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(beats(calls).at(-1)).toBe(true);
+  });
+
+  it("two minutes without input give control back, with one click to take it again", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const calls = lucina();
+    await drive();
+    await vi.advanceTimersByTimeAsync(119_000);
+    expect(released(calls)).toBe(false);
+    await vi.advanceTimersByTimeAsync(16_000);
+    await waitFor(() => expect(released(calls)).toBe(true));
+    const toast = await screen.findByText("You were idle, so Lucina has the computer again.");
+    fireEvent.click(within(toast.closest(".computer-idle") as HTMLElement).getByRole("button", { name: "Take over" }));
+    await screen.findByText("You are driving");
+    expect(screen.queryByText("You were idle, so Lucina has the computer again.")).toBeNull();
+  });
+
+  it("Lucina saying the owner was idle shows the same toast", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    lucina(() => "owner_idle");
+    await drive();
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(await screen.findByText("You were idle, so Lucina has the computer again.")).toBeInTheDocument();
+    expect(screen.queryByText("You are driving")).toBeNull();
+  });
+
+  it("a page hidden for a minute gives control back, also when it wakes from sleep", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const calls = lucina();
+    await drive();
+    Object.defineProperty(document, "hidden", { configurable: true, value: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(30_000);
+    Object.defineProperty(document, "hidden", { configurable: true, value: false });
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(released(calls)).toBe(false); // back within the minute: still driving
+    Object.defineProperty(document, "hidden", { configurable: true, value: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+    // Asleep: no timer runs, but the clock moves on.
+    vi.setSystemTime(Date.now() + 5 * 60_000);
+    Object.defineProperty(document, "hidden", { configurable: true, value: false });
+    document.dispatchEvent(new Event("visibilitychange"));
+    await waitFor(() => expect(released(calls)).toBe(true));
+  });
+});
+
 describe("page helpers", () => {
   it("passes keys the way the viewer names them", () => {
     expect(passKey({ key: "a" })).toEqual({ text: "a" });
