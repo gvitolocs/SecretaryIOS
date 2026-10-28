@@ -686,6 +686,15 @@ pub fn specs() -> Vec<ToolSpec> {
             "Permission requests from coding agents (and from the secrets broker) waiting for the owner: what is asked, by which agent, until when. Read only: only the owner answers them, in the Secretary app."),
         spec!("agents_usage", "Coding agent usage", Scope::Agents, ro = true, destructive = false, idempotent = true, crate::agents::NoArgs,
             "Coding agents by provider (how many, how many running, tokens of their last turns, cost when the provider reports it), the providers this server has, and the schedules."),
+        // The Homelab service catalog (agentd /catalog, nezopt ~/Projects/Homelab/catalog): ask before acting.
+        spec!("catalog_get", "Catalog component", Scope::Agents, ro = true, destructive = false, idempotent = true, crate::agents::CatalogGetArgs,
+            "One component of the owner's systems from the Homelab catalog (hosts nezopt, p1, pi-home, oracle-peer1…; services, timers, containers, k3s workloads, databases, tunnels, sites, repos): where it runs, its units, containers and ports, what it needs and what needs it, its health right now (checked every 5 minutes), the last deploy, its logs, restart and rollback commands, and its runbook. Ask before restarting, deploying or changing anything."),
+        spec!("catalog_impact", "Catalog impact", Scope::Agents, ro = true, destructive = false, idempotent = true, crate::agents::CatalogImpactArgs,
+            "What breaks and what degrades if these components are down (stopped, restarted, unreachable), following the dependency graph, with the public hostnames that would fail. Use it before stopping, restarting or redeploying anything, or to understand an outage."),
+        spec!("catalog_health", "Catalog health", Scope::Agents, ro = true, destructive = false, idempotent = true, crate::agents::CatalogHealthArgs,
+            "Health from the catalog: without id, everything that is down, broken, degraded or warning right now (worst first, with the reason); with id, that component's checks. live=true rescans its host first (slower)."),
+        spec!("catalog_drift", "Catalog drift", Scope::Agents, ro = true, destructive = false, idempotent = true, crate::agents::NoArgs,
+            "Drift between the catalog and reality: units, containers, k8s workloads, tunnels, Caddy sites and repos that run but are not catalogued, and catalogued ones that are missing."),
 
     ]
 }

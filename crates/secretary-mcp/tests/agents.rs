@@ -8,7 +8,7 @@ use common::agents::{AGENTS_TOKEN, MAIN_CHECKOUT};
 use common::*;
 use serde_json::{json, Value};
 
-const AGENT_TOOLS: [&str; 25] = [
+const AGENT_TOOLS: [&str; 29] = [
     "agents_list",
     "agent_run",
     "agent_send",
@@ -34,6 +34,10 @@ const AGENT_TOOLS: [&str; 25] = [
     "schedule_remove",
     "permissions_list",
     "agents_usage",
+    "catalog_get",
+    "catalog_impact",
+    "catalog_health",
+    "catalog_drift",
 ];
 
 const WS: &str = "wks_42a3dadd481e4d7f";
@@ -458,4 +462,46 @@ async fn without_the_agents_token_the_tools_say_so() {
     let (err, text) = h.call(&t, "agents_list", json!({})).await;
     assert!(err && text.contains("isn't connected"), "{text}");
     assert!(agent_requests(&h).is_empty());
+}
+
+#[tokio::test]
+async fn catalog_tools_read_the_service_map() {
+    let h = start().await;
+    let t = h.issue("claude-code", "read,agents");
+    let (err, text) = h.call(&t, "catalog_get", json!({"id": "pokoin-db-writer"})).await;
+    assert!(!err, "{text}");
+    assert!(text.contains("pokoin-db-writer (Pokoin Postgres writer (nezopt)) — Pokoin / pokoin, db on nezopt"), "{text}");
+    assert!(text.contains("State: down") && text.contains("Needed by: k3s-pokoin-api (hard), pokoin-db-replica (soft)"), "{text}");
+    assert!(text.contains("Restart: docker restart pokoin-marketplace-postgres-15t"), "{text}");
+
+    let (err, text) = h.call(&t, "catalog_impact", json!({"ids": ["pokoin-db-writer"]})).await;
+    assert!(!err, "{text}");
+    assert!(text.starts_with("If pokoin-db-writer went down: 1 break, 1 degrade."), "{text}");
+    assert!(text.contains("- site-api (critical), serves api.pokoin.com via cloudflared-pi ← pokoin-db-writer"), "{text}");
+
+    let (err, text) = h.call(&t, "catalog_health", json!({})).await;
+    assert!(!err, "{text}");
+    assert!(text.contains("- down pokoin-db-writer (critical)") && text.contains("- broken k3s-pokoin-api (high), because of pokoin-db-writer"), "{text}");
+    let (err, text) = h.call(&t, "catalog_health", json!({"id": "pokoin-db-writer", "live": true})).await;
+    assert!(!err && text.starts_with("pokoin-db-writer: ok"), "{text}");
+    let (err, text) = h.call(&t, "catalog_health", json!({"live": true})).await;
+    assert!(err && text.contains("live needs an id"), "{text}");
+
+    let (err, text) = h.call(&t, "catalog_drift", json!({})).await;
+    assert!(!err && text.contains("- unknown unit on nezopt: user:new-thing.service"), "{text}");
+
+    // Ids are checked before anything is sent; the paths go to agentd's top-level /catalog.
+    let (err, _) = h.call(&t, "catalog_get", json!({"id": "../etc/passwd"})).await;
+    assert!(err);
+    let paths: Vec<String> = agent_requests(&h).into_iter().map(|r| r.path).collect();
+    assert_eq!(
+        paths,
+        [
+            "/v1/agents/catalog/components/pokoin-db-writer",
+            "/v1/agents/catalog/impact/pokoin-db-writer",
+            "/v1/agents/catalog/status",
+            "/v1/agents/catalog/health",
+            "/v1/agents/catalog/drift",
+        ]
+    );
 }
