@@ -120,23 +120,68 @@ pub async fn classify(
         user_label,
         platform,
     };
-    if let Some(c) = tier0::classify_tier0(user_text, recent, s) {
+    let rule = tier0::classify_tier0(user_text, recent, s);
+    let first = crate::jev_route::jev_first_enabled();
+    // One Jev call per turn, shared by JEV-first, the tier-0 double-check and tier 1.
+    let wants_jev = first || rule.as_ref().is_none_or(crate::jev_route::checks_tier0);
+    let jev = if wants_jev {
+        crate::jev_route::classify_intent(lucina_jev::shared(), &t).await
+    } else {
+        None
+    };
+    let chat = |confidence: f64| {
+        tier0::from_model_json(
+            &serde_json::json!({"intent": "chat", "confidence": confidence,
+                "reply_mode": "chat", "needs_memory": true, "needs_tools": false}),
+            user_text, recent, s)
+    };
+    // JEV first (owner's rule, 2026-10-28): Jev routes every turn it is sure of; the safety layers
+    // stay on top (side-effect intents need their own rule to run directly, MCP turns consult).
+    if first {
+        let pick = jev
+            .as_ref()
+            .map(|(v, c)| (v["intent"].as_str().unwrap_or(""), *c));
+        match crate::jev_route::jev_first(pick, rule.as_ref()) {
+            Ok(()) => {
+                let (v, confidence) = jev.clone().expect("jev answered");
+                let mut c = tier0::from_model_json(&v, user_text, recent, s);
+                let agreed = rule.as_ref().is_some_and(|r| r.intent == c.intent);
+                let side_effect = crate::jev_route::SIDE_EFFECT_INTENTS.contains(&c.intent.as_str());
+                let guard = match (side_effect && !agreed, mcp) {
+                    (true, true) => "side_effect_on_mcp_turn:chat",
+                    (true, false) => "side_effect_without_rule:planner",
+                    _ => "",
+                };
+                tracing::info!(target: "lucina_jev::route", event = "jev_first", used = true,
+                    intent = %c.intent, confidence, tier0 = ?rule.as_ref().map(|r| r.intent.as_str()),
+                    guard, "jev_first");
+                if guard.ends_with(":chat") {
+                    return chat(confidence);
+                }
+                if guard.ends_with(":planner") {
+                    c.reply_mode = "full_plan".into();
+                }
+                return c;
+            }
+            Err(reason) => {
+                tracing::info!(target: "lucina_jev::route", event = "jev_first", used = false, reason,
+                    intent = ?pick.map(|p| p.0), confidence = ?pick.map(|p| p.1),
+                    tier0 = ?rule.as_ref().map(|r| r.intent.as_str()), "jev_first fallback");
+            }
+        }
+    }
+    if let Some(c) = rule {
         // A tier-0 regex rule gets Jev's second opinion; only a sure
         // disagreement wins, and never into a side-effect intent.
         if crate::jev_route::checks_tier0(&c) {
-            if let Some((v, confidence)) =
-                crate::jev_route::classify_intent(lucina_jev::shared(), &t).await
-            {
+            if let Some((v, confidence)) = jev.clone() {
                 let jev_intent = v["intent"].as_str().unwrap_or("");
                 // Agents write technical prose that regexes over-match ("restart cloudflared at 17:16"):
                 // on an MCP turn, any disagreement with a side-effect rule makes it plain chat.
                 if mcp && crate::jev_route::mcp_falls_back_to_chat(&c, jev_intent) {
                     tracing::info!(target: "lucina_jev::route", tier0 = %c.intent, jev = jev_intent,
                         confidence, "jev disagrees with a side-effect tier-0 rule on an mcp turn; plain chat");
-                    return tier0::from_model_json(
-                        &serde_json::json!({"intent": "chat", "confidence": confidence,
-                            "reply_mode": "chat", "needs_memory": true, "needs_tools": false}),
-                        user_text, recent, s);
+                    return chat(confidence);
                 }
                 if crate::jev_route::overrides(&c.intent, jev_intent, confidence) {
                     tracing::info!(target: "lucina_jev::route", tier0 = %c.intent, jev = jev_intent,
@@ -154,13 +199,14 @@ pub async fn classify(
         }
         return c;
     }
-    // Jev first (TypeSafe's decision model: fast, typed, no JSON to parse); a
-    // sure answer is final, an unsure one is checked by DeepSeek, and a failed
-    // call (quota, timeout, breaker) leaves the turn to DeepSeek alone.
-    let jev = crate::jev_route::classify_intent(lucina_jev::shared(), &t).await;
-    if let Some((v, confidence)) = &jev {
-        if *confidence >= crate::jev_route::intent_min() {
-            return tier0::from_model_json(v, user_text, recent, s);
+    // Tier 1. With JEV first on, Jev was not sure enough: DeepSeek decides ("our thing"), Jev only
+    // when DeepSeek fails. Otherwise Jev first: a sure answer is final, an unsure one is checked by
+    // DeepSeek, and a failed call (quota, timeout, breaker) leaves the turn to DeepSeek alone.
+    if !first {
+        if let Some((v, confidence)) = &jev {
+            if *confidence >= crate::jev_route::intent_min() {
+                return tier0::from_model_json(v, user_text, recent, s);
+            }
         }
     }
     match st.planner.classify_json(&t).await {

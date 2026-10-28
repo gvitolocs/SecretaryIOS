@@ -178,7 +178,7 @@ async fn rpc(
         .timeout(cfg.rpc_timeout)
         .send()
         .await
-        .map_err(|e| format!("dsh-remote unreachable: {}", e.without_url()))?;
+        .map_err(|e| transport_error(&e, cfg.rpc_timeout))?;
     let status = resp.status();
     let body: Value = resp.json().await.unwrap_or(Value::Null);
     if !status.is_success() {
@@ -216,6 +216,25 @@ async fn rpc(
     })
 }
 
+/// Why a dsh-remote call failed, in words: reqwest's own text ("error sending request") hides
+/// whether it timed out, was refused or broke off (2026-10-28: three jobs "unreachable" while
+/// dsh-remote was up and still routing the prompt after 30 s).
+pub fn transport_error(e: &reqwest::Error, timeout: Duration) -> String {
+    if e.is_timeout() {
+        format!("dsh-remote did not answer within {} s", timeout.as_secs())
+    } else if e.is_connect() {
+        "dsh-remote unreachable: connection refused (is dsh-remote.service running?)".into()
+    } else {
+        let mut why = String::from("request failed");
+        let mut src = std::error::Error::source(e);
+        while let Some(s) = src {
+            why.push_str(&format!(": {s}"));
+            src = s.source();
+        }
+        format!("dsh-remote unreachable: {why}")
+    }
+}
+
 /// `runDshRemoteTask`: queue the prompt and wait until it is idle.
 pub async fn run_harness(
     http: &reqwest::Client,
@@ -231,7 +250,7 @@ pub async fn run_harness(
         chrono::Utc::now().timestamp_millis(),
         &uuid::Uuid::new_v4().to_string()[..8]
     );
-    let mut result = rpc(
+    let queued = rpc(
         http,
         cfg,
         "dsh_prompt",
@@ -240,7 +259,17 @@ pub async fn run_harness(
             "wait_seconds": cfg.wait_seconds, "new_session": false, "mode": "queue",
         }),
     )
-    .await?;
+    .await;
+    // dsh-remote may take longer than one RPC to route the prompt, but it has it (our request id):
+    // follow it instead of failing a job that is running.
+    let mut result = match queued {
+        Ok(r) => r,
+        Err(e) if e.starts_with("dsh-remote did not answer") => {
+            tracing::warn!(request_id = %rid, "dsh_prompt slow to answer; following the request");
+            json!({"status": "pending", "requestId": rid})
+        }
+        Err(e) => return Err(e),
+    };
     let started = std::time::Instant::now();
     let busy = |r: &Value| matches!(r["status"].as_str(), Some("running" | "pending"));
     while busy(&result) && started.elapsed() < cfg.timeout {

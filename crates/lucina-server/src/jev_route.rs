@@ -201,6 +201,65 @@ pub fn mcp_falls_back_to_chat(tier0: &lucina_intent::tier0::Classification, jev_
     SIDE_EFFECT_INTENTS.contains(&tier0.intent.as_str()) && jev_intent != tier0.intent
 }
 
+/// `LUCINA_JEV_FIRST` (off until calibrated): Jev routes every turn it is sure of, before the
+/// tier-0 rules (owner's rule, 2026-10-28: "for confidence over 75%, we trust Jeff").
+pub fn jev_first_enabled() -> bool {
+    std::env::var("LUCINA_JEV_FIRST")
+        .is_ok_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes"))
+}
+
+/// JEV-first trusts Jev from this confidence up (`LUCINA_JEV_FIRST_MIN`).
+pub const JEV_FIRST_MIN: f64 = 0.75;
+
+/// The JEV-first threshold for `intent`: `LUCINA_JEV_FIRST_INTENT_MIN` (`"cursor_task=0.95,chat=0.7"`)
+/// overrides `LUCINA_JEV_FIRST_MIN` per intent.
+pub fn jev_first_min(intent: &str) -> f64 {
+    jev_first_min_from(
+        intent,
+        std::env::var("LUCINA_JEV_FIRST_MIN").ok().as_deref(),
+        std::env::var("LUCINA_JEV_FIRST_INTENT_MIN").ok().as_deref(),
+    )
+}
+
+pub fn jev_first_min_from(intent: &str, global: Option<&str>, per_intent: Option<&str>) -> f64 {
+    let valid = |v: &str| v.trim().parse::<f64>().ok().filter(|v| (0.0..=1.0).contains(v));
+    per_intent
+        .unwrap_or("")
+        .split(',')
+        .filter_map(|kv| kv.split_once('='))
+        .find(|(k, _)| k.trim() == intent)
+        .and_then(|(_, v)| valid(v))
+        .or_else(|| global.and_then(valid))
+        .unwrap_or(JEV_FIRST_MIN)
+}
+
+/// Tier-0 routes that parse their own arguments and that Jev has no option for (her computer,
+/// groceries, the log inspector, study focus): they keep precedence over JEV-first.
+pub fn deterministic_rule(c: &lucina_intent::tier0::Classification) -> bool {
+    c.intent.starts_with("grocery.")
+        || matches!(c.intent.as_str(), "computer_task" | "lucina_log_inspect" | "study_focus_reminders")
+}
+
+/// Does JEV-first route this turn? `Err` names why not (for the drift log).
+pub fn jev_first(
+    jev: Option<(&str, f64)>,
+    rule: Option<&lucina_intent::tier0::Classification>,
+) -> Result<(), &'static str> {
+    let Some((intent, confidence)) = jev else {
+        return Err("jev_unavailable");
+    };
+    if rule.is_some_and(deterministic_rule) {
+        return Err("deterministic_rule");
+    }
+    if intent.is_empty() || intent == "unknown" {
+        return Err("jev_unknown");
+    }
+    if confidence < jev_first_min(intent) {
+        return Err("below_threshold");
+    }
+    Ok(())
+}
+
 /// Jev's sure answer replaces the tier-0 rule's.
 pub fn overrides(tier0_intent: &str, jev_intent: &str, confidence: f64) -> bool {
     jev_intent != tier0_intent
@@ -295,6 +354,25 @@ mod tests {
         assert!(doubts(&chat, "computer_task", 0.6));
         assert!(!doubts(&chat, "social_greeting", 0.9), "both are conversational");
         assert!(!doubts(&chat, "unknown", 0.9));
+    }
+
+    #[test]
+    fn jev_first_trusts_sure_answers_and_keeps_deterministic_routes() {
+        let s = lucina_intent::heuristics::Settings::default();
+        let rule = |intent: &str| lucina_intent::tier0::from_model_json(
+            &json!({"intent": intent, "confidence": 1.0}), "x", "", &s);
+        assert_eq!(jev_first_min_from("chat", None, None), 0.75);
+        assert_eq!(jev_first_min_from("chat", Some("0.8"), None), 0.8);
+        assert_eq!(jev_first_min_from("cursor_task", Some("0.8"), Some("cursor_task=0.95, chat=0.7")), 0.95);
+        assert_eq!(jev_first_min_from("chat", Some("x"), Some("chat=2")), 0.75, "bad values are ignored");
+        assert_eq!(jev_first(None, None), Err("jev_unavailable"));
+        assert_eq!(jev_first(Some(("unknown", 0.99)), None), Err("jev_unknown"));
+        assert_eq!(jev_first(Some(("chat", 0.99)), Some(&rule("computer_task"))), Err("deterministic_rule"));
+        assert_eq!(jev_first(Some(("chat", 0.99)), Some(&rule("grocery.shopping_list.add"))), Err("deterministic_rule"));
+        // The 2026-10-28 misroutes: Jev was unsure, so the rules (tightened) and consult mode still matter.
+        assert_eq!(jev_first(Some(("unknown", 0.28)), Some(&rule("cursor_task"))), Err("jev_unknown"));
+        assert_eq!(jev_first(Some(("computer_task", 0.49)), Some(&rule("schedule_reminder"))), Err("below_threshold"));
+        assert_eq!(jev_first(Some(("chat", 0.8)), Some(&rule("schedule_reminder"))), Ok(()));
     }
 
     #[test]

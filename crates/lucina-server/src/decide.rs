@@ -185,7 +185,7 @@ pub fn option_index(options: &[String], answer: &str) -> Option<usize> {
 pub fn owner_only(r: &Request) -> bool {
     let text = format!("{}\n{}\n{}", r.question, r.options.join("\n"), r.context);
     lucina_intent::re!(
-        r"\b(buy|purchase|checkout|pay for|make a payment|place (an|the) order|spend (\$|€|eur|usd|dkk)?\s?\d|credit card|carta di credito|bank transfer|bonifico|enter (his|the owner'?s|giuseppe'?s) (password|credentials|card|pin)|accept (the )?(terms|tos|agreement|license|licence)|sign (the )?(contract|agreement)|send (an? )?(e-?mail|message|dm|sms|text) (to|on (his|giuseppe'?s) behalf)|on (his|giuseppe'?s|the owner'?s) behalf|compra(re)?|acquista(re)?|paga(re)? )",
+        r"\b(buy|purchase|checkout|pay for|make a payment|place (an|the) order|spend (\$|€|eur|usd|dkk)?\s?\d|credit card|carta di credito|bank transfer|bonifico|enter (his|the owner'?s|giuseppe'?s) (password|credentials|card|pin)|accept (the )?(terms|tos|agreement|license|licence)|sign (the )?(contract|agreement)|send (an? )?(e-?mail|message|dm|sms|text) (to|on (his|giuseppe'?s) behalf)|on (his|giuseppe'?s|the owner'?s) behalf|compra(re)?|acquista(re)?|paga(re)? |secrets?|credentials?|api[- ]?keys?|passwords?|infisical|tokens?)\b",
         "i"
     )
     .test(&text)
@@ -1219,6 +1219,16 @@ pub async fn owner_answer(st: &AppState, text: &str) -> Option<OwnerReply> {
     })
 }
 
+/// "What's the state of dc-…?": the decision's status from the log, on any turn (read only).
+pub fn status_answer(st: &AppState, text: &str) -> Option<String> {
+    let c = lucina_intent::re!(r"\b(dc-[0-9a-f]{12})\b", "i").exec(text)?;
+    let id = lucina_intent::jsre::group(&c, 1).to_lowercase();
+    Some(match store(&st.cfg.data_dir).get(&id, Utc::now()) {
+        Some(d) => summary(&d),
+        None => format!("I don't have a decision {id}."),
+    })
+}
+
 // ---------------------------------------------------------------- API
 
 pub fn valid_id(id: &str) -> bool {
@@ -1316,6 +1326,9 @@ mod tests {
         b["question"] = json!("Accept the terms of the new Infisical licence?");
         assert!(owner_only(&parse_request(&b).unwrap()));
         b["question"] = json!("Send an email to Marianne about the CRAFT tool?");
+        assert!(owner_only(&parse_request(&b).unwrap()));
+        // Secret wiring is his (2026-10-28: the Paseo session's token-placement question).
+        b["question"] = json!("Store the Hermes agents MCP token at lucina/prod instead of agents/prod?");
         assert!(owner_only(&parse_request(&b).unwrap()));
         b["question"] = json!("Restart the payment-webhook worker on p1?");
         assert!(!owner_only(&parse_request(&b).unwrap()), "technical words are not a payment");

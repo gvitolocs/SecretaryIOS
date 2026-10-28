@@ -48,6 +48,17 @@ async fn agent_turns_consult_and_owner_turns_still_act() {
         assert!(out["job"].is_null(), "{out}");
         assert_eq!(out["consult"], true);
     }
+    // 2026-10-28, the Ubuntu-plan session: a status question started a Harness job.
+    let out = mcp(&h, "claude-code", "nezopt-2604", "nezopt 26.04 upgrade: status check, nothing needs deciding. The venv rebuild is done and the plan is committed (nezopt-ops 263ece6). Has Giuseppe said yes to the window you proposed, Thu 29 Oct 20:00–23:00? And is Secretary → Approvals → Set up done? If not yet, no action; I'll ask again later.").await;
+    assert!(out["job"].is_null(), "{out}");
+    // 2026-10-28, the Paseo session: a decision question about secret wiring became an Infisical
+    // project offer card in the owner's chat. Agent prose never makes a secret card.
+    let before = h.timeline_lines().len();
+    let out = mcp(&h, "claude-code", "paseo", "Lucina, I need your go-ahead on three choices. 1) Where your Hermes gets its Lucina-Agents MCP token: create a new Infisical project for agents, or keep it in project lucina. Reply for each, or tell me if you want to ask him first").await;
+    assert_ne!(out["action"], "secret_project_offer", "{out}");
+    let new: Vec<Value> = h.timeline_lines().into_iter().skip(before).collect();
+    assert!(new.iter().all(|i| i["meta"]["kind"] != "secret_offer"), "{new:?}");
+    assert!(new.iter().filter(|i| i["role"] == "user").all(|i| i["meta"]["via"] == "mcp"), "agent text is labelled as the agent's");
     // A request that still routes to a tool: answered, not run, with the tool to use.
     let out = mcp(&h, "claude-code", "coordinator", "fai fare a cursor il fix del bug di login su pokoin").await;
     assert!(out["job"].is_null(), "{out}");
@@ -139,6 +150,11 @@ async fn low_impact_go_aheads_are_decided_and_high_impact_ones_wait_for_the_owne
     assert_eq!(d["decided_by"], "owner");
     assert_eq!(d["decision"], "change");
     assert_eq!(d["chosen_index"], 2);
+
+    // Anyone may ask where a decision stands; the answer comes from the log.
+    let out = mcp(&h, "claude-code", "coordinator", &format!("what's the state of decision {id}?")).await;
+    assert_eq!(out["action"], "decision", "{out}");
+    assert!(out["reply"].as_str().unwrap().contains("Giuseppe decided"), "{out}");
 
     let (_, b) = h.get("/decisions?status=decided&limit=5").await;
     assert_eq!(b["data"]["items"].as_array().unwrap().len(), 2);

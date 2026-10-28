@@ -565,6 +565,30 @@ async fn route(
             let job = job.ok_or_else(|| ApiError::new(404, "job_not_found", "No such job"))?;
             Ok(ok(job.public()))
         }
+        // Routing diagnostics (calibration, drift): what tier 0, Jev and the live router make of a
+        // text. Reads only (no turn, no timeline, no memory); not forwarded by secretary-server.
+        (Some("jev"), Some("route")) => {
+            only(&["POST"])?;
+            let body = read_json(body, MAX_BODY_BYTES).await?;
+            let text = body["text"].as_str().map(str::trim).filter(|t| !t.is_empty())
+                .ok_or_else(|| ApiError::bad_request("text is required"))?;
+            let recent = body["recent"].as_str().unwrap_or("");
+            let platform = body["platform"].as_str().unwrap_or("secretary");
+            let mcp = body["mcp"].as_bool().unwrap_or(false);
+            let rule = lucina_intent::tier0::classify_tier0(text, recent, &st.cfg.intent);
+            let t = crate::planner::TurnInput { user_text: text, memory: recent, user_label: USER_LABEL, platform };
+            let jev = crate::jev_route::classify_intent(lucina_jev::shared(), &t).await;
+            let routed = crate::context::classify(st, text, recent, USER_LABEL, platform, mcp).await;
+            Ok(ok(json!({
+                "tier0": rule.as_ref().map(|c| c.intent.clone()),
+                "tier0Confidence": rule.as_ref().map(|c| c.confidence),
+                "jev": jev.as_ref().map(|(v, _)| v["intent"].clone()),
+                "jevConfidence": jev.as_ref().map(|(_, c)| *c),
+                "jevFirst": crate::jev_route::jev_first_enabled(),
+                "routed": {"intent": routed.intent, "confidence": routed.confidence,
+                           "replyMode": routed.reply_mode, "tier0": routed.tier0()},
+            })))
+        }
         // Go-aheads for agents (crate::decide, docs/design/decisions-api.md).
         (Some("decisions"), None) => match method.as_str() {
             "POST" => {

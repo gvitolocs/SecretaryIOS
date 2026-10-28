@@ -144,7 +144,9 @@ pub async fn handle_chat(
     }
     // "Add secret": `/secret …` never reaches a sink; tokens in a normal
     // message are masked before the turn and offered for saving after it.
-    if crate::owner_secrets::is_secret_command(&text) {
+    // "Add secret" and Infisical project offers are the owner's own: an MCP caller's prose never
+    // makes a card in his chat (2026-10-28: an agent's decision question became a project offer).
+    if mcp_turn.is_none() && crate::owner_secrets::is_secret_command(&text) {
         let (reply, lucina_item_id) =
             crate::owner_secrets::answer_secret_command(&st, &text, &st.timeline_for(&session));
         return Ok(json!({
@@ -159,8 +161,7 @@ pub async fn handle_chat(
         }));
     }
     let (text, held) = crate::owner_secrets::mask_message(&st, &text);
-    if let Some(name) = held
-        .is_empty()
+    if let Some(name) = (held.is_empty() && mcp_turn.is_none())
         .then(|| crate::owner_secrets::project_request(&text))
         .flatten()
     {
@@ -1466,6 +1467,10 @@ async fn json_turn(
             return Finish::reply(f.reply, "decision")
                 .with(f.action_result, Some(Meta::kind("decision")));
         }
+    }
+    // A decision's status ("what's the state of dc-…?"), for anyone who asks: from the log, no routing.
+    if let Some(reply) = crate::decide::status_answer(st, &t.message) {
+        return Finish::reply(reply, "decision").with("[decision status]", Some(Meta::kind("decision")));
     }
 
     // A YouTube link and "transcribe / report / summarise" (crate::video): a background job.
