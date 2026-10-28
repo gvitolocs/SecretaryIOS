@@ -211,6 +211,8 @@ pub struct ComputerResult {
     pub executed_tools: Vec<String>,
     /// How many receipts failed.
     pub tool_errors: usize,
+    /// A shopping task stopped at the checkout: what the owner pays himself.
+    pub handover: Option<jev_drive::Handover>,
 }
 
 impl ComputerResult {
@@ -224,6 +226,15 @@ impl ComputerResult {
         });
         if let Some(id) = &self.session_id {
             v["sessionId"] = json!(id);
+        }
+        if let Some(h) = &self.handover {
+            // The screenshot travels separately (the server attaches it); not in tool JSON.
+            v["handover"] = json!({
+                "site": h.site,
+                "total": h.total,
+                "reason": h.reason,
+                "screenshot": h.screenshot_b64.is_some(),
+            });
         }
         v
     }
@@ -478,6 +489,7 @@ pub fn parse_computer_result(output: &str) -> Result<ComputerResult, Error> {
             .map(str::to_owned),
         executed_tools,
         tool_errors: receipts.len() - successful.len(),
+        handover: None,
     })
 }
 

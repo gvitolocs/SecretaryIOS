@@ -16,7 +16,10 @@
 //! | POST | `/agents/{id}/unarchive` | | snapshot |
 //! | DELETE | `/agents/{id}` | | `{agentId, deleted}` |
 //! | POST | `/agents/{id}/wait` | `?timeoutMs=` (0 = none) | wait result |
-//! | GET | `/agents/{id}/timeline` | `?afterSeq=&limit=` | `{epoch, rows, nextSeq}` |
+//! | GET | `/agents/{id}/timeline` | `?afterSeq=&limit=` (`&subagent=<id>`: that provider subagent's, see below) | `{epoch, rows, nextSeq}` |
+//! | GET | `/agents/{id}/provider-subagents` | | `{agentId, subagents: [descriptor]}` |
+//! | GET | `/agents/{id}/provider-subagents/{subId}` | id or unique prefix | descriptor |
+//! | GET | `/agents/{id}/provider-subagents/{subId}/timeline` | `?afterSeq=&limit=&direction=after\|tail` | `{agentId, subagentId, provider, direction, epoch, rows, nextSeq, window, hasOlder, hasNewer, subagent}` |
 //! | POST | `/agents/{id}/permissions/{requestId}` | permission response | `{agentId, requestId, behavior}` |
 //! | GET | `/permissions` | `?all=true` | `{permissions: [view]}` (agent and external) |
 //! | POST | `/permissions` | external request | view |
@@ -36,6 +39,7 @@
 //! Projects, workspaces, diffs, files and checkout operations: [`workspaces`].
 //! Terminals, scripts and the service proxy: [`terminals`].
 //! Schedules, heartbeats, search, prompts, detach and usage: [`orch`].
+//! Rewind and fork (with chat-history context): [`rewind`].
 //! The Homelab service catalog (project tree, health, impact, drift): [`catalog`].
 //!
 //! A process an agent started acts as that agent ([`Caller::Agent`]): its `create`
@@ -65,7 +69,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use lucina_agents::permission_gate::{Origin, Verdict};
 use lucina_agents::PermissionResponse;
 
-use crate::manager::{ActiveTurnBehavior, Caller, CreateRequest, ExternalRequest, Manager, ManagerError};
+use crate::manager::{ActiveTurnBehavior, Caller, CreateRequest, ExternalRequest, Manager, ManagerError, SubagentDirection};
 use crate::journal::{Sequenced, Subscription};
 use crate::peer::{self, origin, Peer};
 use crate::workspaces::WsError;
@@ -73,6 +77,7 @@ use crate::workspaces::WsError;
 pub mod terminals;
 mod catalog;
 mod orch;
+mod rewind;
 mod workspaces;
 
 pub struct ApiError(StatusCode, String, String);
@@ -99,8 +104,12 @@ impl From<ManagerError> for ApiError {
             ManagerError::CommandNotFound(_) => StatusCode::NOT_FOUND,
             ManagerError::CommandExpired(_) => StatusCode::GONE,
             ManagerError::DelegationDepth(_) | ManagerError::NotYourAgent(_) | ManagerError::ScheduleForbidden(_) => StatusCode::FORBIDDEN,
-            ManagerError::ScheduleNotFound(_) => StatusCode::NOT_FOUND,
+            ManagerError::ScheduleNotFound(_) | ManagerError::SubagentNotFound(_) => StatusCode::NOT_FOUND,
             ManagerError::ScheduleConflict(_) => StatusCode::CONFLICT,
+            ManagerError::RewindUnsupported(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            ManagerError::RewindTargetNotFound(_) => StatusCode::NOT_FOUND,
+            ManagerError::RewindForbidden(_) => StatusCode::FORBIDDEN,
+            ManagerError::ForkBoundary(_) | ManagerError::Busy(_) => StatusCode::CONFLICT,
         };
         ApiError(status, e.code().to_string(), e.to_string())
     }
@@ -136,6 +145,9 @@ pub fn router(manager: Manager) -> Router {
         .route("/agents/{id}/unarchive", post(unarchive))
         .route("/agents/{id}/wait", post(wait))
         .route("/agents/{id}/timeline", get(timeline))
+        .route("/agents/{id}/provider-subagents", get(provider_subagents))
+        .route("/agents/{id}/provider-subagents/{sub}", get(provider_subagent))
+        .route("/agents/{id}/provider-subagents/{sub}/timeline", get(provider_subagent_timeline))
         .route("/agents/{id}/permissions/{request_id}", post(respond_permission))
         .route("/permissions", get(permissions).post(request_permission))
         .route("/permissions/{id}", get(permission).post(answer_permission))
@@ -143,6 +155,7 @@ pub fn router(manager: Manager) -> Router {
         .merge(workspaces::routes())
         .merge(terminals::routes())
         .merge(orch::routes())
+        .merge(rewind::routes())
         .merge(catalog::routes())
         // Last, so it sees every request (`Host: <label>.localhost` goes to that service).
         .layer(axum::middleware::from_fn_with_state(manager.clone(), terminals::host_proxy))
@@ -183,7 +196,7 @@ struct CreateBody {
 
 /// An owner's text that looks like an agent envelope is quoted as the owner's
 /// (Paseo `prepareAgentMessage`), so nobody can pose as an agent or a schedule.
-fn quote(text: String) -> String {
+pub(super) fn quote(text: String) -> String {
     lucina_agents::envelope::quote_reserved(&text, &uuid::Uuid::new_v4().to_string())
 }
 
@@ -342,13 +355,45 @@ struct TimelineQuery {
     after_seq: u64,
     #[serde(default)]
     limit: usize,
+    /// A provider subagent of the agent (id or unique prefix): its timeline, as
+    /// `/provider-subagents/{subId}/timeline` returns it.
+    #[serde(default)]
+    subagent: Option<String>,
+    #[serde(default)]
+    direction: Option<String>,
+}
+
+fn direction(q: &TimelineQuery) -> Result<SubagentDirection, ManagerError> {
+    match q.direction.as_deref() {
+        None | Some("after") => Ok(SubagentDirection::After),
+        Some("tail") => Ok(SubagentDirection::Tail),
+        Some(other) => Err(ManagerError::Invalid(format!("Unknown timeline direction: {other} (after or tail)"))),
+    }
 }
 
 async fn timeline(State(m): State<Manager>, Path(id): Path<String>, Query(q): Query<TimelineQuery>) -> ApiResult {
     let id = m.resolve(&id)?;
+    if let Some(sub) = &q.subagent {
+        return to_json(m.provider_subagent_timeline(&id, sub, direction(&q)?, q.after_seq, q.limit)?);
+    }
     let (epoch, rows) = m.timeline(&id, q.after_seq, q.limit)?;
     let next_seq = rows.last().map(|r| r.seq).unwrap_or(q.after_seq);
     to_json(json!({"epoch": epoch, "rows": rows, "nextSeq": next_seq}))
+}
+
+async fn provider_subagents(State(m): State<Manager>, Path(id): Path<String>) -> ApiResult {
+    let id = m.resolve(&id)?;
+    to_json(json!({"agentId": id, "subagents": m.provider_subagents(&id)?}))
+}
+
+async fn provider_subagent(State(m): State<Manager>, Path((id, sub)): Path<(String, String)>) -> ApiResult {
+    let id = m.resolve(&id)?;
+    to_json(m.provider_subagent(&id, &sub)?)
+}
+
+async fn provider_subagent_timeline(State(m): State<Manager>, Path((id, sub)): Path<(String, String)>, Query(q): Query<TimelineQuery>) -> ApiResult {
+    let id = m.resolve(&id)?;
+    to_json(m.provider_subagent_timeline(&id, &sub, direction(&q)?, q.after_seq, q.limit)?)
 }
 
 fn caller(m: &Manager, peer: &Peer, headers: &HeaderMap) -> Origin {

@@ -21,6 +21,7 @@
 //! | plain script env | the terminal's only | also `PASEO_SCRIPTNAME` and setup's worktree variables |
 //! | a plain script's terminal | stays open as a shell | ends with the script (its output stays capturable) |
 //! | `send-keys Up` (CLI) | types the word `Up` | the arrow key (the MCP encoder, as Paseo's MCP tool) |
+//! | rewind (mock) | keeps only the first user message, whatever the target; an unknown target fails inside the provider | rewinds to the target: the rows before it stay; an unknown target is `REWIND_TARGET_NOT_FOUND` before anything runs |
 
 mod common;
 
@@ -291,6 +292,40 @@ fn oracle(op: &str, cwd: &str, arg: Option<&str>) -> Value {
     serde_json::from_str(r.stdout.trim()).unwrap_or_else(|e| panic!("oracle {op}: {e}: {} {}", r.stdout, r.stderr))
 }
 
+/// Paseo's answer about an agent through its own client (`paseo_oracle.mjs`: timeline,
+/// fork-context, rewind).
+fn agent_oracle(op: &str, agent: &str, arg: Option<&str>, arg2: Option<&str>) -> Value {
+    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/paseo_oracle.mjs");
+    let mut cmd = Command::new("node");
+    cmd.args([script, "127.0.0.1:6777", op, agent]);
+    if arg.is_some() || arg2.is_some() {
+        cmd.arg(arg.unwrap_or(""));
+    }
+    if let Some(a) = arg2 {
+        cmd.arg(a);
+    }
+    let r = run(&mut cmd);
+    serde_json::from_str(r.stdout.trim()).unwrap_or_else(|e| panic!("oracle {op}: {e}: {} {}", r.stdout, r.stderr))
+}
+
+/// A local HTTP request on the lucina socket: status and JSON body.
+fn lucina_call(l: &Daemon, method: &str, path: &str, body: &Value) -> (u16, Value) {
+    use std::io::{Read, Write};
+    let mut s = std::os::unix::net::UnixStream::connect(l.socket()).unwrap();
+    let body = body.to_string();
+    write!(s, "{method} {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
+    let mut raw = String::new();
+    s.read_to_string(&mut raw).unwrap();
+    let (head, rest) = raw.split_once("\r\n\r\n").unwrap();
+    let status = head.split(' ').nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let text = if head.to_ascii_lowercase().contains("transfer-encoding: chunked") {
+        rest.split_once("\r\n").map(|(_, r)| r.rsplit_once("\r\n0\r\n").map(|(b, _)| b).unwrap_or(r)).unwrap_or("")
+    } else {
+        rest
+    };
+    (status, serde_json::from_str(text.trim()).unwrap_or(Value::Null))
+}
+
 /// A local HTTP GET on the lucina socket.
 fn lucina_get(l: &Daemon, path: &str) -> Value {
     use std::io::{Read, Write};
@@ -555,6 +590,105 @@ fn scenario_terminals_scripts(p: &Paseo, l: &Daemon) {
     same("stop a stopped script", &json!([pst.code, err_code(&pst)]), &json!([lst.code, err_code(&lst)]));
 }
 
+/// Two settled answers, the same text on both sides (no timing in them).
+fn two_answers(p: &Paseo, l: &Daemon) -> (String, String) {
+    let prompt = |n: &str| format!("emit settled assistant image markdown: ![{n}](https://example.test/{n}.png)");
+    let first = prompt("one");
+    let args = ["run", "--provider", "mock/e2e-fast-stream", "--title", "Rewind source", "--cwd", "/tmp", first.as_str()];
+    let (pr, lr) = (p.json(&args), l.json(&args));
+    let (pid, lid) = (id(&pr), id(&lr));
+    let second = prompt("two");
+    p.json(&["send", &pid, &second]);
+    l.json(&["send", &lid, &second]);
+    p.json(&["wait", &pid]);
+    l.json(&["wait", &lid]);
+    (pid, lid)
+}
+
+fn rows_of(timeline: &Value) -> Vec<Value> {
+    timeline["rows"].as_array().cloned().unwrap_or_default()
+}
+
+fn of_kind(rows: &[Value], kind: &str) -> Vec<Value> {
+    rows.iter().filter(|r| r["item"]["type"] == kind).cloned().collect()
+}
+
+fn user_texts(rows: &[Value]) -> Value {
+    json!(of_kind(rows, "user_message").iter().map(|r| r["item"]["text"].clone()).collect::<Vec<_>>())
+}
+
+/// The fork-context attachment and the rewind modes (parity row A16), through Paseo's
+/// client (`agent.fork_context.request`, `agent.rewind.request`).
+fn scenario_rewind_fork(p: &Paseo, l: &Daemon) {
+    let (pid, lid) = two_answers(p, l);
+    let ptl = agent_oracle("timeline", &pid, None, None);
+    let ltl = lucina_get(l, &format!("/agents/{lid}/timeline"));
+    let (prows, lrows) = (rows_of(&ptl), rows_of(&ltl));
+    same("user prompts", &user_texts(&prows), &user_texts(&lrows));
+
+    // The attachment, whole and up to each boundary.
+    let context = |boundary: Value| -> (Value, Value) {
+        let asked = if boundary.is_null() { json!({}) } else { boundary };
+        let paseo = agent_oracle("fork-context", &pid, Some(&asked.to_string()), None);
+        let (_, lucina) = lucina_call(l, "POST", &format!("/agents/{lid}/fork-context"), &asked);
+        (paseo, lucina)
+    };
+    let shown = |v: &Value| json!({"attachment": v["attachment"], "itemCount": v["itemCount"], "error": v["error"]});
+    let (pc, lc) = context(Value::Null);
+    same("fork context, whole history", &shown(&pc), &shown(&lc));
+    assert!(pc["attachment"]["text"].as_str().is_some_and(|t| t.contains("[User] emit settled") && t.contains("[Assistant] ![one]")), "{pc}");
+    let first_answer = |rows: &[Value]| of_kind(rows, "assistant_message").into_iter().next().expect("an answer");
+    let (pa, la) = (first_answer(&prows), first_answer(&lrows));
+    // Each side's own ids: the text compared is the same.
+    let paseo = agent_oracle("fork-context", &pid, Some(&json!({"boundaryMessageId": pa["item"]["messageId"]}).to_string()), None);
+    let (_, lucina) = lucina_call(l, "POST", &format!("/agents/{lid}/fork-context"), &json!({"boundaryMessageId": la["item"]["messageId"]}));
+    same("fork context, by assistant message id", &shown(&paseo), &shown(&lucina));
+    assert_eq!(paseo["itemCount"], 2, "{paseo}");
+    let paseo = agent_oracle("fork-context", &pid, Some(&json!({"boundaryCursor": {"epoch": ptl["epoch"], "seq": pa["seq"]}}).to_string()), None);
+    let (_, lucina) = lucina_call(l, "POST", &format!("/agents/{lid}/fork-context"), &json!({"boundaryCursor": {"epoch": ltl["epoch"], "seq": la["seq"]}}));
+    same("fork context, by cursor", &shown(&paseo), &shown(&lucina));
+    // Boundaries that are gone: Paseo's message, as an error.
+    let gone = |paseo_body: Value, lucina_body: Value| {
+        let paseo = agent_oracle("fork-context", &pid, Some(&paseo_body.to_string()), None);
+        let (status, lucina) = lucina_call(l, "POST", &format!("/agents/{lid}/fork-context"), &lucina_body);
+        assert_eq!(status, 409, "{lucina}");
+        same("fork context, a boundary that is gone", &paseo["error"], &lucina["error"]["message"]);
+    };
+    gone(json!({"boundaryMessageId": "nope"}), json!({"boundaryMessageId": "nope"}));
+    gone(json!({"boundaryCursor": {"epoch": "stale", "seq": 2}}), json!({"boundaryCursor": {"epoch": "stale", "seq": 2}}));
+    gone(json!({"boundaryCursor": {"epoch": ptl["epoch"], "seq": 99}}), json!({"boundaryCursor": {"epoch": ltl["epoch"], "seq": 99}}));
+
+    // Files and both are accepted by the mock on both sides; the conversation is what both
+    // keep of the first prompt (Paseo's mock keeps only that message, Lucina's the rows
+    // before the target: the prompts compared are the same).
+    let second = |rows: &[Value]| of_kind(rows, "user_message")[1]["item"]["messageId"].clone();
+    let (pm, lm) = (second(&prows), second(&lrows));
+    assert!(pm.is_string() && lm.is_string(), "{pm} {lm}");
+    let paseo = agent_oracle("rewind", &pid, Some(pm.as_str().unwrap()), Some("files"));
+    let (status, lucina) = lucina_call(l, "POST", &format!("/agents/{lid}/rewind"), &json!({"messageId": lm, "mode": "files"}));
+    assert_eq!(status, 200, "{lucina}");
+    same("rewind files", &json!(paseo["ok"]), &lucina["ok"]);
+    same("files rewind keeps the prompts", &user_texts(&rows_of(&agent_oracle("timeline", &pid, None, None))), &user_texts(&rows_of(&lucina_get(l, &format!("/agents/{lid}/timeline")))));
+    // Not a message of the agent: both refuse (the messages differ, see the table above).
+    let paseo = agent_oracle("rewind", &pid, Some("nope"), Some("conversation"));
+    let (status, lucina) = lucina_call(l, "POST", &format!("/agents/{lid}/rewind"), &json!({"messageId": "nope", "mode": "conversation"}));
+    assert!(paseo["error"].is_string() && status == 404, "{paseo} {lucina}");
+    for mode in ["conversation", "both"] {
+        let (pid, lid) = two_answers(p, l);
+        let (prows, lrows) = (rows_of(&agent_oracle("timeline", &pid, None, None)), rows_of(&lucina_get(l, &format!("/agents/{lid}/timeline"))));
+        let (pm, lm) = (second(&prows), second(&lrows));
+        let paseo = agent_oracle("rewind", &pid, Some(pm.as_str().unwrap()), Some(mode));
+        let (status, lucina) = lucina_call(l, "POST", &format!("/agents/{lid}/rewind"), &json!({"messageId": lm, "mode": mode}));
+        assert_eq!(status, 200, "{lucina}");
+        same(&format!("rewind {mode}"), &json!(paseo["ok"]), &lucina["ok"]);
+        same(
+            &format!("prompts left after rewind {mode}"),
+            &user_texts(&rows_of(&agent_oracle("timeline", &pid, None, None))),
+            &user_texts(&rows_of(&lucina_get(l, &format!("/agents/{lid}/timeline")))),
+        );
+    }
+}
+
 fn keys_of(v: &Value) -> Value {
     keys(v)
 }
@@ -574,7 +708,7 @@ fn paseo_parity() {
         ("LUCINA_AGENTD_METADATA_PROVIDER", "off".to_string()),
     ]);
     type Scenario = fn(&Paseo, &Daemon);
-    let scenarios: [(&str, Scenario); 8] = [
+    let scenarios: [(&str, Scenario); 9] = [
         ("a run/logs/inspect/ls", scenario_run_logs_inspect),
         ("b turn failure", scenario_turn_failure),
         ("c plan approval + stop", scenario_plan_approval_stop),
@@ -583,8 +717,14 @@ fn paseo_parity() {
         ("f permit ls/allow/deny + errors", scenario_permit),
         ("g projects/workspaces/worktrees, diffs, files, archive", scenario_workspaces),
         ("h terminals, send-keys, capture; scripts, env, ports", scenario_terminals_scripts),
+        ("i fork context, rewind modes", scenario_rewind_fork),
     ];
+    // PASEO_DIFF_ONLY=i runs one scenario (the letter before its name).
+    let only = std::env::var("PASEO_DIFF_ONLY").ok();
     for (name, scenario) in scenarios {
+        if only.as_deref().is_some_and(|o| !name.starts_with(&format!("{o} "))) {
+            continue;
+        }
         let start = Instant::now();
         scenario(&paseo, &lucina);
         eprintln!("paseo_parity: {name}: same ({:.1}s)", start.elapsed().as_secs_f32());

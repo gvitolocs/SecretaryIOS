@@ -15,6 +15,7 @@ use crate::config::{default_socket, shorten_path};
 
 mod term;
 mod orch;
+mod rewind;
 mod ws;
 
 #[derive(Parser, Debug)]
@@ -90,6 +91,10 @@ pub enum Command {
     Search(orch::SearchArgs),
     /// Make a subagent independent without stopping or moving it
     Detach { id: String },
+    /// Take an agent back to an earlier user message: its conversation, its files, or both (Lucina only)
+    Rewind(rewind::RewindArgs),
+    /// Start a new agent from an agent's chat history (Lucina only)
+    Fork(rewind::ForkArgs),
     /// Serve the agents' MCP tools on stdio (agentd attaches this to its agents)
     Mcp,
 }
@@ -352,6 +357,10 @@ pub struct LogsArgs {
     pub tail: Option<String>,
     #[arg(long)]
     pub filter: Option<String>,
+    /// Lucina only: show this provider subagent's activity (a Claude `Task`; id or unique
+    /// prefix, as `lagent inspect` lists them) instead of the agent's.
+    #[arg(long)]
+    pub subagent: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -591,8 +600,12 @@ fn upper_snake(k: &str) -> String {
 }
 
 /// Projected timeline items (Paseo `fetchProjectedTimelineItems`).
-async fn projected_items(client: &Client, id: &str) -> Result<Vec<TimelineItem>, CmdError> {
-    let v = client.get(&format!("/agents/{id}/timeline")).await?;
+async fn projected_items(client: &Client, id: &str, subagent: Option<&str>) -> Result<Vec<TimelineItem>, CmdError> {
+    let path = match subagent {
+        Some(sub) => format!("/agents/{id}/provider-subagents/{sub}/timeline"),
+        None => format!("/agents/{id}/timeline"),
+    };
+    let v = client.get(&path).await?;
     let rows: Vec<TimelineRow> = serde_json::from_value(v["rows"].clone())
         .map_err(|e| CmdError::new("BAD_RESPONSE", e.to_string()))?;
     Ok(project_rows(&rows).into_iter().map(|e| e.item).collect())
@@ -874,7 +887,10 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
                 Some(t) => Some(t.parse::<usize>().map_err(|_| CmdError::new("INVALID_TAIL", format!("Invalid --tail value: {t}")))?),
                 None => None,
             };
-            let items: Vec<TimelineItem> = projected_items(&client, &id)
+            if a.follow && a.subagent.is_some() {
+                return Err(CmdError::new("INVALID_ARGUMENT", "--follow is not supported with --subagent"));
+            }
+            let items: Vec<TimelineItem> = projected_items(&client, &id, a.subagent.as_deref())
                 .await?
                 .into_iter()
                 .filter(|i| matches_filter(i, a.filter.as_deref()))
@@ -951,7 +967,7 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
                 None => (0, None),
             };
             let state = wait_for(&client, &id, timeout_ms, a.gate).await?;
-            let recent = projected_items(&client, &id).await.ok().map(|items| transcript(&items, Some(5)));
+            let recent = projected_items(&client, &id, None).await.ok().map(|items| transcript(&items, Some(5)));
             let with_recent = |msg: String| match recent.as_deref().filter(|t| !t.trim().is_empty()) {
                 Some(t) => format!("{msg}\nLast 5 activity items:\n{t}"),
                 None => msg,
@@ -1015,7 +1031,19 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
         }
         Command::Inspect { id } => {
             let agent = resolve_as(&client, id, NotFound::Plain).await?;
-            let data = inspect_data(&agent);
+            let mut data = inspect_data(&agent);
+            // Lucina only, and only when the provider ran subagents (Paseo's key set stays the same).
+            let subs = match agent["id"].as_str() {
+                Some(id) => client.get(&format!("/agents/{id}/provider-subagents")).await.ok().and_then(|v| v["subagents"].as_array().cloned()).unwrap_or_default(),
+                None => Vec::new(),
+            };
+            if !subs.is_empty() {
+                data["Subagents"] = Value::Array(
+                    subs.iter()
+                        .map(|x| json!({"Id": x["id"], "Title": x["title"], "Description": x["description"], "Status": x["status"], "Subtitle": x["subtitle"], "ParentSubagentId": x["parentSubagentId"]}))
+                        .collect(),
+                );
+            }
             let mut rows = Vec::new();
             for key in ["Id", "Name", "Provider", "Model", "Thinking", "Status", "Archived", "ArchivedAt", "Mode", "Cwd", "CreatedAt", "UpdatedAt"] {
                 let value = if key == "Cwd" { shorten_path(data[key].as_str().unwrap_or_default()) } else { s(&data[key]) };
@@ -1025,6 +1053,9 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
                 let p = data["PendingPermissions"].as_array().cloned().unwrap_or_default();
                 if p.is_empty() { "[]".into() } else { p.iter().map(|x| format!("{} ({})", s(&x["id"]), s(&x["tool"]))).collect::<Vec<_>>().join(", ") }
             }]);
+            if !subs.is_empty() {
+                rows.push(vec!["Subagents".into(), subs.iter().map(|x| format!("{} ({}, {}): {}", s(&x["id"]), x["title"].as_str().unwrap_or("-"), s(&x["status"]), x["description"].as_str().unwrap_or("-"))).collect::<Vec<_>>().join("\n")]);
+            }
             Ok(Output { text: table(&["KEY", "VALUE"], &rows), json: Some(data) })
         }
         Command::Providers => {
@@ -1086,6 +1117,8 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
         Command::Heartbeat(cmd) => orch::heartbeat(&client, cmd).await,
         Command::Search(a) => orch::search(&client, a).await,
         Command::Detach { id } => orch::detach(&client, id).await,
+        Command::Rewind(a) => rewind::rewind(&client, a).await,
+        Command::Fork(a) => rewind::fork(&client, a).await,
         Command::Mcp => {
             crate::mcp::serve(client).await.map_err(|e| CmdError::new("MCP_FAILED", e.to_string()))?;
             Ok(Output { json: None, text: String::new() })

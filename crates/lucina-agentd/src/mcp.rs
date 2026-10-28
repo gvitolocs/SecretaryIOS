@@ -9,7 +9,7 @@
 //! "only your own subagents" and schedule ownership are all enforced by the daemon,
 //! which is why agentd preapproves these tools ([`is_own_tool`]).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use lucina_agents::curator::{curate_activity, CurateOptions};
 use lucina_agents::projection::project_rows;
@@ -61,6 +61,34 @@ pub fn acp_servers(for_agent: bool) -> Value {
     }
 }
 
+/// The `config` override for Codex's `thread/start` and `thread/resume` (Paseo's
+/// `buildCodexInnerConfig` + `applyCodexToolPolicy`): the server under
+/// `mcp_servers.lucina-agents`, its tools listed and preapproved one by one
+/// (`default_tools_approval_mode: "prompt"` for anything else). Codex hands an MCP
+/// server only a small environment, so the agent id goes in explicitly.
+pub fn codex_config(agent_id: Option<&str>) -> Option<Value> {
+    let id = agent_id?;
+    Some(codex_config_for(&lagent_path()?, &socket(), id))
+}
+
+#[cfg(test)]
+pub fn codex_config_for_tests(lagent: &str, socket: &str, agent_id: &str) -> Value {
+    codex_config_for(Path::new(lagent), socket, agent_id)
+}
+
+fn codex_config_for(lagent: &Path, socket: &str, agent_id: &str) -> Value {
+    let names: Vec<String> = tools().iter().filter_map(|t| t["name"].as_str().map(str::to_string)).collect();
+    let approvals: serde_json::Map<String, Value> = names.iter().map(|n| (n.clone(), json!({"approval_mode": "approve"}))).collect();
+    json!({"mcp_servers": {SERVER: {
+        "command": lagent.display().to_string(),
+        "args": ["mcp"],
+        "env": {crate::config::SOCKET_ENV: socket, "LUCINA_AGENT_ID": agent_id},
+        "enabled_tools": names,
+        "default_tools_approval_mode": "prompt",
+        "tools": approvals,
+    }}})
+}
+
 fn tool(name: &str, description: &str, properties: Value, required: &[&str]) -> Value {
     json!({"name": name, "description": description, "inputSchema": {"type": "object", "properties": properties, "required": required, "additionalProperties": false}})
 }
@@ -90,8 +118,8 @@ fn tools() -> Vec<Value> {
         tool("get_agent_status", "An agent's status, title and pending permission requests.", json!({"agentId": id}), &["agentId"]),
         tool(
             "get_agent_activity",
-            "An agent's recent activity as text.",
-            json!({"agentId": id, "limit": {"type": "integer", "description": "Last N entries (default 30)"}}),
+            "An agent's recent activity as text. Its provider subagents (a Claude Task) show as one entry with what they did; pass subagentId for one's own activity.",
+            json!({"agentId": id, "limit": {"type": "integer", "description": "Last N entries (default 30)"}, "subagentId": {"type": "string", "description": "A provider subagent of this agent (its Task call id)"}}),
             &["agentId"],
         ),
         tool(
@@ -220,7 +248,11 @@ async fn call(client: &Client, me: Option<&str>, name: &str, a: &Value) -> Resul
         }
         "get_agent_activity" => {
             let id = seg(a, "agentId")?;
-            let v = client.get(&format!("/agents/{id}/timeline")).await.map_err(e)?;
+            let path = match a["subagentId"].as_str().filter(|s| !s.is_empty()) {
+                Some(_) => format!("/agents/{id}/provider-subagents/{}/timeline", seg(a, "subagentId")?),
+                None => format!("/agents/{id}/timeline"),
+            };
+            let v = client.get(&path).await.map_err(e)?;
             let rows: Vec<TimelineRow> = serde_json::from_value(v["rows"].clone()).unwrap_or_default();
             let items: Vec<TimelineItem> = project_rows(&rows).into_iter().map(|e| e.item).collect();
             let limit = a["limit"].as_u64().unwrap_or(30) as usize;
@@ -401,5 +433,22 @@ mod tests {
         assert_eq!(duration_ms("x"), None);
         assert_eq!(urlencode("a b/ü"), "a%20b%2F%C3%BC");
         assert_eq!(tools().len(), 15);
+    }
+
+    #[test]
+    fn codex_config_lists_and_preapproves_every_tool() {
+        let c = codex_config_for(Path::new("/opt/bin/lagent"), "/run/agentd.sock", "agent-1");
+        let s = &c["mcp_servers"][SERVER];
+        assert_eq!(s["command"], "/opt/bin/lagent");
+        assert_eq!(s["args"], json!(["mcp"]));
+        assert_eq!(s["env"], json!({crate::config::SOCKET_ENV: "/run/agentd.sock", "LUCINA_AGENT_ID": "agent-1"}));
+        assert_eq!(s["default_tools_approval_mode"], "prompt");
+        let names: Vec<&str> = s["enabled_tools"].as_array().unwrap().iter().map(|n| n.as_str().unwrap()).collect();
+        assert_eq!(names.len(), 15);
+        assert!(names.contains(&"create_agent") && names.contains(&"search_agents"));
+        let approvals = s["tools"].as_object().unwrap();
+        assert_eq!(approvals.len(), 15);
+        assert!(names.iter().all(|n| approvals[*n] == json!({"approval_mode": "approve"})));
+        assert!(codex_config(None).is_none());
     }
 }

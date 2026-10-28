@@ -570,6 +570,12 @@ impl AppState {
     /// Background tasks: the grocery deal watch when `GROCERY_OFFER_WATCH_ENABLED=true`,
     /// the reminder scheduler only when `LUCINA_SCHEDULER=true`.
     pub fn spawn_background(&self) {
+        // A shopping drive that reaches the checkout asks the owner (decision + app notification).
+        let st = self.clone();
+        lucina_computer_use::jev_drive::set_handover_sink(Arc::new(move |h| {
+            let st = st.clone();
+            tokio::spawn(async move { crate::computer::hand_over(&st, h).await });
+        }));
         // Learn every value in Lucina's Infisical folder, so the redactor
         // masks a secret even before a tool first uses it.
         if let Some(store) = self.secrets.clone() {
