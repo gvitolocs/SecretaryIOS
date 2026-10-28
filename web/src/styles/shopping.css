@@ -2077,6 +2077,12 @@
   gap: 8px;
 }
 
+/* The list switcher is a quiet header button: its name takes the button's 13/600, not the phone title size. */
+.shopping-wide .shopping-head-tools .shop-list-name {
+  font: inherit;
+  letter-spacing: normal;
+}
+
 .shopping-wide .shop-menu {
   top: calc(100% + 8px);
   right: 0;
