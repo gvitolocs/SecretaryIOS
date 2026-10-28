@@ -792,9 +792,8 @@ impl Device {
             self.opened_tab_active = true;
             tokio::time::sleep(Duration::from_millis(300)).await;
         }
-        // Focus the address bar and select what is there, or the text is appended.
+        // Focus the address bar; Ctrl+L also selects what is there, so the text replaces it.
         self.tool("hotkey", json!({"keys": ["ctrl", "l"]})).await?;
-        self.tool("hotkey", json!({"keys": ["ctrl", "a"]})).await?;
         self.tool("type_text", json!({"text": url})).await?;
         self.tool("press_key", json!({"key": "Return"})).await?;
         Ok(())
@@ -1177,6 +1176,7 @@ pub async fn drive(jev: &Jev, target: Where, task: &str, cancel: &Cancel) -> Res
                 let offer = step::offer(target, &screen, &mem, &plan);
                 let qs = step::questions(target, &offer, &plan, &dev.apps);
                 let state = step::state(task, target, &screen, &mem, &plan, &offer);
+                let traced = trace_dir().map(|d| (d, state.clone()));
                 let purpose = if target == Where::Android { "android" } else { "browse" };
                 let d = match jev.decide(purpose, state, &qs).await {
                     Ok(d) => d,
@@ -1190,6 +1190,9 @@ pub async fn drive(jev: &Jev, target: Where, task: &str, cancel: &Cancel) -> Res
                 stats.jev_ms += d.elapsed_ms;
                 jev_ms = d.elapsed_ms;
                 tokens = d.input_tokens;
+                if let Some((dir, state)) = traced {
+                    trace(&dir, started, step, &state, &d);
+                }
                 let mut n = step::decide(&offer, &d, gate, &plan);
                 n = android_app(target, &screen, &mem, &d, n);
                 if let Next::Fallback(cands) = n {
@@ -1347,6 +1350,42 @@ pub async fn drive(jev: &Jev, target: Where, task: &str, cancel: &Cancel) -> Res
         actions: mem.actions(),
         stats: finish(stats, steps),
     })
+}
+
+/// `LUCINA_JEV_TRACE=<dir>`: each step's Jev state and answers go to
+/// `<dir>/<drive start>-<step>.json` (tuning; off by default).
+fn trace_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("LUCINA_JEV_TRACE")
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_dir())
+}
+
+fn trace(dir: &std::path::Path, started: Instant, step: usize, state: &Value, d: &Decision) {
+    let id = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|n| n.as_millis() - started.elapsed().as_millis())
+        .unwrap_or(0);
+    let answers: serde_json::Map<String, Value> = d
+        .answers
+        .iter()
+        .map(|(k, a)| {
+            let v = match a {
+                lucina_jev::Answer::Choice { choice, confidence, probabilities } => {
+                    let mut top: Vec<(&String, &f64)> = probabilities.iter().collect();
+                    top.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap_or(std::cmp::Ordering::Equal));
+                    top.truncate(5);
+                    json!({"choice": choice, "confidence": confidence, "top": top})
+                }
+                lucina_jev::Answer::Noul(p) => json!(p),
+                lucina_jev::Answer::Score { score, confidence } => json!({"score": score, "confidence": confidence}),
+            };
+            (k.clone(), v)
+        })
+        .collect();
+    let _ = std::fs::write(
+        dir.join(format!("{id}-{step:02}.json")),
+        serde_json::to_vec_pretty(&json!({"state": state, "answers": answers})).unwrap_or_default(),
+    );
 }
 
 /// On the phone's first step, a confident app choice that is not on screen is
