@@ -460,6 +460,34 @@ The Gallery's editor (web `components/gallery/editor`) edits non-destructively: 
 - **HEIC and other formats the server can't decode** are edited from `preview.jpg` (the phone's rendering), the same source the renditions use. `thumbs::generate` makes renditions from `edited.jpg` while it exists, so a regeneration keeps the edit.
 - A new original for the same asset (the phone re-sends an edited photo) forgets the edit list. Purging an item removes its list and derivative with the rest of its thumbs.
 - Not done: JPEG XL for the derivative (it is JPEG so the renditions can be made from it with the `image` crate); edits for videos; a batch "edited" filter in the list API; text outlines and fonts beyond the embedded Latin subset.
+## Archive format: JPEG XL (2026-10-28)
+
+The backup photos can be stored as JPEG XL without losing a bit. Module `archive_jxl.rs` (+ `archive_jxl_measure.rs`), command
+`lucina-media archive-jxl`. Numbers, the decision per type and the apply procedure are in the build report
+(`~/scratch/gallery/format/REPORT.md`); nothing is applied by default.
+
+| Original | Archive action | Result |
+|---|---|---|
+| JPEG | `jpeg_recompress`: libjxl JPEG transcoding with the reconstruction data stored (effort 7) | the JXL rebuilds the original file **bit for bit** (blake3 checked) |
+| PNG, TIFF, BMP | `lossless_jxl`: decoded pixels, lossless, effort 7 | pixel-exact, not byte-exact; measured and verified, never applied automatically |
+| HEIC, RAW | `keep_original` + `display_derivative` (lossy JXL, distance 1.0, long side 2560) | the original stays |
+| GIF, WebP, AVIF, other | `keep_original` | unchanged |
+
+- **One identity.** `items.hash` stays the original's hash (ETag, device comparison, downloads do not change). Table
+  `archive_blobs(hash, kind, jxl_hash, jxl_bytes, reconstructs_to, original_bytes, original_ext, verified_at,
+  original_deleted_at)` records the JXL, kept at `<store>/archive-jxl/ab/cd/<hash>.jxl`, and the hash it rebuilds to.
+- **Reading.** `ingest::original_path` rebuilds an original whose file is gone (`archive_jxl::materialize`): the JXL must match
+  its recorded hash and the rebuilt bytes must hash to `reconstructs_to` and to the item's hash, or nothing is served (503).
+  The rebuilt file is cached under `<data>/archive-cache/` (1 GiB, oldest out), so `GET items/{id}/original`
+  (with `Range`, `If-None-Match`, `?download=1`), thumbnails and `details` all see the identical bytes and ETag.
+- **Applying.** `archive-jxl --apply --i-have-a-backup [--delete-originals] [--limit N]` (refuses without the backup flag, on
+  quiet hours and when the store is not mounted). Per file: the stored object is re-hashed, converted, the JXL written
+  durably, read back from disk and rebuilt once more, then the row is recorded. An original is deleted only with
+  `--delete-originals`, only after that second verification, and only from the owned store (never `external` files or the spool).
+  It logs counts only. `archive-jxl --restore-originals` rebuilds every deleted original back into the store.
+- **Purge.** A purged blob takes its JXL, row and cache file with it.
+- **Dry run.** `archive-jxl --dry-run [--sample N] [--report path]` opens the catalog read-only, converts and verifies a
+  stratified sample, writes nothing to the library, and reports sizes, ratios, timings and failures by reason (opaque ids only).
 
 ## Backup and the device rate limit
 
@@ -489,3 +517,4 @@ An upload whose bytes are gone answers 410 on finish, and the phone starts that 
 - Zoom/pan on the device is unit-tested only: XCUITest can't run on iOS 27 with Xcode 26.
 - Stateright/TLA+ model of the upload protocol.
 - HLS cache eviction.
+- Archive format: PNG/TIFF/BMP stay as originals until the owner accepts pixel-exact (not byte-exact) storage; video preview renditions are recommended in the build report, not built.

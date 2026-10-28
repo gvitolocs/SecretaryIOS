@@ -2388,6 +2388,7 @@ dependencies = [
  "image",
  "jpegxl-rs",
  "jpegxl-sys",
+ "libc",
  "mime_guess",
  "nom-exif",
  "pdf-extract",

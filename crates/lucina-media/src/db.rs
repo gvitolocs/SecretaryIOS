@@ -261,6 +261,8 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     crate::renditions::migrate(conn)?;
     // Duplicates (2026-10-28): links, device-asset aliases and perceptual hashes (`dedup_merge.rs`).
     crate::dedup_merge::migrate(conn)?;
+    // The JPEG XL archive format: which originals have a verified JXL copy.
+    crate::archive_jxl::migrate(conn)?;
     Ok(())
 }
 

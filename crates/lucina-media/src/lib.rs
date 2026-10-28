@@ -13,6 +13,8 @@
 //! device and adds the upstream key (see [`http::upstream_guard`]).
 
 pub mod archive;
+pub mod archive_jxl;
+pub mod archive_jxl_measure;
 pub mod batch;
 pub mod browse;
 pub mod config;

@@ -657,7 +657,15 @@ pub fn original_path(lib: &Library, item_id: &str) -> anyhow::Result<Option<(Pat
     let Some(b) = lib.db.with(|c| db::blob(c, &item.hash))? else {
         return Ok(None);
     };
-    Ok(Some((store::path_of(&lib.cfg, &b), item)))
+    let path = store::path_of(&lib.cfg, &b);
+    // An archived original whose file was removed after its JXL proved it: rebuild it (verified,
+    // cached) so every reader gets the same bytes and the same hash as before.
+    if b.location == "store" && !path.is_file() {
+        if let Some(p) = crate::archive_jxl::materialize(&lib.cfg, &lib.db, &b.hash) {
+            return Ok(Some((p, item)));
+        }
+    }
+    Ok(Some((path, item)))
 }
 
 /// Make thumbnails for items that need them, a few at a time, forever.
