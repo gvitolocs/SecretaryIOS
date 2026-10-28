@@ -256,7 +256,7 @@ async fn full_flow_register_login_token_call_refresh() {
     assert!(access.starts_with("mcpa_") && refresh.starts_with("mcpr_"));
 
     // call a tool with the access token: Lucina sees "chatgpt"
-    assert_eq!(h.tool_names(&access).await.len(), 38);
+    assert_eq!(h.tool_names(&access).await.len(), 39);
     let (err, text) = h
         .call(&access, "ask_lucina", json!({"message": "ciao"}))
         .await;

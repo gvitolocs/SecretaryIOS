@@ -9,7 +9,7 @@ Three hops, three deploy lines:
 
 | Hop | Line | What |
 |---|---|---|
-| secretary-mcp (p1) | `server-live` | MCP tools `lucina_decide`, `lucina_decision_status`, `lucina_job_status` |
+| secretary-mcp (p1) | `server-live` | MCP tools `lucina_decide`, `lucina_decision_status`, `lucina_decision_withdraw`, `lucina_job_status` |
 | secretary-server (p1) | `server-live` | `/v1/decisions*` forwarded to Lucina with the device credential |
 | lucina-rs (nezopt) | `lucina-rs` | `/api/secretary/decisions*`: the decision itself, the record, the owner's push |
 
@@ -91,6 +91,8 @@ decision shows on the timeline in the asking client's MCP conversation (`meta.ki
 `POST /v1/decisions`, `GET /v1/decisions/{id}`, `GET /v1/decisions` behind the device-token middleware, forwarded
 to Lucina like `/v1/jobs/{id}`. The POST may take up to 40 s (memory search, DeepSeek, JEV): forward with a
 60 s timeout. Body and query are passed through unchanged (the body is a JSON object ≤ 32 KB).
+`DELETE /v1/decisions/{id}?reason=` forwards to `DELETE /api/secretary/decisions/{id}?reason=` (the asker takes
+back a pending decision); `reason` is optional, trimmed, at most 500 characters.
 
 ## secretary-mcp tools (scope `chat`)
 
@@ -105,8 +107,13 @@ name. Answer text: one line in words, then the JSON object:
 - pending: `Pending: Lucina asked the owner on his phone (decision dc-…). Do not act on this yet; check with
   lucina_decision_status {"decision_id": "dc-…"}.`
 - expired: `Expired: the owner did not answer within 24 h (decision dc-…). Ask again or leave it.`
+- withdrawn: `Withdrawn: decision dc-… needs no answer. <reason>`
 
 `lucina_decision_status` — `{decision_id, wait_seconds?}` (same polling), same answer text.
+
+`lucina_decision_withdraw` — `{decision_id, reason?}`: `DELETE /v1/decisions/{id}?reason=`; takes back a decision
+still pending (asked by mistake, settled elsewhere), and the owner's buttons then answer that it was withdrawn.
+Same answer text.
 
 `lucina_job_status` — `{job_id}`: `GET /v1/jobs/{id}`; answers the status (`queued`, `running`, `done`,
 `error`), the action, the result or error, and the times.

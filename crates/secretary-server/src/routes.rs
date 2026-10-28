@@ -106,6 +106,20 @@ async fn decision(State(st): State<AppState>, Path(id): Path<String>) -> ApiResu
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+struct WithdrawQuery {
+    reason: Option<String>,
+}
+
+async fn withdraw_decision(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    QueryArgs(q): QueryArgs<WithdrawQuery>,
+) -> ApiResult {
+    forward(&st, Call::withdraw_decision(&id, q.reason.as_deref())?).await
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct DecisionsQuery {
     status: Option<String>,
     limit: Option<String>,
@@ -260,7 +274,10 @@ pub fn protected() -> Router<AppState> {
                 .post(create_decision)
                 .layer(DefaultBodyLimit::max(32 * 1024)),
         )
-        .route("/v1/decisions/{id}", get(decision))
+        .route(
+            "/v1/decisions/{id}",
+            get(decision).delete(withdraw_decision),
+        )
         .route("/v1/reminders", get(reminders).post(create_reminder))
         .route("/v1/reminders/{id}", delete(cancel_reminder))
         .route("/v1/agenda", get(agenda))

@@ -152,6 +152,14 @@ pub struct DecisionStatusArgs {
 }
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct DecisionWithdrawArgs {
+    /// Decision id from lucina_decide: dc- followed by 12 lowercase hexadecimal digits.
+    pub decision_id: String,
+    /// Why it no longer needs an answer, shown to the owner; at most 500 characters.
+    pub reason: Option<String>,
+}
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct JobStatusArgs {
     /// Background job id returned by ask_lucina.
     pub job_id: String,
@@ -641,6 +649,8 @@ pub fn specs() -> Vec<ToolSpec> {
             "THE way for agents to get a go-ahead: use this instead of asking the owner or using ask_lucina. Lucina decides from the owner's memory, messages and earlier decisions with JEV. She asks the owner on his phone for high impact, irreversible or owner-only requests, conflicting evidence or low confidence. A pending answer means do not act yet; follow it with lucina_decision_status. Optionally wait and poll for up to 100 seconds."),
         spec!("lucina_decision_status", "Lucina decision status", Scope::Chat, ro = true, destructive = false, idempotent = true, DecisionStatusArgs,
             "Check a structured go-ahead from lucina_decide, optionally polling for up to 100 seconds. Pending means do not act yet; decided and expired answers include the full decision record."),
+        spec!("lucina_decision_withdraw", "Withdraw a Lucina decision", Scope::Chat, ro = false, destructive = false, idempotent = true, DecisionWithdrawArgs,
+            "Take back a decision you asked with lucina_decide that is still pending (asked by mistake, settled elsewhere). The owner's buttons then answer that it was withdrawn."),
         spec!("lucina_job_status", "Lucina job status", Scope::Chat, ro = true, destructive = false, idempotent = true, JobStatusArgs,
             "Follow a background job started by Lucina: status, action, result or error, and created, started and finished times. For go-aheads use lucina_decide; ask_lucina is answers-only for agents."),
         spec!("lucina_timeline", "Lucina timeline", Scope::Read, ro = true, destructive = false, idempotent = true, TimelineArgs,
@@ -1083,6 +1093,29 @@ impl Tools<'_> {
             .get(&format!("/v1/decisions/{}", a.decision_id), &[])
             .await?;
         Ok(format::decision(&self.poll_decision(response, wait).await?))
+    }
+
+    pub async fn decision_withdraw(&self, args: &JsonObject) -> ToolResult {
+        let a: DecisionWithdrawArgs = parse(args)?;
+        let reason = a.reason.as_deref().map(str::trim).filter(|r| !r.is_empty());
+        secretary_core::Call::withdraw_decision(&a.decision_id, reason)
+            .map_err(|e| bad(e.to_string()))?;
+        let query: Vec<(&str, String)> = reason
+            .map(|r| ("reason", r.to_owned()))
+            .into_iter()
+            .collect();
+        let response = self
+            .app
+            .backend
+            .send_device_query(
+                reqwest::Method::DELETE,
+                &format!("/v1/decisions/{}", a.decision_id),
+                &query,
+                None,
+                reqwest::header::HeaderMap::new(),
+            )
+            .await?;
+        Ok(format::decision(&response))
     }
 
     pub async fn job_status(&self, args: &JsonObject) -> ToolResult {

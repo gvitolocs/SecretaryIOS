@@ -26,6 +26,9 @@ client ──HTTPS──▶ Caddy (getsecretary.tech) ──▶ secretary-mcp 12
 | Tool | Scope | What it does |
 |---|---|---|
 | `ask_lucina {message, conversation?}` | `chat` | One Lucina turn (`POST /v1/chat`); returns her reply. See the note below the table. |
+| `lucina_decide {question, options, reversible, impact, recommendation?, context?, urgency?, topic?, asking_session?, wait_seconds?}` | `chat` | Ask for a go-ahead; pending means wait for the owner's answer. |
+| `lucina_decision_status {decision_id, wait_seconds?}` | `chat` | Check a decision, optionally polling for up to 100 seconds. |
+| `lucina_decision_withdraw {decision_id, reason?}` | `chat` | Take back a pending decision; the owner's buttons then say it was withdrawn. The optional reason is trimmed and limited to 500 characters. |
 | `lucina_timeline {limit?, before?, channel?}` | `read` | Recent messages on all channels, newest first; paginate with `before`. |
 | `shopping_list {list?}` | `read` | v2 list state: needed items with ids, recently bought, other lists. Falls back to legacy `/v1/shopping` when v2 answers 404/502. |
 | `shopping_add {items: [name \| {name, spec?, quantity?, unit?}], list?}` | `write` | v2 `add` ops (new UUID `opId`s); legacy `POST /v1/shopping` as fallback. |
@@ -75,8 +78,8 @@ agenda is unavailable, it falls back to today's reminders.
 - No tool buys anything, messages third parties, or deletes data. There are no shopping `remove`, list
   delete, note delete, gym/body delete or post tools. `note_save` only overwrites a note with an explicit
   `replace: true`.
-- Anything with consequences goes through `ask_lucina`, so it is handled by Lucina's own pipeline and
-  her own confirmation flow.
+- Go-aheads go through `lucina_decide`, so Lucina can decide or ask the owner on his phone.
+  `ask_lucina` is for consultation and memory.
 - Every call is logged on target `secretary_mcp::audit` with tool, caller, auth kind, token or grant
   id, duration and ok. Arguments, bodies and tokens are never logged.
 
