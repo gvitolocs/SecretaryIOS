@@ -1472,3 +1472,11 @@ section + .settings-block {
 .picker-head .icon-btn {
   font-size: 1.4rem;
 }
+
+/* Weight's desktop page-system frame. Phone weight rules stay above. */
+.pg.weight-desk .weight-desk-log-row, .pg.weight-desk .weight-desk-units { display: flex; align-items: center; gap: 8px; }
+.pg.weight-desk .weight-desk-log-row > .pg-input { min-width: 0; }
+.pg.weight-desk [aria-pressed="true"] { background: var(--pg-fill-hover); border-color: var(--pg-border-strong); }
+.pg.weight-desk .chart-line--primary { stroke: var(--pg-data); filter: none; }
+.pg.weight-desk .chart-line--secondary { stroke: var(--pg-muted); }
+.pg.weight-desk :is(.chart-x, .chart-y) { color: var(--pg-muted); font-size: 12px; }

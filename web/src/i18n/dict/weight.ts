@@ -2,6 +2,10 @@ import type { FeatureDictionary } from "../types";
 
 const en = {
   allEntries: "All weigh-ins",
+  backTraining: "‹ Training",
+  stats: "Statistics",
+  chartEmpty: "Log a few weigh-ins to see your trend.",
+  emptyRail: "Log your first weigh-in in the form beside this list.",
   title: "Weight",
   loading: "Loading your weigh-ins…",
   staleCopy: "{message} Showing the last copy.",
@@ -53,6 +57,10 @@ export const weight: FeatureDictionary<typeof en> = {
   en,
   it: {
     allEntries: "Tutte le pesate",
+    backTraining: "‹ Allenamento",
+    stats: "Statistiche",
+    chartEmpty: "Registra alcune pesate per vedere il tuo andamento.",
+    emptyRail: "Registra la tua prima pesata nel modulo accanto a questo elenco.",
     title: "Peso",
     loading: "Caricamento delle pesate…",
     staleCopy: "{message} Mostro l'ultima copia.",
@@ -101,6 +109,10 @@ export const weight: FeatureDictionary<typeof en> = {
   },
   da: {
     allEntries: "Alle vejninger",
+    backTraining: "‹ Træning",
+    stats: "Statistik",
+    chartEmpty: "Registrer et par vejninger for at se din udvikling.",
+    emptyRail: "Registrer din første vejning i formularen ved siden af listen.",
     title: "Vægt",
     loading: "Indlæser dine vejninger…",
     staleCopy: "{message} Viser den seneste kopi.",
