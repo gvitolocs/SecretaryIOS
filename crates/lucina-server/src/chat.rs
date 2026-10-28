@@ -438,6 +438,34 @@ impl Finish {
     }
 }
 
+/// `action` does not run for this turn: an agent's consult turn gets a plain answer in Lucina's words
+/// (what she thinks, nothing started), any other guarded turn the fixed refusal.
+async fn not_run(t: &Turn<'_>, memory: &str, action: &str) -> Finish {
+    if !t.consult {
+        return Finish::refusal(t.persona(), action);
+    }
+    tracing::info!(session_id = %t.session, not_run = %action, "secretary mcp consult turn: answered only");
+    let extra = format!(
+        "{} The agent's message reads like a request for \"{action}\": do not claim you started, scheduled or ran anything. Answer it as a consultation, briefly.",
+        t.extra_system
+    );
+    let text = t
+        .st
+        .planner
+        .generate_reply(&t.input(memory, t.platform_label()), &extra, "", "reply")
+        .await
+        .unwrap_or_default();
+    let text = if text.trim().is_empty() {
+        "I only answer agents here: I did not start anything.".to_owned()
+    } else {
+        text
+    };
+    let mut f = Finish::reply(text, "reply");
+    f.extra.insert("notRun".into(), json!(action));
+    f.extra.insert("hint".into(), json!(mcp::consult_hint(action)));
+    f
+}
+
 /// Node `resolveReminderRequest`: the parser first, then the plan's dueDate.
 /// `"19:00"` → (19, 0).
 fn hh_mm(s: &str) -> Option<(u32, u32)> {
@@ -526,9 +554,12 @@ struct Turn<'a> {
     mcp: Option<McpTurn>,
     /// The turn's memory surface (classified once in `handle_chat`).
     surface: TurnSurface,
-    /// An MCP turn held to the allowlist (`LUCINA_MCP_TRUSTED=false`), or a
-    /// channel turn that is not the owner's.
+    /// An MCP turn held to the allowlist (`LUCINA_MCP_TRUSTED=false`, or an
+    /// agent's consult turn), or a channel turn that is not the owner's.
     guarded: bool,
+    /// An agent's MCP turn (not one of `LUCINA_MCP_OWNER_CLIENTS`): answers only, plus the
+    /// kinds its prefix allows (`lucina_intent::mcp::CONSULT_ACTIONS`). Implies `guarded`.
+    consult: bool,
     user_label: String,
     extra_system: String,
     /// The share pipeline's tool loop.
@@ -540,6 +571,27 @@ struct Turn<'a> {
 impl Turn<'_> {
     fn persona(&self) -> &str {
         &self.st.cfg.persona
+    }
+
+    /// May this turn run planner action `action`? (The owner: everything; a guarded MCP turn:
+    /// `mcp::ALLOWED_ACTIONS`; an agent's consult turn: `mcp::CONSULT_ACTIONS` plus its `allow`.)
+    fn may(&self, action: &str) -> bool {
+        if self.consult {
+            return mcp::CONSULT_ACTIONS.contains(&action)
+                || mcp::allow_kind_of(action)
+                    .is_some_and(|k| self.mcp.as_ref().is_some_and(|m| m.allows(k)));
+        }
+        !self.guarded || mcp::ALLOWED_ACTIONS.contains(&action)
+    }
+
+    /// May this turn run grocery intent `intent`?
+    fn may_grocery(&self, intent: &str) -> bool {
+        if self.consult {
+            return mcp::CONSULT_GROCERY_INTENTS.contains(&intent)
+                || (self.mcp.as_ref().is_some_and(|m| m.allows("shopping"))
+                    && mcp::ALLOWED_GROCERY_INTENTS.contains(&intent));
+        }
+        !self.guarded || mcp::ALLOWED_GROCERY_INTENTS.contains(&intent)
     }
 
     /// The planner's platform (`secretary`, or the channel's).
@@ -729,6 +781,7 @@ async fn run_turn_scoped(
         .map(|m| Meta {
             via: Some("mcp".into()),
             caller: Some(m.caller.clone()),
+            conversation: m.conversation.clone(),
             ..Meta::default()
         })
         .unwrap_or_default()
@@ -766,8 +819,14 @@ async fn run_turn_scoped(
     } else {
         base_system.to_owned()
     };
+    // Agents (every caller but the owner's own assistant apps) consult; they never act as the owner.
+    let consult = mcp_turn
+        .as_ref()
+        .is_some_and(|m| !mcp::is_owner_client(&m.caller, &st.cfg.mcp_owner_clients));
     let note = |m: &McpTurn| {
-        if st.cfg.mcp_trusted {
+        if consult {
+            mcp::note_consult(m)
+        } else if st.cfg.mcp_trusted {
             mcp::note_trusted(m)
         } else {
             mcp::note(m)
@@ -801,8 +860,8 @@ async fn run_turn_scoped(
         ),
         None => timeline.record_user(&message, Vec::new()),
     };
-    let guarded =
-        (mcp_turn.is_some() && !st.cfg.mcp_trusted) || origin.as_ref().is_some_and(|o| !o.owner);
+    let guarded = (mcp_turn.is_some() && (!st.cfg.mcp_trusted || consult))
+        || origin.as_ref().is_some_and(|o| !o.owner);
     let t = Turn {
         st: &st,
         message,
@@ -811,6 +870,7 @@ async fn run_turn_scoped(
         mcp: mcp_turn,
         surface,
         guarded,
+        consult,
         user_label,
         extra_system,
         share,
@@ -937,6 +997,9 @@ async fn run_turn_scoped(
         "lucinaItemId": lucina_item.map(|i| i.id),
     });
     add_rich(&mut out, rich_msg.as_ref());
+    if t.consult {
+        out["consult"] = json!(true);
+    }
     if crate::selftest::is_session(&session_of(&out)) {
         out["conversation"] = json!(crate::selftest::CONVERSATION);
     }
@@ -1097,8 +1160,9 @@ fn remember_turn(st: &AppState, t: &Turn<'_>, action: &str, reply: &str, action_
     }
     let label = match &t.mcp {
         Some(m) => format!(
-            "[{PLATFORM_LABEL}, via Lucina MCP from {}] {}",
-            m.caller, t.message
+            "[{PLATFORM_LABEL}, via Lucina MCP from {}; written by that agent, not by Giuseppe] {}",
+            m.label(),
+            t.message
         ),
         None => format!("[{PLATFORM_LABEL}] {}", t.message),
     };
@@ -1395,6 +1459,14 @@ async fn json_turn(
     let persona = t.persona().to_owned();
     let memory = prepared.memory_context.as_str();
 
+    // The owner's answer to a decision Lucina asked him about (crate::decide): his own turns only.
+    if !t.guarded && t.mcp.is_none() {
+        if let Some(f) = crate::decide::owner_answer(st, &t.message).await {
+            return Finish::reply(f.reply, "decision")
+                .with(f.action_result, Some(Meta::kind("decision")));
+        }
+    }
+
     // A YouTube link and "transcribe / report / summarise" (crate::video): a background job.
     if let Some(f) = youtube_turn::try_turn(t, cmid) {
         return f;
@@ -1421,15 +1493,17 @@ async fn json_turn(
     // Her own computer ("explore Outlook in your sandbox", "check my inbox"): before every other shortcut,
     // so the notes, tasks, calendar, memo and media routes, and a playing game, cannot take the message.
     if let Some(plan) = lucina_intent::computer_route::plan(&t.message) {
-        if t.guarded && !mcp::ALLOWED_ACTIONS.contains(&"computer_task") {
-            return Finish::refusal(&persona, "computer_task");
+        if !t.may("computer_task") {
+            return not_run(t, memory, "computer_task").await;
         }
         return computer_task_finish(t, &plan, cmid).await;
     }
 
-    // Meshy 3D (LUCINA_MESHY=true): a pending plan's yes/no, or a 3D request.
-    if let Some(f) = meshy_turn::try_turn(t, memory).await {
-        return f;
+    // Meshy 3D (LUCINA_MESHY=true): a pending plan's yes/no, or a 3D request. Not for agents.
+    if !t.consult {
+        if let Some(f) = meshy_turn::try_turn(t, memory).await {
+            return f;
+        }
     }
 
     // Lucina's own Google Drive (LUCINA_DRIVE=true with a grant), read-only.
@@ -1454,6 +1528,9 @@ async fn json_turn(
     // explicit asks ("chiedi a Grok …"). From Lucina MCP only when trusted.
     if let Some(d) = st.delegator.clone() {
         if let Some(f) = delegation_hook(t, &d, memory).await {
+            if t.consult {
+                return not_run(t, memory, "delegation").await;
+            }
             return f;
         }
     }
@@ -1503,14 +1580,16 @@ async fn json_turn(
     if st.cfg.notes_enabled {
         let pending = !st.bridge_state.pending_part(&t.session).is_empty();
         if let Some(intent) = nt::parse_notes_intent(&t.message, pending) {
-            if t.guarded && !mcp::ALLOWED_ACTIONS.contains(&"notes") {
-                return Finish::refusal(&persona, "notes");
+            let read = matches!(intent, nt::NotesIntent::Read { .. } | nt::NotesIntent::List { .. });
+            if !(t.may("notes") || (t.consult && read)) {
+                return not_run(t, memory, "notes").await;
             }
-            let source = t
-                .mcp
-                .as_ref()
-                .map(|m| mcp::note_source(&m.caller))
-                .unwrap_or_else(|| "owner".into());
+            // Who wrote it: the MCP caller, a channel sender who is not the owner, or the owner.
+            let source = match (&t.mcp, &t.origin) {
+                (Some(m), _) => mcp::note_source(&m.caller),
+                (None, Some(o)) if !o.owner => mcp::note_source(o.planner_platform),
+                _ => "owner".into(),
+            };
             let o = crate::bridges::notes_turn(
                 &st.secretary,
                 &st.bridge_state,
@@ -1562,7 +1641,8 @@ async fn json_turn(
     // overdue. MCP turns may read, add and complete; deleting is refused.
     // Before the calendar: "cosa devo fare oggi?" answers with the tasks and
     // today's events.
-    if st.cfg.tasks_enabled {
+    // Agents read tasks with tasks_list and write with task_add (or allow=tasks).
+    if st.cfg.tasks_enabled && (!t.consult || t.may("tasks")) {
         match crate::bridges::tasks_turn(
             &st.secretary,
             &t.message,
@@ -1596,7 +1676,7 @@ async fn json_turn(
         {
             Some(Err(blocked)) => {
                 tracing::warn!(session_id = %t.session, %blocked, "secretary mcp turn refused");
-                return Finish::refusal(&persona, blocked);
+                return not_run(t, memory, blocked).await;
             }
             Some(Ok(o)) => return calendar_finish(o),
             None => {}
@@ -1615,12 +1695,10 @@ async fn json_turn(
 
     // The deterministic grocery path (same as a Telegram text turn).
     let grocery_intent = gi::parse_grocery_intent(&t.message).map(|g| g.intent);
-    if t.guarded {
-        if let Some(intent) = grocery_intent {
-            if !mcp::ALLOWED_GROCERY_INTENTS.contains(&intent) {
-                tracing::warn!(session_id = %t.session, blocked = intent, "secretary mcp turn refused");
-                return Finish::refusal(&persona, intent);
-            }
+    if let Some(intent) = grocery_intent {
+        if !t.may_grocery(intent) {
+            tracing::warn!(session_id = %t.session, blocked = intent, "secretary mcp turn refused");
+            return not_run(t, memory, intent).await;
         }
     }
     // Deal questions: the deals engine answers (crate::deals); the grocery
@@ -1727,9 +1805,9 @@ async fn json_turn(
         }
     }
 
-    if t.guarded && !mcp::ALLOWED_ACTIONS.contains(&action.as_str()) {
+    if !t.may(&action) {
         tracing::warn!(session_id = %t.session, blocked = %action, "secretary mcp turn refused");
-        return Finish::refusal(&persona, &action);
+        return not_run(t, memory, &action).await;
     }
 
     // Her Pokémon Red run (planner-chosen, never keyword shortcuts; MCP callers are refused above because these
@@ -2360,6 +2438,9 @@ fn spawn_job(st: AppState, job: Job, plan: Value, message: String, memory: Strin
                     j.timeline_item_id = item.map(|i| i.id);
                     j.finished_at = Some(now_iso());
                 });
+                // The asking conversation hears about the failure too (an MCP caller's next turn,
+                // the app's chat), not only the timeline.
+                recent.append(recent_key, "assistant", &text, Utc::now());
                 remember_job(
                     &st,
                     &surface,
@@ -2877,9 +2958,12 @@ async fn tools_turn(
         mcp: surface.caller().map(|caller| McpTurn {
             caller: caller.to_owned(),
             text: message.clone(),
+            allow: Vec::new(),
+            conversation: None,
         }),
         surface: surface.clone(),
         guarded: false,
+        consult: false,
         user_label: USER_LABEL.into(),
         extra_system: String::new(),
         share: false,

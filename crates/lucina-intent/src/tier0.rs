@@ -272,7 +272,7 @@ pub fn classify_tier0(text: &str, memory: &str, s: &Settings) -> Option<Classifi
         return Some(C::t0("explicit_memory_recall", 0.9, true, false, "chat"));
     }
     if looks_like_travel_info(text) {
-        if looks_like_harness_or_log_task(text) || looks_like_code_project(text) {
+        if looks_like_delegation_request(text) {
             return Some(C::t0("cursor_task", 0.92, true, true, "direct"));
         }
         return Some(C::t0("chat", 1.0, true, false, "chat"));
@@ -335,12 +335,11 @@ pub fn classify_tier0(text: &str, memory: &str, s: &Settings) -> Option<Classifi
         return Some(C::t0("graph_task", 0.92, true, true, "full_plan"));
     }
     if re!(
-        r"controlla.{0,50}(deploy|running|servizio|server|tunnel|stato)",
+        r"^\s*(?:puoi\s+|potresti\s+)?controlla\b.{0,50}(deploy|running|servizio|server|tunnel|stato)",
         "i"
     )
     .test(text)
-        || looks_like_code_project(text)
-        || looks_like_harness_or_log_task(text)
+        || looks_like_delegation_request(text)
     {
         return Some(C::t0("cursor_task", 0.9, true, true, "direct"));
     }
@@ -351,7 +350,8 @@ pub fn classify_tier0(text: &str, memory: &str, s: &Settings) -> Option<Classifi
         return Some(C::t0("chat", 1.0, true, false, "chat"));
     }
     if looks_like_actionable(text) {
-        if re!(r"(cursor|codex|commit|deploy|refactor|codebase|\brepo\b|implementa|fix|harness|\blog\b|logs|diagnos|debug)", "i").test(text) {
+        if looks_like_delegation_request(text)
+            && re!(r"(cursor|codex|commit|deploy|refactor|codebase|\brepo\b|implementa|fix|harness|\blog\b|logs|diagnos|debug)", "i").test(text) {
             return Some(C::t0("cursor_task", 0.88, true, true, "full_plan"));
         }
         if re!(r"(graph|grafico|chart|plot)", "i").test(text) {

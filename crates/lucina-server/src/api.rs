@@ -561,6 +561,32 @@ async fn route(
             let job = job.ok_or_else(|| ApiError::new(404, "job_not_found", "No such job"))?;
             Ok(ok(job.public()))
         }
+        // Go-aheads for agents (crate::decide, docs/design/decisions-api.md).
+        (Some("decisions"), None) => match method.as_str() {
+            "POST" => {
+                let body = read_json(body, MAX_BODY_BYTES).await?;
+                let d = crate::decide::create(st, &body).await?;
+                let mut v = d.public();
+                lucina_secrets::redactor().redact_json(&mut v);
+                Ok(ok(v))
+            }
+            "GET" => {
+                let mut v = crate::decide::list(
+                    st,
+                    query_param(uri, "status").as_deref(),
+                    query_param(uri, "limit").as_deref(),
+                )?;
+                lucina_secrets::redactor().redact_json(&mut v);
+                Ok(ok(v))
+            }
+            _ => Err(ApiError::method_not_allowed(&["GET", "POST"])),
+        },
+        (Some("decisions"), Some(id)) => {
+            only(&["GET"])?;
+            let mut v = crate::decide::get(st, id)?;
+            lucina_secrets::redactor().redact_json(&mut v);
+            Ok(ok(v))
+        }
         (Some("reminders"), None) => match method.as_str() {
             "GET" => list_reminders(st, uri),
             "POST" => create_reminder(st, body).await,

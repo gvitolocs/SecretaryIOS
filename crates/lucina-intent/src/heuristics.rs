@@ -424,6 +424,22 @@ pub fn reminder_list_scope(text: &str) -> &'static str {
 
 const ACTIONABLE_VERB: &str = r"(book|buy|get|fetch|search|find|check|look up|cerca|trova|compra|prenota|ordina|send|draft|reply|respond|answer|rispondi|replica|schedule|set|create|make|generate|registra|salva|aggiorna|pubblica|remind|avvisami|ricordami|dimmi|mostra|tell me|show me)";
 
+/// Explicitly asks to hand work to an agent; technical vocabulary alone is insufficient.
+pub fn looks_like_delegation_request(text: &str) -> bool {
+    if re!(r"\b(?:cursor_task|project work|coding agent task)\b", "i").test(text)
+        || re!(r"\b(?:fai fare a|delega a|delegate to)\s+\S+", "i").test(text)
+    {
+        return true;
+    }
+    // Keep the request and named runner in the same short clause. Connectors also
+    // cover forms such as "run the tests with/on Codex" and "give the fix to Cursor".
+    re!(
+        r"\b(?:fai fare|chiedi a|usa|use|ask|have|get|let|lancia|avvia|start|launch|delega|delegate|manda a|con|tramite|via|with|run\b[^.!?;\n]{0,60}\b(?:with|on)|give\b[^.!?;\n]{0,60}\bto)\s+[^.!?;\n]{0,60}\b(?:cursor|codex|harness|deepseek harness|dsh|claude code|coding agent|qwen|zcode|opencode)\b",
+        "i"
+    )
+    .test(text)
+}
+
 pub fn looks_like_harness_or_log_task(text: &str) -> bool {
     let text = text.to_lowercase();
     if text.is_empty() {
@@ -578,8 +594,17 @@ pub fn looks_like_reminder_request(text: &str) -> bool {
     if re!(r"(remind me|set a reminder|schedule a reminder|ricordami|avvisami|mi ricordi (alle|di|che devo)|mandami un promemoria|promemoria (per|domani|alle))", "i").test(text) {
         return true;
     }
-    if re!(r"(?:alle|at)\s+\d{1,2}[:.]\d{2}", "i").test(text) {
-        return true;
+    if re!(r"\b(?:alle|at)\s+\d{1,2}[:.]\d{2}\b", "i").test(text) {
+        // Bare times are useful for notes to self, but timestamps in reports
+        // must not schedule reminders (including short reports).
+        let trimmed = text.trim();
+        let starts_with_time = re!(r"^(?:alle|at)\s+\d{1,2}[:.]\d{2}\b", "i").test(trimmed);
+        let report = re!(
+            r"(?<![\p{L}\p{N}_])(?:applied|fixed|did|done|was|were|happened|finished|started|restarted|deployed|added|returned|since|ho|abbiamo|hai|è stato|sono stat[oi]|fatto|risolto|sistemato|applicato|finito)(?![\p{L}\p{N}_])",
+            "i"
+        )
+        .test(text);
+        return starts_with_time || (utf16_len(text) <= 80 && !report);
     }
     re!(
         r"^(?:\d{4}-\d{2}-\d{2}|\d{1,2}\s+[A-Za-z]+\s+\d{4})\s*[—–-]\s*.+",

@@ -263,7 +263,8 @@ async fn mcp_writes_are_tagged_with_the_caller() {
     Mock::given(method("POST"))
         .and(path("/v3/workspaces/hermes-peer1/sessions/secretary_mcp-grok/messages"))
         .and(body_json(json!({"messages": [
-            {"peer_id": "giuseppe", "content": "q", "metadata": {"role": "user", "via": "mcp", "caller": "grok"}},
+            // The delegate's words are its own peer's, never the owner's (his scope, not his voice).
+            {"peer_id": "mcp-grok", "content": "q", "metadata": {"role": "user", "via": "mcp", "caller": "grok", "speaker": "agent"}},
             {"peer_id": "hermes", "content": "a", "metadata": {"role": "assistant"}}
         ]})))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))

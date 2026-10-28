@@ -1,0 +1,1359 @@
+//! Decisions: an agent asks Lucina for a go-ahead (`docs/design/decisions-api.md`).
+//!
+//! Owner rule (2026-10-28): agents do not ask Giuseppe "may I?"; they ask Lucina with a structured
+//! request (question, options, recommendation, impact, reversible), never free text through the chat's
+//! intent routing. She decides from his own words (timeline, Honcho, never an agent's text), her
+//! earlier decisions on the same subject and two independent checks (DeepSeek and Jev), or asks him on
+//! his phone with one button per option and waits for his answer.
+//!
+//! - [`create`]: validate, gather evidence, decide or ask, record, report on the timeline.
+//! - [`owner_answer`]: his reply ("Decision dc-…: 2") in his own chat resolves a pending decision.
+//! - Records: `<LUCINA_DATA_DIR>/decisions/decisions.jsonl`, the full object after every change
+//!   (the last line of an id wins).
+
+use std::collections::HashMap;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
+
+use chrono::{DateTime, Utc};
+use lucina_jev::Question;
+use lucina_llm::{ChatRequest, Message};
+use lucina_store::timeline::{Meta, NewItem, TimelineItem};
+use lucina_store::timeutil::{iso_ms, now_iso};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+
+use crate::api::ApiError;
+use crate::AppState;
+
+pub const MAX_QUESTION: usize = 2000;
+pub const MAX_OPTION: usize = 200;
+pub const MAX_OPTIONS: usize = 6;
+pub const MAX_CONTEXT: usize = 8000;
+/// A pending decision the owner has not answered within this becomes `expired`.
+pub const PENDING_TTL: chrono::Duration = chrono::Duration::hours(24);
+/// Lucina decides herself from this confidence up (low and medium impact).
+pub const MIN_CONFIDENCE_LOW: f64 = 0.6;
+pub const MIN_CONFIDENCE_MEDIUM: f64 = 0.8;
+/// Jev's "the evidence goes against the recommendation" from this probability up is a conflict.
+pub const CONFLICT_MIN: f64 = 0.6;
+/// Evidence lines returned to the agent, and their length.
+const EVIDENCE_OUT: usize = 6;
+const EVIDENCE_CHARS: usize = 300;
+/// How far back his own messages count as evidence.
+const OWNER_MESSAGE_DAYS: i64 = 14;
+const MODEL_TIMEOUT: Duration = Duration::from_secs(25);
+const MEMORY_TIMEOUT: Duration = Duration::from_secs(6);
+
+// ---------------------------------------------------------------- the request
+
+/// A validated `POST /api/secretary/decisions` body.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Request {
+    pub question: String,
+    pub options: Vec<String>,
+    /// 0-based index into `options`.
+    pub recommendation: Option<usize>,
+    pub context: String,
+    pub reversible: bool,
+    pub impact: Impact,
+    pub urgency: String,
+    pub topic: Option<String>,
+    pub asking_session: Option<String>,
+    pub asking_client: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Impact {
+    Low,
+    Medium,
+    High,
+}
+
+impl Impact {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Impact::Low => "low",
+            Impact::Medium => "medium",
+            Impact::High => "high",
+        }
+    }
+}
+
+fn text_field(v: &Value, key: &str, max: usize, required: bool) -> Result<Option<String>, String> {
+    match &v[key] {
+        Value::Null if !required => Ok(None),
+        Value::String(s) => {
+            let t = s.trim();
+            if t.is_empty() {
+                return if required {
+                    Err(format!("{key} must not be empty"))
+                } else {
+                    Ok(None)
+                };
+            }
+            if t.chars().count() > max {
+                return Err(format!("{key} is longer than {max} characters"));
+            }
+            if t.chars().any(|c| c.is_control() && c != '\n' && c != '\t') {
+                return Err(format!("{key} contains control characters"));
+            }
+            Ok(Some(t.to_owned()))
+        }
+        Value::Null => Err(format!("{key} is required")),
+        _ => Err(format!("{key} must be a string")),
+    }
+}
+
+/// The body as the contract describes it; the message names the bad field.
+pub fn parse_request(v: &Value) -> Result<Request, String> {
+    if !v.is_object() {
+        return Err("the body must be a JSON object".into());
+    }
+    let question = text_field(v, "question", MAX_QUESTION, true)?.unwrap_or_default();
+    let raw = v["options"]
+        .as_array()
+        .ok_or("options must be an array of 2-6 strings")?;
+    if raw.len() < 2 || raw.len() > MAX_OPTIONS {
+        return Err(format!("options must have 2-{MAX_OPTIONS} entries"));
+    }
+    let mut options = Vec::with_capacity(raw.len());
+    for (i, o) in raw.iter().enumerate() {
+        let wrapped = json!({ "o": o });
+        let s = text_field(&wrapped, "o", MAX_OPTION, true)
+            .map_err(|e| e.replacen('o', &format!("options[{i}]"), 1))?
+            .unwrap_or_default();
+        if options.iter().any(|x: &String| x.eq_ignore_ascii_case(&s)) {
+            return Err(format!("options[{i}] repeats an earlier option"));
+        }
+        options.push(s);
+    }
+    let recommendation = match text_field(v, "recommendation", MAX_OPTION, false)? {
+        None => None,
+        Some(r) => Some(option_index(&options, &r).ok_or(
+            "recommendation must be one of the options (its text or its number)",
+        )?),
+    };
+    let context = text_field(v, "context", MAX_CONTEXT, false)?.unwrap_or_default();
+    let reversible = v["reversible"]
+        .as_bool()
+        .ok_or("reversible is required (true or false)")?;
+    let impact = match v["impact"].as_str() {
+        Some("low") => Impact::Low,
+        Some("medium") => Impact::Medium,
+        Some("high") => Impact::High,
+        _ => return Err("impact must be low, medium or high".into()),
+    };
+    let urgency = match v["urgency"].as_str() {
+        None => "normal",
+        Some(u @ ("low" | "normal" | "high")) => u,
+        Some(_) => return Err("urgency must be low, normal or high".into()),
+    }
+    .to_owned();
+    let topic = text_field(v, "topic", 64, false)?;
+    let asking_session = text_field(v, "asking_session", 120, false)?;
+    let asking_client = text_field(v, "asking_client", 32, false)?
+        .map(|c| lucina_intent::mcp::note_source(&c))
+        .unwrap_or_else(|| "unknown".into());
+    Ok(Request {
+        question,
+        options,
+        recommendation,
+        context,
+        reversible,
+        impact,
+        urgency,
+        topic,
+        asking_session,
+        asking_client,
+    })
+}
+
+/// `"Deploy now"` or `"2"` → the option's 0-based index.
+pub fn option_index(options: &[String], answer: &str) -> Option<usize> {
+    let a = answer.trim().trim_end_matches(['.', ')']).trim();
+    if let Ok(n) = a.parse::<usize>() {
+        return (1..=options.len()).contains(&n).then(|| n - 1);
+    }
+    options.iter().position(|o| o.eq_ignore_ascii_case(a))
+}
+
+/// Questions only the owner may answer: money, credentials, terms, messages in his name.
+pub fn owner_only(r: &Request) -> bool {
+    let text = format!("{}\n{}\n{}", r.question, r.options.join("\n"), r.context);
+    lucina_intent::re!(
+        r"\b(buy|purchase|checkout|pay for|make a payment|place (an|the) order|spend (\$|€|eur|usd|dkk)?\s?\d|credit card|carta di credito|bank transfer|bonifico|enter (his|the owner'?s|giuseppe'?s) (password|credentials|card|pin)|accept (the )?(terms|tos|agreement|license|licence)|sign (the )?(contract|agreement)|send (an? )?(e-?mail|message|dm|sms|text) (to|on (his|giuseppe'?s) behalf)|on (his|giuseppe'?s|the owner'?s) behalf|compra(re)?|acquista(re)?|paga(re)? )",
+        "i"
+    )
+    .test(&text)
+}
+
+// ---------------------------------------------------------------- the record
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Evidence {
+    pub kind: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Decision {
+    pub decision_id: String,
+    pub record_id: String,
+    pub status: String,
+    pub decision: Option<String>,
+    pub chosen_option: Option<String>,
+    pub chosen_index: Option<usize>,
+    pub reason: String,
+    pub decided_by: Option<String>,
+    pub confidence: Option<f64>,
+    pub asked_owner: bool,
+    pub owner_only: bool,
+    pub question: String,
+    pub options: Vec<String>,
+    pub recommendation: Option<String>,
+    #[serde(default)]
+    pub context: String,
+    pub impact: String,
+    pub reversible: bool,
+    pub urgency: String,
+    pub topic: Option<String>,
+    pub asking_client: String,
+    pub asking_session: Option<String>,
+    pub created_at: String,
+    pub decided_at: Option<String>,
+    pub expires_at: Option<String>,
+    #[serde(default)]
+    pub evidence: Vec<Evidence>,
+    /// The owner's timeline item with the buttons (pending decisions).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_item_id: Option<String>,
+}
+
+impl Decision {
+    /// The API answer (no context, no internal ids).
+    pub fn public(&self) -> Value {
+        let mut v = serde_json::to_value(self).unwrap_or_default();
+        if let Some(o) = v.as_object_mut() {
+            o.remove("context");
+            o.remove("owner_item_id");
+            if let Some(Value::Array(e)) = o.get_mut("evidence") {
+                e.truncate(EVIDENCE_OUT);
+            }
+        }
+        v
+    }
+
+    fn who(&self) -> String {
+        match &self.asking_session {
+            Some(s) => format!("{} ({s})", self.asking_client),
+            None => self.asking_client.clone(),
+        }
+    }
+
+    fn choose(&mut self, index: usize, by: &str, confidence: f64, reason: String) {
+        self.status = "decided".into();
+        self.decision = Some(
+            if self.recommendation.as_deref() == Some(self.options[index].as_str()) {
+                "go"
+            } else {
+                "change"
+            }
+            .into(),
+        );
+        self.chosen_index = Some(index + 1);
+        self.chosen_option = Some(self.options[index].clone());
+        self.decided_by = Some(by.into());
+        self.confidence = Some(confidence);
+        self.reason = reason;
+        self.decided_at = Some(now_iso());
+        self.expires_at = None;
+    }
+}
+
+/// The append-only decision log of one data directory.
+pub struct Store {
+    path: PathBuf,
+    items: Mutex<Vec<Decision>>,
+}
+
+impl Store {
+    pub fn open(dir: &Path) -> Self {
+        let path = dir.join("decisions").join("decisions.jsonl");
+        let mut items: Vec<Decision> = Vec::new();
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            for line in text.lines().filter(|l| !l.trim().is_empty()) {
+                match serde_json::from_str::<Decision>(line) {
+                    Ok(d) => match items.iter_mut().find(|x| x.decision_id == d.decision_id) {
+                        Some(x) => *x = d,
+                        None => items.push(d),
+                    },
+                    Err(e) => tracing::warn!(error = %e, "decisions log: unreadable line skipped"),
+                }
+            }
+        }
+        Self {
+            path,
+            items: Mutex::new(items),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Decision>> {
+        self.items.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Append the decision as it is now and keep it in memory.
+    pub fn put(&self, d: &Decision) -> std::io::Result<()> {
+        let mut items = self.lock();
+        if let Some(parent) = self.path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut line = serde_json::to_string(d).map_err(std::io::Error::other)?;
+        line.push('\n');
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)?;
+        f.write_all(line.as_bytes())?;
+        f.sync_data()?;
+        match items.iter_mut().find(|x| x.decision_id == d.decision_id) {
+            Some(x) => *x = d.clone(),
+            None => items.push(d.clone()),
+        }
+        Ok(())
+    }
+
+    /// The decision, with an unanswered one past its time marked `expired` (and recorded).
+    pub fn get(&self, id: &str, now: DateTime<Utc>) -> Option<Decision> {
+        let mut d = self.lock().iter().find(|d| d.decision_id == id).cloned()?;
+        if expire(&mut d, now) {
+            if let Err(e) = self.put(&d) {
+                tracing::warn!(error = %e, "decisions log write failed");
+            }
+        }
+        Some(d)
+    }
+
+    /// Newest first.
+    pub fn list(&self, status: Option<&str>, limit: usize, now: DateTime<Utc>) -> Vec<Decision> {
+        let ids: Vec<String> = self
+            .lock()
+            .iter()
+            .rev()
+            .map(|d| d.decision_id.clone())
+            .collect();
+        ids.iter()
+            .filter_map(|id| self.get(id, now))
+            .filter(|d| status.is_none_or(|s| d.status == s))
+            .take(limit)
+            .collect()
+    }
+
+    /// Earlier settled decisions on the same subject (same topic, or shared words), newest first.
+    pub fn similar(&self, r: &Request, limit: usize) -> Vec<Decision> {
+        let words = keywords(&format!("{} {}", r.question, r.options.join(" ")));
+        let mut scored: Vec<(usize, Decision)> = self
+            .lock()
+            .iter()
+            .rev()
+            .filter(|d| d.status == "decided")
+            .filter_map(|d| {
+                let same_topic = r.topic.is_some() && d.topic == r.topic;
+                let shared = overlap(&words, &format!("{} {}", d.question, d.options.join(" ")));
+                (same_topic || shared >= 3).then(|| (shared + if same_topic { 10 } else { 0 }, d.clone()))
+            })
+            .collect();
+        scored.sort_by_key(|s| std::cmp::Reverse(s.0));
+        scored.into_iter().take(limit).map(|(_, d)| d).collect()
+    }
+}
+
+fn expire(d: &mut Decision, now: DateTime<Utc>) -> bool {
+    let due = d
+        .expires_at
+        .as_deref()
+        .and_then(|e| DateTime::parse_from_rfc3339(e).ok())
+        .is_some_and(|e| e.with_timezone(&Utc) <= now);
+    if d.status == "pending" && due {
+        d.status = "expired".into();
+        d.reason = format!("{} Giuseppe did not answer within 24 hours.", d.reason)
+            .trim()
+            .to_owned();
+        return true;
+    }
+    false
+}
+
+/// The store of `dir` (one per data directory, opened once).
+pub fn store(dir: &Path) -> Arc<Store> {
+    static STORES: OnceLock<Mutex<HashMap<PathBuf, Arc<Store>>>> = OnceLock::new();
+    let mut m = STORES
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    m.entry(dir.to_path_buf())
+        .or_insert_with(|| Arc::new(Store::open(dir)))
+        .clone()
+}
+
+// ---------------------------------------------------------------- evidence
+
+const STOPWORDS: &[&str] = &[
+    "this", "that", "with", "from", "have", "should", "would", "could", "there", "their", "about",
+    "which", "what", "when", "where", "will", "into", "your", "they", "them", "then", "than", "also",
+    "only", "just", "more", "some", "other", "need", "needs", "want", "please", "question", "option",
+    "options", "recommend", "recommendation", "owner", "giuseppe", "lucina", "agent", "session",
+    "della", "delle", "dello", "sono", "come", "questo", "quello", "anche", "ancora", "dopo", "prima",
+    "fare", "deve", "posso", "vuoi", "perché", "quando",
+];
+
+fn keywords(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = text
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')
+        .filter(|w| w.chars().count() >= 4 && !STOPWORDS.contains(w))
+        .map(str::to_owned)
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn overlap(words: &[String], text: &str) -> usize {
+    let lower = text.to_lowercase();
+    words.iter().filter(|w| lower.contains(w.as_str())).count()
+}
+
+fn clip(s: &str, max: usize) -> String {
+    let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= max {
+        return flat;
+    }
+    let head: String = flat.chars().take(max - 1).collect();
+    format!("{}…", head.trim_end())
+}
+
+fn day(ts: &str) -> String {
+    ts.get(..10).unwrap_or(ts).to_owned()
+}
+
+/// His own recent messages that talk about the same thing (never an MCP caller's).
+fn owner_messages(st: &AppState, words: &[String], now: DateTime<Utc>) -> Vec<Evidence> {
+    let need = if words.len() >= 4 { 2 } else { 1 };
+    let since = now - chrono::Duration::days(OWNER_MESSAGE_DAYS);
+    let mut found: Vec<(usize, TimelineItem)> = Vec::new();
+    let mut before: Option<String> = None;
+    for _ in 0..10 {
+        let Ok((items, next)) = st.timeline.list(before.as_deref(), 200) else {
+            break;
+        };
+        let mut older = false;
+        for raw in &items {
+            let Ok(item) = serde_json::from_str::<TimelineItem>(&raw.raw) else {
+                continue;
+            };
+            if DateTime::parse_from_rfc3339(&item.ts).is_ok_and(|t| t.with_timezone(&Utc) < since) {
+                older = true;
+                continue;
+            }
+            let agent = item.meta.as_ref().is_some_and(|m| m.via.as_deref() == Some("mcp"));
+            if item.role != "user" || agent || item.text.trim().is_empty() {
+                continue;
+            }
+            let score = overlap(words, &item.text);
+            if score >= need {
+                found.push((score, item));
+            }
+        }
+        match next {
+            Some(n) if !older => before = Some(n),
+            _ => break,
+        }
+    }
+    found.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.ts.cmp(&a.1.ts)));
+    found
+        .into_iter()
+        .take(4)
+        .map(|(_, i)| Evidence {
+            kind: "owner_message".into(),
+            text: clip(&format!("[{} {}] Giuseppe: {}", day(&i.ts), i.channel, i.text), EVIDENCE_CHARS),
+        })
+        .collect()
+}
+
+/// His long-term memory (Honcho), his own messages only.
+async fn owner_memory(st: &AppState, r: &Request, query: &str) -> Vec<Evidence> {
+    let mcp = lucina_intent::mcp::McpTurn {
+        caller: r.asking_client.clone(),
+        text: String::new(),
+        allow: Vec::new(),
+        conversation: None,
+    };
+    let surface = crate::surface::chat_surface(
+        &st.cfg,
+        Some(crate::surface::BearerVerified::checked()),
+        "web",
+        Some(&mcp),
+    );
+    let owner = st.cfg.owner_peer_id.clone();
+    match tokio::time::timeout(MEMORY_TIMEOUT, st.memory.search(&surface, query, 8)).await {
+        Ok(Ok(msgs)) => msgs
+            .into_iter()
+            .filter(|m| m.peer_id.as_deref().is_none_or(|p| p == owner))
+            .filter(|m| {
+                !m.metadata.as_ref().is_some_and(|md| {
+                    md["via"] == "mcp" || md["speaker"] == "agent"
+                }) && !m.content.contains("via Lucina MCP")
+            })
+            .take(4)
+            .map(|m| Evidence {
+                kind: "owner_memory".into(),
+                text: clip(
+                    &format!(
+                        "[{}] Giuseppe: {}",
+                        m.created_at.as_deref().map(day).unwrap_or_default(),
+                        m.content
+                    ),
+                    EVIDENCE_CHARS,
+                ),
+            })
+            .collect(),
+        Ok(Err(e)) => {
+            tracing::debug!(error = %e, "decision: memory search unavailable");
+            Vec::new()
+        }
+        Err(_) => {
+            tracing::warn!("decision: memory search timed out");
+            Vec::new()
+        }
+    }
+}
+
+fn earlier(d: &Decision) -> Evidence {
+    let who = d.decided_by.as_deref().unwrap_or("?");
+    let who = if who == "owner" { "Giuseppe" } else { "Lucina" };
+    Evidence {
+        kind: if who == "Giuseppe" {
+            "owner_decision"
+        } else {
+            "earlier_decision"
+        }
+        .into(),
+        text: clip(
+            &format!(
+                "[{}] {who} decided \"{}\" → \"{}\" ({})",
+                day(d.decided_at.as_deref().unwrap_or(&d.created_at)),
+                d.question,
+                d.chosen_option.as_deref().unwrap_or("own words"),
+                d.reason
+            ),
+            EVIDENCE_CHARS,
+        ),
+    }
+}
+
+// ---------------------------------------------------------------- deciding
+
+/// DeepSeek's reading.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelView {
+    /// 0-based option, `None` = Giuseppe must decide.
+    pub choice: Option<usize>,
+    pub confidence: f64,
+    pub conflict: bool,
+    pub reason: String,
+}
+
+/// Jev's reading.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JevView {
+    pub choice: Option<usize>,
+    pub probability: f64,
+    pub conflict: f64,
+}
+
+/// What Lucina does with a request.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Verdict {
+    Decide {
+        index: usize,
+        confidence: f64,
+        reason: String,
+    },
+    Ask {
+        why: Vec<String>,
+        lean: Option<usize>,
+        confidence: Option<f64>,
+    },
+}
+
+/// The policy, without I/O: hard rules first, then the two readings.
+pub fn settle(r: &Request, owner_only: bool, model: Option<&ModelView>, jev: Option<&JevView>) -> Verdict {
+    let mut why: Vec<String> = Vec::new();
+    if owner_only {
+        why.push("only Giuseppe can decide this (money, credentials, terms or messages in his name)".into());
+    }
+    if r.impact == Impact::High {
+        why.push("the impact is high".into());
+    }
+    if !r.reversible {
+        why.push("it can't be undone".into());
+    }
+    let (choice, confidence) = match (model, jev) {
+        (Some(m), Some(j)) => match (m.choice, j.choice) {
+            (Some(a), Some(b)) if a == b => (Some(a), (m.confidence + j.probability) / 2.0),
+            (Some(_), Some(_)) => {
+                why.push("my two checks disagree on the option".into());
+                (None, 0.0)
+            }
+            _ => {
+                why.push("the evidence doesn't settle it".into());
+                (m.choice.or(j.choice), 0.0)
+            }
+        },
+        (Some(m), None) => (m.choice, m.confidence * 0.9),
+        (None, Some(j)) => (j.choice, j.probability * 0.9),
+        (None, None) => {
+            why.push("I couldn't weigh it right now".into());
+            (None, 0.0)
+        }
+    };
+    if choice.is_none() && !why.iter().any(|w| w.contains("checks disagree") || w.contains("settle") || w.contains("weigh")) {
+        why.push("the evidence doesn't settle it".into());
+    }
+    if model.is_some_and(|m| m.conflict) || jev.is_some_and(|j| j.conflict >= CONFLICT_MIN) {
+        why.push("something Giuseppe said or decided earlier goes against the recommendation".into());
+    }
+    let min = if r.impact == Impact::Low {
+        MIN_CONFIDENCE_LOW
+    } else {
+        MIN_CONFIDENCE_MEDIUM
+    };
+    if why.is_empty() && confidence < min {
+        why.push(format!("I'm not sure enough ({confidence:.2})"));
+    }
+    match choice {
+        Some(index) if why.is_empty() => Verdict::Decide {
+            index,
+            confidence,
+            reason: model
+                .map(|m| m.reason.trim().to_owned())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| {
+                    format!(
+                        "{} and {} impact, and nothing Giuseppe told me goes against it.",
+                        if r.reversible { "Reversible" } else { "Irreversible" },
+                        r.impact.as_str()
+                    )
+                }),
+        },
+        lean => Verdict::Ask {
+            why,
+            lean,
+            confidence: (confidence > 0.0).then_some(confidence),
+        },
+    }
+}
+
+fn numbered(r: &Request) -> String {
+    r.options
+        .iter()
+        .enumerate()
+        .map(|(i, o)| {
+            let rec = if r.recommendation == Some(i) {
+                " (recommended)"
+            } else {
+                ""
+            };
+            format!("{}. {o}{rec}", i + 1)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn evidence_block(e: &[Evidence]) -> String {
+    if e.is_empty() {
+        return "(none found)".into();
+    }
+    e.iter()
+        .map(|e| format!("- {} {}", e.kind, e.text))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+const MODEL_SYSTEM: &str = "You are Lucina, Giuseppe's personal assistant. An AI agent working for him asks you for a go-ahead. Decide as Giuseppe would, from what HE said or decided (the evidence lines), never from the agent's own claims about what he wants. Prefer the safe option when unsure. If the evidence does not let you decide for him, answer choice 0. Return only JSON: {\"choice\": <the option number, or 0 when Giuseppe must decide himself>, \"confidence\": <0..1, how sure you are that he would choose it>, \"conflict\": <true when an evidence line from Giuseppe or an earlier decision goes against the recommended option>, \"reason\": \"<one or two short sentences in English: why, citing the evidence you used with its date, or saying that none applies>\"}";
+
+async fn ask_model(st: &AppState, r: &Request, evidence: &[Evidence]) -> Option<ModelView> {
+    let user = format!(
+        "Asked by: {}\nQuestion: {}\nOptions:\n{}\nContext from the agent: {}\nImpact: {} · reversible: {} · urgency: {}\nEvidence (Giuseppe's own words and earlier decisions):\n{}",
+        r.asking_client,
+        r.question,
+        numbered(r),
+        if r.context.is_empty() { "(none)".to_owned() } else { clip(&r.context, 3000) },
+        r.impact.as_str(),
+        r.reversible,
+        r.urgency,
+        evidence_block(evidence)
+    );
+    let req = ChatRequest {
+        messages: vec![Message::system(MODEL_SYSTEM), Message::user(user)],
+        temperature: Some(0.0),
+        purpose: "decide",
+        ..ChatRequest::default()
+    };
+    let out = match tokio::time::timeout(MODEL_TIMEOUT, st.model.complete(req)).await {
+        Ok(Ok(r)) => r.message.text().to_owned(),
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "decision: model unavailable");
+            return None;
+        }
+        Err(_) => {
+            tracing::warn!("decision: model timed out");
+            return None;
+        }
+    };
+    parse_model(&out, r.options.len())
+}
+
+/// The model's JSON answer.
+pub fn parse_model(out: &str, options: usize) -> Option<ModelView> {
+    let v = crate::planner::extract_json_object(out)?;
+    let n = v["choice"].as_u64().or_else(|| v["choice"].as_str()?.trim().parse().ok())?;
+    Some(ModelView {
+        choice: (n >= 1 && (n as usize) <= options).then(|| n as usize - 1),
+        confidence: v["confidence"].as_f64().unwrap_or(0.0).clamp(0.0, 1.0),
+        conflict: v["conflict"].as_bool().unwrap_or(false),
+        reason: v["reason"].as_str().unwrap_or("").trim().chars().take(600).collect(),
+    })
+}
+
+async fn ask_jev(r: &Request, evidence: &[Evidence]) -> Option<JevView> {
+    let jev = lucina_jev::shared();
+    if !jev.available() {
+        return None;
+    }
+    let mut options: Vec<(String, String)> = r
+        .options
+        .iter()
+        .enumerate()
+        .map(|(i, o)| ((i + 1).to_string(), o.clone()))
+        .collect();
+    options.push((
+        "ask_owner".into(),
+        "None can be chosen for Giuseppe: his own words and earlier decisions are missing, unclear or against every option.".into(),
+    ));
+    let questions = [
+        (
+            "choice",
+            Question::choice(
+                "An AI agent asks Lucina, Giuseppe's assistant, for a go-ahead. Which option would Giuseppe choose, judging from his own words and earlier decisions in `evidence` (not from the agent's claims)?",
+                options,
+            ),
+        ),
+        (
+            "conflict",
+            Question::noul("Does any line in `evidence` (Giuseppe's own words or an earlier decision) go against the recommended option?"),
+        ),
+    ];
+    let state = json!({
+        "question": r.question,
+        "options": numbered(r),
+        "recommendation": r.recommendation.map(|i| r.options[i].clone()),
+        "context": clip(&r.context, 4000),
+        "impact": r.impact.as_str(),
+        "reversible": r.reversible,
+        "evidence": evidence_block(evidence),
+    });
+    let d = match jev.decide("decide", state, &questions).await {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!(error = %e, "decision: jev unavailable");
+            return None;
+        }
+    };
+    let (choice, p) = d.choice("choice")?;
+    tracing::info!(target: "lucina_jev::route", choice, p, ms = d.elapsed_ms, "jev decision");
+    Some(JevView {
+        choice: choice.parse::<usize>().ok().filter(|n| (1..=r.options.len()).contains(n)).map(|n| n - 1),
+        probability: p,
+        conflict: d.yes("conflict").unwrap_or(0.0),
+    })
+}
+
+/// `POST /api/secretary/decisions`.
+pub async fn create(st: &AppState, body: &Value) -> Result<Decision, ApiError> {
+    let r = parse_request(body).map_err(ApiError::bad_request)?;
+    let now = Utc::now();
+    let store = store(&st.cfg.data_dir);
+    let only = owner_only(&r);
+    // Evidence: earlier decisions, his own recent messages, his long-term memory.
+    let words = keywords(&format!(
+        "{} {} {} {}",
+        r.question,
+        r.options.join(" "),
+        r.topic.as_deref().unwrap_or(""),
+        clip(&r.context, 500)
+    ));
+    let mut evidence: Vec<Evidence> = store.similar(&r, 3).iter().map(earlier).collect();
+    evidence.extend(owner_messages(st, &words, now));
+    let query = clip(&format!("{} {}", r.question, r.options.join(" / ")), 400);
+    evidence.extend(owner_memory(st, &r, &query).await);
+    let (model, jev) = if only {
+        (None, None)
+    } else {
+        tokio::join!(ask_model(st, &r, &evidence), ask_jev(&r, &evidence))
+    };
+    let verdict = settle(&r, only, model.as_ref(), jev.as_ref());
+    tracing::info!(client = %r.asking_client, impact = r.impact.as_str(), reversible = r.reversible,
+        owner_only = only, model = ?model.as_ref().map(|m| (m.choice, m.confidence, m.conflict)),
+        jev = ?jev.as_ref().map(|j| (j.choice, j.probability, j.conflict)), verdict = ?verdict, "decision");
+    let id = format!("dc-{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
+    let mut d = Decision {
+        decision_id: id.clone(),
+        record_id: id,
+        status: "pending".into(),
+        decision: None,
+        chosen_option: None,
+        chosen_index: None,
+        reason: String::new(),
+        decided_by: None,
+        confidence: None,
+        asked_owner: false,
+        owner_only: only,
+        question: r.question.clone(),
+        options: r.options.clone(),
+        recommendation: r.recommendation.map(|i| r.options[i].clone()),
+        context: r.context.clone(),
+        impact: r.impact.as_str().into(),
+        reversible: r.reversible,
+        urgency: r.urgency.clone(),
+        topic: r.topic.clone(),
+        asking_client: r.asking_client.clone(),
+        asking_session: r.asking_session.clone(),
+        created_at: iso_ms(now),
+        decided_at: None,
+        expires_at: None,
+        evidence,
+        owner_item_id: None,
+    };
+    match verdict {
+        Verdict::Decide {
+            index,
+            confidence,
+            reason,
+        } => d.choose(index, "lucina", (confidence * 100.0).round() / 100.0, reason),
+        Verdict::Ask {
+            why,
+            lean,
+            confidence,
+        } => {
+            d.asked_owner = true;
+            d.confidence = confidence.map(|c| (c * 100.0).round() / 100.0);
+            d.expires_at = Some(iso_ms(now + PENDING_TTL));
+            let lean = lean
+                .map(|i| format!(" I lean to \"{}\".", d.options[i]))
+                .unwrap_or_default();
+            d.reason = format!("I asked Giuseppe: {}.{lean}", why.join("; "));
+            d.owner_item_id = ask_owner(st, &d).await;
+        }
+    }
+    store
+        .put(&d)
+        .map_err(|e| ApiError::new(500, "internal_error", format!("decisions log: {e}")))?;
+    report_to_asker(st, &d, true);
+    Ok(d)
+}
+
+// ---------------------------------------------------------------- the timeline
+
+fn agent_meta(d: &Decision) -> Meta {
+    Meta {
+        via: Some("mcp".into()),
+        caller: Some(d.asking_client.clone()),
+        kind: Some("decision".into()),
+        decision_id: Some(d.decision_id.clone()),
+        ..Meta::default()
+    }
+}
+
+/// What the agent's MCP conversation shows: the request (first time) and where it stands.
+fn report_to_asker(st: &AppState, d: &Decision, with_request: bool) {
+    let request = with_request.then(|| {
+        let rec = d
+            .recommendation
+            .as_deref()
+            .map(|r| format!(" Recommended: \"{r}\"."))
+            .unwrap_or_default();
+        st.timeline.record(NewItem {
+            channel: "web".into(),
+            role: "user".into(),
+            text: clip(
+                &format!(
+                    "Decision request {}: {}\nOptions: {}.{rec} Impact {}, {}.",
+                    d.decision_id,
+                    d.question,
+                    d.options.join(" / "),
+                    d.impact,
+                    if d.reversible { "reversible" } else { "irreversible" }
+                ),
+                2000,
+            ),
+            meta: Some(agent_meta(d)),
+            ..Default::default()
+        })
+    });
+    st.timeline.record(NewItem {
+        channel: "web".into(),
+        role: "lucina".into(),
+        text: summary(d),
+        reply_to: request.flatten().map(|i| i.id),
+        meta: Some(agent_meta(d)),
+        ..Default::default()
+    });
+}
+
+/// One line for the agent's conversation.
+pub fn summary(d: &Decision) -> String {
+    let by = if d.decided_by.as_deref() == Some("owner") {
+        "Giuseppe decided"
+    } else {
+        "I decided"
+    };
+    match (d.status.as_str(), d.decision.as_deref()) {
+        ("decided", Some("owner_reply")) => format!("{}: Giuseppe answered: \"{}\"", d.decision_id, d.reason),
+        ("decided", Some(kind)) => format!(
+            "{}: {by}: {} \"{}\". {}",
+            d.decision_id,
+            if kind == "go" { "GO with" } else { "CHANGE to" },
+            d.chosen_option.as_deref().unwrap_or(""),
+            d.reason
+        ),
+        ("expired", _) => format!("{}: expired, Giuseppe did not answer.", d.decision_id),
+        _ => format!("{}: pending. {}", d.decision_id, d.reason),
+    }
+}
+
+/// Ask Giuseppe in his own chat (buttons) and push it to his phone. Returns the item id.
+async fn ask_owner(st: &AppState, d: &Decision) -> Option<String> {
+    let mut flags = vec![format!("impact {}", d.impact)];
+    if !d.reversible {
+        flags.push("can't be undone".into());
+    }
+    if d.urgency == "high" {
+        flags.push("urgent".into());
+    }
+    let context = if d.context.is_empty() {
+        String::new()
+    } else {
+        format!("\n{}", clip(&d.context, 400))
+    };
+    let options = d
+        .options
+        .iter()
+        .enumerate()
+        .map(|(i, o)| {
+            let rec = if d.recommendation.as_deref() == Some(o.as_str()) {
+                " (recommended)"
+            } else {
+                ""
+            };
+            format!("{}. {o}{rec}", i + 1)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let text = format!(
+        "{} needs a decision: {}{context}\n\n{options}\n\n{} · {}\nTap an option, or answer \"Decision {}: <your words>\".",
+        d.who(),
+        d.question,
+        flags.join(" · "),
+        d.reason,
+        d.decision_id
+    );
+    let max_buttons = if d.options.len() > 4 { 3 } else { 4 };
+    let mut actions: Vec<Value> = d
+        .options
+        .iter()
+        .take(max_buttons)
+        .enumerate()
+        .map(|(i, o)| {
+            json!({
+                "id": format!("{}-{}", d.decision_id, i + 1),
+                "label": clip(&format!("{}. {o}", i + 1), 40),
+                "kind": "reply",
+                "payload": {"text": format!("Decision {}: {}. {}", d.decision_id, i + 1, o)},
+            })
+        })
+        .collect();
+    if d.options.len() > max_buttons {
+        actions.push(json!({
+            "id": format!("{}-other", d.decision_id),
+            "label": "Other answer",
+            "kind": "reply",
+            "payload": {"text": format!("Decision {}: ", d.decision_id), "prefill": true},
+        }));
+    }
+    let rich = lucina_store::rich::RichMessage {
+        format: lucina_store::rich::FORMAT.into(),
+        bubbles: vec![text.clone()],
+        lang: Some("en".into()),
+        blocks: Vec::new(),
+        actions,
+    };
+    let meta = Meta {
+        kind: Some("decision".into()),
+        decision_id: Some(d.decision_id.clone()),
+        ..Meta::default()
+    }
+    .merge(Meta::rich(&rich));
+    let item = st.timeline.record(NewItem {
+        channel: "web".into(),
+        role: "lucina".into(),
+        text: text.clone(),
+        meta: Some(meta),
+        ..Default::default()
+    });
+    let id = item.map(|i| i.id);
+    let mut push = json!({
+        "category": "lucina_message",
+        "title": format!("Decision needed ({})", d.asking_client),
+        "body": clip(&d.question, 300),
+        "route": "/",
+        "channel": "web",
+    });
+    if let Some(id) = &id {
+        // The timeline ingest pushes the same item: one dedup key for both.
+        push["timelineId"] = json!(id);
+        push["dedupKey"] = json!(format!("tl:{id}"));
+    }
+    let r = crate::bridges::notify(&st.secretary, &push).await;
+    if !r.ok {
+        tracing::warn!(status = r.status, code = %r.code, "decision push failed (the timeline item still notifies)");
+    }
+    id
+}
+
+// ---------------------------------------------------------------- his answer
+
+/// Lucina's reply to the owner's answer.
+pub struct OwnerReply {
+    pub reply: String,
+    pub action_result: String,
+}
+
+/// `Decision dc-…: 2. Deploy now` / `decisione dc-…: aspetta domani`.
+pub fn parse_answer(text: &str) -> Option<(String, String)> {
+    let c = lucina_intent::re!(
+        r"^\s*(?:decision[ei]?|decisione|beslutning)\s+(dc-[0-9a-f]{12})\b\s*[:.\-–—→>]*\s*([\s\S]*)$",
+        "i"
+    )
+    .exec(text)?;
+    Some((
+        lucina_intent::jsre::group(&c, 1).to_lowercase(),
+        lucina_intent::jsre::group(&c, 2).trim().to_owned(),
+    ))
+}
+
+/// Which option an answer names: `2`, `2. Deploy now`, `Deploy now`.
+pub fn answer_option(options: &[String], answer: &str) -> Option<usize> {
+    let a = answer.trim();
+    let lead: String = a.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if !lead.is_empty() {
+        let rest = a[lead.len()..].trim_start_matches(['.', ')', ':']).trim();
+        let n: usize = lead.parse().ok()?;
+        if (1..=options.len()).contains(&n) && (rest.is_empty() || rest.eq_ignore_ascii_case(&options[n - 1])) {
+            return Some(n - 1);
+        }
+        return None;
+    }
+    option_index(options, a)
+}
+
+/// The owner's own turn: resolves a pending decision. `None`: not a decision answer.
+pub async fn owner_answer(st: &AppState, text: &str) -> Option<OwnerReply> {
+    let (id, answer) = parse_answer(text)?;
+    let store = store(&st.cfg.data_dir);
+    let Some(mut d) = store.get(&id, Utc::now()) else {
+        return Some(OwnerReply {
+            reply: format!("I don't have a decision {id}."),
+            action_result: format!("[decision {id}: unknown]"),
+        });
+    };
+    if d.status != "pending" {
+        return Some(OwnerReply {
+            reply: format!("{id} is already {}: {}", d.status, summary(&d)),
+            action_result: format!("[decision {id}: already {}]", d.status),
+        });
+    }
+    if answer.is_empty() {
+        return Some(OwnerReply {
+            reply: format!("Which option for {id}? Answer with its number, or in your own words."),
+            action_result: format!("[decision {id}: no answer yet]"),
+        });
+    }
+    match answer_option(&d.options, &answer) {
+        Some(i) => d.choose(i, "owner", 1.0, "Giuseppe chose it himself.".into()),
+        None => {
+            d.status = "decided".into();
+            d.decision = Some("owner_reply".into());
+            d.decided_by = Some("owner".into());
+            d.confidence = Some(1.0);
+            d.reason = clip(&answer, 1000);
+            d.decided_at = Some(now_iso());
+            d.expires_at = None;
+        }
+    }
+    if let Err(e) = store.put(&d) {
+        tracing::error!(error = %e, "decisions log write failed");
+        return Some(OwnerReply {
+            reply: format!("I couldn't record your answer to {id} ({e}). Try again in a moment."),
+            action_result: format!("[decision {id}: not recorded]"),
+        });
+    }
+    report_to_asker(st, &d, false);
+    let what = match &d.chosen_option {
+        Some(o) => format!("\"{o}\""),
+        None => format!("your answer (\"{}\")", clip(&d.reason, 120)),
+    };
+    Some(OwnerReply {
+        reply: format!("Ok, {} gets {what}.", d.who()),
+        action_result: format!(
+            "[decision {id}] {} asked: {} → Giuseppe: {}",
+            d.who(),
+            d.question,
+            d.chosen_option.as_deref().unwrap_or(&d.reason)
+        ),
+    })
+}
+
+// ---------------------------------------------------------------- API
+
+pub fn valid_id(id: &str) -> bool {
+    id.len() == 15
+        && id.starts_with("dc-")
+        && id[3..].bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// `GET /api/secretary/decisions/{id}`.
+pub fn get(st: &AppState, id: &str) -> Result<Value, ApiError> {
+    if !valid_id(id) {
+        return Err(ApiError::new(404, "decision_not_found", "No such decision"));
+    }
+    store(&st.cfg.data_dir)
+        .get(id, Utc::now())
+        .map(|d| d.public())
+        .ok_or_else(|| ApiError::new(404, "decision_not_found", "No such decision"))
+}
+
+/// `GET /api/secretary/decisions?status=&limit=`.
+pub fn list(st: &AppState, status: Option<&str>, limit: Option<&str>) -> Result<Value, ApiError> {
+    let status = match status {
+        None | Some("") => None,
+        Some(s @ ("pending" | "decided" | "expired")) => Some(s),
+        Some(_) => return Err(ApiError::bad_request("status must be pending, decided or expired")),
+    };
+    let limit = match limit {
+        None | Some("") => 20,
+        Some(l) => l
+            .parse::<usize>()
+            .ok()
+            .filter(|n| (1..=100).contains(n))
+            .ok_or_else(|| ApiError::bad_request("limit must be 1-100"))?,
+    };
+    let items: Vec<Value> = store(&st.cfg.data_dir)
+        .list(status, limit, Utc::now())
+        .iter()
+        .map(Decision::public)
+        .collect();
+    Ok(json!({ "items": items }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn body() -> Value {
+        json!({
+            "question": "Deploy the gallery fix to p1 now?",
+            "options": ["Deploy now", "Wait for tomorrow"],
+            "recommendation": "Deploy now",
+            "context": "Tests pass; one-line CSS change.",
+            "reversible": true,
+            "impact": "low",
+            "asking_session": "coordinator",
+            "asking_client": "claude-code",
+        })
+    }
+
+    fn req() -> Request {
+        parse_request(&body()).unwrap()
+    }
+
+    #[test]
+    fn requests_are_validated_field_by_field() {
+        let r = req();
+        assert_eq!(r.recommendation, Some(0));
+        assert_eq!(r.urgency, "normal");
+        assert_eq!(r.asking_client, "claude-code");
+        let bad = |patch: Value| {
+            let mut b = body();
+            for (k, v) in patch.as_object().unwrap() {
+                b[k] = v.clone();
+            }
+            parse_request(&b).unwrap_err()
+        };
+        assert!(bad(json!({"options": ["only one"]})).contains("2-6"));
+        assert!(bad(json!({"options": ["a", "A"]})).contains("repeats"));
+        assert!(bad(json!({"recommendation": "something else"})).contains("one of the options"));
+        assert!(bad(json!({"impact": "huge"})).contains("impact"));
+        assert!(bad(json!({"reversible": null})).contains("reversible"));
+        assert!(bad(json!({"question": ""})).contains("question"));
+        assert!(bad(json!({"urgency": "now"})).contains("urgency"));
+        let mut b = body();
+        b["recommendation"] = json!("2");
+        assert_eq!(parse_request(&b).unwrap().recommendation, Some(1));
+    }
+
+    #[test]
+    fn owner_only_questions() {
+        assert!(!owner_only(&req()));
+        let mut b = body();
+        b["question"] = json!("Should I buy the 2 TB plan for the backups?");
+        assert!(owner_only(&parse_request(&b).unwrap()));
+        b["question"] = json!("Accept the terms of the new Infisical licence?");
+        assert!(owner_only(&parse_request(&b).unwrap()));
+        b["question"] = json!("Send an email to Marianne about the CRAFT tool?");
+        assert!(owner_only(&parse_request(&b).unwrap()));
+        b["question"] = json!("Restart the payment-webhook worker on p1?");
+        assert!(!owner_only(&parse_request(&b).unwrap()), "technical words are not a payment");
+    }
+
+    fn model(choice: Option<usize>, confidence: f64) -> ModelView {
+        ModelView { choice, confidence, conflict: false, reason: "He said to ship small fixes.".into() }
+    }
+
+    fn jev(choice: Option<usize>, probability: f64) -> JevView {
+        JevView { choice, probability, conflict: 0.1 }
+    }
+
+    #[test]
+    fn low_impact_reversible_agreement_is_a_go() {
+        match settle(&req(), false, Some(&model(Some(0), 0.9)), Some(&jev(Some(0), 0.8))) {
+            Verdict::Decide { index, confidence, reason } => {
+                assert_eq!(index, 0);
+                assert!((confidence - 0.85).abs() < 1e-9);
+                assert!(reason.contains("ship small fixes"));
+            }
+            v => panic!("{v:?}"),
+        }
+        // Only Jev answered (DeepSeek down): still a decision when it is sure enough.
+        assert!(matches!(settle(&req(), false, None, Some(&jev(Some(0), 0.9))), Verdict::Decide { .. }));
+    }
+
+    #[test]
+    fn she_asks_him_when_it_matters_or_is_unclear() {
+        let ask = |r: &Request, only: bool, m: Option<&ModelView>, j: Option<&JevView>| match settle(r, only, m, j) {
+            Verdict::Ask { why, .. } => why.join("; "),
+            v => panic!("expected ask, got {v:?}"),
+        };
+        let (m, j) = (model(Some(0), 0.95), jev(Some(0), 0.95));
+        let mut high = req();
+        high.impact = Impact::High;
+        assert!(ask(&high, false, Some(&m), Some(&j)).contains("impact is high"));
+        let mut once = req();
+        once.reversible = false;
+        assert!(ask(&once, false, Some(&m), Some(&j)).contains("can't be undone"));
+        assert!(ask(&req(), true, None, None).contains("only Giuseppe"));
+        assert!(ask(&req(), false, Some(&model(Some(0), 0.9)), Some(&jev(Some(1), 0.9))).contains("disagree"));
+        assert!(ask(&req(), false, Some(&model(None, 0.9)), Some(&j)).contains("settle"));
+        assert!(ask(&req(), false, None, None).contains("weigh"));
+        let mut conflict = model(Some(0), 0.9);
+        conflict.conflict = true;
+        assert!(ask(&req(), false, Some(&conflict), Some(&j)).contains("goes against"));
+        let mut medium = req();
+        medium.impact = Impact::Medium;
+        assert!(ask(&medium, false, Some(&model(Some(0), 0.7)), Some(&jev(Some(0), 0.7))).contains("not sure enough"));
+    }
+
+    #[test]
+    fn model_answers_and_owner_answers_parse() {
+        let m = parse_model("```json\n{\"choice\": 2, \"confidence\": 0.7, \"conflict\": false, \"reason\": \"x\"}\n```", 2).unwrap();
+        assert_eq!(m.choice, Some(1));
+        assert_eq!(parse_model("{\"choice\": 0, \"confidence\": 0.2}", 2).unwrap().choice, None);
+        assert!(parse_model("not json", 2).is_none());
+        assert_eq!(
+            parse_answer("Decision dc-0123456789ab: 2. Wait for tomorrow"),
+            Some(("dc-0123456789ab".into(), "2. Wait for tomorrow".into()))
+        );
+        assert_eq!(
+            parse_answer("decisione dc-0123456789AB aspetta domani sera").map(|a| a.1),
+            Some("aspetta domani sera".into())
+        );
+        assert!(parse_answer("I made a decision dc-0123456789ab yesterday").is_none());
+        let opts = vec!["Deploy now".to_owned(), "Wait for tomorrow".to_owned()];
+        assert_eq!(answer_option(&opts, "2. Wait for tomorrow"), Some(1));
+        assert_eq!(answer_option(&opts, "1"), Some(0));
+        assert_eq!(answer_option(&opts, "deploy now"), Some(0));
+        assert_eq!(answer_option(&opts, "3"), None);
+        assert_eq!(answer_option(&opts, "no, wait until Friday"), None);
+        assert!(valid_id("dc-0123456789ab") && !valid_id("dc-0123") && !valid_id("../etc/passwd"));
+    }
+
+    #[test]
+    fn the_log_keeps_the_last_state_and_expires_unanswered_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(dir.path());
+        let now = Utc::now();
+        let mut d = Decision {
+            decision_id: "dc-0123456789ab".into(),
+            record_id: "dc-0123456789ab".into(),
+            status: "pending".into(),
+            decision: None,
+            chosen_option: None,
+            chosen_index: None,
+            reason: "I asked Giuseppe: the impact is high.".into(),
+            decided_by: None,
+            confidence: None,
+            asked_owner: true,
+            owner_only: false,
+            question: "Deploy the gallery fix to p1 now?".into(),
+            options: vec!["Deploy now".into(), "Wait".into()],
+            recommendation: Some("Deploy now".into()),
+            context: String::new(),
+            impact: "high".into(),
+            reversible: true,
+            urgency: "normal".into(),
+            topic: Some("gallery".into()),
+            asking_client: "claude-code".into(),
+            asking_session: None,
+            created_at: iso_ms(now),
+            decided_at: None,
+            expires_at: Some(iso_ms(now + PENDING_TTL)),
+            evidence: vec![],
+            owner_item_id: Some("x".into()),
+        };
+        s.put(&d).unwrap();
+        d.choose(1, "owner", 1.0, "Giuseppe chose it himself.".into());
+        s.put(&d).unwrap();
+        let reopened = Store::open(dir.path());
+        let got = reopened.get("dc-0123456789ab", now).unwrap();
+        assert_eq!(got.status, "decided");
+        assert_eq!(got.decision.as_deref(), Some("change"));
+        assert_eq!(got.chosen_index, Some(2));
+        assert!(got.public().get("context").is_none() && got.public().get("owner_item_id").is_none());
+        // Same topic → an earlier decision the next request sees.
+        let mut r = req();
+        r.topic = Some("gallery".into());
+        assert_eq!(reopened.similar(&r, 3).len(), 1);
+        let mut p = d.clone();
+        p.decision_id = "dc-ba9876543210".into();
+        p.status = "pending".into();
+        p.expires_at = Some(iso_ms(now + PENDING_TTL));
+        reopened.put(&p).unwrap();
+        let later = now + PENDING_TTL + chrono::Duration::minutes(1);
+        assert_eq!(reopened.get("dc-ba9876543210", later).unwrap().status, "expired");
+        assert_eq!(Store::open(dir.path()).get("dc-ba9876543210", now).unwrap().status, "expired", "recorded");
+        assert_eq!(reopened.list(Some("expired"), 10, later).len(), 1);
+    }
+}

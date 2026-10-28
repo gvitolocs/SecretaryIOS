@@ -104,12 +104,14 @@ pub fn presence_block(st: &AppState, prompt: &str) -> String {
 }
 
 /// Classify a turn: tier 0, else the model (tier 1) on the recent turns.
+/// `mcp`: the turn comes from a Lucina MCP client (an agent's or assistant app's text, not the owner's).
 pub async fn classify(
     st: &AppState,
     user_text: &str,
     recent: &str,
     user_label: &str,
     platform: &str,
+    mcp: bool,
 ) -> Classification {
     let s = &st.cfg.intent;
     let t = TurnInput {
@@ -126,6 +128,16 @@ pub async fn classify(
                 crate::jev_route::classify_intent(lucina_jev::shared(), &t).await
             {
                 let jev_intent = v["intent"].as_str().unwrap_or("");
+                // Agents write technical prose that regexes over-match ("restart cloudflared at 17:16"):
+                // on an MCP turn, any disagreement with a side-effect rule makes it plain chat.
+                if mcp && crate::jev_route::mcp_falls_back_to_chat(&c, jev_intent) {
+                    tracing::info!(target: "lucina_jev::route", tier0 = %c.intent, jev = jev_intent,
+                        confidence, "jev disagrees with a side-effect tier-0 rule on an mcp turn; plain chat");
+                    return tier0::from_model_json(
+                        &serde_json::json!({"intent": "chat", "confidence": confidence,
+                            "reply_mode": "chat", "needs_memory": true, "needs_tools": false}),
+                        user_text, recent, s);
+                }
                 if crate::jev_route::overrides(&c.intent, jev_intent, confidence) {
                     tracing::info!(target: "lucina_jev::route", tier0 = %c.intent, jev = jev_intent,
                         confidence, "jev overrides a tier-0 rule");
@@ -241,7 +253,15 @@ pub async fn prepare_keyed(
             .unwrap_or_else(Classification::fallback);
         (c, Policy::ProjectContext, "tools_mode".to_owned())
     } else {
-        let c = classify(st, user_text, &recent_context, user_label, platform).await;
+        let c = classify(
+            st,
+            user_text,
+            &recent_context,
+            user_label,
+            platform,
+            surface.caller().is_some(),
+        )
+        .await;
         let (p, r) = policy::resolve(&c, first_after_idle, st.cfg.intent.confidence_min);
         (c, p, r)
     };

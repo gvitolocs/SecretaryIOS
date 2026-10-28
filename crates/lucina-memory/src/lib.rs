@@ -643,8 +643,11 @@ impl Memory {
     /// Store one exchange (`readwrite` only), as Node's `rememberWithClient`:
     /// get-or-create peers and session, add both peers, add two messages
     /// with `metadata.role`. The surface is checked first: a denied write
-    /// makes no Honcho call. An MCP (owner delegate) write carries
-    /// `metadata.via = "mcp"` and `metadata.caller` on the user message.
+    /// makes no Honcho call. An MCP (owner delegate) write is the owner's
+    /// record (his scope), but its words are the caller's, not his: the user
+    /// message is spoken by the caller's own peer ([`delegate_peer_id`],
+    /// `mcp-claude-code`) and carries `metadata.via = "mcp"`, `metadata.caller`
+    /// and `metadata.speaker = "agent"`, so nothing derives it as his.
     pub async fn remember(
         &self,
         surface: &TurnSurface,
@@ -669,19 +672,30 @@ impl Memory {
             (MemoryMode::ReadOnly, _) => return Err(MemoryError::ReadOnly),
         };
         let agent = c.config().agent_peer_id.clone();
-        let user_meta = match surface.caller() {
-            Some(caller) => json!({"role": "user", "via": "mcp", "caller": caller}),
-            None => json!({"role": "user"}),
+        let (speaker, user_meta) = match surface.caller() {
+            Some(caller) => (
+                delegate_peer_id(caller),
+                json!({"role": "user", "via": "mcp", "caller": caller, "speaker": "agent"}),
+            ),
+            None => (user_peer_id.to_owned(), json!({"role": "user"})),
         };
         c.ensure_peer(user_peer_id).await?;
+        if speaker != user_peer_id {
+            c.ensure_peer(&speaker).await?;
+        }
         c.ensure_peer(&agent).await?;
         c.ensure_session(session_id).await?;
-        c.add_peers(session_id, &[user_peer_id, &agent]).await?;
+        // The owner stays a member of his delegates' sessions (his context is read from them).
+        let mut peers = vec![user_peer_id, agent.as_str()];
+        if speaker != user_peer_id {
+            peers.insert(0, speaker.as_str());
+        }
+        c.add_peers(session_id, &peers).await?;
         c.add_messages(
             session_id,
             &[
                 NewMessage {
-                    peer_id: user_peer_id.into(),
+                    peer_id: speaker,
                     content: user_text.into(),
                     metadata: user_meta,
                 },
@@ -713,6 +727,21 @@ impl Memory {
         c.search_peer(&c.config().owner_peer_id.clone(), query, limit)
             .await
     }
+}
+
+/// The Honcho peer an MCP caller speaks as (`claude-code` → `mcp-claude-code`): never the owner's.
+pub fn delegate_peer_id(caller: &str) -> String {
+    let mut id: String = caller
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .take(32)
+        .collect();
+    id = id.trim_matches('-').to_owned();
+    if id.is_empty() {
+        id = "unknown".into();
+    }
+    format!("mcp-{id}")
 }
 
 /// Secretary chat session id: `secretary_<id>`, no double prefix

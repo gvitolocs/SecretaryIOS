@@ -110,6 +110,12 @@ pub struct Meta {
     /// The MCP caller ("chatgpt", "claude-code", …).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caller: Option<String>,
+    /// On MCP turns: the caller's `ask_lucina` conversation ("coordinator").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation: Option<String>,
+    /// With `kind: "decision"`: the decision's id (`dc-…`, lucina-server `decide`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -172,6 +178,8 @@ impl Meta {
             && self.list_id.is_none()
             && self.via.is_none()
             && self.caller.is_none()
+            && self.conversation.is_none()
+            && self.decision_id.is_none()
             && self.device.is_none()
             && self.device_name.is_none()
             && self.command_id.is_none()
@@ -215,6 +223,8 @@ impl Meta {
             list_id,
             via,
             caller,
+            conversation,
+            decision_id,
             device,
             device_name,
             command_id,
@@ -446,6 +456,8 @@ fn normalize_meta(meta: Option<Meta>) -> Option<Meta> {
         list_id: s(m.list_id),
         via: s(m.via),
         caller: s(m.caller),
+        conversation: s(m.conversation),
+        decision_id: s(m.decision_id),
         device: m.device.filter(|v| valid_device(v)),
         device_name: m.device_name.and_then(|v| {
             let clean: String = v.chars().filter(|c| !c.is_control()).collect();

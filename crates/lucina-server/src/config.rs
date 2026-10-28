@@ -61,6 +61,11 @@ pub struct Config {
     /// token: ChatGPT, Grok, Cursor, Claude Code) act like the owner. Secrets
     /// and paid Meshy credits stay owner-only either way.
     pub mcp_trusted: bool,
+    /// `LUCINA_MCP_OWNER_CLIENTS` (default `chatgpt,claude,grok`): the owner's own assistant apps,
+    /// which relay what he types. Only they get `mcp_trusted`; every other MCP caller (Claude Code,
+    /// Cursor, ZCode, Hermes, …) is an agent and gets consult turns: answers only, no work started
+    /// from its prose (`lucina_intent::mcp::CONSULT_ACTIONS`, docs/lucina-rust/MCP-POLICY.md).
+    pub mcp_owner_clients: Vec<String>,
     /// `LUCINA_RICH_COMPOSE_TIMEOUT_MS` (25000): one JSON-mode compose call.
     pub rich_compose_timeout: Duration,
     /// `LUCINA_MAPS_GEOCODE_URL` (+ `LUCINA_MAPS_UPSTREAM_KEY_FILE`): fill the
@@ -236,6 +241,7 @@ impl std::fmt::Debug for Config {
             .field("otp_owner_token_file", &self.otp.owner_token_file)
             .field("drive", &self.drive_enabled)
             .field("mcp_trusted", &self.mcp_trusted)
+            .field("mcp_owner_clients", &self.mcp_owner_clients)
             .field("telegram", &self.telegram.enabled)
             .field("discord", &self.discord.enabled)
             .field("maps_geocode", &self.maps_geocode.is_some())
@@ -401,6 +407,19 @@ impl Config {
             capability_hints: flag("LUCINA_CAPABILITY_HINTS_ENABLED", true),
             rich_replies: flag("LUCINA_RICH_REPLIES", false),
             mcp_trusted: flag("LUCINA_MCP_TRUSTED", false),
+            mcp_owner_clients: get("LUCINA_MCP_OWNER_CLIENTS")
+                .map(|v| {
+                    v.split(',')
+                        .map(|c| lucina_intent::mcp::note_source(c.trim()))
+                        .filter(|c| !c.is_empty() && c != "lucina")
+                        .collect()
+                })
+                .unwrap_or_else(|| {
+                    lucina_intent::mcp::DEFAULT_OWNER_CLIENTS
+                        .iter()
+                        .map(|c| c.to_string())
+                        .collect()
+                }),
             rich_compose_timeout: Duration::from_millis(
                 num("LUCINA_RICH_COMPOSE_TIMEOUT_MS", 25_000).max(1000),
             ),

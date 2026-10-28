@@ -20,6 +20,7 @@ pub mod computer_files;
 pub mod computer_view;
 pub mod config;
 pub mod context;
+pub mod decide;
 pub mod cua_wire;
 pub mod deals;
 pub mod delegation;

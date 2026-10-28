@@ -225,7 +225,13 @@ async fn lucina_mcp_turns_never_delegate() {
             )
             .await;
         assert_eq!(s, 200, "{b}");
-        assert_eq!(b["data"]["action"], "needs_confirmation", "{msg}: {b}");
+        // Guarded callers get the refusal; an agent's consult turn (claude-code) a plain answer
+        // that names what it did not run.
+        let d = &b["data"];
+        assert!(
+            d["action"] == "needs_confirmation" || (d["consult"] == true && d["notRun"].is_string()),
+            "{msg}: {b}"
+        );
     }
     assert!(
         w.xai.received_requests().await.unwrap().is_empty(),

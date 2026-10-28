@@ -178,6 +178,29 @@ pub fn doubts(tier0: &lucina_intent::tier0::Classification, jev_intent: &str, co
     side_effect || chat_but_action
 }
 
+/// Tier-0 intents that start work in the world (jobs, posts, reminders, writes).
+pub const SIDE_EFFECT_INTENTS: &[&str] = &[
+    "cursor_task",
+    "schedule_reminder",
+    "study_focus_reminders",
+    "social_post",
+    "revive_qwen",
+    "spreadsheet_update",
+    "poko_news_scout_retry",
+    "discord_admin",
+    "oracle_monitor",
+    "generate_image",
+    "graph_task",
+    "web_crawl",
+];
+
+/// On an MCP turn (an agent's prose, not the owner's words), a side-effect tier-0 rule that Jev
+/// reads as anything else, at any confidence, gives way to plain chat: the cost of a wrong reply is a
+/// sentence, the cost of a wrong job is a Harness run or a reminder nobody asked for.
+pub fn mcp_falls_back_to_chat(tier0: &lucina_intent::tier0::Classification, jev_intent: &str) -> bool {
+    SIDE_EFFECT_INTENTS.contains(&tier0.intent.as_str()) && jev_intent != tier0.intent
+}
+
 /// Jev's sure answer replaces the tier-0 rule's.
 pub fn overrides(tier0_intent: &str, jev_intent: &str, confidence: f64) -> bool {
     jev_intent != tier0_intent
@@ -272,6 +295,20 @@ mod tests {
         assert!(doubts(&chat, "computer_task", 0.6));
         assert!(!doubts(&chat, "social_greeting", 0.9), "both are conversational");
         assert!(!doubts(&chat, "unknown", 0.9));
+    }
+
+    #[test]
+    fn mcp_turns_fall_back_to_chat_when_jev_disagrees_with_a_side_effect_rule() {
+        let s = lucina_intent::heuristics::Settings::default();
+        let rule = |intent: &str| lucina_intent::tier0::from_model_json(
+            &json!({"intent": intent, "confidence": 1.0, "needs_tools": true}), "x", "", &s);
+        // The 2026-10-28 incident: tier 0 said cursor_task 0.9 (Jev: unknown 0.28) and
+        // schedule_reminder 1.0 (Jev: computer_task 0.49).
+        assert!(mcp_falls_back_to_chat(&rule("cursor_task"), "unknown"));
+        assert!(mcp_falls_back_to_chat(&rule("schedule_reminder"), "computer_task"));
+        assert!(!mcp_falls_back_to_chat(&rule("schedule_reminder"), "schedule_reminder"));
+        assert!(!mcp_falls_back_to_chat(&rule("list_reminders"), "chat"), "reads stay");
+        assert!(!mcp_falls_back_to_chat(&rule("chat"), "cursor_task"));
     }
 
     #[test]
