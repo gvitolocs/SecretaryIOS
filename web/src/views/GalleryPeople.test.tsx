@@ -5,6 +5,7 @@ import { resetFacesAvailable } from "../components/gallery/faces/facesAvailable"
 import { setLocale } from "../i18n";
 import { peopleBackend, rawPerson } from "../test/peopleBackend";
 import { renderAt } from "../test/router";
+import { stubWide } from "../test/wide";
 import GalleryPeopleView, { SCAN_POLL_MS } from "./GalleryPeople";
 
 function mount() {
@@ -424,5 +425,42 @@ describe("leaving", () => {
     mount();
     await screen.findByRole("list", { name: "People" });
     expect(screen.getByRole("link", { name: "Gallery" })).toHaveAttribute("href", "/gallery");
+  });
+});
+
+describe("on the page system (desktop)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("uses the shared Gallery header with People current, one accent button at most and a people card", async () => {
+    stubWide();
+    peopleBackend({ settings: { enabled: true, faces: 23 }, people: three() });
+    mount();
+    expect(await screen.findByRole("heading", { level: 1, name: "Gallery" })).toBeInTheDocument();
+    const nav = screen.getByRole("navigation", { name: "Gallery sections" });
+    expect(within(nav).getByRole("link", { name: "People" })).toHaveAttribute("aria-current", "page");
+    expect(document.querySelector(".pp-head")).toBeNull();
+    expect(document.querySelectorAll(".pg-cta").length).toBeLessThanOrEqual(1);
+    expect(await screen.findByRole("region", { name: "People" })).toHaveClass("pg-card");
+    expect(await screen.findByRole("list", { name: "People" })).toBeInTheDocument();
+    // Selecting turns Merge into the header's one accent button.
+    fireEvent.click(screen.getByRole("button", { name: "Select" }));
+    expect(document.querySelectorAll(".pg-cta")).toHaveLength(1);
+    expect(screen.getByRole("button", { name: /Merge/ })).toBeDisabled();
+  });
+
+  it("explains recognition on a card while it is off, with the one accent button", async () => {
+    stubWide();
+    peopleBackend({ settings: { enabled: false, faces: 0 }, people: [] });
+    mount();
+    expect(await screen.findByRole("heading", { name: "Find the people in your photos" })).toBeInTheDocument();
+    expect(document.querySelector(".pp-card")).toBeNull();
+    expect(document.querySelectorAll(".pg-cta")).toHaveLength(1);
+  });
+
+  it("shows the friendly empty state", async () => {
+    stubWide();
+    peopleBackend({ settings: { enabled: true, faces: 0 }, people: [] });
+    mount();
+    await waitFor(() => expect(document.querySelector(".pg-empty")).toHaveTextContent("No people"));
   });
 });

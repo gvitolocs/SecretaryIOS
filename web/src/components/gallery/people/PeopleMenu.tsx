@@ -4,7 +4,7 @@ import { GearIcon } from "../../Icons";
 import "../../../styles/gallery-people.css";
 
 /** The settings menu on the People page: turn recognition off, delete what it found. */
-export function PeopleMenu(props: { onTurnOff: () => void; onDelete: () => void }) {
+export function PeopleMenu(props: { wide?: boolean; onTurnOff: () => void; onDelete: () => void }) {
   const [open, setOpen] = createSignal(false);
   let root: HTMLDivElement | undefined;
   const away = (e: PointerEvent) => {
@@ -18,7 +18,7 @@ export function PeopleMenu(props: { onTurnOff: () => void; onDelete: () => void 
   };
   return (
     <div class="pp-menu" ref={root} onKeyDown={(e) => e.key === "Escape" && open() && (e.stopPropagation(), setOpen(false))}>
-      <button type="button" class="g-iconbtn" aria-label={t("galleryPeople.settings")} title={t("galleryPeople.settings")} aria-haspopup="menu" aria-expanded={open()} onClick={() => setOpen((v) => !v)}>
+      <button type="button" class={props.wide ? "pg-icon-btn" : "g-iconbtn"} aria-label={t("galleryPeople.settings")} title={t("galleryPeople.settings")} aria-haspopup="menu" aria-expanded={open()} onClick={() => setOpen((v) => !v)}>
         <GearIcon />
       </button>
       <Show when={open()}>

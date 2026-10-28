@@ -896,3 +896,21 @@ html[data-shell="desktop"] .g-title {
 .pg .g-chip, .pg .g-seg__btn, .pg .g-source { font: inherit; color: var(--pg-muted); background: var(--pg-fill); border-color: var(--pg-border); }
 .pg .g-chip[aria-pressed="true"], .pg .g-seg__btn[aria-pressed="true"], .pg .g-source[aria-pressed="true"] { color: var(--pg-text); background: var(--pg-fill-hover); }
 .pg .g-note { color: var(--pg-muted); }
+
+/* The shelves (people, places, shared, lab, duplicates) on the page system: the gallery variables follow the page tokens. */
+.pg.g-lib {
+  --g-fg-soft: var(--pg-muted);
+  --g-line: var(--pg-border);
+  --g-field: var(--pg-fill);
+  --g-accent: var(--pg-data);
+  --g-accent-fill: var(--pg-accent);
+  --g-on-accent: var(--pg-on-accent);
+  --g-bg: var(--pg-surface);
+}
+.pg .g-desktop-tools { margin-bottom: 16px; }
+.pg .pp-grid, .pg .pp-scan { max-width: none; margin: 0 0 16px; }
+.pg .pp-unassigned { max-width: none; margin: 16px 0 0; }
+.pg .pp-off-card { max-width: 560px; }
+.pg .pp-off-card p { margin-bottom: 8px; }
+.pg .pp-card__actions { margin-top: 16px; }
+.pg .pp-menu__list { background: var(--pg-surface-raised); border: 1px solid var(--pg-border); }

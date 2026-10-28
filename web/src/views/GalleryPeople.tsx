@@ -1,4 +1,6 @@
 import { A } from "@solidjs/router";
+import { Card, EmptyState, ErrorState, LoadingState, Page, PageGrid, PrimaryAction, useWide } from "../components/page";
+import { GalleryHeader } from "../components/gallery/GalleryHeader";
 import { createEffect, createMemo, createResource, createSignal, For, onCleanup, Show } from "solid-js";
 import { getFaceSettings, listPeople, patchPerson, setFacesEnabled, type FaceSettings, type Person } from "../api/gallery";
 import { resetFacesAvailable } from "../components/gallery/faces/facesAvailable";
@@ -24,6 +26,7 @@ export const SCAN_POLL_MS = 5000;
  * merging, and the faces still without a person.
  */
 export default function GalleryPeopleView() {
+  const { wide, track } = useWide();
   const [settings, { mutate: setSettings, refetch: refetchSettings }] = createResource(getFaceSettings);
   const [showHidden, setShowHidden] = createSignal(false);
   const current = (): FaceSettings | undefined => (settings.state === "errored" ? undefined : settings.latest);
@@ -127,96 +130,166 @@ export default function GalleryPeopleView() {
     void refetchSettings();
   }
 
-  return (
-    <div class="pp-page">
-      <header class="pp-head">
-        <A class="g-back" href="/gallery" aria-label={t("gallery.backToGallery")}>
-          <BackIcon />
-        </A>
-        <h1 class="pp-h1">{t("galleryPeople.title")}</h1>
-        <Show when={enabled()}>
-          <Show
-            when={selecting()}
-            fallback={
-              <>
-                <button type="button" class="g-chip" aria-pressed={showHidden()} onClick={() => setShowHidden((v) => !v)}>
-                  {t("galleryPeople.showHidden")}
-                </button>
-                <button type="button" class="g-chip" onClick={() => setSelecting(true)}>
-                  {t("galleryPeople.select")}
-                </button>
-                <PeopleMenu onTurnOff={() => void turnOff()} onDelete={() => setDeleting(true)} />
-              </>
-            }
-          >
-            <span class="pp-selcount" role="status">
-              {t("galleryPeople.selected", { count: selected().size })}
-            </span>
-            <button type="button" class="btn btn--primary" disabled={!canMerge(selected())} onClick={() => setMerging(true)}>
-              <MergeIcon /> {t("galleryPeople.merge")}
-            </button>
-            <button type="button" class="g-chip" onClick={stopSelecting}>
-              {t("galleryPeople.doneSelecting")}
-            </button>
-          </Show>
-        </Show>
-      </header>
+  const showHiddenChip = () => (
+    <button type="button" class="g-chip" aria-pressed={showHidden()} onClick={() => setShowHidden((v) => !v)}>
+      {t("galleryPeople.showHidden")}
+    </button>
+  );
+  const selectChip = () => (
+    <button type="button" class="g-chip" onClick={() => setSelecting(true)}>
+      {t("galleryPeople.select")}
+    </button>
+  );
+  const doneChip = () => (
+    <button type="button" class="g-chip" onClick={stopSelecting}>
+      {t("galleryPeople.doneSelecting")}
+    </button>
+  );
+  const selCount = () => (
+    <span class="pp-selcount" role="status">
+      {t("galleryPeople.selected", { count: selected().size })}
+    </span>
+  );
+  const retryBox = (retry: () => void) => (
+    <Show
+      when={wide()}
+      fallback={
+        <p class="pp-empty" role="alert">
+          {t("galleryPeople.loadError")}{" "}
+          <button type="button" class="btn" onClick={retry}>
+            {t("galleryPeople.retry")}
+          </button>
+        </p>
+      }
+    >
+      <ErrorState message={t("galleryPeople.loadError")} retryLabel={t("galleryPeople.retry")} onRetry={retry} />
+    </Show>
+  );
+  const loadingBox = () => (
+    <Show when={wide()} fallback={<p class="pp-empty" role="status">{t("gallery.loading")}</p>}>
+      <LoadingState label={t("gallery.loading")} />
+    </Show>
+  );
 
-      <Show when={settings.state !== "pending" && settings.state !== "unresolved"} fallback={<p class="pp-empty" role="status">{t("gallery.loading")}</p>}>
+  const body = () => (
+    <Show when={settings.state !== "pending" && settings.state !== "unresolved"} fallback={loadingBox()}>
+      <Show when={settings.state !== "errored"} fallback={retryBox(() => void refetchSettings())}>
         <Show
-          when={settings.state !== "errored"}
-          fallback={
-            <p class="pp-empty" role="alert">
-              {t("galleryPeople.loadError")}{" "}
-              <button type="button" class="btn" onClick={() => void refetchSettings()}>
-                {t("galleryPeople.retry")}
-              </button>
-            </p>
-          }
+          when={enabled()}
+          fallback={<FacesOffCard wide={wide()} hasData={(current()?.faces ?? 0) > 0} onTurnOn={turnOn} onDelete={() => setDeleting(true)} />}
         >
-          <Show
-            when={enabled()}
-            fallback={<FacesOffCard hasData={(current()?.faces ?? 0) > 0} onTurnOn={turnOn} onDelete={() => setDeleting(true)} />}
-          >
-            <Show when={current()}>{(s) => <ScanStatus settings={s()} />}</Show>
-            <Show
-              when={!people.loading || list().length > 0}
-              fallback={<p class="pp-empty" role="status">{t("gallery.loading")}</p>}
-            >
+          <Show when={current()}>{(s) => <ScanStatus settings={s()} />}</Show>
+          <Show when={!people.loading || list().length > 0} fallback={loadingBox()}>
+            <Show when={people.state !== "errored"} fallback={retryBox(() => void refetchPeople())}>
               <Show
-                when={people.state !== "errored"}
+                when={list().length > 0}
                 fallback={
-                  <p class="pp-empty" role="alert">
-                    {t("galleryPeople.loadError")}{" "}
-                    <button type="button" class="btn" onClick={() => void refetchPeople()}>
-                      {t("galleryPeople.retry")}
-                    </button>
-                  </p>
+                  <Show when={wide()} fallback={<p class="pp-empty">{t("galleryPeople.empty")}</p>}>
+                    <EmptyState text={t("galleryPeople.empty")} />
+                  </Show>
                 }
               >
-                <Show when={list().length > 0} fallback={<p class="pp-empty">{t("galleryPeople.empty")}</p>}>
-                  <ul class="pp-grid" aria-label={t("galleryPeople.title")}>
-                    <For each={list()}>
-                      {(person) => (
-                        <li>
-                          <PersonTile
-                            person={person}
-                            selecting={selecting()}
-                            selected={selected().has(person.id)}
-                            onToggle={() => toggle(person.id)}
-                            onRename={(name) => renameSaved(person, name)}
-                            onHide={() => void hide(person)}
-                          />
-                        </li>
-                      )}
-                    </For>
-                  </ul>
-                </Show>
+                <ul class="pp-grid" aria-label={t("galleryPeople.title")}>
+                  <For each={list()}>
+                    {(person) => (
+                      <li>
+                        <PersonTile
+                          person={person}
+                          selecting={selecting()}
+                          selected={selected().has(person.id)}
+                          onToggle={() => toggle(person.id)}
+                          onRename={(name) => renameSaved(person, name)}
+                          onHide={() => void hide(person)}
+                        />
+                      </li>
+                    )}
+                  </For>
+                </ul>
               </Show>
             </Show>
-            <UnassignedFaces refreshKey={(current()?.people ?? 0) * 100000 + (current()?.faces ?? 0)} onAssigned={() => { void refetchPeople(); void refetchSettings(); }} />
           </Show>
         </Show>
+      </Show>
+    </Show>
+  );
+  const unassigned = () => (
+    <Show when={settings.state === "ready" || settings.state === "refreshing"}>
+      <Show when={enabled()}>
+        <UnassignedFaces wide={wide()} refreshKey={(current()?.people ?? 0) * 100000 + (current()?.faces ?? 0)} onAssigned={() => { void refetchPeople(); void refetchSettings(); }} />
+      </Show>
+    </Show>
+  );
+
+  return (
+    <div class={wide() ? "g-page-root" : "pp-page"} ref={track}>
+      <Show
+        when={wide()}
+        fallback={
+          <>
+            <header class="pp-head">
+              <A class="g-back" href="/gallery" aria-label={t("gallery.backToGallery")}>
+                <BackIcon />
+              </A>
+              <h1 class="pp-h1">{t("galleryPeople.title")}</h1>
+              <Show when={enabled()}>
+                <Show
+                  when={selecting()}
+                  fallback={
+                    <>
+                      {showHiddenChip()}
+                      {selectChip()}
+                      <PeopleMenu onTurnOff={() => void turnOff()} onDelete={() => setDeleting(true)} />
+                    </>
+                  }
+                >
+                  {selCount()}
+                  <button type="button" class="btn btn--primary" disabled={!canMerge(selected())} onClick={() => setMerging(true)}>
+                    <MergeIcon /> {t("galleryPeople.merge")}
+                  </button>
+                  {doneChip()}
+                </Show>
+              </Show>
+            </header>
+            {body()}
+            {unassigned()}
+          </>
+        }
+      >
+        <Page class="g-lib">
+          <GalleryHeader
+            count={enabled() && !people.loading && people.state !== "errored" ? list().length : undefined}
+            action={
+              <Show when={enabled() && selecting()}>
+                <PrimaryAction icon={<MergeIcon />} disabled={!canMerge(selected())} onClick={() => setMerging(true)}>
+                  {t("galleryPeople.merge")}
+                </PrimaryAction>
+              </Show>
+            }
+          />
+          <PageGrid layout="full">
+            <Show when={enabled()}>
+              <div class="g-desktop-tools">
+                <Show
+                  when={selecting()}
+                  fallback={
+                    <>
+                      {showHiddenChip()}
+                      {selectChip()}
+                      <PeopleMenu wide onTurnOff={() => void turnOff()} onDelete={() => setDeleting(true)} />
+                    </>
+                  }
+                >
+                  {selCount()}
+                  {doneChip()}
+                </Show>
+              </div>
+            </Show>
+            <Show when={enabled()} fallback={body()}>
+              <Card label={t("galleryPeople.title")}>{body()}</Card>
+              {unassigned()}
+            </Show>
+          </PageGrid>
+        </Page>
       </Show>
 
       <Show when={status()}>

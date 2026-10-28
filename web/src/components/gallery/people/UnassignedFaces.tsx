@@ -1,6 +1,7 @@
 import { createEffect, createSignal, For, on, Show } from "solid-js";
 import { assignFace, listUnassignedFaces, type FaceTarget, type UnassignedFace } from "../../../api/gallery";
 import { t } from "../../../i18n";
+import { Card } from "../../page";
 import { FacePicker } from "../faces/FacePicker";
 import "../../../styles/gallery-people.css";
 
@@ -8,7 +9,7 @@ import "../../../styles/gallery-people.css";
  * "Faces without a person" at the bottom of the People page: each face can be given to a person (or to a new one) with the
  * same picker as in the viewer. The list is asked for again when `refreshKey` changes (the scan found more).
  */
-export function UnassignedFaces(props: { refreshKey: number; onAssigned: () => void }) {
+export function UnassignedFaces(props: { wide?: boolean; refreshKey: number; onAssigned: () => void }) {
   const [faces, setFaces] = createSignal<UnassignedFace[]>([]);
   const [cursor, setCursor] = createSignal<string | null>(null);
   const [loading, setLoading] = createSignal(false);
@@ -44,12 +45,8 @@ export function UnassignedFaces(props: { refreshKey: number; onAssigned: () => v
     props.onAssigned();
   }
 
-  return (
-    <Show when={faces().length > 0 || failed()}>
-      <section class="pp-unassigned" aria-labelledby="pp-unassigned-title">
-        <h2 id="pp-unassigned-title" class="pp-section">
-          {t("galleryPeople.unassignedTitle")}
-        </h2>
+  const content = () => (
+    <>
         <p class="pp-hint">{t("galleryPeople.unassignedHint")}</p>
         <ul class="pp-faces">
           <For each={faces()}>
@@ -65,17 +62,36 @@ export function UnassignedFaces(props: { refreshKey: number; onAssigned: () => v
         <Show when={failed()}>
           <p class="gv-error" role="alert">
             {t("galleryPeople.loadError")}{" "}
-            <button type="button" class="btn" onClick={() => void load(cursor() !== null && faces().length > 0)}>
+            <button type="button" class={props.wide ? "pg-btn" : "btn"} onClick={() => void load(cursor() !== null && faces().length > 0)}>
               {t("galleryPeople.retry")}
             </button>
           </p>
         </Show>
         <Show when={cursor() && !failed()}>
-          <button type="button" class="btn" disabled={loading()} onClick={() => void load(true)}>
+          <button type="button" class={props.wide ? "pg-btn" : "btn"} disabled={loading()} onClick={() => void load(true)}>
             {t("galleryPeople.showMore")}
           </button>
         </Show>
-      </section>
+    </>
+  );
+
+  return (
+    <Show when={faces().length > 0 || failed()}>
+      <Show
+        when={props.wide}
+        fallback={
+          <section class="pp-unassigned" aria-labelledby="pp-unassigned-title">
+            <h2 id="pp-unassigned-title" class="pp-section">
+              {t("galleryPeople.unassignedTitle")}
+            </h2>
+            {content()}
+          </section>
+        }
+      >
+        <Card title={t("galleryPeople.unassignedTitle")} class="pp-unassigned">
+          {content()}
+        </Card>
+      </Show>
       <Show when={choosing()}>
         {(face) => <FacePicker faceId={face().id} current={null} onAssign={(target) => assign(face(), target)} onCancel={() => setChoosing(null)} />}
       </Show>
