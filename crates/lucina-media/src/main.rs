@@ -25,6 +25,9 @@ enum Cmd {
         source: String,
         #[arg(long)]
         album: Option<String>,
+        /// Folder imports: JSON Lines journal; a rerun skips what it lists and retries failures.
+        #[arg(long)]
+        journal: Option<PathBuf>,
     },
     /// Move spooled originals to the store now (respects the quiet hours).
     FlushSpool,
@@ -227,13 +230,22 @@ async fn main() -> anyhow::Result<()> {
             path,
             source,
             album,
+            journal,
         } => {
             let lib = Library::open(cfg)?;
             let stats = tokio::task::spawn_blocking(move || {
-                import::import_path(&lib, &path, &import::ImportOpts { source, album })
+                import::import_path(
+                    &lib,
+                    &path,
+                    &import::ImportOpts {
+                        source,
+                        album,
+                        journal,
+                    },
+                )
             })
             .await??;
-            println!("{stats:?}");
+            println!("{}", serde_json::to_string(&stats)?);
         }
         Cmd::FlushSpool => {
             let lib = Library::open(cfg)?;

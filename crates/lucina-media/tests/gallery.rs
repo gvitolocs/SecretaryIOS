@@ -209,6 +209,7 @@ async fn imports_show_their_folder_relative_to_the_import_root() {
         &import::ImportOpts {
             source: "nextcloud".into(),
             album: None,
+            journal: None,
         },
     )
     .unwrap();

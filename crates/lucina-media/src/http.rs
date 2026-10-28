@@ -1969,6 +1969,7 @@ async fn start_import(
         let opts = crate::import::ImportOpts {
             source: r.source.unwrap_or_else(|| "import".into()),
             album: r.album,
+            journal: None,
         };
         match crate::import::import_path(&l, &path, &opts) {
             Ok(s) => tracing::info!(?s, "import finished"),
