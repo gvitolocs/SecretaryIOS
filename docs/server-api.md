@@ -191,6 +191,23 @@ Logs out: deletes the session and clears the cookie
 `X-Secretary-CSRF: 1` (else `403 csrf`). `200`
 `{"authenticated": false, "deviceId": null, "deviceName": null}`.
 
+### `GET|HEAD /v1/auth/owner` (forward_auth for the owner-only plugins)
+
+The target of p1 Caddy's `forward_auth` for `/v1/instagram`, `/v1/pixiv` and
+`/v1/nclient`. It answers with no body:
+
+| Status | When |
+|---|---|
+| `204` | A device session: Bearer `sec_…` token or the `sec_session` cookie. |
+| `401 unauthorized` | No or bad credentials, or a revoked device. |
+| `403 owner_only` | Lucina's service token (`svc_…`). She reaches the plugin services on loopback with their own gateway secret. |
+| `429 rate_limited` | More than `SECRETARY_OWNER_AUTH_PER_MINUTE` (default 600) checks a minute from one device. |
+
+It has its own per-device bucket, so one plugin call (Caddy asks once per API
+call, never for signed `/s/*` media) does not use up the 60 requests a minute
+the app's own routes share. No CSRF check here: Caddy turns the subrequest into
+a GET and gates the real method (`X-Secretary-CSRF: 1` for cookie writes).
+
 ## Health
 
 ### `GET /v1/health` (no auth)

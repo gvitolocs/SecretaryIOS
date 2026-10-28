@@ -535,3 +535,48 @@ pub fn session_routes() -> Router<AppState> {
         .route("/v1/session", get(status).post(login).delete(logout))
         .route("/v1/auth/device", post(device_login))
 }
+
+/// `GET|HEAD /v1/auth/owner`: the forward_auth target of the owner-only
+/// plugins (Instagram, Pixiv, NClient) behind Caddy.
+///
+/// - 204: a device session (Bearer device token or `sec_session` cookie).
+/// - 401: no or bad credentials, a revoked device.
+/// - 403 `owner_only`: Lucina's service token. She reaches the plugin
+///   services on loopback with their own gateway secret, never through p1.
+///
+/// Unlike [`require_device`] this route has its own, larger bucket
+/// (`SECRETARY_OWNER_AUTH_PER_MINUTE`, per device): Caddy asks once per
+/// plugin API call, and those must not eat the 60/min the app's own
+/// requests share. No CSRF check: Caddy turns the subrequest into a GET and
+/// gates the real method itself.
+pub fn owner_routes() -> Router<AppState> {
+    Router::new().route("/v1/auth/owner", get(owner_check))
+}
+
+async fn owner_check(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    let svc = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split_once(' '))
+        .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
+        .map(|(_, t)| t.trim())
+        .filter(|t| t.starts_with(crate::service::SERVICE_PREFIX));
+    if let Some(token) = svc {
+        return match &st.service_token {
+            Some(expected) if expected.matches(token) => Err(ApiError::new(
+                StatusCode::FORBIDDEN,
+                "owner_only",
+                "this is for the owner's devices, not Lucina's service token",
+            )),
+            _ => Err(ApiError::unauthorized("unknown service token")),
+        };
+    }
+    let ident = identify(&st, &headers)?.map_err(ApiError::unauthorized)?;
+    st.owner_limiter
+        .check(&ident.device_id)
+        .map_err(ApiError::rate_limited)?;
+    Ok(StatusCode::NO_CONTENT)
+}
