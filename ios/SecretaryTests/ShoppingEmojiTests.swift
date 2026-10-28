@@ -44,7 +44,22 @@ final class ShoppingEmojiTests: XCTestCase {
         let items = WidgetFetcher.neededItems(rows, emoji: table)
         XCTAssertEqual(items.map(\.name), ["Candele", "Latte", "Sapone"])
         XCTAssertEqual(items.map(\.emoji), ["🕯️", "🥛", "🧽"])
-        XCTAssertEqual(items.map(\.art), [nil, "item-milk", nil])
+        XCTAssertEqual(items.map(\.art), [nil, "item-milk", "section-household"])
+    }
+
+    /// The owner's Casa list (2026-10-28): catalog rows draw their art, the custom Lavatrici its
+    /// section's (its 🧽 is the household emoji), a row with its own specific emoji keeps it.
+    func testCasaRowsDrawArtLikeTheApp() throws {
+        let rows = try JSONDecoder().decode(JSONValue.self, from: Data("""
+        [{"id":"1","catalogId":"eggs","name":"Uova","icon":"🥚","iconPicked":false,"section":"dairy-eggs","status":"needed","position":1},
+         {"id":"2","catalogId":"prosciutto","name":"Prosciutto crudo","icon":"🍖","iconPicked":false,"section":"deli","status":"needed","position":2},
+         {"id":"3","catalogId":"ham","name":"Prosciutto cotto","icon":"🍖","iconPicked":false,"section":"deli","status":"needed","position":3},
+         {"id":"4","name":"Lavatrici","icon":"🧽","iconPicked":false,"section":"household","status":"needed","position":4},
+         {"id":"5","name":"Estintore","icon":"🧯","section":"household","status":"needed","position":5},
+         {"id":"6","icon":"svg:candles","name":"Candele","status":"needed","position":6}]
+        """.utf8))
+        let items = WidgetFetcher.neededItems(rows, emoji: table)
+        XCTAssertEqual(items.map(\.art), ["item-eggs", "item-prosciutto", "item-ham", "section-household", nil, "item-candles"])
     }
 
     func testCatalogRowsCarryTheirArtUnlessTheEmojiWasPicked() throws {
