@@ -1,10 +1,10 @@
 /* Inside Secretary Code (lib/desktopShell: embedded()), the shell's rail names and switches the pages: plugin
    pages drop their "‹ Plugins" link and their big title, which stays for screen readers. */
-html[data-shell="desktop"] .content a[href="/plugins"]:is(.media-back, .computer-back, .pokemon-back, .sh-back) {
+html[data-shell="desktop"] .content a[href="/plugins"]:is(.media-back, .computer-back, .pokemon-back, .sh-back, .ig-back) {
   display: none;
 }
 html[data-shell="desktop"]
-  :is(#drive-title, #computer-title, #pokemon-title, #media-title, #sh-title, #films-title, #chats-title, #secrets-title) {
+  :is(#drive-title, #computer-title, #pokemon-title, #media-title, #sh-title, #films-title, #chats-title, #secrets-title, #instagram-title) {
   position: absolute;
   width: 1px;
   height: 1px;

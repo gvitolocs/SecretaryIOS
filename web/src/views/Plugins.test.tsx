@@ -28,6 +28,13 @@ describe("Plugins", () => {
     expect(PLUGINS.find((p) => p.id === "keep")?.href).toBe("/keep");
   });
 
+  it("has an Instagram card that opens /instagram", () => {
+    renderPlugins();
+    expect(PLUGINS.find((p) => p.id === "instagram")?.href).toBe("/instagram");
+    expect(PLUGINS.find((p) => p.id === "instagram")?.adult).toBeUndefined();
+    expect(screen.getByRole("button", { name: /^Instagram/ })).toHaveAttribute("data-plugin", "instagram");
+  });
+
   it("opens Films from its card and has no Media card", () => {
     renderPlugins();
     expect(screen.getByRole("button", { name: /Films.*Film and Dansk film/ })).toBeInTheDocument();
