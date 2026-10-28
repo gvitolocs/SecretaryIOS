@@ -791,6 +791,15 @@ select.text-input option {
   margin: 0 auto;
   padding: 16px var(--pad-right) 32px var(--pad-left);
 }
+.scan-page--wide {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+}
+.pg.scan-desk .scan-desk-card {
+  padding: 0;
+  overflow: hidden;
+}
 
 .scan-head {
   display: flex;

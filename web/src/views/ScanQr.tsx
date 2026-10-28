@@ -1,6 +1,7 @@
 import { A, useNavigate } from "@solidjs/router";
 import { createSignal, onCleanup, onMount, Show } from "solid-js";
 import { BackIcon } from "../components/Icons";
+import { Button, Card, ErrorState, Page, PageGrid, PageHeader, useWide } from "../components/page";
 import { t } from "../i18n";
 import { approveCodeFrom, createQrReader, type QrReader } from "../lib/qrScan";
 
@@ -16,6 +17,7 @@ type Camera = "starting" | "on" | "denied" | "unavailable";
 
 export default function ScanQr() {
   const navigate = useNavigate();
+  const { wide, track } = useWide();
   const [camera, setCamera] = createSignal<Camera>("starting");
   const [notOurs, setNotOurs] = createSignal(false);
   const [typed, setTyped] = createSignal("");
@@ -76,26 +78,37 @@ export default function ScanQr() {
     else setTypedError(true);
   }
 
-  return (
-    <section class="scan-page" aria-labelledby="scan-title">
-      <header class="scan-head">
-        <A class="icon-btn" href="/plugins" aria-label={t("login.scanBack")}>
-          <BackIcon />
-        </A>
-        <h1 id="scan-title" class="scan-title">
-          {t("login.scanTitle")}
-        </h1>
-      </header>
+  const cameraMessage = () =>
+    camera() === "starting" ? t("login.scanStarting") : camera() === "denied" ? t("login.scanDenied") : t("login.scanUnavailable");
+
+  const scanner = () => (
+    <>
       <p class="scan-sub">{t("login.scanSub")}</p>
-      <div class="scan-viewfinder" data-camera={camera()}>
-        <video ref={video} class="scan-video" playsinline muted autoplay aria-hidden="true" />
-        <span class="scan-frame" aria-hidden="true" />
-        <Show when={camera() !== "on"}>
-          <p class="scan-note" role={camera() === "starting" ? "status" : "alert"}>
-            {camera() === "starting" ? t("login.scanStarting") : camera() === "denied" ? t("login.scanDenied") : t("login.scanUnavailable")}
-          </p>
-        </Show>
-      </div>
+      <Card class="scan-desk-card">
+        <div class="scan-viewfinder" data-camera={camera()}>
+          <video ref={video} class="scan-video" playsinline muted autoplay aria-hidden="true" />
+          <span class="scan-frame" aria-hidden="true" />
+          <Show when={camera() !== "on"}>
+            <Show when={camera() === "starting"}>
+              <p class="scan-note" role="status">
+                {cameraMessage()}
+              </p>
+            </Show>
+            <Show when={camera() !== "starting"}>
+              <Show
+                when={wide()}
+                fallback={
+                  <p class="scan-note" role="alert">
+                    {cameraMessage()}
+                  </p>
+                }
+              >
+                <ErrorState message={cameraMessage()} retryLabel={t("common.tryAgain")} onRetry={() => window.location.reload()} />
+              </Show>
+            </Show>
+          </Show>
+        </div>
+      </Card>
       <Show when={notOurs()}>
         <p class="scan-hint" role="status">
           {t("login.scanNotOurs")}
@@ -121,16 +134,53 @@ export default function ScanQr() {
             aria-invalid={typedError() ? "true" : "false"}
             aria-describedby={typedError() ? "scan-code-error" : undefined}
           />
-          <button type="submit" class="btn btn--primary">
-            {t("login.scanContinue")}
-          </button>
+          <Show when={wide()} fallback={
+            <button type="submit" class="btn btn--primary">
+              {t("login.scanContinue")}
+            </button>
+          }>
+            <Button type="submit">{t("login.scanContinue")}</Button>
+          </Show>
         </div>
         <Show when={typedError()}>
-          <p id="scan-code-error" class="form-error" role="alert">
-            {t("login.scanTypeError")}
-          </p>
+          <Show
+            when={wide()}
+            fallback={
+              <p id="scan-code-error" class="form-error" role="alert">
+                {t("login.scanTypeError")}
+              </p>
+            }
+          >
+            <ErrorState message={t("login.scanTypeError")} retryLabel={t("common.tryAgain")} onRetry={() => setTypedError(false)} />
+          </Show>
         </Show>
       </form>
+    </>
+  );
+
+  return (
+    <section class="scan-page" classList={{ "scan-page--wide": wide() }} ref={track} aria-labelledby="scan-title">
+      <Show
+        when={wide()}
+        fallback={
+          <>
+            <header class="scan-head">
+              <A class="icon-btn" href="/plugins" aria-label={t("login.scanBack")}>
+                <BackIcon />
+              </A>
+              <h1 id="scan-title" class="scan-title">
+                {t("login.scanTitle")}
+              </h1>
+            </header>
+            {scanner()}
+          </>
+        }
+      >
+        <Page class="scan-desk">
+          <PageHeader title={t("login.scanTitle")} />
+          <PageGrid layout="single">{scanner()}</PageGrid>
+        </Page>
+      </Show>
     </section>
   );
 }
