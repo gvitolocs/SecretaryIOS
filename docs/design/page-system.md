@@ -77,6 +77,10 @@ shell's navy surfaces, the phone's iOS greys, light mode).
   desktop and the 16 px gutter on a phone.
 - **Type**: page title 28/600 (24 on a phone), card title 16/600, row title 15/600, body 14/400,
   secondary 13, caption 12, big numbers 24 or 36/600. Two weights only. Tabular figures everywhere.
+- **Material**: cards and lists are solid (`--pg-surface`). Surfaces that float over content (sheets,
+  popovers and menus, the composer, the phone tab bar) are frosted glass (`styles/glass.css`, the
+  `--lu-glass*` tokens from `design/tokens.json`); they keep the radii above (sheets 16 px), only the
+  material changes. Never glass over the live desktop or a playing video (solid glass there).
 - **Accent**: one filled accent button per page, in the header. Everything else is a quiet button
   (`pg-btn`), a ghost button (`pg-btn--ghost`), a text link (`pg-link`) or an icon button
   (`pg-icon-btn`). Destructive actions are `pg-btn--danger` behind a confirm step.

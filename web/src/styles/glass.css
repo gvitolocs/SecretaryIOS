@@ -1,6 +1,8 @@
 /* Frosted glass, the one material for surfaces that float over content (owner, 2026-10-28: "the new Android blur").
  * Colours come from design/tokens.json (--lu-glass*); the blur is the tab bar's 24 px, saturated 1.4.
  * Use `.glass` on a new floating surface. Dense cards and lists stay solid: they need a readable background.
+ * The page system's floating surfaces (components/page Sheet, the Training ⋯ menu) are glass too; they keep the page
+ * system's radii (docs/design/page-system.md), only the material comes from here.
  * Text contrast: at 60% the tint alone keeps primary text at WCAG AA over a black or white page behind it.
  *
  * Imported last (index.tsx). The surfaces below already have their own rules, some in lazily loaded chunks, so the
@@ -36,7 +38,7 @@
 
 /* The material: solid first, glass where the browser can blur. */
 .glass,
-:root:root :is(.tabbar, .composer-input, .picker-sheet, .notif-panel, .kp-dialog, .kp-modal, .kp-pop) {
+:root:root :is(.tabbar, .composer-input, .picker-sheet, .notif-panel, .kp-dialog, .kp-modal, .kp-pop, .pg-sheet, .trd-menu-pop) {
   border: 1px solid var(--glass-border);
   background: var(--glass-fallback);
   box-shadow:
@@ -46,7 +48,7 @@
 
 @supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
   .glass,
-  :root:root :is(.tabbar, .composer-input, .picker-sheet, .notif-panel, .kp-dialog, .kp-modal, .kp-pop) {
+  :root:root :is(.tabbar, .composer-input, .picker-sheet, .notif-panel, .kp-dialog, .kp-modal, .kp-pop, .pg-sheet, .trd-menu-pop) {
     background: var(--glass-bg);
     -webkit-backdrop-filter: var(--glass-blur);
     backdrop-filter: var(--glass-blur);
@@ -64,7 +66,7 @@
 
 /* Long forms and lists in a sheet: thicker glass, so the page behind never competes with the text. */
 @supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
-  :root:root :is(.picker-sheet, .notif-panel) {
+  :root:root :is(.picker-sheet, .notif-panel, .pg-sheet) {
     background: color-mix(in srgb, var(--glass-fallback) 88%, transparent);
   }
 }
@@ -91,7 +93,7 @@
 }
 
 /* One blurred layer at a time: the scrim under a glass sheet only darkens, and glass inside glass is clear. */
-:root:root :is(.picker-overlay, .notif-overlay),
+:root:root :is(.picker-overlay, .notif-overlay, .pg-sheet-overlay),
 .glass .glass {
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
@@ -99,7 +101,7 @@
 
 @media (prefers-reduced-transparency: reduce) {
   .glass,
-  :root:root :is(.tabbar, .composer-input, .picker-sheet, .notif-panel, .kp-dialog, .kp-modal, .kp-pop) {
+  :root:root :is(.tabbar, .composer-input, .picker-sheet, .notif-panel, .kp-dialog, .kp-modal, .kp-pop, .pg-sheet, .trd-menu-pop) {
     background: var(--glass-fallback);
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
