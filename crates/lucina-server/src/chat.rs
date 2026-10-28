@@ -42,6 +42,7 @@ pub mod drive_turn;
 pub mod media_turn;
 pub mod memo_turn;
 pub mod meshy_turn;
+pub mod plugin_turn;
 pub mod reply;
 mod share_turn;
 
@@ -1000,9 +1001,16 @@ async fn secrets_finish(st: &AppState, text: &str, mcp: bool) -> Option<Finish> 
     Some(f)
 }
 
+/// The action of a turn that used the owner-only plugin tools: never sent to long-term memory.
+pub(crate) const PRIVATE_ACTION: &str = "re_plugins";
+
 /// Honcho `remember` (`readwrite` only), Node's `rememberSecretaryTurn`.
 fn remember_turn(st: &AppState, t: &Turn<'_>, action: &str, reply: &str, action_result: &str) {
     if st.memory.mode() != MemoryMode::ReadWrite || crate::selftest::is_session(&t.session) {
+        return;
+    }
+    if action == PRIVATE_ACTION {
+        // The owner-only plugins (Instagram, Pixiv): nothing of the exchange goes to Honcho.
         return;
     }
     if t.origin.is_some() {
@@ -1235,6 +1243,11 @@ async fn json_turn(
 
     // Lucina's own Google Drive (LUCINA_DRIVE=true with a grant), read-only.
     if let Some(f) = drive_turn::try_turn(t, memory).await {
+        return f;
+    }
+
+    // The owner's Instagram and Pixiv plugins (owner's app chat only).
+    if let Some(f) = plugin_turn::try_turn(t, memory).await {
         return f;
     }
 
@@ -2218,6 +2231,12 @@ fn gallery_action(path: &str, count: usize, lang: &str) -> Value {
     if path == "/drive" || path.starts_with("/drive/") {
         return json!({"id": "drive", "label": drive_label(lang), "emoji": "📁", "kind": "route", "payload": {"path": path}});
     }
+    if path == "/instagram" || path.starts_with("/instagram/") {
+        return json!({"id": "instagram", "label": "Open Instagram", "emoji": "📷", "kind": "route", "payload": {"path": path}});
+    }
+    if path == "/pixiv" || path.starts_with("/pixiv/") {
+        return json!({"id": "pixiv", "label": "Open Pixiv", "emoji": "🎨", "kind": "route", "payload": {"path": path}});
+    }
     if path.starts_with("/films") {
         let label = if path.starts_with("/films/play/") {
             "Play the film".to_owned()
@@ -2259,6 +2278,10 @@ fn effects_to_finish(effects: &[Effect], reply: String) -> Finish {
         _ => None,
     }) {
         f.routes.push(gallery_action(&path, count, lang));
+    }
+    if effects.iter().any(|e| matches!(e, Effect::PrivateTurn)) {
+        // Instagram / Pixiv: never remembered (see `remember_turn`).
+        f.action = PRIVATE_ACTION.into();
     }
     f.calendar_events = effects
         .iter()
@@ -2624,6 +2647,26 @@ async fn tools_turn(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plugin_turns_are_private_and_get_their_page_button() {
+        let f = effects_to_finish(
+            &[
+                Effect::PrivateTurn,
+                Effect::Gallery {
+                    path: "/pixiv".into(),
+                    count: 3,
+                },
+            ],
+            "ok".into(),
+        );
+        assert_eq!(f.action, PRIVATE_ACTION);
+        assert_eq!(f.routes[0]["label"], "Open Pixiv");
+        assert_eq!(f.routes[0]["payload"]["path"], "/pixiv");
+        assert_eq!(gallery_action("/instagram", 2, "en")["label"], "Open Instagram");
+        // an ordinary reply is not private
+        assert_eq!(effects_to_finish(&[], "ok".into()).action, "reply");
+    }
 
     #[test]
     fn film_results_get_a_films_button() {

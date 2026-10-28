@@ -13,6 +13,7 @@ pub mod meshy;
 pub mod notes;
 pub mod notify;
 pub mod places;
+pub mod plugins;
 pub mod presence;
 pub mod reminders;
 pub mod secrets;
@@ -51,6 +52,16 @@ pub fn builtin() -> Vec<Arc<dyn Tool>> {
         Arc::new(delegate::AskGrokTool),
         Arc::new(delegate::AskChatgptTool),
         Arc::new(delegate::DelegateTool),
+        Arc::new(plugins::InstagramProfileTool),
+        Arc::new(plugins::InstagramStoriesTool),
+        Arc::new(plugins::InstagramWatchlistTool),
+        Arc::new(plugins::InstagramWatchTool),
+        Arc::new(plugins::InstagramUnwatchTool),
+        Arc::new(plugins::InstagramNewTool),
+        Arc::new(plugins::InstagramSaveLatestTool),
+        Arc::new(plugins::PixivSearchTool),
+        Arc::new(plugins::PixivRankingTool),
+        Arc::new(plugins::SaveToGalleryTool),
     ]
 }
 

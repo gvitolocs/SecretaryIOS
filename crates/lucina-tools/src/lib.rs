@@ -18,7 +18,8 @@
 //!   the delegation tools `ask_claude`, `ask_grok`, `ask_chatgpt`, `delegate`
 //!   ([`SideEffect::Delegate`]: Lucina's own decision, no confirmation); none of
 //!   these is offered on Lucina MCP turns ([`NO_MCP_TOOLS`]); `meshy` (3D
-//!   models, registered by the server when `LUCINA_MESHY=true`); `drive`
+//!   models, registered by the server when `LUCINA_MESHY=true`); the owner-only plugin tools `instagram_profile`,
+//!   `instagram_stories`, the watchlist tools, `pixiv_search`, `pixiv_ranking`, `save_to_gallery` ([`tools::plugins`]; safe Pixiv only); `drive`
 //!   (Lucina's own Google Drive, read-only, registered by the server when
 //!   `LUCINA_DRIVE=true` and the grant exists, see [`google`]).
 //! - Secrets: a tool reads a secret by setting name through [`Ctx::secret`]
@@ -123,6 +124,9 @@ pub enum Effect {
     CalendarEvents {
         events: Vec<Value>,
     },
+    /// The turn used an owner-only plugin tool (Instagram, Pixiv): the server
+    /// keeps the exchange out of Honcho (the long-term memory).
+    PrivateTurn,
 }
 
 /// External endpoints (overridable for tests).
@@ -230,6 +234,8 @@ pub struct ToolEnv {
     pub diagnostics_token_file: Option<PathBuf>,
     /// Lucina's own Google Drive (`LUCINA_DRIVE`).
     pub drive: Option<Arc<google::Drive>>,
+    /// The owner's Instagram and Pixiv plugin services on this host.
+    pub plugins: tools::plugins::Plugins,
 }
 
 impl ToolEnv {
@@ -278,6 +284,7 @@ impl ToolEnv {
             diagnostics_url: None,
             diagnostics_token_file: None,
             drive: None,
+            plugins: tools::plugins::Plugins::default(),
         }
     }
 }
@@ -458,13 +465,37 @@ pub fn name_words(name: &str) -> Vec<String> {
 }
 
 /// Tools for the owner only: never registered on Lucina MCP turns.
-pub const OWNER_ONLY_TOOLS: &[&str] = &["secrets_status", "secrets_audit"];
+pub const OWNER_ONLY_TOOLS: &[&str] = &[
+    "secrets_status",
+    "secrets_audit",
+    // The Instagram / Pixiv plugins (`tools::plugins::NAMES`): owner's chat only.
+    "instagram_profile",
+    "instagram_stories",
+    "instagram_watchlist",
+    "instagram_watch",
+    "instagram_unwatch",
+    "instagram_new",
+    "instagram_save_latest",
+    "pixiv_search",
+    "pixiv_ranking",
+    "save_to_gallery",
+];
 
 /// Every tool a Lucina MCP turn never gets: the owner-only tools and the
 /// delegation tools (outside agents calling Lucina must not drive her).
 pub const NO_MCP_TOOLS: &[&str] = &[
     "secrets_status",
     "secrets_audit",
+    "instagram_profile",
+    "instagram_stories",
+    "instagram_watchlist",
+    "instagram_watch",
+    "instagram_unwatch",
+    "instagram_new",
+    "instagram_save_latest",
+    "pixiv_search",
+    "pixiv_ranking",
+    "save_to_gallery",
     "ask_claude",
     "ask_grok",
     "ask_chatgpt",
@@ -639,10 +670,14 @@ mod tests {
             .unwrap_err()
             .contains("no money movement"));
         let all = Registry::builtin(&ToolSelection::All);
-        assert_eq!(all.names().len(), 22);
+        assert_eq!(all.names().len(), 32);
         assert_eq!(all.without(OWNER_ONLY_TOOLS).names().len(), 20);
         let mcp = all.without(NO_MCP_TOOLS);
         assert_eq!(mcp.names().len(), 16);
+        for n in tools::plugins::NAMES {
+            assert!(OWNER_ONLY_TOOLS.contains(n) && all.get(n).is_some(), "{n}");
+            assert!(mcp.get(n).is_none(), "{n}");
+        }
         assert!(mcp.get("memos").is_some());
         assert!(mcp.get("diagnostics").is_some());
         for t in tools::delegate::DELEGATION_TOOLS
