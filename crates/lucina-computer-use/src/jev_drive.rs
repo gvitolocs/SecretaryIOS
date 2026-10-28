@@ -650,8 +650,16 @@ impl Device {
             Ok(v) => v["isError"] == true && text_of(v).contains("background_unavailable"),
             Err(e) => e.contains("background_unavailable"),
         };
-        let v = if needs_front {
-            args["delivery_mode"] = json!("foreground");
+        // A pointer click needs on-screen bounds; some fields have none (Wolt's
+        // search box). The accessibility action reaches them in background.
+        let no_bounds = tool == "click"
+            && args["delivery_mode"] == "foreground"
+            && match &v {
+                Ok(v) => v["isError"] == true && text_of(v).contains("no usable on-screen bounds"),
+                Err(e) => e.contains("no usable on-screen bounds"),
+            };
+        let v = if needs_front || no_bounds {
+            args["delivery_mode"] = json!(if no_bounds { "background" } else { "foreground" });
             self.sandbox
                 .call_tool(tool, args)
                 .await
