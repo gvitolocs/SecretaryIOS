@@ -141,6 +141,40 @@ export function createKeepStore(deps: KeepStoreDeps) {
     return notes.get(resolveId(id));
   }
 
+  /** A note by id, by the temporary id it had before the server answered, or by slug (Lucina cites notes by slug). */
+  function findByKey(key: string): KeepNote | undefined {
+    version();
+    const byId = notes.get(resolveId(key));
+    if (byId) return byId;
+    for (const n of notes.values()) if (n.slug === key) return n;
+    return undefined;
+  }
+
+  const [resolving, setResolving] = createSignal(0);
+  const asked = new Set<string>();
+
+  /** A key that is not in the cache (a deep link to a note this device has not synced yet): ask the server once. */
+  async function ensure(key: string): Promise<KeepNote | undefined> {
+    const have = findByKey(key);
+    if (have || asked.has(key)) return have;
+    asked.add(key);
+    setResolving((n) => n + 1);
+    try {
+      const got = await api.get(key);
+      batch(() => {
+        // Never over a copy this device already holds that is newer.
+        if (!notes.has(got.id) || (notes.get(got.id)?.rev ?? 0) <= got.rev) notes.set(got.id, got);
+        bump();
+      });
+      void db.putNotes([got]);
+      return got;
+    } catch {
+      return undefined;
+    } finally {
+      setResolving((n) => n - 1);
+    }
+  }
+
   // ------------------------------------------------------------ sync
 
   function merge(notesIn: KeepNote[], removed: string[]): void {
@@ -253,6 +287,8 @@ export function createKeepStore(deps: KeepStoreDeps) {
         cursor = c.cursor;
         setRegistry(c.labels);
         bump();
+        // Marked as syncing before the page sees the cache: a deep link to an unknown note waits for the sync.
+        setStatus("syncing");
         setLoaded(true);
       });
     }
@@ -370,8 +406,25 @@ export function createKeepStore(deps: KeepStoreDeps) {
     return applyInput(base, input, iso(ms));
   }
 
+  /** Labels typed into a note keep their display case in the nav before the registry is fetched again. */
+  function registerNames(names: string[] | undefined): void {
+    if (!names?.length) return;
+    const have = new Set(registry().map((l) => l.tag));
+    const fresh: LabelInfo[] = [];
+    for (const raw of names) {
+      const name = cleanLabelName(raw);
+      const tag = normLabel(name);
+      if (tag && !have.has(tag)) {
+        have.add(tag);
+        fresh.push({ tag, name, count: 0 });
+      }
+    }
+    if (fresh.length) setRegistry([...registry(), ...fresh]);
+  }
+
   /** Create a note: it shows at once (id tmp_…) and is replaced by the server's copy. */
   function create(input: NoteInput): { id: string; saved: Promise<KeepNote | null> } {
+    registerNames(input.labels);
     const tmp = `tmp_${now().toString(36)}${(tmpSeq++).toString(36)}`;
     const local = blankNote(tmp, input);
     notes.set(tmp, local);
@@ -416,6 +469,7 @@ export function createKeepStore(deps: KeepStoreDeps) {
   }
 
   function updateMany(ids: string[], input: NoteInput): Promise<void> {
+    registerNames(input.labels);
     const stamp = iso(now());
     return mutate(
       ids,
@@ -623,6 +677,7 @@ export function createKeepStore(deps: KeepStoreDeps) {
     chains.clear();
     cursor = "0";
     firstSync = true;
+    asked.clear();
     batch(() => {
       setRegistry([]);
       setLoaded(false);
@@ -637,6 +692,9 @@ export function createKeepStore(deps: KeepStoreDeps) {
     labels,
     labelName,
     note,
+    findByKey,
+    ensure,
+    resolving: () => resolving() > 0,
     status,
     error,
     loaded,

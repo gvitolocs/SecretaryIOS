@@ -54,6 +54,21 @@ export default function KeepView() {
     onCleanup(startAutoSync(keep));
   });
 
+  // A deep link may carry a slug (Lucina cites notes as [note:<slug>]): use the note's id from then on,
+  // asking the server for a note this device has not synced yet.
+  const dialogId = createMemo(() => {
+    const key = route().noteId;
+    return key ? (keep.findByKey(key)?.id ?? key) : undefined;
+  });
+  createEffect(() => {
+    const key = route().noteId;
+    if (!key || !keep.loaded()) return;
+    const found = keep.findByKey(key);
+    if (found && found.id !== key) {
+      navigate(noteHref(found.id, view(), labelDisplay()), { replace: true });
+    } else if (!found && keep.status() !== "syncing") void keep.ensure(key);
+  });
+
   // Moving to another view drops the selection and the search.
   createEffect(
     on(
@@ -259,7 +274,7 @@ export default function KeepView() {
               </Show>
             </main>
           </div>
-          <Show when={route().noteId}>{(id) => <NoteDialog id={id()} onClose={closeNote} />}</Show>
+          <Show when={dialogId()}>{(id) => <NoteDialog id={id()} onClose={closeNote} />}</Show>
           <Show when={labelsOpen()}>
             <LabelsDialog onClose={() => setLabelsOpen(false)} />
           </Show>

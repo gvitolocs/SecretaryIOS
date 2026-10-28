@@ -1326,7 +1326,14 @@
   opacity: 0.85;
 }
 
+/* While selecting, an unselected card shows a dim circle; a selected one a bright, filled check. */
+.kp[data-selecting] .kp-card:not(.kp-card--selected) .kp-select {
+  color: var(--kp-text-2);
+  opacity: 0.7;
+}
+
 .kp-card--selected .kp-select {
+  color: var(--kp-text);
   opacity: 1;
 }
 

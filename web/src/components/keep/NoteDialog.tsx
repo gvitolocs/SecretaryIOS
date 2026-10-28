@@ -261,7 +261,7 @@ export function NoteDialog(props: { id: string; onClose: () => void }) {
     <Show
       when={note()}
       fallback={
-        <Show when={keep.loaded() && keep.status() !== "syncing"}>
+        <Show when={keep.loaded() && keep.status() !== "syncing" && !keep.resolving()}>
           <div class="kp-scrim" onPointerDown={(e) => e.target === e.currentTarget && props.onClose()}>
             <div class="kp-dialog kp-dialog--gone" role="alertdialog" aria-label={t("keep.noteGone")}>
               <p>{t("keep.noteGone")}</p>

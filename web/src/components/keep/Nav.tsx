@@ -1,4 +1,4 @@
-import { For, type JSX } from "solid-js";
+import { createEffect, For, type JSX } from "solid-js";
 import { t } from "../../i18n";
 import { sameView, keepHref } from "../../lib/keepRoute";
 import type { KeepView } from "../../lib/keepFilter";
@@ -29,9 +29,15 @@ function Item(props: { href: string; label: string; icon: JSX.Element; active: b
 /** Keep's left nav: Notes, Reminders, the labels, Edit labels, Archive, Trash. Collapsed it shows icons and opens on hover. */
 export function Nav(props: { view: KeepView; labels: LabelInfo[]; collapsed: boolean; onGo: (href: string) => void; onEditLabels: () => void }) {
   const is = (v: KeepView) => sameView(props.view, v);
+  let inner: HTMLDivElement | undefined;
+  // With many labels the active item (Archive, Trash) can sit below the fold: bring it into view.
+  createEffect(() => {
+    void props.view;
+    queueMicrotask(() => inner?.querySelector<HTMLElement>(".kp-nav-item--active")?.scrollIntoView?.({ block: "nearest" }));
+  });
   return (
     <nav class="kp-nav" classList={{ "kp-nav--collapsed": props.collapsed }} aria-label={t("keep.menu")}>
-      <div class="kp-nav-inner">
+      <div class="kp-nav-inner" ref={inner}>
         <Item href="/keep" label={t("keep.notes")} icon={<BulbOutlineIcon />} active={is({ kind: "notes" })} onGo={props.onGo} data="notes" />
         <Item href="/keep/reminders" label={t("keep.reminders")} icon={<BellIcon />} active={is({ kind: "reminders" })} onGo={props.onGo} data="reminders" />
         <For each={props.labels}>

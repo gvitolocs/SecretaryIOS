@@ -334,7 +334,8 @@ function summary(n, q) {
 
 const find = (key) => {
   const k = decodeURIComponent(key).toLowerCase();
-  return notes.get(k) ?? [...notes.values()].find((n) => n.slug === k) ?? trash.get(k);
+  // Live notes only (docs/keep.md): a trashed note is reached through /trash.
+  return notes.get(k) ?? [...notes.values()].find((n) => n.slug === k);
 };
 
 function readRaw(req, limit) {
@@ -603,7 +604,10 @@ export async function handleNotes(req, res, { path, method, url, send, fail, rea
 
   // The changes feed.
   if (parts.length === 3 && parts[2] === "changes" && method === "GET") {
-    const since = Number(url.searchParams.get("since") ?? 0) || 0;
+    const rawSince = url.searchParams.get("since") ?? "";
+    if (rawSince !== "" && !/^\d+$/.test(rawSince)) return fail(res, 400, "bad_request", "since: must be a number"), true;
+    const since = Number(rawSince || 0);
+    if (since > storeRev) return fail(res, 410, "cursor_expired", "the cursor is from another store"), true;
     const limit = Math.min(500, Math.max(1, Number(url.searchParams.get("limit") ?? 200) || 200));
     const horizon = Number(process.env.MOCK_KEEP_HORIZON ?? 0);
     if (since > 0 && since < horizon) return fail(res, 410, "cursor_expired", "the cursor is older than the kept tombstones"), true;
@@ -636,7 +640,7 @@ export async function handleNotes(req, res, { path, method, url, send, fail, rea
     if (parts.length === 4) {
       const tag = decodeURIComponent(parts[3]);
       const l = registry.get(tag);
-      if (!l && ![...notes.values()].some((n) => n.tags.includes(tag))) return fail(res, 404, "not_found", "no such label"), true;
+      if (!l && ![...notes.values()].some((n) => n.tags.includes(tag))) return fail(res, 404, "label_not_found", "no such label"), true;
       if (method === "PATCH") {
         const name = cleanName(body?.name ?? "");
         const next = normTag(name);
@@ -656,29 +660,52 @@ export async function handleNotes(req, res, { path, method, url, send, fail, rea
       }
       if (method === "DELETE") {
         registry.delete(tag);
+        let removed = 0;
         for (const n of [...notes.values(), ...trash.values()]) {
           if (!n.tags.includes(tag)) continue;
           n.tags = n.tags.filter((t) => t !== tag);
           stamp(n);
+          removed++;
         }
-        return send(res, 200, { ok: true }), true;
+        return send(res, 200, { ok: true, removed }), true;
       }
     }
     return fail(res, 404, "not_found", "Not found."), true;
   }
 
-  // Batch writes.
+  // Batch writes (docs/keep.md): trash / restore / deleteForever exclude each other and set / labels.
   if (parts.length === 3 && parts[2] === "batch" && method === "POST") {
-    const ids = Array.isArray(body?.ids) ? body.ids.map(String).slice(0, 500) : [];
+    const ids = [...new Set(Array.isArray(body?.ids) ? body.ids.map(String) : [])].slice(0, 500);
+    const modes = ["trash", "restore", "deleteForever"].filter((k) => body?.[k]);
+    if (modes.length > 1 || (modes.length && (body.set || body.addLabels || body.removeLabels))) {
+      return fail(res, 400, "bad_request", "trash, restore and deleteForever exclude each other and set / labels"), true;
+    }
     const changed = [];
-    for (const id of ids) {
-      const n = notes.get(id) ?? trash.get(id);
+    const removed = [];
+    for (const key of ids) {
+      const live = find(key);
+      const n = live ?? trash.get(key);
       if (!n) continue;
       if (body.deleteForever) {
+        if (!trash.has(n.id)) continue;
         purge(n);
+        removed.push(n.id);
         continue;
       }
-      if (body.restore && trash.has(id)) restoreNote(n);
+      if (body.restore) {
+        if (!trash.has(n.id)) continue;
+        restoreNote(n);
+        changed.push(n);
+        continue;
+      }
+      if (body.trash) {
+        if (!notes.has(n.id)) continue;
+        trashNote(n);
+        changed.push(n);
+        continue;
+      }
+      if (!notes.has(n.id)) continue;
+      const before = JSON.stringify([n.color, n.pinned, n.archived, n.tags]);
       if (body.set) {
         if (body.set.color !== undefined && COLORS.includes(body.set.color)) n.color = body.set.color;
         if (body.set.pinned !== undefined) n.pinned = !!body.set.pinned;
@@ -688,14 +715,12 @@ export async function handleNotes(req, res, { path, method, url, send, fail, rea
         const drop = new Set((body.removeLabels ?? []).map(normTag));
         n.tags = normTags([...n.tags, ...(body.addLabels ?? [])]).filter((t) => !drop.has(t));
       }
-      if (body.trash && notes.has(id)) trashNote(n);
-      else {
-        n.updatedAt = now();
-        stamp(n);
-      }
+      if (JSON.stringify([n.color, n.pinned, n.archived, n.tags]) === before) continue;
+      n.updatedAt = now();
+      stamp(n);
       changed.push(n);
     }
-    send(res, 200, { notes: changed });
+    send(res, 200, { notes: changed, ...(body.deleteForever ? { removed } : {}) });
     return true;
   }
 

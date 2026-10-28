@@ -1,5 +1,5 @@
-import { Route } from "@solidjs/router";
-import { fireEvent, screen, waitFor, within } from "@solidjs/testing-library";
+import { createMemoryHistory, MemoryRouter, Route } from "@solidjs/router";
+import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { KeepNote } from "../api/keep";
 import { dismissSnackbar, keep } from "../state/keep";
@@ -14,7 +14,7 @@ import KeepView from "./Keep";
 const NOW = "2026-10-27T10:00:00.000Z";
 const seed = (): KeepNote[] => [
   note({ id: "n_pin", title: "Revision plan", content: "Split into **blocks**", color: "teal", pinned: true, tags: ["godlevel"], position: 900, rev: 5 }),
-  note({ id: "n_text", title: "Active recall", content: "Test yourself", tags: ["godlevel"], position: 800, rev: 4 }),
+  note({ id: "n_text", slug: "n-text-slug", title: "Active recall", content: "Test yourself", tags: ["godlevel"], position: 800, rev: 4 }),
   note({
     id: "n_list",
     title: "Groceries",
@@ -57,6 +57,34 @@ function server(notes: KeepNote[] = seed()) {
     if (c.method === "POST" && url.pathname === "/v1/notes/batch") return { body: { notes: [] } };
     if (c.method === "DELETE") return { body: { ok: true } };
     return { status: 404, body: { error: { code: "not_found", message: "no" } } };
+  });
+}
+
+function renderKeepWithHistory(path: string) {
+  const history = createMemoryHistory();
+  history.set({ value: path, scroll: false, replace: true });
+  const r = render(() => (
+    <MemoryRouter history={history}>
+      <Route path="/keep/*rest" component={KeepView} />
+    </MemoryRouter>
+  ));
+  return { ...r, history };
+}
+
+/** Like server(), and GET /v1/notes/<slug> answers with `extra` (the changes feed does not list it). */
+function stubGetBySlug(extra: KeepNote) {
+  const notes = seed();
+  let synced = false;
+  calls = stubFetch((c) => {
+    const url = new URL(c.url, "http://x");
+    if (c.method === "GET" && url.pathname === "/v1/notes/changes") {
+      const body = { notes: synced ? [] : notes, removed: [], cursor: "6", hasMore: false };
+      synced = true;
+      return { body };
+    }
+    if (c.method === "GET" && url.pathname === "/v1/notes/labels") return { body: { labels: LABELS } };
+    if (c.method === "GET" && url.pathname === `/v1/notes/${extra.slug}`) return { body: extra };
+    return { status: 404, body: { error: { code: "note_not_found", message: "no" } } };
   });
 }
 
@@ -348,6 +376,24 @@ describe("Keep: the note dialog", () => {
     await waitFor(() => expect(calls.some((c) => c.method === "PATCH")).toBe(true));
     const items = (calls.find((c) => c.method === "PATCH")!.body as { items: { text: string; checked: boolean }[] }).items;
     expect(items.map((i) => [i.text, i.checked])).toEqual([["Oats", true], ["Lemons", true], ["Spinach", false]]);
+  });
+
+  it("opens a note from its slug in the cache, and moves the URL to its id", async () => {
+    server();
+    const { history } = renderKeepWithHistory("/keep/note/n-text-slug");
+    const dialog = await screen.findByRole("dialog", { name: "Active recall" });
+    expect(dialog).toBeInTheDocument();
+    await waitFor(() => expect(history.get()).toMatch(/\/keep\/note\/n_text$/));
+    expect(calls.some((c) => c.url.startsWith("/v1/notes/n-text-slug"))).toBe(false);
+  });
+
+  it("asks the server for a slug it has not synced (live notes only), then shows it", async () => {
+    server();
+    const extra = note({ id: "n_far", slug: "far-away", title: "Far away note", content: "from Lucina", rev: 50 });
+    stubGetBySlug(extra);
+    renderKeep("/keep/note/far-away");
+    expect(await screen.findByRole("dialog", { name: "Far away note" })).toBeInTheDocument();
+    expect(calls.some((c) => c.method === "GET" && c.url === "/v1/notes/far-away")).toBe(true);
   });
 
   it("says when a note does not exist", async () => {

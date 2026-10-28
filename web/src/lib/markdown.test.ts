@@ -93,3 +93,44 @@ describe("plainExcerpt", async () => {
     expect(parseTags("Work, #rome , work,, ")).toEqual(["work", "rome"]);
   });
 });
+
+describe("[note:<slug>] citations", () => {
+  const cite = (src: string) => parseInline(src).filter((n) => n.t === "link");
+
+  it("turns a citation into an in-app link to the note in Keep", () => {
+    const nodes = parseInline("Saved it in [note:gift-ideas-xmas] for you.");
+    expect(nodes).toEqual([
+      { t: "text", text: "Saved it in " },
+      { t: "link", href: "/keep/note/gift-ideas-xmas", route: true, children: [{ t: "text", text: "note:gift-ideas-xmas" }] },
+      { t: "text", text: " for you." },
+    ]);
+  });
+
+  it("finds several, and keeps the rest of the text, bold and links as they are", () => {
+    const nodes = parseInline("**See** [note:a] and [note:b-2], also [the site](https://x.org).");
+    expect(links(nodes)).toEqual(["/keep/note/a", "/keep/note/b-2", "https://x.org/"]);
+    expect(nodes[0]).toMatchObject({ t: "strong" });
+  });
+
+  it("only accepts a slug of [a-z0-9-], 1 to 64 characters", () => {
+    expect(cite("[note:Upper]")).toHaveLength(0);
+    expect(cite("[note:with space]")).toHaveLength(0);
+    expect(cite("[note:]")).toHaveLength(0);
+    expect(cite("[note:a_b]")).toHaveLength(0);
+    expect(cite(`[note:${"a".repeat(64)}]`)).toHaveLength(1);
+    expect(cite(`[note:${"a".repeat(65)}]`)).toHaveLength(0);
+    expect(inlineText(parseInline("[note:Upper]"))).toBe("[note:Upper]");
+  });
+
+  it("leaves code and a markdown link that happens to start with note: alone", () => {
+    expect(links(parseInline("`[note:x]`"))).toEqual([]);
+    expect(links(parseInline("[note:x](https://y.org)"))).toEqual(["https://y.org/"]);
+  });
+
+  it("is inline in paragraphs and list items of a whole document", () => {
+    const blocks = parseMarkdown("- one [note:x]\n- two");
+    const first = (blocks[0] as Extract<Block, { t: "list" }>).items[0]!.children[0] as Extract<Block, { t: "paragraph" }>;
+    expect(links(first.children)).toEqual(["/keep/note/x"]);
+  });
+});
+

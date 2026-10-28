@@ -222,6 +222,8 @@ const enc = (s: string) => encodeURIComponent(s);
 
 export interface KeepApi {
   changes(since: string, limit?: number): Promise<Changes>;
+  /** One live note by id or slug (the trash is not served here). */
+  get(key: string): Promise<KeepNote>;
   labels(): Promise<LabelInfo[]>;
   create(input: NoteInput): Promise<KeepNote>;
   patch(id: string, input: NoteInput): Promise<KeepNote>;
@@ -240,6 +242,7 @@ export interface KeepApi {
 export const keepApi: KeepApi = {
   changes: async (since, limit = 200) =>
     parseChanges(await request<unknown>("GET", `/v1/notes/changes?since=${enc(since || "0")}&limit=${limit}`)),
+  get: async (key) => parseKeepNote(await request<unknown>("GET", `/v1/notes/${enc(key)}`)),
   labels: async () => parseLabels(await request<unknown>("GET", "/v1/notes/labels")),
   create: async (input) => parseKeepNote(await request<unknown>("POST", "/v1/notes", { body: input, headers: CLIENT })),
   patch: async (id, input) => parseKeepNote(await request<unknown>("PATCH", `/v1/notes/${enc(id)}`, { body: input, headers: CLIENT })),

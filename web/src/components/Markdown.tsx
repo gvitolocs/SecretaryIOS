@@ -1,6 +1,7 @@
 import { createMemo, For, Match, Show, Switch, type JSX } from "solid-js";
 import { Dynamic } from "solid-js/web";
 import { inlineText, parseInline, parseMarkdown, type Block, type Inline } from "../lib/markdown";
+import { InAppLink } from "./InAppLink";
 
 // Renders lib/markdown's tree as elements with text children only: no
 // innerHTML anywhere, links open in a new tab without a referrer.
@@ -38,9 +39,18 @@ function Inlines(props: { nodes: Inline[] }): JSX.Element {
           </Match>
           <Match when={n.t === "link" && n}>
             {(x) => (
-              <a href={x().href} target="_blank" rel="noopener noreferrer nofollow">
-                <Inlines nodes={x().children} />
-              </a>
+              <Show
+                when={x().route}
+                fallback={
+                  <a href={x().href} target="_blank" rel="noopener noreferrer nofollow">
+                    <Inlines nodes={x().children} />
+                  </a>
+                }
+              >
+                <InAppLink href={x().href} class="md-note-link">
+                  <Inlines nodes={x().children} />
+                </InAppLink>
+              </Show>
             )}
           </Match>
         </Switch>
