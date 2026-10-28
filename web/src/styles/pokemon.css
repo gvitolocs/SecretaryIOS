@@ -1,5 +1,8 @@
 /* Lucina's Pokémon game (views/Pokemon.tsx). */
 .pokemon-page { max-width: 640px; margin: 0 auto; padding: var(--lu-space-sm, 8px) var(--lu-gutter, 16px) var(--lu-space-xxl, 28px); }
+.pokemon-page--wide { max-width: none; margin: 0; padding: 0; }
+.pg.pokemon-desk .pokemon-desk-game { padding: var(--pg-pad, 24px); }
+.pokemon-desk-ask { margin-top: 12px; }
 .pokemon-page h1 { margin: 4px 0 12px; }
 .pokemon-page h2 { font-size: 1.1rem; margin: 20px 0 8px; }
 .pokemon-back { display: inline-flex; align-items: center; gap: 4px; color: var(--lu-text-secondary); text-decoration: none; }
