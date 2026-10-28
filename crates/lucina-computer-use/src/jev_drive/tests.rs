@@ -1,4 +1,9 @@
 use super::*;
+use guard::{risky as risky_for, Kind};
+
+fn risky(l: &str) -> bool {
+    risky_for(l, Kind::Browse)
+}
 
 // Trimmed from a real get_window_state of Lucina's Chromium (2026-10-28).
 const DESKTOP: &str = r#"- [0] frame "Log ind – Google Konti - Chromium" [actions=[doDefault,showContextMenu]]
@@ -32,7 +37,7 @@ const DESKTOP: &str = r#"- [0] frame "Log ind – Google Konti - Chromium" [acti
 "#;
 
 #[test]
-fn desktop_offers_page_elements_and_tabs_but_not_chrome_or_risky_buttons() {
+fn desktop_offers_page_elements_but_not_tabs_chrome_or_risky_buttons() {
     let s = parse_desktop(DESKTOP, "s00000007", "Log ind – Google Konti - Chromium");
     let labels: Vec<&str> = s.elements.iter().map(|e| e.label.as_str()).collect();
     assert_eq!(
@@ -44,7 +49,6 @@ fn desktop_offers_page_elements_and_tabs_but_not_chrome_or_risky_buttons() {
             "Næste",
             "Opret konto",
             "Privatlivspolitik (eksternt)",
-            "Mail - Giuseppe Vitolo - Outlook",
         ]
     );
     let entry = &s.elements[1];
@@ -52,6 +56,10 @@ fn desktop_offers_page_elements_and_tabs_but_not_chrome_or_risky_buttons() {
     assert!(entry.editable);
     assert_eq!(entry.handle, "s00000007:33");
     assert!(!s.elements.iter().any(|e| e.label == "Close" || e.label == "Minimize"));
+    // The owner's tabs are his: pages open in the drive's own tab.
+    assert!(!s.elements.iter().any(|e| e.role == "page tab"));
+    // "Send" and "Accept all" are removed for good, and remembered for the checkout check.
+    assert_eq!(s.hard_labels, ["Send", "Accept all"]);
     assert!(s.text.contains("# Page: Log ind – Google Konti"));
     assert!(s.text.contains("# Log ind"));
     assert!(s.text.contains("Har du glemt mailadressen?"));
@@ -98,7 +106,9 @@ fn android_text_is_quoted_for_the_device_shell() {
 #[test]
 fn step_questions_fit_jev_limits_and_only_offer_typing_with_a_field() {
     let s = parse_desktop(DESKTOP, "s1", "t");
-    let qs = step_questions(Where::Desktop, &s, &[]);
+    let mem = Memory::default();
+    let plan = Plan::default();
+    let qs = step::questions(Where::Desktop, &step::offer(Where::Desktop, &s, &mem, &plan), &plan, &[]);
     let names: Vec<&str> = qs.iter().map(|(n, _)| *n).collect();
     assert_eq!(names, ["operation", "click_target", "done", "stuck"]);
     let Question::Choice { options, .. } = &qs[0].1 else {
@@ -109,9 +119,9 @@ fn step_questions_fit_jev_limits_and_only_offer_typing_with_a_field() {
         elements: s.elements.iter().filter(|e| !e.editable).cloned().collect(),
         ..s.clone()
     };
-    let ops = operations(Where::Desktop, &no_fields);
+    let ops = step::offer(Where::Desktop, &no_fields, &mem, &plan).ops;
     assert!(!ops.iter().any(|(k, _)| *k == "type"));
-    let android = operations(Where::Android, &no_fields);
+    let android = step::offer(Where::Android, &no_fields, &mem, &plan).ops;
     assert!(android.iter().any(|(k, _)| *k == "open_app"));
     assert!(!android.iter().any(|(k, _)| *k == "open_url"));
 }
@@ -141,7 +151,9 @@ fn account_switching_is_never_offered_and_accounts_are_named() {
             label: "Google-konto: Giuseppe (givi@au.dk)".into(),
             editable: false,
             handle: "s1:1".into(),
+            ..Element::default()
         }],
+        ..Screen::default()
     };
     assert_eq!(accounts(&s), ["givi@au.dk", "gvitolofoto0@gmail.com"]);
 }

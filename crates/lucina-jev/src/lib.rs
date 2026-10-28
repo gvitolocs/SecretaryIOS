@@ -150,7 +150,7 @@ impl Question {
         }
     }
 
-    fn validate(&self, name: &str) -> Result<(), JevError> {
+    pub fn validate(&self, name: &str) -> Result<(), JevError> {
         let bad = |m: String| Err(JevError::Invalid(format!("{name}: {m}")));
         match self {
             Self::Choice { options, .. } => {

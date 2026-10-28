@@ -157,6 +157,51 @@ fn now_ms() -> u64 {
 }
 
 /// The screen of a sandbox through the driver's `get_desktop_state`.
+/// A shopping drive stopped at the checkout (or a sign-in): the owner decides
+/// and pays himself. Creates an owner decision (owner-only by its words), keeps
+/// the screenshot under the data dir, and notifies his app with a link to the
+/// Computer view, where the basket's tab is open.
+pub async fn hand_over(st: &crate::AppState, h: lucina_computer_use::jev_drive::Handover) {
+    let total = h.total.clone().unwrap_or_else(|| "total not shown".into());
+    let question = format!(
+        "Your basket at {} is at the checkout ({total}). Place the order yourself?",
+        lucina_jev::clip(&h.site, 120)
+    );
+    let mut shot = None;
+    if let Some(b64) = &h.screenshot_b64 {
+        if let Ok(png) = base64::engine::general_purpose::STANDARD.decode(b64) {
+            let dir = st.cfg.data_dir.join("lucina-rs/checkout");
+            let ms = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+            let path = dir.join(format!("{ms}.png"));
+            if std::fs::create_dir_all(&dir).is_ok() && std::fs::write(&path, png).is_ok() {
+                shot = Some(path.display().to_string());
+            }
+        }
+    }
+    let body = json!({
+        "question": question,
+        "options": ["I'll pay in Lucina's open tab", "Cancel it"],
+        "context": format!("{}\n{}\nScreenshot: {}", h.reason, h.reply, shot.as_deref().unwrap_or("none")),
+        "reversible": true,
+        "impact": "medium",
+        "urgency": "high",
+        "topic": "computer-checkout",
+        "asking_client": "lucina",
+    });
+    match crate::decide::create(st, &body).await {
+        Ok(d) => tracing::info!(target: "lucina_jev::drive", decision = %d.decision_id, owner_only = d.owner_only, "checkout handed to the owner"),
+        Err(e) => tracing::warn!(target: "lucina_jev::drive", error = ?e, "checkout decision failed; notifying only"),
+    }
+    let note = json!({
+        "category": "lucina_message",
+        "title": "Basket ready at the checkout",
+        "body": lucina_jev::clip(&h.reply, 480),
+        "route": "/computer",
+        "dedupKey": format!("computer-checkout:{}", lucina_jev::clip(&h.site, 60)),
+    });
+    let _ = crate::bridges::notify(&st.secretary, &note).await;
+}
+
 async fn screen(sb: &Sandbox) -> Result<(Option<(String, String)>, String), ApiError> {
     let r = sb
         .call_tool("get_desktop_state", json!({}))
