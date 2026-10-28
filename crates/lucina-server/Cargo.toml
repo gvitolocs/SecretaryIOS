@@ -19,6 +19,7 @@ lucina-telegram = { path = "../lucina-telegram" }
 lucina-secrets = { path = "../lucina-secrets" }
 lucina-approvals = { path = "../lucina-approvals" }
 lucina-llm = { path = "../lucina-llm" }
+lucina-jev = { path = "../lucina-jev" }
 lucina-store = { path = "../lucina-store" }
 lucina-memory = { path = "../lucina-memory" }
 lucina-grocery = { path = "../lucina-grocery" }

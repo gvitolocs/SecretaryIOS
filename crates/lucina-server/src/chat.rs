@@ -2681,6 +2681,13 @@ async fn tools_turn(
     };
     let agent_cfg = AgentConfig {
         deadline: st.cfg.turn_deadline,
+        // Owner turns only: Jev's first-tool hint (TypeSafe; off without JEV_API_KEY).
+        router: if mcp {
+            None
+        } else {
+            crate::jev_route::tool_router()
+        },
+        route_text: Some(message.clone()),
         ..AgentConfig::default()
     };
     let t = TurnInput {

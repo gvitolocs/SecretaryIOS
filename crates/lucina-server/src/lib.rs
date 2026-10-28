@@ -28,6 +28,7 @@ pub mod desk;
 pub mod discord;
 pub mod fake;
 pub mod geocode;
+pub mod jev_route;
 pub mod grocery_turn;
 pub mod jobs;
 pub mod lan;

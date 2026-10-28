@@ -17,6 +17,7 @@ members = [
     "crates/lucina-secrets",
     "crates/lucina-approvals",
     "crates/lucina-llm",
+    "crates/lucina-jev",
     "crates/lucina-store",
     "crates/lucina-memory",
     "crates/lucina-grocery",

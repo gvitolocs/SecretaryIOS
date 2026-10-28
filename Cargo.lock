@@ -2668,6 +2668,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "lucina-jev"
+version = "0.1.0"
+dependencies = [
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "wiremock",
+]
+
+[[package]]
 name = "lucina-llm"
 version = "0.1.0"
 dependencies = [
@@ -2858,6 +2871,7 @@ dependencies = [
  "lucina-discord",
  "lucina-grocery",
  "lucina-intent",
+ "lucina-jev",
  "lucina-llm",
  "lucina-memo",
  "lucina-memory",

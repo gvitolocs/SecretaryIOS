@@ -2,6 +2,7 @@
 //! tool errors returned to the model as `{"error": ...}`, confirmation-gated
 //! tools turned into pending actions instead of running.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use lucina_llm::{ChatModel, ChatRequest, LlmError, Message, Role, ToolCall};
@@ -14,6 +15,22 @@ use crate::{is_denied_name, Ctx, Origin, Registry};
 pub const MAX_ROUNDS: usize = 6;
 const MAX_TOOL_OUTPUT_CHARS: usize = 8000;
 const PER_TOOL_TIMEOUT: Duration = Duration::from_secs(30);
+/// The router may take at most this long before the first model call.
+const ROUTER_TIMEOUT: Duration = Duration::from_secs(4);
+
+/// Guesses the first tool a request needs (the server plugs in TypeSafe Jev).
+/// A guess only adds a hint to the system prompt; every tool stays available.
+#[async_trait::async_trait]
+pub trait ToolRouter: Send + Sync {
+    /// `tools`: (name, description). `None`: no confident guess, or no tool.
+    async fn first_tool(&self, user_text: &str, tools: &[(String, String)]) -> Option<String>;
+}
+
+impl std::fmt::Debug for dyn ToolRouter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ToolRouter")
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct AgentConfig {
@@ -23,6 +40,10 @@ pub struct AgentConfig {
     pub temperature: Option<f32>,
     /// Characters of one tool result the model sees (longer ones are cut).
     pub max_tool_output_chars: usize,
+    /// Optional first-tool router (a hint, never a filter).
+    pub router: Option<Arc<dyn ToolRouter>>,
+    /// What the router reads (the owner's own words); default: the last user message.
+    pub route_text: Option<String>,
 }
 
 impl Default for AgentConfig {
@@ -33,6 +54,8 @@ impl Default for AgentConfig {
             model: None,
             temperature: Some(0.4),
             max_tool_output_chars: MAX_TOOL_OUTPUT_CHARS,
+            router: None,
+            route_text: None,
         }
     }
 }
@@ -290,6 +313,10 @@ pub async fn run(
     let deadline = Instant::now() + cfg.deadline;
     let mut records = Vec::new();
     let specs = registry.specs();
+    if let Some(router) = &cfg.router {
+        let text = cfg.route_text.clone();
+        add_route_hint(router.as_ref(), text, &mut messages, &specs, deadline).await;
+    }
     for round in 0..cfg.max_rounds.max(1) {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
@@ -386,6 +413,53 @@ pub async fn run(
         stop: Stop::MaxRounds,
         messages,
     })
+}
+
+/// Ask the router for the first tool of the latest user message and, when it
+/// names one that exists, say so in the system prompt.
+async fn add_route_hint(
+    router: &dyn ToolRouter,
+    route_text: Option<String>,
+    messages: &mut Vec<Message>,
+    specs: &[lucina_llm::Tool],
+    deadline: Instant,
+) {
+    let Some(user_text) = route_text
+        .or_else(|| {
+            messages
+                .iter()
+                .rev()
+                .find(|m| m.role == Role::User)
+                .map(|m| m.text().to_owned())
+        })
+        .filter(|t| !t.trim().is_empty())
+    else {
+        return;
+    };
+    if specs.is_empty() {
+        return;
+    }
+    let tools: Vec<(String, String)> = specs
+        .iter()
+        .map(|t| (t.function.name.clone(), t.function.description.clone()))
+        .collect();
+    let budget = ROUTER_TIMEOUT.min(deadline.saturating_duration_since(Instant::now()) / 4);
+    let Ok(Some(tool)) = tokio::time::timeout(budget, router.first_tool(&user_text, &tools)).await
+    else {
+        return;
+    };
+    if !tools.iter().any(|(n, _)| *n == tool) {
+        return;
+    }
+    let hint = format!(
+        "Routing hint: this request most likely needs the tool `{tool}` first. Call it unless it clearly does not fit; other tools stay available."
+    );
+    match messages.first_mut() {
+        Some(m) if m.role == Role::System => {
+            m.content = Some(format!("{}\n\n{hint}", m.text()));
+        }
+        _ => messages.insert(0, Message::system(hint)),
+    }
 }
 
 /// One call through the confirmation and MCP gates (tests of other modules).

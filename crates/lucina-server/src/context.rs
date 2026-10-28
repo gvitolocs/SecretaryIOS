@@ -1,8 +1,8 @@
 //! A text turn's context, as the Node Lucina builds it
 //! (`prepareLucinaTurnContext` + `assembleLucinaTurnContext`):
 //!
-//! turn metadata → intent (tier 0, else the DeepSeek classifier on the
-//! recent turns) → context policy → gated sources, joined in Node's order:
+//! turn metadata → intent (tier 0, else Jev or the DeepSeek classifier on the
+//! recent turns, see [`crate::jev_route`]) → context policy → gated sources, joined in Node's order:
 //! metadata, Discord presence, calendar, named notes, recent turns,
 //! delivered reminders, Honcho (only for policies that allow it, clipped to
 //! the policy budget).
@@ -121,8 +121,21 @@ pub async fn classify(
         user_label,
         platform,
     };
+    // Jev first (TypeSafe's decision model: fast, typed, no JSON to parse); a
+    // sure answer is final, an unsure one is checked by DeepSeek, and a failed
+    // call (quota, timeout, breaker) leaves the turn to DeepSeek alone.
+    let jev = crate::jev_route::classify_intent(lucina_jev::shared(), &t).await;
+    if let Some((v, confidence)) = &jev {
+        if *confidence >= crate::jev_route::intent_min() {
+            return tier0::from_model_json(v, user_text, recent, s);
+        }
+    }
     match st.planner.classify_json(&t).await {
         Ok(Some(v)) => tier0::from_model_json(&v, user_text, recent, s),
+        Ok(None) | Err(_) if jev.is_some() => {
+            let (v, _) = jev.unwrap();
+            tier0::from_model_json(&v, user_text, recent, s)
+        }
         Ok(None) => Classification::unparsed(),
         Err(e) => {
             tracing::warn!(error = %e, "intent router tier1 failed; using safe fallback");
