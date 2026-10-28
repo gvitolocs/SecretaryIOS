@@ -20,7 +20,7 @@ use lucina_tools::agent::{self, AgentConfig, ToolRecord};
 use lucina_tools::tools::media::MediaTool;
 use lucina_tools::{Ctx, Effect, Origin, Registry};
 
-use super::{gallery_action, Finish, Turn, SECRETARY_EXTRA_SYSTEM};
+use super::{gallery_action, Finish, Turn};
 use crate::api::PLATFORM_LABEL;
 use crate::prompts::Prompts;
 use crate::share::library::LibraryReader;
@@ -210,7 +210,7 @@ pub(super) async fn try_turn(t: &Turn<'_>, memory: &str) -> Option<Finish> {
     };
     let ctx = Ctx::new(st.tool_env.clone(), &t.channel, &t.session).with_origin(origin);
     let mcp_note = t.mcp.as_ref().map(mcp::note).unwrap_or_default();
-    let extra = format!("{SECRETARY_EXTRA_SYSTEM} {GUIDE} {mcp_note}");
+    let extra = crate::capabilities::subloop_extra(GUIDE, &mcp_note);
     let now = chrono::Utc::now();
     let system = st.planner.prompts.agent_system(
         PLATFORM_LABEL,

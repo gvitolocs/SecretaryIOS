@@ -129,7 +129,65 @@ tokio::task_local! {
     /// carries it right before the message (`Prompts::user_block`,
     /// `Prompts::plan_user`), so the casual memory clip never drops it.
     pub static TURN_REPLY: String;
+    /// The reply-language line for the turn (`resolve_reply_language`): the language of the owner's
+    /// latest message, never of earlier turns or the device. Read by `Prompts::language_rule`.
+    pub static TURN_LANG: String;
 }
+
+/// The turn's reply-language line ("" outside a turn).
+pub fn turn_lang() -> String {
+    TURN_LANG
+        .try_with(|l| l.trim().to_owned())
+        .unwrap_or_default()
+}
+
+/// Which language the reply uses: the owner's own text first; with no text of its own (a bare link, a
+/// photo, a file) the language of his recent messages, newest first; then English. Never the device
+/// locale or his location. `recent_owner` is newest first.
+pub fn resolve_reply_language<S: AsRef<str>>(
+    owner_text: &str,
+    recent_owner: &[S],
+) -> lucina_intent::lang::Lang {
+    use lucina_intent::lang::{detect, Lang};
+    detect(owner_text)
+        .or_else(|| recent_owner.iter().find_map(|t| detect(t.as_ref())))
+        .unwrap_or(Lang::En)
+}
+
+/// The owner's recent plain messages in `chat_id`, newest first (share wrappers are skipped: they hold
+/// English instructions and extracted content, not his words).
+pub fn recent_owner_texts(recent: &lucina_store::recent::RecentChat, chat_id: &str) -> Vec<String> {
+    recent
+        .turns(chat_id)
+        .into_iter()
+        .rev()
+        .filter(|t| t.role == "user" && !t.text.contains("<Shared content>"))
+        .take(6)
+        .map(|t| t.text)
+        .collect()
+}
+
+/// `Reply language: X ...` for the turn, resolved from the owner's text and recent messages.
+pub fn reply_language_line(
+    recent: &lucina_store::recent::RecentChat,
+    chat_id: &str,
+    owner_text: &str,
+) -> String {
+    let lang = resolve_reply_language(owner_text, &recent_owner_texts(recent, chat_id));
+    Prompts::language_line(lang)
+}
+
+/// Last thing the planner reads, after the game block: the answer is one JSON object.
+pub const PLAN_JSON_REMINDER: &str = "Output format: reply with exactly one JSON object for the owner's latest message (the schema above) and no text outside it. Put prose only inside the \"text\" field.";
+
+/// Re-ask text when a reply came back as tool-call markup.
+pub const NO_TOOL_MARKUP_RULE: &str = "You have no tools in this reply. Answer in plain text only; never write tool calls, function-call tags or other markup.";
+
+/// What the owner sees when the model keeps answering in tool-call markup.
+pub const TOOL_MARKUP_FAILURE: &str = "I couldn't put that into words just now. Please send it once more.";
+
+/// Sent after a plan answer that was not JSON.
+pub const PLAN_REPAIR_PROMPT: &str = "Your previous output was not a valid JSON object. Return only the JSON object for this turn, using the schema above, for the owner's latest message only. No text outside the JSON.";
 
 /// The current turn's reply block ("" outside a turn or with no `replyTo`).
 pub fn turn_reply() -> String {
@@ -200,14 +258,26 @@ impl Planner {
             knowledge,
             Utc::now(),
         );
-        let text = self
-            .complete(
-                system,
-                Prompts::user_block(t.user_label, t.memory, t.user_text),
-                0.6,
-                purpose,
-            )
+        let user = Prompts::user_block(t.user_label, t.memory, t.user_text);
+        let mut text = self
+            .complete(system.clone(), user.clone(), 0.6, purpose)
             .await?;
+        if lucina_llm::has_tool_markup(&text) {
+            // The model wrote tool-call markup as its answer (this path has no tools): ask once more for plain
+            // text, then admit the failure rather than show the markup to the owner.
+            tracing::warn!(purpose, "reply contained tool-call markup; re-asking once");
+            text = self
+                .complete(
+                    format!("{system} {NO_TOOL_MARKUP_RULE}"),
+                    user,
+                    0.6,
+                    purpose,
+                )
+                .await?;
+            if lucina_llm::has_tool_markup(&text) {
+                return Ok(TOOL_MARKUP_FAILURE.into());
+            }
+        }
         Ok(if text.trim().is_empty() {
             "I could not generate a reply.".into()
         } else {
@@ -376,18 +446,49 @@ impl Planner {
                 && actionable(user_text))
     }
 
-    /// `planResponse` (Lucina): the JSON plan plus Node's post-processing.
-    pub async fn plan_response(&self, t: &TurnInput<'_>) -> Result<Value, LlmError> {
-        let content = self
-            .complete(
-                self.prompts.plan_system(),
-                Prompts::plan_user(t.platform, t.user_label, t.memory, t.user_text),
-                0.2,
-                "plan",
-            )
+    /// One plan call (JSON mode): the text and the finish reason.
+    async fn plan_call(&self, messages: Vec<Message>) -> Result<(String, Option<String>), LlmError> {
+        let r = self
+            .model
+            .complete(ChatRequest {
+                messages,
+                temperature: Some(0.2),
+                purpose: "plan",
+                json_object: true,
+                ..ChatRequest::default()
+            })
             .await?;
-        let parsed = parse_plan_output(&content)
-            .ok_or_else(|| LlmError::Decode("No JSON object found in model response".into()))?;
+        Ok((r.message.text().to_owned(), r.finish_reason))
+    }
+
+    /// `planResponse` (Lucina): the JSON plan plus Node's post-processing. The request asks for JSON
+    /// mode; a reply that still is not JSON gets one repair retry before the caller falls back.
+    pub async fn plan_response(&self, t: &TurnInput<'_>) -> Result<Value, LlmError> {
+        let system = format!(
+            "{}\n\n{PLAN_JSON_REMINDER}",
+            with_turn_system(self.prompts.plan_system_for(t.user_text, Utc::now()), "plan")
+        );
+        let user = Prompts::plan_user(t.platform, t.user_label, t.memory, t.user_text);
+        let mut messages = vec![Message::system(system), Message::user(user)];
+        let (mut content, finish) = self.plan_call(messages.clone()).await?;
+        let mut parsed = parse_plan_output(&content);
+        if parsed.is_none() {
+            tracing::warn!(
+                chars = content.chars().count(),
+                finish = ?finish,
+                head = %content.chars().take(80).collect::<String>().replace('\n', " "),
+                "plan output was not JSON; retrying once"
+            );
+            if !content.trim().is_empty() {
+                messages.push(Message::assistant(content.clone()));
+            }
+            messages.push(Message::user(PLAN_REPAIR_PROMPT));
+            let (again, _) = self.plan_call(messages).await?;
+            parsed = parse_plan_output(&again);
+            content = again;
+        }
+        let parsed =
+            parsed.ok_or_else(|| LlmError::Decode("No JSON object found in model response".into()))?;
         let action = parsed["action"].as_str().unwrap_or("reply").to_owned();
         let s = |k: &str| parsed[k].as_str().unwrap_or("").trim().to_owned();
         if looks_like_reminder_request(t.user_text)
@@ -427,7 +528,16 @@ impl Planner {
             | "game_start"
             | "game_pause" => parsed.clone(),
             _ => {
-                json!({"action": "reply", "text": if s("text").is_empty() { content.trim().to_owned() } else { s("text") }})
+                let text = if s("text").is_empty() {
+                    content.trim().to_owned()
+                } else {
+                    s("text")
+                };
+                if lucina_llm::has_tool_markup(&text) {
+                    // The caller falls back to a plain reply, which guards against the markup too.
+                    return Err(LlmError::Decode("tool-call markup in the plan text".into()));
+                }
+                json!({"action": "reply", "text": text})
             }
         })
     }
@@ -530,5 +640,184 @@ mod tests {
             parse_plan_output("{\"action\":\"reply\",\"text\":\"Ciao, come st").unwrap()["text"],
             "Ciao, come st"
         );
+    }
+
+    // ---- the JSON plan: JSON mode, one repair retry, language and the game block
+
+    use lucina_llm::ScriptedModel;
+
+    fn planner(model: &Arc<ScriptedModel>) -> Planner {
+        Planner {
+            model: model.clone(),
+            prompts: Prompts::minimal("Lucina"),
+        }
+    }
+
+    fn turn<'a>(text: &'a str, memory: &'a str) -> TurnInput<'a> {
+        TurnInput {
+            user_text: text,
+            memory,
+            user_label: "Giuseppe",
+            platform: "secretary",
+        }
+    }
+
+    /// The 10:59 and 11:00 turns of 2026-10-28, with her old Italian turns in the context and the game block
+    /// that every owner turn carried in the system part.
+    const MEMORY: &str = "Recent chat turns (most recent last; stamps show when each turn happened):\n[28/10 10:58 Europe/Copenhagen] user: Ho fatto la lavanderia, poi vado alla posta per il pacco\n[28/10 10:58 Europe/Copenhagen] assistant: Va bene, ti preparo il giro delle commissioni.";
+
+    #[tokio::test]
+    async fn the_plan_request_is_json_mode_and_ends_with_the_format_reminder() {
+        let model = Arc::new(ScriptedModel::new());
+        model.push_text(r#"{"action":"reply","text":"At 12:00."}"#);
+        let game = crate::bridges::game_block(
+            &json!({"running": false, "actions": 17274, "events": ["a", "b"]}),
+            "MODE: Dialog\nLOCATION: CHAMPIONS_ROOM",
+            false,
+        );
+        let plan = TURN_SYSTEM
+            .scope(game, async {
+                planner(&model)
+                    .plan_response(&turn("You know what time is the meeting therese è teresa", MEMORY))
+                    .await
+            })
+            .await
+            .unwrap();
+        assert_eq!(plan["text"], "At 12:00.");
+        let reqs = model.requests.lock().unwrap().clone();
+        assert_eq!(reqs.len(), 1);
+        assert!(reqs[0].json_object, "JSON mode");
+        assert_eq!(reqs[0].purpose, "plan");
+        let system = reqs[0].messages[0].text();
+        assert!(system.ends_with(PLAN_JSON_REMINDER), "the last words are the format");
+        assert!(system.contains("Reply language: English"));
+        assert!(system.contains("CHAMPIONS_ROOM"), "the paused game stays as information");
+        assert!(!system.contains("This Pokémon Red run is YOU: your own playing self"));
+        assert!(system.contains("Never flatly deny what you said earlier"));
+        // Size of what a failing turn sent: the verbatim system prompt is most of it.
+        let user = reqs[0].messages[1].text();
+        eprintln!("plan prompt chars: system={} user={}", system.chars().count(), user.chars().count());
+        assert!(user.contains("Message:\nYou know what time is the meeting therese è teresa"));
+    }
+
+    #[tokio::test]
+    async fn a_prose_answer_gets_one_repair_retry() {
+        let model = Arc::new(ScriptedModel::new());
+        model.push_text("Alle 12:00 hai Therese zoom, non Teresa.");
+        model.push_text(r#"{"action":"reply","text":"Therese zoom is at 12:00."}"#);
+        let plan = planner(&model)
+            .plan_response(&turn("You know what time is the meeting therese è teresa", MEMORY))
+            .await
+            .unwrap();
+        assert_eq!(plan["action"], "reply");
+        assert_eq!(plan["text"], "Therese zoom is at 12:00.");
+        let reqs = model.requests.lock().unwrap().clone();
+        assert_eq!(reqs.len(), 2);
+        assert!(reqs.iter().all(|r| r.json_object));
+        let retry = &reqs[1].messages;
+        assert_eq!(retry.len(), 4, "system, user, her previous output, the repair request");
+        assert_eq!(retry[2].text(), "Alle 12:00 hai Therese zoom, non Teresa.");
+        assert!(retry[3].text().contains("Return only the JSON object for this turn"));
+    }
+
+    #[tokio::test]
+    async fn two_non_json_answers_fail_so_the_caller_can_fall_back() {
+        let model = Arc::new(ScriptedModel::new());
+        model.push_text("prose");
+        model.push_text("more prose");
+        let err = planner(&model)
+            .plan_response(&turn("Cancella", ""))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("No JSON object found"));
+        assert_eq!(model.request_count(), 2, "exactly one retry");
+    }
+
+    #[tokio::test]
+    async fn the_fallback_reply_answers_the_latest_message_in_its_language() {
+        let model = Arc::new(ScriptedModel::new());
+        model.push_text("It is at 12:00.");
+        let t = turn("You know what time is the meeting therese è teresa", MEMORY);
+        let text = planner(&model)
+            .generate_reply(&t, crate::prompts::PLAN_FALLBACK_RULE, "", "reply")
+            .await
+            .unwrap();
+        assert_eq!(text, "It is at 12:00.");
+        let reqs = model.requests.lock().unwrap().clone();
+        let system = reqs[0].messages[0].text();
+        assert!(system.contains("Answer ONLY the owner's latest message"));
+        assert!(system.contains("never answer an older topic"));
+        assert!(system.contains("Reply language: English"));
+        assert!(!reqs[0].json_object);
+    }
+
+    #[test]
+    fn the_reply_language_is_the_owner_s_own_text_then_his_recent_messages_then_english() {
+        use lucina_intent::lang::Lang;
+        let none: [&str; 0] = [];
+        // His own text wins, whatever came before.
+        assert_eq!(
+            resolve_reply_language("You know what time is the meeting therese è teresa", &["Di cosa stai parlando?"]),
+            Lang::En
+        );
+        assert_eq!(resolve_reply_language("Explode outlook in your sandbox", &["Cancella"]), Lang::En);
+        assert_eq!(resolve_reply_language("Di cosa stai parlando?", &["hello there my friend"]), Lang::It);
+        assert_eq!(resolve_reply_language("hvad har jeg i kalenderen i morgen", &none), Lang::Da);
+        // No text of its own (a bare link, a photo, a file): his recent messages, newest first, then English.
+        let recent = ["ok", "Ho fatto la lavanderia, poi vado alla posta per il pacco", "hello there my friend"];
+        assert_eq!(resolve_reply_language("", &recent), Lang::It);
+        assert_eq!(resolve_reply_language("📎 The Little Mermaid (statue)", &recent[..1]), Lang::En);
+        assert_eq!(resolve_reply_language("", &none), Lang::En);
+        // The exact texts that came back in Danish on 2026-10-26/27.
+        for t in [
+            "[selftest] Comprare: latte, uova, pane integrale, 2 limoni",
+            "[selftest] promemoria: chiamare il dentista domani alle 10",
+            "[selftest] tre foto: cosa hanno in comune?",
+        ] {
+            assert_eq!(resolve_reply_language(t, &none), Lang::It, "{t}");
+        }
+        assert_eq!(resolve_reply_language("https://en.wikipedia.org/wiki/The_Little_Mermaid_(statue)", &none), Lang::En);
+    }
+
+    #[test]
+    fn recent_owner_texts_skip_share_wrappers_and_assistant_turns() {
+        let recent = lucina_store::recent::RecentChat::new(None);
+        let now = Utc::now();
+        recent.append("s", "user", "Ho fatto la lavanderia", now);
+        recent.append("s", "assistant", "Hello there, how are you my friend", now);
+        recent.append("s", "user", "Owner's question or note: \"\"\n\n<Shared content>the and of</Shared content>", now);
+        let texts = recent_owner_texts(&recent, "s");
+        assert_eq!(texts, vec!["Ho fatto la lavanderia".to_owned()]);
+        assert!(reply_language_line(&recent, "s", "").contains("Reply language: Italian"));
+    }
+
+    #[tokio::test]
+    async fn tool_markup_is_never_returned_as_a_reply() {
+        let markup = "<\u{ff5c}DSML\u{ff5c}function_calls><\u{ff5c}DSML\u{ff5c}invoke name=\"drive\"></\u{ff5c}DSML\u{ff5c}invoke></\u{ff5c}DSML\u{ff5c}function_calls>";
+        // Once, then plain text: the retry answers.
+        let model = Arc::new(ScriptedModel::new());
+        model.push_text(markup);
+        model.push_text("Alle 12:00.");
+        let t = turn("A che ora è la riunione?", "");
+        let text = planner(&model)
+            .generate_reply(&t, "", "", "reply")
+            .await
+            .unwrap();
+        assert_eq!(text, "Alle 12:00.");
+        let reqs = model.requests.lock().unwrap().clone();
+        assert!(reqs[1].messages[0].text().contains(NO_TOOL_MARKUP_RULE));
+        // Twice: the honest one-line failure.
+        let model = Arc::new(ScriptedModel::new());
+        model.push_text(markup);
+        model.push_text(markup);
+        let text = planner(&model)
+            .generate_reply(&t, "", "", "reply")
+            .await
+            .unwrap();
+        assert_eq!(text, TOOL_MARKUP_FAILURE);
+        // A plan whose text is markup is an error, so the caller falls back.
+        let model = Arc::new(ScriptedModel::new());
+        model.push_text(&format!("{{\"action\":\"reply\",\"text\":{}}}", serde_json::to_string(markup).unwrap()));
+        assert!(planner(&model).plan_response(&t).await.is_err());
     }
 }

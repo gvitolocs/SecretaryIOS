@@ -491,3 +491,25 @@ async fn confirmation_gated_calls_become_pending_actions() {
     assert_eq!(store.list(false).unwrap().len(), 0);
     assert!(pending.take(&p.id).is_none());
 }
+
+#[tokio::test]
+async fn tool_call_markup_is_never_the_answer() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = Ctx::new(Arc::new(env(dir.path(), None)), "web", "s");
+    let r = Registry::builtin(&ToolSelection::All);
+    let dsml = "<\u{ff5c}\u{ff5c}DSML\u{ff5c}\u{ff5c} calls> <\u{ff5c}\u{ff5c}DSML\u{ff5c}\u{ff5c} invoke name=\"drive\"> </\u{ff5c}\u{ff5c}DSML\u{ff5c}\u{ff5c} calls>";
+    let pending = PendingStore::memory(DEFAULT_TTL);
+    // Markup, then a clean answer on the re-ask.
+    let model = ScriptedModel::new();
+    model.push_text(dsml);
+    model.push_text("Non ho trovato nulla su Drive.");
+    let out = agent::run(&model, &r, vec![lucina_llm::Message::user("cerca su drive")], &ctx, &pending, &AgentConfig::default(), &|_| {}).await.unwrap();
+    assert_eq!(out.text, "Non ho trovato nulla su Drive.");
+    assert!(model.requests.lock().unwrap()[1].tools.is_empty(), "the re-ask has no tools");
+    // Markup twice: no text at all, so the caller falls back.
+    let model = ScriptedModel::new();
+    model.push_text(dsml);
+    model.push_text(dsml);
+    let out = agent::run(&model, &r, vec![lucina_llm::Message::user("cerca su drive")], &ctx, &pending, &AgentConfig::default(), &|_| {}).await.unwrap();
+    assert_eq!(out.text, "");
+}

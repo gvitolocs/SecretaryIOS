@@ -19,12 +19,15 @@ pub mod jsre;
 
 pub mod calendar;
 pub mod calendar_event;
+pub mod computer_route;
 pub mod domains;
 pub mod game;
 pub mod grocery;
 pub mod heuristics;
 pub mod hints;
+pub mod lang;
 pub mod mcp;
+pub mod name_match;
 pub mod notes;
 pub mod outfit;
 pub mod policy;

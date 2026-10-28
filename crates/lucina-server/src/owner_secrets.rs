@@ -727,4 +727,19 @@ mod tests {
             "Saved `POKO_KEY` in Poko / prod / /Pokobot (fingerprint ab12cd34)"
         );
     }
+
+    #[test]
+    fn mail_and_outlook_are_not_secrets() {
+        for t in [
+            "Quick check only: has Giuseppe already SENT an email this morning (28 Oct 2026) from givi@au.dk to Marianne/Arkaitz about CRAFT self-assessment / \"Ecosystem self assessment-tool for replication\"? If you can see Outlook Sent or notes, say yes/no. If you cannot check, say cannot check. One short answer.",
+            "Explode outlook in your sandbox",
+            "Explore Outlook in your sandbox",
+        ] {
+            assert!(!is_secret_command(t), "{t}");
+            assert_eq!(project_request(t), None, "{t}");
+            assert!(lucina_secrets::reveal::classify(t).is_none(), "{t}");
+            assert!(lucina_secrets::redact::detect(t).is_empty(), "{t}");
+            assert_eq!(lucina_secrets::redactor().redact(t).as_ref(), t, "{t}");
+        }
+    }
 }

@@ -13,7 +13,7 @@ use lucina_tools::agent::{self, AgentConfig, ToolRecord};
 use lucina_tools::tools::drive::DriveTool;
 use lucina_tools::{Ctx, Origin, Registry};
 
-use super::{Finish, Turn, SECRETARY_EXTRA_SYSTEM};
+use super::{Finish, Turn};
 use crate::api::PLATFORM_LABEL;
 use crate::prompts::Prompts;
 
@@ -88,7 +88,7 @@ pub(super) async fn try_turn(t: &Turn<'_>, memory: &str) -> Option<Finish> {
             }
         })
         .unwrap_or_default();
-    let extra = format!("{SECRETARY_EXTRA_SYSTEM} {GUIDE} {mcp_note}");
+    let extra = crate::capabilities::subloop_extra(GUIDE, &mcp_note);
     let system = st.planner.prompts.agent_system(
         PLATFORM_LABEL,
         &t.message,
