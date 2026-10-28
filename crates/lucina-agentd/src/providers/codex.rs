@@ -62,6 +62,12 @@ pub struct CodexProvider {
 
 impl CodexProvider {
     async fn start(&self, config: SessionConfig, events: EventSink, resume: Option<&str>) -> Result<Arc<dyn Session>, ProviderError> {
+        // The agents' own tools (subagents, heartbeats, search): `lagent mcp`.
+        let mcp = crate::mcp::codex_config(config.agent_id.as_deref());
+        self.start_with(config, events, resume, mcp).await
+    }
+
+    async fn start_with(&self, config: SessionConfig, events: EventSink, resume: Option<&str>, mcp: Option<Value>) -> Result<Arc<dyn Session>, ProviderError> {
         let mode = config.mode_id.clone().unwrap_or_else(|| DEFAULT_MODE.into());
         let (approval, sandbox, reviewer) = preset(&mode).ok_or_else(|| {
             ProviderError::new(format!("Invalid Codex mode \"{mode}\". Valid modes are: read-only, auto, auto-review, full-access"))
@@ -81,17 +87,8 @@ impl CodexProvider {
         .await
         .map_err(|e| fail("initialize", e))?;
         rpc.notify("initialized", json!({})).await.map_err(|e| fail("initialized", e))?;
-        let mut params = json!({"cwd": config.cwd, "approvalPolicy": approval, "sandbox": sandbox, "approvalsReviewer": reviewer});
-        if let Some(m) = &model {
-            params["model"] = json!(m);
-        }
-        let (method, thread_id) = match resume {
-            Some(id) => {
-                params["threadId"] = json!(id);
-                ("thread/resume", id.to_string())
-            }
-            None => ("thread/start", String::new()),
-        };
+        let (method, params) = thread_request(&config.cwd, (approval, sandbox, reviewer), model.as_deref(), resume, mcp);
+        let thread_id = resume.unwrap_or_default().to_string();
         let resp = rpc.request(method, params, RPC_TIMEOUT).await.map_err(|e| fail(method, e))?;
         let thread_id = resp["thread"]["id"].as_str().map(str::to_string).filter(|s| !s.is_empty()).unwrap_or(thread_id);
         if thread_id.is_empty() {
@@ -116,6 +113,25 @@ impl CodexProvider {
         });
         session.clone().spawn_reader(incoming);
         Ok(session)
+    }
+}
+
+/// The `thread/start` (or `thread/resume`) request. `mcp` is the `config` override
+/// that attaches `lagent mcp` ([`crate::mcp::codex_config`]).
+fn thread_request(cwd: &str, (approval, sandbox, reviewer): (&str, &str, &str), model: Option<&str>, resume: Option<&str>, mcp: Option<Value>) -> (&'static str, Value) {
+    let mut params = json!({"cwd": cwd, "approvalPolicy": approval, "sandbox": sandbox, "approvalsReviewer": reviewer});
+    if let Some(m) = model {
+        params["model"] = json!(m);
+    }
+    if let Some(c) = mcp {
+        params["config"] = c;
+    }
+    match resume {
+        Some(id) => {
+            params["threadId"] = json!(id);
+            ("thread/resume", params)
+        }
+        None => ("thread/start", params),
     }
 }
 
@@ -433,6 +449,12 @@ impl CodexSession {
             "item/fileChange/requestApproval" | "applyPatchApproval" => ("Edit", PermissionKind::Tool, "Apply file changes".to_string(), None, p.clone()),
             "item/permissions/requestApproval" => ("Permissions", PermissionKind::Other, "Grant extra permissions".to_string(), None, p.clone()),
             "item/tool/requestUserInput" => ("AskUserQuestion", PermissionKind::Question, "Questions".to_string(), None, p.clone()),
+            // agentd's own MCP server enforces its limits itself (preapproved, see `mcp::is_own_tool`);
+            // the config already marks its tools `approve`, so this is only a safety net.
+            "mcpServer/elicitation/request" if p["serverName"] == crate::mcp::SERVER => {
+                let _ = self.rpc.respond(id, json!({"action": "accept", "content": null, "_meta": null})).await;
+                return;
+            }
             _ => {
                 let _ = self.rpc.respond_error(id, -32601, &format!("lucina-agentd does not handle {method}")).await;
                 return;
@@ -589,5 +611,85 @@ mod tests {
         assert!(map_item(&json!({"type":"reasoning","id":"r"}), true).is_none());
         assert_eq!(preset("auto"), Some(("on-request", "workspace-write", "user")));
         assert_eq!(preset("bogus"), None);
+    }
+
+    #[test]
+    fn thread_request_json_with_and_without_mcp() {
+        let preset = preset("auto").unwrap();
+        let cfg = crate::mcp::codex_config_for_tests("/opt/bin/lagent", "/run/agentd.sock", "agent-1");
+        let (method, p) = thread_request("/w", preset, Some("gpt-6.1-sol"), None, Some(cfg.clone()));
+        assert_eq!(method, "thread/start");
+        assert_eq!(p["cwd"], "/w");
+        assert_eq!(p["model"], "gpt-6.1-sol");
+        assert_eq!((&p["approvalPolicy"], &p["sandbox"], &p["approvalsReviewer"]), (&json!("on-request"), &json!("workspace-write"), &json!("user")));
+        let server = &p["config"]["mcp_servers"]["lucina-agents"];
+        assert_eq!(server["command"], "/opt/bin/lagent");
+        assert_eq!(server["args"], json!(["mcp"]));
+        assert_eq!(server["env"], json!({"LUCINA_AGENTD_SOCKET": "/run/agentd.sock", "LUCINA_AGENT_ID": "agent-1"}));
+        assert_eq!(server["default_tools_approval_mode"], "prompt");
+        assert_eq!(server["tools"]["create_agent"], json!({"approval_mode": "approve"}));
+        assert_eq!(server["enabled_tools"].as_array().unwrap().len(), 15);
+        // Resume carries the same override and the thread id.
+        let (method, p) = thread_request("/w", preset, None, Some("t9"), Some(cfg));
+        assert_eq!((method, &p["threadId"]), ("thread/resume", &json!("t9")));
+        assert!(p["config"]["mcp_servers"]["lucina-agents"].is_object() && p.get("model").is_none());
+        // MCP off: no `config` key at all.
+        let (_, p) = thread_request("/w", preset, None, None, None);
+        assert!(p.get("config").is_none());
+    }
+
+    /// A stub `codex app-server` that records every request line and answers `initialize` and
+    /// `thread/start`/`thread/resume`.
+    fn stub(dir: &std::path::Path) -> (PathBuf, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let log = dir.join("requests.jsonl");
+        let bin = dir.join("codex");
+        let script = format!(
+            r#"#!/bin/bash
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> '{log}'
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{}}}}\n' "$id" ;;
+    *'"method":"thread/'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"thread":{{"id":"thr-1"}},"model":"stub"}}}}\n' "$id" ;;
+  esac
+done
+"#,
+            log = log.display()
+        );
+        std::fs::write(&bin, script).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (bin, log)
+    }
+
+    async fn thread_requests(mcp: Option<Value>, resume: Option<&str>) -> Vec<Value> {
+        let dir = tempfile::tempdir().unwrap();
+        let (bin, log) = stub(dir.path());
+        let provider = CodexProvider { bin, default_model: Some("gpt-6.1-sol".into()), default_effort: None, registry: None };
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let config = SessionConfig { cwd: dir.path().display().to_string(), agent_id: Some("agent-1".into()), ..Default::default() };
+        let session = provider.start_with(config, tx, resume, mcp).await.unwrap();
+        assert_eq!(session.session_id(), "thr-1");
+        session.close().await;
+        std::fs::read_to_string(log)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap())
+            .filter(|v| v["method"].as_str().is_some_and(|m| m.starts_with("thread/")))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn fake_app_server_receives_the_mcp_config() {
+        let cfg = crate::mcp::codex_config_for_tests("/opt/bin/lagent", "/run/agentd.sock", "agent-1");
+        let sent = thread_requests(Some(cfg.clone()), None).await;
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0]["method"], "thread/start");
+        assert_eq!(sent[0]["params"]["config"], cfg);
+        let sent = thread_requests(Some(cfg.clone()), Some("thr-0")).await;
+        assert_eq!((sent[0]["method"].as_str(), sent[0]["params"]["threadId"].as_str()), (Some("thread/resume"), Some("thr-0")));
+        assert_eq!(sent[0]["params"]["config"], cfg);
+        let sent = thread_requests(None, None).await;
+        assert!(sent[0]["params"].get("config").is_none());
     }
 }

@@ -239,7 +239,7 @@ How phase 4 built it (`crates/lucina-agentd/src/workspaces/`, guard kernel `work
 - Heartbeats are an agent's periodic self-check-ins, as in Paseo.
 - Subagents: an agent may start agents through the agentd MCP tools. Parents get one message with the child's
   report and finish notice (0.13). Built in phase 6: `lagent mcp` (server `lucina-agents`) is attached to every
-  Claude and ACP agent; the daemon knows the calling agent from its process tree, limits delegation to depth 1 (as
+  Claude, Codex and ACP agent; the daemon knows the calling agent from its process tree, limits delegation to depth 1 (as
   lucina-delegate) and lets an agent act only on its own subagents (`docs/design/agents-api.md`, phase 6).
 - Connected hosts: one agentd talks to another over SSH or Lucina Link. The Mac can run an agentd for Xcode work and
   show up as a host.
