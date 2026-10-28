@@ -509,3 +509,15 @@ fn stats_price_jev_tokens() {
     assert!((s.cost_usd() - 0.0038).abs() < 0.0001);
     assert_eq!(s.to_json()["costUsd"], json!(0.003803));
 }
+
+#[test]
+fn a_dialog_button_survives_the_cap_next_to_a_calendar() {
+    let mut rows: Vec<Value> = (0..250)
+        .map(|i| el(100 + i, "table cell", &format!("Day {i}, 2026"), &["click"], 400.0 + (i % 7) as f64, 300.0 + (i / 7) as f64))
+        .collect();
+    rows.push(el(1811, "push button", "Done.", &["press"], 1029.0, 751.0));
+    let s = screen_of(&page("Google Flights", rows), "Google Flights - Chromium", Kind::Browse, None);
+    assert_eq!(s.elements.len(), 200);
+    assert!(s.elements.iter().any(|e| e.label == "Done."));
+    assert_eq!(s.elements[0].label, "Back", "buttons before the bulk of day cells");
+}
