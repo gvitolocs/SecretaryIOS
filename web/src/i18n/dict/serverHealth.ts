@@ -3,6 +3,7 @@ import type { FeatureDictionary } from "../types";
 // Server health plugin (views/ServerHealth.tsx).
 
 const en = {
+  hosts: "Hosts",
   title: "Server health",
   refresh: "Refresh",
   loading: "Loading…",
@@ -36,6 +37,7 @@ const en = {
 export const serverHealth: FeatureDictionary<typeof en> = {
   en,
   it: {
+    hosts: "Host",
     title: "Stato dei server",
     refresh: "Aggiorna",
     loading: "Caricamento…",
@@ -66,6 +68,7 @@ export const serverHealth: FeatureDictionary<typeof en> = {
     showMore: "Mostra altri",
   },
   da: {
+    hosts: "Værter",
     title: "Serverstatus",
     refresh: "Opdater",
     loading: "Indlæser…",

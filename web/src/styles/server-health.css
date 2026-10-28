@@ -63,3 +63,9 @@
 .sh-transition [data-state="warn"] { color: var(--lu-warning); font-weight: 600; }
 .sh-transition [data-state="ok"] { color: var(--lu-positive); font-weight: 600; }
 .sh-more { margin-top: 8px; }
+
+.sh-page-root { flex: 1; min-width: 0; overflow-y: auto; }
+.pg .health-status[data-state="ok"] { color: var(--pg-success); }
+.pg .health-status[data-state="warn"] { color: var(--pg-warning); }
+.pg .health-status[data-state="crit"] { color: var(--pg-danger); }
+.pg .health-status[data-state="stale"] { color: var(--pg-muted); }

@@ -6,6 +6,7 @@ import { healthyByGroup, needsAttention } from "../api/systemHealth";
 import { setLocale } from "../i18n";
 import { stubFetch } from "../test/fetch";
 import { renderAt } from "../test/router";
+import { stubWide } from "../test/wide";
 import ServerHealthView, { duration, REFRESH_MS } from "./ServerHealth";
 
 const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString();
@@ -171,5 +172,43 @@ describe("server health helpers", () => {
     expect(duration("2026-10-27T11:48:00Z", now, "en")).toBe("12 min");
     expect(duration("2026-10-27T09:00:00Z", now, "en")).toBe("3 hr");
     expect(duration("2026-10-24T12:00:00Z", now, "en")).toBe("3 days");
+  });
+});
+
+describe("Server health desktop page", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it("keeps its header while loading, then shows attention, metrics and host summaries", async () => {
+    stubWide();
+    let resolve!: (value: { body: SystemHealth }) => void;
+    stubFetch(() => new Promise(r => { resolve = r; }));
+    show();
+    expect(screen.getByRole("heading", { level: 1, name: "Server health" })).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveClass("pg-loading");
+    resolve({ body: health() });
+    const attention = await screen.findByRole("region", { name: "Needs attention" });
+    expect(within(attention).getByRole("list")).toHaveClass("pg-rows");
+    expect(attention).toHaveTextContent("lucina-rs");
+    expect(screen.getByRole("region", { name: "Metrics · nezopt" }).querySelector(".pg-stats")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Hosts" })).toHaveTextContent("Critical");
+    expect(document.querySelector(".pg-context")).toHaveTextContent("Last report");
+    expect(document.querySelector(".pg-grid--rail")).toBeInTheDocument();
+    expect(document.querySelector(".sh-titlebar, .sh-tiles, .sh-hosts, .pg-seg")).toBeNull();
+    expect(document.querySelectorAll(".pg-cta")).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(screen.getByRole("button", { name: "Refresh" })).toBeDisabled();
+    resolve({ body: health() });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh" })).toBeEnabled());
+  });
+  it("uses friendly empty states and one retry state under the header", async () => {
+    stubWide();
+    let failed = true;
+    stubFetch(() => failed ? { status: 503, body: { error: "Offline" } } : { body: { hosts: [], events: [] } });
+    show();
+    expect(await screen.findByRole("alert")).toHaveClass("pg-error");
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Server health");
+    failed = false;
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByText("No server has reported yet.")).toHaveClass("pg-empty-text");
+    expect(screen.getByText("Nothing needs attention.")).toHaveClass("pg-empty-text");
   });
 });
