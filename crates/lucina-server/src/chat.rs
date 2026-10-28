@@ -1324,6 +1324,28 @@ fn queue_job(t: &Turn<'_>, plan: &Value, action: &str, cmid: Option<&str>) -> Fi
 
 /// Lucina's own computer (lucina_computer_use): she does the job herself in her sandbox, as a job. The owner
 /// gets her ack at once ("I can check via my computer, starting now") and the result lands on the timeline.
+/// A planner `web_crawl_task` (read a page, or search the web) as a read-only `computer_task` in her
+/// one Chromium window. The ack is the planner's when it gave one.
+fn web_crawl_as_computer_task(plan: &Value, message: &str) -> Value {
+    let s = |k: &str| plan[k].as_str().map(str::trim).unwrap_or_default();
+    let goal = if s("query").is_empty() { message.trim() } else { s("query") };
+    let what = if s("url").is_empty() {
+        format!("Search the web for this in a new tab (Google): {goal}")
+    } else {
+        format!("Open {} in a new tab and read it. Goal: {goal}", s("url"))
+    };
+    let ack = if s("ack").is_empty() {
+        crate::planner::web_read_ack()
+    } else {
+        s("ack")
+    };
+    json!({
+        "action": "computer_task",
+        "task": format!("{what}. Use your one Chromium window through accessibility tools (get_window_state, click, type_text, press_key; ctrl+t opens a new tab). Read only: do not log in, buy, post, send or change anything. Answer briefly with what the page actually says and its URL."),
+        "ack": ack,
+    })
+}
+
 async fn computer_task_finish(t: &Turn<'_>, plan: &Value, cmid: Option<&str>) -> Finish {
     queue_job(t, plan, "computer_task", cmid)
 }
@@ -1654,23 +1676,9 @@ async fn json_turn(
         Ok(p) => p,
         Err(e) => {
             tracing::error!(surface = "secretary", error = %e, "response planning failed");
-            // No tools now: answer the latest message only, in its language (the language rule is in the
-            // reply prompt), not an older topic from the recent turns.
-            match st
-                .planner
-                .generate_reply(
-                    &t.input(memory, t.platform_label()),
-                    crate::prompts::PLAN_FALLBACK_RULE,
-                    "",
-                    "reply",
-                )
-                .await
-            {
-                Ok(text) => json!({"action": "reply", "text": text}),
-                Err(_) => {
-                    json!({"action": "reply", "text": format!("{persona}: I misread that turn and could not recover it. Please send the message once more.")})
-                }
-            }
+            // Planning failed twice (JSON mode, then one repair retry): say so briefly instead of a
+            // tool-less guess that may answer the wrong thing.
+            json!({"action": "reply", "text": crate::planner::plan_failed_text()})
         }
     };
     let action = plan["action"]
@@ -1883,6 +1891,13 @@ async fn json_turn(
         };
     }
 
+    // Reading a public page or searching the web: the Rust Lucina has no crawler, but her computer's
+    // Chromium can, so the job goes there (read-only) instead of "this app can't run it".
+    if action == "web_crawl_task" && lucina_computer_use::shared_client().ready() {
+        let plan = web_crawl_as_computer_task(&plan, &t.message);
+        return queue_job(t, &plan, "computer_task", cmid);
+    }
+
     if jobs::ASYNC_ACTIONS.contains(&action.as_str()) {
         return queue_job(t, &plan, &action, cmid);
     }
@@ -1923,7 +1938,7 @@ async fn json_turn(
         .to_owned()
     } else {
         format!(
-            "{} This request needs the \"{action}\" tool, which the Secretary app cannot run. Say so in one sentence, answer whatever you can without it, and suggest asking on Telegram for the tool. Never claim the tool ran.",
+            "{} This request needs the \"{action}\" tool, which this Lucina cannot run yet. Say so in one sentence and answer whatever you can without it. Never claim the tool ran.",
             t.extra_system
         )
     };
@@ -2818,6 +2833,44 @@ async fn tools_turn(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_page_read_runs_read_only_on_her_computer() {
+        let p = web_crawl_as_computer_task(
+            &json!({"action": "web_crawl_task", "url": "https://example.com", "query": "the page title"}),
+            "Read https://example.com and tell me the page title.",
+        );
+        assert_eq!(p["action"], "computer_task");
+        let task = p["task"].as_str().unwrap();
+        assert!(task.starts_with(
+            "Open https://example.com in a new tab and read it. Goal: the page title."
+        ));
+        assert!(task.contains("Read only"));
+        assert_eq!(
+            p["ack"],
+            "Ok, I'm opening it in my computer's browser and will report back."
+        );
+        let p = web_crawl_as_computer_task(
+            &json!({"action": "web_crawl_task", "url": "", "ack": "Cerco subito."}),
+            "Search online: when does daylight saving time start in Denmark in 2027?",
+        );
+        assert!(p["task"].as_str().unwrap().starts_with(
+            "Search the web for this in a new tab (Google): Search online: when does daylight saving time start in Denmark in 2027?"
+        ));
+        assert_eq!(p["ack"], "Cerco subito.");
+    }
+
+    #[tokio::test]
+    async fn a_failed_plan_is_said_in_the_turn_language() {
+        let it = crate::planner::TURN_LANG
+            .scope(
+                lucina_intent::lang::language_line(lucina_intent::lang::Lang::It),
+                async { crate::planner::plan_failed_text() },
+            )
+            .await;
+        assert!(it.starts_with("Scusa"), "{it}");
+        assert!(crate::planner::plan_failed_text().starts_with("Sorry"));
+    }
 
     #[test]
     fn plugin_turns_are_private_and_get_their_page_button() {

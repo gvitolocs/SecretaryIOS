@@ -141,6 +141,31 @@ pub fn turn_lang() -> String {
         .unwrap_or_default()
 }
 
+/// The ack of a page read or web search that runs on her computer, in the turn's language.
+pub fn web_read_ack() -> &'static str {
+    let line = turn_lang();
+    if line.starts_with("Reply language: Italian") {
+        "Ok, lo apro nel browser del mio computer e ti dico."
+    } else if line.starts_with("Reply language: Danish") {
+        "Okay, jeg åbner det i browseren på min computer og vender tilbage."
+    } else {
+        "Ok, I'm opening it in my computer's browser and will report back."
+    }
+}
+
+/// What she says when the plan failed twice: no tool-less guess, a short honest line in the turn's
+/// language (English outside a turn).
+pub fn plan_failed_text() -> &'static str {
+    let line = turn_lang();
+    if line.starts_with("Reply language: Italian") {
+        "Scusa, mi sono incartata nel capire come gestire questo messaggio. Me lo rimandi?"
+    } else if line.starts_with("Reply language: Danish") {
+        "Undskyld, jeg fik viklet mig ind i, hvordan jeg skulle håndtere den besked. Kan du sende den igen?"
+    } else {
+        "Sorry, I got tangled up working out how to handle that message. Could you send it again?"
+    }
+}
+
 /// Which language the reply uses: the owner's own text first; with no text of its own (a bare link, a
 /// photo, a file) the language of his recent messages, newest first; then English. Never the device
 /// locale or his location. `recent_owner` is newest first.
@@ -485,6 +510,14 @@ impl Planner {
             messages.push(Message::user(PLAN_REPAIR_PROMPT));
             let (again, _) = self.plan_call(messages).await?;
             parsed = parse_plan_output(&again);
+            if parsed.is_none() {
+                // Both answers, raw (capped), so a failing turn can be debugged from the journal.
+                tracing::warn!(
+                    first = %content.chars().take(2000).collect::<String>(),
+                    retry = %again.chars().take(2000).collect::<String>(),
+                    "plan output was not JSON twice"
+                );
+            }
             content = again;
         }
         let parsed =
