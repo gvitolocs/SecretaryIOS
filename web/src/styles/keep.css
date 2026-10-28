@@ -2155,3 +2155,35 @@
     animation: none !important;
   }
 }
+
+/* ---------- Desktop page system (views/Keep.tsx) ---------- */
+
+.kp--desk .kp-top {
+  display: none;
+}
+
+.kp--desk .keep-desk-main {
+  min-width: 0;
+}
+
+.keep-desk-search {
+  width: min(280px, 36vw);
+}
+
+.keep-desk-nav-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  color: var(--pg-muted);
+}
+
+.keep-desk-nav-icon :is(svg, .icon) {
+  width: 20px;
+  height: 20px;
+}
+
+.pg .keep-desk-nav--active {
+  background: var(--pg-fill-hover);
+}
