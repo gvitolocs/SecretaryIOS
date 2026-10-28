@@ -36,9 +36,12 @@ export function TimelineRow(props: { item: TimelineItem; withDay?: boolean; comp
         </p>
         <Show when={!props.compact && i().detail}>
           <p class="sh-tl-detail" classList={{ "sh-tl-detail--expanded": expanded() }}>{i().detail}</p>
-          <button class="sh-more" type="button" aria-expanded={expanded()} onClick={() => setExpanded(!expanded())}>
-            {t(expanded() ? "serverHealth.less" : "serverHealth.more")}
-          </button>
+          {/* Two clamped lines hold about 140 characters; shorter details need no toggle. */}
+          <Show when={(i().detail?.length ?? 0) > 140}>
+            <button class="sh-more" type="button" aria-expanded={expanded()} onClick={() => setExpanded(!expanded())}>
+              {t(expanded() ? "serverHealth.less" : "serverHealth.more")}
+            </button>
+          </Show>
         </Show>
         <Show when={!props.compact}>
         <p class="sh-tl-tags">

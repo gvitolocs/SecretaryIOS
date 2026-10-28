@@ -113,15 +113,16 @@ describe("Server page", () => {
     expect(within(dialog).queryByText(/criticality/)).toBeNull();
   });
 
-  it("shows collecting instead of a line or dot for sparse history", async () => {
+  it("draws no line or dot for sparse history: quiet on the card, collecting in the sheet", async () => {
     const o = overview();
     o.hosts[0]!.history!.tctl = [null, 95, null];
     stubFetch(() => ({ body: o }));
     show();
     const card = (await screen.findByText("nezopt", { selector: ".sh-host-name" })).closest("a")!;
     const chart = within(card).getByRole("img", { name: /^CPU temperature/ });
-    expect(within(chart).getByText("collecting…")).toBeInTheDocument();
+    expect(within(chart).queryByText("collecting…")).toBeNull();
     expect(chart.querySelector("svg, .sh-chart-dot")).toBeNull();
+    expect(chart.querySelector(".sh-chart-empty")).not.toBeNull();
   });
 
   it("hides repos until toggled and counts only visible services", async () => {
@@ -140,15 +141,18 @@ describe("Server page", () => {
   });
 
   it("keeps Recent to five compact rows and expands details only in timeline tabs", async () => {
-    const events = Array.from({ length: 7 }, (_, n) => event({ title: `Event ${n}`, kind: "incident", at: ago(n), detail: `Detail ${n}`, host: "nezopt", project: "secretary" }));
+    const long = "a long detail that does not fit in two clamped lines, ".repeat(4);
+    const events = Array.from({ length: 7 }, (_, n) => event({ title: `Event ${n}`, kind: "incident", at: ago(n), detail: `Detail ${n} ${n === 0 ? long : ""}`.trim(), host: "nezopt", project: "secretary" }));
     stubFetch(() => ({ body: overview({ timeline: events }) }));
     show();
     const recent = await screen.findByRole("list", { name: "Recent" });
     expect(within(recent).getAllByRole("listitem")).toHaveLength(5);
-    expect(within(recent).queryByText("Detail 0")).toBeNull();
+    expect(within(recent).queryByText(/^Detail 0/)).toBeNull();
     fireEvent.click(screen.getByRole("link", { name: "Incidents" }));
-    const detail = await screen.findByText("Detail 0");
+    const detail = await screen.findByText(/^Detail 0 /);
     const row = detail.closest("li")!;
+    // A short detail has no toggle.
+    expect(within(screen.getByText("Detail 1").closest("li")!).queryByRole("button", { name: "more" })).toBeNull();
     fireEvent.click(within(row).getByRole("button", { name: "more" }));
     expect(detail).toHaveClass("sh-tl-detail--expanded");
     expect(within(row).getByRole("button", { name: "less" })).toHaveAttribute("aria-expanded", "true");

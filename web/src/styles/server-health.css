@@ -1170,13 +1170,15 @@
 .sh-host-role { flex: 1; font-size: 11px; }
 .sh-host-uptime { margin-left: auto; color: var(--pg-muted); font-size: 11px; white-space: nowrap; }
 .sh-host .sh-host-os { margin: 0; }
-.sh-host .sh-sparks { gap: 8px; margin-top: 0; }
-.sh-spark { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 4px; min-width: 0; }
-.sh-spark-head { flex: none; flex-direction: row; gap: 3px; align-items: baseline; margin: 0; }
-.sh-spark-name { max-width: 62px; font-size: 10px; }
-.sh-spark-value { font-size: 11px; }
-.sh-spark .sh-chart { flex: 1 0 48px; max-width: 64px; min-width: 0; }
-.sh-spark .sh-chart-plot { height: 18px; }
+/* Three equal columns: the name, then the value with the sparkline under it. */
+.sh-host .sh-sparks { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 2px; }
+.sh-spark { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.sh-spark-head { display: flex; flex-direction: column; align-items: flex-start; gap: 0; margin: 0; }
+.sh-spark-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; }
+.sh-spark-value { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.sh-spark .sh-chart { width: 100%; max-width: none; min-width: 0; }
+.sh-spark .sh-chart-plot { height: 16px; }
+.sh-spark .sh-chart-empty { height: 16px; }
 .sh-collecting { display: block; color: var(--pg-muted); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sh-chart--large .sh-collecting { padding-block: 48px; text-align: center; font-size: 13px; }
 .sh-host .sh-disks { margin-top: 0 !important; }
@@ -1211,4 +1213,9 @@
   .sh-updated-dot { display: none; }
   .sh-restarted-list a { flex-wrap: wrap; }
   .sh-group-head, .sh-project-head { flex-wrap: wrap; }
+}
+
+/* Four sections fit a 390 px phone without scrolling the nav. */
+@media (max-width: 430px) {
+  .sh-page .pg-seg-item { padding-inline: 8px; }
 }
