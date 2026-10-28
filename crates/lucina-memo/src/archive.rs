@@ -123,7 +123,26 @@ pub fn archive_memo(app: &App, id: &str) -> Result<ArchiveReport> {
 /// `record: false` (the CLI, a separate process): copy and verify only. The memo's meta.json
 /// belongs to the running server; writing it from here could undo the server's own update.
 fn archive_files(app: &App, id: &str, record: bool) -> Result<ArchiveReport> {
-    let _guard = app.archive_lock.lock().unwrap();
+    let _lock = lock_archive(app)?;
+    archive_files_locked(app, id, record)
+}
+
+/// Serializes archive writers across processes: the server's worker and the daily CLI run
+/// (`lucina-memo archive`) take the same lock file in the archive root.
+fn lock_archive(app: &App) -> Result<(std::sync::MutexGuard<'_, ()>, fs::File)> {
+    let guard = app.archive_lock.lock().unwrap();
+    let root = check_mount(app)?;
+    fs::create_dir_all(root)?;
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(root.join(".archive.lock"))?;
+    fs4::fs_std::FileExt::lock_exclusive(&file)?;
+    Ok((guard, file))
+}
+
+fn archive_files_locked(app: &App, id: &str, record: bool) -> Result<ArchiveReport> {
     let (m, source, dest, trash) = locate(app, id)?;
     fs::create_dir_all(&dest)?;
     let mut report = ArchiveReport::default();
@@ -192,7 +211,11 @@ fn archive_files(app: &App, id: &str, record: bool) -> Result<ArchiveReport> {
 }
 /// Verify BEFORE a repairing copy, so corruption cannot be hidden by --all.
 pub fn verify_memo(app: &App, id: &str) -> Result<ArchiveReport> {
-    let _guard = app.archive_lock.lock().unwrap();
+    let _lock = lock_archive(app)?;
+    verify_memo_locked(app, id)
+}
+
+fn verify_memo_locked(app: &App, id: &str) -> Result<ArchiveReport> {
     let (_, source, dest, _) = locate(app, id)?;
     verify_paths(&source, &dest, true)
 }
@@ -342,16 +365,19 @@ pub fn run_cli(app: &App, all: bool, verify: bool) -> Result<()> {
         }
         memos += 1;
         let result = (|| -> Result<ArchiveReport> {
+            // One lock for the whole check-copy-verify, so the server's worker cannot be
+            // half-way through the same memo.
+            let _lock = lock_archive(app)?;
             let mut before = ArchiveReport::default();
             if verify && dest.exists() {
                 before = verify_paths(Path::new(""), &dest, false)?;
             }
             if verify && !all {
-                return verify_memo(app, &id);
+                return verify_memo_locked(app, &id);
             }
-            let mut report = archive_files(app, &id, false)?;
+            let mut report = archive_files_locked(app, &id, false)?;
             if verify {
-                let after = verify_memo(app, &id)?;
+                let after = verify_memo_locked(app, &id)?;
                 report.verified_ok = after.verified_ok;
                 report.mismatches = before.mismatches + after.mismatches;
             }

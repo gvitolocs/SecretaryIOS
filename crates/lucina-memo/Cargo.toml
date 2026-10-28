@@ -13,6 +13,7 @@ name = "lucina-memo"
 path = "src/main.rs"
 
 [dependencies]
+fs4 = { workspace = true }
 lucina-llm = { path = "../lucina-llm" }
 axum = "0.8"
 tokio = { workspace = true }
