@@ -318,7 +318,7 @@ impl Config {
             .unwrap_or_else(|| "giuseppe".into());
         let tz_name = get("LUCINA_REMINDER_TIMEZONE")
             .or_else(|| get("LUCINA_TIMEZONE"))
-            .unwrap_or_else(|| "Europe/Rome".into());
+            .unwrap_or_else(|| "Europe/Copenhagen".into());
         let time_zone: Tz = tz_name
             .trim()
             .parse()
@@ -630,12 +630,25 @@ mod tests {
         assert_eq!(c.memory_mode, MemoryMode::ReadOnly);
         assert!(!c.scheduler);
         assert_eq!(c.default_session, "secretary_app");
-        assert_eq!(c.time_zone.name(), "Europe/Rome");
+        assert_eq!(c.time_zone.name(), "Europe/Copenhagen");
         assert_eq!(c.presence_dir, PathBuf::from("/tmp/x/presence"));
         assert!(c.presence_context);
         assert_eq!(c.presence_retention_days, 90);
         assert_eq!(c.owner_discord_user_id, None);
         assert!(!c.delegate_enabled, "delegation is opt-in per host");
         assert!(!format!("{c:?}").contains("\"t\""));
+    }
+
+    #[test]
+    fn the_time_zone_env_still_overrides_the_copenhagen_default() {
+        let base = [
+            ("LUCINA_DATA_DIR", "/tmp/x"),
+            ("SECRETARY_API_ENABLED", "true"),
+            ("SECRETARY_API_TOKEN", "t"),
+        ];
+        let mut env: HashMap<&str, &str> = base.into_iter().collect();
+        env.insert("LUCINA_REMINDER_TIMEZONE", "Europe/Rome");
+        let c = Config::from_lookup(|k| env.get(k).map(|v| v.to_string())).unwrap();
+        assert_eq!(c.time_zone.name(), "Europe/Rome");
     }
 }

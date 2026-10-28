@@ -14,6 +14,7 @@ use crate::client::{Client, ClientError};
 use crate::config::{default_socket, shorten_path};
 
 mod term;
+mod orch;
 mod ws;
 
 #[derive(Parser, Debug)]
@@ -79,6 +80,18 @@ pub enum Command {
     Script(term::ScriptCommand),
     /// Record agent hook activity (called by agent CLIs running in terminals)
     Hooks { agent: String, event: String },
+    /// Manage schedules (recurring agent runs)
+    #[command(subcommand)]
+    Schedule(orch::ScheduleCommand),
+    /// Recurring prompts to the calling agent (inside an agent)
+    #[command(subcommand)]
+    Heartbeat(orch::HeartbeatCommand),
+    /// Search agents by title, workspace, branch or what was said
+    Search(orch::SearchArgs),
+    /// Make a subagent independent without stopping or moving it
+    Detach { id: String },
+    /// Serve the agents' MCP tools on stdio (agentd attaches this to its agents)
+    Mcp,
 }
 
 #[derive(Subcommand, Debug)]
@@ -1069,6 +1082,14 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
         Command::Terminal(cmd) => term::terminal(&client, cmd).await,
         Command::Script(cmd) => term::script(&client, cmd).await,
         Command::Hooks { agent, event } => Ok(term::hooks(&client, agent, event).await),
+        Command::Schedule(cmd) => orch::schedule(&client, cmd).await,
+        Command::Heartbeat(cmd) => orch::heartbeat(&client, cmd).await,
+        Command::Search(a) => orch::search(&client, a).await,
+        Command::Detach { id } => orch::detach(&client, id).await,
+        Command::Mcp => {
+            crate::mcp::serve(client).await.map_err(|e| CmdError::new("MCP_FAILED", e.to_string()))?;
+            Ok(Output { json: None, text: String::new() })
+        }
     }
 }
 

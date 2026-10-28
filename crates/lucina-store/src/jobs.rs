@@ -208,6 +208,28 @@ impl JobStore {
         Ok(Some(out))
     }
 
+    /// Takes over a queued/running job a restart interrupted: this process runs it now, so
+    /// [`find`](Self::find) does not mark it `interrupted`. None if it is not unfinished.
+    pub fn adopt(&self, id: &str) -> Result<Option<Job>> {
+        let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut jobs = self.read()?;
+        let Some(job) = jobs
+            .iter_mut()
+            .find(|j| j.id == id && matches!(j.status.as_str(), "queued" | "running"))
+        else {
+            return Ok(None);
+        };
+        job.boot_id = Some(self.boot_id.clone());
+        job.updated_at = now_iso();
+        let out = job.clone();
+        self.active
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id.to_owned());
+        self.write(jobs)?;
+        Ok(Some(out))
+    }
+
     pub fn finish(&self, id: &str) {
         self.active
             .lock()
@@ -344,6 +366,47 @@ mod tests {
             ("running", Some("node"), false, false),
         ] {
             assert_eq!(may_mark_interrupted(status, owner, active), want);
+        }
+    }
+
+    #[test]
+    fn adopt_takes_over_an_interrupted_job_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("jobs.json");
+        let before = JobStore::new(&path);
+        let mut job = sample_for_adopt("j1");
+        job.status = "running".into();
+        before.insert(job).unwrap();
+        let mut done = sample_for_adopt("j2");
+        done.status = "done".into();
+        before.insert(done).unwrap();
+        // A restart: a new store, the job is no longer active here.
+        let after = JobStore::new(&path);
+        let adopted = after.adopt("j1").unwrap().unwrap();
+        assert_eq!(adopted.boot_id.as_deref(), Some(after.boot_id()));
+        assert_eq!(after.find("j1").unwrap().unwrap().status, "running");
+        assert!(after.adopt("j2").unwrap().is_none());
+        assert!(after.adopt("nope").unwrap().is_none());
+    }
+
+    fn sample_for_adopt(id: &str) -> Job {
+        Job {
+            id: id.into(),
+            action: "youtube_report".into(),
+            status: "queued".into(),
+            result: None,
+            error: None,
+            image_url: None,
+            session_id: "s".into(),
+            client_message_id: None,
+            created_at: now_iso(),
+            started_at: None,
+            finished_at: None,
+            updated_at: now_iso(),
+            timeline_item_id: None,
+            owner: None,
+            boot_id: None,
+            extra: Default::default(),
         }
     }
 }

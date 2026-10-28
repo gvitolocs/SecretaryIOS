@@ -209,8 +209,13 @@ async fn tasks_turns_like_node() {
         .await
         .unwrap()
         .unwrap();
-    // Node guesses English here too (no Italian marker word).
-    assert!(del.reply.starts_with("You delete tasks yourself"));
+    // Node guessed English here (no Italian marker word); the function-word detector reads Italian.
+    assert!(del.reply.starts_with("Le attività le elimini tu"));
+    let en = tasks_turn(&s, "delete the task anki", false, TZ, false)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(en.reply.starts_with("You delete tasks yourself"));
     assert!(tasks_turn(&s, "done with duolingo", true, TZ, false)
         .await
         .is_none());

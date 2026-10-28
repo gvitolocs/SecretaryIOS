@@ -236,6 +236,26 @@ pub struct LlmComposer {
     pub model: Arc<dyn lucina_llm::ChatModel>,
     pub persona: String,
     pub max_chars: usize,
+    /// The owner's time zone: every timestamp in the facts is shown in it, never in UTC.
+    pub tz: chrono_tz::Tz,
+}
+
+/// Facts with every full timestamp (`2026-10-28T11:00:00Z`) rewritten as local time
+/// (`Wed 2026-10-28 12:00`), so the model never sees, and never repeats, a UTC clock time.
+pub fn localize_times(v: &Value, tz: chrono_tz::Tz) -> Value {
+    match v {
+        Value::String(s) => match chrono::DateTime::parse_from_rfc3339(s) {
+            Ok(t) => Value::String(t.with_timezone(&tz).format("%a %Y-%m-%d %H:%M").to_string()),
+            Err(_) => v.clone(),
+        },
+        Value::Array(a) => Value::Array(a.iter().map(|x| localize_times(x, tz)).collect()),
+        Value::Object(o) => Value::Object(
+            o.iter()
+                .map(|(k, x)| (k.clone(), localize_times(x, tz)))
+                .collect(),
+        ),
+        _ => v.clone(),
+    }
 }
 
 const RULES: &str = "You are writing a PROACTIVE message: Lucina reaches out to Giuseppe on her own, before he asks, \
@@ -251,7 +271,8 @@ app shows a button to open it).\n\
 mention it.\n\
 - Plain text, no markdown headings, at most one emoji. Do not mention scores, priorities, rules, signals or that \
 this is automatic.\n\
-- Times: facts are in UTC or relative minutes; the local time now is {NOW}. Prefer relative times (\"tra un'ora\").\n\
+- Times: every clock time in the facts is already in the owner's local time zone ({TZ}), as is the local time now: {NOW}. \
+State clock times exactly as given, in local time, and never write UTC, GMT or a trailing Z. Prefer relative times (\"tra un'ora\").\n\
 Answer in exactly this format:\n\
 MESSAGE:\n<the message>\n\
 PREP:\n<only when facts.wantPrep is true: a concise markdown summary to read before the meeting, at most 12 lines, \
@@ -263,7 +284,7 @@ Rules:\n\
 items in the JSON: important today (facts.important), completed (facts.completed), keep an eye on (facts.watch). \
 At most 3 bullets per section, one line each.\n\
 - Use ONLY the facts. Never invent anything. No actions taken by you.\n\
-- Plain text (bullets with •), no markdown headings, at most one emoji. The local time now is {NOW}.\n\
+- Plain text (bullets with •), no markdown headings, at most one emoji. Times in the facts are already local ({TZ}); the local time now is {NOW}. Never write UTC, GMT or a trailing Z.\n\
 Answer in exactly this format:\nMESSAGE:\n<the message>\nPREP:\nNONE";
 
 /// `MESSAGE:` / `PREP:` sections.
@@ -327,7 +348,14 @@ impl Composer for LlmComposer {
             RULES
         }
         .replace("{LANG}", lang_name(&req.language))
+        .replace("{TZ}", self.tz.name())
         .replace("{NOW}", &req.local_time);
+        // The facts, the template fallbacks and the prep note all use local times.
+        let localized = ComposeRequest {
+            facts: localize_times(&req.facts, self.tz),
+            ..req.clone()
+        };
+        let req = &localized;
         let mut facts = req.facts.clone();
         if let Some(o) = facts.as_object_mut() {
             o.insert("kind".into(), json!(req.kind.as_str()));
@@ -437,6 +465,40 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn meeting_prep_input_shows_local_time_not_utc() {
+        let m = Arc::new(lucina_llm::ScriptedModel::new());
+        m.push_text("MESSAGE:\nTherese zoom è tra un'ora, alle 12:00.\nPREP:\nNONE");
+        let c = LlmComposer {
+            model: m.clone(),
+            persona: PERSONA_DEFAULT.into(),
+            max_chars: 700,
+            tz: chrono_tz::Europe::Copenhagen,
+        };
+        let f = json!({"event": {"title": "Therese zoom", "start": "2026-10-28T11:00:00Z", "end": "2026-10-28T12:00:00Z", "startsInMinutes": 60}, "notes": []});
+        let out = c.compose(&req(Kind::MeetingPrep, "it", f)).await;
+        assert_eq!(out.via, "llm");
+        let sent = m.requests.lock().unwrap().clone();
+        let system = sent[0].messages[0].text().to_owned();
+        let input = sent[0].messages[1].text().to_owned();
+        assert!(input.contains("12:00"), "{input}");
+        assert!(input.contains("13:00"), "the end time is local too: {input}");
+        assert!(!input.contains("11:00"), "{input}");
+        assert!(!input.contains("UTC") && !input.contains("00Z"), "{input}");
+        assert!(system.contains("never write UTC, GMT or a trailing Z"));
+        assert!(system.contains("Europe/Copenhagen"));
+        assert!(!system.contains("facts are in UTC"));
+        // The prep note built without the model is local as well.
+        let prep = prep_template(&ComposeRequest {
+            facts: localize_times(
+                &json!({"event": {"title": "x", "start": "2026-10-28T11:00:00Z"}}),
+                chrono_tz::Europe::Copenhagen,
+            ),
+            ..req(Kind::MeetingPrep, "it", json!({}))
+        });
+        assert!(prep.contains("When: Wed 2026-10-28 12:00"), "{prep}");
+    }
+
     #[test]
     fn templates_in_three_languages() {
         let f = json!({"event": {"title": "CRAFT-IT4SD", "start": "2026-10-22T12:00:00Z", "startsInMinutes": 55}, "notes": [{"slug": "craftit-meeting", "title": "CRAFT", "content": "x"}]});
@@ -475,6 +537,7 @@ mod tests {
             model: m.clone(),
             persona: PERSONA_DEFAULT.into(),
             max_chars: 700,
+            tz: chrono_tz::Europe::Copenhagen,
         };
         let f = json!({"event": {"title": "CRAFT", "startsInMinutes": 60}, "notes": []});
         let a = c.compose(&req(Kind::MeetingPrep, "it", f.clone())).await;

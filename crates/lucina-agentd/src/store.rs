@@ -67,6 +67,12 @@ impl Store {
         self.db.lock().unwrap_or_else(|p| p.into_inner())
     }
 
+    /// Run `f` on the database, for the tables other modules own (schedules, finish
+    /// subscriptions, the search index).
+    pub fn with_db<T>(&self, f: impl FnOnce(&Connection) -> T) -> T {
+        f(&self.db())
+    }
+
     pub fn save(&self, record: &AgentRecord) -> Result<(), StoreError> {
         let json = serde_json::to_string(record)?;
         self.db().execute(

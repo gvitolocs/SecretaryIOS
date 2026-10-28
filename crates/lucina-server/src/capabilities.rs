@@ -6,6 +6,27 @@
 
 use lucina_intent::mcp;
 
+/// Email, when her computer is on: no API, but she reads the owner's Outlook and Google in her Chromium.
+pub const EMAIL_VIA_COMPUTER: &str = "Email: there is no email API (the Gmail integration was removed on 2026-09-20), but I read Giuseppe's Outlook (givi@au.dk) and Google/Gmail in my own computer's Chromium, which is already signed in, through accessibility tools (get_window_state, click, type_text, press_key). That is read-only by default; I send, reply to or delete mail only with his explicit OK. When asked to check his mail (\"has he sent an email to X?\", \"explore Outlook\"), I do it on my computer: I never say I cannot check.";
+
+/// Email, when her computer is off.
+pub const EMAIL_WITHOUT_COMPUTER: &str = "Email: there is no email API (the Gmail integration was removed on 2026-09-20) and my own computer is off on this runtime, so I cannot open Giuseppe's Outlook or Gmail now.";
+
+/// One rule for every short tool loop (media, Drive, memos, Meshy, shared content …): the tools
+/// a step has are only that step's, never a statement about what Lucina can do. Replies like "in
+/// this session the only tool live for me is the media library" came from loops that knew nothing
+/// else.
+pub const SUBLOOP_SCOPE_RULE: &str = "These tools are only the ones for this step. Lucina has her other capabilities (calendar, notes, reminders, tasks, her computer, Drive, the game and more) in other steps of her normal chat. Never tell the owner that a capability is missing or unavailable \"in this session\" or \"in this run\", and never describe your tool list as everything you can do. If the request needs something other than your tools, say you will handle it, or that it goes through your normal chat, and do not claim it is impossible.";
+
+/// The extra system text of a short tool loop: the Secretary app line, the loop's own guide, the
+/// shared scope rule and the MCP note.
+pub fn subloop_extra(guide: &str, mcp_note: &str) -> String {
+    format!(
+        "{} {guide} {SUBLOOP_SCOPE_RULE} {mcp_note}",
+        crate::chat::SECRETARY_EXTRA_SYSTEM
+    )
+}
+
 /// The flags the block reads, with Node's env names.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Capabilities {
@@ -151,7 +172,7 @@ impl Capabilities {
         add(self.secretary, "Secretary app chat (web PWA and iOS), one timeline shared with Telegram, Discord and Alexa.".into(), Some("Secretary app chat is off on this runtime."));
         add(self.alexa, "Alexa as a voice input surface.".into(), None);
         if self.mcp_trusted {
-            add(self.secretary, "Lucina MCP: ChatGPT, Grok, Cursor and Claude Code ask me on Giuseppe's behalf with his token, so I act on their requests as on his own (downloads, project work, delegation), with my own judgement; secrets and money stay out.".into(), None);
+            add(self.secretary, "Lucina MCP: ChatGPT, Grok, Cursor and Claude Code ask me on Giuseppe's behalf with his token, so I act on their requests as on his own (downloads, project work, delegation, checking his mail on my computer), with my own judgement; secrets and money stay out.".into(), None);
         } else {
             add(self.secretary, format!("Lucina MCP: ChatGPT, Grok and Claude Code can ask me on Giuseppe's behalf. MCP guard: they may only {}; anything else waits for Giuseppe's own yes in the app or on Telegram.", Self::mcp_allowed_phrase()), None);
         }
@@ -220,7 +241,12 @@ impl Capabilities {
             "Oracle CPU/RAM monitor.",
             Some("The Oracle CPU/RAM monitor is off on this runtime."),
         );
-        off.push("No email: the Gmail integration was removed on 2026-09-20.".into());
+        // No email API, but the owner's mail is readable in her own computer's Chromium.
+        if self.computer_use {
+            live.push(EMAIL_VIA_COMPUTER.into());
+        } else {
+            off.push(EMAIL_WITHOUT_COMPUTER.into());
+        }
         (reasoning, live, off)
     }
 
@@ -272,5 +298,58 @@ mod tests {
         assert!(b.contains("- Tasks from chat are off (LUCINA_TASKS)."));
         assert!(looks_like_self_description("cosa sai fare?"));
         assert!(!looks_like_self_description("ciao"));
+    }
+
+    fn caps(flags: &[(&str, &str)]) -> Capabilities {
+        let env: std::collections::HashMap<String, String> = flags
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        Capabilities::from_lookup(&|k: &str| env.get(k).cloned())
+    }
+
+    #[test]
+    fn the_block_says_she_reads_outlook_on_her_computer() {
+        let b = caps(&[("LUCINA_COMPUTER_USE_ENABLED", "true"), ("SECRETARY_API_ENABLED", "true"), ("LUCINA_MCP_TRUSTED", "true")]).block();
+        assert!(!b.contains("No email"), "{b}");
+        assert!(b.contains("no email API"));
+        assert!(b.contains("Outlook (givi@au.dk)"));
+        assert!(b.contains("own computer's Chromium"));
+        assert!(b.contains("read-only by default"));
+        assert!(b.contains("only with his explicit OK"));
+        assert!(b.contains("I never say I cannot check"));
+        assert!(!b.contains("Not available on this runtime:\n- Email"));
+    }
+
+    #[test]
+    fn with_the_computer_off_the_block_is_honest_about_email() {
+        let b = caps(&[]).block();
+        assert!(!b.contains("No email: the Gmail integration"), "{b}");
+        assert!(b.contains("my own computer is off on this runtime, so I cannot open Giuseppe's Outlook"));
+    }
+
+    #[test]
+    fn the_subloop_rule_forbids_session_scoped_denials() {
+        assert!(SUBLOOP_SCOPE_RULE.contains("only the ones for this step"));
+        assert!(SUBLOOP_SCOPE_RULE.contains("\"in this session\" or \"in this run\""));
+        assert!(SUBLOOP_SCOPE_RULE.contains("calendar, notes, reminders"));
+        let extra = subloop_extra("GUIDE-TEXT", "MCP-NOTE");
+        assert!(extra.contains("GUIDE-TEXT") && extra.contains("MCP-NOTE"));
+        assert!(extra.contains(SUBLOOP_SCOPE_RULE));
+    }
+
+    #[test]
+    fn every_reply_prompt_knows_about_outlook_on_her_computer() {
+        let p = crate::prompts::Prompts::minimal("Lucina");
+        let now = chrono::Utc::now();
+        let sys = p.reply_system("Secretary app", "has Giuseppe sent an email?", "", "", "", now);
+        assert!(!sys.contains("cannot read, search, or send email"), "{sys}");
+        assert!(!sys.contains("has no email access"));
+        assert!(!sys.contains("even if earlier chat turns claimed otherwise"));
+        assert!(sys.contains("no email API"));
+        assert!(sys.contains("Outlook (givi@au.dk)"));
+        assert!(sys.contains("own computer's Chromium"));
+        assert!(sys.contains("I can check via my computer, starting now"));
+        assert!(sys.contains("explicit OK"));
     }
 }

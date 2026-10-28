@@ -83,6 +83,7 @@ pub fn engine(cfg: Arc<Config>, secrets: &Secrets, store: Arc<dyn Store>, p: Par
             model: m.clone(),
             persona: persona(&cfg),
             max_chars: cfg.compose.max_chars,
+            tz: cfg.tz(),
         }),
         _ => Arc::new(TemplateComposer),
     };

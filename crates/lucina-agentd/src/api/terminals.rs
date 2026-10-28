@@ -114,7 +114,7 @@ pub fn principal(m: &Manager, p: &Peer, headers: &HeaderMap) -> Principal {
                 None => Principal::Terminal(t.id.clone()),
             };
         }
-        return procs::agent_id_of(leader).map(Principal::Agent).unwrap_or(Principal::Unknown);
+        return peer::agent_of(leader).map(Principal::Agent).unwrap_or(Principal::Unknown);
     }
     match peer::origin(p, headers, &m.provider_pids()) {
         Origin::Local | Origin::OwnerDevice => Principal::Owner,
@@ -597,7 +597,7 @@ fn detected(m: &Manager, w: &WorkspaceRecord) -> BTreeMap<u16, (u32, Option<Stri
     let agents: HashSet<String> = m.snapshots(false).into_iter().filter(|s| s.workspace_id.as_deref() == Some(w.workspace_id.as_str())).map(|s| s.id).collect();
     let terminals = m.terminals().session_pids();
     for pid in m.provider_pids().into_iter().filter(|p| !terminals.contains(p)) {
-        let Some(agent) = procs::agent_id_of(pid).filter(|a| agents.contains(a)) else { continue };
+        let Some(agent) = peer::agent_of(pid).filter(|a| agents.contains(a)) else { continue };
         for l in procs::listening(&table.members(&HashSet::new(), &[pid].into())) {
             out.entry(l.port).or_insert((l.pid, None, Some(agent.clone())));
         }

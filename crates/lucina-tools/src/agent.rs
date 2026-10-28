@@ -237,6 +237,45 @@ async fn handle_call(
     }
 }
 
+/// One more call without tools after a reply that was raw tool-call markup.
+/// Returns clean plain text, or an empty string when the model repeats the markup or fails.
+async fn reask_plain(
+    model: &dyn ChatModel,
+    messages: &[Message],
+    cfg: &AgentConfig,
+    deadline: Instant,
+) -> String {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return String::new();
+    }
+    let mut retry = messages.to_vec();
+    retry.push(Message::user(
+        "Your last reply was raw tool-call markup, which the owner cannot read. Answer now in plain text, in the owner's language, using only what the tool results above show. Do not call tools.",
+    ));
+    let request = ChatRequest {
+        model: cfg.model.clone(),
+        messages: retry,
+        tools: Vec::new(),
+        tool_choice: None,
+        temperature: cfg.temperature,
+        max_tokens: None,
+        purpose: "agent",
+        json_object: false,
+    };
+    match tokio::time::timeout(remaining, model.complete(request)).await {
+        Ok(Ok(r)) => {
+            let t = r.message.text().trim().to_owned();
+            if lucina_llm::has_tool_markup(&t) || !r.tool_calls().is_empty() {
+                String::new()
+            } else {
+                t
+            }
+        }
+        _ => String::new(),
+    }
+}
+
 /// Run the loop. `on_executed` sees every executed (not deferred) tool call
 /// right after it finished (the server appends it to the timeline).
 pub async fn run(
@@ -297,7 +336,14 @@ pub async fn run(
         };
         let calls = response.tool_calls().to_vec();
         if calls.is_empty() || last {
-            let text = response.message.text().trim().to_owned();
+            let mut text = response.message.text().trim().to_owned();
+            if lucina_llm::has_tool_markup(&text) {
+                // Raw tool-call markup (DeepSeek DSML …) is never an answer
+                // for the owner: ask once more for plain text, else no text
+                // (the caller then falls back to its normal path).
+                tracing::warn!(round, "model answered with tool-call markup; re-asking once");
+                text = reask_plain(model, &messages, cfg, deadline).await;
+            }
             messages.push(response.message);
             let stop = if last && !calls.is_empty() {
                 Stop::MaxRounds

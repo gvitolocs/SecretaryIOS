@@ -150,12 +150,6 @@ pub fn signal_session(session: u32, signal: &str) -> usize {
     pids.len()
 }
 
-/// The `LUCINA_AGENT_ID` a process was started with (agentd sets it for providers).
-pub fn agent_id_of(pid: u32) -> Option<String> {
-    let env = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
-    env.split(|b| *b == 0).find_map(|kv| kv.strip_prefix(b"LUCINA_AGENT_ID=")).map(|v| String::from_utf8_lossy(v).to_string()).filter(|v| !v.is_empty())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

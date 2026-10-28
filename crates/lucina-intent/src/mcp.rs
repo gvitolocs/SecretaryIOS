@@ -6,6 +6,11 @@
 use crate::jsre::group;
 use crate::re;
 
+/// `computer_task` is deliberately not here: a guarded MCP caller (chat scope) must not drive Lucina's
+/// computer through `ask_lucina`; callers with the `computer` scope use the `computer_*` tools. A
+/// trusted MCP turn (`LUCINA_MCP_TRUSTED=true`, live) is not guarded at all, so the mail-on-her-computer
+/// route (`computer_route`) runs for it like for the owner.
+///
 /// Planner actions an MCP turn may run (`notes` is the notes bridge,
 /// `tasks` the tasks bridge: read, add, complete; never delete; `game` the status of Lucina's Pokémon
 /// run, never starting or pausing it).
@@ -167,5 +172,19 @@ mod tests {
         assert_eq!(note_source("!!"), "lucina");
         assert!(refusal("Lucina", "social_post_task")
             .contains("\"social_post_task\" needs Giuseppe's own confirmation"));
+    }
+
+    #[test]
+    fn computer_work_is_for_trusted_turns_or_the_computer_tools() {
+        assert!(!ALLOWED_ACTIONS.contains(&"computer_task"));
+        // The 07:32 turn: the route exists, the guard decides whether this caller may use it.
+        let m = turn_info(
+            "mcp-www",
+            "[via Lucina MCP, from www] Quick check only: has Giuseppe already SENT an email this morning? If you can see Outlook Sent, say yes/no.",
+        )
+        .unwrap();
+        assert_eq!(m.caller, "www");
+        assert!(crate::computer_route::wants_computer(&m.text));
+        assert!(note_trusted(&m).contains("act on it as you would on his own request"));
     }
 }

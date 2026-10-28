@@ -104,6 +104,10 @@ fn patterns() -> &'static Patterns {
 
 /// `guessLang`: `"it" | "en" | "da"`.
 pub fn guess_lang(text: &str) -> &'static str {
+    // Function-word scoring first (`lang::detect`): one stray word ("mine", "lo") must not decide.
+    if let Some(l) = crate::lang::detect(text) {
+        return l.code();
+    }
     if re!(
         r"[æøå]|\b(hvad|jeg|opgave|opgaver|lavet|gjort|tilføj|mine)\b",
         "i"
