@@ -3,6 +3,7 @@ import { createMemo, createSignal, For, Show, type JSX } from "solid-js";
 import type { GymCommand, GymView, Routine, Workout } from "../../api/gym";
 import { formatDate } from "../../lib/units";
 import { runGym } from "../../state/gym";
+import WeightView from "../Weight";
 import { ArrowUpRightIcon, CalendarIcon, PlayIcon, PlusCircleIcon, SparkleIcon } from "./icons";
 import RoutineBuilder from "./RoutineBuilder";
 import { SettingsBody } from "./Settings";
@@ -286,21 +287,24 @@ function TrainingBody(props: { view: GymView; wide: boolean; aside?: () => JSX.E
   );
 }
 
+const weightRail = () => <WeightView compact />;
+
 /**
- * `aside`: what the Training page shows beside the training (its weight).
- * Above the Gym on a phone, a rail right of it on a desktop-wide page.
+ * On a desktop-wide page the weight is a rail right of the training (on /gym
+ * and /training alike). `weightAbove`: the Training page's phone layout, the
+ * weight above the Gym; /gym on a phone shows the Gym alone.
  */
-export default function GymHome(props: { aside?: () => JSX.Element } = {}) {
+export default function GymHome(props: { weightAbove?: boolean } = {}) {
   const location = useLocation();
   const settings = createMemo(() => isSettingsSearch(location.search));
   const { wide, track } = useWide();
   const desk = () => wide() && !settings();
   return (
     <>
-      <Show when={!desk() && props.aside}>{(aside) => aside()()}</Show>
+      <Show when={!desk() && props.weightAbove}>{weightRail()}</Show>
       <GymPage wide={desk()} subnav={!desk()} ref={track}>
         {(view) => (
-          <Show when={settings()} fallback={<TrainingBody view={view()} wide={desk()} aside={props.aside} />}>
+          <Show when={settings()} fallback={<TrainingBody view={view()} wide={desk()} aside={weightRail} />}>
             <SettingsBody view={view()} />
           </Show>
         )}
