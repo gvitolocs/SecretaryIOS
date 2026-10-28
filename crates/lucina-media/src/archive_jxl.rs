@@ -4,9 +4,11 @@
 //! - A JPEG original is *recompressed* (libjxl's JPEG transcoding, `JxlEncoderAddJPEGFrame` with the
 //!   reconstruction data stored): the JXL decodes to the same pixels and also rebuilds the original
 //!   file bit for bit. Only a JXL whose rebuilt file has the original's blake3 is ever kept.
-//! - A PNG/TIFF/BMP is stored as lossless JXL from its decoded pixels (effort 7). That is
-//!   pixel-exact, not byte-exact: the file's bytes (and its text chunks) cannot be rebuilt, so
-//!   these are measured and verified here, but `apply` leaves them alone until the owner decides.
+//! - A PNG is stored as lossless JXL from its decoded pixels (effort 7, `archive_png.rs`). That is
+//!   pixel-exact, not byte-exact: the file's bytes (and its text chunks) cannot be rebuilt. The
+//!   original PNG is deleted only after the JXL read back from disk decodes to the same pixel
+//!   digest, and once it is gone a PNG with the same pixels, layout and ICC profile is rebuilt
+//!   (and verified) on demand. TIFF and BMP are measured but `apply` leaves them alone.
 //! - HEIC, RAW and everything else stay as they are; HEIC/RAW get a lossy display derivative.
 //!
 //! The item keeps one identity. `items.hash` stays the original's hash (so the ETag, device
@@ -16,7 +18,8 @@
 //! (the original route, thumbnails, EXIF details) works unchanged and serves the identical bytes.
 //!
 //! The original file is deleted only after a verified round trip, only when asked
-//! (`--delete-originals`), and `apply` refuses to run without `--i-have-a-backup`.
+//! (`--delete-originals`), and `apply` refuses to run without `--i-have-a-backup`. `--kinds`
+//! chooses between JPEG and PNG, `--manifest` lists every processed file (`archive_manifest.rs`).
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -28,6 +31,8 @@ use jpegxl_rs::encode::{ColorEncoding, EncoderFrame, EncoderSpeed};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
+use crate::archive_manifest::Manifest;
+use crate::archive_png::{self, PngColor};
 use crate::config::Config;
 use crate::db::{now_str, Db};
 use crate::ingest::Library;
@@ -597,23 +602,73 @@ pub fn display_derivative(img: &DynamicImage) -> Result<Vec<u8>, ConvertError> {
 
 // ---- the storage model -----------------------------------------------------------------------
 
-pub const SCHEMA: &str = r#"
-CREATE TABLE IF NOT EXISTS archive_blobs (
-    hash TEXT PRIMARY KEY,
-    kind TEXT NOT NULL CHECK (kind IN ('jpeg_recompress')),
-    jxl_hash TEXT NOT NULL,
-    jxl_bytes INTEGER NOT NULL,
-    reconstructs_to TEXT NOT NULL,
-    original_bytes INTEGER NOT NULL,
-    original_ext TEXT NOT NULL,
-    verified_at TEXT NOT NULL,
-    original_deleted_at TEXT
-);
-"#;
+/// The kinds of `archive_blobs.kind`.
+pub const KIND_JPEG: &str = "jpeg_recompress";
+pub const KIND_PNG: &str = "png_lossless";
 
-/// Idempotent; called from the catalog's migrate step.
+const COLUMNS: &str =
+    "hash, kind, jxl_hash, jxl_bytes, reconstructs_to, original_bytes, original_ext, \
+     verified_at, original_deleted_at, original_sha256, pixel_digest, png_color, icc";
+
+fn create_sql(name: &str) -> String {
+    format!(
+        "CREATE TABLE IF NOT EXISTS {name} (
+            hash TEXT PRIMARY KEY,
+            kind TEXT NOT NULL CHECK (kind IN ('{KIND_JPEG}', '{KIND_PNG}')),
+            jxl_hash TEXT NOT NULL,
+            jxl_bytes INTEGER NOT NULL,
+            reconstructs_to TEXT NOT NULL,
+            original_bytes INTEGER NOT NULL,
+            original_ext TEXT NOT NULL,
+            verified_at TEXT NOT NULL,
+            original_deleted_at TEXT,
+            original_sha256 TEXT,
+            pixel_digest TEXT,
+            png_color TEXT,
+            icc BLOB
+        );"
+    )
+}
+
+/// Idempotent; called from the catalog's migrate step. Adds the columns the first release did not
+/// have (SHA-256 of the original, and for PNG the pixel digest, layout and ICC profile) and widens
+/// the `kind` check to allow PNG rows (SQLite cannot alter a CHECK, so the table is rebuilt once,
+/// rows kept).
 pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute_batch(SCHEMA)
+    conn.execute_batch(&create_sql("archive_blobs"))?;
+    let has = |col: &str| -> rusqlite::Result<bool> {
+        let mut st =
+            conn.prepare("SELECT 1 FROM pragma_table_info('archive_blobs') WHERE name = ?1")?;
+        st.exists([col])
+    };
+    for (col, ddl) in [
+        ("original_sha256", "original_sha256 TEXT"),
+        ("pixel_digest", "pixel_digest TEXT"),
+        ("png_color", "png_color TEXT"),
+        ("icc", "icc BLOB"),
+    ] {
+        if !has(col)? {
+            conn.execute(&format!("ALTER TABLE archive_blobs ADD COLUMN {ddl}"), [])?;
+        }
+    }
+    let sql: String = conn.query_row(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'archive_blobs'",
+        [],
+        |r| r.get(0),
+    )?;
+    if !sql.contains(KIND_PNG) {
+        conn.execute_batch(&format!(
+            "SAVEPOINT archive_widen;
+             DROP TABLE IF EXISTS archive_blobs_new;
+             {create}
+             INSERT INTO archive_blobs_new ({COLUMNS}) SELECT {COLUMNS} FROM archive_blobs;
+             DROP TABLE archive_blobs;
+             ALTER TABLE archive_blobs_new RENAME TO archive_blobs;
+             RELEASE archive_widen;",
+            create = create_sql("archive_blobs_new"),
+        ))?;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -623,17 +678,31 @@ pub struct ArchiveRow {
     pub kind: String,
     pub jxl_hash: String,
     pub jxl_bytes: i64,
-    /// The blake3 of the file the JXL rebuilds to. Always equal to `hash` for a JPEG.
+    /// What the JXL rebuilds to: the original's blake3 for a JPEG (always equal to `hash`), the
+    /// pixel digest for a PNG.
     pub reconstructs_to: String,
     pub original_bytes: i64,
     pub original_ext: String,
+    pub verified_at: String,
     pub original_deleted_at: Option<String>,
+    /// SHA-256 of the original file (a JPEG's rebuilt file must match it too).
+    pub original_sha256: Option<String>,
+    /// PNG only: [`archive_png::digest`] of the original's pixels, the layout they are in and the
+    /// ICC profile bytes (the JXL itself only tags sRGB or Display P3).
+    pub pixel_digest: Option<String>,
+    pub png_color: Option<String>,
+    pub icc: Option<Vec<u8>>,
+}
+
+impl ArchiveRow {
+    pub fn is_png(&self) -> bool {
+        self.kind == KIND_PNG
+    }
 }
 
 pub fn archive_row(c: &Connection, hash: &str) -> rusqlite::Result<Option<ArchiveRow>> {
     c.query_row(
-        "SELECT hash, kind, jxl_hash, jxl_bytes, reconstructs_to, original_bytes, original_ext, original_deleted_at
-         FROM archive_blobs WHERE hash = ?1",
+        &format!("SELECT {COLUMNS} FROM archive_blobs WHERE hash = ?1"),
         [hash],
         |r| {
             Ok(ArchiveRow {
@@ -644,36 +713,85 @@ pub fn archive_row(c: &Connection, hash: &str) -> rusqlite::Result<Option<Archiv
                 reconstructs_to: r.get(4)?,
                 original_bytes: r.get(5)?,
                 original_ext: r.get(6)?,
-                original_deleted_at: r.get(7)?,
+                verified_at: r.get(7)?,
+                original_deleted_at: r.get(8)?,
+                original_sha256: r.get(9)?,
+                pixel_digest: r.get(10)?,
+                png_color: r.get(11)?,
+                icc: r.get(12)?,
             })
         },
     )
     .optional()
 }
 
+fn insert_row(c: &Connection, row: &ArchiveRow) -> rusqlite::Result<usize> {
+    c.execute(
+        &format!(
+            "INSERT OR REPLACE INTO archive_blobs ({COLUMNS})
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)"
+        ),
+        params![
+            row.hash,
+            row.kind,
+            row.jxl_hash,
+            row.jxl_bytes,
+            row.reconstructs_to,
+            row.original_bytes,
+            row.original_ext,
+            row.verified_at,
+            row.original_deleted_at,
+            row.original_sha256,
+            row.pixel_digest,
+            row.png_color,
+            row.icc,
+        ],
+    )
+}
+
 fn is_hash(h: &str) -> bool {
     h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// Where a hash's JXL lives: `archive-jxl/ab/cd/<hash>.jxl` on the big disk.
-pub fn jxl_path(cfg: &Config, hash: &str) -> PathBuf {
-    cfg.store_dir
-        .join("archive-jxl")
+/// A hash's JXL, relative to the store: `archive-jxl/ab/cd/<hash>.jxl`.
+pub fn jxl_rel(hash: &str) -> PathBuf {
+    PathBuf::from("archive-jxl")
         .join(&hash[0..2])
         .join(&hash[2..4])
         .join(format!("{hash}.jxl"))
+}
+
+/// Where a hash's JXL lives: `archive-jxl/ab/cd/<hash>.jxl` on the big disk.
+pub fn jxl_path(cfg: &Config, hash: &str) -> PathBuf {
+    cfg.store_dir.join(jxl_rel(hash))
 }
 
 pub fn cache_dir(cfg: &Config) -> PathBuf {
     cfg.data_dir.join("archive-cache")
 }
 
-fn cache_path(cfg: &Config, hash: &str) -> PathBuf {
-    cache_dir(cfg).join(format!("{hash}.jpg"))
+fn cache_path(cfg: &Config, hash: &str, png: bool) -> PathBuf {
+    cache_dir(cfg).join(format!("{hash}.{}", if png { "png" } else { "jpg" }))
+}
+
+/// Is `path` a PNG rebuilt from a JXL (in the rebuilt-original cache)? Such a file has the original's
+/// pixels but not its bytes, so it is served with a weak ETag.
+pub fn is_rebuilt(cfg: &Config, path: &Path) -> bool {
+    path.parent() == Some(cache_dir(cfg).as_path()) && path.extension().is_some_and(|e| e == "png")
+}
+
+/// The ETag value (without quotes; a `W/` prefix marks a weak one) for the original at `path`
+/// of the item whose hash is `hash`: the hash, weak for a rebuilt PNG.
+pub fn original_etag(cfg: &Config, path: &Path, hash: &str) -> String {
+    if is_rebuilt(cfg, path) {
+        format!("W/{hash}")
+    } else {
+        hash.to_string()
+    }
 }
 
 /// Write `bytes` to `dst` durably: temp file next to it, fsync, rename, fsync the directory.
-fn write_durable(dst: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_durable(dst: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let dir = dst
         .parent()
         .ok_or_else(|| std::io::Error::other("no parent"))?;
@@ -693,36 +811,132 @@ fn write_durable(dst: &Path, bytes: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Rebuild the original of an archived hash from its JXL on disk, proving it is the original:
-/// the JXL file must match its recorded hash, and the rebuilt bytes must hash to both
-/// `reconstructs_to` and the item's own hash. Anything else is an error, never wrong bytes.
-pub fn reconstruct(cfg: &Config, row: &ArchiveRow) -> Result<Vec<u8>, ConvertError> {
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+fn png_layout(row: &ArchiveRow) -> Result<(PngColor, &str), ConvertError> {
+    let color = row
+        .png_color
+        .as_deref()
+        .and_then(PngColor::parse)
+        .ok_or(ConvertError::Mismatch)?;
+    let digest = row.pixel_digest.as_deref().ok_or(ConvertError::Mismatch)?;
+    Ok((color, digest))
+}
+
+/// The JXL of a row, read from disk and checked against its recorded hash.
+fn read_jxl(cfg: &Config, row: &ArchiveRow) -> Result<Vec<u8>, ConvertError> {
     if !is_hash(&row.hash) {
         return Err(ConvertError::Mismatch);
     }
     let jxl = std::fs::read(jxl_path(cfg, &row.hash))?;
-    if blake3_hex(&jxl) != row.jxl_hash {
+    if jxl.len() as i64 != row.jxl_bytes || blake3_hex(&jxl) != row.jxl_hash {
         return Err(ConvertError::Mismatch);
     }
+    Ok(jxl)
+}
+
+/// The pixels a PNG row's JXL decodes to on disk, checked against the digest recorded from the
+/// original. This is what lets a PNG original be deleted.
+fn verify_png_pixels(
+    cfg: &Config,
+    row: &ArchiveRow,
+) -> Result<archive_png::PngPixels, ConvertError> {
+    let (color, digest) = png_layout(row)?;
+    let jxl = read_jxl(cfg, row)?;
+    let pixels = archive_png::jxl_to_pixels(&jxl, color, row.icc.clone())?;
+    if archive_png::digest(&pixels) != digest || row.reconstructs_to != digest {
+        return Err(ConvertError::Mismatch);
+    }
+    Ok(pixels)
+}
+
+/// Rebuild the original of an archived hash from its JXL on disk, proving it is the original.
+///
+/// JPEG: the JXL file must match its recorded hash, and the rebuilt bytes must hash to both
+/// `reconstructs_to` and the item's own hash (and to the recorded SHA-256). PNG: the JXL must decode
+/// to the recorded pixel digest, and the PNG built from it must decode to that digest again (the
+/// bytes are not the original's). Anything else is an error, never wrong bytes.
+pub fn reconstruct(cfg: &Config, row: &ArchiveRow) -> Result<Vec<u8>, ConvertError> {
+    if row.is_png() {
+        let pixels = verify_png_pixels(cfg, row)?;
+        return archive_png::encode_verified(&pixels, &row.reconstructs_to);
+    }
+    let jxl = read_jxl(cfg, row)?;
     let jpeg = jxl_to_jpeg(&jxl)?;
     let got = blake3_hex(&jpeg);
     if got != row.reconstructs_to || got != row.hash {
         return Err(ConvertError::Mismatch);
     }
+    if row
+        .original_sha256
+        .as_deref()
+        .is_some_and(|want| sha256_hex(&jpeg) != want)
+    {
+        return Err(ConvertError::Mismatch);
+    }
     Ok(jpeg)
+}
+
+/// Rebuilt PNG files already decoded and found right, by (path, size, modification time), so a
+/// Range request or a thumbnail does not decode the picture again.
+fn verified_cache(
+) -> &'static std::sync::Mutex<std::collections::HashSet<(PathBuf, u64, std::time::SystemTime)>> {
+    static SET: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashSet<(PathBuf, u64, std::time::SystemTime)>>,
+    > = std::sync::OnceLock::new();
+    SET.get_or_init(Default::default)
+}
+
+/// Is the cached file at `path` still the picture `row` records?
+fn cached_ok(path: &Path, row: &ArchiveRow) -> bool {
+    let Ok(m) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !m.is_file() || m.len() == 0 {
+        return false;
+    }
+    if !row.is_png() {
+        return m.len() as i64 == row.original_bytes;
+    }
+    let Ok(mtime) = m.modified() else {
+        return false;
+    };
+    let key = (path.to_path_buf(), m.len(), mtime);
+    if verified_cache().lock().is_ok_and(|s| s.contains(&key)) {
+        return true;
+    }
+    let ok = std::fs::read(path)
+        .ok()
+        .and_then(|b| archive_png::decode(&b).ok())
+        .is_some_and(|p| Some(archive_png::digest(&p)) == row.pixel_digest);
+    if ok {
+        if let Ok(mut s) = verified_cache().lock() {
+            if s.len() > 4096 {
+                s.clear();
+            }
+            s.insert(key);
+        }
+    }
+    ok
 }
 
 /// The file of an archived original whose stored file is gone: rebuilt into the cache (verified
 /// before it is moved into place) and its path. `None` when the hash is not archived or the
-/// rebuild fails (logged, without names).
+/// rebuild fails (logged, without names). A JPEG comes back byte for byte; a PNG comes back as
+/// the same picture (see [`archive_png`]).
 pub fn materialize(cfg: &Config, db: &Db, hash: &str) -> Option<PathBuf> {
     if !is_hash(hash) {
         return None;
     }
     let row = db.with(|c| archive_row(c, hash)).ok()??;
-    let cached = cache_path(cfg, hash);
-    if std::fs::metadata(&cached).is_ok_and(|m| m.is_file() && m.len() as i64 == row.original_bytes)
-    {
+    let cached = cache_path(cfg, hash, row.is_png());
+    if cached_ok(&cached, &row) {
         return Some(cached);
     }
     match reconstruct(cfg, &row) {
@@ -766,7 +980,8 @@ fn prune_cache(dir: &Path, keep: &Path) {
         .filter_map(Result::ok)
         .filter_map(|e| {
             let m = e.metadata().ok()?;
-            if !(m.is_file() && e.file_name().to_string_lossy().ends_with(".jpg")) {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if !(m.is_file() && (name.ends_with(".jpg") || name.ends_with(".png"))) {
                 return None;
             }
             Some((m.modified().ok()?, m.len(), e.path()))
@@ -794,10 +1009,65 @@ pub fn remove_archive_files(cfg: &Config, hash: &str) {
         return;
     }
     let _ = std::fs::remove_file(jxl_path(cfg, hash));
-    let _ = std::fs::remove_file(cache_path(cfg, hash));
+    let _ = std::fs::remove_file(cache_path(cfg, hash, false));
+    let _ = std::fs::remove_file(cache_path(cfg, hash, true));
 }
 
 // ---- apply -----------------------------------------------------------------------------------
+
+/// What `--apply` may touch. HEIC, RAW, GIF, WebP, AVIF, TIFF, BMP and video are never touched.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Kinds {
+    pub jpeg: bool,
+    pub png: bool,
+}
+
+impl Default for Kinds {
+    fn default() -> Self {
+        Kinds {
+            jpeg: true,
+            png: true,
+        }
+    }
+}
+
+impl Kinds {
+    /// `jpeg,png` (any order, any case); nothing else is accepted.
+    pub fn parse(list: &[String]) -> anyhow::Result<Kinds> {
+        let mut k = Kinds {
+            jpeg: false,
+            png: false,
+        };
+        for item in list.iter().flat_map(|s| s.split(',')) {
+            match item.trim().to_ascii_lowercase().as_str() {
+                "jpeg" | "jpg" => k.jpeg = true,
+                "png" => k.png = true,
+                other => anyhow::bail!("--kinds takes jpeg and png, not '{other}'"),
+            }
+        }
+        anyhow::ensure!(k.jpeg || k.png, "--kinds needs jpeg, png or both");
+        Ok(k)
+    }
+
+    fn exts(self) -> Vec<&'static str> {
+        let mut v = Vec::new();
+        if self.jpeg {
+            v.extend(["jpg", "jpeg", "jpe"]);
+        }
+        if self.png {
+            v.push("png");
+        }
+        v
+    }
+
+    fn allows(self, format: Format) -> bool {
+        match format {
+            Format::Jpeg => self.jpeg,
+            Format::Png => self.png,
+            _ => false,
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct ApplyOpts {
@@ -809,6 +1079,24 @@ pub struct ApplyOpts {
     pub limit: Option<usize>,
     /// Pause while the CPU is at or above this temperature.
     pub max_temp_c: u32,
+    /// Which formats to convert (`--kinds`).
+    pub kinds: Kinds,
+    /// Append one JSON line per processed file here (`--manifest`); failures also go to
+    /// `<manifest>.failures.jsonl`.
+    pub manifest: Option<PathBuf>,
+}
+
+impl ApplyOpts {
+    pub fn new(max_temp_c: u32) -> ApplyOpts {
+        ApplyOpts {
+            i_have_a_backup: false,
+            delete_originals: false,
+            limit: None,
+            max_temp_c,
+            kinds: Kinds::default(),
+            manifest: None,
+        }
+    }
 }
 
 /// Counts only: no names, hashes or paths.
@@ -816,18 +1104,35 @@ pub struct ApplyOpts {
 pub struct ApplyStats {
     pub candidates: usize,
     pub converted: usize,
+    /// `converted` split by `jpeg` and `png`.
+    pub converted_by_kind: std::collections::BTreeMap<String, usize>,
     pub already_archived: usize,
     pub originals_deleted: usize,
     pub original_bytes_converted: u64,
     pub jxl_bytes_written: u64,
     pub original_bytes_freed: u64,
-    /// Lossless pixels (PNG/TIFF/BMP) are not applied: they are not byte-exact.
+    /// Files this run did not touch on purpose and that stay as they are: TIFF and BMP, and PNG
+    /// when `--kinds` leaves it out.
     pub pixel_exact_left_alone: usize,
+    /// Files whose sniffed format `--kinds` does not select (a PNG named .jpg, say).
+    pub not_selected: usize,
     pub failed: std::collections::BTreeMap<String, usize>,
+    /// How many 15-second pauses the CPU temperature limit caused.
+    pub temp_pauses: u32,
+    /// Lines written to the manifest (0 without `--manifest`).
+    pub manifest_lines: usize,
 }
 
-/// Convert the store's JPEG originals to archived JXL (and, when asked, delete the originals that
-/// proved themselves). Safe to interrupt and to repeat.
+struct Candidate {
+    hash: String,
+    ext: String,
+    bytes: i64,
+    archived: bool,
+    deleted: bool,
+}
+
+/// Convert the store's JPEG and PNG originals to archived JXL (and, when asked, delete the originals
+/// that proved themselves). Safe to interrupt and to repeat.
 pub fn apply(lib: &Library, opts: &ApplyOpts) -> anyhow::Result<ApplyStats> {
     anyhow::ensure!(
         opts.i_have_a_backup,
@@ -842,67 +1147,109 @@ pub fn apply(lib: &Library, opts: &ApplyOpts) -> anyhow::Result<ApplyStats> {
         !cfg.is_quiet(chrono::Utc::now()),
         "quiet hours: the big disk is left alone"
     );
-    let rows: Vec<(String, String, i64, bool, bool)> = lib.db.with(|c| {
-        let mut st = c.prepare(
+    let exts = opts
+        .kinds
+        .exts()
+        .iter()
+        .map(|e| format!("'{e}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let rows: Vec<Candidate> = lib.db.with(|c| {
+        let mut st = c.prepare(&format!(
             "SELECT b.hash, b.ext, b.bytes, a.hash IS NOT NULL, a.original_deleted_at IS NOT NULL
              FROM blobs b LEFT JOIN archive_blobs a ON a.hash = b.hash
-             WHERE b.location = 'store' AND lower(b.ext) IN ('jpg', 'jpeg', 'jpe')
+             WHERE b.location = 'store' AND lower(b.ext) IN ({exts})
                AND (EXISTS (SELECT 1 FROM items i WHERE i.hash = b.hash AND i.kind = 'photo')
                     OR EXISTS (SELECT 1 FROM item_versions v WHERE v.hash = b.hash))
-             ORDER BY b.hash",
-        )?;
+             ORDER BY b.hash"
+        ))?;
         let r = st.query_map([], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            Ok(Candidate {
+                hash: r.get(0)?,
+                ext: r.get(1)?,
+                bytes: r.get(2)?,
+                archived: r.get(3)?,
+                deleted: r.get(4)?,
+            })
         })?;
         r.collect()
     })?;
+    let mut manifest = opts.manifest.as_deref().map(Manifest::open).transpose()?;
     let mut stats = ApplyStats {
         candidates: rows.len(),
         ..ApplyStats::default()
     };
     let mut worked = 0usize;
-    for (hash, ext, bytes, archived, deleted) in rows {
+    for cand in rows {
         if opts.limit.is_some_and(|l| worked >= l) {
             break;
         }
-        if archived && (deleted || !opts.delete_originals) {
+        if cand.archived && (cand.deleted || !opts.delete_originals) {
             stats.already_archived += 1;
             continue;
         }
-        crate::archive_jxl_measure::wait_for_cool(opts.max_temp_c);
-        let step = if archived {
-            delete_verified(lib, &hash, &ext).map(Step::Deleted)
+        stats.temp_pauses += crate::archive_jxl_measure::wait_for_cool(opts.max_temp_c);
+        let step = if cand.archived {
+            delete_verified(lib, &cand.hash)
         } else {
-            convert_one(lib, &hash, &ext, bytes, opts.delete_originals)
+            convert_one(lib, &cand, opts)
         };
         match step {
-            Ok(Step::Converted {
-                original,
-                jxl,
-                freed,
-            }) => {
-                stats.converted += 1;
-                stats.original_bytes_converted += original;
-                stats.jxl_bytes_written += jxl;
-                if freed > 0 {
+            Ok(Step::Skipped) => stats.not_selected += 1,
+            Ok(step) => {
+                let (row, freed, converted) = match &step {
+                    Step::Converted { row, freed } => (row, *freed, true),
+                    Step::Deleted { row, freed } => (row, *freed, false),
+                    Step::Skipped => unreachable!("handled above"),
+                };
+                if converted {
+                    stats.converted += 1;
+                    *stats
+                        .converted_by_kind
+                        .entry(if row.is_png() { "png" } else { "jpeg" }.to_string())
+                        .or_default() += 1;
+                    stats.original_bytes_converted += row.original_bytes as u64;
+                    stats.jxl_bytes_written += row.jxl_bytes as u64;
+                }
+                if freed > 0 || matches!(step, Step::Deleted { .. }) {
                     stats.originals_deleted += 1;
                     stats.original_bytes_freed += freed;
                 }
                 worked += 1;
+                if let Some(m) = manifest.as_mut() {
+                    // Re-read the row: deleting set `original_deleted_at` after it was built.
+                    let row = lib
+                        .db
+                        .with(|c| archive_row(c, &cand.hash))?
+                        .unwrap_or_else(|| row.clone());
+                    stats.manifest_lines += m.record_success(lib, &row)?;
+                }
             }
-            Ok(Step::Deleted(freed)) => {
-                stats.originals_deleted += 1;
-                stats.original_bytes_freed += freed;
-                worked += 1;
+            Err(e) => {
+                *stats.failed.entry(e.reason().to_string()).or_default() += 1;
+                if let Some(m) = manifest.as_mut() {
+                    let row = lib.db.with(|c| archive_row(c, &cand.hash))?;
+                    stats.manifest_lines += m.record_failure(
+                        lib,
+                        &cand.hash,
+                        &cand.ext,
+                        cand.bytes,
+                        row.as_ref(),
+                        &format!("{}: {e}", e.reason()),
+                    )?;
+                }
             }
-            Err(e) => *stats.failed.entry(e.reason().to_string()).or_default() += 1,
         }
+    }
+    if let Some(m) = manifest.as_mut() {
+        m.sync()?;
     }
     stats.pixel_exact_left_alone = lib.db.with(|c| {
         c.query_row(
-            "SELECT count(*) FROM blobs b WHERE b.location = 'store' AND lower(b.ext) IN ('png', 'tif', 'tiff', 'bmp')
-             AND EXISTS (SELECT 1 FROM items i WHERE i.hash = b.hash AND i.kind = 'photo')",
-            [],
+            "SELECT count(*) FROM blobs b WHERE b.location = 'store'
+               AND (lower(b.ext) IN ('tif', 'tiff', 'bmp') OR (?1 AND lower(b.ext) = 'png'))
+               AND EXISTS (SELECT 1 FROM items i WHERE i.hash = b.hash AND i.kind = 'photo')",
+            [!opts.kinds.png],
             |r| r.get::<_, i64>(0),
         )
     })? as usize;
@@ -912,107 +1259,146 @@ pub fn apply(lib: &Library, opts: &ApplyOpts) -> anyhow::Result<ApplyStats> {
         already = stats.already_archived,
         deleted = stats.originals_deleted,
         failed = stats.failed.values().sum::<usize>(),
+        pauses = stats.temp_pauses,
         "archive-jxl apply"
     );
     Ok(stats)
 }
 
 enum Step {
-    Converted { original: u64, jxl: u64, freed: u64 },
-    Deleted(u64),
+    Converted {
+        row: ArchiveRow,
+        freed: u64,
+    },
+    Deleted {
+        row: ArchiveRow,
+        freed: u64,
+    },
+    /// The file's real format is not one `--kinds` selected.
+    Skipped,
 }
 
 fn original_file(cfg: &Config, hash: &str, ext: &str) -> PathBuf {
     cfg.store_dir.join(store::object_rel(hash, ext))
 }
 
-/// Convert one original and record it; with `delete`, remove the original after the JXL has been
-/// read back from disk and rebuilt it once more.
-fn convert_one(
-    lib: &Library,
-    hash: &str,
-    ext: &str,
-    bytes: i64,
-    delete: bool,
-) -> Result<Step, ConvertError> {
+fn db_err(e: impl std::fmt::Display) -> ConvertError {
+    ConvertError::Io(std::io::Error::other(e.to_string()))
+}
+
+/// Convert one original and record it; with `--delete-originals`, remove the original after the
+/// JXL has been read back from disk and proved it holds the original (a JPEG rebuilds bit for bit,
+/// a PNG decodes to the recorded pixel digest).
+fn convert_one(lib: &Library, cand: &Candidate, opts: &ApplyOpts) -> Result<Step, ConvertError> {
     let cfg = &lib.cfg;
+    let (hash, ext, bytes) = (cand.hash.as_str(), cand.ext.as_str(), cand.bytes);
     let path = original_file(cfg, hash, ext);
     let data = std::fs::read(&path)?;
     // The stored object must be what the catalog says it is, before anything depends on it.
     if data.len() as i64 != bytes || blake3_hex(&data) != hash {
         return Err(ConvertError::Mismatch);
     }
-    if decide(ext, &data[..data.len().min(64)]).action != ArchiveAction::JpegRecompress {
-        return Err(ConvertError::JpegUnsupported("not a JPEG".into()));
+    let decision = decide(ext, &data[..data.len().min(64)]);
+    if !opts.kinds.allows(decision.format) {
+        return match decision.format {
+            Format::Jpeg | Format::Png => Ok(Step::Skipped),
+            _ => Err(ConvertError::JpegUnsupported(
+                "not a JPEG or PNG".to_string(),
+            )),
+        };
     }
-    let conv = jpeg_roundtrip(&data)?;
+    let sha256 = sha256_hex(&data);
+    let (kind, jxl, reconstructs_to, pixel_digest, png_color, icc) = match decision.format {
+        Format::Jpeg => {
+            let conv = jpeg_roundtrip(&data)?;
+            // The rebuilt file must have the original's SHA-256 as well as its blake3.
+            if sha256_hex(&jxl_to_jpeg(&conv.jxl)?) != sha256 {
+                return Err(ConvertError::Mismatch);
+            }
+            (KIND_JPEG, conv.jxl, conv.reconstructs_to, None, None, None)
+        }
+        _ => {
+            let conv = archive_png::png_roundtrip(&data)?;
+            (
+                KIND_PNG,
+                conv.converted.jxl,
+                conv.digest.clone(),
+                Some(conv.digest),
+                Some(conv.color.as_str().to_string()),
+                conv.icc,
+            )
+        }
+    };
     let jxl_file = jxl_path(cfg, hash);
-    write_durable(&jxl_file, &conv.jxl)?;
+    write_durable(&jxl_file, &jxl)?;
     // The copy on disk is what must rebuild the original, not the buffer we still hold.
     let row = ArchiveRow {
         hash: hash.to_string(),
-        kind: "jpeg_recompress".into(),
-        jxl_hash: blake3_hex(&conv.jxl),
-        jxl_bytes: conv.jxl.len() as i64,
-        reconstructs_to: conv.reconstructs_to,
+        kind: kind.to_string(),
+        jxl_hash: blake3_hex(&jxl),
+        jxl_bytes: jxl.len() as i64,
+        reconstructs_to,
         original_bytes: bytes,
         original_ext: ext.to_string(),
+        verified_at: now_str(),
         original_deleted_at: None,
+        original_sha256: Some(sha256),
+        pixel_digest,
+        png_color,
+        icc,
     };
     if let Err(e) = reconstruct(cfg, &row) {
         let _ = std::fs::remove_file(&jxl_file);
         return Err(e);
     }
-    lib.db
-        .with(|c| {
-            c.execute(
-                "INSERT OR REPLACE INTO archive_blobs
-                 (hash, kind, jxl_hash, jxl_bytes, reconstructs_to, original_bytes, original_ext, verified_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![
-                    row.hash,
-                    row.kind,
-                    row.jxl_hash,
-                    row.jxl_bytes,
-                    row.reconstructs_to,
-                    row.original_bytes,
-                    row.original_ext,
-                    now_str()
-                ],
-            )
-        })
-        .map_err(|e| ConvertError::Io(std::io::Error::other(e.to_string())))?;
-    let freed = if delete {
-        remove_original(lib, hash, ext, bytes as u64)?
+    lib.db.with(|c| insert_row(c, &row)).map_err(db_err)?;
+    let freed = if opts.delete_originals {
+        remove_original(lib, &row)?
     } else {
         0
     };
-    Ok(Step::Converted {
-        original: bytes as u64,
-        jxl: conv.jxl.len() as u64,
-        freed,
-    })
+    Ok(Step::Converted { row, freed })
 }
 
 /// A second pass for rows converted earlier: verify from disk again, then delete the original.
-fn delete_verified(lib: &Library, hash: &str, ext: &str) -> Result<u64, ConvertError> {
+fn delete_verified(lib: &Library, hash: &str) -> Result<Step, ConvertError> {
     let cfg = &lib.cfg;
-    let row = lib
+    let mut row = lib
         .db
         .with(|c| archive_row(c, hash))
-        .map_err(|e| ConvertError::Io(std::io::Error::other(e.to_string())))?
+        .map_err(db_err)?
         .ok_or(ConvertError::Mismatch)?;
-    reconstruct(cfg, &row)?;
-    remove_original(lib, hash, ext, row.original_bytes as u64)
+    let rebuilt = reconstruct(cfg, &row)?;
+    // A JPEG row converted before the SHA-256 was recorded gets it from the verified rebuild
+    // (its blake3 matched the item's hash).
+    if row.original_sha256.is_none() && !row.is_png() {
+        let sha = sha256_hex(&rebuilt);
+        lib.db
+            .with(|c| {
+                c.execute(
+                    "UPDATE archive_blobs SET original_sha256 = ?2 WHERE hash = ?1",
+                    params![hash, sha],
+                )
+            })
+            .map_err(db_err)?;
+        row.original_sha256 = Some(sha);
+    }
+    let freed = remove_original(lib, &row)?;
+    Ok(Step::Deleted { row, freed })
 }
 
 /// Delete the original file of an archived hash. The file must still be the very object that was
 /// verified (same hash), the catalog row is marked, and only then does the file go.
-fn remove_original(lib: &Library, hash: &str, ext: &str, bytes: u64) -> Result<u64, ConvertError> {
-    let path = original_file(&lib.cfg, hash, ext);
+fn remove_original(lib: &Library, row: &ArchiveRow) -> Result<u64, ConvertError> {
+    let path = original_file(&lib.cfg, &row.hash, &row.original_ext);
     match std::fs::read(&path) {
         Ok(data) => {
-            if blake3_hex(&data) != hash {
+            if blake3_hex(&data) != row.hash
+                || row
+                    .original_sha256
+                    .as_deref()
+                    .is_some_and(|want| sha256_hex(&data) != want)
+            {
                 return Err(ConvertError::Mismatch);
             }
         }
@@ -1024,20 +1410,30 @@ fn remove_original(lib: &Library, hash: &str, ext: &str, bytes: u64) -> Result<u
         .with(|c| {
             c.execute(
                 "UPDATE archive_blobs SET original_deleted_at = ?2 WHERE hash = ?1",
-                params![hash, now_str()],
+                params![row.hash, now_str()],
             )
         })
-        .map_err(|e| ConvertError::Io(std::io::Error::other(e.to_string())))?;
+        .map_err(db_err)?;
     match std::fs::remove_file(&path) {
-        Ok(()) => Ok(bytes),
+        Ok(()) => Ok(row.original_bytes as u64),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
         Err(e) => Err(e.into()),
     }
 }
 
-/// Rollback after deletion: rebuild every deleted original from its JXL back into the store
-/// (verified), and clear the mark. Returns how many went back.
-pub fn restore_originals(lib: &Library) -> anyhow::Result<usize> {
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct RestoreStats {
+    /// JPEG originals rebuilt into the store, byte for byte.
+    pub restored: usize,
+    /// PNG rows whose original is gone: a PNG cannot be put back byte for byte, so these stay
+    /// served from their JXL (restore them from the backup).
+    pub png_not_restorable: usize,
+}
+
+/// Rollback after deletion: rebuild every deleted JPEG original from its JXL back into the store
+/// (verified), and clear the mark. A deleted PNG original cannot be rebuilt byte for byte; those
+/// rows are left as they are and counted.
+pub fn restore_originals(lib: &Library) -> anyhow::Result<RestoreStats> {
     let cfg = &lib.cfg;
     let rows: Vec<ArchiveRow> = lib.db.with(|c| {
         let mut st = c.prepare(
@@ -1052,8 +1448,12 @@ pub fn restore_originals(lib: &Library) -> anyhow::Result<usize> {
         }
         Ok(out)
     })?;
-    let mut restored = 0;
+    let mut stats = RestoreStats::default();
     for row in rows {
+        if row.is_png() {
+            stats.png_not_restorable += 1;
+            continue;
+        }
         let bytes = reconstruct(cfg, &row)?;
         let dst = original_file(cfg, &row.hash, &row.original_ext);
         write_durable(&dst, &bytes)?;
@@ -1063,10 +1463,14 @@ pub fn restore_originals(lib: &Library) -> anyhow::Result<usize> {
                 [&row.hash],
             )
         })?;
-        restored += 1;
+        stats.restored += 1;
     }
-    tracing::info!(restored, "archive-jxl restore");
-    Ok(restored)
+    tracing::info!(
+        restored = stats.restored,
+        png_not_restorable = stats.png_not_restorable,
+        "archive-jxl restore"
+    );
+    Ok(stats)
 }
 
 #[cfg(test)]

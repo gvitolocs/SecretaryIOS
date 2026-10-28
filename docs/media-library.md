@@ -462,29 +462,58 @@ The Gallery's editor (web `components/gallery/editor`) edits non-destructively: 
 - Not done: JPEG XL for the derivative (it is JPEG so the renditions can be made from it with the `image` crate); edits for videos; a batch "edited" filter in the list API; text outlines and fonts beyond the embedded Latin subset.
 ## Archive format: JPEG XL (2026-10-28)
 
-The backup photos can be stored as JPEG XL without losing a bit. Module `archive_jxl.rs` (+ `archive_jxl_measure.rs`), command
-`lucina-media archive-jxl`. Numbers, the decision per type and the apply procedure are in the build report
+The backup photos can be stored as JPEG XL without losing a bit of picture. Modules `archive_jxl.rs` (storage, apply, restore),
+`archive_png.rs` (PNG pixels, digest, rebuild), `archive_manifest.rs` (manifest, export) and `archive_jxl_measure.rs` (dry run);
+command `lucina-media archive-jxl`. Numbers and the decision per type are in the build report
 (`~/scratch/gallery/format/REPORT.md`); nothing is applied by default.
 
 | Original | Archive action | Result |
 |---|---|---|
-| JPEG | `jpeg_recompress`: libjxl JPEG transcoding with the reconstruction data stored (effort 7) | the JXL rebuilds the original file **bit for bit** (blake3 checked) |
-| PNG, TIFF, BMP | `lossless_jxl`: decoded pixels, lossless, effort 7 | pixel-exact, not byte-exact; measured and verified, never applied automatically |
-| HEIC, RAW | `keep_original` + `display_derivative` (lossy JXL, distance 1.0, long side 2560) | the original stays |
-| GIF, WebP, AVIF, other | `keep_original` | unchanged |
+| JPEG | `jpeg_recompress`: libjxl JPEG transcoding with the reconstruction data stored (effort 7) | the JXL rebuilds the original file **bit for bit** (blake3 and SHA-256 checked) |
+| PNG | `png_lossless`: decoded pixels, lossless, effort 7, sRGB or Display P3 | **pixel-exact**, not byte-exact: after the original is deleted a PNG with the same pixels, layout and ICC profile is rebuilt |
+| TIFF, BMP | `lossless_jxl` measured only | never applied |
+| HEIC, RAW, GIF, WebP, AVIF, video, other | `keep_original` (HEIC/RAW also get a measured display derivative) | never touched by `--apply` |
 
-- **One identity.** `items.hash` stays the original's hash (ETag, device comparison, downloads do not change). Table
-  `archive_blobs(hash, kind, jxl_hash, jxl_bytes, reconstructs_to, original_bytes, original_ext, verified_at,
-  original_deleted_at)` records the JXL, kept at `<store>/archive-jxl/ab/cd/<hash>.jxl`, and the hash it rebuilds to.
-- **Reading.** `ingest::original_path` rebuilds an original whose file is gone (`archive_jxl::materialize`): the JXL must match
-  its recorded hash and the rebuilt bytes must hash to `reconstructs_to` and to the item's hash, or nothing is served (503).
-  The rebuilt file is cached under `<data>/archive-cache/` (1 GiB, oldest out), so `GET items/{id}/original`
-  (with `Range`, `If-None-Match`, `?download=1`), thumbnails and `details` all see the identical bytes and ETag.
-- **Applying.** `archive-jxl --apply --i-have-a-backup [--delete-originals] [--limit N]` (refuses without the backup flag, on
-  quiet hours and when the store is not mounted). Per file: the stored object is re-hashed, converted, the JXL written
-  durably, read back from disk and rebuilt once more, then the row is recorded. An original is deleted only with
-  `--delete-originals`, only after that second verification, and only from the owned store (never `external` files or the spool).
-  It logs counts only. `archive-jxl --restore-originals` rebuilds every deleted original back into the store.
+- **One identity.** `items.hash` stays the original's hash (device comparison, dedup, downloads' identity do not change).
+  Table `archive_blobs(hash, kind, jxl_hash, jxl_bytes, reconstructs_to, original_bytes, original_ext, verified_at,
+  original_deleted_at, original_sha256, pixel_digest, png_color, icc)` records the JXL, kept at
+  `<store>/archive-jxl/ab/cd/<hash>.jxl`. `kind` is `jpeg_recompress` or `png_lossless`; the migration adds the columns and
+  widens the `kind` check (rows kept). `reconstructs_to` is the blake3 of the JPEG, or the pixel digest of the PNG.
+- **JPEG verification.** The JPEG rebuilt from the JXL must have the original's blake3 *and* SHA-256 (`original_sha256`);
+  it is checked at conversion, again from the JXL on disk, before any deletion and at every rebuild.
+- **PNG verification.** The pixel digest is a SHA-256 over width, height, colour layout (`l8`, `la8`, `rgb8`, `rgba8` and the
+  16-bit ones), every sample (16-bit little-endian) and the ICC profile bytes. It is taken from the original file; the original
+  may be deleted only after the JXL, read back from disk, decodes to the same digest (and the PNG built from it decodes to it
+  too). Refused (original kept, listed as a failure): palette and 1/2/4-bit PNGs, animated PNGs, a `tRNS` chunk, a profile
+  other than sRGB or Display P3 (judged by colorants and tone curve), float data. Text, EXIF, resolution and gamma chunks are
+  not carried over. The ICC bytes are stored in the row (the JXL only tags sRGB or Display P3).
+- **Reading.** `ingest::original_path` rebuilds an original whose file is gone (`archive_jxl::materialize`, also used for an
+  older version's file): JPEG bytes must hash to the recorded blake3 and SHA-256, a PNG must decode to the recorded digest,
+  or nothing is served (503). The rebuilt file is cached under `<data>/archive-cache/<hash>.jpg|png` (1 GiB, oldest out), so
+  `GET items/{id}/original` (with `Range`, `If-None-Match`, `?download=1`), thumbnails and `details` all read it.
+- **PNG serving.** A rebuilt PNG is deterministic for a given library version (fixed compression and filter, `iCCP`
+  embedded, no timestamp) but is not the original file, so `items/{id}/original` answers it with a **weak ETag** `W/"<item hash>"`
+  and `Content-Type: image/png`. `If-None-Match` matches the weak or the old strong tag (the pixels are the same, 304). `If-Range`
+  never validates a weak tag, so a request with any `If-Range` gets the whole file (200) instead of a range: a client resuming
+  with the pre-conversion strong tag cannot be handed bytes of the rebuilt file. `items.hash` and `items.bytes` stay the
+  original's (the served length differs). A JPEG is still served byte for byte with its strong ETag.
+- **Applying.** `archive-jxl --apply --i-have-a-backup [--kinds jpeg,png] [--delete-originals] [--limit N] [--manifest P]
+  [--max-temp 90]` refuses without the backup flag, on quiet hours and when the store is not mounted. One run is one batch
+  (`--limit` counts converted or deleted files, in hash order; run it again for the next batch). Per file: the stored object is
+  re-hashed against the catalog, converted, the JXL written durably, read back from disk and verified once more, then the row
+  is recorded. An original is deleted only with `--delete-originals`, only after that second verification, and only from the
+  owned store (never `external` files or the spool). The CPU temperature is checked before every file (pause while Tctl is at or
+  above `--max-temp`, default 90 °C); the CPU cap is the caller's `systemd-run -p CPUQuota=…` (apply is single-threaded).
+  Output is counts only (`converted_by_kind`, `failed` by reason, `temp_pauses`).
+- **Manifest.** `--manifest P` appends one JSON line per processed file and item, fsynced every 50 lines and at the end of the
+  run: `{item_id, device, asset_id, kind, original_rel_path, original_bytes, original_blake3, original_sha256, jxl_rel_path,
+  jxl_bytes, jxl_blake3, verified, verified_at, original_deleted_at, error?}` (PNG lines add `pixel_sha256`; paths relative to
+  the store). A file that failed has `verified:false` and `error`, keeps its original and is also appended to
+  `P.failures.jsonl`. `archive-jxl --export-manifest P` writes the complete manifest from the catalog (read-only), and is the
+  authority after an interrupted run.
+- **Restore.** `archive-jxl --restore-originals` rebuilds every deleted *JPEG* original into the store, byte for byte. A deleted
+  PNG original cannot be put back byte for byte: those rows stay served from the JXL and are counted (`png_not_restorable`);
+  restore PNGs from the backup of `objects/`.
 - **Purge.** A purged blob takes its JXL, row and cache file with it.
 - **Dry run.** `archive-jxl --dry-run [--sample N] [--report path]` opens the catalog read-only, converts and verifies a
   stratified sample, writes nothing to the library, and reports sizes, ratios, timings and failures by reason (opaque ids only).
@@ -517,4 +546,4 @@ An upload whose bytes are gone answers 410 on finish, and the phone starts that 
 - Zoom/pan on the device is unit-tested only: XCUITest can't run on iOS 27 with Xcode 26.
 - Stateright/TLA+ model of the upload protocol.
 - HLS cache eviction.
-- Archive format: PNG/TIFF/BMP stay as originals until the owner accepts pixel-exact (not byte-exact) storage; video preview renditions are recommended in the build report, not built.
+- Archive format: TIFF/BMP stay as originals; video preview renditions are recommended in the build report, not built.

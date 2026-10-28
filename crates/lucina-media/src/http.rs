@@ -540,20 +540,43 @@ pub async fn serve_file(
     etag: &str,
     cache: &str,
 ) -> ApiResult<Response> {
-    let etag = format!("\"{etag}\"");
-    if req_headers
+    // `W/<tag>` is a weak validator: the same content, not necessarily the same bytes (a PNG
+    // rebuilt from its archive copy, see `archive_jxl::original_etag`).
+    let (tag, weak) = match etag.strip_prefix("W/") {
+        Some(t) => (t, true),
+        None => (etag, false),
+    };
+    let etag = if weak {
+        format!("W/\"{tag}\"")
+    } else {
+        format!("\"{tag}\"")
+    };
+    // If-None-Match uses the weak comparison: `W/"x"` and `"x"` are the same tag.
+    let quoted = format!("\"{tag}\"");
+    let not_modified = req_headers
         .get(header::IF_NONE_MATCH)
         .and_then(|v| v.to_str().ok())
-        == Some(etag.as_str())
-    {
+        .is_some_and(|v| {
+            v.split(',')
+                .map(|t| t.trim().trim_start_matches("W/"))
+                .any(|t| t == quoted)
+        });
+    if not_modified {
         return Ok(Response::builder()
             .status(StatusCode::NOT_MODIFIED)
             .header(header::ETAG, &etag)
             .body(Body::empty())
             .unwrap());
     }
+    // A range can only be tied to one version of the bytes by a strong validator. A weak one never
+    // is, so `If-Range` (whatever it holds, an old strong tag included) turns the request into a
+    // whole-file one rather than splice two encodings.
+    let whole = weak && req_headers.contains_key(header::IF_RANGE);
     let mut req = Request::builder().uri("/");
     for (k, v) in req_headers.iter() {
+        if whole && matches!(k.as_str(), "range" | "if-range") {
+            continue;
+        }
         if matches!(
             k.as_str(),
             "range" | "if-range" | "if-modified-since" | "if-unmodified-since"
@@ -634,11 +657,13 @@ async fn original(
             "original is not reachable right now".into(),
         ));
     }
+    // A PNG rebuilt from its archive copy has the original's pixels, not its bytes: weak ETag.
+    let etag = crate::archive_jxl::original_etag(&lib.cfg, &path, &hash);
     let mut res = serve_file(
         headers,
         path,
         &mime,
-        &hash,
+        &etag,
         "private, max-age=31536000, immutable",
     )
     .await?;
