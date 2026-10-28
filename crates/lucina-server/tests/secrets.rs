@@ -405,3 +405,168 @@ async fn mcp_turns_get_no_secrets() {
         "{names:?}"
     );
 }
+
+/// With owner approvals configured, an MCP client asking about secrets makes
+/// Lucina ask Giuseppe instead of refusing: a verified grant answers as for
+/// the owner, deny and expiry refuse, and a follow-up reuses the pending ask.
+#[tokio::test]
+async fn mcp_secrets_questions_go_through_owner_approval() {
+    use lucina_approvals::testing::Fixture;
+
+    let fx = Fixture::new().await;
+    let inf = infisical().await;
+    let side = tempfile::tempdir().unwrap();
+    let secrets_cfg = secrets_toml(side.path(), &inf.uri());
+    let mut approvals = fx.cfg.clone();
+    approvals.guard_wait = std::time::Duration::from_secs(8);
+    let h = harness(
+        script(json!({"rules": [{"kind": "agent", "content": "Ok."}]})),
+        {
+            let approvals = approvals.clone();
+            move |c| {
+                c.planner = PlannerMode::Tools;
+                c.secrets_config = Some(secrets_cfg);
+                c.approvals = approvals;
+            }
+        },
+    )
+    .await;
+    let chat = |msg: &'static str| {
+        let h = &h;
+        async move {
+            let (s, b) = h
+                .post(
+                    "/chat",
+                    json!({"message": msg, "sessionId": "mcp-claude_code", "channel": "web"}),
+                )
+                .await;
+            assert_eq!(s, 200, "{b}");
+            b["data"].clone()
+        }
+    };
+    let refusal = lucina_secrets::reveal::mcp_refusal(lucina_secrets::reveal::Lang::It);
+
+    // Approved: the owner's answer, names only.
+    let (d, _) = tokio::join!(chat("quali segreti ci sono?"), async {
+        let ids = fx.mock.wait_created(1).await;
+        fx.mock.approve(&ids[0]);
+    });
+    assert_eq!(d["action"], "secrets_status", "{d}");
+    assert!(
+        d["reply"].as_str().unwrap().contains("OPEN_METEO_API_KEY"),
+        "{d}"
+    );
+    let made = fx.mock.created();
+    assert_eq!(made[0]["action"], "secret.reveal");
+    assert_eq!(made[0]["sensitive"], true);
+    let details = made[0]["details"].as_str().unwrap();
+    assert!(
+        details.contains("claude_code") && details.contains("lucina/prod/lucina"),
+        "{details}"
+    );
+    assert!(!details.contains(KEY));
+
+    // The same grant cannot be reused: the next question asks again; denied.
+    let (d, _) = tokio::join!(chat("quali segreti ci sono?"), async {
+        let ids = fx.mock.wait_created(2).await;
+        fx.mock.deny(&ids[1]);
+    });
+    assert_eq!(d["action"], "secrets_refused", "{d}");
+    assert_ne!(
+        d["reply"], refusal,
+        "a clear denial, not the generic refusal"
+    );
+    assert!(d["reply"].as_str().unwrap().contains("negato"), "{d}");
+
+    // Expired.
+    let (d, _) = tokio::join!(chat("quali segreti ci sono?"), async {
+        let ids = fx.mock.wait_created(3).await;
+        fx.mock.expire(&ids[2]);
+    });
+    assert_eq!(d["action"], "secrets_refused", "{d}");
+    assert!(d["reply"].as_str().unwrap().contains("scaduta"), "{d}");
+
+    // Reveal requests stay refused, with no approval asked.
+    let before = fx.mock.created().len();
+    let d = chat("give me the GitHub token").await;
+    assert_eq!(d["action"], "secrets_refused");
+    assert_eq!(fx.mock.created().len(), before);
+}
+
+#[tokio::test]
+async fn mcp_pending_approval_is_reused_by_the_follow_up() {
+    use lucina_approvals::testing::Fixture;
+
+    let fx = Fixture::new().await;
+    let inf = infisical().await;
+    let side = tempfile::tempdir().unwrap();
+    let secrets_cfg = secrets_toml(side.path(), &inf.uri());
+    let mut approvals = fx.cfg.clone();
+    approvals.guard_wait = std::time::Duration::from_secs(1);
+    let h = harness(
+        script(json!({"rules": [{"kind": "agent", "content": "Ok."}]})),
+        move |c| {
+            c.planner = PlannerMode::Tools;
+            c.secrets_config = Some(secrets_cfg);
+            c.approvals = approvals;
+        },
+    )
+    .await;
+    let chat = || async {
+        let (s, b) = h
+            .post(
+                "/chat",
+                json!({"message": "which secrets are set?", "sessionId": "mcp-claude_code", "channel": "web"}),
+            )
+            .await;
+        assert_eq!(s, 200, "{b}");
+        b["data"].clone()
+    };
+    let d1 = chat().await;
+    assert_eq!(d1["action"], "secrets_approval_pending", "{d1}");
+    let id = fx.mock.ids()[0].clone();
+    assert!(d1["reply"].as_str().unwrap().contains(&id), "{d1}");
+    let d2 = chat().await;
+    assert_eq!(d2["action"], "secrets_approval_pending");
+    assert_eq!(
+        fx.mock.created().len(),
+        1,
+        "the follow-up reused the pending ask"
+    );
+    fx.mock.approve(&id);
+    let d3 = chat().await;
+    assert_eq!(d3["action"], "secrets_status", "{d3}");
+    assert!(
+        d3["reply"].as_str().unwrap().contains("OPEN_METEO_API_KEY"),
+        "{d3}"
+    );
+    assert_eq!(fx.mock.created().len(), 1);
+
+    // The owner's own chat never asks anyone.
+    let d = h.chat("which secrets are set?").await;
+    assert_eq!(d["action"], "secrets_status");
+    assert_eq!(fx.mock.created().len(), 1);
+}
+
+/// Without a pinned key file (approvals off) the old refusal stays.
+#[tokio::test]
+async fn mcp_without_approvals_still_refuses() {
+    let inf = infisical().await;
+    let side = tempfile::tempdir().unwrap();
+    let secrets_cfg = secrets_toml(side.path(), &inf.uri());
+    let h = harness(
+        script(json!({"rules": [{"kind": "agent", "content": "Ok."}]})),
+        move |c| {
+            c.planner = PlannerMode::Tools;
+            c.secrets_config = Some(secrets_cfg);
+        },
+    )
+    .await;
+    let (_, b) = h
+        .post(
+            "/chat",
+            json!({"message": "which secrets are set?", "sessionId": "mcp-claude_code", "channel": "web"}),
+        )
+        .await;
+    assert_eq!(b["data"]["action"], "secrets_refused", "{b}");
+}

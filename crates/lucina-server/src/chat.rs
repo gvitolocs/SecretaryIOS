@@ -778,6 +778,7 @@ async fn run_turn_inner(
         &st,
         secrets_text.as_deref().unwrap_or(&t.message),
         not_owner,
+        t.mcp.as_ref().map(|m| m.caller.as_str()),
     )
     .await
     {
@@ -991,8 +992,19 @@ fn add_rich(out: &mut Value, rich: Option<&lucina_store::rich::RichMessage>) {
 }
 
 /// The secrets turn as a [`Finish`] (see [`crate::secrets::secrets_turn`]).
-async fn secrets_finish(st: &AppState, text: &str, mcp: bool) -> Option<Finish> {
-    let (reply, action) = crate::secrets::secrets_turn(st.secrets.as_deref(), text, mcp).await?;
+async fn secrets_finish(
+    st: &AppState,
+    text: &str,
+    mcp: bool,
+    mcp_caller: Option<&str>,
+) -> Option<Finish> {
+    // An MCP caller may get the owner's secrets answers when the owner approves (crate lucina_approvals).
+    let gate = match (mcp_caller, st.tool_env.approvals.as_deref()) {
+        (Some(caller), Some(approvals)) => Some(crate::secrets::McpApproval { approvals, caller }),
+        _ => None,
+    };
+    let (reply, action) =
+        crate::secrets::secrets_turn(st.secrets.as_deref(), text, mcp, gate).await?;
     let mut f = Finish::reply(reply, action);
     if action == "secrets_refused" {
         f.extra.insert("blockedAction".into(), json!("secrets"));
@@ -2412,7 +2424,13 @@ async fn tools_turn(
     } else {
         st.registry.clone()
     };
-    let secrets = secrets_finish(&st, secrets_text.as_deref().unwrap_or(&message), from_mcp).await;
+    let secrets = secrets_finish(
+        &st,
+        secrets_text.as_deref().unwrap_or(&message),
+        from_mcp,
+        from_mcp.then(|| surface.caller().unwrap_or("mcp")),
+    )
+    .await;
     let (memory_context, game_system) = if secrets.is_some() {
         (String::new(), String::new())
     } else {

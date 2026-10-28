@@ -306,6 +306,18 @@ impl AppState {
                 }
             }
         }
+        // Owner approvals: on when secretary-server, the service token and the pinned grant key are all there.
+        let approvals = match lucina_approvals::Approvals::new(cfg.approvals.clone()) {
+            Ok(a) => {
+                tracing::info!("owner approvals: ready (secrets guard for MCP, root_exec)");
+                Some(Arc::new(a))
+            }
+            Err(e) => {
+                tracing::info!(reason = %e, "owner approvals: off");
+                None
+            }
+        };
+        env.approvals = approvals.clone();
         let env_http = env.http.clone();
         let jobs = Arc::new(
             JobStore::new(&cfg.jobs_path).with_node_file(Some(cfg.node_jobs_path.clone())),
@@ -355,6 +367,12 @@ impl AppState {
             registry
                 .register(Arc::new(lucina_tools::tools::computer::ComputerTool))
                 .expect("computer tool registers");
+        }
+        // Root commands after the owner's approval of the exact commands (crate lucina_approvals).
+        if approvals.is_some() && cfg.tools.allows("root_exec") {
+            registry
+                .register(Arc::new(lucina_tools::tools::root_exec::RootExecTool))
+                .expect("root_exec tool registers");
         }
         let meshy_registry = meshy.as_ref().map(|svc| {
             let tool = Arc::new(lucina_tools::tools::meshy::MeshyTool::new(svc.clone()));

@@ -236,6 +236,8 @@ pub struct ToolEnv {
     pub drive: Option<Arc<google::Drive>>,
     /// The owner's Instagram and Pixiv plugin services on this host.
     pub plugins: tools::plugins::Plugins,
+    /// Owner approvals (pinned grant key present): the `root_exec` tool.
+    pub approvals: Option<Arc<lucina_approvals::Approvals>>,
 }
 
 impl ToolEnv {
@@ -285,6 +287,7 @@ impl ToolEnv {
             diagnostics_token_file: None,
             drive: None,
             plugins: tools::plugins::Plugins::default(),
+            approvals: None,
         }
     }
 }
@@ -500,6 +503,8 @@ pub const NO_MCP_TOOLS: &[&str] = &[
     "ask_grok",
     "ask_chatgpt",
     "delegate",
+    // Root commands (owner approval): never for a guarded MCP caller.
+    "root_exec",
 ];
 
 /// Which tools are enabled.
