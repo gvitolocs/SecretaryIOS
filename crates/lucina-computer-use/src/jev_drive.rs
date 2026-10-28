@@ -986,7 +986,7 @@ async fn make_plan(task: &str, stats: &mut DriveStats) -> Plan {
     };
     let r = words(
         "computer-plan",
-        "You plan a browsing task for Lucina's Chromium. Answer JSON only: {\"kind\":\"browse\"|\"shopping\",\"start\":\"...\",\"slots\":{\"name\":\"value\"}}.\n- kind: shopping when the task fills a basket or orders food or goods, else browse.\n- start: the full https URL of the site to open first when the task names or implies one (Google Flights: https://www.google.com/travel/flights?hl=en ; Wolt: https://wolt.com/en/dnk/aarhus ; Just Eat: https://www.just-eat.dk), else a short web search query; empty when the task is about the page already open.\n- slots: the literal values the task will type into fields, at most 8, short names like from, to, depart, return, passengers, restaurant, item, query. Dates as the site shows them, e.g. \"Fri, Nov 6\". Resolve relative dates from today.\nNever add values the task does not give or imply.",
+        "You plan a browsing task for Lucina's Chromium. Answer JSON only: {\"kind\":\"browse\"|\"shopping\",\"start\":\"...\",\"slots\":{\"name\":\"value\"}}.\n- kind: shopping when the task fills a basket or orders food or goods, else browse.\n- start: the full https URL of the site to open first when the task names or implies one (Google Flights: https://www.google.com/travel/flights?hl=en ; Wolt: https://wolt.com/en/dnk/aarhus, or https://wolt.com/en/dnk/aarhus/search?q=<restaurant> when a restaurant is named ; Just Eat: https://www.just-eat.dk), else a short web search query; empty when the task is about the page already open.\n- slots: the literal values the task will type into fields, at most 8, short names like from, to, depart, return, passengers, restaurant, item, query. Dates as the site shows them, e.g. \"Fri, Nov 6\". Resolve relative dates from today.\nNever add values the task does not give or imply.",
         format!("Today: {}\nTask: {task}", today()),
         300,
         true,
@@ -1131,6 +1131,7 @@ pub async fn drive(jev: &Jev, target: Where, task: &str, cancel: &Cancel) -> Res
     let mut mem = Memory::default();
     let gate = step::act_min();
     let limit = max_steps();
+    let mut failed_run = 0usize;
     let finish = |mut stats: DriveStats, steps: usize| {
         stats.steps = steps;
         stats.wall_ms = started.elapsed().as_millis() as u64;
@@ -1345,9 +1346,18 @@ pub async fn drive(jev: &Jev, target: Where, task: &str, cancel: &Cancel) -> Res
         };
         let act_ms = t_act.elapsed().as_millis() as u64;
         if let Err(e) = result {
-            dev.tidy().await;
-            return Ok(escalate(e, &screen.title, &mem, stats));
+            // One element the driver cannot reach (no bounds, refused input) is
+            // banned on this page and Jev chooses again; two failures in a row end it.
+            failed_run += 1;
+            tracing::info!(target: "lucina_jev::drive", step, op = %act.op, target = %label, error = %lucina_jev::clip(&e, 200), "jev action failed");
+            if failed_run >= 2 || act.op == "open_url" {
+                dev.tidy().await;
+                return Ok(escalate(e, &screen.title, &mem, stats));
+            }
+            mem.failed(screen.fingerprint);
+            continue;
         }
+        failed_run = 0;
         let nav = matches!(act.op.as_str(), "open_url" | "back" | "open_app")
             || (act.op == "click" && act.target.as_ref().is_some_and(|e| e.role == "link"))
             || (act.op == "type" && submit);

@@ -211,6 +211,16 @@ impl Memory {
         }
     }
 
+    /// The last action failed in the driver: banned on this page, not counted
+    /// as a page change, and its history line says so.
+    pub fn failed(&mut self, fp: u64) {
+        if let Some(t) = self.taken.last_mut() {
+            t.after = Some(fp);
+            t.text.push_str(" (failed: the browser refused it)");
+            self.banned.insert((fp, key(&t.op, &t.label)));
+        }
+    }
+
     pub fn banned(&self, fp: u64, op: &str, label: &str) -> bool {
         self.banned.contains(&(fp, key(op, label)))
     }

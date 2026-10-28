@@ -331,6 +331,13 @@ fn three_actions_that_change_nothing_end_the_drive() {
     mem.push("click", "D", "clicked D".into(), s.fingerprint);
     mem.settled(s.fingerprint + 1);
     assert_eq!(mem.unchanged_run, 0);
+    // A refused action is banned on its page and does not count as a loop.
+    let mut m = Memory::default();
+    m.push("type", "Search in Wolt...", "typed \"Holy Pizza\"".into(), 5);
+    m.failed(5);
+    assert!(m.banned(5, "type", "Search in Wolt..."));
+    assert_eq!(m.unchanged_run, 0);
+    assert!(m.history()[0].contains("(failed"));
     // The same action on the same page: the drive counts the repeats.
     let mut m = Memory::default();
     assert_eq!(m.push("click", "X", "x".into(), 7), 0);
