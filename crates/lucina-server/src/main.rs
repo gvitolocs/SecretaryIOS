@@ -287,9 +287,15 @@ enum DecideCmd {
         #[arg(long, default_value_t = 0)]
         wait: u64,
     },
+    /// Take back a question still waiting for the owner (asked by mistake, settled elsewhere).
+    Withdraw {
+        id: String,
+        #[arg(long, default_value = "")]
+        reason: String,
+    },
     /// Recent decisions as JSON.
     List {
-        /// pending | decided | expired.
+        /// pending | decided | expired | withdrawn.
         #[arg(long)]
         status: Option<String>,
         #[arg(long, default_value_t = 20)]
@@ -472,6 +478,7 @@ async fn decide_cmd(cmd: Option<DecideCmd>, a: DecideArgs) -> anyhow::Result<()>
     let c = cli::Client::from_env()?;
     let out = match cmd {
         Some(DecideCmd::Status { id, wait }) => c.wait(c.get(&id).await?, wait).await?,
+        Some(DecideCmd::Withdraw { id, reason }) => c.withdraw(&id, &reason).await?,
         Some(DecideCmd::List { status, limit }) => c.list(status.as_deref(), limit).await?,
         None => {
             let question = a

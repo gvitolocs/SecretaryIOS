@@ -185,10 +185,21 @@ pub fn option_index(options: &[String], answer: &str) -> Option<usize> {
 pub fn owner_only(r: &Request) -> bool {
     let text = format!("{}\n{}\n{}", r.question, r.options.join("\n"), r.context);
     lucina_intent::re!(
-        r"\b(buy|purchase|checkout|pay for|make a payment|place (an|the) order|spend (\$|€|eur|usd|dkk)?\s?\d|credit card|carta di credito|bank transfer|bonifico|enter (his|the owner'?s|giuseppe'?s) (password|credentials|card|pin)|accept (the )?(terms|tos|agreement|license|licence)|sign (the )?(contract|agreement)|send (an? )?(e-?mail|message|dm|sms|text) (to|on (his|giuseppe'?s) behalf)|on (his|giuseppe'?s|the owner'?s) behalf|compra(re)?|acquista(re)?|paga(re)? |secrets?|credentials?|api[- ]?keys?|passwords?|infisical|tokens?)\b",
+        r"\b(buy|purchase|checkout|pay for|make a payment|place (an|the) order|spend (\$|€|eur|usd|dkk)?\s?\d|credit card|carta di credito|bank transfer|bonifico|enter (his|the owner'?s|giuseppe'?s) (password|credentials|card|pin)|accept (the )?(terms|tos|agreement|license|licence)|sign (the )?(contract|agreement)|send (an? )?(e-?mail|message|dm|sms|text) (to|on (his|giuseppe'?s) behalf)|on (his|giuseppe'?s|the owner'?s) behalf|compra(re)?|acquista(re)?|paga(re)? )\b",
         "i"
     )
     .test(&text)
+        || handles_secret(&format!("{}\n{}", r.question, r.options.join("\n")))
+}
+
+/// The question itself is about handling a credential (where a token lives, rotating, sharing,
+/// granting access), not a mention of one ("0 secret hits" in a review summary).
+fn handles_secret(text: &str) -> bool {
+    lucina_intent::re!(
+        r"\b(store|move|put|place|keep|copy|rotate|revoke|reissue|re-issue|mint|issue|share|reveal|expose|grant|give|hand|upload|paste|delete|remove|wire)\b[^.?!\n]{0,60}\b(secrets?|credentials?|api[- ]?keys?|passwords?|tokens?|infisical)\b|\b(secrets?|credentials?|api[- ]?keys?|passwords?|tokens?)\b[^.?!\n]{0,40}\b(at|in|into|to|from|for)\b[^.?!\n]{0,20}\b(infisical|[a-z0-9_-]+/(prod|dev|staging))\b",
+        "i"
+    )
+    .test(text)
 }
 
 // ---------------------------------------------------------------- the record
@@ -704,12 +715,16 @@ pub fn settle(r: &Request, owner_only: bool, model: Option<&ModelView>, jev: Opt
         },
         (Some(m), None) => (m.choice, m.confidence * 0.9),
         (None, Some(j)) => (j.choice, j.probability * 0.9),
+        (None, None) if owner_only => (None, 0.0),
         (None, None) => {
             why.push("I couldn't weigh it right now".into());
             (None, 0.0)
         }
     };
-    if choice.is_none() && !why.iter().any(|w| w.contains("checks disagree") || w.contains("settle") || w.contains("weigh")) {
+    if !owner_only
+        && choice.is_none()
+        && !why.iter().any(|w| w.contains("checks disagree") || w.contains("settle") || w.contains("weigh"))
+    {
         why.push("the evidence doesn't settle it".into());
     }
     if model.is_some_and(|m| m.conflict) || jev.is_some_and(|j| j.conflict >= CONFLICT_MIN) {
@@ -1022,6 +1037,7 @@ pub fn summary(d: &Decision) -> String {
             d.reason
         ),
         ("expired", _) => format!("{}: expired, Giuseppe did not answer.", d.decision_id),
+        ("withdrawn", _) => format!("{}: withdrawn, no answer needed. {}", d.decision_id, d.reason),
         _ => format!("{}: pending. {}", d.decision_id, d.reason),
     }
 }
@@ -1219,6 +1235,33 @@ pub async fn owner_answer(st: &AppState, text: &str) -> Option<OwnerReply> {
     })
 }
 
+/// `DELETE /api/secretary/decisions/{id}?reason=`: the asker takes back a question still waiting for
+/// the owner (asked by mistake, settled elsewhere). His buttons then answer that it was withdrawn.
+pub fn withdraw(st: &AppState, id: &str, reason: &str) -> Result<Value, ApiError> {
+    let store = store(&st.cfg.data_dir);
+    let mut d = valid_id(id)
+        .then(|| store.get(id, Utc::now()))
+        .flatten()
+        .ok_or_else(|| ApiError::new(404, "decision_not_found", "No such decision"))?;
+    if d.status != "pending" {
+        return Err(ApiError::new(409, "not_pending", format!("{id} is {}, not pending", d.status)));
+    }
+    let reason = clip(reason.trim(), 500);
+    d.status = "withdrawn".into();
+    d.reason = if reason.is_empty() {
+        "Withdrawn by the asker.".into()
+    } else {
+        format!("Withdrawn by the asker: {reason}")
+    };
+    d.expires_at = None;
+    d.decided_at = Some(now_iso());
+    store
+        .put(&d)
+        .map_err(|e| ApiError::new(500, "internal_error", format!("decisions log: {e}")))?;
+    report_to_asker(st, &d, false);
+    Ok(d.public())
+}
+
 /// "What's the state of dc-…?": the decision's status from the log, on any turn (read only).
 pub fn status_answer(st: &AppState, text: &str) -> Option<String> {
     let c = lucina_intent::re!(r"\b(dc-[0-9a-f]{12})\b", "i").exec(text)?;
@@ -1252,8 +1295,8 @@ pub fn get(st: &AppState, id: &str) -> Result<Value, ApiError> {
 pub fn list(st: &AppState, status: Option<&str>, limit: Option<&str>) -> Result<Value, ApiError> {
     let status = match status {
         None | Some("") => None,
-        Some(s @ ("pending" | "decided" | "expired")) => Some(s),
-        Some(_) => return Err(ApiError::bad_request("status must be pending, decided or expired")),
+        Some(s @ ("pending" | "decided" | "expired" | "withdrawn")) => Some(s),
+        Some(_) => return Err(ApiError::bad_request("status must be pending, decided, expired or withdrawn")),
     };
     let limit = match limit {
         None | Some("") => 20,
@@ -1350,6 +1393,14 @@ pub mod cli {
             self.send(self.http.get(format!("{}/{id}", self.base))).await
         }
 
+        pub async fn withdraw(&self, id: &str, reason: &str) -> anyhow::Result<Value> {
+            if !super::valid_id(id) {
+                anyhow::bail!("a decision id is dc- and 12 hex digits");
+            }
+            self.send(self.http.delete(format!("{}/{id}", self.base)).query(&[("reason", reason)]))
+                .await
+        }
+
         pub async fn list(&self, status: Option<&str>, limit: u32) -> anyhow::Result<Value> {
             let mut q = vec![("limit", limit.to_string())];
             if let Some(s) = status {
@@ -1377,6 +1428,7 @@ pub mod cli {
         match (s("status"), s("decision")) {
             ("pending", _) => format!("Pending: Lucina asked the owner on his phone (decision {id}). Do not act on this yet; check with: lucina-rs decide status {id} --wait 60"),
             ("expired", _) => format!("Expired: the owner did not answer within 24 h (decision {id})."),
+            ("withdrawn", _) => format!("Withdrawn (decision {id}): {}", s("reason")),
             (_, "owner_reply") => format!("The owner answered: \"{}\"  Decision {id}", s("reason")),
             (_, kind) => format!(
                 "{} decided: {} \"{}\" (confidence {:.2}). Reason: {}  Decision {id}",
@@ -1449,6 +1501,13 @@ mod tests {
         // Secret wiring is his (2026-10-28: the Paseo session's token-placement question).
         b["question"] = json!("Store the Hermes agents MCP token at lucina/prod instead of agents/prod?");
         assert!(owner_only(&parse_request(&b).unwrap()));
+        // A review summary that mentions secrets is not a secret question (dc-d5c85cb22592).
+        b["question"] = json!("Merge gvitolocs/pokoin PR #513 into main?");
+        b["context"] = json!("Reviewed clean: tests pass, diffgate ok, 0 secret hits, mergeable.");
+        assert!(!owner_only(&parse_request(&b).unwrap()));
+        b["question"] = json!("Rotate the Pokobot DeepSeek API key now?");
+        assert!(owner_only(&parse_request(&b).unwrap()));
+        b["context"] = json!("Tests pass.");
         b["question"] = json!("Restart the payment-webhook worker on p1?");
         assert!(!owner_only(&parse_request(&b).unwrap()), "technical words are not a payment");
     }

@@ -609,8 +609,12 @@ async fn route(
             }
             _ => Err(ApiError::method_not_allowed(&["GET", "POST"])),
         },
+        (Some("decisions"), Some(id)) if method == Method::DELETE => {
+            let reason = query_param(uri, "reason").unwrap_or_default();
+            Ok(ok(crate::decide::withdraw(st, id, &reason)?))
+        }
         (Some("decisions"), Some(id)) => {
-            only(&["GET"])?;
+            only(&["GET", "DELETE"])?;
             let mut v = crate::decide::get(st, id)?;
             lucina_secrets::redactor().redact_json(&mut v);
             Ok(ok(v))

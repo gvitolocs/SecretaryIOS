@@ -156,6 +156,17 @@ async fn low_impact_go_aheads_are_decided_and_high_impact_ones_wait_for_the_owne
     assert_eq!(out["action"], "decision", "{out}");
     assert!(out["reply"].as_str().unwrap().contains("Giuseppe decided"), "{out}");
 
+    // The asker takes back a question still waiting for him; his later tap is told so.
+    let (_, b) = h.post("/decisions", decision("high", true)).await;
+    let wid = b["data"]["decision_id"].as_str().unwrap().to_owned();
+    let (s, b, _) = h.call(reqwest::Method::DELETE, &format!("/decisions/{wid}?reason=asked%20by%20mistake"), None).await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(b["data"]["status"], "withdrawn");
+    let out = h.chat(&format!("Decision {wid}: 1")).await;
+    assert!(out["reply"].as_str().unwrap().contains("withdrawn"), "{out}");
+    let (s, _, _) = h.call(reqwest::Method::DELETE, &format!("/decisions/{wid}"), None).await;
+    assert_eq!(s, 409, "only a pending one");
+
     let (_, b) = h.get("/decisions?status=decided&limit=5").await;
     assert_eq!(b["data"]["items"].as_array().unwrap().len(), 2);
     assert_eq!(h.get("/decisions/dc-000000000000").await.1["error"], "decision_not_found");
