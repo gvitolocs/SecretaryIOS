@@ -114,9 +114,10 @@ impl VideoConfig {
             ffprobe: whisper.ffprobe.clone(),
             max_duration: secs("LUCINA_VIDEO_MAX_SEC", 3 * 3600),
             gemini_model: get("LUCINA_VIDEO_GEMINI_MODEL")
-                .unwrap_or_else(|| "gemini-3.8-flash".into()),
-            gemini_fallback_model: get("LUCINA_VIDEO_GEMINI_FALLBACK_MODEL")
                 .unwrap_or_else(|| "gemini-3.5-flash".into()),
+            // 3.8 answered "high demand" for hours on 2026-10-28: the fallback, not the default.
+            gemini_fallback_model: get("LUCINA_VIDEO_GEMINI_FALLBACK_MODEL")
+                .unwrap_or_else(|| "gemini-3.8-flash".into()),
             gemini_url: get("LUCINA_GEMINI_URL")
                 .unwrap_or_else(|| "https://generativelanguage.googleapis.com/v1beta".into()),
             zcode: flag("LUCINA_VIDEO_ZCODE", true),
@@ -262,6 +263,83 @@ pub(crate) fn stage(st: &AppState, job_id: &str, stage: &str) {
     });
 }
 
+/// A running job's way back after a restart (lucina-rs is redeployed often): the plan and
+/// where it reports, in `<work_dir>/<video id>/resume.json` until the job ends.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct Resume {
+    pub job_id: String,
+    pub plan: Value,
+    pub message: String,
+    pub session: String,
+    pub channel: String,
+    pub user_item: Option<String>,
+    /// Starts so far (the first included); a job is not resumed a third time.
+    pub attempts: u32,
+}
+
+pub const MAX_ATTEMPTS: u32 = 3;
+
+fn resume_path(cfg: &VideoConfig, plan: &Value) -> Option<PathBuf> {
+    let id = plan["videoId"].as_str()?;
+    (trigger::video_id(&format!("https://youtu.be/{id}")).as_deref() == Some(id))
+        .then(|| cfg.work_dir.join(id).join("resume.json"))
+}
+
+/// Records (or counts another start of) a job; best effort.
+pub fn save_resume(cfg: &VideoConfig, r: &Resume) {
+    let Some(p) = resume_path(cfg, &r.plan) else {
+        return;
+    };
+    let mut r = r.clone();
+    if let Some(old) = std::fs::read(&p)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Resume>(&b).ok())
+        .filter(|o| o.job_id == r.job_id)
+    {
+        r.attempts = r.attempts.max(old.attempts);
+    }
+    let write = || -> anyhow::Result<()> {
+        if let Some(dir) = p.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        lucina_store::write_atomic(&p, serde_json::to_string_pretty(&r)?.as_bytes())?;
+        Ok(())
+    };
+    if let Err(e) = write() {
+        tracing::warn!(error = %e, "youtube report: could not save the resume file");
+    }
+}
+
+/// The job ended (either way): nothing to resume.
+pub fn clear_resume(cfg: &VideoConfig, plan: &Value) {
+    if let Some(p) = resume_path(cfg, plan) {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
+/// Jobs a restart interrupted, oldest first.
+pub fn pending_resumes(cfg: &VideoConfig) -> Vec<Resume> {
+    let Ok(dirs) = std::fs::read_dir(&cfg.work_dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<(std::time::SystemTime, Resume)> = dirs
+        .flatten()
+        .filter_map(|d| {
+            let p = d.path().join("resume.json");
+            let t = std::fs::metadata(&p).and_then(|m| m.modified()).ok()?;
+            let r = serde_json::from_slice::<Resume>(&std::fs::read(&p).ok()?).ok()?;
+            Some((t, r))
+        })
+        .collect();
+    out.sort_by_key(|(t, _)| *t);
+    out.into_iter().map(|(_, r)| r).collect()
+}
+
+/// A step's saved result in the archive folder, reused when a resumed job gets there again.
+fn reuse<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
+    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+}
+
 /// The plan the chat hands to the job (crate::chat::youtube_turn).
 pub fn plan(url: &str, id: &str, request: &str, redo: bool) -> Value {
     json!({"action": ACTION, "url": url, "videoId": id, "request": request, "redo": redo})
@@ -335,8 +413,26 @@ pub async fn run(st: &AppState, plan: &Value, job_id: &str) -> Result<(String, S
         }
         zcode::run(cfg, &meta, &files.video, &work, &folder).await
     };
-    let whisper = transcript::whisper(cfg, &meta, &files.video, &work);
-    let frames = visual::inspect(st, cfg, &meta, &files.video, &folder, &work);
+    let whisper = async {
+        if let Some(t) = reuse::<Value>(&folder.join("transcript.whisper.json")) {
+            let segments: Vec<Seg> =
+                serde_json::from_value(t["segments"].clone()).unwrap_or_default();
+            if !segments.is_empty() {
+                return Ok(transcript::Transcript {
+                    segments,
+                    engine: t["engine"].as_str().unwrap_or_default().to_owned(),
+                    language: t["language"].as_str().map(str::to_owned),
+                });
+            }
+        }
+        transcript::whisper(cfg, &meta, &files.video, &work).await
+    };
+    let frames = async {
+        match reuse::<Vec<Frame>>(&folder.join("visual.json")) {
+            Some(f) if !f.is_empty() => Ok(f),
+            _ => visual::inspect(st, cfg, &meta, &files.video, &folder, &work).await,
+        }
+    };
     let (whisper, frames, zcode) = tokio::join!(whisper, frames, zcode);
 
     let whisper = whisper.unwrap_or_else(|e| {
@@ -374,6 +470,15 @@ pub async fn run(st: &AppState, plan: &Value, job_id: &str) -> Result<(String, S
     }
 
     stage(st, job_id, "merging the transcripts");
+    // Saved now so a restart during the merge or the report does not run Whisper again.
+    if !whisper.segments.is_empty() {
+        let _ = lucina_store::write_atomic(
+            &folder.join("transcript.whisper.json"),
+            serde_json::to_string_pretty(&json!({"engine": whisper.engine, "language": whisper.language, "segments": whisper.segments}))
+                .unwrap_or_default()
+                .as_bytes(),
+        );
+    }
     let merged = merge::merge(
         &st.tool_env.http,
         cfg,
@@ -409,4 +514,67 @@ pub async fn run(st: &AppState, plan: &Value, job_id: &str) -> Result<(String, S
     let _ = tokio::fs::remove_dir_all(&work).await;
     stage(st, job_id, "done");
     Ok(report::chat_reply(&input, &rep, &saved))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(work: &Path) -> VideoConfig {
+        let w = lucina_memo::transcribe::WhisperConfig::from_lookup(|_| None);
+        let mut c = VideoConfig::from_lookup(&|_: &str| None, work, &w);
+        c.work_dir = work.to_path_buf();
+        c
+    }
+
+    #[test]
+    fn resume_files_round_trip_and_count_attempts() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = cfg(dir.path());
+        let r = Resume {
+            job_id: "job-1".into(),
+            plan: plan(
+                "https://youtu.be/FBs--2nSPLQ",
+                "FBs--2nSPLQ",
+                "report",
+                false,
+            ),
+            message: "report https://youtu.be/FBs--2nSPLQ".into(),
+            session: "secretary_app".into(),
+            channel: "ios".into(),
+            user_item: Some("01M".into()),
+            attempts: 2,
+        };
+        save_resume(&cfg, &r);
+        // A later save of the same job never lowers the count.
+        save_resume(
+            &cfg,
+            &Resume {
+                attempts: 1,
+                ..r.clone()
+            },
+        );
+        assert_eq!(pending_resumes(&cfg), vec![r.clone()]);
+        clear_resume(&cfg, &r.plan);
+        assert!(pending_resumes(&cfg).is_empty());
+        // A plan without a valid id never names a path.
+        save_resume(
+            &cfg,
+            &Resume {
+                plan: json!({"videoId": "../../etc"}),
+                ..r
+            },
+        );
+        assert!(pending_resumes(&cfg).is_empty());
+    }
+
+    #[test]
+    fn gemini_defaults_to_the_stable_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = cfg(dir.path());
+        assert_eq!(
+            (c.gemini_model.as_str(), c.gemini_fallback_model.as_str()),
+            ("gemini-3.5-flash", "gemini-3.8-flash")
+        );
+    }
 }

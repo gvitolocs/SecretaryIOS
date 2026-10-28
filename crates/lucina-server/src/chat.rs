@@ -1317,7 +1317,10 @@ fn queue_job(t: &Turn<'_>, plan: &Value, action: &str, cmid: Option<&str>) -> Fi
         }
         Err(e) => {
             tracing::error!(error = %e, "secretary job insert failed");
-            Finish::reply(format!("I could not start the {}.", jobs::label(action)), action)
+            Finish::reply(
+                format!("I could not start the {}.", jobs::label(action)),
+                action,
+            )
         }
     }
 }
@@ -2107,6 +2110,60 @@ struct JobDest {
     origin: Option<Arc<ChannelOrigin>>,
 }
 
+/// Video report jobs a restart interrupted (crate::video::Resume) start again, reporting on
+/// the app's timeline (a Telegram reply sink does not survive a restart). Once per process.
+pub(crate) fn resume_video_jobs(st: &AppState) {
+    static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if DONE.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let cfg = &st.cfg.video;
+    for mut r in crate::video::pending_resumes(cfg) {
+        let job = match st.jobs.adopt(&r.job_id) {
+            Ok(Some(job)) if r.attempts < crate::video::MAX_ATTEMPTS => job,
+            Ok(Some(_)) => {
+                tracing::warn!(job_id = %r.job_id, "youtube report: interrupted too often; not resuming");
+                let _ = st.jobs.update(&r.job_id, |j| {
+                    j.status = "error".into();
+                    j.error = Some("interrupted by restarts".into());
+                    j.finished_at = Some(now_iso());
+                });
+                st.jobs.finish(&r.job_id);
+                crate::video::clear_resume(cfg, &r.plan);
+                continue;
+            }
+            _ => {
+                crate::video::clear_resume(cfg, &r.plan);
+                continue;
+            }
+        };
+        tracing::info!(job_id = %job.id, attempt = r.attempts + 1, "youtube report: resuming after a restart");
+        r.attempts += 1;
+        crate::video::save_resume(cfg, &r);
+        let surface = crate::surface::chat_surface(
+            &st.cfg,
+            Some(BearerVerified::checked()),
+            &r.channel,
+            None,
+        );
+        spawn_job(
+            st.clone(),
+            job,
+            r.plan.clone(),
+            r.message.clone(),
+            String::new(),
+            JobDest {
+                turn_meta: None,
+                session: r.session.clone(),
+                user_item: r.user_item.clone(),
+                channel: r.channel.clone(),
+                surface,
+                origin: None,
+            },
+        );
+    }
+}
+
 /// A finished job on the owner's devices (`/v1/notify`), keyed to its timeline item so it is
 /// one notification with secretary-server's timeline ingester.
 fn notify_job(
@@ -2204,7 +2261,21 @@ fn spawn_job(st: AppState, job: Job, plan: Value, message: String, memory: Strin
                 "computer_task" => {
                     run_computer_task(plan["task"].as_str().map(str::trim).filter(|s| !s.is_empty()).unwrap_or(&message)).await
                 }
-                crate::video::ACTION => crate::video::run(&st, &plan, &job.id).await,
+                crate::video::ACTION => {
+                    let cfg = &st.cfg.video;
+                    crate::video::save_resume(cfg, &crate::video::Resume {
+                        job_id: job.id.clone(),
+                        plan: plan.clone(),
+                        message: message.clone(),
+                        session: session.clone(),
+                        channel: channel.clone(),
+                        user_item: user_item.clone(),
+                        attempts: 1,
+                    });
+                    let out = crate::video::run(&st, &plan, &job.id).await;
+                    crate::video::clear_resume(cfg, &plan);
+                    out
+                }
                 "oracle_monitor_task" => Ok(("Oracle SSH monitoring is disabled on nezopt. Oracle peer1 runs Poko only, not Lucina.".into(), String::new())),
                 "generate_image" => Err("image generation (ComfyUI) is not available on the Rust Lucina yet".into()),
                 "graph_task" => Err("graph_task needs rclone and the Drive cache, which the Rust Lucina does not have".into()),
@@ -2887,7 +2958,10 @@ mod tests {
         assert_eq!(f.action, PRIVATE_ACTION);
         assert_eq!(f.routes[0]["label"], "Open Pixiv");
         assert_eq!(f.routes[0]["payload"]["path"], "/pixiv");
-        assert_eq!(gallery_action("/instagram", 2, "en")["label"], "Open Instagram");
+        assert_eq!(
+            gallery_action("/instagram", 2, "en")["label"],
+            "Open Instagram"
+        );
         // an ordinary reply is not private
         assert_eq!(effects_to_finish(&[], "ok".into()).action, "reply");
     }

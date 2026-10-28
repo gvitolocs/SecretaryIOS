@@ -82,6 +82,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let manager = Manager::open_with(Store::open(&state_dir)?, providers, lanes, options)?;
     manager.spawn_sweeper();
     manager.spawn_command_sweeper();
+    let bridge = lucina_agentd::approvals_bridge::spawn_from_env(&manager);
 
     if let Some(dir) = socket.parent() {
         std::fs::create_dir_all(dir)?;
@@ -127,6 +128,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let drained = tokio::time::timeout(Duration::from_secs(3), async {
         for s in servers {
             let _ = s.await;
+        }
+        // The approvals bridge withdraws what is still open, then ends.
+        if let Some(b) = bridge {
+            let _ = b.await;
         }
     })
     .await;
