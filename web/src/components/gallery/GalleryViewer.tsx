@@ -14,6 +14,7 @@ import { PhotoEditor } from "./editor/PhotoEditor";
 import { RenameDialog } from "./RenameDialog";
 import { ArchiveIcon, UnarchiveIcon } from "./browse/BrowseIcons";
 import { GalleryVideo } from "./browse/GalleryVideo";
+import { ShareSheet } from "./share/ShareSheet";
 import { AlbumIcon, DownloadIcon, HeartIcon, InfoIcon, RenameIcon, RestoreIcon, RotateIcon, TrashIcon } from "./ViewerIcons";
 
 export interface GalleryViewerProps {
@@ -31,7 +32,7 @@ export interface GalleryViewerProps {
   archive?: boolean;
 }
 
-type Dialog = "delete" | "album" | "rename" | null;
+type Dialog = "delete" | "album" | "rename" | "share" | null;
 
 const INFO_KEY = "gallery.infoOpen";
 
@@ -389,7 +390,7 @@ export function GalleryViewer(props: GalleryViewerProps) {
         index={props.index}
         onIndex={props.onIndex}
         onClose={props.onClose}
-        actions={{ share: true }}
+        actions={props.trash ? undefined : { share: () => void setDialog("share") }}
         toolbar={<Toolbar />}
         panel={infoOpen() ? <Panel /> : undefined}
         onKeyDown={onKeyDown}
@@ -418,6 +419,9 @@ export function GalleryViewer(props: GalleryViewerProps) {
             </Match>
             <Match when={dialog() === "album"}>
               <AlbumPicker itemIds={[item().id]} onDone={addedToAlbum} onCancel={() => setDialog(null)} />
+            </Match>
+            <Match when={dialog() === "share"}>
+              <ShareSheet target={{ kind: "items", items: [item()] }} onClose={() => setDialog(null)} />
             </Match>
             <Match when={dialog() === "rename"}>
               <RenameDialog item={item()} onSave={saveRename} onCancel={() => setDialog(null)} />

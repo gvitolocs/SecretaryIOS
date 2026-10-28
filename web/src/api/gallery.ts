@@ -483,3 +483,240 @@ export async function listRecent(q: { origin?: string; days?: number; limit?: nu
   const body = obj(await request<unknown>("GET", `/v1/media/items/recent?${params}`));
   return { items: parseItems(body.items), total: num(body.total) ?? 0 };
 }
+
+// ---- share & compare ----------------------------------------------------------------------------------------------
+// Links (POST shares for chosen photos, POST albums/{id}/shares for an album) and every stored form of one item.
+
+export type ShareKind = "album" | "selection";
+
+export interface GalleryShare {
+  token: string;
+  kind: ShareKind;
+  /** The album, for an album link; null for a link over chosen photos (its hidden album is not a client's business). */
+  albumId: string | null;
+  title: string;
+  /** Items the link serves now (trashed ones are not counted). */
+  count: number;
+  coverItem: string | null;
+  coverThumb: string | null;
+  createdAt: string;
+  expiresAt: string | null;
+  revokedAt: string | null;
+  allowOriginal: boolean;
+  views: number;
+  lastViewAt: string | null;
+  /** Not revoked and not expired. */
+  live: boolean;
+  /** `/a/<token>`: the public page, on the Secretary host. */
+  publicPath: string;
+}
+
+export interface ShareOptions {
+  /** 1, 7, 30; null = never expires. */
+  expiresInDays: number | null;
+  allowOriginal: boolean;
+  title?: string;
+}
+
+export function parseShare(raw: unknown): GalleryShare | null {
+  const r = obj(raw);
+  const token = str(r.token);
+  if (!token) return null;
+  return {
+    token,
+    kind: r.kind === "selection" ? "selection" : "album",
+    albumId: str(r.album_id),
+    title: str(r.title) ?? "",
+    count: num(r.count) ?? 0,
+    coverItem: str(r.cover_item),
+    coverThumb: sameOriginPath(r.cover_thumb) ?? null,
+    createdAt: str(r.created_at) ?? "",
+    expiresAt: str(r.expires_at),
+    revokedAt: str(r.revoked_at),
+    allowOriginal: r.allow_original === true,
+    views: num(r.views) ?? 0,
+    lastViewAt: str(r.last_view_at),
+    live: r.live === true,
+    publicPath: str(r.public_path) ?? `/a/${token}`,
+  };
+}
+
+function shareBody(opts: ShareOptions): Raw {
+  const body: Raw = { allow_original: opts.allowOriginal };
+  if (opts.expiresInDays !== null) body.expires_in_days = opts.expiresInDays;
+  return body;
+}
+
+/** A link over chosen photos and videos (up to 500). */
+export async function createSelectionShare(itemIds: string[], opts: ShareOptions): Promise<GalleryShare> {
+  const body = shareBody(opts);
+  body.item_ids = itemIds;
+  if (opts.title?.trim()) body.title = opts.title.trim();
+  const share = parseShare(await request<unknown>("POST", "/v1/media/shares", { body }));
+  if (!share) throw new Error("share not created");
+  return share;
+}
+
+export async function createAlbumShare(albumId: string, opts: ShareOptions): Promise<GalleryShare> {
+  const share = parseShare(await request<unknown>("POST", `/v1/media/albums/${enc(albumId)}/shares`, { body: shareBody(opts) }));
+  if (!share) throw new Error("share not created");
+  return share;
+}
+
+/** Every link, newest first, both kinds. */
+export async function listShares(): Promise<GalleryShare[]> {
+  const body = obj(await request<unknown>("GET", "/v1/media/shares"));
+  return (Array.isArray(body.shares) ? body.shares : []).map(parseShare).filter((s): s is GalleryShare => s !== null);
+}
+
+/** Turns a link off for good (the page answers "gone"). */
+export async function revokeShare(token: string): Promise<void> {
+  await request<unknown>("DELETE", `/v1/media/shares/${enc(token)}`);
+}
+
+export type RenditionName = "grid" | "preview" | "thumb" | "large" | "poster" | "device_preview";
+
+export interface StoredFile {
+  format: string;
+  mime: string;
+  bytes: number | null;
+  blake3: string | null;
+  width: number | null;
+  height: number | null;
+  url: string;
+}
+
+export interface OriginalFile extends StoredFile {
+  version: number;
+  /** `store`, `spool` or `external`: where the server keeps it (never a path). */
+  stored: string | null;
+  reachable: boolean;
+}
+
+export interface OlderVersion extends StoredFile {
+  version: number;
+  replacedAt: string | null;
+  stored: string | null;
+  reachable: boolean;
+}
+
+export interface Rendition extends StoredFile {
+  name: RenditionName;
+}
+
+/** What the device told the server when it uploaded (one entry per upload: an edit adds one). */
+export interface DeviceUpload {
+  filename: string | null;
+  mime: string | null;
+  uti: string | null;
+  bytes: number | null;
+  blake3: string | null;
+  width: number | null;
+  height: number | null;
+  takenAt: string | null;
+  uploadedAt: string | null;
+  /** The stored version whose checksum equals the one the device reported; null when none (or none reported). */
+  matchesVersion: number | null;
+}
+
+export interface DeviceCopy {
+  id: string;
+  name: string | null;
+  kind: string | null;
+  lastSeenAt: string | null;
+  assetId: string | null;
+  uploads: DeviceUpload[];
+  latest: DeviceUpload | null;
+}
+
+export interface ItemRenditions {
+  itemId: string;
+  kind: string;
+  original: OriginalFile;
+  versions: OlderVersion[];
+  renditions: Rendition[];
+  device: DeviceCopy | null;
+}
+
+const RENDITION_NAMES = new Set<string>(["grid", "preview", "thumb", "large", "poster", "device_preview"]);
+
+function parseStored(raw: unknown): StoredFile | null {
+  const r = obj(raw);
+  const url = sameOriginPath(r.url);
+  if (!url) return null;
+  return {
+    format: str(r.format) ?? "",
+    mime: str(r.mime) ?? "",
+    bytes: num(r.bytes),
+    blake3: str(r.blake3),
+    width: num(r.width),
+    height: num(r.height),
+    url,
+  };
+}
+
+function parseUpload(raw: unknown): DeviceUpload {
+  const r = obj(raw);
+  return {
+    filename: str(r.filename),
+    mime: str(r.mime),
+    uti: str(r.uti),
+    bytes: num(r.bytes),
+    blake3: str(r.blake3),
+    width: num(r.width),
+    height: num(r.height),
+    takenAt: str(r.taken_at),
+    uploadedAt: str(r.uploaded_at),
+    matchesVersion: num(r.matches_version),
+  };
+}
+
+function parseDevice(raw: unknown): DeviceCopy | null {
+  const r = obj(raw);
+  const id = str(r.id);
+  if (!id) return null;
+  const uploads = (Array.isArray(r.uploads) ? r.uploads : []).map(parseUpload);
+  return {
+    id,
+    name: str(r.name),
+    kind: str(r.kind),
+    lastSeenAt: str(r.last_seen_at),
+    assetId: str(r.asset_id),
+    uploads,
+    latest: uploads.length ? uploads[uploads.length - 1]! : null,
+  };
+}
+
+export function parseRenditions(raw: unknown): ItemRenditions | null {
+  const r = obj(raw);
+  const itemId = str(r.item_id);
+  const original = parseStored(r.original);
+  if (!itemId || !original) return null;
+  const o = obj(r.original);
+  return {
+    itemId,
+    kind: str(r.kind) ?? "photo",
+    original: { ...original, version: num(o.version) ?? 1, stored: str(o.stored), reachable: o.reachable !== false },
+    versions: (Array.isArray(r.versions) ? r.versions : [])
+      .map((v): OlderVersion | null => {
+        const file = parseStored(v);
+        if (!file) return null;
+        const x = obj(v);
+        return { ...file, version: num(x.version) ?? 0, replacedAt: str(x.replaced_at), stored: str(x.stored), reachable: x.reachable !== false };
+      })
+      .filter((v): v is OlderVersion => v !== null),
+    renditions: (Array.isArray(r.renditions) ? r.renditions : [])
+      .map((v): Rendition | null => {
+        const file = parseStored(v);
+        const name = str(obj(v).name);
+        return file && name && RENDITION_NAMES.has(name) ? { ...file, name: name as RenditionName } : null;
+      })
+      .filter((v): v is Rendition => v !== null),
+    device: parseDevice(r.device),
+  };
+}
+
+/** Every stored form of one item: original, older versions, display renditions and what the device reported. */
+export async function getRenditions(id: string): Promise<ItemRenditions | null> {
+  return parseRenditions(await request<unknown>("GET", `/v1/media/items/${enc(id)}/renditions`));
+}

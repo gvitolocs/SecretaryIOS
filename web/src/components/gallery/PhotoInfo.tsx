@@ -14,6 +14,7 @@ import {
 } from "../../lib/galleryInfo";
 import { placeRoute } from "../../lib/mapKit";
 import { LucinaMap } from "../LucinaMap";
+import { CopyInfo } from "./compare/CopyInfo";
 import "../../styles/gallery-viewer.css";
 import "../../styles/lucinaMap.css";
 
@@ -263,6 +264,8 @@ export function PhotoInfo(props: PhotoInfoProps) {
           </Show>
         </dl>
       </section>
+
+      <CopyInfo item={item()} />
 
       <Show when={item().place}>
         {(place) => (

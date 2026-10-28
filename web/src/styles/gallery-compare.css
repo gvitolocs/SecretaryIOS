@@ -1,0 +1,255 @@
+/* The info panel's Server copy / Device copy block (components/gallery/compare/CopyInfo.tsx) and the compare view
+   (CompareView.tsx). The panel is dark, like the viewer; the compare view sits above the viewer and its dialogs. */
+
+.cc { gap: 10px; }
+
+.cc-tabs {
+  display: flex;
+  padding: 3px;
+  border-radius: 10px;
+  background: rgb(255 255 255 / 10%);
+}
+
+.cc-tab {
+  flex: 1;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: var(--lu-type-subheadline, 14px);
+  cursor: pointer;
+}
+
+.cc-tab--on { background: rgb(255 255 255 / 22%); font-weight: 600; }
+.cc-tab:disabled { opacity: 0.4; cursor: default; }
+.cc-tab:focus-visible { outline: 2px solid #fff; outline-offset: 1px; }
+
+.cc-hash {
+  font-family: var(--lu-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+.cc-verdict {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: rgb(255 255 255 / 8%);
+  font-size: var(--lu-type-subheadline, 14px);
+}
+
+.cc-verdict--same { background: rgb(52 199 89 / 16%); }
+.cc-verdict--differs { background: rgb(255 159 10 / 18%); }
+
+.cc-note { margin: 0; }
+
+.cc-more summary {
+  cursor: pointer;
+  color: rgb(255 255 255 / 70%);
+  font-size: var(--lu-type-subheadline, 14px);
+}
+
+.cc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--lu-type-subheadline, 14px);
+}
+
+.cc-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.cc-compare { align-self: flex-start; }
+
+/* ---- the compare view ---- */
+
+.cv {
+  position: fixed;
+  inset: 0;
+  z-index: 2200;
+  display: flex;
+  flex-direction: column;
+  background: #000;
+  color: #fff;
+  outline: none;
+  touch-action: none;
+}
+
+.cv-bar {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  padding: max(8px, env(safe-area-inset-top)) 12px 8px;
+  background: rgb(28 28 30 / 94%);
+}
+
+.cv-btn {
+  min-width: 36px;
+  height: 36px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 18px;
+  background: rgb(255 255 255 / 14%);
+  color: inherit;
+  font: inherit;
+  font-size: var(--lu-type-subheadline, 14px);
+  cursor: pointer;
+}
+
+.cv-btn:hover { background: rgb(255 255 255 / 24%); }
+.cv-btn:focus-visible, .cv-select:focus-visible, .cv-handle:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.cv-btn--on { background: rgb(255 255 255 / 34%); font-weight: 600; }
+.cv-close { font-size: 22px; line-height: 1; padding: 0; width: 36px; }
+.cv-percent { min-width: 58px; font-variant-numeric: tabular-nums; }
+
+.cv-seg, .cv-zoom { display: flex; gap: 4px; }
+.cv-zoom { margin-left: auto; }
+
+.cv-pick { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.cv-pick-label { color: rgb(255 255 255 / 60%); font-size: 13px; }
+
+.cv-select {
+  max-width: 190px;
+  height: 36px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 10px;
+  background: rgb(255 255 255 / 14%);
+  color: inherit;
+  font: inherit;
+  font-size: var(--lu-type-subheadline, 14px);
+}
+
+.cv-select option { color: #000; }
+
+.cv-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+  background: #222;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.cv-stage:active { cursor: grabbing; }
+
+@media (max-width: 700px) {
+  .cv-stage { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
+}
+
+.cv-stage--split { display: block; }
+
+.cv-pane {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: #000;
+}
+
+.cv-stage--split .cv-pane { position: absolute; inset: 0; }
+.cv-pane--over { pointer-events: none; }
+
+/* Before the core has placed the picture it is simply fitted. */
+.cv-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  -webkit-user-drag: none;
+}
+
+.cv-img--placed { inset: auto; object-fit: fill; }
+
+.cv-caption {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  max-width: calc(100% - 16px);
+  padding: 3px 10px;
+  border-radius: 12px;
+  background: rgb(0 0 0 / 62%);
+  font-size: 12.5px;
+  pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cv-caption--a { left: 8px; }
+.cv-caption--b { left: auto; right: 8px; }
+
+.cv-cant {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  padding: 16px;
+  color: rgb(255 255 255 / 70%);
+  text-align: center;
+}
+
+.cv-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 44px;
+  margin-left: -22px;
+  display: grid;
+  place-items: center;
+  cursor: ew-resize;
+  touch-action: none;
+  z-index: 2;
+}
+
+.cv-handle::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  margin-left: -1px;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 40%);
+}
+
+.cv-knob {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 18px;
+  background: #fff;
+  color: #000;
+  font-size: 18px;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 50%);
+}
+
+.cv-hint {
+  flex: none;
+  margin: 0;
+  padding: 6px 12px max(8px, env(safe-area-inset-bottom));
+  background: rgb(28 28 30 / 94%);
+  color: rgb(255 255 255 / 60%);
+  font-size: 12.5px;
+  text-align: center;
+}
