@@ -465,9 +465,15 @@ fn a_shopping_drive_stops_at_the_checkout_whatever_jev_would_do() {
     // Even with nothing opened yet, the stop comes before any action.
     assert!(matches!(step::before_jev(Where::Desktop, &s, &Memory::default(), &plan), Some(Next::NeedsOwner(_))));
     // A sign-in wall in a shopping flow is the owner's too.
-    let mut login = screen_of(&flights(), "Log in | Wolt", Kind::Shopping, None);
-    login.text = "Log in or sign up".into();
+    let mut login = screen_of(&flights(), "Wolt", Kind::Shopping, None);
+    login.text = "# Page: Wolt\n# Log in or sign up".into();
     assert!(matches!(step::before_jev(Where::Desktop, &login, &mem, &plan), Some(Next::NeedsOwner(_))));
+    // Google's one-tap "Continue with Google" on a shop page is not a wall.
+    let mut shop = screen_of(&flights(), "Aarhus | Wolt Delivery", Kind::Shopping, None);
+    shop.text = "# Page: Aarhus | Wolt\nContinue with Google\n# Discovery".into();
+    assert_eq!(step::before_jev(Where::Desktop, &shop, &mem, &plan), None);
+    assert!(guard::login_wall("Log ind – Google Konti", "", false));
+    assert!(guard::login_wall("Wolt", "", true));
     // Browsing never stops there (and never offers the pay button anyway).
     let b = screen_of(&checkout, "Checkout | Wolt - Chromium", Kind::Browse, None);
     let browse = Plan { kind: Kind::Browse, ..plan.clone() };

@@ -636,7 +636,10 @@ async fn jev_first(
         }
         Ok(Outcome::NeedsOwner { handover, actions, stats }) => {
             tracing::info!(target: "lucina_jev::drive", ?target, reason = %handover.reason, total = ?handover.total, "jev engine stopped for the owner");
-            jev_drive::hand_over(handover.clone());
+            // A checkout asks him (decision + notification); a sign-in wall is in the reply.
+            if handover.checkout {
+                jev_drive::hand_over(handover.clone());
+            }
             Ok(Some(Ok(ComputerResult {
                 status: crate::Status::Completed,
                 reply: handover.reply.clone(),
