@@ -1,0 +1,454 @@
+//! The daemon's JSON API, served on the unix socket (and optional loopback TCP).
+//! secretary-server will proxy it as `/v1/agents/*` (phase 7).
+//!
+//! | Method | Path | Body / query | Returns |
+//! |---|---|---|---|
+//! | GET | `/health` | | `{ok, version}` |
+//! | GET | `/providers` | | provider infos |
+//! | POST | `/agents` | create request | snapshot |
+//! | GET | `/agents` | `?archived=true` | `{agents: [snapshot]}` |
+//! | GET | `/agents/items` | `?archived=true` | `{agents: [list item]}` |
+//! | GET | `/agents/{id}` | id or unique prefix | snapshot |
+//! | PATCH | `/agents/{id}` | `{title}` | snapshot |
+//! | POST | `/agents/{id}/send` | `{prompt, activeTurnBehavior}` | `{disposition}` |
+//! | POST | `/agents/{id}/stop` | | `{agentId, stopped}` |
+//! | POST | `/agents/{id}/archive` | | `{agentId, archivedAt}` |
+//! | POST | `/agents/{id}/unarchive` | | snapshot |
+//! | DELETE | `/agents/{id}` | | `{agentId, deleted}` |
+//! | POST | `/agents/{id}/wait` | `?timeoutMs=` (0 = none) | wait result |
+//! | GET | `/agents/{id}/timeline` | `?afterSeq=&limit=` | `{epoch, rows, nextSeq}` |
+//! | POST | `/agents/{id}/permissions/{requestId}` | permission response | `{agentId, requestId, behavior}` |
+//! | GET | `/permissions` | `?all=true` | `{permissions: [view]}` (agent and external) |
+//! | POST | `/permissions` | external request | view |
+//! | GET | `/permissions/{id}` | `?waitMs=` (long-poll, up to 120 s) | view |
+//! | POST | `/permissions/{id}` | `{behavior, message}` | view |
+//! | GET | `/stream` | `Last-Event-ID` (or `?lastEventId=`) | SSE of numbered bus events, resumable |
+//! | POST | `/agents/{id}/events` | `{events: [StreamEvent]}` | `{agentId, applied}` (external agents, owner device only) |
+//! | POST | `/agents/{id}/commands/{commandId}/ack` | | `{agentId, commandId, acked}` (owner device only) |
+//! | GET | `/commands` | | `{commands: [AgentCommand]}` waiting for the calling device |
+//!
+//! The stream: every event has an `id:` (see [`crate::journal`]). A client that
+//! reconnects with `Last-Event-ID` gets the kept events after it, or `event:
+//! stream.reset` when it fell too far behind. `agent_command` events go only to the
+//! device that owns the agent; a device that connects without `Last-Event-ID` first
+//! gets its waiting commands (without ids).
+//!
+//! Projects, workspaces, diffs, files and checkout operations: [`workspaces`].
+//!
+//! Answers and external requests check the caller ([`crate::peer`]): only the owner
+//! answers, never an MCP token or a process an agent started.
+
+use std::convert::Infallible;
+use std::time::Duration;
+
+use axum::extract::{ConnectInfo, Path, Query, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use serde::Deserialize;
+use serde_json::{json, Value};
+use lucina_agents::external::EventsBody;
+use lucina_agents::stream::Resume;
+use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
+
+use lucina_agents::permission_gate::{Origin, Verdict};
+use lucina_agents::PermissionResponse;
+
+use crate::manager::{ActiveTurnBehavior, CreateRequest, ExternalRequest, Manager, ManagerError};
+use crate::journal::{Sequenced, Subscription};
+use crate::peer::{self, origin, Peer};
+use crate::workspaces::WsError;
+
+mod workspaces;
+
+pub struct ApiError(StatusCode, String, String);
+
+impl From<ManagerError> for ApiError {
+    fn from(e: ManagerError) -> Self {
+        let status = match e {
+            ManagerError::NotFound(_) => StatusCode::NOT_FOUND,
+            ManagerError::Ambiguous(_) | ManagerError::Invalid(_) | ManagerError::UnknownProvider(_) => StatusCode::BAD_REQUEST,
+            ManagerError::Lifecycle(_) => StatusCode::CONFLICT,
+            ManagerError::Provider(_) => StatusCode::BAD_GATEWAY,
+            ManagerError::Store(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            ManagerError::Forbidden(_) => StatusCode::FORBIDDEN,
+            ManagerError::PermissionNotFound(_) => StatusCode::NOT_FOUND,
+            ManagerError::AlreadyAnswered(_) => StatusCode::CONFLICT,
+            ManagerError::Expired(_) => StatusCode::GONE,
+            ManagerError::Unconfirmed(_) => StatusCode::GATEWAY_TIMEOUT,
+            ManagerError::Workspace(WsError::NotFound(_)) => StatusCode::NOT_FOUND,
+            ManagerError::Workspace(WsError::Invalid(_)) => StatusCode::BAD_REQUEST,
+            ManagerError::Workspace(WsError::Git(_)) => StatusCode::BAD_GATEWAY,
+            ManagerError::Workspace(WsError::Store(_)) => StatusCode::INTERNAL_SERVER_ERROR,
+            ManagerError::Guard(_) => StatusCode::FORBIDDEN,
+            ManagerError::NotOwner(_) => StatusCode::FORBIDDEN,
+            ManagerError::CommandNotFound(_) => StatusCode::NOT_FOUND,
+            ManagerError::CommandExpired(_) => StatusCode::GONE,
+        };
+        ApiError(status, e.code().to_string(), e.to_string())
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        (self.0, Json(json!({"error": {"code": self.1, "message": self.2}}))).into_response()
+    }
+}
+
+type ApiResult = Result<Json<Value>, ApiError>;
+
+fn to_json<T: serde::Serialize>(v: T) -> ApiResult {
+    serde_json::to_value(v)
+        .map(Json)
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, "SERIALIZE".into(), e.to_string()))
+}
+
+pub fn router(manager: Manager) -> Router {
+    Router::new()
+        .route("/health", get(health))
+        .route("/providers", get(providers))
+        .route("/agents", get(list).post(create))
+        .route("/agents/items", get(items))
+        .route("/agents/{id}", get(inspect).delete(delete).patch(rename))
+        .route("/agents/{id}/events", post(post_events))
+        .route("/agents/{id}/commands/{command_id}/ack", post(ack_command))
+        .route("/commands", get(commands))
+        .route("/agents/{id}/send", post(send))
+        .route("/agents/{id}/stop", post(stop))
+        .route("/agents/{id}/archive", post(archive))
+        .route("/agents/{id}/unarchive", post(unarchive))
+        .route("/agents/{id}/wait", post(wait))
+        .route("/agents/{id}/timeline", get(timeline))
+        .route("/agents/{id}/permissions/{request_id}", post(respond_permission))
+        .route("/permissions", get(permissions).post(request_permission))
+        .route("/permissions/{id}", get(permission).post(answer_permission))
+        .route("/stream", get(stream))
+        .merge(workspaces::routes())
+        .with_state(manager)
+}
+
+async fn health() -> Json<Value> {
+    Json(json!({"ok": true, "version": env!("CARGO_PKG_VERSION")}))
+}
+
+async fn providers(State(m): State<Manager>) -> ApiResult {
+    to_json(m.providers())
+}
+
+#[derive(Deserialize, Default)]
+struct ListQuery {
+    #[serde(default)]
+    archived: bool,
+}
+
+async fn list(State(m): State<Manager>, Query(q): Query<ListQuery>) -> ApiResult {
+    to_json(json!({"agents": m.snapshots(q.archived)}))
+}
+
+async fn items(State(m): State<Manager>, Query(q): Query<ListQuery>) -> ApiResult {
+    to_json(json!({"agents": m.list(q.archived)}))
+}
+
+async fn create(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Json(mut req): Json<CreateRequest>) -> ApiResult {
+    // Only the owner may run an agent in a main checkout (worktree guard).
+    let who = caller(&m, &peer, &headers);
+    if req.allow_main_checkout && !matches!(who, Origin::Local | Origin::OwnerDevice) {
+        req.allow_main_checkout = false;
+    }
+    // An external agent belongs to the device registering it, never to a body field.
+    req.owner_device_id = peer::device(who, &headers);
+    to_json(m.create(req).await?)
+}
+
+async fn inspect(State(m): State<Manager>, Path(id): Path<String>) -> ApiResult {
+    let id = m.resolve(&id)?;
+    to_json(m.snapshot(&id)?)
+}
+
+#[derive(Deserialize)]
+struct RenameBody {
+    title: String,
+}
+
+async fn rename(State(m): State<Manager>, Path(id): Path<String>, Json(body): Json<RenameBody>) -> ApiResult {
+    let id = m.resolve(&id)?;
+    to_json(m.rename(&id, &body.title)?)
+}
+
+fn device_of(m: &Manager, peer: &Peer, headers: &HeaderMap) -> Option<String> {
+    peer::device(caller(m, peer, headers), headers)
+}
+
+async fn post_events(
+    State(m): State<Manager>,
+    ConnectInfo(peer): ConnectInfo<Peer>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<EventsBody>,
+) -> ApiResult {
+    let id = m.resolve(&id)?;
+    let applied = m.post_events(&id, device_of(&m, &peer, &headers).as_deref(), body.events).await?;
+    to_json(json!({"agentId": id, "applied": applied}))
+}
+
+async fn ack_command(
+    State(m): State<Manager>,
+    ConnectInfo(peer): ConnectInfo<Peer>,
+    headers: HeaderMap,
+    Path((id, command_id)): Path<(String, String)>,
+) -> ApiResult {
+    let id = m.resolve(&id)?;
+    m.ack_command(&id, &command_id, device_of(&m, &peer, &headers).as_deref())?;
+    to_json(json!({"agentId": id, "commandId": command_id, "acked": true}))
+}
+
+async fn commands(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap) -> ApiResult {
+    to_json(json!({"commands": m.pending_commands(device_of(&m, &peer, &headers).as_deref())?}))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SendBody {
+    prompt: String,
+    #[serde(default)]
+    active_turn_behavior: ActiveTurnBehavior,
+}
+
+async fn send(State(m): State<Manager>, Path(id): Path<String>, Json(body): Json<SendBody>) -> ApiResult {
+    let id = m.resolve(&id)?;
+    let disposition = m.send(&id, &body.prompt, body.active_turn_behavior).await?;
+    to_json(json!({"agentId": id, "disposition": disposition}))
+}
+
+async fn stop(State(m): State<Manager>, Path(id): Path<String>) -> ApiResult {
+    let id = m.resolve(&id)?;
+    let stopped = m.stop(&id).await?;
+    to_json(json!({"agentId": id, "stopped": stopped}))
+}
+
+async fn archive(State(m): State<Manager>, Path(id): Path<String>) -> ApiResult {
+    let id = m.resolve(&id)?;
+    let archived_at = m.archive(&id).await?;
+    to_json(json!({"agentId": id, "archivedAt": archived_at}))
+}
+
+async fn unarchive(State(m): State<Manager>, Path(id): Path<String>) -> ApiResult {
+    let id = m.resolve(&id)?;
+    to_json(m.unarchive(&id)?)
+}
+
+async fn delete(State(m): State<Manager>, Path(id): Path<String>) -> ApiResult {
+    let id = m.resolve(&id)?;
+    m.delete(&id).await?;
+    to_json(json!({"agentId": id, "deleted": true}))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WaitQuery {
+    #[serde(default)]
+    timeout_ms: u64,
+    /// Also wait for the finished-run gate.
+    #[serde(default)]
+    gate: bool,
+}
+
+async fn wait(State(m): State<Manager>, Path(id): Path<String>, Query(q): Query<WaitQuery>) -> ApiResult {
+    let id = m.resolve(&id)?;
+    let timeout = (q.timeout_ms > 0).then(|| Duration::from_millis(q.timeout_ms));
+    to_json(m.wait(&id, timeout, q.gate).await?)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TimelineQuery {
+    #[serde(default)]
+    after_seq: u64,
+    #[serde(default)]
+    limit: usize,
+}
+
+async fn timeline(State(m): State<Manager>, Path(id): Path<String>, Query(q): Query<TimelineQuery>) -> ApiResult {
+    let id = m.resolve(&id)?;
+    let (epoch, rows) = m.timeline(&id, q.after_seq, q.limit)?;
+    let next_seq = rows.last().map(|r| r.seq).unwrap_or(q.after_seq);
+    to_json(json!({"epoch": epoch, "rows": rows, "nextSeq": next_seq}))
+}
+
+fn caller(m: &Manager, peer: &Peer, headers: &HeaderMap) -> Origin {
+    origin(peer, headers, &m.provider_pids())
+}
+
+async fn respond_permission(
+    State(m): State<Manager>,
+    ConnectInfo(peer): ConnectInfo<Peer>,
+    headers: HeaderMap,
+    Path((id, request_id)): Path<(String, String)>,
+    Json(response): Json<PermissionResponse>,
+) -> ApiResult {
+    let id = m.resolve(&id)?;
+    let who = caller(&m, &peer, &headers);
+    let behavior = match response {
+        PermissionResponse::Allow { .. } => "allow",
+        PermissionResponse::Deny { .. } => "deny",
+    };
+    m.respond_permission(&id, &request_id, response, who).await?;
+    to_json(json!({"agentId": id, "requestId": request_id, "behavior": behavior}))
+}
+
+#[derive(Deserialize, Default)]
+struct PermissionsQuery {
+    #[serde(default)]
+    all: bool,
+}
+
+async fn permissions(State(m): State<Manager>, Query(q): Query<PermissionsQuery>) -> ApiResult {
+    to_json(json!({"permissions": m.permissions(q.all)}))
+}
+
+async fn request_permission(
+    State(m): State<Manager>,
+    ConnectInfo(peer): ConnectInfo<Peer>,
+    headers: HeaderMap,
+    Json(req): Json<ExternalRequest>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let who = peer::requester(&peer, &headers, &m.provider_pids());
+    let view = m.request_external(req, who)?;
+    Ok((StatusCode::CREATED, to_json(view)?))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct PermissionQuery {
+    #[serde(default)]
+    wait_ms: u64,
+}
+
+async fn permission(State(m): State<Manager>, Path(id): Path<String>, Query(q): Query<PermissionQuery>) -> ApiResult {
+    if q.wait_ms == 0 {
+        return to_json(m.permission(&id)?);
+    }
+    let timeout = Duration::from_millis(q.wait_ms.min(120_000));
+    to_json(m.wait_permission(&id, timeout).await?)
+}
+
+#[derive(Deserialize)]
+struct AnswerBody {
+    behavior: Verdict,
+    #[serde(default)]
+    message: Option<String>,
+}
+
+async fn answer_permission(
+    State(m): State<Manager>,
+    ConnectInfo(peer): ConnectInfo<Peer>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<AnswerBody>,
+) -> ApiResult {
+    let who = caller(&m, &peer, &headers);
+    to_json(m.answer_external(&id, body.behavior, body.message, who)?)
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct StreamQuery {
+    #[serde(default)]
+    last_event_id: Option<String>,
+}
+
+const LAST_EVENT_ID: &str = "last-event-id";
+const RESET_DATA: &str = r#"{"type":"stream.reset"}"#;
+
+fn numbered(e: &Sequenced) -> SseEvent {
+    SseEvent::default().id(e.id.to_string()).data(&e.data)
+}
+
+fn reset(id: u64) -> SseEvent {
+    SseEvent::default().event("stream.reset").id(id.to_string()).data(RESET_DATA)
+}
+
+type Frames = mpsc::Sender<Result<SseEvent, Infallible>>;
+
+async fn stream(
+    State(m): State<Manager>,
+    ConnectInfo(peer): ConnectInfo<Peer>,
+    headers: HeaderMap,
+    Query(q): Query<StreamQuery>,
+) -> Response {
+    let device = device_of(&m, &peer, &headers);
+    let last = headers
+        .get(LAST_EVENT_ID)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+        .or(q.last_event_id);
+    let sub = m.journal().subscribe(last.as_deref());
+    let (tx, rx) = mpsc::channel(64);
+    tokio::spawn(pump(m, sub, device, tx));
+    Sse::new(ReceiverStream::new(rx)).keep_alive(KeepAlive::default()).into_response()
+}
+
+/// Feed one stream: the reset or replay, then live events in id order. A subscriber
+/// that lags behind the bus catches up from the journal (or gets a reset).
+async fn pump(m: Manager, sub: Subscription, device: Option<String>, tx: Frames) {
+    let Subscription { resume, replay, last, mut live } = sub;
+    let visible = |e: &Sequenced| e.event.visible_to(device.as_deref());
+    match resume {
+        Resume::Reset => {
+            if tx.send(Ok(reset(last))).await.is_err() {
+                return;
+            }
+        }
+        Resume::Live => {
+            for c in m.pending_commands(device.as_deref()).unwrap_or_default() {
+                let mut v = serde_json::to_value(&c).unwrap_or_default();
+                v["type"] = json!("agent_command");
+                if tx.send(Ok(SseEvent::default().data(v.to_string()))).await.is_err() {
+                    return;
+                }
+            }
+        }
+        Resume::After(_) => {}
+    }
+    for e in replay.iter().filter(|e| visible(e)) {
+        if tx.send(Ok(numbered(e))).await.is_err() {
+            return;
+        }
+    }
+    let mut sent = last;
+    let mut closing = m.closing();
+    loop {
+        let next = tokio::select! {
+            r = live.recv() => r,
+            _ = tx.closed() => return,
+            _ = closing.wait_for(|c| *c) => return,
+        };
+        let batch = match next {
+            Ok(e) => vec![e],
+            Err(RecvError::Lagged(_)) => match m.journal().since(sent) {
+                Some(missed) => missed,
+                None => {
+                    sent = m.journal().last_id();
+                    if tx.send(Ok(reset(sent))).await.is_err() {
+                        return;
+                    }
+                    continue;
+                }
+            },
+            Err(RecvError::Closed) => return,
+        };
+        for e in batch {
+            if e.id <= sent {
+                continue;
+            }
+            sent = e.id;
+            if visible(&e) && tx.send(Ok(numbered(&e))).await.is_err() {
+                return;
+            }
+        }
+    }
+}

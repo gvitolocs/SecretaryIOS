@@ -256,6 +256,11 @@
   background: color-mix(in srgb, var(--violet) 14%, transparent);
 }
 
+.notif-icon--agent {
+  color: var(--violet);
+  background: color-mix(in srgb, var(--violet) 10%, transparent);
+}
+
 .notif-icon--shopping {
   color: var(--lime);
   background: color-mix(in srgb, var(--lime) 12%, transparent);

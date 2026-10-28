@@ -22,6 +22,7 @@ const SETTINGS = {
     reminder: true,
     calendar: true,
     device_confirm: true,
+    agent: true,
     shopping: true,
     presence: false,
     system: false,

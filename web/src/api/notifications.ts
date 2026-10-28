@@ -8,6 +8,7 @@ export const CATEGORIES = [
   "reminder",
   "calendar",
   "device_confirm",
+  "agent",
   "shopping",
   "presence",
   "system",
