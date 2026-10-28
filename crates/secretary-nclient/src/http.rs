@@ -19,6 +19,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use subtle::ConstantTimeEq;
 
+use crate::saves::{Saves, StartError, MAX_PAGES};
 use crate::service::{parse_sort, Detail, ImageKind, SearchParams, Service, ServiceError, Summary};
 use crate::store::Store;
 
@@ -30,6 +31,7 @@ pub struct Http {
     pub store: Store,
     pub gateway_secret: Vec<u8>,
     pub signing_key: Vec<u8>,
+    pub saves: Saves,
 }
 
 type St = Arc<Http>;
@@ -64,8 +66,18 @@ impl IntoResponse for ServiceError {
         match self {
             ServiceError::NotFound => err(StatusCode::NOT_FOUND, "not_found"),
             ServiceError::BadRequest(_) => err(StatusCode::BAD_REQUEST, "bad_request"),
-            ServiceError::Upstream(crate::upstream::UpstreamError::Status(429)) => {
-                err(StatusCode::TOO_MANY_REQUESTS, "upstream_busy")
+            ServiceError::Upstream(crate::upstream::UpstreamError::RateLimited(s)) => {
+                let mut r = no_store(
+                    (
+                        StatusCode::TOO_MANY_REQUESTS,
+                        Json(json!({"ok": false, "error": "rate_limited", "retryAfter": s})),
+                    )
+                        .into_response(),
+                );
+                if let Ok(v) = HeaderValue::from_str(&s.to_string()) {
+                    r.headers_mut().insert(header::RETRY_AFTER, v);
+                }
+                r
             }
             ServiceError::Upstream(_) | ServiceError::Parse => {
                 err(StatusCode::BAD_GATEWAY, "upstream_unavailable")
@@ -177,6 +189,8 @@ pub fn router(st: St) -> Router {
         )
         .route("/progress", get(all_progress))
         .route("/progress/{id}", axum::routing::put(set_progress))
+        .route("/galleries/{id}/save", axum::routing::post(save_gallery))
+        .route("/saves/{job}", get(save_status).delete(save_cancel))
         .route_layer(middleware::from_fn_with_state(st.clone(), gateway));
     let signed = Router::new().route("/s/{id}/{kind}/{index}/{exp}/{sig}", get(image));
     Router::new()
@@ -198,7 +212,12 @@ async fn access_log(req: Request, next: Next) -> Response {
 }
 
 async fn status() -> Response {
-    ok(json!({"enabled": true, "rateLimitPerSecond": 1}))
+    ok(json!({
+        "enabled": true,
+        "rateLimitPerSecond": 1,
+        // Where a gallery can be saved: the Library reads Kindle formats only.
+        "save": {"gallery": true, "library": false},
+    }))
 }
 
 #[derive(Deserialize)]
@@ -374,5 +393,63 @@ async fn image(
             no_store(r)
         }
         Err(e) => e.into_response(),
+    }
+}
+
+/// `POST /galleries/{id}/save {target: "gallery"}`: queue every page for lucina-media.
+/// The gallery is vetted first; a blocked or missing one answers 404 and nothing is fetched or
+/// ingested. `target: "library"` is not supported: the Library (ink-library) reads Kindle
+/// formats only (azw3, mobi, kfx, pdf, epub, txt, md), not comics or image archives.
+async fn save_gallery(
+    State(st): State<St>,
+    Path(id): Path<i32>,
+    body: axum::body::Bytes,
+) -> Response {
+    let target = if body.iter().all(u8::is_ascii_whitespace) {
+        "gallery".to_string()
+    } else {
+        match serde_json::from_slice::<Value>(&body) {
+            Ok(v) => v
+                .get("target")
+                .and_then(Value::as_str)
+                .unwrap_or("gallery")
+                .to_string(),
+            Err(_) => return err(StatusCode::BAD_REQUEST, "bad_request"),
+        }
+    };
+    match target.as_str() {
+        "gallery" => {}
+        "library" => return err(StatusCode::BAD_REQUEST, "library_not_supported"),
+        _ => return err(StatusCode::BAD_REQUEST, "bad_request"),
+    }
+    let d = match st.service.gallery(id).await {
+        Ok(d) => d,
+        Err(e) => return e.into_response(),
+    };
+    if d.pages.is_empty() || d.pages.len() > MAX_PAGES {
+        return err(StatusCode::BAD_REQUEST, "bad_request");
+    }
+    match st.saves.start(&st, d.id, d.pages.len()) {
+        Ok(job) => {
+            let mut r = ok(job.status());
+            *r.status_mut() = StatusCode::ACCEPTED;
+            r
+        }
+        Err(StartError::Busy) => err(StatusCode::TOO_MANY_REQUESTS, "busy"),
+    }
+}
+
+async fn save_status(State(st): State<St>, Path(job): Path<String>) -> Response {
+    match st.saves.get(&job) {
+        Some(j) => ok(j.status()),
+        None => err(StatusCode::NOT_FOUND, "not_found"),
+    }
+}
+
+async fn save_cancel(State(st): State<St>, Path(job): Path<String>) -> Response {
+    if st.saves.cancel(&job) {
+        ok(json!({"cancelling": true}))
+    } else {
+        err(StatusCode::NOT_FOUND, "not_found")
     }
 }

@@ -9,6 +9,7 @@
 //! only. See `README` in the crate docs of [`config`].
 
 pub mod agenda;
+pub mod agentd;
 pub mod api;
 pub mod bot_hospital;
 pub mod bridges;
@@ -41,6 +42,7 @@ pub mod rich;
 pub mod secrets;
 pub mod selftest;
 pub mod share;
+pub mod video;
 pub mod surface;
 pub mod telegram;
 
@@ -235,6 +237,25 @@ impl AppState {
         env.secretary_url = cfg.secretary_url.clone();
         env.secretary_service_token_file = cfg.secretary_service_token_file.clone();
         env.secrets = secret_store.clone();
+        // Instagram / Pixiv plugin services (loopback; gateway secrets are read per call).
+        {
+            let (c, p) = (&cfg.plugins, &mut env.plugins);
+            if let Some(v) = &c.instagram_url {
+                p.instagram.url = v.clone();
+            }
+            if let Some(v) = &c.instagram_secret_file {
+                p.instagram.secret_file = v.clone();
+            }
+            if let Some(v) = &c.pixiv_url {
+                p.pixiv.url = v.clone();
+            }
+            if let Some(v) = &c.pixiv_secret_file {
+                p.pixiv.secret_file = v.clone();
+            }
+            if let Some(v) = &c.public_url {
+                p.public_url = v.trim_end_matches('/').to_owned();
+            }
+        }
         // Voice memos (lucina-memo on this host): on when its service token is readable.
         let memo_token = std::env::var("LUCINA_MEMO_SERVICE_TOKEN_FILE")
             .ok()

@@ -28,9 +28,22 @@ pub enum WriterKind {
     Local,
 }
 
+/// `LUCINA_INSTAGRAM_URL`, `LUCINA_INSTAGRAM_GATEWAY_SECRET_FILE`, `LUCINA_PIXIV_URL`,
+/// `LUCINA_PIXIV_GATEWAY_SECRET_FILE`, `LUCINA_PUBLIC_URL` (the owner-only plugin tools).
+#[derive(Debug, Clone, Default)]
+pub struct PluginsConfig {
+    pub instagram_url: Option<String>,
+    pub instagram_secret_file: Option<PathBuf>,
+    pub pixiv_url: Option<String>,
+    pub pixiv_secret_file: Option<PathBuf>,
+    pub public_url: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct Config {
     pub share: crate::share::ShareConfig,
+    /// YouTube video reports (crate::video, docs/youtube-reports.md).
+    pub video: crate::video::VideoConfig,
     pub bind: SocketAddr,
     /// Every address to listen on (`LUCINA_BIND`, comma-separated; the
     /// first is `bind`).
@@ -167,6 +180,9 @@ pub struct Config {
     pub secrets_config: Option<PathBuf>,
     /// Meshy 3D (`LUCINA_MESHY`, `MESHY_*`, `LUCINA_MESHY_*`).
     pub meshy: lucina_meshy::MeshyConfig,
+    /// Where the owner's Instagram and Pixiv plugin services are (all optional;
+    /// defaults in `lucina_tools::tools::plugins::Plugins`).
+    pub plugins: PluginsConfig,
     /// `LUCINA_DRIVE` (default false): Lucina's own Google Drive, read-only.
     pub drive_enabled: bool,
     /// `LUCINA_GOOGLE_CLIENT_FILE` (default: the Lucina Gmail OAuth client).
@@ -373,8 +389,11 @@ impl Config {
             secretary_service_token_file.clone(),
         );
         let hospital = crate::bot_hospital::HospitalConfig::from_lookup(&get, &data_dir);
+        let share = crate::share::ShareConfig::from_lookup(&get);
+        let video = crate::video::VideoConfig::from_lookup(&get, &data_dir, &share.whisper);
         Ok(Self {
-            share: crate::share::ShareConfig::from_lookup(&get),
+            share,
+            video,
             bind,
             binds,
             shadow: flag("LUCINA_SHADOW", false),
@@ -504,6 +523,13 @@ impl Config {
             delivery_alert_after: Duration::from_secs(
                 num("LUCINA_DELIVERY_ALERT_AFTER_MIN", 5).max(1) * 60,
             ),
+            plugins: PluginsConfig {
+                instagram_url: get("LUCINA_INSTAGRAM_URL"),
+                instagram_secret_file: get("LUCINA_INSTAGRAM_GATEWAY_SECRET_FILE").map(PathBuf::from),
+                pixiv_url: get("LUCINA_PIXIV_URL"),
+                pixiv_secret_file: get("LUCINA_PIXIV_GATEWAY_SECRET_FILE").map(PathBuf::from),
+                public_url: get("LUCINA_PUBLIC_URL"),
+            },
             drive_enabled: flag("LUCINA_DRIVE", false),
             google_client_file: PathBuf::from(
                 get("LUCINA_GOOGLE_CLIENT_FILE")

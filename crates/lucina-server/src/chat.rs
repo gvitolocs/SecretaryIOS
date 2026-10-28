@@ -42,8 +42,10 @@ pub mod drive_turn;
 pub mod media_turn;
 pub mod memo_turn;
 pub mod meshy_turn;
+pub mod plugin_turn;
 pub mod reply;
 mod share_turn;
+mod youtube_turn;
 
 /// Counted after the MCP prefix (which may add up to 100 more on the wire).
 pub const MAX_MESSAGE_CHARS: usize = 12_000;
@@ -1056,9 +1058,16 @@ async fn secrets_finish(
     Some(f)
 }
 
+/// The action of a turn that used the owner-only plugin tools: never sent to long-term memory.
+pub(crate) const PRIVATE_ACTION: &str = "re_plugins";
+
 /// Honcho `remember` (`readwrite` only), Node's `rememberSecretaryTurn`.
 fn remember_turn(st: &AppState, t: &Turn<'_>, action: &str, reply: &str, action_result: &str) {
     if st.memory.mode() != MemoryMode::ReadWrite || crate::selftest::is_session(&t.session) {
+        return;
+    }
+    if action == PRIVATE_ACTION {
+        // The owner-only plugins (Instagram, Pixiv): nothing of the exchange goes to Honcho.
         return;
     }
     if t.origin.is_some() {
@@ -1357,6 +1366,11 @@ async fn json_turn(
     let persona = t.persona().to_owned();
     let memory = prepared.memory_context.as_str();
 
+    // A YouTube link and "transcribe / report / summarise" (crate::video): a background job.
+    if let Some(f) = youtube_turn::try_turn(t, cmid) {
+        return f;
+    }
+
     if t.share {
         if t.guarded {
             // Not the owner: no tools, an answer from the extracted content only.
@@ -1391,6 +1405,11 @@ async fn json_turn(
 
     // Lucina's own Google Drive (LUCINA_DRIVE=true with a grant), read-only.
     if let Some(f) = drive_turn::try_turn(t, memory).await {
+        return f;
+    }
+
+    // The owner's Instagram and Pixiv plugins (owner's app chat only).
+    if let Some(f) = plugin_turn::try_turn(t, memory).await {
         return f;
     }
 
@@ -2073,6 +2092,37 @@ struct JobDest {
     origin: Option<Arc<ChannelOrigin>>,
 }
 
+/// A finished job on the owner's devices (`/v1/notify`), keyed to its timeline item so it is
+/// one notification with secretary-server's timeline ingester.
+fn notify_job(
+    st: &AppState,
+    job_id: &str,
+    title: &str,
+    text: &str,
+    timeline_id: Option<&str>,
+    channel: &str,
+) {
+    if !st.cfg.app_notify {
+        return;
+    }
+    let mut body = json!({
+        "category": "lucina_message", "title": title,
+        "body": text.chars().take(600).collect::<String>(),
+        "route": "/", "channel": channel,
+        "dedupKey": format!("lucina:job:{job_id}"),
+    });
+    if let Some(id) = timeline_id {
+        body["timelineId"] = json!(id);
+    }
+    let secretary = st.secretary.clone();
+    tokio::spawn(async move {
+        let r = crate::bridges::notify(&secretary, &body).await;
+        if !r.ok {
+            tracing::warn!(status = r.status, "job notification failed");
+        }
+    });
+}
+
 /// `startJob`: run the action, report on the timeline and the job record
 /// (and, from a chat channel, in the chat: it has no polling client).
 fn spawn_job(st: AppState, job: Job, plan: Value, message: String, memory: String, dest: JobDest) {
@@ -2139,6 +2189,7 @@ fn spawn_job(st: AppState, job: Job, plan: Value, message: String, memory: Strin
                 "computer_task" => {
                     run_computer_task(plan["task"].as_str().map(str::trim).filter(|s| !s.is_empty()).unwrap_or(&message)).await
                 }
+                crate::video::ACTION => crate::video::run(&st, &plan, &job.id).await,
                 "oracle_monitor_task" => Ok(("Oracle SSH monitoring is disabled on nezopt. Oracle peer1 runs Poko only, not Lucina.".into(), String::new())),
                 "generate_image" => Err("image generation (ComfyUI) is not available on the Rust Lucina yet".into()),
                 "graph_task" => Err("graph_task needs rclone and the Drive cache, which the Rust Lucina does not have".into()),
@@ -2166,6 +2217,16 @@ fn spawn_job(st: AppState, job: Job, plan: Value, message: String, memory: Strin
                     (rich_msg, text)
                 };
                 let item = record(text, rich_msg.as_ref());
+                if action == crate::video::ACTION {
+                    notify_job(
+                        &st,
+                        &job.id,
+                        "Video report ready",
+                        &result,
+                        item.as_ref().map(|i| i.id.as_str()),
+                        &channel,
+                    );
+                }
                 let _ = st.jobs.update(&job.id, |j| {
                     j.status = "done".into();
                     j.result = Some(result.clone());
@@ -2193,6 +2254,16 @@ fn spawn_job(st: AppState, job: Job, plan: Value, message: String, memory: Strin
                 tracing::error!(job_id = %job.id, %action, error = %reason.chars().take(300).collect::<String>(), "secretary job failed");
                 let text = format!("{} failed: {reason}", jobs::label(&action));
                 let item = record(text.clone(), None);
+                if action == crate::video::ACTION {
+                    notify_job(
+                        &st,
+                        &job.id,
+                        "Video report failed",
+                        &text,
+                        item.as_ref().map(|i| i.id.as_str()),
+                        &channel,
+                    );
+                }
                 let _ = st.jobs.update(&job.id, |j| {
                     j.status = "error".into();
                     j.error = Some(reason.clone());
@@ -2294,6 +2365,12 @@ fn gallery_action(path: &str, count: usize, lang: &str) -> Value {
     if path == "/drive" || path.starts_with("/drive/") {
         return json!({"id": "drive", "label": drive_label(lang), "emoji": "📁", "kind": "route", "payload": {"path": path}});
     }
+    if path == "/instagram" || path.starts_with("/instagram/") {
+        return json!({"id": "instagram", "label": "Open Instagram", "emoji": "📷", "kind": "route", "payload": {"path": path}});
+    }
+    if path == "/pixiv" || path.starts_with("/pixiv/") {
+        return json!({"id": "pixiv", "label": "Open Pixiv", "emoji": "🎨", "kind": "route", "payload": {"path": path}});
+    }
     if path.starts_with("/films") {
         let label = if path.starts_with("/films/play/") {
             "Play the film".to_owned()
@@ -2335,6 +2412,10 @@ fn effects_to_finish(effects: &[Effect], reply: String) -> Finish {
         _ => None,
     }) {
         f.routes.push(gallery_action(&path, count, lang));
+    }
+    if effects.iter().any(|e| matches!(e, Effect::PrivateTurn)) {
+        // Instagram / Pixiv: never remembered (see `remember_turn`).
+        f.action = PRIVATE_ACTION.into();
     }
     f.calendar_events = effects
         .iter()
@@ -2737,6 +2818,26 @@ async fn tools_turn(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plugin_turns_are_private_and_get_their_page_button() {
+        let f = effects_to_finish(
+            &[
+                Effect::PrivateTurn,
+                Effect::Gallery {
+                    path: "/pixiv".into(),
+                    count: 3,
+                },
+            ],
+            "ok".into(),
+        );
+        assert_eq!(f.action, PRIVATE_ACTION);
+        assert_eq!(f.routes[0]["label"], "Open Pixiv");
+        assert_eq!(f.routes[0]["payload"]["path"], "/pixiv");
+        assert_eq!(gallery_action("/instagram", 2, "en")["label"], "Open Instagram");
+        // an ordinary reply is not private
+        assert_eq!(effects_to_finish(&[], "ok".into()).action, "reply");
+    }
 
     #[test]
     fn film_results_get_a_films_button() {

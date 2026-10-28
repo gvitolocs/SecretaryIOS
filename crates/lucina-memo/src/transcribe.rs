@@ -261,7 +261,21 @@ pub async fn transcribe(
     duration_sec: f64,
     gpu_wait: Duration,
 ) -> Result<Transcript, SttError> {
-    run(cfg, wav, work, duration_sec, gpu_wait, false).await
+    run(cfg, wav, work, duration_sec, gpu_wait, false, None).await
+}
+
+/// [`transcribe`] primed with `prompt` (whisper.cpp `--prompt`): names and jargon the audio
+/// is likely to contain (a video's title, tags and chapters), so they come out spelled right.
+pub async fn transcribe_prompted(
+    cfg: &WhisperConfig,
+    wav: &Path,
+    work: &Path,
+    duration_sec: f64,
+    gpu_wait: Duration,
+    prompt: &str,
+) -> Result<Transcript, SttError> {
+    let prompt = Some(prompt.trim()).filter(|p| !p.is_empty());
+    run(cfg, wav, work, duration_sec, gpu_wait, false, prompt).await
 }
 
 /// [`transcribe`] with word timings (`-ojf`): every segment carries its words (meetings, where
@@ -273,7 +287,7 @@ pub async fn transcribe_words(
     duration_sec: f64,
     gpu_wait: Duration,
 ) -> Result<Transcript, SttError> {
-    run(cfg, wav, work, duration_sec, gpu_wait, true).await
+    run(cfg, wav, work, duration_sec, gpu_wait, true, None).await
 }
 
 async fn run(
@@ -283,13 +297,14 @@ async fn run(
     duration_sec: f64,
     gpu_wait: Duration,
     words: bool,
+    prompt: Option<&str>,
 ) -> Result<Transcript, SttError> {
     if !cfg.model.is_file() {
         tracing::warn!(model = %cfg.model.display(), "Whisper model missing");
         return Err(SttError::ModelMissing(cfg.model.clone()));
     }
     let prefix = work.join("whisper");
-    let gpu = run_whisper(cfg, wav, &prefix, &cfg.model, true, gpu_wait, words).await;
+    let gpu = run_whisper(cfg, wav, &prefix, &cfg.model, true, gpu_wait, words, prompt).await;
     let (out, engine) = match gpu {
         Ok(o) => (o, format!("whisper.cpp {} (GPU)", model_name(&cfg.model))),
         Err(RunError::NoLease) => {
@@ -297,7 +312,7 @@ async fn run(
                 return Err(SttError::GpuBusy(gpu_wait));
             };
             tracing::info!("no GPU lease within {gpu_wait:?}; transcribing on the CPU");
-            let o = run_whisper(cfg, wav, &prefix, cpu, false, gpu_wait, words)
+            let o = run_whisper(cfg, wav, &prefix, cpu, false, gpu_wait, words, prompt)
                 .await
                 .map_err(|e| SttError::Whisper(e.to_string()))?;
             (o, format!("whisper.cpp {} (CPU)", model_name(cpu)))
@@ -323,6 +338,7 @@ enum RunError {
     Failed(String),
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_whisper(
     cfg: &WhisperConfig,
     wav: &Path,
@@ -331,6 +347,7 @@ async fn run_whisper(
     gpu: bool,
     gpu_wait: Duration,
     words: bool,
+    prompt: Option<&str>,
 ) -> Result<String, RunError> {
     let json = prefix.with_extension("json");
     let _ = tokio::fs::remove_file(&json).await;
@@ -360,6 +377,9 @@ async fn run_whisper(
     }
     if let Some(vad) = &cfg.vad_model {
         cmd.arg("--vad").arg("-vm").arg(vad);
+    }
+    if let Some(p) = prompt {
+        cmd.arg("--prompt").arg(p);
     }
     cmd.arg("-of").arg(prefix).arg("-f").arg(wav);
     cmd.stdin(Stdio::null())
