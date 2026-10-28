@@ -44,5 +44,16 @@ final class ShoppingEmojiTests: XCTestCase {
         let items = WidgetFetcher.neededItems(rows, emoji: table)
         XCTAssertEqual(items.map(\.name), ["Candele", "Latte", "Sapone"])
         XCTAssertEqual(items.map(\.emoji), ["🕯️", "🥛", "🧽"])
+        XCTAssertEqual(items.map(\.art), [nil, "item-milk", nil])
+    }
+
+    func testCatalogRowsCarryTheirArtUnlessTheEmojiWasPicked() throws {
+        let rows = try JSONDecoder().decode(JSONValue.self, from: Data("""
+        [{"id":"1","catalogId":"prosciutto","name":"Prosciutto crudo","icon":"🍖","status":"needed","position":1},
+         {"id":"2","catalogId":"ham","name":"Prosciutto cotto","icon":"🐷","iconPicked":true,"status":"needed","position":2}]
+        """.utf8))
+        let items = WidgetFetcher.neededItems(rows, emoji: table)
+        XCTAssertEqual(items.map(\.art), ["item-prosciutto", nil])
+        XCTAssertEqual(items.map(\.emoji), ["🍖", "🐷"])
     }
 }

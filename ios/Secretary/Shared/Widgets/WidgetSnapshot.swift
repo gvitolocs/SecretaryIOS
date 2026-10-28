@@ -65,6 +65,9 @@ struct ShoppingSection: WidgetSection {
         var spec: String
         /// The catalogue emoji (`ShoppingEmojiSection`); nil in a copy saved before it existed.
         var icon: String?
+        /// The catalogue item's illustration (`item-<catalogId>` in ItemIcons.xcassets), drawn instead of
+        /// the emoji when bundled; nil for free text, custom items and hand-picked emoji.
+        var art: String?
 
         var emoji: String { icon ?? ShoppingEmojiSection.defaultEmoji }
     }

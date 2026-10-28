@@ -128,8 +128,10 @@ struct WidgetFetcher: Sendable {
             guard let name = names?[language]?.nonEmptyString ?? row["name"]?.nonEmptyString else { return nil }
             let icon = emoji.emoji(icon: row["icon"]?.nonEmptyString, catalogId: row["catalogId"]?.nonEmptyString,
                                    name: name, section: row["section"]?.nonEmptyString)
+            let picked = row["iconPicked"]?.boolValue == true
+            let art = picked ? nil : row["catalogId"]?.nonEmptyString.map { "item-\($0)" }
             return (row["position"]?.numberValue ?? Double(index),
-                    ShoppingSection.Item(id: id, name: name, spec: row["spec"]?.stringValue ?? "", icon: icon))
+                    ShoppingSection.Item(id: id, name: name, spec: row["spec"]?.stringValue ?? "", icon: icon, art: art))
         }
         return rows.sorted { $0.0 < $1.0 }.map(\.1)
     }

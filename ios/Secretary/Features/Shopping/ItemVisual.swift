@@ -17,7 +17,8 @@ enum ItemVisual: Equatable, Sendable {
     /// The picture of a row, most specific first, so a list never mixes illustrations with
     /// stray emoji when art exists:
     /// 1. an explicit `svg:<key>` icon;
-    /// 2. the art of its catalog item, unless the owner gave the row an emoji of its own;
+    /// 2. the art of its catalog item, unless the owner hand-picked the row's emoji (`iconPicked`):
+    ///    a catalog-bound row's stored emoji is the catalog's, possibly from another catalog version;
     /// 3. no catalog id (free text, a custom object): the art of the catalog item its name
     ///    names (`CatalogSearch.guess`), when that item belongs to the row's section, if any;
     /// 4. a specific emoji of the row (not the cart and not just its section's emoji);
@@ -25,6 +26,7 @@ enum ItemVisual: Equatable, Sendable {
     /// 6. any remaining emoji other than the cart, else the first letter of the name.
     /// `hasArt` says whether an asset exists (injected so the rule is unit-testable).
     static func resolve(icon rawIcon: String?, catalogId: String?, name: String, section rowSection: String?,
+                        iconPicked: Bool = false,
                         catalog: ShoppingCatalog, search: CatalogSearch?, hasArt: (String) -> Bool) -> ItemVisual {
         let trimmed = rawIcon?.trimmingCharacters(in: .whitespacesAndNewlines)
         let given = trimmed?.isEmpty == false ? trimmed : nil
@@ -38,7 +40,7 @@ enum ItemVisual: Equatable, Sendable {
         if let catalogId {
             item = catalog.item(catalogId)
             let asset = itemAsset(catalogId)
-            if hasArt(asset), icon == nil || item == nil || icon == item?.icon { return .art(asset) }
+            if hasArt(asset), !(iconPicked && icon != nil && icon != item?.icon) { return .art(asset) }
         } else if let guess = search?.guess(name) {
             let fits = rowSection == nil || rowSection == ShoppingCatalog.otherSection || guess.section == nil || guess.section == rowSection
             if fits, hasArt(itemAsset(guess.id)) { return .art(itemAsset(guess.id)) }
