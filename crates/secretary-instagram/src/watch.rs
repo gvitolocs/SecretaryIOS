@@ -314,6 +314,11 @@ impl WatchStore {
             .map(|a| a.username.clone())
     }
 
+    pub fn earliest_due(&self) -> Option<i64> {
+        let g = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        g.accounts.values().map(|a| a.next_due).min()
+    }
+
     pub fn queue_notice(&self, user: &str, change: &Change, now: i64) {
         self.with(|s| {
             s.notices.push(Notice {

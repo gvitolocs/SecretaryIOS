@@ -55,6 +55,7 @@ impl Default for Opts {
                 interval_max: Duration::from_secs(2400),
                 pause: Duration::from_secs(1800),
                 daily_cap_bytes: 500 << 20,
+                first_check_jitter: Duration::ZERO,
             },
             notify: true,
         }

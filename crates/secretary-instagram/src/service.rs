@@ -101,6 +101,8 @@ pub struct WatchConfig {
     pub pause: Duration,
     /// Auto-saved bytes per account per UTC day.
     pub daily_cap_bytes: u64,
+    /// A newly watched account is first checked after 2 s plus up to this long.
+    pub first_check_jitter: Duration,
 }
 
 impl Default for WatchConfig {
@@ -111,6 +113,7 @@ impl Default for WatchConfig {
             interval_max: Duration::from_secs(40 * 60),
             pause: Duration::from_secs(30 * 60),
             daily_cap_bytes: 500 * 1024 * 1024,
+            first_check_jitter: Duration::from_secs(8),
         }
     }
 }
@@ -297,6 +300,17 @@ impl Service {
                 std::fs::set_permissions(&cfg.spool_dir, std::fs::Permissions::from_mode(0o700));
         }
         std::fs::create_dir_all(&cfg.state_dir)?;
+        // A save cut short by a stop leaves its spool copy behind; nothing in the spool is
+        // needed after a restart.
+        for e in std::fs::read_dir(&cfg.spool_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            if e.metadata().is_ok_and(|m| m.is_file()) {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(120))
             .redirect(reqwest::redirect::Policy::none())
@@ -841,7 +855,7 @@ impl Service {
     pub fn watch_put(&self, raw: &str, auto_save: Option<bool>) -> Result<Value, ServiceError> {
         let user = normalize_username(raw).ok_or(ServiceError::BadRequest("username"))?;
         let now = chrono::Utc::now().timestamp();
-        let first = now + 2 + (jitter(8) as i64);
+        let first = now + 2 + (jitter(self.cfg.watch.first_check_jitter.as_secs() + 1) as i64);
         let acc = self.watch.put(&user, auto_save, now, first);
         self.wake.notify_one();
         Ok(self.watch_json(&acc))
@@ -1210,13 +1224,28 @@ impl Service {
         }
     }
 
+    /// How long the warmer may sleep: until the next account is due (at most 30 s).
+    fn until_next_due(&self) -> Duration {
+        let now = chrono::Utc::now().timestamp();
+        match self.watch.earliest_due() {
+            Some(due) => Duration::from_secs((due - now + 1).clamp(1, 30) as u64),
+            None => Duration::from_secs(30),
+        }
+    }
+
     /// The warmer's loop: a pass, then a short rest, until `stop` says so.
     pub async fn run_warmer(&self, mut stop: tokio::sync::watch::Receiver<bool>) {
         loop {
-            let rest = match self.watch_tick().await {
+            // A pass can take minutes (a video download, a backed-off request); a stop request
+            // ends it at once. Everything it learned is already saved after each step.
+            let outcome = tokio::select! {
+                o = self.watch_tick() => o,
+                _ = stop.changed() => return,
+            };
+            let rest = match outcome {
                 TickOutcome::Disabled => return,
                 TickOutcome::Checked(_) => Duration::from_secs(3),
-                TickOutcome::Idle => Duration::from_secs(30),
+                TickOutcome::Idle => self.until_next_due(),
                 TickOutcome::Paused => Duration::from_secs(60),
             };
             tokio::select! {

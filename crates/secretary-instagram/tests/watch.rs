@@ -696,6 +696,76 @@ async fn the_warmer_spaces_accounts_with_jitter_and_does_nothing_when_none_is_du
 }
 
 #[tokio::test]
+async fn the_warmer_loop_checks_a_new_account_by_itself_and_stops_when_told() {
+    let e = env().await;
+    mount_ingest(&e).await;
+    mount_account(&e, false, "1", &["p1"], &["s1"]).await;
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let svc = e.st.service.clone();
+    let looped = tokio::spawn(async move { svc.run_warmer(stop_rx).await });
+    watch(&e, "natgeo", json!({})).await; // wakes the loop; due within 2 s
+    let started = Instant::now();
+    loop {
+        if e.st
+            .service
+            .watch
+            .get("natgeo")
+            .unwrap()
+            .last_check
+            .is_some()
+        {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(8),
+            "the warmer never checked it"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // last_check is set before the story is saved: wait for the save.
+    while requests_to(&e, "/internal/v1/ingest").await.is_empty() {
+        assert!(
+            started.elapsed() < Duration::from_secs(8),
+            "its story was not saved"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    stop_tx.send(true).unwrap();
+    tokio::time::timeout(Duration::from_secs(3), looped)
+        .await
+        .expect("the loop stops on request")
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_stop_request_ends_a_pass_that_is_still_waiting_on_the_backend() {
+    let e = env().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/users/natgeo/bundle"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_secs(20))
+                .set_body_json(bundle()),
+        )
+        .mount(&e.server)
+        .await;
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let svc = e.st.service.clone();
+    let looped = tokio::spawn(async move { svc.run_warmer(stop_rx).await });
+    watch(&e, "natgeo", json!({})).await;
+    while requests_to(&e, "/api/").await.is_empty() {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let t = Instant::now();
+    stop_tx.send(true).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), looped)
+        .await
+        .expect("the loop stops while the request is in flight")
+        .unwrap();
+    assert!(t.elapsed() < Duration::from_secs(2));
+}
+
+#[tokio::test]
 async fn the_warmer_can_be_turned_off() {
     let e = env_with(Opts {
         watch: WatchConfig {
