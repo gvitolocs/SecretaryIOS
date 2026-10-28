@@ -20,3 +20,11 @@ html[data-shell="desktop"]
 html[data-shell="desktop"] .dock.dock--offstage {
   display: none !important;
 }
+
+/* Its rail replaces hers, so her grid drops the rail column too (else every page starts 118px in). */
+html[data-shell="desktop"] .shell {
+  grid-template-columns: minmax(0, 1fr);
+}
+html[data-shell="desktop"] :is(.shell-body, .banner) {
+  grid-column: 1;
+}
