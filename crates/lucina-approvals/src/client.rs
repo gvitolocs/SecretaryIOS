@@ -76,11 +76,20 @@ pub struct WaitReply {
     pub grant: Option<String>,
 }
 
+/// Where the service token comes from.
+#[derive(Clone)]
+enum TokenSource {
+    /// A file, read per call (it can rotate).
+    File(PathBuf),
+    /// A value handed over in the environment (agentd's `LUCINA_AGENTD_NOTIFY_TOKEN`).
+    Value(String),
+}
+
 #[derive(Clone)]
 pub struct Client {
     http: reqwest::Client,
     base: String,
-    token_file: PathBuf,
+    token: TokenSource,
 }
 
 impl std::fmt::Debug for Client {
@@ -91,6 +100,15 @@ impl std::fmt::Debug for Client {
 
 impl Client {
     pub fn new(base: &str, token_file: PathBuf) -> Result<Self, ApprovalError> {
+        Self::build(base, TokenSource::File(token_file))
+    }
+
+    /// A client whose `svc_` token is given as a value (never printed or logged).
+    pub fn with_token(base: &str, token: String) -> Result<Self, ApprovalError> {
+        Self::build(base, TokenSource::Value(token))
+    }
+
+    fn build(base: &str, token: TokenSource) -> Result<Self, ApprovalError> {
         let http = reqwest::Client::builder()
             .user_agent(concat!("lucina-approvals/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(5))
@@ -99,22 +117,25 @@ impl Client {
         Ok(Self {
             http,
             base: base.trim_end_matches('/').to_owned(),
-            token_file,
+            token,
         })
     }
 
-    /// The service token, read per call (it can rotate).
+    /// The service token (a file is read per call, it can rotate).
     fn token(&self) -> Result<String, ApprovalError> {
-        let t = std::fs::read_to_string(&self.token_file)
-            .map_err(|e| {
-                ApprovalError::NotConfigured(format!(
-                    "service token file {}: {}",
-                    self.token_file.display(),
-                    e.kind()
-                ))
-            })?
-            .trim()
-            .to_owned();
+        let t = match &self.token {
+            TokenSource::File(path) => std::fs::read_to_string(path)
+                .map_err(|e| {
+                    ApprovalError::NotConfigured(format!(
+                        "service token file {}: {}",
+                        path.display(),
+                        e.kind()
+                    ))
+                })?
+                .trim()
+                .to_owned(),
+            TokenSource::Value(v) => v.trim().to_owned(),
+        };
         if t.starts_with("svc_") {
             Ok(t)
         } else {
@@ -167,6 +188,26 @@ impl Client {
             .await
             .map_err(|e| ApprovalError::Http(e.without_url().to_string()))?;
         Self::read(resp).await
+    }
+
+    /// `POST /v1/approvals/{id}/withdraw`: the requester no longer needs the
+    /// answer. Idempotent. A pending request becomes `expired`; one that was
+    /// decided keeps its status. `NotFound` means the server no longer knows it.
+    pub async fn withdraw(&self, id: &str) -> Result<Status, ApprovalError> {
+        #[derive(Deserialize)]
+        struct Reply {
+            status: Status,
+        }
+        let token = self.token()?;
+        let resp = self
+            .http
+            .post(format!("{}/v1/approvals/{id}/withdraw", self.base))
+            .bearer_auth(token)
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await
+            .map_err(|e| ApprovalError::Http(e.without_url().to_string()))?;
+        Ok(Self::read::<Reply>(resp).await?.status)
     }
 
     /// One long poll, `GET /v1/approvals/{id}/wait?timeout=…`. `local` caps the
