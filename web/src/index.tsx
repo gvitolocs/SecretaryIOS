@@ -43,6 +43,7 @@ const GalleryLabView = lazy(() => import("./views/GalleryLab"));
 const FilmsView = lazy(() => import("./views/Films"));
 const PixivView = lazy(() => import("./views/Pixiv"));
 const InstagramView = lazy(() => import("./views/Instagram"));
+const AgentsView = lazy(() => import("./views/Agents"));
 const DriveView = lazy(() => import("./views/Drive"));
 const ServerHealthView = lazy(() => import("./views/ServerHealth"));
 const NotificationsView = lazy(() => import("./views/ShellSheets").then((m) => ({ default: m.NotificationsView })));
@@ -102,6 +103,7 @@ render(
       <Route path="/gallery" component={GalleryView} />
       <Route path="/gallery/trash" component={() => <GalleryView trash />} />
       <Route path="/instagram/:username?" component={InstagramView} />
+      <Route path="/agents/*rest" component={AgentsView} />
       <Route path="/gallery/archive" component={() => <GalleryView archive />} />
       <Route path="/gallery/places" component={GalleryPlaces} />
       <Route path="/gallery/shared" component={GallerySharedLinksView} />

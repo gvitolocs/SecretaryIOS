@@ -3,6 +3,7 @@ import { createEffect, createMemo, createSignal, For, on, Show, type JSX } from 
 import { Portal } from "solid-js/web";
 import type { AppNotification, Category } from "../api/notifications";
 import { locale, t } from "../i18n";
+import { agentNotificationRoute } from "../lib/agentsRoute";
 import { prefetchPushKey } from "../lib/push";
 import {
   markAllRead,
@@ -174,7 +175,7 @@ export function NotificationPanel(props: { open: boolean; onClose: () => void; o
   function open(n: AppNotification) {
     void markRead([n.id]);
     props.onClose();
-    navigate(safeRoute(n.route));
+    navigate(agentNotificationRoute(n) ?? safeRoute(n.route));
   }
 
   return (
