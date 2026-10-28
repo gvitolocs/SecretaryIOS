@@ -118,8 +118,8 @@ fn tools() -> Vec<Value> {
         tool("get_agent_status", "An agent's status, title and pending permission requests.", json!({"agentId": id}), &["agentId"]),
         tool(
             "get_agent_activity",
-            "An agent's recent activity as text.",
-            json!({"agentId": id, "limit": {"type": "integer", "description": "Last N entries (default 30)"}}),
+            "An agent's recent activity as text. Its provider subagents (a Claude Task) show as one entry with what they did; pass subagentId for one's own activity.",
+            json!({"agentId": id, "limit": {"type": "integer", "description": "Last N entries (default 30)"}, "subagentId": {"type": "string", "description": "A provider subagent of this agent (its Task call id)"}}),
             &["agentId"],
         ),
         tool(
@@ -248,7 +248,11 @@ async fn call(client: &Client, me: Option<&str>, name: &str, a: &Value) -> Resul
         }
         "get_agent_activity" => {
             let id = seg(a, "agentId")?;
-            let v = client.get(&format!("/agents/{id}/timeline")).await.map_err(e)?;
+            let path = match a["subagentId"].as_str().filter(|s| !s.is_empty()) {
+                Some(_) => format!("/agents/{id}/provider-subagents/{}/timeline", seg(a, "subagentId")?),
+                None => format!("/agents/{id}/timeline"),
+            };
+            let v = client.get(&path).await.map_err(e)?;
             let rows: Vec<TimelineRow> = serde_json::from_value(v["rows"].clone()).unwrap_or_default();
             let items: Vec<TimelineItem> = project_rows(&rows).into_iter().map(|e| e.item).collect();
             let limit = a["limit"].as_u64().unwrap_or(30) as usize;

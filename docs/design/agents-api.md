@@ -70,7 +70,10 @@ The agent routes are agentd's routes, prefixed. The table below adds what phase 
 | GET | `/v1/agents/items` | list items with state buckets (the apps' lists) |
 | GET/DELETE | `/v1/agents/{id}` | snapshot / delete |
 | POST | `/v1/agents/{id}/{send,stop,archive,unarchive,wait}` | as agentd. Steer is `send` with `activeTurnBehavior: "steer"` |
-| GET | `/v1/agents/{id}/timeline?afterSeq=&limit=` | `{epoch, rows, nextSeq}` |
+| GET | `/v1/agents/{id}/timeline?afterSeq=&limit=` | `{epoch, rows, nextSeq}`. `&subagent=<id>` reads a provider subagent's timeline instead (below) |
+| GET | `/v1/agents/{id}/provider-subagents` | **P7:** `{agentId, subagents: [descriptor]}`, oldest first |
+| GET | `/v1/agents/{id}/provider-subagents/{subId}` | **P7:** one descriptor (id or unique prefix) |
+| GET | `/v1/agents/{id}/provider-subagents/{subId}/timeline?afterSeq=&limit=&direction=after\|tail` | **P7:** a page of the child's timeline (below) |
 | POST | `/v1/agents/{id}/permissions/{requestId}` | answer (owner devices only) |
 | GET/POST | `/v1/agents/permissions[/{id}]` | the permission book; external requests |
 | … | `/v1/agents/projects`, `/v1/agents/workspaces/…`, `/v1/agents/clone` | phase 4 routes (`api/workspaces.rs`) |
@@ -228,6 +231,46 @@ terminal output is SSE and input is a POST. A WebSocket would need upgrade suppo
 - **Search:** Paseo's typo-tolerant ranking over title, workspace, branch and project, plus SQLite FTS5 over prompts,
   answers and agent messages (indexed when an agent is idle).
 
+## Provider subagents (P7)
+
+A provider can run children inside an agent: a Claude `Task` call, an OpenCode child session. Paseo gives each its own
+timeline, apart from the parent's (`ProviderSubagentStore`, `agent.provider_subagents.*` messages); so does agentd. They
+are **not** `lucina.parent-agent-id` children (those are separate agents that an agent started through the MCP, phase 6).
+
+- **Descriptor** (Paseo's `ProviderSubagentDescriptorPayloadSchema`): `{id, parentAgentId, parentSubagentId, provider, title,
+  description, status, createdAt, updatedAt, toolCallId, cwd, subtitle}`. `id` is the child's own id (the `Task` call id for
+  Claude, the child session id for OpenCode); `title` is its name or type (a `Task` input `name` beats `subagent_type`),
+  `description` the task, `status` `running | completed | failed | canceled`, `toolCallId` the parent timeline's tool call
+  that started it, `parentSubagentId` the child that started this one, `subtitle` provider-formatted context
+  (`general-purpose · claude-opus-5-5 · 5.1k tokens`; clients must not parse it). Fields an update omits keep their value.
+- **Timeline:** `{agentId, subagentId, provider, direction, epoch, rows, nextSeq, window: {minSeq, maxSeq, nextSeq},
+  hasOlder, hasNewer, subagent}`. Rows are `TimelineRow`s as the agent's own, numbered from 1 per child, and use the agent's
+  `epoch`. `direction=after` (default) returns the rows after `afterSeq` (`limit` 0 = all); `tail` the last `limit`.
+  Unlike Paseo they are not projected: a client collapses them like the agent's own rows (`projection`). A child's items:
+  its prompt (`user_message`), `assistant_message`, `reasoning`, tool calls and `todo`. A child started by another child has
+  that child's `Task` card in the parent child's timeline.
+- **In the parent's timeline** there is only the provider's card for the call: a `tool_call` with a `sub_agent` detail
+  (`subAgentType`, `description`, `log`). `log` lists what the child did (`[Bash] ls`, at most 200 lines) and, once it has
+  finished, its report. This is all `lagent logs <agent>` and the MCP's activity text show of a child, as in Paseo.
+- **Errors:** 404 `PROVIDER_SUBAGENT_NOT_FOUND`; an ambiguous prefix is 400 `INVALID_REQUEST`; an unknown `direction` is 400.
+- **Stream:** `{"type":"provider_subagent","event":{...}}` with `kind` `upsert` (`subagent`: the descriptor), `timeline`
+  (`parentAgentId`, `subagentId`, `provider`, `item`, `timestamp`, `seq`, `epoch`) or `remove` (`parentAgentId`, `subagentId`),
+  Paseo's `agent.provider_subagents.update` payload. A child's items never come as `agent_stream` events of the parent.
+- **Lifecycle:** a running child is `canceled` when its agent is archived or the daemon restarts (its provider process is
+  gone); `delete` removes the agent's children (a `remove` event each). Stored in SQLite (`provider_subagents`,
+  `provider_subagent_rows`); at most 5,000 rows per child.
+- **`lagent`:** `logs <agent> --subagent <id|prefix>` prints the child's activity (not with `--follow`); `inspect` adds a
+  `Subagents` list when there are any (Lucina only); `lagent mcp`'s `get_agent_activity` takes `subagentId`.
+- **Claude** (stream-json): frames with `parent_tool_use_id` go to the child; identity and status come from Claude Code's task
+  protocol (`task_started`, `task_updated`, `task_notification`, `task_progress`), as in Paseo; an older CLI without it
+  declares the child on its first frame and the `Task` result ends it. A foreground child ends with its call's result, a
+  background one outlives the turn. **OpenCode** (ACP): a `session/update` from another session id is a child, linked to the
+  running `task` call; it is not checked against a live OpenCode (it may not forward those updates). Codex, Cursor, Copilot, Pi
+  and ZCode report no children.
+- **Differences from Paseo:** no timeline projection; an explicit `null` can't clear a descriptor field; a Claude child's text is
+  taken from complete `assistant` messages (Paseo's tracker does the same); no `workflow` output files and no effort in
+  the subtitle (Paseo reads it from Claude hooks).
+
 ## Stream
 
 `GET /v1/agents/stream` is SSE. Each event has a monotonic `id:` and `data:` set to one bus event:
@@ -235,6 +278,7 @@ terminal output is SSE and input is a POST. A WebSocket would need upgrade suppo
 - `{"type":"agent_state","agent":{…snapshot}}`
 - `{"type":"agent_stream","agentId","event":{…StreamEvent},"seq","epoch","timestamp"}`
 - `{"type":"agent_deleted","agentId"}`
+- `{"type":"provider_subagent","event":{"kind":"upsert"|"timeline"|"remove",…}}` (P7, above)
 - `{"type":"permission","permission":{…PermissionView}}`
 - `{"type":"workspace","workspace":{…WorkspaceRecord}}`
 - phase 7: `{"type":"agent_command","agentId","commandId","command":{…},"createdAt","expiresAt"}`, only to the owning device

@@ -3,13 +3,16 @@
 //! line, append-only. Paseo keeps timelines in memory only; these survive a
 //! restart with the same epoch. Projects and workspaces are JSON records in the same
 //! database (Paseo: `projects/projects.json`, `projects/workspaces.json`), and so are
-//! the commands queued for external agents' owner devices.
+//! the commands queued for external agents' owner devices. A provider subagent's
+//! descriptor and timeline rows are in `provider_subagents` and
+//! `provider_subagent_rows` (an agent's rows are separate from its own).
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use lucina_agents::subagent::Subagent;
 use lucina_agents::workspace::{ProjectRecord, WorkspaceRecord};
 use lucina_agents::external::AgentCommand;
 use lucina_agents::{AgentRecord, TimelineRow};
@@ -58,7 +61,20 @@ impl Store {
                  state TEXT NOT NULL DEFAULT 'pending',
                  record TEXT NOT NULL
              );
-             CREATE INDEX IF NOT EXISTS commands_device ON commands (device_id, state);",
+             CREATE INDEX IF NOT EXISTS commands_device ON commands (device_id, state);
+             CREATE TABLE IF NOT EXISTS provider_subagents (
+                 agent_id TEXT NOT NULL,
+                 id TEXT NOT NULL,
+                 record TEXT NOT NULL,
+                 PRIMARY KEY (agent_id, id)
+             );
+             CREATE TABLE IF NOT EXISTS provider_subagent_rows (
+                 agent_id TEXT NOT NULL,
+                 subagent_id TEXT NOT NULL,
+                 seq INTEGER NOT NULL,
+                 record TEXT NOT NULL,
+                 PRIMARY KEY (agent_id, subagent_id, seq)
+             );",
         )?;
         Ok(Store { db: Mutex::new(db), timelines })
     }
@@ -104,6 +120,7 @@ impl Store {
     pub fn delete(&self, id: &str) -> Result<(), StoreError> {
         self.db().execute("DELETE FROM agents WHERE id = ?1", params![id])?;
         self.db().execute("DELETE FROM commands WHERE agent_id = ?1", params![id])?;
+        self.delete_subagents(id)?;
         if valid_id(id) {
             match fs::remove_file(self.timelines.join(format!("{id}.jsonl"))) {
                 Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e.into()),
@@ -286,5 +303,53 @@ impl Store {
         let week = 7 * 24 * 3_600_000_i64;
         db.execute("DELETE FROM commands WHERE state != 'pending' AND expires_at_ms <= ?1", params![now_ms as i64 - week])?;
         Ok(out)
+    }
+}
+
+impl Store {
+    pub fn save_subagent(&self, s: &Subagent) -> Result<(), StoreError> {
+        self.db().execute(
+            "INSERT INTO provider_subagents (agent_id, id, record) VALUES (?1, ?2, ?3)
+             ON CONFLICT(agent_id, id) DO UPDATE SET record = excluded.record",
+            params![s.parent_agent_id, s.id, serde_json::to_string(s)?],
+        )?;
+        Ok(())
+    }
+
+    pub fn append_subagent_row(&self, agent_id: &str, subagent_id: &str, row: &TimelineRow) -> Result<(), StoreError> {
+        self.db().execute(
+            "INSERT OR REPLACE INTO provider_subagent_rows (agent_id, subagent_id, seq, record) VALUES (?1, ?2, ?3, ?4)",
+            params![agent_id, subagent_id, row.seq as i64, serde_json::to_string(row)?],
+        )?;
+        Ok(())
+    }
+
+    /// An agent's provider subagents with their rows, oldest first. An unreadable record is skipped.
+    pub fn load_subagents(&self, agent_id: &str) -> Result<Vec<(Subagent, Vec<TimelineRow>)>, StoreError> {
+        let db = self.db();
+        let mut stmt = db.prepare("SELECT record FROM provider_subagents WHERE agent_id = ?1")?;
+        let records = stmt.query_map(params![agent_id], |r| r.get::<_, String>(0))?;
+        let mut subs: Vec<Subagent> = records.flatten().filter_map(|j| serde_json::from_str(&j).ok()).collect();
+        subs.sort_by(|a, b| a.created_at.cmp(&b.created_at).then_with(|| a.id.cmp(&b.id)));
+        let mut rows_stmt = db.prepare("SELECT record FROM provider_subagent_rows WHERE agent_id = ?1 AND subagent_id = ?2 ORDER BY seq")?;
+        let mut out = Vec::new();
+        for sub in subs {
+            let rows = rows_stmt.query_map(params![agent_id, sub.id], |r| r.get::<_, String>(0))?;
+            let rows: Vec<TimelineRow> = rows.flatten().filter_map(|j| serde_json::from_str(&j).ok()).collect();
+            out.push((sub, rows));
+        }
+        Ok(out)
+    }
+
+    pub fn delete_subagent(&self, agent_id: &str, subagent_id: &str) -> Result<(), StoreError> {
+        self.db().execute("DELETE FROM provider_subagents WHERE agent_id = ?1 AND id = ?2", params![agent_id, subagent_id])?;
+        self.db().execute("DELETE FROM provider_subagent_rows WHERE agent_id = ?1 AND subagent_id = ?2", params![agent_id, subagent_id])?;
+        Ok(())
+    }
+
+    pub fn delete_subagents(&self, agent_id: &str) -> Result<(), StoreError> {
+        self.db().execute("DELETE FROM provider_subagents WHERE agent_id = ?1", params![agent_id])?;
+        self.db().execute("DELETE FROM provider_subagent_rows WHERE agent_id = ?1", params![agent_id])?;
+        Ok(())
     }
 }

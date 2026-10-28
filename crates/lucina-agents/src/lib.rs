@@ -15,6 +15,8 @@
 //! - [`timeline`]: timeline items, tool-call details, rows and cursors
 //!   (`messages.js` `AgentTimelineItemPayloadSchema`).
 //! - [`events`]: provider stream events (`AgentStreamEventPayloadSchema`).
+//! - [`subagent`]: the children a provider runs inside an agent, each with its own
+//!   timeline (`server/agent/provider-subagents/store.js`, `ProviderSubagent*` messages).
 //! - [`permission`]: permission requests and responses.
 //! - [`projection`]: collapsing streamed rows (`server/agent/timeline-projection.js`).
 //! - [`display`]: tool-call display names and summaries (`tool-call-display.js`,
@@ -62,6 +64,7 @@ pub mod projection;
 pub mod run_gate;
 pub mod schedule;
 pub mod stream;
+pub mod subagent;
 pub mod text_match;
 pub mod timeline;
 pub mod title;

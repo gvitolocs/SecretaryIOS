@@ -10,7 +10,9 @@
 //! | `zcode` | the ZCode CLI (`zcode.cjs --json`), one process per turn |
 
 pub mod acp;
+mod acp_subagents;
 pub mod claude;
+pub mod claude_subagents;
 pub mod codex;
 pub mod pi;
 pub mod zcode;
