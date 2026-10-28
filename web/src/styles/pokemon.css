@@ -2,6 +2,9 @@
 .pokemon-page { max-width: 640px; margin: 0 auto; padding: var(--lu-space-sm, 8px) var(--lu-gutter, 16px) var(--lu-space-xxl, 28px); }
 .pokemon-page--wide { max-width: none; margin: 0; padding: 0; }
 .pg.pokemon-desk .pokemon-desk-game { padding: var(--pg-pad, 24px); }
+/* Desktop: one surface (no card in the card) and a game screen of a readable size. */
+.pg.pokemon-desk .pokemon-card { padding: 0; background: none; }
+.pg.pokemon-desk .pokemon-screen { max-width: 480px; }
 .pokemon-desk-ask { margin-top: 12px; }
 .pokemon-page h1 { margin: 4px 0 12px; }
 .pokemon-page h2 { font-size: 1.1rem; margin: 20px 0 8px; }

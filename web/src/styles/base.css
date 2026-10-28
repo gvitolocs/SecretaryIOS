@@ -801,6 +801,11 @@ select.text-input option {
   overflow: hidden;
 }
 
+/* Desktop: the viewfinder keeps a phone-sized square instead of filling the column. */
+.pg.scan-desk .scan-viewfinder {
+  max-width: 420px;
+}
+
 .scan-head {
   display: flex;
   align-items: center;
