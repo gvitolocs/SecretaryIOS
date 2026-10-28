@@ -255,6 +255,8 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             conn.execute(&format!("ALTER TABLE items ADD COLUMN {ddl}"), [])?;
         }
     }
+    // Duplicates (2026-10-28): links, device-asset aliases and perceptual hashes (`dedup_merge.rs`).
+    crate::dedup_merge::migrate(conn)?;
     Ok(())
 }
 

@@ -14,7 +14,7 @@ use crate::config::Config;
 use crate::db::{self, now_str, Db};
 use crate::meta::{self, ClientMeta, Extracted};
 use crate::protocol::{ingest_decision, IngestDecision, Known};
-use crate::{gallery, geo, store, thumbs};
+use crate::{dedup_merge, gallery, geo, store, thumbs};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Event {
@@ -227,21 +227,26 @@ fn keep_owned_bytes(
 }
 
 fn known_for(c: &Connection, hash: &str, client: &ClientMeta) -> rusqlite::Result<Known> {
-    let by_hash = c
+    let by_hash: Option<String> = c
         .query_row(
             "SELECT id FROM items WHERE hash = ?1 ORDER BY added_at LIMIT 1",
             [hash],
             |r| r.get(0),
         )
         .optional()?;
+    // Bytes of a hidden duplicate belong to the photo it was merged into (`dedup_merge`).
+    let by_hash = by_hash.map(|id| dedup_merge::resolve(c, &id)).transpose()?;
     let by_asset = match (&client.device, &client.asset_id) {
-        (Some(d), Some(a)) => c
-            .query_row(
-                "SELECT id, hash FROM items WHERE device = ?1 AND asset_id = ?2",
-                params![d, a],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?,
+        (Some(d), Some(a)) => match dedup_merge::asset_lookup(c, d, a, hash)? {
+            Some(merged) => Some(merged),
+            None => c
+                .query_row(
+                    "SELECT id, hash FROM items WHERE device = ?1 AND asset_id = ?2",
+                    params![d, a],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?,
+        },
         _ => None,
     };
     Ok(Known { by_hash, by_asset })
@@ -270,6 +275,9 @@ fn insert_new_or_duplicate(
             |r| r.get(0),
         )
         .optional()?;
+    let existing = existing
+        .map(|id| dedup_merge::resolve(c, &id))
+        .transpose()?;
     if let Some(existing) = existing {
         if let (Some(dev), Some(asset)) = (&client.device, &client.asset_id) {
             c.execute(

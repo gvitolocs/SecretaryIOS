@@ -121,6 +121,7 @@ pub fn router(lib: Library, extra: Option<Router>) -> Router {
         .route("/v1/media/sources", get(list_sources))
         .route("/v1/media/events", get(events))
         .merge(uploads)
+        .merge(crate::dedup_merge::routes())
         .merge(crate::share_http::owner_routes())
         .merge(crate::share_http::public_routes())
         .with_state(lib.clone())
@@ -339,10 +340,13 @@ async fn list_items(
     })))
 }
 
-async fn get_item(State(lib): State<Library>, Path(id): Path<String>) -> ApiResult<Json<ItemOut>> {
+async fn get_item(State(lib): State<Library>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
+    let asked = id.clone();
     let (it, album, info) = lib
         .db
         .call(move |c| {
+            // A copy merged into another photo (`dedup_merge`) answers with that photo.
+            let id = crate::dedup_merge::resolve(c, &id)?;
             let Some(it) = db::get_item(c, &id)? else {
                 return Ok(None);
             };
@@ -354,7 +358,12 @@ async fn get_item(State(lib): State<Library>, Path(id): Path<String>) -> ApiResu
         })
         .await?
         .ok_or_else(not_found)?;
-    Ok(Json(item_out_full(&lib, it, album, info, None)))
+    let merged = it.id != asked;
+    let mut out = serde_json::to_value(item_out_full(&lib, it, album, info, None))?;
+    if merged {
+        out["merged_from"] = json!(asked);
+    }
+    Ok(Json(out))
 }
 
 /// The words of a search, for snippets.
@@ -1718,7 +1727,13 @@ async fn device_assets(
         .db
         .call(move |c| {
             let mut st = c.prepare(
-                "SELECT asset_id, hash, id, version, trashed_at IS NOT NULL FROM items WHERE device = ?1 AND asset_id IS NOT NULL",
+                // Assets merged into another photo (`dedup_merge`) are listed with what the device sent.
+                "SELECT asset_id, hash, id, version, trashed_at IS NOT NULL FROM items
+                 WHERE device = ?1 AND asset_id IS NOT NULL
+                   AND NOT EXISTS (SELECT 1 FROM item_aliases a WHERE a.device = items.device AND a.asset_id = items.asset_id)
+                 UNION ALL
+                 SELECT a.asset_id, a.hash, a.item_id, s.version, s.trashed_at IS NOT NULL
+                 FROM item_aliases a JOIN items s ON s.id = a.item_id WHERE a.device = ?1",
             )?;
             let rows = st.query_map([&device], |r| {
                 Ok(json!({"asset_id": r.get::<_, String>(0)?, "hash": r.get::<_, String>(1)?,

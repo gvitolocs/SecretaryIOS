@@ -36,6 +36,59 @@ enum Cmd {
     /// Index a folder in place (no copy) as album LABEL: a film folder's media, or every file of a
     /// Drive folder.
     IndexFolder { label: String, path: PathBuf },
+    /// Find the same photo in two encodings and write the dry-run report (JSON, ids and scores only).
+    /// Reads the catalog read-only; hashes go to a scratch database, never into the catalog.
+    DedupReport {
+        /// Where the full report goes (default: ~/scratch/gallery/dedup/report.json).
+        #[arg(long)]
+        report: Option<PathBuf>,
+        /// The scratch database for perceptual hashes (default: next to the report).
+        #[arg(long)]
+        hashes: Option<PathBuf>,
+        /// The library's data directory (default: LUCINA_MEDIA_DATA_DIR).
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+        /// Largest distance (0 to 64) for a duplicate with no time or name evidence.
+        #[arg(long)]
+        strict: Option<f32>,
+        /// Largest distance for a duplicate that agrees on the moment or on name and size.
+        #[arg(long)]
+        close: Option<f32>,
+        /// Largest distance at which two pictures taken together are a burst, not a duplicate.
+        #[arg(long)]
+        similar: Option<f32>,
+        /// Pause while the CPU is at or above this many degrees.
+        #[arg(long, default_value_t = lucina_media::dedup_cli::MAX_TEMP_C)]
+        max_temp: f64,
+    },
+    /// Compute the perceptual hashes of photos that have none, into the library's own table.
+    DedupHash {
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// Hide the duplicates a report found under their survivors. Nothing is deleted; `dedup-undo`
+    /// reverses one. Needs --i-have-a-backup (or --dry-run).
+    DedupApply {
+        #[arg(long)]
+        report: PathBuf,
+        /// Only merges scoring at least this (0 to 1).
+        #[arg(long, default_value_t = 0.7)]
+        min_score: f32,
+        /// Comma list: exact, same_photo_reencoded, resized_copy.
+        #[arg(long, default_value = "exact,same_photo_reencoded,resized_copy")]
+        classes: String,
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Merge pairs the owner undid before.
+        #[arg(long)]
+        redo_undone: bool,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        i_have_a_backup: bool,
+    },
+    /// Put a merged duplicate back as its own item.
+    DedupUndo { item: String },
     /// Write the text of a document to OUTPUT (the Drive worker runs this in a capped child process).
     /// Exits 3 when the file has no text.
     ExtractText {
@@ -70,6 +123,45 @@ async fn main() -> anyhow::Result<()> {
             Some(text) => std::fs::write(output, extract::truncate_text(text))?,
             None => std::process::exit(extract::NO_TEXT_EXIT),
         }
+        return Ok(());
+    }
+    if let Cmd::DedupReport {
+        report,
+        hashes,
+        data_dir,
+        strict,
+        close,
+        similar,
+        max_temp,
+    } = &cli.cmd
+    {
+        // Read-only: no config, no migration, nothing written under the data directory.
+        let data_dir = data_dir
+            .clone()
+            .or_else(|| std::env::var_os("LUCINA_MEDIA_DATA_DIR").map(PathBuf::from))
+            .ok_or_else(|| anyhow::anyhow!("pass --data-dir or set LUCINA_MEDIA_DATA_DIR"))?;
+        let scratch = lucina_media::dedup_cli::scratch_dir();
+        let report = report
+            .clone()
+            .unwrap_or_else(|| scratch.join("report.json"));
+        let hashes = hashes
+            .clone()
+            .unwrap_or_else(|| report.with_file_name("hashes.db"));
+        let mut thresholds = lucina_media::dedup::Thresholds::default();
+        thresholds.strict = strict.unwrap_or(thresholds.strict);
+        thresholds.close = close.unwrap_or(thresholds.close);
+        thresholds.similar = similar.unwrap_or(thresholds.similar);
+        let args = lucina_media::dedup_cli::ReportArgs {
+            data_dir,
+            report: report.clone(),
+            hashes,
+            thresholds,
+            max_temp_c: *max_temp,
+        };
+        let r = tokio::task::spawn_blocking(move || lucina_media::dedup_cli::run_report(&args))
+            .await??;
+        print!("{}", lucina_media::dedup_cli::summary(&r));
+        println!("report: {}", report.display());
         return Ok(());
     }
     let cfg = Config::from_env()?;
@@ -131,7 +223,44 @@ async fn main() -> anyhow::Result<()> {
                 println!("{r:?}");
             }
         }
-        Cmd::ExtractText { .. } => unreachable!("handled above"),
+        Cmd::DedupHash { limit } => {
+            let lib = Library::open(cfg)?;
+            let stats =
+                tokio::task::spawn_blocking(move || lucina_media::dedup_cli::run_hash(&lib, limit))
+                    .await??;
+            println!("{stats:?}");
+        }
+        Cmd::DedupApply {
+            report,
+            min_score,
+            classes,
+            limit,
+            redo_undone,
+            dry_run,
+            i_have_a_backup,
+        } => {
+            let args = lucina_media::dedup_cli::ApplyArgs {
+                report,
+                min_score,
+                classes: lucina_media::dedup_cli::parse_classes(&classes)?,
+                limit,
+                redo: redo_undone,
+                dry_run,
+                backup_ack: i_have_a_backup,
+            };
+            let stats = tokio::task::spawn_blocking(move || {
+                lucina_media::dedup_cli::run_apply(|| Library::open(cfg), &args)
+            })
+            .await??;
+            println!("{}", serde_json::to_string_pretty(&stats)?);
+        }
+        Cmd::DedupUndo { item } => {
+            let lib = Library::open(cfg)?;
+            let done = lib.db.with(|c| lucina_media::dedup_merge::undo(c, &item))?;
+            anyhow::ensure!(done, "{item} is not a merged duplicate");
+            println!("{item} is its own item again");
+        }
+        Cmd::DedupReport { .. } | Cmd::ExtractText { .. } => unreachable!("handled above"),
         Cmd::Serve => serve(cfg).await?,
     }
     Ok(())
