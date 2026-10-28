@@ -551,6 +551,8 @@ pub fn shared_client() -> &'static Client {
 /// was already done. A task that starts with `[engine:hermes]` goes straight
 /// to Hermes, and `[engine:jev]` runs the Jev engine alone on the desktop: no
 /// route question and no Hermes after it (comparisons, tests).
+/// `[engine:jev-quiet]` is the same without the checkout hand-over to the
+/// owner (repeated benchmark runs; the reply still says where it stopped).
 pub async fn run_task(who: &str, prompt: &str, cancel: &Cancel) -> Result<ComputerResult, Error> {
     let client = shared_client();
     if !client.ready() {
@@ -558,11 +560,12 @@ pub async fn run_task(who: &str, prompt: &str, cancel: &Cancel) -> Result<Comput
     }
     let (engine, prompt) = engine_choice(prompt);
     let mut prompt = std::borrow::Cow::Borrowed(prompt);
+    let jev_only = matches!(engine, Some("jev" | "jev-quiet"));
     if engine != Some("hermes") {
-        if let Some(r) = jev_first(&prompt, engine == Some("jev"), cancel).await? {
+        if let Some(r) = jev_first(&prompt, jev_only, engine != Some("jev-quiet"), cancel).await? {
             match r {
                 Ok(done) => return Ok(done),
-                Err(handover) if engine == Some("jev") => {
+                Err(handover) if jev_only => {
                     return Ok(ComputerResult {
                         status: crate::Status::Partial,
                         reply: format!("The Jev engine stopped without finishing; Hermes was not asked ([engine:jev]).\n\n{handover}"),
@@ -587,7 +590,11 @@ pub async fn run_task(who: &str, prompt: &str, cancel: &Cancel) -> Result<Comput
 /// `[engine:hermes] task` → (Some("hermes"), "task").
 pub fn engine_choice(prompt: &str) -> (Option<&'static str>, &str) {
     let t = prompt.trim_start();
-    for (tag, engine) in [("[engine:hermes]", "hermes"), ("[engine:jev]", "jev")] {
+    for (tag, engine) in [
+        ("[engine:hermes]", "hermes"),
+        ("[engine:jev-quiet]", "jev-quiet"),
+        ("[engine:jev]", "jev"),
+    ] {
         if let Some(rest) = t.strip_prefix(tag) {
             return (Some(engine), rest.trim_start());
         }
@@ -602,6 +609,7 @@ pub fn engine_choice(prompt: &str) -> (Option<&'static str>, &str) {
 async fn jev_first(
     prompt: &str,
     desktop: bool,
+    ask_owner: bool,
     cancel: &Cancel,
 ) -> Result<Option<Result<ComputerResult, String>>, Error> {
     use crate::jev_drive::{self, Outcome, Where};
@@ -637,7 +645,7 @@ async fn jev_first(
         Ok(Outcome::NeedsOwner { handover, actions, stats }) => {
             tracing::info!(target: "lucina_jev::drive", ?target, reason = %handover.reason, total = ?handover.total, "jev engine stopped for the owner");
             // A checkout asks him (decision + notification); a sign-in wall is in the reply.
-            if handover.checkout {
+            if handover.checkout && ask_owner {
                 jev_drive::hand_over(handover.clone());
             }
             Ok(Some(Ok(ComputerResult {
@@ -831,6 +839,7 @@ mod tests {
     fn an_engine_tag_picks_the_engine_and_is_removed() {
         assert_eq!(engine_choice("[engine:hermes] find flights"), (Some("hermes"), "find flights"));
         assert_eq!(engine_choice("  [engine:jev]open wolt"), (Some("jev"), "open wolt"));
+        assert_eq!(engine_choice("[engine:jev-quiet] open wolt"), (Some("jev-quiet"), "open wolt"));
         assert_eq!(engine_choice("find [engine:hermes] flights"), (None, "find [engine:hermes] flights"));
     }
 
