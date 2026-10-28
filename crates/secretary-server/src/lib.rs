@@ -114,6 +114,8 @@ pub struct Inner {
     pub qr_limiter: RateLimiter,
     /// `POST /v1/device/events` (instead of `limiter`).
     pub device_limiter: RateLimiter,
+    /// `GET /v1/auth/owner` (forward_auth of the owner-only plugins).
+    pub owner_limiter: RateLimiter,
     /// Recently forwarded device event ids (dedup).
     pub event_ids: device::SeenIds,
     pub health: HealthCache,
@@ -192,6 +194,7 @@ impl AppState {
             qr_logins: qr_login::QrLogins::new(cfg.qr_login_ttl, &cfg.public_url),
             qr_limiter: RateLimiter::new(qr_login::POLLS_PER_MINUTE),
             device_limiter: RateLimiter::new(cfg.device_events_per_minute),
+            owner_limiter: RateLimiter::new(cfg.owner_auth_per_minute),
             event_ids: device::SeenIds::new(device::SEEN_IDS),
             health: HealthCache::new(cfg.health_ttl, cfg.health_timeout),
             upstream,
@@ -328,6 +331,7 @@ pub fn app(state: AppState) -> Router {
         .merge(calendar)
         .merge(device_events)
         .merge(auth::session_routes())
+        .merge(auth::owner_routes())
         .merge(qr_login::public_routes())
         .merge(approvals)
         .merge(protected)
