@@ -22,6 +22,8 @@ export default function InstagramViewer(props: {
   slides: Slide[];
   start: number;
   username: string;
+  /** Items already in the Gallery (the Archive): no save buttons. */
+  archived?: boolean;
   onClose: () => void;
   /** Called when the viewer gets near the end of the slides, so the page can load more. */
   onNearEnd?: () => void;
@@ -179,7 +181,7 @@ export default function InstagramViewer(props: {
         <footer class="ig-viewer__foot">
           <Show when={slide()?.item.caption}>{(c) => <p class="ig-viewer__caption">{c()}</p>}</Show>
           <div class="ig-viewer__actions">
-            <Show when={slide()}>
+            <Show when={props.archived ? undefined : slide()}>
               {(s) => (
                 <button type="button" class="ig-btn ig-btn--primary" disabled={stateOf(s().key) === "saving"} onClick={() => void save([s()])}>
                   <Show when={stateOf(s().key) === "saved"} fallback={<DownloadIcon />}>
@@ -189,7 +191,7 @@ export default function InstagramViewer(props: {
                 </button>
               )}
             </Show>
-            <Show when={siblings().length > 1}>
+            <Show when={siblings().length > 1 && !props.archived}>
               <button type="button" class="ig-btn" disabled={siblings().some((s) => stateOf(s.key) === "saving")} onClick={() => void save(siblings())}>
                 {t("instagram.saveAll", { count: siblings().length })}
               </button>

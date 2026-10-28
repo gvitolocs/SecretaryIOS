@@ -94,6 +94,29 @@ export interface IgSaveResult {
   failed: { index: number; error: string }[];
 }
 
+/** A watched account (GET /v1/instagram/watch). */
+export interface IgWatch {
+  username: string;
+  autoSave: boolean;
+  /** Unix seconds of the last refresh; null before the first. */
+  lastCheck: number | null;
+  newStories: number;
+  newPosts: number;
+  /** null until the first refresh. */
+  private: boolean | null;
+  fullName?: string;
+  picUrl?: string | null;
+  isVerified?: boolean;
+  gone?: boolean;
+  status?: string | null;
+  archived?: number;
+}
+
+export interface IgBadges {
+  total: number;
+  accounts: Record<string, number>;
+}
+
 const BASE = "/v1/instagram";
 
 async function get<T>(path: string): Promise<T> {
@@ -116,6 +139,22 @@ export const instagramApi = {
     get<IgPage>(`/highlights/items?id=${encodeURIComponent(id)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`),
   resolve: (url: string) => get<IgPage>(`/resolve?url=${encodeURIComponent(url)}`),
   recent: () => get<{ items: IgRecent[] }>("/recent").then((d) => d.items),
+  watchList: () => get<IgWatch[]>("/watch"),
+  async watch(username: string, body: { autoSave?: boolean } = {}): Promise<IgWatch> {
+    const r = await request<{ ok: boolean; data: IgWatch }>("PUT", `${BASE}/watch/${user(username)}`, { body });
+    return r.data;
+  },
+  async unwatch(username: string): Promise<void> {
+    await request("DELETE", `${BASE}/watch/${user(username)}`);
+  },
+  /** The owner opened the account: its badge clears. Answers the badges that are left. */
+  async opened(username: string): Promise<IgBadges> {
+    const r = await request<{ ok: boolean; data: IgBadges }>("POST", `${BASE}/watch/${user(username)}/opened`);
+    return r.data;
+  },
+  badges: () => get<IgBadges>("/badges"),
+  /** What was saved to the Gallery for this account (newest first); `cursor` is an offset. */
+  archive: (username: string, cursor?: string | null) => get<IgPage>(`/archive/${user(username)}${cursorQuery(cursor)}`),
   async save(items: IgSaveItem[]): Promise<IgSaveResult> {
     const r = await request<{ ok: boolean; data: IgSaveResult }>("POST", `${BASE}/save`, { body: { items } });
     return r.data;

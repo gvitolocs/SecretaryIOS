@@ -28,6 +28,8 @@ export interface SecretaryShell {
   show?(view: ShellView): void;
   /** Make the Mac forget its device token (the web app signs out too). */
   signOut?(): void | Promise<void>;
+  /** Show a red dot with a count on a plugin's rail icon (0 clears it). The rail implements it. */
+  setBadge?(plugin: string, count: number): void;
 }
 
 declare global {

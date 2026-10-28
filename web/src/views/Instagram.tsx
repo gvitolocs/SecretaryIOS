@@ -1,8 +1,9 @@
 import { A, useNavigate, useParams } from "@solidjs/router";
-import { createEffect, createResource, createSignal, For, on, Show, type Accessor } from "solid-js";
+import { createEffect, createResource, createSignal, For, on, onMount, Show, type Accessor } from "solid-js";
 import { ApiError } from "../api/client";
 import { instagramApi, type IgItem, type IgPage, type IgProfileBundle } from "../api/instagram";
-import { BackIcon, CheckIcon, ExternalIcon, SearchIcon } from "../components/Icons";
+import { instagramWatched, refreshInstagramBadges, refreshInstagramWatched, setInstagramBadges } from "../state/instagramBadge";
+import { BackIcon, BellIcon, CheckIcon, ExternalIcon, SearchIcon } from "../components/Icons";
 import InstagramViewer from "../components/InstagramViewer";
 import { t } from "../i18n";
 import { formatCount, parseTyped, slideIndexOf, slidesOf } from "../lib/instagram";
@@ -13,8 +14,8 @@ import "../styles/instagram.css";
 // highlights, posts and reels through the server's service (docs/instagram.md). Nothing is
 // fetched from Instagram by the browser: every picture and video is a signed URL of our server.
 
-type Tab = "stories" | "highlights" | "posts" | "reels";
-const TABS: Tab[] = ["stories", "highlights", "posts", "reels"];
+type Tab = "stories" | "highlights" | "posts" | "reels" | "archive";
+const TABS: Tab[] = ["stories", "highlights", "posts", "reels", "archive"];
 
 /** What to tell the owner about a failed request. */
 export function errorText(e: unknown, missing?: string): string {
@@ -126,6 +127,8 @@ interface Opened {
   feed: Feed;
   start: number;
   username: string;
+  /** From the Archive: already in the Gallery. */
+  archived?: boolean;
 }
 
 function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
@@ -148,13 +151,43 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
   const [tab, setTab] = createSignal<Tab>("posts");
   const [notice, setNotice] = createSignal("");
   const [opening, setOpening] = createSignal<string | null>(null);
+  const watchEntry = () => instagramWatched().find((w) => w.username === props.username);
+
+  // Opening a watched account clears its red dot.
+  createEffect(
+    on(
+      () => bundle()?.profile.username,
+      async (name) => {
+        if (!name) return;
+        await refreshInstagramWatched();
+        if (!watchEntry()) return;
+        try {
+          setInstagramBadges(await instagramApi.opened(props.username));
+          await refreshInstagramWatched();
+        } catch {
+          // The dot stays until the next time.
+        }
+      },
+    ),
+  );
+
+  async function changeWatch(run: () => Promise<unknown>) {
+    setNotice("");
+    try {
+      await run();
+      await Promise.all([refreshInstagramWatched(), refreshInstagramBadges()]);
+    } catch {
+      setNotice(t("instagram.watchFailed"));
+    }
+  }
 
   let posts: Feed | undefined;
   const reels = createFeed((c) => instagramApi.reels(props.username, c));
   const stories = createFeed(() => instagramApi.stories(props.username));
+  const archive = createFeed((c) => instagramApi.archive(props.username, c));
   const postsFeed = () => (posts ??= createFeed((c) => instagramApi.posts(props.username, c), bundle()?.posts));
 
-  const feedOf = (tb: Tab): Feed | undefined => (tb === "posts" ? (bundle() ? postsFeed() : undefined) : tb === "reels" ? reels : tb === "stories" ? stories : undefined);
+  const feedOf = (tb: Tab): Feed | undefined => (tb === "posts" ? (bundle() ? postsFeed() : undefined) : tb === "reels" ? reels : tb === "stories" ? stories : tb === "archive" ? archive : undefined);
 
   // Stories first when there are some; each tab is fetched the first time it is shown.
   createEffect(
@@ -182,7 +215,8 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
   }
 
   const tabLabel = (tb: Tab) => t(`instagram.${tb}`);
-  const empty = (tb: Tab) => t(tb === "stories" ? "instagram.noStories" : tb === "highlights" ? "instagram.noHighlights" : tb === "reels" ? "instagram.noReels" : "instagram.noPosts");
+  const empty = (tb: Tab) =>
+    t(tb === "stories" ? "instagram.noStories" : tb === "highlights" ? "instagram.noHighlights" : tb === "reels" ? "instagram.noReels" : tb === "archive" ? "instagram.noArchive" : "instagram.noPosts");
 
   return (
     <div class="ig-profile">
@@ -224,6 +258,33 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
                 )}
               </Show>
             </header>
+
+            <div class="ig-watch">
+              <Show
+                when={watchEntry()}
+                fallback={
+                  <button type="button" class="ig-btn" onClick={() => void changeWatch(() => instagramApi.watch(props.username))}>
+                    <BellIcon /> <span>{t("instagram.watch")}</span>
+                  </button>
+                }
+              >
+                {(w) => (
+                  <>
+                    <button type="button" class="ig-btn ig-btn--on" aria-pressed="true" onClick={() => void changeWatch(() => instagramApi.unwatch(props.username))}>
+                      <CheckIcon /> <span>{t("instagram.watching")}</span>
+                    </button>
+                    <label class="ig-switch">
+                      <input type="checkbox" checked={w().autoSave} onChange={(e) => void changeWatch(() => instagramApi.watch(props.username, { autoSave: e.currentTarget.checked }))} />
+                      <span>{t("instagram.autoSave")}</span>
+                    </label>
+                    <p class="ig-muted ig-watch__hint">{t("instagram.watchHint")}</p>
+                    <Show when={w().gone}>
+                      <p class="ig-note" role="status">{t("instagram.gone")}</p>
+                    </Show>
+                  </>
+                )}
+              </Show>
+            </div>
 
             <Show when={b().profile.isPrivate}>
               <p class="ig-note">{t("instagram.private")}</p>
@@ -275,7 +336,7 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
                                   <Tile
                                     item={item}
                                     label={`${tabLabel(tb)} ${i() + 1}${item.caption ? `: ${item.caption.slice(0, 60)}` : ""}`}
-                                    onOpen={() => props.open({ feed: f(), start: slideIndexOf(f().items(), i()), username: props.username })}
+                                    onOpen={() => props.open({ feed: f(), start: slideIndexOf(f().items(), i()), username: props.username, archived: tb === "archive" })}
                                   />
                                 )}
                               </For>
@@ -317,6 +378,7 @@ export default function InstagramView() {
   const [problem, setProblem] = createSignal("");
   const [busy, setBusy] = createSignal(false);
   const [opened, setOpened] = createSignal<Opened | null>(null);
+  onMount(() => void refreshInstagramWatched());
   const [recent] = createResource(() => (params.username ? null : true), () => instagramApi.recent().catch(() => []));
 
   async function submit(e: Event) {
@@ -363,6 +425,30 @@ export default function InstagramView() {
       </Show>
 
       <Show keyed when={params.username} fallback={
+        <>
+        <Show when={instagramWatched().length > 0}>
+          <section class="ig-watched" aria-labelledby="ig-watched-title">
+            <h2 id="ig-watched-title" class="media-section">{t("instagram.watchList")}</h2>
+            <ul class="ig-chips">
+              <For each={instagramWatched()}>
+                {(w) => {
+                  const fresh = () => w.newStories + w.newPosts;
+                  return (
+                    <li>
+                      <button type="button" class="ig-chip" aria-label={fresh() > 0 ? t("instagram.chipLabel", { name: w.username, count: fresh() }) : `@${w.username}`} onClick={() => navigate(`/instagram/${encodeURIComponent(w.username)}`)}>
+                        <Avatar url={w.picUrl ?? null} name={w.username} />
+                        <span class="ig-chip__name">@{w.username}</span>
+                        <Show when={fresh() > 0}>
+                          <span class="ig-dot" aria-hidden="true">{fresh()}</span>
+                        </Show>
+                      </button>
+                    </li>
+                  );
+                }}
+              </For>
+            </ul>
+          </section>
+        </Show>
         <section class="ig-recent" aria-labelledby="ig-recent-title">
           <h2 id="ig-recent-title" class="media-section">{t("instagram.recent")}</h2>
           <Show when={(recent() ?? []).length > 0} fallback={<p class="ig-muted">{recent.loading ? t("instagram.loading") : t("instagram.recentEmpty")}</p>}>
@@ -387,6 +473,7 @@ export default function InstagramView() {
           </Show>
           <p class="ig-muted ig-hint">{t("instagram.hint")}</p>
         </section>
+        </>
       }>
         {(username) => <ProfilePage username={username} open={setOpened} />}
       </Show>
@@ -397,6 +484,7 @@ export default function InstagramView() {
             slides={slidesOf(o.feed.items())}
             start={o.start}
             username={o.username}
+            archived={o.archived}
             onClose={() => setOpened(null)}
             onNearEnd={() => void o.feed.more()}
           />

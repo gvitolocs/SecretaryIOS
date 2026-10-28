@@ -13,6 +13,7 @@ import "../styles/embedded.css";
 import { connectTimeline, resumeJobPolling } from "../state/chat";
 import { checkHealth, HEALTH_POLL_MS } from "../state/health";
 import { lucinaNotice, markLucinaOnline } from "../state/lucina";
+import { startInstagramBadges } from "../state/instagramBadge";
 import { startNotifications } from "../state/notifications";
 import { signOut } from "../state/session";
 import { setStageHidden, stageHidden } from "../state/stage";
@@ -102,6 +103,7 @@ export default function Shell(props: { children?: JSX.Element }) {
       if (entries.length && location.pathname !== "/") navigate("/" + location.search);
     }).catch(() => undefined);
     onCleanup(startNotifications((route) => navigate(route)));
+    onCleanup(startInstagramBadges());
     void checkHealth();
     resumeJobPolling();
     // The timeline stream stays open on every page, so Lucina's outfit changes arrive live.

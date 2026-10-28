@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { IgItem, IgPage } from "../api/instagram";
 import { stubFetch, type Call } from "../test/fetch";
 import { renderAt } from "../test/router";
+import { instagramBadges, resetInstagramBadges } from "../state/instagramBadge";
 import InstagramView, { errorText } from "./Instagram";
 
 const item = (id: string, kind: IgItem["kind"] = "image", extra: Partial<IgItem> = {}): IgItem => ({
@@ -53,6 +54,11 @@ function serve(r: Routes) {
     if (url.startsWith("/v1/instagram/stories/")) return { body: { ok: true, data: r.stories ?? { items: [], nextCursor: null } } };
     if (url.startsWith("/v1/instagram/highlights/items")) return { body: { ok: true, data: r.highlightItems } };
     if (url.startsWith("/v1/instagram/resolve")) return { body: { ok: true, data: r.resolve } };
+    if (url === "/v1/instagram/watch" && call.method === "GET") return { body: { ok: true, data: r.watched ?? [] } };
+    if (url.startsWith("/v1/instagram/watch/") && url.endsWith("/opened")) return { body: { ok: true, data: r.opened ?? { total: 0, accounts: {} } } };
+    if (url.startsWith("/v1/instagram/watch/")) return { body: { ok: true, data: { username: "natgeo", autoSave: true } } };
+    if (url === "/v1/instagram/badges") return { body: { ok: true, data: { total: 0, accounts: {} } } };
+    if (url.startsWith("/v1/instagram/archive/")) return { body: { ok: true, data: r.archive ?? { items: [], nextCursor: null } } };
     if (url === "/v1/instagram/recent") return { body: { ok: true, data: { items: r.recent ?? [] } } };
     if (url === "/v1/instagram/save") return { body: { ok: true, data: r.save ?? { saved: [{ index: 0, itemId: "itm_1", duplicate: false }], failed: [] } } };
     return { status: 404, body: {} };
@@ -64,7 +70,11 @@ function renderIg(path = "/instagram") {
 }
 
 describe("Instagram", () => {
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    resetInstagramBadges();
+    delete (window as { secretaryShell?: unknown }).secretaryShell;
+  });
 
   it("lists the recent profiles and opens one", async () => {
     const calls = serve({ recent: [{ username: "nasa", fullName: "NASA", isVerified: true, picUrl: null, openedAt: 1 }], profile: { ...bundle(), profile: { ...bundle().profile, username: "nasa", fullName: "NASA" } } });
@@ -98,7 +108,7 @@ describe("Instagram", () => {
     expect(calls.filter((c) => c.url.startsWith("/v1/instagram/profile"))).toHaveLength(0);
   });
 
-  it("shows the profile header, counts and the four tabs", async () => {
+  it("shows the profile header, counts and the five tabs", async () => {
     serve({ profile: bundle() });
     renderIg("/instagram/natgeo");
     expect(await screen.findByRole("heading", { name: /National Geographic/ })).toBeInTheDocument();
@@ -106,7 +116,7 @@ describe("Instagram", () => {
     expect(screen.getByText("268M")).toBeInTheDocument();
     expect(screen.getByText("32K")).toBeInTheDocument();
     expect(screen.getByText("Step into wonder")).toBeInTheDocument();
-    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Stories", "Highlights", "Posts", "Reels"]);
+    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Stories", "Highlights", "Posts", "Reels", "Archive"]);
     expect(screen.getByRole("tab", { name: "Posts" })).toHaveAttribute("aria-selected", "true");
     expect(within(screen.getByRole("tabpanel")).getAllByRole("button")).toHaveLength(4); // 3 tiles + Load more
   });
@@ -184,6 +194,101 @@ describe("Instagram", () => {
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByText("@natgeo")).toBeInTheDocument();
     expect(calls.some((c) => c.url.startsWith("/v1/instagram/resolve?url="))).toBe(true);
+  });
+
+  describe("watching", () => {
+    const entry = (over: Record<string, unknown> = {}) => ({ username: "natgeo", autoSave: true, lastCheck: 1, newStories: 2, newPosts: 1, private: false, fullName: "National Geographic", picUrl: null, ...over });
+
+    it("shows the watched accounts as chips with their red dots", async () => {
+      serve({ watched: [entry(), entry({ username: "nasa", newStories: 0, newPosts: 0 })] });
+      renderIg();
+      const chip = await screen.findByRole("button", { name: "@natgeo, 3 new" });
+      expect(within(chip).getByText("3")).toBeInTheDocument();
+      const quiet = screen.getByRole("button", { name: "@nasa" });
+      expect(quiet.querySelector(".ig-dot")).toBeNull();
+    });
+
+    it("opens a chip's profile and clears its badge", async () => {
+      const setBadge = vi.fn();
+      (window as { secretaryShell?: unknown }).secretaryShell = { showCode() {}, setBadge };
+      const calls = serve({ watched: [entry()], profile: bundle(), opened: { total: 4, accounts: { nasa: 4 } } });
+      renderIg();
+      fireEvent.click(await screen.findByRole("button", { name: "@natgeo, 3 new" }));
+      await screen.findByRole("heading", { name: /National Geographic/ });
+      await waitFor(() => expect(calls.some((c) => c.method === "POST" && c.url === "/v1/instagram/watch/natgeo/opened")).toBe(true));
+      await waitFor(() => expect(instagramBadges().total).toBe(4));
+      expect(setBadge).toHaveBeenCalledWith("instagram", 4);
+      expect(calls.find((c) => c.url.endsWith("/opened"))!.headers["x-secretary-csrf"]).toBe("1");
+    });
+
+    it("does not call opened for an account that is not watched", async () => {
+      const calls = serve({ profile: bundle() });
+      renderIg("/instagram/natgeo");
+      await screen.findByRole("heading", { name: /National Geographic/ });
+      expect(screen.getByRole("button", { name: "Watch" })).toBeInTheDocument();
+      expect(calls.some((c) => c.url.endsWith("/opened"))).toBe(false);
+    });
+
+    it("starts watching from the profile, switches auto-save and stops", async () => {
+      let list: unknown[] = [];
+      const calls = stubFetch((call) => {
+        const url = call.url;
+        if (url.startsWith("/v1/instagram/profile/")) return { body: { ok: true, data: bundle() } };
+        if (url === "/v1/instagram/watch" && call.method === "GET") return { body: { ok: true, data: list } };
+        if (url === "/v1/instagram/watch/natgeo" && call.method === "PUT") {
+          list = [entry({ newStories: 0, newPosts: 0, autoSave: (call.body as { autoSave?: boolean }).autoSave ?? true })];
+          return { body: { ok: true, data: list[0] } };
+        }
+        if (url === "/v1/instagram/watch/natgeo" && call.method === "DELETE") {
+          list = [];
+          return { body: { ok: true, data: { removed: true } } };
+        }
+        if (url.endsWith("/opened")) return { body: { ok: true, data: { total: 0, accounts: {} } } };
+        if (url === "/v1/instagram/badges") return { body: { ok: true, data: { total: 0, accounts: {} } } };
+        return { status: 404, body: {} };
+      });
+      renderIg("/instagram/natgeo");
+      fireEvent.click(await screen.findByRole("button", { name: "Watch" }));
+      expect(await screen.findByRole("button", { name: "Watching" })).toHaveAttribute("aria-pressed", "true");
+      const put = calls.find((c) => c.method === "PUT")!;
+      expect(put.headers["x-secretary-csrf"]).toBe("1");
+      const box = screen.getByRole("checkbox", { name: "Save new stories to Lucina" });
+      expect(box).toBeChecked();
+      fireEvent.click(box);
+      await waitFor(() => expect(calls.filter((c) => c.method === "PUT").at(-1)!.body).toEqual({ autoSave: false }));
+      await waitFor(() => expect(screen.getByRole("checkbox", { name: "Save new stories to Lucina" })).not.toBeChecked());
+      fireEvent.click(screen.getByRole("button", { name: "Watching" }));
+      expect(await screen.findByRole("button", { name: "Watch" })).toBeInTheDocument();
+      expect(calls.some((c) => c.method === "DELETE" && c.url === "/v1/instagram/watch/natgeo")).toBe(true);
+    });
+
+    it("tells the owner when a watched account stopped answering", async () => {
+      serve({ watched: [entry({ gone: true })], profile: bundle() });
+      renderIg("/instagram/natgeo");
+      expect(await screen.findByText(/no longer answers/)).toBeInTheDocument();
+    });
+
+    it("lists the Archive, opens it in the viewer without save buttons", async () => {
+      const calls = serve({
+        profile: bundle(),
+        archive: { items: [item("a1", "image"), item("a2", "video")], nextCursor: null },
+      });
+      renderIg("/instagram/natgeo");
+      fireEvent.click(await screen.findByRole("tab", { name: "Archive" }));
+      await waitFor(() => expect(screen.getAllByRole("button", { name: /^Archive \d/ })).toHaveLength(2));
+      expect(calls.some((c) => c.url === "/v1/instagram/archive/natgeo")).toBe(true);
+      fireEvent.click(screen.getByRole("button", { name: /^Archive 1/ }));
+      const dialog = await screen.findByRole("dialog");
+      expect(within(dialog).getByText("1 of 2")).toBeInTheDocument();
+      expect(within(dialog).queryByRole("button", { name: /Save/ })).toBeNull();
+    });
+
+    it("says when nothing was saved yet", async () => {
+      serve({ profile: bundle() });
+      renderIg("/instagram/natgeo");
+      fireEvent.click(await screen.findByRole("tab", { name: "Archive" }));
+      expect(await screen.findByText("Nothing saved from this account yet.")).toBeInTheDocument();
+    });
   });
 
   describe("the viewer", () => {

@@ -46,4 +46,26 @@ describe("instagramApi", () => {
     expect((err as ApiError).status).toBe(429);
     expect((err as ApiError).retryAfterSeconds).toBe(12);
   });
+
+  it("talks to the watch routes", async () => {
+    const calls = stubFetch((c) => ({ body: { ok: true, data: c.url.endsWith("/badges") ? { total: 0, accounts: {} } : [] } }));
+    await instagramApi.watchList();
+    await instagramApi.watch("na.tgeo", { autoSave: false });
+    await instagramApi.watch("natgeo");
+    await instagramApi.unwatch("natgeo");
+    await instagramApi.opened("natgeo");
+    await instagramApi.badges();
+    await instagramApi.archive("natgeo", "30");
+    expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      "GET /v1/instagram/watch",
+      "PUT /v1/instagram/watch/na.tgeo",
+      "PUT /v1/instagram/watch/natgeo",
+      "DELETE /v1/instagram/watch/natgeo",
+      "POST /v1/instagram/watch/natgeo/opened",
+      "GET /v1/instagram/badges",
+      "GET /v1/instagram/archive/natgeo?cursor=30",
+    ]);
+    expect(calls[1]!.body).toEqual({ autoSave: false });
+    expect(calls.slice(1, 5).every((c) => c.headers["x-secretary-csrf"] === "1")).toBe(true);
+  });
 });

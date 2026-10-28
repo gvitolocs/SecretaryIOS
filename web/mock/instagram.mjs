@@ -4,6 +4,8 @@
 //   natgeo   stories (image + video), 4 highlights, 12 posts (+6 on "P2"), 20 reels (2 pages), verified
 //   nasa     no stories, no highlights, 12 posts whose cursor page is "exhausted" (the real backend ignores cursors)
 //   private  a private account with nothing public
+//   Watching: natgeo (2 new stories + 1 new post), nasa (auto-save off) and private (1 new post) are watched; opening an
+//            account clears its badge. natgeo has an Archive of 9 saved items.
 //   slow     answers 429 with Retry-After: 12 (the rate-limit message)
 //   anything else: 404 not_found
 // Save: POST /v1/instagram/save answers every item as saved; a URL saved twice is a duplicate.
@@ -114,6 +116,32 @@ let recent = [
   { username: "natgeo", fullName: "National Geographic", isVerified: true, picUrl: media("avatar", 1), openedAt: NOW - 86400 },
 ];
 const saved = new Set();
+
+/** The watch list (GET /watch) and each account's saved items (GET /archive). */
+const seedWatched = () => [
+  { username: "natgeo", autoSave: true, lastCheck: NOW - 900, newStories: 2, newPosts: 1, private: false, fullName: "National Geographic", picUrl: media("avatar", 1), isVerified: true, gone: false, status: null, archived: 9 },
+  { username: "nasa", autoSave: false, lastCheck: NOW - 1800, newStories: 0, newPosts: 0, private: false, fullName: "NASA", picUrl: media("avatar", 2), isVerified: true, gone: false, status: null, archived: 0 },
+  { username: "private", autoSave: true, lastCheck: NOW - 600, newStories: 0, newPosts: 1, private: true, fullName: "A private account", picUrl: media("avatar", 3), isVerified: false, gone: false, status: null, archived: 0 },
+];
+let watched = seedWatched();
+const badges = () => {
+  const accounts = Object.fromEntries(watched.filter((w) => w.newStories + w.newPosts > 0).map((w) => [w.username, w.newStories + w.newPosts]));
+  return { total: Object.values(accounts).reduce((a, b) => a + b, 0), accounts };
+};
+const archiveItems = (user) =>
+  user !== "natgeo"
+    ? []
+    : Array.from({ length: 9 }, (_, i) => ({
+        id: `40159631736842${60000 + i}`,
+        mediaId: `itm_arch_${i}`,
+        kind: i % 4 === 1 ? "video" : "image",
+        url: media(i % 4 === 1 ? "video" : "story", 200 + i),
+        thumbUrl: media("story", 200 + i),
+        takenAt: NOW - i * 7200,
+        savedAt: NOW - i * 7000,
+        caption: i % 3 === 0 ? "Sunrise over the delta." : null,
+        auto: i % 5 !== 4,
+      }));
 let counter = 0;
 
 // ---- pictures and the video --------------------------------------------------------------------
@@ -198,6 +226,49 @@ export async function handleInstagram(req, res, { path, method, url, send, readJ
     if (!p) return true;
     recent = [{ username: p.profile.username, fullName: p.profile.fullName, isVerified: p.profile.isVerified, picUrl: p.profile.picUrl, openedAt: Math.floor(Date.now() / 1000) }, ...recent.filter((r) => r.username !== p.profile.username)].slice(0, 30);
     return ok({ profile: p.profile, posts: p.posts(null), highlights: p.highlights }), true;
+  }
+  if (rest === "/_reset" && method === "POST") {
+    // A dev hook (like the server's /v1/_mock/*): back to the seeded watch list and badges.
+    watched = seedWatched();
+    return ok({ reset: true }), true;
+  }
+  if (rest === "/watch" && method === "GET") return ok(watched), true;
+  if (rest === "/badges" && method === "GET") return ok(badges()), true;
+  if (rest.startsWith("/watch/") && rest.endsWith("/opened") && method === "POST") {
+    const u = decodeURIComponent(rest.slice("/watch/".length, -"/opened".length));
+    const w = watched.find((x) => x.username === u);
+    if (!w) return err(404, "not_found"), true;
+    w.newStories = 0;
+    w.newPosts = 0;
+    return ok(badges()), true;
+  }
+  if (rest.startsWith("/watch/") && rest.endsWith("/new") && method === "GET") {
+    const u = decodeURIComponent(rest.slice("/watch/".length, -"/new".length));
+    const w = watched.find((x) => x.username === u);
+    if (!w) return err(404, "not_found"), true;
+    return ok({ username: u, since: NOW - 7200, stories: PROFILES[u]?.stories.slice(0, w.newStories) ?? [], posts: postsPage(u, 0, w.newPosts) }), true;
+  }
+  if (rest.startsWith("/watch/") && method === "PUT") {
+    const u = decodeURIComponent(rest.slice("/watch/".length)).toLowerCase();
+    const body = await readJson(req).catch(() => ({}));
+    let w = watched.find((x) => x.username === u);
+    if (!w) {
+      const p = PROFILES[u]?.profile;
+      w = { username: u, autoSave: true, lastCheck: null, newStories: 0, newPosts: 0, private: p ? p.isPrivate : null, fullName: p?.fullName ?? "", picUrl: p?.picUrl ?? null, isVerified: !!p?.isVerified, gone: false, status: null, archived: 0 };
+      watched.push(w);
+    }
+    if (typeof body.autoSave === "boolean") w.autoSave = body.autoSave;
+    return ok(w), true;
+  }
+  if (rest.startsWith("/watch/") && method === "DELETE") {
+    const u = decodeURIComponent(rest.slice("/watch/".length));
+    const before = watched.length;
+    watched = watched.filter((x) => x.username !== u);
+    return watched.length === before ? (err(404, "not_found"), true) : (ok({ removed: true }), true);
+  }
+  if (rest.startsWith("/archive/") && method === "GET") {
+    const items = archiveItems(decodeURIComponent(rest.slice("/archive/".length)).toLowerCase());
+    return ok({ items, nextCursor: null }), true;
   }
   if (rest.startsWith("/posts/") && method === "GET") {
     const p = find("/posts/");
