@@ -11,6 +11,7 @@ import androidx.compose.ui.unit.sp
 /** One palette of the Lucina design tokens; [LucinaColors.dark] is the default look. */
 class LucinaPalette(
     val bg: Color,
+    val chatBg: Color,
     val card: Color,
     val cardRaised: Color,
     val field: Color,
@@ -32,6 +33,7 @@ class LucinaPalette(
 object LucinaColors {
     val dark = LucinaPalette(
         bg = Color(0xFF000000),
+        chatBg = Color(0xFF1C2A8C),
         card = Color(0xFF1C1C1E),
         cardRaised = Color(0xFF2C2C2E),
         field = Color(0x29767680),
@@ -51,6 +53,7 @@ object LucinaColors {
     )
     val light = LucinaPalette(
         bg = Color(0xFFF2F2F7),
+        chatBg = Color(0xFF1C2A8C),
         card = Color(0xFFFFFFFF),
         cardRaised = Color(0xFFF2F2F7),
         field = Color(0x1F767680),

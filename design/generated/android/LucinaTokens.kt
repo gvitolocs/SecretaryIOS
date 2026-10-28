@@ -6,6 +6,7 @@ package tech.getsecretary.design
 object LucinaTokens {
     object Dark {
         const val bg: Int = 0xFF000000.toInt()
+        const val chatBg: Int = 0xFF1C2A8C.toInt()
         const val card: Int = 0xFF1C1C1E.toInt()
         const val cardRaised: Int = 0xFF2C2C2E.toInt()
         const val field: Int = 0x29767680.toInt()
@@ -26,6 +27,7 @@ object LucinaTokens {
 
     object Light {
         const val bg: Int = 0xFFF2F2F7.toInt()
+        const val chatBg: Int = 0xFF1C2A8C.toInt()
         const val card: Int = 0xFFFFFFFF.toInt()
         const val cardRaised: Int = 0xFFF2F2F7.toInt()
         const val field: Int = 0x1F767680.toInt()
