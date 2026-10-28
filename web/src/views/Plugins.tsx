@@ -1,6 +1,6 @@
 import { useNavigate } from "@solidjs/router";
 import { For, Show, type JSX } from "solid-js";
-import { BookIcon, BulbIcon, BubbleIcon, CheckCircleIcon, CodeIcon, ComputerIcon, DriveIcon, FilmIcon, GamepadIcon, GridIcon, HangerIcon, InstagramIcon, LinkIcon, MicIcon, NoteIcon, PagesIcon, PhoneIcon, PixivIcon, PulseIcon, QrIcon } from "../components/Icons";
+import { AgentsIcon, BookIcon, BulbIcon, BubbleIcon, CheckCircleIcon, CodeIcon, ComputerIcon, DriveIcon, FilmIcon, GamepadIcon, GridIcon, HangerIcon, InstagramIcon, LinkIcon, MicIcon, NoteIcon, PagesIcon, PhoneIcon, PixivIcon, PulseIcon, QrIcon } from "../components/Icons";
 import { t } from "../i18n";
 import { desktopShell } from "../lib/desktopShell";
 import { setShowAdult, showAdult } from "../lib/adult";
@@ -48,6 +48,8 @@ export const PLUGINS: Plugin[] = [
     visible: () => !!desktopShell(),
     run: () => desktopShell()?.showCode(),
   },
+  // Lucina Agents: coding agents on nezopt (views/Agents.tsx).
+  { id: "agents", icon: AgentsIcon, title: () => t("agents.title"), detail: () => t("agents.detail"), href: "/agents" },
   { id: "desk", icon: CheckCircleIcon, title: () => "My desk", href: "/desk" },
   // Approve a QR sign-in on another screen (views/ScanQr.tsx).
   { id: "scan", icon: QrIcon, title: () => t("login.scanOpen"), detail: () => t("login.scanOpenHint"), href: "/scan" },

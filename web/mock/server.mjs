@@ -55,6 +55,7 @@
 // Maps (mock/maps.mjs): /v1/maps/config (tiles null unless MOCK_MAPS_TILES=<file.pmtiles>, then
 //   served with Range; MOCK_MAPS_ASSETS=<dir> serves fonts/ and sprites/), /v1/maps/geocode (a
 //   fixed table: "Folkehuset Møllestien", "Skejbygårdsvej 3"), and /v1/maps/routes (four modes).
+// Lucina Agents (mock/agents.mjs): /v1/agents/* with a shared SSE stream, permissions, diffs, files, terminals, schedules.
 // Instagram (mock/instagram.mjs): /v1/instagram/* over synthetic profiles (natgeo, nasa, private; "slow" is a 429).
 // Tasks: /v1/tasks/* is proxied to a real secretary-server (MOCK_TASKS_URL + MOCK_TASKS_TOKEN);
 //   Links shows a Todoist card (paste any 20+ character token; "bad…" is refused).
@@ -1951,6 +1952,7 @@ async function route(req, res) {
   if (await (await import("./notes.mjs")).handleNotes(req, res, { path, method, url, send, fail, readJson })) return;
   if (await (await import("./nclient.mjs")).handleNClient(req, res, { path, method, url, send, fail, readJson })) return;
   if (await (await import("./instagram.mjs")).handleInstagram(req, res, { path, method, url, send, fail, readJson })) return;
+  if (await (await import("./agents.mjs")).handleAgents(req, res, { path, method, url, send, fail, readJson })) return;
   if (await (await import("./systemHealth.mjs")).handleSystemHealth(req, res, { path, method, send })) return;
 
   if (mockServerDown && (path.startsWith("/v1/gym/") || path.startsWith("/v1/body/"))) {
