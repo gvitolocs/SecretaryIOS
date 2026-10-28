@@ -291,3 +291,41 @@ async fn worker_records_failures_and_re_embeds_changed_items() {
     let (_, v) = get(&env.app, "/v1/media/items/search?q=red").await;
     assert_eq!(ids(&v), vec![red]);
 }
+
+#[test]
+fn purging_an_item_forgets_its_vectors() {
+    let env = setup();
+    let id = add(&env, "gone", [200, 30, 30], "2024-05-01T10:00:00Z");
+    let kept = add(&env, "kept", [30, 30, 200], "2024-05-02T10:00:00Z");
+    let count = |item: &str| -> i64 {
+        env.lib
+            .db
+            .with(|c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM ml_embeddings WHERE item_id = ?1",
+                    [item],
+                    |r| r.get(0),
+                )
+            })
+            .unwrap()
+    };
+    env.lib
+        .db
+        .with(|c| {
+            for item in [&id, &kept] {
+                c.execute(
+                    "INSERT INTO ml_embeddings (item_id, model, dim, vec, created_at) VALUES (?1, 'test', 2, x'00000000', '2024-05-03T00:00:00Z')",
+                    [item],
+                )?;
+            }
+            c.execute(
+                "UPDATE items SET trashed_at = '2024-05-03T00:00:00Z' WHERE id = ?1",
+                [&id],
+            )?;
+            lucina_media::trash::purge_in(c, std::slice::from_ref(&id))?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(count(&id), 0, "the purged item has no vectors left");
+    assert_eq!(count(&kept), 1, "other items keep theirs");
+}

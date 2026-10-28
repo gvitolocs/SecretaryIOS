@@ -116,6 +116,8 @@ pub fn purge_in(c: &Connection, ids: &[String]) -> rusqlite::Result<PurgeReport>
         )?;
         c.execute("DELETE FROM items WHERE id = ?1", [id])?;
         crate::dedup_merge::forget(c, id)?;
+        // Smart-search vectors (and, later, faces) of the item (lucina-media-ml).
+        lucina_media_ml::forget_item(c, id)?;
         report.done.push(id.clone());
     }
     // A blob goes when nothing references its hash any more (the same bytes may be another item,
