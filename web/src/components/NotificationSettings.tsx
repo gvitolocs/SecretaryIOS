@@ -110,6 +110,8 @@ export function NotificationSettings(props: { desktop?: boolean }) {
               ? t("notify.pushDenied")
               : pushStatus() === "needs-install"
                 ? t("notify.pushInstallIos")
+                : pushStatus() === "desktop-app"
+                  ? t("notify.pushDesktop")
                 : pushStatus() === "unsupported"
                   ? t("notify.pushUnsupported")
                   : t("notify.pushOff")}
