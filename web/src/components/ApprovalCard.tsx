@@ -5,6 +5,7 @@
 // where to approve it.
 
 import { createEffect, createSignal, onCleanup, onMount, Show, type JSX } from "solid-js";
+import { Button, Card } from "./page";
 import type { Approval } from "../api/approvals";
 import { t, type MessageKey } from "../i18n";
 import { CLOSED, decideApproval, skipApproval, type Outcome } from "../state/approvals";
@@ -46,6 +47,7 @@ export function outcomeText(o: Outcome): string {
 
 export function ApprovalCard(props: {
   item: Approval;
+  desktop?: boolean;
   /** "1 of 3": where this one is in the queue. */
   position?: { index: number; total: number };
   /** The request was closed (see CLOSED in state/approvals). */
@@ -55,6 +57,7 @@ export function ApprovalCard(props: {
   /** Extra controls in the header corner. */
   children?: JSX.Element;
 }) {
+  const [confirmDeny, setConfirmDeny] = createSignal(false);
   const [busy, setBusy] = createSignal<"approve" | "deny" | null>(null);
   const [note, setNote] = createSignal<MessageKey | null>(null);
   const [now, setNow] = createSignal(Date.now());
@@ -96,8 +99,7 @@ export function ApprovalCard(props: {
   const canApprove = () => !props.item.sensitive && !busy() && !expired();
   const initial = () => (props.item.requester.name.trim()[0] ?? "?").toUpperCase();
 
-  return (
-    <article class="apv-card" classList={{ "apv-card--sensitive": props.item.sensitive }} aria-labelledby={`apv-sum-${props.item.id}`}>
+  const content = () => <>
       <header class="apv-head">
         <span class="apv-avatar" aria-hidden="true">
           {initial()}
@@ -114,7 +116,7 @@ export function ApprovalCard(props: {
         {props.children}
       </header>
 
-      <h2 class="apv-summary" id={`apv-sum-${props.item.id}`}>
+      <h2 class={props.desktop ? "apv-detail-title" : "apv-summary"} id={`apv-sum-${props.item.id}`}>
         {props.item.summary}
       </h2>
 
@@ -146,13 +148,13 @@ export function ApprovalCard(props: {
       </Show>
       <Show when={note()}>
         {(key) => (
-          <p class="form-error" role="alert">
+          <p class={props.desktop ? "pg-notice" : "form-error"} role="alert">
             {t(key())}
           </p>
         )}
       </Show>
 
-      <div class="apv-actions">
+      <Show when={props.desktop} fallback={<>      <div class="apv-actions">
         <button type="button" class="btn" disabled={busy() !== null || expired()} onClick={() => void answer("deny")}>
           {busy() === "deny" ? t("approvals.denying") : t("approvals.deny")}
         </button>
@@ -166,6 +168,15 @@ export function ApprovalCard(props: {
           {busy() === "approve" ? t("approvals.approving") : t("approvals.approve")}
         </button>
       </div>
+</>}>
+        <div class="apv-actions">
+          <Show when={confirmDeny()} fallback={<Button disabled={busy() !== null || expired()} onClick={() => setConfirmDeny(true)}>{t("approvals.deny")}</Button>}>
+            <Button variant="danger" disabled={busy() !== null || expired()} onClick={() => void answer("deny")}>{busy() === "deny" ? t("approvals.denying") : t("approvals.deny")}</Button>
+            <Button variant="ghost" disabled={busy() !== null} onClick={() => setConfirmDeny(false)}>{t("common.cancel")}</Button>
+          </Show>
+          <button type="button" class="pg-cta" aria-describedby={props.item.sensitive ? `apv-face-${props.item.id}` : undefined} disabled={!canApprove()} onClick={() => void answer("approve")}>{busy() === "approve" ? t("approvals.approving") : t("approvals.approve")}</button>
+        </div>
+      </Show>
       <Show when={props.onLater}>
         {(later) => (
           <button type="button" class="apv-later" onClick={() => later()()}>
@@ -173,7 +184,12 @@ export function ApprovalCard(props: {
           </button>
         )}
       </Show>
-    </article>
+  </>;
+
+  return (
+    <Show when={props.desktop} fallback={<article class="apv-card" classList={{ "apv-card--sensitive": props.item.sensitive }} aria-labelledby={`apv-sum-${props.item.id}`}>
+      {content()}
+    </article>}><Card label={props.item.summary} class="apv-desk-detail">{content()}</Card></Show>
   );
 }
 

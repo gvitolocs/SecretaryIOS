@@ -280,3 +280,15 @@
     animation: none;
   }
 }
+
+.pg .apv-desk-detail { display: grid; gap: 16px; }
+.pg .apv-detail-title { font-size: 20px; font-weight: 600; }
+.pg .apv-avatar { background: var(--pg-fill); color: var(--pg-data); font-weight: 600; }
+.pg .apv-kind, .pg .apv-action, .pg .apv-expiry { color: var(--pg-muted); font-size: 13px; }
+.pg .apv-badge { font-size: 12px; }
+.pg .apv-badge--low { color: var(--pg-success); }
+.pg .apv-badge--medium { color: var(--pg-warning); }
+.pg .apv-badge--high, .pg .apv-badge--sensitive { color: var(--pg-danger); background: var(--pg-fill); }
+.pg .apv-details { background: var(--pg-fill); border-color: var(--pg-border); border-radius: var(--pg-radius-control); font-size: 13px; }
+.pg .apv-faceid { background: var(--pg-fill); color: var(--pg-muted); border-radius: var(--pg-radius-control); font-size: 13px; }
+.pg .apv-actions { display: flex; gap: 8px; align-items: center; }

@@ -28,6 +28,7 @@ const en = {
   errSend: "Couldn't send your answer. Try again.",
   // /approvals and /approvals/:id
   title: "Approvals",
+  pending: "Pending",
   listSub: "Requests waiting for your OK.",
   listEmpty: "Nothing is waiting for you.",
   allApprovals: "All approvals",
@@ -79,6 +80,7 @@ export const approvals: FeatureDictionary<typeof en> = {
     errNotMain: "Risponde prima il dispositivo principale. Riprova tra un attimo.",
     errSend: "Impossibile inviare la risposta. Riprova.",
     title: "Approvazioni",
+    pending: "In attesa",
     listSub: "Richieste in attesa del tuo OK.",
     listEmpty: "Non c'è nulla in attesa.",
     allApprovals: "Tutte le approvazioni",
@@ -126,6 +128,7 @@ export const approvals: FeatureDictionary<typeof en> = {
     errNotMain: "Din hovedenhed svarer først. Prøv igen om lidt.",
     errSend: "Kunne ikke sende dit svar. Prøv igen.",
     title: "Godkendelser",
+    pending: "Afventer",
     listSub: "Anmodninger, der venter på dit OK.",
     listEmpty: "Der venter ingenting.",
     allApprovals: "Alle godkendelser",

@@ -35,7 +35,7 @@ let inflight = false;
  * Fetch the pending list. Quiet on purpose: while the server doesn't have the routes (404) or is unreachable,
  * the pop-up simply has nothing to show; it never raises an error banner.
  */
-export async function refreshApprovals(): Promise<void> {
+export async function refreshApprovals(onError?: () => void): Promise<void> {
   if (inflight) return;
   inflight = true;
   try {
@@ -49,6 +49,7 @@ export async function refreshApprovals(): Promise<void> {
     }));
   } catch (e) {
     if (toApiError(e).status === 404) setItems([]);
+    else onError?.();
   } finally {
     inflight = false;
   }
