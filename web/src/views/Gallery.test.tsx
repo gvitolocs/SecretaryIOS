@@ -752,3 +752,17 @@ it("keeps the desktop Gallery header above its filters and empty photo surface",
   expect(screen.getByRole("group", { name: "Filters" })).toBeInTheDocument();
   await waitFor(() => expect(document.querySelector(".pg-empty")).toHaveTextContent("No photos here yet."));
 });
+
+it("renders the toolbar and the photo grid as full-width children of the grid page, under the header", async () => {
+  stubWide(); backend(library(30)); mount();
+  await screen.findByRole("heading", { level: 1, name: "Gallery" });
+  await waitFor(() => expect(document.querySelector(".g-body .g-scroll")).not.toBeNull());
+  const header = document.querySelector(".pg-head")!;
+  const main = document.querySelector(".pg-grid--full > .pg-main")!;
+  expect(header.compareDocumentPosition(main) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  // One toolbar row for the search and icon buttons, then the filters, then the grid, all inside the page's main column.
+  expect(main.querySelector(":scope > .g-top .g-desktop-tools .g-search")).not.toBeNull();
+  expect(main.querySelectorAll(":scope > .g-top .g-desktop-tools .pg-icon-btn").length).toBeGreaterThan(0);
+  expect(main.querySelector(":scope > .g-top .g-filters")).not.toBeNull();
+  expect(main.querySelector(":scope > .g-main .g-body .g-scroll")).not.toBeNull();
+});

@@ -886,6 +886,9 @@ html[data-shell="desktop"] .g-title {
 .pg.g-grid-page, .pg.g-grid-page > .pg-inner, .pg.g-grid-page .pg-grid--full,
 .pg.g-grid-page .pg-main { display: flex; flex: 1; min-height: 0; flex-direction: column; }
 .pg.g-grid-page > .pg-inner { width: 100%; }
+/* .pg-grid aligns its items to the start; as a flex column that would shrink the toolbar and the photo grid to their (container-contained, so zero) content width. */
+.pg.g-grid-page .pg-grid--full { align-items: stretch; }
+.pg.g-grid-page .pg-main { width: 100%; }
 .pg.g-grid-page .pg-main { gap: 16px; }
 .pg.g-grid-page .g-top { padding: 0; gap: 12px; }
 .pg .g-desktop-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
