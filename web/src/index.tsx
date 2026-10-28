@@ -45,6 +45,8 @@ const SecretsView = lazy(() => import("./views/ShellSheets").then((m) => ({ defa
 const ViewerView = lazy(() => import("./views/Viewer"));
 const ApproveView = lazy(() => import("./views/Approve"));
 const ScanQrView = lazy(() => import("./views/ScanQr"));
+const ApprovalsView = lazy(() => import("./views/Approvals"));
+const ApprovalDetailView = lazy(() => import("./views/ApprovalDetail"));
 
 // The service worker (Web Push, static asset cache). It never caches /v1.
 void registerServiceWorker();
@@ -101,6 +103,8 @@ render(
       <Route path="/viewer" component={ViewerView} />
       <Route path="/approve" component={ApproveView} />
       <Route path="/scan" component={ScanQrView} />
+      <Route path="/approvals" component={ApprovalsView} />
+      <Route path="/approvals/:id" component={ApprovalDetailView} />
       <Route path="*" component={() => <Navigate href="/" />} />
     </Router>
   ),

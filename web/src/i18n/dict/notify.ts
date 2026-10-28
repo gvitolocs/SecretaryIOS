@@ -24,6 +24,7 @@ const en = {
   catShopping: "Shopping list",
   catPresence: "Lucina's status",
   catSystem: "Secretary",
+  catApproval: "Approvals",
 
   descLucina: "Replies and messages from Lucina on any channel, while you're not in the app.",
   descReminder: "When one of your reminders is due.",
@@ -32,6 +33,7 @@ const en = {
   descShopping: "When Lucina or someone else changes a shopping list.",
   descPresence: "When Lucina goes offline or comes back.",
   descSystem: "Security notices, like a new device signing in.",
+  descApproval: "Requests that need your OK, like a secret or a command on your server. Always on.",
 
   pushTitle: "This device",
   pushOn: "Notifications are on for this device.",
@@ -99,6 +101,7 @@ export const notify: FeatureDictionary<typeof en> = {
     catShopping: "Lista della spesa",
     catPresence: "Stato di Lucina",
     catSystem: "Secretary",
+    catApproval: "Approvazioni",
 
     descLucina: "Risposte e messaggi di Lucina su qualsiasi canale, quando non sei nell'app.",
     descReminder: "Quando scade un tuo promemoria.",
@@ -107,6 +110,7 @@ export const notify: FeatureDictionary<typeof en> = {
     descShopping: "Quando Lucina o qualcun altro modifica una lista della spesa.",
     descPresence: "Quando Lucina va offline o torna online.",
     descSystem: "Avvisi di sicurezza, come l'accesso di un nuovo dispositivo.",
+    descApproval: "Richieste che hanno bisogno del tuo OK, come un segreto o un comando sul tuo server. Sempre attive.",
 
     pushTitle: "Questo dispositivo",
     pushOn: "Le notifiche sono attive su questo dispositivo.",
@@ -171,6 +175,7 @@ export const notify: FeatureDictionary<typeof en> = {
     catShopping: "Indkøbsliste",
     catPresence: "Lucinas status",
     catSystem: "Secretary",
+    catApproval: "Godkendelser",
 
     descLucina: "Svar og beskeder fra Lucina på alle kanaler, mens du ikke er i appen.",
     descReminder: "Når en af dine påmindelser forfalder.",
@@ -179,6 +184,7 @@ export const notify: FeatureDictionary<typeof en> = {
     descShopping: "Når Lucina eller en anden ændrer en indkøbsliste.",
     descPresence: "Når Lucina går offline eller kommer tilbage.",
     descSystem: "Sikkerhedsbeskeder, fx når en ny enhed logger ind.",
+    descApproval: "Anmodninger, der kræver dit OK, fx en hemmelighed eller en kommando på din server. Altid slået til.",
 
     pushTitle: "Denne enhed",
     pushOn: "Notifikationer er slået til på denne enhed.",

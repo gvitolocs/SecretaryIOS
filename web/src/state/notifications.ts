@@ -41,6 +41,7 @@ export const CATEGORY_TITLE: Record<Category, MessageKey> = {
   shopping: "notify.catShopping",
   presence: "notify.catPresence",
   system: "notify.catSystem",
+  approval: "notify.catApproval",
 };
 
 export const CATEGORY_DESC: Record<Category, MessageKey> = {
@@ -51,6 +52,7 @@ export const CATEGORY_DESC: Record<Category, MessageKey> = {
   shopping: "notify.descShopping",
   presence: "notify.descPresence",
   system: "notify.descSystem",
+  approval: "notify.descApproval",
 };
 
 export function titleOf(n: AppNotification): string {

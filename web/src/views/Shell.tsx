@@ -1,5 +1,6 @@
 import { A, useLocation, useNavigate } from "@solidjs/router";
 import { createEffect, createSignal, lazy, on, onCleanup, onMount, Show, Suspense, type JSX } from "solid-js";
+import { ApprovalPopup } from "../components/ApprovalPopup";
 import { AccountDialog } from "../components/AccountDialog";
 import { SecretSheet } from "../components/SecretSheet";
 import { AvatarIcon, ChatIcon, DumbbellIcon, GridIcon, ListIcon, LogoutIcon, UserIcon } from "../components/Icons";
@@ -225,6 +226,8 @@ export default function Shell(props: { children?: JSX.Element }) {
         </Suspense>
       </Show>
       <SecretSheet />
+      {/* Outside the chrome: Secretary Code has no top or tab bar, and the pop-up must still show. */}
+      <ApprovalPopup />
       <AccountDialog
         open={accountOpen()}
         section={accountSection()}

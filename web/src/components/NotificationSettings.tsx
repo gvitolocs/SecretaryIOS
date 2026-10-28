@@ -18,6 +18,9 @@ import {
 } from "../state/notifications";
 import { relativeTime } from "./NotificationBell";
 
+/** Approval requests are always on (the owner would otherwise miss a request), so they have no switch. */
+const TOGGLED = CATEGORIES.filter((c) => c !== "approval");
+
 export const LEAD_CHOICES = [5, 10, 15, 30, 60] as const;
 
 /** Epoch ms of tomorrow 08:00 local time. */
@@ -157,13 +160,13 @@ export function NotificationSettings() {
           <>
             <div class="notif-block">
               <span class="field-label appearance-label">{t("notify.categoriesTitle")}</span>
-              <For each={CATEGORIES}>
+              <For each={TOGGLED}>
                 {(c) => (
                   <Toggle
                     id={`notif-cat-${c}`}
                     label={t(CATEGORY_TITLE[c])}
                     hint={t(CATEGORY_DESC[c])}
-                    checked={cur().categories[c]}
+                    checked={cur().categories[c] === true}
                     onChange={(v) => setCategory(c, v)}
                   />
                 )}

@@ -37,6 +37,7 @@ const ICONS: Record<Category, () => JSX.Element> = {
   shopping: ListIcon,
   presence: PulseIcon,
   system: GearIcon,
+  approval: ShieldCheckIcon,
 };
 
 const CHANNEL_NAMES: Record<string, string> = {
