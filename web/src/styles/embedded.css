@@ -1,10 +1,14 @@
 /* Inside Secretary Code (lib/desktopShell: embedded()), the shell's rail names and switches the pages: plugin
-   pages drop their "‹ Plugins" link and their big title, which stays for screen readers. */
+   pages drop their "‹ Plugins" link and their big title, which stays for screen readers. A page on the page
+   system (docs/design/page-system.md) keeps its header title: it is the page's one title, as on Training. */
 html[data-shell="desktop"] .content a[href="/plugins"]:is(.media-back, .computer-back, .pokemon-back, .sh-back, .ig-back, .ag-back-plugins) {
   display: none;
 }
 html[data-shell="desktop"]
-  :is(#drive-title, #computer-title, #pokemon-title, #media-title, #sh-title, #films-title, #chats-title, #secrets-title, #nclient-title, #instagram-title, #agents-title) {
+  :is(#drive-title, #computer-title, #pokemon-title, #media-title, #sh-title, #films-title, #chats-title, #secrets-title, #nclient-title, #instagram-title, #agents-title):not(
+    .pg-title,
+    .pg-title *
+  ) {
   position: absolute;
   width: 1px;
   height: 1px;
