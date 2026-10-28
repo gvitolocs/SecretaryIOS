@@ -281,6 +281,27 @@ describe("DeskPlayer", () => {
     }
   });
 
+  it("in focus mode the controls are the shared DriveBar (take over, give back), not the pill", async () => {
+    shellIs({ showCode() {}, setFocusMode: () => undefined, onFocusModeChange: () => () => undefined });
+    try {
+      const { container } = render(() => <DeskPlayer sandbox="workspace" state={idle} onFallback={() => undefined} />);
+      await waitFor(() => expect(FakeWS.all).toHaveLength(1));
+      await live(FakeWS.all[0]!);
+      expect(container.querySelector(".drivebar")).not.toBeNull();
+      expect(container.querySelector(".ldesk-pill")).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Take over" }));
+      await waitFor(() => expect(FakeWS.all).toHaveLength(2));
+      const control = FakeWS.all[1]!;
+      control.open();
+      control.frame();
+      fireEvent.click(await screen.findByRole("button", { name: "Give back" }));
+      await waitFor(() => expect(FakeWS.all).toHaveLength(3));
+      expect(FakeWS.all[2]!.protocols[1]).toMatch(/^ticket\.t-watch-/);
+    } finally {
+      delete (window as { secretaryShell?: unknown }).secretaryShell;
+    }
+  });
+
   it("a background mount in Secretary Code asks for focus only once it is on screen", async () => {
     const calls: boolean[] = [];
     shellIs({ showCode() {}, setFocusMode: (on: boolean) => calls.push(on), onFocusModeChange: () => () => undefined });

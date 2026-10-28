@@ -2,6 +2,7 @@ import { createEffect, createSignal, on, onCleanup, onMount, Show, For } from "s
 import { toApiError } from "../api/client";
 import { releaseOnExit, type ControlState, type CopiedFile, type Sandbox } from "../api/computer";
 import { downloadFile, sendFiles, tooLarge, watchCopiedFiles } from "../lib/desktopFiles";
+import DriveBar, { barIcons, type DriveBarAction } from "./DriveBar";
 import { t } from "../i18n";
 import { decodableCodecs, DeskSocket, type DeskMode, type DeskPhase } from "../lib/deskClient";
 import { createDeskPipe, type DeskPipe } from "../lib/deskPipe";
@@ -50,6 +51,9 @@ import "../styles/lucinadesk.css";
 //
 // Touch: tap = click, long press = right click, drag = left drag, two fingers = scroll, two-finger
 // tap = right click, pinch = local zoom (lib/touch.ts, shared with Simple mode).
+//
+// In focus mode the controls are the shared DriveBar (the same bar as the Cua page, same place on this
+// device); on the page they are the pill above the picture.
 //
 // Focus: inside Secretary Code the stream fills the whole content area and the shell hides its rail
 // (lib/focusMode; the shell may leave focus itself, on Esc or a view change, and says so
@@ -118,6 +122,8 @@ export default function DeskPlayer(props: DeskPlayerProps) {
   const [notice, setNotice] = createSignal<string | null>(null);
   const [confirm, setConfirm] = createSignal<{ text: string; replay: Replay | null } | null>(null);
   const [keyboard, setKeyboard] = createSignal(false);
+  /** The DriveBar's Keys popover (focus mode). */
+  const [keysOpen, setKeysOpen] = createSignal(false);
   // Inside Secretary Code the stream owns the content area from the start, if it is on screen: the
   // shell also (re)loads this page in the background, and focus there would hide its rail over another
   // view. A background mount asks when it becomes visible (`onVisible`).
@@ -777,6 +783,14 @@ export default function DeskPlayer(props: DeskPlayerProps) {
     if (driving() && msg.type === "key" && (msg.char === "c" || msg.char === "x") && msg.modifiers?.includes("Control")) copiedFiles.soon();
   };
 
+  /** The DriveBar's own buttons while driving (focus mode). */
+  const barActions = (): DriveBarAction[] => {
+    const out: DriveBarAction[] = [];
+    if (touch) out.push({ id: "keyboard", label: t("desk.keyboard"), icon: barIcons.keyboard(), pressed: keyboard(), run: toggleKeyboard });
+    if (zoom().scale > 1.05) out.push({ id: "zoom", label: t("desk.resetZoom"), icon: barIcons.scale(), run: resetZoom });
+    return out;
+  };
+
   const pressKey = (k: (typeof KEYS)[number]) => {
     const msg = keyButton(k.key, k.modifiers);
     input(msg, { kind: "msg", msg });
@@ -1031,50 +1045,82 @@ export default function DeskPlayer(props: DeskPlayerProps) {
         </Show>
       </div>
 
-      <div class="ldesk-pill" role="toolbar" aria-label={pillLabel()}>
-        <span class="ldesk-pill-dot" aria-hidden="true" />
-        <span class="ldesk-pill-label" role="status">
-          {pillLabel()}
-        </span>
-        <Show when={!driving() && !switching() && phase() === "live"}>
-          <span class="ldesk-pill-hint">{touch ? t("desk.tapToDrive") : t("desk.clickToDrive")}</span>
-        </Show>
-        <Show when={showStats && stats().codec}>
-          <span class="ldesk-pill-hint">{t("desk.stats", { codec: stats().codec, fps: stats().fps, rtt: stats().rtt })}</span>
-        </Show>
-        <Show when={driving() && touch}>
-          <button type="button" class="ldesk-pill-btn" aria-pressed={keyboard()} onClick={toggleKeyboard}>
-            {t("desk.keyboard")}
-          </button>
-        </Show>
-        <Show when={driving()}>
-          <button type="button" class="ldesk-pill-btn" disabled={!!switching()} onClick={giveBack}>
-            {t("desk.giveBack")}
-          </button>
-        </Show>
-        <Show
-          when={focus()}
-          fallback={
-            <button type="button" class="ldesk-pill-btn" onClick={enterFocus}>
-              {inShell ? t("desk.focus") : t("desk.fullScreen")}
+      <Show
+        when={!focus()}
+        fallback={
+          <DriveBar
+            driving={driving()}
+            busy={!!switching() || phase() !== "live"}
+            status={pillLabel()}
+            onTakeOver={() => requestTakeover(null)}
+            onGiveBack={giveBack}
+            onExit={exit}
+            actions={barActions()}
+            panel={
+              <div class="ldesk-bar-keys">
+                <For each={KEYS}>
+                  {(k) => (
+                    <button type="button" class="ldesk-key" onClick={() => pressKey(k)}>
+                      {k.label}
+                    </button>
+                  )}
+                </For>
+              </div>
+            }
+            panelOpen={keysOpen()}
+            onPanel={setKeysOpen}
+            onInteract={() => {
+              if (driving() && !touch) canvas?.focus({ preventScroll: true });
+            }}
+            storageKey="computer.bar"
+          />
+        }
+      >
+        <div class="ldesk-pill" role="toolbar" aria-label={pillLabel()}>
+          <span class="ldesk-pill-dot" aria-hidden="true" />
+          <span class="ldesk-pill-label" role="status">
+            {pillLabel()}
+          </span>
+          <Show when={!driving() && !switching() && phase() === "live"}>
+            <span class="ldesk-pill-hint">{touch ? t("desk.tapToDrive") : t("desk.clickToDrive")}</span>
+          </Show>
+          <Show when={showStats && stats().codec}>
+            <span class="ldesk-pill-hint">{t("desk.stats", { codec: stats().codec, fps: stats().fps, rtt: stats().rtt })}</span>
+          </Show>
+          <Show when={driving() && touch}>
+            <button type="button" class="ldesk-pill-btn" aria-pressed={keyboard()} onClick={toggleKeyboard}>
+              {t("desk.keyboard")}
             </button>
-          }
-        >
-          <button type="button" class="ldesk-pill-btn" onClick={exit}>
-            {t("desk.exit")}
-          </button>
-        </Show>
-        <Show when={zoom().scale > 1.05}>
-          <button type="button" class="ldesk-pill-btn" onClick={resetZoom}>
-            {t("desk.resetZoom")}
-          </button>
-        </Show>
-        <Show when={!focus()}>
-          <button type="button" class="ldesk-pill-btn ldesk-pill-btn--quiet" onClick={() => props.onFallback("manual")}>
-            {t("desk.classic")}
-          </button>
-        </Show>
-      </div>
+          </Show>
+          <Show when={driving()}>
+            <button type="button" class="ldesk-pill-btn" disabled={!!switching()} onClick={giveBack}>
+              {t("desk.giveBack")}
+            </button>
+          </Show>
+          <Show
+            when={focus()}
+            fallback={
+              <button type="button" class="ldesk-pill-btn" onClick={enterFocus}>
+                {inShell ? t("desk.focus") : t("desk.fullScreen")}
+              </button>
+            }
+          >
+            <button type="button" class="ldesk-pill-btn" onClick={exit}>
+              {t("desk.exit")}
+            </button>
+          </Show>
+          <Show when={zoom().scale > 1.05}>
+            <button type="button" class="ldesk-pill-btn" onClick={resetZoom}>
+              {t("desk.resetZoom")}
+            </button>
+          </Show>
+          <Show when={!focus()}>
+            <button type="button" class="ldesk-pill-btn ldesk-pill-btn--quiet" onClick={() => props.onFallback("manual")}>
+              {t("desk.classic")}
+            </button>
+          </Show>
+        </div>
+      </Show>
 
       <Show when={driving() && touch && keyboard()}>
         <div class="ldesk-keys" role="group" aria-label={t("desk.keysBar")}>

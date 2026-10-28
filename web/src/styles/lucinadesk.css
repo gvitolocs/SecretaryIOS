@@ -293,3 +293,5 @@ html.ldesk-focus body {
   box-shadow: 0 6px 24px rgb(0 0 0 / 35%);
 }
 .ldesk-files span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The DriveBar's Keys popover in focus mode. */
+.ldesk-bar-keys { display: flex; flex-wrap: wrap; gap: 6px; max-width: 360px; }
