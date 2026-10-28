@@ -507,7 +507,7 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
                   }}
                 />
               </label>
-              <Show when={album()}>{(a) => <AlbumTools album={a()} onRenamed={setAlbum} onDeleted={() => navigate(ALBUMS_PATH)} />}</Show>
+              <Show when={album()}>{(a) => <AlbumTools wide={wide()} album={a()} onRenamed={setAlbum} onDeleted={() => navigate(ALBUMS_PATH)} />}</Show>
               <Show when={!shelf()}>
                 <A class={wide() ? "pg-icon-btn" : "g-iconbtn"} href="/gallery/albums" aria-label={t("galleryAlbums.link")} title={t("galleryAlbums.link")}>
                   <AlbumIcon />

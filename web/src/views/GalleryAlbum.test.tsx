@@ -5,6 +5,7 @@ import { setLocale } from "../i18n";
 import { rawItem, sizeTheBox } from "../test/galleryGrid";
 import { type Call, stubFetch } from "../test/fetch";
 import { renderAt } from "../test/router";
+import { stubWide } from "../test/wide";
 import GalleryAlbumView from "./GalleryAlbum";
 
 vi.mock("../lib/jxl", () => ({ supportsJxl: () => Promise.resolve(false) }));
@@ -209,5 +210,33 @@ describe("an album's view (/gallery/album/:id)", () => {
     const bar = await screen.findByRole("toolbar", { name: "Actions for the selected photos" });
     expect(within(bar).getByRole("button", { name: "Add to album" })).toBeInTheDocument();
     expect(within(bar).getByRole("button", { name: "Remove from album" })).toBeInTheDocument();
+  });
+});
+
+describe("an album's view on the page system (desktop)", () => {
+  it("keeps the Gallery header (Albums current), a back link, the album heading and its tools as header icons", async () => {
+    stubWide();
+    backend();
+    mount();
+    expect(await screen.findByRole("heading", { level: 1, name: "Gallery" })).toBeInTheDocument();
+    const nav = screen.getByRole("navigation", { name: "Gallery sections" });
+    expect(within(nav).getByRole("link", { name: "Albums" })).toHaveAttribute("aria-current", "page");
+    expect(await screen.findByRole("heading", { level: 2, name: "Holiday" })).toHaveClass("g-detail-title");
+    expect(document.querySelector("a.pg-back")).toHaveAttribute("href", "/gallery/albums");
+    expect(document.querySelector(".g-bar")).toBeNull();
+    expect(document.querySelectorAll(".pg-cta")).toHaveLength(0);
+    await waitFor(() => expect(tiles()).toHaveLength(4));
+    expect(screen.getByRole("button", { name: "Rename album" })).toHaveClass("pg-icon-btn");
+    expect(document.querySelector(".pg-grid--full > .pg-main > .g-main .g-scroll")).not.toBeNull();
+    // Still opens photos in the viewer.
+    fireEvent.click(open(1));
+    expect(screen.getByTestId("viewer")).toHaveTextContent("p2");
+  });
+
+  it("shows the empty state in a card", async () => {
+    stubWide();
+    backend({ album: album({ count: 0 }), empty: true });
+    mount();
+    await waitFor(() => expect(document.querySelector(".pg-empty")).toHaveTextContent(/No photos in this album yet/));
   });
 });
