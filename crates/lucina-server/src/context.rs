@@ -112,15 +112,36 @@ pub async fn classify(
     platform: &str,
 ) -> Classification {
     let s = &st.cfg.intent;
-    if let Some(c) = tier0::classify_tier0(user_text, recent, s) {
-        return c;
-    }
     let t = TurnInput {
         user_text,
         memory: recent,
         user_label,
         platform,
     };
+    if let Some(c) = tier0::classify_tier0(user_text, recent, s) {
+        // A tier-0 regex rule gets Jev's second opinion; only a sure
+        // disagreement wins, and never into a side-effect intent.
+        if crate::jev_route::checks_tier0(&c) {
+            if let Some((v, confidence)) =
+                crate::jev_route::classify_intent(lucina_jev::shared(), &t).await
+            {
+                let jev_intent = v["intent"].as_str().unwrap_or("");
+                if crate::jev_route::overrides(&c.intent, jev_intent, confidence) {
+                    tracing::info!(target: "lucina_jev::route", tier0 = %c.intent, jev = jev_intent,
+                        confidence, "jev overrides a tier-0 rule");
+                    return tier0::from_model_json(&v, user_text, recent, s);
+                }
+                if crate::jev_route::doubts_side_effect(&c.intent, jev_intent, confidence) {
+                    tracing::info!(target: "lucina_jev::route", tier0 = %c.intent, jev = jev_intent,
+                        confidence, "jev doubts a side-effect tier-0 rule; the planner decides");
+                    let mut v = v;
+                    v["reply_mode"] = serde_json::json!("full_plan");
+                    return tier0::from_model_json(&v, user_text, recent, s);
+                }
+            }
+        }
+        return c;
+    }
     // Jev first (TypeSafe's decision model: fast, typed, no JSON to parse); a
     // sure answer is final, an unsure one is checked by DeepSeek, and a failed
     // call (quota, timeout, breaker) leaves the turn to DeepSeek alone.

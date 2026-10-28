@@ -1,5 +1,7 @@
 //! Jev (TypeSafe's decision model, crate `lucina_jev`) in everyday turns.
 //!
+//! - **Intent:** tier-0 regex rules are double-checked by Jev, which wins
+//!   only when sure ([`OVERRIDE_MIN`]) and never into a side-effect intent.
 //! - **Intent (tier 1):** when tier 0 has no rule for a message, Jev picks the
 //!   intent, scope and the memory/tool flags in one call (the reply mode
 //!   follows from the intent), in the
@@ -128,6 +130,53 @@ pub async fn classify_intent(jev: &Jev, t: &TurnInput<'_>) -> Option<(Value, f64
     Some((v, confidence))
 }
 
+/// Jev overrides a broad tier-0 rule from this confidence up (`LUCINA_JEV_OVERRIDE_MIN`).
+pub const OVERRIDE_MIN: f64 = 0.9;
+
+pub fn override_min() -> f64 {
+    env_f64("LUCINA_JEV_OVERRIDE_MIN", OVERRIDE_MIN)
+}
+
+/// Tier-0 answers Jev double-checks: every regex rule, except the
+/// deterministic routes that parse their own arguments (the computer,
+/// groceries, the log inspector, study focus).
+pub fn checks_tier0(c: &lucina_intent::tier0::Classification) -> bool {
+    !c.intent.starts_with("grocery.")
+        && !matches!(c.intent.as_str(), "computer_task" | "lucina_log_inspect" | "study_focus_reminders")
+        && lucina_jev::shared().available()
+}
+
+/// Intents with side effects that a Jev override never routes into: only
+/// their own tier-0 rules (or the planner) reach them.
+const NO_OVERRIDE_INTO: &[&str] = &[
+    "social_post",
+    "revive_qwen",
+    "spreadsheet_update",
+    "poko_news_scout_retry",
+    "cursor_task",
+    "discord_admin",
+    "oracle_monitor",
+];
+
+/// A side-effect tier-0 rule that Jev doubts from this confidence up goes to
+/// the full planner instead of running directly (`LUCINA_JEV_DOUBT_MIN`).
+pub const DOUBT_MIN: f64 = 0.6;
+
+/// Jev doubts a side-effect tier-0 rule (a post, reviving Qwen, a spreadsheet
+/// write, a coding task…): the planner decides instead of the regex.
+pub fn doubts_side_effect(tier0_intent: &str, jev_intent: &str, confidence: f64) -> bool {
+    NO_OVERRIDE_INTO.contains(&tier0_intent)
+        && jev_intent != tier0_intent
+        && confidence >= env_f64("LUCINA_JEV_DOUBT_MIN", DOUBT_MIN)
+}
+
+/// Jev's sure answer replaces the tier-0 rule's.
+pub fn overrides(tier0_intent: &str, jev_intent: &str, confidence: f64) -> bool {
+    jev_intent != tier0_intent
+        && confidence >= override_min()
+        && !NO_OVERRIDE_INTO.contains(&jev_intent)
+}
+
 /// Jev's intent answer is trusted from this confidence up.
 pub fn intent_min() -> f64 {
     env_f64("LUCINA_JEV_INTENT_MIN", INTENT_MIN)
@@ -195,6 +244,18 @@ mod tests {
                 assert!(options.len() <= lucina_jev::MAX_OPTIONS, "{name}");
             }
         }
+    }
+
+    #[test]
+    fn overrides_need_confidence_and_never_reach_side_effect_intents() {
+        assert!(overrides("social_post", "schedule_reminder", 0.95));
+        assert!(!overrides("social_post", "schedule_reminder", 0.6));
+        assert!(!overrides("chat", "social_post", 0.99));
+        assert!(!overrides("chat", "cursor_task", 0.99));
+        assert!(!overrides("chat", "chat", 0.99));
+        assert!(doubts_side_effect("social_post", "schedule_reminder", 0.87));
+        assert!(!doubts_side_effect("social_post", "social_post", 0.99));
+        assert!(!doubts_side_effect("chat", "schedule_reminder", 0.87));
     }
 
     #[test]
