@@ -1282,7 +1282,8 @@ Notification:
 ```
 
 `category`: `lucina_message`, `reminder`, `calendar`, `device_confirm`,
-`shopping`, `presence`, `system`. Without `title`, clients title it by category.
+`shopping`, `presence`, `system`, `approval` (always on: no switch, no per-device mute, and quiet
+hours / DND do not hold it; see [Approvals](#approvals)). Without `title`, clients title it by category.
 `route` is an app path (`/`, `/shopping`, `/gym`, `/weight`).
 
 | Route | |
@@ -2185,6 +2186,66 @@ Lucina writes the receipt to the timeline (`meta.kind: secret_receipt`): "Saved 
 env / path (fingerprint xxxxxxxx)". In chat, `/secret …` never reaches her model, timeline, Honcho
 or replay cache, and token-shaped text is masked before the turn and offered as a held value.
 
+## Approvals
+
+"When Lucina needs my permission, I get a prompt on my main device and press Yes." One API for every
+requester (Lucina's secrets guard and root commands, the Infisical broker, agentd, a device).
+Code: `crates/secretary-server/src/approvals.rs`. Pending requests live in memory (a restart drops
+them); settings and keys are JSON files (0600) in the data dir; every event is appended to
+`approvals-audit.jsonl` (`created`, `notified` main/escalated, `decided` with device and biometric
+yes/no, `expired`, `waited` when a grant is handed out). Names and ids only, no secret values.
+
+**Requester** routes take the service token (`svc_…`) or a device Bearer/cookie. A device that asks
+always shows as `kind: device` with its own name. Creation is limited to 20 per requester per minute (429).
+
+| Route | |
+|---|---|
+| `POST /v1/approvals` | `{requester: {kind: lucina\|broker\|agentd\|mcp\|device, name, detail?}, action, summary (<=200), details? (<=4000), risk: low\|medium\|high, sensitive?, payloadHash: "sha256:<64 hex>", ttlSecs?}` → `201 {id: "apr_…", status: "pending", sensitive, expiresAt}`. `ttlSecs`: default 300, clamped to 30..900. `action`: lowercase `[a-z0-9._-]`. |
+| `GET /v1/approvals/{id}/wait?timeout=25` | Long poll (at most 30 s), only for the identity that asked, else 404 `approval_not_found`. `{id, status: pending\|approved\|denied\|expired, decidedAt?, decidedBy? (device name), grant?}`. |
+| `GET /v1/approvals/public-key` | Public. `{alg: "ed25519", publicKey: <base64>, keyId: <8 hex>}`. |
+
+`sensitive` is forced when `action` starts with `secret.`, `root.`, `sudo.`, `message.send`,
+`email.send`, `payment.`, `account.` or `broker.`.
+
+**Grant** (on `approved`, the same string on every wait until the request expires):
+`b64url(payload_json) + "." + b64url(signature)`; the signature (Ed25519, key `approval-grant.key`,
+made on first start, a different key and context than the "Add secret" grants) is over the ASCII bytes
+`"secretary-approval-v1." + b64url(payload_json)`. Payload:
+`{v: 1, id, action, requester: {kind, name}, payloadHash, decision: "approved", decidedBy: <device id>,
+biometric, iat, exp: iat + 120}`. A verifier checks the signature with the pinned public key, `exp`,
+`action`, that `payloadHash` is the hash of what it is about to do, and single use (it remembers ids
+until `exp`).
+
+**Approver** routes take a device (Bearer, or cookie with `X-Secretary-CSRF: 1`); the service token
+gets 403 `service_cannot_decide` on all of them.
+
+| Route | |
+|---|---|
+| `GET /v1/approvals?status=pending\|all` | `{approvals: […]}`, newest first. `pending`: what this device may decide now (not its own requests; inside the first 30 s only the main device sees it). Item: `{id, status, requester, action, summary, details, risk, sensitive, payloadHash, createdAt, expiresAt, escalated, youAreMain, decidedAt?, decidedBy?, decidedById?, biometric?}`. |
+| `GET /v1/approvals/{id}` | One item, also decided or expired (kept for an hour), for a deep link that says "already answered". |
+| `POST /v1/approvals/{id}/decide` | `{decision: approve\|deny, payloadHash, proof?: {keyId, signature}}` → `{status: approved\|denied}`. |
+| `GET /v1/approvals/settings` | `{mainDeviceId, escalateAfterSecs: 30, devices: [{id, name, isMain, hasBiometricKey, lastSeen?}], thisDeviceId}`. |
+| `PUT /v1/approvals/settings` | `{mainDeviceId: "<id>" \| null}` (the field is required; 404 `device_not_found`). Answers like `GET`. |
+| `POST /v1/approvals/keys` | `{publicKey: <base64 X9.63 uncompressed P-256>, label?, password: <owner password>}` → `{keyId}`. Replaces this device's key. A wrong password is 403 `invalid_credentials`. |
+| `DELETE /v1/approvals/keys` | `{removed}`. |
+
+`proof.signature` is a base64 DER ECDSA P-256/SHA-256 signature over the ASCII bytes
+`"secretary-approval-v1\n{id}\n{payloadHash}\n{decision}"`, made with the key registered to the
+deciding device (a Secure Enclave key usable after Face ID). Approving a sensitive request without a
+valid proof gives 403 `biometric_required`; denying never needs one. The web has no such key, so it can
+approve only requests that are not sensitive.
+
+Decide errors: 404 `approval_not_found`; 409 `approval_decided`; 410 `approval_expired`; 403
+`self_approval` (the approver is the requester device); 403 `not_main_device` (first 30 s, a main
+device is set and this is not it); 409 `payload_mismatch` (`payloadHash` differs from the request's);
+403 `biometric_required`; 403 `csrf` (cookie without the header).
+
+**Delivery.** On create the server publishes a notification of category `approval` to the main
+device's subscriptions, and to every other device after 30 s if the request is still pending (at once
+to all when no main device is set). Web Push payload: `route` and `url` = `/approvals/<id>`, plus
+`approvalId` and `sensitive`. APNs (when configured): `aps.category = "APPROVAL"`, `approvalId`,
+`sensitive`. The native app has no remote push on a free team and polls `GET /v1/approvals?status=pending`.
+
 ## Models
 
 The owner's private 3D gallery: models Lucina made with Meshy AI (crate
@@ -2228,6 +2289,10 @@ video?, rigged?}`. Clients build the file URLs from the id on their own origin.
 | 400 | `due_in_past`, `unparseable_reminder`, `invalid_status` | Lucina | See the routes above. |
 | 401 | `unauthorized` | server | No/invalid/revoked device token or session. |
 | 403 | `csrf` | server | Cookie request that changes state without `X-Secretary-CSRF: 1`. |
+| 403 | `self_approval`, `not_main_device`, `biometric_required`, `service_cannot_decide` | server | Approvals: see [Approvals](#approvals). |
+| 404 | `approval_not_found` | server | No such approval request (or not yours to wait on). |
+| 409 | `approval_decided`, `payload_mismatch` | server | Approvals. |
+| 410 | `approval_expired` | server | Deciding an approval request that ran out. |
 | 404 | `not_found` | server | Unknown `/v1` route. |
 | 404 | `job_not_found`, `reminder_not_found`, `item_not_found` | Lucina | |
 | 404 | `note_not_found` | server | No note with that id or slug. |

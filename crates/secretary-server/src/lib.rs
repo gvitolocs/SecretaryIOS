@@ -5,6 +5,7 @@
 //! `secretary-core`), forwarding with the server-held Lucina token, error
 //! mapping and static file serving. It owns no product logic.
 
+pub mod approvals;
 pub mod assets;
 pub mod auth;
 pub mod avatar;
@@ -150,6 +151,8 @@ pub struct Inner {
     pub system_health: Arc<system_health::HealthStore>,
     /// Signs the owner grants of "Add secret" (`secret-grant.key`).
     pub grant_signer: owner_secrets::GrantSigner,
+    /// Owner approvals: requests, grants, audit (`/v1/approvals*`).
+    pub approvals: Arc<approvals::Approvals>,
 }
 
 #[derive(Clone)]
@@ -205,6 +208,10 @@ impl AppState {
             tasks: Arc::new(tasks::TasksHub::open(&cfg.data_dir, cfg.todoist.clone())?),
             system_health: system_health::store(&cfg.data_dir),
             grant_signer: owner_secrets::GrantSigner::new(&cfg.data_dir),
+            approvals: Arc::new(approvals::Approvals::open(
+                &cfg.data_dir,
+                cfg.approvals.clone(),
+            )?),
         })))
     }
 
@@ -298,6 +305,8 @@ pub fn app(state: AppState) -> Router {
         auth::require_device_or_service,
     ));
 
+    let approvals = approvals::routes(state.clone());
+
     let device_events = device::events_routes().route_layer(middleware::from_fn_with_state(
         state.clone(),
         auth::require_device_events,
@@ -312,6 +321,7 @@ pub fn app(state: AppState) -> Router {
         .merge(device_events)
         .merge(auth::session_routes())
         .merge(qr_login::public_routes())
+        .merge(approvals)
         .merge(protected)
         .merge(computer::view_routes())
         .merge(desk::ws_routes())
@@ -417,6 +427,7 @@ pub async fn serve(cfg: Config) -> anyhow::Result<()> {
         "secretary-server listening"
     );
     notify::spawn_workers(&state);
+    approvals::spawn_sweeper(&state);
     if !cfg.calendar_sync_every.is_zero() {
         calendar::spawn_sync_loop(state.clone(), cfg.calendar_sync_every);
     }
