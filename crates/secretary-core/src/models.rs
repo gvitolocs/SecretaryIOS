@@ -431,6 +431,10 @@ pub struct OpsBatch {
     /// The revision the client's view is based on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_revision: Option<u64>,
+    /// Who sent the batch; `mcp` = an MCP client: Lucina checks its
+    /// free-text adds with Jev. Absent = the app.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
     pub ops: Vec<ShoppingOp>,
 }
 

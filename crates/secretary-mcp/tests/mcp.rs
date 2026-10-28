@@ -322,6 +322,7 @@ async fn shopping_v2_tools() {
     );
     let ops = h.mock.requests("/v1/shopping/lists/default/ops");
     assert_eq!(ops.len(), 1);
+    assert_eq!(ops[0].body["via"], "mcp");
     let sent = ops[0].body["ops"].as_array().unwrap();
     assert_eq!(sent.len(), 2);
     assert_eq!(sent[0]["type"], "add");
@@ -365,6 +366,40 @@ async fn shopping_v2_tools() {
 
     let (err, text) = h.call(&t, "shopping_add", json!({"items": []})).await;
     assert!(err && text.contains("1-50"), "{text}");
+}
+
+#[tokio::test]
+async fn shopping_add_relays_lucinas_question() {
+    let h = start().await;
+    let t = h.issue("claude-code", "read,write");
+
+    let (err, text) = h
+        .call(&t, "shopping_add", json!({"items": ["lavatrici"]}))
+        .await;
+    assert!(!err, "a question is an answer, not an error: {text}");
+    assert!(text.contains("Nothing was added"), "{text}");
+    assert!(
+        text.contains("Intendevi Detersivo per lavatrice?"),
+        "{text}"
+    );
+    assert!(text.contains("Detersivo per lavatrice"), "{text}");
+    assert!(!text.contains("Added on list"), "{text}");
+
+    let (err, text) = h
+        .call(&t, "shopping_add", json!({"items": ["latte", "lavatrici"]}))
+        .await;
+    assert!(!err, "{text}");
+    assert!(text.contains("Added on list default: latte."), "{text}");
+    assert!(
+        text.contains("Not added: lavatrici. Lucina asks: Intendevi Detersivo per lavatrice?"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("Added on list default: latte, lavatrici"),
+        "{text}"
+    );
+    let ops = h.mock.requests("/v1/shopping/lists/default/ops");
+    assert!(ops.iter().all(|o| o.body["via"] == "mcp"));
 }
 
 #[tokio::test]

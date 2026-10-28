@@ -559,7 +559,7 @@ pub fn specs() -> Vec<ToolSpec> {
         spec!("shopping_list", "Shopping list", Scope::Read, ro = true, destructive = false, idempotent = true, ShoppingListArgs,
             "Show a shopping list: what is still needed (with item ids) and what was bought recently. Also lists the other lists by name."),
         spec!("shopping_add", "Add to shopping list", Scope::Write, ro = false, destructive = false, idempotent = false, ShoppingAddArgs,
-            "Put items on the owner's shopping list (default list unless `list` is given). Items can be plain names or {name, spec, quantity, unit}."),
+            "Put items on the owner's shopping list (default list unless `list` is given). Items can be plain names or {name, spec, quantity, unit}. Lucina checks each item; one that doesn't look like a shopping item is not added and her question is returned for the owner."),
         spec!("shopping_mark_bought", "Mark item bought", Scope::Write, ro = false, destructive = false, idempotent = true, MarkBoughtArgs,
             "Tick off one shopping list item as bought (it moves to 'recently bought', nothing is deleted). Identify it by id or by name."),
         spec!("reminders_list", "List reminders", Scope::Read, ro = true, destructive = false, idempotent = true, RemindersListArgs,
@@ -1021,8 +1021,8 @@ impl Tools<'_> {
                 } => (name.as_str(), spec.as_deref(), *quantity, unit.as_deref()),
             };
             let name = check_text(&format!("items[{i}].name"), name, 200)?;
-            let mut op =
-                json!({"opId": uuid::Uuid::new_v4().to_string(), "type": "add", "name": name});
+            let op_id = uuid::Uuid::new_v4().to_string();
+            let mut op = json!({"opId": op_id, "type": "add", "name": name});
             if let Some(s) = spec.map(str::trim).filter(|s| !s.is_empty()) {
                 op["spec"] = json!(check_text(&format!("items[{i}].spec"), s, 200)?);
             }
@@ -1037,10 +1037,13 @@ impl Tools<'_> {
             if let Some(u) = unit.map(str::trim).filter(|u| !u.is_empty()) {
                 op["unit"] = json!(check_text(&format!("items[{i}].unit"), u, 32)?);
             }
-            names.push(match spec.map(str::trim).filter(|s| !s.is_empty()) {
-                Some(s) => format!("{name} ({s})"),
-                None => name,
-            });
+            names.push((
+                op_id,
+                match spec.map(str::trim).filter(|s| !s.is_empty()) {
+                    Some(s) => format!("{name} ({s})"),
+                    None => name,
+                },
+            ));
             ops.push(op);
         }
         let v2 = match self.list_id(a.list.as_deref()).await? {
@@ -1049,18 +1052,19 @@ impl Tools<'_> {
                 .backend
                 .post(
                     &format!("/v1/shopping/lists/{}/ops", seg(&id)),
-                    &json!({"ops": ops}),
+                    &json!({"via": "mcp", "ops": ops}),
                 )
                 .await
                 .map(|r| (id, r)),
             Err(e) => Err(e),
         };
         match v2 {
-            Ok((id, r)) => Ok(format::ops_result("Added", &names, &id, &r)),
+            // Lucina's questions are a normal answer to relay, not an error
+            Ok((id, r)) => Ok(format::add_result(&names, &id, &r)),
             Err(e) if e.is_v2_unavailable() => {
                 self.legacy_ok(a.list.as_deref(), e).await?;
                 let mut added = Vec::new();
-                for n in &names {
+                for (_, n) in &names {
                     self.app
                         .backend
                         .post("/v1/shopping", &json!({"rawName": n}))

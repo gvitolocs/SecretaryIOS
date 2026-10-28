@@ -497,6 +497,14 @@ impl Call {
     /// `opId`s; every field is checked (ids, lengths, quantities).
     pub fn shopping_ops(id: &str, batch: &OpsBatch) -> Result<Self> {
         validate::id("id", id)?;
+        if let Some(via) = batch.via.as_deref() {
+            if via != "mcp" {
+                return Err(Error::Invalid {
+                    field: "via",
+                    message: "must be \"mcp\" when present".into(),
+                });
+            }
+        }
         if batch.ops.is_empty() || batch.ops.len() > validate::MAX_OPS_PER_BATCH {
             return Err(Error::Invalid {
                 field: "ops",
@@ -1385,6 +1393,32 @@ mod tests {
         .is_err());
         assert!(Call::shopping_list_update("default", &UpdateList::default()).is_err());
         assert!(Call::shopping_list("a/b").is_err());
+    }
+
+    #[test]
+    fn shopping_ops_via() {
+        const U1: &str = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
+        let batch = |extra: Value| -> Result<Call> {
+            let mut v = json!({"ops": [{"opId": U1, "type": "add", "name": "latte"}]});
+            v.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            let b: OpsBatch =
+                serde_json::from_value(v).map_err(|e| Error::Decode(e.to_string()))?;
+            Call::shopping_ops("default", &b)
+        };
+        let body = batch(json!({"via": "mcp"}))
+            .unwrap()
+            .body()
+            .unwrap()
+            .clone();
+        assert_eq!(body["via"], "mcp");
+        let body = batch(json!({})).unwrap().body().unwrap().clone();
+        assert!(body.get("via").is_none(), "absent via stays absent: {body}");
+        match batch(json!({"via": "web"})) {
+            Err(Error::Invalid { field, .. }) => assert_eq!(field, "via"),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

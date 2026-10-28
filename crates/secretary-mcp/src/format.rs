@@ -323,6 +323,73 @@ pub fn ops_result(verb: &str, names: &[String], list_id: &str, r: &Value) -> Str
     out
 }
 
+/// The answer to a `shopping_add` batch. `items` pairs each op's `opId` with
+/// the name shown to the caller. Ops in `applied` or `duplicates` count as
+/// added; `rejected` ones are named with their reason, and Lucina's question
+/// (`needs_confirmation`) is passed on for the owner.
+pub fn add_result(items: &[(String, String)], list_id: &str, r: &Value) -> String {
+    let ids = |k: &str| -> Vec<&str> {
+        r.get(k)
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default()
+    };
+    let (applied, dups) = (ids("applied"), ids("duplicates"));
+    let added: Vec<&str> = items
+        .iter()
+        .filter(|(op, _)| applied.contains(&op.as_str()) || dups.contains(&op.as_str()))
+        .map(|(_, n)| n.as_str())
+        .collect();
+    let mut out = if added.is_empty() {
+        format!("Nothing was added to list {list_id}.")
+    } else {
+        format!("Added on list {list_id}: {}.", added.join(", "))
+    };
+    let dup = items
+        .iter()
+        .filter(|(op, _)| dups.contains(&op.as_str()))
+        .count();
+    if dup > 0 {
+        out.push_str(&format!(" ({dup} already applied before.)"));
+    }
+    let needed = r.get("items").and_then(Value::as_array).map(|a| {
+        a.iter()
+            .filter(|i| s(i, "status") == Some("needed"))
+            .count()
+    });
+    if let Some(n) = needed {
+        out.push_str(&format!(" The list now has {n} item(s) to buy."));
+    }
+    for rej in r
+        .get("rejected")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+    {
+        let op = s(rej, "opId").unwrap_or_default();
+        let name = items
+            .iter()
+            .find(|(id, _)| id == op)
+            .map(|(_, n)| n.as_str())
+            .or_else(|| s(rej, "text"))
+            .unwrap_or(op);
+        let error = s(rej, "error").unwrap_or("rejected");
+        match (error, s(rej, "question")) {
+            ("needs_confirmation", Some(q)) => {
+                out.push_str(&format!("\nNot added: {name}. Lucina asks: {q} "));
+                match s(rej, "suggestion").filter(|x| !x.trim().is_empty()) {
+                    Some(sug) => out.push_str(&format!(
+                        "Ask the owner; if they agree, call shopping_add again with the suggested item ({sug})."
+                    )),
+                    None => out.push_str("Ask the owner what they meant."),
+                }
+            }
+            _ => out.push_str(&format!("\nNot added: {name} ({error}).")),
+        }
+    }
+    out
+}
+
 /// Find one item by id, exact (folded) name, or a unique partial name.
 pub fn pick_item(
     items: &[Value],
@@ -1303,6 +1370,55 @@ mod tests {
         assert!(
             !t.contains("telegram") && t.ends_with("next_before: tl_1"),
             "{t}"
+        );
+    }
+
+    #[test]
+    fn add_result_names_added_and_rejected_items() {
+        let items: Vec<(String, String)> = [("o1", "latte"), ("o2", "lavatrici"), ("o3", "pane")]
+            .iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect();
+        let r = json!({
+            "applied": ["o1"], "duplicates": ["o3"],
+            "rejected": [{"opId": "o2", "error": "needs_confirmation", "text": "lavatrici",
+                          "question": "Intendevi Detersivo per lavatrice?",
+                          "suggestion": "Detersivo per lavatrice"}],
+            "items": [{"status": "needed"}, {"status": "needed"}, {"status": "recent"}]
+        });
+        assert_eq!(
+            add_result(&items, "default", &r),
+            "Added on list default: latte, pane. (1 already applied before.) \
+             The list now has 2 item(s) to buy.\n\
+             Not added: lavatrici. Lucina asks: Intendevi Detersivo per lavatrice? \
+             Ask the owner; if they agree, call shopping_add again with the suggested item \
+             (Detersivo per lavatrice)."
+        );
+
+        // null suggestion, other codes, nothing added
+        let r = json!({
+            "applied": [],
+            "rejected": [
+                {"opId": "o1", "error": "duplicate_item"},
+                {"opId": "o2", "error": "needs_confirmation", "text": "lavatrici",
+                 "question": "Cosa intendevi?", "suggestion": null},
+                {"opId": "o3", "error": "item_not_found"},
+            ],
+            "items": []
+        });
+        assert_eq!(
+            add_result(&items, "l2", &r),
+            "Nothing was added to list l2. The list now has 0 item(s) to buy.\n\
+             Not added: latte (duplicate_item).\n\
+             Not added: lavatrici. Lucina asks: Cosa intendevi? Ask the owner what they meant.\n\
+             Not added: pane (item_not_found)."
+        );
+
+        // no rejected key (older Lucina): plain success
+        let r = json!({"applied": ["o1", "o2", "o3"], "duplicates": []});
+        assert_eq!(
+            add_result(&items, "default", &r),
+            "Added on list default: latte, lavatrici, pane."
         );
     }
 }
