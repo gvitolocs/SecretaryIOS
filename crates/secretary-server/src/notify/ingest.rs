@@ -7,6 +7,7 @@
 //! | `role: lucina`, `meta.kind: "reminder"` | `reminder` |
 //! | `role: lucina`, `meta.kind: "device_command"` that needs a tap (`meta.command.requiresConfirmation`, else by type) | `device_confirm` |
 //! | `role: lucina`, `meta.kind: "shopping"` (Lucina changed a list) | `shopping` |
+//! | `role: lucina`, `meta.kind: "decision"` | none: Lucina's own `POST /v1/notify` carries the route (`/decisions/<id>`) and the options |
 //! | any other `role: lucina` item | `lucina_message` |
 //!
 //! Owner items, backfilled history and items older than
@@ -163,6 +164,9 @@ pub fn classify(item: &TimelineItem, now_ms: i64, stale_ms: i64) -> Option<NewNo
         body = attachment_body(item);
     }
     let (category, data) = match kind {
+        // A decision: her own push opens it (`/decisions/<id>`, the options as buttons). A notification from the
+        // item would win the shared `tl:` key with route `/` (2026-10-28: the owner's tap opened the chat).
+        "decision" => return None,
         "reminder" => (Category::Reminder, None),
         "device_command" => {
             let command = &meta["command"];
@@ -323,6 +327,10 @@ mod tests {
             classify(&item(v), now, 3_600_000).unwrap().category,
             Some(Category::Reminder)
         );
+
+        let mut v = base.clone();
+        v["meta"] = json!({"kind": "decision", "decisionId": "dc-0123456789ab"});
+        assert!(classify(&item(v), now, 3_600_000).is_none(), "Lucina pushes decisions herself");
 
         let mut v = base.clone();
         v["meta"] = json!({"kind": "shopping", "listId": "L1"});
