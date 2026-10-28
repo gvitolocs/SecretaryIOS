@@ -15,7 +15,10 @@
 // Browse (Places, memories, archive): GET items/places, GET items/on-this-day, GET items/recent, batch archive/unarchive,
 // `archived` and `bbox` on the listing, POST items/{id}/play (a tokenised file URL) and GET s/{token}/{id}/file, which
 // serves MOCK_GALLERY_VIDEO (an mp4 on disk) for every video.
+// Albums, Live Photos and smart search (the albums API, `live_pair` on some phone photos with a hidden motion clip,
+// embeddings/status, items/search, items/{id}/similar): mock/galleryMl.mjs.
 
+import { handleGalleryMl } from "./galleryMl.mjs";
 import { handleLab } from "./lab.mjs";
 
 const COUNT = Math.max(0, Number(process.env.MOCK_GALLERY_ITEMS ?? 6000) || 0);
@@ -125,9 +128,15 @@ const SHAPES = [
   [4032, 3024], [4032, 3024], [4032, 3024], [3024, 4032], [3024, 4032], [1920, 1080], [3000, 3000], [4000, 1500], [2400, 3600],
 ];
 
+const ALBUM_DATE = "2026-10-01T10:00:00.000Z";
 const albums = [
-  { id: "alb_holiday", title: "Holiday (test)", system_key: null },
-  { id: "alb_family", title: "Family (test)", system_key: null },
+  { id: "alb_holiday", title: "Holiday (test)", system_key: null, cover: "auto", created_at: ALBUM_DATE, updated_at: "2026-10-20T10:00:00.000Z" },
+  // No chosen cover: the albums page falls back to the newest photo.
+  { id: "alb_family", title: "Family (test)", system_key: null, cover: null, created_at: ALBUM_DATE, updated_at: "2026-10-10T10:00:00.000Z" },
+  { id: "alb_empty", title: "Not filled yet (test)", system_key: null, cover: null, created_at: ALBUM_DATE, updated_at: "2026-10-05T10:00:00.000Z" },
+  { id: "sys-lucina", title: "Lucina", system_key: "lucina", cover: "auto", created_at: ALBUM_DATE, updated_at: "2026-10-27T10:00:00.000Z" },
+  // The hidden album behind a photo-selection share link: the real server never lists it.
+  { id: "alb_share_tok1", title: "Shared photos", system_key: "share:tok1", cover: "auto", created_at: ALBUM_DATE, updated_at: "2026-10-26T10:00:00.000Z" },
 ];
 const deletions = new Map();
 
@@ -198,8 +207,32 @@ function build() {
       archived: rand() < 0.02,
       hue: Math.floor(rand() * 360),
     });
-    if (rand() < 0.04) items[items.length - 1].albums.push(albums[Math.floor(rand() * albums.length)].id);
+    if (rand() < 0.04) items[items.length - 1].albums.push(albums[Math.floor(rand() * 2)].id);
   }
+  // Lucina's own pictures are in her built-in album; two photos are behind a share link.
+  for (const it of items) if (it.source.startsWith("lucina")) it.albums.push("sys-lucina");
+  for (const it of items.filter((x) => x.kind === "photo").slice(10, 12)) it.albums.push("alb_share_tok1");
+  // Live Photos: some phone photos have a short motion clip, a hidden video item that only the still points to.
+  const motions = [];
+  for (const it of items) {
+    if (it.kind !== "photo" || it.device !== "iphone-test" || it.index % 17 !== 4) continue;
+    it.live_pair = `${it.id}_mov`;
+    motions.push({
+      ...it,
+      id: it.live_pair,
+      kind: "video",
+      title: it.title.replace(/\.[^.]+$/, ".MOV"),
+      mime: "video/quicktime",
+      size: 2_400_000,
+      duration_ms: 1500,
+      live_pair: it.id,
+      hidden: true,
+      favorite: false,
+      caption: null,
+      albums: [],
+    });
+  }
+  items.push(...motions);
   // Newest first, ties by id, like the library's paging order.
   items.sort((a, b) => (a.sort_at === b.sort_at ? (a.id < b.id ? 1 : -1) : a.sort_at < b.sort_at ? 1 : -1));
   // A few trashed items.
@@ -243,6 +276,7 @@ function out(it) {
     trashed_at: it.trashed_at,
     trash_expires_at: expires(it),
     thumbhash: hashFor(it.hue, aspect),
+    live_pair: it.live_pair ?? null,
     urls: {
       thumb: `${base}/thumb?size=256`,
       large: `${base}/thumb?size=1024`,
@@ -276,7 +310,7 @@ function matcher(p) {
   const from = p.get("from") ? Date.parse(`${p.get("from").slice(0, 10)}T00:00:00Z`) : null;
   const to = p.get("to") ? Date.parse(`${p.get("to").slice(0, 10)}T00:00:00Z`) + DAY : null;
   return (it) => {
-    if (!kinds.has(it.kind)) return false;
+    if (!kinds.has(it.kind) || it.hidden) return false;
     if (trashed !== (it.trashed_at !== null)) return false;
     if (!trashed && archived !== it.archived) return false;
     if (bbox?.length === 4) {
@@ -547,7 +581,7 @@ export async function handleGallery(req, res, { path, method, url, send, fail, r
     };
     const all = { photos: 0, videos: 0 };
     for (const it of items) {
-      if (it.trashed_at || it.archived) continue;
+      if (it.trashed_at || it.archived || it.hidden) continue;
       if (it.kind === "video") all.videos++; else all.photos++;
       if (it.device) {
         const d = DEVICES.find((x) => x.id === it.device);
@@ -557,22 +591,6 @@ export async function handleGallery(req, res, { path, method, url, send, fail, r
     }
     send(res, 200, { sources: [...groups.values()].sort((a, b) => (a.latest_taken_at < b.latest_taken_at ? 1 : -1)), all });
     return true;
-  }
-
-  if (rest === "albums") {
-    if (method === "GET") {
-      send(res, 200, { albums: albums.map((a) => ({ ...a, count: items.filter((i) => !i.trashed_at && i.albums.includes(a.id)).length })) });
-      return true;
-    }
-    if (method === "POST") {
-      const body = await readJson(req);
-      const title = typeof body.title === "string" ? body.title.trim() : "";
-      if (!title) return fail(res, 400, "bad_request", "title required"), true;
-      const album = { id: `alb_${albums.length + 1}_${Date.now().toString(36)}`, title, system_key: null };
-      albums.push(album);
-      send(res, 201, { ...album, count: 0 });
-      return true;
-    }
   }
 
   if (rest === "items/batch" && method === "POST") {
@@ -603,6 +621,7 @@ export async function handleGallery(req, res, { path, method, url, send, fail, r
     }
   }
 
+  if (await handleGalleryMl(req, res, { rest, method, url, send, fail, readJson }, { albums, items: () => items, matcher, out })) return true;
   if (await handleLab(req, res, { rest, method, url, send, fail, readJson }, labEnv)) return true;
 
   const one = rest.match(/^items\/([^/]+)(?:\/(.*))?$/);
@@ -627,7 +646,7 @@ export async function handleGallery(req, res, { path, method, url, send, fail, r
     if (sub === "play" && method === "POST" && it.kind === "video") {
       return send(res, 200, {
         id: it.id, kind: "video", title: it.title, mode: "direct", url: `/v1/media/s/mock/${it.id}/file`, file_url: `/v1/media/s/mock/${it.id}/file`,
-        hls_url: null, poster_url: `/v1/media/items/${it.id}/thumb?size=1024`, duration_ms: 12_000, subtitles: [], bitmap_subtitles: 0,
+        hls_url: null, poster_url: `/v1/media/items/${it.id}/thumb?size=1024`, duration_ms: it.hidden ? 1500 : 12_000, subtitles: [], bitmap_subtitles: 0,
         expires_at: Date.now() + 3_600_000, progress: null, resume_ms: 0,
       }), true;
     }

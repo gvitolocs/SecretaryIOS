@@ -36,11 +36,14 @@ import { browse } from "./dict/browse";
 import { galleryShare } from "./dict/galleryShare";
 import { galleryCompare } from "./dict/galleryCompare";
 import { lab } from "./dict/lab";
+import { galleryAlbums } from "./dict/galleryAlbums";
+import { galleryLive } from "./dict/galleryLive";
+import { gallerySmart } from "./dict/gallerySmart";
 import { weight } from "./dict/weight";
 import { nclient } from "./dict/nclient";
 import { pixiv } from "./dict/pixiv";
 import { instagram } from "./dict/instagram";
 
-export const dictionaries = { approvals, chats, library, common, computer, desk, shell, share, chat, login, weight, gym, wardrobe, notify, links, maps, notes, keep, tasks, studio, models, memos, media, films, drive, plugins, serverHealth, viewer, secrets, gallery, galleryInfo, nclient, pixiv, instagram, editor, browse, galleryShare, galleryCompare, lab };
+export const dictionaries = { approvals, chats, library, common, computer, desk, shell, share, chat, login, weight, gym, wardrobe, notify, links, maps, notes, keep, tasks, studio, models, memos, media, films, drive, plugins, serverHealth, viewer, secrets, gallery, galleryInfo, nclient, pixiv, instagram, editor, browse, galleryShare, galleryCompare, lab, galleryAlbums, galleryLive, gallerySmart };
 
 export type Dictionaries = typeof dictionaries;

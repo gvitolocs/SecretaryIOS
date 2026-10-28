@@ -1,4 +1,4 @@
-import { children, createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, type JSX } from "solid-js";
+import { children, createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, untrack, type Accessor, type JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 import { t } from "../i18n";
 import { imageCore, type CoreView, type DragOut, type Gesture, type ImageCore, type Rect, type ViewRequest } from "../lib/imageCore";
@@ -65,6 +65,18 @@ export interface PhotoViewerProps {
    * on a video (outside its control strip) pages like on a picture, and a tap is left to the video itself.
    */
   renderVideo?: (ctx: { item: ViewerItem; index: number; current: boolean }) => JSX.Element;
+  /**
+   * Drawn right after a picture, in the same box as the picture (`style`, and `placed` once the core has placed it, as
+   * for the picture's own `pv-img--placed` class), so a Live Photo's motion can lie exactly over its still. Called once
+   * per page: the accessors follow the item, the zoom and the rotation.
+   */
+  renderOverlay?: (ctx: {
+    item: Accessor<ViewerItem | undefined>;
+    index: number;
+    current: Accessor<boolean>;
+    style: Accessor<JSX.CSSProperties | undefined>;
+    placed: Accessor<boolean>;
+  }) => JSX.Element;
   /** Called first for every key; return true to say the key is handled and the viewer must ignore it. */
   onKeyDown?: (e: KeyboardEvent) => boolean | void;
 }
@@ -593,20 +605,23 @@ export function PhotoViewer(props: PhotoViewerProps) {
                   >
                     <Show when={shownSrc(item(), isCurrent())}>
                       {(src) => (
-                        <img
-                          class="pv-img"
-                          classList={{ "pv-img--placed": isCurrent() && !!rect() }}
-                          src={src()}
-                          alt={item()?.name ?? ""}
-                          draggable={false}
-                          style={imageStyle(item(), isCurrent())}
-                          onLoad={(e) => {
-                            if (!isCurrent() || natural()) return;
-                            const img = e.currentTarget;
-                            if (img.naturalWidth && img.naturalHeight) setNatural({ w: img.naturalWidth, h: img.naturalHeight });
-                          }}
-                          onError={() => { if (isCurrent()) props.onImageError?.(s.index); }}
-                        />
+                        <>
+                          <img
+                            class="pv-img"
+                            classList={{ "pv-img--placed": isCurrent() && !!rect() }}
+                            src={src()}
+                            alt={item()?.name ?? ""}
+                            draggable={false}
+                            style={imageStyle(item(), isCurrent())}
+                            onLoad={(e) => {
+                              if (!isCurrent() || natural()) return;
+                              const img = e.currentTarget;
+                              if (img.naturalWidth && img.naturalHeight) setNatural({ w: img.naturalWidth, h: img.naturalHeight });
+                            }}
+                            onError={() => { if (isCurrent()) props.onImageError?.(s.index); }}
+                          />
+                          {untrack(() => props.renderOverlay?.({ item, index: s.index, current: isCurrent, style: () => imageStyle(item(), isCurrent()), placed: () => isCurrent() && !!rect() }))}
+                        </>
                       )}
                     </Show>
                   </Show>

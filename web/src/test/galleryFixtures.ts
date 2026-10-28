@@ -27,6 +27,7 @@ export function galleryItem(id: string, over: Partial<GalleryItem> = {}): Galler
     trashedAt: null,
     trashExpiresAt: null,
     thumbhash: null,
+    livePair: null,
     urls: {
       thumb: `/v1/media/items/${id}/r/thumb`,
       large: `/v1/media/items/${id}/r/large`,

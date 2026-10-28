@@ -5,7 +5,8 @@
 // (items, width, options); appending a page of items reuses every section but the last, so the rows already on screen
 // keep their identity and the DOM is not rebuilt while the owner scrolls.
 
-export type GroupBy = "day" | "month";
+/** `none`: one flat section with no header (search results, which are ordered by relevance, not by date). */
+export type GroupBy = "day" | "month" | "none";
 export type GridMode = "justified" | "square";
 
 /** What the layout needs from a gallery item. */
@@ -84,6 +85,7 @@ function pad2(n: number): string {
 
 /** The local calendar day or month an item belongs to (taken date, else the date it was added). */
 export function sectionKey(item: Pick<LayoutItem, "takenAt" | "addedAt">, groupBy: GroupBy): string {
+  if (groupBy === "none") return "all";
   const ms = Date.parse(item.takenAt ?? item.addedAt);
   if (!Number.isFinite(ms)) return "0000-00";
   const d = new Date(ms);

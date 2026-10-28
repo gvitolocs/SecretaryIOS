@@ -1,5 +1,5 @@
 import { batch, createEffect, createSignal, on, onCleanup, untrack, type Accessor } from "solid-js";
-import { listGallery, type GalleryItem, type GalleryQuery } from "../../api/gallery";
+import { listGallery, type GalleryItem, type GalleryPage, type GalleryQuery } from "../../api/gallery";
 
 /** First page size, and the size of the pages that follow while scrolling. */
 export const FIRST_PAGE = 200;
@@ -29,9 +29,10 @@ export interface GalleryFeed {
 
 /**
  * A cursor-paged list of the Gallery for a query. A new query starts over; a stale answer (an earlier query's page,
- * or one that arrives after a reload) is dropped.
+ * or one that arrives after a reload) is dropped. `load` fetches a page (the plain listing by default; smart search
+ * and similar pictures bring their own).
  */
-export function createGalleryFeed(query: Accessor<GalleryQuery>): GalleryFeed {
+export function createGalleryFeed(query: Accessor<GalleryQuery>, load: (q: GalleryQuery) => Promise<GalleryPage> = listGallery): GalleryFeed {
   const [items, setItems] = createSignal<GalleryItem[]>([]);
   const [loading, setLoading] = createSignal(false);
   const [cursor, setCursor] = createSignal<string | null>(null);
@@ -48,7 +49,7 @@ export function createGalleryFeed(query: Accessor<GalleryQuery>): GalleryFeed {
     setFailed(false);
     try {
       const q = untrack(() => ({ ...query(), cursor: cursor() ?? undefined, limit }));
-      const page = await listGallery(q);
+      const page = await load(q);
       if (gen !== generation) return;
       const fresh = page.items.filter((i) => !ids.has(i.id));
       for (const i of fresh) ids.add(i.id);
@@ -61,8 +62,9 @@ export function createGalleryFeed(query: Accessor<GalleryQuery>): GalleryFeed {
       if (gen === generation) setFailed(true);
     } finally {
       if (gen === generation) {
-        setLoading(false);
+        // Free the slot first: the grid asks for the next page the moment `loading` drops, when the page it has is short.
         inflight = null;
+        setLoading(false);
       }
     }
   }

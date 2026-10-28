@@ -66,6 +66,8 @@ export interface GalleryItem {
   trashedAt: string | null;
   trashExpiresAt: string | null;
   thumbhash: string | null;
+  /** A Live Photo: the id of the other half (the hidden motion clip), else null. Listings return only the still. */
+  livePair: string | null;
   urls: GalleryUrls;
 }
 
@@ -95,6 +97,10 @@ export interface GalleryQuery {
   /** `west,south,east,north` in degrees: only pictures with a position inside it (a Places cluster). */
   bbox?: string;
   album?: string;
+  /** With `q`: rank by meaning (smart search) instead of matching words; see `listGalleryPage`. */
+  smart?: boolean;
+  /** Pictures that look like this one (smart search); `q` is ignored. */
+  similarTo?: string;
   cursor?: string;
   limit?: number;
 }
@@ -200,6 +206,7 @@ export function parseItem(raw: unknown): GalleryItem | null {
     trashedAt: str(r.trashed_at),
     trashExpiresAt: str(r.trash_expires_at),
     thumbhash: str(r.thumbhash),
+    livePair: str(r.live_pair),
     urls: parseUrls(r.urls),
   };
 }
@@ -332,14 +339,10 @@ export async function batch(op: BatchOp, ids: string[], opts: { album?: string; 
 }
 
 export async function listAlbums(): Promise<GalleryAlbum[]> {
-  const body = obj(await request<unknown>("GET", "/v1/media/albums?scope=gallery"));
-  return (Array.isArray(body.albums) ? body.albums : [])
-    .map((a) => {
-      const r = obj(a);
-      const id = str(r.id);
-      return id ? { id, title: str(r.title) ?? "", count: num(r.count) ?? num(r.items) ?? 0, system: typeof r.system_key === "string" } : null;
-    })
-    .filter((a): a is GalleryAlbum => a !== null);
+  // The album cards include the empty ones, so an album made on the albums page can be filled from the picker at once.
+  return (await listAlbumCards())
+    .filter((a) => !a.systemKey?.startsWith("share:"))
+    .map((a) => ({ id: a.id, title: a.title, count: a.count, system: a.systemKey !== null }));
 }
 
 export async function createAlbum(title: string): Promise<GalleryAlbum> {
@@ -865,4 +868,157 @@ export async function retryLabJob(id: string): Promise<LabJob | null> {
 /** Cancel a queued job, or remove a failed one. */
 export async function cancelLabJob(id: string): Promise<void> {
   await request<unknown>("DELETE", `/v1/media/lab/${enc(id)}`);
+}
+
+// ---- albums page (views/GalleryAlbums.tsx, components/gallery/albums) ---------------------------------------------------
+// An album as the server lists it, with the cover and the dates. Albums made for a photo-selection share (`share:` keys)
+// are not the owner's and are never shown; the other built-in albums (Lucina's) have a `systemKey` and can't be deleted.
+
+export interface AlbumCard {
+  id: string;
+  title: string;
+  /** Set for the built-in albums. */
+  systemKey: string | null;
+  coverItem: string | null;
+  count: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export function parseAlbumCard(raw: unknown): AlbumCard | null {
+  const r = obj(raw);
+  const id = str(r.id);
+  if (!id) return null;
+  return {
+    id,
+    title: str(r.title) ?? "",
+    systemKey: str(r.system_key),
+    coverItem: str(r.cover_item),
+    count: num(r.count) ?? 0,
+    createdAt: str(r.created_at) ?? "",
+    updatedAt: str(r.updated_at) ?? "",
+  };
+}
+
+const parseAlbumCards = (v: unknown): AlbumCard[] => (Array.isArray(v) ? v : []).map(parseAlbumCard).filter((a): a is AlbumCard => a !== null);
+
+/**
+ * Every album with something in the Gallery, plus the empty ones (a new album has no photos yet, and the Gallery scope
+ * leaves out albums with nothing in it). Albums whose photos are all elsewhere (film folders, Drive) are not listed.
+ */
+export async function listAlbumCards(): Promise<AlbumCard[]> {
+  const [inGallery, everywhere] = await Promise.all([
+    request<unknown>("GET", "/v1/media/albums?scope=gallery"),
+    request<unknown>("GET", "/v1/media/albums").catch(() => null),
+  ]);
+  const shown = parseAlbumCards(obj(inGallery).albums);
+  const seen = new Set(shown.map((a) => a.id));
+  const empty = parseAlbumCards(obj(everywhere).albums).filter((a) => a.count === 0 && !seen.has(a.id));
+  return [...shown, ...empty];
+}
+
+export async function getAlbum(id: string): Promise<AlbumCard | null> {
+  return parseAlbumCard(await request<unknown>("GET", `/v1/media/albums/${enc(id)}`));
+}
+
+export async function renameAlbum(id: string, title: string): Promise<AlbumCard> {
+  const album = parseAlbumCard(await request<unknown>("PATCH", `/v1/media/albums/${enc(id)}`, { body: { title } }));
+  if (!album) throw new Error("album not renamed");
+  return album;
+}
+
+/** Deletes the album only; its photos stay in the Gallery. */
+export async function deleteAlbum(id: string): Promise<void> {
+  await request<unknown>("DELETE", `/v1/media/albums/${enc(id)}`);
+}
+
+/** One item by id (an album's cover). */
+export async function getItem(id: string): Promise<GalleryItem | null> {
+  return parseItem(await request<unknown>("GET", `/v1/media/items/${enc(id)}`));
+}
+
+// ---- smart search (components/gallery/smart) -----------------------------------------------------------------------------
+// Pictures ranked by meaning: the server embeds every photo (CLIP-style) and answers a text query or "like this one" with
+// the closest first, not by date. It can be switched off (503), or have looked at only part of the library so far.
+
+export interface EmbeddingStatus {
+  enabled: boolean;
+  model: string | null;
+  /** Photos the index has looked at. */
+  indexed: number;
+  /** Photos still waiting to be looked at. */
+  pending: number;
+  running: boolean;
+  /** Paused because the machine is hot. */
+  pausedHot: boolean;
+}
+
+export function parseEmbeddingStatus(raw: unknown): EmbeddingStatus | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = obj(raw);
+  return {
+    enabled: r.enabled === true,
+    model: str(r.model),
+    indexed: Math.max(0, num(r.indexed) ?? 0),
+    pending: Math.max(0, num(r.pending) ?? 0),
+    running: r.running === true,
+    pausedHot: r.paused_hot === true,
+  };
+}
+
+/** Smart search is off on this server (503), or the server has no such route. */
+export class SmartUnavailableError extends Error {
+  constructor() {
+    super("smart search is not available");
+    this.name = "SmartUnavailableError";
+  }
+}
+
+export interface SmartPage extends GalleryPage {
+  /** 0 to 1, higher is closer, in the order of `items`. */
+  scores: number[];
+  status: EmbeddingStatus | null;
+}
+
+/** null when the server has no smart search or it is off. */
+export async function getEmbeddingStatus(): Promise<EmbeddingStatus | null> {
+  try {
+    return parseEmbeddingStatus(await request<unknown>("GET", "/v1/media/embeddings/status"));
+  } catch {
+    return null;
+  }
+}
+
+export const SMART_PAGE_MAX = 200;
+
+async function smartRequest(path: string, q: GalleryQuery): Promise<SmartPage> {
+  const limit = Math.min(SMART_PAGE_MAX, Math.max(1, q.limit ?? 60));
+  let body: Raw;
+  try {
+    body = obj(await request<unknown>("GET", `${path}?${galleryQueryString({ ...q, limit })}`));
+  } catch (e) {
+    const status = (e as { status?: unknown }).status;
+    if (status === 503 || status === 404 || status === 501) throw new SmartUnavailableError();
+    throw e;
+  }
+  const items = (Array.isArray(body.items) ? body.items : []).map(parseItem).filter((i): i is GalleryItem => i !== null);
+  const scores = Array.isArray(body.scores) ? body.scores.map((s) => num(s) ?? 0) : [];
+  return { items, scores, nextCursor: str(body.next_cursor), status: parseEmbeddingStatus(body.status) };
+}
+
+/** Photos ranked by how well they match the words in `q.q`; the other fields filter as in the plain listing. */
+export function searchSmart(q: GalleryQuery): Promise<SmartPage> {
+  return smartRequest("/v1/media/items/search", q);
+}
+
+/** Photos that look like `id` (the picture itself is left out). */
+export function listSimilar(id: string, q: GalleryQuery = {}): Promise<SmartPage> {
+  return smartRequest(`/v1/media/items/${enc(id)}/similar`, { ...q, q: undefined });
+}
+
+/** A page of the Gallery for a query: similar pictures, a smart search, or the plain (words) listing. */
+export async function listGalleryPage(q: GalleryQuery): Promise<GalleryPage> {
+  if (q.similarTo) return listSimilar(q.similarTo, q);
+  if (q.smart && q.q?.trim()) return searchSmart(q);
+  return listGallery(q);
 }
