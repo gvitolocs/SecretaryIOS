@@ -1,5 +1,5 @@
 import { Route } from "@solidjs/router";
-import { fireEvent, screen, waitFor } from "@solidjs/testing-library";
+import { fireEvent, screen, waitFor, within } from "@solidjs/testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ControlState } from "../api/computer";
 import { toScreen } from "../api/computer";
@@ -452,6 +452,39 @@ describe("full screen as a remote desktop (focus mode in Secretary Code)", () =>
     fromFrame(frame, { type: "lucina:fullscreen" });
     expect(setFocus).toHaveBeenLastCalledWith(false);
     await waitFor(() => expect(page()).toBe("no"));
+  });
+
+  it("in focus mode the drive bar is the only toolbar: Cua's hides, its buttons are mirrored", async () => {
+    fakeLucina(state());
+    renderComputer();
+    await screen.findByText("Idle");
+    const frame = (await screen.findByTitle("Lucina's screen")) as HTMLIFrameElement;
+    const posted = watchFrame(frame);
+    fromFrame(frame, {
+      type: "lucina:buttons",
+      buttons: [
+        { id: "clipboard", label: "Clipboard sync on", pressed: true },
+        { id: "upload", label: "Upload files" },
+        { id: "stats", label: "Stats", hidden: true },
+        { id: "audio", label: "Sound on", pressed: false },
+      ],
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Full screen" }));
+    await waitFor(() => expect(posted).toContainEqual({ type: "lucina:chrome", toolbar: false }));
+    const bar = () => within(screen.getByRole("toolbar", { name: "Full screen controls" }));
+    fireEvent.click(bar().getByRole("button", { name: "Take over" }));
+    await screen.findByText("You're driving");
+    const sync = bar().getByRole("button", { name: "Clipboard sync on" });
+    expect(sync).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Sound on" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Upload files" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Stats" })).toBeNull();
+    fireEvent.click(sync);
+    expect(posted).toContainEqual({ type: "lucina:button", id: "clipboard" });
+    // Leaving focus mode brings Cua's toolbar back.
+    fireEvent.click(bar().getByRole("button", { name: "Exit full screen" }));
+    listener?.(false);
+    await waitFor(() => expect(posted).toContainEqual({ type: "lucina:chrome", toolbar: true }));
   });
 
   it("the first click on the stream takes over and is replayed into the desktop", async () => {

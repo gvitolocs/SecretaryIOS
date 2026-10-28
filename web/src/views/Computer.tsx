@@ -1,5 +1,5 @@
 import { A } from "@solidjs/router";
-import { createEffect, createSignal, For, lazy, on, onCleanup, onMount, Show } from "solid-js";
+import { createEffect, createSignal, For, lazy, on, onCleanup, onMount, Show, type JSX } from "solid-js";
 import { toApiError } from "../api/client";
 import {
   computerApi,
@@ -15,6 +15,7 @@ import {
   type View,
 } from "../api/computer";
 import type { DeskFallback } from "../components/DeskPlayer";
+import DriveBar, { barIcons, type DriveBarAction } from "../components/DriveBar";
 import { BackIcon } from "../components/Icons";
 import { t } from "../i18n";
 import { hasFocusMode, onFocusModeChange, setFocusMode } from "../lib/focusMode";
@@ -108,6 +109,28 @@ export function passKey(e: { key: string; ctrlKey?: boolean; metaKey?: boolean; 
 
 /** Text copied on her desktop, relayed by the viewer frame (`lucina:clipboard`) for this page to write. */
 export type ClipboardRelay = { id?: unknown; text?: unknown; png?: unknown };
+
+/** One of Cua's toolbar buttons as the viewer reports it (`lucina:buttons`). */
+export interface ViewerButton {
+  id: string;
+  label: string;
+  pressed: boolean;
+}
+
+/** The viewer buttons the drive bar mirrors, with their glyphs (the label stays the name). */
+const VIEWER_ICONS: Record<string, () => JSX.Element> = { scale: barIcons.scale, clipboard: barIcons.clipboard, audio: barIcons.audio, stats: barIcons.stats };
+
+/** The mirrored buttons from a `lucina:buttons` message: known ids only, in this order. */
+export function viewerButtonsOf(raw: unknown): ViewerButton[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ViewerButton[] = [];
+  for (const id of Object.keys(VIEWER_ICONS)) {
+    const b = raw.find((x): x is { id: string; label?: unknown; pressed?: unknown; hidden?: unknown } => !!x && typeof x === "object" && (x as { id?: unknown }).id === id);
+    if (!b || b.hidden === true) continue;
+    out.push({ id, label: typeof b.label === "string" && b.label ? b.label.slice(0, 60) : id, pressed: b.pressed === true });
+  }
+  return out;
+}
 
 /** Files the viewer frame got from a paste or a drop (`lucina:files`). */
 export type FilesRelay = { id?: unknown; files?: unknown; paste?: unknown };
@@ -285,6 +308,8 @@ export default function ComputerView() {
   let renewTimer: number | undefined;
   let markTimer: number | undefined;
   /** The viewer failed or never came up: a fresh view is minted after 1, 2, 4, then every 8 s. */
+  /** Cua's own toolbar buttons, mirrored into the drive bar in focus mode (the viewer reports them). */
+  const [viewerButtons, setViewerButtons] = createSignal<ViewerButton[]>([]);
   /** Files just copied on her desktop, offered as downloads. */
   const [offer, setOffer] = createSignal<CopiedFile[] | null>(null);
   const [reconnecting, setReconnecting] = createSignal(false);
@@ -751,7 +776,7 @@ export default function ComputerView() {
         // Watching: the first key press takes over and is typed into the desktop.
         if (mine() || busy() || confirming() || mode() !== "live") return;
         const target = e.target as HTMLElement | null;
-        if (target?.closest?.("input, textarea, select, button, .computer-pill")) return;
+        if (target?.closest?.("input, textarea, select, button, .drivebar")) return;
         const pass = passKey(e);
         if (!pass) return;
         e.preventDefault();
@@ -801,6 +826,19 @@ export default function ComputerView() {
     }
   };
 
+  // In focus mode the drive bar is the only toolbar: Cua's own one hides (its buttons are mirrored).
+  createEffect(on(full, (f) => post({ type: "lucina:chrome", toolbar: !f })));
+
+  /** The drive bar's buttons while driving: the keyboard (touch screens) and the viewer's own. */
+  const barActions = (): DriveBarAction[] => {
+    const out: DriveBarAction[] = [];
+    if (coarse()) out.push({ id: "keyboard", label: t("computer.keyboard"), icon: barIcons.keyboard(), pressed: keyboard(), run: toggleKeyboard });
+    for (const b of viewerButtons()) {
+      out.push({ id: b.id, label: b.label, icon: VIEWER_ICONS[b.id]?.(), pressed: b.pressed, run: () => post({ type: "lucina:button", id: b.id }) });
+    }
+    return out;
+  };
+
   // In focus mode a notice floats over the stream: it goes away by itself.
   let noticeTimer: number | undefined;
   createEffect(
@@ -834,7 +872,11 @@ export default function ComputerView() {
       if (!frame || e.source !== frame.contentWindow) return;
       const data = e.data as { type?: string; state?: string } | null;
       if (!data || typeof data.type !== "string") return;
-      if (data.type === "lucina:ready") window.clearTimeout(readyTimer);
+      if (data.type === "lucina:ready") {
+        window.clearTimeout(readyTimer);
+        post({ type: "lucina:chrome", toolbar: !full() });
+      }
+      if (data.type === "lucina:buttons") setViewerButtons(viewerButtonsOf((data as { buttons?: unknown }).buttons));
       if (data.type === "lucina:state" && data.state === "streaming") reconnected();
       if (data.type === "lucina:state" && data.state === "failed") reconnect();
       // The viewer's own fullscreen icon: the same as the page's button.
@@ -1150,36 +1192,25 @@ export default function ComputerView() {
         </div>
       </Show>
 
-      {/* Full screen's only chrome: who drives, the toggle, keyboard, keys & clipboard, exit. */}
+      {/* Focus mode's only chrome (RustDesk-style): who drives, the toggle, the viewer's own buttons,
+          keys & clipboard, fold, exit. It hangs from the top edge and folds into a thin tab. */}
       <Show when={full()}>
-        <div class="computer-pill" role="toolbar" aria-label={t("computer.fullScreenBar")} data-mine={mine() ? "yes" : "no"}>
-          <span class="computer-pill-state" role="status">
-            <span class="computer-dot" aria-hidden="true" />
-            {mine() ? t("computer.pillDriving") : t("computer.pillWatching")}
-          </span>
-          <Show
-            when={mine()}
-            fallback={
-              <button type="button" class="computer-pill-btn computer-pill-btn--primary" disabled={busy() || !state()} onClick={() => void takeOver()}>
-                {t("computer.takeOver")}
-              </button>
-            }
-          >
-            <button type="button" class="computer-pill-btn" disabled={busy()} onClick={() => void giveBack()}>
-              {t("computer.giveBack")}
-            </button>
-            <button type="button" class="computer-pill-btn" aria-pressed={keyboard()} onClick={() => toggleKeyboard()}>
-              {t("computer.keyboard")}
-            </button>
-            <button type="button" class="computer-pill-btn" aria-pressed={tools()} aria-expanded={tools()} onClick={() => setTools(!tools())}>
-              {t("computer.keys")}
-            </button>
-          </Show>
-          <button type="button" class="computer-pill-btn" aria-label={t("computer.exitFull")} title={t("computer.exitFull")} onClick={() => exitFull()}>
-            ✕
-          </button>
-          <Show when={tools() && mine()}>
-            <div class="computer-pill-pop" role="group" aria-label={t("computer.keys")}>
+        <DriveBar
+          driving={mine()}
+          busy={busy() || !state()}
+          status={reconnecting() ? t("computer.reconnecting") : mine() ? t("computer.pillDriving") : t("computer.pillWatching")}
+          onTakeOver={() => void takeOver()}
+          onGiveBack={() => void giveBack()}
+          onExit={() => exitFull()}
+          actions={barActions()}
+          panelOpen={tools()}
+          onPanel={setTools}
+          onInteract={() => {
+            if (mine()) focusStream();
+          }}
+          storageKey="computer.bar"
+          panel={
+            <>
               <div class="computer-keys">
                 <For each={KEYS}>
                   {(k) => (
@@ -1200,9 +1231,9 @@ export default function ComputerView() {
                   </button>
                 </div>
               </div>
-            </div>
-          </Show>
-        </div>
+            </>
+          }
+        />
       </Show>
 
       <Show when={mine() && !desk()}>
