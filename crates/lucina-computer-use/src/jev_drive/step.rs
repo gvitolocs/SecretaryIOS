@@ -466,7 +466,7 @@ pub fn before_jev(target: Where, screen: &Screen, mem: &Memory, plan: &Plan) -> 
         if guard::at_checkout(&screen.title, &screen.url, &screen.text, &screen.hard_labels) {
             return Some(Next::NeedsOwner("the checkout page is open".into()));
         }
-        if guard::login_wall(&screen.text, screen.password_field) {
+        if guard::login_wall(&screen.title, &screen.text, screen.password_field) {
             return Some(Next::NeedsOwner("the site asks to sign in".into()));
         }
     }

@@ -161,6 +161,9 @@ pub struct Handover {
     pub total: Option<String>,
     /// Why it stopped ("the checkout page is open", "the site asks to sign in").
     pub reason: String,
+    /// The basket is at the checkout (the owner is asked to pay); otherwise a
+    /// sign-in wall, which the reply alone reports.
+    pub checkout: bool,
     /// What Lucina tells him.
     pub reply: String,
     /// PNG, base64.
@@ -1242,16 +1245,22 @@ pub async fn drive(jev: &Jev, target: Where, task: &str, cancel: &Cancel) -> Res
                 return Ok(escalate(reason, &screen.title, &mem, stats));
             }
             Next::NeedsOwner(reason) => {
-                let total = guard::total(&screen.text);
+                let checkout = reason.contains("checkout");
+                let total = if checkout { guard::total(screen.all_text()) } else { None };
                 let site = screen.title.trim_end_matches(" - Chromium").to_owned();
-                let reply = format!(
-                    "I stopped before paying: {reason} on {site}{}. The basket is ready in my browser's open tab; I have not placed the order. Paying is yours.",
-                    total.as_deref().map(|t| format!(" (total {t})")).unwrap_or_default()
-                );
+                let reply = if checkout {
+                    format!(
+                        "I stopped before paying: the checkout is open on {site}{}. The basket is ready in my browser's open tab; I have not placed the order. Paying is yours.",
+                        total.as_deref().map(|t| format!(" (total {t})")).unwrap_or_default()
+                    )
+                } else {
+                    format!("I stopped: {site} asks to sign in, and signing in is yours. Nothing was ordered; the tab is open in my browser.")
+                };
                 let handover = Handover {
                     site,
                     total,
                     reason,
+                    checkout,
                     reply,
                     screenshot_b64: dev.screenshot().await,
                 };

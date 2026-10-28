@@ -162,14 +162,17 @@ pub fn at_checkout(title: &str, url: &str, text: &str, hard_labels: &[String]) -
     pay_button || (says && total(text).is_some())
 }
 
-/// A sign-in wall in a shopping flow: signing in is the owner's.
-pub fn login_wall(text: &str, has_password_field: bool) -> bool {
+/// A sign-in wall in a shopping flow: signing in is the owner's. A password
+/// field, a sign-in page title, or a sign-in heading; not a "Continue with
+/// Google" prompt in a corner (Google's one-tap sits on many shop pages).
+pub fn login_wall(title: &str, text: &str, has_password_field: bool) -> bool {
+    const SIGN_IN: &[&str] = &[
+        "log in", "login", "sign in", "sign up", "log ind", "opret konto", "accedi", "registrati",
+        "log in or sign up", "log in or create an account", "log ind eller opret",
+    ];
     has_password_field
-        || has(text, &[
-            "log in or sign up", "log in or create an account", "sign in to continue",
-            "log ind eller opret", "log ind for at fortsætte", "accedi o registrati",
-            "accedi per continuare", "continue with google", "fortsæt med google",
-        ])
+        || has(title, SIGN_IN)
+        || text.lines().any(|l| l.starts_with('#') && !l.starts_with("# Page:") && has(l, SIGN_IN))
 }
 
 /// The amount to pay as the page writes it ("189,00 kr.", "DKK 189", "€ 12,50").
