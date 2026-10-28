@@ -21,6 +21,7 @@ import { createLive, trackHold } from "./live/liveController";
 import { LiveIcon } from "./live/LiveIcons";
 import { LiveVideo } from "./live/LiveVideo";
 import { SimilarIcon } from "./smart/SmartIcons";
+import { createViewerFaces } from "./faces/viewerFaces";
 import { ShareSheet } from "./share/ShareSheet";
 import { AlbumIcon, DownloadIcon, HeartIcon, InfoIcon, RenameIcon, RestoreIcon, RotateIcon, TrashIcon } from "./ViewerIcons";
 
@@ -39,6 +40,10 @@ export interface GalleryViewerProps {
   archive?: boolean;
   /** Show "Similar photos" (smart search is on): called with the photo to look for pictures like it. */
   onSimilar?: (item: GalleryItem) => void;
+  /** A person in the info panel was chosen: open their page. */
+  onPerson?: (id: string) => void;
+  /** A face was assigned or unassigned (a person's photo count may have changed). */
+  onPeopleChanged?: () => void;
 }
 
 type Dialog = "delete" | "album" | "rename" | "share" | "lab" | null;
@@ -143,6 +148,8 @@ export function GalleryViewer(props: GalleryViewerProps) {
     queues.set(id, task.catch(() => undefined));
     return task;
   }
+
+  const faces = createViewerFaces(() => current()?.id, { onPeopleChanged: () => props.onPeopleChanged?.(), onError: setError });
 
   const favorite = () => {
     const item = current();
@@ -264,7 +271,7 @@ export function GalleryViewer(props: GalleryViewerProps) {
 
   const onKeyDown = (e: KeyboardEvent): boolean => {
     // A dialog owns the keyboard; so does a text field, and the editor over the viewer.
-    if (editing() || dialog() || typing(e.target)) return true;
+    if (editing() || dialog() || faces.picking() || typing(e.target)) return true;
     if (e.metaKey || e.ctrlKey || e.altKey) return false;
     // On a focused video the arrows seek; they must not also page.
     if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && e.target instanceof HTMLVideoElement) return true;
@@ -278,6 +285,12 @@ export function GalleryViewer(props: GalleryViewerProps) {
       case "I":
         e.preventDefault();
         toggleInfo();
+        return true;
+      case "p":
+      case "P":
+        if (!faces.available() || current()?.kind !== "photo") return false;
+        e.preventDefault();
+        faces.toggle();
         return true;
       case "f":
       case "F":
@@ -361,6 +374,7 @@ export function GalleryViewer(props: GalleryViewerProps) {
               <span class="gl-btn__label">{t("galleryLive.label")}</span>
             </button>
           </Show>
+          <Show when={item().kind === "photo"}>{faces.button()}</Show>
           <Show when={props.onSimilar && item().kind === "photo"}>
             <button type="button" class="pv-btn" aria-label={t("gallerySmart.similar")} title={t("gallerySmart.similar")} onClick={() => props.onSimilar?.(item())}>
               <SimilarIcon />
@@ -444,7 +458,7 @@ export function GalleryViewer(props: GalleryViewerProps) {
 
   const Panel = () => (
     <Show when={current()}>
-      {(item) => <PhotoInfo item={item()} trash={props.trash} onClose={toggleInfo} onCaption={saveCaption} />}
+      {(item) => <PhotoInfo item={item()} trash={props.trash} onClose={toggleInfo} onCaption={saveCaption} onPerson={props.onPerson} peopleKey={faces.revision()} />}
     </Show>
   );
 
@@ -460,7 +474,10 @@ export function GalleryViewer(props: GalleryViewerProps) {
         panel={infoOpen() ? <Panel /> : undefined}
         onKeyDown={onKeyDown}
         renderOverlay={({ item, current: here, style, placed }) => (
-          <Show when={here() && liveOf(item()?.id)}>{(pair) => <LiveVideo pairId={pair()} live={live} style={style} placed={placed} />}</Show>
+          <>
+            <Show when={here() && liveOf(item()?.id)}>{(pair) => <LiveVideo pairId={pair()} live={live} style={style} placed={placed} />}</Show>
+            {faces.layer({ current: here, style, placed })}
+          </>
         )}
         renderVideo={({ item, current }) => (
           <GalleryVideo id={item.id ?? ""} poster={item.poster} durationMs={listed(item.id ?? "")?.durationMs} active={current} />
@@ -478,6 +495,7 @@ export function GalleryViewer(props: GalleryViewerProps) {
           </Portal>
         )}
       </Show>
+      {faces.picker()}
       <Show when={editing() && current()}>{(item) => <PhotoEditor item={item()} onClose={() => setEditing(false)} onSaved={edited} />}</Show>
       <Show when={current()}>
         {(item) => (

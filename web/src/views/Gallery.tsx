@@ -4,7 +4,10 @@ import {
   batch,
   getAlbum,
   getEmbeddingStatus,
+  getPerson,
+  listGallery,
   listMonths,
+  listPersonItems,
   listSimilar,
   listSources,
   searchSmart,
@@ -22,6 +25,8 @@ import { createGalleryFeed, SEEK_PAGE } from "../components/gallery/GridFeed";
 import { GridView, type GridCommand, type TileClick } from "../components/gallery/GridView";
 import { SelectionBar } from "../components/gallery/SelectionBar";
 import { ArchiveBoxIcon, PlacesIcon } from "../components/gallery/browse/BrowseIcons";
+import { PeopleIcon } from "../components/gallery/faces/FaceIcons";
+import { PersonHeader } from "../components/gallery/people/PersonHeader";
 import { MemoriesStrip } from "../components/gallery/browse/MemoriesStrip";
 import { SourceBar } from "../components/gallery/SourceBar";
 import { SmartHeader } from "../components/gallery/smart/SmartHeader";
@@ -31,6 +36,7 @@ import { ShareSheet } from "../components/gallery/share/ShareSheet";
 import { BackIcon, LinkIcon, SearchIcon, TrashIcon } from "../components/Icons";
 import { t } from "../i18n";
 import { ALBUMS_PATH } from "../lib/galleryAlbums";
+import { PEOPLE_PATH, personName, personPath } from "../lib/galleryPeople";
 import { rangeIds, sectionKey, sourceIdOf, toggleId, type GroupBy } from "../lib/galleryLayout";
 import { lookedAt, smartPager, smartReady, usesSmart, withSearch, type SearchMode } from "../lib/gallerySmart";
 import { supportsJxl } from "../lib/jxl";
@@ -65,12 +71,13 @@ function initialOrigin(): string {
   return mac ? `device:${mac.id}` : "all";
 }
 
-export default function GalleryView(props: { trash?: boolean; archive?: boolean; album?: string }) {
+export default function GalleryView(props: { trash?: boolean; archive?: boolean; album?: string; person?: string }) {
   const trash = () => !!props.trash;
   const archive = () => !!props.archive;
   const albumId = () => props.album;
-  // The shelves and an album list everything of theirs, whatever source the Gallery was last switched to.
-  const shelf = () => trash() || archive() || !!albumId();
+  const personId = () => props.person;
+  // The shelves, an album and a person list everything of theirs, whatever source the Gallery was last switched to.
+  const shelf = () => trash() || archive() || !!albumId() || !!personId();
   // `?bbox=w,s,e,n` shows the pictures of one Places cluster.
   const [params, setParams] = useSearchParams<{ bbox?: string }>();
   const bbox = () => (typeof params.bbox === "string" && params.bbox ? params.bbox : undefined);
@@ -89,6 +96,9 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
   const navigate = useNavigate();
   const [album, { mutate: setAlbum }] = createResource(albumId, (id) => getAlbum(id).catch(() => null));
   const albumGone = () => !!albumId() && !album.loading && !album();
+  // A person's page: the same grid over the photos with that person's face (the people API pages them).
+  const [person, { mutate: setPerson, refetch: refetchPerson }] = createResource(personId, (id) => getPerson(id).catch(() => null));
+  const personGone = () => !!personId() && !person.loading && !person();
 
   // ---- smart search: the box asks by meaning when the server can, else by words ---------------------------------------
   const smartAllowed = () => !trash() && !archive();
@@ -134,6 +144,7 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
         archived: archive() || undefined,
         bbox: bbox(),
         album: albumId(),
+        person: personId(),
       },
       { smart: smartOn(), similarTo: similarOn() ? similar()!.id : null },
     ),
@@ -144,14 +155,14 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
       setSimilar(null);
     },
     onStatus: setLatestStatus,
-  });
+  }, (request) => (request.person ? listPersonItems(request.person, request) : listGallery(request)));
   const feed = createGalleryFeed(query, pager);
   const items = feed.items;
   const filtered = () => kind() !== "all" || favorite() || !!from() || !!to() || !!q() || !!bbox() || similarOn();
 
   const [months, { refetch: refetchMonths }] = createResource(
     // The scrubber counts the whole library, so an album doesn't ask for it.
-    () => (albumId() ? false : { origin: shelf() ? "all" : origin(), kind: kind(), favorite: favorite(), trashed: trash(), archived: archive() }),
+    () => (albumId() || personId() ? false : { origin: shelf() ? "all" : origin(), kind: kind(), favorite: favorite(), trashed: trash(), archived: archive() }),
     (key) => listMonths(key).catch(() => []),
   );
 
@@ -410,7 +421,11 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
                 ? t("galleryAlbums.albumMissing")
                 : albumId()
                   ? t("galleryAlbums.emptyAlbum")
-                  : t("gallery.empty");
+                  : personGone()
+                    ? t("galleryPeople.personMissing")
+                    : personId()
+                      ? t("galleryPeople.emptyPerson")
+                      : t("gallery.empty");
   const settled = () => !feed.loading() && feed.items().length === 0 && !feed.hasMore();
   const seg = (value: KindFilter, label: string) => (
     <button type="button" class="g-seg__btn" aria-pressed={kind() === value} onClick={() => setKind(value)}>
@@ -419,26 +434,26 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
   );
 
   return (
-    <section class="gallery" classList={{ "gallery--trash": trash(), "gallery--archive": archive(), "gallery--album": !!albumId() }} aria-labelledby="gallery-title">
+    <section class="gallery" classList={{ "gallery--trash": trash(), "gallery--archive": archive(), "gallery--album": !!albumId(), "gallery--person": !!personId() }} aria-labelledby="gallery-title">
       <div class="g-top">
         <Show
           when={selected().size > 0}
           fallback={
             <header class="g-bar">
               <Show when={shelf()}>
-                <A class="g-back" href={albumId() ? ALBUMS_PATH : "/gallery"} aria-label={albumId() ? t("galleryAlbums.title") : t("gallery.backToGallery")}>
+                <A class="g-back" href={albumId() ? ALBUMS_PATH : personId() ? PEOPLE_PATH : "/gallery"} aria-label={albumId() ? t("galleryAlbums.title") : personId() ? t("galleryPeople.backToPeople") : t("gallery.backToGallery")}>
                   <BackIcon />
                 </A>
               </Show>
               <h1 class="g-title" id="gallery-title">
-                {trash() ? t("gallery.trashTitle") : archive() ? t("browse.archiveTitle") : albumId() ? album()?.title || t("galleryAlbums.title") : t("gallery.title")}
+                {trash() ? t("gallery.trashTitle") : archive() ? t("browse.archiveTitle") : albumId() ? album()?.title || t("galleryAlbums.title") : personId() ? (person() ? personName(person()!, t("galleryPeople.unnamed")) : t("galleryPeople.title")) : t("gallery.title")}
               </h1>
               <label class="g-search">
                 <SearchIcon />
                 <input
                   type="search"
                   value={draft()}
-                  placeholder={t("gallery.searchPlaceholder")}
+                  placeholder={person() ? (person()!.name ? t("galleryPeople.searchWithin", { name: person()!.name! }) : t("galleryPeople.searchWithinUnnamed")) : t("gallery.searchPlaceholder")}
                   aria-label={t("gallery.search")}
                   onInput={(e) => setDraft(e.currentTarget.value)}
                   onKeyDown={(e) => {
@@ -450,6 +465,9 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
               <Show when={!shelf()}>
                 <A class="g-iconbtn" href="/gallery/albums" aria-label={t("galleryAlbums.link")} title={t("galleryAlbums.link")}>
                   <AlbumIcon />
+                </A>
+                <A class="g-iconbtn" href={PEOPLE_PATH} aria-label={t("galleryPeople.link")} title={t("galleryPeople.link")}>
+                  <PeopleIcon />
                 </A>
                 <A class="g-iconbtn" href="/gallery/places" aria-label={t("browse.placesLink")} title={t("browse.placesLink")}>
                   <PlacesIcon />
@@ -563,6 +581,7 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
             onClearSimilar={() => setSimilar(null)}
           />
         </Show>
+        <Show when={person()}>{(p) => <PersonHeader person={p()} onChanged={setPerson} />}</Show>
         <Show when={trash()}>
           <p class="g-note">{t("gallery.trashNote")}</p>
         </Show>
@@ -598,7 +617,7 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
           hasMore={feed.hasMore()}
           failed={feed.failed()}
           months={months() ?? []}
-          scrubber={!q() && !from() && !to() && !bbox() && !albumId() && !similarOn()}
+          scrubber={!q() && !from() && !to() && !bbox() && !albumId() && !personId() && !similarOn()}
           onNeedMore={() => void feed.loadMore()}
           onRetry={() => void feed.loadMore()}
           onSeek={loadUntil}
@@ -653,6 +672,11 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
           trash={trash()}
           archive={archive()}
           onSimilar={smartAllowed() && !refused() && smartReady(smartStatus()) ? showSimilar : undefined}
+          onPerson={(id) => {
+            setViewer(null);
+            navigate(personPath(id));
+          }}
+          onPeopleChanged={personId() ? () => void refetchPerson() : undefined}
         />
       </Show>
       <Show when={deleting()}>

@@ -97,6 +97,8 @@ export interface GalleryQuery {
   /** `west,south,east,north` in degrees: only pictures with a position inside it (a Places cluster). */
   bbox?: string;
   album?: string;
+  /** Only pictures with a face of this person (the people API: `people/{id}/items`, and smart search's `person=`). */
+  person?: string;
   /** With `q`: rank by meaning (smart search) instead of matching words; see `listGalleryPage`. */
   smart?: boolean;
   /** Pictures that look like this one (smart search); `q` is ignored. */
@@ -125,10 +127,17 @@ export interface Exif {
   offset: string | null;
 }
 
+/** A person as the photo's details name them (see `Person` for the people page's full record). */
+export interface PersonRef {
+  /** null for a name that comes as plain text (a server without the people API). */
+  id: string | null;
+  name: string | null;
+}
+
 export interface ItemDetails {
   item: GalleryItem;
   exif: Exif | null;
-  people: string[];
+  people: PersonRef[];
 }
 
 export type BatchOp = "trash" | "restore" | "purge" | "favorite" | "unfavorite" | "album_add" | "album_remove" | "archive" | "unarchive";
@@ -211,6 +220,22 @@ export function parseItem(raw: unknown): GalleryItem | null {
   };
 }
 
+/** `[{id, name}]`; a plain string is a name with no person to open. */
+export function parsePersonRefs(raw: unknown): PersonRef[] {
+  if (!Array.isArray(raw)) return [];
+  const out: PersonRef[] = [];
+  for (const entry of raw) {
+    if (typeof entry === "string") {
+      if (entry) out.push({ id: null, name: entry });
+      continue;
+    }
+    const r = obj(entry);
+    const id = str(r.id);
+    if (id) out.push({ id, name: str(r.name) });
+  }
+  return out;
+}
+
 function parseSource(raw: unknown): GallerySource | null {
   const r = obj(raw);
   const id = str(r.id);
@@ -261,6 +286,7 @@ export function galleryQueryString(q: GalleryQuery): string {
   if (q.archived) params.set("archived", "true");
   if (q.bbox) params.set("bbox", q.bbox);
   if (q.album) params.set("album", q.album);
+  if (q.person) params.set("person", q.person);
   if (q.cursor) params.set("cursor", q.cursor);
   params.set("limit", String(Math.min(500, Math.max(1, q.limit ?? 200))));
   return params.toString();
@@ -296,7 +322,7 @@ export async function getDetails(id: string): Promise<ItemDetails | null> {
   const body = obj(await request<unknown>("GET", `/v1/media/items/${enc(id)}/details`));
   const item = parseItem(body.item);
   if (!item) return null;
-  return { item, exif: parseExif(body.exif), people: Array.isArray(body.people) ? body.people.filter((p): p is string => typeof p === "string") : [] };
+  return { item, exif: parseExif(body.exif), people: parsePersonRefs(body.people) };
 }
 
 export interface ItemEdit {
@@ -1021,4 +1047,218 @@ export async function listGalleryPage(q: GalleryQuery): Promise<GalleryPage> {
   if (q.similarTo) return listSimilar(q.similarTo, q);
   if (q.smart && q.q?.trim()) return searchSmart(q);
   return listGallery(q);
+}
+
+// ---- people (views/GalleryPeople.tsx, GalleryPerson via Gallery, components/gallery/people) --------------------------------
+// Face recognition runs on this server only and is off until the owner turns it on. Faces are found once per photo, grouped
+// into people, and a face the owner assigns by hand is never moved by the grouping. Boxes are fractions (0..1) of the picture
+// as the renditions show it, before the rotation the client draws.
+
+export interface FaceSettings {
+  enabled: boolean;
+  model: string | null;
+  /** Photos looked at / still waiting. */
+  scanned: number;
+  pending: number;
+  faces: number;
+  people: number;
+  running: boolean;
+  pausedHot: boolean;
+  pausedBusy: boolean;
+}
+
+export interface Person {
+  id: string;
+  /** null until the owner names the person. */
+  name: string | null;
+  hidden: boolean;
+  /** `YYYY-MM-DD`, else null. */
+  birthDate: string | null;
+  faceCount: number;
+  /** Photos with a face of this person. */
+  itemCount: number;
+  coverFaceId: string | null;
+  thumbUrl: string | null;
+}
+
+export interface FaceBox {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface ItemFace {
+  id: string;
+  box: FaceBox;
+  score: number;
+  /** `manual`: the owner assigned it, the grouping leaves it alone. */
+  source: "ml" | "manual";
+  person: { id: string; name: string | null } | null;
+}
+
+export interface UnassignedFace {
+  id: string;
+  itemId: string | null;
+  thumbUrl: string;
+  score: number;
+}
+
+/** Where a face goes: a person, nobody (`personId: null`), or a new person with this name. */
+export type FaceTarget = { personId: string | null } | { newPerson: string };
+
+export const PERSON_NAME_MAX = 80;
+export const UNASSIGNED_PAGE = 60;
+
+export const faceThumbUrl = (faceId: string): string => `/v1/media/faces/${enc(faceId)}/thumb`;
+
+export function parseFaceSettings(raw: unknown): FaceSettings {
+  const r = obj(raw);
+  const count = (v: unknown) => Math.max(0, Math.round(num(v) ?? 0));
+  return {
+    enabled: r.enabled === true,
+    model: str(r.model),
+    scanned: count(r.scanned),
+    pending: count(r.pending),
+    faces: count(r.faces),
+    people: count(r.people),
+    running: r.running === true,
+    pausedHot: r.paused_hot === true,
+    pausedBusy: r.paused_busy === true,
+  };
+}
+
+const date = (v: unknown): string | null => (typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null);
+
+export function parsePerson(raw: unknown): Person | null {
+  const r = obj(raw);
+  const id = str(r.id);
+  if (!id) return null;
+  return {
+    id,
+    name: str(r.name),
+    hidden: r.hidden === true,
+    birthDate: date(r.birth_date),
+    faceCount: Math.max(0, Math.round(num(r.face_count) ?? 0)),
+    itemCount: Math.max(0, Math.round(num(r.item_count) ?? 0)),
+    coverFaceId: str(r.cover_face_id),
+    thumbUrl: sameOriginPath(r.thumb_url) ?? null,
+  };
+}
+
+/** A box inside the picture with a size; anything else is dropped (the face is not drawn). */
+export function parseFaceBox(raw: unknown): FaceBox | null {
+  const b = obj(raw);
+  const x = num(b.x);
+  const y = num(b.y);
+  const w = num(b.w);
+  const h = num(b.h);
+  if (x === null || y === null || w === null || h === null || w <= 0 || h <= 0) return null;
+  const left = Math.min(1, Math.max(0, x));
+  const top = Math.min(1, Math.max(0, y));
+  const width = Math.min(1 - left, w);
+  const height = Math.min(1 - top, h);
+  return width > 0 && height > 0 ? { x: left, y: top, w: width, h: height } : null;
+}
+
+export function parseItemFace(raw: unknown): ItemFace | null {
+  const r = obj(raw);
+  const id = str(r.id);
+  const box = parseFaceBox(r.box);
+  if (!id || !box) return null;
+  const person = obj(r.person);
+  const personId = str(person.id);
+  return {
+    id,
+    box,
+    score: num(r.score) ?? 0,
+    source: r.source === "manual" ? "manual" : "ml",
+    person: personId ? { id: personId, name: str(person.name) } : null,
+  };
+}
+
+export async function getFaceSettings(): Promise<FaceSettings> {
+  return parseFaceSettings(await request<unknown>("GET", "/v1/media/faces/settings"));
+}
+
+/** Turn recognition on or off. Off stops the scanning; nothing is deleted. */
+export async function setFacesEnabled(enabled: boolean): Promise<FaceSettings> {
+  return parseFaceSettings(await request<unknown>("PUT", "/v1/media/faces/settings", { body: { enabled } }));
+}
+
+/** Delete every face, person and crop (recognition is turned off too). */
+export async function deleteFaceData(): Promise<void> {
+  await request<unknown>("DELETE", "/v1/media/faces", { timeoutMs: 60_000 });
+}
+
+export async function listPeople(opts: { minFaces?: number; includeHidden?: boolean } = {}): Promise<Person[]> {
+  const params = new URLSearchParams();
+  if (opts.minFaces !== undefined) params.set("min_faces", String(opts.minFaces));
+  if (opts.includeHidden) params.set("include_hidden", "true");
+  const query = params.toString();
+  const body = obj(await request<unknown>("GET", `/v1/media/people${query ? `?${query}` : ""}`));
+  return (Array.isArray(body.people) ? body.people : []).map(parsePerson).filter((p): p is Person => p !== null);
+}
+
+export async function getPerson(id: string): Promise<Person | null> {
+  return parsePerson(await request<unknown>("GET", `/v1/media/people/${enc(id)}`));
+}
+
+export interface PersonEdit {
+  /** null (or blank) removes the name. */
+  name?: string | null;
+  hidden?: boolean;
+  /** `YYYY-MM-DD`, or null to clear it. */
+  birthDate?: string | null;
+  coverFaceId?: string;
+}
+
+export async function patchPerson(id: string, edit: PersonEdit): Promise<Person> {
+  const body: Raw = {};
+  if (edit.name !== undefined) body.name = edit.name === null ? null : edit.name.trim().slice(0, PERSON_NAME_MAX) || null;
+  if (edit.hidden !== undefined) body.hidden = edit.hidden;
+  if (edit.birthDate !== undefined) body.birth_date = edit.birthDate;
+  if (edit.coverFaceId !== undefined) body.cover_face_id = edit.coverFaceId;
+  const person = parsePerson(await request<unknown>("PATCH", `/v1/media/people/${enc(id)}`, { body }));
+  if (!person) throw new Error("person not updated");
+  return person;
+}
+
+/** Move the faces of `from` to `keep` and delete those people. */
+export async function mergePeople(keep: string, from: string[]): Promise<Person> {
+  const person = parsePerson(await request<unknown>("POST", `/v1/media/people/${enc(keep)}/merge`, { body: { from }, timeoutMs: 60_000 }));
+  if (!person) throw new Error("people not merged");
+  return person;
+}
+
+/** A page of one person's photos: the listing's own filters and paging, the person's route. */
+export async function listPersonItems(id: string, q: GalleryQuery = {}): Promise<GalleryPage> {
+  const body = obj(await request<unknown>("GET", `/v1/media/people/${enc(id)}/items?${galleryQueryString({ ...q, person: undefined })}`));
+  const items = (Array.isArray(body.items) ? body.items : []).map(parseItem).filter((i): i is GalleryItem => i !== null);
+  return { items, nextCursor: str(body.next_cursor) };
+}
+
+export async function listItemFaces(itemId: string): Promise<ItemFace[]> {
+  const body = obj(await request<unknown>("GET", `/v1/media/items/${enc(itemId)}/faces`));
+  return (Array.isArray(body.faces) ? body.faces : []).map(parseItemFace).filter((f): f is ItemFace => f !== null);
+}
+
+/** Assign a face (to a person, to nobody, or to a new person). The server marks it as the owner's choice. */
+export async function assignFace(faceId: string, target: FaceTarget): Promise<ItemFace | null> {
+  const body: Raw = "newPerson" in target ? { new_person: target.newPerson.trim().slice(0, PERSON_NAME_MAX) } : { person_id: target.personId };
+  return parseItemFace(await request<unknown>("PUT", `/v1/media/faces/${enc(faceId)}`, { body }));
+}
+
+export async function listUnassignedFaces(opts: { cursor?: string | null; limit?: number } = {}): Promise<{ faces: UnassignedFace[]; nextCursor: string | null }> {
+  const params = new URLSearchParams({ limit: String(opts.limit ?? UNASSIGNED_PAGE) });
+  if (opts.cursor) params.set("cursor", opts.cursor);
+  const body = obj(await request<unknown>("GET", `/v1/media/faces/unassigned?${params}`));
+  const faces: UnassignedFace[] = [];
+  for (const entry of Array.isArray(body.faces) ? body.faces : []) {
+    const r = obj(entry);
+    const id = str(r.id);
+    if (!id) continue;
+    faces.push({ id, itemId: str(r.item_id), thumbUrl: sameOriginPath(r.thumb_url) ?? faceThumbUrl(id), score: num(r.score) ?? 0 });
+  }
+  return { faces, nextCursor: str(body.next_cursor) };
 }

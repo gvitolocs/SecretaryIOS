@@ -17,7 +17,9 @@
 // serves MOCK_GALLERY_VIDEO (an mp4 on disk) for every video.
 // Albums, Live Photos and smart search (the albums API, `live_pair` on some phone photos with a hidden motion clip,
 // embeddings/status, items/search, items/{id}/similar): mock/galleryMl.mjs.
+// Faces and people (faces/settings, people, items/{id}/faces, the `person` filter, faces drawn on the pictures): mock/galleryFaces.mjs.
 
+import { facesSvg, handleGalleryFaces, hasPerson, peopleOf } from "./galleryFaces.mjs";
 import { handleGalleryMl } from "./galleryMl.mjs";
 import { handleLab } from "./lab.mjs";
 
@@ -307,6 +309,7 @@ function matcher(p) {
   const favorite = p.get("favorite") === "true";
   const q = (p.get("q") ?? "").trim().toLowerCase();
   const album = p.get("album");
+  const person = p.get("person");
   const from = p.get("from") ? Date.parse(`${p.get("from").slice(0, 10)}T00:00:00Z`) : null;
   const to = p.get("to") ? Date.parse(`${p.get("to").slice(0, 10)}T00:00:00Z`) + DAY : null;
   return (it) => {
@@ -322,6 +325,7 @@ function matcher(p) {
     if (!originMatches(it, origin)) return false;
     if (favorite && !it.favorite) return false;
     if (album && !it.albums.includes(album)) return false;
+    if (person && !hasPerson(it.id, person)) return false;
     if (from !== null || to !== null) {
       const ms = Date.parse(it.sort_at);
       if (from !== null && ms < from) return false;
@@ -369,7 +373,7 @@ function svgFor(it, size) {
   const play = it.kind === "video"
     ? `<circle cx="${w / 2}" cy="${h / 2}" r="${Math.min(w, h) / 7}" fill="rgba(0,0,0,.45)"/><path d="M${w / 2 - fs * 0.6} ${h / 2 - fs} L${w / 2 + fs * 1.1} ${h / 2} L${w / 2 - fs * 0.6} ${h / 2 + fs} Z" fill="#fff"/>`
     : "";
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${a}"/><stop offset="1" stop-color="${b}"/></linearGradient></defs><rect width="${w}" height="${h}" fill="url(#g)"/><path d="M0 ${h} L${w * 0.38} ${h * 0.55} L${w * 0.6} ${h * 0.8} L${w * 0.78} ${h * 0.62} L${w} ${h} Z" fill="rgba(0,0,0,.22)"/><circle cx="${w * 0.78}" cy="${h * 0.22}" r="${Math.min(w, h) * 0.09}" fill="rgba(255,255,255,.55)"/><text x="${w * 0.06}" y="${h * 0.12 + fs}" font-family="monospace" font-size="${fs}" fill="#fff" fill-opacity=".9">#${it.index}</text><text x="${w * 0.06}" y="${h * 0.12 + fs * 2.2}" font-family="monospace" font-size="${Math.round(fs * 0.7)}" fill="#fff" fill-opacity=".75">${day}</text>${play}</svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${a}"/><stop offset="1" stop-color="${b}"/></linearGradient></defs><rect width="${w}" height="${h}" fill="url(#g)"/><path d="M0 ${h} L${w * 0.38} ${h * 0.55} L${w * 0.6} ${h * 0.8} L${w * 0.78} ${h * 0.62} L${w} ${h} Z" fill="rgba(0,0,0,.22)"/><circle cx="${w * 0.78}" cy="${h * 0.22}" r="${Math.min(w, h) * 0.09}" fill="rgba(255,255,255,.55)"/>${facesSvg(it.id, w, h)}<text x="${w * 0.06}" y="${h * 0.12 + fs}" font-family="monospace" font-size="${fs}" fill="#fff" fill-opacity=".9">#${it.index}</text><text x="${w * 0.06}" y="${h * 0.12 + fs * 2.2}" font-family="monospace" font-size="${Math.round(fs * 0.7)}" fill="#fff" fill-opacity=".75">${day}</text>${play}</svg>`;
 }
 
 // ---- handlers ----------------------------------------------------------------------------------------------------
@@ -621,6 +625,7 @@ export async function handleGallery(req, res, { path, method, url, send, fail, r
     }
   }
 
+  if (await handleGalleryFaces(req, res, { rest, method, url, send, fail, readJson }, { items: () => items, matcher, out })) return true;
   if (await handleGalleryMl(req, res, { rest, method, url, send, fail, readJson }, { albums, items: () => items, matcher, out })) return true;
   if (await handleLab(req, res, { rest, method, url, send, fail, readJson }, labEnv)) return true;
 
@@ -630,7 +635,7 @@ export async function handleGallery(req, res, { path, method, url, send, fail, r
     const sub = one[2] ?? "";
     if (!it) return fail(res, 404, "not_found", "no such item"), true;
     if (sub === "" && method === "GET") return send(res, 200, out(it)), true;
-    if (sub === "details" && method === "GET") return send(res, 200, { item: out(it), exif: exifFor(it), people: [] }), true;
+    if (sub === "details" && method === "GET") return send(res, 200, { item: out(it), exif: exifFor(it), people: peopleOf(it.id) }), true;
     if (sub === "" && method === "PATCH") {
       const body = await readJson(req);
       if (body.rotation !== undefined && ![0, 90, 180, 270].includes(body.rotation)) return fail(res, 400, "bad_rotation", "rotation: 0, 90, 180 or 270"), true;

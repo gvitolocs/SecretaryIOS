@@ -12,6 +12,7 @@ import {
   normalizeOffset,
   placeLine,
 } from "../../lib/galleryInfo";
+import { chipLabel, personPath } from "../../lib/galleryPeople";
 import { placeRoute } from "../../lib/mapKit";
 import { LucinaMap } from "../LucinaMap";
 import { CopyInfo } from "./compare/CopyInfo";
@@ -25,6 +26,10 @@ export interface PhotoInfoProps {
   onClose: () => void;
   /** Saves the caption; rejects when the server refuses (the draft stays). */
   onCaption: (caption: string) => Promise<void>;
+  /** A person chip was chosen (their page opens); without it the chips are plain links. */
+  onPerson?: (id: string) => void;
+  /** Changes when the photo's people did (a face was assigned): the details are asked for again. */
+  peopleKey?: number;
 }
 
 // ---- what the panel asks the server once per page, not per picture -------------------------------------------------
@@ -74,11 +79,12 @@ function Row(props: { label: string; children: JSX.Element }) {
 
 /** The info panel: when, where, what with, how big, from where, which albums, and the caption. */
 export function PhotoInfo(props: PhotoInfoProps) {
+  // The key is `<id>|<people revision>`: a string, so an edit of the item (a new object, the same id) asks for nothing.
   const [details] = createResource(
-    () => props.item.id,
-    async (id): Promise<ItemDetails | null> => {
+    () => `${props.item.id}|${props.peopleKey ?? 0}`,
+    async (key): Promise<ItemDetails | null> => {
       try {
-        return await getDetails(id);
+        return await getDetails(key.slice(0, key.lastIndexOf("|")));
       } catch {
         return null;
       }
@@ -108,8 +114,15 @@ export function PhotoInfo(props: PhotoInfoProps) {
     },
   );
 
-  const exif = () => (details.state === "ready" ? (details()?.exif ?? null) : null);
-  const people = () => (details.state === "ready" ? (details()?.people ?? []) : []);
+  // The details of this photo: kept while they are asked for again after a face changed hands (so nothing blinks), never
+  // those of the photo before.
+  const loaded = (): ItemDetails | null => {
+    if (details.state !== "ready" && details.state !== "refreshing") return null;
+    const d = details();
+    return d && d.item.id === props.item.id ? d : null;
+  };
+  const exif = () => loaded()?.exif ?? null;
+  const people = () => loaded()?.people ?? [];
   const item = () => props.item;
 
   const takenAt = () => item().takenAt ?? exif()?.takenAt ?? null;
@@ -191,7 +204,7 @@ export function PhotoInfo(props: PhotoInfoProps) {
         </p>
       </Show>
 
-      <Show when={details.loading}>
+      <Show when={details.loading && !loaded()}>
         <p class="gv-note" role="status">{t("galleryInfo.infoLoading")}</p>
       </Show>
       <Show when={details.state === "ready" && details() === null}>
@@ -299,7 +312,27 @@ export function PhotoInfo(props: PhotoInfoProps) {
           <Show when={people().length}>
             <Row label={t("galleryInfo.people")}>
               <ul class="gv-chips">
-                <For each={people()}>{(name) => <li class="gv-chip">{name}</li>}</For>
+                <For each={people()}>
+                  {(person) => (
+                    <li class="gv-chip">
+                      <Show when={person.id} fallback={chipLabel(person, t("galleryPeople.unnamed"))}>
+                        {(id) => (
+                          <a
+                            class="gv-chip__link"
+                            href={personPath(id())}
+                            onClick={(e) => {
+                              if (!props.onPerson || e.metaKey || e.ctrlKey || e.shiftKey) return;
+                              e.preventDefault();
+                              props.onPerson(id());
+                            }}
+                          >
+                            {chipLabel(person, t("galleryPeople.unnamed"))}
+                          </a>
+                        )}
+                      </Show>
+                    </li>
+                  )}
+                </For>
               </ul>
             </Row>
           </Show>
