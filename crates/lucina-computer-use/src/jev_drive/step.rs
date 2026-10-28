@@ -13,6 +13,8 @@ use super::{Element, Screen, Where};
 /// Jev's answer is acted on at or above this confidence (operation and target).
 pub const ACT_MIN_DEFAULT: f64 = 0.75;
 pub const DONE_MIN: f64 = 0.8;
+/// "done" is the top operation and the done question is at least this sure.
+pub const DONE_AGREE: f64 = 0.6;
 pub const STUCK_MIN: f64 = 0.85;
 /// Actions in a row that changed nothing before the drive counts as stuck.
 const UNCHANGED_MAX: usize = 3;
@@ -374,6 +376,20 @@ pub fn questions(target: Where, offer: &Offer, plan: &Plan, apps: &[String]) -> 
     qs
 }
 
+/// The page text that is not on screen (empty when the read had no frames).
+fn rest_of_page(screen: &Screen) -> &str {
+    let all = screen.all_text();
+    if all.len() <= screen.text.len() {
+        return "";
+    }
+    // The visible part is a subsequence; what follows its last line is below the fold.
+    let last = screen.text.lines().last().unwrap_or("");
+    match all.rfind(last).filter(|_| !last.is_empty()) {
+        Some(i) => &all[(i + last.len()).min(all.len())..],
+        None => all,
+    }
+}
+
 /// Jev's state for one step: compact, the task first.
 pub fn state(task: &str, target: Where, screen: &Screen, mem: &Memory, plan: &Plan, offer: &Offer) -> Value {
     let elements: Vec<String> = offer
@@ -391,6 +407,8 @@ pub fn state(task: &str, target: Where, screen: &Screen, mem: &Memory, plan: &Pl
         "current_app": if target == Where::Android { screen.title.as_str() } else { "" },
         "steps_taken": mem.history(),
         "visible_text": lucina_jev::clip(&screen.text, 3000),
+        // What the page holds beyond the viewport (results below the fold count for "done").
+        "rest_of_page": lucina_jev::clip(rest_of_page(screen), 2500),
         "elements": elements.join("\n"),
     })
 }
@@ -499,7 +517,9 @@ pub fn decide(offer: &Offer, d: &Decision, gate: f64, plan: &Plan) -> Next {
     let done = d.yes("done").unwrap_or(0.0);
     let stuck = d.yes("stuck").unwrap_or(0.0);
     let (op, oc) = d.choice("operation").unwrap_or(("blocked", 0.0));
-    if done >= DONE_MIN || (op == "done" && oc >= gate) {
+    // Two signals that agree are enough: the done question leans yes and
+    // "done" is Jev's top operation.
+    if done >= DONE_MIN || (op == "done" && (oc >= gate || done >= DONE_AGREE)) {
         return Next::Finish;
     }
     if stuck >= STUCK_MIN {

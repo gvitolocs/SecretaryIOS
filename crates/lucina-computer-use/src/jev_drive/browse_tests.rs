@@ -56,6 +56,8 @@ fn flights() -> Value {
             json!({"element_index": 47, "element_token": "s9:47", "role": "check box", "label": "Nonstop only",
                    "actions": ["click"], "checked": true, "enabled": true, "in_web_content": true,
                    "frame": {"x": 700.0, "y": 500.0, "w": 100.0, "h": 30.0}}),
+            // Below the fold: not Jev's view, but the answer reads it.
+            el(49, "static", "Norwegian 284 Danish kroner", &[], 300.0, 1500.0),
             json!({"element_index": 48, "element_token": "s9:48", "role": "push button", "label": "Hidden",
                    "actions": ["press"], "enabled": false, "in_web_content": true,
                    "frame": {"x": 700.0, "y": 550.0, "w": 100.0, "h": 30.0}}),
@@ -116,7 +118,10 @@ fn only_visible_in_page_elements_with_a_real_action_are_offered() {
     assert_eq!(nonstop.state, "checked");
     assert!(s.text.contains("# Page: Google Flights"));
     assert!(s.text.contains("# Flights"));
-    assert!(!s.text.contains("Skip to content"), "off-screen text is not read");
+    assert!(!s.text.contains("Skip to content"), "off-screen text is not Jev's view");
+    assert!(!s.text.contains("Norwegian 284"));
+    assert!(s.page_text.contains("Norwegian 284") && s.page_text.contains("# Flights"));
+    assert!(s.all_text().contains("Norwegian 284"));
 }
 
 #[test]
@@ -260,6 +265,8 @@ fn done_stuck_and_blocked_thresholds() {
     assert_eq!(step::decide(&o, &d("click", 0.1, 0.85, 0.0), 0.75, &plan), Next::Finish);
     assert_eq!(step::decide(&o, &d("done", 0.9, 0.3, 0.0), 0.75, &plan), Next::Finish);
     assert!(matches!(step::decide(&o, &d("done", 0.6, 0.3, 0.0), 0.75, &plan), Next::Fallback(_)));
+    // Agreeing signals: "done" on top and the done question at 0.65.
+    assert_eq!(step::decide(&o, &d("done", 0.4, 0.65, 0.0), 0.75, &plan), Next::Finish);
     assert!(matches!(step::decide(&o, &d("wait", 0.9, 0.1, 0.9), 0.75, &plan), Next::Escalate(_)));
     assert!(matches!(step::decide(&o, &d("blocked", 0.8, 0.1, 0.1), 0.75, &plan), Next::Escalate(_)));
     assert!(matches!(step::decide(&o, &d("wait", 0.9, 0.1, 0.1), 0.75, &plan), Next::Act(_)));

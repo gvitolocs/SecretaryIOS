@@ -130,6 +130,8 @@ pub fn parse_desktop_elements(v: &Value, title: &str, kind: Kind) -> Screen {
         }
     }
     let mut seen_text: HashSet<String> = HashSet::new();
+    let mut page_text: Vec<String> = text.clone();
+    let mut seen_page: HashSet<String> = HashSet::new();
     let mut seen_el: HashSet<(String, String, i64, i64)> = HashSet::new();
     for e in elements {
         let role = s(e, "role");
@@ -161,12 +163,18 @@ pub fn parse_desktop_elements(v: &Value, title: &str, kind: Kind) -> Screen {
             .unwrap_or_default();
         let acts = actions.iter().any(|a| REAL_ACTIONS.contains(a));
         let enabled = e.get("enabled").and_then(Value::as_bool).unwrap_or(true);
-        // Visible text (headings marked, for "done?" and the answer).
-        if in_page && visible && !label.is_empty() && (TEXT_ROLES.contains(&role) || role.starts_with("heading")) {
+        // Text (headings marked): the visible part for Jev's "done?", the whole
+        // page for the answer (a results list runs below the fold).
+        if in_page && !label.is_empty() && (TEXT_ROLES.contains(&role) || role.starts_with("heading")) {
             let line = if role.starts_with("heading") { format!("# {label}") } else { label.clone() };
             // Sections repeat their children's text: keep short ones only.
-            if (role != "section" || line.chars().count() <= 200) && seen_text.insert(line.clone()) {
-                text.push(line);
+            if role != "section" || line.chars().count() <= 200 {
+                if visible && seen_text.insert(line.clone()) {
+                    text.push(line.clone());
+                }
+                if seen_page.insert(line.clone()) {
+                    page_text.push(line);
+                }
             }
         }
         if !acts || !enabled || !visible || STRUCTURE.contains(&role) || role == "password text" {
@@ -214,6 +222,7 @@ pub fn parse_desktop_elements(v: &Value, title: &str, kind: Kind) -> Screen {
         screen.elements.push(element(e, role, &label, state));
     }
     screen.text = lucina_jev::clip(&text.join("\n"), 6000);
+    screen.page_text = lucina_jev::clip(&page_text.join("\n"), 16000);
     screen
 }
 

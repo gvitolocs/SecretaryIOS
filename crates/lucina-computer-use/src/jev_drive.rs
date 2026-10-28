@@ -243,6 +243,8 @@ pub struct Screen {
     pub title: String,
     /// Visible text, for "done?" and the answer.
     pub text: String,
+    /// The whole page's text, off-screen parts too (the answer reads it).
+    pub page_text: String,
     pub elements: Vec<Element>,
     /// The address bar's value, when the tree shows it.
     pub url: String,
@@ -523,6 +525,17 @@ pub fn parse_android(xml: &str) -> Screen {
 }
 
 /// E-mail addresses visible on the screen (the signed-in account chip, mail headers).
+impl Screen {
+    /// The whole page's text when the read has it, else the visible text.
+    pub fn all_text(&self) -> &str {
+        if self.page_text.is_empty() {
+            &self.text
+        } else {
+            &self.page_text
+        }
+    }
+}
+
 pub fn accounts(screen: &Screen) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let labels = screen.elements.iter().map(|e| e.label.as_str());
@@ -1018,7 +1031,7 @@ async fn fallback_pick(
             "Task: {task}\nPage: {}\nSteps taken: {}\nVisible text:\n{}\n\nCandidates:\n{}",
             screen.title,
             mem.history().join("; "),
-            lucina_jev::clip(&screen.text, 1500),
+            lucina_jev::clip(screen.all_text(), 3000),
             list.join("\n")
         ),
         40,
@@ -1053,7 +1066,7 @@ async fn answer(task: &str, screen: &Screen, history: &[String], stats: &mut Dri
             history.join("; "),
             screen.title,
             accounts(screen).join(", "),
-            lucina_jev::clip(&screen.text, 5000)
+            lucina_jev::clip(screen.all_text(), 8000)
         ),
         400,
         false,
