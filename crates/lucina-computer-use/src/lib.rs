@@ -105,8 +105,11 @@ pub enum Error {
     #[error("Computer-use request is empty or too long.")]
     BadRequest,
     /// The workspace permits Chromium only.
-    #[error("Lucina's computer uses Chromium only: use the browser_* tools (start_session first) or launch Chromium.")]
+    #[error("Lucina's computer uses Chromium only: work in its open Chromium window with get_window_state, click and type_text.")]
     BrowserPolicy,
+    /// The workspace has one Chromium; no isolated or second browser.
+    #[error("Lucina's computer has one Chromium, already open and signed in: work in that window with get_window_state, click and type_text; never launch an isolated profile or a second browser.")]
+    SecondBrowser,
     /// Cancelled by the caller (the gateway was stopped).
     #[error("Computer-use request cancelled.")]
     Cancelled,
@@ -152,7 +155,7 @@ impl Error {
             Self::NotEnabled => "not_enabled",
             Self::RecoveryRequired => "recovery_required",
             Self::Busy => "busy",
-            Self::BadRequest | Self::BrowserPolicy => "bad_request",
+            Self::BadRequest | Self::BrowserPolicy | Self::SecondBrowser => "bad_request",
             Self::Cancelled => "cancelled",
             Self::Deadline => "deadline_exceeded",
             Self::OutputLimit => "output_limit",

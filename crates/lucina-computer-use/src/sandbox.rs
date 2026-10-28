@@ -337,10 +337,26 @@ impl Sandbox {
                     .is_some_and(|s| s.eq_ignore_ascii_case("launch_app"))
                 && args.get("arguments").is_some_and(names_firefox));
         if denied {
-            Err(Error::BrowserPolicy)
-        } else {
-            Ok(())
+            return Err(Error::BrowserPolicy);
         }
+        // browser_prepare may attach to the open Chromium, never launch another.
+        let (name, inner) = if tool == "call_tool" {
+            (
+                args.get("tool").and_then(Value::as_str).unwrap_or(""),
+                args.get("arguments"),
+            )
+        } else {
+            (tool, Some(args))
+        };
+        if name.eq_ignore_ascii_case("browser_prepare")
+            && inner.is_some_and(|a| {
+                a.get("allow_launch").and_then(Value::as_bool) == Some(true)
+                    || a.get("profile").is_some_and(|p| !p.is_null())
+            })
+        {
+            return Err(Error::SecondBrowser);
+        }
+        Ok(())
     }
 
     /// One MCP `tools/call` over a fresh stdio session; the proxy is
@@ -473,7 +489,7 @@ mod tests {
             let e = sb.bash(command, None).await.unwrap_err();
             assert_eq!(e, Error::BrowserPolicy, "{command}");
             assert_eq!(e.code(), "bad_request");
-            assert_eq!(e.to_string(), "Lucina's computer uses Chromium only: use the browser_* tools (start_session first) or launch Chromium.");
+            assert_eq!(e.to_string(), "Lucina's computer uses Chromium only: work in its open Chromium window with get_window_state, click and type_text.");
             assert_eq!(
                 sb.call("space_bash", json!({"command":command}))
                     .await
@@ -494,6 +510,58 @@ mod tests {
                 Error::BrowserPolicy
             );
         }
+    }
+
+    #[tokio::test]
+    async fn workspace_refuses_a_second_browser() {
+        let sb = Sandbox::workspace().with_script("/nonexistent/cua-mcp.sh");
+        for args in [
+            json!({"session": "s", "allow_launch": true}),
+            json!({"session": "s", "profile": {"mode": "isolated_named", "name": "lucina"}}),
+            json!({"allow_launch": true, "profile": {"mode": "isolated_new"}}),
+        ] {
+            let e = sb
+                .call_tool("browser_prepare", args.clone())
+                .await
+                .unwrap_err();
+            assert_eq!(e, Error::SecondBrowser);
+            assert_eq!(e.code(), "bad_request");
+            assert_eq!(
+                sb.call("browser_prepare", args).await.unwrap_err(),
+                Error::SecondBrowser
+            );
+        }
+        // Attaching to the open window and the other browser tools pass the policy.
+        for (tool, args) in [
+            (
+                "browser_prepare",
+                json!({"session": "s", "pid": 1, "window_id": 2, "strategy": {"kind": "existing_profile"}}),
+            ),
+            (
+                "browser_prepare",
+                json!({"session": "s", "pid": 1, "allow_launch": false}),
+            ),
+            (
+                "get_browser_state",
+                json!({"session": "s", "pid": 1, "window_id": 2, "allow_launch": true}),
+            ),
+            (
+                "browser_navigate",
+                json!({"session": "s", "target_id": "t", "tab_id": "u", "url": "https://example.com"}),
+            ),
+        ] {
+            assert!(
+                sb.check_browser_policy("call_tool", &json!({"tool": tool, "arguments": args}))
+                    .is_ok(),
+                "{tool}"
+            );
+        }
+        assert!(Sandbox::android()
+            .check_browser_policy(
+                "call_tool",
+                &json!({"tool": "browser_prepare", "arguments": {"allow_launch": true}})
+            )
+            .is_ok());
     }
 
     #[test]
