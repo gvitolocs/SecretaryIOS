@@ -493,7 +493,7 @@ export default function TrainingDesk(props: { view: GymView }) {
                   <Show when={!props.view.state.active}>
                     <button
                       type="button"
-                      class="trd-btn"
+                      class="trd-link"
                       disabled={starting()}
                       onClick={() => {
                         const r = next();
@@ -501,7 +501,6 @@ export default function TrainingDesk(props: { view: GymView }) {
                         else void start({ type: "start_workout", title: gt("defaultWorkoutTitle") });
                       }}
                     >
-                      <PlayIcon />
                       {gt("startFirst")}
                     </button>
                   </Show>

@@ -959,5 +959,180 @@
   box-shadow: 0 0 16px color-mix(in srgb, var(--accent) 40%, transparent);
 }
 
+/* ---------- Exercise picker (gym/Picker.tsx) ----------
+ * Phone: the shared full-height sheet (styles.css .picker-sheet), unchanged; the
+ * picker's wrappers take no part in the layout. Wide window: a centred dialog whose
+ * frame owns the radius, border and clip; only .picker-body scrolls, with compact
+ * rows and the muscle chips (search covers equipment).
+ */
+
+.gym-picker :is(.picker-tools, .picker-body, .picker-foot) {
+  display: contents;
+}
+
+.gym-picker :is(.picker-tools, .picker-body, .picker-foot) > * {
+  flex: none;
+}
+
+.gym-picker .picker-item-meta,
+.gym-picker .picker-item-kind {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (min-width: 880px) {
+  .gym-picker.picker-sheet {
+    gap: 0;
+    width: min(640px, calc(100vw - 48px));
+    max-width: none;
+    height: auto;
+    max-height: 80vh;
+    padding: 0;
+    overflow: hidden;
+    border: 1px solid var(--border-strong);
+    border-radius: 16px;
+    background: var(--surface-solid);
+  }
+
+  /* The decorative hairline sized itself to the scrolling box and ended mid-list
+     (the routine builder sheet scrolls too): a plain border instead. */
+  .gym-picker.picker-sheet::before,
+  .routine-builder.picker-sheet::before {
+    display: none;
+  }
+
+  .routine-builder.picker-sheet {
+    border: 1px solid var(--border-strong);
+  }
+
+  .gym-picker .picker-head {
+    padding: 16px 16px 12px 24px;
+  }
+
+  .gym-picker .picker-head .section-title {
+    font-size: 17px;
+    font-weight: 600;
+  }
+
+  .gym-picker .picker-tools {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 0 24px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .gym-picker .picker-tools .text-input {
+    min-height: 40px;
+  }
+
+  .gym-picker .chip-group {
+    flex-wrap: wrap;
+    overflow: visible;
+    gap: 8px;
+    padding: 0;
+  }
+
+  .gym-picker .chip {
+    min-height: 28px;
+    padding: 0 12px;
+    font-size: 13px;
+  }
+
+  .gym-picker .picker-chips--equipment {
+    display: none;
+  }
+
+  .gym-picker .picker-body {
+    display: block;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 8px;
+  }
+
+  /* A scroll area can take keyboard focus; it gets no ring of its own, its rows do. */
+  .gym-picker .picker-body:focus {
+    outline: none;
+  }
+
+  .gym-picker .picker-body > .picker-create {
+    padding: 0 16px 16px;
+  }
+
+  .gym-picker .picker-body > .muted {
+    padding: 24px 0;
+  }
+
+  .gym-picker .picker-list {
+    border: 0;
+    border-radius: 0;
+    background: none;
+    overflow: visible;
+  }
+
+  .gym-picker .picker-list li + li {
+    border-top: 0;
+  }
+
+  .gym-picker .picker-item {
+    min-height: 44px;
+    padding: 6px 12px;
+    border-radius: 8px;
+  }
+
+  .gym-picker .picker-item:focus {
+    outline: none;
+  }
+
+  .gym-picker .picker-item:focus-visible {
+    outline: 2px solid var(--lu-accent);
+    outline-offset: -2px;
+  }
+
+  .gym-picker .picker-item:not(:disabled):hover {
+    background: color-mix(in srgb, var(--text) 7%, transparent);
+  }
+
+  .gym-picker .picker-item-main {
+    flex-direction: row;
+    align-items: baseline;
+    gap: 12px;
+  }
+
+  .gym-picker .picker-item-name {
+    flex: none;
+    font-size: 15px;
+  }
+
+  .gym-picker .picker-item-meta {
+    overflow: hidden;
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .gym-picker .picker-item-kind {
+    display: none;
+  }
+
+  .gym-picker .picker-item .badge {
+    flex: none;
+  }
+
+  .gym-picker .picker-foot {
+    display: block;
+    padding: 12px 24px 16px;
+    border-top: 1px solid var(--border);
+  }
+
+  .gym-picker .picker-foot .btn {
+    width: auto;
+    min-height: 36px;
+    padding: 0 14px;
+    font-size: 13px;
+  }
+}
+
 /* The desktop Training page (GymHome on a page at least WIDE_MIN_PX wide) has its own
    stylesheet: styles/gym-desk.css, loaded by gym/TrainingDesk.tsx. */
