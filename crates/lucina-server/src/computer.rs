@@ -95,12 +95,19 @@ pub(crate) fn cu_error(e: lucina_computer_use::Error) -> ApiError {
         | "recovery_required"
         | "viewer_unavailable" => 503,
         "bad_request" | "output_limit" => 400,
-        "busy" | "owner_driving" | "not_driving" => 409,
+        "busy" | "owner_driving" | "not_driving" | "owner_idle" => 409,
         "quota_exhausted" => 429,
         "deadline_exceeded" => 504,
         _ => 502,
     };
     ApiError::new(status, e.code(), e.to_string())
+}
+
+/// `clipboard_read` / `clipboard_write`: owner actions that are not input.
+fn is_clipboard_event(e: &Value) -> bool {
+    e.get("kind")
+        .and_then(Value::as_str)
+        .is_some_and(|k| k.starts_with("clipboard_"))
 }
 
 /// `x-lucina-caller` from secretary-server: `[a-z0-9:-]{1,40}`, else `app`.
@@ -200,7 +207,11 @@ fn job_json(id: &str, j: &Job) -> Value {
 }
 
 fn job_not_found() -> ApiError {
-    ApiError::new(404, "job_not_found", "no such computer job (jobs are kept for an hour)")
+    ApiError::new(
+        404,
+        "job_not_found",
+        "no such computer job (jobs are kept for an hour)",
+    )
 }
 
 fn prune_jobs(map: &mut HashMap<String, Job>) {
@@ -538,7 +549,9 @@ pub async fn computer(
             let Some(cfg) = crate::lan::config().filter(|_| crate::lan::ready()) else {
                 return Ok(ok(json!({"url": null})));
             };
-            Ok(ok(json!({"url": cfg.url, "publicIp": crate::lan::public_ip().await})))
+            Ok(ok(
+                json!({"url": cfg.url, "publicIp": crate::lan::public_ip().await}),
+            ))
         }
         (Some("screenshot"), None, _, 1) => {
             only(Method::GET)?;
@@ -585,7 +598,18 @@ pub async fn computer(
                     })))
                 }
                 "heartbeat" => {
-                    control().heartbeat(id).map_err(cu_error)?;
+                    // `active`: real input since the last heartbeat (newer apps say;
+                    // without it the heartbeat counts as input, as before).
+                    let beat = match v.get("active").and_then(Value::as_bool) {
+                        Some(active) => control().heartbeat_idle(id, active),
+                        None => control().heartbeat(id),
+                    };
+                    if let Err(e) = beat {
+                        if e.code() == "owner_idle" {
+                            crate::computer_view::drop_control_views(id);
+                        }
+                        return Err(cu_error(e));
+                    }
                     Ok(ok(json!({"state": control().state(id)})))
                 }
                 "release" => {
@@ -617,6 +641,11 @@ pub async fn computer(
             control()
                 .owner_input(id, &dev, batch_summary(events))
                 .map_err(cu_error)?;
+            // Clipboard reads and writes are allowed while driving but are not input:
+            // they never keep an idle owner's lease.
+            if events.iter().any(|e| !is_clipboard_event(e)) {
+                control().active(id).map_err(cu_error)?;
+            }
             let sb = sandbox(id);
             let mut done = 0usize;
             let mut outputs = Vec::new();
@@ -678,23 +707,69 @@ mod tests {
     use super::*;
 
     #[test]
+    fn clipboard_events_are_not_input() {
+        assert!(is_clipboard_event(&json!({"kind": "clipboard_read"})));
+        assert!(is_clipboard_event(
+            &json!({"kind": "clipboard_write", "text": "x"})
+        ));
+        assert!(!is_clipboard_event(
+            &json!({"kind": "click", "x": 1, "y": 2})
+        ));
+        assert!(!is_clipboard_event(&json!({"kind": "key", "key": "Enter"})));
+        assert!(!is_clipboard_event(&json!({})));
+    }
+
+    #[test]
     fn input_events_map_to_driver_tools() {
         let fg = "foreground";
         let (t, a) = input_event(&json!({"kind": "click", "x": 10, "y": 20})).unwrap();
         assert_eq!(t, "click");
-        assert_eq!(a, json!({"scope": "desktop", "x": 10, "y": 20, "button": "left", "count": 1, "delivery_mode": fg}));
-        let (t, a) = input_event(&json!({"kind": "scroll", "x": 1, "y": 2, "direction": "down"})).unwrap();
-        assert_eq!((t, a["amount"].clone(), a["delivery_mode"].clone()), ("scroll", json!(3), json!(fg)));
-        let (t, a) = input_event(&json!({"kind": "key", "key": "Return", "modifiers": ["ctrl"]})).unwrap();
-        assert_eq!((t, a), ("press_key", json!({"key": "Return", "modifiers": ["ctrl"], "delivery_mode": fg})));
+        assert_eq!(
+            a,
+            json!({"scope": "desktop", "x": 10, "y": 20, "button": "left", "count": 1, "delivery_mode": fg})
+        );
+        let (t, a) =
+            input_event(&json!({"kind": "scroll", "x": 1, "y": 2, "direction": "down"})).unwrap();
+        assert_eq!(
+            (t, a["amount"].clone(), a["delivery_mode"].clone()),
+            ("scroll", json!(3), json!(fg))
+        );
+        let (t, a) =
+            input_event(&json!({"kind": "key", "key": "Return", "modifiers": ["ctrl"]})).unwrap();
+        assert_eq!(
+            (t, a),
+            (
+                "press_key",
+                json!({"key": "Return", "modifiers": ["ctrl"], "delivery_mode": fg})
+            )
+        );
         let (t, a) = input_event(&json!({"kind": "type", "text": "hi"})).unwrap();
-        assert_eq!((t, a), ("type_text", json!({"text": "hi", "delivery_mode": fg})));
+        assert_eq!(
+            (t, a),
+            ("type_text", json!({"text": "hi", "delivery_mode": fg}))
+        );
         // The tools without the parameter do not get it (the driver rejects unknown arguments).
-        assert!(input_event(&json!({"kind": "move", "x": 1, "y": 1})).unwrap().1.get("delivery_mode").is_none());
+        assert!(input_event(&json!({"kind": "move", "x": 1, "y": 1}))
+            .unwrap()
+            .1
+            .get("delivery_mode")
+            .is_none());
         let (t, a) = input_event(&json!({"kind": "down", "x": 5, "y": 6})).unwrap();
-        assert_eq!((t, a), ("mouse_button_down", json!({"scope": "desktop", "x": 5, "y": 6, "button": "left"})));
+        assert_eq!(
+            (t, a),
+            (
+                "mouse_button_down",
+                json!({"scope": "desktop", "x": 5, "y": 6, "button": "left"})
+            )
+        );
         let (t, a) = input_event(&json!({"kind": "up", "x": 7, "y": 8, "button": "left"})).unwrap();
-        assert_eq!((t, a), ("mouse_button_up", json!({"scope": "desktop", "x": 7, "y": 8, "button": "left"})));
+        assert_eq!(
+            (t, a),
+            (
+                "mouse_button_up",
+                json!({"scope": "desktop", "x": 7, "y": 8, "button": "left"})
+            )
+        );
         for bad in [
             json!({"kind": "click", "x": -1, "y": 0}),
             json!({"kind": "click", "x": 1}),

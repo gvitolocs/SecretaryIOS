@@ -58,7 +58,10 @@
  *    Ctrl+V. A Ctrl/Cmd+C or X while driving tells the page (`lucina:copied`)
  *    to look for files on her clipboard, which it offers as downloads.
  *
- * 6. Toolbar. In focus mode the page's drive bar is the only toolbar:
+ * 6. Activity. Real input while driving is reported as `lucina:active` (at most
+ *    every 5 s); the page renews the owner's lease only with it.
+ *
+ * 7. Toolbar. In focus mode the page's drive bar is the only toolbar:
  *    `lucina:chrome {toolbar:false}` hides Cua's, whose buttons (scale,
  *    clipboard sync, sound, stats) are reported as `lucina:buttons` and pressed
  *    with `lucina:button {id}`.
@@ -846,6 +849,29 @@
     );
   }
 
+  // ------------------------------------------------------------------ active
+
+  var ACTIVE_EVERY_MS = 5000;
+  var lastActive = 0;
+
+  /**
+   * Real input in the stream (keys, mouse, touch) while driving, at most every 5 s: the page
+   * keeps the owner's lease only with it (two idle minutes give the desktop back to Lucina).
+   * Clipboard sync and the socket's own traffic never count.
+   */
+  function reportActivity() {
+    var mark = function () {
+      if (mode !== "control") return;
+      var now = Date.now();
+      if (now - lastActive < ACTIVE_EVERY_MS) return;
+      lastActive = now;
+      send({ type: "lucina:active" });
+    };
+    ["keydown", "pointerdown", "pointermove", "wheel", "touchstart"].forEach(function (ev) {
+      window.addEventListener(ev, mark, { capture: true, passive: true });
+    });
+  }
+
   // ----------------------------------------------------------------- toolbar
 
   /** Cua's buttons the page's drive bar mirrors in focus mode (its own toolbar is hidden there). */
@@ -966,5 +992,6 @@
   relayClipboardWrites();
   sendFilesWhileDriving();
   mirrorToolbar();
+  reportActivity();
   send({ type: "lucina:ready", coarse: COARSE, mode: mode });
 })();

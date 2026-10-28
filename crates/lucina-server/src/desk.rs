@@ -69,7 +69,10 @@ const MAX_CLIPBOARD_IMAGE: usize = 10 * 1024 * 1024;
 /// Larger than this the socket itself fails (tungstenite's limit); a little over the largest
 /// clipboard image, so a slightly oversized one is refused rather than ending the session.
 const MAX_FRAME: usize = MAX_CLIPBOARD_IMAGE + 1024 * 1024;
-const _: () = assert!(MAX_FRAME > 4 + MAX_CLIPBOARD_IMAGE, "the socket takes a full image");
+const _: () = assert!(
+    MAX_FRAME > 4 + MAX_CLIPBOARD_IMAGE,
+    "the socket takes a full image"
+);
 /// Binary frame kinds (contract section 4).
 const KIND_VIDEO: u8 = 1;
 const KIND_CLIPBOARD_IMAGE: u8 = 2;
@@ -109,7 +112,12 @@ const CODECS: [&str; 5] = ["vp8", "vp9", "av1", "h264", "h265"];
 /// The browser's list, known codecs only, in its order; anything malformed is ignored.
 fn codecs(v: &Value) -> String {
     let mut out: Vec<&str> = Vec::new();
-    for c in v.get("codecs").and_then(Value::as_array).into_iter().flatten() {
+    for c in v
+        .get("codecs")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
         if let Some(c) = c.as_str().and_then(|c| CODECS.iter().find(|k| **k == c)) {
             if !out.contains(c) {
                 out.push(c);
@@ -131,7 +139,12 @@ fn valid_ticket(t: &str) -> bool {
 }
 
 /// A new ticket for `device`, or 429 when it already has [`MAX_UNREDEEMED`] waiting.
-fn mint(sandbox: SandboxId, mode: ViewMode, device: &str, codecs: &str) -> Result<String, ApiError> {
+fn mint(
+    sandbox: SandboxId,
+    mode: ViewMode,
+    device: &str,
+    codecs: &str,
+) -> Result<String, ApiError> {
     let mut raw = [0u8; 32];
     getrandom::fill(&mut raw).map_err(|_| ApiError::internal())?;
     let ticket = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw);
@@ -215,10 +228,13 @@ type Gateway = tokio_tungstenite::WebSocketStream<tokio::net::UnixStream>;
 
 async fn connect_gateway(sb: SandboxId, codecs: &str, mode: ViewMode) -> Result<Gateway, String> {
     let path = gateway_path();
-    let stream = tokio::time::timeout(Duration::from_secs(5), tokio::net::UnixStream::connect(&path))
-        .await
-        .map_err(|_| "gateway connect timed out".to_owned())?
-        .map_err(|e| format!("gateway {}: {e}", path.display()))?;
+    let stream = tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio::net::UnixStream::connect(&path),
+    )
+    .await
+    .map_err(|_| "gateway connect timed out".to_owned())?
+    .map_err(|e| format!("gateway {}: {e}", path.display()))?;
     let mut url = format!("ws://lucinadesk-gateway/v1/session?sandbox={}", sb.as_str());
     if !codecs.is_empty() {
         url.push_str("&codecs=");
@@ -415,7 +431,11 @@ impl Filter {
         if elapsed >= Duration::from_secs(1) {
             if self.in_window > MAX_INPUT_PER_SEC {
                 // Every whole second without input breaks the run.
-                self.over_secs = if elapsed < Duration::from_secs(2) { self.over_secs + 1 } else { 1 };
+                self.over_secs = if elapsed < Duration::from_secs(2) {
+                    self.over_secs + 1
+                } else {
+                    1
+                };
             } else {
                 self.over_secs = 0;
             }
@@ -522,7 +542,9 @@ impl Filter {
         match what {
             "mouse" => self.counts.mouse += 1,
             "key" => self.counts.keys += 1,
-            "clipboard" => self.counts.clipboard_in += v["text"].as_str().map_or(0, str::len) as u64,
+            "clipboard" => {
+                self.counts.clipboard_in += v["text"].as_str().map_or(0, str::len) as u64
+            }
             _ => {
                 self.counts.text_chars += v["text"].as_str().map_or(0, |t| t.chars().count()) as u64
             }
@@ -549,7 +571,10 @@ pub async fn mint_route(State(st): State<AppState>, req: Request) -> Response {
 
 async fn mint_body(v: Result<Value, ApiError>) -> Result<Response, ApiError> {
     let v = v?;
-    let sandbox = v.get("sandbox").and_then(Value::as_str).unwrap_or("workspace");
+    let sandbox = v
+        .get("sandbox")
+        .and_then(Value::as_str)
+        .unwrap_or("workspace");
     let sb = SandboxId::parse(sandbox)
         .ok_or_else(|| ApiError::bad_request("sandbox must be workspace"))?;
     if sb != SandboxId::Workspace {
@@ -616,7 +641,11 @@ struct Bytes {
 }
 
 fn closed_frame(reason: &str) -> Message {
-    Message::Text(json!({"type": "closed", "reason": reason}).to_string().into())
+    Message::Text(
+        json!({"type": "closed", "reason": reason})
+            .to_string()
+            .into(),
+    )
 }
 
 async fn session(mut browser: WebSocket, t: Ticket, via: &'static str) {
@@ -659,16 +688,28 @@ async fn session(mut browser: WebSocket, t: Ticket, via: &'static str) {
 }
 
 /// Pumps until one side ends; returns the close code and reason for the owner's socket.
-async fn run(browser: &mut WebSocket, t: &Ticket, filter: &mut Filter, bytes: &mut Bytes) -> (u16, String) {
-    let hello = json!({"type": "hello", "v": 1, "mode": t.mode.as_str(), "sandbox": t.sandbox.as_str()});
-    if browser.send(Message::Text(hello.to_string().into())).await.is_err() {
+async fn run(
+    browser: &mut WebSocket,
+    t: &Ticket,
+    filter: &mut Filter,
+    bytes: &mut Bytes,
+) -> (u16, String) {
+    let hello =
+        json!({"type": "hello", "v": 1, "mode": t.mode.as_str(), "sandbox": t.sandbox.as_str()});
+    if browser
+        .send(Message::Text(hello.to_string().into()))
+        .await
+        .is_err()
+    {
         return (code::NORMAL, "client gone".into());
     }
     let mut gw = match connect_gateway(t.sandbox, &t.codecs, t.mode).await {
         Ok(g) => g,
         Err(e) => {
             tracing::warn!(error = %e, "desk: gateway unavailable");
-            let _ = browser.send(closed_frame("LucinaDesk is unavailable")).await;
+            let _ = browser
+                .send(closed_frame("LucinaDesk is unavailable"))
+                .await;
             return (code::GATEWAY_UNAVAILABLE, "gateway unavailable".into());
         }
     };
@@ -789,9 +830,12 @@ async fn pump(
                     return (code::CONTROL_ENDED, "control ended".into());
                 }
                 if last_renew.elapsed() >= RENEW_EVERY {
-                    if control().heartbeat(t.sandbox).is_err() {
-                        let _ = browser.send(closed_frame("control ended")).await;
-                        return (code::CONTROL_ENDED, "control ended".into());
+                    // An open socket is not input: only the keys, mouse and text counted
+                    // below keep the owner (an idle owner's lease ends after OWNER_IDLE).
+                    if let Err(e) = control().heartbeat_idle(t.sandbox, false) {
+                        let why = if e.code() == "owner_idle" { "idle" } else { "control ended" };
+                        let _ = browser.send(closed_frame(why)).await;
+                        return (code::CONTROL_ENDED, why.into());
                     }
                     last_renew = Instant::now();
                 }
@@ -807,6 +851,12 @@ async fn pump(
                             "clipboardImageIn": c.clipboard_image_in - logged.clipboard_image_in,
                         });
                         if control().owner_input(t.sandbox, &t.device, batch).is_err() {
+                            let _ = browser.send(closed_frame("control ended")).await;
+                            return (code::CONTROL_ENDED, "control ended".into());
+                        }
+                        // Clipboard traffic is allowed while driving but is not input.
+                        let real = c.mouse > logged.mouse || c.keys > logged.keys || c.text_chars > logged.text_chars;
+                        if real && control().active(t.sandbox).is_err() {
                             let _ = browser.send(closed_frame("control ended")).await;
                             return (code::CONTROL_ENDED, "control ended".into());
                         }
@@ -829,23 +879,44 @@ mod tests {
         let t = mint(SandboxId::Workspace, ViewMode::Watch, dev, "").unwrap();
         assert!(valid_ticket(&t), "{t}");
         let got = redeem(&t).expect("redeemed once");
-        assert_eq!((got.sandbox, got.mode, got.device.as_str()), (SandboxId::Workspace, ViewMode::Watch, dev));
+        assert_eq!(
+            (got.sandbox, got.mode, got.device.as_str()),
+            (SandboxId::Workspace, ViewMode::Watch, dev)
+        );
         assert!(redeem(&t).is_none(), "single use");
         assert!(redeem("nope").is_none());
         let waiting: Vec<_> = (0..MAX_UNREDEEMED)
             .map(|_| mint(SandboxId::Workspace, ViewMode::Control, dev, "").unwrap())
             .collect();
         let e = mint(SandboxId::Workspace, ViewMode::Control, dev, "").unwrap_err();
-        assert_eq!((e.status.as_u16(), e.code.as_str()), (429, "too_many_tickets"));
-        assert!(mint(SandboxId::Workspace, ViewMode::Control, "another-device", "").is_ok());
+        assert_eq!(
+            (e.status.as_u16(), e.code.as_str()),
+            (429, "too_many_tickets")
+        );
+        assert!(mint(
+            SandboxId::Workspace,
+            ViewMode::Control,
+            "another-device",
+            ""
+        )
+        .is_ok());
         assert!(redeem(&waiting[0]).is_some());
-        assert!(mint(SandboxId::Workspace, ViewMode::Control, dev, "").is_ok(), "one slot free again");
+        assert!(
+            mint(SandboxId::Workspace, ViewMode::Control, dev, "").is_ok(),
+            "one slot free again"
+        );
     }
 
     #[test]
     fn codecs_keep_the_browsers_order_and_drop_the_rest() {
-        assert_eq!(codecs(&json!({"codecs": ["vp9", "av1", "h264"]})), "vp9,av1,h264");
-        assert_eq!(codecs(&json!({"codecs": ["h264", "vp9", "h264", "x;rm", 7, "VP9"]})), "h264,vp9");
+        assert_eq!(
+            codecs(&json!({"codecs": ["vp9", "av1", "h264"]})),
+            "vp9,av1,h264"
+        );
+        assert_eq!(
+            codecs(&json!({"codecs": ["h264", "vp9", "h264", "x;rm", 7, "VP9"]})),
+            "h264,vp9"
+        );
         assert_eq!(codecs(&json!({"codecs": "vp9"})), "", "not a list: ignored");
         assert_eq!(codecs(&json!({})), "");
     }
@@ -860,10 +931,16 @@ mod tests {
     #[test]
     fn the_ticket_rides_as_a_subprotocol() {
         let mut h = HeaderMap::new();
-        h.insert(header::SEC_WEBSOCKET_PROTOCOL, "lucinadesk.v1, ticket.abc".parse().unwrap());
+        h.insert(
+            header::SEC_WEBSOCKET_PROTOCOL,
+            "lucinadesk.v1, ticket.abc".parse().unwrap(),
+        );
         assert_eq!(offered(&h), (true, Some("abc".into())));
         let mut h = HeaderMap::new();
-        h.insert(header::SEC_WEBSOCKET_PROTOCOL, "ticket.abc".parse().unwrap());
+        h.insert(
+            header::SEC_WEBSOCKET_PROTOCOL,
+            "ticket.abc".parse().unwrap(),
+        );
         assert_eq!(offered(&h), (false, Some("abc".into())));
         assert_eq!(offered(&HeaderMap::new()), (false, None));
     }
@@ -879,13 +956,26 @@ mod tests {
         match f.text(mouse, now) {
             Verdict::Drop(Some(r)) => {
                 let r: Value = serde_json::from_str(&r).unwrap();
-                assert_eq!(r, json!({"type": "refused", "what": "mouse", "why": "watch"}));
+                assert_eq!(
+                    r,
+                    json!({"type": "refused", "what": "mouse", "why": "watch"})
+                );
             }
             v => panic!("{v:?}"),
         }
-        assert_eq!(f.text(mouse, now), Verdict::Drop(None), "refused once per kind");
-        assert!(matches!(f.text(r#"{"type":"text","text":"hi"}"#, now), Verdict::Drop(Some(_))));
-        assert!(matches!(f.text(r#"{"type":"key","key":"Return"}"#, now), Verdict::Drop(Some(_))));
+        assert_eq!(
+            f.text(mouse, now),
+            Verdict::Drop(None),
+            "refused once per kind"
+        );
+        assert!(matches!(
+            f.text(r#"{"type":"text","text":"hi"}"#, now),
+            Verdict::Drop(Some(_))
+        ));
+        assert!(matches!(
+            f.text(r#"{"type":"key","key":"Return"}"#, now),
+            Verdict::Drop(Some(_))
+        ));
         match f.text(r#"{"type":"clipboard","text":"secret"}"#, now) {
             Verdict::Drop(Some(r)) => assert_eq!(
                 serde_json::from_str::<Value>(&r).unwrap(),
@@ -893,8 +983,14 @@ mod tests {
             ),
             v => panic!("{v:?}"),
         }
-        assert!(!f.host_frame(r#"{"type":"clipboard","text":"from the host"}"#), "never to a watch socket");
-        assert!(f.host_frame(r#"{"type":"login","hostname":"clipboard-box"}"#), "other frames pass");
+        assert!(
+            !f.host_frame(r#"{"type":"clipboard","text":"from the host"}"#),
+            "never to a watch socket"
+        );
+        assert!(
+            f.host_frame(r#"{"type":"login","hostname":"clipboard-box"}"#),
+            "other frames pass"
+        );
         assert_eq!(f.counts, Counts::default(), "nothing counted as input");
         assert_eq!(f.clipboard_out, 0);
     }
@@ -903,16 +999,43 @@ mod tests {
     fn control_sockets_forward_valid_input_and_count_it() {
         let now = Instant::now();
         let mut f = Filter::new(ViewMode::Control);
-        assert_eq!(f.text(r#"{"type":"mouse","mask":9,"x":10,"y":20}"#, now), Verdict::Forward);
-        assert_eq!(f.text(r#"{"type":"text","text":"ciao"}"#, now), Verdict::Forward);
-        assert_eq!(f.text(r#"{"type":"key","char":"l","modifiers":["Control"]}"#, now), Verdict::Forward);
-        assert_eq!(f.text(r#"{"type":"key","key":"Return"}"#, now), Verdict::Forward);
-        assert_eq!(f.text(r#"{"type":"clipboard","text":"héllo"}"#, now), Verdict::Forward);
-        assert_eq!(f.counts, Counts { mouse: 1, keys: 2, text_chars: 4, clipboard_in: 6, clipboard_image_in: 0 });
+        assert_eq!(
+            f.text(r#"{"type":"mouse","mask":9,"x":10,"y":20}"#, now),
+            Verdict::Forward
+        );
+        assert_eq!(
+            f.text(r#"{"type":"text","text":"ciao"}"#, now),
+            Verdict::Forward
+        );
+        assert_eq!(
+            f.text(r#"{"type":"key","char":"l","modifiers":["Control"]}"#, now),
+            Verdict::Forward
+        );
+        assert_eq!(
+            f.text(r#"{"type":"key","key":"Return"}"#, now),
+            Verdict::Forward
+        );
+        assert_eq!(
+            f.text(r#"{"type":"clipboard","text":"héllo"}"#, now),
+            Verdict::Forward
+        );
+        assert_eq!(
+            f.counts,
+            Counts {
+                mouse: 1,
+                keys: 2,
+                text_chars: 4,
+                clipboard_in: 6,
+                clipboard_image_in: 0
+            }
+        );
         assert!(f.host_frame(r#"{"type":"clipboard","text":"ciao"}"#));
         assert_eq!(f.clipboard_out, 4, "bytes, not the text");
         let big = json!({"type": "clipboard", "text": "x".repeat(MAX_CLIPBOARD + 1)}).to_string();
-        assert!(matches!(f.text(&big, now), Verdict::Drop(_)), "over 60,000 bytes");
+        assert!(
+            matches!(f.text(&big, now), Verdict::Drop(_)),
+            "over 60,000 bytes"
+        );
         for bad in [
             r#"{"type":"mouse","mask":7,"x":1,"y":1}"#,
             r#"{"type":"mouse","mask":9,"x":"1","y":1}"#,
@@ -931,7 +1054,10 @@ mod tests {
             v => panic!("{v:?}"),
         }
         assert!(matches!(f.text("not json", now), Verdict::Drop(_)));
-        assert!(matches!(f.text(r#"{"type":"files"}"#, now), Verdict::Drop(_)));
+        assert!(matches!(
+            f.text(r#"{"type":"files"}"#, now),
+            Verdict::Drop(_)
+        ));
     }
 
     fn png(len: usize) -> Vec<u8> {
@@ -954,7 +1080,10 @@ mod tests {
             v => panic!("{v:?}"),
         }
         assert!(w.host_binary(&video), "video reaches every socket");
-        assert!(!w.host_binary(&png(100)), "a host image never reaches a watch socket");
+        assert!(
+            !w.host_binary(&png(100)),
+            "a host image never reaches a watch socket"
+        );
         assert!(!w.host_binary(&[9, 0, 0, 0]), "nor a kind added later");
         assert_eq!((w.counts.clipboard_image_in, w.clipboard_image_out), (0, 0));
 
@@ -962,8 +1091,16 @@ mod tests {
         assert_eq!(c.binary(&png(100), now), Verdict::Forward);
         assert!(c.host_binary(&png(50)));
         assert!(c.host_binary(&video));
-        assert_eq!((c.counts.clipboard_image_in, c.clipboard_image_out), (100, 50), "PNG bytes only");
-        assert_eq!(c.binary(&png(MAX_CLIPBOARD_IMAGE), now), Verdict::Forward, "10 MiB is allowed");
+        assert_eq!(
+            (c.counts.clipboard_image_in, c.clipboard_image_out),
+            (100, 50),
+            "PNG bytes only"
+        );
+        assert_eq!(
+            c.binary(&png(MAX_CLIPBOARD_IMAGE), now),
+            Verdict::Forward,
+            "10 MiB is allowed"
+        );
         match Filter::new(ViewMode::Control).binary(&png(MAX_CLIPBOARD_IMAGE + 1), now) {
             Verdict::Drop(Some(r)) => assert!(r.contains("too_large"), "{r}"),
             v => panic!("{v:?}"),
@@ -971,15 +1108,22 @@ mod tests {
         let mut not_png = png(100);
         not_png[5] = b'X';
         match Filter::new(ViewMode::Control).binary(&not_png, now) {
-            Verdict::Drop(Some(r)) => assert!(r.contains("\"invalid\"") && r.contains("clipboard"), "{r}"),
+            Verdict::Drop(Some(r)) => {
+                assert!(r.contains("\"invalid\"") && r.contains("clipboard"), "{r}")
+            }
             v => panic!("{v:?}"),
         }
         let mut bad_header = png(100);
         bad_header[1] = 2;
-        assert!(matches!(Filter::new(ViewMode::Control).binary(&bad_header, now), Verdict::Drop(_)));
+        assert!(matches!(
+            Filter::new(ViewMode::Control).binary(&bad_header, now),
+            Verdict::Drop(_)
+        ));
         for other in [&video[..], &[], &[3, 0, 0, 0]] {
             match Filter::new(ViewMode::Control).binary(other, now) {
-                Verdict::Drop(Some(r)) => assert!(r.contains("unknown") && r.contains("invalid"), "{r}"),
+                Verdict::Drop(Some(r)) => {
+                    assert!(r.contains("unknown") && r.contains("invalid"), "{r}")
+                }
                 v => panic!("{other:?}: {v:?}"),
             }
         }
@@ -1010,9 +1154,15 @@ mod tests {
         for _ in 0..=MAX_INPUT_PER_SEC + 1 {
             g.text(m, t0);
         }
-        assert_eq!(g.text(m, t0 + Duration::from_millis(1500)), Verdict::Forward);
+        assert_eq!(
+            g.text(m, t0 + Duration::from_millis(1500)),
+            Verdict::Forward
+        );
         assert_eq!(g.over_secs, 1);
-        assert_eq!(g.text(m, t0 + Duration::from_millis(2600)), Verdict::Forward);
+        assert_eq!(
+            g.text(m, t0 + Duration::from_millis(2600)),
+            Verdict::Forward
+        );
         assert_eq!(g.over_secs, 0);
     }
 }
