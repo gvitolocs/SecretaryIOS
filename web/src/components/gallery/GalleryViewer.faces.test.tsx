@@ -37,10 +37,11 @@ function server(enabled: boolean): Call[] {
 function open(items: GalleryItem[] = [galleryItem("a")], extra: { onPerson?: (id: string) => void } = {}) {
   const [index, setIndex] = createSignal(0);
   render(() => <GalleryViewer items={items} index={index()} onIndex={setIndex} onClose={() => {}} onChanged={() => {}} onRemoved={() => {}} onPerson={extra.onPerson} />);
+  fireEvent.click(screen.getByRole("button", { name: "More" }));
 }
 const key = (k: string, target: Element | Window = window) => fireEvent.keyDown(target, { key: k });
 const toolbar = () => screen.getByRole("toolbar", { name: "Photo actions" });
-const facesButton = () => within(toolbar()).queryByRole("button", { name: "Faces" });
+const facesButton = () => within(toolbar()).queryByRole("menuitem", { name: "Faces" });
 const faceRequests = (calls: Call[]) => calls.filter((c) => /\/faces$/.test(c.url));
 
 beforeEach(() => {

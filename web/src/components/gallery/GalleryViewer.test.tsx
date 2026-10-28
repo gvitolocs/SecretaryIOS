@@ -69,6 +69,10 @@ function open(opts: Opts = {}) {
 
 const key = (k: string, target: Element | Window = window) => fireEvent.keyDown(target, { key: k });
 const button = (name: string | RegExp) => screen.getByRole("button", { name });
+const menuItem = (name: string) => {
+  fireEvent.click(button("More"));
+  return screen.getByRole("menuitem", { name });
+};
 const currentImage = () => document.querySelector<HTMLImageElement>(".pv-slot .pv-img")!;
 
 beforeEach(() => {
@@ -92,11 +96,39 @@ describe("GalleryViewer", () => {
     expect(screen.getByRole("dialog", { name: "Photo 1 of 2" })).toBeInTheDocument();
     expect(currentImage().getAttribute("src")).toBe("/v1/media/items/a/r/large");
     const toolbar = screen.getByRole("toolbar", { name: "Photo actions" });
-    for (const name of ["Info", "Add to favorites", "Rotate", "Rename", "Add to album", "Download", "Move to Trash"]) {
-      expect(within(toolbar).getByRole(name === "Download" ? "link" : "button", { name })).toBeInTheDocument();
+    for (const name of ["Info", "Add to favorites", "Edit", "Move to Trash", "More"]) {
+      expect(within(toolbar).getByRole("button", { name })).toBeInTheDocument();
     }
-    expect(within(toolbar).getByRole("link", { name: "Download" })).toHaveAttribute("href", "/v1/media/items/a/download");
+    fireEvent.click(button("More"));
+    for (const name of ["Rotate", "Rename", "Add to album", "Download"]) {
+      expect(screen.getByRole("menuitem", { name })).toBeInTheDocument();
+    }
+    expect(screen.getByRole("menuitem", { name: "Download" })).toHaveAttribute("href", "/v1/media/items/a/download");
     expect(screen.getByRole("button", { name: "Share" })).toBeInTheDocument();
+  });
+
+  it("closes More before the viewer on Escape and returns focus", async () => {
+    const { onClose } = open();
+    fireEvent.click(button("More"));
+    await waitFor(() => expect(screen.getByRole("menuitem", { name: "Rotate" })).toHaveFocus());
+    key("ArrowDown");
+    expect(screen.getByRole("menuitem", { name: "Rename" })).toHaveFocus();
+    key("Escape");
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(button("More")).toHaveFocus();
+    expect(onClose).not.toHaveBeenCalled();
+    key("Escape");
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("closes More on outside pointer down and on an item change", () => {
+    open();
+    fireEvent.click(button("More"));
+    fireEvent.pointerDown(document.body);
+    expect(screen.queryByRole("menu")).toBeNull();
+    fireEvent.click(button("More"));
+    key("ArrowRight");
+    expect(screen.queryByRole("menu")).toBeNull();
   });
 
   describe("info panel", () => {
@@ -258,7 +290,7 @@ describe("GalleryViewer", () => {
       expect(currentImage().style.transform).toBe("rotate(90deg)");
       await waitFor(() => expect(onChanged).toHaveBeenCalledWith(expect.objectContaining({ id: "a", rotation: 90 })));
       expect(patchItem).toHaveBeenCalledWith("a", { rotation: 90 });
-      fireEvent.click(button("Rotate"));
+      fireEvent.click(menuItem("Rotate"));
       expect(currentImage().style.transform).toBe("rotate(180deg)");
       await waitFor(() => expect(patchItem).toHaveBeenLastCalledWith("a", { rotation: 180 }));
 
@@ -291,7 +323,7 @@ describe("GalleryViewer", () => {
     it("renames: the title and the caption go in one save", async () => {
       patchItem.mockResolvedValue(galleryItem("a", { title: "Harbour", caption: "At dusk" }));
       const { onChanged } = open();
-      fireEvent.click(button("Rename"));
+      fireEvent.click(menuItem("Rename"));
       const dialog = screen.getByRole("dialog", { name: "Rename" });
       const name = within(dialog).getByLabelText("Name");
       expect(name).toHaveValue("a.jpg");
@@ -307,7 +339,7 @@ describe("GalleryViewer", () => {
     it("keeps the rename dialog open with an error when saving fails", async () => {
       patchItem.mockRejectedValue(new Error("500"));
       open();
-      fireEvent.click(button("Rename"));
+      fireEvent.click(menuItem("Rename"));
       const dialog = screen.getByRole("dialog", { name: "Rename" });
       fireEvent.input(within(dialog).getByLabelText("Name"), { target: { value: "Harbour" } });
       fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
@@ -320,7 +352,7 @@ describe("GalleryViewer", () => {
       listAlbums.mockResolvedValue([{ id: "trip", title: "Summer trip", count: 3, system: false }]);
       batch.mockResolvedValue({ done: ["a"], failed: [] });
       const { onChanged } = open();
-      fireEvent.click(button("Add to album"));
+      fireEvent.click(menuItem("Add to album"));
       fireEvent.click(await screen.findByRole("button", { name: /Summer trip/ }));
       await waitFor(() => expect(onChanged).toHaveBeenCalledWith(expect.objectContaining({ id: "a", albums: ["trip"] })));
       expect(batch).toHaveBeenCalledWith("album_add", ["a"], { album: "trip" });

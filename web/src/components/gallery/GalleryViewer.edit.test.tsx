@@ -133,8 +133,9 @@ describe("the Edit action in the viewer", () => {
     await waitFor(() => expect(currentImage().getAttribute("src")).toBe("a-edited-large"));
     expect(currentImage().getAttribute("src")).not.toBe(before);
     // The original is still what "Download" gives; the edit has its own link.
-    expect(screen.getByRole("link", { name: "Download" })).toHaveAttribute("href", "/v1/media/items/a/download");
-    expect(screen.getByRole("link", { name: "Download edited" })).toHaveAttribute("href", "a-edited-download");
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
+    expect(screen.getByRole("menuitem", { name: "Download" })).toHaveAttribute("href", "/v1/media/items/a/download");
+    expect(screen.getByRole("menuitem", { name: "Download edited" })).toHaveAttribute("href", "a-edited-download");
     expect(screen.getByRole("button", { name: "Edit (already edited)" })).toBeInTheDocument();
   });
 });

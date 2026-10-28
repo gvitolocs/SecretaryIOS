@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createSignal } from "solid-js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { imageCoreFromBytes, setImageCoreForTests } from "../lib/imageCore";
+import { imageCoreFromBytes, setImageCoreForTests, type ImageCore } from "../lib/imageCore";
 import { PhotoViewer, type ViewerItem } from "./PhotoViewer";
 
 // The viewer with the real Rust core (image-core.wasm) in an 800×600 window.
@@ -13,8 +13,10 @@ const H = 600;
 const items: ViewerItem[] = ["a", "b", "c"].map((id) => ({ src: `/p/${id}.jpg`, name: `${id}.jpg` }));
 
 const restore: (() => void)[] = [];
+let realCore: ImageCore;
 beforeAll(async () => {
-  setImageCoreForTests(await imageCoreFromBytes(readFileSync(join(process.cwd(), "src/lib/image-core.wasm"))));
+  realCore = await imageCoreFromBytes(readFileSync(join(process.cwd(), "src/lib/image-core.wasm")));
+  setImageCoreForTests(realCore);
   const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
     x: 0, y: 0, left: 0, top: 0, width: W, height: H, right: W, bottom: H, toJSON: () => ({}),
   } as DOMRect);
@@ -49,7 +51,10 @@ const pointer = (type: "pointerDown" | "pointerMove" | "pointerUp", x: number, y
   fireEvent[type](stage(), { pointerId: 1, clientX: x, clientY: y });
 
 describe("PhotoViewer", () => {
-  beforeEach(() => vi.useRealTimers());
+  beforeEach(() => {
+    vi.useRealTimers();
+    setImageCoreForTests(realCore);
+  });
 
   it("fits the picture with the core and zooms on a double tap and a trackpad pinch", async () => {
     open();
@@ -91,9 +96,14 @@ describe("PhotoViewer", () => {
   it("closes on a swipe down, and springs back from a short one", async () => {
     const { onClose } = open();
     await placed();
+    let now = 0;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
     pointer("pointerDown", 400, 200);
+    now = 500;
     pointer("pointerMove", 402, 230);
+    now = 1000;
     pointer("pointerMove", 404, 260);
+    now = 1100;
     pointer("pointerUp", 404, 262);
     expect(onClose).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.getByRole("dialog").classList.contains("pv--animating")).toBe(false));
@@ -104,6 +114,71 @@ describe("PhotoViewer", () => {
     expect(document.querySelector<HTMLElement>(".pv-backdrop")!.style.opacity).not.toBe("1");
     pointer("pointerUp", 404, 340);
     await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+    clock.mockRestore();
+  });
+
+  it.each([true, false])("closes a diagonal drag with the picture loaded=%s", async (loaded) => {
+    const { onClose } = open();
+    if (loaded) await placed();
+    else await Promise.resolve();
+    pointer("pointerDown", 300, 150);
+    pointer("pointerMove", 405, 300);
+    expect(document.querySelector<HTMLElement>(".pv-backdrop")!.style.opacity).not.toBe("1");
+    pointer("pointerUp", 405, 300);
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+  });
+
+  it("closes a fast short flick", async () => {
+    const { onClose } = open();
+    await placed();
+    let now = 0;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    pointer("pointerDown", 400, 200);
+    now = 25;
+    pointer("pointerMove", 400, 224);
+    pointer("pointerUp", 400, 224);
+    clock.mockRestore();
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+  });
+
+  it("finishes a page slide when the next drag starts", async () => {
+    const { index, onClose } = open();
+    await placed();
+    pointer("pointerDown", 600, 200);
+    pointer("pointerMove", 300, 200);
+    pointer("pointerUp", 300, 200);
+    expect(index()).toBe(0);
+    pointer("pointerDown", 400, 200);
+    expect(index()).toBe(1);
+    pointer("pointerMove", 400, 400);
+    pointer("pointerUp", 400, 400);
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+  });
+
+  it("renders extra controls in the top bar and leaves the bottom free", () => {
+    render(() => <PhotoViewer items={items} index={0} onIndex={() => {}} onClose={() => {}} toolbar={<button>Extra</button>} />);
+    expect(screen.getByRole("button", { name: "Extra" }).closest(".pv-top")).not.toBeNull();
+    expect(document.querySelector(".pv-toolbar")).toBeNull();
+  });
+
+  it("follows and dismisses a drag while the core is unavailable", async () => {
+    setImageCoreForTests(null);
+    const { onClose } = open();
+    pointer("pointerDown", 300, 150);
+    pointer("pointerMove", 405, 300);
+    expect(document.querySelector<HTMLElement>(".pv-backdrop")!.style.opacity).toBe("0.5");
+    pointer("pointerUp", 405, 300);
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+  });
+
+  it("does not start a picture gesture from the top bar", async () => {
+    const { onClose } = open();
+    await placed();
+    fireEvent.pointerDown(document.querySelector(".pv-title")!, { pointerId: 1, clientX: 300, clientY: 20 });
+    pointer("pointerMove", 300, 300);
+    pointer("pointerUp", 300, 300);
+    expect(document.querySelector<HTMLElement>(".pv-backdrop")!.style.opacity).toBe("1");
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it("saves to Lucina with progress and says when it's already there", async () => {

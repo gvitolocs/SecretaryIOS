@@ -82,12 +82,13 @@ export function createViewerFaces(itemId: Accessor<string | undefined>, hooks: V
     revision,
     /** The picker is open: the viewer's own keys step aside. */
     picking: () => picking() !== null,
-    button(): JSX.Element {
+    button(menu = false): JSX.Element {
       return (
         <Show when={isAvailable()}>
           <button
             type="button"
-            class="pv-btn"
+            role={menu ? "menuitem" : undefined}
+            class={menu ? undefined : "pv-btn"}
             classList={{ "pv-btn--active": wanted() }}
             aria-label={t("galleryPeople.faces")}
             aria-pressed={wanted()}
@@ -95,6 +96,7 @@ export function createViewerFaces(itemId: Accessor<string | undefined>, hooks: V
             onClick={toggle}
           >
             <FacesIcon />
+            {menu ? t("galleryPeople.faces") : null}
           </button>
         </Show>
       );

@@ -375,7 +375,7 @@
 .st-strip-wrap {
   position: fixed;
   left: 50%;
-  bottom: calc(max(14px, env(safe-area-inset-bottom)) + 62px);
+  bottom: max(14px, env(safe-area-inset-bottom));
   z-index: 2040;
   max-width: calc(100vw - 24px);
   transform: translateX(-50%);
@@ -390,7 +390,7 @@
   .st-strip-wrap--panel {
     left: 50%;
     max-width: calc(100vw - 24px);
-    bottom: calc(min(56dvh, 460px) + 62px);
+    bottom: calc(min(56dvh, 460px) + max(14px, env(safe-area-inset-bottom)));
   }
 }
 
