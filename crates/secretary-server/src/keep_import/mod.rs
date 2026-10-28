@@ -13,7 +13,7 @@ pub mod html;
 pub mod report;
 pub mod takeout;
 
-pub use apply::import_takeout;
+pub use apply::{import_takeout, import_takeout_labelled};
 pub use report::{
     AttachmentCounts, FileCounts, ImportReport, LabelCounts, NoteCounts, ReportError, SampleNote,
 };

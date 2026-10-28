@@ -17,7 +17,7 @@ use futures_util::StreamExt;
 use serde::Deserialize;
 use tokio::io::AsyncWriteExt;
 
-use super::{import_takeout, ImportReport};
+use super::{import_takeout_labelled, ImportReport};
 use crate::error::{ApiError, QueryArgs};
 use crate::notes::Caller;
 use crate::AppState;
@@ -29,6 +29,9 @@ pub const MAX_ZIP_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 pub struct ImportQuery {
     #[serde(default, rename = "dryRun")]
     dry_run: Option<String>,
+    /// A label added to every imported note (e.g. the account it came from).
+    #[serde(default)]
+    label: Option<String>,
 }
 
 fn running() -> &'static Mutex<HashSet<PathBuf>> {
@@ -103,6 +106,21 @@ pub async fn import_google_keep(
         ));
     }
     let dry_run = is_dry_run(&q);
+    let label = q
+        .label
+        .as_deref()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_owned);
+    if label
+        .as_ref()
+        .is_some_and(|l| l.chars().count() > 50 || l.chars().any(|c| c.is_control() || c == ','))
+    {
+        return Err(bad(
+            "invalid_label",
+            "label: up to 50 characters, no commas",
+        ));
+    }
     if headers
         .get(axum::http::header::CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
@@ -177,7 +195,13 @@ pub async fn import_google_keep(
     let result = tokio::task::spawn_blocking(move || {
         let _run = run;
         let tmp = tmp;
-        import_takeout(&store, std::slice::from_ref(&tmp.0), dry_run, caller)
+        import_takeout_labelled(
+            &store,
+            std::slice::from_ref(&tmp.0),
+            dry_run,
+            caller,
+            label.as_deref(),
+        )
     })
     .await
     .map_err(|_| ApiError::internal("import task failed"))?;

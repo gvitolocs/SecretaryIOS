@@ -89,6 +89,9 @@ pub enum NotesAction {
         /// Print the report as JSON.
         #[arg(long)]
         json: bool,
+        /// Add this label to every imported note (e.g. the source account).
+        #[arg(long)]
+        label: Option<String>,
     },
 }
 
@@ -144,12 +147,14 @@ pub fn run_notes(
             zips,
             dry_run,
             json,
+            label,
         } => {
-            let report = crate::keep_import::import_takeout(
+            let report = crate::keep_import::import_takeout_labelled(
                 &store,
                 &zips,
                 dry_run,
                 crate::notes::Caller("owner"),
+                label.as_deref(),
             )
             .map_err(|e| anyhow::anyhow!(e))?;
             if json {

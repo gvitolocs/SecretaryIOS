@@ -688,6 +688,7 @@ fn cli_import_keep_prints_text_and_json() {
                 zips: zips.clone(),
                 dry_run,
                 json,
+                label: None,
             },
             &mut out,
         )
@@ -720,9 +721,49 @@ fn cli_import_keep_prints_text_and_json() {
         NotesAction::ImportKeep {
             zips: vec![bad],
             dry_run: true,
-            json: false
+            json: false,
+            label: None,
         },
         &mut out
     )
     .is_err());
+}
+
+#[tokio::test]
+async fn endpoint_label_marks_a_second_accounts_notes() {
+    let h = H::new().await;
+    let zip = std::fs::read(one_zip(h.dir.path(), "all.zip", |_| {})).unwrap();
+
+    let (s, v) = post_zip(&h, "?label=a,b", Some(&h.token), zip.clone()).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+
+    let (s, v) = post_zip(&h, "?label=nesaggezza", Some(&h.token), zip.clone()).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["notes"]["new"], 22);
+    for (title, n) in &h.notes_by_title().await {
+        let tags: Vec<&str> = n["tags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t.as_str().unwrap())
+            .collect();
+        assert!(tags.contains(&"nesaggezza"), "{title}: {tags:?}");
+    }
+    let labels = h.get("/v1/notes/labels").await;
+    assert!(
+        labels["labels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l["name"] == "nesaggezza"),
+        "{labels}"
+    );
+
+    // Same export, same label: nothing changes and nothing doubles.
+    let before = h.notes_by_title().await.len();
+    let (s, v) = post_zip(&h, "?label=nesaggezza", Some(&h.token), zip).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v["notes"]["new"], 0);
+    assert_eq!(v["notes"]["unchanged"], 21);
+    assert_eq!(h.notes_by_title().await.len(), before);
 }
