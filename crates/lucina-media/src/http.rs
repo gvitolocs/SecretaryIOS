@@ -125,6 +125,8 @@ pub fn router(lib: Library, extra: Option<Router>) -> Router {
         .merge(crate::edits::routes())
         .merge(crate::share_http::owner_routes())
         .merge(crate::share_http::public_routes())
+        .merge(crate::share_sel::routes())
+        .merge(crate::renditions::routes())
         .with_state(lib.clone())
         .merge(extra.unwrap_or_default())
         .layer(middleware::from_fn_with_state(lib, upstream_guard))
@@ -283,7 +285,7 @@ pub fn item_out_full(
     }
 }
 
-fn rendition_url(lib: &Library, id: &str, which: &str, v: &str) -> String {
+pub(crate) fn rendition_url(lib: &Library, id: &str, which: &str, v: &str) -> String {
     match &lib.signer {
         Some(s) => format!("{}/r/{which}?v={v}", s.base(id).0),
         None => format!("/v1/media/items/{id}/r/{which}?v={v}"),
@@ -295,10 +297,11 @@ fn first_album_titles(
     c: &rusqlite::Connection,
     items: &[Item],
 ) -> rusqlite::Result<Vec<Option<String>>> {
-    let mut st = c.prepare_cached(
-        "SELECT a.title FROM album_items ai JOIN albums a ON a.id = ai.album_id WHERE ai.item_id = ?1
+    let mut st = c.prepare_cached(&format!(
+        "SELECT a.title FROM album_items ai JOIN albums a ON a.id = ai.album_id WHERE ai.item_id = ?1 AND {}
          ORDER BY a.system_key IS NOT NULL, ai.added_at LIMIT 1",
-    )?;
+        db::not_share_album("a")
+    ))?;
     items
         .iter()
         .map(|it| st.query_row([&it.id], |r| r.get(0)).optional())
@@ -566,6 +569,8 @@ pub async fn serve_file(
 #[derive(Deserialize)]
 struct OriginalQuery {
     download: Option<String>,
+    /// An older version of the item (`renditions` lists them); absent or the current one: the current original.
+    version: Option<i64>,
 }
 
 /// `inline` or `attachment` with the file's name: ASCII for old clients, UTF-8 (RFC 5987) for the rest.
@@ -601,6 +606,16 @@ async fn original(
         .await??
         .ok_or_else(not_found)?;
     let info = lib.db.call(move |c| drive::info_for(c, &id)).await?;
+    // An older version: its own blob, with the type its extension names.
+    let (path, mime, hash) = match oq.version.filter(|v| *v != item.version) {
+        Some(v) => {
+            let (l, iid) = (lib.clone(), item.id.clone());
+            crate::renditions::version_file(l, iid, v)
+                .await?
+                .ok_or_else(not_found)?
+        }
+        None => (path, item.mime.clone(), item.hash.clone()),
+    };
     if !path.is_file() {
         return Err(ApiError(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -610,8 +625,8 @@ async fn original(
     let mut res = serve_file(
         headers,
         path,
-        &item.mime,
-        &item.hash,
+        &mime,
+        &hash,
         "private, max-age=31536000, immutable",
     )
     .await?;
@@ -629,7 +644,7 @@ async fn original(
     Ok(res)
 }
 
-fn valid_item_id(id: &str) -> bool {
+pub(crate) fn valid_item_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128
         && id
@@ -1177,8 +1192,11 @@ async fn patch_album(
         .db
         .call(move |c| {
             c.execute(
-                "UPDATE albums SET title = COALESCE(?2, title), cover_item = COALESCE(?3, cover_item), updated_at = ?4
-                 WHERE id = ?1",
+                &format!(
+                    "UPDATE albums SET title = COALESCE(?2, title), cover_item = COALESCE(?3, cover_item), updated_at = ?4
+                     WHERE id = ?1 AND {}",
+                    db::not_share_album("albums")
+                ),
                 params![id, p.title.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()), p.cover_item, now_str()],
             )?;
             db::get_album(c, &id)

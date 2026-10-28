@@ -257,6 +257,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     }
     crate::edits::init_schema(conn)?;
     crate::browse::migrate(conn)?;
+    crate::renditions::migrate(conn)?;
     Ok(())
 }
 
@@ -449,9 +450,23 @@ pub fn film_video_ids(c: &Connection, films: &[String]) -> rusqlite::Result<Vec<
     rows.collect()
 }
 
+/// `system_key` prefix of the hidden album behind a photo-selection share (`share_sel.rs`). Such an
+/// album is never listed, never counted, never matched by title and never an album a client may
+/// add to; it only backs the share link.
+pub const SHARE_ALBUM_PREFIX: &str = "share:";
+
+/// SQL that is true for every album except the hidden share albums; `alias` is the albums table's
+/// name in the query.
+pub fn not_share_album(alias: &str) -> String {
+    format!("({alias}.system_key IS NULL OR substr({alias}.system_key, 1, 6) <> 'share:')")
+}
+
 pub fn item_albums(c: &Connection, id: &str) -> rusqlite::Result<Vec<String>> {
-    let mut st =
-        c.prepare_cached("SELECT album_id FROM album_items WHERE item_id = ?1 ORDER BY added_at")?;
+    let mut st = c.prepare_cached(&format!(
+        "SELECT ai.album_id FROM album_items ai JOIN albums a ON a.id = ai.album_id \
+         WHERE ai.item_id = ?1 AND {} ORDER BY ai.added_at",
+        not_share_album("a")
+    ))?;
     let rows = st.query_map([id], |r| r.get(0))?;
     rows.collect()
 }
@@ -758,7 +773,8 @@ pub(crate) fn list_filters(q: &ListQuery) -> (Vec<String>, Vec<rusqlite::types::
         let n = args.len();
         wh.push(format!(
             "i.id IN (SELECT ai.item_id FROM album_items ai JOIN albums al ON al.id = ai.album_id \
-             WHERE al.id = ?{n} OR al.title = ?{n} COLLATE NOCASE)"
+             WHERE (al.id = ?{n} OR al.title = ?{n} COLLATE NOCASE) AND {})",
+            not_share_album("al")
         ));
     }
     if let Some(fq) = q.q.as_deref().and_then(fts_query) {
@@ -1038,7 +1054,8 @@ pub fn list_albums_in(
         "SELECT a.id, a.title, a.system_key, a.cover_item, \
            (SELECT COUNT(*) FROM album_items ai JOIN items i ON i.id = ai.item_id \
              WHERE ai.album_id = a.id AND i.trashed_at IS NULL AND i.hidden = 0{extra}), a.created_at, a.updated_at \
-         FROM albums a ORDER BY a.system_key IS NULL, a.updated_at DESC"
+         FROM albums a WHERE {} ORDER BY a.system_key IS NULL, a.updated_at DESC",
+        not_share_album("a")
     ))?;
     let rows = st.query_map(rusqlite::params_from_iter(args), album_from_row)?;
     let albums: Vec<Album> = rows.collect::<rusqlite::Result<_>>()?;
@@ -1155,7 +1172,17 @@ pub fn album_visible_items(
     Ok((rows.collect::<rusqlite::Result<_>>()?, total))
 }
 
+/// An album a client can see and change; the hidden album behind a selection share is not one.
 pub fn get_album(c: &Connection, id: &str) -> rusqlite::Result<Option<Album>> {
+    Ok(get_album_any(c, id)?.filter(|a| {
+        a.system_key
+            .as_deref()
+            .is_none_or(|k| !k.starts_with(SHARE_ALBUM_PREFIX))
+    }))
+}
+
+/// Any album, the hidden share albums included (the share page needs its title and count).
+pub fn get_album_any(c: &Connection, id: &str) -> rusqlite::Result<Option<Album>> {
     c.query_row(
         "SELECT a.id, a.title, a.system_key, a.cover_item, \
            (SELECT COUNT(*) FROM album_items ai JOIN items i ON i.id = ai.item_id \

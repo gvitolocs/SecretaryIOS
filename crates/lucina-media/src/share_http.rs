@@ -58,13 +58,51 @@ struct CreateReq {
     allow_original: Option<bool>,
 }
 
-fn share_out(s: &ShareRow) -> Value {
+/// The longest a link may live.
+const MAX_EXPIRY_DAYS: u32 = 3650;
+
+/// RFC 3339 expiry for `days` from now (at least 1, at most [`MAX_EXPIRY_DAYS`]); `None` = never.
+pub(crate) fn expiry_after(
+    now: chrono::DateTime<chrono::Utc>,
+    days: Option<u32>,
+) -> Option<String> {
+    days.map(|d| {
+        (now + chrono::Duration::days(i64::from(d.clamp(1, MAX_EXPIRY_DAYS))))
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    })
+}
+
+/// The owner's view of one link: the row, what it shares and how it is doing. `kind` is `album`
+/// (a real album) or `selection` (the hidden album behind a link made from chosen photos);
+/// `title`, `count` (visible items now) and the cover come from that album.
+pub(crate) fn share_json(
+    lib: &Library,
+    c: &rusqlite::Connection,
+    s: &ShareRow,
+) -> rusqlite::Result<Value> {
     let now = now_str();
     let expired = s.expires_at.as_deref().is_some_and(|e| e <= now.as_str());
-    json!({
+    let album = db::get_album_any(c, &s.album_id)?;
+    let selection = album.as_ref().is_some_and(|a| {
+        a.system_key
+            .as_deref()
+            .is_some_and(|k| k.starts_with(db::SHARE_ALBUM_PREFIX))
+    });
+    let cover = db::album_visible_items(c, &s.album_id, 0, 1)?.0.pop();
+    let cover_thumb = cover.as_ref().map(|it| match &lib.signer {
+        Some(sg) => format!("{}/thumb.jpg", sg.base(&it.id).0),
+        None => format!("/v1/media/items/{}/thumb?size=256&v={}", it.id, it.version),
+    });
+    Ok(json!({
         "token": s.token,
         "url_path": format!("/v1/media/a/{}", s.token),
-        "album_id": s.album_id,
+        "public_path": format!("/a/{}", s.token),
+        "kind": if selection { "selection" } else { "album" },
+        "album_id": (!selection).then_some(&s.album_id),
+        "title": album.as_ref().map(|a| a.title.clone()),
+        "count": album.as_ref().map_or(0, |a| a.count),
+        "cover_item": cover.as_ref().map(|it| it.id.clone()),
+        "cover_thumb": cover_thumb,
         "created_at": s.created_at,
         "expires_at": s.expires_at,
         "revoked_at": s.revoked_at,
@@ -72,7 +110,7 @@ fn share_out(s: &ShareRow) -> Value {
         "views": s.views,
         "last_view_at": s.last_view_at,
         "live": s.revoked_at.is_none() && !expired,
-    })
+    }))
 }
 
 async fn create_share(
@@ -84,10 +122,7 @@ async fn create_share(
     let token = share::new_token()
         .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let now = chrono::Utc::now();
-    let expires_at = r.expires_in_days.map(|d| {
-        (now + chrono::Duration::days(i64::from(d.max(1))))
-            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
-    });
+    let expires_at = expiry_after(now, r.expires_in_days);
     let row = ShareRow {
         token,
         album_id: album.clone(),
@@ -99,40 +134,50 @@ async fn create_share(
         last_view_at: None,
     };
     let saved = row.clone();
+    let l = lib.clone();
     let made = lib
         .db
         .call(move |c| {
             if db::get_album(c, &album)?.is_none() {
-                return Ok(false);
+                return Ok(None);
             }
             db::insert_share(c, &saved)?;
-            Ok(true)
+            Ok(Some(share_json(&l, c, &saved)?))
         })
         .await?;
-    if !made {
-        return Err(ApiError(StatusCode::NOT_FOUND, "no such album".into()));
+    match made {
+        Some(v) => Ok((StatusCode::CREATED, Json(v))),
+        None => Err(ApiError(StatusCode::NOT_FOUND, "no such album".into())),
     }
-    Ok((StatusCode::CREATED, Json(share_out(&row))))
 }
 
 async fn album_shares(
     State(lib): State<Library>,
     Path(album): Path<String>,
 ) -> ApiResult<Json<Value>> {
-    let rows = lib
+    let l = lib.clone();
+    let shares = lib
         .db
-        .call(move |c| db::list_shares(c, Some(&album)))
+        .call(move |c| shares_json(&l, c, Some(&album)))
         .await?;
-    Ok(Json(
-        json!({ "shares": rows.iter().map(share_out).collect::<Vec<_>>() }),
-    ))
+    Ok(Json(json!({ "shares": shares })))
 }
 
 async fn all_shares(State(lib): State<Library>) -> ApiResult<Json<Value>> {
-    let rows = lib.db.call(|c| db::list_shares(c, None)).await?;
-    Ok(Json(
-        json!({ "shares": rows.iter().map(share_out).collect::<Vec<_>>() }),
-    ))
+    let l = lib.clone();
+    let shares = lib.db.call(move |c| shares_json(&l, c, None)).await?;
+    Ok(Json(json!({ "shares": shares })))
+}
+
+fn shares_json(
+    lib: &Library,
+    c: &rusqlite::Connection,
+    album: Option<&str>,
+) -> rusqlite::Result<Vec<Value>> {
+    db::list_shares(c, album)?
+        .iter()
+        .map(|s| share_json(lib, c, s))
+        .collect()
 }
 
 async fn revoke(State(lib): State<Library>, Path(token): Path<String>) -> ApiResult<StatusCode> {
@@ -235,7 +280,7 @@ async fn page(State(lib): State<Library>, Path(token): Path<String>) -> ApiResul
         .db
         .call(move |c| {
             db::count_share_view(c, &t)?;
-            let album = db::get_album(c, &album_id)?;
+            let album = db::get_album_any(c, &album_id)?;
             Ok(album.map(|a| (a.title, a.count)).unwrap_or_default())
         })
         .await?;
@@ -285,7 +330,7 @@ async fn items(
     let (title, list, total) = lib
         .db
         .call(move |c| {
-            let title = db::get_album(c, &album_id)?
+            let title = db::get_album_any(c, &album_id)?
                 .map(|a| a.title)
                 .unwrap_or_default();
             let (list, total) = db::album_visible_items(c, &album_id, offset, limit)?;
