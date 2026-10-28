@@ -19,6 +19,8 @@ export interface TileProps {
   catalogId?: string | null | undefined;
   /** The row's own section, for art of free text and custom items (ItemIcon). */
   section?: string | null | undefined;
+  /** The row's emoji was hand-picked (server `iconPicked`). */
+  iconPicked?: boolean | undefined;
   name: string;
   spec?: string;
   /** Accessible label of the main button. */
@@ -120,7 +122,7 @@ export function Tile(props: TileProps) {
       >
         <span class="tile-icon" aria-hidden="true">
           <Show when={props.kind !== "custom"} fallback={<span class="tile-initial">+</span>}>
-            <ItemIcon icon={props.icon} catalogId={props.catalogId} name={props.name} section={props.section} />
+            <ItemIcon icon={props.icon} catalogId={props.catalogId} name={props.name} section={props.section} iconPicked={props.iconPicked} />
           </Show>
         </span>
         <span class="tile-name" classList={{ "tile-name--long": long() }}>
