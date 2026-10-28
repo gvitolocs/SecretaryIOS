@@ -118,6 +118,89 @@ describe("Chat", () => {
     }
   });
 
+  it("stays on the newest message when layout lowers scrollTop, pins while hidden, and only the reader unpins it", async () => {
+    const es = installEventSource();
+    let height = 1200;
+    let client = 400;
+    let resized: (() => void) | undefined;
+    const originalObserver = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = class {
+      constructor(callback: ResizeObserverCallback) { resized = () => callback([], this); }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
+    const heightSpy = vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(function (this: HTMLElement) {
+      return this.classList.contains("messages") ? height : 0;
+    });
+    const clientSpy = vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(() => client);
+    let olderCalls = 0;
+    serve(() => ({ body: {} }), (c) => {
+      if (c.url.includes("before=")) olderCalls++;
+      return c.url.includes("before=") ? EMPTY_PAGE : { body: { items: MIXED, nextBefore: "3" } };
+    });
+    let top = 0;
+    const clamp = () => { top = Math.max(0, Math.min(top, height - client)); };
+    try {
+      await loadLatest();
+      render(() => <ChatView />);
+      const log = screen.getByRole("log");
+      log.scrollTo = (options?: ScrollToOptions | number) => {
+        log.scrollTop = typeof options === "number" ? options : options?.top ?? 0;
+      };
+      Object.defineProperty(log, "scrollTop", {
+        configurable: true,
+        get: () => top,
+        set: (value: number) => { top = value; clamp(); },
+      });
+      await waitFor(() => expect(top).toBe(800));
+      // Secretary Code re-places its view taller: the browser clamps scrollTop down. Not a scroll up.
+      client = 600;
+      clamp();
+      fireEvent.scroll(log);
+      height = 1500;
+      resized?.();
+      expect(top).toBe(900);
+      // Content above shrinks so far that the clamp lands near the top: no older page, still pinned.
+      height = 700;
+      clamp();
+      expect(top).toBe(100);
+      fireEvent.scroll(log);
+      height = 1300;
+      resized?.();
+      expect(top).toBe(700);
+      expect(olderCalls).toBe(0);
+      // Hidden (another rail item or tab in front): animation frames never run, the pin happens anyway.
+      const frames = vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
+      const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+      try {
+        height = 1500;
+        es.latest().emit("item", { id: "20", ts: new Date().toISOString(), channel: "web", role: "lucina", text: "Arrived while hidden" });
+        await screen.findByText("Arrived while hidden");
+        await waitFor(() => expect(top).toBe(900));
+      } finally {
+        frames.mockRestore();
+        visibility.mockRestore();
+      }
+      // The reader's wheel unpins, even when a busy page delivers its scroll event late.
+      const clock = vi.spyOn(Date, "now");
+      const start = Date.now();
+      clock.mockReturnValue(start);
+      fireEvent.wheel(log, { deltaY: -100 });
+      clock.mockReturnValue(start + 1500);
+      top = 300;
+      fireEvent.scroll(log);
+      clock.mockRestore();
+      height = 1600;
+      resized?.();
+      expect(top).toBe(300);
+    } finally {
+      heightSpy.mockRestore();
+      clientSpy.mockRestore();
+      globalThis.ResizeObserver = originalObserver;
+    }
+  });
+
   it("shows an optimistic bubble, a thinking indicator, then the reply as plain text", async () => {
     const gate = deferred<void>();
     const calls = serve(async () => {

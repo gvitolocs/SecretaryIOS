@@ -39,6 +39,7 @@
 //   POST /v1/_mock/timeline {channel, role, text, meta?} -> injects an item (CSRF header needed)
 //   POST /v1/proactive/outreach/{po_id}/feedback {action} -> 201 {feedback} (logged, not stored)
 //   MOCK_FAKE_TRAFFIC=1 posts a fake Telegram message (and Lucina's answer) every ~20 s.
+//   MOCK_CHAT_HISTORY=<n> seeds n items of this browser's chat with photos and links (seedChatHistory).
 // Lucina stage (session needed, like the real server):
 //   GET  /v1/assets/<file> -> files from MOCK_ASSETS_DIR (default ~/scratch/lucina-avatar/out).
 //                            The model is private: never copy it into the repo.
@@ -1405,6 +1406,34 @@ function addItem(fields, ts = Date.now()) {
   return item;
 }
 
+/**
+ * MOCK_CHAT_HISTORY=<n>: n items of this browser's own chat shaped like the owner's real one (days of
+ * history, long replies, links, photos from the synthetic Gallery). Older photos carry no size, so the
+ * bubble only learns its shape from the media item, as on the real server; newer ones carry size and
+ * ThumbHash. For the scroll-position checks (Chat lands on the newest message).
+ */
+function seedChatHistory(n, now) {
+  const own = { channel: "web", meta: { device: MOCK_DEVICE, deviceName: "This browser" } };
+  const long = "Here is what I found. ".repeat(6) + "\n\n- first point with some detail\n- second point\n- third point that wraps onto a second line on a phone";
+  for (let i = 0; i < n; i++) {
+    const at = now - (n - i) * 17 * 60_000;
+    const role = i % 2 ? "lucina" : "user";
+    const fields = { ...own, role, text: role === "user" ? `Question ${i + 1}: what about this?` : `Answer ${i + 1}. ${i % 5 === 1 ? long : "Done."}` };
+    if (i % 6 === 0) {
+      const media = Array.from({ length: 1 + (i % 4 === 0 ? 2 : 0) }, (_, k) => {
+        const index = (i * 3 + k) % 5000;
+        const sized = i > n - 40;
+        return { kind: "image", name: `photo-${i}-${k}.jpg`, mediaId: `itm_${index.toString(16).padStart(6, "0")}`, ...(sized ? { width: 3024, height: 4032 } : {}) };
+      });
+      fields.attachments = media;
+    } else if (i % 9 === 3) {
+      fields.text += " https://example.com/article-" + i;
+      fields.attachments = [{ kind: "link", url: `https://example.com/article-${i}`, name: `Article ${i}` }];
+    }
+    addItem(fields, at);
+  }
+}
+
 function seedTimeline() {
   const now = Date.now();
   const H = 3_600_000;
@@ -1420,6 +1449,11 @@ function seedTimeline() {
   if (requested !== undefined) {
     const n = Math.max(0, Number(requested) || 0);
     for (let i = 0; i < n; i++) addItem({ ...variants[i % variants.length], role: i % 2 ? "lucina" : "user", text: `Seed message ${i + 1}` }, now - (n - i) * 60000);
+    return;
+  }
+  const history = process.env.MOCK_CHAT_HISTORY;
+  if (history !== undefined) {
+    seedChatHistory(Math.max(0, Number(history) || 0), now);
     return;
   }
   for (const [i, variant] of variants.entries()) addItem({ ...variant, role: "user", text: `Hello from conversation ${i + 1}` }, now - DAY_MS * 30 + i * 1000);
@@ -1974,6 +2008,7 @@ async function route(req, res) {
   if (await (await import("./instagram.mjs")).handleInstagram(req, res, { path, method, url, send, fail, readJson })) return;
   if (await (await import("./agents.mjs")).handleAgents(req, res, { path, method, url, send, fail, readJson })) return;
   if (await (await import("./systemHealth.mjs")).handleSystemHealth(req, res, { path, method, send })) return;
+  if (await (await import("./systemOverview.mjs")).handleSystemOverview(req, res, { path, method, send })) return;
 
   if (mockServerDown && (path.startsWith("/v1/gym/") || path.startsWith("/v1/body/"))) {
     res.writeHead(502, { "Cache-Control": "no-store" });

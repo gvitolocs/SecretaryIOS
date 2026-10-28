@@ -126,7 +126,7 @@ render(
       <Route path="/films/play/:id" component={FilmsView} />
       <Route path="/pixiv/:id?" component={PixivView} />
       <Route path="/drive/*rest" component={DriveView} />
-      <Route path="/server-health" component={ServerHealthView} />
+      <Route path="/server-health/:section?" component={ServerHealthView} />
       <Route path="/notifications" component={NotificationsView} />
       <Route path="/account" component={AccountView} />
       <Route path="/secrets" component={SecretsView} />
