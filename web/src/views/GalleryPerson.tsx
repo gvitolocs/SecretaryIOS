@@ -8,7 +8,7 @@ export default function GalleryPersonView() {
   // Another person is another list: start the view afresh.
   return (
     <Show when={params.id} keyed>
-      {(id) => <GalleryView person={id} />}
+      {(id) => <GalleryView person={id} desktop />}
     </Show>
   );
 }
