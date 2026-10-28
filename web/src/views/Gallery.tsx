@@ -8,6 +8,7 @@ import { createGalleryFeed, SEEK_PAGE } from "../components/gallery/GridFeed";
 import { GridView, type GridCommand, type TileClick } from "../components/gallery/GridView";
 import { SelectionBar } from "../components/gallery/SelectionBar";
 import { SourceBar } from "../components/gallery/SourceBar";
+import { LabIcon } from "../components/gallery/lab/LabIcons";
 import { BackIcon, SearchIcon, TrashIcon } from "../components/Icons";
 import { t } from "../i18n";
 import { rangeIds, sectionKey, sourceIdOf, toggleId, type GroupBy } from "../lib/galleryLayout";
@@ -325,6 +326,9 @@ export default function GalleryView(props: { trash?: boolean }) {
                 />
               </label>
               <Show when={!trash()}>
+                <A class="g-iconbtn" href="/gallery/lab" aria-label={t("lab.labLink")} title={t("lab.labLink")}>
+                  <LabIcon />
+                </A>
                 <A class="g-iconbtn" href="/gallery/trash" aria-label={t("gallery.trashLink")} title={t("gallery.trashLink")}>
                   <TrashIcon />
                 </A>

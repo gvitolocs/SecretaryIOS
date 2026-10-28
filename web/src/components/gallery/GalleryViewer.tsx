@@ -8,6 +8,8 @@ import { PhotoViewer, type ViewerItem } from "../PhotoViewer";
 import "../../styles/gallery-viewer.css";
 import { AlbumPicker } from "./AlbumPicker";
 import { DeleteDialog, type DeleteResult } from "./DeleteDialog";
+import { LabIcon } from "./lab/LabIcons";
+import { LabSheet } from "./lab/LabSheet";
 import { PhotoInfo } from "./PhotoInfo";
 import { RenameDialog } from "./RenameDialog";
 import { AlbumIcon, DownloadIcon, HeartIcon, InfoIcon, RenameIcon, RestoreIcon, RotateIcon, TrashIcon } from "./ViewerIcons";
@@ -25,7 +27,7 @@ export interface GalleryViewerProps {
   trash?: boolean;
 }
 
-type Dialog = "delete" | "album" | "rename" | null;
+type Dialog = "delete" | "album" | "rename" | "lab" | null;
 
 const INFO_KEY = "gallery.infoOpen";
 
@@ -282,6 +284,11 @@ export function GalleryViewer(props: GalleryViewerProps) {
             <button type="button" class="pv-btn" aria-label={t("galleryInfo.rename")} title={t("galleryInfo.rename")} onClick={() => setDialog("rename")}>
               <RenameIcon />
             </button>
+            <Show when={item().kind === "photo"}>
+              <button type="button" class="pv-btn" aria-label={t("lab.editWithLucina")} title={t("lab.editWithLucina")} onClick={() => setDialog("lab")}>
+                <LabIcon />
+              </button>
+            </Show>
             <button type="button" class="pv-btn" aria-label={t("galleryInfo.addToAlbum")} title={t("galleryInfo.addToAlbum")} onClick={() => setDialog("album")}>
               <AlbumIcon />
             </button>
@@ -350,6 +357,9 @@ export function GalleryViewer(props: GalleryViewerProps) {
             </Match>
             <Match when={dialog() === "album"}>
               <AlbumPicker itemIds={[item().id]} onDone={addedToAlbum} onCancel={() => setDialog(null)} />
+            </Match>
+            <Match when={dialog() === "lab"}>
+              <LabSheet item={item()} onClose={() => setDialog(null)} />
             </Match>
             <Match when={dialog() === "rename"}>
               <RenameDialog item={item()} onSave={saveRename} onCancel={() => setDialog(null)} />
