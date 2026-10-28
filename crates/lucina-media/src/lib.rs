@@ -28,6 +28,8 @@ pub mod drive;
 pub mod drive_kernel;
 pub mod edits;
 pub mod extract;
+pub mod faces;
+pub mod faces_http;
 pub mod gallery;
 pub mod geo;
 pub mod highlight;

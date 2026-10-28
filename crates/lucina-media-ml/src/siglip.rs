@@ -15,8 +15,8 @@
 //! The text tower is loaded on the first query and dropped after a while without one
 //! ([`Siglip::release_idle`]); the vision tower only lives while the worker embeds.
 
-use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use image::imageops::FilterType;
@@ -24,6 +24,7 @@ use image::RgbImage;
 use ort::session::Session;
 use ort::value::Tensor;
 
+use crate::runtime::{failed, init_runtime, session, unavailable};
 use crate::vector::normalize;
 use crate::{Embedder, MlError};
 
@@ -94,39 +95,6 @@ impl SiglipConfig {
         .into_iter()
         .find(|p| !p.is_file())
     }
-}
-
-fn unavailable(e: impl std::fmt::Display) -> MlError {
-    MlError::Unavailable(e.to_string())
-}
-fn failed(e: impl std::fmt::Display) -> MlError {
-    MlError::Failed(e.to_string())
-}
-
-/// ONNX Runtime from `lib`, once per process (it cannot be reloaded). A library that fails to
-/// load leaves smart search off instead of crashing the service.
-fn init_runtime(lib: &Path) -> Result<(), MlError> {
-    static INIT: OnceLock<Result<(), String>> = OnceLock::new();
-    INIT.get_or_init(|| {
-        let path = lib.display().to_string();
-        std::panic::catch_unwind(|| ort::init_from(path).with_name("lucina-media-ml").commit())
-            .map_err(|_| format!("could not load ONNX Runtime from {}", lib.display()))?
-            .map(|_| ())
-            .map_err(|e| e.to_string())
-    })
-    .clone()
-    .map_err(MlError::Unavailable)
-}
-
-fn session(path: &Path, threads: usize) -> Result<Session, MlError> {
-    std::panic::catch_unwind(|| {
-        Session::builder()?
-            .with_intra_threads(threads.max(1))?
-            .with_inter_threads(1)?
-            .commit_from_file(path)
-    })
-    .map_err(|_| MlError::Unavailable("ONNX Runtime panicked loading a model".into()))?
-    .map_err(|e| MlError::Unavailable(format!("{}: {e}", path.display())))
 }
 
 /// The pooled output: `pooler_output` by name, else the second output (the transformers export

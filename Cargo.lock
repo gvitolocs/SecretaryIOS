@@ -2561,6 +2561,7 @@ dependencies = [
  "thiserror",
  "tokenizers",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

@@ -7,11 +7,18 @@
 //! - [`index`]: every vector of a model in memory, searched by brute force (a 10k-photo library
 //!   is about 30 MB of f32 and a scan takes a few milliseconds; no vector database).
 //! - [`thermal`]: the CPU temperature, so background work pauses when nezopt runs hot.
+//! - [`faces`]: YuNet finds faces, SFace turns each into a 128-value vector (ONNX, CPU);
+//!   [`faces_store`] keeps faces, people and scan records in the catalog; [`cluster`] groups face
+//!   vectors into people, incrementally.
 //!
 //! The HTTP routes and the background worker live in `lucina-media` (`smart.rs`), which knows
 //! the catalog's items and renditions; this crate knows nothing about them.
 
+pub mod cluster;
+pub mod faces;
+pub mod faces_store;
 pub mod index;
+pub(crate) mod runtime;
 pub mod siglip;
 pub mod store;
 pub mod thermal;
@@ -19,10 +26,14 @@ pub mod vector;
 
 use image::RgbImage;
 
-/// Drops everything this crate keeps about an item (its vectors and failures in every model).
-/// The catalog's purge calls it when an item is deleted for good.
+/// Drops everything this crate keeps about an item: its vectors and failures in every model, and
+/// its faces (people left with no face are dropped unless named; covers are fixed). The catalog's
+/// purge calls it when an item is deleted for good. Face crops under the data folder belong to the
+/// service, which removes the ones whose face is gone (`lucina-media`'s `faces::prune`).
 pub fn forget_item(c: &rusqlite::Connection, item_id: &str) -> rusqlite::Result<()> {
-    store::forget(c, item_id)
+    store::forget(c, item_id)?;
+    faces_store::forget(c, item_id)?;
+    Ok(())
 }
 
 #[derive(Debug, thiserror::Error)]
