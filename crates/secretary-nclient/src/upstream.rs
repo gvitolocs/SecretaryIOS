@@ -19,6 +19,12 @@ pub struct UpstreamConfig {
     pub user_agent: String,
     /// Optional `Cookie` header (e.g. a Cloudflare clearance cookie), read from a file.
     pub cookie: Option<String>,
+    /// Retries after a 429 or a 5xx (so up to `1 + max_retries` attempts per request).
+    pub max_retries: u32,
+    /// First backoff step; it doubles per retry, with jitter. A `Retry-After` wins when longer.
+    pub backoff_base: Duration,
+    /// A `Retry-After` longer than this is not waited for: the caller gets `RateLimited`.
+    pub retry_after_cap: Duration,
 }
 
 impl Default for UpstreamConfig {
@@ -31,6 +37,9 @@ impl Default for UpstreamConfig {
             image_interval: Duration::from_secs(1),
             user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15".into(),
             cookie: None,
+            max_retries: 2,
+            backoff_base: Duration::from_secs(2),
+            retry_after_cap: Duration::from_secs(20),
         }
     }
 }
@@ -41,6 +50,10 @@ pub enum UpstreamError {
     Forbidden,
     #[error("upstream status {0}")]
     Status(u16),
+    /// The site kept answering 429 (or asked for a longer wait than we hold a request for).
+    /// The number is the seconds the client should wait.
+    #[error("upstream rate limit, retry after {0}s")]
+    RateLimited(u64),
     #[error("upstream unreachable")]
     Network,
     #[error("upstream body too large")]
@@ -70,6 +83,35 @@ impl Limiter {
         };
         tokio::time::sleep_until(at.into()).await;
     }
+
+    /// The site asked us to slow down: no request of this kind leaves before `d` has passed.
+    async fn penalize(&self, d: Duration) {
+        let mut next = self.next.lock().await;
+        let until = Instant::now() + d;
+        if until > *next {
+            *next = until;
+        }
+    }
+}
+
+/// `Retry-After` in whole seconds (the HTTP-date form is not used by the site).
+fn retry_after(resp: &reqwest::Response) -> Option<u64> {
+    resp.headers()
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+}
+
+/// Exponential backoff with up to 25 % jitter.
+fn backoff(base: Duration, attempt: u32) -> Duration {
+    let step = base.saturating_mul(1u32 << attempt.min(6));
+    let mut b = [0u8; 2];
+    let _ = getrandom::fill(&mut b);
+    let jitter = u32::from(u16::from_le_bytes(b) % 256); // 0..=255 of 1024
+    step + step * jitter / 1024
 }
 
 pub struct Upstream {
@@ -130,35 +172,54 @@ impl Upstream {
         image: bool,
     ) -> Result<(Vec<u8>, Option<String>), UpstreamError> {
         let target = self.map(url)?;
-        if image {
-            self.images.wait().await;
-        } else {
-            self.api.wait().await;
-        }
-        let mut req = self.http.get(&target);
-        if let Some(c) = &self.cfg.cookie {
-            req = req.header(reqwest::header::COOKIE, c);
-        }
-        if !image {
-            req = req.header(reqwest::header::ACCEPT, "application/json");
-        }
-        let mut resp = req.send().await.map_err(|_| UpstreamError::Network)?;
-        if !resp.status().is_success() {
-            return Err(UpstreamError::Status(resp.status().as_u16()));
-        }
-        let ctype = resp
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string);
-        let mut body = Vec::new();
-        while let Some(chunk) = resp.chunk().await.map_err(|_| UpstreamError::Network)? {
-            if body.len() + chunk.len() > limit {
-                return Err(UpstreamError::TooLarge);
+        let limiter = if image { &self.images } else { &self.api };
+        let mut attempt = 0u32;
+        loop {
+            limiter.wait().await;
+            let mut req = self.http.get(&target);
+            if let Some(c) = &self.cfg.cookie {
+                req = req.header(reqwest::header::COOKIE, c);
             }
-            body.extend_from_slice(&chunk);
+            if !image {
+                req = req.header(reqwest::header::ACCEPT, "application/json");
+            }
+            let mut resp = req.send().await.map_err(|_| UpstreamError::Network)?;
+            let status = resp.status();
+            if status.as_u16() == 429 || status.is_server_error() {
+                let asked = retry_after(&resp);
+                let wait = backoff(self.cfg.backoff_base, attempt)
+                    .max(Duration::from_secs(asked.unwrap_or(0)));
+                let too_long =
+                    asked.is_some_and(|s| Duration::from_secs(s) > self.cfg.retry_after_cap);
+                // Everything after this one waits too, for what the site asked.
+                limiter.penalize(wait).await;
+                if attempt >= self.cfg.max_retries || too_long {
+                    return Err(if status.as_u16() == 429 {
+                        UpstreamError::RateLimited(wait.as_secs().max(1))
+                    } else {
+                        UpstreamError::Status(status.as_u16())
+                    });
+                }
+                attempt += 1;
+                continue;
+            }
+            if !status.is_success() {
+                return Err(UpstreamError::Status(status.as_u16()));
+            }
+            let ctype = resp
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+            let mut body = Vec::new();
+            while let Some(chunk) = resp.chunk().await.map_err(|_| UpstreamError::Network)? {
+                if body.len() + chunk.len() > limit {
+                    return Err(UpstreamError::TooLarge);
+                }
+                body.extend_from_slice(&chunk);
+            }
+            return Ok((body, ctype));
         }
-        Ok((body, ctype))
     }
 
     pub async fn json(&self, url: &str) -> Result<String, UpstreamError> {
