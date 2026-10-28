@@ -173,6 +173,30 @@ impl Question {
         Ok(())
     }
 
+    /// The question as JSON text, choice options in the caller's order.
+    /// (`serde_json::Map` sorts keys without `preserve_order`, which this
+    /// workspace does not enable; Jev leans towards the first option, so the
+    /// order is the caller's to set.)
+    fn to_wire_text(&self) -> String {
+        match self {
+            Self::Choice {
+                instructions,
+                options,
+            } => {
+                let criteria: Vec<String> = options
+                    .iter()
+                    .map(|(k, v)| format!("{}:{}", Value::from(k.as_str()), Value::from(v.as_str())))
+                    .collect();
+                format!(
+                    "{{\"type\":\"choice\",\"instructions\":{},\"criteria\":{{{}}}}}",
+                    Value::from(instructions.as_str()),
+                    criteria.join(",")
+                )
+            }
+            _ => self.to_wire().to_string(),
+        }
+    }
+
     fn to_wire(&self) -> Value {
         match self {
             Self::Choice {
@@ -407,13 +431,10 @@ impl Jev {
         if questions.is_empty() {
             return Err(JevError::Invalid("no questions".into()));
         }
-        let mut qs = Map::new();
         for (name, q) in questions {
             q.validate(name)?;
-            qs.insert((*name).to_owned(), q.to_wire());
         }
-        let state = clip_state(state);
-        let body = json!({"model": self.cfg.model, "state": state, "questions": qs});
+        let body = request_body(&self.cfg.model, clip_state(state), questions);
         self.counters.calls.fetch_add(1, Ordering::Relaxed);
         let started = Instant::now();
         let out = self.send(key, &body).await;
@@ -441,12 +462,13 @@ impl Jev {
         out
     }
 
-    async fn send(&self, key: &str, body: &Value) -> Result<Value, JevError> {
+    async fn send(&self, key: &str, body: &str) -> Result<Value, JevError> {
         let resp = self
             .http
             .post(&self.cfg.url)
             .bearer_auth(key)
-            .json(body)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body.to_owned())
             .send()
             .await
             .map_err(|e| {
@@ -519,6 +541,20 @@ impl Jev {
             "byPurpose": by,
         })
     }
+}
+
+/// The request as JSON text: questions and choice options in the caller's order.
+pub fn request_body(model: &str, state: Value, questions: &[(&str, Question)]) -> String {
+    let qs: Vec<String> = questions
+        .iter()
+        .map(|(name, q)| format!("{}:{}", Value::from(*name), q.to_wire_text()))
+        .collect();
+    format!(
+        "{{\"model\":{},\"state\":{},\"questions\":{{{}}}}}",
+        Value::from(model),
+        state,
+        qs.join(",")
+    )
 }
 
 fn clip_state(state: Value) -> Value {

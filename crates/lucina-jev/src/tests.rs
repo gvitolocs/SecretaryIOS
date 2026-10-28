@@ -207,3 +207,17 @@ async fn unconfigured_client_never_calls_out() {
     );
     assert_eq!(j.stats()["skipped"], 1);
 }
+
+#[test]
+fn the_request_keeps_question_and_option_order() {
+    let qs = vec![
+        ("zeta", Question::choice("Pick", [("open_app", "first"), ("back", "second \"quoted\"")])),
+        ("alpha", Question::noul("Done?")),
+    ];
+    let body = request_body("jev-1.14.0", json!({"task": "x"}), &qs);
+    let v: Value = serde_json::from_str(&body).expect("valid JSON");
+    assert_eq!(v["questions"]["zeta"]["criteria"]["back"], "second \"quoted\"");
+    assert_eq!(v["model"], "jev-1.14.0");
+    assert!(body.find("\"zeta\"").unwrap() < body.find("\"alpha\"").unwrap());
+    assert!(body.find("\"open_app\"").unwrap() < body.find("\"back\"").unwrap());
+}

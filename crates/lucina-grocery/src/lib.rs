@@ -1295,6 +1295,11 @@ impl GroceryRepo {
                 let unit = op_text(op.get("unit"), MAX_UNIT, false)?;
                 let section = op_text(op.get("section"), MAX_SECTION, false)?;
                 let idx = self.catalog.index();
+                // Only `svg:<catalog id>` (an item illustration) is kept; anything else is ignored.
+                let icon = op_text(op.get("icon"), MAX_CATALOG_ID + 4, false)?.filter(|i| {
+                    i.strip_prefix("svg:")
+                        .is_some_and(|k| idx.item(k).is_some())
+                });
                 let (object, typed_text) = match self.find_add_object(conn, ctx.user_id, op).await?
                 {
                     Some(found) => found,
@@ -1332,6 +1337,7 @@ impl GroceryRepo {
                          item_id = COALESCE(item_id, $4), catalog_item_id = COALESCE(catalog_item_id, $5), \
                          specification = COALESCE($6, specification), quantity = COALESCE($7::numeric, quantity), \
                          unit = COALESCE($8, unit), section_override = COALESCE($9, section_override), \
+                         icon_key = COALESCE($10, icon_key), \
                          rev = $2, modified_by = $3, updated_at = now() WHERE id = $1",
                     )
                     .bind(existing.id)
@@ -1343,6 +1349,7 @@ impl GroceryRepo {
                     .bind(quantity)
                     .bind(&unit)
                     .bind(&section)
+                    .bind(&icon)
                     .execute(&mut *conn)
                     .await?;
                     // S2: later ops of this client name its optimistic row.
@@ -1380,8 +1387,8 @@ impl GroceryRepo {
                 };
                 let row = sqlx::query(
                     "INSERT INTO grocery.shopping_list_items (user_id, list_id, product_id, raw_name, status, item_id, catalog_item_id, \
-                     specification, quantity, unit, section_override, position, rev, modified_by, id) \
-                     VALUES ($1, $2, $3, $4, 'needed', $5, $6, $7, $8::numeric, $9, $10, $11, $12, $13, $14) RETURNING id",
+                     specification, quantity, unit, section_override, position, rev, modified_by, id, icon_key) \
+                     VALUES ($1, $2, $3, $4, 'needed', $5, $6, $7, $8::numeric, $9, $10, $11, $12, $13, $14, $15) RETURNING id",
                 )
                 .bind(ctx.user_id)
                 .bind(list_id)
@@ -1397,6 +1404,7 @@ impl GroceryRepo {
                 .bind(ctx.rev)
                 .bind(ctx.modified_by)
                 .bind(new_id)
+                .bind(&icon)
                 .fetch_one(&mut *conn)
                 .await?;
                 Ok(Some(row.get::<Uuid, _>("id")))
@@ -1915,7 +1923,7 @@ impl GroceryRepo {
             .await
     }
 
-    /// [`Self::add_item_in`] with extra `add` op fields (`catalogId`, `section`).
+    /// [`Self::add_item_in`] with extra `add` op fields (`catalogId`, `section`, `icon`).
     pub async fn add_item_with(
         &self,
         user_id: &str,
@@ -1932,7 +1940,7 @@ impl GroceryRepo {
             raw_name.to_owned()
         };
         let mut op = json!({"opId": op_id, "type": "add", "text": name});
-        for k in ["catalogId", "section"] {
+        for k in ["catalogId", "section", "icon"] {
             if let Some(v) = extra.get(k).filter(|v| v.is_string()) {
                 op[k] = v.clone();
             }

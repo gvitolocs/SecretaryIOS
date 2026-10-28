@@ -57,6 +57,9 @@ impl Gate {
         let mut op = json!({"opId": uuid::Uuid::new_v4().to_string(), "type": "add", "text": text});
         if let Some(id) = catalog_id {
             op["catalogId"] = json!(id);
+            // The catalog id is also the illustration key; an explicit `svg:` icon
+            // wins over any emoji in every client.
+            op["icon"] = json!(format!("svg:{id}"));
         }
         if let (None, Some(s)) = (catalog_id, section) {
             op["section"] = json!(s);
@@ -302,6 +305,7 @@ mod tests {
         );
         let op = g.add_op("Pastiglie bucato").unwrap();
         assert_eq!(op["catalogId"], "laundry-detergent");
+        assert_eq!(op["icon"], "svg:laundry-detergent");
         assert_eq!(op["text"], "Pastiglie bucato");
         assert!(op.get("section").is_none(), "the catalog item brings its section");
 
