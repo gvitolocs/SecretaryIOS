@@ -1,13 +1,14 @@
 import { A, useLocation, useNavigate } from "@solidjs/router";
-import { createMemo, createSignal, For, Show, type JSX } from "solid-js";
+import { createMemo, createSignal, For, Show } from "solid-js";
 import type { GymCommand, GymView, Routine, Workout } from "../../api/gym";
 import { formatDate } from "../../lib/units";
 import { runGym } from "../../state/gym";
 import WeightView from "../Weight";
 import { ArrowUpRightIcon, CalendarIcon, PlayIcon, PlusCircleIcon, SparkleIcon } from "./icons";
 import RoutineBuilder from "./RoutineBuilder";
+import TrainingDesk from "./TrainingDesk";
 import { SettingsBody } from "./Settings";
-import { ConfirmButton, exerciseById, Eyebrow, GymPage, GymSubNav, isSettingsSearch, Metric, setsText, useGymClock, useWide } from "./shared";
+import { ConfirmButton, exerciseById, Eyebrow, GymPage, isSettingsSearch, Metric, setsText, useGymClock, useWide } from "./shared";
 import { gt } from "./strings";
 
 // Training (RootView.swift `TrainingView`): hero, weekly goal, the active
@@ -100,7 +101,7 @@ function ActiveCard(props: { view: GymView; workout: Workout }) {
   );
 }
 
-function TrainingBody(props: { view: GymView; wide: boolean; aside?: () => JSX.Element }) {
+function TrainingBody(props: { view: GymView }) {
   const navigate = useNavigate();
   const [starting, setStarting] = createSignal(false);
   const [building, setBuilding] = createSignal(false);
@@ -219,62 +220,31 @@ function TrainingBody(props: { view: GymView; wide: boolean; aside?: () => JSX.E
 
   return (
     <>
-      <Show
-        when={props.wide}
-        fallback={
-          <>
-            <header class="gym-hero">
-              <div class="gym-hero-brand">
-                <Eyebrow>{gt("brand")}</Eyebrow>
-                <span class="gym-hero-sparkle">
-                  <SparkleIcon />
-                </span>
-              </div>
-              <h1 class="gym-hero-title">
-                {gt("heroLine1")}
-                <br />
-                {gt("heroLine2")}
-              </h1>
-            </header>
-
-            {week()}
-
-            <Show when={props.view.state.active} fallback={startButton("btn--block")}>
-              {(active) => <ActiveCard view={props.view} workout={active()} />}
-            </Show>
-
-            {routines()}
-            {repeat()}
-            {metrics()}
-
-            <p class="gym-footer">{gt("footer")}</p>
-          </>
-        }
-      >
-        <header class="gym-desk-head">
-          <div class="gym-desk-titles">
-            <Eyebrow>{gt("brand")}</Eyebrow>
-            <h1 class="gym-title gym-desk-title">{gt("tabTraining")}</h1>
-          </div>
-          {week()}
-          <Show when={!props.view.state.active}>{startButton("gym-desk-start")}</Show>
-        </header>
-        <GymSubNav />
-        <div class="gym-desk-grid" classList={{ "gym-desk-grid--rail": Boolean(props.aside) }}>
-          <div class="gym-desk-main">
-            <Show when={props.view.state.active}>
-              {(active) => <ActiveCard view={props.view} workout={active()} />}
-            </Show>
-            {routines()}
-            {repeat()}
-            {metrics()}
-            <p class="gym-footer">{gt("footer")}</p>
-          </div>
-          <Show when={props.aside}>
-            {(aside) => <aside class="gym-desk-rail">{aside()()}</aside>}
-          </Show>
+      <header class="gym-hero">
+        <div class="gym-hero-brand">
+          <Eyebrow>{gt("brand")}</Eyebrow>
+          <span class="gym-hero-sparkle">
+            <SparkleIcon />
+          </span>
         </div>
+        <h1 class="gym-hero-title">
+          {gt("heroLine1")}
+          <br />
+          {gt("heroLine2")}
+        </h1>
+      </header>
+
+      {week()}
+
+      <Show when={props.view.state.active} fallback={startButton("btn--block")}>
+        {(active) => <ActiveCard view={props.view} workout={active()} />}
       </Show>
+
+      {routines()}
+      {repeat()}
+      {metrics()}
+
+      <p class="gym-footer">{gt("footer")}</p>
 
       <RoutineBuilder
         open={building()}
@@ -290,9 +260,10 @@ function TrainingBody(props: { view: GymView; wide: boolean; aside?: () => JSX.E
 const weightRail = () => <WeightView compact />;
 
 /**
- * On a desktop-wide page the weight is a rail right of the training (on /gym
- * and /training alike). `weightAbove`: the Training page's phone layout, the
- * weight above the Gym; /gym on a phone shows the Gym alone.
+ * On a desktop-wide page (on /gym and /training alike) the Training page is
+ * gym/TrainingDesk.tsx, with the weight in its rail. `weightAbove`: the
+ * Training page's phone layout, the weight above the Gym; /gym on a phone
+ * shows the Gym alone.
  */
 export default function GymHome(props: { weightAbove?: boolean } = {}) {
   const location = useLocation();
@@ -304,7 +275,12 @@ export default function GymHome(props: { weightAbove?: boolean } = {}) {
       <Show when={!desk() && props.weightAbove}>{weightRail()}</Show>
       <GymPage wide={desk()} subnav={!desk()} ref={track}>
         {(view) => (
-          <Show when={settings()} fallback={<TrainingBody view={view()} wide={desk()} aside={weightRail} />}>
+          <Show when={settings()} fallback={
+              <Show when={desk()} fallback={<TrainingBody view={view()} />}>
+                <TrainingDesk view={view()} />
+              </Show>
+            }
+          >
             <SettingsBody view={view()} />
           </Show>
         )}

@@ -66,6 +66,8 @@
 // MOCK_STRICT=1 emulates the older lucina-gym-core view (no estimated_1rm, exercise_charts,
 // active_elapsed_seconds or volume_grams; repeat_workout and parse_weight fail) to check
 // that the UI degrades gracefully.
+// MOCK_GYM_EMPTY=1 starts the gym with no routines or workouts, MOCK_BODY_EMPTY=1 the body
+// log with no weigh-ins (the first-run empty states).
 
 import http from "node:http";
 import { handleMaps } from "./maps.mjs";
@@ -203,6 +205,8 @@ function lucinaReply(message) {
 // lucina-gym-core view (see the header).
 
 const MOCK_STRICT = process.env.MOCK_STRICT === "1";
+const MOCK_GYM_EMPTY = process.env.MOCK_GYM_EMPTY === "1";
+const MOCK_BODY_EMPTY = process.env.MOCK_BODY_EMPTY === "1";
 const DAY_MS = 86_400_000;
 let mockServerDown = false;
 
@@ -356,6 +360,16 @@ function makeGymState() {
         weight_grams: 0,
       })),
     },
+    {
+      id: "pull",
+      name: "Pull",
+      exercises: ["deadlift", "pull-up", "cable-row", "biceps-curl"].map((exercise_id) => ({
+        exercise_id,
+        sets: 3,
+        reps: 8,
+        weight_grams: 0,
+      })),
+    },
   ];
   const state = {
     schema_version: 1,
@@ -369,16 +383,21 @@ function makeGymState() {
     rest: null,
     receipts: new Map(),
   };
+  // MOCK_GYM_EMPTY=1: a first-run account (no routines, no workouts) for the empty states.
+  if (MOCK_GYM_EMPTY) {
+    state.routines = [];
+    return state;
+  }
   seedGymWorkout(state, 12, "Lower body", [
     ["squat", [[80000, 5, 0, 0], [80000, 5, 0, 0], [80000, 5, 0, 0]]],
     ["cable-row", [[55000, 10, 0, 0], [55000, 10, 0, 0], [55000, 10, 0, 0]]],
   ]);
-  seedGymWorkout(state, 7, "Push day", [
+  seedGymWorkout(state, 7, "Push", [
     ["bench-press", [[60000, 8, 0, 0], [60000, 8, 0, 0], [60000, 8, 0, 0]]],
     ["overhead-press", [[35000, 8, 0, 0], [35000, 8, 0, 0]]],
     ["plank", [[0, 0, 60, 0], [0, 0, 60, 0]]],
   ]);
-  seedGymWorkout(state, 2, "Heavy pulls", [
+  seedGymWorkout(state, 2, "Pull", [
     ["deadlift", [[100000, 5, 0, 0], [100000, 5, 0, 0], [100000, 5, 0, 0]]],
     ["pull-up", [[0, 8, 0, 0], [0, 8, 0, 0], [0, 8, 0, 0]]],
     ["run", [[0, 0, 900, 3000]]],
@@ -1141,7 +1160,8 @@ const BODY_MAX_NOTE = 1_000;
 function makeBodyState() {
   const now = Date.now();
   const entries = [];
-  for (let i = 0; i < 40; i++) {
+  // MOCK_BODY_EMPTY=1: no weigh-ins yet.
+  for (let i = 0; i < (MOCK_BODY_EMPTY ? 0 : 40); i++) {
     const measured = now - i * DAY_MS - (i % 5) * 3_600_000;
     entries.push({
       id: randomUUID(),
