@@ -8,6 +8,8 @@ import { PhotoViewer, type ViewerItem } from "../PhotoViewer";
 import "../../styles/gallery-viewer.css";
 import { AlbumPicker } from "./AlbumPicker";
 import { DeleteDialog, type DeleteResult } from "./DeleteDialog";
+import { LabIcon } from "./lab/LabIcons";
+import { LabSheet } from "./lab/LabSheet";
 import { PhotoInfo } from "./PhotoInfo";
 import { EditIcon } from "./editor/EditorIcons";
 import { PhotoEditor } from "./editor/PhotoEditor";
@@ -32,7 +34,7 @@ export interface GalleryViewerProps {
   archive?: boolean;
 }
 
-type Dialog = "delete" | "album" | "rename" | "share" | null;
+type Dialog = "delete" | "album" | "rename" | "share" | "lab" | null;
 
 const INFO_KEY = "gallery.infoOpen";
 
@@ -331,6 +333,11 @@ export function GalleryViewer(props: GalleryViewerProps) {
             <button type="button" class="pv-btn" aria-label={t("galleryInfo.rename")} title={t("galleryInfo.rename")} onClick={() => setDialog("rename")}>
               <RenameIcon />
             </button>
+            <Show when={item().kind === "photo"}>
+              <button type="button" class="pv-btn" aria-label={t("lab.editWithLucina")} title={t("lab.editWithLucina")} onClick={() => setDialog("lab")}>
+                <LabIcon />
+              </button>
+            </Show>
             <button type="button" class="pv-btn" aria-label={t("galleryInfo.addToAlbum")} title={t("galleryInfo.addToAlbum")} onClick={() => setDialog("album")}>
               <AlbumIcon />
             </button>
@@ -422,6 +429,9 @@ export function GalleryViewer(props: GalleryViewerProps) {
             </Match>
             <Match when={dialog() === "share"}>
               <ShareSheet target={{ kind: "items", items: [item()] }} onClose={() => setDialog(null)} />
+            </Match>
+            <Match when={dialog() === "lab"}>
+              <LabSheet item={item()} onClose={() => setDialog(null)} />
             </Match>
             <Match when={dialog() === "rename"}>
               <RenameDialog item={item()} onSave={saveRename} onCancel={() => setDialog(null)} />

@@ -39,6 +39,7 @@ const MediaView = lazy(() => import("./views/Media"));
 const GalleryView = lazy(() => import("./views/Gallery"));
 const GalleryPlaces = lazy(() => import("./views/GalleryPlaces"));
 const GallerySharedLinksView = lazy(() => import("./views/GallerySharedLinks"));
+const GalleryLabView = lazy(() => import("./views/GalleryLab"));
 const FilmsView = lazy(() => import("./views/Films"));
 const PixivView = lazy(() => import("./views/Pixiv"));
 const InstagramView = lazy(() => import("./views/Instagram"));
@@ -104,6 +105,7 @@ render(
       <Route path="/gallery/archive" component={() => <GalleryView archive />} />
       <Route path="/gallery/places" component={GalleryPlaces} />
       <Route path="/gallery/shared" component={GallerySharedLinksView} />
+      <Route path="/gallery/lab" component={GalleryLabView} />
       <Route path="/films" component={FilmsView} />
       <Route path="/films/play/:id" component={FilmsView} />
       <Route path="/pixiv/:id?" component={PixivView} />

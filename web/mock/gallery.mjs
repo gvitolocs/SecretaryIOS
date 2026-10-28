@@ -16,6 +16,8 @@
 // `archived` and `bbox` on the listing, POST items/{id}/play (a tokenised file URL) and GET s/{token}/{id}/file, which
 // serves MOCK_GALLERY_VIDEO (an mp4 on disk) for every video.
 
+import { handleLab } from "./lab.mjs";
+
 const COUNT = Math.max(0, Number(process.env.MOCK_GALLERY_ITEMS ?? 6000) || 0);
 const TRASH_DAYS = 30;
 const DAY = 86_400_000;
@@ -406,6 +408,31 @@ function image(res, it, size) {
   res.end(svgFor(it, size));
 }
 
+/** What the AI Lab mock (mock/lab.mjs) needs from the Gallery: the items, the pictures, and a way to add an accepted edit. */
+const labEnv = {
+  items: () => items,
+  svgFor,
+  out,
+  add(original, job) {
+    const copy = {
+      ...original,
+      id: `itm_lab_${job.id.slice(-6)}`,
+      title: `${original.title.replace(/\.[^.]+$/, "")} (Lucina edit)`,
+      caption: job.prompt,
+      source: "lucina-lab",
+      device: null,
+      device_name: null,
+      hue: (original.hue + 120) % 360,
+      favorite: false,
+      albums: [],
+      trashed_at: null,
+    };
+    items.push(copy);
+    items.sort((a, b) => (a.sort_at === b.sort_at ? (a.id < b.id ? 1 : -1) : a.sort_at < b.sort_at ? 1 : -1));
+    return copy;
+  },
+};
+
 /** Returns true when the request was answered. */
 export async function handleGallery(req, res, { path, method, url, send, fail, readJson }) {
   if (!path.startsWith("/v1/media/")) return false;
@@ -575,6 +602,8 @@ export async function handleGallery(req, res, { path, method, url, send, fail, r
       return true;
     }
   }
+
+  if (await handleLab(req, res, { rest, method, url, send, fail, readJson }, labEnv)) return true;
 
   const one = rest.match(/^items\/([^/]+)(?:\/(.*))?$/);
   if (one) {

@@ -720,3 +720,149 @@ export function parseRenditions(raw: unknown): ItemRenditions | null {
 export async function getRenditions(id: string): Promise<ItemRenditions | null> {
   return parseRenditions(await request<unknown>("GET", `/v1/media/items/${enc(id)}/renditions`));
 }
+
+// ---- lab (AI Lab: "Edit with Lucina…") ------------------------------------------------------------------------------
+// A photo, a prompt and an optional reference photo go to a local image model that runs one job at a time. The result
+// waits in the Lab until it is accepted (a new library item linked to the original; the original is never changed) or
+// discarded. Lucina notifies the owner when a job finishes.
+
+export type LabStatus = "queued" | "running" | "done" | "failed" | "accepted" | "discarded";
+export type LabPhase = "waiting" | "generating";
+
+export interface LabOriginal {
+  id: string;
+  title: string;
+  width: number | null;
+  height: number | null;
+  rotation: Rotation;
+  thumbhash: string | null;
+  trashed: boolean;
+}
+
+export interface LabJob {
+  id: string;
+  itemId: string;
+  referenceItemId: string | null;
+  prompt: string;
+  status: LabStatus;
+  /** While running: `waiting` for the GPU, then `generating`. */
+  phase: LabPhase | null;
+  /** 0 to 100. */
+  progress: number;
+  error: string | null;
+  seed: number | null;
+  steps: number | null;
+  model: string | null;
+  /** 1 for the job that runs next; null when the job is not queued. */
+  queuePosition: number | null;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  acceptedItemId: string | null;
+  width: number | null;
+  height: number | null;
+  original: LabOriginal | null;
+  urls: { before: string | null; after: string | null; reference: string | null };
+}
+
+const LAB_STATUSES = new Set(["queued", "running", "done", "failed", "accepted", "discarded"]);
+
+export function parseLabJob(raw: unknown): LabJob | null {
+  const r = obj(raw);
+  const id = str(r.id);
+  const itemId = str(r.item_id);
+  const status = str(r.status);
+  if (!id || !itemId || !status || !LAB_STATUSES.has(status)) return null;
+  const urls = obj(r.urls);
+  const result = obj(r.result);
+  const original = r.original && typeof r.original === "object" ? obj(r.original) : null;
+  const rotation = num(original?.rotation);
+  const phase = str(r.phase);
+  return {
+    id,
+    itemId,
+    referenceItemId: str(r.reference_item_id),
+    prompt: str(r.prompt) ?? "",
+    status: status as LabStatus,
+    phase: phase === "waiting" || phase === "generating" ? phase : null,
+    progress: Math.min(100, Math.max(0, Math.round(num(r.progress) ?? 0))),
+    error: str(r.error),
+    seed: num(r.seed),
+    steps: num(r.steps),
+    model: str(r.model),
+    queuePosition: num(r.queue_position),
+    createdAt: str(r.created_at) ?? "",
+    startedAt: str(r.started_at),
+    finishedAt: str(r.finished_at),
+    acceptedItemId: str(r.accepted_item_id),
+    width: num(result.width) ?? num(original?.width),
+    height: num(result.height) ?? num(original?.height),
+    original: original
+      ? {
+          id: str(original.id) ?? itemId,
+          title: str(original.title) ?? "",
+          width: num(original.width),
+          height: num(original.height),
+          rotation: (rotation !== null && ROTATIONS.has(rotation) ? rotation : 0) as Rotation,
+          thumbhash: str(original.thumbhash),
+          trashed: original.trashed === true,
+        }
+      : null,
+    urls: { before: sameOriginPath(urls.before) ?? null, after: sameOriginPath(urls.after) ?? null, reference: sameOriginPath(urls.reference) ?? null },
+  };
+}
+
+/** The Lab's jobs (discarded ones are left out unless asked for), and whether a model is connected to run them. */
+export async function listLab(opts: { status?: LabStatus[]; itemId?: string } = {}): Promise<{ enabled: boolean; jobs: LabJob[] }> {
+  const params = new URLSearchParams();
+  if (opts.status?.length) params.set("status", opts.status.join(","));
+  if (opts.itemId) params.set("item_id", opts.itemId);
+  const query = params.toString();
+  const body = obj(await request<unknown>("GET", `/v1/media/lab${query ? `?${query}` : ""}`));
+  const jobs = (Array.isArray(body.jobs) ? body.jobs : []).map(parseLabJob).filter((j): j is LabJob => j !== null);
+  return { enabled: body.enabled !== false, jobs };
+}
+
+export async function getLabJob(id: string): Promise<LabJob | null> {
+  return parseLabJob(await request<unknown>("GET", `/v1/media/lab/${enc(id)}`));
+}
+
+export const LAB_PROMPT_MAX = 1000;
+
+/** Queue an edit of `itemId`. Resolves the job (status queued). */
+export async function createLabJob(itemId: string, edit: { prompt: string; referenceItemId?: string | null }): Promise<LabJob> {
+  const body: Raw = { prompt: edit.prompt.trim() };
+  if (edit.referenceItemId) body.reference_item_id = edit.referenceItemId;
+  const job = parseLabJob(await request<unknown>("POST", `/v1/media/items/${enc(itemId)}/lab`, { body }));
+  if (!job) throw new Error("job not created");
+  return job;
+}
+
+export interface AcceptedEdit {
+  job: LabJob | null;
+  /** The new library item (null when the server's answer had none). */
+  item: GalleryItem | null;
+  /** The result was already in the library: no new item was made. */
+  duplicate: boolean;
+}
+
+/** The result becomes a new library item linked to the original. */
+export async function acceptLabJob(id: string): Promise<AcceptedEdit> {
+  const body = obj(await request<unknown>("POST", `/v1/media/lab/${enc(id)}/accept`, { body: {} }));
+  return { job: parseLabJob(body.job), item: parseItem(body.item), duplicate: body.duplicate === true };
+}
+
+/** Delete the result. */
+export async function discardLabJob(id: string): Promise<LabJob | null> {
+  return parseLabJob(await request<unknown>("POST", `/v1/media/lab/${enc(id)}/discard`, { body: {} }));
+}
+
+/** Queue a failed job again. */
+export async function retryLabJob(id: string): Promise<LabJob | null> {
+  return parseLabJob(await request<unknown>("POST", `/v1/media/lab/${enc(id)}/retry`, { body: {} }));
+}
+
+/** Cancel a queued job, or remove a failed one. */
+export async function cancelLabJob(id: string): Promise<void> {
+  await request<unknown>("DELETE", `/v1/media/lab/${enc(id)}`);
+}

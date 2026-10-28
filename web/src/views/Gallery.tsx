@@ -10,6 +10,7 @@ import { SelectionBar } from "../components/gallery/SelectionBar";
 import { ArchiveBoxIcon, PlacesIcon } from "../components/gallery/browse/BrowseIcons";
 import { MemoriesStrip } from "../components/gallery/browse/MemoriesStrip";
 import { SourceBar } from "../components/gallery/SourceBar";
+import { LabIcon } from "../components/gallery/lab/LabIcons";
 import { BackIcon, SearchIcon, TrashIcon } from "../components/Icons";
 import { t } from "../i18n";
 import { rangeIds, sectionKey, sourceIdOf, toggleId, type GroupBy } from "../lib/galleryLayout";
@@ -354,6 +355,9 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean 
                 </A>
                 <A class="g-iconbtn" href="/gallery/archive" aria-label={t("browse.archiveLink")} title={t("browse.archiveLink")}>
                   <ArchiveBoxIcon />
+                </A>
+                <A class="g-iconbtn" href="/gallery/lab" aria-label={t("lab.labLink")} title={t("lab.labLink")}>
+                  <LabIcon />
                 </A>
                 <A class="g-iconbtn" href="/gallery/trash" aria-label={t("gallery.trashLink")} title={t("gallery.trashLink")}>
                   <TrashIcon />
