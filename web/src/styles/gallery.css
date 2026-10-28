@@ -933,3 +933,13 @@ html[data-shell="desktop"] .g-title {
 .pg .lab-card { border-color: var(--pg-border); border-radius: var(--pg-radius); background: var(--pg-surface); }
 .pg .lab-badge, .pg .lab-bar { color: var(--pg-text); }
 .pg .lab-prompt-heading, .pg .lab-note, .pg .lab-when, .pg .lab-ref-line { color: var(--pg-muted); }
+.pg .dd-intro, .pg .dd-summary, .pg .dd-note, .pg .dd-banner, .pg .dd-groups, .pg .dd-bursts, .pg .dd-more, .pg .dd-state { max-width: none; margin-left: 0; margin-right: 0; }
+.pg .dd-intro { margin-bottom: 16px; }
+.pg .dd-banner { margin-top: 0; margin-bottom: 16px; padding: 12px 16px; background: var(--pg-surface); border-radius: var(--pg-radius); }
+.pg .dd-groups { gap: 16px; }
+.pg .dd-group.pg-card { padding: 20px 24px 24px; border-radius: var(--pg-radius); background: var(--pg-surface); }
+.pg .dd-suggestion { border-radius: var(--pg-radius-control); background: var(--pg-surface); border: 1px solid var(--pg-border); }
+.pg .dd-score--weak, .pg .dd-weak { color: var(--pg-warning); }
+.pg .dd-reason { color: var(--pg-data); }
+.pg .dd-member--suggested, .pg .dd-strip__item--primary { border-color: var(--pg-data); }
+.pg .dd-more { justify-content: flex-start; }
