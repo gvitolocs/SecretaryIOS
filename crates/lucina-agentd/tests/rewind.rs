@@ -251,7 +251,8 @@ fn a_running_turn_is_cancelled_first_and_a_refused_rewind_leaves_it_alone() {
     let dir = tempfile::tempdir().unwrap();
     let id = start(&d, dir.path(), "lucina mock write a.txt=one", json!({"provider": "mock/ten-second-stream"}));
     ok(&d, "POST", &format!("/agents/{id}/send"), Some(&json!({"prompt": "now tell me a long story"})));
-    wait_until("the story to run", 10, || status(&d, &id) == "running");
+    // A provider that echoes the prompt puts it on the timeline just after the turn starts.
+    wait_until("the story to run", 10, || status(&d, &id) == "running" && users(&d, &id).len() == 2);
     let ids = users(&d, &id);
     assert_eq!(ids.len(), 2);
 
