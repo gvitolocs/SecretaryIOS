@@ -5,6 +5,7 @@
 //! `secretary-core`), forwarding with the server-held Lucina token, error
 //! mapping and static file serving. It owns no product logic.
 
+pub mod agents;
 pub mod approvals;
 pub mod assets;
 pub mod auth;
@@ -101,6 +102,8 @@ pub const WEB_CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 's
 
 pub struct Inner {
     pub lucina: Option<LucinaClient>,
+    /// `/v1/agents/*` (`None` without a Lucina token).
+    pub agents: Option<agents::Agents>,
     pub devices: DeviceAuth,
     pub sessions: SessionAuth,
     pub limiter: RateLimiter,
@@ -111,6 +114,8 @@ pub struct Inner {
     pub qr_limiter: RateLimiter,
     /// `POST /v1/device/events` (instead of `limiter`).
     pub device_limiter: RateLimiter,
+    /// `GET /v1/auth/owner` (forward_auth of the owner-only plugins).
+    pub owner_limiter: RateLimiter,
     /// Recently forwarded device event ids (dedup).
     pub event_ids: device::SeenIds,
     pub health: HealthCache,
@@ -175,8 +180,13 @@ impl AppState {
             Some(u) => Some(upstream::Upstream::new(u, cfg.upstream_timeout)?),
             None => None,
         };
+        let agents = match &cfg.lucina_token {
+            Some(t) => Some(agents::Agents::new(&cfg.lucina_url, t, cfg.agents.clone())?),
+            None => None,
+        };
         Ok(Self(Arc::new(Inner {
             lucina,
+            agents,
             devices: DeviceAuth::new(DeviceStore::new(&cfg.data_dir)),
             sessions: SessionAuth::new(SessionStore::new(&cfg.data_dir)),
             limiter: RateLimiter::new(cfg.rate_limit_per_minute),
@@ -184,6 +194,7 @@ impl AppState {
             qr_logins: qr_login::QrLogins::new(cfg.qr_login_ttl, &cfg.public_url),
             qr_limiter: RateLimiter::new(qr_login::POLLS_PER_MINUTE),
             device_limiter: RateLimiter::new(cfg.device_events_per_minute),
+            owner_limiter: RateLimiter::new(cfg.owner_auth_per_minute),
             event_ids: device::SeenIds::new(device::SEEN_IDS),
             health: HealthCache::new(cfg.health_ttl, cfg.health_timeout),
             upstream,
@@ -320,6 +331,7 @@ pub fn app(state: AppState) -> Router {
         .merge(calendar)
         .merge(device_events)
         .merge(auth::session_routes())
+        .merge(auth::owner_routes())
         .merge(qr_login::public_routes())
         .merge(approvals)
         .merge(protected)
@@ -333,6 +345,7 @@ pub fn app(state: AppState) -> Router {
         .merge(notes::routes(state.clone()))
         .merge(library::routes(state.clone()))
         .merge(models::routes(state.clone()))
+        .merge(agents::routes())
         .route_layer(SetResponseHeaderLayer::if_not_present(
             header::CACHE_CONTROL,
             HeaderValue::from_static("no-store"),

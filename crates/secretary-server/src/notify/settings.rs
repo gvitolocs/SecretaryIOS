@@ -34,6 +34,8 @@ pub struct Categories {
     #[serde(default = "yes")]
     pub device_confirm: bool,
     #[serde(default = "yes")]
+    pub agent: bool,
+    #[serde(default = "yes")]
     pub shopping: bool,
     #[serde(default = "no")]
     pub presence: bool,
@@ -48,6 +50,7 @@ impl Default for Categories {
             reminder: true,
             calendar: true,
             device_confirm: true,
+            agent: true,
             shopping: true,
             presence: false,
             system: false,
@@ -62,6 +65,7 @@ impl Categories {
             Category::Reminder => self.reminder,
             Category::Calendar => self.calendar,
             Category::DeviceConfirm => self.device_confirm,
+            Category::Agent => self.agent,
             Category::Shopping => self.shopping,
             Category::Presence => self.presence,
             Category::System => self.system,

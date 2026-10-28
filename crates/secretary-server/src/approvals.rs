@@ -16,9 +16,12 @@
 //!   [`SENSITIVE_PREFIXES`], or the requester says so) are approved only with a
 //!   biometric proof: a P-256 ECDSA signature over
 //!   `secretary-approval-v1\n{id}\n{payloadHash}\n{decision}` made by a key that
-//!   was registered to the deciding device (`POST /v1/approvals/keys`, which
-//!   needs the owner's password) and lives in its Secure Enclave behind Face ID.
-//!   Denying never needs a proof.
+//!   was registered to the deciding device (`POST /v1/approvals/keys`, proved by
+//!   a signature of the new key over the device id and the key) and lives in its
+//!   Secure Enclave behind Face ID; or, instead, with the owner's optional
+//!   6-digit app PIN (`PUT /v1/approvals/pin`, an Argon2id hash in
+//!   `approval-pin.json`; 5 wrong ones in a row lock it for 15 minutes).
+//!   Denying never needs either.
 //! - Approving mints a **grant**: `b64url(payload_json) + "." + b64url(sig)`,
 //!   Ed25519 over `"secretary-approval-v1." + b64url(payload_json)`, key
 //!   `approval-grant.key` (a different key and domain string than the "Add
@@ -34,12 +37,14 @@
 //! |---|---|---|
 //! | `POST /v1/approvals` | svc or device | create |
 //! | `GET /v1/approvals/{id}/wait?timeout=` | svc or device (the requester) | long poll, at most 30 s |
+//! | `POST /v1/approvals/{id}/withdraw` | svc or device (the requester) | the requester no longer needs the answer: a pending request becomes `expired` |
 //! | `GET /v1/approvals/public-key` | public | the grant verification key |
 //! | `GET /v1/approvals?status=pending\|all` | device | what this device may decide now |
 //! | `GET /v1/approvals/{id}` | device | one request, decided or expired too |
 //! | `POST /v1/approvals/{id}/decide` | device | approve or deny |
 //! | `GET`, `PUT /v1/approvals/settings` | device | main device |
 //! | `POST`, `DELETE /v1/approvals/keys` | device | the biometric key of this device |
+//! | `PUT`, `DELETE /v1/approvals/pin` | device | the optional app PIN |
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Write};
@@ -52,7 +57,7 @@ use axum::extract::{Extension, Path, Request, State};
 use axum::http::{header, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::Response;
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
@@ -74,11 +79,20 @@ use crate::AppState;
 pub const GRANT_KEY_FILE: &str = "approval-grant.key";
 pub const SETTINGS_FILE: &str = "approvals-settings.json";
 pub const KEYS_FILE: &str = "approval-keys.json";
+pub const PIN_FILE: &str = "approval-pin.json";
 pub const AUDIT_FILE: &str = "approvals-audit.jsonl";
 /// Signed grant bytes = this + the base64url payload.
 pub const GRANT_CONTEXT: &str = "secretary-approval-v1.";
 /// Signed proof bytes = this + `{id}\n{payloadHash}\n{decision}`.
 pub const PROOF_CONTEXT: &str = "secretary-approval-v1\n";
+/// Key registration proof = this + `{deviceId}\n{publicKey}` (as sent), signed by the new key.
+pub const KEY_PROOF_CONTEXT: &str = "secretary-approval-key-v1\n";
+/// PIN change proof = this + `{deviceId}`, signed by the device's registered key.
+pub const PIN_PROOF_CONTEXT: &str = "secretary-approval-pin-v1\n";
+/// Wrong PINs in a row before the lock.
+pub const PIN_MAX_FAILURES: u32 = 5;
+/// How long the PIN stays locked.
+pub const PIN_LOCK_MS: i64 = 15 * 60 * 1000;
 /// Approving an action with one of these prefixes needs a biometric proof.
 pub const SENSITIVE_PREFIXES: [&str; 8] = [
     "secret.",
@@ -169,6 +183,9 @@ struct GrantPayload<'a> {
     decision: &'static str,
     decided_by: &'a str,
     biometric: bool,
+    /// `device_key` or `pin`; absent when nobody was verified.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    verified_by: Option<&'static str>,
     iat: i64,
     exp: i64,
 }
@@ -245,6 +262,61 @@ struct KeysDoc {
     keys: BTreeMap<String, StoredKey>,
 }
 
+/// `approval-pin.json`: the app PIN as an Argon2id PHC string, and the
+/// wrong-attempt state (it survives a restart).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PinDoc {
+    #[serde(default)]
+    hash: Option<String>,
+    /// Wrong PINs in a row.
+    #[serde(default)]
+    failures: u32,
+    /// Epoch ms until which the PIN is locked; 0 when it is not.
+    #[serde(default)]
+    locked_until_ms: i64,
+}
+
+/// Why a PIN was not accepted.
+#[derive(Debug)]
+enum PinError {
+    NotSet,
+    Wrong { left: u32 },
+    Locked { retry_secs: u64 },
+    Storage,
+}
+
+impl From<PinError> for ApiError {
+    fn from(e: PinError) -> Self {
+        match e {
+            PinError::NotSet => forbidden(
+                "biometric_required",
+                "approving this needs Face ID on a device with a registered key (no PIN is set)",
+            ),
+            PinError::Wrong { left } => {
+                let mut e = forbidden("pin_wrong", "the PIN is wrong");
+                e.attempts_left = Some(left);
+                e
+            }
+            PinError::Locked { retry_secs } => {
+                let mut e = ApiError::new(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "pin_locked",
+                    "too many wrong PINs; the PIN is locked for a while",
+                );
+                e.retry_after = Some(retry_secs.max(1));
+                e
+            }
+            PinError::Storage => ApiError::internal("could not save the PIN state"),
+        }
+    }
+}
+
+/// Exactly six ASCII digits.
+fn pin_format_ok(pin: &str) -> bool {
+    pin.len() == 6 && pin.bytes().all(|b| b.is_ascii_digit())
+}
+
 /// `approvals-audit.jsonl`: append-only, one JSON object per line, 0600.
 struct Audit {
     path: PathBuf,
@@ -286,6 +358,7 @@ struct Decided {
     by_id: String,
     by_name: String,
     biometric: bool,
+    verified_by: Option<&'static str>,
     grant: Option<String>,
 }
 
@@ -365,6 +438,19 @@ struct ProofIn {
     signature: String,
 }
 
+/// A bare signature (key registration, PIN changes).
+#[derive(Debug, Deserialize)]
+struct SigIn {
+    signature: String,
+}
+
+/// Whether `sig_b64` (DER ECDSA P-256/SHA-256, base64) signs `msg` under `vk`.
+fn sig_ok(vk: &VerifyingKey, msg: &[u8], sig_b64: &str) -> bool {
+    crate::notify::push::b64_decode(sig_b64)
+        .and_then(|b| Signature::from_der(&b).ok())
+        .is_some_and(|sig| vk.verify(msg, &sig).is_ok())
+}
+
 fn bad(msg: impl Into<String>) -> ApiError {
     ApiError::new(StatusCode::BAD_REQUEST, "bad_request", msg)
 }
@@ -412,6 +498,9 @@ pub struct Approvals {
     signer: ApprovalSigner,
     settings: JsonFile<SettingsDoc>,
     keys: JsonFile<KeysDoc>,
+    pin: JsonFile<PinDoc>,
+    /// Serialises PIN checks, so parallel guesses cannot outrun the lock.
+    pin_gate: Mutex<()>,
     audit: Audit,
     /// Bumped on every decision, to wake long polls.
     changed: tokio::sync::watch::Sender<u64>,
@@ -426,6 +515,8 @@ impl Approvals {
             signer: ApprovalSigner::open(dir)?,
             settings: JsonFile::open(dir, SETTINGS_FILE),
             keys: JsonFile::open(dir, KEYS_FILE),
+            pin: JsonFile::open(dir, PIN_FILE),
+            pin_gate: Mutex::new(()),
             audit: Audit {
                 path: dir.join(AUDIT_FILE),
                 lock: Mutex::new(()),
@@ -605,6 +696,9 @@ impl Approvals {
             v["decidedBy"] = json!(d.by_name);
             v["decidedById"] = json!(d.by_id);
             v["biometric"] = json!(d.biometric);
+            if let Some(by) = d.verified_by {
+                v["verifiedBy"] = json!(by);
+            }
         }
         v
     }
@@ -677,8 +771,47 @@ impl Approvals {
         })
     }
 
+    /// The requester gives up: a pending request expires now (status
+    /// `expired`, so old clients need no new value) and leaves every
+    /// approver's list. Idempotent; a request that was already decided keeps
+    /// its status. Only the identity that asked can; anyone else gets 404.
+    fn withdraw_at(&self, id: &str, who: &str, now: i64) -> Result<&'static str, ApiError> {
+        let mut map = self.lock();
+        self.sweep_locked(&mut map, now);
+        let a = map
+            .get_mut(id)
+            .filter(|a| a.requester_id == who)
+            .ok_or_else(not_found)?;
+        if !a.open(now) {
+            return Ok(match &a.decided {
+                Some(d) if d.approve && now < a.expires_ms => "approved",
+                Some(d) if d.approve => "expired",
+                Some(_) => "denied",
+                None => "expired",
+            });
+        }
+        a.expires_ms = now;
+        // The audit line below replaces the sweeper's `expired` one.
+        a.expiry_logged = true;
+        self.audit
+            .log("withdrawn", json!({"id": a.id, "action": a.action}));
+        drop(map);
+        self.wake();
+        Ok("expired")
+    }
+
     fn still_open(&self, id: &str, now: i64) -> bool {
         self.lock().get(id).is_some_and(|a| a.open(now))
+    }
+
+    /// The verifying key registered to `device_id`, with its id.
+    fn device_key(&self, device_id: &str) -> Option<(String, VerifyingKey)> {
+        let stored = self.keys.read(|k| k.keys.get(device_id).cloned())?;
+        let vk = STANDARD
+            .decode(&stored.public_key)
+            .ok()
+            .and_then(|b| VerifyingKey::from_sec1_bytes(&b).ok())?;
+        Some((stored.key_id, vk))
     }
 
     /// Whether `proof` is a valid signature by the key registered to `device_id`.
@@ -690,42 +823,93 @@ impl Approvals {
         decision: &str,
         proof: &ProofIn,
     ) -> bool {
-        let Some(stored) = self.keys.read(|k| k.keys.get(device_id).cloned()) else {
-            return false;
-        };
-        if proof.key_id != stored.key_id {
-            return false;
-        }
-        let Some(vk) = STANDARD
-            .decode(&stored.public_key)
-            .ok()
-            .and_then(|b| VerifyingKey::from_sec1_bytes(&b).ok())
-        else {
-            return false;
-        };
-        let Some(sig) = crate::notify::push::b64_decode(&proof.signature)
-            .and_then(|b| Signature::from_der(&b).ok())
-        else {
+        let Some((key_id, vk)) = self.device_key(device_id) else {
             return false;
         };
         let msg = format!("{PROOF_CONTEXT}{id}\n{hash}\n{decision}");
-        vk.verify(msg.as_bytes(), &sig).is_ok()
+        proof.key_id == key_id && sig_ok(&vk, msg.as_bytes(), &proof.signature)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn decide_at(
+    /// Whether `sig_b64` signs `secretary-approval-pin-v1\n{device_id}` with
+    /// the key registered to `device_id`.
+    fn pin_proof_ok(&self, device_id: &str, sig_b64: &str) -> bool {
+        self.device_key(device_id).is_some_and(|(_, vk)| {
+            sig_ok(
+                &vk,
+                format!("{PIN_PROOF_CONTEXT}{device_id}").as_bytes(),
+                sig_b64,
+            )
+        })
+    }
+
+    fn has_pin(&self) -> bool {
+        self.pin.read(|p| p.hash.is_some())
+    }
+
+    /// Check `pin` against the stored hash, counting the failure. Runs one
+    /// Argon2 verify: call it from `spawn_blocking`.
+    fn check_pin(&self, pin: &str, device_id: &str, now: i64) -> Result<(), PinError> {
+        let _gate = self.pin_gate.lock().unwrap_or_else(|p| p.into_inner());
+        let doc = self.pin.get();
+        let Some(hash) = doc.hash.as_deref() else {
+            return Err(PinError::NotSet);
+        };
+        if doc.locked_until_ms > now {
+            let retry_secs = u64::try_from((doc.locked_until_ms - now + 999) / 1000).unwrap_or(1);
+            return Err(PinError::Locked { retry_secs });
+        }
+        // A lock that ran out starts a fresh count.
+        let failures = if doc.locked_until_ms != 0 {
+            0
+        } else {
+            doc.failures
+        };
+        if crate::owner::verify_hash(pin, hash) {
+            if doc.failures != 0 || doc.locked_until_ms != 0 {
+                let _ = self.pin.update(|p| {
+                    p.failures = 0;
+                    p.locked_until_ms = 0;
+                });
+            }
+            return Ok(());
+        }
+        let failures = failures + 1;
+        let locked = failures >= PIN_MAX_FAILURES;
+        self.pin
+            .update(|p| {
+                p.failures = failures;
+                p.locked_until_ms = if locked { now + PIN_LOCK_MS } else { 0 };
+            })
+            .map_err(|e| {
+                tracing::error!(error = %e, "approval PIN state not saved");
+                PinError::Storage
+            })?;
+        if locked {
+            self.audit.log("pin_locked", json!({"device": device_id}));
+            Err(PinError::Locked {
+                retry_secs: u64::try_from(PIN_LOCK_MS / 1000).unwrap_or(900),
+            })
+        } else {
+            self.audit.log(
+                "pin_wrong",
+                json!({"device": device_id, "attemptsLeft": PIN_MAX_FAILURES - failures}),
+            );
+            Err(PinError::Wrong {
+                left: PIN_MAX_FAILURES - failures,
+            })
+        }
+    }
+
+    /// The checks every decision passes first, in the contract's order. A PIN
+    /// never helps with any of them.
+    fn gate(
         &self,
+        a: &Approval,
         who: &Identity,
-        id: &str,
-        approve: bool,
         payload_hash: &str,
-        proof: Option<&ProofIn>,
         main: Option<&str>,
         now: i64,
     ) -> Result<(), ApiError> {
-        let mut map = self.lock();
-        self.sweep_locked(&mut map, now);
-        let a = map.get_mut(id).ok_or_else(not_found)?;
         if a.decided.is_some() {
             return Err(ApiError::new(
                 StatusCode::CONFLICT,
@@ -759,14 +943,69 @@ impl Approvals {
                 "payloadHash is not the one of this request",
             ));
         }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    /// Run the gate before any PIN is spent; says whether the request is
+    /// sensitive and whether the device-key proof already holds.
+    fn precheck(
+        &self,
+        who: &Identity,
+        id: &str,
+        approve: bool,
+        payload_hash: &str,
+        proof: Option<&ProofIn>,
+        main: Option<&str>,
+        now: i64,
+    ) -> Result<Pre, ApiError> {
+        let mut map = self.lock();
+        self.sweep_locked(&mut map, now);
+        let a = map.get(id).ok_or_else(not_found)?;
+        self.gate(a, who, payload_hash, main, now)?;
         let decision = if approve { "approve" } else { "deny" };
-        let biometric = approve
+        Ok(Pre {
+            sensitive: a.sensitive,
+            key_ok: approve
+                && proof.is_some_and(|p| {
+                    self.proof_ok(&who.device_id, id, &a.payload_hash, decision, p)
+                }),
+        })
+    }
+
+    /// `pin_ok`: the handler verified the body's PIN (see [`Self::check_pin`]).
+    #[allow(clippy::too_many_arguments)]
+    fn decide_at(
+        &self,
+        who: &Identity,
+        id: &str,
+        approve: bool,
+        payload_hash: &str,
+        proof: Option<&ProofIn>,
+        pin_ok: bool,
+        main: Option<&str>,
+        now: i64,
+    ) -> Result<(), ApiError> {
+        let mut map = self.lock();
+        self.sweep_locked(&mut map, now);
+        let a = map.get_mut(id).ok_or_else(not_found)?;
+        self.gate(a, who, payload_hash, main, now)?;
+        let decision = if approve { "approve" } else { "deny" };
+        let key_ok = approve
             && proof
                 .is_some_and(|p| self.proof_ok(&who.device_id, id, &a.payload_hash, decision, p));
+        let verified_by = if key_ok {
+            Some("device_key")
+        } else if approve && pin_ok {
+            Some("pin")
+        } else {
+            None
+        };
+        let biometric = verified_by.is_some();
         if approve && a.sensitive && !biometric {
             return Err(forbidden(
                 "biometric_required",
-                "approving this needs Face ID on a device with a registered key",
+                "approving this needs Face ID on a device with a registered key, or the app PIN",
             ));
         }
         let grant = if approve {
@@ -783,6 +1022,7 @@ impl Approvals {
                 decision: "approved",
                 decided_by: &who.device_id,
                 biometric,
+                verified_by,
                 iat,
                 exp: iat + i64::try_from(self.cfg.grant_ttl.as_secs()).unwrap_or(120),
             };
@@ -799,13 +1039,15 @@ impl Approvals {
             by_id: who.device_id.clone(),
             by_name: who.device_name.clone(),
             biometric,
+            verified_by,
             grant,
         });
         self.audit.log(
             "decided",
             json!({
                 "id": a.id, "action": a.action, "decision": decision, "device": who.device_id,
-                "deviceName": who.device_name, "biometric": biometric, "sensitive": a.sensitive,
+                "deviceName": who.device_name, "biometric": biometric, "verifiedBy": verified_by,
+                "sensitive": a.sensitive,
             }),
         );
         drop(map);
@@ -820,6 +1062,13 @@ impl Approvals {
     fn has_key(&self, device_id: &str) -> bool {
         self.keys.read(|k| k.keys.contains_key(device_id))
     }
+}
+
+/// What [`Approvals::precheck`] found.
+struct Pre {
+    sensitive: bool,
+    /// The body's device-key proof is valid.
+    key_ok: bool,
 }
 
 /// A requester's poll result.
@@ -948,6 +1197,17 @@ async fn wait(
     }
 }
 
+/// `POST /v1/approvals/{id}/withdraw`
+async fn withdraw(
+    State(st): State<AppState>,
+    Extension(who): Extension<Identity>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let status = st.approvals.withdraw_at(&id, &who.device_id, now_ms())?;
+    tracing::info!(id = %id, requester = %who.device_id, status, "approval withdrawn");
+    Ok(Json(json!({"id": id, "status": status})))
+}
+
 /// `GET /v1/approvals/public-key`
 async fn public_key(State(st): State<AppState>) -> Json<Value> {
     let s = st.approvals.signer();
@@ -1001,6 +1261,18 @@ struct DecideBody {
     payload_hash: String,
     #[serde(default)]
     proof: Option<ProofIn>,
+    /// The app PIN, instead of `proof`.
+    #[serde(default)]
+    pin: Option<String>,
+}
+
+/// Verify a PIN off the async runtime (Argon2 is slow on purpose).
+async fn verify_pin(st: &AppState, pin: String, device_id: String) -> Result<(), ApiError> {
+    let ap = st.approvals.clone();
+    tokio::task::spawn_blocking(move || ap.check_pin(&pin, &device_id, now_ms()))
+        .await
+        .map_err(|_| ApiError::internal("PIN check failed"))?
+        .map_err(ApiError::from)
 }
 
 /// `POST /v1/approvals/{id}/decide`
@@ -1016,12 +1288,34 @@ async fn decide(
         _ => return Err(bad("decision: approve or deny")),
     };
     let main = effective_main(&st);
+    let pre = st.approvals.precheck(
+        &who,
+        &id,
+        approve,
+        &body.payload_hash,
+        body.proof.as_ref(),
+        main.as_deref(),
+        now_ms(),
+    )?;
+    // The PIN is the fallback: only a sensitive approve whose device-key
+    // proof does not hold spends an attempt.
+    let mut pin_ok = false;
+    if approve && pre.sensitive && !pre.key_ok {
+        if let Some(pin) = body.pin {
+            if !pin_format_ok(&pin) {
+                return Err(bad("pin: exactly 6 digits"));
+            }
+            verify_pin(&st, pin, who.device_id.clone()).await?;
+            pin_ok = true;
+        }
+    }
     st.approvals.decide_at(
         &who,
         &id,
         approve,
         &body.payload_hash,
         body.proof.as_ref(),
+        pin_ok,
         main.as_deref(),
         now_ms(),
     )?;
@@ -1058,6 +1352,7 @@ fn settings_json(st: &AppState, me: &str) -> Result<Value, ApiError> {
         "escalateAfterSecs": st.approvals.cfg.escalate_after.as_secs(),
         "devices": devices,
         "thisDeviceId": me,
+        "hasPin": st.approvals.has_pin(),
     }))
 }
 
@@ -1123,10 +1418,32 @@ struct KeyBody {
     public_key: String,
     #[serde(default)]
     label: String,
-    password: String,
+    #[serde(default)]
+    proof: Option<SigIn>,
 }
 
-/// `POST /v1/approvals/keys {publicKey, label, password}`
+fn proof_invalid() -> ApiError {
+    ApiError::new(
+        StatusCode::BAD_REQUEST,
+        "proof_invalid",
+        "proof.signature must be this key's signature over the device id and the public key",
+    )
+}
+
+/// Tell every device about a change to the approval setup. Not an approval
+/// prompt: it carries no `approvalId`, so no client offers Approve.
+async fn tell_owner(st: &AppState, text: &str) {
+    let mut n = NewNotification::new(Category::Approval, clip(text, 160));
+    n.title = Some("Approvals".to_owned());
+    if let Err(e) = st.notify.publish(n).await {
+        tracing::warn!(error = %e, "could not store the approvals notice");
+    }
+}
+
+/// `POST /v1/approvals/keys {publicKey, label, proof: {signature}}`
+///
+/// The device authorizes itself (its token); the new key proves it exists by
+/// signing `secretary-approval-key-v1\n{deviceId}\n{publicKey}`.
 async fn register_key(
     State(st): State<AppState>,
     Extension(who): Extension<Identity>,
@@ -1134,35 +1451,24 @@ async fn register_key(
 ) -> Result<Json<Value>, ApiError> {
     let point = crate::notify::push::b64_decode(&body.public_key)
         .filter(|b| b.len() == 65 && b[0] == 0x04)
-        .filter(|b| VerifyingKey::from_sec1_bytes(b).is_ok())
         .ok_or_else(|| bad("publicKey: base64 of an uncompressed P-256 point (65 bytes)"))?;
+    let vk = VerifyingKey::from_sec1_bytes(&point)
+        .map_err(|_| bad("publicKey: base64 of an uncompressed P-256 point (65 bytes)"))?;
     let label = body.label.trim();
     if label.chars().count() > 64 || label.chars().any(char::is_control) {
         return Err(bad("label: at most 64 printable characters"));
     }
-    // Only the owner can add a key: a device token alone is not enough.
-    let store = st.owner.clone();
-    let owner = tokio::task::spawn_blocking(move || store.load())
-        .await
-        .map_err(|_| ApiError::internal("owner store failed"))?
-        .map_err(|_| ApiError::internal("owner store unavailable"))?
-        .ok_or_else(|| {
-            ApiError::new(
-                StatusCode::CONFLICT,
-                "no_owner_account",
-                "no owner account; run `secretary-server user set` on the server",
-            )
-        })?;
-    match crate::auth::check_password(&st, owner.email, body.password).await {
-        // 403, not 401: the caller is still signed in.
-        Err(e) if e.code == "invalid_credentials" => {
-            st.approvals.audit.log(
-                "key_refused",
-                json!({"device": who.device_id, "reason": "wrong password"}),
-            );
-            return Err(forbidden("invalid_credentials", "the password is wrong"));
-        }
-        other => other?,
+    let msg = format!("{KEY_PROOF_CONTEXT}{}\n{}", who.device_id, body.public_key);
+    if !body
+        .proof
+        .as_ref()
+        .is_some_and(|p| sig_ok(&vk, msg.as_bytes(), &p.signature))
+    {
+        st.approvals.audit.log(
+            "key_refused",
+            json!({"device": who.device_id, "reason": "proof invalid"}),
+        );
+        return Err(proof_invalid());
     }
     let key_id = key_id_of(&point);
     let stored = StoredKey {
@@ -1184,6 +1490,7 @@ async fn register_key(
         "key_registered",
         json!({"device": who.device_id, "deviceName": who.device_name, "keyId": key_id, "label": label}),
     );
+    tell_owner(&st, &format!("Approvals set up on {}", who.device_name)).await;
     Ok(Json(json!({"keyId": key_id})))
 }
 
@@ -1206,6 +1513,115 @@ async fn delete_key(
             .log("key_removed", json!({"device": who.device_id}));
     }
     Ok(Json(json!({"removed": removed})))
+}
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PinBody {
+    #[serde(default)]
+    pin: Option<String>,
+    #[serde(default)]
+    current_pin: Option<String>,
+    #[serde(default)]
+    proof: Option<SigIn>,
+}
+
+/// Replacing or removing an existing PIN needs the current one, or a proof
+/// from this device's registered key. No PIN yet: nothing to prove.
+async fn authorize_pin_change(
+    st: &AppState,
+    who: &Identity,
+    current_pin: Option<String>,
+    proof: Option<&SigIn>,
+) -> Result<(), ApiError> {
+    if !st.approvals.has_pin() {
+        return Ok(());
+    }
+    if proof.is_some_and(|p| st.approvals.pin_proof_ok(&who.device_id, &p.signature)) {
+        return Ok(());
+    }
+    match current_pin {
+        Some(cur) if pin_format_ok(&cur) => verify_pin(st, cur, who.device_id.clone()).await,
+        Some(_) => Err(bad("currentPin: exactly 6 digits")),
+        None => Err(forbidden(
+            "pin_auth_required",
+            "send currentPin, or a proof from this device's approval key",
+        )),
+    }
+}
+
+fn pin_state_json(st: &AppState) -> Value {
+    json!({"hasPin": st.approvals.has_pin()})
+}
+
+/// `PUT /v1/approvals/pin {pin, currentPin?, proof?: {signature}}`
+async fn put_pin(
+    State(st): State<AppState>,
+    Extension(who): Extension<Identity>,
+    JsonBody(body): JsonBody<PinBody>,
+) -> Result<Json<Value>, ApiError> {
+    let pin = body.pin.unwrap_or_default();
+    if !pin_format_ok(&pin) {
+        return Err(bad("pin: exactly 6 digits"));
+    }
+    let replaced = st.approvals.has_pin();
+    authorize_pin_change(&st, &who, body.current_pin, body.proof.as_ref()).await?;
+    let hash = tokio::task::spawn_blocking(move || crate::owner::hash_password(&pin))
+        .await
+        .map_err(|_| ApiError::internal("PIN hashing failed"))?
+        .map_err(|e| {
+            tracing::error!(error = %e, "PIN hashing failed");
+            ApiError::internal("could not hash the PIN")
+        })?;
+    st.approvals
+        .pin
+        .update(|p| {
+            *p = PinDoc {
+                hash: Some(hash),
+                failures: 0,
+                locked_until_ms: 0,
+            };
+        })
+        .map_err(|e| {
+            tracing::error!(error = %e, "approval PIN not saved");
+            ApiError::internal("could not save the PIN")
+        })?;
+    st.approvals.audit.log(
+        "pin_set",
+        json!({"device": who.device_id, "deviceName": who.device_name, "replaced": replaced}),
+    );
+    tell_owner(&st, &format!("Approval PIN changed on {}", who.device_name)).await;
+    Ok(Json(pin_state_json(&st)))
+}
+
+/// `DELETE /v1/approvals/pin` (optional body `{currentPin?, proof?}`)
+async fn delete_pin(
+    State(st): State<AppState>,
+    Extension(who): Extension<Identity>,
+    raw: axum::body::Bytes,
+) -> Result<Json<Value>, ApiError> {
+    let body: PinBody = if raw.iter().all(u8::is_ascii_whitespace) {
+        PinBody::default()
+    } else {
+        serde_json::from_slice(&raw).map_err(|_| bad("body: {currentPin?, proof?}"))?
+    };
+    if !st.approvals.has_pin() {
+        return Ok(Json(pin_state_json(&st)));
+    }
+    authorize_pin_change(&st, &who, body.current_pin, body.proof.as_ref()).await?;
+    st.approvals
+        .pin
+        .update(|p| *p = PinDoc::default())
+        .map_err(|e| {
+            tracing::error!(error = %e, "approval PIN not saved");
+            ApiError::internal("could not remove the PIN")
+        })?;
+    st.approvals.audit.log(
+        "pin_removed",
+        json!({"device": who.device_id, "deviceName": who.device_name}),
+    );
+    tell_owner(&st, &format!("Approval PIN changed on {}", who.device_name)).await;
+    Ok(Json(pin_state_json(&st)))
 }
 
 /// Approver routes: a device, never the service token.
@@ -1237,6 +1653,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
     let requester = Router::new()
         .route("/v1/approvals", post(create))
         .route("/v1/approvals/{id}/wait", get(wait))
+        .route("/v1/approvals/{id}/withdraw", post(withdraw))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             crate::auth::require_device_or_service,
@@ -1248,6 +1665,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
             get(get_settings).put(put_settings),
         )
         .route("/v1/approvals/keys", post(register_key).delete(delete_key))
+        .route("/v1/approvals/pin", put(put_pin).delete(delete_pin))
         .route("/v1/approvals/{id}", get(get_one))
         .route("/v1/approvals/{id}/decide", post(decide))
         .route_layer(middleware::from_fn_with_state(state, approver_only));
@@ -1419,6 +1837,7 @@ mod tests {
                 decision: "approved",
                 decided_by: "dev_1",
                 biometric: true,
+                verified_by: Some("device_key"),
                 iat: 100,
                 exp: 220,
             })
@@ -1431,6 +1850,7 @@ mod tests {
         );
         assert_eq!(payload["payloadHash"], "sha256:00");
         assert_eq!(payload["exp"], 220);
+        assert_eq!(payload["verifiedBy"], "device_key");
         ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, signer.public_key())
             .verify(
                 format!("secretary-approval-v1.{p64}").as_bytes(),
@@ -1506,6 +1926,68 @@ mod tests {
         assert_eq!(e.status, StatusCode::TOO_MANY_REQUESTS);
         // Another requester has its own bucket.
         assert!(ap.create_at(&who("dev_a"), body("a.b"), 1).is_ok());
+    }
+
+    fn with_pin(ap: &Approvals, pin: &str) {
+        let hash = crate::owner::hash_password(pin).unwrap();
+        ap.pin
+            .update(|p| {
+                *p = PinDoc {
+                    hash: Some(hash),
+                    ..PinDoc::default()
+                }
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn the_pin_locks_after_five_failures_persists_and_expires() {
+        let dir = tempfile::tempdir().unwrap();
+        let ap = store(dir.path());
+        assert!(matches!(
+            ap.check_pin("123456", "d", 0),
+            Err(PinError::NotSet)
+        ));
+        with_pin(&ap, "123456");
+        let t0 = 1_000_000;
+        for left in [4, 3, 2] {
+            assert!(matches!(
+                ap.check_pin("000000", "d", t0),
+                Err(PinError::Wrong { left: l }) if l == left
+            ));
+        }
+        // A right one resets the count.
+        ap.check_pin("123456", "d", t0).unwrap();
+        for left in [4, 3, 2, 1] {
+            assert!(matches!(
+                ap.check_pin("000000", "d", t0),
+                Err(PinError::Wrong { left: l }) if l == left
+            ));
+        }
+        assert!(matches!(
+            ap.check_pin("000000", "d", t0),
+            Err(PinError::Locked { retry_secs: 900 })
+        ));
+        // Locked: even the right PIN is refused, and the lock survives a restart.
+        let reopened = store(dir.path());
+        assert!(matches!(
+            reopened.check_pin("123456", "d", t0 + 1_000),
+            Err(PinError::Locked { retry_secs: 899 })
+        ));
+        assert!(matches!(
+            reopened.check_pin("123456", "d", t0 + PIN_LOCK_MS - 1),
+            Err(PinError::Locked { retry_secs: 1 })
+        ));
+        // When it runs out the count starts again from five.
+        assert!(matches!(
+            reopened.check_pin("000000", "d", t0 + PIN_LOCK_MS),
+            Err(PinError::Wrong { left: 4 })
+        ));
+        reopened.check_pin("123456", "d", t0 + PIN_LOCK_MS).unwrap();
+        assert!(matches!(
+            store(dir.path()).check_pin("000000", "d", t0 + PIN_LOCK_MS),
+            Err(PinError::Wrong { left: 4 })
+        ));
     }
 
     #[tokio::test]

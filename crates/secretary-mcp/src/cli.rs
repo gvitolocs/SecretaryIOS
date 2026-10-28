@@ -41,9 +41,13 @@ pub enum TokenCmd {
         /// Caller name Lucina sees: claude-code, chatgpt, grok, … (a-z, 0-9, '-').
         #[arg(long)]
         name: String,
-        /// Comma-separated scopes: read, chat, write.
+        /// Comma-separated scopes: read, chat, write, computer, agents.
         #[arg(long, default_value = "read,chat")]
         scopes: String,
+        /// Delegation depth: 0 for the owner's clients, 1 for a token handed to an
+        /// agent run (it can use agents but not start any).
+        #[arg(long, default_value_t = 0)]
+        depth: u8,
     },
     /// List tokens (never the tokens themselves).
     List,
@@ -81,9 +85,9 @@ pub fn run_admin(cmd: Cmd) -> anyhow::Result<i32> {
         Cmd::Token { cmd } => {
             let store = crate::tokens::TokenStore::new(&dir);
             match cmd {
-                TokenCmd::Issue { name, scopes } => {
+                TokenCmd::Issue { name, scopes, depth } => {
                     let scopes = Scopes::parse_list(&scopes).map_err(anyhow::Error::msg)?;
-                    let (rec, secret) = store.issue(&name, scopes)?;
+                    let (rec, secret) = store.issue_at(&name, scopes, depth)?;
                     eprintln!(
                         "Issued {} for {:?} with scopes {}. It is shown only now:",
                         rec.id, rec.name, rec.scopes
@@ -98,10 +102,11 @@ pub fn run_admin(cmd: Cmd) -> anyhow::Result<i32> {
                     }
                     for t in list {
                         println!(
-                            "{}  {:<14} scopes={:<16} created={} last_used={} {}",
+                            "{}  {:<14} scopes={:<16}{} created={} last_used={} {}",
                             t.id,
                             t.name,
                             t.scopes.to_string(),
+                            if t.depth > 0 { format!(" depth={}", t.depth) } else { String::new() },
                             rfc3339(t.created_at),
                             t.last_used_at
                                 .map(rfc3339)
