@@ -9,6 +9,7 @@
 //! only. See `README` in the crate docs of [`config`].
 
 pub mod agenda;
+pub mod agentd;
 pub mod api;
 pub mod bot_hospital;
 pub mod bridges;

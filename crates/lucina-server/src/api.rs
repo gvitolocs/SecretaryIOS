@@ -442,6 +442,10 @@ async fn route(
 ) -> ApiResult {
     let p = |i: usize| parts.get(i).map(String::as_str);
     let (resource, id, extra, fourth) = (p(0), p(1), p(2), p(3));
+    // Lucina Agents: a raw forwarder to lucina-agentd's socket (crate::agentd).
+    if resource == Some("agentd") {
+        return Ok(crate::agentd::forward(method, uri, headers, body).await);
+    }
     if resource == Some("device") {
         if parts.len() > 4 {
             return Err(ApiError::not_found());

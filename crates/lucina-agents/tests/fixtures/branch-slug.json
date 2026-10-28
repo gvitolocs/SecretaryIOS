@@ -1,0 +1,110 @@
+{
+ "slugify": [
+  {
+   "input": "Fix the login redirect bug",
+   "slug": "fix-the-login-redirect-bug"
+  },
+  {
+   "input": "  --Ünïcode__x  ",
+   "slug": "n-code-x"
+  },
+  {
+   "input": "",
+   "slug": ""
+  },
+  {
+   "input": "---",
+   "slug": ""
+  },
+  {
+   "input": "ALL CAPS 123",
+   "slug": "all-caps-123"
+  },
+  {
+   "input": "İstanbul straße",
+   "slug": "i-stanbul-stra-e"
+  },
+  {
+   "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "slug": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+   "input": "word-word-word-word-word-word-word-word-word-word-word-word-",
+   "slug": "word-word-word-word-word-word-word-word-word-word"
+  },
+  {
+   "input": "abcdefghij-abcdefghij-abcdefghij-abcdefghij-abcdefghij-x",
+   "slug": "abcdefghij-abcdefghij-abcdefghij-abcdefghij"
+  },
+  {
+   "input": "xxxxxxxxxxxxxxxxxxxxxxxx-yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+   "slug": "xxxxxxxxxxxxxxxxxxxxxxxx-yyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+   "input": "PR #2638: Playwright specs!",
+   "slug": "pr-2638-playwright-specs"
+  },
+  {
+   "input": "feat/x",
+   "slug": "feat-x"
+  },
+  {
+   "input": "emoji 😀 here",
+   "slug": "emoji-here"
+  }
+ ],
+ "validate": [
+  {
+   "input": "feat/x",
+   "valid": true
+  },
+  {
+   "input": "",
+   "valid": false,
+   "error": "Branch name cannot be empty"
+  },
+  {
+   "input": "Feat",
+   "valid": false,
+   "error": "Branch name must contain only lowercase letters, numbers, hyphens, and forward slashes"
+  },
+  {
+   "input": "a--b",
+   "valid": false,
+   "error": "Branch name cannot have consecutive hyphens"
+  },
+  {
+   "input": "-a",
+   "valid": false,
+   "error": "Branch name cannot start or end with a hyphen"
+  },
+  {
+   "input": "a-",
+   "valid": false,
+   "error": "Branch name cannot start or end with a hyphen"
+  },
+  {
+   "input": "a b",
+   "valid": false,
+   "error": "Branch name must contain only lowercase letters, numbers, hyphens, and forward slashes"
+  },
+  {
+   "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "valid": false,
+   "error": "Branch name too long (max 100 characters)"
+  },
+  {
+   "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "valid": true
+  },
+  {
+   "input": "agent/fix-login-2",
+   "valid": true
+  },
+  {
+   "input": "a_b",
+   "valid": false,
+   "error": "Branch name must contain only lowercase letters, numbers, hyphens, and forward slashes"
+  }
+ ]
+}

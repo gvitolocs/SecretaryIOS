@@ -26,6 +26,9 @@ pub fn title(c: Category, l: &str) -> &'static str {
         (Category::DeviceConfirm, "it") => "Lucina aspetta una conferma",
         (Category::DeviceConfirm, "da") => "Lucina venter på din bekræftelse",
         (Category::DeviceConfirm, _) => "Lucina needs your OK",
+        (Category::Agent, "it") => "Agenti",
+        (Category::Agent, "da") => "Agenter",
+        (Category::Agent, _) => "Agents",
         (Category::Shopping, "it") => "Lista della spesa",
         (Category::Shopping, "da") => "Indkøbsliste",
         (Category::Shopping, _) => "Shopping list",
@@ -33,6 +36,21 @@ pub fn title(c: Category, l: &str) -> &'static str {
         (Category::Presence, "da") => "Lucinas status",
         (Category::Presence, _) => "Lucina's status",
         (Category::System, _) => "Secretary",
+    }
+}
+
+/// An agent push, by `data.reason` (lucina-agentd sends no title).
+pub fn agent_title(reason: Option<&str>, l: &str) -> &'static str {
+    match (reason, l) {
+        (Some("permission"), "it") => "Un agente chiede il permesso",
+        (Some("permission"), "da") => "En agent beder om tilladelse",
+        (Some("permission"), _) => "Agent needs permission",
+        (Some("error"), "it") => "Un agente ha bisogno di te",
+        (Some("error"), "da") => "En agent kræver opmærksomhed",
+        (Some("error"), _) => "Agent needs attention",
+        (_, "it") => "Agente ha finito",
+        (_, "da") => "Agent er færdig",
+        _ => "Agent finished",
     }
 }
 
