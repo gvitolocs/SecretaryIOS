@@ -13,7 +13,7 @@ import "../styles/pokemon.css";
 
 export default function PokemonView() {
   const navigate = useNavigate();
-  const { wide, track } = useWide();
+  const { wide, trackSlot } = useWide();
   const [state, setState] = createSignal<GameState | null>(null);
   const [tick, setTick] = createSignal(0);
   const [error, setError] = createSignal<string | null>(null);
@@ -162,7 +162,7 @@ export default function PokemonView() {
   );
 
   return (
-    <section class="pokemon-page" classList={{ "pokemon-page--wide": wide() }} ref={track} aria-labelledby="pokemon-title">
+    <section class="pokemon-page" classList={{ "pokemon-page--wide": wide() }} ref={trackSlot} aria-labelledby="pokemon-title">
       <Show
         when={wide()}
         fallback={

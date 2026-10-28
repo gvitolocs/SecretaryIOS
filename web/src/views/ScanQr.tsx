@@ -17,7 +17,7 @@ type Camera = "starting" | "on" | "denied" | "unavailable";
 
 export default function ScanQr() {
   const navigate = useNavigate();
-  const { wide, track } = useWide();
+  const { wide, trackSlot } = useWide();
   const [camera, setCamera] = createSignal<Camera>("starting");
   const [notOurs, setNotOurs] = createSignal(false);
   const [typed, setTyped] = createSignal("");
@@ -159,7 +159,7 @@ export default function ScanQr() {
   );
 
   return (
-    <section class="scan-page" classList={{ "scan-page--wide": wide() }} ref={track} aria-labelledby="scan-title">
+    <section class="scan-page" classList={{ "scan-page--wide": wide() }} ref={trackSlot} aria-labelledby="scan-title">
       <Show
         when={wide()}
         fallback={

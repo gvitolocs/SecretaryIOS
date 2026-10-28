@@ -392,15 +392,17 @@ function Detail(props: { id: string; onChanged: () => void; desk?: boolean }) {
 
 export default function MemosView() {
   const params = useParams<{ id?: string }>();
-  const { wide, track } = useWide();
+  const { wide, trackSlot } = useWide();
   const [memos, { refetch }] = createResource(() => memosApi.list());
+  // Read without throwing: a failed list shows its error instead of breaking the page.
+  const list = () => (memos.error ? undefined : memos());
   const reload = () => void refetch();
   onMount(() => {
     setOnUploaded(reload);
     void flushQueue();
   });
   const poll = setInterval(() => {
-    const busy = (memos() ?? []).some((m) => m.status !== "done" && m.status !== "failed") || queue().length > 0;
+    const busy = (list() ?? []).some((m) => m.status !== "done" && m.status !== "failed") || queue().length > 0;
     if (busy) reload();
   }, 5000);
   onCleanup(() => {
@@ -419,7 +421,7 @@ export default function MemosView() {
               <p role="alert" class="memo-chip" data-state="failed">{toApiError(memos.error).message}</p>
             </Show>
             <ul class="memos-list">
-              <List memos={memos()} loading={memos.loading} />
+              <List memos={list()} loading={memos.loading} />
             </ul>
           </>
         }
@@ -443,7 +445,7 @@ export default function MemosView() {
         <PageGrid
           layout="split"
           railLabel={t("memos.title")}
-          rail={<List memos={memos()} loading={memos.loading} desk selectedId={params.id} />}
+          rail={<List memos={list()} loading={memos.loading} desk selectedId={params.id} />}
         >
           <Show
             when={params.id}
@@ -462,7 +464,7 @@ export default function MemosView() {
   );
 
   return (
-    <main id="main" class="memos" classList={{ "memos--wide": wide() }} ref={track}>
+    <main id="main" class="memos" classList={{ "memos--wide": wide() }} ref={trackSlot}>
       <Show when={wide()} fallback={phone()}>
         {desk()}
       </Show>

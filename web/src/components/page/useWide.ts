@@ -13,14 +13,26 @@ export function useWide() {
   const [wide, setWide] = createSignal(false);
   let observer: ResizeObserver | undefined;
   onCleanup(() => observer?.disconnect());
-  function track(el: HTMLElement) {
+  function observe(el: HTMLElement, width: (entry: ResizeObserverEntry) => number) {
     if (typeof ResizeObserver !== "function") return;
     observer?.disconnect();
     observer = new ResizeObserver((entries) => {
-      const width = entries[0]?.contentRect.width ?? 0;
-      setWide(width >= WIDE_MIN_PX);
+      const entry = entries[0];
+      setWide(entry ? width(entry) >= WIDE_MIN_PX : false);
     });
     observer.observe(el);
   }
-  return { wide, track };
+  function track(el: HTMLElement) {
+    observe(el, (entry) => entry.contentRect.width);
+  }
+  /**
+   * Measure the route slot the element sits in (its parent) instead of the
+   * element itself: for pages whose phone column is capped (max-width), which
+   * would otherwise never measure wide. The parent is read on every resize,
+   * since a page inside a Suspense boundary is attached after its ref runs.
+   */
+  function trackSlot(el: HTMLElement) {
+    observe(el, (entry) => Math.max(entry.contentRect.width, el.parentElement?.getBoundingClientRect().width ?? 0));
+  }
+  return { wide, track, trackSlot };
 }

@@ -93,10 +93,12 @@ function ModelDetail(props: { model: GalleryModel; desk: boolean; onRemove: () =
 export default function ModelsView() {
   const params = useParams();
   const navigate = useNavigate();
-  const { wide, track } = useWide();
+  const { wide, trackSlot } = useWide();
   const [models, { refetch }] = createResource(() => listModels());
   const [notice, setNotice] = createSignal("");
-  const selected = () => (models() ?? []).find((m) => m.id === params.id) ?? null;
+  // Read without throwing: a failed list shows its error instead of breaking the page.
+  const list = () => (models.error ? [] : (models() ?? []));
+  const selected = () => list().find((m) => m.id === params.id) ?? null;
 
   async function remove(m: GalleryModel) {
     if (!confirm(t("models.deleteConfirm", { title: m.title }))) return;
@@ -119,7 +121,7 @@ export default function ModelsView() {
           }
         >
           <Show
-            when={(models() ?? []).length > 0}
+            when={list().length > 0}
             fallback={
               <Show
                 when={desk}
@@ -134,7 +136,7 @@ export default function ModelsView() {
               </Show>
             }
           >
-            <ModelGrid models={models() ?? []} />
+            <ModelGrid models={list()} />
           </Show>
         </Show>
       }
@@ -144,7 +146,7 @@ export default function ModelsView() {
   );
 
   return (
-    <main class="models" classList={{ "models--wide": wide() }} ref={track}>
+    <main class="models" classList={{ "models--wide": wide() }} ref={trackSlot}>
       <Show
         when={wide()}
         fallback={

@@ -19,7 +19,7 @@ const ACTIONS: Record<string, string> = {
 };
 
 export default function Desk() {
-  const { wide, track } = useWide();
+  const { wide, trackSlot } = useWide();
   const [data, { refetch, mutate }] = createResource(getHermesDesk);
   const [routes, setRoutes] = createSignal<ModelRoute[]>([]);
   const [defaultRoute, setDefaultRoute] = createSignal("");
@@ -86,7 +86,7 @@ export default function Desk() {
   );
 
   const loaded = () => (
-    <Show when={data()} fallback={
+    <Show when={!data.error && data()} fallback={
       <Show when={!data.error}>
         <Show when={wide()} fallback={<p role="status">Opening my desk…</p>}>
           <LoadingState label="Opening my desk…" />
@@ -282,7 +282,7 @@ export default function Desk() {
   );
 
   return (
-    <section class="desk" classList={{ "desk--wide": wide() }} ref={track} aria-labelledby="desk-title">
+    <section class="desk" classList={{ "desk--wide": wide() }} ref={trackSlot} aria-labelledby="desk-title">
       <Show
         when={wide()}
         fallback={
