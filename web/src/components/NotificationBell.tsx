@@ -19,6 +19,7 @@ import {
   turnOnPush,
   unreadCount,
 } from "../state/notifications";
+import { Button, Card } from "./page";
 import {
   BellIcon,
   CalendarIcon,
@@ -31,7 +32,7 @@ import {
   SparkIcon,
 } from "./Icons";
 
-const ICONS: Record<Category, () => JSX.Element> = {
+export const ICONS: Record<Category, () => JSX.Element> = {
   lucina_message: SparkIcon,
   reminder: ClockIcon,
   calendar: CalendarIcon,
@@ -43,7 +44,7 @@ const ICONS: Record<Category, () => JSX.Element> = {
   approval: ShieldCheckIcon,
 };
 
-const CHANNEL_NAMES: Record<string, string> = {
+export const CHANNEL_NAMES: Record<string, string> = {
   telegram: "Telegram",
   discord: "Discord",
   alexa: "Alexa",
@@ -67,7 +68,7 @@ export function relativeTime(ts: number, now = Date.now(), loc = locale()): stri
   }
 }
 
-function sameDay(a: number, b: number): boolean {
+export function sameDay(a: number, b: number): boolean {
   const x = new Date(a);
   const y = new Date(b);
   return x.getFullYear() === y.getFullYear() && x.getMonth() === y.getMonth() && x.getDate() === y.getDate();
@@ -105,46 +106,73 @@ function Item(props: { n: AppNotification; onOpen: (n: AppNotification) => void 
   );
 }
 
-/** Asks this browser to enable push (only from the button's click). */
-export function PushCta() {
+/** The notifications split into today and earlier. */
+export function groupByDay(list: AppNotification[], now = Date.now()) {
+  return {
+    today: list.filter((n) => sameDay(n.ts, now)),
+    earlier: list.filter((n) => !sameDay(n.ts, now)),
+  };
+}
+
+/** Asks this browser to enable push (only from the button's click). `desktop`: as a page-system Card. */
+export function PushCta(props: { desktop?: boolean }) {
   const [error, setError] = createSignal<string | null>(null);
+  const text = () =>
+    pushStatus() === "needs-install"
+      ? t("notify.pushInstallIos")
+      : pushStatus() === "denied"
+        ? t("notify.pushDenied")
+        : t("notify.ctaBody");
+  const enable = () => {
+    setError(null);
+    void turnOnPush().then((e) => setError(e));
+  };
   return (
     <Show when={pushStatus() === "off" || pushStatus() === "needs-install" || pushStatus() === "denied"}>
-      <div class="notif-cta" role="note">
-        <span class="notif-cta-icon" aria-hidden="true">
-          <BellIcon />
-        </span>
-        <div class="notif-cta-text">
-          <p class="notif-cta-title">{t("notify.ctaTitle")}</p>
-          <p class="muted small">
-            {pushStatus() === "needs-install"
-              ? t("notify.pushInstallIos")
-              : pushStatus() === "denied"
-                ? t("notify.pushDenied")
-                : t("notify.ctaBody")}
-          </p>
+      <Show
+        when={props.desktop}
+        fallback={
+          <div class="notif-cta" role="note">
+            <span class="notif-cta-icon" aria-hidden="true">
+              <BellIcon />
+            </span>
+            <div class="notif-cta-text">
+              <p class="notif-cta-title">{t("notify.ctaTitle")}</p>
+              <p class="muted small">{text()}</p>
+              <Show when={error()}>
+                {(msg) => (
+                  <p class="form-error small" role="alert">
+                    {msg()}
+                  </p>
+                )}
+              </Show>
+            </div>
+            <Show when={pushStatus() === "off"}>
+              <button type="button" class="btn btn--primary btn--small" disabled={pushBusy()} onClick={enable}>
+                {pushBusy() ? t("notify.pushWorking") : t("notify.pushEnable")}
+              </button>
+            </Show>
+          </div>
+        }
+      >
+        <Card title={t("notify.ctaTitle")}>
+          <p class="pg-muted">{text()}</p>
           <Show when={error()}>
             {(msg) => (
-              <p class="form-error small" role="alert">
+              <p class="pg-notice" role="alert">
                 {msg()}
               </p>
             )}
           </Show>
-        </div>
-        <Show when={pushStatus() === "off"}>
-          <button
-            type="button"
-            class="btn btn--primary btn--small"
-            disabled={pushBusy()}
-            onClick={() => {
-              setError(null);
-              void turnOnPush().then((e) => setError(e));
-            }}
-          >
-            {pushBusy() ? t("notify.pushWorking") : t("notify.pushEnable")}
-          </button>
-        </Show>
-      </div>
+          <Show when={pushStatus() === "off"}>
+            <div>
+              <Button disabled={pushBusy()} onClick={enable}>
+                {pushBusy() ? t("notify.pushWorking") : t("notify.pushEnable")}
+              </Button>
+            </div>
+          </Show>
+        </Card>
+      </Show>
     </Show>
   );
 }
@@ -165,14 +193,7 @@ export function NotificationPanel(props: { open: boolean; onClose: () => void; o
     ),
   );
 
-  const groups = createMemo(() => {
-    const now = Date.now();
-    const list = notifications();
-    return {
-      today: list.filter((n) => sameDay(n.ts, now)),
-      earlier: list.filter((n) => !sameDay(n.ts, now)),
-    };
-  });
+  const groups = createMemo(() => groupByDay(notifications()));
 
   function open(n: AppNotification) {
     void markRead([n.id]);

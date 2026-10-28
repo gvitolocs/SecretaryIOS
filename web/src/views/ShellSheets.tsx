@@ -4,6 +4,7 @@ import { Portal } from "solid-js/web";
 import { useWide } from "../components/page";
 import { AccountDialog } from "../components/AccountDialog";
 import { NotificationPanel } from "../components/NotificationBell";
+import { NotificationsPage } from "../components/NotificationsPage";
 import { signOut } from "../state/session";
 import ChatView from "./Chat";
 
@@ -12,18 +13,28 @@ import ChatView from "./Chat";
 // They work in a browser too.
 
 export function NotificationsView() {
+  const { wide, track } = useWide();
   const navigate = useNavigate();
   return (
-    <>
-      <ChatView />
-      <Portal>
-        <NotificationPanel
-          open
-          onClose={() => navigate("/", { replace: true })}
-          onSettings={() => navigate("/account?section=notifications", { replace: true })}
-        />
-      </Portal>
-    </>
+    <div ref={track}>
+      <Show
+        when={wide()}
+        fallback={
+          <>
+            <ChatView />
+            <Portal>
+              <NotificationPanel
+                open
+                onClose={() => navigate("/", { replace: true })}
+                onSettings={() => navigate("/account?section=notifications", { replace: true })}
+              />
+            </Portal>
+          </>
+        }
+      >
+        <NotificationsPage />
+      </Show>
+    </div>
   );
 }
 
