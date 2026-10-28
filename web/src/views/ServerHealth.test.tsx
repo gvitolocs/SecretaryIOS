@@ -1,10 +1,10 @@
-import { Route, useLocation } from "@solidjs/router";
-import { fireEvent, screen, waitFor, within } from "@solidjs/testing-library";
+import { createMemoryHistory, MemoryRouter, Route, useLocation } from "@solidjs/router";
+import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setLocale } from "../i18n";
 import { prefill } from "../state/chat";
 import { stubFetch } from "../test/fetch";
-import { renderAt } from "../test/router";
+import { chartLabel } from "../components/server/Chart";
 import { ago, overview } from "../test/serverFixtures";
 import ServerHealthView, { REFRESH_MS } from "./ServerHealth";
 
@@ -13,14 +13,18 @@ function Where() {
   return <p data-testid="where">{loc.pathname + loc.search}</p>;
 }
 
-const show = (path = "/server-health") =>
-  renderAt(path, () => (
-    <>
+const show = (path = "/server-health") => {
+  const history = createMemoryHistory();
+  history.set({ value: path, scroll: false, replace: true });
+  const result = render(() => (
+    <MemoryRouter history={history}>
       <Route path="/server-health/:section?" component={() => (<><ServerHealthView /><Where /></>)} />
       <Route path="/" component={Where} />
       <Route path="/agents/map/:id" component={Where} />
-    </>
+    </MemoryRouter>
   ));
+  return { ...result, history };
+};
 
 const where = () => screen.getByTestId("where").textContent;
 
@@ -28,6 +32,8 @@ describe("Server page", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
+    delete (document as unknown as Record<string, unknown>).hidden;
+    delete (navigator as unknown as Record<string, unknown>).clipboard;
   });
 
   it("shows the status, hosts, what needs attention, healthy checks and recent events", async () => {
@@ -36,7 +42,7 @@ describe("Server page", () => {
     const nezopt = (await screen.findByText("nezopt", { selector: ".sh-host-name" })).closest("a")!;
     expect(calls[0]!.url).toMatch(/\/v1\/system\/overview$/);
 
-    // Header: 2 items + the unreachable host (nezopt's host component is not an item here, so it counts too).
+    // Header: 2 items + the two unhealthy hosts, neither already listed as an item.
     expect(screen.getByText("4 need attention")).toBeInTheDocument();
     expect(screen.getByText(/· updated/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Overview" })).toHaveAttribute("aria-current", "page");
@@ -105,6 +111,8 @@ describe("Server page", () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("journalctl --user -u gmaps-server -n 100 --no-pager"));
     expect(await within(dialog).findByRole("button", { name: "Copied" })).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "Copy restart command" })).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Copy restart command" }));
+    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("systemctl --user restart gmaps-server"));
     delete (navigator as unknown as Record<string, unknown>).clipboard;
 
     // Closing a sheet opened by the URL drops the parameter.
@@ -150,6 +158,20 @@ describe("Server page", () => {
     const gmaps = within(dialog).getAllByRole("link", { name: /gmaps-server/ });
     expect(gmaps.map((a) => a.getAttribute("href"))).toEqual(["/server-health?item=catalog%3Agmaps-server", "/server-health?item=catalog%3Agmaps-server"]);
     expect(within(dialog).getByText("Needs attention on this host")).toBeInTheDocument();
+    expect(within(dialog).getByText(/16 CPUs/)).toBeInTheDocument();
+  });
+
+  it("closes a host sheet on history back and restores it on forward", async () => {
+    const calls = stubFetch(() => ({ body: overview() }));
+    const { history } = show();
+    fireEvent.click((await screen.findByText("nezopt", { selector: ".sh-host-name" })).closest("a")!);
+    await screen.findByRole("dialog", { name: "nezopt" });
+    history.go(-1);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(where()).toBe("/server-health");
+    history.go(1);
+    await screen.findByRole("dialog", { name: "nezopt" });
+    expect(calls).toHaveLength(1);
   });
 
   it("shows partial sources and an empty attention list calmly", async () => {
@@ -198,6 +220,8 @@ describe("Server page", () => {
   });
 
   it("shows incidents and deploys by day", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date(2026, 9, 28, 12));
     stubFetch(() => ({ body: overview() }));
     show("/server-health/incidents");
     const today = await screen.findByRole("region", { name: "Today" });
@@ -237,6 +261,7 @@ describe("Server page", () => {
     fail = true;
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(/^Couldn't refresh/);
+    expect(screen.getByText("Can't reach the server")).toBeInTheDocument();
     expect(screen.getByText("nezopt", { selector: ".sh-host-name" })).toBeInTheDocument();
 
     // No refresh while hidden.
@@ -247,6 +272,30 @@ describe("Server page", () => {
     delete (document as unknown as Record<string, unknown>).hidden;
   });
 
+  it("waits while initially hidden, then refreshes on visibility and focus", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let hidden = true;
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
+    const calls = stubFetch(() => ({ body: overview() }));
+    show();
+    await vi.advanceTimersByTimeAsync(REFRESH_MS);
+    fireEvent.focus(window);
+    fireEvent(document, new Event("visibilitychange"));
+    expect(calls).toHaveLength(0);
+
+    hidden = false;
+    fireEvent(document, new Event("visibilitychange"));
+    await screen.findByText("nezopt", { selector: ".sh-host-name" });
+    expect(calls).toHaveLength(1);
+    fireEvent.focus(window);
+    await waitFor(() => expect(calls).toHaveLength(2));
+  });
+
+  it("includes the current sample in chart bounds, even without history", () => {
+    expect(chartLabel("tctl", [40, null, 60], 95)).toBe("CPU temperature, last 24 hours: now 95 °C, low 40, high 95");
+    expect(chartLabel("mem", [], 33)).toBe("Memory, last 24 hours: now 33%, low 33, high 33");
+  });
+
   it("is translated", async () => {
     setLocale("it");
     stubFetch(() => ({ body: overview() }));
@@ -254,5 +303,15 @@ describe("Server page", () => {
     expect(await screen.findByText("Da controllare")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Panoramica" })).toBeInTheDocument();
     expect(screen.getByText("Tutto a posto · 122 controlli")).toBeInTheDocument();
+  });
+
+  it("renders Danish navigation and attention actions", async () => {
+    setLocale("da");
+    stubFetch(() => ({ body: overview() }));
+    show("/server-health?item=catalog%3Agmaps-server");
+    const dialog = await screen.findByRole("dialog", { name: "gmaps-server" });
+    expect(screen.getByRole("link", { name: "Oversigt" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Kopiér logkommando" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Spørg Lucina" })).toBeInTheDocument();
   });
 });

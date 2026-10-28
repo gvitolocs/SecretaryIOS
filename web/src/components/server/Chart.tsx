@@ -18,7 +18,7 @@ export const METRICS: Record<Metric, { label: MessageKey; short: MessageKey; fmt
 /** "CPU temperature, last 24 hours: now 95 °C, low 61, high 96". */
 export function chartLabel(metric: Metric, values: (number | null)[], current?: number | null): string {
   const m = METRICS[metric];
-  const s = seriesStats(values);
+  const s = seriesStats([...values, current ?? null]);
   const what = t(m.label);
   const period = t("serverHealth.last24h");
   const now = current ?? s.now;
@@ -93,7 +93,7 @@ export function Spark(props: { metric: Metric; values: (number | null)[]; curren
 export function BigChart(props: { metric: Metric; history: HostHistory; current: number | null }) {
   const m = () => METRICS[props.metric];
   const values = () => props.history[props.metric];
-  const s = createMemo(() => seriesStats(values()));
+  const s = createMemo(() => seriesStats([...values(), props.current]));
   const fmt = (v: number | null) => (v == null ? "—" : m().fmt(v));
   return (
     <figure class="sh-bigchart">

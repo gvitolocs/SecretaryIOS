@@ -203,7 +203,7 @@ export const isUnhealthy = (s: ServiceState) => UNHEALTHY.includes(s);
 
 /**
  * The catalog tree trimmed to components matching `query` (id, name, host or project, case-insensitive).
- * A project or group whose own name matches keeps all its components. An empty query returns the tree.
+ * A project whose id matches keeps all its components. An empty query returns the tree.
  */
 export function filterServices(groups: ServiceGroup[], query: string): ServiceGroup[] {
   const q = query.trim().toLowerCase();

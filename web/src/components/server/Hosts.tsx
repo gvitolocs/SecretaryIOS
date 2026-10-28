@@ -116,7 +116,7 @@ export function HostDetail(props: { host: Host; services: ServiceGroup[]; attent
       <Show when={osLine(h()) || h().cpus}>
         <p class="sh-host-os">
           {osLine(h())}
-          <Show when={h().cpus}> · {h().cpus} CPU</Show>
+          <Show when={h().cpus}> · {t("serverHealth.cpus", { count: h().cpus! })}</Show>
         </p>
       </Show>
 

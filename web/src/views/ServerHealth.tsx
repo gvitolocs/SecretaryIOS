@@ -49,7 +49,7 @@ export default function ServerHealthView() {
   let seq = 0;
 
   const load = async (fresh = false) => {
-    if (loading() && !fresh) return;
+    if (loading() || (!fresh && document.hidden)) return;
     const mine = ++seq;
     setLoading(true);
     try {
@@ -78,6 +78,7 @@ export default function ServerHealthView() {
     document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("focus", onVisible);
     onCleanup(() => {
+      ++seq;
       window.clearInterval(timer);
       window.clearInterval(tick);
       document.removeEventListener("visibilitychange", onVisible);
@@ -120,8 +121,9 @@ export default function ServerHealthView() {
 
   // ---- Header -------------------------------------------------------------------------------
   const status = () => {
+    if (error()) return { state: "crit", text: t("serverHealth.unreachableServer") } as const;
     const d = data();
-    if (!d) return error() ? ({ state: "crit", text: t("serverHealth.unreachableServer") } as const) : null;
+    if (!d) return null;
     const n = attentionTotal(d);
     if (n === 0 && d.overall === "ok") return { state: "ok", text: t("serverHealth.allNormal") } as const;
     return { state: d.overall === "crit" ? "crit" : "warn", text: t("serverHealth.needAttentionCount", { count: Math.max(1, n) }) } as const;
@@ -171,6 +173,7 @@ export default function ServerHealthView() {
             classList={{ "sh-refresh--busy": loading() }}
             aria-label={t("serverHealth.refresh")}
             aria-busy={loading()}
+            disabled={loading()}
             onClick={() => void load(true)}
           >
             <RefreshIcon />

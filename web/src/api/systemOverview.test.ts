@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { event, overview } from "../test/serverFixtures";
 import {
   attentionFor,
+  attentionTotal,
   chartPaths,
   chartScale,
   dayKey,
@@ -63,6 +64,13 @@ describe("system overview helpers", () => {
     ]);
     expect(attentionFor(o.attention, "gmaps-server")?.key).toBe("catalog:gmaps-server");
     expect(attentionFor(o.attention, "secretary-server")).toBeUndefined();
+  });
+
+  it("counts unhealthy hosts once when their component is already in attention", () => {
+    const o = overview();
+    expect(attentionTotal(o)).toBe(4);
+    o.attention.push({ ...o.attention[0]!, key: "catalog:nezopt", component_id: "nezopt" });
+    expect(attentionTotal(o)).toBe(4);
   });
 
   it("computes stats and scales", () => {
