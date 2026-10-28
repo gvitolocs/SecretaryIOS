@@ -125,3 +125,38 @@ fn absent_mount_writes_nothing_and_retries_back_off() {
     assert!(!root.path().join("archive").exists());
     assert!(app.store.get(&id).unwrap().archived_at.is_none());
 }
+
+/// The CLI (the daily backup, a separate process) never writes a memo's meta.json: only the
+/// running server records `archived_rev`. Its --verify accepts a meta.json the server changed since.
+#[test]
+fn cli_leaves_meta_to_the_server_and_verify_ignores_live_meta_changes() {
+    let root = tempfile::tempdir().unwrap();
+    let app = app(root.path(), "");
+    let id = memo(&app);
+    std::fs::write(app.store.dir(&id).join("summary.json"), "{}").unwrap();
+    let before = std::fs::read(app.store.dir(&id).join("meta.json")).unwrap();
+    archive::run_cli(&app, true, true).unwrap();
+    assert_eq!(
+        std::fs::read(app.store.dir(&id).join("meta.json")).unwrap(),
+        before
+    );
+    assert!(app.store.get(&id).unwrap().archived_rev.is_none());
+    assert!(root
+        .path()
+        .join("archive/2026")
+        .join(&id)
+        .join("summary.json")
+        .is_file());
+    // The server updates the memo afterwards (status, archive bookkeeping, a re-link).
+    app.store
+        .update(&id, |m| m.title = "Renamed".into())
+        .unwrap();
+    let report = archive::verify_memo(&app, &id).unwrap();
+    assert_eq!(report.mismatches, 0);
+    // The worker's pass records it.
+    archive::archive_memo(&app, &id).unwrap();
+    assert_eq!(
+        app.store.get(&id).unwrap().archived_rev,
+        Some(app.store.get(&id).unwrap().revision)
+    );
+}

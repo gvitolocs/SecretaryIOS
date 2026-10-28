@@ -620,9 +620,11 @@ pub async fn relink_one(app: &App) -> bool {
         .list()
         .into_iter()
         .filter(|m| {
+            // Memos still in the pipeline get their link in step 1b; this job takes the
+            // finished ones (Stateright `WorkerRelink`: done or failed).
             m.event.is_none()
                 && kernel::may_auto_link(kernel::LinkSource::parse(m.event_source.as_deref()))
-                && m.status != Status::Uploading
+                && matches!(m.status, Status::Done | Status::Failed)
                 && m.recorded_at >= Utc::now() - chrono::Duration::days(90)
                 && m.link_checked_gen.is_none_or(|g| g < generation)
         })
@@ -641,7 +643,7 @@ pub async fn relink_one(app: &App) -> bool {
     let result = app.store.update(&m.id, |m| {
         if m.event.is_some()
             || !kernel::may_auto_link(kernel::LinkSource::parse(m.event_source.as_deref()))
-            || m.status == Status::Uploading
+            || !matches!(m.status, Status::Done | Status::Failed)
         {
             return;
         }

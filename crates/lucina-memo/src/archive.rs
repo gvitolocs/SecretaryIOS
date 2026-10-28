@@ -115,7 +115,14 @@ fn manifest(dest: &Path) -> Result<()> {
     write_atomic(&dest.join("SHA256SUMS"), lines.as_bytes())?;
     Ok(())
 }
+/// Archives one memo and records it on the memo (`archived_rev`): the server's worker only.
 pub fn archive_memo(app: &App, id: &str) -> Result<ArchiveReport> {
+    archive_files(app, id, true)
+}
+
+/// `record: false` (the CLI, a separate process): copy and verify only. The memo's meta.json
+/// belongs to the running server; writing it from here could undo the server's own update.
+fn archive_files(app: &App, id: &str, record: bool) -> Result<ArchiveReport> {
     let _guard = app.archive_lock.lock().unwrap();
     let (m, source, dest, trash) = locate(app, id)?;
     fs::create_dir_all(&dest)?;
@@ -145,7 +152,7 @@ pub fn archive_memo(app: &App, id: &str) -> Result<ArchiveReport> {
     manifest(&dest)?;
     // Mark only after all source files have been verified. Preserve an existing marker
     // on an unchanged revision so a second pass is entirely unchanged.
-    if m.archived_rev != Some(m.revision) || m.archived_at.is_none() {
+    if record && (m.archived_rev != Some(m.revision) || m.archived_at.is_none()) {
         if trash {
             let mut saved = m.clone();
             saved.archived_rev = Some(m.revision);
@@ -206,8 +213,9 @@ fn verify_paths(source: &Path, dest: &Path, compare_source: bool) -> Result<Arch
         listed.insert(name.to_owned(), expected.to_owned());
         let archived = hash(&dest.join(name));
         let source_path = source.join(name);
-        // Archiving changes only the bookkeeping in source meta.json.
-        let source_ok = if !compare_source || !source_path.exists() {
+        // meta.json changes on every update (status, archive bookkeeping, re-links): the
+        // archived copy is checked against its manifest only.
+        let source_ok = if !compare_source || name == "meta.json" || !source_path.exists() {
             true
         } else {
             hash(&source_path)? == expected
@@ -341,7 +349,7 @@ pub fn run_cli(app: &App, all: bool, verify: bool) -> Result<()> {
             if verify && !all {
                 return verify_memo(app, &id);
             }
-            let mut report = archive_memo(app, &id)?;
+            let mut report = archive_files(app, &id, false)?;
             if verify {
                 let after = verify_memo(app, &id)?;
                 report.verified_ok = after.verified_ok;

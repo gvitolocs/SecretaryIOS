@@ -6,10 +6,11 @@ export LUCINA_MEMO_ARCHIVE_DIR=${LUCINA_MEMO_ARCHIVE_DIR:-/home/nez/mnt/mybook/l
 "$HOME/.local/bin/lucina-memo" archive --all --verify
 snapshots=/home/nez/mnt/mybook/backups/lucina-memos
 today=$(date +%F)
-previous=$(date -d yesterday +%F)
 mkdir -p "$snapshots"
+# Hard-link against the latest earlier snapshot (not only yesterday's: a missed day must not copy everything).
+previous=$(ls -1 "$snapshots" | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' | grep -vx "$today" | tail -1 || true)
 args=()
-if [[ -d "$snapshots/$previous" ]]; then
+if [[ -n "$previous" ]]; then
     args+=(--link-dest="$snapshots/$previous")
 fi
 rsync -a "${args[@]}" "$LUCINA_MEMO_ARCHIVE_DIR/" "$snapshots/$today/"
