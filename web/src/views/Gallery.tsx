@@ -6,6 +6,7 @@ import {
   getAlbum,
   getEmbeddingStatus,
   getPerson,
+  listCategoryItems,
   listGallery,
   listMonths,
   listPersonItems,
@@ -13,6 +14,7 @@ import {
   listSources,
   searchSmart,
   type EmbeddingStatus,
+  type GalleryCategory,
   type GalleryItem,
   type GalleryKind,
   type GalleryQuery,
@@ -38,6 +40,7 @@ import { DuplicatesIcon } from "../components/gallery/stacks/StackIcons";
 import { BackIcon, LinkIcon, SearchIcon, TrashIcon } from "../components/Icons";
 import { t } from "../i18n";
 import { ALBUMS_PATH } from "../lib/galleryAlbums";
+import { albumKey } from "../lib/galleryCategories";
 import { PEOPLE_PATH, personName, personPath } from "../lib/galleryPeople";
 import { rangeIds, sectionKey, sourceIdOf, toggleId, type GroupBy } from "../lib/galleryLayout";
 import { lookedAt, smartPager, smartReady, usesSmart, withSearch, type SearchMode } from "../lib/gallerySmart";
@@ -73,13 +76,14 @@ function initialOrigin(): string {
   return mac ? `device:${mac.id}` : "all";
 }
 
-export default function GalleryView(props: { trash?: boolean; archive?: boolean; album?: string; person?: string }) {
+export default function GalleryView(props: { trash?: boolean; archive?: boolean; album?: string; person?: string; category?: GalleryCategory }) {
   const trash = () => !!props.trash;
   const archive = () => !!props.archive;
   const albumId = () => props.album;
   const personId = () => props.person;
+  const categoryId = () => props.category;
   // The shelves, an album and a person list everything of theirs, whatever source the Gallery was last switched to.
-  const shelf = () => trash() || archive() || !!albumId() || !!personId();
+  const shelf = () => trash() || archive() || !!albumId() || !!personId() || !!categoryId();
   // `?bbox=w,s,e,n` shows the pictures of one Places cluster.
   const [params, setParams] = useSearchParams<{ bbox?: string }>();
   const bbox = () => (typeof params.bbox === "string" && params.bbox ? params.bbox : undefined);
@@ -103,7 +107,8 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
   const personGone = () => !!personId() && !person.loading && !person();
 
   // ---- smart search: the box asks by meaning when the server can, else by words ---------------------------------------
-  const smartAllowed = () => !trash() && !archive();
+  // A category page searches by words: the smart search routes know nothing of categories.
+  const smartAllowed = () => !trash() && !archive() && !categoryId();
   const [fetchedStatus] = createResource(() => smartAllowed() || undefined, () => getEmbeddingStatus());
   const [latestStatus, setLatestStatus] = createSignal<EmbeddingStatus | null>(null);
   const smartStatus = () => latestStatus() ?? fetchedStatus() ?? null;
@@ -147,6 +152,7 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
         bbox: bbox(),
         album: albumId(),
         person: personId(),
+        category: categoryId(),
       },
       { smart: smartOn(), similarTo: similarOn() ? similar()!.id : null },
     ),
@@ -157,14 +163,14 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
       setSimilar(null);
     },
     onStatus: setLatestStatus,
-  }, (request) => (request.person ? listPersonItems(request.person, request) : listGallery(request)));
+  }, (request) => (request.category ? listCategoryItems(request.category, request) : request.person ? listPersonItems(request.person, request) : listGallery(request)));
   const feed = createGalleryFeed(query, pager);
   const items = feed.items;
   const filtered = () => kind() !== "all" || favorite() || !!from() || !!to() || !!q() || !!bbox() || similarOn();
 
   const [months, { refetch: refetchMonths }] = createResource(
     // The scrubber counts the whole library, so an album doesn't ask for it.
-    () => (albumId() || personId() ? false : { origin: shelf() ? "all" : origin(), kind: kind(), favorite: favorite(), trashed: trash(), archived: archive() }),
+    () => (albumId() || personId() || categoryId() ? false : { origin: shelf() ? "all" : origin(), kind: kind(), favorite: favorite(), trashed: trash(), archived: archive() }),
     (key) => listMonths(key).catch(() => []),
   );
 
@@ -456,6 +462,8 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
                     ? t("galleryPeople.personMissing")
                     : personId()
                       ? t("galleryPeople.emptyPerson")
+                      : categoryId()
+                        ? t("galleryCategories.emptyCategory")
                       : t("gallery.empty");
   const settled = () => !feed.loading() && feed.items().length === 0 && !feed.hasMore();
   const seg = (value: KindFilter, label: string) => (
@@ -465,19 +473,19 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
   );
 
   return (
-    <section class="gallery" classList={{ "gallery--trash": trash(), "gallery--archive": archive(), "gallery--album": !!albumId(), "gallery--person": !!personId() }} aria-labelledby="gallery-title">
+    <section class="gallery" classList={{ "gallery--trash": trash(), "gallery--archive": archive(), "gallery--album": !!albumId(), "gallery--person": !!personId(), "gallery--category": !!categoryId() }} aria-labelledby="gallery-title">
       <div class="g-top">
         <Show
           when={selected().size > 0}
           fallback={
             <header class="g-bar">
               <Show when={shelf()}>
-                <A class="g-back" href={albumId() ? ALBUMS_PATH : personId() ? PEOPLE_PATH : "/gallery"} aria-label={albumId() ? t("galleryAlbums.title") : personId() ? t("galleryPeople.backToPeople") : t("gallery.backToGallery")}>
+                <A class="g-back" href={albumId() || categoryId() ? ALBUMS_PATH : personId() ? PEOPLE_PATH : "/gallery"} aria-label={albumId() || categoryId() ? t("galleryAlbums.title") : personId() ? t("galleryPeople.backToPeople") : t("gallery.backToGallery")}>
                   <BackIcon />
                 </A>
               </Show>
               <h1 class="g-title" id="gallery-title">
-                {trash() ? t("gallery.trashTitle") : archive() ? t("browse.archiveTitle") : albumId() ? album()?.title || t("galleryAlbums.title") : personId() ? (person() ? personName(person()!, t("galleryPeople.unnamed")) : t("galleryPeople.title")) : t("gallery.title")}
+                {trash() ? t("gallery.trashTitle") : archive() ? t("browse.archiveTitle") : albumId() ? album()?.title || t("galleryAlbums.title") : categoryId() ? t(albumKey(categoryId()!)) : personId() ? (person() ? personName(person()!, t("galleryPeople.unnamed")) : t("galleryPeople.title")) : t("gallery.title")}
               </h1>
               <label class="g-search">
                 <SearchIcon />
@@ -652,7 +660,7 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
           hasMore={feed.hasMore()}
           failed={feed.failed()}
           months={months() ?? []}
-          scrubber={!q() && !from() && !to() && !bbox() && !albumId() && !personId() && !similarOn()}
+          scrubber={!q() && !from() && !to() && !bbox() && !albumId() && !personId() && !categoryId() && !similarOn()}
           onNeedMore={() => void feed.loadMore()}
           onRetry={() => void feed.loadMore()}
           onSeek={loadUntil}

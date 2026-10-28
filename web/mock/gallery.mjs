@@ -18,9 +18,11 @@
 // Albums, Live Photos and smart search (the albums API, `live_pair` on some phone photos with a hidden motion clip,
 // embeddings/status, items/search, items/{id}/similar): mock/galleryMl.mjs. Duplicates and stacks: mock/galleryDedup.mjs.
 // Faces and people (faces/settings, people, items/{id}/faces, the `person` filter, faces drawn on the pictures): mock/galleryFaces.mjs.
+// Automatic photo categories (categories, categories/{cat}/items, items/{id}/category, `category` in the details): mock/galleryCategories.mjs.
 
 import { handleGalleryDedup, seedDedup, stackRef } from "./galleryDedup.mjs";
 import { facesSvg, handleGalleryFaces, hasPerson, peopleOf } from "./galleryFaces.mjs";
+import { categoryOf, handleGalleryCategories } from "./galleryCategories.mjs";
 import { handleGalleryMl } from "./galleryMl.mjs";
 import { handleLab } from "./lab.mjs";
 
@@ -630,6 +632,7 @@ export async function handleGallery(req, res, { path, method, url, send, fail, r
 
   if (await handleGalleryFaces(req, res, { rest, method, url, send, fail, readJson }, { items: () => items, matcher, out })) return true;
   if (await handleGalleryMl(req, res, { rest, method, url, send, fail, readJson }, { albums, items: () => items, matcher, out })) return true;
+  if (await handleGalleryCategories(req, res, { rest, method, url, send, fail, readJson }, { items: () => items, matcher, out })) return true;
   if (await handleGalleryDedup(req, res, { rest, method, url, send, fail, readJson }, { items: () => items, out })) return true;
   if (await handleLab(req, res, { rest, method, url, send, fail, readJson }, labEnv)) return true;
 
@@ -639,7 +642,7 @@ export async function handleGallery(req, res, { path, method, url, send, fail, r
     const sub = one[2] ?? "";
     if (!it) return fail(res, 404, "not_found", "no such item"), true;
     if (sub === "" && method === "GET") return send(res, 200, out(it)), true;
-    if (sub === "details" && method === "GET") return send(res, 200, { item: out(it), exif: exifFor(it), people: peopleOf(it.id) }), true;
+    if (sub === "details" && method === "GET") return send(res, 200, { item: out(it), exif: exifFor(it), people: peopleOf(it.id), category: categoryOf(it) }), true;
     if (sub === "" && method === "PATCH") {
       const body = await readJson(req);
       if (body.rotation !== undefined && ![0, 90, 180, 270].includes(body.rotation)) return fail(res, 400, "bad_rotation", "rotation: 0, 90, 180 or 270"), true;
