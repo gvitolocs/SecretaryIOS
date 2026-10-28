@@ -145,7 +145,7 @@ async fn completion(url: &str, path: &Path) -> anyhow::Result<String> {
         .map(str::to_owned)
         .context("vision returned no description")
 }
-pub(super) async fn describe(st: &AppState, path: &Path) -> anyhow::Result<String> {
+pub(crate) async fn describe(st: &AppState, path: &Path) -> anyhow::Result<String> {
     if let Some(url) = &st.cfg.share.vision_url {
         return completion(url, path).await;
     }

@@ -16,13 +16,14 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-pub const ASYNC_ACTIONS: [&str; 6] = [
+pub const ASYNC_ACTIONS: [&str; 7] = [
     "cursor_task",
     "oracle_monitor_task",
     "spreadsheet_update_task",
     "graph_task",
     "generate_image",
     "social_post_task",
+    crate::video::ACTION,
 ];
 
 /// `asyncActionLabel`.
@@ -34,6 +35,7 @@ pub fn label(action: &str) -> &'static str {
         "graph_task" => "graph task",
         "generate_image" => "image generation",
         "social_post_task" => "social post",
+        crate::video::ACTION => "video report",
         _ => "Hermes action",
     }
 }
