@@ -29,6 +29,9 @@ use crate::{Cancel, Client, ComputerResult, ComputerUseConfig, Error};
 
 /// How long a takeover lasts without a heartbeat.
 pub const OWNER_LEASE: Duration = Duration::from_secs(45);
+/// How long the owner may drive without real input (keys, mouse, touch) before
+/// the desktop goes back to Lucina by itself. Heartbeats alone never renew past it.
+pub const OWNER_IDLE: Duration = Duration::from_secs(120);
 /// An agent call this recent still shows the agent as driving.
 const AGENT_RECENT: Duration = Duration::from_secs(15);
 /// Audit entries kept in memory for the apps.
@@ -83,6 +86,8 @@ struct Lease {
     device: String,
     since_ms: u64,
     expires: Instant,
+    /// The owner's last real input (or the takeover itself).
+    active: Instant,
 }
 
 #[derive(Debug)]
@@ -115,6 +120,7 @@ struct Inner {
 pub struct Control {
     inner: Mutex<Inner>,
     lease: Duration,
+    idle: Duration,
     audit_log: Option<PathBuf>,
 }
 
@@ -146,8 +152,15 @@ impl Control {
         Self {
             inner: Mutex::new(Inner::default()),
             lease,
+            idle: OWNER_IDLE,
             audit_log,
         }
+    }
+
+    /// A shorter idle limit (tests).
+    pub fn with_idle(mut self, idle: Duration) -> Self {
+        self.idle = idle;
+        self
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
@@ -155,7 +168,10 @@ impl Control {
     }
 
     fn record(&self, inner: &mut Inner, sb: SandboxId, event: &str, mut fields: Value) {
-        let obj = fields.as_object_mut().map(std::mem::take).unwrap_or_default();
+        let obj = fields
+            .as_object_mut()
+            .map(std::mem::take)
+            .unwrap_or_default();
         let mut entry = serde_json::Map::new();
         entry.insert("at".into(), json!(now_ms()));
         entry.insert("sandbox".into(), json!(sb.as_str()));
@@ -223,7 +239,13 @@ impl Control {
 
     /// Registers a whole engine task. Refused while the owner drives or while
     /// another task runs. The guard unregisters it when dropped.
-    pub fn begin_task(&self, sb: SandboxId, who: &str, what: &str, cancel: Cancel) -> Result<TaskGuard<'_>, Error> {
+    pub fn begin_task(
+        &self,
+        sb: SandboxId,
+        who: &str,
+        what: &str,
+        cancel: Cancel,
+    ) -> Result<TaskGuard<'_>, Error> {
         let mut inner = self.lock();
         self.expire(&mut inner, sb);
         inner.next_task += 1;
@@ -243,7 +265,11 @@ impl Control {
             cancel,
             preempted: false,
         });
-        Ok(TaskGuard { control: self, sb, id })
+        Ok(TaskGuard {
+            control: self,
+            sb,
+            id,
+        })
     }
 
     /// The owner takes over: Lucina's running task on this sandbox is stopped.
@@ -253,11 +279,17 @@ impl Control {
         let lease = self.lease;
         let slot = &mut inner.slots[sb.index()];
         let renewed = slot.owner.is_some();
-        let since_ms = slot.owner.as_ref().map(|l| l.since_ms).unwrap_or_else(now_ms);
+        let since_ms = slot
+            .owner
+            .as_ref()
+            .map(|l| l.since_ms)
+            .unwrap_or_else(now_ms);
+        let now = Instant::now();
         slot.owner = Some(Lease {
             device: device.to_owned(),
             since_ms,
-            expires: Instant::now() + lease,
+            expires: now + lease,
+            active: now,
         });
         if !renewed {
             slot.epoch += 1;
@@ -276,19 +308,61 @@ impl Control {
                 json!({"device": device, "stoppedTask": stopped_task}),
             );
         }
-        Takeover { epoch, stopped_task }
+        Takeover {
+            epoch,
+            stopped_task,
+        }
     }
 
-    /// Renews the owner's lease; `Err(NotDriving)` when it already ended.
+    /// Renews the owner's lease, counting it as input (an older client that does
+    /// not say whether the owner was active); `Err(NotDriving)` when it already ended.
     pub fn heartbeat(&self, sb: SandboxId) -> Result<u64, Error> {
+        self.heartbeat_idle(sb, true)
+    }
+
+    /// Renews the owner's lease. `active`: there was real input (keys, mouse,
+    /// touch) since the last heartbeat. Without any for [`OWNER_IDLE`] the
+    /// desktop goes back to Lucina (`idle` in the audit, `Err(OwnerIdle)`):
+    /// an open page or socket alone never keeps it.
+    pub fn heartbeat_idle(&self, sb: SandboxId, active: bool) -> Result<u64, Error> {
+        let mut inner = self.lock();
+        self.expire(&mut inner, sb);
+        let (lease, idle) = (self.lease, self.idle);
+        let now = Instant::now();
+        let slot = &mut inner.slots[sb.index()];
+        let Some(l) = slot.owner.as_mut() else {
+            return Err(Error::NotDriving);
+        };
+        if active {
+            l.active = now;
+        }
+        let idle_for = now.duration_since(l.active);
+        if idle_for < idle {
+            l.expires = now + lease;
+            return Ok(slot.epoch);
+        }
+        let device = slot.owner.take().map(|l| l.device).unwrap_or_default();
+        slot.epoch += 1;
+        self.record(
+            &mut inner,
+            sb,
+            "idle",
+            json!({"device": device, "idleMs": idle_for.as_millis() as u64}),
+        );
+        Err(Error::OwnerIdle)
+    }
+
+    /// Real owner input (keys, mouse, touch): renews the lease and the idle clock.
+    pub fn active(&self, sb: SandboxId) -> Result<(), Error> {
         let mut inner = self.lock();
         self.expire(&mut inner, sb);
         let lease = self.lease;
-        let slot = &mut inner.slots[sb.index()];
-        match slot.owner.as_mut() {
+        let now = Instant::now();
+        match inner.slots[sb.index()].owner.as_mut() {
             Some(l) => {
-                l.expires = Instant::now() + lease;
-                Ok(slot.epoch)
+                l.active = now;
+                l.expires = now + lease;
+                Ok(())
             }
             None => Err(Error::NotDriving),
         }
@@ -302,7 +376,12 @@ impl Control {
         if let Some(lease) = slot.owner.take() {
             slot.epoch += 1;
             let held_ms = now_ms().saturating_sub(lease.since_ms);
-            self.record(&mut inner, sb, "release", json!({"device": device, "heldMs": held_ms}));
+            self.record(
+                &mut inner,
+                sb,
+                "release",
+                json!({"device": device, "heldMs": held_ms}),
+            );
         }
     }
 
@@ -314,7 +393,12 @@ impl Control {
         if inner.slots[sb.index()].owner.is_none() {
             return Err(Error::NotDriving);
         }
-        self.record(&mut inner, sb, "input", json!({"device": device, "batch": summary}));
+        self.record(
+            &mut inner,
+            sb,
+            "input",
+            json!({"device": device, "batch": summary}),
+        );
         Ok(())
     }
 
@@ -435,7 +519,11 @@ fn running_under_test() -> bool {
 /// The process-wide engine client (config from the environment at first use).
 pub fn shared_client() -> &'static Client {
     static C: OnceLock<Client> = OnceLock::new();
-    C.get_or_init(|| Client::new(ComputerUseConfig::from_lookup(&|k: &str| std::env::var(k).ok())))
+    C.get_or_init(|| {
+        Client::new(ComputerUseConfig::from_lookup(&|k: &str| {
+            std::env::var(k).ok()
+        }))
+    })
 }
 
 /// Runs one engine task on the workspace for `who` (`lucina`, `mcp:claude`, …)
@@ -466,14 +554,27 @@ mod tests {
     fn takeover_refuses_agents_and_stops_the_task() {
         let c = ctl();
         let cancel = Cancel::new();
-        let guard = c.begin_task(SandboxId::Workspace, "lucina", "open example.com", cancel.clone()).unwrap();
+        let guard = c
+            .begin_task(
+                SandboxId::Workspace,
+                "lucina",
+                "open example.com",
+                cancel.clone(),
+            )
+            .unwrap();
         assert_eq!(c.state(SandboxId::Workspace)["driver"], "lucina");
         let t = c.take(SandboxId::Workspace, "iphone");
         assert_eq!(t.stopped_task.as_deref(), Some("lucina: open example.com"));
         assert!(cancel.is_cancelled());
         assert!(guard.preempted());
-        assert_eq!(c.agent_call(SandboxId::Workspace, "mcp:claude"), Err(Error::OwnerDriving));
-        assert!(matches!(c.begin_task(SandboxId::Workspace, "lucina", "x", Cancel::new()), Err(Error::OwnerDriving)));
+        assert_eq!(
+            c.agent_call(SandboxId::Workspace, "mcp:claude"),
+            Err(Error::OwnerDriving)
+        );
+        assert!(matches!(
+            c.begin_task(SandboxId::Workspace, "lucina", "x", Cancel::new()),
+            Err(Error::OwnerDriving)
+        ));
         // The other sandbox is unaffected.
         assert!(c.agent_call(SandboxId::Android, "mcp:claude").is_ok());
         assert_eq!(c.state(SandboxId::Workspace)["driver"], "owner");
@@ -489,7 +590,11 @@ mod tests {
         let e0 = c.epoch(SandboxId::Android);
         let t = c.take(SandboxId::Android, "mac");
         assert_eq!(t.epoch, e0 + 1);
-        assert_eq!(c.take(SandboxId::Android, "mac").epoch, e0 + 1, "a second take renews");
+        assert_eq!(
+            c.take(SandboxId::Android, "mac").epoch,
+            e0 + 1,
+            "a second take renews"
+        );
         assert_eq!(c.heartbeat(SandboxId::Android), Ok(e0 + 1));
         std::thread::sleep(Duration::from_millis(250));
         assert!(!c.owner_driving(SandboxId::Android));
@@ -501,18 +606,77 @@ mod tests {
     }
 
     #[test]
+    fn an_idle_owner_gives_the_desktop_back_however_often_the_page_beats() {
+        let c = Control::new(Duration::from_secs(5), None).with_idle(Duration::from_millis(120));
+        let sb = SandboxId::Workspace;
+        let e0 = c.epoch(sb);
+        c.take(sb, "mac");
+        // An open page or socket alone (heartbeats without input) keeps it only until idle.
+        assert_eq!(c.heartbeat_idle(sb, false), Ok(e0 + 1));
+        std::thread::sleep(Duration::from_millis(70));
+        assert_eq!(c.heartbeat_idle(sb, false), Ok(e0 + 1));
+        std::thread::sleep(Duration::from_millis(70));
+        assert_eq!(c.heartbeat_idle(sb, false), Err(Error::OwnerIdle));
+        assert!(!c.owner_driving(sb), "Lucina has it again");
+        assert_eq!(c.epoch(sb), e0 + 2, "control views die with it");
+        let recent = c.recent(sb, 10);
+        assert_eq!(recent[0]["event"], "idle");
+        assert_eq!(recent[0]["device"], "mac");
+        assert!(recent[0]["idleMs"].as_u64().unwrap() >= 120);
+        assert_eq!(c.heartbeat_idle(sb, false), Err(Error::NotDriving));
+        assert_eq!(c.active(sb), Err(Error::NotDriving));
+    }
+
+    #[test]
+    fn real_input_keeps_the_owner_and_old_heartbeats_count_as_input() {
+        let c = Control::new(Duration::from_secs(5), None).with_idle(Duration::from_millis(120));
+        let sb = SandboxId::Android;
+        c.take(sb, "mac");
+        for _ in 0..4 {
+            std::thread::sleep(Duration::from_millis(50));
+            c.active(sb).unwrap(); // keys, mouse, touch
+            assert!(c.heartbeat_idle(sb, false).is_ok());
+        }
+        for _ in 0..4 {
+            std::thread::sleep(Duration::from_millis(50));
+            assert!(
+                c.heartbeat_idle(sb, true).is_ok(),
+                "a page that saw input says so"
+            );
+        }
+        for _ in 0..4 {
+            std::thread::sleep(Duration::from_millis(50));
+            assert!(
+                c.heartbeat(sb).is_ok(),
+                "an app that does not say keeps today's behaviour"
+            );
+        }
+        assert!(c.owner_driving(sb));
+        c.release(sb, "mac");
+    }
+
+    #[test]
     fn input_needs_the_lease_and_one_task_at_a_time() {
         let c = ctl();
         assert_eq!(
             c.owner_input(SandboxId::Workspace, "mac", json!({"events": 1})),
             Err(Error::NotDriving)
         );
-        let g = c.begin_task(SandboxId::Workspace, "lucina", "a", Cancel::new()).unwrap();
-        assert!(matches!(c.begin_task(SandboxId::Workspace, "mcp:grok", "b", Cancel::new()), Err(Error::Busy)));
+        let g = c
+            .begin_task(SandboxId::Workspace, "lucina", "a", Cancel::new())
+            .unwrap();
+        assert!(matches!(
+            c.begin_task(SandboxId::Workspace, "mcp:grok", "b", Cancel::new()),
+            Err(Error::Busy)
+        ));
         drop(g);
-        let _g = c.begin_task(SandboxId::Workspace, "mcp:grok", "b", Cancel::new()).unwrap();
+        let _g = c
+            .begin_task(SandboxId::Workspace, "mcp:grok", "b", Cancel::new())
+            .unwrap();
         c.take(SandboxId::Workspace, "mac");
-        assert!(c.owner_input(SandboxId::Workspace, "mac", json!({"events": 2})).is_ok());
+        assert!(c
+            .owner_input(SandboxId::Workspace, "mac", json!({"events": 2}))
+            .is_ok());
         assert_eq!(c.recent(SandboxId::Workspace, 1)[0]["event"], "input");
     }
 
@@ -524,7 +688,10 @@ mod tests {
         c.take(SandboxId::Workspace, "mac");
         c.release(SandboxId::Workspace, "mac");
         let text = std::fs::read_to_string(path).unwrap();
-        let lines: Vec<Value> = text.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        let lines: Vec<Value> = text
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0]["event"], "take");
         assert_eq!(lines[1]["event"], "release");

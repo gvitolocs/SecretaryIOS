@@ -31,11 +31,11 @@ pub use client::{
     TASK_TIMEOUT,
 };
 pub use control::{control, run_task, shared_client, Control, SandboxId, Takeover, OWNER_LEASE};
-pub use viewer::{ViewMode, ViewTicket, ViewerConfig};
 pub use sandbox::{
     guest_path, image_of, text_of, Sandbox, ANDROID_SANDBOX_SHELL, ANDROID_SPACE,
     WORKSPACE_SANDBOX_SHELL, WORKSPACE_SPACE,
 };
+pub use viewer::{ViewMode, ViewTicket, ViewerConfig};
 
 use serde_json::{json, Value};
 
@@ -135,11 +135,16 @@ pub enum Error {
     #[error("Lucina's sandbox daemon is unavailable: {0}")]
     Sandbox(String),
     /// The owner took over this sandbox from the apps' live view.
-    #[error("The owner is driving this computer from the live view; try again once it is given back.")]
+    #[error(
+        "The owner is driving this computer from the live view; try again once it is given back."
+    )]
     OwnerDriving,
     /// An owner-only action without the owner's takeover lease.
     #[error("Take over the computer first.")]
     NotDriving,
+    /// The owner drove without real input for [`control::OWNER_IDLE`]: the desktop went back to Lucina.
+    #[error("You were idle, so Lucina has the computer again.")]
+    OwnerIdle,
     /// A live-view ticket could not be minted.
     #[error("Live view unavailable: {0}")]
     Viewer(String),
@@ -166,6 +171,7 @@ impl Error {
             Self::Sandbox(_) => "sandbox_unavailable",
             Self::OwnerDriving => "owner_driving",
             Self::NotDriving => "not_driving",
+            Self::OwnerIdle => "owner_idle",
             Self::Viewer(_) => "viewer_unavailable",
         }
     }
@@ -297,10 +303,7 @@ pub fn claims_failed_exit(s: &str) -> bool {
     while let Some(i) = s[from..].find("[exit ") {
         let rest = &s[from + i + "[exit ".len()..];
         if !rest.starts_with("0]") {
-            let digits = rest
-                .bytes()
-                .take_while(u8::is_ascii_digit)
-                .count();
+            let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
             if digits > 0 && rest.as_bytes().get(digits) == Some(&b']') {
                 return true;
             }
@@ -419,7 +422,8 @@ pub fn parse_computer_result(output: &str) -> Result<ComputerResult, Error> {
         .find(|e| e.get("type") == Some(&Value::String("result".into())));
     if let Some(result) = result {
         let text = str_or_empty(result.get("error"), result.get("text"));
-        let zero = matches!(result.get("exit_code"), Some(Value::Number(n)) if n.as_f64() == Some(0.0));
+        let zero =
+            matches!(result.get("exit_code"), Some(Value::Number(n)) if n.as_f64() == Some(0.0));
         if !zero && quota_exhausted(&text) {
             return Err(Error::QuotaExhausted);
         }
@@ -440,7 +444,9 @@ pub fn parse_computer_result(output: &str) -> Result<ComputerResult, Error> {
     let successful: Vec<&Value> = receipts.iter().copied().filter(|e| succeeded(e)).collect();
     let mut executed_tools: Vec<String> = Vec::new();
     for e in &successful {
-        let Some(name) = receipt_name(e) else { continue };
+        let Some(name) = receipt_name(e) else {
+            continue;
+        };
         let Some(canonical) = cua_tool(name) else {
             continue;
         };
@@ -528,21 +534,28 @@ mod tests {
     #[test]
     fn failing_receipts_make_it_partial() {
         let failing = receipt("terminal", r#"{"exit_code":1}"#);
-        let only_failing = parse_computer_result(&stream(&[failing.clone(), final_event()])).unwrap();
+        let only_failing =
+            parse_computer_result(&stream(&[failing.clone(), final_event()])).unwrap();
         assert_eq!(only_failing.status, Status::Unverified);
         assert_eq!(only_failing.tool_errors, 1);
         assert!(only_failing.executed_tools.is_empty());
-        let partial = parse_computer_result(&stream(&[ok_receipt(), failing, final_event()])).unwrap();
+        let partial =
+            parse_computer_result(&stream(&[ok_receipt(), failing, final_event()])).unwrap();
         assert_eq!(partial.status, Status::Partial);
         assert_eq!(partial.tool_errors, 1);
-        assert!(partial.reply.starts_with("Some tool calls failed; the task is only partially verified."));
+        assert!(partial
+            .reply
+            .starts_with("Some tool calls failed; the task is only partially verified."));
     }
 
     #[test]
     fn untrusted_wrapper_and_nested_driver_errors() {
         let wrapped = "<untrusted_tool_result source=\"mcp__cua__call_tool\">\nExternal source data.\n\n{\"error\":\"driver failure\"}\n</untrusted_tool_result>";
-        let r = parse_computer_result(&stream(&[receipt("mcp__cua__call_tool", wrapped), final_event()]))
-            .unwrap();
+        let r = parse_computer_result(&stream(&[
+            receipt("mcp__cua__call_tool", wrapped),
+            final_event(),
+        ]))
+        .unwrap();
         assert_eq!(r.status, Status::Unverified);
         let nested = json!({"type": "tool_result", "name": "mcp__cua__space_bash", "output": json!({"result": "{\"not_found\":\"nope\"}"}).to_string()});
         let r = parse_computer_result(&stream(&[nested, final_event()])).unwrap();
@@ -567,7 +580,10 @@ mod tests {
     fn failures_and_quota() {
         let mut bad = final_event();
         bad["exit_code"] = json!(1);
-        assert_eq!(parse_computer_result(&stream(&[bad.clone()])).unwrap_err(), Error::Failed);
+        assert_eq!(
+            parse_computer_result(&stream(&[bad.clone()])).unwrap_err(),
+            Error::Failed
+        );
         bad["error"] = json!("RESOURCE_EXHAUSTED quota");
         assert_eq!(
             parse_computer_result(&stream(&[bad])).unwrap_err(),
@@ -585,14 +601,23 @@ mod tests {
 
     #[test]
     fn tool_names_normalise() {
-        assert_eq!(cua_tool("mcp_cua_space_bash").as_deref(), Some("space_bash"));
-        assert_eq!(cua_tool("mcp__cua__space_write").as_deref(), Some("space_write"));
+        assert_eq!(
+            cua_tool("mcp_cua_space_bash").as_deref(),
+            Some("space_bash")
+        );
+        assert_eq!(
+            cua_tool("mcp__cua__space_write").as_deref(),
+            Some("space_write")
+        );
         assert_eq!(
             cua_tool("mcp__android__space_bash").as_deref(),
             Some("space_bash")
         );
         assert_eq!(cua_tool("terminal").as_deref(), Some("terminal"));
-        assert_eq!(cua_tool("mcp__phone__phone_shell").as_deref(), Some("mcp__phone__phone_shell"));
+        assert_eq!(
+            cua_tool("mcp__phone__phone_shell").as_deref(),
+            Some("mcp__phone__phone_shell")
+        );
         assert_eq!(cua_tool("mcp__phone__phone_home"), None);
         assert_eq!(cua_tool("web_search"), None);
         assert_eq!(cua_tool("delegate"), None);
