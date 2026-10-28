@@ -2,7 +2,8 @@
 //! idempotency key; `timelines/<agentId>.jsonl` holds the timeline rows, one per
 //! line, append-only. Paseo keeps timelines in memory only; these survive a
 //! restart with the same epoch. Projects and workspaces are JSON records in the same
-//! database (Paseo: `projects/projects.json`, `projects/workspaces.json`).
+//! database (Paseo: `projects/projects.json`, `projects/workspaces.json`), and so are
+//! the commands queued for external agents' owner devices.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
@@ -10,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use lucina_agents::workspace::{ProjectRecord, WorkspaceRecord};
+use lucina_agents::external::AgentCommand;
 use lucina_agents::{AgentRecord, TimelineRow};
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -47,7 +49,16 @@ impl Store {
                  record TEXT NOT NULL
              );
              CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, record TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY, record TEXT NOT NULL);",
+             CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS commands (
+                 id TEXT PRIMARY KEY,
+                 agent_id TEXT NOT NULL,
+                 device_id TEXT NOT NULL,
+                 expires_at_ms INTEGER NOT NULL,
+                 state TEXT NOT NULL DEFAULT 'pending',
+                 record TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS commands_device ON commands (device_id, state);",
         )?;
         Ok(Store { db: Mutex::new(db), timelines })
     }
@@ -86,6 +97,7 @@ impl Store {
 
     pub fn delete(&self, id: &str) -> Result<(), StoreError> {
         self.db().execute("DELETE FROM agents WHERE id = ?1", params![id])?;
+        self.db().execute("DELETE FROM commands WHERE agent_id = ?1", params![id])?;
         if valid_id(id) {
             match fs::remove_file(self.timelines.join(format!("{id}.jsonl"))) {
                 Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e.into()),
@@ -172,5 +184,101 @@ impl Store {
 
     pub fn load_workspaces(&self) -> Result<Vec<WorkspaceRecord>, StoreError> {
         self.all("workspaces")
+    }
+}
+
+/// A queued command's state (`commands.state`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandState {
+    Pending,
+    Acked,
+    Expired,
+}
+
+impl CommandState {
+    fn as_str(self) -> &'static str {
+        match self {
+            CommandState::Pending => "pending",
+            CommandState::Acked => "acked",
+            CommandState::Expired => "expired",
+        }
+    }
+
+    fn parse(s: &str) -> Self {
+        match s {
+            "acked" => CommandState::Acked,
+            "expired" => CommandState::Expired,
+            _ => CommandState::Pending,
+        }
+    }
+}
+
+/// One stored command with its owner device and state.
+#[derive(Debug, Clone)]
+pub struct StoredCommand {
+    pub command: AgentCommand,
+    pub device_id: String,
+    pub expires_at_ms: u64,
+    pub state: CommandState,
+}
+
+impl Store {
+    pub fn insert_command(&self, command: &AgentCommand, device_id: &str, expires_at_ms: u64) -> Result<(), StoreError> {
+        self.db().execute(
+            "INSERT INTO commands (id, agent_id, device_id, expires_at_ms, record) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![command.command_id, command.agent_id, device_id, expires_at_ms as i64, serde_json::to_string(command)?],
+        )?;
+        Ok(())
+    }
+
+    pub fn command(&self, id: &str) -> Result<Option<StoredCommand>, StoreError> {
+        let row = self
+            .db()
+            .query_row(
+                "SELECT record, device_id, expires_at_ms, state FROM commands WHERE id = ?1",
+                params![id],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?)),
+            )
+            .optional()?;
+        row.map(|(json, device_id, exp, state)| {
+            Ok(StoredCommand { command: serde_json::from_str(&json)?, device_id, expires_at_ms: exp.max(0) as u64, state: CommandState::parse(&state) })
+        })
+        .transpose()
+    }
+
+    /// Pending commands of one device that have not expired by `now_ms`, oldest first.
+    pub fn pending_commands(&self, device_id: &str, now_ms: u64) -> Result<Vec<AgentCommand>, StoreError> {
+        let db = self.db();
+        let mut stmt = db.prepare(
+            "SELECT record FROM commands WHERE device_id = ?1 AND state = 'pending' AND expires_at_ms > ?2 ORDER BY rowid",
+        )?;
+        let rows = stmt.query_map(params![device_id, now_ms as i64], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for json in rows {
+            out.push(serde_json::from_str(&json?)?);
+        }
+        Ok(out)
+    }
+
+    pub fn set_command_state(&self, id: &str, state: CommandState) -> Result<(), StoreError> {
+        self.db().execute("UPDATE commands SET state = ?2 WHERE id = ?1", params![id, state.as_str()])?;
+        Ok(())
+    }
+
+    /// Mark pending commands past their expiry as expired; returns them.
+    pub fn expire_commands(&self, now_ms: u64) -> Result<Vec<AgentCommand>, StoreError> {
+        let db = self.db();
+        let mut stmt = db.prepare("SELECT record FROM commands WHERE state = 'pending' AND expires_at_ms <= ?1 ORDER BY rowid")?;
+        let rows = stmt.query_map(params![now_ms as i64], |r| r.get::<_, String>(0))?;
+        let mut out: Vec<AgentCommand> = Vec::new();
+        for json in rows {
+            out.push(serde_json::from_str(&json?)?);
+        }
+        drop(stmt);
+        db.execute("UPDATE commands SET state = 'expired' WHERE state = 'pending' AND expires_at_ms <= ?1", params![now_ms as i64])?;
+        // Finished commands are kept a week for inspection, then dropped.
+        let week = 7 * 24 * 3_600_000_i64;
+        db.execute("DELETE FROM commands WHERE state != 'pending' AND expires_at_ms <= ?1", params![now_ms as i64 - week])?;
+        Ok(out)
     }
 }

@@ -270,7 +270,7 @@ impl Manager {
         let what = format!("Permission request {request_id}");
         let key = agent_key(agent_id, request_id);
         let now = now_ms();
-        let (session, to_send, step) = {
+        let (session, to_send, step, external) = {
             let agents = self.lock();
             let agent = agents.get(agent_id).ok_or_else(|| ManagerError::NotFound(agent_id.to_string()))?;
             if !agent.pending.iter().any(|p| p.id == request_id) {
@@ -291,7 +291,7 @@ impl Manager {
             drop(book);
             self.publish_permission(&view);
             let to_send = if step.outcome == Outcome::Expired { expired_response() } else { response };
-            (agent.session.clone(), to_send, step)
+            (agent.session.clone(), to_send, step, agent.record.external)
         };
         let Some(session) = session else {
             return Err(ManagerError::Provider("the agent has no running session".into()));
@@ -310,6 +310,11 @@ impl Manager {
         }
         if step.outcome == Outcome::Expired {
             return Err(refusal(Outcome::Expired, &what));
+        }
+        if external {
+            // Queued for the owner device, which may be asleep: it confirms by posting
+            // `permission_resolved` when it applies the answer.
+            return Ok(());
         }
         let mut rx = self.inner.generation.subscribe();
         let deadline = tokio::time::Instant::now() + Duration::from_secs(15);

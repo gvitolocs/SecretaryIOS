@@ -44,6 +44,9 @@ async-trait = { workspace = true }
 sha2 = { workspace = true }
 regex = "1"
 reqwest = { workspace = true }
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
 
 libc = "0.2"
 base64 = "=0.22.1"

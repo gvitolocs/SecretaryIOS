@@ -9,6 +9,7 @@
 //! | GET | `/agents` | `?archived=true` | `{agents: [snapshot]}` |
 //! | GET | `/agents/items` | `?archived=true` | `{agents: [list item]}` |
 //! | GET | `/agents/{id}` | id or unique prefix | snapshot |
+//! | PATCH | `/agents/{id}` | `{title}` | snapshot |
 //! | POST | `/agents/{id}/send` | `{prompt, activeTurnBehavior}` | `{disposition}` |
 //! | POST | `/agents/{id}/stop` | | `{agentId, stopped}` |
 //! | POST | `/agents/{id}/archive` | | `{agentId, archivedAt}` |
@@ -21,7 +22,16 @@
 //! | POST | `/permissions` | external request | view |
 //! | GET | `/permissions/{id}` | `?waitMs=` (long-poll, up to 120 s) | view |
 //! | POST | `/permissions/{id}` | `{behavior, message}` | view |
-//! | GET | `/stream` | | SSE of bus events |
+//! | GET | `/stream` | `Last-Event-ID` (or `?lastEventId=`) | SSE of numbered bus events, resumable |
+//! | POST | `/agents/{id}/events` | `{events: [StreamEvent]}` | `{agentId, applied}` (external agents, owner device only) |
+//! | POST | `/agents/{id}/commands/{commandId}/ack` | | `{agentId, commandId, acked}` (owner device only) |
+//! | GET | `/commands` | | `{commands: [AgentCommand]}` waiting for the calling device |
+//!
+//! The stream: every event has an `id:` (see [`crate::journal`]). A client that
+//! reconnects with `Last-Event-ID` gets the kept events after it, or `event:
+//! stream.reset` when it fell too far behind. `agent_command` events go only to the
+//! device that owns the agent; a device that connects without `Last-Event-ID` first
+//! gets its waiting commands (without ids).
 //!
 //! Projects, workspaces, diffs, files and checkout operations: [`workspaces`].
 //!
@@ -39,14 +49,18 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tokio_stream::wrappers::BroadcastStream;
-use tokio_stream::{Stream, StreamExt};
+use lucina_agents::external::EventsBody;
+use lucina_agents::stream::Resume;
+use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 
 use lucina_agents::permission_gate::{Origin, Verdict};
 use lucina_agents::PermissionResponse;
 
 use crate::manager::{ActiveTurnBehavior, CreateRequest, ExternalRequest, Manager, ManagerError};
-use crate::peer::{origin, Peer};
+use crate::journal::{Sequenced, Subscription};
+use crate::peer::{self, origin, Peer};
 use crate::workspaces::WsError;
 
 mod workspaces;
@@ -71,6 +85,9 @@ impl From<ManagerError> for ApiError {
             ManagerError::Workspace(WsError::Git(_)) => StatusCode::BAD_GATEWAY,
             ManagerError::Workspace(WsError::Store(_)) => StatusCode::INTERNAL_SERVER_ERROR,
             ManagerError::Guard(_) => StatusCode::FORBIDDEN,
+            ManagerError::NotOwner(_) => StatusCode::FORBIDDEN,
+            ManagerError::CommandNotFound(_) => StatusCode::NOT_FOUND,
+            ManagerError::CommandExpired(_) => StatusCode::GONE,
         };
         ApiError(status, e.code().to_string(), e.to_string())
     }
@@ -96,7 +113,10 @@ pub fn router(manager: Manager) -> Router {
         .route("/providers", get(providers))
         .route("/agents", get(list).post(create))
         .route("/agents/items", get(items))
-        .route("/agents/{id}", get(inspect).delete(delete))
+        .route("/agents/{id}", get(inspect).delete(delete).patch(rename))
+        .route("/agents/{id}/events", post(post_events))
+        .route("/agents/{id}/commands/{command_id}/ack", post(ack_command))
+        .route("/commands", get(commands))
         .route("/agents/{id}/send", post(send))
         .route("/agents/{id}/stop", post(stop))
         .route("/agents/{id}/archive", post(archive))
@@ -135,15 +155,59 @@ async fn items(State(m): State<Manager>, Query(q): Query<ListQuery>) -> ApiResul
 
 async fn create(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Json(mut req): Json<CreateRequest>) -> ApiResult {
     // Only the owner may run an agent in a main checkout (worktree guard).
-    if req.allow_main_checkout && !matches!(caller(&m, &peer, &headers), Origin::Local | Origin::OwnerDevice) {
+    let who = caller(&m, &peer, &headers);
+    if req.allow_main_checkout && !matches!(who, Origin::Local | Origin::OwnerDevice) {
         req.allow_main_checkout = false;
     }
+    // An external agent belongs to the device registering it, never to a body field.
+    req.owner_device_id = peer::device(who, &headers);
     to_json(m.create(req).await?)
 }
 
 async fn inspect(State(m): State<Manager>, Path(id): Path<String>) -> ApiResult {
     let id = m.resolve(&id)?;
     to_json(m.snapshot(&id)?)
+}
+
+#[derive(Deserialize)]
+struct RenameBody {
+    title: String,
+}
+
+async fn rename(State(m): State<Manager>, Path(id): Path<String>, Json(body): Json<RenameBody>) -> ApiResult {
+    let id = m.resolve(&id)?;
+    to_json(m.rename(&id, &body.title)?)
+}
+
+fn device_of(m: &Manager, peer: &Peer, headers: &HeaderMap) -> Option<String> {
+    peer::device(caller(m, peer, headers), headers)
+}
+
+async fn post_events(
+    State(m): State<Manager>,
+    ConnectInfo(peer): ConnectInfo<Peer>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<EventsBody>,
+) -> ApiResult {
+    let id = m.resolve(&id)?;
+    let applied = m.post_events(&id, device_of(&m, &peer, &headers).as_deref(), body.events).await?;
+    to_json(json!({"agentId": id, "applied": applied}))
+}
+
+async fn ack_command(
+    State(m): State<Manager>,
+    ConnectInfo(peer): ConnectInfo<Peer>,
+    headers: HeaderMap,
+    Path((id, command_id)): Path<(String, String)>,
+) -> ApiResult {
+    let id = m.resolve(&id)?;
+    m.ack_command(&id, &command_id, device_of(&m, &peer, &headers).as_deref())?;
+    to_json(json!({"agentId": id, "commandId": command_id, "acked": true}))
+}
+
+async fn commands(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap) -> ApiResult {
+    to_json(json!({"commands": m.pending_commands(device_of(&m, &peer, &headers).as_deref())?}))
 }
 
 #[derive(Deserialize)]
@@ -252,7 +316,7 @@ async fn request_permission(
     headers: HeaderMap,
     Json(req): Json<ExternalRequest>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let who = caller(&m, &peer, &headers);
+    let who = peer::requester(&peer, &headers, &m.provider_pids());
     let view = m.request_external(req, who)?;
     Ok((StatusCode::CREATED, to_json(view)?))
 }
@@ -290,11 +354,101 @@ async fn answer_permission(
     to_json(m.answer_external(&id, body.behavior, body.message, who)?)
 }
 
-async fn stream(State(m): State<Manager>) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
-    let events = BroadcastStream::new(m.subscribe()).filter_map(|msg| {
-        let event = msg.ok()?;
-        let data = serde_json::to_string(&event).ok()?;
-        Some(Ok(SseEvent::default().data(data)))
-    });
-    Sse::new(events).keep_alive(KeepAlive::default())
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct StreamQuery {
+    #[serde(default)]
+    last_event_id: Option<String>,
+}
+
+const LAST_EVENT_ID: &str = "last-event-id";
+const RESET_DATA: &str = r#"{"type":"stream.reset"}"#;
+
+fn numbered(e: &Sequenced) -> SseEvent {
+    SseEvent::default().id(e.id.to_string()).data(&e.data)
+}
+
+fn reset(id: u64) -> SseEvent {
+    SseEvent::default().event("stream.reset").id(id.to_string()).data(RESET_DATA)
+}
+
+type Frames = mpsc::Sender<Result<SseEvent, Infallible>>;
+
+async fn stream(
+    State(m): State<Manager>,
+    ConnectInfo(peer): ConnectInfo<Peer>,
+    headers: HeaderMap,
+    Query(q): Query<StreamQuery>,
+) -> Response {
+    let device = device_of(&m, &peer, &headers);
+    let last = headers
+        .get(LAST_EVENT_ID)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+        .or(q.last_event_id);
+    let sub = m.journal().subscribe(last.as_deref());
+    let (tx, rx) = mpsc::channel(64);
+    tokio::spawn(pump(m, sub, device, tx));
+    Sse::new(ReceiverStream::new(rx)).keep_alive(KeepAlive::default()).into_response()
+}
+
+/// Feed one stream: the reset or replay, then live events in id order. A subscriber
+/// that lags behind the bus catches up from the journal (or gets a reset).
+async fn pump(m: Manager, sub: Subscription, device: Option<String>, tx: Frames) {
+    let Subscription { resume, replay, last, mut live } = sub;
+    let visible = |e: &Sequenced| e.event.visible_to(device.as_deref());
+    match resume {
+        Resume::Reset => {
+            if tx.send(Ok(reset(last))).await.is_err() {
+                return;
+            }
+        }
+        Resume::Live => {
+            for c in m.pending_commands(device.as_deref()).unwrap_or_default() {
+                let mut v = serde_json::to_value(&c).unwrap_or_default();
+                v["type"] = json!("agent_command");
+                if tx.send(Ok(SseEvent::default().data(v.to_string()))).await.is_err() {
+                    return;
+                }
+            }
+        }
+        Resume::After(_) => {}
+    }
+    for e in replay.iter().filter(|e| visible(e)) {
+        if tx.send(Ok(numbered(e))).await.is_err() {
+            return;
+        }
+    }
+    let mut sent = last;
+    let mut closing = m.closing();
+    loop {
+        let next = tokio::select! {
+            r = live.recv() => r,
+            _ = tx.closed() => return,
+            _ = closing.wait_for(|c| *c) => return,
+        };
+        let batch = match next {
+            Ok(e) => vec![e],
+            Err(RecvError::Lagged(_)) => match m.journal().since(sent) {
+                Some(missed) => missed,
+                None => {
+                    sent = m.journal().last_id();
+                    if tx.send(Ok(reset(sent))).await.is_err() {
+                        return;
+                    }
+                    continue;
+                }
+            },
+            Err(RecvError::Closed) => return,
+        };
+        for e in batch {
+            if e.id <= sent {
+                continue;
+            }
+            sent = e.id;
+            if visible(&e) && tx.send(Ok(numbered(&e))).await.is_err() {
+                return;
+            }
+        }
+    }
 }

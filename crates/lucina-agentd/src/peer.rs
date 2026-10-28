@@ -11,15 +11,17 @@
 //! uid (design, Security requirement 6), which can't open the 0600 socket at all.
 //!
 //! Otherwise the `X-Lucina-Origin` header names the origin: `device:<id>` (set by
-//! secretary-server for the owner's devices), `mcp[:<token id>]`, or nothing / `local`
-//! for `lagent` on the host. Loopback TCP callers are [`Origin::Unknown`]: they can
-//! read, never answer.
+//! secretary-server for the owner's devices), `mcp[:<token id>]`, `service:<name>` (a
+//! service secretary-server vouches for: it may only create external permission
+//! requests, see [`requester`]), or nothing / `local` for `lagent` on the host.
+//! Loopback TCP callers are [`Origin::Unknown`]: they can read, never answer.
 
 use std::collections::HashSet;
 
 use axum::extract::connect_info::Connected;
 use axum::http::HeaderMap;
 use axum::serve::IncomingStream;
+use lucina_agents::external::valid_device_id;
 use lucina_agents::permission_gate::Origin;
 use tokio::net::{TcpListener, UnixListener};
 
@@ -92,8 +94,36 @@ pub fn origin(peer: &Peer, headers: &HeaderMap, providers: &HashSet<u32>) -> Ori
         None | Some("local") => Origin::Local,
         Some("mcp") => Origin::Mcp,
         Some(h) if h.starts_with("mcp:") => Origin::Mcp,
-        Some(h) if h.strip_prefix("device:").is_some_and(|d| !d.is_empty()) => Origin::OwnerDevice,
+        Some(h) if h.strip_prefix("device:").is_some_and(valid_device_id) => Origin::OwnerDevice,
         Some(_) => Origin::Unknown,
+    }
+}
+
+/// The owner device calling (`device:<id>`), when the origin is [`Origin::OwnerDevice`].
+pub fn device(origin: Origin, headers: &HeaderMap) -> Option<String> {
+    if origin != Origin::OwnerDevice {
+        return None;
+    }
+    let h = headers.get(ORIGIN_HEADER)?.to_str().ok()?;
+    h.strip_prefix("device:").filter(|d| valid_device_id(d)).map(str::to_string)
+}
+
+/// A service secretary-server vouches for (`service:<name>`, the Infisical broker).
+fn service(headers: &HeaderMap) -> bool {
+    headers
+        .get(ORIGIN_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|h| h.strip_prefix("service:"))
+        .is_some_and(|n| (1..=40).contains(&n.len()) && n.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'))
+}
+
+/// The origin for creating an external permission request: a `service:<name>` caller
+/// counts as [`Origin::Local`] here and nowhere else (it can ask the owner, never
+/// answer).
+pub fn requester(peer: &Peer, headers: &HeaderMap, providers: &HashSet<u32>) -> Origin {
+    match origin(peer, headers, providers) {
+        Origin::Unknown if peer.unix && peer.pid.is_some() && service(headers) => Origin::Local,
+        o => o,
     }
 }
 
@@ -111,8 +141,20 @@ mod tests {
         assert_eq!(origin(&me, &h, &none), Origin::Mcp);
         h.insert(ORIGIN_HEADER, "device:dev_1".parse().unwrap());
         assert_eq!(origin(&me, &h, &none), Origin::OwnerDevice);
+        assert_eq!(device(Origin::OwnerDevice, &h).as_deref(), Some("dev_1"));
+        assert_eq!(device(Origin::Mcp, &h), None);
         h.insert(ORIGIN_HEADER, "device:".parse().unwrap());
         assert_eq!(origin(&me, &h, &none), Origin::Unknown);
+        h.insert(ORIGIN_HEADER, "device:a/b".parse().unwrap());
+        assert_eq!(origin(&me, &h, &none), Origin::Unknown);
+        // A service may ask (requester), never answer (origin).
+        h.insert(ORIGIN_HEADER, "service:infisical-broker".parse().unwrap());
+        assert_eq!(origin(&me, &h, &none), Origin::Unknown);
+        assert_eq!(requester(&me, &h, &none), Origin::Local);
+        assert_eq!(requester(&Peer { pid: None, unix: false }, &h, &none), Origin::Unknown);
+        h.insert(ORIGIN_HEADER, "service:Bad Name".parse().unwrap());
+        assert_eq!(requester(&me, &h, &none), Origin::Unknown);
+        h.insert(ORIGIN_HEADER, "device:dev_1".parse().unwrap());
         assert_eq!(origin(&Peer { pid: None, unix: false }, &HeaderMap::new(), &none), Origin::Unknown);
         // This test process runs under its own parent: as a "provider", it is an agent.
         let parent = stat_ids(std::process::id() as i32).unwrap().0 as u32;

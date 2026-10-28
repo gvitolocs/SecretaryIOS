@@ -210,6 +210,17 @@ pub struct AgentRecord {
     pub gate: Option<GateResult>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate_request: Option<GateRequest>,
+    /// Lucina only: an agent another host runs (a Secretary Code session on the Mac),
+    /// mirrored here; see [`crate::external`].
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub external: bool,
+    /// The device that registered an external agent: only it posts its events and
+    /// receives its commands.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_device_id: Option<String>,
+    /// Where an external agent runs (`mac`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
 }
 
 impl AgentRecord {
@@ -332,6 +343,13 @@ pub struct AgentSnapshot {
     /// Lucina only: the finished-run gate's result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate: Option<GateResult>,
+    /// Lucina only: an external agent ([`crate::external`]), its owner device and host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_device_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
 }
 
 /// Paseo `AgentListItemPayloadSchema`, plus Lucina's state bucket.
@@ -363,6 +381,13 @@ pub struct AgentListItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_unavailable: Option<bool>,
     pub bucket: crate::bucket::Bucket,
+    /// Lucina only, as in [`AgentSnapshot`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_device_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
 }
 
 #[cfg(test)]

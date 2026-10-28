@@ -81,6 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let manager = Manager::open_with(Store::open(&state_dir)?, providers, lanes, options)?;
     manager.spawn_sweeper();
+    manager.spawn_command_sweeper();
 
     if let Some(dir) = socket.parent() {
         std::fs::create_dir_all(dir)?;
@@ -120,14 +121,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     shutdown_signal().await;
     tracing::info!("shutting down");
+    manager.close_streams();
     let _ = stop_tx.send(());
     // Long-lived streams (SSE) would hold the graceful drain open: cap it.
-    let _ = tokio::time::timeout(Duration::from_secs(3), async {
+    let drained = tokio::time::timeout(Duration::from_secs(3), async {
         for s in servers {
             let _ = s.await;
         }
     })
     .await;
+    tracing::debug!(drained = drained.is_ok(), "servers stopped");
     // Provider processes get up to 4 s (each closes with a 3 s grace): 3 + 4 s stays
     // under the unit's 10 s stop timeout.
     let _ = tokio::time::timeout(Duration::from_secs(4), manager.shutdown()).await;

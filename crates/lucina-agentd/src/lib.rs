@@ -12,6 +12,9 @@
 //!
 //! - [`workspaces`]: projects, workspaces and worktrees (through `wt`), `paseo.json`
 //!   setup, diffs, the file explorer and checkout operations.
+//! - [`journal`]: the numbered event bus behind the resumable `/stream`;
+//!   [`external`]: agents another host runs (Secretary Code sessions) and the
+//!   commands queued for their owner device.
 //! - [`peer`]: who is calling (owner, MCP, or a process an agent started), for
 //!   permission answers; [`notify`]: pushes through secretary-server.
 //! - [`providers`]: Claude (stream-json), Codex (app-server), the ACP agents
@@ -24,6 +27,8 @@ pub mod api;
 pub mod cli;
 pub mod client;
 pub mod config;
+pub mod external;
+pub mod journal;
 pub mod jsonrpc;
 pub mod lane;
 pub mod manager;

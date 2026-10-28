@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use lucina_agents::bucket::{state_bucket, BucketInput};
+use lucina_agents::external::{self as ext, CommandBody};
 use lucina_agents::events::{format_turn_failed, system_error_item};
 use lucina_agents::lifecycle::{self, AgentState, Effect, Event, LifecycleError};
 use lucina_agents::title::resolve_titles;
@@ -20,8 +21,10 @@ use lucina_agents::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use tokio::sync::{broadcast, mpsc, watch};
+use tokio::sync::{mpsc, watch};
 
+use crate::external::{Commands, ExternalProvider};
+use crate::journal::Journal;
 use crate::lane::{LaneConfig, Lane, Outcome};
 use crate::notify::Notifier;
 use crate::now_iso;
@@ -29,6 +32,7 @@ use crate::process::Registry;
 use crate::provider::{Provider, ProviderInfo, Session, SessionConfig};
 use crate::store::{Store, StoreError};
 
+mod external_agents;
 mod gate;
 mod permissions;
 mod workspaces;
@@ -97,6 +101,13 @@ pub enum ManagerError {
     /// The worktree guard refused the agent's workspace.
     #[error("{0}")]
     Guard(String),
+    /// Only an external agent's owner device may do this.
+    #[error("{0}")]
+    NotOwner(String),
+    #[error("{0}")]
+    CommandNotFound(String),
+    #[error("{0}")]
+    CommandExpired(String),
 }
 
 impl ManagerError {
@@ -119,6 +130,9 @@ impl ManagerError {
             ManagerError::Workspace(WsError::Git(_)) => "WORKSPACE_GIT_FAILED",
             ManagerError::Workspace(WsError::Store(_)) => "STORE_ERROR",
             ManagerError::Guard(_) => "WORKSPACE_GUARD",
+            ManagerError::NotOwner(_) => "NOT_OWNER",
+            ManagerError::CommandNotFound(_) => "COMMAND_NOT_FOUND",
+            ManagerError::CommandExpired(_) => "COMMAND_EXPIRED",
         }
     }
 }
@@ -149,6 +163,27 @@ pub enum BusEvent {
     Workspace {
         workspace: Box<WorkspaceRecord>,
     },
+    /// Lucina only: a command for an external agent's owner device. Streams send it
+    /// to that device only.
+    AgentCommand {
+        agent_id: String,
+        command_id: String,
+        command: CommandBody,
+        created_at: String,
+        expires_at: String,
+        #[serde(skip_serializing)]
+        device_id: String,
+    },
+}
+
+impl BusEvent {
+    /// Whether a stream opened by `device` (`None`: not a device) may see this event.
+    pub fn visible_to(&self, device: Option<&str>) -> bool {
+        match self {
+            BusEvent::AgentCommand { device_id, .. } => device == Some(device_id.as_str()),
+            _ => true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -200,6 +235,16 @@ pub struct CreateRequest {
     /// Hidden helper agents (title and branch generation); never from the API.
     #[serde(skip)]
     pub internal: bool,
+    /// An agent another host runs (provider `secretary-code`); see [`crate::external`].
+    #[serde(default)]
+    pub external: bool,
+    /// Where an external agent runs (`mac`).
+    #[serde(default)]
+    pub host: Option<String>,
+    /// The device registering an external agent: set by the API from the caller, never
+    /// from the body.
+    #[serde(skip)]
+    pub owner_device_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
@@ -216,6 +261,8 @@ pub enum Disposition {
     TurnStarted,
     Steered,
     OutOfBand,
+    /// An external agent: the prompt is queued for its owner device.
+    Queued,
 }
 
 /// Paseo `waitForFinish`'s result.
@@ -266,7 +313,10 @@ struct Inner {
     providers: HashMap<String, Arc<dyn Provider>>,
     lanes: LaneConfig,
     agents: Mutex<HashMap<String, Agent>>,
-    bus: broadcast::Sender<BusEvent>,
+    bus: Journal,
+    commands: Arc<Commands>,
+    /// Set at shutdown: open streams end, so the server's graceful drain does not wait on them.
+    closing: watch::Sender<bool>,
     generation: watch::Sender<u64>,
     book: Mutex<HashMap<String, permissions::Entry>>,
     options: Options,
@@ -293,6 +343,8 @@ fn session_config(record: &AgentRecord, env: Vec<(String, String)>) -> SessionCo
         thinking_option_id: record.config.thinking_option_id.clone(),
         feature_values: record.config.feature_values.clone().unwrap_or_default(),
         env,
+        agent_id: Some(record.id.clone()),
+        owner_device_id: record.owner_device_id.clone(),
     }
 }
 
@@ -304,11 +356,13 @@ impl Manager {
     }
 
     pub fn open_with(store: Store, providers: Vec<Arc<dyn Provider>>, lanes: LaneConfig, options: Options) -> Result<Self, ManagerError> {
-        let providers: HashMap<String, Arc<dyn Provider>> =
+        let mut providers: HashMap<String, Arc<dyn Provider>> =
             providers.into_iter().map(|p| (p.info().id, p)).collect();
-        let (bus, _) = broadcast::channel(4096);
+        let bus = Journal::new();
         let (generation, _) = watch::channel(0);
         let store = Arc::new(store);
+        let commands = Arc::new(Commands::new(store.clone(), bus.clone()));
+        providers.insert(ext::PROVIDER.to_string(), Arc::new(ExternalProvider::new(commands.clone())));
         let ws_bus = bus.clone();
         let publish: crate::workspaces::Publish = Arc::new(move |w: &WorkspaceRecord| {
             let _ = ws_bus.send(BusEvent::Workspace { workspace: Box::new(w.clone()) });
@@ -322,6 +376,8 @@ impl Manager {
                 lanes,
                 agents: Mutex::new(HashMap::new()),
                 bus,
+                commands,
+                closing: watch::channel(false).0,
                 generation,
                 book: Mutex::new(HashMap::new()),
                 options,
@@ -380,8 +436,19 @@ impl Manager {
         self.inner.agents.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    pub fn subscribe(&self) -> broadcast::Receiver<BusEvent> {
-        self.inner.bus.subscribe()
+    /// The numbered event bus (`GET /stream`).
+    pub fn journal(&self) -> &Journal {
+        &self.inner.bus
+    }
+
+    /// Ends every open stream (shutdown).
+    pub fn close_streams(&self) {
+        self.inner.closing.send_replace(true);
+    }
+
+    /// Becomes `true` at shutdown.
+    pub fn closing(&self) -> watch::Receiver<bool> {
+        self.inner.closing.subscribe()
     }
 
     pub fn providers(&self) -> Vec<ProviderInfo> {
@@ -450,6 +517,9 @@ impl Manager {
             provider_unavailable: None,
             internal: r.internal.then_some(true),
             gate: r.gate.clone(),
+            external: r.external.then_some(true),
+            owner_device_id: r.owner_device_id.clone(),
+            host: r.host.clone(),
         }
     }
 
@@ -479,6 +549,9 @@ impl Manager {
                 requires_attention: agent.k.requires_attention,
                 attention_reason: agent.k.attention_reason,
             }),
+            external: r.external.then_some(true),
+            owner_device_id: r.owner_device_id.clone(),
+            host: r.host.clone(),
         }
     }
 
@@ -766,6 +839,9 @@ impl Manager {
             return self.snapshot(&snap.id);
         }
         let (provider_id, model) = split_provider(&req.provider, req.model.clone());
+        if req.external || provider_id == ext::PROVIDER {
+            Self::check_external(&mut req, &provider_id)?;
+        }
         let provider = self
             .inner
             .providers
@@ -789,11 +865,15 @@ impl Manager {
             }
         }
         let info = provider.info();
-        if !req.internal {
+        if !req.internal && !req.external {
             let mode = req.mode_id.clone().or_else(|| info.default_mode_id.clone());
             self.guard_start(&req.cwd, &provider_id, mode.as_deref(), req.allow_main_checkout).await?;
         }
-        let workspace_id = workspace.map(|w| w.workspace_id).or_else(|| self.inner.workspaces.find_by_cwd(&req.cwd).map(|w| w.workspace_id));
+        let workspace_id = match req.external {
+            // Its cwd is a path on another host.
+            true => None,
+            false => workspace.map(|w| w.workspace_id).or_else(|| self.inner.workspaces.find_by_cwd(&req.cwd).map(|w| w.workspace_id)),
+        };
         let (_, provisional) = resolve_titles(req.title.as_deref(), req.prompt.as_deref());
         let now = now_iso();
         let record = AgentRecord {
@@ -834,6 +914,9 @@ impl Manager {
                 heavy: req.verify_heavy,
                 auto_fix: req.auto_fix.min(5),
             }),
+            external: req.external,
+            owner_device_id: req.owner_device_id.clone(),
+            host: req.host.clone(),
         };
         self.inner.store.save(&record)?;
         let id = record.id.clone();
@@ -1001,6 +1084,18 @@ impl Manager {
         if prompt.trim().is_empty() {
             return Err(ManagerError::Invalid("A prompt is required".into()));
         }
+        if let Some((owner, running)) = self.external_of(id)? {
+            let prompt = prompt.to_string();
+            let bodies = match (running, behavior) {
+                (true, ActiveTurnBehavior::Steer) => vec![CommandBody::Steer { prompt }],
+                (true, ActiveTurnBehavior::Interrupt) => vec![CommandBody::Stop {}, CommandBody::Send { prompt }],
+                (false, _) => vec![CommandBody::Send { prompt }],
+            };
+            for body in bodies {
+                self.inner.commands.enqueue(id, &owner, body)?;
+            }
+            return Ok(Disposition::Queued);
+        }
         let session = self.ensure_loaded(id).await?;
         if let Some(events) = session.out_of_band(prompt) {
             for ev in events {
@@ -1049,6 +1144,12 @@ impl Manager {
 
     /// Interrupt a running agent; `false` when it wasn't running.
     pub async fn stop(&self, id: &str) -> Result<bool, ManagerError> {
+        if let Some((owner, running)) = self.external_of(id)? {
+            if running {
+                self.inner.commands.enqueue(id, &owner, CommandBody::Stop {})?;
+            }
+            return Ok(running);
+        }
         let session = {
             let agents = self.lock();
             let a = agents.get(id).ok_or_else(|| ManagerError::NotFound(id.to_string()))?;

@@ -33,6 +33,8 @@
 //!   until when) and [`run_gate`] (the finished-run gate's verdict), proven in
 //!   `verification/verus/permission_gate.rs` and `run_gate.rs`. [`worktree_guard`]: where agents may write
 //!   and when a worktree may be removed (`verification/verus/worktree_guard.rs`).
+//! - Lucina only: [`external`] (agents another host runs, their owner device and
+//!   queued commands) and [`stream`] (event ids and `Last-Event-ID` resume).
 //!
 //! String lengths and cuts follow JavaScript (UTF-16 code units, JS whitespace;
 //! see [`jsstr`]), so truncated texts match Paseo's byte for byte.
@@ -45,6 +47,7 @@ pub mod curator;
 pub mod diffparse;
 pub mod display;
 pub mod events;
+pub mod external;
 pub mod jsstr;
 pub mod lifecycle;
 pub mod notification;
@@ -52,6 +55,7 @@ pub mod permission;
 pub mod permission_gate;
 pub mod projection;
 pub mod run_gate;
+pub mod stream;
 pub mod timeline;
 pub mod title;
 pub mod types;

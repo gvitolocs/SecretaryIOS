@@ -32,6 +32,10 @@ pub struct SessionConfig {
     pub thinking_option_id: Option<String>,
     pub feature_values: Map<String, Value>,
     pub env: Vec<(String, String)>,
+    /// The agent this session belongs to (external sessions address their commands with it).
+    pub agent_id: Option<String>,
+    /// An external agent's owner device.
+    pub owner_device_id: Option<String>,
 }
 
 /// One model a provider offers (Paseo `AgentModelDefinitionSchema`, the fields
