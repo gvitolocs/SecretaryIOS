@@ -352,6 +352,26 @@ struct WidgetFetcher: Sendable {
         #endif
     }
 
+    // MARK: Server
+
+    /// The homelab's status, as the Server plugin shows it (`GET /v1/system/overview`, the server's 30 s cache).
+    func server() async throws -> ServerSection {
+        let json: JSONValue = try await client.get("/v1/system/overview", timeout: 20)
+        return Self.serverSection(json)
+    }
+
+    static func serverSection(_ json: JSONValue, fetchedAt: Date = Date()) -> ServerSection {
+        let attention = json["attention"]?.arrayValue ?? []
+        let count = number(json["attention_count"]).map { Int($0) } ?? attention.count
+        let overall = json["overall"]?.nonEmptyString ?? "unknown"
+        // No item, but a host is down or hot: the hosts are what need attention.
+        let hosts = (json["hosts"]?.arrayValue ?? []).filter { ["warn", "crit"].contains($0["state"]?.stringValue ?? "") }.count
+        let needs = max(count, attention.count) > 0 ? max(count, attention.count) : (overall == "ok" ? 0 : hosts)
+        let titles = attention.prefix(3).compactMap { $0["title"]?.nonEmptyString ?? $0["component_id"]?.nonEmptyString }
+        return ServerSection(fetchedAt: fetchedAt, overall: overall, attentionCount: needs, titles: titles,
+                             generatedAt: date(json["generated_at"]))
+    }
+
     // MARK: Helpers
 
     static func segment(_ id: String) -> String {

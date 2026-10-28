@@ -331,6 +331,7 @@ enum NotificationRoute {
 
     static func tab(for route: String) -> AppModel.Tab {
         guard isSafe(route) else { return .chat }
+        if server(route) != nil { return .plugins }
         let first = route.split(separator: "/").first.map(String.init) ?? ""
         switch first {
         case "shopping": return .shopping
@@ -358,6 +359,12 @@ enum NotificationRoute {
         let parts = path.split(separator: "/").map(String.init)
         guard parts.first == "memos" else { return nil }
         return parts.count >= 2 ? parts[1] : ""
+    }
+
+    /// `/server-health[?item=|?host=]` (sentinel) or `/agents/map/<component>` (catalog): the Server plugin.
+    static func server(_ route: String) -> ServerLink? {
+        guard isSafe(route) else { return nil }
+        return ServerLink.parse(route)
     }
 
     /// `/shopping/map` (grocery deal alerts): the deals map on the Shopping tab.

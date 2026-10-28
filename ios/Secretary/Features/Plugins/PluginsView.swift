@@ -38,6 +38,9 @@ struct Plugin: Identifiable {
             Plugin(id: "tasks", icon: "checkmark.circle", title: "Tasks") { app.showTasks = true },
             Plugin(id: "agents", icon: "terminal", title: "Agents",
                    detail: agentsDetail(app)) { app.showAgents = true },
+            Plugin(id: "server", icon: "server.rack", title: "Server",
+                   detail: ServerText.pluginDetail(app.server.overview),
+                   isActive: app.server.overview?.overall == .crit) { app.showServer = true },
             Plugin(id: "countdown", icon: "hourglass", title: "Countdown",
                    detail: Countdown.visible(Countdown.pinned, fresher: [], now: Date()).first
                        .map { "\(Countdown.label($0, now: Date())) · \($0.title)" }) { app.showCountdowns = true },
@@ -71,6 +74,8 @@ struct PluginsView: View {
             .padding(.bottom, LucinaTokens.Space.xxl)
         }
         .lucinaScreen("Plugins")
+        // The Server card's status line ("All systems normal"): one look when the tab first shows.
+        .task { if app.server.overview == nil, !AppModel.isUnitTestHost { await app.server.load() } }
         .navigationDestination(isPresented: $app.showGallery) { GalleryScreen() }
         .navigationDestination(isPresented: $app.showDrive) { DriveScreen().environment(app.drive).environment(app.driveNav) }
         .navigationDestination(isPresented: $app.showMemos) { MemosView().environment(app.memos) }
@@ -78,6 +83,7 @@ struct PluginsView: View {
         .navigationDestination(isPresented: $app.showNotes) { NotesView() }
         .navigationDestination(isPresented: $app.showTasks) { TasksView() }
         .navigationDestination(isPresented: $app.showAgents) { AgentsView() }
+        .navigationDestination(isPresented: $app.showServer) { ServerView() }
         .navigationDestination(isPresented: $app.showCountdowns) { CountdownsView() }
         .navigationDestination(isPresented: $app.showPokemon) { PokemonView() }
         .navigationDestination(isPresented: $app.showAllChats) { AllChatsView() }

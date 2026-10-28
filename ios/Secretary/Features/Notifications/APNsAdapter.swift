@@ -140,6 +140,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
                 if let route, NotificationRoute.opensDealsMap(route) { app.showDealsMap = true }
                 if let route, let memo = NotificationRoute.memo(route) { app.openMemo(memo.isEmpty ? nil : memo) }
                 if let route, let decision = NotificationRoute.decision(route) { app.openDecision(decision) }
+                if let route, let server = NotificationRoute.server(route) { app.openServer(server) }
             }
         }
     }

@@ -48,6 +48,7 @@ private struct AppWindow: View {
             .environment(app.notes)
             .environment(app.tasks)
             .environment(app.agents)
+            .environment(app.server)
             .environment(app.memos)
             .environment(app.health)
             .environment(app.wardrobe)

@@ -17,6 +17,7 @@ enum WidgetKind: String, CaseIterable, Sendable {
     case pokemon = "tech.getsecretary.widget.pokemon"
     case films = "tech.getsecretary.widget.films"
     case countdown = "tech.getsecretary.widget.countdown"
+    case server = "tech.getsecretary.widget.server"
 }
 
 protocol WidgetSection: Codable, Equatable, Sendable {
@@ -187,4 +188,17 @@ struct FilmsSection: WidgetSection {
 
     var fetchedAt: Date
     var films: [Film]
+}
+
+/// The homelab's status (`GET /v1/system/overview`): worst state, how many things need attention, the first titles.
+struct ServerSection: WidgetSection {
+    static let key = "server"
+    var fetchedAt: Date
+    /// `ok`, `warn`, `crit` (or `unknown`).
+    var overall: String
+    var attentionCount: Int
+    /// The first attention items, worst first.
+    var titles: [String]
+    /// When the server built the overview.
+    var generatedAt: Date?
 }

@@ -543,6 +543,11 @@ extension AppModel {
             showPlace(place, navigate: PlaceLinks.navigates(path))
             return
         }
+        // `/server-health…` and the catalog's outage push `/agents/map/<component>`.
+        if let link = ServerLink.parse(path) {
+            openServer(link)
+            return
+        }
         let first = path.split(separator: "/").first.map(String.init) ?? ""
         switch first {
         case "shopping": selectedTab = .shopping
