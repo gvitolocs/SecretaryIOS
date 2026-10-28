@@ -1,3 +1,6 @@
+import { Button, Card, EmptyState, ErrorState, LoadingState, Page, PageGrid, useWide } from "../components/page";
+import { GalleryDetail, GalleryHeader } from "../components/gallery/GalleryHeader";
+import { Dynamic } from "solid-js/web";
 import { A, useNavigate, useSearchParams } from "@solidjs/router";
 import { createEffect, createMemo, createResource, createSignal, on, onCleanup, Show } from "solid-js";
 import {
@@ -76,7 +79,9 @@ function initialOrigin(): string {
   return mac ? `device:${mac.id}` : "all";
 }
 
-export default function GalleryView(props: { trash?: boolean; archive?: boolean; album?: string; person?: string; category?: GalleryCategory }) {
+export default function GalleryView(props: { trash?: boolean; archive?: boolean; album?: string; person?: string; category?: GalleryCategory; desktop?: boolean }) {
+  const measured = useWide();
+  const wide = () => measured.wide() && (props.desktop ?? !shelf());
   const trash = () => !!props.trash;
   const archive = () => !!props.archive;
   const albumId = () => props.album;
@@ -472,21 +477,23 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
     </button>
   );
 
-  return (
-    <section class="gallery" classList={{ "gallery--trash": trash(), "gallery--archive": archive(), "gallery--album": !!albumId(), "gallery--person": !!personId(), "gallery--category": !!categoryId() }} aria-labelledby="gallery-title">
+  const detailTitle = () => trash() ? t("gallery.trashTitle") : archive() ? t("browse.archiveTitle") : albumId() ? album()?.title || t("galleryAlbums.title") : categoryId() ? t(albumKey(categoryId()!)) : personId() ? (person() ? personName(person()!, t("galleryPeople.unnamed")) : t("galleryPeople.title")) : t("gallery.title");
+  const body = () => (<>
       <div class="g-top">
         <Show
           when={selected().size > 0}
           fallback={
-            <header class="g-bar">
-              <Show when={shelf()}>
+            <Dynamic component={wide() ? "div" : "header"} class={wide() ? "g-desktop-tools" : "g-bar"}>
+              <Show when={!wide() && shelf()}>
                 <A class="g-back" href={albumId() || categoryId() ? ALBUMS_PATH : personId() ? PEOPLE_PATH : "/gallery"} aria-label={albumId() || categoryId() ? t("galleryAlbums.title") : personId() ? t("galleryPeople.backToPeople") : t("gallery.backToGallery")}>
                   <BackIcon />
                 </A>
               </Show>
+<Show when={!wide()}>
               <h1 class="g-title" id="gallery-title">
                 {trash() ? t("gallery.trashTitle") : archive() ? t("browse.archiveTitle") : albumId() ? album()?.title || t("galleryAlbums.title") : categoryId() ? t(albumKey(categoryId()!)) : personId() ? (person() ? personName(person()!, t("galleryPeople.unnamed")) : t("galleryPeople.title")) : t("gallery.title")}
               </h1>
+</Show>
               <label class="g-search">
                 <SearchIcon />
                 <input
@@ -502,32 +509,32 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
               </label>
               <Show when={album()}>{(a) => <AlbumTools album={a()} onRenamed={setAlbum} onDeleted={() => navigate(ALBUMS_PATH)} />}</Show>
               <Show when={!shelf()}>
-                <A class="g-iconbtn" href="/gallery/albums" aria-label={t("galleryAlbums.link")} title={t("galleryAlbums.link")}>
+                <A class={wide() ? "pg-icon-btn" : "g-iconbtn"} href="/gallery/albums" aria-label={t("galleryAlbums.link")} title={t("galleryAlbums.link")}>
                   <AlbumIcon />
                 </A>
-                <A class="g-iconbtn" href={PEOPLE_PATH} aria-label={t("galleryPeople.link")} title={t("galleryPeople.link")}>
+                <A class={wide() ? "pg-icon-btn" : "g-iconbtn"} href={PEOPLE_PATH} aria-label={t("galleryPeople.link")} title={t("galleryPeople.link")}>
                   <PeopleIcon />
                 </A>
-                <A class="g-iconbtn" href="/gallery/places" aria-label={t("browse.placesLink")} title={t("browse.placesLink")}>
+                <A class={wide() ? "pg-icon-btn" : "g-iconbtn"} href="/gallery/places" aria-label={t("browse.placesLink")} title={t("browse.placesLink")}>
                   <PlacesIcon />
                 </A>
-                <A class="g-iconbtn" href="/gallery/archive" aria-label={t("browse.archiveLink")} title={t("browse.archiveLink")}>
+                <A class={wide() ? "pg-icon-btn" : "g-iconbtn"} href="/gallery/archive" aria-label={t("browse.archiveLink")} title={t("browse.archiveLink")}>
                   <ArchiveBoxIcon />
                 </A>
-                <A class="g-iconbtn" href="/gallery/duplicates" aria-label={t("galleryDedup.link")} title={t("galleryDedup.link")}>
+                <A class={wide() ? "pg-icon-btn" : "g-iconbtn"} href="/gallery/duplicates" aria-label={t("galleryDedup.link")} title={t("galleryDedup.link")}>
                   <DuplicatesIcon />
                 </A>
-                <A class="g-iconbtn" href="/gallery/lab" aria-label={t("lab.labLink")} title={t("lab.labLink")}>
+                <A class={wide() ? "pg-icon-btn" : "g-iconbtn"} href="/gallery/lab" aria-label={t("lab.labLink")} title={t("lab.labLink")}>
                   <LabIcon />
                 </A>
-                <A class="g-iconbtn" href="/gallery/shared" aria-label={t("galleryShare.manage")} title={t("galleryShare.manage")}>
+                <A class={wide() ? "pg-icon-btn" : "g-iconbtn"} href="/gallery/shared" aria-label={t("galleryShare.manage")} title={t("galleryShare.manage")}>
                   <LinkIcon />
                 </A>
-                <A class="g-iconbtn" href="/gallery/trash" aria-label={t("gallery.trashLink")} title={t("gallery.trashLink")}>
+                <A class={wide() ? "pg-icon-btn" : "g-iconbtn"} href="/gallery/trash" aria-label={t("gallery.trashLink")} title={t("gallery.trashLink")}>
                   <TrashIcon />
                 </A>
               </Show>
-            </header>
+            </Dynamic>
           }
         >
           <SelectionBar
@@ -674,7 +681,7 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
           onCommand={onCommand}
         />
         <Show when={items().length === 0}>
-          <div class="g-state">
+<Show when={wide()} fallback={          <div class="g-state">
             <Show when={feed.failed()} fallback={
               <Show when={settled()} fallback={<span class="g-spinner" role="status" aria-label={t("gallery.loading")} />}>
                 <p>{emptyText()}</p>
@@ -690,7 +697,15 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
                 {t("gallery.retry")}
               </button>
             </Show>
-          </div>
+          </div>}>
+            <Card label={t("gallery.typePhotos")}>
+              <Show when={!feed.failed()} fallback={<ErrorState message={t("gallery.loadError")} retryLabel={t("gallery.retry")} onRetry={() => feed.reload()} />}>
+                <Show when={settled()} fallback={<LoadingState label={t("gallery.loading")} />}>
+                  <EmptyState text={emptyText()} action={<Show when={filtered()}><Button onClick={clearFilters}>{t("gallery.clearFilters")}</Button></Show>} />
+                </Show>
+              </Show>
+            </Card>
+          </Show>
         </Show>
         <Show when={status()}>
           {(s) => (
@@ -703,6 +718,17 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
           )}
         </Show>
       </div>
+  </>);
+
+  return (
+    <section class="gallery" ref={measured.track} classList={{ "gallery--wide": wide(), "gallery--trash": trash(), "gallery--archive": archive(), "gallery--album": !!albumId(), "gallery--person": !!personId(), "gallery--category": !!categoryId() }} aria-labelledby={wide() ? undefined : "gallery-title"} aria-label={wide() ? t("gallery.title") : undefined}>
+      <Show when={wide()} fallback={body()}>
+        <Page class="g-grid-page">
+          <GalleryHeader count={album()?.count ?? (person()?.itemCount) ?? (!feed.loading() && !feed.hasMore() && !feed.failed() ? items().length : undefined)} />
+          <Show when={shelf()}><GalleryDetail href={albumId() || categoryId() ? ALBUMS_PATH : personId() ? PEOPLE_PATH : "/gallery"} back={albumId() || categoryId() ? t("galleryAlbums.title") : personId() ? t("galleryPeople.backToPeople") : t("gallery.backToGallery")} title={detailTitle()} /></Show>
+          <PageGrid layout="full">{body()}</PageGrid>
+        </Page>
+      </Show>
 
       <Show when={viewer() !== null && items()[viewer()!]}>
         <GalleryViewer

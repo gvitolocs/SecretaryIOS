@@ -1,4 +1,5 @@
 /// <reference types="node" />
+import { stubWide } from "../test/wide";
 import { Route } from "@solidjs/router";
 import { fireEvent, screen, waitFor, within } from "@solidjs/testing-library";
 import { readFileSync } from "node:fs";
@@ -189,6 +190,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   lucinaViewer.setDevice(null);
   vi.restoreAllMocks();
 });
@@ -738,4 +740,15 @@ describe("languages", () => {
     await waitFor(() => expect(document.querySelector(".g-head__label")).not.toBeNull());
     expect(document.querySelector(".g-head__label")!.textContent!.toLowerCase()).toContain("onsdag");
   });
+});
+
+it("keeps the desktop Gallery header above its filters and empty photo surface", async () => {
+  stubWide(); backend([]); mount();
+  expect(await screen.findByRole("heading", { level: 1, name: "Gallery" })).toBeInTheDocument();
+  expect(within(screen.getByRole("navigation", { name: "Gallery sections" })).getByRole("link", { name: "Photos" })).toHaveAttribute("aria-current", "page");
+  expect(document.querySelectorAll(".pg-cta").length).toBeLessThanOrEqual(1);
+  expect(document.querySelector(".g-title")).toBeNull();
+  expect(document.querySelector(".pg-grid--full")).toBeInTheDocument();
+  expect(screen.getByRole("group", { name: "Filters" })).toBeInTheDocument();
+  await waitFor(() => expect(document.querySelector(".pg-empty")).toHaveTextContent("No photos here yet."));
 });

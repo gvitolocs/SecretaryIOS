@@ -881,3 +881,18 @@ html[data-shell="desktop"] .g-title {
 .g-page-root { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; }
 .pg .al-grid { max-width: none; gap: 16px; margin: 0; }
 .pg .al-section { margin: 24px 0 16px; color: var(--pg-muted); font-size: 16px; font-weight: 600; }
+
+/* Give the virtual grid a definite height inside the desktop page frame. */
+.pg.g-grid-page, .pg.g-grid-page > .pg-inner, .pg.g-grid-page .pg-grid--full,
+.pg.g-grid-page .pg-main { display: flex; flex: 1; min-height: 0; flex-direction: column; }
+.pg.g-grid-page > .pg-inner { width: 100%; }
+.pg.g-grid-page .pg-main { gap: 16px; }
+.pg.g-grid-page .g-top { padding: 0; gap: 12px; }
+.pg .g-desktop-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.pg .g-desktop-tools .g-search { margin-left: 0; margin-right: auto; }
+.pg .g-main > .pg-card { position: relative; }
+.pg .g-search { background: var(--pg-fill); border-radius: var(--pg-radius-control); color: var(--pg-muted); }
+.pg .g-search input { font: inherit; color: var(--pg-text); }
+.pg .g-chip, .pg .g-seg__btn, .pg .g-source { font: inherit; color: var(--pg-muted); background: var(--pg-fill); border-color: var(--pg-border); }
+.pg .g-chip[aria-pressed="true"], .pg .g-seg__btn[aria-pressed="true"], .pg .g-source[aria-pressed="true"] { color: var(--pg-text); background: var(--pg-fill-hover); }
+.pg .g-note { color: var(--pg-muted); }
