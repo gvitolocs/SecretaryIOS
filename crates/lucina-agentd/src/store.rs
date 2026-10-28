@@ -145,6 +145,21 @@ impl Store {
         Ok(())
     }
 
+    /// Replace an agent's stored timeline (a rewind took it back). Written beside the
+    /// old file and renamed over it, so a crash leaves one whole timeline or the other.
+    pub fn replace_rows(&self, id: &str, rows: &[TimelineRow]) -> Result<(), StoreError> {
+        let path = self.timeline_path(id)?;
+        let tmp = path.with_extension("jsonl.tmp");
+        let mut out = String::new();
+        for row in rows {
+            out.push_str(&serde_json::to_string(row)?);
+            out.push('\n');
+        }
+        fs::write(&tmp, out)?;
+        fs::rename(&tmp, &path)?;
+        Ok(())
+    }
+
     /// The stored rows; a torn last line (crash mid-write) is dropped.
     pub fn load_rows(&self, id: &str) -> Result<Vec<TimelineRow>, StoreError> {
         let path = self.timeline_path(id)?;

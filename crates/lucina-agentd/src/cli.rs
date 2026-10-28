@@ -15,6 +15,7 @@ use crate::config::{default_socket, shorten_path};
 
 mod term;
 mod orch;
+mod rewind;
 mod ws;
 
 #[derive(Parser, Debug)]
@@ -90,6 +91,10 @@ pub enum Command {
     Search(orch::SearchArgs),
     /// Make a subagent independent without stopping or moving it
     Detach { id: String },
+    /// Take an agent back to an earlier user message: its conversation, its files, or both (Lucina only)
+    Rewind(rewind::RewindArgs),
+    /// Start a new agent from an agent's chat history (Lucina only)
+    Fork(rewind::ForkArgs),
     /// Serve the agents' MCP tools on stdio (agentd attaches this to its agents)
     Mcp,
 }
@@ -1112,6 +1117,8 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
         Command::Heartbeat(cmd) => orch::heartbeat(&client, cmd).await,
         Command::Search(a) => orch::search(&client, a).await,
         Command::Detach { id } => orch::detach(&client, id).await,
+        Command::Rewind(a) => rewind::rewind(&client, a).await,
+        Command::Fork(a) => rewind::fork(&client, a).await,
         Command::Mcp => {
             crate::mcp::serve(client).await.map_err(|e| CmdError::new("MCP_FAILED", e.to_string()))?;
             Ok(Output { json: None, text: String::new() })

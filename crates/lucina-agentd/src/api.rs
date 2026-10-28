@@ -39,6 +39,7 @@
 //! Projects, workspaces, diffs, files and checkout operations: [`workspaces`].
 //! Terminals, scripts and the service proxy: [`terminals`].
 //! Schedules, heartbeats, search, prompts, detach and usage: [`orch`].
+//! Rewind and fork (with chat-history context): [`rewind`].
 //! The Homelab service catalog (project tree, health, impact, drift): [`catalog`].
 //!
 //! A process an agent started acts as that agent ([`Caller::Agent`]): its `create`
@@ -76,6 +77,7 @@ use crate::workspaces::WsError;
 pub mod terminals;
 mod catalog;
 mod orch;
+mod rewind;
 mod workspaces;
 
 pub struct ApiError(StatusCode, String, String);
@@ -104,6 +106,10 @@ impl From<ManagerError> for ApiError {
             ManagerError::DelegationDepth(_) | ManagerError::NotYourAgent(_) | ManagerError::ScheduleForbidden(_) => StatusCode::FORBIDDEN,
             ManagerError::ScheduleNotFound(_) | ManagerError::SubagentNotFound(_) => StatusCode::NOT_FOUND,
             ManagerError::ScheduleConflict(_) => StatusCode::CONFLICT,
+            ManagerError::RewindUnsupported(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            ManagerError::RewindTargetNotFound(_) => StatusCode::NOT_FOUND,
+            ManagerError::RewindForbidden(_) => StatusCode::FORBIDDEN,
+            ManagerError::ForkBoundary(_) | ManagerError::Busy(_) => StatusCode::CONFLICT,
         };
         ApiError(status, e.code().to_string(), e.to_string())
     }
@@ -149,6 +155,7 @@ pub fn router(manager: Manager) -> Router {
         .merge(workspaces::routes())
         .merge(terminals::routes())
         .merge(orch::routes())
+        .merge(rewind::routes())
         .merge(catalog::routes())
         // Last, so it sees every request (`Host: <label>.localhost` goes to that service).
         .layer(axum::middleware::from_fn_with_state(manager.clone(), terminals::host_proxy))
@@ -189,7 +196,7 @@ struct CreateBody {
 
 /// An owner's text that looks like an agent envelope is quoted as the owner's
 /// (Paseo `prepareAgentMessage`), so nobody can pose as an agent or a schedule.
-fn quote(text: String) -> String {
+pub(super) fn quote(text: String) -> String {
     lucina_agents::envelope::quote_reserved(&text, &uuid::Uuid::new_v4().to_string())
 }
 

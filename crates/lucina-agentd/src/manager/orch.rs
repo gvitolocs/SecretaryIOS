@@ -39,6 +39,8 @@ use crate::store::Store;
 pub const DEPTH_LABEL: &str = "lucina.delegation-depth";
 /// Who started it (`agent:<id>`, `mcp:<name>`), as the MCP labels its runs.
 pub const ORIGIN_LABEL: &str = "lucina.origin";
+/// The MCP token that started an agent (set by secretary-mcp); that token owns the agent.
+pub const MCP_TOKEN_LABEL: &str = "lucina.mcp-token";
 /// Deepest delegation (lucina-delegate's `max_depth`, secretary-mcp's `MAX_DEPTH`).
 pub const MAX_DEPTH: u32 = 1;
 /// Paseo `schedule(2000, flush)`.

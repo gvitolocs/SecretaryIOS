@@ -221,6 +221,10 @@ pub struct AgentRecord {
     /// Where an external agent runs (`mac`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
+    /// Lucina only: a fork's chat history (the fork-context attachment), sent ahead of the
+    /// agent's first prompt and then forgotten.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed_context: Option<String>,
 }
 
 impl AgentRecord {

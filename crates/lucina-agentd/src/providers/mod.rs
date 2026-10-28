@@ -8,6 +8,22 @@
 //! | `cursor`, `opencode`, `copilot`, and `[acp.<id>]` entries | ACP over stdio (`cursor-agent acp`, `opencode acp`, `copilot --acp`) |
 //! | `pi` | `pi --mode rpc` (JSON lines) |
 //! | `zcode` | the ZCode CLI (`zcode.cjs --json`), one process per turn |
+//!
+//! **Rewind** (parity row A16): which modes a provider supports is its
+//! `supportsRewind{Conversation,Files,Both}` flags, and a session that sets one implements
+//! [`Session::rewind`](crate::provider::Session::rewind). Paseo 0.13.2 supports, per provider:
+//!
+//! | Provider | conversation | files | both | Lucina |
+//! |---|---|---|---|---|
+//! | `claude` | yes (fork the transcript before the turn) | yes (SDK file checkpoints) | yes | none yet |
+//! | `codex` | yes (`thread/fork` + `thread/rollback`) | no | no | none yet |
+//! | `opencode` | no | no | yes (session revert) | none yet |
+//! | `pi`, `omp` | yes (tree navigation) | no | no | none yet |
+//! | `copilot`, `cursor` and other ACP | no | no | no | none (same) |
+//! | `mock` (dev) | yes | yes | yes | all three, with real file checkpoints |
+//!
+//! A real provider whose flag is off is refused with `REWIND_UNSUPPORTED` before anything
+//! runs. Turning a flag on is a provider change with its own tests against the real CLI.
 
 pub mod acp;
 mod acp_subagents;
@@ -62,4 +78,35 @@ pub fn installed(lanes: &LaneConfig, registry: &Registry) -> Vec<Arc<dyn Provide
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use super::*;
+
+    /// No real provider claims a rewind it doesn't implement (module docs).
+    #[test]
+    fn real_providers_claim_no_rewind_yet() {
+        let bin = || PathBuf::from("/nonexistent/bin");
+        let mut all: Vec<Arc<dyn Provider>> = vec![
+            Arc::new(claude::ClaudeProvider { bin: bin(), default_model: None, default_effort: None, registry: None }),
+            Arc::new(codex::CodexProvider { bin: bin(), default_model: None, default_effort: None, registry: None }),
+            Arc::new(pi::PiProvider { bin: bin(), registry: None }),
+            Arc::new(zcode::ZcodeProvider { node: bin(), dir: bin(), registry: None }),
+        ];
+        for def in acp::builtin() {
+            all.push(Arc::new(acp::AcpProvider::new(def, bin(), None, None)));
+        }
+        assert!(all.len() >= 7);
+        for p in all {
+            let info = p.info();
+            let c = &info.capabilities;
+            assert!(!(c.supports_rewind_conversation || c.supports_rewind_files || c.supports_rewind_both), "{} claims a rewind", info.id);
+        }
+        let mock = crate::mock::MockProvider.info().capabilities;
+        assert!(mock.supports_rewind_conversation && mock.supports_rewind_files && mock.supports_rewind_both);
+    }
 }

@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use lucina_agents::rewind::{unsupported_message, RewindMode};
 use lucina_agents::types::{AgentMode, Capabilities, PersistenceHandle, RuntimeInfo};
 use lucina_agents::{PermissionResponse, StreamEvent};
 use serde::Serialize;
@@ -36,6 +37,17 @@ pub struct SessionConfig {
     pub agent_id: Option<String>,
     /// An external agent's owner device.
     pub owner_device_id: Option<String>,
+}
+
+/// What a rewind asks of a session (Paseo `revertConversation` / `revertFiles` /
+/// `revertBoth`, `{messageId}`).
+#[derive(Debug, Clone)]
+pub struct Rewind {
+    pub mode: RewindMode,
+    /// The target user message's id.
+    pub message_id: String,
+    /// How many user messages come before it (for providers that count turns).
+    pub user_turn: usize,
 }
 
 /// One model a provider offers (Paseo `AgentModelDefinitionSchema`, the fields
@@ -92,6 +104,14 @@ pub trait Session: Send + Sync {
     /// A prompt the provider answers without a turn (Paseo `tryHandleOutOfBand`).
     fn out_of_band(&self, _prompt: &str) -> Option<Vec<StreamEvent>> {
         None
+    }
+    /// Revert the provider's own state to just before the target user message: its
+    /// conversation, the files it changed, or both (`mode`). The manager has already
+    /// checked the capability flag for the mode, cancelled the running turn, and
+    /// checked the agent may touch its files; it takes the timeline back itself.
+    /// Providers that set `supportsRewind*` implement this.
+    async fn rewind(&self, rewind: &Rewind) -> Result<(), ProviderError> {
+        Err(ProviderError::new(unsupported_message(rewind.mode)))
     }
     async fn close(&self);
     fn runtime_info(&self) -> RuntimeInfo;

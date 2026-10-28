@@ -11,8 +11,17 @@
 //! "lucina mock write <path>=<text>" writes a file in the session's cwd and settles,
 //! and "lucina mock mcp permission <server>/<tool>" asks for an MCP tool.
 //!
+//! Rewind (parity row A16): `mock` supports all three modes, as Paseo's does (its
+//! `mockRewindError` feature value makes a rewind fail). Paseo's mock only validates the
+//! target and keeps the first user message; this one does what the modes say. It keeps a
+//! checkpoint per user message: for each file the Lucina write trigger changed during the
+//! turn, what the file held before (or that it was new). A conversation rewind drops the
+//! checkpoints from the target on; a files rewind puts the files those checkpoints
+//! recorded back, newest first, and refuses a path outside the session's directory. The
+//! checkpoints live in the persistence handle, so they survive a restart.
+//!
 //! Not ported yet (parity row P10): the stress and large-payload triggers, the
-//! steering-replay shapes, prompt rejections and rewind.
+//! steering-replay shapes and prompt rejections.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -28,7 +37,11 @@ use lucina_agents::{PermissionResponse, StreamEvent, TimelineItem, Usage};
 use serde_json::{json, Map, Value};
 use tokio::task::JoinHandle;
 
-use crate::provider::{EventSink, ModelInfo, Provider, ProviderError, ProviderInfo, Session, SessionConfig};
+use base64::Engine;
+use serde::{Deserialize, Serialize};
+
+use crate::provider::{EventSink, ModelInfo, Provider, ProviderError, ProviderInfo, Rewind, Session, SessionConfig};
+use crate::workspaces::files::resolve;
 
 pub const MOCK_ID: &str = "mock";
 pub const MOCK_SLOW_ID: &str = "mock-slow";
@@ -507,7 +520,11 @@ impl Provider for MockProvider {
                 config.mode_id = meta.get("modeId").and_then(Value::as_str).map(str::to_string);
             }
         }
-        Ok(Arc::new(MockSession::new(handle.session_id.clone(), config, events)))
+        let session = MockSession::new(handle.session_id.clone(), config, events);
+        if let Some(saved) = handle.metadata.as_ref().and_then(|m| m.get("checkpoints")) {
+            session.inner.lock().unwrap_or_else(|p| p.into_inner()).checkpoints = serde_json::from_value(saved.clone()).unwrap_or_default();
+        }
+        Ok(Arc::new(session))
     }
 }
 
@@ -559,6 +576,22 @@ struct Turn {
     emitted_tokens: u64,
 }
 
+/// What one file held before a user message's turn changed it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct FileWrite {
+    /// Relative to the session's directory.
+    path: String,
+    /// The old content, base64; `None`: the file was new.
+    before: Option<String>,
+}
+
+/// Per user message: the files its turn changed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Checkpoint {
+    message_id: String,
+    writes: Vec<FileWrite>,
+}
+
 struct Inner {
     cwd: String,
     model: String,
@@ -569,6 +602,8 @@ struct Inner {
     response: Option<String>,
     streaming_response: Option<String>,
     streaming_interval_ms: u64,
+    checkpoints: Vec<Checkpoint>,
+    rewind_error: Option<String>,
 }
 
 pub struct MockSession {
@@ -609,6 +644,8 @@ impl MockSession {
                 response: feature_str(fv, "mockAssistantResponse"),
                 streaming_response: feature_str(fv, "mockStreamingAssistantResponse"),
                 streaming_interval_ms,
+                checkpoints: Vec::new(),
+                rewind_error: feature_str(fv, "mockRewindError"),
             })),
         }
     }
@@ -675,11 +712,9 @@ impl TurnCtx {
             return;
         }
         self.started();
-        self.timeline(TimelineItem::UserMessage {
-            text: prompt.to_string(),
-            message_id: Some(uuid::Uuid::new_v4().to_string()),
-            client_message_id,
-        });
+        let message_id = uuid::Uuid::new_v4().to_string();
+        self.lock().checkpoints.push(Checkpoint { message_id: message_id.clone(), writes: Vec::new() });
+        self.timeline(TimelineItem::UserMessage { text: prompt.to_string(), message_id: Some(message_id), client_message_id });
     }
 
     fn usage(&self) -> Usage {
@@ -820,8 +855,17 @@ async fn run_script(ctx: TurnCtx, script: Script) {
                 return;
             }
             ctx.started();
-            let full = std::path::Path::new(&ctx.lock().cwd).join(&path);
-            let reply = match full.parent().map(std::fs::create_dir_all).unwrap_or(Ok(())).and_then(|_| std::fs::write(&full, &text)) {
+            let root = std::path::PathBuf::from(ctx.lock().cwd.clone());
+            // Inside the session's directory, and remembered for a files rewind.
+            let written = resolve(&root, &path).and_then(|full| {
+                let before = std::fs::read(&full).ok().map(|b| base64::engine::general_purpose::STANDARD.encode(b));
+                full.parent().map(std::fs::create_dir_all).unwrap_or(Ok(())).and_then(|_| std::fs::write(&full, &text)).map_err(|e| e.to_string())?;
+                if let Some(last) = ctx.lock().checkpoints.last_mut() {
+                    last.writes.push(FileWrite { path: path.clone(), before });
+                }
+                Ok(())
+            });
+            let reply = match written {
                 Ok(()) => format!("Wrote {path}"),
                 Err(e) => format!("Could not write {path}: {e}"),
             };
@@ -1049,6 +1093,24 @@ impl Session for MockSession {
         Ok(())
     }
 
+    async fn rewind(&self, rewind: &Rewind) -> Result<(), ProviderError> {
+        let mut g = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(e) = &g.rewind_error {
+            return Err(ProviderError::new(e.clone()));
+        }
+        let Some(at) = g.checkpoints.iter().position(|c| c.message_id == rewind.message_id) else {
+            return Err(ProviderError::new(format!("Mock rewind target {} was not found in session history", rewind.message_id)));
+        };
+        // Files first, as Paseo's Claude does for `both`: the checkpoints it needs go with the conversation.
+        if rewind.mode.changes_files() {
+            restore_files(std::path::Path::new(&g.cwd), &g.checkpoints[at..])?;
+        }
+        if rewind.mode.changes_conversation() {
+            g.checkpoints.truncate(at);
+        }
+        Ok(())
+    }
+
     fn out_of_band(&self, prompt: &str) -> Option<Vec<StreamEvent>> {
         (prompt == HANDLED_COMMAND).then(|| {
             vec![StreamEvent::Timeline {
@@ -1081,13 +1143,39 @@ impl Session for MockSession {
             provider: MOCK_ID.into(),
             session_id: self.id.clone(),
             native_handle: None,
-            metadata: Some(json_map(json!({"model": g.model, "modeId": g.mode}))),
+            metadata: Some(json_map(json!({"model": g.model, "modeId": g.mode, "checkpoints": g.checkpoints}))),
         }
     }
 
     fn current_mode(&self) -> Option<String> {
         Some(self.inner.lock().unwrap_or_else(|p| p.into_inner()).mode.clone())
     }
+}
+
+/// Put back what `checkpoints` recorded, newest first. Every path is checked first: one
+/// that resolves outside `root` fails the rewind before any file is touched.
+fn restore_files(root: &std::path::Path, checkpoints: &[Checkpoint]) -> Result<(), ProviderError> {
+    let mut plan = Vec::new();
+    for write in checkpoints.iter().rev().flat_map(|c| c.writes.iter().rev()) {
+        plan.push((resolve(root, &write.path).map_err(ProviderError::new)?, write));
+    }
+    for (full, write) in plan {
+        let fail = |e: std::io::Error| ProviderError::new(format!("Could not restore {}: {e}", write.path));
+        match &write.before {
+            Some(saved) => {
+                let bytes = base64::engine::general_purpose::STANDARD.decode(saved).map_err(|e| ProviderError::new(e.to_string()))?;
+                if let Some(dir) = full.parent() {
+                    std::fs::create_dir_all(dir).map_err(fail)?;
+                }
+                std::fs::write(&full, bytes).map_err(fail)?;
+            }
+            None => match std::fs::remove_file(&full) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(fail(e)),
+                _ => {}
+            },
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

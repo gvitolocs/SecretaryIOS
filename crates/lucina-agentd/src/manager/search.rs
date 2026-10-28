@@ -87,10 +87,14 @@ struct FtsHit {
 
 /// One prompt in Paseo's prompt index.
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PromptEntry {
     pub seq: u64,
     pub timestamp: String,
     pub preview: String,
+    /// Lucina only: the message's id, to rewind to it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
 }
 
 const PREVIEW_MAX: usize = 120;
@@ -126,11 +130,26 @@ impl Manager {
             .rows
             .iter()
             .filter_map(|r| match &r.item {
-                TimelineItem::UserMessage { text, .. } => Some(PromptEntry { seq: r.seq, timestamp: r.timestamp.clone(), preview: prompt_preview(text) }),
+                TimelineItem::UserMessage { text, message_id, .. } => {
+                    Some(PromptEntry { seq: r.seq, timestamp: r.timestamp.clone(), preview: prompt_preview(text), message_id: message_id.clone() })
+                }
                 _ => None,
             })
             .collect();
         Ok((a.record.epoch.clone(), prompts))
+    }
+
+    /// Drop what is indexed of an agent whose timeline was replaced (a rewind), so the
+    /// next pass indexes the new one.
+    pub(super) fn forget_index(&self, id: &str) {
+        let r = self.inner.store.with_db(|db| -> rusqlite::Result<()> {
+            db.execute("DELETE FROM search_fts WHERE agent_id = ?1", params![id])?;
+            db.execute("DELETE FROM search_state WHERE agent_id = ?1", params![id])?;
+            Ok(())
+        });
+        if let Err(e) = r {
+            tracing::warn!(agent = id, error = %e, "search index reset failed");
+        }
     }
 
     /// Index the timeline rows of idle agents that aren't indexed yet.

@@ -68,7 +68,7 @@ pub fn mcp_label(token: &str) -> String {
     format!("mcp:{h}")
 }
 
-pub const MCP_TOKEN_LABEL: &str = "lucina.mcp-token";
+pub use crate::manager::MCP_TOKEN_LABEL;
 
 /// Who is calling, for terminals and scripts.
 #[derive(Debug, Clone, PartialEq, Eq)]
