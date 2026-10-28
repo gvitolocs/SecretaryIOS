@@ -615,6 +615,229 @@ describe("holding control", () => {
   });
 });
 
+describe("the viewer reconnects by itself", () => {
+  beforeEach(() => setLocale("en"));
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  function fromFrame(frame: HTMLIFrameElement, data: unknown) {
+    const ev = new MessageEvent("message", { data });
+    Object.defineProperty(ev, "source", { value: frame.contentWindow });
+    window.dispatchEvent(ev);
+  }
+  const views = (calls: Call[]) => calls.filter((c) => c.url === "/v1/computer/view").length;
+
+  it("opens a fresh view after a failed stream, backing off, until it streams again", async () => {
+    const calls = fakeLucina(state());
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    renderComputer();
+    await waitFor(() => expect(document.querySelector("iframe")).not.toBeNull());
+    const frame = document.querySelector("iframe")!;
+    watchFrame(frame);
+    expect(views(calls)).toBe(1);
+
+    fromFrame(frame, { type: "lucina:state", state: "failed" });
+    expect(await screen.findByText("Reconnecting to Lucina's computer…")).toBeInTheDocument();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(views(calls)).toBe(2);
+    fromFrame(frame, { type: "lucina:state", state: "failed" });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(views(calls)).toBe(2); // the second wait is 2 s
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(views(calls)).toBe(3);
+
+    fromFrame(frame, { type: "lucina:state", state: "streaming" });
+    await waitFor(() => expect(screen.queryByText("Reconnecting to Lucina's computer…")).toBeNull());
+    fromFrame(frame, { type: "lucina:state", state: "failed" });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(views(calls)).toBe(4); // streaming reset the backoff
+  });
+
+  it("treats a frame that never says ready (a raw error answer) as down", async () => {
+    const calls = fakeLucina(state());
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    renderComputer();
+    await waitFor(() => expect(document.querySelector("iframe")).not.toBeNull());
+    const frame = document.querySelector("iframe")!;
+    watchFrame(frame);
+    frame.dispatchEvent(new Event("load"));
+    fromFrame(frame, { type: "lucina:ready" });
+    await vi.advanceTimersByTimeAsync(8_000);
+    expect(views(calls)).toBe(1);
+
+    frame.dispatchEvent(new Event("load")); // e.g. {"error":"sandbox_unreachable"}
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(screen.getByText("Reconnecting to Lucina's computer…")).toBeInTheDocument();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(views(calls)).toBe(2);
+  });
+
+  it("watches again when the takeover died with Lucina (a restart drops the lease)", async () => {
+    let s = state();
+    let restarted = false;
+    const calls = stubFetch((c: Call) => {
+      if (c.url.startsWith("/v1/computer/control") && c.method === "GET") return { body: { state: s, recent: [] } };
+      if (c.url === "/v1/computer/control") {
+        s = state({ driver: "owner", epoch: 1, owner: { device: "web", since: 1, expiresInMs: 45000 } });
+        return { body: { state: s, stoppedTask: null } };
+      }
+      if (c.url === `/v1/computer/view/${VIEW_ID}/ticket`) {
+        return { body: { ticket: "t2", mode: "control", sandbox: "workspace", ttlSecs: 600, epoch: 1, changed: true } };
+      }
+      if (c.url === "/v1/computer/view") {
+        const mode = (c.body as { mode: string }).mode;
+        if (restarted && mode === "control") return { status: 409, body: { error: { code: "not_driving", message: "take over before driving" } } };
+        return { body: { viewId: VIEW_ID, viewUrl: `/v1/computer/view/${VIEW_ID}/viewer/#ticket=t&mode=${mode}`, sandbox: "workspace", mode, ttlSecs: 600 } };
+      }
+      return { status: 404, body: { error: { code: "not_found", message: "no" } } };
+    });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    renderComputer();
+    await waitFor(() => expect(document.querySelector("iframe")).not.toBeNull());
+    fireEvent.click(await screen.findByRole("button", { name: "Take over" }));
+    await screen.findByText("You are driving");
+    const frame = document.querySelector("iframe")!;
+    watchFrame(frame);
+    restarted = true; // the poll still says "owner": only the 409 tells
+    fromFrame(frame, { type: "lucina:state", state: "failed" });
+    await vi.advanceTimersByTimeAsync(1_000);
+    await waitFor(() => expect(calls.filter((c) => c.url === "/v1/computer/view").map((c) => (c.body as { mode: string }).mode)).toEqual(["watch", "control", "watch"]));
+    expect(screen.queryByText("take over before driving")).toBeNull();
+    // The fresh view is a fresh iframe: it is the one that reports streaming.
+    await waitFor(() => expect(document.querySelector("iframe")?.getAttribute("src")).toContain("mode=watch"));
+    const fresh = document.querySelector("iframe")!;
+    watchFrame(fresh);
+    fromFrame(fresh, { type: "lucina:state", state: "streaming" });
+    await waitFor(() => expect(screen.queryByText("Reconnecting to Lucina's computer…")).toBeNull());
+    expect(screen.queryByText("You are driving")).toBeNull();
+  });
+
+  it("keeps trying while Lucina is away, then shows the viewer", async () => {
+    let down = 3;
+    const calls = stubFetch((c: Call) => {
+      if (c.url.startsWith("/v1/computer/control") && c.method === "GET") {
+        return { body: { state: state(), recent: [], viewer: { assets: "0123456789abcdef" } } };
+      }
+      if (c.url === "/v1/computer/view") {
+        if (down-- > 0) return { status: 502, body: { error: { code: "sandbox_unreachable", message: "unreachable" } } };
+        return { body: { viewId: VIEW_ID, viewUrl: `/v1/computer/view/${VIEW_ID}/viewer/#ticket=t&mode=watch`, sandbox: "workspace", mode: "watch", ttlSecs: 600 } };
+      }
+      return { status: 404, body: { error: { code: "not_found", message: "no" } } };
+    });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    renderComputer();
+    expect(await screen.findByText("Reconnecting to Lucina's computer…")).toBeInTheDocument();
+    expect(screen.queryByText("unreachable")).toBeNull();
+    await vi.advanceTimersByTimeAsync(1_000 + 2_000 + 4_000);
+    await waitFor(() => expect(document.querySelector("iframe")).not.toBeNull());
+    expect(views(calls)).toBe(4);
+  });
+});
+
+describe("files while driving", () => {
+  beforeEach(() => setLocale("en"));
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  function fromFrame(frame: HTMLIFrameElement, data: unknown) {
+    const ev = new MessageEvent("message", { data });
+    Object.defineProperty(ev, "source", { value: frame.contentWindow });
+    window.dispatchEvent(ev);
+  }
+
+  /** A Lucina that lets this page drive, takes files, and has `copied` on her clipboard. */
+  function filesLucina(copied: { generation: number; files: { path: string; name: string; bytes: number }[] }) {
+    let s = state();
+    return stubFetch((c: Call) => {
+      if (c.url.startsWith("/v1/computer/control") && c.method === "GET") return { body: { state: s, recent: [] } };
+      if (c.url === "/v1/computer/control") {
+        if ((c.body as { action: string }).action === "take") {
+          s = state({ driver: "owner", epoch: 1, owner: { device: "web", since: 1, expiresInMs: 45000 } });
+        }
+        return { body: { state: s, stoppedTask: null } };
+      }
+      if (c.url === "/v1/computer/view") {
+        const mode = (c.body as { mode: string }).mode;
+        return { body: { viewId: VIEW_ID, viewUrl: `/v1/computer/view/${VIEW_ID}/viewer/#ticket=t&mode=${mode}`, sandbox: "workspace", mode, ttlSecs: 600 } };
+      }
+      if (c.url === `/v1/computer/view/${VIEW_ID}/ticket`) {
+        return { body: { ticket: "t2", mode: "control", sandbox: "workspace", ttlSecs: 600, epoch: 1, changed: true } };
+      }
+      if (c.url.startsWith("/v1/computer/files?") && c.method === "POST") {
+        const name = new URL(c.url, "http://x").searchParams.get("name");
+        return { body: { path: `/home/cua/Desktop/From Mac/${name}`, name, bytes: 2 } };
+      }
+      if (c.url === "/v1/computer/clipboard/files") return { body: { generation: 9 } };
+      if (c.url.startsWith("/v1/computer/clipboard/files?")) return { body: copied };
+      return { status: 404, body: { error: { code: "not_found", message: "no" } } };
+    });
+  }
+
+  async function drive() {
+    renderComputer();
+    await waitFor(() => expect(document.querySelector("iframe")).not.toBeNull());
+    fireEvent.click(await screen.findByRole("button", { name: "Take over" }));
+    await screen.findByText("You are driving");
+    const frame = document.querySelector("iframe")!;
+    return { frame, posted: watchFrame(frame) };
+  }
+
+  it("sends pasted files to her desktop and clipboard, then lets the frame paste", async () => {
+    const calls = filesLucina({ generation: 1, files: [] });
+    const { frame, posted } = await drive();
+    fromFrame(frame, { type: "lucina:files", id: 7, paste: true, files: [new File(["hi"], "report.pdf"), new File(["yo"], "notes.txt")] });
+    await waitFor(() => expect(posted).toContainEqual({ type: "lucina:files-done", id: 7, ok: true }));
+    const uploads = calls.filter((c) => c.url.startsWith("/v1/computer/files?"));
+    expect(uploads.map((c) => c.url)).toEqual([
+      "/v1/computer/files?sandbox=workspace&name=report.pdf",
+      "/v1/computer/files?sandbox=workspace&name=notes.txt",
+    ]);
+    expect(uploads[0]!.headers["x-secretary-csrf"]).toBe("1");
+    const set = calls.find((c) => c.url === "/v1/computer/clipboard/files");
+    expect(set?.body).toEqual({ sandbox: "workspace", paths: ["/home/cua/Desktop/From Mac/report.pdf", "/home/cua/Desktop/From Mac/notes.txt"] });
+    expect(await screen.findByText("2 files are in From Mac on her desktop.")).toBeInTheDocument();
+  });
+
+  it("refuses files while only watching", async () => {
+    const calls = filesLucina({ generation: 1, files: [] });
+    renderComputer();
+    await waitFor(() => expect(document.querySelector("iframe")).not.toBeNull());
+    const frame = document.querySelector("iframe")!;
+    const posted = watchFrame(frame);
+    fromFrame(frame, { type: "lucina:files", id: 1, paste: true, files: [new File(["hi"], "a.txt")] });
+    await waitFor(() => expect(posted).toContainEqual({ type: "lucina:files-done", id: 1, ok: false }));
+    expect(calls.some((c) => c.url.startsWith("/v1/computer/files"))).toBe(false);
+  });
+
+  it("offers files copied on her desktop as downloads", async () => {
+    const copied = { generation: 1, files: [] as { path: string; name: string; bytes: number }[] };
+    filesLucina(copied);
+    const { frame } = await drive();
+    fromFrame(frame, { type: "lucina:copied" }); // the first look only learns what is there
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByText(/Lucina copied/)).toBeNull();
+    copied.generation = 2;
+    copied.files = [{ path: "/home/cua/Documents/report.pdf", name: "report.pdf", bytes: 2_202_009 }];
+    fromFrame(frame, { type: "lucina:copied" });
+    expect(await screen.findByText("Lucina copied report.pdf (2.1 MB).")).toBeInTheDocument();
+    const clicked: { href: string; download: string }[] = [];
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      clicked.push({ href: this.getAttribute("href") ?? "", download: this.download });
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Download" }));
+    expect(clicked).toEqual([
+      { href: "/v1/computer/files?sandbox=workspace&path=%2Fhome%2Fcua%2FDocuments%2Freport.pdf", download: "report.pdf" },
+    ]);
+    expect(screen.queryByText(/Lucina copied/)).toBeNull();
+  });
+});
+
 describe("page helpers", () => {
   it("passes keys the way the viewer names them", () => {
     expect(passKey({ key: "a" })).toEqual({ text: "a" });
@@ -641,7 +864,7 @@ describe("page helpers", () => {
       expect(writeText).toHaveBeenCalledWith("copied there");
       await relayClipboard({ id: 2, text: "while watching" }, false, (ok) => replies.push(ok));
       await relayClipboard({ id: 3, text: 42 }, true, (ok) => replies.push(ok));
-      await relayClipboard({ id: 4, text: "x".repeat(256 * 1024 + 1) }, true, (ok) => replies.push(ok));
+      await relayClipboard({ id: 4, text: "x".repeat(1024 * 1024 + 1) }, true, (ok) => replies.push(ok));
       expect(writeText).toHaveBeenCalledTimes(1);
       writeText.mockImplementationOnce(() => Promise.reject(new Error("Document is not focused.")));
       await relayClipboard({ id: 5, text: "unfocused" }, true, (ok) => replies.push(ok));
@@ -651,9 +874,34 @@ describe("page helpers", () => {
     }
   });
 
+  it("writes an image copied on her desktop as a PNG on this computer", async () => {
+    const write = vi.fn((_items: unknown[]) => Promise.resolve());
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { write, writeText: vi.fn() } });
+    class Item {
+      constructor(public parts: Record<string, Blob>) {}
+    }
+    vi.stubGlobal("ClipboardItem", Item);
+    try {
+      const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47]).buffer;
+      const replies: boolean[] = [];
+      await relayClipboard({ id: 1, png, text: "alt" }, true, (ok) => replies.push(ok));
+      expect(replies).toEqual([true]);
+      const parts = (write.mock.calls[0]![0] as Item[])[0]!.parts;
+      expect(Object.keys(parts).sort()).toEqual(["image/png", "text/plain"]);
+      expect(parts["image/png"]!.type).toBe("image/png");
+      await relayClipboard({ id: 2, png }, false, (ok) => replies.push(ok));
+      expect(write).toHaveBeenCalledTimes(1);
+    } finally {
+      delete (navigator as { clipboard?: unknown }).clipboard;
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("shows clipboard syncs as byte counts", () => {
     expect(auditLine({ at: 1, event: "clipboard_to_desktop", bytes: 12 } as never)).toBe("Clipboard → her desktop (12 B)");
-    expect(auditLine({ at: 1, event: "clipboard_from_desktop", bytes: 3 } as never)).toBe("Clipboard → this computer (3 B)");
+    expect(auditLine({ at: 1, event: "clipboard_from_desktop", bytes: 3, imageBytes: 348_160 } as never)).toBe("Clipboard → this computer (3 B, image 340 KB)");
+    expect(auditLine({ at: 1, event: "file_to_desktop", name: "report.pdf", bytes: 2_202_009 } as never)).toBe("File → her desktop: report.pdf (2.1 MB)");
+
   });
 });
 

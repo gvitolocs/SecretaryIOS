@@ -78,7 +78,11 @@ html.computer-fullscreen body {
 .computer-screen--full::backdrop { background: #000; }
 
 /* Full screen shows the stream and nothing else of the page but the pill. */
-.computer-page[data-full="yes"] > :not(.computer-screen):not(.computer-pill) { display: none !important; }
+.computer-page[data-full="yes"] > :not(.computer-screen):not(.computer-pill):not(.computer-notice):not(.computer-files) { display: none !important; }
+/* Focus mode: notices and file offers float over the stream (top right). */
+.computer-page[data-full="yes"] > .computer-notice,
+.computer-page[data-full="yes"] > .computer-files { position: fixed; top: 12px; right: 12px; z-index: 1002; max-width: min(420px, calc(100vw - 24px)); margin: 0; box-shadow: 0 6px 24px rgb(0 0 0 / 35%); }
+.computer-page[data-full="yes"] > .computer-notice { background: var(--surface-2); color: var(--text); padding: 8px 12px; border-radius: 10px; }
 .computer-screen--full { z-index: 1000; }
 
 /* The pill: who drives, the toggle, keyboard, keys & clipboard, exit. Faint until used. */
@@ -197,3 +201,20 @@ html.computer-fullscreen body {
   font-size: 12px;
 }
 .computer-via[data-via="lan"] { color: #9fe0b0; border-color: rgb(80 200 120 / 45%); }
+
+/* The viewer is down (Lucina restarting, the sandbox recreated): a fresh view is on its way. */
+.computer-reconnecting {
+  position: absolute; inset: 0; z-index: 3; margin: 0;
+  display: grid; place-items: center;
+  color: var(--text); background: color-mix(in srgb, var(--surface-1, #000) 72%, transparent);
+  font-weight: 600; pointer-events: none;
+}
+
+/* Files copied on her desktop, offered as downloads. */
+.computer-files {
+  display: flex; align-items: center; gap: 10px; margin: 8px 0 0;
+  padding: 8px 10px; border-radius: 10px;
+  background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
+}
+.computer-files span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.computer-files-close { background: none; border: 0; color: var(--text-muted); font: inherit; cursor: pointer; padding: 4px 6px; }

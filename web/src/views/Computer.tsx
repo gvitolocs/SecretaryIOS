@@ -9,6 +9,7 @@ import {
   viewerAsset,
   type AuditEntry,
   type ControlState,
+  type CopiedFile,
   type InputEvent,
   type Sandbox,
   type View,
@@ -19,6 +20,7 @@ import { t } from "../i18n";
 import { hasFocusMode, onFocusModeChange, setFocusMode } from "../lib/focusMode";
 import { readString, writeString } from "../lib/storage";
 import { deskCapable } from "../lib/deskClient";
+import { downloadFile, sendFiles, tooLarge, watchCopiedFiles } from "../lib/desktopFiles";
 import { createTouchMouse } from "../lib/touch";
 import "../styles/computer.css";
 
@@ -65,6 +67,12 @@ const STATE_POLL_MS = 3_000;
 const SHOT_POLL_MS = 1_500;
 /** A device is not asleep for the whole lease, so renew a little before it ends. */
 const RENEW_MARGIN_SECS = 120;
+/** Backoff between attempts to reopen a viewer that is down (seconds; the last repeats). */
+const RECONNECT_SECS = [1, 2, 4, 8];
+/** How long a loaded frame has to say `lucina:ready` before it counts as an error page. */
+const READY_MS = 6_000;
+/** How long a notice stays over the stream in focus mode. */
+const NOTICE_FULL_MS = 6_000;
 // `key`/`modifiers` are the driver's (X11) names for the screenshot mode; `live` is the same chord in
 // the Cua viewer's own key names, sent over the live socket like a touch.
 const KEYS: { label: string; key: string; modifiers?: ("ctrl" | "shift" | "alt" | "super")[]; live: string[] }[] = [
@@ -99,25 +107,54 @@ export function passKey(e: { key: string; ctrlKey?: boolean; metaKey?: boolean; 
 }
 
 /** Text copied on her desktop, relayed by the viewer frame (`lucina:clipboard`) for this page to write. */
-export type ClipboardRelay = { id?: unknown; text?: unknown };
+export type ClipboardRelay = { id?: unknown; text?: unknown; png?: unknown };
 
-/** lucina-server's cap on synced clipboard text. */
-const CLIP_TEXT_LIMIT = 256 * 1024;
+/** Files the viewer frame got from a paste or a drop (`lucina:files`). */
+export type FilesRelay = { id?: unknown; files?: unknown; paste?: unknown };
+
+/** lucina-server's caps on synced clipboard content. */
+const CLIP_TEXT_LIMIT = 1024 * 1024;
+const CLIP_IMAGE_LIMIT = 16 * 1024 * 1024;
 
 /**
- * Writes relayed desktop clipboard text to this computer's clipboard, only while this page drives,
- * and answers the frame (`lucina:clipboard-done`) so the viewer can offer its "Copy" chip on failure.
+ * Writes relayed desktop clipboard content (text, a PNG, or both) to this computer's clipboard, only
+ * while this page drives, and answers the frame (`lucina:clipboard-done`) so the viewer can offer its
+ * "Copy" chip on failure.
  */
 export async function relayClipboard(data: ClipboardRelay, driving: boolean, reply: (ok: boolean) => void): Promise<void> {
-  const text = data.text;
+  const text = typeof data.text === "string" && data.text.length <= CLIP_TEXT_LIMIT ? data.text : undefined;
+  const png = data.png instanceof ArrayBuffer && data.png.byteLength <= CLIP_IMAGE_LIMIT ? data.png : undefined;
+  const clipboard = typeof navigator === "undefined" ? undefined : navigator.clipboard;
   let ok = false;
-  if (driving && typeof text === "string" && text.length <= CLIP_TEXT_LIMIT && navigator.clipboard?.writeText) {
-    ok = await navigator.clipboard.writeText(text).then(
+  if (driving && png && clipboard?.write && typeof ClipboardItem !== "undefined") {
+    const parts: Record<string, Blob> = { "image/png": new Blob([png], { type: "image/png" }) };
+    if (text !== undefined) parts["text/plain"] = new Blob([text], { type: "text/plain" });
+    ok = await clipboard.write([new ClipboardItem(parts)]).then(
+      () => true,
+      () => false,
+    );
+  } else if (driving && text !== undefined && clipboard?.writeText) {
+    ok = await clipboard.writeText(text).then(
       () => true,
       () => false,
     );
   }
   reply(ok);
+}
+
+/** 512 B, 34 KB, 2.1 MB. */
+export function byteSize(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** "12 B", "image 340 KB", or both. */
+function clipSizes(e: AuditEntry): string {
+  const parts = [];
+  if (e.bytes) parts.push(byteSize(e.bytes));
+  if (e.imageBytes) parts.push(`${t("computer.image")} ${byteSize(e.imageBytes)}`);
+  return parts.join(", ") || byteSize(0);
 }
 
 /** `mcp:claude` → "Claude", `app` → "App". */
@@ -163,9 +200,13 @@ export function auditLine(e: AuditEntry): string {
     case "view_socket_closed":
       return t("computer.evSocketClosed", { why: e.why ?? "" });
     case "clipboard_to_desktop":
-      return t("computer.evClipToDesktop", { bytes: String(e.bytes ?? 0) });
+      return t("computer.evClipToDesktop", { what: clipSizes(e) });
     case "clipboard_from_desktop":
-      return t("computer.evClipFromDesktop", { bytes: String(e.bytes ?? 0) });
+      return t("computer.evClipFromDesktop", { what: clipSizes(e) });
+    case "file_to_desktop":
+      return t("computer.evFileToDesktop", { name: e.name ?? "?", what: byteSize(e.bytes ?? 0) });
+    case "file_from_desktop":
+      return t("computer.evFileFromDesktop", { name: e.name ?? "?", what: byteSize(e.bytes ?? 0) });
     default:
       return t("computer.evOther", { event: e.event });
   }
@@ -243,6 +284,14 @@ export default function ComputerView() {
   const [mark, setMark] = createSignal<{ x: number; y: number; button: "left" | "right"; n: number } | null>(null);
   let renewTimer: number | undefined;
   let markTimer: number | undefined;
+  /** The viewer failed or never came up: a fresh view is minted after 1, 2, 4, then every 8 s. */
+  /** Files just copied on her desktop, offered as downloads. */
+  const [offer, setOffer] = createSignal<CopiedFile[] | null>(null);
+  const [reconnecting, setReconnecting] = createSignal(false);
+  let retryTimer: number | undefined;
+  let retries = 0;
+  /** Armed on each frame load; the shim's `lucina:ready` disarms it (an error page never sends it). */
+  let readyTimer: number | undefined;
   let preload: HTMLLinkElement | undefined;
   let img: HTMLImageElement | undefined;
   let screen: HTMLDivElement | undefined;
@@ -321,8 +370,46 @@ export default function ComputerView() {
     } catch (e) {
       const err = toApiError(e);
       setView(null);
-      setError(err.status === 503 || err.lucinaOffline ? t("computer.unavailable") : err.message);
+      // Lucina restarting or the sandbox being recreated: keep trying rather than show an error.
+      if (transient(err)) return reconnect();
+      // The takeover ended meanwhile (a restart drops the lease): watch instead.
+      if (kind === "control" && err.code === "not_driving") return lost();
+      reconnected();
+      setError(err.message);
     }
+  };
+
+  const transient = (err: ReturnType<typeof toApiError>) => !err.status || err.status >= 500 || !!err.lucinaOffline;
+
+  /** The viewer is down (an error page in the frame, a failed stream, Lucina away): retry with backoff. */
+  const reconnect = () => {
+    window.clearTimeout(readyTimer);
+    if (retryTimer !== undefined || mode() !== "live" || desk()) return;
+    setReconnecting(true);
+    const delay = (RECONNECT_SECS[Math.min(retries, RECONNECT_SECS.length - 1)] ?? 8) * 1000;
+    retries += 1;
+    retryTimer = window.setTimeout(() => {
+      retryTimer = undefined;
+      void openView(viewMode());
+    }, delay);
+  };
+
+  onCleanup(() => {
+    window.clearTimeout(retryTimer);
+    window.clearTimeout(readyTimer);
+  });
+
+  const reconnected = () => {
+    retries = 0;
+    window.clearTimeout(retryTimer);
+    retryTimer = undefined;
+    setReconnecting(false);
+  };
+
+  /** Each load of the frame must be the viewer (it says `lucina:ready`), not a raw error answer. */
+  const onFrameLoad = () => {
+    window.clearTimeout(readyTimer);
+    readyTimer = window.setTimeout(reconnect, READY_MS);
   };
 
   /** The probe's answer, remembered for a minute (a renewal or a sandbox switch does not ask again). */
@@ -691,6 +778,39 @@ export default function ComputerView() {
     }
   };
 
+  /**
+   * Files the frame got from a paste or a drop: to `From Mac` on her desktop and onto her clipboard.
+   * The frame sends Ctrl+V once this answers yes (a paste), so the files land where she is.
+   */
+  const receiveFiles = async (data: FilesRelay, source: Window) => {
+    const files = Array.isArray(data.files) ? data.files.filter((f): f is File => f instanceof File) : [];
+    const reply = (ok: boolean) => source.postMessage({ type: "lucina:files-done", id: data.id, ok }, "*");
+    if (!mine() || !files.length) return reply(false);
+    const big = tooLarge(files);
+    if (big.length) {
+      setNotice(t("computer.filesTooBig", { name: big[0]!.name }));
+      return reply(false);
+    }
+    try {
+      await sendFiles(sandbox(), files, (f) => setNotice(t("computer.filesSending", { name: f.name })));
+      setNotice(files.length === 1 ? t("computer.filesSent", { name: files[0]!.name }) : t("computer.filesSentMany", { n: String(files.length) }));
+      reply(true);
+    } catch (e) {
+      setNotice(t("computer.filesFailed", { why: toApiError(e).message }));
+      reply(false);
+    }
+  };
+
+  // In focus mode a notice floats over the stream: it goes away by itself.
+  let noticeTimer: number | undefined;
+  createEffect(
+    on(notice, (n) => {
+      window.clearTimeout(noticeTimer);
+      if (n && full()) noticeTimer = window.setTimeout(() => setNotice(null), NOTICE_FULL_MS);
+    }),
+  );
+  onCleanup(() => window.clearTimeout(noticeTimer));
+
   onMount(() => {
     void loadState();
     void openView(viewMode());
@@ -700,6 +820,8 @@ export default function ComputerView() {
     const shots = window.setInterval(() => {
       if (!document.hidden && mode() === "simple") setTick(Date.now());
     }, SHOT_POLL_MS);
+    // Files copied in her file manager while this page drives: offered as downloads.
+    const copied = watchCopiedFiles(sandbox, () => mine() && mode() === "live" && !desk(), setOffer);
     const beat = window.setInterval(() => {
       if (!mine()) return;
       computerApi.heartbeat(sandbox()).catch((e) => {
@@ -712,9 +834,9 @@ export default function ComputerView() {
       if (!frame || e.source !== frame.contentWindow) return;
       const data = e.data as { type?: string; state?: string } | null;
       if (!data || typeof data.type !== "string") return;
-      if (data.type === "lucina:state" && data.state === "failed") {
-        setError(t("computer.unavailable"));
-      }
+      if (data.type === "lucina:ready") window.clearTimeout(readyTimer);
+      if (data.type === "lucina:state" && data.state === "streaming") reconnected();
+      if (data.type === "lucina:state" && data.state === "failed") reconnect();
       // The viewer's own fullscreen icon: the same as the page's button.
       if (data.type === "lucina:fullscreen") toggleFull();
       // Esc pressed in the frame while only watching (driving, Esc stays the desktop's).
@@ -728,6 +850,10 @@ export default function ComputerView() {
         const source = e.source as Window;
         void relayClipboard(relay, mine(), (ok) => source.postMessage({ type: "lucina:clipboard-done", id: relay.id, ok }, "*"));
       }
+      // A Ctrl+C or Ctrl+X went to her desktop: files may be on her clipboard now.
+      if (data.type === "lucina:copied") copied.soon();
+      // Files pasted (Cmd+V) or dropped on the stream: to her desktop and her clipboard.
+      if (data.type === "lucina:files") void receiveFiles(data as FilesRelay, e.source as Window);
     };
     const onFullscreen = () => {
       // LucinaDesk full-screens its own stage; that is not this page's classic full screen.
@@ -752,6 +878,7 @@ export default function ComputerView() {
       window.clearInterval(poll);
       window.clearInterval(shots);
       window.clearInterval(beat);
+      copied.stop();
       window.clearTimeout(renewTimer);
       window.clearTimeout(markTimer);
       window.removeEventListener("message", onMessage);
@@ -876,6 +1003,30 @@ export default function ComputerView() {
       <Show when={notice()}>
         <p class="computer-notice" role="status">{notice()}</p>
       </Show>
+      <Show when={offer()}>
+        {(files) => (
+          <div class="computer-files" role="status">
+            <span>
+              {files().length === 1
+                ? t("computer.filesOffer", { name: files()[0]!.name, size: byteSize(files()[0]!.bytes) })
+                : t("computer.filesOfferMany", { n: String(files().length) })}
+            </span>
+            <button
+              type="button"
+              class="computer-btn"
+              onClick={() => {
+                for (const f of files()) downloadFile(sandbox(), f);
+                setOffer(null);
+              }}
+            >
+              {t("computer.download")}
+            </button>
+            <button type="button" class="computer-files-close" aria-label={t("computer.dismiss")} onClick={() => setOffer(null)}>
+              ✕
+            </button>
+          </div>
+        )}
+      </Show>
       <Show when={error()}>
         <p class="computer-error" role="alert">{error()}</p>
       </Show>
@@ -929,8 +1080,14 @@ export default function ComputerView() {
                   sandbox="allow-scripts allow-pointer-lock"
                   allow="fullscreen; clipboard-read; clipboard-write; autoplay"
                   referrerpolicy="no-referrer"
+                  onLoad={onFrameLoad}
                 />
               )}
+            </Show>
+            <Show when={reconnecting()}>
+              <p class="computer-reconnecting" role="status">
+                {t("computer.reconnecting")}
+              </p>
             </Show>
           </Show>
           {/* Full screen, watching: the first click on the stream takes over (then reaches the desktop). */}
