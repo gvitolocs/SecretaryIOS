@@ -1,9 +1,8 @@
 import { useNavigate, useSearchParams } from "@solidjs/router";
-import { createEffect, createSignal, onCleanup, onMount } from "solid-js";
+import { createSignal } from "solid-js";
 import { Portal } from "solid-js/web";
 import { AccountDialog } from "../components/AccountDialog";
 import { NotificationPanel } from "../components/NotificationBell";
-import { closeSecretSheet, openSecretSheet, secretSheet } from "../state/secretSheet";
 import { signOut } from "../state/session";
 import ChatView from "./Chat";
 
@@ -53,17 +52,4 @@ export function AccountView() {
   );
 }
 
-/** The "Add secret" sheet (rendered by the Shell) over the chat; closing it goes back to the chat. */
-export function SecretsView() {
-  const navigate = useNavigate();
-  let opened = false;
-  onMount(() => openSecretSheet());
-  createEffect(() => {
-    if (secretSheet()) opened = true;
-    else if (opened) navigate("/", { replace: true });
-  });
-  onCleanup(() => {
-    if (secretSheet()) closeSecretSheet();
-  });
-  return <ChatView />;
-}
+export { SecretsView } from "./Secrets";
