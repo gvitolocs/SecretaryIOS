@@ -402,89 +402,90 @@ export default function PrompterView() {
   const takes = createMemo(() => splitNote(note()?.content ?? "").takes);
   const rep = createMemo(() => (result() ? report(result()!.r.take) : null));
 
-  const rail = (): JSX.Element => (
-    <>
-      <Card
-        title={t("prompter.scriptsTitle")}
-        list
-        actions={
-          <Button variant="ghost" onClick={() => void newScript()}>
-            + {t("prompter.newScript")}
-          </Button>
-        }
-      >
-        <Show when={!scripts.loading || scripts()} fallback={<LoadingState label={t("common.loading")} />}>
-          <Show when={(scripts() ?? []).length} fallback={<p class="pr-rail-empty pg-muted">{t("prompter.empty")}</p>}>
-            <RowList label={t("prompter.scriptsTitle")}>
-              <For each={scripts()}>
-                {(s) => (
-                  <ListRow
-                    class={note()?.id === s.id ? "pr-row-current" : ""}
-                    title={s.title || t("prompter.untitled")}
-                    href={`/prompter/${encodeURIComponent(s.slug)}`}
-                    sub={new Date(s.updatedAt).toLocaleDateString(locale(), {
-                      day: "numeric",
-                      month: "short",
-                    })}
-                  />
-                )}
-              </For>
-            </RowList>
-          </Show>
+  const scriptsList = (): JSX.Element => (
+    <Card
+      title={t("prompter.scriptsTitle")}
+      list
+      actions={
+        <Button variant="ghost" onClick={() => void newScript()}>
+          + {t("prompter.newScript")}
+        </Button>
+      }
+    >
+      <Show when={!scripts.loading || scripts()} fallback={<LoadingState label={t("common.loading")} />}>
+        <Show when={(scripts() ?? []).length} fallback={<p class="pr-rail-empty pg-muted">{t("prompter.empty")}</p>}>
+          <RowList label={t("prompter.scriptsTitle")}>
+            <For each={scripts()}>
+              {(s) => (
+                <ListRow
+                  class={note()?.id === s.id ? "pr-row-current" : ""}
+                  title={s.title || t("prompter.untitled")}
+                  href={`/prompter/${encodeURIComponent(s.slug)}`}
+                  sub={new Date(s.updatedAt).toLocaleDateString(locale(), {
+                    day: "numeric",
+                    month: "short",
+                  })}
+                />
+              )}
+            </For>
+          </RowList>
         </Show>
-        <div class="pr-rail-actions">
-          <Button variant="ghost" onClick={() => setSheet("draft")}>
-            ✦ {t("prompter.draft")}
-          </Button>
-          <Button variant="ghost" onClick={() => setSheet("keep")}>
-            {t("prompter.fromKeep")}
-          </Button>
-        </div>
-      </Card>
-      <Card title={t("prompter.settings")}>
-        <div class="pr-settings">
+      </Show>
+      <div class="pr-rail-actions">
+        <Button variant="ghost" onClick={() => setSheet("draft")}>
+          ✦ {t("prompter.draft")}
+        </Button>
+        <Button variant="ghost" onClick={() => setSheet("keep")}>
+          {t("prompter.fromKeep")}
+        </Button>
+      </div>
+    </Card>
+  );
+
+  const settingsCard = (): JSX.Element => (
+    <Card title={t("prompter.settings")}>
+      <div class="pr-settings">
+        <label class="pg-field">
+          <span class="pg-field-label">{t("prompter.language")}</span>
+          <select class="pg-input" value={settings().language} onChange={(e) => saveSettings({ language: e.currentTarget.value })}>
+            <option value="auto">{t("prompter.languageAuto")}</option>
+            <option value="en">English</option>
+            <option value="it">Italiano</option>
+            <option value="da">Dansk</option>
+          </select>
+        </label>
+        <label class="pr-check">
+          <input type="checkbox" checked={settings().useJev} onChange={(e) => saveSettings({ useJev: e.currentTarget.checked })} />
+          <span>
+            {t("prompter.useJev")}
+            <small class="pg-muted">{t("prompter.useJevHint")}</small>
+          </span>
+        </label>
+        <label class="pr-check">
+          <input type="checkbox" checked={settings().autoAdvance} onChange={(e) => saveSettings({ autoAdvance: e.currentTarget.checked })} />
+          <span>{t("prompter.autoAdvance")}</span>
+        </label>
+        <label class="pr-check">
+          <input type="checkbox" checked={settings().alsoRecord} onChange={(e) => saveSettings({ alsoRecord: e.currentTarget.checked })} />
+          <span>{t("prompter.alsoRecord")}</span>
+        </label>
+        <Show when={desktopShell()?.openPrompterOverlay}>
           <label class="pg-field">
-            <span class="pg-field-label">{t("prompter.language")}</span>
-            <select class="pg-input" value={settings().language} onChange={(e) => saveSettings({ language: e.currentTarget.value })}>
-              <option value="auto">{t("prompter.languageAuto")}</option>
-              <option value="en">English</option>
-              <option value="it">Italiano</option>
-              <option value="da">Dansk</option>
-            </select>
-          </label>
-          <label class="pr-check">
-            <input type="checkbox" checked={settings().useJev} onChange={(e) => saveSettings({ useJev: e.currentTarget.checked })} />
-            <span>
-              {t("prompter.useJev")}
-              <small class="pg-muted">{t("prompter.useJevHint")}</small>
+            <span class="pg-field-label">
+              {t("prompter.opacity")} {Math.round(settings().opacity * 100)}%
             </span>
+            <input
+              type="range"
+              min="0.3"
+              max="1"
+              step="0.05"
+              value={settings().opacity}
+              onInput={(e) => saveSettings({ opacity: Number(e.currentTarget.value) })}
+            />
           </label>
-          <label class="pr-check">
-            <input type="checkbox" checked={settings().autoAdvance} onChange={(e) => saveSettings({ autoAdvance: e.currentTarget.checked })} />
-            <span>{t("prompter.autoAdvance")}</span>
-          </label>
-          <label class="pr-check">
-            <input type="checkbox" checked={settings().alsoRecord} onChange={(e) => saveSettings({ alsoRecord: e.currentTarget.checked })} />
-            <span>{t("prompter.alsoRecord")}</span>
-          </label>
-          <Show when={desktopShell()?.openPrompterOverlay}>
-            <label class="pg-field">
-              <span class="pg-field-label">
-                {t("prompter.opacity")} {Math.round(settings().opacity * 100)}%
-              </span>
-              <input
-                type="range"
-                min="0.3"
-                max="1"
-                step="0.05"
-                value={settings().opacity}
-                onInput={(e) => saveSettings({ opacity: Number(e.currentTarget.value) })}
-              />
-            </label>
-          </Show>
-        </div>
-      </Card>
-    </>
+        </Show>
+      </div>
+    </Card>
   );
 
   return (
@@ -523,7 +524,7 @@ export default function PrompterView() {
               </button>
             </div>
           </Show>
-          <PageGrid rail={rail()} railLabel={t("prompter.title")}>
+          <PageGrid layout="split" rail={scriptsList()} railLabel={t("prompter.scriptsTitle")}>
             <Show when={result()}>
               <Card
                 title={t("prompter.said", {
@@ -629,6 +630,7 @@ export default function PrompterView() {
                       }}
                     />
                   </Card>
+                  {settingsCard()}
                   <Card title={t("prompter.takes")}>
                     <Show when={takes()} fallback={<p class="pg-muted">{t("prompter.noTakes")}</p>}>
                       <Markdown text={takes()} class="pr-takes" />
