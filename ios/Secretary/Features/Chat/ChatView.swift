@@ -85,8 +85,12 @@ struct ChatTitle: View {
 struct ChatTranscript: View {
     @Environment(ChatStore.self) private var store
     @Environment(ChatActions.self) private var actions
-    /// The end of the list is on screen; new messages only scroll it when it is.
+    /// Pinned to the newest message: new messages and late layout (photos, previews) keep it at the end.
+    /// Only the reader's own scroll unpins it; layout changes and older pages never do (on iOS 17, where
+    /// the reader's scroll cannot be told apart, the end marker leaving the screen still unpins it).
     @State private var atBottom = true
+    /// The reader is dragging the list or it is still moving from their flick (iOS 18+).
+    @State private var readerScrolling = false
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -95,7 +99,8 @@ struct ChatTranscript: View {
                     if store.hasOlder {
                         HStack { Spacer(); ProgressView(); Spacer() }
                             .padding(.vertical, 8)
-                            .onAppear { loadOlder(proxy) }
+                            // Only once the reader has scrolled away from the end, never when the list appears.
+                            .onAppear { if !atBottom { loadOlder(proxy) } }
                             .accessibilityLabel("Loading older messages")
                     }
                     if store.items.isEmpty {
@@ -127,13 +132,14 @@ struct ChatTranscript: View {
                         .frame(height: 1)
                         .id(Self.endId)
                         .onAppear { atBottom = true }
-                        .onDisappear { atBottom = false }
+                        .onDisappear { if !Self.tracksReaderScroll { atBottom = false } }
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 12)
             }
             .scrollDismissesKeyboard(.interactively)
             .defaultScrollAnchor(.bottom)
+            .modifier(PinToEnd(atBottom: $atBottom, readerScrolling: $readerScrolling))
             .refreshable { await store.refresh() }
             .onChange(of: store.items.last?.id) { _, _ in
                 if atBottom || store.items.last?.isLocal == true { scrollToEnd(proxy) }
@@ -145,9 +151,13 @@ struct ChatTranscript: View {
                 Task { await showOriginal(request.id, proxy) }
             }
             .onReceive(NotificationCenter.default.publisher(for: .chatScrollToLatest).receive(on: DispatchQueue.main)) { _ in
+                atBottom = true
                 scrollToEnd(proxy)
             }
-            .onAppear { scrollToEnd(proxy, animated: false) }
+            .onAppear {
+                atBottom = true
+                scrollToEnd(proxy, animated: false)
+            }
         }
     }
 
@@ -223,6 +233,12 @@ struct ChatTranscript: View {
 
     static let endId = "transcript-end"
 
+    /// iOS 18 tells the reader's scrolls (scroll phases) from layout moving the list.
+    static var tracksReaderScroll: Bool {
+        if #available(iOS 18.0, *) { return true }
+        return false
+    }
+
     /// A quote was tapped: scrolls to the original (loading older pages if needed) and flashes it.
     private func showOriginal(_ id: String, _ proxy: ScrollViewProxy) async {
         if store.isHidden(id) {
@@ -253,8 +269,39 @@ struct ChatTranscript: View {
             } else {
                 proxy.scrollTo(Self.endId, anchor: .bottom)
             }
-            try? await Task.sleep(for: .milliseconds(250))
-            proxy.scrollTo(Self.endId, anchor: .bottom)
+            // Rows and photos keep laying out after the first jump: follow them while still pinned.
+            for delay in [250, 800] {
+                try? await Task.sleep(for: .milliseconds(delay))
+                guard atBottom, !readerScrolling else { return }
+                proxy.scrollTo(Self.endId, anchor: .bottom)
+            }
+        }
+    }
+}
+
+/// Unpins the transcript only when the reader scrolls more than 80 pt away from the end themselves (iOS 18+);
+/// the scroll view's bottom anchor keeps a pinned list on its newest message through size changes.
+private struct PinToEnd: ViewModifier {
+    @Binding var atBottom: Bool
+    @Binding var readerScrolling: Bool
+
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content
+                .onScrollPhaseChange { _, phase in
+                    readerScrolling = phase == .tracking || phase == .interacting || phase == .decelerating
+                }
+                .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                    geometry.contentSize.height - geometry.visibleRect.maxY
+                } action: { _, distance in
+                    if distance <= 80 {
+                        if !atBottom { atBottom = true }
+                    } else if readerScrolling, atBottom {
+                        atBottom = false
+                    }
+                }
+        } else {
+            content
         }
     }
 }
