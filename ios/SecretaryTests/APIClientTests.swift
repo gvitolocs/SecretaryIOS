@@ -41,14 +41,14 @@ final class APIClientTests: XCTestCase {
         }
     }
 
-    func testChatUsesTheLongTimeoutAndJSONBody() async throws {
+    func testChatUsesTheSendTimeoutAndJSONBody() async throws {
         StubURLProtocol.handler = { _ in .init(body: #"{"reply":"hi","action":"reply","job":null}"#) }
         let api = SecretaryAPI(client: StubURLProtocol.makeClient())
         let reply = try await api.chat(ChatRequest(message: "hello", sessionId: "ios-1", clientMessageId: "abc"))
         XCTAssertEqual(reply.reply, "hi")
         let request = try XCTUnwrap(StubURLProtocol.requests.first)
         XCTAssertEqual(request.httpMethod, "POST")
-        XCTAssertEqual(request.timeoutInterval, 125)
+        XCTAssertEqual(request.timeoutInterval, 45)
         XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
         let body = try JSONSerialization.jsonObject(with: try XCTUnwrap(request.httpBody)) as? [String: String]
         XCTAssertEqual(body, ["message": "hello", "sessionId": "ios-1", "clientMessageId": "abc"])

@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import Observation
 
 struct ChatJob: Codable, Equatable, Sendable {
@@ -40,7 +41,16 @@ final class ChatStore {
     /// Job cards, keyed by the Lucina item that started them.
     private(set) var jobs: [String: ChatJob] = [:]
     private(set) var mode: Mode = .unknown
-    private(set) var isSending = false
+    /// The text messages on their way, in order (one on the wire at a time).
+    private(set) var sendQueue = ChatSendQueue()
+    /// A message is on the wire (the thinking bubble).
+    var isSending: Bool { sendQueue.isSending }
+    @ObservationIgnored private var sendTasks: [String: Task<Void, Never>] = [:]
+    /// The network coming back resets stuck sends, like the foreground does.
+    @ObservationIgnored private let pathMonitor = NWPathMonitor()
+    @ObservationIgnored private var online = true
+    /// Callers waiting for their message's outcome, by client id.
+    @ObservationIgnored private var sendWaiters: [String: [CheckedContinuation<String, Never>]] = [:]
     private(set) var isLoadingOlder = false
     private(set) var hasOlder = false
     /// The live stream is connected.
@@ -132,6 +142,16 @@ final class ChatStore {
             guard let self else { return }
             await hydrate()
         }
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            Task { @MainActor in
+                guard let self else { return }
+                let now = path.status == .satisfied
+                let cameBack = now && !self.online
+                self.online = now
+                if cameBack { self.resumeSends() }
+            }
+        }
+        pathMonitor.start(queue: DispatchQueue(label: "chat-send-path"))
     }
 
     // MARK: - Rich replies
@@ -342,6 +362,13 @@ final class ChatStore {
         items = result.items
         for (old, new) in result.replaced {
             if let job = jobs.removeValue(forKey: old), jobs[new] == nil { jobs[new] = job }
+            // The server has this message: a failed or waiting copy is not sent again.
+            guard old.hasPrefix(TimelineItem.localPrefix) else { continue }
+            let clientId = String(old.dropFirst(TimelineItem.localPrefix.count))
+            if let state = sendQueue.state(of: clientId), state == .queued || state == .failed {
+                sendQueue.remove(clientId)
+                resumeWaiters(clientId, "")
+            }
         }
         if persistAfter { persist(additional: incoming, removing: Array(result.replaced.keys)) }
         voiceReplies.consider(visible, items: items, foreground: isForeground, api: api)
@@ -357,6 +384,7 @@ final class ChatStore {
                 await refresh()
                 if mode == .server { startStream() }
             }
+            resumeSends()
             resumePolling()
             reconcileOutbox()
             resumeSharePolling()
@@ -453,16 +481,17 @@ final class ChatStore {
     }
 
     /// nil: not sent. Otherwise the reply text ("" when the send failed; the bubble shows why).
+    /// Never refused because another message is on its way: the bubble appears at once and waits its turn.
     private func post(_ text: String, replyTo: String?) async -> String? {
         let message = Self.clean(text)
-        guard !message.isEmpty, message.count <= Self.maxCharacters, !isSending else { return nil }
+        guard !message.isEmpty, message.count <= Self.maxCharacters else { return nil }
         LucinaDonations.donate()
         let clientId = UUID().uuidString
         sentClientIDs.insert(clientId)
         items.append(TimelineItem(id: TimelineItem.localPrefix + clientId, ts: Date(), channel: .ios, role: .user, text: message,
                                   clientMessageId: clientId, replyTo: replyTo, localStatus: .sending))
         persist()
-        return await deliver(clientId: clientId, text: message, replyTo: replyTo) ?? ""
+        return await enqueue(clientId: clientId, text: message, replyTo: replyTo)
     }
 
     /// Feedback on a message Lucina sent on her own; `true` when the server took it.
@@ -475,68 +504,162 @@ final class ChatStore {
         }
     }
 
-    /// Resends a failed message with the same `clientMessageId` (idempotent on the server).
+    /// Resends a failed message with the same `clientMessageId` (idempotent on the server), behind any
+    /// message already waiting.
     func retry(_ itemId: String) async {
         if let shareId = items.first(where: { $0.id == itemId })?.meta?.shareId, outgoing[shareId] != nil {
             retryShare(shareId)
             return
         }
         guard let index = items.firstIndex(where: { $0.id == itemId }), items[index].localStatus == .error,
-              let clientId = items[index].clientMessageId, !isSending else { return }
+              let clientId = items[index].clientMessageId else { return }
         items[index].localStatus = .sending
         items[index].localError = nil
+        let text = items[index].text
+        let replyTo = items[index].replyTo
         persist()
-        await deliver(clientId: clientId, text: items[index].text, replyTo: items[index].replyTo)
+        await enqueue(clientId: clientId, text: text, replyTo: replyTo)
     }
 
+    /// The message waits behind another one (its bubble says so).
+    func isQueued(_ item: TimelineItem) -> Bool {
+        guard item.localStatus == .sending, let clientId = item.clientMessageId else { return false }
+        return sendQueue.state(of: clientId) == .queued
+    }
+
+    /// Queues the message, moves the line and waits until this message is answered or failed: the reply's
+    /// spoken text ("" when it failed).
     @discardableResult
-    private func deliver(clientId: String, text: String, replyTo: String? = nil) async -> String? {
-        isSending = true
-        defer { isSending = false }
-        let localId = TimelineItem.localPrefix + clientId
-        do {
-            let request = ChatRequest(message: text, sessionId: sessionId, clientMessageId: clientId, replyTo: replyTo)
-            onChatRequest?(request)
-            let response = try await api().chat(request)
+    private func enqueue(clientId: String, text: String, replyTo: String?) async -> String {
+        guard sendQueue.enqueue(clientId: clientId, text: text, replyTo: replyTo) else { return "" }
+        return await withCheckedContinuation { continuation in
+            sendWaiters[clientId, default: []].append(continuation)
+            pumpSends()
+        }
+    }
+
+    /// Starts the next waiting message unless one is on the wire. Each send gets `ChatSendQueue.timeout`
+    /// (the request's own timeout, then cancellation), so the line always moves.
+    private func pumpSends() {
+        failExpiredSends()
+        guard let entry = sendQueue.start(now: Date()) else { return }
+        let request = ChatRequest(message: entry.text, sessionId: sessionId, clientMessageId: entry.clientId, replyTo: entry.replyTo)
+        onChatRequest?(request)
+        let client = api()
+        let timeout = sendQueue.timeout
+        sendTasks[entry.clientId]?.cancel()
+        sendTasks[entry.clientId] = Task { [weak self] in
+            let result: Result<ChatResponse, Error>
+            do {
+                result = .success(try await ChatSendQueue.within(timeout) { try await client.chat(request) })
+            } catch {
+                result = .failure(error)
+            }
+            self?.finishSend(entry, result)
+        }
+    }
+
+    private func finishSend(_ entry: ChatSendQueue.Entry, _ result: Result<ChatResponse, Error>) {
+        let clientId = entry.clientId
+        // The attempt this result belongs to; a newer one (a Retry) may already be on the wire.
+        let current = sendQueue.state(of: clientId) == entry.state
+        if current { sendTasks[clientId] = nil }
+        switch result {
+        case let .success(response):
+            // The server has it, even if the bubble was already failed: show the answer, never send it again.
+            if !sendQueue.succeed(clientId) { sendQueue.remove(clientId) }
             onTransportSuccess?()
-            guard let index = items.firstIndex(where: { $0.id == localId || $0.clientMessageId == clientId && $0.role == .user })
-            else { return response.reply } // cleared (sign-out) or already replaced by the stream
-            let sentAt = items[index].ts
-            let userId = response.userItemId ?? localId
-            let replyId = response.lucinaItemId ?? (TimelineItem.localPrefix + "reply-" + clientId)
-            var user = TimelineItem(id: userId, ts: sentAt, channel: .ios, role: .user, text: text, clientMessageId: clientId,
-                                    replyTo: replyTo, localStatus: response.userItemId == nil ? .sent : nil)
-            if items[index].id == userId { user.localStatus = items[index].isLocal ? .sent : nil }
-            let reply = TimelineItem(id: replyId, ts: max(Date(), sentAt.addingTimeInterval(0.001)), channel: .ios, role: .lucina,
-                                     text: response.reply, clientMessageId: clientId, replyTo: userId,
-                                     localStatus: response.lucinaItemId == nil ? .sent : nil, rich: response.rich)
-            if userId != localId { items.removeAll { $0.id == localId } }
-            // The stream may have delivered the real items first; never downgrade them.
-            var incoming: [TimelineItem] = []
-            if !items.contains(where: { $0.id == userId && !$0.isLocal }) { incoming.append(user) }
-            if !items.contains(where: { $0.id == replyId && !$0.isLocal })
-                && !items.contains(where: { $0.role == .lucina && !$0.isLocal && ($0.replyTo == userId || $0.clientMessageId == clientId) }) {
-                incoming.append(reply)
-                if response.rich != nil { revealIds.insert(replyId) }
-            }
-            let merged = TimelineMerge.merge(items.filter { !incoming.map(\.id).contains($0.id) }, incoming)
-            items = merged.items
-            if let job = response.job {
-                jobs[replyId] = ChatJob(id: job.id, status: job.status, action: response.action)
-                if !JobInfo.isTerminal(job.status) { startPolling(itemId: replyId, delay: pollInterval) }
-            }
-            persist()
-            // Her voice reads only the bubbles (never the widgets), without markdown.
-            return response.rich?.speechText ?? RichMessage.stripMarkdown(response.reply)
-        } catch {
+            let reply = applyResponse(response, clientId: clientId, text: entry.text, replyTo: entry.replyTo)
+            resumeWaiters(clientId, reply)
+        case let .failure(error):
+            guard current, sendQueue.fail(clientId) else { break } // already failed by the timeout sweep
             let apiError = APIError.wrap(error)
             onTransportError?(apiError)
-            guard let index = items.firstIndex(where: { $0.id == localId }) else { return nil }
-            items[index].localStatus = .error
-            items[index].localError = Self.describe(apiError)
-            persist()
-            return nil
+            markFailed(clientId, Self.describe(apiError))
+            resumeWaiters(clientId, "")
         }
+        pumpSends()
+    }
+
+    /// Fails every send past its timeout, so the next message goes.
+    private func failExpiredSends(now: Date = Date()) {
+        for clientId in sendQueue.expire(now: now) {
+            sendTasks.removeValue(forKey: clientId)?.cancel()
+            markFailed(clientId, Self.describe(.timeout))
+            resumeWaiters(clientId, "")
+        }
+    }
+
+    /// Foreground and network back: nothing stays "Sending…" for longer than the timeout, and the line moves.
+    func resumeSends(now: Date = Date()) {
+        failExpiredSends(now: now)
+        // A bubble that says "Sending…" with no send behind it (it cannot be retried otherwise).
+        var changed = false
+        for index in items.indices where items[index].localStatus == .sending && items[index].meta?.isShare != true {
+            guard let clientId = items[index].clientMessageId, sendQueue.state(of: clientId) == nil,
+                  now.timeIntervalSince(items[index].ts) >= sendQueue.timeout else { continue }
+            items[index].localStatus = .error
+            items[index].localError = Self.describe(.timeout)
+            changed = true
+        }
+        if changed { persist() }
+        pumpSends()
+    }
+
+    private func markFailed(_ clientId: String, _ reason: String) {
+        guard let index = items.firstIndex(where: { $0.id == TimelineItem.localPrefix + clientId }),
+              items[index].localStatus == .sending else { return }
+        items[index].localStatus = .error
+        items[index].localError = reason
+        persist()
+    }
+
+    private func resumeWaiters(_ clientId: String, _ reply: String) {
+        for waiter in sendWaiters.removeValue(forKey: clientId) ?? [] { waiter.resume(returning: reply) }
+    }
+
+    /// Puts the server's answer in place of the optimistic bubble; returns what her voice reads.
+    private func applyResponse(_ response: ChatResponse, clientId: String, text: String, replyTo: String?) -> String {
+        let localId = TimelineItem.localPrefix + clientId
+        guard let index = items.firstIndex(where: { $0.id == localId || $0.clientMessageId == clientId && $0.role == .user })
+        else { return response.reply } // cleared (sign-out) or already replaced by the stream
+        let sentAt = items[index].ts
+        let userId = response.userItemId ?? localId
+        let replyId = response.lucinaItemId ?? (TimelineItem.localPrefix + "reply-" + clientId)
+        var user = TimelineItem(id: userId, ts: sentAt, channel: .ios, role: .user, text: text, clientMessageId: clientId,
+                                replyTo: replyTo, localStatus: response.userItemId == nil ? .sent : nil)
+        if items[index].id == userId { user.localStatus = items[index].isLocal ? .sent : nil }
+        let reply = TimelineItem(id: replyId, ts: max(Date(), sentAt.addingTimeInterval(0.001)), channel: .ios, role: .lucina,
+                                 text: response.reply, clientMessageId: clientId, replyTo: userId,
+                                 localStatus: response.lucinaItemId == nil ? .sent : nil, rich: response.rich)
+        if userId != localId { items.removeAll { $0.id == localId } }
+        // The stream may have delivered the real items first; never downgrade them.
+        var incoming: [TimelineItem] = []
+        if !items.contains(where: { $0.id == userId && !$0.isLocal }) { incoming.append(user) }
+        if !items.contains(where: { $0.id == replyId && !$0.isLocal })
+            && !items.contains(where: { $0.role == .lucina && !$0.isLocal && ($0.replyTo == userId || $0.clientMessageId == clientId) }) {
+            incoming.append(reply)
+            if response.rich != nil { revealIds.insert(replyId) }
+        }
+        let merged = TimelineMerge.merge(items.filter { !incoming.map(\.id).contains($0.id) }, incoming)
+        items = merged.items
+        if let job = response.job {
+            jobs[replyId] = ChatJob(id: job.id, status: job.status, action: response.action)
+            if !JobInfo.isTerminal(job.status) { startPolling(itemId: replyId, delay: pollInterval) }
+        }
+        persist()
+        // Her voice reads only the bubbles (never the widgets), without markdown.
+        return response.rich?.speechText ?? RichMessage.stripMarkdown(response.reply)
+    }
+
+    /// Stops every send (sign-out); whoever waits gets an empty reply.
+    private func cancelSends() {
+        sendTasks.values.forEach { $0.cancel() }
+        sendTasks.removeAll()
+        sendQueue.removeAll()
+        let waiters = sendWaiters
+        sendWaiters.removeAll()
+        for waiter in waiters.values.flatMap({ $0 }) { waiter.resume(returning: "") }
     }
 
     nonisolated static func describe(_ error: APIError) -> String {
@@ -638,6 +761,7 @@ final class ChatStore {
         replyingTo = nil
         hiddenIds = []
         defaults.removeObject(forKey: Self.hiddenKey)
+        cancelSends()
         stopPolling()
         stopStream()
         stopSharePolling()
