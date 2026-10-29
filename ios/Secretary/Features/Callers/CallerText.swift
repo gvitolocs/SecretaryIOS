@@ -12,7 +12,6 @@ enum CallerText {
         switch kind {
         case "person": return String(localized: "Person")
         case "business": return String(localized: "Business")
-        case "delivery": return String(localized: "Delivery")
         case "telemarketing": return String(localized: "Telemarketing")
         case "scam": return String(localized: "Scam")
         case "unknown": return String(localized: "Unknown")

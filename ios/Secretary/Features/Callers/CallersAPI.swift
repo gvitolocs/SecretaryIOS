@@ -15,15 +15,8 @@ struct CallerScreenRequest: Encodable, Equatable, Sendable {
     var call: Call?
 
     struct Context: Encodable, Equatable, Sendable {
-        var courier: Courier?
         /// Only with exactly one number.
         var contact: String?
-    }
-
-    struct Courier: Encodable, Equatable, Sendable {
-        var onShift: Bool
-        var orderActive: Bool
-        var orderAgeMin: Int?
     }
 
     struct Call: Encodable, Equatable, Sendable {
@@ -50,7 +43,7 @@ struct CallerResult: Decodable, Equatable, Sendable {
     var type: String?
     /// P(spam: telemarketing, robocall or scam).
     var spam: Double?
-    /// person, business, delivery, telemarketing, scam, unknown.
+    /// person, business, telemarketing, scam, unknown.
     var kind: String?
     var kindP: Double?
     /// P(he should pick up).
@@ -69,6 +62,20 @@ struct CallerResult: Decodable, Equatable, Sendable {
         var previousCalls: Int?
         var lastCall: String?
         var messages: Int?
+        /// The public caller-ID page Lucina read first (180.dk), quoted with its URL.
+        var publicReport: PublicReport?
+
+        private enum CodingKeys: String, CodingKey {
+            case contact, previousCalls, lastCall, messages
+            case publicReport = "public"
+        }
+    }
+
+    struct PublicReport: Decodable, Equatable, Sendable {
+        var source: String
+        var url: String
+        var reports: Int?
+        var latestComment: String?
     }
 
     private enum CodingKeys: String, CodingKey {

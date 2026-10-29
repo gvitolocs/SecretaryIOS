@@ -104,12 +104,10 @@ final class CallersTests: XCTestCase {
         XCTAssertNil(object["call"], "a lookup is not recorded as an incoming call")
 
         let full = CallerScreenRequest(numbers: ["+4570405205"], lang: nil,
-                                       context: .init(courier: .init(onShift: true, orderActive: true, orderAgeMin: 7), contact: "Name"),
+                                       context: .init(contact: "Name"),
                                        call: .init(source: "android", at: "2026-10-29T12:00:00Z"))
         let fullObject = try XCTUnwrap(JSONSerialization.jsonObject(with: APIClient.encoder.encode(full)) as? [String: Any])
-        let courier = try XCTUnwrap((fullObject["context"] as? [String: Any])?["courier"] as? [String: Any])
-        XCTAssertEqual(courier["onShift"] as? Bool, true)
-        XCTAssertEqual(courier["orderAgeMin"] as? Int, 7)
+        XCTAssertNil((fullObject["context"] as? [String: Any])?["courier"], "no guesses about who calls are sent")
         XCTAssertEqual((fullObject["context"] as? [String: Any])?["contact"] as? String, "Name")
         XCTAssertEqual((fullObject["call"] as? [String: Any])?["source"] as? String, "android")
     }
@@ -486,6 +484,23 @@ final class CallersTests: XCTestCase {
         await h.store.lookup("  \n ")
         XCTAssertTrue(h.store.results.isEmpty)
         XCTAssertEqual(StubURLProtocol.requests.count, before, "nothing to look up, nothing sent")
+    }
+
+    func testPublicReportDecodesAndDeliveryIsGone() throws {
+        let json = """
+        {"lang":"en","results":[{"number":"+4520682758","display":"+45 20 68 27 58","type":"mobile",
+         "spam":0.67,"kind":"telemarketing","kindP":0.56,"pickUp":0.15,"label":"Likely telemarketing (0.56)",
+         "short":"Telemarketing 56%","source":"jev","reasons":["DK mobile","180.dk: 6 reports"],
+         "known":{"contact":null,"previousCalls":0,"public":{"source":"180.dk","url":"https://www.180.dk/nummer/20682758",
+          "searches":374,"reports":6,"latestComment":"26. oktober 2026 — Irriterende: De ringer i min arbejdstid"}}}]}
+        """
+        let response = try Fixtures.decode(CallerScreenResponse.self, json)
+        let report = try XCTUnwrap(response.results.first?.known?.publicReport)
+        XCTAssertEqual(report.source, "180.dk")
+        XCTAssertEqual(report.url, "https://www.180.dk/nummer/20682758")
+        XCTAssertEqual(report.reports, 6)
+        XCTAssertNil(CallerText.kind("delivery"), "no delivery kind any more")
+        XCTAssertNotNil(CallerText.kind("telemarketing"))
     }
 }
 
