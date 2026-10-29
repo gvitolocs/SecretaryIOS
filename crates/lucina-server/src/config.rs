@@ -222,6 +222,9 @@ pub struct Config {
     /// `LUCINA_CALLERS` (default on; `off` disables): screening unknown callers with Jev
     /// (`/api/secretary/callers/*`, the `caller_screen` tool and chat turn).
     pub callers_enabled: bool,
+    /// `LUCINA_CALLERS_PUBLIC_URL` (default `https://www.180.dk`; `off` disables): the public
+    /// caller-ID pages read before Jev decides.
+    pub callers_public_url: Option<String>,
 }
 
 impl std::fmt::Debug for Config {
@@ -558,6 +561,11 @@ impl Config {
                     "off" | "false" | "0" | "no"
                 )
             }),
+            callers_public_url: match get("LUCINA_CALLERS_PUBLIC_URL") {
+                Some(v) if matches!(v.trim().to_ascii_lowercase().as_str(), "off" | "false" | "0" | "no" | "") => None,
+                Some(v) => Some(v.trim().trim_end_matches('/').to_owned()),
+                None => Some(lucina_tools::tools::callers::PUBLIC_BASE.to_owned()),
+            },
             callers_enabled: !get("LUCINA_CALLERS").is_some_and(|v| {
                 matches!(
                     v.trim().to_ascii_lowercase().as_str(),

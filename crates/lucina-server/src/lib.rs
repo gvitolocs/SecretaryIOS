@@ -252,6 +252,10 @@ impl AppState {
         env.secretary_service_token_file = cfg.secretary_service_token_file.clone();
         env.secrets = secret_store.clone();
         env.au_url = cfg.au_enabled.then(|| cfg.au_url.clone());
+        env.callers_public_url = cfg
+            .callers_public_url
+            .clone()
+            .filter(|_| cfg.callers_enabled);
         env.callers = cfg.callers_enabled.then(|| {
             Arc::new(lucina_tools::tools::callers::CallerStore::in_data_dir(
                 &cfg.data_dir,

@@ -253,6 +253,8 @@ pub struct ToolEnv {
     pub au_url: Option<String>,
     /// Numbers the phones reported and the answers `caller_screen` gave; `None`: no store.
     pub callers: Option<Arc<tools::callers::CallerStore>>,
+    /// Public caller-ID pages (`LUCINA_CALLERS_PUBLIC_URL`, default 180.dk); `None`: off.
+    pub callers_public_url: Option<String>,
 }
 
 impl ToolEnv {
@@ -306,6 +308,7 @@ impl ToolEnv {
             ops: None,
             au_url: None,
             callers: None,
+            callers_public_url: None,
         }
     }
 }

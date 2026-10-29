@@ -267,7 +267,7 @@ mod tests {
             table: caller::table(&[one("+45 70 40 52 05")], "en"),
         };
         let text = render(&r);
-        assert!(text.starts_with("Here's what Jev makes of it:\n\n**+45 70 40 52 05** — Likely telemarketing (0.60) · Danish 70-number (company line)\n"));
+        assert!(text.starts_with("Here's what Jev makes of it:\n\n**+45 70 40 52 05** — Unknown caller · Danish 70-number (company line)\n"));
         assert!(text.contains("| Number | Spam | Kind | Pick up |"));
         let many: Vec<_> = ["+4570405205", "+35794095733", "+4570405220", "+35794462808"]
             .iter()

@@ -80,12 +80,20 @@ pub fn owner_texts(st: &AppState) -> Vec<String> {
 /// Screens `req` with everything Lucina knows.
 pub async fn screen(st: &AppState, req: &ScreenRequest) -> Result<tc::ScreenResponse, String> {
     let texts = owner_texts(st);
+    let public = st
+        .cfg
+        .callers_public_url
+        .as_ref()
+        .map(|base| tc::PublicLookup {
+            http: st.tool_env.http.clone(),
+            base: base.clone(),
+        });
     tc::screen(
         lucina_jev::shared(),
         st.tool_env.callers.as_deref(),
+        public.as_ref(),
         req,
         Utc::now(),
-        st.cfg.time_zone,
         &|n| mentions_in(&texts, n),
     )
     .await

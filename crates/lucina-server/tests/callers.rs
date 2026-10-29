@@ -1,18 +1,29 @@
 //! Caller screening: /api/secretary/callers/* and the chat shortcut. Jev is
-//! not configured in tests, so the deterministic rules answer (`source: rules`).
+//! not configured in tests, so the deterministic rules answer (`source: rules`);
+//! the public caller-ID site is a fake one.
 
 mod common;
 
 use common::{harness, script};
 use serde_json::json;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+/// A 180.dk-like page (the structure the site served on 2026-10-29).
+const PAGE_180: &str = r#"<title>20682758 | ADVARSEL &#x2013; rapporter: 6</title>
+<span>20682758</span><span>(Danmark)</span><span>+4520682758</span>
+<b>374</b><small>Antal gange s&#xF8;gte</small><b>6</b><small>Rapporteret af brugere</small>
+<h3>Seneste kommentar</h3><p>26. oktober 2026</p><p>Irriterende</p><p>De ringer i min arbejdstid</p><p>Kommentar fra bruger</p>
+<li>Forsigtig (37,5%)</li><li>Irriterende (37,5%)</li><li>Telemarketing (25%)</li>"#;
 
 #[tokio::test]
 async fn screen_records_calls_and_feeds_the_directory() {
     let h = harness(script(json!({"rules": []})), |c| c.callers_enabled = true).await;
 
+    // An older phone build still sends the shift: accepted and ignored.
     let ring = json!({
         "numbers": ["+45 70 40 52 05"], "lang": "en",
-        "context": {"courier": {"onShift": true, "orderActive": false}},
+        "context": {"courier": {"onShift": true, "orderActive": true}},
         "call": {"source": "android"}
     });
     let (s, b) = h.post("/callers/screen", ring.clone()).await;
@@ -20,13 +31,15 @@ async fn screen_records_calls_and_feeds_the_directory() {
     let v = &b["data"]["results"][0];
     assert_eq!(v["number"], "+4570405205", "{b}");
     assert_eq!(v["type"], "non_geographic", "{b}");
-    assert_eq!(v["kind"], "telemarketing", "{b}");
+    assert_eq!(v["kind"], "business", "{b}");
     assert_eq!(v["source"], "rules", "{b}");
+    assert_eq!(v["label"], "Unknown caller", "{b}");
     assert_eq!(v["known"]["previousCalls"], 0, "{b}");
     assert!(b["data"]["table"]
         .as_str()
         .unwrap()
         .starts_with("| Number | Spam | Kind | Pick up |"));
+    assert!(!b.to_string().to_lowercase().contains("wolt"), "{b}");
 
     let (_, b) = h.post("/callers/screen", ring).await;
     assert_eq!(b["data"]["results"][0]["known"]["previousCalls"], 1, "{b}");
@@ -45,10 +58,7 @@ async fn screen_records_calls_and_feeds_the_directory() {
         .await;
     assert_eq!(s, 200, "{b}");
     assert_eq!(b["data"]["lang"], "da");
-    assert_eq!(
-        b["data"]["results"][0]["label"], "Sandsynligvis svindel (0,60)",
-        "{b}"
-    );
+    assert_eq!(b["data"]["results"][0]["label"], "Ukendt opkald", "{b}");
     assert_eq!(b["data"]["results"][1]["type"], "invalid", "{b}");
     let (_, b) = h
         .post(
@@ -63,8 +73,8 @@ async fn screen_records_calls_and_feeds_the_directory() {
     assert_eq!(
         b["data"]["entries"],
         json!([
-            {"number": 4570405205_i64, "label": "Telemarketing 60%"},
-            {"number": 35794095733_i64, "label": "Svindel 60%"}
+            {"number": 4570405205_i64, "label": "Unknown caller"},
+            {"number": 35794095733_i64, "label": "Ukendt opkald"}
         ]),
         "{b}"
     );
@@ -112,9 +122,9 @@ async fn chat_answers_who_called_with_the_table() {
     assert_eq!(d["action"], "caller_screen", "{d}");
     let reply = d["reply"].as_str().unwrap();
     for s in [
-        "**+45 70 40 52 05** — Likely telemarketing (0.60)",
+        "**+45 70 40 52 05** — Unknown caller · Danish 70-number (company line)",
         "| Number | Spam | Kind | Pick up |",
-        "| +45 70 40 52 05 | 0.65 | telemarketing 0.60 | 0.20 |",
+        "| +45 70 40 52 05 | 0.40 | business 0.45 | 0.40 |",
         "Source: basic rules",
     ] {
         assert!(reply.contains(s), "{s} missing: {reply}");
@@ -136,4 +146,32 @@ async fn chat_answers_who_called_with_the_table() {
             .contains("| Numero | Spam | Tipo | Rispondere |"),
         "{d}"
     );
+}
+
+#[tokio::test]
+async fn the_public_page_is_read_first_and_quoted() {
+    let site = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/nummer/20682758"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(PAGE_180))
+        .mount(&site)
+        .await;
+    let uri = site.uri();
+    let h = harness(script(json!({"rules": []})), |c| {
+        c.callers_enabled = true;
+        c.callers_public_url = Some(uri);
+    })
+    .await;
+    let d = h.chat("Who called me from 20 68 27 58?").await;
+    assert_eq!(d["action"], "caller_screen", "{d}");
+    let reply = d["reply"].as_str().unwrap();
+    for s in [
+        "**+45 20 68 27 58** — Likely telemarketing (0.50)",
+        "180.dk: 6 reports",
+        "180.dk: 6 user reports (looked up 374 times); categories: caution 37.5%, annoying 37.5%, telemarketing 25%",
+        "De ringer i min arbejdstid",
+        "https://www.180.dk/nummer/20682758",
+    ] {
+        assert!(reply.contains(s), "{s} missing: {reply}");
+    }
 }

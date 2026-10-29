@@ -53,6 +53,8 @@ pub async fn harness_with(
     cfg.au_enabled = false;
     // Hermetic: no caller turn for test messages that hold numbers; tests/callers.rs turns it on.
     cfg.callers_enabled = false;
+    // Hermetic: never read 180.dk from tests (tests/callers.rs points it at a fake site).
+    cfg.callers_public_url = None;
     // The tests' dates and reminders are written for Rome; the production default is Europe/Copenhagen.
     cfg.time_zone = chrono_tz::Europe::Rome;
     cfg.recovery_companion_path = Some(dir.path().join("none.md"));

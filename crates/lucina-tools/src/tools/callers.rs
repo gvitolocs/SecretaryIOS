@@ -2,9 +2,10 @@
 //! `lucina_phone_core::caller`, plus the small store of numbers the phones
 //! reported (earlier calls, last verdicts) that the iOS Call Directory reads.
 //!
-//! - [`screen`]: one Jev call per number (spam yes/no, who is calling, pick up
-//!   yes/no) on a state enriched with what Lucina knows; Jev unreachable or
-//!   cooling down → the deterministic rules, `source: "rules"`.
+//! - [`screen`]: first the public caller-ID page (180.dk, cached), then one
+//!   Jev call per number (spam yes/no, who is calling, pick up yes/no) on facts
+//!   about the number only; Jev unreachable or cooling down → the
+//!   deterministic rules, `source: "rules"`.
 //! - [`CallerStore`]: `<data>/callers/callers.json` (0600, written atomically),
 //!   at most [`MAX_NUMBERS_KEPT`] numbers with their last [`MAX_CALLS_KEPT`] calls.
 //!
@@ -15,14 +16,14 @@ use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use chrono_tz::Tz;
 use lucina_jev::{Jev, Question};
 use lucina_phone_core::caller::{
-    self, Context, Courier, Known, LineType, Number, Probs, Verdict, KINDS, KIND_QUESTION,
-    MAX_NUMBERS, PICK_UP_QUESTION, SPAM_QUESTION,
+    self, Context, Courier, Known, LineType, Number, Probs, PublicReport, Verdict, KINDS,
+    KIND_QUESTION, MAX_NUMBERS, PICK_UP_QUESTION, SPAM_QUESTION,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -48,10 +49,14 @@ const MAX_CONTACT: usize = 80;
 pub struct SeenCall {
     pub at: String,
     pub source: String,
-    #[serde(default)]
-    pub on_shift: bool,
-    #[serde(default)]
-    pub order_active: bool,
+}
+
+/// A public caller-ID page as read, with when.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CachedPublic {
+    pub at: String,
+    pub report: PublicReport,
 }
 
 /// The last answer for a number.
@@ -76,6 +81,9 @@ pub struct Entry {
     pub verdict: Option<SavedVerdict>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_label: Option<String>,
+    /// The last public caller-ID page read for this number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public: Option<CachedPublic>,
     /// Last call or lookup (RFC 3339), for pruning.
     #[serde(default)]
     pub active: String,
@@ -162,7 +170,6 @@ impl CallerStore {
         Known {
             previous_calls: e.calls.len() as u32,
             last_call: e.calls.last().map(|c| c.at.clone()),
-            called_during_shift: e.calls.iter().any(|c| c.on_shift),
             owner_label: e.owner_label,
             ..Known::default()
         }
@@ -177,6 +184,30 @@ impl CallerStore {
                 let drop = e.calls.len() - MAX_CALLS_KEPT;
                 e.calls.drain(..drop);
             }
+        });
+    }
+
+    /// The cached public page, when it is younger than `max_age`.
+    pub fn public(
+        &self,
+        e164: &str,
+        now: DateTime<Utc>,
+        max_age: Duration,
+    ) -> Option<PublicReport> {
+        let c = self.entry(e164)?.public?;
+        let at: DateTime<Utc> = c.at.parse().ok()?;
+        let age = now.signed_duration_since(at).to_std().unwrap_or_default();
+        (age <= max_age).then_some(c.report)
+    }
+
+    pub fn save_public(&self, e164: &str, report: &PublicReport, at: &str) {
+        self.update(|f| {
+            let e = f.numbers.entry(e164.to_owned()).or_default();
+            e.active = e.active.clone().max(at.to_owned());
+            e.public = Some(CachedPublic {
+                at: at.to_owned(),
+                report: report.clone(),
+            });
         });
     }
 
@@ -223,6 +254,8 @@ impl CallerStore {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RequestContext {
+    /// Accepted from older phone builds and ignored: who might call him is not
+    /// a fact about the number (owner's rule, 2026-10-29).
     pub courier: Option<Courier>,
     /// The contact's name, when the phone found the number in his contacts.
     pub contact: Option<String>,
@@ -286,6 +319,88 @@ pub struct ScreenResponse {
     pub table: String,
 }
 
+/// Where the public caller-ID pages come from (`LUCINA_CALLERS_PUBLIC_URL`).
+#[derive(Debug, Clone)]
+pub struct PublicLookup {
+    pub http: reqwest::Client,
+    /// `https://www.180.dk` (a test server in tests).
+    pub base: String,
+}
+
+pub const PUBLIC_BASE: &str = "https://www.180.dk";
+/// A lookup in chat waits this long for the page; a ringing call much less.
+const PUBLIC_TIMEOUT: Duration = Duration::from_secs(4);
+const PUBLIC_TIMEOUT_RINGING: Duration = Duration::from_millis(700);
+/// A cached page is reused this long for lookups, and longer while a call rings.
+const PUBLIC_FRESH: Duration = Duration::from_secs(24 * 3600);
+const PUBLIC_FRESH_RINGING: Duration = Duration::from_secs(7 * 24 * 3600);
+/// Bytes of a page read (they are about 300 KB).
+const PUBLIC_MAX_BYTES: usize = 2 * 1024 * 1024;
+const USER_AGENT: &str = "Lucina/1.0 (personal caller lookup for one owner)";
+
+/// Reads the number's public page; `None` on any failure or timeout.
+pub async fn fetch_public(p: &PublicLookup, n: &Number, timeout: Duration) -> Option<PublicReport> {
+    let url = caller::url_180(&p.base, n)?;
+    let resp = p
+        .http
+        .get(&url)
+        .header(reqwest::header::USER_AGENT, USER_AGENT)
+        .timeout(timeout)
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        tracing::info!(
+            status = resp.status().as_u16(),
+            "caller public page refused"
+        );
+        return None;
+    }
+    let bytes = tokio::time::timeout(timeout, resp.bytes())
+        .await
+        .ok()?
+        .ok()?;
+    if bytes.len() > PUBLIC_MAX_BYTES {
+        return None;
+    }
+    let html = String::from_utf8_lossy(&bytes);
+    // Quote the page people can open, not a test server's.
+    let public_url = caller::url_180(PUBLIC_BASE, n).unwrap_or(url);
+    caller::parse_180(&html, &public_url)
+}
+
+/// The public report for `n`: the cache when fresh, else the page (cached on success), else a stale cache.
+async fn public_report(
+    p: Option<&PublicLookup>,
+    store: Option<&CallerStore>,
+    n: &Number,
+    ringing: bool,
+    now: DateTime<Utc>,
+) -> Option<PublicReport> {
+    let fresh = if ringing {
+        PUBLIC_FRESH_RINGING
+    } else {
+        PUBLIC_FRESH
+    };
+    if let Some(r) = store.and_then(|s| s.public(&n.e164, now, fresh)) {
+        return Some(r);
+    }
+    let timeout = if ringing {
+        PUBLIC_TIMEOUT_RINGING
+    } else {
+        PUBLIC_TIMEOUT
+    };
+    match fetch_public(p?, n, timeout).await {
+        Some(r) => {
+            if let Some(s) = store {
+                s.save_public(&n.e164, &r, &now.to_rfc3339());
+            }
+            Some(r)
+        }
+        None => store.and_then(|s| s.public(&n.e164, now, Duration::MAX)),
+    }
+}
+
 fn questions() -> [(&'static str, Question); 3] {
     [
         ("spam", Question::noul(SPAM_QUESTION)),
@@ -327,16 +442,16 @@ async fn ask_jev(jev: &Jev, n: &Number, ctx: &Context) -> Option<Probs> {
 pub async fn screen(
     jev: &Jev,
     store: Option<&CallerStore>,
+    public: Option<&PublicLookup>,
     req: &ScreenRequest,
     now: DateTime<Utc>,
-    tz: Tz,
     mentions: &(dyn Fn(&Number) -> Vec<String> + Sync),
 ) -> Result<ScreenResponse, String> {
     req.validate()?;
     let lang = caller::lang(req.lang.as_deref().unwrap_or("en"));
     let rc = req.context.clone().unwrap_or_default();
-    let (courier, contact) = (rc.courier, rc.contact.map(|c| c.trim().to_owned()));
-    let local_time = now.with_timezone(&tz).format("%A %H:%M").to_string();
+    let contact = rc.contact.map(|c| c.trim().to_owned());
+    let ringing = req.call.is_some();
     let at = req
         .call
         .as_ref()
@@ -353,14 +468,13 @@ pub async fn screen(
         if n.valid() {
             known.mentions = mentions(&n);
         }
-        let ctx = Context {
-            courier,
-            known,
-            local_time: Some(local_time.clone()),
-            ringing: req.call.is_some(),
-        };
+        let mut ctx = Context { known, ringing };
         let at = at.clone();
         async move {
+            // The public page first: it changes the verdict the most.
+            if n.valid() && ctx.known.contact.is_none() {
+                ctx.known.public = public_report(public, store, &n, ringing, now).await;
+            }
             let jev_probs = if n.valid() && ctx.known.contact.is_none() {
                 ask_jev(jev, &n, &ctx).await
             } else {
@@ -373,14 +487,11 @@ pub async fn screen(
             let v = caller::verdict(&n, &ctx, &probs, source, lang);
             if let (Some(s), true) = (store, n.valid()) {
                 if let Some(call) = &req.call {
-                    let c = courier.unwrap_or_default();
                     s.record_call(
                         &n.e164,
                         SeenCall {
                             at: at.clone(),
                             source: call.source.clone(),
-                            on_shift: c.on_shift,
-                            order_active: c.order_active,
                         },
                     );
                 }
@@ -416,7 +527,7 @@ impl Tool for CallerScreenTool {
         "caller_screen"
     }
     fn description(&self) -> &'static str {
-        "Screen phone numbers that called the owner (\"who called me from …\"): for each number Jev gives P(spam), who is likely calling (person, business, Wolt delivery, telemarketing, scam, unknown) and P(pick up), from the number's country and line type and what Lucina knows (earlier calls, his Wolt shift). Not a spam database: say so. Show the returned table as is."
+        "Screen phone numbers that called the owner (\"who called me from …\"): Lucina reads the public caller-ID page (180.dk) first, then Jev gives P(spam), who is likely calling (person, business, telemarketing, scam, unknown) and P(pick up) from facts about the number only (country, line type, contacts, his calls with it, the public reports). Show the returned table as is, with the quoted sources."
     }
     fn parameters(&self) -> Value {
         schema_for::<ScreenArgs>()
@@ -431,12 +542,20 @@ impl Tool for CallerScreenTool {
             lang: a.lang.map(|l| caller::lang(&l).to_owned()),
             ..ScreenRequest::default()
         };
+        let public = ctx
+            .env
+            .callers_public_url
+            .as_ref()
+            .map(|base| PublicLookup {
+                http: ctx.env.http.clone(),
+                base: base.clone(),
+            });
         let r = screen(
             lucina_jev::shared(),
             ctx.env.callers.as_deref(),
+            public.as_ref(),
             &req,
             ctx.now,
-            ctx.env.time_zone,
             &|_| Vec::new(),
         )
         .await
@@ -504,50 +623,33 @@ mod tests {
             source: "android".into(),
             at: None,
         });
+        // Older phone builds still send the shift: accepted, never used.
         r.context = Some(RequestContext {
             courier: Some(Courier {
                 on_shift: true,
-                order_active: false,
+                order_active: true,
                 order_age_min: None,
             }),
             contact: None,
         });
-        let out = screen(
-            &off(),
-            Some(&store),
-            &r,
-            now,
-            chrono_tz::Europe::Copenhagen,
-            &|_| Vec::new(),
-        )
-        .await
-        .unwrap();
+        let out = screen(&off(), Some(&store), None, &r, now, &|_| Vec::new())
+            .await
+            .unwrap();
         let v = &out.results[0];
-        assert_eq!(
-            (v.source.as_str(), v.kind.as_str()),
-            ("rules", "telemarketing")
-        );
+        assert_eq!((v.source.as_str(), v.kind.as_str()), ("rules", "business"));
         assert_eq!(v.known.previous_calls, 0);
         assert!(out.table.contains("Source: basic rules"));
 
         // The second call knows the first.
-        let out = screen(
-            &off(),
-            Some(&store),
-            &r,
-            now,
-            chrono_tz::Europe::Copenhagen,
-            &|_| Vec::new(),
-        )
-        .await
-        .unwrap();
+        let out = screen(&off(), Some(&store), None, &r, now, &|_| Vec::new())
+            .await
+            .unwrap();
         assert_eq!(out.results[0].known.previous_calls, 1);
-        assert!(out.results[0].known.called_during_shift);
         let e = store.entry("+4570405205").unwrap();
         assert_eq!(e.calls.len(), 2);
         assert_eq!(
             store.directory(),
-            vec![(4570405205, "Telemarketing 60%".to_owned())]
+            vec![(4570405205, "Unknown caller".to_owned())]
         );
 
         // A lookup saves the answer but is no call; contacts never reach the directory.
@@ -556,14 +658,9 @@ mod tests {
             courier: None,
             contact: Some("Jerry's".into()),
         });
-        let out = screen(
-            &off(),
-            Some(&store),
-            &l,
-            now,
-            chrono_tz::Europe::Copenhagen,
-            &|n| vec![format!("seen {}", n.e164)],
-        )
+        let out = screen(&off(), Some(&store), None, &l, now, &|n| {
+            vec![format!("seen {}", n.e164)]
+        })
         .await
         .unwrap();
         assert_eq!(out.results[0].source, "contact");
@@ -590,16 +687,88 @@ mod tests {
         let out = screen(
             &off(),
             None,
+            None,
             &req(&["hello", "+357 94 095733"]),
             now,
-            chrono_tz::UTC,
             &|_| Vec::new(),
         )
         .await
         .unwrap();
         assert_eq!(out.results[0].line, LineType::Invalid);
-        assert_eq!(out.results[1].kind, "scam");
+        assert_eq!(out.results[1].kind, "unknown");
         assert!(out.table.contains("Not a phone number"));
+    }
+
+    /// A 180.dk-like page (the structure the site served on 2026-10-29).
+    const PAGE_180: &str = r#"<title>20682758 | ADVARSEL &#x2013; rapporter: 6</title>
+<span>20682758</span><span>(Danmark)</span><span>+4520682758</span>
+<b>374</b><small>Antal gange s&#xF8;gte</small><b>6</b><small>Rapporteret af brugere</small>
+<h3>Seneste kommentar</h3><p>26. oktober 2026</p><p>Irriterende</p><p>De ringer i min arbejdstid</p><p>Kommentar fra bruger</p>
+<li>Forsigtig (37,5%)</li><li>Irriterende (37,5%)</li><li>Telemarketing (25%)</li>"#;
+
+    #[tokio::test]
+    async fn the_public_page_is_read_first_cached_and_quoted() {
+        use wiremock::matchers::{header_exists, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let site = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/nummer/20682758"))
+            .and(header_exists("user-agent"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(PAGE_180))
+            .expect(1)
+            .mount(&site)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/nummer/0035794095733"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&site)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let store = CallerStore::in_data_dir(dir.path());
+        let lookup = PublicLookup {
+            http: reqwest::Client::new(),
+            base: site.uri(),
+        };
+        let now: DateTime<Utc> = "2026-10-29T12:00:00Z".parse().unwrap();
+        let r = req(&["+45 20 68 27 58", "+357 94 095733"]);
+        let out = screen(&off(), Some(&store), Some(&lookup), &r, now, &|_| {
+            Vec::new()
+        })
+        .await
+        .unwrap();
+        let v = &out.results[0];
+        let p = v.known.public.as_ref().expect("public report");
+        assert_eq!((p.reports, p.searches), (6, 374));
+        assert_eq!(p.url, "https://www.180.dk/nummer/20682758");
+        // Jev is off here: the rules follow the reports.
+        assert_eq!(
+            (v.source.as_str(), v.kind.as_str()),
+            ("rules", "telemarketing")
+        );
+        assert!(
+            v.reasons.contains(&"180.dk: 6 reports".to_owned()),
+            "{:?}",
+            v.reasons
+        );
+        assert!(
+            out.table.contains("https://www.180.dk/nummer/20682758"),
+            "{}",
+            out.table
+        );
+        assert!(out.results[1].known.public.is_none());
+        // The second lookup within a day uses the cache (the page is asked for once).
+        let again = screen(
+            &off(),
+            Some(&store),
+            Some(&lookup),
+            &req(&["20682758"]),
+            now,
+            &|_| Vec::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(again.results[0].known.public.as_ref().unwrap().reports, 6);
+        site.verify().await;
     }
 
     #[test]
@@ -612,8 +781,6 @@ mod tests {
                 SeenCall {
                     at: format!("2026-10-29T12:{:02}:00Z", i % 60),
                     source: "android".into(),
-                    on_shift: false,
-                    order_active: false,
                 },
             );
         }
