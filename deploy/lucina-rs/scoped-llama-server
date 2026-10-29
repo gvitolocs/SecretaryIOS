@@ -1,0 +1,6 @@
+#!/bin/sh
+# Lucina's on-demand vision server (Gemma 4 12B + mmproj) for shares, in its own transient scope:
+# lucina-rs.service is capped at MemoryMax=768M, and the model needs several GB of host RAM.
+# LUCINA_VISION_SERVER_BIN points here; gpu-lease wraps this script, so the lease still holds the pid.
+exec systemd-run --user --scope --quiet --collect -p MemoryMax=16G \
+  -- "${LUCINA_VISION_REAL_BIN:-$HOME/llama.cpp/build/bin/llama-server}" "$@"

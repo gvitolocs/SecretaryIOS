@@ -174,13 +174,30 @@ Rust: store under `flock` with write-to-temp, fsync, rename; same JSON layout an
 the `scheduler-lucina.lock` lease; delivers with `sendMessage` using the Lucina bot token (allowed while Node still
 polls: only `getUpdates` is exclusive), writes the `meta.kind: "reminder"` timeline item, records `sent`/`lastError`.
 
-Handover: (1) Rust up with scheduler off; (2) Node restarted with the shim on and its scheduler off; from this
-moment Node no longer touches the file; (3) Rust scheduler on, lease acquired. Due reminders wait at most one poll;
-none are lost (they stay `pending`). Rollback: Rust scheduler off (lease released), Node env reverted, Node restarted.
+Handover (checked by the model `ownership.rs::Scheduler`, `formal/ownership/SchedulerHandover.tla`; the order
+first written here ran two `reminders.json` writers and lost a reminder, docs/verification.md P2a):
+
+1. Rust restarts with **only** `/api/internal/reminders/*` open: its scheduler off and its secretary path still
+   forwarding to Node (`LUCINA_REMINDERS_WRITER=node`). Nothing calls the internal endpoint yet, so Node is still
+   the only writer.
+2. Node restarts with the shim on and its scheduler off, **after its current tick has finished** (drain: Node waits
+   for a running `processDueReminders` on SIGTERM; or restart only while no reminder is due). From here Rust is the
+   only writer.
+3. Rust restarts with `LUCINA_REMINDERS_WRITER=local` and `LUCINA_SCHEDULER=true` (lease acquired).
+
+Due reminders wait at most one poll; none are lost (they stay `pending`). Rollback, in this order: Rust stops
+writing first (scheduler off, secretary path forwarding, internal endpoint closed: Node's shim calls fail visibly for
+a few seconds), then Node takes the file and the scheduler back (env reverted, restart).
+
+Delivery is at most once in both runtimes (P2b, `ReminderStore::process_due`, Node `processDueReminders`): a tick
+claims its due reminders (`status: "sending"`, written atomically) before the first `sendMessage`; a claim found
+by the next tick (the process died mid-send) becomes `failed` with `lastError: "interrupted; not resent"` and shows
+in the reminder list. Writing `sent` once at the end of the tick, as both did before, resent the batch after a
+restart.
 
 Parity: same store copy and injected clock in both runtimes deliver the same ids with the same text
 (`formatReminderDelivery`); dedupe key semantics; `already_sent` / `cancelled: false` rules; parser corpus; restart
-in the middle of a delivery does not double-send (state written before the next poll).
+in the middle of a delivery does not double-send (claim before send, above).
 
 ### Phase 3: Telegram
 
@@ -201,6 +218,28 @@ Parity: replay recorded/synthesised `Update` JSON (text, voice, photo, document,
 into both bots against a fake Bot API (wiremock) and diff the outgoing call sequence (method, chat, reply-to, parse
 mode, text with LLM text masked); golden transcripts from the Telegram sample; timeline items identical.
 
+**Implemented (branch `node-retire`, 2026-10-26)**, off unless `LUCINA_TELEGRAM_ENABLED=true` (with the Lucina
+token of task A):
+
+- `lucina-telegram::poller`: the lease before the first `getUpdates` (deferred: holder logged, retry 5 s; lost: stop
+  at once, reacquire; SIGTERM: stop, release, then a 20 s handler drain). No `drop_pending_updates` ever; a webhook
+  is deleted only when `getWebhookInfo` reports one, keeping pending updates. At most once: `claim.rs`
+  (`should_handle = update_id > claimed`, `claim = max`) persisted to `<data>/lucina-rs/telegram-<botKey>-claim.json`
+  (temp, fsync, rename) before a batch reaches any handler; replays are skipped and counted. 409 backs off 30 s
+  (logged as an error), 401/404 stop the poller, other errors 5 s, `retry_after` honoured. One bounded queue per
+  chat (ordered), chats concurrent. `/health` → `telegram` (state, lease, holder, counters, claim).
+- `lucina-server::telegram`: OTP middleware, allow-list and `TELEGRAM_UNAUTHORIZED_DM=decline`, `/start`,
+  `/cancel_pdf`, `/status [full]`, text turns through `chat::channel_turn` (session `telegram_chat_<id>`, Node's
+  peer and label rules, planner platform `telegram`, replies `Telegram`, reminders for the chat with source
+  `telegram`, jobs reporting back to the chat), voice/audio/video_note (limits and texts as Node, the share
+  pipeline's Whisper), photos and documents (the share pipeline's per-file handling and tool loop), owner timeline
+  items (`isDm`, `chatTitle`), `recent-telegram-chat.json` (reloaded at each lease acquisition, secretary sessions
+  merged in when missing), `telegram-chats.json`, Telegram HTML replies split at 4096.
+- Not ported: PDF follow-up questions (`/cancel_pdf` always answers that nothing runs), provider-wait notices (no
+  retry events in the Rust planner), rich multi-message replies (one plain reply), the Gemini/OpenAI transcription
+  fallbacks, Node-only actions (image generation, graphs, web crawl, log inspection, Ollama, Poko posts: the planner
+  says it cannot run them). Non-owner chats are held to the MCP allowlist and get no Honcho memory (surface policy).
+
 ### Phase 4: Discord
 
 Prerequisites: Q1 (keep Discord? persona name), `LUCINA_OWNER_DISCORD_USER_ID`.
@@ -213,6 +252,16 @@ second Rust instance cannot connect. Rollback: the same in reverse.
 
 Parity: golden replies on the 52 historical Discord messages; admin operations replayed against a private test guild
 in dry-run mode that records REST calls, compared with Node's calls for the same plans.
+
+Already live (2026-10-22): the owner **presence watcher**, crate `lucina-discord` (twilight-gateway 0.17.1),
+`lucina presence-watch`, systemd user unit `lucina-presence.service` on nezopt (`deploy/lucina-presence.service`).
+It is a second gateway session on the Lucina token with intents `GUILDS | GUILD_PRESENCES` only (no message events,
+so it never replies) and is not part of the `discord-<appid>.lock` singleton above. It keeps only
+`LUCINA_OWNER_DISCORD_USER_ID`'s presence (merged across guilds, freshest wins) in `data/presence/discord.json`
+(current, 0600) and `data/presence/discord.jsonl` (transitions, `LUCINA_PRESENCE_RETENTION_DAYS`, 90). Readers:
+`GET /api/secretary/presence`, the `presence` tool, the chat context line (`LUCINA_PRESENCE_CONTEXT`, default on in
+Rust) and, until the cutover, the Node hook `src/discord-presence-context.js` (`LUCINA_PRESENCE_CONTEXT=true`).
+The phase-4 port reuses the crate for the message session.
 
 ### Phase 5: Alexa
 
@@ -227,6 +276,33 @@ Alexa turns (16 timeline items).
 Scope: proactive check-ins as a native scheduler job (Q5), `lucina_log_inspect` (own logs + journald), capability
 hints, `model_status` tool, grocery offers (`catalog.js`, `nearby.js`, `rapidapi-quota.js`), `/grocery/*` dashboard
 API (Q10), `backfill-timeline` and `grocery-migrate` subcommands, Hermes upstream tools from §7.
+Grocery deal watch (Lucina `src/grocery/deals/`, added 2026-10-24; Node is canonical, the Hermes grocery copy is not
+updated): Salling food-waste + Tjek flyer sources, the shopping-list matcher with its synonym rules and owner override
+file `data/grocery/deal-synonyms.json`, the `grocery.deals.cheapest`/`grocery.deals.lunch` intents, and the Telegram
+digest/alert scheduler whose state file `data/grocery/deal-watch.json` must stay byte-compatible (INVENTORY §3). Port
+it with its recorded fixtures (`tests/fixtures/grocery-deals/`) as parity tests; until then only Node runs the watcher.
+Until 2026-10-25 lucina-rs asked Node for deals (`node_deals.rs`, removed): the map forward and
+`POST /api/secretary/grocery/deals/answer`.
+Ported 2026-10-24 (owner decision: deals are rewritten in Rust and the Node code is deleted): `crates/lucina-deals`
+(beside `lucina-grocery`, which it uses for canonical products and the shopping list) holds the sources, synonyms with
+hot reload, matcher, engine (list, cheapest, lunch, map data), formatters, and the watch run with its
+`deal-watch.json` state (byte-compatible). `tests/parity.rs` compares it with Node goldens from the recorded fixtures
+(digest/alerts/list/lunch/map text byte for byte, map/list/lunch/cheapest JSON value for value); `tests/node_suite.rs`
+ports `tests/grocery-deals.test.mjs`.
+Wired 2026-10-25 (`crates/lucina-server/src/deals.rs`): `GET /api/secretary/grocery/deals/map` is served natively
+(503 `deals_unavailable` without home coordinates, 400 for `radiusM` outside 500–15000); chat turns (MCP too) classified
+`grocery.offer.search`, `grocery.deals.cheapest` or `grocery.deals.lunch` answer from the engine with Node's texts,
+and what the engine cannot answer (a product offer without a deal) goes on to the Rust grocery path. The ShelfAtlas
+catalog fallback of Node's offer questions is not ported (it belongs to the catalog adapters above). The deal watch
+(`lucina_deals::Scheduler`: digest at `GROCERY_DEALS_DIGEST_TIME` until 11:00 once per local day, alerts every
+`GROCERY_DEALS_ALERT_INTERVAL_MIN` inside `GROCERY_DEALS_ALERT_WINDOW`, daily cap, 10-minute digest cooldown) runs in
+lucina-server with its own switch `GROCERY_OFFER_WATCH_ENABLED` (in `mode.env`; `env-from-node` does not copy it),
+independent of `LUCINA_SCHEDULER`, and delivers to the app only (`POST /v1/notify`, Node's body and dedup key;
+`GROCERY_DEALS_CHANNEL=telegram|both` is logged and delivered to the app). It keeps Node's
+`data/grocery/deal-watch.json`. `lucina deals list|cheapest|lunch|map|digest|alerts [--dry-run|--send]` mirrors
+`scripts/grocery-deals.mjs`. Cut-over: turn the Node watch off (`GROCERY_OFFER_WATCH_ENABLED=false` on lucina-nez)
+in the same step as turning the Rust one on, and give the state file to the lucina-rs user (Node wrote it as root, 0600).
+Then delete the Node deals code.
 
 Retirement: switch `lucina-nez` to a runtime without Lucina (`HERMES_RUNTIME` set to a value that disables
 `lucina`, for example `poko-routes`, after checking which OTHER-BOT pieces still need to run there), keep it on 8788

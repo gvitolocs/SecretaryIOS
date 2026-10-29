@@ -25,6 +25,25 @@ running finishes, but nothing new starts until the Rust Lucina is live.
 - [x] Lucina guard for MCP turns (allowlist of actions) + strip the MCP prefix before intents (c37de51, live)
 - [x] ChatGPT (custom plugin, OAuth) and Grok Bot (custom MCP server, OAuth) connected
 - [ ] Grok Bot caller shows as "www": map the cursor.com redirect host to "grok"
+- [x] Lucina delegates on her own to Claude (CLI), Grok (Grok Bot / xAI) and ChatGPT (OpenAI / Codex): self-judged,
+      no confirmations, hard limits (no secrets out, no money, depth 1, never from MCP, code only in a bwrap sandbox
+      on `lucina/<job>`), budget as a runaway guard, cards + notes + audit → `docs/lucina-rust/DELEGATION.md`
+      (branch `lucina-delegate`)
+- [ ] Deploy delegation: `LUCINA_DELEGATE=true` + `~/.config/lucina-rs/delegate.toml` on lucina-rs
+- [ ] Grok for Lucina: sign the Grok Bot app on nezopt back in (it is signed out), or add an xAI key
+      (`delegate.xai_api_key`); until then research goes to ChatGPT (Codex)
+- [ ] Proactive engine: call `/api/secretary/delegate` (dry run) for research once `lucina-proactive` merges
+- [ ] Telegram/Discord (Node Lucina): thin bridge to `/api/secretary/delegate`-style delegation, behind a flag
+- Verification findings (docs/verification.md on main), merged into lucina-rs 2026-10-24 (93a023b, 6fb355c); workspace
+  fmt/clippy clean, lucina-* tests 339 passed with Postgres; lucina-rs binary LIVE 2026-10-24 12:43:
+  - [x] T1: timeline stream resumes by arrival order (fix-verification-lucina 845b04b)
+  - [x] P1a/P1b: lucina-rs keeps its own jobs file (`data/lucina-rs/secretary-jobs.json`), Node's read only (cad62c5)
+  - [x] P2a/P2b: reminders claimed before they are sent; phase-2 handover order in PORT_PLAN (4b395cb)
+  - [x] S1: the 409 names the batch's duplicates (390c0e5)
+  - [x] S2: client row ids kept (390c0e5); migration 004 (`grocery.shopping_row_aliases`) not yet applied to the live database
+  - [x] G4: Meshy per-step credit guard, worst-case reservation (5c3b038); LUCINA_MESHY still off
+  - [x] Secrets redactor overlap: only well-formed patterns admitted (52f55e0)
+  - [x] G3: proactive tick lock (fix-verification-proactive 6ca0059); the running lucina-proactive binary is older (not redeployed)
 
 ## Proactive Lucina (owner, 2026-10-22: "she reaches out before you ask")
 - [x] MVP1+2 built; lucina-proactive.service RUNNING IN DRY-RUN since 2026-10-22 15:13 (server/web routes live). Go live: LUCINA_PROACTIVE_DRY_RUN=false in ~/.config/lucina-proactive/env after owner reviews `lucina-proactive report --hours 24`

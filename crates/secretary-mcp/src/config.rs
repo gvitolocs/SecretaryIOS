@@ -19,6 +19,8 @@
 //! | `SECRETARY_MCP_ALLOWED_ORIGINS` | public origin, `https://chatgpt.com`, `https://claude.ai` | `Origin` check of `/mcp` (requests without `Origin` pass) |
 //! | `SECRETARY_MCP_ACCESS_TTL_SECS` | `3600` | OAuth access token lifetime |
 //! | `SECRETARY_MCP_REFRESH_TTL_SECS` | `2592000` (30 d) | OAuth refresh token lifetime |
+//! | `SECRETARY_MCP_DIAGNOSTICS_URL` | unset | lucina-diagnostics (`http://<nezopt tailnet>:8794`); unset: the `diagnostics_*` tools are not listed |
+//! | `SECRETARY_MCP_DIAGNOSTICS_TOKEN_FILE` | unset | lucina-diagnostics' service token (nezopt `~/.config/lucina-diagnostics/service.token`) |
 //! | `SECRETARY_MCP_STATUS_TOKEN_FILE` | unset | enables `GET /internal/status` (AI clients for the app's Links tab); same content as secretary-server's `SECRETARY_MCP_STATUS_TOKEN_FILE` |
 
 use std::net::SocketAddr;
@@ -64,6 +66,9 @@ pub struct Config {
     pub refresh_ttl: Duration,
     /// Bearer for `GET /internal/status`; `None`: the route answers 404.
     pub status_token: Option<String>,
+    /// lucina-diagnostics base URL; `None`: no `diagnostics_*` tools.
+    pub diagnostics_url: Option<String>,
+    pub diagnostics_token: Option<String>,
 }
 
 impl std::fmt::Debug for Config {
@@ -93,6 +98,11 @@ impl std::fmt::Debug for Config {
             .field("cimd_prefixes", &self.cimd_prefixes)
             .field("allowed_hosts", &self.allowed_hosts)
             .field("allowed_origins", &self.allowed_origins)
+            .field("diagnostics_url", &self.diagnostics_url)
+            .field(
+                "diagnostics_token",
+                &self.diagnostics_token.as_ref().map(|_| "<set>"),
+            )
             .finish()
     }
 }
@@ -129,6 +139,8 @@ impl Config {
             access_ttl: Duration::from_secs(3600),
             refresh_ttl: Duration::from_secs(30 * 24 * 3600),
             status_token: None,
+            diagnostics_url: None,
+            diagnostics_token: None,
         })
     }
 
@@ -161,6 +173,12 @@ impl Config {
         }
         if let Some(p) = get("SECRETARY_MCP_STATUS_TOKEN_FILE") {
             cfg.status_token = Some(read_secret(&p, "SECRETARY_MCP_STATUS_TOKEN_FILE")?);
+        }
+        if let Some(u) = get("SECRETARY_MCP_DIAGNOSTICS_URL") {
+            cfg.diagnostics_url = Some(u.trim().trim_end_matches('/').to_owned());
+        }
+        if let Some(p) = get("SECRETARY_MCP_DIAGNOSTICS_TOKEN_FILE") {
+            cfg.diagnostics_token = Some(read_secret(&p, "SECRETARY_MCP_DIAGNOSTICS_TOKEN_FILE")?);
         }
         if let Some(tz) = get("SECRETARY_MCP_TIMEZONE") {
             cfg.timezone = tz

@@ -1,10 +1,16 @@
 # secretary-maps
 
 Maps for the Secretary apps: self-hosted Protomaps PMTiles, fonts and sprites, with Google
-Places API (New) Text Search and Google Routes API called by this server. The Google key stays
-on the server and travels only in `X-Goog-Api-Key`; clients never receive it. iOS keeps MapKit
-for rendering; web and Android use MapLibre. Provider failures let clients fall back to their
-platform search/directions or approximate travel estimates.
+Places API (New) Text Search and Google Routes API called by this server. The Google server key
+stays on the server and travels only in `X-Goog-Api-Key`; clients never receive it. Web and iOS
+render Google Maps (Maps JavaScript API, Maps SDK for iOS) with the client keys from `/config`
+(the web key referrer-restricted to `https://getsecretary.tech/*`, the iOS key restricted to the
+bundle `tech.getsecretary.app`); the self-hosted tiles stay for other clients.
+
+Google is pluggable and never required: without a key (or when Google fails) geocoding falls
+back to the gazetteer and a self-hosted Photon, routing to a self-hosted OSRM, and, for callers
+that ask with `estimate=1` (Lucina), to straight-line estimates (the MK4 kernel). When nothing
+answers, the route is 503 and the apps show their own "≈" estimates.
 
 The kernels (coordinates, bounds, travel estimates, the `place` normalizer, the asset path rule)
 are in `src/kernel.rs` and verified in `verification/verus/map_kernels.rs` (protocol 15 in
@@ -19,7 +25,15 @@ are in `src/kernel.rs` and verified in `verification/verus/map_kernels.rs` (prot
 | `MAPS_TILES` | `region` | tiles file name without `.pmtiles`, `[a-z0-9-]{1,40}` |
 | `MAPS_HOME_LAT`, `MAPS_HOME_LNG` | unset | home; `home` is `null` when either is unset or invalid (out of range, (0, 0), not a number) |
 | `MAPS_HOME_LABEL` | `Home` | |
-| `MAPS_GOOGLE_KEY_FILE` | `~/.config/secretary-maps/google.key` | trimmed at startup; missing/empty key disables geocoding and routes; restart after rotation |
+| `GOOGLE_MAPS_SERVER_KEY` | unset | the key itself (the Infisical secret's name); wins over the key file |
+| `MAPS_GOOGLE_KEY_FILE` | `~/.config/secretary-maps/google.key` | trimmed at startup; a missing, empty or unreadable key turns Google off (never a startup error); restart after rotation |
+| `GOOGLE_MAPS_WEB_KEY` | unset | the web client key (Maps JavaScript API, referrer-restricted); wins over its file; served in `/config` |
+| `MAPS_GOOGLE_WEB_KEY_FILE` | `~/.config/secretary-maps/google-web.key` | as the server key file; a key that is not 20..=100 chars of `[A-Za-z0-9_-]` is logged (without the value) and served as `null` |
+| `GOOGLE_MAPS_IOS_KEY` | unset | the iOS client key (Maps SDK for iOS, bundle-restricted); wins over its file; served in `/config` |
+| `MAPS_GOOGLE_IOS_KEY_FILE` | `~/.config/secretary-maps/google-ios.key` | as the web key file |
+| `MAPS_AUFIND_URL` | unset (off) | AU Find base URL, e.g. `http://127.0.0.1:18211`; university building lookup at `/api/buildings?q=` with a 1.5 s deadline |
+| `MAPS_PHOTON_URL` | unset | self-hosted Photon base URL (`<url>/api`): geocoding without Google |
+| `MAPS_OSRM_URL` | unset | self-hosted OSRM base URL (`<url>/route/v1/<driving\|walking\|cycling>/…`): drive/walk/bike routes without Google |
 | `MAPS_GOOGLE_PLACES_URL` | `https://places.googleapis.com/v1/places:searchText` | base origin or complete endpoint override for local tests |
 | `MAPS_GOOGLE_ROUTES_URL` | `https://routes.googleapis.com/directions/v2:computeRoutes` | base origin or complete endpoint override for local tests |
 | `XDG_STATE_HOME` | `~/.local/state` | Places snapshot at `secretary-maps/cache.json`, private directory/file permissions, atomic temp-file + rename |
@@ -32,28 +46,31 @@ All under `/v1/maps`; anything else is `404 {"error":"not_found"}`.
 
 | Route | |
 |---|---|
-| `GET /health` | `{"ok":true,"tiles":bool,"geocoder":bool}` (no upstream key needed) |
-| `GET /config` | `{"tiles":"/v1/maps/tiles/region.pmtiles"\|null,"assets":"/v1/maps/assets","home":{"lat","lng","label"}\|null,"geocoder":bool,"routes":bool,"attribution":"© OpenStreetMap contributors · Protomaps"}`; `tiles` is null while the file is missing, `geocoder` and `routes` are true when a Google key is loaded (no network probe) |
+| `GET /health` | `{"ok":true,"tiles":bool,"geocoder":bool}` (no upstream key needed; `geocoder`: Google or Photon) |
+| `GET /config` | `{"tiles":"/v1/maps/tiles/region.pmtiles"\|null,"assets":"/v1/maps/assets","home":{"lat","lng","label"}\|null,"geocoder":bool,"routes":bool,"attribution":"© OpenStreetMap contributors · Protomaps","google":{"webKey":string\|null,"iosKey":string\|null}}`; `tiles` is null while the file is missing, `geocoder` is true with a Google key or Photon, `routes` with a Google key or OSRM (no network probe); `google` is always present, a key is null when not configured. No key value is ever logged, and `/health` exposes none |
 | `GET /tiles/<name>.pmtiles` | the file with `Range` (206 + `Content-Range`, 416 for an unsatisfiable range), `ETag` (`If-None-Match` 304, `If-Match` 412, `If-Range`), `Last-Modified`, `Accept-Ranges: bytes`, `Cache-Control: private, max-age=86400` |
 | `GET /assets/<path>` | files under `MAPS_DIR/assets` (`.pbf` as `application/x-protobuf`, `.json`, `.png`), `Cache-Control: private, max-age=604800`. Paths with `..`, `.` or empty segments, a leading `/`, `\`, `%`, NUL or other control bytes are 400; a path whose canonical form leaves the assets dir (a symlink out) is 404 |
-| `GET /geocode?q=&lat=&lng=&limit=` | `{"results":[{"name","address","lat","lng"}]}`. `q` trimmed, 2..=200 chars, `limit` 1..=5 (default 3), else 400. Places Text Search, Danish language, 50 km circular bias around valid query coordinates or home. Three-second deadline. Persistent + memory LRU/TTL cache, 5000 entries, 30 days, keyed by normalized query, bias rounded to 0.01°, and limit. Logs only query length and result count. |
-| `GET /routes?from=lat,lng&to=lat,lng&modes=drive,walk,bike,transit&arrive=RFC3339` | Coordinates required and validated via `parse_coord`; modes optional subset (default all four), arrival optional. Invalid input is 400. Concurrent Google Routes calls, four-second deadline per mode. Returns `{"provider":"google","routes":[...],"failed":[...]}`; each route has mode, durationS, staticDurationS, distanceM, decoded precision-5 polyline simplified to ≤400 points, leaveAt (with arrival: arrival − duration − 5 min), and transit step summaries for transit. |
+| `GET /geocode?q=&lat=&lng=&limit=` | `{"results":[{"name","address","lat","lng","label"?,"source"?}]}`. Optional fields are omitted when absent. `source` is `AU Find`, `OpenStreetMap`, `Google` or `Photon`; `label` describes university building, name, room and floor when known (floor 0 is `ground floor`). `q` trimmed, 2..=200 chars, `limit` 1..=5 (default 3), else 400. Places Text Search, Danish language, 50 km circular bias around valid query coordinates or home. Three-second deadline. Persistent + memory LRU/TTL cache, 5000 entries, 30 days, keyed by normalized query, bias rounded to 0.01°, and limit. Logs only query length and result count. |
+| `GET /routes?from=lat,lng&to=lat,lng&modes=drive,walk,bike,transit&arrive=RFC3339&estimate=1` | Coordinates required and validated via `parse_coord`; modes optional subset (default all four), arrival optional. Invalid input is 400. Concurrent Google Routes calls, four-second deadline per mode; when there is no key or every mode fails, OSRM (`"provider":"osrm"`, no transit), then with `estimate=1` straight-line estimates (`"provider":"estimate"`, walk/bike/drive, `"estimate":true`, empty polyline). Returns `{"provider":"google"\|"osrm"\|"estimate","routes":[...],"failed":[...]}`; each route has mode, durationS, staticDurationS, distanceM, decoded precision-5 polyline simplified to ≤400 points, leaveAt (with arrival: arrival − duration − 5 min), `steps`, and transit step summaries for transit. `steps` is `[{"instruction":string,"maneuver":string\|null,"distanceM":int,"durationS":int,"polyline":[[lat,lng],...]}]`, at most 200, each polyline ≤100 points: Google's turn-by-turn steps for every mode (Danish instructions, Google's `Maneuver` names; a step without instruction keeps its maneuver, one with neither is dropped), OSRM's steps (the road name as instruction, its maneuver mapped to Google's names), `[]` for estimates. |
 
-Both provider endpoints return `503 {"error":"provider_unavailable"}` without a key or on provider failure
-(routes: when every requested mode fails). Partial routing failures appear in `failed`. Drive uses
+Both provider endpoints return `503 {"error":"provider_unavailable"}` when no provider answers
+(routes: when every requested mode fails everywhere and `estimate=1` is absent). Partial routing failures appear in `failed`. Drive uses
 `TRAFFIC_AWARE` and departure now; for a future arrival it first obtains static duration and then routes at
 arrival minus that duration, within the same deadline. Transit uses arrivalTime when supplied,
 otherwise departureTime now. Walk/bike omit time options. Routing logs contain only mode, status and latency.
 Route results are cached in memory by coordinates rounded to four decimals, mode and arrival rounded to five
 minutes (absent arrival is a distinct bucket): drive/transit five minutes, walk/bike 24 h, at most 5000 entries.
-Cached leaveAt is recalculated for the exact requested arrival. Only Places entries persist.
+Cached leaveAt is recalculated for the exact requested arrival. Only Places entries persist; AU Find and Photon answers
+(one day) and OSRM routes (one day) are cached in memory.
 
-`deploy/secretary-maps/sync-google-key.sh` reads `GOOGLE_MAPS_SERVER_KEY` from the dev Infisical project and
-atomically writes the private key file with `umask 077`; it never prints the value. Run it at deployment,
-then restart the service. It exits 3 if the secret is missing. This script is a deployment step, not a service
-startup dependency (the service can serve tiles without Google).
+`deploy/secretary-maps/sync-google-key.sh` reads `GOOGLE_MAPS_SERVER_KEY`, `GOOGLE_MAPS_WEB_KEY` and
+`GOOGLE_MAPS_IOS_KEY` from the dev Infisical project and atomically writes the private key files (`google.key`,
+`google-web.key`, `google-ios.key`, or the `MAPS_GOOGLE_*_KEY_FILE` paths) with `umask 077`; it never prints a
+value. Run it at deployment, then restart the service. It exits 3 if the server key is missing; a missing client
+key is only a warning (the apps get `null` for it). This script is a deployment step, not a service
+startup dependency (the service serves tiles, the gazetteer, Photon, OSRM and estimates without Google).
 
-The web client opens the tiles with `pmtiles://` + the absolute URL of `config.tiles`, and the
+Clients that use the self-hosted tiles open them with `pmtiles://` + the absolute URL of `config.tiles`, and the
 MapLibre style points `glyphs` at `<assets>/fonts/{fontstack}/{range}.pbf` and `sprite` at
 `<assets>/sprites/v4/<flavor>`.
 
@@ -123,8 +140,11 @@ MAPS_BIND=100.107.164.33:8840
 MAPS_HOME_LAT=56.19633
 MAPS_HOME_LNG=10.20110
 MAPS_HOME_LABEL=Home
+MAPS_AUFIND_URL=http://127.0.0.1:18211
 MAPS_UPSTREAM_KEY_FILE=/home/nez/.config/secretary-maps/upstream.key
 MAPS_GOOGLE_KEY_FILE=/home/nez/.config/secretary-maps/google.key
+MAPS_GOOGLE_WEB_KEY_FILE=/home/nez/.config/secretary-maps/google-web.key
+MAPS_GOOGLE_IOS_KEY_FILE=/home/nez/.config/secretary-maps/google-ios.key
 ```
 
 Tests: `cargo test -p secretary-maps` (kernels, the HTTP routes against a local Google stub, and
@@ -133,10 +153,20 @@ Tests: `cargo test -p secretary-maps` (kernels, the HTTP routes against a local 
 ## Gazetteer: university room codes
 
 Calendar entries from the Aarhus University timetable give rooms, not addresses (`5125-140 Seminarrum`:
-room 140 in building 5125). No geocoder knows those, so `/v1/maps/geocode` first looks the building up in
-`MAPS_DIR/gazetteer/*.json` (arrays of `{"ref", "name", "lat", "lng"}`), locally and without the Google key.
-Only the `NNNN-room` form is matched, so postcodes such as `8000 Aarhus C` never hit it. A building that is
-not listed falls through to Google.
+room 140 in building 5125). For university locations `/v1/maps/geocode` tries AU Find first when
+`MAPS_AUFIND_URL` is set, then `MAPS_DIR/gazetteer/*.json` (arrays of
+`{"ref", "name", "lat", "lng"}`), then the normal Google → Photon chain. These building lookups
+work without a Google key. AU Find uses only an exact building `id` match and valid coordinates;
+unavailable, empty or invalid responses fall through and are never cached. Successful AU Find
+answers use the shared memory cache for one day, keyed by normalized query, rounded bias and limit
+as for other geocode answers. AU Find logs contain only the building number, status and latency.
+
+The parser accepts `NNNN-room` with surrounding text and case-insensitive `Building NNNN` /
+`Bygning NNNN`, optionally followed by `- room`, `, room 524` or `, lokale 524`. Postcodes such as
+`8000 Aarhus C`, dates and phone numbers do not match. Rooms starting with at least three digits
+use their first digit as the floor. AU Find supplies the building address; gazetteer results keep
+the original query as their address. Both supply the descriptive `label` and their `source`;
+Google and Photon supply `source` without a label.
 
 `au-buildings.json` comes from the building `ref` tags in OpenStreetMap around Aarhus (83 buildings on
 2026-10-26; 5220 and 5522 were missing). Rebuild it with this Overpass query and convert each element to

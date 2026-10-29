@@ -70,7 +70,10 @@ The agent routes are agentd's routes, prefixed. The table below adds what phase 
 | GET | `/v1/agents/items` | list items with state buckets (the apps' lists) |
 | GET/DELETE | `/v1/agents/{id}` | snapshot / delete |
 | POST | `/v1/agents/{id}/{send,stop,archive,unarchive,wait}` | as agentd. Steer is `send` with `activeTurnBehavior: "steer"` |
-| GET | `/v1/agents/{id}/timeline?afterSeq=&limit=` | `{epoch, rows, nextSeq}` |
+| GET | `/v1/agents/{id}/timeline?afterSeq=&limit=` | `{epoch, rows, nextSeq}`. `&subagent=<id>` reads a provider subagent's timeline instead (below) |
+| GET | `/v1/agents/{id}/provider-subagents` | **P7:** `{agentId, subagents: [descriptor]}`, oldest first |
+| GET | `/v1/agents/{id}/provider-subagents/{subId}` | **P7:** one descriptor (id or unique prefix) |
+| GET | `/v1/agents/{id}/provider-subagents/{subId}/timeline?afterSeq=&limit=&direction=after\|tail` | **P7:** a page of the child's timeline (below) |
 | POST | `/v1/agents/{id}/permissions/{requestId}` | answer (owner devices only) |
 | GET/POST | `/v1/agents/permissions[/{id}]` | the permission book; external requests |
 | … | `/v1/agents/projects`, `/v1/agents/workspaces/…`, `/v1/agents/clone` | phase 4 routes (`api/workspaces.rs`) |
@@ -85,9 +88,12 @@ The agent routes are agentd's routes, prefixed. The table below adds what phase 
 | GET | `/v1/agents/schedules/{id}/logs` | **phase 6:** `{runs}`, oldest first |
 | POST | `/v1/agents/schedules/{id}/{pause,resume,run-once}` | **phase 6:** → Schedule; 409 `SCHEDULE_CONFLICT` when completed or already running |
 | GET | `/v1/agents/search?q=&limit=&archived=` | **phase 6:** `{query, results: [{agentId, title, provider, status, cwd, updatedAt, archivedAt?, score, matches: [{field: title\|workspace\|branch\|project\|timeline, seq?, kind?, snippet}]}]}` |
-| GET | `/v1/agents/{id}/prompts` | **phase 6:** `{epoch, prompts: [{seq, timestamp, preview}]}` (Paseo's prompt index) |
+| GET | `/v1/agents/{id}/prompts` | **phase 6:** `{epoch, prompts: [{seq, timestamp, preview, messageId}]}` (Paseo's prompt index; `messageId` is Lucina's: the id to rewind to) |
 | POST | `/v1/agents/{id}/detach` | **phase 6:** drop the parent labels → snapshot |
 | GET | `/v1/agents/usage` | **phase 6:** `{providers: [{provider, agents, running, inputTokens, cachedInputTokens, outputTokens, totalCostUsd}], schedules: {active, paused, completed}, since}` |
+| POST | `/v1/agents/{id}/rewind` | **A16:** `{messageId, mode: conversation\|files\|both, allowMainCheckout?}` → `{agentId, messageId, mode, ok, epoch, removedRows}`; see "Rewind and fork" |
+| POST | `/v1/agents/{id}/fork-context` | **A16:** `{boundaryCursor?: {epoch, seq}, boundaryMessageId?}` → Paseo's `agent.fork_context.response` payload without the request id: `{agentId, attachment, itemCount, boundaryCursor, boundaryMessageId, error: null}` |
+| POST | `/v1/agents/{id}/fork` | **A16:** `{boundaryCursor?, boundaryMessageId?, prompt?, title?, provider?, model?, modeId?, thinkingOptionId?, cwd?, workspaceId?, labels?, idempotencyKey?, allowMainCheckout?}` → `{agent: snapshot, forkedFrom, itemCount, boundaryCursor, boundaryMessageId}` |
 
 **External agents:** `POST /v1/agents` with `provider: "secretary-code"`, `external: true`, `host: "mac"` registers
 one. Its `ownerDeviceId` is the registering device. Sends, steers, stops and permission answers for it become
@@ -228,6 +234,131 @@ terminal output is SSE and input is a POST. A WebSocket would need upgrade suppo
 - **Search:** Paseo's typo-tolerant ranking over title, workspace, branch and project, plus SQLite FTS5 over prompts,
   answers and agent messages (indexed when an agent is idle).
 
+## Provider subagents (P7)
+
+A provider can run children inside an agent: a Claude `Task` call, an OpenCode child session. Paseo gives each its own
+timeline, apart from the parent's (`ProviderSubagentStore`, `agent.provider_subagents.*` messages); so does agentd. They
+are **not** `lucina.parent-agent-id` children (those are separate agents that an agent started through the MCP, phase 6).
+
+- **Descriptor** (Paseo's `ProviderSubagentDescriptorPayloadSchema`): `{id, parentAgentId, parentSubagentId, provider, title,
+  description, status, createdAt, updatedAt, toolCallId, cwd, subtitle}`. `id` is the child's own id (the `Task` call id for
+  Claude, the child session id for OpenCode); `title` is its name or type (a `Task` input `name` beats `subagent_type`),
+  `description` the task, `status` `running | completed | failed | canceled`, `toolCallId` the parent timeline's tool call
+  that started it, `parentSubagentId` the child that started this one, `subtitle` provider-formatted context
+  (`general-purpose · claude-opus-5-5 · 5.1k tokens`; clients must not parse it). Fields an update omits keep their value.
+- **Timeline:** `{agentId, subagentId, provider, direction, epoch, rows, nextSeq, window: {minSeq, maxSeq, nextSeq},
+  hasOlder, hasNewer, subagent}`. Rows are `TimelineRow`s as the agent's own, numbered from 1 per child, and use the agent's
+  `epoch`. `direction=after` (default) returns the rows after `afterSeq` (`limit` 0 = all); `tail` the last `limit`.
+  Unlike Paseo they are not projected: a client collapses them like the agent's own rows (`projection`). A child's items:
+  its prompt (`user_message`), `assistant_message`, `reasoning`, tool calls and `todo`. A child started by another child has
+  that child's `Task` card in the parent child's timeline.
+- **In the parent's timeline** there is only the provider's card for the call: a `tool_call` with a `sub_agent` detail
+  (`subAgentType`, `description`, `log`). `log` lists what the child did (`[Bash] ls`, at most 200 lines) and, once it has
+  finished, its report. This is all `lagent logs <agent>` and the MCP's activity text show of a child, as in Paseo.
+- **Errors:** 404 `PROVIDER_SUBAGENT_NOT_FOUND`; an ambiguous prefix is 400 `INVALID_REQUEST`; an unknown `direction` is 400.
+- **Stream:** `{"type":"provider_subagent","event":{...}}` with `kind` `upsert` (`subagent`: the descriptor), `timeline`
+  (`parentAgentId`, `subagentId`, `provider`, `item`, `timestamp`, `seq`, `epoch`) or `remove` (`parentAgentId`, `subagentId`),
+  Paseo's `agent.provider_subagents.update` payload. A child's items never come as `agent_stream` events of the parent.
+- **Lifecycle:** a running child is `canceled` when its agent is archived or the daemon restarts (its provider process is
+  gone); `delete` removes the agent's children (a `remove` event each). Stored in SQLite (`provider_subagents`,
+  `provider_subagent_rows`); at most 5,000 rows per child.
+- **`lagent`:** `logs <agent> --subagent <id|prefix>` prints the child's activity (not with `--follow`); `inspect` adds a
+  `Subagents` list when there are any (Lucina only); `lagent mcp`'s `get_agent_activity` takes `subagentId`.
+- **Claude** (stream-json): frames with `parent_tool_use_id` go to the child; identity and status come from Claude Code's task
+  protocol (`task_started`, `task_updated`, `task_notification`, `task_progress`), as in Paseo; an older CLI without it
+  declares the child on its first frame and the `Task` result ends it. A foreground child ends with its call's result, a
+  background one outlives the turn. **OpenCode** (ACP): a `session/update` from another session id is a child, linked to the
+  running `task` call; it is not checked against a live OpenCode (it may not forward those updates). Codex, Cursor, Copilot, Pi
+  and ZCode report no children.
+- **Differences from Paseo:** no timeline projection; an explicit `null` can't clear a descriptor field; a Claude child's text is
+  taken from complete `assistant` messages (Paseo's tracker does the same); no `workflow` output files and no effort in
+  the subtitle (Paseo reads it from Claude hooks).
+
+## Rewind and fork (A16)
+
+Paseo's CLI has neither; they are app operations there (`agent.rewind.request`, `agent.fork_context.request`). The routes
+above are their equivalents, and `lagent rewind <id> --to <message> [--mode conversation|files|both]` and
+`lagent fork <id> [prompt] [--at <boundary>]` call them. Code: `crates/lucina-agentd/src/manager/rewind.rs`,
+`api/rewind.rs`, `cli/rewind.rs`; the pure parts (modes, target lookup, the attachment) in `lucina-agents`
+(`rewind.rs`, `fork_context.rs`).
+
+**Rewind** takes an agent back to just before one of its user messages. The target is a user message's `messageId` (or the
+`clientMessageId` it came with); every user message has one (the manager gives the ones it records an id, a provider that
+echoes the message brings its own), and the prompt index lists them. A rewind removes the target and everything after it, so
+the owner can send the message again, edited.
+
+| Mode | The provider reverts | The timeline |
+|---|---|---|
+| `conversation` | its conversation state | rows from the target on are removed, under a new epoch (`timeline_replacement` on the stream); the stored timeline is rewritten; the search index forgets the agent |
+| `files` | the files the agent changed since the target | unchanged |
+| `both` | files first, then the conversation, as one operation | as `conversation` |
+
+Order of checks, none of which touches the agent until the last: the caller owns the agent (below); the provider has the
+capability flag for the mode (Paseo's `supportsRewindConversation|Files|Both`, read from the provider, not from a closed
+agent's stored flags); the target is a user message of this agent; the agent isn't in a lane chain; for a mode that changes
+files, the file rules (below). Then the agent is held (`AGENT_BUSY` for a new prompt or a second rewind), a finished-run
+check in progress is waited for (30 s at most), a running turn is cancelled, a closed agent is loaded, and the provider is
+asked. A provider error (`PROVIDER_ERROR`, 502) leaves the timeline as it was.
+
+**Providers.** A mode needs the provider's flag *and* its session's `rewind` implementation. Paseo 0.13.2 supports:
+
+| Provider | conversation | files | both |
+|---|---|---|---|
+| claude | yes | yes | yes |
+| codex | yes | no | no |
+| opencode | no | no | yes |
+| pi, omp | yes | no | no |
+| copilot, cursor, other ACP | no | no | no |
+| mock | yes | yes | yes |
+
+Lucina implements **`mock` only** (all three modes, with real file checkpoints); every real provider reports all three flags
+off and is refused with `422 REWIND_UNSUPPORTED`, "Provider does not support rewinding \<mode\>" (Paseo's text). External
+agents (`secretary-code`) are refused too: the session is rewound on the Mac. Enabling a real provider means implementing
+`Session::rewind` for it and setting its flags, each with its own test against the real CLI.
+
+**Who may rewind what.**
+
+| Caller | Rewind | Files |
+|---|---|---|
+| owner (`lagent`, owner devices) | any agent | the worktree guard still applies; `allowMainCheckout` overrides it |
+| MCP token | agents with its `lucina.mcp-token` label | only if the agent's directory is inside its workspace's directory (`REWIND_FORBIDDEN` otherwise); no override |
+| agent | its subagents only, not itself | as an MCP token |
+| anyone else | nothing (`NOT_YOUR_AGENT`) | |
+
+The worktree guard is the one that gates starting an agent: not in a main checkout under the projects root, not in a stray
+worktree, the Codex rule (`WORKSPACE_GUARD`, 403). A conversation rewind changes no files, so it has no guard.
+
+**Fork** starts a new agent from another's chat history.
+
+- **`fork-context`** is Paseo's `buildAgentForkContextAttachment`, byte for byte (checked against Paseo's own code on 35
+  cases, `crates/lucina-agents/tests/paseo_fork_context.rs`, and live in `paseo_diff` scenario i): `{type: "text", mimeType:
+  "text/plain", contextKind: "chat_history", title: "Chat history", text}` where `text` is `<chat-history-summary>`, the header
+  `Chat history from a previous Paseo agent.` (kept as is), `Source agent:` and `Source directory:` lines, then the projected
+  timeline as `[User] …`, `[Assistant] …` and tool-call lines (reasoning, notifications and plugin items stay out). The whole
+  text is at most 100,000 UTF-16 code units: the newest entries that fit, after `[Earlier chat history omitted]`; one entry
+  bigger than all keeps its head and tail around `[Message truncated]`.
+- **Boundary**, as Paseo: `boundaryCursor` `{epoch, seq}` (the projected entry that ends at `seq`; a cursor from another epoch
+  is stale) or `boundaryMessageId` (the last assistant message with that id; a cursor wins when both are given); neither means
+  the whole history. A boundary that isn't there, or that falls inside an entry that kept growing (a tool call that updated
+  after it), is `409 FORK_BOUNDARY_UNAVAILABLE` with Paseo's message. Fork from a completed response.
+- **`fork`** creates the agent. It takes the source's provider, model, mode, thinking option, feature values, directory and
+  workspace unless the request names others (settings carry over only to the same provider; a caller that isn't the owner never
+  inherits the mode: it gets a supervised one). It is labelled `lucina.forked-from=<source id>`, and an MCP token's fork carries
+  its `lucina.mcp-token`. The first prompt it gets is the attachment text, a blank line, then the prompt. With a `prompt` that
+  turn starts at once; without one the agent waits idle with the history kept on its record (`seedContext`), and the first prompt
+  sent to it (also after a restart) carries it, once. The timeline shows the prompt as typed, except for a provider that echoes
+  the message itself (the mock, Codex): it shows what it was sent. An external agent can't be forked into its own kind: pass a
+  `provider`.
+- **Who may fork:** the owner any agent; an MCP token the agents it started; an agent itself and its subagents (its fork is
+  its subagent, under the depth limit: a subagent forks nothing, `DELEGATION_DEPTH`). The same rules apply to `fork-context`.
+  Non-owners are supervised as for any agent they start (no provider or mode without permission prompts).
+
+**Differences from Paseo** (the mock; `paseo_diff` scenario i): Paseo's mock keeps only the first user message on any
+conversation rewind and fails an unknown target inside the provider; Lucina's mock rewinds to the target and an unknown
+target is `404 REWIND_TARGET_NOT_FOUND` before anything runs. Paseo cancels the running turn before it finds out the rewind is
+unsupported; Lucina checks first. Paseo reads the history back from the provider after a rewind; Lucina rewrites its own
+stored timeline.
+
 ## Stream
 
 `GET /v1/agents/stream` is SSE. Each event has a monotonic `id:` and `data:` set to one bus event:
@@ -235,6 +366,10 @@ terminal output is SSE and input is a POST. A WebSocket would need upgrade suppo
 - `{"type":"agent_state","agent":{…snapshot}}`
 - `{"type":"agent_stream","agentId","event":{…StreamEvent},"seq","epoch","timestamp"}`
 - `{"type":"agent_deleted","agentId"}`
+- `{"type":"provider_subagent","event":{"kind":"upsert"|"timeline"|"remove",…}}` (P7, above)
+
+- A16: `{"type":"timeline_replacement","agentId","epoch"}` (Paseo's `agent.timeline.replacement`): a conversation rewind replaced the
+  timeline; drop what you hold for the agent and fetch `/timeline` again under the new epoch
 - `{"type":"permission","permission":{…PermissionView}}`
 - `{"type":"workspace","workspace":{…WorkspaceRecord}}`
 - phase 7: `{"type":"agent_command","agentId","commandId","command":{…},"createdAt","expiresAt"}`, only to the owning device

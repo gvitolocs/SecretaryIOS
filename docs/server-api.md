@@ -427,6 +427,34 @@ timeout 15 s. `200`:
 `device`, `deviceName`, and `caller` are optional; agent conversations can
 include `caller`. Unknown fields on conversations and the response are kept.
 
+**Lucina's own endpoints (lucina-server).** `GET /api/secretary/timeline` and
+`GET /api/secretary/timeline/conversations` serve the same data with the same bearer
+authentication, wrapped in the usual envelope (`{"ok":true,"data":{"items":[],"nextBefore":null,"cursor":null,"hasMore":false}}`);
+items are raw stored JSON, newest id first, including incremental responses. Differences from
+the table above, as Lucina implements them:
+
+- `scope=mine` requires `device` (a valid id) and `channel` (`web` or `ios`); it includes
+  `device:<device>`, `legacy:<channel>`, and `lucina`. `conversation` and `scope` are mutually exclusive.
+- `after` scans the items that arrived after that id in file arrival order and returns at most
+  `limit` matches; it is mutually exclusive with `before`. A scan may cross nonmatching items, so
+  always advance using `cursor`, not a returned item's id. A late writer can append an older id:
+  incremental sync uses arrival order while responses display items newest id first. On 410,
+  rebuild the local snapshot using ordinary pages. The SSE stream is unchanged.
+- `nextBefore` is the oldest returned id if more matching older items remain, otherwise `null`.
+  `cursor` is the newest arrival id at read time for ordinary pages; for `after` pages it is the
+  last scanned id when more items remain to scan, otherwise the newest arrival id. It is `null`
+  only for an empty store. All responses have `Cache-Control: no-store`.
+- Chat bodies accept optional `device` (`[A-Za-z0-9_-]{1,64}`; invalid values are dropped) and
+  `deviceName` (controls removed, trimmed, clipped to 64 UTF-16 code units). Both are stored on the
+  user and reply meta, also on MCP turns and later job results when the turn context is available.
+  Existing lines remain unchanged.
+- The conversations list excludes the selftest store. Counts cover retained generations only.
+  The last fields describe the newest item by id; `lastText` is plain text with whitespace
+  collapsed and clipped to 160 UTF-16 code units. Device titles use the latest deviceName seen,
+  otherwise the device id; legacy titles are "iPhone (before devices)" and "Web (before devices)".
+  Agent titles are ChatGPT, Claude, Claude Code, Grok Bot (grok or grok-bot), Cursor, Codex,
+  otherwise the stored caller. Other titles are Telegram, Discord, Alexa, and Lucina.
+
 ### `GET /v1/timeline/stream`
 
 [Server-Sent Events](https://html.spec.whatwg.org/multipage/server-sent-events.html):
@@ -2244,95 +2272,6 @@ projects), 503 `secrets_unconfigured` / `broker_unavailable`.
 Lucina writes the receipt to the timeline (`meta.kind: secret_receipt`): "Saved `NAME` in project /
 env / path (fingerprint xxxxxxxx)". In chat, `/secret …` never reaches her model, timeline, Honcho
 or replay cache, and token-shaped text is masked before the turn and offered as a held value.
-
-## Approvals
-
-"When Lucina needs my permission, I get a prompt on my main device and press Yes." One API for every
-requester (Lucina's secrets guard and root commands, the Infisical broker, agentd, a device).
-Code: `crates/secretary-server/src/approvals.rs`. Pending requests live in memory (a restart drops
-them); settings and keys are JSON files (0600) in the data dir; every event is appended to
-`approvals-audit.jsonl` (`created`, `notified` main/escalated, `decided` with device and biometric
-yes/no and `verifiedBy`, `expired`, `waited` when a grant is handed out, `key_registered`, `key_refused`,
-`pin_set`, `pin_removed`, `pin_wrong`, `pin_locked`). Names and ids only, no secret values.
-
-**Requester** routes take the service token (`svc_…`) or a device Bearer/cookie. A device that asks
-always shows as `kind: device` with its own name. Creation is limited to 20 per requester per minute (429).
-
-| Route | |
-|---|---|
-| `POST /v1/approvals` | `{requester: {kind: lucina\|broker\|agentd\|mcp\|device, name, detail?}, action, summary (<=200), details? (<=4000), risk: low\|medium\|high, sensitive?, payloadHash: "sha256:<64 hex>", ttlSecs?}` → `201 {id: "apr_…", status: "pending", sensitive, expiresAt}`. `ttlSecs`: default 300, clamped to 30..900. `action`: lowercase `[a-z0-9._-]`. |
-| `GET /v1/approvals/{id}/wait?timeout=25` | Long poll (at most 30 s), only for the identity that asked, else 404 `approval_not_found`. `{id, status: pending\|approved\|denied\|expired, decidedAt?, decidedBy? (device name), grant?}`. |
-| `GET /v1/approvals/public-key` | Public. `{alg: "ed25519", publicKey: <base64>, keyId: <8 hex>}`. |
-
-`sensitive` is forced when `action` starts with `secret.`, `root.`, `sudo.`, `message.send`,
-`email.send`, `payment.`, `account.` or `broker.`.
-
-**Grant** (on `approved`, the same string on every wait until the request expires):
-`b64url(payload_json) + "." + b64url(signature)`; the signature (Ed25519, key `approval-grant.key`,
-made on first start, a different key and context than the "Add secret" grants) is over the ASCII bytes
-`"secretary-approval-v1." + b64url(payload_json)`. Payload:
-`{v: 1, id, action, requester: {kind, name}, payloadHash, decision: "approved", decidedBy: <device id>,
-biometric, verifiedBy?, iat, exp: iat + 120}`. `biometric: true` means "the owner verified on the device",
-by `verifiedBy: "device_key"` (the Face ID key) or `"pin"` (the app PIN); both are absent/false for an
-approval that needed no verification. A verifier checks the signature with the pinned public key, `exp`,
-`action`, that `payloadHash` is the hash of what it is about to do, and single use (it remembers ids
-until `exp`).
-
-**Approver** routes take a device (Bearer, or cookie with `X-Secretary-CSRF: 1`); the service token
-gets 403 `service_cannot_decide` on all of them.
-
-| Route | |
-|---|---|
-| `GET /v1/approvals?status=pending\|all` | `{approvals: […]}`, newest first. `pending`: what this device may decide now (not its own requests; inside the first 30 s only the main device sees it). Item: `{id, status, requester, action, summary, details, risk, sensitive, payloadHash, createdAt, expiresAt, escalated, youAreMain, decidedAt?, decidedBy?, decidedById?, biometric?, verifiedBy?}`. |
-| `GET /v1/approvals/{id}` | One item, also decided or expired (kept for an hour), for a deep link that says "already answered". |
-| `POST /v1/approvals/{id}/decide` | `{decision: approve\|deny, payloadHash, proof?: {keyId, signature}, pin?: "123456"}` → `{status: approved\|denied}`. A sensitive approve needs `proof` or `pin`. |
-| `GET /v1/approvals/settings` | `{mainDeviceId, escalateAfterSecs: 30, devices: [{id, name, isMain, hasBiometricKey, lastSeen?}], thisDeviceId, hasPin}`. |
-| `PUT /v1/approvals/settings` | `{mainDeviceId: "<id>" \| null}` (the field is required; 404 `device_not_found`). Answers like `GET`. |
-| `POST /v1/approvals/keys` | `{publicKey: <base64 X9.63 uncompressed P-256>, label?, proof: {signature}}` → `{keyId}`. No password (a `password` field is ignored). Replaces this device's key. Missing or bad proof: 400 `proof_invalid`. |
-| `DELETE /v1/approvals/keys` | `{removed}`. |
-| `PUT /v1/approvals/pin` | `{pin: "123456", currentPin?, proof?: {signature}}` → `{hasPin: true}`. `pin` is exactly 6 ASCII digits (400 `bad_request`). When a PIN already exists, `currentPin` or a `proof` is required (403 `pin_auth_required`). |
-| `DELETE /v1/approvals/pin` | Optional body `{currentPin?, proof?}` (same rule) → `{hasPin: false}`. Without a PIN it is a no-op that answers the same. |
-
-**Key registration.** The device authorizes itself with its token; `proof.signature` is a base64 DER
-ECDSA P-256/SHA-256 signature made by the new key over the ASCII bytes
-`"secretary-approval-key-v1\n{thisDeviceId}\n{publicKey}"`, where `publicKey` is the exact string sent
-(on iOS, making it needs Face ID or the passcode). On success the audit logs `key_registered` and every
-device gets an `approval`-category notice (title "Approvals", no `approvalId`, so no Approve action):
-"Approvals set up on <device name>".
-
-**App PIN** (optional, the fallback when Face ID is not available). Stored only as an Argon2id hash in
-`approval-pin.json` (0600), with the wrong-attempt count and the lock time. Changing or removing an
-existing PIN takes the current PIN, or `proof.signature` over `"secretary-approval-pin-v1\n{thisDeviceId}"`
-from this device's registered key. Every change notifies all devices: "Approval PIN changed on <device name>".
-A wrong `currentPin` counts like a wrong PIN when deciding.
-
-`proof.signature` is a base64 DER ECDSA P-256/SHA-256 signature over the ASCII bytes
-`"secretary-approval-v1\n{id}\n{payloadHash}\n{decision}"`, made with the key registered to the
-deciding device (a Secure Enclave key usable after Face ID). Approving a sensitive request without a
-valid proof gives 403 `biometric_required`; denying never needs one. The web has no such key, so it can
-approve only requests that are not sensitive.
-
-A sensitive approve may carry `pin` instead of `proof`; a valid `proof` is used first (and then the PIN
-is not checked). The PIN is checked after every other check below, so it never helps with
-`self_approval`, `not_main_device`, `payload_mismatch`, `approval_decided` or `approval_expired`. A wrong
-PIN is 403 `pin_wrong` with the count next to `code` and `message`:
-`{"error": {"code": "pin_wrong", "message": "the PIN is wrong", "attemptsLeft": 4}}`. The fifth wrong
-PIN in a row locks it for 15 minutes: that answer and every PIN attempt until then is 429 `pin_locked`
-with `Retry-After` (seconds; the device-key proof still works). A correct PIN resets the count; the
-count and the lock survive a restart. A `pin` that is not 6 digits is 400 `bad_request` and costs no
-attempt. With no PIN set, a `pin` gives 403 `biometric_required`. A `pin` on a request that is not
-sensitive is ignored.
-
-Decide errors: 404 `approval_not_found`; 409 `approval_decided`; 410 `approval_expired`; 403
-`self_approval` (the approver is the requester device); 403 `not_main_device` (first 30 s, a main
-device is set and this is not it); 409 `payload_mismatch` (`payloadHash` differs from the request's);
-403 `biometric_required`; 403 `pin_wrong`; 429 `pin_locked`; 403 `csrf` (cookie without the header).
-
-**Delivery.** On create the server publishes a notification of category `approval` to the main
-device's subscriptions, and to every other device after 30 s if the request is still pending (at once
-to all when no main device is set). Web Push payload: `route` and `url` = `/approvals/<id>`, plus
-`approvalId` and `sensitive`. APNs (when configured): `aps.category = "APPROVAL"`, `approvalId`,
-`sensitive`. The native app has no remote push on a free team and polls `GET /v1/approvals?status=pending`.
 
 ## Models
 

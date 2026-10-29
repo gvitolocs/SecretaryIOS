@@ -2,13 +2,17 @@
 //! docs/verification.md protocol 15).
 //!
 //! Routes under `/v1/maps`: `health`, `config`, `tiles/<name>.pmtiles` (HTTP range),
-//! `assets/<path>` (fonts and sprites), `geocode` and `routes` (Google server APIs).
+//! `assets/<path>` (fonts and sprites), `geocode` and `routes` (Google server APIs when a key is
+//! loaded; the self-hosted gazetteer, Photon and OSRM and straight-line estimates otherwise).
 //! p1's Caddy authenticates the owner (forward_auth) and, when the service is started with
 //! an upstream key, adds `X-Maps-Upstream-Key`.
+pub mod aufind;
 pub mod cache;
 pub mod gazetteer;
 pub mod geocode;
 pub mod kernel;
+pub mod osrm;
+pub mod photon;
 pub mod provider;
 pub mod routes;
 
@@ -48,15 +52,29 @@ pub struct Config {
     pub tiles: String,
     pub home: Option<Home>,
     pub google_key: Option<provider::Secret>,
+    /// Client keys the apps render Google Maps with (`/v1/maps/config`): web (referrer
+    /// restricted) and iOS (bundle restricted).
+    pub google_web_key: Option<provider::ClientKey>,
+    pub google_ios_key: Option<provider::ClientKey>,
     pub places_url: String,
     pub routes_url: String,
+    /// Self-hosted Photon (`MAPS_PHOTON_URL`): geocoding when Google is missing or fails.
+    pub photon_url: Option<String>,
+    /// AU Find building directory (`MAPS_AUFIND_URL`), before the local gazetteer.
+    pub aufind_url: Option<String>,
+    /// Self-hosted OSRM (`MAPS_OSRM_URL`): drive/walk/bike routes when Google is missing or fails.
+    pub osrm_url: Option<String>,
     pub state_dir: PathBuf,
     pub upstream_key: Option<String>,
 }
 
 impl Config {
-    /// Reads `MAPS_DIR`, `MAPS_TILES`, `MAPS_HOME_LAT`/`_LNG`/`_LABEL`, `MAPS_GOOGLE_KEY_FILE` and
-    /// `MAPS_UPSTREAM_KEY_FILE` through `var` (`std::env::var` in the binary).
+    /// Reads `MAPS_DIR`, `MAPS_TILES`, `MAPS_HOME_LAT`/`_LNG`/`_LABEL`, `GOOGLE_MAPS_SERVER_KEY`
+    /// or `MAPS_GOOGLE_KEY_FILE`, the client keys `GOOGLE_MAPS_WEB_KEY` / `MAPS_GOOGLE_WEB_KEY_FILE`
+    /// and `GOOGLE_MAPS_IOS_KEY` / `MAPS_GOOGLE_IOS_KEY_FILE`, `MAPS_PHOTON_URL`, `MAPS_AUFIND_URL`, `MAPS_OSRM_URL`
+    /// and `MAPS_UPSTREAM_KEY_FILE` through `var` (`std::env::var` in the binary). No Google key
+    /// is ever required: a missing, empty, unreadable (or, for client keys, malformed) key is
+    /// only not configured.
     pub fn from_env(var: impl Fn(&str) -> Option<String>) -> Result<Config, String> {
         let get = |k: &str| {
             var(k)
@@ -88,14 +106,54 @@ impl Config {
             _ => None,
         };
         let home_dir = var("HOME").map(PathBuf::from).unwrap_or_default();
-        let key_path = get("MAPS_GOOGLE_KEY_FILE")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home_dir.join(".config/secretary-maps/google.key"));
-        let google_key = match std::fs::read_to_string(key_path) {
-            Ok(k) => provider::Secret::new(k.trim()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(_) => return Err("cannot read Google key file".into()),
+        // A key: the secret's own name (Infisical) wins over the key file; trimmed; missing,
+        // empty or unreadable is `None`, never an error.
+        let read_key = |secret: &str, file_var: &str, default_file: &str| {
+            if let Some(k) = get(secret) {
+                return Some(k);
+            }
+            let path = get(file_var)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home_dir.join(".config/secretary-maps").join(default_file));
+            match std::fs::read_to_string(path) {
+                Ok(k) => Some(k.trim().to_string()).filter(|k| !k.is_empty()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(_) => {
+                    tracing::warn!(key = secret, "key file unreadable: key not configured");
+                    None
+                }
+            }
         };
+        let google_key = read_key(
+            "GOOGLE_MAPS_SERVER_KEY",
+            "MAPS_GOOGLE_KEY_FILE",
+            "google.key",
+        )
+        .and_then(|k| provider::Secret::new(&k));
+        // Client keys for the apps' Google map; a malformed key is logged (never its value)
+        // and served as null.
+        let client_key = |secret: &str, file_var: &str, default_file: &str| {
+            let k = read_key(secret, file_var, default_file)?;
+            let key = provider::ClientKey::new(&k);
+            if key.is_none() {
+                tracing::warn!(key = secret, "client key malformed: not configured");
+            }
+            key
+        };
+        let google_web_key = client_key(
+            "GOOGLE_MAPS_WEB_KEY",
+            "MAPS_GOOGLE_WEB_KEY_FILE",
+            "google-web.key",
+        );
+        let google_ios_key = client_key(
+            "GOOGLE_MAPS_IOS_KEY",
+            "MAPS_GOOGLE_IOS_KEY_FILE",
+            "google-ios.key",
+        );
+        let base_url = |k: &str| get(k).map(|u| u.trim_end_matches('/').to_string());
+        let photon_url = base_url("MAPS_PHOTON_URL");
+        let aufind_url = base_url("MAPS_AUFIND_URL");
+        let osrm_url = base_url("MAPS_OSRM_URL");
         let places_url = get("MAPS_GOOGLE_PLACES_URL")
             .map(|url| provider::endpoint(&url, "v1/places:searchText"))
             .unwrap_or_else(|| "https://places.googleapis.com/v1/places:searchText".into());
@@ -124,8 +182,13 @@ impl Config {
             tiles,
             home,
             google_key,
+            google_web_key,
+            google_ios_key,
             places_url,
             routes_url,
+            photon_url,
+            aufind_url,
+            osrm_url,
             state_dir,
             upstream_key,
         })
@@ -168,6 +231,16 @@ impl AppState {
 
     fn tiles_present(&self) -> bool {
         self.config.tiles_path(&self.config.tiles).is_file()
+    }
+
+    /// A geocoder beyond the gazetteer: Google or Photon.
+    fn geocoder(&self) -> bool {
+        self.config.google_key.is_some() || self.config.photon_url.is_some()
+    }
+
+    /// A road router: Google or OSRM (estimates are not routes).
+    fn router(&self) -> bool {
+        self.config.google_key.is_some() || self.config.osrm_url.is_some()
     }
 }
 
@@ -231,9 +304,7 @@ async fn method_not_allowed() -> Response {
 }
 
 async fn health(State(st): State<Arc<AppState>>) -> Json<Value> {
-    Json(
-        json!({ "ok": true, "tiles": st.tiles_present(), "geocoder": st.config.google_key.is_some() }),
-    )
+    Json(json!({ "ok": true, "tiles": st.tiles_present(), "geocoder": st.geocoder() }))
 }
 
 async fn config(State(st): State<Arc<AppState>>) -> Json<Value> {
@@ -248,9 +319,13 @@ async fn config(State(st): State<Arc<AppState>>) -> Json<Value> {
         "tiles": tiles,
         "assets": "/v1/maps/assets",
         "home": home,
-        "geocoder": st.config.google_key.is_some(),
-        "routes": st.config.google_key.is_some(),
+        "geocoder": st.geocoder(),
+        "routes": st.router(),
         "attribution": ATTRIBUTION,
+        "google": {
+            "webKey": c.google_web_key.as_ref().map(provider::ClientKey::as_str),
+            "iosKey": c.google_ios_key.as_ref().map(provider::ClientKey::as_str),
+        },
     }))
 }
 
@@ -428,33 +503,64 @@ async fn geocode_route(State(st): State<Arc<AppState>>, Query(p): Query<GeocodeQ
         _ => None,
     };
     let bias = from_query.or(st.config.home.as_ref().map(|h| (h.lat_e7, h.lng_e7)));
-    // University room codes: answered locally, with or without a Google key.
+    // University codes: AU Find first, then local OSM buildings, with or without Google.
+    if let (Some(base), Some(room)) = (&st.config.aufind_url, gazetteer::au_room(q)) {
+        let key = format!("aufind|{}", geocode::cache_key(q, bias, limit));
+        if let Some(results) = st.cache.lock().unwrap().get(&key) {
+            return Json(json!({ "results": results })).into_response();
+        }
+        if let Some(hit) = aufind::lookup(&st.http, base, &room).await {
+            let results = json!([hit]);
+            st.cache
+                .lock()
+                .unwrap()
+                .insert(key, results.clone(), 86400, false);
+            return Json(json!({ "results": results })).into_response();
+        }
+    }
     if let Some(hit) = st.gazetteer.lookup(q) {
         tracing::info!(q_len = n, results = 1, "geocode gazetteer");
         return Json(json!({ "results": [hit] })).into_response();
     }
-    if st.config.google_key.is_none() {
-        return error(StatusCode::SERVICE_UNAVAILABLE, "provider_unavailable");
-    }
-    let key = geocode::cache_key(q, bias, limit);
-    if let Some(results) = st.cache.lock().unwrap().get(&key) {
-        return Json(json!({ "results": results })).into_response();
-    }
-    match tokio::time::timeout(Duration::from_secs(3), geocode::google(&st, q, bias, limit))
-        .await
-        .unwrap_or(Err(provider::Unavailable))
-    {
-        Ok(results) => {
-            tracing::info!(q_len = n, results = results.len(), "geocode");
-            st.cache
-                .lock()
-                .unwrap()
-                .insert(key, json!(results), 30 * 86400, true);
-            Json(json!({ "results": results })).into_response()
+    // Google first (when a key is loaded), then the self-hosted Photon (when configured).
+    if st.config.google_key.is_some() {
+        let key = geocode::cache_key(q, bias, limit);
+        if let Some(results) = st.cache.lock().unwrap().get(&key) {
+            return Json(json!({ "results": results })).into_response();
         }
-        Err(provider::Unavailable) => {
-            tracing::warn!(q_len = n, "geocode unavailable");
-            error(StatusCode::SERVICE_UNAVAILABLE, "provider_unavailable")
+        match tokio::time::timeout(Duration::from_secs(3), geocode::google(&st, q, bias, limit))
+            .await
+            .unwrap_or(Err(provider::Unavailable))
+        {
+            Ok(results) => {
+                tracing::info!(q_len = n, results = results.len(), "geocode");
+                st.cache
+                    .lock()
+                    .unwrap()
+                    .insert(key, json!(results), 30 * 86400, true);
+                return Json(json!({ "results": results })).into_response();
+            }
+            Err(provider::Unavailable) => tracing::warn!(q_len = n, "geocode google unavailable"),
         }
     }
+    if let Some(base) = &st.config.photon_url {
+        let key = format!("photon|{}", geocode::cache_key(q, bias, limit));
+        if let Some(results) = st.cache.lock().unwrap().get(&key) {
+            return Json(json!({ "results": results })).into_response();
+        }
+        match photon::geocode(&st.http, base, q, bias, limit).await {
+            Ok(results) => {
+                tracing::info!(q_len = n, results = results.len(), "geocode photon");
+                // Memory only: the persistent snapshot holds Google answers.
+                st.cache
+                    .lock()
+                    .unwrap()
+                    .insert(key, json!(results), 86400, false);
+                return Json(json!({ "results": results })).into_response();
+            }
+            Err(provider::Unavailable) => tracing::warn!(q_len = n, "geocode photon unavailable"),
+        }
+    }
+    tracing::warn!(q_len = n, "geocode unavailable");
+    error(StatusCode::SERVICE_UNAVAILABLE, "provider_unavailable")
 }

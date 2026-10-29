@@ -1,0 +1,44 @@
+[package]
+name = "lucina-tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Lucina's tool plugins, registry, agent loop and confirmation flow"
+
+[dependencies]
+lucina-secrets = { path = "../lucina-secrets" }
+lucina-approvals = { path = "../lucina-approvals" }
+lucina-llm = { path = "../lucina-llm" }
+lucina-store = { path = "../lucina-store" }
+lucina-grocery = { path = "../lucina-grocery" }
+lucina-jev = { path = "../lucina-jev" }
+lucina-discord = { path = "../lucina-discord" }
+lucina-meshy = { path = "../lucina-meshy" }
+lucina-delegate = { path = "../lucina-delegate" }
+lucina-computer-use = { path = "../lucina-computer-use" }
+lucina-ops = { path = "../lucina-ops" }
+lucina-phone-core = { path = "../lucina-phone-core" }
+futures-util = { workspace = true }
+async-trait = { workspace = true }
+schemars = "1"
+jsonschema = { version = "0.59", default-features = false }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+sha2 = { workspace = true }
+base64 = "=0.22.1"
+num-bigint = "=0.4.8"
+num-rational = "=0.4.2"
+num-traits = "=0.2.19"
+
+[dev-dependencies]
+proptest = "1"
+wiremock = "0.6"
+tempfile = "3"
+lucina-approvals = { path = "../lucina-approvals", features = ["testing"] }

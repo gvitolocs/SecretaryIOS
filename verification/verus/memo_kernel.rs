@@ -30,6 +30,10 @@
 //      `better` is a strict order (asymmetric, transitive).
 //   K9 may_auto_link: the worker never replaces the owner's choice of event ("none" included).
 //   K10 title_from_event: the linked event names the memo unless the owner named it.
+//   K11 diarize_memo: speaker labels are made only when a diarizer is available, the
+//      transcript has none and no attempt was made on this transcript; a labelled transcript
+//      is never relabelled and a failing diarizer is not retried on the same transcript
+//      (lemma: at most one attempt per transcript).
 //
 // Bug found while writing this (fixed in lucina-rs with the kernel): a reprocess with the
 // GPU busy replaced a Whisper transcript with the iPhone's (K1 failed on `existing`).
@@ -533,6 +537,60 @@ pub fn title_from_event(source: TitleSource) -> (r: bool)
         r <==> source != TitleSource::Owner,
 {
     !matches!(source, TitleSource::Owner)
+}
+
+// ---------------------------------------------------------------- K11
+
+pub open spec fn spec_diarize_memo(available: bool, labelled: bool, attempted: bool) -> bool {
+    available && !labelled && !attempted
+}
+
+pub fn diarize_memo(available: bool, labelled: bool, attempted: bool) -> (r: bool)
+    ensures
+        r == spec_diarize_memo(available, labelled, attempted),
+        labelled ==> !r,
+        attempted ==> !r,
+{
+    available && !labelled && !attempted
+}
+
+/// Attempts over runs on one transcript, with the diarizer's availability at each run; each
+/// attempt records `diarized_at` (attempted) whatever its outcome.
+pub open spec fn attempts(attempted: bool, labelled: bool, avail: Seq<bool>) -> nat
+    decreases avail.len(),
+{
+    if avail.len() == 0 {
+        0
+    } else if spec_diarize_memo(avail[0], labelled, attempted) {
+        1 + attempts(true, labelled, avail.subrange(1, avail.len() as int))
+    } else {
+        attempts(attempted, labelled, avail.subrange(1, avail.len() as int))
+    }
+}
+
+proof fn lemma_attempted_stops(labelled: bool, avail: Seq<bool>)
+    ensures
+        attempts(true, labelled, avail) == 0,
+    decreases avail.len(),
+{
+    if avail.len() > 0 {
+        lemma_attempted_stops(labelled, avail.subrange(1, avail.len() as int));
+    }
+}
+
+/// At most one diarization per transcript, however many runs, restarts and outages.
+pub proof fn lemma_diarize_once_per_transcript(attempted: bool, labelled: bool, avail: Seq<bool>)
+    ensures
+        attempts(attempted, labelled, avail) <= 1,
+    decreases avail.len(),
+{
+    if avail.len() > 0 {
+        if spec_diarize_memo(avail[0], labelled, attempted) {
+            lemma_attempted_stops(labelled, avail.subrange(1, avail.len() as int));
+        } else {
+            lemma_diarize_once_per_transcript(attempted, labelled, avail.subrange(1, avail.len() as int));
+        }
+    }
 }
 
 fn main() {

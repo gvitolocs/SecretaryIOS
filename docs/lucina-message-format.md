@@ -65,8 +65,7 @@ Text fields marked *md* allow inline markdown; the others are plain text.
 | `quote` | `text` *md*, `cite?` | |
 | `link_preview` | `url`, `title` | `url` must be `http(s)`. Opens in a new tab / Safari. |
 | `place` | `title`, `address?`, `lat?`+`lng?`, `when?`, `end?` (RFC 3339), `eventId?`, `kind: event\|place`, `travelMin?`+`travelMode?` (`walk\|bike\|transit\|drive`), `travelApprox?` | A title plus an address or a valid coordinate pair (both or neither, not (0,0)); at most 3 per message. The card opens the in-app place map (`/map/place`). `travelMin` (1-1440) is Lucina's travel time from home, `travelApprox: true` when it is a straight-line estimate. |
-
-| `image` | `src`, `alt`, `caption?`, `width?`, `height?` | A picture Lucina made, e.g. an AU campus map. `src` is a relative `/v1/…` path on secretary-server (fetched with the app's auth) or `https://getsecretary.tech/…`; any other `src` drops the block. Tapping opens it full size. |
+| `image` | `src`, `alt?`, `caption?`, `width?`, `height?` | At most 2 per message. `src` is a path of the apps' API starting with `/v1/` (no `..`, no `//`, at most 300 characters, e.g. `/v1/au/map.png?building=1532&z=17`) or an `https://` URL on `getsecretary.tech`; anything else drops the block. `alt` and `caption` up to 200 characters; `width`/`height` in pixels (1-4096). Used for the AU campus map. | Tapping opens it full size.
 
 Lengths: titles 120, item texts 400, card bodies 600, labels and stat values 40,
 table cells 80 characters.
@@ -139,7 +138,8 @@ Ecco cosa supporto **ora** ✅
 
 Checklist `✅`/`⬜`, card `emoji **title** — subtitle` + body, stat
 `label: **value** (delta)`, list `• text — meta` (or the item's emoji), table
-`a · b · c` rows, steps `1. …`, quote `> …`, link preview `🔗 [title](url)`.
+`a · b · c` rows, steps `1. …`, quote `> …`, link preview `🔗 [title](url)`,
+image `🗺️ caption` (followed by ` — <LUCINA_PUBLIC_URL><src>` when the public URL is configured).
 A prefill or `edit` action is shown as `«text …»`, a route as `nell'app: label`.
 
 ## How Lucina produces it

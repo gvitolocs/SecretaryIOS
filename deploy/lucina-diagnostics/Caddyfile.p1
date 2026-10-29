@@ -1,0 +1,26 @@
+	# lucina-diagnostics (nezopt :8794, docs/diagnostics.md): crash reports and log bundles.
+	# Same gate as /v1/memos: device auth through forward_auth (60/min per device), CSRF for
+	# cookie writes, and the gateway key lucina-diagnostics checks. Reports with attachments
+	# are at most 20 MiB of attachments plus 1 MiB; place this block next to @memos, before
+	# the catch-all `handle`.
+	@diagnostics path /v1/diagnostics /v1/diagnostics/*
+	handle @diagnostics {
+		route {
+			@diagnostics_csrf {
+				not method GET HEAD
+				not header Authorization *
+				not header X-Secretary-CSRF 1
+			}
+			respond @diagnostics_csrf `{"ok":false,"error":"csrf"}` 403
+			forward_auth 127.0.0.1:8800 {
+				uri /v1/avatar
+			}
+			request_body {
+				max_size 22MiB
+			}
+			reverse_proxy 100.107.164.33:8794 {
+				header_up X-Diagnostics-Gateway {file./etc/caddy/diagnostics-gateway.key}
+				flush_interval -1
+			}
+		}
+	}

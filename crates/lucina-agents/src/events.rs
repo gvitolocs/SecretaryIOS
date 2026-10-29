@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Number;
 
 use crate::permission::{PermissionRequest, PermissionResponse};
+use crate::subagent::SubagentEvent;
 use crate::timeline::TimelineItem;
 use crate::types::AttentionReason;
 
@@ -111,6 +112,12 @@ pub enum StreamEvent {
         turn_id: Option<String>,
         usage: Usage,
     },
+    /// A child the provider runs inside this agent (a Claude `Task`, an OpenCode child
+    /// session): its descriptor and its own timeline. Not part of the parent's timeline.
+    ProviderSubagent {
+        provider: String,
+        event: SubagentEvent,
+    },
     AttentionRequired {
         provider: String,
         reason: AttentionReason,
@@ -195,6 +202,8 @@ mod tests {
             json!({"type":"turn_canceled","provider":"mock","reason":"interrupted"}),
             json!({"type":"timeline","provider":"mock","item":{"type":"reasoning","text":"r"},"turnId":"t1"}),
             json!({"type":"permission_resolved","provider":"mock","requestId":"p","resolution":{"behavior":"deny"}}),
+            json!({"type":"provider_subagent","provider":"claude","event":{"type":"upsert","id":"t1","title":"Explore","status":"running","toolCallId":"t1"}}),
+            json!({"type":"provider_subagent","provider":"claude","event":{"type":"timeline","id":"t1","item":{"type":"reasoning","text":"r"}}}),
             json!({"type":"attention_required","provider":"mock","reason":"finished","timestamp":"2026-10-27T00:00:00.000Z","shouldNotify":true,
                    "notification":{"title":"Agent finished","body":"b","data":{"serverId":"srv","agentId":"a","reason":"finished"}}}),
         ] {

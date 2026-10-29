@@ -55,5 +55,12 @@ proptest = "1"
 # tests/desk.rs: a mock Lucina desk socket and a WebSocket client.
 axum = { version = "0.8", features = ["ws"] }
 tokio-tungstenite = "0.29"
+# tests/agents.rs: the real daemon router behind a mock Lucina.
+lucina-agentd = { path = "../lucina-agentd" }
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
 tempfile = "3"
 url = "2"
+# Stateright model of device-event delivery (tests/device_events_model.rs), checked by `cargo test`.
+stateright = { version = "=0.31.0", default-features = false }

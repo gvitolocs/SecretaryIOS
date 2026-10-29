@@ -47,6 +47,9 @@ client ──HTTPS──▶ Caddy (getsecretary.tech) ──▶ secretary-mcp 12
 | `notes_search {q?, tag?, label?, color?, type?, archived?, limit?}` | `read` | `GET /v1/notes?q=&tag=&color=&type=&archived=`: slug, title, source, labels, colour, checklist progress, reminder and an excerpt per hit; without `q`, the latest notes. `archived` is `include` (default), `exclude` or `only`. |
 | `note_labels` | `read` | `GET /v1/notes/labels`: label display names with note counts. |
 | `lucina_status` | `read` | Server and Lucina health, whether the backend token is accepted, owner time zone and local time, this caller's scopes. |
+| `diagnostics_recent {app?, kind?, since?, limit?, before?}` | `read` | lucina-diagnostics `GET /v1/diagnostics/reports`: crash reports from every Lucina client, newest first, with repeat counts and the top frame. Listed only with `SECRETARY_MCP_DIAGNOSTICS_URL`. |
+| `diagnostics_get {id, log_tail?}` | `read` | `GET /v1/diagnostics/reports/{id}`: message, stack, context, attachments, plus the end of its main log (6 000 characters by default). |
+| `diagnostics_file {id, name, from_end?, max_chars?}` | `read` | A text attachment (`…/files/{name}?tail=` or `head=`), up to 60 000 characters. Minidumps are refused. |
 
 **`ask_lucina` details.** The message reaches Lucina prefixed `[via Lucina MCP, from <caller>] `, so
 she knows who is asking. Each caller gets its own session `mcp-<caller>[-<conversation>]`. Progress
@@ -70,6 +73,11 @@ craftit-meeting"). For a document too long for one call, `note_save` the first p
 agenda is unavailable, it falls back to today's reminders.
 
 `tools/list`, `resources/list` and `prompts/list` show only what the caller's scopes allow.
+
+**Diagnostics.** The `diagnostics_*` tools read lucina-diagnostics on nezopt (`docs/diagnostics.md`)
+with its service token: set `SECRETARY_MCP_DIAGNOSTICS_URL=http://<nezopt tailnet>:8794` and
+`SECRETARY_MCP_DIAGNOSTICS_TOKEN_FILE` (a copy of nezopt's `~/.config/lucina-diagnostics/service.token`,
+`secretary-mcp:secretary-mcp 0600`). Without the URL the tools are not listed.
 
 **AI client status.** With `SECRETARY_MCP_STATUS_TOKEN_FILE` set, `GET /internal/status` (Bearer that token; 404 otherwise; not routed by Caddy) lists callers, how they connect, scopes, created/last-used times and whether they are active, never ids or hashes. secretary-server reads it for the Links tab.
 

@@ -65,7 +65,24 @@ Response `200` (also for `GET /api/secretary/decisions/{id}`):
 - `owner_only`: the question is one only the owner may answer (money, purchases, passwords or payment
   details, accepting terms, messages to other people in his name): always `pending`, never decided by Lucina.
   Claude sessions still need the owner's own words in their chat for those (their safety rules).
-- `evidence`: at most 6 short lines (each ≤ 300 chars) of what she based it on.
+- `evidence`: at most 6 short lines (each ≤ 300 chars) of what she based it on, best tier first
+  (`tier`: 1 his own words, 2 his own actions, 3 her earlier decisions, 4 agents' records). Every line must
+  share the question's keywords (on topic). Tier 2 (`kind: owner_action`, last 30 days, newest first, at most 4):
+  - secrets he saved through the Add-secret sheet (timeline items `meta.kind: "secret_receipt"`);
+  - broker grants he made from the apps and Lucina relayed (`LUCINA_SECRET_GRANTS_FILE`, default
+    `<LUCINA_DATA_DIR>/secret-grants.jsonl`, mode 0600: one line per relayed grant with `ts`, `op`
+    (`put_secret`, `create_project`, …), `project`, `environment`, `path`, `key`, `project_name`, `slug`,
+    `caller` when the grant names one, `outcome` `ok`|`error` and the broker's `error` code; never the
+    value, its hash, the grant or a token). Catalog browsing and unsuccessful relays are not evidence;
+  - root steps he approved or denied on his iPhone (`LUCINA_ROOT_AUDIT_FILE` (also `LUCINA_ROOT_AUDIT`), default
+    `<LUCINA_DATA_DIR>/root-exec-audit.jsonl`; `requested` alone is not his act). Steps that touch
+    `/etc/infisical-broker/` (or a reason that names the broker or broker.toml) read "Giuseppe approved
+    a broker settings change: …", with caller, section and grant names from readable staged `.toml`
+    files referenced by the steps.
+    Consecutive approved copies are compared by name only; when no named change can be recovered,
+    the line uses the requester's reason. Approval describes his decision, not whether the steps succeeded.
+  The broker's own iPhone approvals go from the broker to secretary-server directly; Lucina keeps no
+  record of them, and the broker's audit log is not readable by her.
 
 When she decides herself / asks him:
 - Always asks him (pending): `impact: high`, `reversible: false`, `owner_only`, conflicting evidence

@@ -41,6 +41,7 @@ Lucina keeps the record of all the owner's projects: report every deploy, incide
 one record per event (project slug, title, body; for incidents severity, timeline, cause, fix, follow_ups), and look things up with ops_search and ops_get. \
 AU questions (Aarhus University people, rooms, buildings, campus map) go to au_people_search, au_building and au_campus_map; always cite the source and never invent. \
 Questions like who called the owner from a number, and lists of unknown callers, go to caller_screen (180.dk public reports, then Jev's spam / kind / pick-up table); show its table with the quoted sources. \
+When available, diagnostics_recent, diagnostics_get and diagnostics_file show crash reports and logs from the owner's Lucina apps. \
 Lucina's computer is an isolated Linux desktop sandbox (container `lucina-workspace` on nezopt; not nezopt's host, not the owner's Mac). Its only browser is Chromium: one window, already open and signed in to the owner's accounts (Outlook, Google). Use the Lucina MCP tools: `computer_screenshot` to see it (it lists each window's pid and window_id), `computer_call` with `get_window_state` {pid, window_id} to read that Chromium window and `click`, `type_text`, `press_key` to act in it (reuse its tabs; ctrl+t opens a new tab there), `computer_bash` for shell work, or `computer_task` to have Lucina do the whole job. The driver's browser_* tools cannot attach to that window; never open a second browser window or an isolated profile, and never install or launch Firefox. Those signed-in sessions are the owner's: read and navigate freely, but never send email or messages, buy anything, accept terms or change account settings without the owner's explicit OK.\n\n\
 With the `agents` scope you can also drive Lucina Agents, the owner's coding agents on nezopt (Claude Code, Codex, OpenCode, Cursor, Copilot): \
 make a git worktree with workspace_create, start an agent in it with agent_run (provider + task), follow it with agent_wait and agent_logs, \
@@ -95,6 +96,11 @@ fn audit(what: &str, name: &str, c: &Caller, started: Instant, ok: bool) {
 }
 
 impl LucinaMcp {
+    /// Tools of optional backends exist only when the backend is configured.
+    fn offered(&self, name: &str) -> bool {
+        !name.starts_with("diagnostics_") || self.app.diagnostics.is_some()
+    }
+
     fn insufficient(&self, c: &Caller, need: Scope, name: &str) -> CallToolResult {
         let mut r = CallToolResult::error(vec![ContentBlock::text(format!(
             "This connection ({}) lacks the `{need}` scope needed for {name}. Reconnect with that permission, or issue a token with it.",
@@ -281,6 +287,7 @@ impl LucinaMcp {
             "task_add" => t.task_add(args).await,
             "task_complete" => t.task_complete(args).await,
             name if name.starts_with("ops_") => t.ops(name, args).await,
+            name if name.starts_with("diagnostics_") => t.diagnostics(name, args).await,
             _ => Err(ToolError(format!("unknown tool {name}"))),
         }
     }
@@ -380,7 +387,7 @@ impl ServerHandler for LucinaMcp {
         let c = caller(&ctx)?;
         let tools: Vec<Tool> = tools::specs()
             .iter()
-            .filter(|s| s.allowed(|x| c.has(x)))
+            .filter(|s| s.allowed(|x| c.has(x)) && self.offered(s.name))
             .map(|s| s.tool())
             .collect();
         Ok(ListToolsResult::with_all_items(tools)
@@ -389,7 +396,9 @@ impl ServerHandler for LucinaMcp {
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
-        tools::spec(name).map(|s| s.tool())
+        tools::spec(name)
+            .filter(|s| self.offered(s.name))
+            .map(|s| s.tool())
     }
 
     async fn call_tool(
@@ -400,7 +409,7 @@ impl ServerHandler for LucinaMcp {
         let started = Instant::now();
         let c = caller(&ctx)?;
         let name = request.name.to_string();
-        let Some(spec) = tools::spec(&name) else {
+        let Some(spec) = tools::spec(&name).filter(|s| self.offered(s.name)) else {
             audit("tool_call", &name, &c, started, false);
             return Err(McpError::invalid_params(
                 format!("unknown tool {name}"),

@@ -194,6 +194,24 @@ fn read_ledger(runtime: &str) -> Option<String> {
         .find_map(|l| l.strip_prefix("commit ").map(|s| s.trim().to_string()))
 }
 
+/// Whether someone holds the merge lock. Two styles are in use: the older
+/// directory lock (`mkdir /tmp/lucina-merge.lock`, optionally with an `owner`
+/// file inside) and a `flock(1)` on the file itself (`exec 9>/tmp/lucina-merge.lock;
+/// flock 9`). A flock is held when a non-blocking `flock -n` on the same path
+/// fails; the caller's own held descriptor counts, since it is a separate open.
+fn lock_is_held(lock: &Path) -> bool {
+    if lock.is_dir() || lock.join("owner").exists() {
+        return true;
+    }
+    if !lock.is_file() {
+        return false;
+    }
+    match Command::new("flock").arg("-n").arg(lock).arg("true").status() {
+        Ok(st) => !st.success(),
+        Err(_) => false,
+    }
+}
+
 fn facts(a: &Args, runtime: &str, target: &str) -> Result<Facts, String> {
     let repo = &a.repo;
     let commit = git_ok(
@@ -248,7 +266,7 @@ fn facts(a: &Args, runtime: &str, target: &str) -> Result<Facts, String> {
             }
         }
     };
-    let lock_held = a.no_lock_check || a.lock.join("owner").exists() || a.lock.is_dir();
+    let lock_held = a.no_lock_check || lock_is_held(&a.lock);
     Ok(Facts {
         dirty_paths,
         commit,
@@ -354,10 +372,212 @@ fn run() -> Result<ExitCode, String> {
             let tmp = dir.join(format!(".{runtime}.commit.tmp"));
             std::fs::write(&tmp, body).map_err(|e| format!("{}: {e}", tmp.display()))?;
             std::fs::rename(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))?;
+            let d = Deploy {
+                runtime: runtime.clone(),
+                commit: f.commit.clone(),
+                subject: git_ok(&a.repo, &["log", "-1", "--format=%s", &f.commit])
+                    .unwrap_or_default(),
+                repo: a
+                    .repo
+                    .canonicalize()
+                    .unwrap_or(a.repo.clone())
+                    .display()
+                    .to_string(),
+                target: target.clone(),
+                recorded: now.clone(),
+                committed: at.clone(),
+                by: who.clone(),
+                note: a.note.clone().unwrap_or_default(),
+            };
+            append_history(&dir, &d);
+            report_to_ops(&d);
             println!("deploy-guard: recorded {runtime} = {}", short(&f.commit));
             Ok(ExitCode::SUCCESS)
         }
         other => Err(format!("unknown command {other}")),
+    }
+}
+
+/// One recorded deploy (the ledger entry, for the history and the ops record).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Deploy {
+    pub runtime: String,
+    pub commit: String,
+    pub subject: String,
+    pub repo: String,
+    pub target: String,
+    pub recorded: String,
+    pub committed: String,
+    pub by: String,
+    pub note: String,
+}
+
+/// A JSON string literal.
+fn js(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// The ops record's project and host of a runtime (`DEPLOY_GUARD_OPS_PROJECT` overrides the project).
+pub fn ops_place(runtime: &str, project_override: Option<&str>) -> (String, &'static str) {
+    let project = match project_override.map(str::trim).filter(|p| !p.is_empty()) {
+        Some(p) => p.to_owned(),
+        None if runtime == "lucina-agentd" => "lucina-agents".to_owned(),
+        None if matches!(runtime, "secretary-server" | "secretary-mcp" | "web") => "secretary".to_owned(),
+        None => "lucina".to_owned(),
+    };
+    let host = match runtime {
+        "secretary-server" | "secretary-mcp" | "web" => "p1",
+        _ => "nezopt",
+    };
+    (project, host)
+}
+
+/// One line of `history.jsonl`.
+pub fn history_line(d: &Deploy) -> String {
+    format!(
+        "{{\"runtime\":{},\"commit\":{},\"repo\":{},\"target\":{},\"recorded\":{},\"committed\":{},\"by\":{},\"note\":{}}}",
+        js(&d.runtime),
+        js(&d.commit),
+        js(&d.repo),
+        js(&d.target),
+        js(&d.recorded),
+        js(&d.committed),
+        js(&d.by),
+        js(&d.note)
+    )
+}
+
+/// The NewRecord `lucina-rs ops record` gets for a deploy.
+pub fn ops_record_json(d: &Deploy, project_override: Option<&str>) -> String {
+    let (project, host) = ops_place(&d.runtime, project_override);
+    let subject: String = d.subject.chars().take(150).collect();
+    let title = if subject.is_empty() {
+        format!("{} deployed {}", d.runtime, short(&d.commit))
+    } else {
+        format!("{} deployed {}: {subject}", d.runtime, short(&d.commit))
+    };
+    let mut body = format!("{} on {}", d.repo, d.target);
+    if !d.note.is_empty() {
+        body.push('\n');
+        body.push_str(&d.note);
+    }
+    body.push_str(&format!("\nby {}", d.by));
+    let mut out = format!(
+        "{{\"kind\":\"deploy\",\"project\":{},\"title\":{},\"body\":{},\"commit\":{},\"host\":{},\"dedup_key\":{}",
+        js(&project),
+        js(&title),
+        js(&body),
+        js(&d.commit),
+        js(host),
+        js(&format!("deploy:{}:{}", d.runtime, d.commit))
+    );
+    if !d.recorded.is_empty() {
+        out.push_str(&format!(",\"at\":{}", js(&d.recorded)));
+    }
+    out.push('}');
+    out
+}
+
+/// Append-only history next to the per-runtime files (best effort).
+fn append_history(dir: &Path, d: &Deploy) {
+    use std::io::Write as _;
+    let path = dir.join("history.jsonl");
+    let r = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut f| writeln!(f, "{}", history_line(d)));
+    if let Err(e) = r {
+        eprintln!(
+            "deploy-guard: history not written ({}): {e}",
+            path.display()
+        );
+    }
+}
+
+/// `lucina-rs ops record --source deploy-guard` (best effort, at most 10 s; never changes the exit code).
+fn report_to_ops(d: &Deploy) {
+    use std::io::Write as _;
+    if std::env::var("DEPLOY_GUARD_OPS").is_ok_and(|v| v.trim() == "off") {
+        return;
+    }
+    let bin = match std::env::var_os("DEPLOY_GUARD_OPS_BIN") {
+        Some(b) => PathBuf::from(b),
+        None => {
+            let home = PathBuf::from(std::env::var("HOME").unwrap_or_default())
+                .join(".local/bin/lucina-rs");
+            if home.is_file() {
+                home
+            } else {
+                PathBuf::from("lucina-rs")
+            }
+        }
+    };
+    let json = ops_record_json(d, std::env::var("DEPLOY_GUARD_OPS_PROJECT").ok().as_deref());
+    let child = Command::new(&bin)
+        .args(["ops", "record", "--source", "deploy-guard"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn();
+    let mut child = match child {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("deploy-guard: ops record skipped: {}: {e}", bin.display());
+            return;
+        }
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(json.as_bytes());
+    }
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if start.elapsed() < std::time::Duration::from_secs(10) => {
+                std::thread::sleep(std::time::Duration::from_millis(50))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                eprintln!("deploy-guard: ops record skipped: no answer in 10 s");
+                return;
+            }
+        }
+    }
+    match child.wait_with_output() {
+        Ok(out) if out.status.success() => {
+            let text = String::from_utf8_lossy(&out.stdout);
+            let id = text
+                .split("\"id\":\"")
+                .nth(1)
+                .and_then(|r| r.split('"').next())
+                .unwrap_or("?");
+            println!("deploy-guard: ops record {id}");
+        }
+        Ok(out) => eprintln!(
+            "deploy-guard: ops record skipped: {}",
+            String::from_utf8_lossy(&out.stderr)
+                .trim()
+                .chars()
+                .take(300)
+                .collect::<String>()
+        ),
+        Err(e) => eprintln!("deploy-guard: ops record skipped: {e}"),
     }
 }
 
@@ -374,6 +594,55 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn deploy(runtime: &str) -> Deploy {
+        Deploy {
+            runtime: runtime.into(),
+            commit: "90e94263abcdef0123456789abcdef0123456789".into(),
+            subject: "Merge branch \"agents-p5\" into int5-rs".into(),
+            repo: "/home/nez/Projects/.worktrees/SecretaryIOS/lucina".into(),
+            target: "lucina-rs".into(),
+            recorded: "2026-10-28T15:53:08Z".into(),
+            committed: "2026-10-28T15:23:30+00:00".into(),
+            by: "nez@nez_opt".into(),
+            note: "phase 5\tlive".into(),
+        }
+    }
+
+    #[test]
+    fn ops_places() {
+        assert_eq!(
+            ops_place("lucina-agentd", None),
+            ("lucina-agents".into(), "nezopt")
+        );
+        assert_eq!(ops_place("lucina-rs", None), ("lucina".into(), "nezopt"));
+        assert_eq!(ops_place("secretary-server", None), ("secretary".into(), "p1"));
+        assert_eq!(ops_place("web", None), ("secretary".into(), "p1"));
+        assert_eq!(
+            ops_place("lucina-rs", Some("pokoin")),
+            ("pokoin".into(), "nezopt")
+        );
+        assert_eq!(
+            ops_place("lucina-rs", Some(" ")),
+            ("lucina".into(), "nezopt")
+        );
+    }
+
+    #[test]
+    fn ops_record_and_history_json() {
+        let j = ops_record_json(&deploy("secretary-mcp"), None);
+        assert_eq!(
+            j,
+            "{\"kind\":\"deploy\",\"project\":\"secretary\",\"title\":\"secretary-mcp deployed 90e94263ab: Merge branch \\\"agents-p5\\\" into int5-rs\",\"body\":\"/home/nez/Projects/.worktrees/SecretaryIOS/lucina on lucina-rs\\nphase 5\\tlive\\nby nez@nez_opt\",\"commit\":\"90e94263abcdef0123456789abcdef0123456789\",\"host\":\"p1\",\"dedup_key\":\"deploy:secretary-mcp:90e94263abcdef0123456789abcdef0123456789\",\"at\":\"2026-10-28T15:53:08Z\"}"
+        );
+        let h = history_line(&deploy("lucina-rs"));
+        assert!(
+            h.starts_with("{\"runtime\":\"lucina-rs\",\"commit\":\"90e94263"),
+            "{h}"
+        );
+        assert!(h.ends_with("\"note\":\"phase 5\\tlive\"}"), "{h}");
+        assert_eq!(js("a\u{1}b"), "\"a\\u0001b\"");
+    }
 
     fn facts(dirty: bool, on_target: bool, live: Option<bool>, lock: bool) -> Facts {
         Facts {
@@ -420,5 +689,29 @@ mod tests {
             panic!("must refuse")
         };
         assert!(why[0].contains("not an ancestor"));
+    }
+    #[test]
+    fn flock_held_lock_file_counts_as_held() {
+        let dir = std::env::temp_dir().join(format!("dg-flock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let lock = dir.join("lucina-merge.lock");
+        std::fs::write(&lock, "").unwrap();
+        assert!(!super::lock_is_held(&lock), "a free lock file is not held");
+        let mut holder = Command::new("flock")
+            .arg("-o")
+            .arg(&lock)
+            .args(["sleep", "5"])
+            .spawn()
+            .expect("flock(1) available");
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(super::lock_is_held(&lock), "a flock-held file is held");
+        let _ = holder.kill();
+        let _ = holder.wait();
+        assert!(!super::lock_is_held(&lock), "released again");
+        let d = dir.join("dir-style.lock");
+        std::fs::create_dir_all(&d).unwrap();
+        assert!(super::lock_is_held(&d), "the directory style still counts");
+        assert!(!super::lock_is_held(&dir.join("missing.lock")));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

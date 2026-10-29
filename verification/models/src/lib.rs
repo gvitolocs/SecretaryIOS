@@ -29,6 +29,7 @@ pub mod game;
 pub mod gates;
 pub mod ink_sync;
 pub mod media_backup;
+pub mod meetings;
 pub mod memos;
 pub mod oauth;
 pub mod otp;
@@ -269,6 +270,7 @@ pub fn all_cases(deep: bool) -> Vec<Case> {
     v.extend(ownership::cases(deep));
     v.extend(shopping::cases(deep));
     v.extend(memos::cases(deep));
+    v.extend(meetings::cases(deep));
     v.extend(oauth::cases(deep));
     v.extend(gates::cases(deep));
     v.extend(ink_sync::cases(deep));
