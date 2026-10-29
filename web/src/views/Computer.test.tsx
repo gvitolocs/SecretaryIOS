@@ -136,6 +136,16 @@ describe("Lucina's computer", () => {
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Lucina's computer");
     expect(await screen.findByRole("alert")).toHaveClass("pg-error");
     expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+
+  it("shows the step Lucina's engine is on while she works", async () => {
+    fakeLucina(
+      state({
+        driver: "lucina",
+        task: { who: "lucina", what: "find flights to London", since: 1, stopping: false, progress: { line: "step 4 · clicked button \"Search\" · 1.2 s", at: 2 } },
+      }),
+    );
+    renderComputer();
+    expect(await screen.findByText("step 4 · clicked button \"Search\" · 1.2 s")).toBeInTheDocument();
   });
 
   it("watches live until the owner takes over, then drives with a new ticket on the same view", async () => {
@@ -389,6 +399,9 @@ describe("helpers", () => {
     );
     expect(auditLine({ at: 1, sandbox: "workspace", event: "input", device: "Mac", batch: { via: "live", bytes: 120 } })).toBe("Mac: input 120 B");
     expect(auditLine({ at: 1, sandbox: "workspace", event: "take", device: "Mac" })).toBe("Mac took over");
+    expect(auditLine({ at: 1, sandbox: "workspace", event: "jev_step", what: "step 2 · clicked list item \"Billund BLL\" · 1.3 s" })).toBe(
+      "step 2 · clicked list item \"Billund BLL\" · 1.3 s",
+    );
   });
 
   it("maps a click on the scaled screenshot to sandbox pixels", () => {

@@ -15,7 +15,14 @@ export interface ControlState {
   driver: Driver;
   epoch: number;
   owner: { device: string; since: number; expiresInMs: number } | null;
-  task: { who: string; what: string; since: number; stopping: boolean } | null;
+  task: {
+    who: string;
+    what: string;
+    since: number;
+    stopping: boolean;
+    /** The engine's latest step ("step 3 · clicked … · 1.4 s"), while Lucina works. */
+    progress?: { line: string; at: number } | null;
+  } | null;
   lastAgent: { who: string; at: number } | null;
   leaseSecs: number;
 }
@@ -34,6 +41,8 @@ export interface AuditEntry {
   /** A file sent either way: its name (never its content). */
   name?: string;
   stoppedTask?: string | null;
+  /** jev_step: what the step did. */
+  what?: string;
   batch?: { via?: string; events?: number; kinds?: string[]; textChars?: number; bytes?: number } | null;
 }
 

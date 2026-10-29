@@ -235,6 +235,8 @@ export function auditLine(e: AuditEntry): string {
       return t("computer.evFileToDesktop", { name: e.name ?? "?", what: byteSize(e.bytes ?? 0) });
     case "file_from_desktop":
       return t("computer.evFileFromDesktop", { name: e.name ?? "?", what: byteSize(e.bytes ?? 0) });
+    case "jev_step":
+      return e.what ?? "";
     default:
       return t("computer.evOther", { event: e.event });
   }
@@ -1082,6 +1084,7 @@ export default function ComputerView() {
         <div class="computer-status-text">
           <strong role="status">{driverLabel(state(), mine() || (desk() && deskDriving()))}</strong>
           <Show when={state()?.task}>{(task) => <span class="computer-muted">{t("computer.working", { what: task().what })}</span>}</Show>
+          <Show when={state()?.task?.progress?.line}>{(line) => <span class="computer-muted computer-progress">{line()}</span>}</Show>
           {/* LucinaDesk's pill says it (and its first click takes over, no button needed). */}
           <Show when={!mine() && !desk()}>
             <span class="computer-muted">{t("computer.watchOnly")}</span>
