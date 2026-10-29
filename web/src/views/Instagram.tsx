@@ -127,13 +127,11 @@ function createFeed(fetchPage: (cursor: string | null) => Promise<IgPage>, initi
     if (refreshing) setUpdating(true);
     else setLoading(true);
     const result = await answer;
-    if (current()) {
-      if ("failure" in result) {
-        // A failed refresh keeps the copy on screen; a failed first or next page says so.
-        if (!refreshing) setError(result.failure);
-      } else if (refreshing) {
-        absorb(result.page);
-      } else {
+    try {
+      if (!current()) return;
+      if ("failure" in result) throw result.failure;
+      if (refreshing) absorb(result.page);
+      else {
         const page = result.page;
         const seen = new Set(append ? items().map((i) => i.id) : []);
         const fresh = page.items.filter((i) => !seen.has(i.id));
@@ -142,9 +140,13 @@ function createFeed(fetchPage: (cursor: string | null) => Promise<IgPage>, initi
         setLoaded(true);
         store();
       }
+    } catch (e) {
+      // A failed refresh keeps the copy on screen; a failed first or next page says so.
+      if (!refreshing) setError(e);
+    } finally {
+      setLoading(false);
+      setUpdating(false);
     }
-    setLoading(false);
-    setUpdating(false);
   }
   return {
     items,

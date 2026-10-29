@@ -110,10 +110,14 @@ export function createFeed() {
     setUpdating(false);
     // A failed refresh keeps the copy on screen.
     if (!current(mine) || "failure" in result) return;
-    setItems((old) => mergeFirstPage(old, result.listing.items));
-    setNotice(result.listing.notice);
-    setSort(result.listing.sort);
-    store();
+    try {
+      setItems((old) => mergeFirstPage(old, result.listing.items));
+      setNotice(result.listing.notice);
+      setSort(result.listing.sort);
+      store();
+    } catch {
+      // An answer without a listing: the copy stays.
+    }
   }
 
   /** A list with no copy: its first page, asked while the store was read. */
@@ -127,12 +131,17 @@ export function createFeed() {
       return;
     }
     if (!current(mine)) return;
-    page = result.listing.page || 1;
-    setHasMore(result.listing.hasMore);
-    setNotice(result.listing.notice);
-    setSort(result.listing.sort);
-    setItems(result.listing.items);
-    store();
+    try {
+      page = result.listing.page || 1;
+      setHasMore(result.listing.hasMore);
+      setNotice(result.listing.notice);
+      setSort(result.listing.sort);
+      setItems(result.listing.items);
+      store();
+    } catch (e) {
+      setError(feedMessage(e));
+      setHasMore(false);
+    }
   }
 
   return {
