@@ -213,7 +213,10 @@ final class APIClient: @unchecked Sendable {
         for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
         if let body {
             request.httpBody = body
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            // A caller that sends something other than JSON (a multipart upload) names its own type.
+            if request.value(forHTTPHeaderField: "Content-Type") == nil {
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            }
         }
         return request
     }

@@ -30,6 +30,20 @@ struct SettingsView: View {
                     }
                 }
                 .accessibilityIdentifier("openLinks")
+                NavigationLink {
+                    NotebooksView()
+                } label: {
+                    Label {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Notebooks")
+                            Text("Sources, notes and chats that answer from them")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        Image(systemName: "books.vertical")
+                    }
+                }
+                .accessibilityIdentifier("openNotebooks")
             }
 
             Section("Server") {
