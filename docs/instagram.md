@@ -19,6 +19,15 @@ builders and parsers are `instarust-core`'s. Observed 2026-10-28:
 | `GET /users/{u}/reels?cursor=` | reels | **distinct from posts**: video posts only, `taken_at` is null, cursor works (page 2 differs) |
 | `GET /users/{u}/stories?cursor=` | stories | all active stories in one page, `next_cursor` null |
 | `GET /users/{u}/highlights`, `GET /highlights/items?id=&cursor=` | highlights | `highlight:<id>` ids |
+
+Observed 2026-10-29: the bundle's `highlights` is `[]` even for accounts that have highlights, while
+`/users/{u}/highlights` still lists them (natgeo: 0 in the bundle, 1 in the list; `/highlights/items`
+gives its 4 items), and the list's `media_count` is 0 for highlights with items. So `GET /profile` asks
+`/users/{u}/highlights` when the bundle has none and the account is public (through the cache entry
+`GET /highlights/{username}` uses, so the two cost one backend call); if that call fails the profile
+comes back with `highlights: []` and a warning in the log. A `mediaCount` of 0 or less is sent as
+`null` ("not known"), and the web then shows no count. The recorded answers are in
+`crates/secretary-instagram/tests/fixtures/natgeo.*.json`.
 | `GET /resolve?url=` | resolve | `MediaPage` wrapper with one item |
 | `GET /users/{u}/tagged` | not used | exists (tagged posts, paginates); could become a tab |
 
@@ -34,7 +43,7 @@ Success: `{"ok":true,"data":…}`. Error: `{"ok":false,"error":"<code>"}`; 429 i
 | Route | `data` |
 |---|---|
 | `GET /status` | `{enabled, rateLimitPerSecond}` |
-| `GET /profile/{username}` | `{profile, posts:{items,nextCursor}, highlights:[{id,title,coverUrl,mediaCount}]}` (also records the profile in `recent`) |
+| `GET /profile/{username}` | `{profile, posts:{items,nextCursor}, highlights:[{id,title,coverUrl,mediaCount}]}` (also records the profile in `recent`; `mediaCount` is null when the backend says 0) |
 | `GET /posts/{username}?cursor=` | `{items, nextCursor, exhausted?}` |
 | `GET /reels/{username}?cursor=` | `{items, nextCursor}` |
 | `GET /stories/{username}?cursor=` | `{items, nextCursor}` |
@@ -61,8 +70,14 @@ caption:"@username <caption>", taken_at, move:true}`. Failures: `bad_url`, `forb
 ## Watching (auto-save, badges, change notices, Archive)
 
 `PUT /watch/{user}` puts an account on the watch list. A background **warmer** then refreshes each
-watched account every 20-40 minutes (a random time per refresh, so accounts drift apart; a new account
-is first checked within seconds), through the same single queue, spacing, backoff and 429 block as the
+watched account about once a day: every 23 h ± 30 min per account by default (a random offset per
+refresh, so accounts drift apart; stories last 24 h, hence the cap below 24 h), `INSTAGRAM_WATCH_INTERVAL_H`
+(1-23), or the owner's choice in the app (6, 12 or 23 h) via `watch-settings`, which applies to all watched
+accounts. A new account is first checked within seconds. Each account's next check is persisted
+(`nextDue` in `watch.json`), so restarts don't add checks: when the service starts, and when the setting
+changes, an account whose next check is outside `last check + interval ± jitter` is moved to
+`last check + interval + a random offset` (one never checked keeps its first check; one pushed out by a 429
+keeps its later time). The refreshes go through the same single queue, spacing, backoff and 429 block as the
 owner's requests. Owner requests go first: the warmer waits while one is pending. When the backend says
 429 (to the warmer or to the owner) the warmer stays quiet for at least `INSTAGRAM_WATCH_PAUSE_SECS`
 (30 min) and the account is rescheduled after the pause. A refresh is the profile bundle plus, for a
@@ -100,7 +115,9 @@ a name taken over by another account shows as "now belongs to a different accoun
 
 | Route | `data` |
 |---|---|
-| `GET /watch` | `[{username, autoSave, lastCheck, newStories, newPosts, private, fullName, picUrl, isVerified, gone, status, archived}]` |
+| `GET /watch` | `[{username, autoSave, lastCheck, nextCheck, newStories, newPosts, private, fullName, picUrl, isVerified, gone, status, archived}]` (`lastCheck`, `nextCheck`: unix seconds) |
+| `GET /watch-settings` | `{intervalHours, defaultHours, jitterMinutes, choices:[6,12,23]}` (`intervalHours`: the owner's choice, else `defaultHours`) |
+| `PUT /watch-settings {intervalHours}` | the same; 1-23, else 400 `bad_request`. Saved in `watch.json`; every account's next check is moved to the new interval. (Not `/watch/settings`: that is the account `settings`.) |
 | `PUT /watch/{user} {autoSave?}` | the entry (creates it; an empty body keeps the switch) |
 | `DELETE /watch/{user}` | `{removed:true}` (the archive index stays) |
 | `GET /watch/{user}/new` | `{username, since, stories:[item], posts:[item]}`: what is unseen, as media items |

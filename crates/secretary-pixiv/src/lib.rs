@@ -3,6 +3,7 @@
 //! disk cache with a size cap, local bookmarks and save-to-gallery (lucina-media ingest).
 //! Owner-only: p1 gates `/v1/pixiv/*` with `/v1/auth/owner` and adds the gateway header.
 
+pub mod account;
 pub mod backend;
 pub mod cache;
 pub mod error;

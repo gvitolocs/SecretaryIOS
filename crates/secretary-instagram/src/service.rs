@@ -24,6 +24,9 @@ use crate::recent::{Recent, RecentEntry};
 use crate::upstream::{Upstream, UpstreamError};
 use crate::watch::{apply_not_found, apply_observation, Account, Change, Observation, WatchStore};
 
+/// The intervals the app offers, in hours.
+pub const INTERVAL_CHOICES: [u32; 3] = [6, 12, 23];
+
 const TTL_PROFILE: Duration = Duration::from_secs(300);
 const TTL_POSTS: Duration = Duration::from_secs(300);
 const TTL_STORIES: Duration = Duration::from_secs(120);
@@ -94,9 +97,10 @@ impl ServiceConfig {
 pub struct WatchConfig {
     /// The warmer refreshes watched accounts (and auto-saves their new stories).
     pub enabled: bool,
-    /// Each account is refreshed every random time in this range (20-40 min by default).
-    pub interval_min: Duration,
-    pub interval_max: Duration,
+    /// Each account is refreshed every `interval` ± a random `jitter` (23 h ± 30 min by default:
+    /// stories last 24 h). The owner's choice in the app replaces `interval`.
+    pub interval: Duration,
+    pub jitter: Duration,
     /// How long the warmer stays quiet after the backend said 429 (at least).
     pub pause: Duration,
     /// Auto-saved bytes per account per UTC day.
@@ -109,8 +113,8 @@ impl Default for WatchConfig {
     fn default() -> Self {
         WatchConfig {
             enabled: true,
-            interval_min: Duration::from_secs(20 * 60),
-            interval_max: Duration::from_secs(40 * 60),
+            interval: Duration::from_secs(23 * 3600),
+            jitter: Duration::from_secs(30 * 60),
             pause: Duration::from_secs(30 * 60),
             daily_cap_bytes: 500 * 1024 * 1024,
             first_check_jitter: Duration::from_secs(8),
@@ -315,7 +319,7 @@ impl Service {
             .timeout(Duration::from_secs(120))
             .redirect(reqwest::redirect::Policy::none())
             .build()?;
-        Ok(Service {
+        let svc = Service {
             up,
             cache,
             recent,
@@ -332,7 +336,11 @@ impl Service {
             inflight: std::sync::Mutex::new(HashMap::new()),
             warmer_paused_until: std::sync::Mutex::new(None),
             wake: Notify::new(),
-        })
+        };
+        // Before the warmer's first pass: what was checked just before a restart is not checked
+        // again now.
+        svc.reschedule_watched();
+        Ok(svc)
     }
 
     // ---- JSON building ----
@@ -428,7 +436,9 @@ impl Service {
                     "id": h.id,
                     "title": h.title,
                     "coverUrl": self.sign_opt(&h.cover_url),
-                    "mediaCount": h.media_count,
+                    // The backend has said 0 for highlights with items since 2026-10-29: 0 is
+                    // "not known", not "empty".
+                    "mediaCount": Some(h.media_count).filter(|n| *n > 0),
                 })
             })
             .collect()
@@ -453,7 +463,8 @@ impl Service {
 
     // ---- endpoints ----
 
-    /// Profile, the first page of posts and the highlights, in one backend call.
+    /// Profile, the first page of posts and the highlights, in one backend call (two when the
+    /// bundle leaves the highlights out).
     pub async fn profile(&self, raw_username: &str) -> Result<Value, ServiceError> {
         let username =
             normalize_username(raw_username).ok_or(ServiceError::BadRequest("username"))?;
@@ -469,11 +480,39 @@ impl Service {
             verified: bundle.profile.is_verified,
             opened_at: chrono::Utc::now().timestamp(),
         });
+        let highlights = if bundle.highlights.is_empty() && !bundle.profile.is_private {
+            self.fallback_highlights(&username).await
+        } else {
+            bundle.highlights
+        };
         Ok(json!({
             "profile": self.profile_json(&bundle.profile),
             "posts": self.page_json(&bundle.posts),
-            "highlights": self.highlights_json(&bundle.highlights),
+            "highlights": self.highlights_json(&highlights),
         }))
+    }
+
+    /// The bundle's `highlights` has been empty since 2026-10-29 even for accounts that have
+    /// some, while `/users/{u}/highlights` still lists them. Asked through the same cache entry as
+    /// [`Service::highlights`]; a failure only costs the list, never the profile.
+    async fn fallback_highlights(&self, username: &str) -> Vec<HighlightSummary> {
+        let text = self
+            .fetch_text(
+                &rel(core_url::user_highlights_url(username)),
+                TTL_HIGHLIGHTS,
+            )
+            .await;
+        match text.map(|t| parse_highlights(&t)) {
+            Ok(Some(hs)) => hs,
+            Ok(None) => {
+                tracing::warn!("instagram profile: the highlights list did not parse");
+                Vec::new()
+            }
+            Err(e) => {
+                tracing::warn!(error = ?e, "instagram profile: the highlights list failed");
+                Vec::new()
+            }
+        }
     }
 
     fn first_page_key(username: &str) -> String {
@@ -829,6 +868,7 @@ impl Service {
             "username": a.username,
             "autoSave": a.auto_save,
             "lastCheck": a.last_check,
+            "nextCheck": a.next_due,
             "newStories": a.unseen_stories.len(),
             "newPosts": a.unseen_posts.len(),
             "private": a.is_private,
@@ -868,6 +908,41 @@ impl Service {
         } else {
             Err(ServiceError::NotFound)
         }
+    }
+
+    /// The interval in force: the owner's choice, else the configured one.
+    fn interval(&self) -> Duration {
+        match self.watch.settings().interval_hours {
+            Some(h) => Duration::from_secs(u64::from(h) * 3600),
+            None => self.cfg.watch.interval,
+        }
+    }
+
+    /// Every account's next check moved into the window of the interval in force.
+    fn reschedule_watched(&self) {
+        let j = self.cfg.watch.jitter.as_secs() as i64;
+        self.watch
+            .reschedule(self.interval().as_secs() as i64, j, || random_offset(j));
+    }
+
+    pub fn watch_settings_json(&self) -> Value {
+        json!({
+            "intervalHours": self.interval().as_secs() / 3600,
+            "defaultHours": self.cfg.watch.interval.as_secs() / 3600,
+            "jitterMinutes": self.cfg.watch.jitter.as_secs() / 60,
+            "choices": INTERVAL_CHOICES,
+        })
+    }
+
+    /// The owner's interval for all watched accounts (1-23 h); it applies to the next check.
+    pub fn set_watch_interval(&self, hours: u32) -> Result<Value, ServiceError> {
+        if !(1..=23).contains(&hours) {
+            return Err(ServiceError::BadRequest("intervalHours"));
+        }
+        self.watch.set_interval_hours(Some(hours));
+        self.reschedule_watched();
+        self.wake.notify_one();
+        Ok(self.watch_settings_json())
     }
 
     pub fn badges_json(&self) -> Value {
@@ -1019,9 +1094,8 @@ impl Service {
     }
 
     fn next_interval(&self) -> i64 {
-        let lo = self.cfg.watch.interval_min.as_millis() as u64;
-        let hi = self.cfg.watch.interval_max.as_millis().max(lo as u128) as u64;
-        ((lo + jitter(hi - lo + 1)) / 1000).max(1) as i64
+        let j = self.cfg.watch.jitter.as_secs() as i64;
+        (self.interval().as_secs() as i64 + random_offset(j)).max(1)
     }
 
     /// Fetch through the warmer's low-priority queue and keep the answer in the cache, so the
@@ -1283,6 +1357,12 @@ fn jitter(max: u64) -> u64 {
         return 0;
     }
     u64::from_le_bytes(b) % max
+}
+
+/// A random number in `-max..=max`.
+fn random_offset(max: i64) -> i64 {
+    let max = max.max(0);
+    jitter(2 * max as u64 + 1) as i64 - max
 }
 
 #[derive(Debug)]

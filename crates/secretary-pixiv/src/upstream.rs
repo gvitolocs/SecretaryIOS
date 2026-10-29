@@ -40,6 +40,7 @@ pub enum Op {
     Ranking { mode: String, page: u32 },
     Search { args: Vec<String> },
     Illust { id: String },
+    SelfStatus,
 }
 
 #[derive(Default)]
@@ -100,6 +101,7 @@ impl ApiGate {
                 Op::Ranking { mode, page } => b.ranking(&mode, page),
                 Op::Search { args } => b.search(&args),
                 Op::Illust { id } => b.illust(&id),
+                Op::SelfStatus => b.self_status(),
             })
             .await
             .map_err(|_| SvcError::Upstream)?;

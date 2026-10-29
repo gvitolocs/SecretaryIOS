@@ -57,6 +57,14 @@ pub struct Illust {
     pub pages: Vec<IllustPage>,
 }
 
+/// Which search order was asked for and which one produced the list (`date_d`, `date`,
+/// `pixiv_popular`, `users_tags`, `date_d_fallback`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Sort {
+    pub requested: String,
+    pub used: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Listing {
     pub items: Vec<Summary>,
@@ -64,6 +72,92 @@ pub struct Listing {
     pub has_more: bool,
     pub total: Option<u64>,
     pub num_pages: Option<u64>,
+    /// Why the list is empty or narrower than asked (`r18_needs_session`, ...).
+    #[serde(default)]
+    pub notice: Option<String>,
+    /// Search only.
+    #[serde(default)]
+    pub sort: Option<Sort>,
+}
+
+/// The one content filter of every list. Wire names: `safe`, `r18`, `all`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Content {
+    Safe,
+    R18,
+    All,
+}
+
+impl Content {
+    pub fn parse(s: &str) -> Option<Content> {
+        match s {
+            "safe" => Some(Content::Safe),
+            "r18" => Some(Content::R18),
+            "all" => Some(Content::All),
+            _ => None,
+        }
+    }
+
+    pub fn wire(self) -> &'static str {
+        match self {
+            Content::Safe => "safe",
+            Content::R18 => "r18",
+            Content::All => "all",
+        }
+    }
+
+    /// The adult gate: without `adult`, `All` is `Safe` and `R18` is refused (`None`).
+    pub fn gated(self, adult: bool) -> Option<Content> {
+        match (self, adult) {
+            (c, true) => Some(c),
+            (Content::R18, false) => None,
+            (_, false) => Some(Content::Safe),
+        }
+    }
+
+    pub fn keeps(self, r18: bool) -> bool {
+        match self {
+            Content::Safe => !r18,
+            Content::R18 => r18,
+            Content::All => true,
+        }
+    }
+}
+
+pub fn filter_content(mut l: Listing, content: Content) -> Listing {
+    l.items.retain(|s| content.keeps(s.r18));
+    l
+}
+
+/// Largest cap on a bookmark tier.
+pub const MAX_TIER: u64 = 10_000_000;
+
+/// pixiv's bookmark-tier tags (`1000users入り`, `VOCALOID500users入り`): the largest N among the
+/// digit runs directly before `users入り`; `None` when no tag has one.
+pub fn popular_tier<S: AsRef<str>>(tags: &[S]) -> Option<u64> {
+    tags.iter()
+        .flat_map(|t| {
+            let t = t.as_ref();
+            t.match_indices("users入り")
+                .filter_map(move |(at, _)| tier_before(&t[..at]))
+        })
+        .max()
+}
+
+fn tier_before(prefix: &str) -> Option<u64> {
+    let digits = prefix.bytes().rev().take_while(u8::is_ascii_digit).count();
+    if digits == 0 {
+        return None;
+    }
+    let run = &prefix[prefix.len() - digits..];
+    let n = run.parse::<u64>().unwrap_or(MAX_TIER).min(MAX_TIER);
+    (n > 0).then_some(n)
+}
+
+impl Summary {
+    pub fn popular_tier(&self) -> Option<u64> {
+        popular_tier(&self.tags)
+    }
 }
 
 fn s(v: &Value, k: &str) -> String {
@@ -113,6 +207,8 @@ pub fn parse_ranking(v: &Value, page: u32, r18_mode: bool) -> Listing {
         has_more: v.get("next").and_then(|n| n.as_bool()).unwrap_or(false),
         total: None,
         num_pages: None,
+        notice: None,
+        sort: None,
     }
 }
 
@@ -130,6 +226,8 @@ pub fn parse_search(v: &Value, page: u32) -> Listing {
         page,
         total: v.get("total").and_then(|n| n.as_u64()),
         num_pages,
+        notice: None,
+        sort: None,
     }
 }
 
@@ -140,6 +238,8 @@ pub fn empty_listing(page: u32) -> Listing {
         has_more: false,
         total: Some(0),
         num_pages: Some(0),
+        notice: None,
+        sort: None,
     }
 }
 
@@ -213,5 +313,29 @@ impl Illust {
             pages: self.page_count,
             r18: self.r18,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn popular_tier_reads_the_digits_before_users_iri() {
+        assert_eq!(popular_tier(&["VOCALOID1000users入り"]), Some(1000));
+        assert_eq!(popular_tier(&["100users入り"]), Some(100));
+        assert_eq!(popular_tier(&["ミク10000users入り", "500users入り"]), Some(10000));
+        assert_eq!(popular_tier(&["users入り"]), None);
+        assert_eq!(popular_tier(&["2024年"]), None);
+        assert_eq!(popular_tier::<&str>(&[]), None);
+        assert_eq!(popular_tier(&["99999999999999999999999users入り"]), Some(MAX_TIER));
+    }
+
+    #[test]
+    fn the_adult_gate_narrows_content() {
+        assert_eq!(Content::All.gated(false), Some(Content::Safe));
+        assert_eq!(Content::R18.gated(false), None);
+        assert_eq!(Content::R18.gated(true), Some(Content::R18));
+        assert_eq!(Content::parse("weird"), None);
     }
 }

@@ -209,6 +209,25 @@ pub fn apply_observation(acc: &mut Account, obs: &Observation, now: i64) -> Vec<
     changes
 }
 
+/// When an account should be checked next, given the interval and jitter in force (seconds) and
+/// a random `offset` in `-jitter..=jitter`. A `next_due` inside `last_check + interval ± jitter` is
+/// kept; one outside it (an older schedule, or a changed setting) becomes
+/// `last_check + interval + offset`, so a restart or a deploy never adds a check. Kept as well:
+/// an account never checked, and a `rate_limited` one pushed past the window's start by a 429.
+pub fn rescheduled_due(acc: &Account, interval: i64, jitter: i64, offset: i64) -> i64 {
+    let Some(last) = acc.last_check else {
+        return acc.next_due;
+    };
+    let (start, end) = (last + interval - jitter, last + interval + jitter);
+    if (start..=end).contains(&acc.next_due) {
+        return acc.next_due;
+    }
+    if acc.status.as_deref() == Some("rate_limited") && acc.next_due > start {
+        return acc.next_due;
+    }
+    last + interval + offset.clamp(-jitter, jitter)
+}
+
 /// The username answered 404. `Some(Gone)` the first time after it had answered before.
 pub fn apply_not_found(acc: &mut Account, now: i64) -> Option<Change> {
     acc.last_check = Some(now);
@@ -229,12 +248,22 @@ pub struct Notice {
     pub at: i64,
 }
 
+/// The owner's choices from the app (`/v1/instagram/watch-settings`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Settings {
+    /// Hours between two checks of an account; `None`: the service's default.
+    pub interval_hours: Option<u32>,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct State {
     #[serde(default)]
     accounts: BTreeMap<String, Account>,
     #[serde(default)]
     notices: Vec<Notice>,
+    #[serde(default)]
+    settings: Settings,
 }
 
 pub struct WatchStore {
@@ -312,6 +341,24 @@ impl WatchStore {
             .filter(|a| a.next_due <= now)
             .min_by_key(|a| a.next_due)
             .map(|a| a.username.clone())
+    }
+
+    pub fn settings(&self) -> Settings {
+        let g = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        g.settings.clone()
+    }
+
+    pub fn set_interval_hours(&self, hours: Option<u32>) {
+        self.with(|s| s.settings.interval_hours = hours);
+    }
+
+    /// [`rescheduled_due`] for every account, saved once; `offset` gives each one its own.
+    pub fn reschedule(&self, interval: i64, jitter: i64, mut offset: impl FnMut() -> i64) {
+        self.with(|s| {
+            for a in s.accounts.values_mut() {
+                a.next_due = rescheduled_due(a, interval, jitter, offset());
+            }
+        });
     }
 
     pub fn earliest_due(&self) -> Option<i64> {
@@ -466,6 +513,91 @@ mod tests {
             a.mark_saved(&format!("id{i}"));
         }
         assert_eq!(a.saved_stories.len(), MAX_SAVED_IDS);
+    }
+
+    const H: i64 = 3600;
+    const DAY: i64 = 23 * H;
+    const J: i64 = 30 * 60;
+
+    fn checked(last: i64, next_due: i64) -> Account {
+        Account {
+            last_check: Some(last),
+            next_due,
+            ..Account::new("x", 0)
+        }
+    }
+
+    #[test]
+    fn a_next_check_inside_the_window_is_kept() {
+        let t = 1_000_000;
+        for due in [t + DAY - J, t + DAY, t + DAY + J, t + DAY + 7] {
+            assert_eq!(rescheduled_due(&checked(t, due), DAY, J, 0), due);
+            assert_eq!(rescheduled_due(&checked(t, due), DAY, J, -J), due);
+        }
+    }
+
+    #[test]
+    fn the_old_twenty_to_forty_minute_schedule_moves_to_a_day_after_the_last_check() {
+        let t = 1_000_000;
+        for due in [t + 20 * 60, t + 40 * 60, t - 5] {
+            assert_eq!(rescheduled_due(&checked(t, due), DAY, J, 0), t + DAY);
+            assert_eq!(rescheduled_due(&checked(t, due), DAY, J, 99), t + DAY + 99);
+        }
+        // A shorter setting brings a far-off check closer.
+        assert_eq!(
+            rescheduled_due(&checked(t, t + DAY), 6 * H, J, 0),
+            t + 6 * H
+        );
+    }
+
+    #[test]
+    fn the_random_offset_stays_inside_the_window_at_both_extremes() {
+        let t = 1_000_000;
+        let a = checked(t, t + 60);
+        assert_eq!(rescheduled_due(&a, DAY, J, -J), t + DAY - J);
+        assert_eq!(rescheduled_due(&a, DAY, J, J), t + DAY + J);
+        // An offset beyond the jitter is held at its edge.
+        assert_eq!(rescheduled_due(&a, DAY, J, -10 * J), t + DAY - J);
+        assert_eq!(rescheduled_due(&a, DAY, J, 10 * J), t + DAY + J);
+    }
+
+    #[test]
+    fn an_account_never_checked_keeps_its_first_check() {
+        let a = Account {
+            next_due: 1234,
+            ..Account::new("x", 1000)
+        };
+        assert_eq!(rescheduled_due(&a, DAY, J, J), 1234);
+    }
+
+    #[test]
+    fn a_rate_limited_account_pushed_out_by_a_429_keeps_its_next_check() {
+        let t = 1_000_000;
+        let mut a = checked(t, t + DAY + 2 * H);
+        a.status = Some("rate_limited".into());
+        assert_eq!(rescheduled_due(&a, DAY, J, 0), t + DAY + 2 * H);
+        // One due before the window is moved like any other.
+        a.next_due = t + 30 * 60;
+        assert_eq!(rescheduled_due(&a, DAY, J, 0), t + DAY);
+    }
+
+    #[test]
+    fn the_settings_persist_and_an_old_file_still_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("watch.json");
+        std::fs::write(
+            &p,
+            r#"{"accounts":{"a":{"username":"a","nextDue":5}},"notices":[]}"#,
+        )
+        .unwrap();
+        let s = WatchStore::open(Some(p.clone()));
+        assert_eq!(s.list().len(), 1);
+        assert_eq!(s.settings().interval_hours, None);
+        s.set_interval_hours(Some(12));
+        assert_eq!(
+            WatchStore::open(Some(p)).settings().interval_hours,
+            Some(12)
+        );
     }
 
     #[test]

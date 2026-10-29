@@ -15,6 +15,7 @@
 //! | `PIXIV_IMAGE_INTERVAL_MS` | `250` | spacing between i.pximg.net request starts; never below 100 |
 //! | `PIXIV_IMAGE_CONCURRENCY` | `3` | parallel image requests (1 to 6) |
 //! | `PIXIV_LIST_TTL_SECS` / `PIXIV_ILLUST_TTL_SECS` | `300` / `1800` | JSON cache lifetime |
+//! | `PIXIV_SESSION_FILE` | none | 0600 file with the pixiv.net `PHPSESSID` value; missing or empty = anonymous |
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -64,6 +65,14 @@ fn signing_key(path: &PathBuf) -> anyhow::Result<Vec<u8>> {
         o.open(path)?.write_all(&k)?;
     }
     Ok(k)
+}
+
+/// The pixiv.net session cookie value, if a non-empty session file is configured. Never logged.
+fn session() -> Option<String> {
+    let path = env("PIXIV_SESSION_FILE")?;
+    let s = std::fs::read_to_string(path).ok()?;
+    let s = s.trim();
+    (!s.is_empty()).then(|| s.to_string())
 }
 
 async fn shutdown_signal() {
@@ -127,7 +136,12 @@ async fn main() -> anyhow::Result<()> {
         cache_dir,
         num("PIXIV_CACHE_MAX_BYTES").unwrap_or(DEFAULT_MAX_BYTES),
     )?;
-    let service = Service::new(Arc::new(CoreBackend::new()), cache, spool, cfg)?;
+    let session = session();
+    tracing::info!(
+        session = if session.is_some() { "configured" } else { "none" },
+        "pixiv session"
+    );
+    let service = Service::new(Arc::new(CoreBackend::new(session)), cache, spool, cfg)?;
     let st = Arc::new(Http {
         service,
         store: Store::open(
