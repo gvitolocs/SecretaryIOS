@@ -26,7 +26,8 @@ function serve() {
       return { body: { ok: true, data: { items: [item("11")], page: 1, hasMore: false, total: null, numPages: null } } };
     }
     if (u.pathname === "/v1/pixiv/bookmarks" && call.method === "GET") {
-      return { body: { ok: true, data: { items: [] } } };
+      const notice = u.searchParams.get("content") === "r18" ? "r18_disabled_in_account" : null;
+      return { body: { ok: true, data: { items: [], notice } } };
     }
     return { status: 404, body: {} };
   });
@@ -59,5 +60,18 @@ describe("desktop Pixiv", () => {
     const nav = screen.getByRole("navigation", { name: "Pixiv sections" });
     expect(within(nav).getByRole("button", { name: "Bookmarks" })).toHaveAttribute("aria-current", "page");
     expect(await screen.findByText("No bookmarks yet. Open a work and tap the bookmark.")).toBeInTheDocument();
+  });
+
+  it("shows the content filter and a notice on the card surface", async () => {
+    serve();
+    renderAt("/pixiv", () => <Route path="/pixiv/:id?" component={PixivView} />);
+    await screen.findByRole("button", { name: "Open Work 11 by Ann" });
+    fireEvent.click(screen.getByRole("button", { name: "Bookmarks" }));
+    await screen.findByText("No bookmarks yet. Open a work and tap the bookmark.");
+    fireEvent.change(screen.getByLabelText("Content"), { target: { value: "r18" } });
+    const notice = await screen.findByText(/Your Pixiv account hides R-18 works/);
+    expect(notice).toHaveAttribute("role", "status");
+    expect(notice.closest(".pixiv-surface")).not.toBeNull();
+    expect(screen.queryByText("No bookmarks yet. Open a work and tap the bookmark.")).toBeNull();
   });
 });

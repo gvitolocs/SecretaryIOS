@@ -10,9 +10,11 @@ const BASE = "/v1/pixiv";
 export const RANKING_MODES = ["day", "week", "month", "day_male", "day_female", "original", "rookie"] as const;
 export const RANKING_MODES_R18 = ["day_r18", "week_r18", "day_male_r18", "day_female_r18"] as const;
 export type RankingMode = (typeof RANKING_MODES)[number] | (typeof RANKING_MODES_R18)[number];
-export type SearchOrder = "date_d" | "date";
+export type SearchOrder = "date_d" | "date" | "popular";
 export type SearchType = "all" | "illust" | "manga" | "ugoira";
 export type SearchSafety = "safe" | "all" | "r18";
+/** What a list holds: `safe` only all-ages works, `r18` only R-18 works, `all` both (the service enforces it). */
+export type PixivContent = SearchSafety;
 
 export interface PixivItem {
   id: string;
@@ -24,6 +26,8 @@ export interface PixivItem {
   pages: number;
   r18: boolean;
   bookmarked: boolean;
+  /** Pixiv's "<N>users入り" bookmark tier (1000 for "1000users入り"), when the work has one. */
+  popularTier: number | null;
   addedAt?: number;
 }
 
@@ -33,6 +37,10 @@ export interface PixivListing {
   hasMore: boolean;
   total: number | null;
   numPages: number | null;
+  /** Why the list is what it is: `r18_needs_session`, `r18_disabled_in_account`, `all_ages_only` (others: ignore). */
+  notice: string | null;
+  /** The order a search asked for and the one the service could use (`pixiv_popular`, `users_tags`, ...). */
+  sort: { requested: string; used: string } | null;
 }
 
 export interface PixivTag {
@@ -93,6 +101,7 @@ export function parseItem(v: unknown): PixivItem {
     pages: Math.max(1, num(o.pages, 1)),
     r18: o.r18 === true,
     bookmarked: o.bookmarked === true,
+    popularTier: typeof o.popularTier === "number" && Number.isFinite(o.popularTier) && o.popularTier > 0 ? o.popularTier : null,
     ...(typeof o.addedAt === "number" ? { addedAt: o.addedAt } : {}),
   };
 }
@@ -105,7 +114,15 @@ export function parseListing(v: unknown): PixivListing {
     hasMore: o.hasMore === true,
     total: typeof o.total === "number" ? o.total : null,
     numPages: typeof o.numPages === "number" ? o.numPages : null,
+    notice: typeof o.notice === "string" && o.notice ? o.notice : null,
+    sort: parseSort(o.sort),
   };
+}
+
+function parseSort(v: unknown): PixivListing["sort"] {
+  if (!v || typeof v !== "object") return null;
+  const o = v as Record<string, unknown>;
+  return typeof o.used === "string" && o.used ? { requested: str(o.requested), used: o.used } : null;
 }
 
 export function parseIllust(v: unknown): PixivIllust {
@@ -173,10 +190,9 @@ export const pixivApi = {
     return data(request("GET", `${BASE}/illust/${encodeURIComponent(id)}${withAdult(new URLSearchParams())}`), parseIllust);
   },
 
-  bookmarks(): Promise<PixivItem[]> {
-    return data(request("GET", `${BASE}/bookmarks${withAdult(new URLSearchParams())}`), (v) =>
-      parseListing(v).items,
-    );
+  /** The owner's bookmarks, filtered by `content` (the whole list on one page). */
+  bookmarks(content: PixivContent = "safe"): Promise<PixivListing> {
+    return data(request("GET", `${BASE}/bookmarks${withAdult(new URLSearchParams({ content }))}`), parseListing);
   },
 
   addBookmark(id: string): Promise<boolean> {
