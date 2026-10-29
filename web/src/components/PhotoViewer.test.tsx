@@ -117,6 +117,42 @@ describe("PhotoViewer", () => {
     clock.mockRestore();
   });
 
+  // The swipe down follows the finger at fit size: the picture moves and shrinks and the black fades with the
+  // distance. Zoomed, the same drag pans and never closes.
+  it("moves, shrinks and fades with a drag down at fit size, and closes past the threshold", async () => {
+    const { onClose } = open();
+    const img = await placed();
+    const slot = () => img.closest<HTMLElement>(".pv-slot")!;
+    const backdrop = () => Number(document.querySelector<HTMLElement>(".pv-backdrop")!.style.opacity);
+    pointer("pointerDown", 400, 200);
+    pointer("pointerMove", 400, 260);
+    const near = backdrop();
+    expect(slot().style.transform).toMatch(/translate3d\(0px, 60px, 0(px)?\) scale\(0\.\d+\)/);
+    pointer("pointerMove", 400, 350);
+    expect(slot().style.transform).toMatch(/translate3d\(0px, 150px, 0(px)?\)/);
+    expect(near).toBeLessThan(1);
+    expect(backdrop()).toBeLessThan(near);
+    pointer("pointerUp", 400, 350);
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+  });
+
+  it("pans a zoomed picture with a vertical drag instead of closing", async () => {
+    const { onClose } = open();
+    const img = await placed();
+    fireEvent.dblClick(stage(), { clientX: 400, clientY: 300 });
+    await waitFor(() => expect(screen.getByRole("dialog").classList.contains("pv--zoomed")).toBe(true));
+    const top = img.style.top;
+    pointer("pointerDown", 400, 200);
+    pointer("pointerMove", 400, 260);
+    pointer("pointerMove", 400, 350);
+    expect(img.closest<HTMLElement>(".pv-slot")!.style.transform).not.toContain("scale");
+    expect(document.querySelector<HTMLElement>(".pv-backdrop")!.style.opacity).toBe("1");
+    expect(img.style.top).not.toBe(top);
+    pointer("pointerUp", 400, 350);
+    await new Promise((r) => setTimeout(r, 250));
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   it.each([true, false])("closes a diagonal drag with the picture loaded=%s", async (loaded) => {
     const { onClose } = open();
     if (loaded) await placed();
