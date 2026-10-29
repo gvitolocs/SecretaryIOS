@@ -122,3 +122,8 @@
 .ig-tiles__title { display: grid; min-width: 0; margin-right: auto; line-height: 1.25; }
 .ig-tiles__title strong { font-size: var(--lu-type-headline); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ig-tiles__title small { color: var(--lu-text-secondary); font-size: var(--lu-type-footnote); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The tiles open things; they have no selection: no tick boxes and no rubber band. */
+.ig-tiles .g-check, .ig-tiles .g-head__check, .ig-tiles .g-band { display: none; }
+.ig-tiles .g-back { padding: 0; border: 0; background: none; cursor: pointer; }
+.ig-tiles .g-back:hover { background: var(--g-field); }
+.ig-tiles .g-back .icon { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
