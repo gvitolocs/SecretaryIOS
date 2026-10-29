@@ -785,20 +785,6 @@ mod tests {
         site.verify().await;
     }
 
-    /// The live page (180.dk's old TLS is why this goes through curl): `cargo test -- --ignored live_180`.
-    #[tokio::test]
-    #[ignore]
-    async fn live_180() {
-        let p = PublicLookup {
-            base: PUBLIC_BASE.into(),
-        };
-        let r = fetch_public(&p, &caller::parse("+4570405205"), PUBLIC_TIMEOUT)
-            .await
-            .expect("180.dk page");
-        assert!(r.reports > 0, "{r:?}");
-        eprintln!("{}", r.summary());
-    }
-
     #[test]
     fn the_store_prunes_and_caps() {
         let dir = tempfile::tempdir().unwrap();
