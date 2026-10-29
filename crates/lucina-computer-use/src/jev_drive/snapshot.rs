@@ -133,6 +133,9 @@ pub fn parse_desktop_elements(v: &Value, title: &str, kind: Kind) -> Screen {
     let mut page_text: Vec<String> = text.clone();
     let mut seen_page: HashSet<String> = HashSet::new();
     let mut seen_el: HashSet<(String, String, i64, i64)> = HashSet::new();
+    // "Allow selection" declines only with every optional cookie box unticked.
+    let mut selection: Option<Element> = None;
+    let mut optional_ticked = false;
     for e in elements {
         let role = s(e, "role");
         let label = clean(s(e, "label"));
@@ -193,6 +196,12 @@ pub fn parse_desktop_elements(v: &Value, title: &str, kind: Kind) -> Screen {
         if guard::declines_cookies(&label) && screen.cookie_decline.is_none() {
             screen.cookie_decline = Some(element(e, role, &label, String::new()));
         }
+        if guard::saves_selection(&label) && selection.is_none() {
+            selection = Some(element(e, role, &label, String::new()));
+        }
+        if role == "check box" && flags.contains("checked") && label.to_lowercase().contains("cookie") {
+            optional_ticked = true;
+        }
         let full = if value.is_empty() || value == label {
             label.clone()
         } else {
@@ -220,6 +229,9 @@ pub fn parse_desktop_elements(v: &Value, title: &str, kind: Kind) -> Screen {
             state.push_str(&flags);
         }
         screen.elements.push(element(e, role, &label, state));
+    }
+    if screen.cookie_decline.is_none() && !optional_ticked {
+        screen.cookie_decline = selection;
     }
     screen.text = lucina_jev::clip(&text.join("\n"), 6000);
     screen.page_text = lucina_jev::clip(&page_text.join("\n"), 16000);

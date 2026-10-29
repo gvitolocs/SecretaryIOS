@@ -43,6 +43,10 @@ const HARD: &[&str] = &[
     "apple pay", "google pay", "mobilepay", "paypal", "add card", "tilføj kort", "aggiungi carta",
     "card number", "kortnummer", "numero carta", "click to order", "klik for at bestille",
     "clicca per ordinare", "tryk for at bestille",
+    // Consenting to every cookie (Lucina declines non-essential ones).
+    "allow all", "allow all cookies", "accept all", "accept all cookies", "accept cookies",
+    "tillad alle", "tillad alle cookies", "accepter alle", "godkend alle", "accetta tutto",
+    "accetta tutti", "consenti tutti", "agree to all", "ok to all",
 ];
 
 /// Risky unless the task is shopping and the label is a basket step.
@@ -108,6 +112,19 @@ const DECLINE: &[&str] = &[
     "tillad kun nødvendige", "tillad nødvendige", "fortsæt uden at acceptere", "rifiuta tutto",
     "rifiuta", "rifiuta tutti", "solo necessari", "solo cookie necessari", "continua senza accettare",
 ];
+
+/// "Allow selection": a decline only while every optional cookie box is unticked
+/// (the caller checks the boxes).
+const SELECTION: &[&str] = &[
+    "allow selection", "confirm selection", "save selection", "confirm my choices", "save my choices",
+    "tillad valgte", "tillad valg", "gem valg", "bekræft valg", "salva selezione", "conferma selezione",
+    "consenti selezione",
+];
+
+pub fn saves_selection(label: &str) -> bool {
+    let l = label.trim().to_lowercase();
+    SELECTION.iter().any(|s| l == *s)
+}
 
 /// The page shows a cookie or consent wall.
 pub fn consent_wall(text: &str, labels: &[&str]) -> bool {
