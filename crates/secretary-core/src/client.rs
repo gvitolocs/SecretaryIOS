@@ -341,6 +341,37 @@ impl Call {
         Ok(c)
     }
 
+    /// `POST /callers/screen`: Jev's verdict on 1-20 phone numbers (`{numbers, lang?,
+    /// context?, call?}`; Lucina validates the rest and denies unknown fields).
+    pub fn callers_screen(body: Value) -> Result<Self> {
+        let numbers = body
+            .get("numbers")
+            .and_then(Value::as_array)
+            .filter(|a| (1..=20).contains(&a.len()))
+            .filter(|a| {
+                a.iter()
+                    .all(|n| n.as_str().is_some_and(|s| !s.trim().is_empty() && s.chars().count() <= 40))
+            });
+        if !body.is_object() || numbers.is_none() {
+            return Err(Error::Invalid {
+                field: "numbers",
+                message: "must be 1-20 phone numbers of at most 40 characters".into(),
+            });
+        }
+        if body.to_string().len() > 8 * 1024 {
+            return Err(Error::Invalid {
+                field: "body",
+                message: "must be at most 8 KiB".into(),
+            });
+        }
+        Ok(Self::new(Method::POST, &["callers", "screen"]).with_body(body))
+    }
+
+    /// `GET /callers/directory`: Call Directory labels for numbers that called before.
+    pub fn callers_directory() -> Self {
+        Self::new(Method::GET, &["callers", "directory"])
+    }
+
     /// `GET /au/health`: whether AU Find answers (`{reachable, af_server, error?}`).
     pub fn au_health() -> Self {
         Self::new(Method::GET, &["au", "health"]).bare()
@@ -1418,6 +1449,30 @@ mod tests {
             }
         }
         assert!(Call::ops_search(None, Some(&"p".repeat(65)), None, None, None, None).is_err());
+    }
+
+    #[test]
+    fn callers_calls() {
+        let c = client("http://h:1");
+        let s = Call::callers_screen(json!({"numbers": ["+45 70 40 52 05"], "lang": "da"})).unwrap();
+        assert_eq!(c.url(&s).as_str(), "http://h:1/api/secretary/callers/screen");
+        assert_eq!(
+            c.url(&Call::callers_directory()).as_str(),
+            "http://h:1/api/secretary/callers/directory"
+        );
+        for bad in [
+            json!([]),
+            json!({}),
+            json!({"numbers": []}),
+            json!({"numbers": "+4570405205"}),
+            json!({"numbers": [1]}),
+            json!({"numbers": [" "]}),
+            json!({"numbers": ["1".repeat(41)]}),
+            json!({"numbers": vec!["1"; 21]}),
+            json!({"numbers": ["1"], "context": {"contact": "x".repeat(9000)}}),
+        ] {
+            assert!(Call::callers_screen(bad.clone()).is_err(), "{bad}");
+        }
     }
 
     #[test]

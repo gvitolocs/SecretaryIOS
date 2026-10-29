@@ -9,6 +9,7 @@ pub mod agents;
 pub mod approvals;
 pub mod assets;
 pub mod au;
+pub mod callers;
 pub mod auth;
 pub mod avatar;
 pub mod calendar;
@@ -311,6 +312,7 @@ pub fn app(state: AppState) -> Router {
         .merge(computer::routes())
         .merge(ops::routes())
         .merge(au::routes())
+        .merge(callers::routes())
         .merge(desk::routes())
         .merge(owner_secrets::routes());
     if state.upstream.is_some() {

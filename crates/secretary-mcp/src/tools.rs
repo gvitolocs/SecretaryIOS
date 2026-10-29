@@ -602,9 +602,11 @@ pub struct ToolSpec {
 }
 
 /// A second scope that also allows a tool: every coding agent (scope `agents`)
-/// reports to and reads Lucina's ops record, and looks things up in AU Find.
+/// reports to and reads Lucina's ops record, and looks things up in AU Find
+/// and the caller screen.
 pub fn also_allowed(name: &str) -> Option<Scope> {
-    (name.starts_with("ops_") || name.starts_with("au_")).then_some(Scope::Agents)
+    (name.starts_with("ops_") || name.starts_with("au_") || name == "caller_screen")
+        .then_some(Scope::Agents)
 }
 
 impl ToolSpec {
@@ -701,6 +703,9 @@ pub fn specs() -> Vec<ToolSpec> {
             "Aarhus University building lookup through AU Find, by building number (e.g. 1532), name or address: id, names, address and coordinates, then the raw JSON. Quote fields as returned and cite the source; never invent addresses, coordinates or URLs. If status is not_found, say 'not found in AU Find'. Draw a building with au_campus_map."),
         spec!("au_campus_map", "AU campus map", Scope::Read, ro = true, destructive = false, idempotent = true, crate::au::MapArgs,
             "An 800x600 PNG map of an Aarhus University building (building id from au_building; zoom 17 by default) or of a point (latitude, longitude), zoom 14-18; with nothing given, the AU park in Aarhus at zoom 15. Cite the caption's source (AU Find map, OpenStreetMap tiles)."),
+        // Caller screening (crate::callers): Jev's verdict on numbers that called the owner; `agents` tokens too.
+        spec!("caller_screen", "Screen callers", Scope::Read, ro = true, destructive = false, idempotent = false, crate::callers::ScreenArgs,
+            "Who called the owner from these phone numbers? For 1-20 numbers Lucina asks Jev for P(spam), who is likely calling (person, business, Wolt delivery, telemarketing, scam, unknown) and P(pick up), from each number's country and line type and what she knows (earlier calls his phones reported, his messages, his Wolt shift). Returns her table (show it as is), then the raw JSON with labels and reasons. Not a spam database: never present it as one, never invent owners of numbers. Read-only: it never answers, rejects or places calls."),
         spec!("tasks_list", "Tasks", Scope::Read, ro = true, destructive = false, idempotent = true, TasksListArgs,
             "The owner's tasks (synced with Todoist): by default Today with the overdue ones first, like Todoist's Today view; or upcoming, inbox, a project, a search or Todoist filter, or what was completed. Each task shows its id, project, due date (↻ = recurring), priority and labels, plus the daily goal."),
         spec!("task_add", "Add task", Scope::Write, ro = false, destructive = false, idempotent = false, TaskAddArgs,
