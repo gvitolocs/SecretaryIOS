@@ -320,9 +320,12 @@ pub struct ScreenResponse {
 }
 
 /// Where the public caller-ID pages come from (`LUCINA_CALLERS_PUBLIC_URL`).
+///
+/// The page is read with the system `curl`: 180.dk's TLS only offers
+/// `AES256-SHA256` (TLS 1.2, no forward secrecy), which rustls refuses by
+/// design (checked 2026-10-29), so reqwest cannot reach it.
 #[derive(Debug, Clone)]
 pub struct PublicLookup {
-    pub http: reqwest::Client,
     /// `https://www.180.dk` (a test server in tests).
     pub base: String,
 }
@@ -341,29 +344,46 @@ const USER_AGENT: &str = "Lucina/1.0 (personal caller lookup for one owner)";
 /// Reads the number's public page; `None` on any failure or timeout.
 pub async fn fetch_public(p: &PublicLookup, n: &Number, timeout: Duration) -> Option<PublicReport> {
     let url = caller::url_180(&p.base, n)?;
-    let resp = p
-        .http
-        .get(&url)
-        .header(reqwest::header::USER_AGENT, USER_AGENT)
-        .timeout(timeout)
-        .send()
-        .await
-        .ok()?;
-    if !resp.status().is_success() {
+    let mut cmd = tokio::process::Command::new("curl");
+    cmd.args([
+        "--silent",
+        "--show-error",
+        "--fail",
+        "--proto",
+        "=https,http",
+        "--max-redirs",
+        "0",
+    ])
+    .arg("--max-time")
+    .arg(format!("{:.1}", timeout.as_secs_f64()))
+    .arg("--max-filesize")
+    .arg(PUBLIC_MAX_BYTES.to_string())
+    .arg("--user-agent")
+    .arg(USER_AGENT)
+    .arg("--")
+    .arg(&url)
+    .stdin(std::process::Stdio::null())
+    .kill_on_drop(true);
+    let out = match tokio::time::timeout(timeout + Duration::from_millis(200), cmd.output()).await {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "caller public page: curl did not run");
+            return None;
+        }
+        Err(_) => {
+            tracing::info!("caller public page timed out");
+            return None;
+        }
+    };
+    if !out.status.success() || out.stdout.len() > PUBLIC_MAX_BYTES {
         tracing::info!(
-            status = resp.status().as_u16(),
+            code = out.status.code(),
+            error = %String::from_utf8_lossy(&out.stderr).trim(),
             "caller public page refused"
         );
         return None;
     }
-    let bytes = tokio::time::timeout(timeout, resp.bytes())
-        .await
-        .ok()?
-        .ok()?;
-    if bytes.len() > PUBLIC_MAX_BYTES {
-        return None;
-    }
-    let html = String::from_utf8_lossy(&bytes);
+    let html = String::from_utf8_lossy(&out.stdout);
     // Quote the page people can open, not a test server's.
     let public_url = caller::url_180(PUBLIC_BASE, n).unwrap_or(url);
     caller::parse_180(&html, &public_url)
@@ -546,10 +566,7 @@ impl Tool for CallerScreenTool {
             .env
             .callers_public_url
             .as_ref()
-            .map(|base| PublicLookup {
-                http: ctx.env.http.clone(),
-                base: base.clone(),
-            });
+            .map(|base| PublicLookup { base: base.clone() });
         let r = screen(
             lucina_jev::shared(),
             ctx.env.callers.as_deref(),
@@ -708,12 +725,12 @@ mod tests {
 
     #[tokio::test]
     async fn the_public_page_is_read_first_cached_and_quoted() {
-        use wiremock::matchers::{header_exists, method, path};
+        use wiremock::matchers::{header, method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
         let site = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/nummer/20682758"))
-            .and(header_exists("user-agent"))
+            .and(header("user-agent", USER_AGENT))
             .respond_with(ResponseTemplate::new(200).set_body_string(PAGE_180))
             .expect(1)
             .mount(&site)
@@ -725,10 +742,7 @@ mod tests {
             .await;
         let dir = tempfile::tempdir().unwrap();
         let store = CallerStore::in_data_dir(dir.path());
-        let lookup = PublicLookup {
-            http: reqwest::Client::new(),
-            base: site.uri(),
-        };
+        let lookup = PublicLookup { base: site.uri() };
         let now: DateTime<Utc> = "2026-10-29T12:00:00Z".parse().unwrap();
         let r = req(&["+45 20 68 27 58", "+357 94 095733"]);
         let out = screen(&off(), Some(&store), Some(&lookup), &r, now, &|_| {

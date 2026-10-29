@@ -84,10 +84,7 @@ pub async fn screen(st: &AppState, req: &ScreenRequest) -> Result<tc::ScreenResp
         .cfg
         .callers_public_url
         .as_ref()
-        .map(|base| tc::PublicLookup {
-            http: st.tool_env.http.clone(),
-            base: base.clone(),
-        });
+        .map(|base| tc::PublicLookup { base: base.clone() });
     tc::screen(
         lucina_jev::shared(),
         st.tool_env.callers.as_deref(),
