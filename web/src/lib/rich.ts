@@ -16,6 +16,7 @@ export type RichBlock =
   | { type: "steps"; title?: string; items: string[] }
   | { type: "quote"; text: string; cite?: string }
   | { type: "link_preview"; url: string; title: string }
+  | { type: "image"; src: string; alt: string; caption?: string; width?: number; height?: number }
   | ({ type: "place" } & PlaceInfo);
 
 export type RichAction =
@@ -56,6 +57,18 @@ export const MAX_TABLE_COLUMNS = 4;
 export const MAX_TABLE_ROWS = 6;
 /** Place blocks per message (they count against MAX_BLOCKS too). */
 export const MAX_PLACES = 3;
+/** Image blocks per message (they count against MAX_BLOCKS too). */
+export const MAX_IMAGES = 2;
+
+/** An image `src`: a path of this server's API (`/v1/…`) or https on getsecretary.tech; never `..` or `//`. */
+const IMAGE_PATH = /^\/v1\/[A-Za-z0-9/_\-.%?=&~]{1,296}$/;
+
+export function validImageSrc(src: string): boolean {
+  if (!src || src.length > 300 || src.includes("..")) return false;
+  if (IMAGE_PATH.test(src)) return !src.includes("//");
+  const host = /^https:\/\/getsecretary\.tech(\/[A-Za-z0-9/_\-.%?=&~]*)?$/.exec(src);
+  return !!host && !(host[1] ?? "").includes("//");
+}
 
 type Raw = Record<string, unknown>;
 
@@ -221,6 +234,18 @@ function parseBlock(v: unknown): RichBlock | null {
       const place = parsePlace(b);
       return place ? { type: "place", ...place } : null;
     }
+    case "image": {
+      const src = typeof b.src === "string" ? b.src.trim() : "";
+      if (!validImageSrc(src)) return null;
+      const caption = line(b.caption, 200);
+      const image: RichBlock & { type: "image" } = { type: "image", src, alt: line(b.alt, 200) || caption };
+      if (caption) image.caption = caption;
+      for (const key of ["width", "height"] as const) {
+        const n = b[key];
+        if (Number.isInteger(n) && (n as number) > 0 && (n as number) <= 4096) image[key] = n as number;
+      }
+      return image;
+    }
     default:
       return null;
   }
@@ -287,9 +312,13 @@ export function parseRich(raw: unknown): RichMessage | null {
     .slice(0, MAX_BUBBLES);
   if (!bubbles.length) return null;
   let places = 0;
+  let images = 0;
   const blocks = arr(m.blocks)
     .map(parseBlock)
-    .filter((b): b is RichBlock => !!b && (b.type !== "place" || ++places <= MAX_PLACES))
+    .filter(
+      (b): b is RichBlock =>
+        !!b && (b.type !== "place" || ++places <= MAX_PLACES) && (b.type !== "image" || ++images <= MAX_IMAGES),
+    )
     .slice(0, MAX_BLOCKS);
   const actions: RichAction[] = [];
   const ids = new Set<string>();

@@ -64,6 +64,31 @@ function ListWidget(props: { block: RichBlock & { type: "list" } }) {
   );
 }
 
+/** A picture from this server (a map PNG): same-origin, so the session cookie loads it; a tap opens it full size. */
+function ImageWidget(props: { block: RichBlock & { type: "image" } }) {
+  const [failed, setFailed] = createSignal(false);
+  return (
+    <figure class="rw rw-image">
+      <Show when={!failed()} fallback={<p class="rw-image-error">{t("chat.richImageUnavailable")}</p>}>
+        <a href={props.block.src} target="_blank" rel="noopener noreferrer" aria-label={t("chat.richImageOpen", { title: props.block.alt })}>
+          <img
+            src={props.block.src}
+            alt={props.block.alt}
+            width={props.block.width}
+            height={props.block.height}
+            loading="lazy"
+            decoding="async"
+            onError={() => setFailed(true)}
+          />
+        </a>
+      </Show>
+      <Show when={props.block.caption}>
+        <figcaption>{props.block.caption}</figcaption>
+      </Show>
+    </figure>
+  );
+}
+
 function Widget(props: { block: RichBlock }) {
   return (
     <Switch>
@@ -204,6 +229,7 @@ function Widget(props: { block: RichBlock }) {
           </a>
         )}
       </Match>
+      <Match when={props.block.type === "image" && props.block}>{(b) => <ImageWidget block={b()} />}</Match>
     </Switch>
   );
 }
