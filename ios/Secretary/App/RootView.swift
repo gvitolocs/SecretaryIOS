@@ -169,8 +169,8 @@ struct MainTabs: View {
                 Task { await app.notifications.reschedule() }
             }
         }
-        // Pending approvals: a look now, then every 30 s while the app is active (5 s with a prompt on screen; no
-        // launch delay: someone is waiting). Nothing in the background.
+        // Pending approvals: a look now, then a long poll while the app is active (the server answers when the list
+        // changes; no launch delay: someone is waiting). Nothing in the background.
         .task(id: foreground) {
             guard foreground else { return }
             await app.approvals.foregroundLoop()
