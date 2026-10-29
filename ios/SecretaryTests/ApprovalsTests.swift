@@ -449,25 +449,23 @@ final class ApprovalsTests: XCTestCase {
         XCTAssertEqual(store.availability, .available)
         XCTAssertEqual(store.sheetItem?.id, "apr_1")
         XCTAssertEqual(notifier.posted, ["apr_1"])
-        XCTAssertEqual(store.interval, ApprovalsStore.cardInterval, "a prompt on screen: every 5 s")
+        XCTAssertEqual(store.interval, ApprovalsStore.pollInterval)
         await store.poll()
         XCTAssertEqual(notifier.posted, ["apr_1"])
     }
 
-    func testPollingSlowsDownWithoutAPromptOnScreen() async throws {
-        StubURLProtocol.handler = { _ in .init(body: #"{"approvals":[]}"#) }
-        await store.poll()
-        XCTAssertEqual(store.availability, .available)
-        XCTAssertNil(store.sheetItem)
-        XCTAssertEqual(store.interval, ApprovalsStore.idleInterval)
-        XCTAssertEqual(ApprovalsStore.idleInterval, .seconds(30))
-        XCTAssertEqual(ApprovalsStore.cardInterval, .seconds(5))
-
-        // The loop asks once, then waits: no second request within the idle interval.
+    func testTheActiveAppLongPollsFromTheLastCursor() async throws {
+        // p1 saw ~20 polls a minute from the iPhone (2026-10-29); now one long poll per change or per 25 s.
+        StubURLProtocol.handler = { _ in .init(body: #"{"approvals":[],"cursor":"1792.4"}"#) }
         let task = Task { await store.foregroundLoop() }
-        try await Task.sleep(for: .milliseconds(1500))
+        try await Task.sleep(for: .milliseconds(1600))
         task.cancel()
-        XCTAssertEqual(StubURLProtocol.requests.filter { $0.url?.path == "/v1/approvals" }.count, 2)
+        let queries = StubURLProtocol.requests.map { $0.url?.query ?? "" }
+        XCTAssertEqual(queries.first, "status=pending")
+        XCTAssertEqual(queries.dropFirst().first, "status=pending&since=1792.4&wait=25")
+        XCTAssertLessThanOrEqual(queries.count, 3)
+        XCTAssertEqual(store.interval, ApprovalsStore.longPollPause)
+        XCTAssertGreaterThan(StubURLProtocol.requests[1].timeoutInterval, 25)
     }
 
     func testOfflineAndServerErrorsStayQuietButSignOutEndsTheSession() async throws {

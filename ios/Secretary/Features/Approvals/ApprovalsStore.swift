@@ -4,10 +4,10 @@ import Observation
 /// The owner's approvals on this iPhone: polls the pending requests, shows the global prompt, posts a local
 /// notification once per request, and answers (a sensitive "yes" is signed with the Face ID key).
 ///
-/// While the app is active it asks every 30 s, and every 5 s while a request's prompt is on screen (someone is
-/// deciding, or one may be answered elsewhere). In the background it does not poll: a push or a background
-/// refresh asks once. A server without the approvals routes (404) is left alone: no banner, no error, one
-/// request every 30 s.
+/// While the app is active it long-polls: the server answers as soon as the list changes (a new request, or one
+/// decided, withdrawn or expired anywhere) or after `longPollWait`; a server without long polls is asked every 3 s.
+/// A push, the widget or a background refresh asks once at once. A server without the approvals routes (404) is
+/// left alone: no banner, no error, one request every 30 s.
 @Observable
 @MainActor
 final class ApprovalsStore {
@@ -32,14 +32,13 @@ final class ApprovalsStore {
         case unavailable
     }
 
-    /// Active, no prompt on screen.
-    static let idleInterval: Duration = .seconds(30)
-    /// Active with a prompt on screen.
-    static let cardInterval: Duration = .seconds(5)
+    static let pollInterval: Duration = .seconds(3)
+    /// Seconds the server may hold a long poll (it allows 30).
+    static let longPollWait = 25
+    /// Between two long polls: keeps a server that answers at once from turning into a busy loop.
+    static let longPollPause: Duration = .seconds(1)
     static let backoffInterval: Duration = .seconds(30)
     static let errorInterval: Duration = .seconds(10)
-    /// How often the loop checks whether the interval changed (a prompt opened); no request.
-    static let tick: Duration = .seconds(1)
     static let notifiedKey = "secretary.approvals.notified"
     static let notifiedLimit = 100
 
@@ -73,6 +72,8 @@ final class ApprovalsStore {
     /// Requests the owner closed without answering; they come back when the app becomes active again.
     @ObservationIgnored private var dismissed: Set<String> = []
     @ObservationIgnored private var polling = false
+    /// The last list's cursor (nil: none yet, or the server does not long-poll).
+    @ObservationIgnored private var cursor: String?
     /// Fixture data for the screenshots: nothing is polled.
     @ObservationIgnored private(set) var isFixture = false
 
@@ -89,37 +90,41 @@ final class ApprovalsStore {
 
     // MARK: - Polling
 
-    /// While the app is active: a poll now, then one every `interval`, until cancelled (the app left the
-    /// foreground). The wait is re-read each second, so a prompt that opens shortens it at once.
+    /// While the app is active, until cancelled: a long poll the server answers when the list changes (or after
+    /// `longPollWait`), then the next one. A server without long polls is asked every 3 s.
     func foregroundLoop() async {
         dismissed.removeAll()
-        let clock = ContinuousClock()
+        cursor = nil
         while !Task.isCancelled {
-            await poll()
-            let polled = clock.now
-            while !Task.isCancelled, clock.now - polled < interval {
-                try? await Task.sleep(for: Self.tick)
-            }
+            await poll(wait: cursor == nil ? 0 : Self.longPollWait)
+            try? await Task.sleep(for: interval)
         }
     }
 
     var interval: Duration {
         switch availability {
         case .unsupported: return Self.backoffInterval
-        case .failing: return sheetItem == nil ? Self.idleInterval : Self.errorInterval
-        case .unknown, .available: return sheetItem == nil ? Self.idleInterval : Self.cardInterval
+        case .failing: return Self.errorInterval
+        case .unknown, .available: return cursor == nil ? Self.pollInterval : Self.longPollPause
         }
     }
 
     /// One look at the pending requests (also the background refresh's). Never throws, never shows an error.
     func poll() async {
-        guard !isFixture, !polling, let api = api() else { return }
+        guard !polling else { return }
         polling = true
         defer { polling = false }
+        await poll(wait: 0)
+    }
+
+    /// `wait` > 0: a long poll from the last `cursor`. It never blocks `poll()` (a push or the widget asks at once).
+    private func poll(wait: Int) async {
+        guard !isFixture, let api = api() else { return }
         do {
-            let items = try await api.pending()
+            let list = try await api.pending(since: cursor, wait: wait)
+            cursor = list.cursor
             availability = .available
-            await apply(items)
+            await apply(list.items)
         } catch {
             let e = APIError.wrap(error)
             if e.status == 404 || e.status == 405 {
