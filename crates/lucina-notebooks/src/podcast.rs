@@ -184,6 +184,31 @@ pub fn json_object(s: &str) -> anyhow::Result<Value> {
     Ok(serde_json::from_str(&s[start..=end])?)
 }
 
+/// Asks for JSON and reads it with `read`; a broken answer is sent back with the error, up to
+/// three tries in all (models sometimes leave a quote unescaped or stop mid-object).
+pub async fn ask_json<T>(
+    llm: &dyn Llm,
+    mut ask: Ask,
+    read: impl Fn(&Value) -> anyhow::Result<T>,
+) -> anyhow::Result<(Value, T)> {
+    let mut last = anyhow::anyhow!("no answer");
+    for _ in 0..3 {
+        let (out, _) = llm.complete(ask.clone(), None).await?;
+        match json_object(&out).and_then(|v| read(&v).map(|t| (v, t))) {
+            Ok(r) => return Ok(r),
+            Err(e) => {
+                tracing::warn!(error = %e, head = %out.chars().take(200).collect::<String>(), "notebooks: model JSON unreadable, asking again");
+                ask.turns.push(Turn::assistant(out));
+                ask.turns.push(Turn::user(format!(
+                    "That answer is not valid JSON in the asked shape ({e}). Answer again with only the JSON object."
+                )));
+                last = e;
+            }
+        }
+    }
+    Err(last)
+}
+
 fn speakers_block(p: &SpeakerProfile) -> String {
     p.speakers
         .iter()
@@ -206,26 +231,23 @@ pub async fn outline(
          Write everything in {}. Make exactly {segments} segments that cover the briefing, flow logically, start \
          with a short introduction and end with a wrap-up. Each description says what is discussed and which \
          facts from the context to use. Segments are only topic markers: don't reintroduce speakers.\n\n\
-         Answer with one JSON object: {{\"title\": \"episode title\", \"segments\": [{{\"name\": \"…\", \
-         \"description\": \"…\", \"size\": \"short\" | \"medium\" | \"long\"}}]}}. No placeholders, no ellipses.",
+         Answer with one JSON object with the keys \"title\" (the episode title) and \"segments\" (a list of \
+         {segments} objects with the keys \"name\", \"description\" and \"size\"; size is exactly one of \"short\", \
+         \"medium\" or \"long\"). For example: {{\"title\": \"Rogue servers on the LAN\", \"segments\": \
+         [{{\"name\": \"Why it matters\", \"description\": \"What a rogue DHCP server can do.\", \"size\": \"medium\"}}]}}. \
+         Write your own segments; no placeholders, no ellipses.",
         speakers_block(profile),
         profile.language
     );
-    let (out, _) = llm
-        .complete(
-            Ask {
-                model,
-                turns: vec![Turn::user(prompt)],
-                json: model == Model::Deepseek,
-                max_tokens: Some(2500),
-                temperature: Some(0.6),
-                purpose: "notebook_podcast_outline",
-            },
-            None,
-        )
-        .await?;
-    let v = json_object(&out)?;
-    let segs: Vec<Segment> = serde_json::from_value(v["segments"].clone())?;
+    let ask = Ask {
+        model,
+        turns: vec![Turn::user(prompt)],
+        json: model == Model::Deepseek,
+        max_tokens: Some(2500),
+        temperature: Some(0.6),
+        purpose: "notebook_podcast_outline",
+    };
+    let (v, segs): (Value, Vec<Segment>) = ask_json(llm, ask, |v| Ok(serde_json::from_value(v["segments"].clone())?)).await?;
     if segs.is_empty() {
         anyhow::bail!("the outline has no segments");
     }
@@ -282,21 +304,15 @@ pub async fn script_segment(
         names.join(", "),
         if index + 1 == segments.len() { "; this is the last segment, so close the episode" } else { "" },
     );
-    let (out, _) = llm
-        .complete(
-            Ask {
-                model,
-                turns: vec![Turn::user(prompt)],
-                json: model == Model::Deepseek,
-                max_tokens: Some(4000),
-                temperature: Some(0.7),
-                purpose: "notebook_podcast_script",
-            },
-            None,
-        )
-        .await?;
-    let v = json_object(&out)?;
-    let lines: Vec<Line> = serde_json::from_value(v["dialogue"].clone())?;
+    let ask = Ask {
+        model,
+        turns: vec![Turn::user(prompt)],
+        json: model == Model::Deepseek,
+        max_tokens: Some(4000),
+        temperature: Some(0.7),
+        purpose: "notebook_podcast_script",
+    };
+    let (_, lines): (Value, Vec<Line>) = ask_json(llm, ask, |v| Ok(serde_json::from_value(v["dialogue"].clone())?)).await?;
     let lines: Vec<Line> = lines
         .into_iter()
         .map(|l| Line {
@@ -477,6 +493,7 @@ mod tests {
     async fn outline_and_script_parse() {
         let llm = Scripted::new(&[
             r#"{"title":"Snooping","segments":[{"name":"Intro","description":"d","size":"short"},{"name":"End","description":"d","size":"short"}]}"#,
+            "{\"dialogue\": [{\"speaker\": \"Lucina\", \"text\": \"broken \"quote\"}]}",
             r#"{"dialogue":[{"speaker":"Lucina","text":"Hi."},{"speaker":"Bob","text":"Hello."},{"speaker":"Marco","text":" "}]}"#,
         ]);
         let p = speaker_profile("duo-en").unwrap();
