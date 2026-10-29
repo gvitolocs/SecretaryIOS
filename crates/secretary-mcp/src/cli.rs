@@ -41,7 +41,7 @@ pub enum TokenCmd {
         /// Caller name Lucina sees: claude-code, chatgpt, grok, … (a-z, 0-9, '-').
         #[arg(long)]
         name: String,
-        /// Comma-separated scopes: read, chat, write, computer, agents.
+        /// Comma-separated scopes: read, chat, write, computer, agents, notebooks.
         #[arg(long, default_value = "read,chat")]
         scopes: String,
         /// Delegation depth: 0 for the owner's clients, 1 for a token handed to an

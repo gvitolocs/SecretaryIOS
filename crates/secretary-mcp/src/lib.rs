@@ -25,6 +25,7 @@ pub mod format;
 pub mod keep;
 pub mod login;
 pub mod mcp;
+pub mod notebooks;
 pub mod oauth;
 pub mod ops;
 pub mod ratelimit;

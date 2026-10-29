@@ -76,7 +76,7 @@ impl TokenStore {
         if scopes.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "at least one scope is needed (read, chat, write, computer, agents)",
+                "at least one scope is needed (read, chat, write, computer, agents, notebooks)",
             ));
         }
         let secret = format!("{TOKEN_PREFIX}{}", random_secret()?);

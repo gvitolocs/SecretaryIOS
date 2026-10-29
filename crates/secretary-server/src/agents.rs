@@ -180,7 +180,7 @@ impl Caller {
     }
 
     /// The rate-limit and stream-slot key, and the access log's device.
-    fn key(&self) -> String {
+    pub(crate) fn key(&self) -> String {
         match self {
             Caller::Device(id) => id.clone(),
             Caller::Mcp(name) => format!("mcp:{name}"),
@@ -206,7 +206,7 @@ pub fn mcp_name(headers: &HeaderMap) -> Option<String> {
     ok.then(|| name.to_owned())
 }
 
-fn bearer(headers: &HeaderMap) -> Option<&str> {
+pub(crate) fn bearer(headers: &HeaderMap) -> Option<&str> {
     headers
         .get(header::AUTHORIZATION)?
         .to_str()

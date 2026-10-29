@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 
 pub mod agents;
+pub mod notebooks;
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -84,7 +85,7 @@ fn err(status: StatusCode, code: &str) -> Response {
         .into_response()
 }
 
-fn device_ok(h: &HeaderMap) -> bool {
+pub(crate) fn device_ok(h: &HeaderMap) -> bool {
     h.get("authorization").and_then(|v| v.to_str().ok()) == Some(&format!("Bearer {DEVICE_TOKEN}"))
 }
 
@@ -281,6 +282,8 @@ async fn handle(
     match (method.as_str(), seg.as_slice()) {
         // Lucina Agents (crate::agents), forwarded to agentd by the real server.
         (m, ["v1", "agents", rest @ ..]) => agents::route(&mut st, m, rest, &query, &headers, &body),
+        // Lucina Notebooks (crate::notebooks), forwarded to Lucina by the real server.
+        (m, ["v1", "notebooks", rest @ ..]) => notebooks::route(&mut st, m, rest, &query, &headers, &body),
         // Lucina's computer (crate::computer): a job that finishes on the first poll.
         ("POST", ["v1", "computer", "task"]) if device_ok(&headers) => (
             StatusCode::ACCEPTED,

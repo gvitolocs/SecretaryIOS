@@ -49,6 +49,10 @@ Agents ask the owner before risky steps: those permission requests (permissions_
 pushing, opening PRs and merging are the owner's too. Agents you start can't start further agents, and each connection has a budget of running agents and runs per hour. \
 Before restarting, stopping, deploying or changing a service, ask the Homelab catalog: catalog_get (where it runs, logs, restart, rollback, runbook), \
 catalog_impact (what breaks if it is down), catalog_health (what is unhealthy right now) and catalog_drift.\n\n\
+With the `notebooks` scope you can use Lucina Notebooks, the owner's NotebookLM-style workspaces: notebook_list and notebook_get read them, \
+notebook_create and notebook_add_source (a link, text, a file on Lucina's desktop or a note) fill them, notebook_ask answers a question only from the sources \
+with numbered citations (the text cites [source:<source id>-<n>]: keep those markers), notebook_search finds passages without a model, \
+notebook_transform runs a saved prompt on a source and notebook_podcast makes an episode. Sources take a moment to be read after they are added; nothing here deletes anything.\n\n\
 Times are in the owner's time zone (see lucina_status). Never use these tools to buy things or contact other people; ask the owner first.";
 
 #[derive(Clone)]
@@ -226,6 +230,30 @@ impl LucinaMcp {
                     }
                 }
             }
+            "notebook_ask" => {
+                // A grounded answer can take two minutes: keep the client informed.
+                let progress = ctx.meta.get_progress_token();
+                let fut = t.notebook_ask(args);
+                tokio::pin!(fut);
+                let mut tick = tokio::time::interval(Duration::from_secs(10));
+                tick.tick().await;
+                let mut n = 0.0;
+                loop {
+                    tokio::select! {
+                        r = &mut fut => break r,
+                        _ = tick.tick() => {
+                            if let Some(p) = progress.clone() {
+                                n += 1.0;
+                                let _ = ctx.peer.notify_progress(
+                                    ProgressNotificationParam::new(p, n).with_message("The notebook is answering…"),
+                                ).await;
+                            }
+                        }
+                        _ = ctx.ct.cancelled() => break Err(ToolError("cancelled".into())),
+                    }
+                }
+            }
+            name if name.starts_with("notebook_") => t.notebooks(name, args).await,
             "lucina_decide" => t.decide(args).await,
             "lucina_decision_status" => t.decision_status(args).await,
             "lucina_decision_withdraw" => t.decision_withdraw(args).await,

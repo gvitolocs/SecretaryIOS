@@ -51,7 +51,7 @@ fn presented_token(headers: &HeaderMap) -> Option<&str> {
 
 /// `WWW-Authenticate: Bearer resource_metadata="…", scope="…"[, error=…]`.
 pub fn challenge(st: &AppState, error: Option<&str>) -> String {
-    // The scopes a client should ask for by default; `agents` only when it wants it.
+    // The scopes a client should ask for by default; `agents` and `notebooks` only when it wants them.
     let scopes = Scopes::default_grant().to_oauth();
     let mut c = format!(
         "Bearer resource_metadata=\"{}\", scope=\"{scopes}\"",

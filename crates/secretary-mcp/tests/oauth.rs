@@ -157,7 +157,7 @@ async fn discovery_metadata() {
         );
         assert_eq!(
             v["scopes_supported"],
-            json!(["read", "chat", "write", "computer", "agents"])
+            json!(["read", "chat", "write", "computer", "agents", "notebooks"])
         );
     }
     let v: Value = h

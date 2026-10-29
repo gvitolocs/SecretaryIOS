@@ -29,6 +29,7 @@ pub mod keep_import;
 pub mod library;
 pub mod links;
 pub mod models;
+pub mod notebooks;
 pub mod notes;
 pub mod notify;
 pub mod ops;
@@ -109,6 +110,8 @@ pub struct Inner {
     pub lucina: Option<LucinaClient>,
     /// `/v1/agents/*` (`None` without a Lucina token).
     pub agents: Option<agents::Agents>,
+    /// `/v1/notebooks/*` (`None` without a Lucina token).
+    pub notebooks: Option<notebooks::Notebooks>,
     pub devices: DeviceAuth,
     pub sessions: SessionAuth,
     pub limiter: RateLimiter,
@@ -191,9 +194,14 @@ impl AppState {
             Some(t) => Some(agents::Agents::new(&cfg.lucina_url, t, cfg.agents.clone())?),
             None => None,
         };
+        let notebooks = match &cfg.lucina_token {
+            Some(t) => Some(notebooks::Notebooks::new(&cfg.lucina_url, t, cfg.agents.mcp_devices.clone())?),
+            None => None,
+        };
         Ok(Self(Arc::new(Inner {
             lucina,
             agents,
+            notebooks,
             devices: DeviceAuth::new(DeviceStore::new(&cfg.data_dir)),
             sessions: SessionAuth::new(SessionStore::new(&cfg.data_dir)),
             limiter: RateLimiter::new(cfg.rate_limit_per_minute),
@@ -358,6 +366,7 @@ pub fn app(state: AppState) -> Router {
         .merge(library::routes(state.clone()))
         .merge(models::routes(state.clone()))
         .merge(agents::routes())
+        .merge(notebooks::routes())
         .route_layer(SetResponseHeaderLayer::if_not_present(
             header::CACHE_CONTROL,
             HeaderValue::from_static("no-store"),
