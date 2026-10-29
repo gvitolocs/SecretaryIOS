@@ -49,7 +49,7 @@
 //! | `GET /v1/approvals/{id}/wait?timeout=` | svc or device (the requester) | long poll, at most 30 s |
 //! | `POST /v1/approvals/{id}/withdraw` | svc or device (the requester) | the requester no longer needs the answer: a pending request becomes `expired` |
 //! | `GET /v1/approvals/public-key` | public | the grant verification key |
-//! | `GET /v1/approvals?status=pending\|all` | device | what this device may decide now |
+//! | `GET /v1/approvals?status=pending\|all&since=&wait=` | device | what this device may decide now; with `since` (the last `cursor`) and `wait`, a long poll of at most 30 s until that changes |
 //! | `GET /v1/approvals/{id}` | device | one request, decided or expired too |
 //! | `POST /v1/approvals/{id}/decide` | device | approve or deny |
 //! | `GET`, `PUT /v1/approvals/settings` | device | main device |
@@ -545,8 +545,10 @@ pub struct Approvals {
     /// Serialises PIN checks, so parallel guesses cannot outrun the lock.
     pin_gate: Mutex<()>,
     audit: Audit,
-    /// Bumped on every decision, to wake long polls.
+    /// Bumped on every new request and every decision, to wake long polls.
     changed: tokio::sync::watch::Sender<u64>,
+    /// Part of the list's `cursor`, so a cursor from before a restart never matches.
+    started_ms: i64,
     limiter: RateLimiter,
 }
 
@@ -565,6 +567,7 @@ impl Approvals {
                 lock: Mutex::new(()),
             },
             changed: tokio::sync::watch::Sender::new(0),
+            started_ms: now_ms(),
             map: Mutex::new(HashMap::new()),
             cfg,
         })
@@ -695,6 +698,8 @@ impl Approvals {
             details: a.details.clone(),
         };
         map.insert(a.id.clone(), a);
+        drop(map);
+        self.wake();
         Ok(created)
     }
 
@@ -772,6 +777,27 @@ impl Approvals {
             .into_iter()
             .map(|a| self.item(a, me, main, now))
             .collect()
+    }
+
+    /// When `me`'s pending list next changes by itself: a request expires, or one held for the main device
+    /// escalates to `me`.
+    fn next_change_ms(&self, me: &str, main: Option<&str>, now: i64) -> Option<i64> {
+        let map = self.lock();
+        map.values()
+            .filter(|a| a.requester_id != me && a.open(now))
+            .map(|a| {
+                if self.in_scope(a, me, main, now) {
+                    a.expires_ms
+                } else {
+                    (a.created_ms + ms(self.cfg.escalate_after)).min(a.expires_ms)
+                }
+            })
+            .min()
+    }
+
+    /// Changes whenever a long poll on the list should answer; it differs after a restart too.
+    fn cursor(&self) -> String {
+        format!("{}.{}", self.started_ms, *self.changed.borrow())
     }
 
     fn get_at(&self, id: &str, me: &str, main: Option<&str>, now: i64) -> Result<Value, ApiError> {
@@ -1344,9 +1370,19 @@ async fn public_key(State(st): State<AppState>) -> Json<Value> {
 struct ListQuery {
     #[serde(default)]
     status: Option<String>,
+    /// The `cursor` of the list the caller already has.
+    #[serde(default)]
+    since: Option<String>,
+    /// Seconds to hold the request while the list still matches `since` (at most `wait_max`).
+    #[serde(default)]
+    wait: Option<u64>,
 }
 
-/// `GET /v1/approvals?status=pending|all`
+/// `GET /v1/approvals?status=pending|all[&since=<cursor>&wait=25]`
+///
+/// With `since` and `wait`, a long poll: it answers when a request is created, decided, withdrawn, expires or
+/// escalates to this device, or after `wait` seconds. The app holds one open while it is active instead of
+/// polling every few seconds.
 async fn list(
     State(st): State<AppState>,
     Extension(who): Extension<Identity>,
@@ -1357,11 +1393,35 @@ async fn list(
         Some("all") => true,
         Some(_) => return Err(bad("status: pending or all")),
     };
-    let main = effective_main(&st);
-    let items = st
-        .approvals
-        .list_at(&who.device_id, main.as_deref(), all, now_ms());
-    Ok(Json(json!({"approvals": items})))
+    let ap = &st.approvals;
+    let secs = q.wait.unwrap_or(0).min(ap.cfg.wait_max.as_secs());
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
+    let mut changed = ap.changed.subscribe();
+    let mut shutdown = st.shutdown.subscribe();
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let cursor = ap.cursor();
+        let main = effective_main(&st);
+        let now = now_ms();
+        if q.since.as_deref() != Some(cursor.as_str()) || left.is_zero() || *shutdown.borrow() {
+            let items = ap.list_at(&who.device_id, main.as_deref(), all, now);
+            return Ok(Json(json!({"approvals": items, "cursor": cursor})));
+        }
+        let by_itself = ap
+            .next_change_ms(&who.device_id, main.as_deref(), now)
+            .map_or(left, |at| {
+                Duration::from_millis(u64::try_from(at - now).unwrap_or(0) + 5)
+            });
+        tokio::select! {
+            _ = changed.changed() => {}
+            () = tokio::time::sleep(left.min(by_itself)) => {
+                // The deadline, or the list changed by itself (an expiry or an escalation).
+                let items = ap.list_at(&who.device_id, main.as_deref(), all, now_ms());
+                return Ok(Json(json!({"approvals": items, "cursor": ap.cursor()})));
+            }
+            () = crate::notify::stopped(&mut shutdown) => {}
+        }
+    }
 }
 
 /// `GET /v1/approvals/{id}`

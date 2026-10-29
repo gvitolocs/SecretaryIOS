@@ -2212,3 +2212,93 @@ async fn a_mac_becomes_an_approver_only_with_the_iphones_face_id_and_can_be_revo
         "{me}"
     );
 }
+
+impl H {
+    /// `GET /v1/approvals?since=…&wait=…` as `dev`, timed.
+    async fn list_poll(&self, dev: &Dev, since: &str, wait: u64) -> (Value, Duration) {
+        let t = std::time::Instant::now();
+        let (s, v) = self
+            .call(
+                "GET",
+                &format!("/v1/approvals?status=pending&since={since}&wait={wait}"),
+                Some(&dev.token),
+                None,
+            )
+            .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        (v, t.elapsed())
+    }
+}
+
+#[tokio::test]
+async fn the_pending_list_long_polls_until_it_changes() {
+    let h = harness(|c| c.approvals.min_ttl = Duration::from_secs(1)).await;
+    let phone = h.device("iPhone");
+
+    // Without `since` it answers at once, with a cursor; an old cursor answers at once too.
+    let (v, took) = h.list_poll(&phone, "", 5).await;
+    assert!(took < Duration::from_secs(1), "{took:?}");
+    let empty = v["cursor"].as_str().unwrap().to_owned();
+    assert_eq!(v["approvals"], json!([]));
+    let (_, took) = h.list_poll(&phone, "0.0", 5).await;
+    assert!(took < Duration::from_secs(1), "{took:?}");
+
+    // Nothing happens: it holds until `wait`, and says the same cursor.
+    let (v, took) = h.list_poll(&phone, &empty, 1).await;
+    assert!(took >= Duration::from_millis(900), "{took:?}");
+    assert_eq!(v["cursor"], empty.as_str());
+
+    // A new request wakes a waiting poll.
+    let poll = |since: String| {
+        let (http, url, token) = (
+            h.http.clone(),
+            h.url(&format!(
+                "/v1/approvals?status=pending&since={since}&wait=20"
+            )),
+            phone.token.clone(),
+        );
+        tokio::spawn(async move {
+            let t = std::time::Instant::now();
+            let v: Value = http
+                .get(url)
+                .bearer_auth(token)
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            (v, t.elapsed())
+        })
+    };
+    let waiter = poll(empty.clone());
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let id = h.ask("agent.permission").await;
+    let (v, took) = waiter.await.unwrap();
+    assert!(took < Duration::from_secs(3), "{took:?}");
+    assert_eq!(v["approvals"][0]["id"], id.as_str());
+    let one = v["cursor"].as_str().unwrap().to_owned();
+    assert_ne!(one, empty);
+
+    // So does a decision.
+    let waiter = poll(one.clone());
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let (s, _) = h.decide(&phone, &id, "deny", None).await;
+    assert_eq!(s, StatusCode::OK);
+    let (v, took) = waiter.await.unwrap();
+    assert!(took < Duration::from_secs(3), "{took:?}");
+    assert_eq!(v["approvals"], json!([]));
+
+    // And an expiry, which changes nothing but the clock.
+    let mut b = H::req_body("agent.permission");
+    b["ttlSecs"] = json!(1);
+    h.ask_with("", b).await;
+    let (v, _) = h.list_poll(&phone, "", 0).await;
+    assert_eq!(v["approvals"].as_array().unwrap().len(), 1);
+    let (v, took) = h.list_poll(&phone, v["cursor"].as_str().unwrap(), 20).await;
+    assert!(
+        took < Duration::from_secs(4),
+        "the poll ends at the expiry: {took:?}"
+    );
+    assert_eq!(v["approvals"], json!([]));
+}
