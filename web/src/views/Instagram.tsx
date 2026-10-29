@@ -1,7 +1,7 @@
 import { A, useNavigate, useParams } from "@solidjs/router";
 import { createEffect, createResource, createSignal, For, on, onMount, Show, type Accessor } from "solid-js";
 import { ApiError } from "../api/client";
-import { instagramApi, type IgItem, type IgPage, type IgProfileBundle } from "../api/instagram";
+import { instagramApi, type IgHighlight, type IgItem, type IgPage, type IgProfileBundle } from "../api/instagram";
 import {
   instagramWatched,
   instagramWatchSettings,
@@ -160,11 +160,28 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
   const [bundle, setBundle] = createSignal<IgProfileBundle>();
   const [loadError, setLoadError] = createSignal<unknown>(null);
   const [fetching, setFetching] = createSignal(true);
+  const [highlights, setHighlights] = createSignal<IgHighlight[]>([]);
+  const [highlightsLoading, setHighlightsLoading] = createSignal(false);
+  const [highlightsError, setHighlightsError] = createSignal<unknown>(null);
+  async function loadHighlights() {
+    if (highlightsLoading() || highlights().length || bundle()?.profile.isPrivate) return;
+    setHighlightsLoading(true);
+    setHighlightsError(null);
+    try {
+      setHighlights(await instagramApi.highlights(props.username));
+    } catch (e) {
+      setHighlightsError(e);
+    } finally {
+      setHighlightsLoading(false);
+    }
+  }
   async function refetch() {
     setFetching(true);
     setLoadError(null);
     try {
-      setBundle(await instagramApi.profile(props.username));
+      const result = await instagramApi.profile(props.username);
+      setHighlights(result.highlights);
+      setBundle(result);
     } catch (e) {
       setLoadError(e);
     } finally {
@@ -242,6 +259,11 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
     const f = bundle() ? feedOf(tab()) : undefined;
     if (f && !f.loaded() && !f.loading() && !f.error()) void f.load();
   });
+
+  // Track tab entries only: an empty response stays unknown, without a request loop.
+  createEffect(on([bundle, tab], ([b, tb]) => {
+    if (b && tb === "highlights") void loadHighlights();
+  }));
 
   async function openHighlight(id: string, title: string) {
     setNotice("");
@@ -356,20 +378,27 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
 
             <div id="ig-panel" role="tabpanel" aria-labelledby={`ig-tab-${tab()}`} class="ig-panel">
               <Show when={tab() === "highlights"}>
-                <Show when={b().highlights.length > 0} fallback={<p class="ig-muted">{empty("highlights")}</p>}>
-                  <ul class="ig-highlights">
-                    <For each={b().highlights}>
-                      {(h) => (
-                        <li>
-                          <button type="button" class="ig-highlight" aria-busy={opening() === h.id} disabled={opening() !== null} onClick={() => void openHighlight(h.id, h.title)}>
-                            <Avatar url={h.coverUrl} name={h.title} size="lg" />
-                            <span class="ig-highlight__title">{h.title}</span>
-                            <Show when={h.mediaCount}>{(n) => <span class="ig-highlight__count">{t("instagram.items", { count: n() })}</span>}</Show>
-                          </button>
-                        </li>
-                      )}
-                    </For>
-                  </ul>
+                <Show when={!highlightsLoading()} fallback={<p role="status" class="ig-muted">{t("instagram.loading")}</p>}>
+                  <Show when={!highlightsError()} fallback={<p role="alert">{errorText(highlightsError())}</p>}>
+                    <Show when={highlights().length > 0} fallback={<p class="ig-muted">{empty("highlights")}</p>}>
+                      <ul class="ig-highlights">
+                        <For each={highlights()}>
+                          {(h) => (
+                            <li>
+                              <button type="button" class="ig-highlight" aria-busy={opening() === h.id} disabled={opening() !== null} onClick={() => void openHighlight(h.id, h.title)}>
+                                <Avatar url={h.coverUrl} name={h.title} size="lg" />
+                                <span class="ig-highlight__title">{h.title}</span>
+                                <Show when={h.mediaCount}>{(n) => <span class="ig-highlight__count">{t("instagram.items", { count: n() })}</span>}</Show>
+                              </button>
+                            </li>
+                          )}
+                        </For>
+                      </ul>
+                    </Show>
+                  </Show>
+                  <Show when={!highlights().length && !b().profile.isPrivate}>
+                    <button type="button" class="btn" onClick={() => void loadHighlights()}>{t("instagram.retry")}</button>
+                  </Show>
                 </Show>
               </Show>
 

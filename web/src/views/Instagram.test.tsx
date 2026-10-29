@@ -54,6 +54,7 @@ function serve(r: Routes) {
     if (url.startsWith("/v1/instagram/reels/")) return { body: { ok: true, data: r.reels ?? { items: [], nextCursor: null } } };
     if (url.startsWith("/v1/instagram/stories/")) return { body: { ok: true, data: r.stories ?? { items: [], nextCursor: null } } };
     if (url.startsWith("/v1/instagram/highlights/items")) return { body: { ok: true, data: r.highlightItems } };
+    if (url.startsWith("/v1/instagram/highlights/")) return { status: r.highlightsStatus as number | undefined, body: r.highlightsStatus ? { ok: false, error: "upstream_unavailable" } : { ok: true, data: { items: r.highlights ?? [] } } };
     if (url.startsWith("/v1/instagram/resolve")) return { body: { ok: true, data: r.resolve } };
     if (url === "/v1/instagram/watch" && call.method === "GET") return { body: { ok: true, data: r.watched ?? [] } };
     if (url === "/v1/instagram/watch-settings") {
@@ -162,6 +163,56 @@ describe("Instagram", () => {
     expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
   });
 
+  it("uses the tray route when the bundle is empty and renders the cover", async () => {
+    const calls = serve({ profile: bundle(), highlights: bundle({ highlights: true }).highlights });
+    renderIg("/instagram/natgeo");
+    fireEvent.click(await screen.findByRole("tab", { name: "Highlights" }));
+    const highlight = await screen.findByRole("button", { name: /Best of/ });
+    expect(highlight.querySelector("img")).toHaveAttribute("src", "/v1/instagram/s/9/x/h");
+    expect(calls.filter((c) => c.url === "/v1/instagram/highlights/natgeo")).toHaveLength(1);
+    fireEvent.click(screen.getByRole("tab", { name: "Posts" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Highlights" }));
+    expect(calls.filter((c) => c.url === "/v1/instagram/highlights/natgeo")).toHaveLength(1);
+  });
+
+  it("retries an empty tray on reentry and with Try again, without looping", async () => {
+    const r: Routes = { profile: bundle() };
+    const calls = serve(r);
+    renderIg("/instagram/natgeo");
+    fireEvent.click(await screen.findByRole("tab", { name: "Highlights" }));
+    await screen.findByText("No highlights.");
+    expect(calls.filter((c) => c.url === "/v1/instagram/highlights/natgeo")).toHaveLength(1);
+    fireEvent.click(screen.getByRole("tab", { name: "Posts" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Highlights" }));
+    await screen.findByText("No highlights.");
+    expect(calls.filter((c) => c.url === "/v1/instagram/highlights/natgeo")).toHaveLength(2);
+    r.highlights = bundle({ highlights: true }).highlights;
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByRole("button", { name: /Best of/ })).toBeInTheDocument();
+    expect(calls.filter((c) => c.url === "/v1/instagram/highlights/natgeo")).toHaveLength(3);
+  });
+
+  it("shows tray errors and can retry", async () => {
+    const r: Routes = { profile: bundle(), highlightsStatus: 502 };
+    serve(r);
+    renderIg("/instagram/natgeo");
+    fireEvent.click(await screen.findByRole("tab", { name: "Highlights" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't load this right now.");
+    expect(screen.queryByText("No highlights.")).toBeNull();
+    r.highlightsStatus = undefined;
+    r.highlights = bundle({ highlights: true }).highlights;
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByRole("button", { name: /Best of/ })).toBeInTheDocument();
+  });
+
+  it("does not request the tray for a private profile", async () => {
+    const calls = serve({ profile: bundle({ isPrivate: true }) });
+    renderIg("/instagram/natgeo");
+    fireEvent.click(await screen.findByRole("tab", { name: "Highlights" }));
+    expect(screen.getByText("No highlights.")).toBeInTheDocument();
+    expect(calls.some((c) => c.url === "/v1/instagram/highlights/natgeo")).toBe(false);
+  });
+
   describe("a highlight's tiles", () => {
     // The Gallery grid lays out what fits in its scroll box: give it one.
     beforeEach(() => {
@@ -178,10 +229,10 @@ describe("Instagram", () => {
     const ids = ["h1", "h2", "h3", "h4", "h5", "h6"];
     const tiles = () => document.querySelectorAll<HTMLElement>(".ig-tiles .g-tile");
     async function openHighlight() {
-      serve({ profile: bundle({ highlights: true }), highlightItems: { items: [...ids.map((i) => item(i)), item("v7", "video")], nextCursor: null } });
+      serve({ profile: bundle(), highlights: bundle({ highlights: true }).highlights, highlightItems: { items: [...ids.map((i) => item(i)), item("v7", "video")], nextCursor: null } });
       renderIg("/instagram/natgeo");
       fireEvent.click(await screen.findByRole("tab", { name: "Highlights" }));
-      fireEvent.click(screen.getByRole("button", { name: /Best of/ }));
+      fireEvent.click(await screen.findByRole("button", { name: /Best of/ }));
       return screen.findByRole("dialog", { name: "Best of: all items" });
     }
     const viewer = () => screen.queryByRole("dialog", { name: /^\d+ of 7$/ });
@@ -255,10 +306,11 @@ describe("Instagram", () => {
   });
 
   it("shows a highlight's count only when the server knows it", async () => {
-    serve({ profile: bundle({ highlights: true }) });
+    const calls = serve({ profile: bundle({ highlights: true }) });
     renderIg("/instagram/natgeo");
     fireEvent.click(await screen.findByRole("tab", { name: "Highlights" }));
     expect(screen.getByRole("button", { name: /Best of/ })).toHaveTextContent("2 items");
+    expect(calls.some((c) => c.url === "/v1/instagram/highlights/natgeo")).toBe(false);
   });
 
   it("shows no count for a highlight whose mediaCount is null", async () => {

@@ -9,6 +9,7 @@ import { request } from "./client";
 // GET  /v1/instagram/posts/{username}?cursor=      -> Page (the backend ignores the cursor: `exhausted`)
 // GET  /v1/instagram/reels/{username}?cursor=      -> Page
 // GET  /v1/instagram/stories/{username}            -> Page
+// GET  /v1/instagram/highlights/{username}         -> {items: IgHighlight[]}
 // GET  /v1/instagram/highlights/items?id=&cursor=  -> Page
 // GET  /v1/instagram/resolve?url=                  -> Page (one post or reel)
 // GET  /v1/instagram/recent                        -> {items}
@@ -153,6 +154,7 @@ export const instagramApi = {
   posts: (username: string, cursor?: string | null) => get<IgPage>(`/posts/${user(username)}${cursorQuery(cursor)}`),
   reels: (username: string, cursor?: string | null) => get<IgPage>(`/reels/${user(username)}${cursorQuery(cursor)}`),
   stories: (username: string) => get<IgPage>(`/stories/${user(username)}`),
+  highlights: (username: string) => get<{ items: IgHighlight[] }>(`/highlights/${user(username)}`).then((d) => d.items),
   highlightItems: (id: string, cursor?: string | null) =>
     get<IgPage>(`/highlights/items?id=${encodeURIComponent(id)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`),
   resolve: (url: string) => get<IgPage>(`/resolve?url=${encodeURIComponent(url)}`),

@@ -11,6 +11,7 @@ describe("instagramApi", () => {
     await instagramApi.posts("na.t_geo", "A+B/c=");
     await instagramApi.reels("natgeo");
     await instagramApi.stories("natgeo");
+    await instagramApi.highlights("na.t_geo");
     await instagramApi.highlightItems("highlight:1", "x y");
     await instagramApi.highlightItems("highlight:1");
     await instagramApi.resolve("https://www.instagram.com/p/abc/?x=1&y=2");
@@ -18,6 +19,7 @@ describe("instagramApi", () => {
       "/v1/instagram/posts/na.t_geo?cursor=A%2BB%2Fc%3D",
       "/v1/instagram/reels/natgeo",
       "/v1/instagram/stories/natgeo",
+      "/v1/instagram/highlights/na.t_geo",
       "/v1/instagram/highlights/items?id=highlight%3A1&cursor=x%20y",
       "/v1/instagram/highlights/items?id=highlight%3A1",
       "/v1/instagram/resolve?url=https%3A%2F%2Fwww.instagram.com%2Fp%2Fabc%2F%3Fx%3D1%26y%3D2",
