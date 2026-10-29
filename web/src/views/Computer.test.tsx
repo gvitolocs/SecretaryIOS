@@ -136,6 +136,7 @@ describe("Lucina's computer", () => {
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Lucina's computer");
     expect(await screen.findByRole("alert")).toHaveClass("pg-error");
     expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+  });
 
   it("shows the step Lucina's engine is on while she works", async () => {
     fakeLucina(
