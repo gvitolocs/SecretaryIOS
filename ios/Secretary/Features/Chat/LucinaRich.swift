@@ -557,7 +557,14 @@ extension AppModel {
         switch first {
         case "shopping": selectedTab = .shopping
         case "gym", "weight": selectedTab = .fitness
-        case "lucina", "avatar", "wardrobe": selectedTab = .lucina
+        case "lucina", "avatar": selectedTab = .lucina
+        case "wardrobe":
+            selectedTab = .lucina
+            wardrobe.presented = true
+        // `decisions` opens the list, `decisions/<id>` one decision (as Lucina's push does).
+        case "decisions":
+            let id = path.split(separator: "/").dropFirst().first.map(String.init)
+            openDecision(id)
         case "settings", "links": showSettings = true
         case "notes":
             selectedTab = .plugins
