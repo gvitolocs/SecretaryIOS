@@ -279,7 +279,8 @@ struct ChatComposer: View {
         let cleaned = ChatStore.clean(model.draft)
         guard cleaned.count <= ChatStore.maxCharacters, model.loading == 0, !model.sending, !model.locating else { return false }
         if model.hasAttachments { return true }
-        return !cleaned.isEmpty && !store.isSending
+        // Never blocked by a message still on its way: this one queues behind it.
+        return !cleaned.isEmpty
     }
 
     /// Sends the draft (and the tray), as a reply when the quote bar is up: `replyTo` rides with it and the

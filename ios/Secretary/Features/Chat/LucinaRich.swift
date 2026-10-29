@@ -512,7 +512,7 @@ struct RichActionsView: View {
                     .overlay(Capsule().strokeBorder(isChosen ? Color.green : Theme.accent.opacity(0.4)))
                 }
                 .buttonStyle(.plain)
-                .disabled(chosen != nil || (store.isSending && action.sendsMessage))
+                .disabled(chosen != nil)
                 .opacity(chosen != nil && !isChosen ? 0.45 : 1)
                 .accessibilityLabel(isChosen ? Text("\(action.label), chosen") : Text(action.label))
                 .accessibilityIdentifier("richAction-\(action.id)")
@@ -521,7 +521,7 @@ struct RichActionsView: View {
     }
 
     private func run(_ action: RichAction) {
-        guard chosen == nil, !(store.isSending && action.sendsMessage) else { return }
+        guard chosen == nil else { return }
         switch action.kind {
         case .reply:
             if action.prefill { store.requestPrefill(action.text ?? "") } else if let t = action.text { Task { await store.send(t) } }

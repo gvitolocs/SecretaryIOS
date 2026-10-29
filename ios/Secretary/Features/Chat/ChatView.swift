@@ -431,22 +431,28 @@ struct MessageRow: View {
                     JobCard(job: job)
                 }
                 if item.localStatus == .error {
-                    HStack(spacing: 6) {
-                        Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.red).accessibilityHidden(true)
-                        Text(item.localError ?? String(localized: "Not delivered."))
-                            .font(.caption).foregroundStyle(.secondary)
-                        Button("Retry") { Task { await store.retry(item.id) } }
-                            .font(.caption.bold())
-                            .disabled(store.isSending && item.meta?.isShare != true)
-                            .accessibilityIdentifier("retryMessage")
+                    // The whole row resends (the red icon too); a failed message never blocks the next ones.
+                    Button { Task { await store.retry(item.id) } } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "arrow.clockwise.circle.fill").foregroundStyle(.red).accessibilityHidden(true)
+                            Text(item.localError ?? String(localized: "Not delivered."))
+                                .font(.caption).foregroundStyle(.secondary)
+                            Text("Retry").font(.caption.bold())
+                        }
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("retryMessage")
                 } else if item.localStatus == .sending {
                     HStack(spacing: 6) {
                         if let shareId = item.meta?.shareId, !item.attachments.contains(where: \.isVisual),
                            let progress = store.shareProgress[shareId] {
                             ProgressView(value: progress).progressViewStyle(.circular).controlSize(.mini)
                         }
-                        Text("Sending…")
+                        if store.isQueued(item) {
+                            Text("Waiting to send")
+                        } else {
+                            Text("Sending…")
+                        }
                     }
                     .font(.caption2).foregroundStyle(.secondary)
                 } else {

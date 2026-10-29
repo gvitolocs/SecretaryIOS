@@ -5,7 +5,8 @@ import os
 ///
 /// - Auth: `Authorization: Bearer <device key>` on every request when a key is set
 ///   (Bearer requests need no CSRF header).
-/// - Timeouts: 15 s by default, 125 s for chat (the server allows Lucina 120 s).
+/// - Timeouts: 15 s by default, 45 s for chat (`ChatSendQueue.timeout`: a longer answer still arrives on the
+///   timeline stream, and the bubble is replaced by the server's copy).
 /// - Endpoints: an ordered list of base URLs for the *same* server (public, then the
 ///   private Tailscale name). A request that fails at the network layer is retried once
 ///   on the next endpoint; HTTP answers (any status) never fall back. The endpoint that
@@ -13,7 +14,7 @@ import os
 /// - Errors: every failure becomes an `APIError`.
 final class APIClient: @unchecked Sendable {
     static let defaultTimeout: TimeInterval = 15
-    static let chatTimeout: TimeInterval = 125
+    static let chatTimeout: TimeInterval = ChatSendQueue.timeout
     static let preferredEndpointKey = "secretary.server.lastWorkingEndpoint"
 
     struct Response: Sendable {
