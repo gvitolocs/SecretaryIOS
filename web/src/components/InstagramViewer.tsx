@@ -4,7 +4,7 @@ import { instagramApi, type IgSaveItem } from "../api/instagram";
 import { ApiError } from "../api/client";
 import { t } from "../i18n";
 import { formatTaken, type Slide } from "../lib/instagram";
-import { CheckIcon, DownloadIcon, ExternalIcon } from "./Icons";
+import { CheckIcon, DownloadIcon, ExternalIcon, GridIcon } from "./Icons";
 import { PhotoViewer, type ViewerItem } from "./PhotoViewer";
 
 // The full-size viewer for stories, highlights, posts and reels: the Gallery's PhotoViewer (pinch,
@@ -28,6 +28,10 @@ export default function InstagramViewer(props: {
   onClose: () => void;
   /** Called when the viewer gets near the end of the slides, so the page can load more. */
   onNearEnd?: () => void;
+  /** The slide shown changed (so the tiles can come back on it). */
+  onIndex?: (index: number) => void;
+  /** Back to the tiles (the top bar's grid button and G); without it there is no grid button. */
+  onGrid?: () => void;
 }) {
   const [index, setIndex] = createSignal(Math.max(0, Math.min(props.start, props.slides.length - 1)));
   const [saves, setSaves] = createSignal<Record<string, SaveState>>({});
@@ -94,9 +98,23 @@ export default function InstagramViewer(props: {
   onCleanup(() => clearTimeout(toastTimer));
 
   createEffect(on(index, (i) => total() - i <= 3 && props.onNearEnd?.()));
+  createEffect(on(index, (i) => props.onIndex?.(i), { defer: true }));
+
+  function onKeyDown(e: KeyboardEvent): boolean {
+    if ((e.key !== "g" && e.key !== "G") || !props.onGrid || e.metaKey || e.ctrlKey || e.altKey) return false;
+    if ((e.target as Element | null)?.closest?.("input, textarea, select")) return false;
+    e.preventDefault();
+    props.onGrid();
+    return true;
+  }
 
   const Toolbar = () => (
     <>
+      <Show when={props.onGrid}>
+        <button type="button" class="pv-btn ig-pv-grid" aria-label={t("instagram.showTiles")} title={t("instagram.showTiles")} onClick={() => props.onGrid?.()}>
+          <GridIcon />
+        </button>
+      </Show>
       <Show when={formatTaken(slide()?.item.takenAt)}>{(d) => <span class="ig-pv-date">{d()}</span>}</Show>
       <Show when={slide()?.item.permalink}>
         {(href) => (
@@ -154,6 +172,7 @@ export default function InstagramViewer(props: {
         onIndex={setIndex}
         onClose={() => props.onClose()}
         label={(n, count) => t("instagram.position", { n, total: count })}
+        onKeyDown={onKeyDown}
         toolbar={<Toolbar />}
         panel={hasPanel() ? <Panel /> : undefined}
         renderVideo={({ item, current }) =>

@@ -114,3 +114,11 @@
 
 .pg .ig-find { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .pg .ig-find .media-search { flex: 1; min-width: 12rem; max-width: 20rem; }
+.ig-pv-grid .icon { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; }
+
+/* A highlight (or any opened feed) as tiles (components/InstagramTiles.tsx): the Gallery's grid (styles/gallery.css)
+   in a full-screen layer under the viewer's z-index, so the viewer opens over it. */
+.ig-tiles { position: fixed; inset: 0; z-index: 1999; padding-top: env(safe-area-inset-top); background: var(--lu-bg); outline: none; }
+.ig-tiles__title { display: grid; min-width: 0; margin-right: auto; line-height: 1.25; }
+.ig-tiles__title strong { font-size: var(--lu-type-headline); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ig-tiles__title small { color: var(--lu-text-secondary); font-size: var(--lu-type-footnote); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

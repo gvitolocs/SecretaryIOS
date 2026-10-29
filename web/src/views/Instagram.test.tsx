@@ -162,13 +162,96 @@ describe("Instagram", () => {
     expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
   });
 
-  it("opens a highlight in the viewer", async () => {
-    serve({ profile: bundle({ highlights: true }), highlightItems: { items: [item("h1"), item("h2")], nextCursor: null } });
+  describe("a highlight's tiles", () => {
+    // The Gallery grid lays out what fits in its scroll box: give it one.
+    beforeEach(() => {
+      vi.spyOn(Element.prototype, "clientWidth", "get").mockImplementation(function (this: Element) {
+        return this.classList.contains("g-scroll") ? 1000 : 0;
+      });
+      vi.spyOn(Element.prototype, "clientHeight", "get").mockImplementation(function (this: Element) {
+        return this.classList.contains("g-scroll") ? 800 : 0;
+      });
+      vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+    });
+    afterEach(() => vi.unstubAllGlobals());
+
+    const ids = ["h1", "h2", "h3", "h4", "h5", "h6"];
+    const tiles = () => document.querySelectorAll<HTMLElement>(".ig-tiles .g-tile");
+    async function openHighlight() {
+      serve({ profile: bundle({ highlights: true }), highlightItems: { items: [...ids.map((i) => item(i)), item("v7", "video")], nextCursor: null } });
+      renderIg("/instagram/natgeo");
+      fireEvent.click(await screen.findByRole("tab", { name: "Highlights" }));
+      fireEvent.click(screen.getByRole("button", { name: /Best of/ }));
+      return screen.findByRole("dialog", { name: "Best of: all items" });
+    }
+    const viewer = () => screen.queryByRole("dialog", { name: /^\d+ of 7$/ });
+
+    it("opens on one tile per item, with the title, the count and a video badge", async () => {
+      const grid = await openHighlight();
+      await waitFor(() => expect(tiles()).toHaveLength(7));
+      expect(grid).toHaveTextContent("Best of");
+      expect(grid).toHaveTextContent("@natgeo · 7 items");
+      expect(tiles()[6]!.querySelector(".g-badge--video")).not.toBeNull();
+      expect(tiles()[0]!.querySelector(".g-badge--video")).toBeNull();
+      expect(tiles()[0]!.querySelector("img")).toHaveAttribute("loading", "lazy");
+      expect(tiles()[0]!.querySelector("img")).toHaveAttribute("src", "/v1/instagram/s/9/x/h1-t");
+      expect(viewer()).toBeNull();
+    });
+
+    it("opens the viewer on the tile that was clicked", async () => {
+      await openHighlight();
+      await waitFor(() => expect(tiles()).toHaveLength(7));
+      fireEvent.click(tiles()[3]!.querySelector(".g-open")!);
+      expect(await screen.findByRole("dialog", { name: "4 of 7" })).toBeInTheDocument();
+      expect(screen.queryByRole("dialog", { name: "Best of: all items" })).toBeNull();
+    });
+
+    it("toggles between the tiles and the viewer with G, and Esc steps back out", async () => {
+      await openHighlight();
+      await waitFor(() => expect(tiles()).toHaveLength(7));
+      fireEvent.keyDown(window, { key: "g" });
+      expect(await screen.findByRole("dialog", { name: "1 of 7" })).toBeInTheDocument();
+      fireEvent.keyDown(window, { key: "ArrowRight" });
+      expect(await screen.findByRole("dialog", { name: "2 of 7" })).toBeInTheDocument();
+      fireEvent.keyDown(window, { key: "G" });
+      expect(await screen.findByRole("dialog", { name: "Best of: all items" })).toBeInTheDocument();
+      expect(viewer()).toBeNull();
+      // Back on the slide the viewer was on.
+      fireEvent.keyDown(window, { key: "g" });
+      expect(await screen.findByRole("dialog", { name: "2 of 7" })).toBeInTheDocument();
+      fireEvent.keyDown(window, { key: "Escape" });
+      expect(await screen.findByRole("dialog", { name: "Best of: all items" })).toBeInTheDocument();
+      fireEvent.keyDown(window, { key: "Escape" });
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    });
+
+    it("goes back to the tiles from the viewer's grid button", async () => {
+      await openHighlight();
+      await waitFor(() => expect(tiles()).toHaveLength(7));
+      fireEvent.click(tiles()[5]!.querySelector(".g-open")!);
+      await screen.findByRole("dialog", { name: "6 of 7" });
+      fireEvent.click(screen.getByRole("button", { name: "All items as tiles (G)" }));
+      expect(await screen.findByRole("dialog", { name: "Best of: all items" })).toBeInTheDocument();
+    });
+
+    it("moves between tiles with the arrow keys", async () => {
+      await openHighlight();
+      await waitFor(() => expect(tiles()).toHaveLength(7));
+      const first = tiles()[0]!.querySelector<HTMLElement>(".g-open")!;
+      first.focus();
+      fireEvent.keyDown(first, { key: "ArrowRight" });
+      expect(document.activeElement).toBe(tiles()[1]!.querySelector(".g-open"));
+    });
+  });
+
+  it("opens a story in the viewer, with a grid button to its tiles", async () => {
+    serve({ profile: bundle({ hasStories: true }), stories: { items: [item("s1"), item("s2"), item("s3")], nextCursor: null } });
     renderIg("/instagram/natgeo");
-    fireEvent.click(await screen.findByRole("tab", { name: "Highlights" }));
-    fireEvent.click(screen.getByRole("button", { name: /Best of/ }));
-    const dialog = await screen.findByRole("dialog");
-    expect(dialog).toHaveAttribute("aria-label", "1 of 2");
+    const tile = await screen.findByRole("button", { name: /Stories 2/ });
+    fireEvent.click(tile);
+    expect(await screen.findByRole("dialog", { name: "2 of 3" })).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "g" });
+    expect(await screen.findByRole("dialog", { name: "@natgeo: all items" })).toBeInTheDocument();
   });
 
   it("shows a highlight's count only when the server knows it", async () => {

@@ -77,6 +77,8 @@ export interface GridViewProps {
   onSection: (start: number, count: number, on: boolean) => void;
   onBand: (phase: "start" | "move" | "end", indexes: number[], additive: boolean) => void;
   onCommand: (command: GridCommand) => void;
+  /** Focus and reveal this tile when the grid mounts (back from a viewer, e.g. the Instagram tiles). */
+  focusIndex?: number;
 }
 
 interface Pad {
@@ -460,6 +462,8 @@ export function GridView(props: GridViewProps) {
   }
   onMount(() => {
     measure();
+    const start = props.focusIndex;
+    if (start !== undefined) requestAnimationFrame(() => focusIndex(start));
     // The click that ends a rubber-band drag must not open the tile under the pointer.
     const swallow = (e: Event) => {
       if (suppressClick) {

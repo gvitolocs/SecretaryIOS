@@ -24,7 +24,7 @@ import {
   RowList,
   useWide,
 } from "../components/page";
-import InstagramViewer from "../components/InstagramViewer";
+import InstagramOpened from "../components/InstagramOpened";
 import { t } from "../i18n";
 import { formatCount, parseTyped, slideIndexOf, slidesOf } from "../lib/instagram";
 import { relativeTime } from "../lib/relativeTime";
@@ -150,6 +150,9 @@ interface Opened {
   username: string;
   /** From the Archive: already in the Gallery. */
   archived?: boolean;
+  /** Open on the tiles (a highlight), with this title. */
+  tiles?: boolean;
+  title?: string;
 }
 
 function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
@@ -240,7 +243,7 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
     if (f && !f.loaded() && !f.loading() && !f.error()) void f.load();
   });
 
-  async function openHighlight(id: string) {
+  async function openHighlight(id: string, title: string) {
     setNotice("");
     setOpening(id);
     const feed = createFeed((c) => instagramApi.highlightItems(id, c));
@@ -248,7 +251,7 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
     setOpening(null);
     if (feed.error()) setNotice(errorText(feed.error()));
     else if (feed.items().length === 0) setNotice(t("instagram.noHighlights"));
-    else props.open({ feed, start: 0, username: props.username });
+    else props.open({ feed, start: 0, username: props.username, tiles: true, title });
   }
 
   const tabLabel = (tb: Tab) => t(`instagram.${tb}`);
@@ -358,7 +361,7 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
                     <For each={b().highlights}>
                       {(h) => (
                         <li>
-                          <button type="button" class="ig-highlight" aria-busy={opening() === h.id} disabled={opening() !== null} onClick={() => void openHighlight(h.id)}>
+                          <button type="button" class="ig-highlight" aria-busy={opening() === h.id} disabled={opening() !== null} onClick={() => void openHighlight(h.id, h.title)}>
                             <Avatar url={h.coverUrl} name={h.title} size="lg" />
                             <span class="ig-highlight__title">{h.title}</span>
                             <Show when={h.mediaCount}>{(n) => <span class="ig-highlight__count">{t("instagram.items", { count: n() })}</span>}</Show>
@@ -668,11 +671,15 @@ export default function InstagramView() {
 
       <Show when={opened()} keyed>
         {(o) => (
-          <InstagramViewer
+          <InstagramOpened
             slides={slidesOf(o.feed.items())}
             start={o.start}
+            tiles={o.tiles}
             username={o.username}
+            title={o.title}
             archived={o.archived}
+            hasMore={o.feed.hasMore()}
+            loading={o.feed.loading()}
             onClose={() => setOpened(null)}
             onNearEnd={() => void o.feed.more()}
           />
