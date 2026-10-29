@@ -13,7 +13,7 @@ use std::{
     fs,
     io::{Read, Write},
     os::unix::fs::OpenOptionsExt,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::Mutex,
 };
 
@@ -217,6 +217,16 @@ pub fn apply(
     }
 }
 
+/// `files_dir` as a path, if it is the app's own files directory
+/// (`…/tech.getsecretary.secretary/files`); every file the Rust core keeps
+/// there goes through this check.
+pub(crate) fn app_files(files_dir: &str) -> Result<PathBuf> {
+    if !files_dir.ends_with(APP_FILES_SUFFIX) || files_dir.contains("/../") {
+        return Err("Invalid app storage.".into());
+    }
+    Ok(PathBuf::from(files_dir))
+}
+
 /// The journal file of the app's files directory.
 #[derive(Debug, Clone)]
 pub struct Journal {
@@ -227,11 +237,8 @@ impl Journal {
     /// Open the journal in `files_dir`, which must be the app's own files
     /// directory (`…/tech.getsecretary.secretary/files`).
     pub fn open(files_dir: &str) -> Result<Self> {
-        if !files_dir.ends_with(APP_FILES_SUFFIX) || files_dir.contains("/../") {
-            return Err("Invalid app storage.".into());
-        }
         Ok(Self {
-            path: Path::new(files_dir).join("calls.json"),
+            path: app_files(files_dir)?.join("calls.json"),
         })
     }
 
@@ -321,6 +328,8 @@ fn random_id() -> Result<String> {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::path::Path;
+
     use super::*;
 
     /// A fresh `…/tech.getsecretary.secretary/files` directory under the

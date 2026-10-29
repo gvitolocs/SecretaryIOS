@@ -5,8 +5,8 @@ import android.content.Context
 /**
  * JNI surface of liblucina_calls.so (crates/lucina-android-calls, see docs/lucina-android.md).
  * Every function returns JSON. All but [phoneCall] and [shareUpload] return the envelope `{"ok", "data" | "error"}`,
- * which [unwrap] opens. [journal] and [ui] are cheap; [voiceTurn], [transcribe] and [shareUpload] block on the
- * network and must not run on the main thread.
+ * which [unwrap] opens. [journal], [ui] and the caller state calls are cheap; [voiceTurn], [transcribe],
+ * [shareUpload] and [screenCall] block on the network and must not run on the main thread.
  */
 object Native {
     init {
@@ -30,4 +30,19 @@ object Native {
 
     /** Screen decisions: `callView`, `dtmf`, `route`. */
     @JvmStatic external fun ui(op: String, json: String): String
+
+    /** Caller screening state, an envelope: `{settings, courier, courierLine, last, lastLine}`. Cheap. */
+    @JvmStatic external fun callerState(filesDir: String): String
+
+    /** Changes the owner's switches `{label?, silence?, reject?}`; returns the state. Cheap. */
+    @JvmStatic external fun callerSettings(filesDir: String, json: String): String
+
+    /** Keeps Lucina Maps' courier state `{onShift, orderAtMs}`; returns the state. Cheap. */
+    @JvmStatic external fun setCourier(filesDir: String, json: String): String
+
+    /** The instant, offline verdict for a ringing number: an envelope around `{notify, action, title, text, sub, ...}`. */
+    @JvmStatic external fun localVerdict(filesDir: String, number: String, json: String, lang: String): String
+
+    /** Jev's verdict from the server (about 1.2 s at most), else the rules; same shape. Blocks on the network. */
+    @JvmStatic external fun screenCall(filesDir: String, cookie: String, number: String, json: String, lang: String): String
 }

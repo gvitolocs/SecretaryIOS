@@ -9,6 +9,9 @@
 //! - [`number`]: which strings are voice-call numbers (never USSD or URIs).
 //! - [`journal`]: the private on-device call history and transcripts.
 //! - [`net`]: Lucina voice turns and recording transcription over HTTPS.
+//! - [`caller`]: screening incoming callers (instant rules verdict, Jev's
+//!   verdict from the server, the owner's silence/reject switches, the
+//!   courier state from Lucina Maps).
 //! - [`share`]: validated manifests and streaming multipart share uploads.
 //! - [`ui`]: what the in-call screen, notification, keypad, transcript list
 //!   and WebView router show or do.
@@ -19,6 +22,7 @@
 //! Verification codes never enter the journal, and a voice message that asks
 //! for one never reaches the network.
 
+pub mod caller;
 pub mod ffi;
 pub mod journal;
 pub mod net;

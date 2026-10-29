@@ -46,12 +46,26 @@ pub trait Backend {
 /// The real transport, authenticated by the WebView's session cookie.
 pub struct Https<'a> {
     cookie: &'a str,
+    /// Total time allowed for one request; the agent's 120 s when `None`.
+    timeout: Option<Duration>,
 }
 
 impl<'a> Https<'a> {
     /// A transport for the `Cookie` header value `cookie`.
     pub fn new(cookie: &'a str) -> Self {
-        Self { cookie }
+        Self {
+            cookie,
+            timeout: None,
+        }
+    }
+
+    /// The same transport with a shorter total time per request (caller
+    /// screening answers within about a second or not at all).
+    pub fn with_timeout(cookie: &'a str, timeout: Duration) -> Self {
+        Self {
+            cookie,
+            timeout: Some(timeout),
+        }
     }
 }
 
@@ -80,16 +94,19 @@ impl Backend for Https<'_> {
         if !path.starts_with("/v1/") || self.cookie.contains(['\r', '\n']) {
             return Err("Invalid request.".into());
         }
-        let mut response = agent()
+        let request = agent()
             .post(format!("{ORIGIN}{path}"))
             .header("Cookie", self.cookie)
             .header("Origin", ORIGIN)
             .header("X-Secretary-CSRF", "1")
-            .header("X-Secretary-Client", "web")
-            .send_json(body)
-            .map_err(|_| {
-                "The request failed. Check your sign-in, connection or provider availability."
-            })?;
+            .header("X-Secretary-Client", "web");
+        let request = match self.timeout {
+            Some(t) => request.config().timeout_global(Some(t)).build(),
+            None => request,
+        };
+        let mut response = request.send_json(body).map_err(|_| {
+            "The request failed. Check your sign-in, connection or provider availability."
+        })?;
         let bytes = response
             .body_mut()
             .with_config()
