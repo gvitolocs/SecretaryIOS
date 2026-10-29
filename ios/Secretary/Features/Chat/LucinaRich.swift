@@ -585,6 +585,10 @@ extension AppModel {
         case "computer":
             selectedTab = .plugins
             showComputer = true
+        case "callers":
+            selectedTab = .plugins
+            showCallers = true
+        case "notebooks": showNotebooks = true
         case "gallery": openGallery(path)
         case "drive": openDrive(DriveLink.parse(path) ?? .root)
         default: selectedTab = .chat

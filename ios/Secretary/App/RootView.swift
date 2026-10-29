@@ -50,6 +50,10 @@ struct MainTabs: View {
             if phase != .active { app.lucina.stopEverything() } else { Task { await app.device.resume() } }
         }
         .onAppear { app.openPendingWidgetRoute() }
+        // A `notebooks` link (in Settings the same screen is pushed).
+        .sheet(isPresented: Binding(get: { app.showNotebooks }, set: { app.showNotebooks = $0 })) {
+            NavigationStack { NotebooksView() }
+        }
         // A place opened by a widget, a notification or a route (`/map/place?...`): the in-app map.
         .modifier(OpenPlaceHost())
         // A maps link (Apple Maps, Google Maps) tapped in the chat opens on Lucina's map too.

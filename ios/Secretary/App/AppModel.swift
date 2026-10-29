@@ -80,6 +80,8 @@ final class AppModel {
     var showAllChats = false
     /// "Who called?": caller screening with Jev and the Call Directory labels, a plugin.
     var showCallers = false
+    /// Notebooks as a sheet (a `notebooks` link); in Settings it is a pushed screen.
+    var showNotebooks = false
     /// The quick weight entry sheet on the Training tab (widget "+", Log weight control).
     var showQuickWeight = false
     /// The Shopping tab's add field (Add to shopping control, widget "+").
