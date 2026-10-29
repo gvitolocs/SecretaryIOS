@@ -615,6 +615,10 @@ impl AppState {
                 });
             }
         }
+        // Caller screening: tellows' Scorelist refresh and the rejected-calls digest.
+        if let Some(h) = callers::spawn(self) {
+            self.supervisor.watch("callers", h);
+        }
         // The grocery deal watch has its own switch (GROCERY_OFFER_WATCH_ENABLED).
         if let Some(h) = deals::spawn_watch(self) {
             self.supervisor.watch("deal watch", h);
