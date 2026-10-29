@@ -18,6 +18,8 @@ export type ShellView =
   | "training";
 
 export interface SecretaryShell {
+  /** Secretary Code opens pixiv's login in its own window and returns the sign-in code. */
+  pixivLogin?(loginUrl: string): Promise<{ code: string } | { error: "cancelled" | "failed" | "bad_url" }>;
   version?: number;
   /** The desktop app hosts this page. */
   isDesktop?: boolean;

@@ -3,6 +3,7 @@ import type { FeatureDictionary } from "../types";
 // Plugins: everything that is not Chat, Shopping or Training + Weight (owner, 2026-10-24).
 
 const en = {
+  settings: "Plugin settings",
   title: "Plugins",
   count: "{count} plugins",
   empty: "No plugins are available on this device.",
@@ -49,6 +50,7 @@ const en = {
 export const plugins: FeatureDictionary<typeof en> = {
   en,
   it: {
+  settings: "Impostazioni dei plugin",
     title: "Plugin",
     count: "{count} plugin",
     empty: "Nessun plugin disponibile su questo dispositivo.",
@@ -92,6 +94,7 @@ export const plugins: FeatureDictionary<typeof en> = {
     showAdult: "Mostra i plugin per adulti su questo dispositivo",
   },
   da: {
+  settings: "Pluginindstillinger",
     title: "Plugins",
     count: "{count} plugins",
     empty: "Ingen plugins er tilgængelige på denne enhed.",

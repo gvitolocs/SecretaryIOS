@@ -16,6 +16,54 @@ export type SearchSafety = "safe" | "all" | "r18";
 /** What a list holds: `safe` only all-ages works, `r18` only R-18 works, `all` both (the service enforces it). */
 export type PixivContent = SearchSafety;
 
+export interface PixivSettings {
+  defaultContent: PixivContent;
+  defaultSort: "date_d" | "popular";
+}
+const CONNECTION_ERRORS = ["approval_denied", "approval_expired", "approval_unavailable", "save_failed", "remove_denied", "remove_failed", "token_rejected", "broker_unavailable", "broker_unconfigured"] as const;
+export interface PixivConnection {
+  state: "disconnected" | "connected" | "expired" | "unavailable";
+  user: { id: string; name: string; account: string } | null;
+  premium: boolean | null;
+  r18: boolean | null;
+  r18g: boolean | null;
+  store: "saved" | "waiting_approval" | null;
+  removal: "waiting_approval" | null;
+  error: (typeof CONNECTION_ERRORS)[number] | null;
+  connectedAt: string | null;
+}
+export interface PixivStatus {
+  [key: string]: unknown;
+  connection: PixivConnection;
+  settings: PixivSettings;
+  account: { session: "none" | "ok" | "expired"; premium: boolean | null; r18: boolean | null };
+}
+export interface PixivConnectStart { loginUrl: string; state: string; expiresInSecs: number }
+
+const object = (v: unknown): Record<string, unknown> => v && typeof v === "object" ? v as Record<string, unknown> : {};
+const nullableBool = (v: unknown): boolean | null => typeof v === "boolean" ? v : null;
+export function parseConnection(v: unknown): PixivConnection {
+  const o = object(v), u = object(o.user);
+  return {
+    state: o.state === "connected" || o.state === "disconnected" || o.state === "expired" ? o.state : "unavailable",
+    user: o.user && typeof o.user === "object" ? { id: str(u.id), name: str(u.name), account: str(u.account) } : null,
+    premium: nullableBool(o.premium), r18: nullableBool(o.r18), r18g: nullableBool(o.r18g),
+    store: o.store === "saved" || o.store === "waiting_approval" ? o.store : null,
+    removal: o.removal === "waiting_approval" ? o.removal : null,
+    error: CONNECTION_ERRORS.find(error => error === o.error) ?? null,
+    connectedAt: typeof o.connectedAt === "string" ? o.connectedAt : null,
+  };
+}
+export function parseSettings(v: unknown): PixivSettings {
+  const o = object(v);
+  return { defaultContent: o.defaultContent === "r18" || o.defaultContent === "all" ? o.defaultContent : "safe", defaultSort: o.defaultSort === "popular" ? "popular" : "date_d" };
+}
+export function parseStatus(v: unknown): PixivStatus {
+  const o = object(v), a = object(o.account);
+  return { ...o, connection: parseConnection(o.connection), settings: parseSettings(o.settings),
+    account: { session: a.session === "ok" || a.session === "expired" ? a.session : "none", premium: nullableBool(a.premium), r18: nullableBool(a.r18) } };
+}
+
 export interface PixivItem {
   id: string;
   title: string;
@@ -170,6 +218,17 @@ export function isAdultOff(e: unknown): boolean {
 }
 
 export const pixivApi = {
+  status() { return data(request("GET", `${BASE}/status`), parseStatus); },
+  connectStart(): Promise<PixivConnectStart> {
+    return data(request("POST", `${BASE}/connect/start`), v => {
+      const o = object(v);
+      return { loginUrl: str(o.loginUrl), state: str(o.state), expiresInSecs: num(o.expiresInSecs) };
+    });
+  },
+  connectFinish(state: string, code: string) { return data(request("POST", `${BASE}/connect/finish`, { body: { state, code } }), parseConnection); },
+  disconnect() { return data(request("POST", `${BASE}/disconnect`), parseConnection); },
+  settings() { return data(request("GET", `${BASE}/settings`), parseSettings); },
+  saveSettings(patch: Partial<PixivSettings>) { return data(request("PUT", `${BASE}/settings`, { body: patch }), parseSettings); },
   ranking(mode: RankingMode, page = 1): Promise<PixivListing> {
     const p = new URLSearchParams({ mode, page: String(page) });
     return data(request("GET", `${BASE}/ranking${withAdult(p)}`), parseListing);

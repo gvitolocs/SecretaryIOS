@@ -15,6 +15,17 @@ export function feedMessage(e: unknown): string {
   return t("pixiv.failed");
 }
 
+/** What a search's popular order turned out to be (`sort.used`); date orders say nothing. */
+const SORT_NOTE: Record<string, () => string> = {
+  pixiv_popular_preview: () => t("pixiv.sortPopularPreview"),
+  pixiv_popular: () => t("pixiv.sortPopular"),
+  users_tags: () => t("pixiv.sortUsersTags"),
+  date_d_fallback: () => t("pixiv.sortFallback"),
+};
+
+/** A label for the sort the service actually used; unknown orders stay quiet. */
+export function sortMessage(used: string): string { return SORT_NOTE[used]?.() ?? ""; }
+
 export function createFeed() {
   const [items, setItems] = createSignal<PixivItem[]>([]);
   const [hasMore, setHasMore] = createSignal(false);

@@ -120,10 +120,10 @@ export default function PluginsView() {
           )}
         </For>
   </>;
-  const adultToggle = () => <label class={wide() ? "plugins-desk-adult" : "plugins-adult"}>
+  const adultToggle = () => <div class="plugins-adult-settings"><label class={wide() ? "plugins-desk-adult" : "plugins-adult"}>
     <input type="checkbox" checked={showAdult()} onChange={(e) => setShowAdult(e.currentTarget.checked)} />
     <span>{t("plugins.showAdult")}</span>
-  </label>;
+  </label><a class="pg-link" href="/account?section=plugins">{t("plugins.settings")}</a></div>;
   return (
     <div ref={track}><Show when={wide()} fallback={<section class="plugins-page" aria-labelledby="plugins-title">
       <h1 id="plugins-title">{t("plugins.title")}</h1>

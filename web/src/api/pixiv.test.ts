@@ -107,3 +107,27 @@ describe("requests", () => {
     expect(slow.retryAfterSeconds).toBe(30);
   });
 });
+
+describe("connection API", () => {
+  it("parses missing and unknown fields safely", async () => {
+    const { parseConnection, parseSettings, parseStatus } = await import("./pixiv");
+    for (const junk of [undefined, null, {}, { state: "future", premium: 1, r18: "yes", store: "other", removal: "saved", error: "new" }]) {
+      expect(parseConnection(junk)).toEqual({ state: "unavailable", user: null, premium: null, r18: null, r18g: null, store: null, removal: null, error: null, connectedAt: null });
+    }
+    expect(parseSettings({ defaultContent: "unknown", defaultSort: "date" })).toEqual({ defaultContent: "safe", defaultSort: "date_d" });
+    expect(parseStatus(null).settings).toEqual({ defaultContent: "safe", defaultSort: "date_d" });
+    const c = { state: "connected", user: { id: "2", name: "Ann", account: "ann" }, premium: true, r18: false, r18g: false, store: "saved", removal: null, error: null, connectedAt: "now" };
+    expect(parseConnection(c)).toEqual(c);
+    expect(parseStatus({ connection: c, settings: { defaultContent: "all", defaultSort: "popular" }, account: { session: "ok", premium: true, r18: false }, enabled: true })).toMatchObject({ connection: c, settings: { defaultContent: "all", defaultSort: "popular" }, enabled: true });
+  });
+  it("uses the contract routes, methods and JSON payloads", async () => {
+    const calls = stubFetch(() => ({ body: { ok: true, data: {} } }));
+    await pixivApi.status(); await pixivApi.connectStart(); await pixivApi.connectFinish("state", "code");
+    await pixivApi.disconnect(); await pixivApi.settings(); await pixivApi.saveSettings({ defaultContent: "r18" });
+    expect(calls.map(c => [c.method, c.url, c.body])).toEqual([
+      ["GET", "/v1/pixiv/status", undefined], ["POST", "/v1/pixiv/connect/start", undefined],
+      ["POST", "/v1/pixiv/connect/finish", { state: "state", code: "code" }], ["POST", "/v1/pixiv/disconnect", undefined],
+      ["GET", "/v1/pixiv/settings", undefined], ["PUT", "/v1/pixiv/settings", { defaultContent: "r18" }],
+    ]);
+  });
+});

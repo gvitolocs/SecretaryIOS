@@ -282,3 +282,8 @@ samp {
 .pg .plugins-desk-tile .plugin-detail { font-size: 13px; color: var(--pg-muted); }
 .pg .plugins-desk-tile .plugin-badge { background: var(--pg-danger); color: var(--pg-text); font-size: 12px; font-weight: 600; }
 .pg .plugins-desk-adult { display: flex; align-items: center; gap: 8px; color: var(--pg-muted); font-size: 13px; }
+
+/* Device visibility and the account's plugin options share one quiet settings row. */
+.plugins-adult-settings { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-top: 20px; }
+.plugins-adult-settings .plugins-adult { margin-top: 0; }
+.pg .plugins-adult-settings { margin-top: 0; }

@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { session, setSessionForTests } from "../state/session";
 import { stubFetch } from "../test/fetch";
 import { renderAt } from "../test/router";
+import { stubWide } from "../test/wide";
 import { AccountView, NotificationsView } from "./ShellSheets";
 
 const routes = () => (
@@ -47,5 +48,21 @@ describe("shell sheets", () => {
     expect(window.secretaryShell.signOut).toHaveBeenCalledOnce();
     expect(order).toEqual(["shell", "web"]);
     expect(calls.some((c) => c.url === "/v1/session" && c.method === "DELETE")).toBe(true);
+  });
+});
+
+describe("plugin settings route", () => {
+  it.each([false, true])("opens the plugins section (desktop=%s)", async desktop => {
+    if (desktop) stubWide();
+    stubFetch(() => ({ body: { ok: true, data: { connection: { state: "disconnected" } }, items: [] } }));
+    renderAt("/account?section=plugins", routes);
+    expect(await screen.findByRole("heading", { name: "Pixiv" })).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Show adult plugins on this device" })).toBeInTheDocument();
+    if (desktop) {
+      expect(screen.getByRole("link", { name: "Plugins" })).toHaveAttribute("aria-current", "page");
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(screen.queryByLabelText("Current password")).toBeNull();
+      expect(document.querySelector(".pg-card #plugin-settings")).toBeInTheDocument();
+    } else expect(screen.getByRole("dialog", { name: "Account" })).toBeInTheDocument();
   });
 });

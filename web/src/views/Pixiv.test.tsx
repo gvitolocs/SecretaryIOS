@@ -242,7 +242,7 @@ describe("Pixiv", () => {
   });
 
   describe("notices", () => {
-    const NEEDS = "R-18 works need the plugin to be signed in to Pixiv. Signed-out visitors only get all-ages works.";
+    const NEEDS = "R-18 needs your Pixiv account. Connect it in Settings → Plugins → Pixiv.";
     const DISABLED = "Your Pixiv account hides R-18 works. On pixiv.net open Settings → Viewing restrictions and set Explicit content (R-18) to Show.";
     const ALL_AGES = "Showing all-ages works only: the plugin isn't signed in to Pixiv.";
 
@@ -459,5 +459,42 @@ describe("Pixiv", () => {
       renderPixiv("/pixiv/12");
       expect(await screen.findByText("Adult content is switched off on this device.")).toBeInTheDocument();
     });
+  });
+});
+
+describe("Pixiv saved defaults", () => {
+  it.each([true, false])("loads defaults with adult switch %s", async adult => {
+    setShowAdult(adult);
+    const calls = serve(c => c.url === "/v1/pixiv/settings" ? ok({ defaultContent: "r18", defaultSort: "popular" }) : undefined);
+    renderPixiv();
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Content" })).toHaveValue(adult ? "r18" : "safe"));
+    fireEvent.click(screen.getByRole("tab", { name: "Search" }));
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Order" })).toHaveValue("popular"));
+    fireEvent.input(screen.getByRole("searchbox"), { target: { value: "sky" } });
+    fireEvent.submit(screen.getByRole("search"));
+    await waitFor(() => expect(calls.some(c => c.url.includes("/search?q=sky&order=popular&type=all&mode=" + (adult ? "r18" : "safe")))).toBe(true));
+    setShowAdult(true);
+  });
+  it("preserves the visitor's choices when defaults arrive late", async () => {
+    let resolve!: (v: { defaultContent: "r18"; defaultSort: "popular" }) => void;
+    const settings = vi.spyOn((await import("../api/pixiv")).pixivApi, "settings").mockImplementation(() => new Promise(r => { resolve = r; }));
+    serve(); renderPixiv();
+    await screen.findByRole("button", { name: "Open Work 11 by Ann" });
+    fireEvent.click(screen.getByRole("tab", { name: "Search" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Content" }), { target: { value: "all" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "Order" }), { target: { value: "date" } });
+    resolve({ defaultContent: "r18", defaultSort: "popular" });
+    await Promise.resolve();
+    expect(screen.getByRole("combobox", { name: "Content" })).toHaveValue("all");
+    expect(screen.getByRole("combobox", { name: "Order" })).toHaveValue("date");
+    settings.mockRestore();
+  });
+  it("links the session notice to settings and labels pixiv's popular preview", async () => {
+    serve(c => c.url.includes("/search?") ? ok({ items: [], notice: "r18_needs_session", sort: { requested: "popular", used: "pixiv_popular_preview" } }) : undefined);
+    renderPixiv(); fireEvent.click(await screen.findByRole("tab", { name: "Search" }));
+    fireEvent.input(screen.getByRole("searchbox"), { target: { value: "sky" } }); fireEvent.submit(screen.getByRole("search"));
+    const notice = await screen.findByText("R-18 needs your Pixiv account. Connect it in Settings → Plugins → Pixiv.");
+    expect(within(notice).getByRole("link")).toHaveAttribute("href", "/account?section=plugins");
+    expect(await screen.findByText("Popular (pixiv's preview)")).toBeInTheDocument();
   });
 });

@@ -5,6 +5,8 @@ import { toApiError } from "../api/client";
 import { api } from "../api/secretary";
 import { openWardrobe } from "../state/wardrobe";
 import { HangerIcon, QrIcon } from "./Icons";
+import { PixivSettings } from "./PixivSettings";
+import { setShowAdult, showAdult } from "../lib/adult";
 import { ApprovalSettings } from "./ApprovalSettings";
 import { KeepImport } from "./KeepImport";
 import { NotificationSettings } from "./NotificationSettings";
@@ -39,7 +41,7 @@ export function AccountDialog(props: {
   open: boolean;
   desktop?: boolean;
   onClose: () => void;
-  section?: "notifications" | "import" | "approvals" | null;
+  section?: "notifications" | "import" | "approvals" | "plugins" | null;
   /** A sign-out button at the end (the /account route; the top bar has its own). */
   onSignOut?: () => void;
   signingOut?: boolean;
@@ -68,7 +70,9 @@ export function AccountDialog(props: {
         setDone(false);
         if (props.desktop) return;
         queueMicrotask(() => {
-          if (props.section === "import") {
+          if (props.section === "plugins") {
+            document.getElementById("plugin-settings")?.scrollIntoView?.({ block: "start" });
+          } else if (props.section === "import") {
             document.getElementById("kp-import")?.scrollIntoView?.({ block: "start" });
           } else if (props.section === "approvals") {
             document.getElementById("apv-settings-title")?.scrollIntoView?.({ block: "start" });
@@ -120,7 +124,7 @@ export function AccountDialog(props: {
   const type = () => (show() ? "text" : "password");
 
   // Phone: the dialog's sections one after another. Desktop: one section of the page at a time, each a Card.
-  function Section(p: { id: "account" | "notifications" | "import"; title: string; children: JSX.Element }) {
+  function Section(p: { id: "account" | "notifications" | "import" | "plugins"; title: string; children: JSX.Element }) {
     return <Show when={!props.desktop || part() === p.id} fallback={null}>
       <Show when={props.desktop} fallback={p.children}><Card title={p.title}>{p.children}</Card></Show>
     </Show>;
@@ -143,6 +147,7 @@ export function AccountDialog(props: {
           { label: t("shell.general"), href: "/account", current: part() === "account" },
           { label: t("notify.settings"), href: "/account?section=notifications", current: part() === "notifications" },
           { label: t("keep.importTitle"), href: "/account?section=import", current: part() === "import" },
+          { label: t("plugins.title"), href: "/account?section=plugins", current: part() === "plugins" },
         ]} />} />
         <PageGrid layout="rail" rail={<Card label={t("shell.account")}>
           <p class="pg-strong">{deviceName() ?? t("shell.account")}</p>
@@ -319,6 +324,13 @@ export function AccountDialog(props: {
               {saving() ? t("common.saving") : t("shell.changePassword")}
             </button>
           </form>
+          </Section>
+          <Section id="plugins" title={t("plugins.title")}>
+            <div id="plugin-settings" class={props.desktop ? "pg-form" : "settings-form"}>
+              <Show when={!props.desktop}><h3 class="field-label">{t("plugins.title")}</h3></Show>
+              <label class="check-row"><input type="checkbox" role="switch" checked={showAdult()} onChange={e => setShowAdult(e.currentTarget.checked)} />{t("plugins.showAdult")}</label>
+              <PixivSettings desktop={props.desktop} />
+            </div>
           </Section>
   </Frame></Show>;
 }

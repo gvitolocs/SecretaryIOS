@@ -1,12 +1,12 @@
 import { A, useNavigate, useParams } from "@solidjs/router";
 import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
 import { pixivApi, RANKING_MODES, RANKING_MODES_R18, type PixivContent, type PixivItem, type RankingMode, type SearchOrder, type SearchType } from "../api/pixiv";
-import { BackIcon, BookmarkIcon, SearchIcon } from "../components/Icons";
+import { BackIcon, BookmarkIcon, GearIcon, SearchIcon } from "../components/Icons";
 import { Button, Card as PageCard, EmptyState, ErrorState, Page, PageGrid, PageHeader, SectionNav, useWide, type SectionNavItem } from "../components/page";
 import { Reader } from "../components/pixiv/Reader";
 import { t } from "../i18n";
 import { showAdult } from "../lib/adult";
-import { createFeed, type Feed } from "../lib/pixivFeed";
+import { createFeed, sortMessage, type Feed } from "../lib/pixivFeed";
 import "../styles/pixiv.css";
 
 // Pixiv (/pixiv, a Plugins card; owner, 2026-10-28): the ranking, a search and the owner's bookmarks, with a
@@ -37,13 +37,6 @@ const NOTICE: Record<string, () => string> = {
   r18_needs_session: () => t("pixiv.noticeNeedsSession"),
   r18_disabled_in_account: () => t("pixiv.noticeDisabled"),
   all_ages_only: () => t("pixiv.noticeAllAgesOnly"),
-};
-
-/** What a search's popular order turned out to be (`sort.used`); date orders say nothing. */
-const SORT_NOTE: Record<string, () => string> = {
-  pixiv_popular: () => t("pixiv.sortPopular"),
-  users_tags: () => t("pixiv.sortUsersTags"),
-  date_d_fallback: () => t("pixiv.sortFallback"),
 };
 
 /** 1000 → "1000+", 10000 → "10k+", 100000 → "100k+". */
@@ -118,7 +111,7 @@ function FeedGrid(props: { feed: Feed; empty: string; onOpen: (item: PixivItem) 
   return (
     <>
       <Show when={notice()}>
-        <p class="px-notice" role="status">{notice()}</p>
+        <p class="px-notice" role="status">{notice()} <Show when={props.feed.notice() === "r18_needs_session"}><a href="/account?section=plugins">{t("plugins.settings")}</a></Show></p>
       </Show>
       <div class="px-grid" role="list" aria-busy={props.feed.loading()}>
         <For each={props.feed.items()}>{(item) => <div role="listitem" class="px-grid__cell"><Card item={item} onOpen={props.onOpen} /></div>}</For>
@@ -168,6 +161,20 @@ export default function PixivView() {
   const [order, setOrder] = createSignal<SearchOrder>("date_d");
   const [kind, setKind] = createSignal<SearchType>("all");
   const [content, setContent] = createSignal<PixivContent>("safe");
+  let contentChanged = false, orderChanged = false;
+  onMount(() => {
+    let active = true;
+    onCleanup(() => { active = false; });
+    // Begin after the initial ranking load; late settings never replace choices made on this visit.
+    queueMicrotask(() => {
+      if (!active) return;
+      void pixivApi.settings().then(settings => {
+        if (!active) return;
+        if (!orderChanged) setOrder(settings.defaultSort);
+        if (!contentChanged) setContent(showAdult() ? settings.defaultContent : "safe");
+      }).catch(() => { /* Safe defaults remain available offline. */ });
+    });
+  });
   const ranking = createFeed();
   const search = createFeed();
   const bookmarks = createFeed();
@@ -253,16 +260,16 @@ export default function PixivView() {
   const { wide, track } = useWide();
 
   const sectionNavItems = (): SectionNavItem[] =>
-    tabs.map(([id, label]) => ({
+    [...tabs.map(([id, label]) => ({
       label: label(),
       onSelect: () => setTab(id),
       current: tab() === id,
-    }));
+    })), { label: t("plugins.settings"), href: "/account?section=plugins", current: false, icon: <GearIcon /> }];
 
   const contentSelect = () => (
     <label class="px-select px-content">
       <span>{t("pixiv.safety")}</span>
-      <select name="content" value={contentNow()} onChange={(e) => setContent(e.currentTarget.value as PixivContent)}>
+      <select name="content" value={contentNow()} onChange={(e) => { contentChanged = true; setContent(e.currentTarget.value as PixivContent); }}>
         <option value="safe">{t("pixiv.safetySafe")}</option>
         <Show when={showAdult()}>
           <option value="r18">{t("pixiv.safetyR18")}</option>
@@ -273,7 +280,7 @@ export default function PixivView() {
   );
   const sortNote = () => {
     const used = search.sort()?.used;
-    return used ? SORT_NOTE[used]?.() ?? "" : "";
+    return used ? sortMessage(used) : "";
   };
 
   const panel = (desk: boolean) => (
@@ -302,7 +309,7 @@ export default function PixivView() {
           </Show>
           <label class="px-select">
             <span>{t("pixiv.order")}</span>
-            <select name="order" value={order()} onChange={(e) => { setOrder(e.currentTarget.value as SearchOrder); if (query()) startSearch(); }}>
+            <select name="order" value={order()} onChange={(e) => { orderChanged = true; setOrder(e.currentTarget.value as SearchOrder); if (query()) startSearch(); }}>
               <option value="date_d">{t("pixiv.orderNew")}</option>
               <option value="date">{t("pixiv.orderOld")}</option>
               <option value="popular">{t("pixiv.orderPopular")}</option>
@@ -349,6 +356,7 @@ export default function PixivView() {
               <BackIcon /> {t("pixiv.back")}
             </A>
             <h1 id="pixiv-title">{t("pixiv.title")}</h1>
+            <a class="icon-btn" href="/account?section=plugins" aria-label={t("plugins.settings")}><GearIcon /></a>
 
             <div class="px-tabs" role="tablist" aria-label={t("pixiv.tabs")}>
               <For each={tabs}>
