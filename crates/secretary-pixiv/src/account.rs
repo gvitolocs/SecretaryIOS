@@ -1,4 +1,4 @@
-//! The optional pixiv.net session (`PIXIV_SESSION_FILE`) and what pixiv says about its account.
+//! The Pixiv account flags used for content gating and cache fingerprints.
 //! Logged out, pixiv shows all-ages works only, refuses the R-18 rankings and ignores the
 //! Premium-only `popular_d` order; so the lists need to know whether a session is there, whether
 //! it is still logged in, whether it is Premium and whether its R-18 display is on.

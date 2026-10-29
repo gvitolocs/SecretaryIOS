@@ -140,7 +140,11 @@ fn valid_id(id: &str) -> bool {
 }
 
 fn ext_of(url: &str, ctype: &str) -> &'static str {
-    let path = url.split(['?', '#']).next().unwrap_or(url).to_ascii_lowercase();
+    let path = url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(url)
+        .to_ascii_lowercase();
     match path.rsplit('.').next() {
         Some("png") => "png",
         Some("gif") => "gif",
@@ -200,7 +204,19 @@ impl Service {
 
     /// The session's account: anonymous without a session (no request), else pixiv's answer,
     /// reused for `ACCOUNT_TTL`. A failed check is not kept and reads as "ok, flags unknown".
+    pub fn connection(&self) -> Option<&Arc<crate::connection::Connection>> {
+        self.backend.connection()
+    }
+
+    pub async fn reset_account(&self) {
+        *self.account.lock().await = None;
+    }
+
     pub async fn account(&self) -> Account {
+        if let Some(c) = self.connection() {
+            self.reset_account().await;
+            return c.account();
+        }
         if !self.backend.has_session() {
             return Account::anonymous();
         }
@@ -294,12 +310,38 @@ impl Service {
         let mode = content.wire();
         let (mut listing, used) = match (p.order.as_str(), account.premium) {
             ("popular", true) => (
-                self.search_page(&fp, &words, "popular_d", mode, &p.kind, page).await?,
+                self.search_page(&fp, &words, "popular_d", mode, &p.kind, page)
+                    .await?,
                 "pixiv_popular",
             ),
+            ("popular", false) if account.usable() && self.connection().is_some() => {
+                let mut preview = self
+                    .search_page(&fp, &words, "popular_preview", mode, &p.kind, 1)
+                    .await?;
+                let mut plain = self
+                    .search_page(
+                        &fp,
+                        &words,
+                        "date_d",
+                        mode,
+                        &p.kind,
+                        page.saturating_sub(1).max(1),
+                    )
+                    .await?;
+                if page == 1 {
+                    preview.has_more = !plain.items.is_empty();
+                    (preview, "pixiv_popular_preview")
+                } else {
+                    let shown: HashSet<_> = preview.items.iter().map(|s| s.id.as_str()).collect();
+                    plain.items.retain(|s| !shown.contains(s.id.as_str()));
+                    plain.page = page;
+                    (plain, "pixiv_popular_preview")
+                }
+            }
             ("popular", false) => self.search_tiers(&fp, &words, mode, &p.kind, page).await?,
             (order, _) => (
-                self.search_page(&fp, &words, order, mode, &p.kind, page).await?,
+                self.search_page(&fp, &words, order, mode, &p.kind, page)
+                    .await?,
                 order,
             ),
         };
@@ -350,7 +392,10 @@ impl Service {
         kind: &str,
         page: u32,
     ) -> Result<(Listing, &'static str), SvcError> {
-        let key = digest(&format!("search-tiers/{fp}/{}/{mode}/{kind}", words.join(" ")));
+        let key = digest(&format!(
+            "search-tiers/{fp}/{}/{mode}/{kind}",
+            words.join(" ")
+        ));
         let list = match self.cache.get_json::<TierList>(&key, self.cfg.list_ttl) {
             Some(l) => l,
             None => {
@@ -361,10 +406,16 @@ impl Service {
                 list
             }
         };
-        let used = if list.items.is_empty() { "date_d_fallback" } else { "users_tags" };
+        let used = if list.items.is_empty() {
+            "date_d_fallback"
+        } else {
+            "users_tags"
+        };
         let k = list.items.len().div_ceil(TIER_PAGE_SIZE) as u32;
         if page > k {
-            let mut l = self.search_page(fp, words, "date_d", mode, kind, page - k).await?;
+            let mut l = self
+                .search_page(fp, words, "date_d", mode, kind, page - k)
+                .await?;
             let shown: HashSet<&str> = list.items.iter().map(|s| s.id.as_str()).collect();
             l.items.retain(|s| !shown.contains(s.id.as_str()));
             l.page = page;
@@ -377,8 +428,10 @@ impl Service {
         let plain = if page == k {
             Some(self.search_page(fp, words, "date_d", mode, kind, 1).await?)
         } else {
-            self.cache
-                .get_json::<Listing>(&search_key(fp, words, "date_d", mode, kind, 1), self.cfg.list_ttl)
+            self.cache.get_json::<Listing>(
+                &search_key(fp, words, "date_d", mode, kind, 1),
+                self.cfg.list_ttl,
+            )
         };
         let mut l = tier_page(&list, page);
         if let Some(plain) = plain {
@@ -519,7 +572,11 @@ impl Service {
         };
         for i in wanted {
             let page = &illust.pages[i];
-            let url = if page.orig.is_empty() { &page.regular } else { &page.orig };
+            let url = if page.orig.is_empty() {
+                &page.regular
+            } else {
+                &page.orig
+            };
             let (bytes, ctype) = match self.images.fetch(url, MAX_ORIGINAL).await {
                 Ok(x) => x,
                 Err(SvcError::RateLimited(s)) => {
@@ -609,7 +666,14 @@ fn query_words(q: &str) -> Vec<String> {
         .collect()
 }
 
-fn search_key(fp: &str, words: &[String], order: &str, mode: &str, kind: &str, page: u32) -> String {
+fn search_key(
+    fp: &str,
+    words: &[String],
+    order: &str,
+    mode: &str,
+    kind: &str,
+    page: u32,
+) -> String {
     digest(&format!(
         "search/{fp}/{}/{order}/{mode}/{kind}/{page}",
         words.join(" ")
@@ -649,7 +713,10 @@ fn tier_group() -> Vec<String> {
 /// Deduplicated by id, sorted by bookmark tier, then id (numeric), both descending.
 fn by_tier(items: Vec<Summary>) -> Vec<Summary> {
     let mut seen = HashSet::new();
-    let mut items: Vec<Summary> = items.into_iter().filter(|s| seen.insert(s.id.clone())).collect();
+    let mut items: Vec<Summary> = items
+        .into_iter()
+        .filter(|s| seen.insert(s.id.clone()))
+        .collect();
     let id_num = |s: &Summary| s.id.parse::<u64>().unwrap_or(0);
     items.sort_by(|a, b| {
         b.popular_tier()

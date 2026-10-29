@@ -58,7 +58,7 @@ pub struct Illust {
 }
 
 /// Which search order was asked for and which one produced the list (`date_d`, `date`,
-/// `pixiv_popular`, `users_tags`, `date_d_fallback`).
+/// `pixiv_popular`, `pixiv_popular_preview`, `users_tags`, `date_d_fallback`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Sort {
     pub requested: String,
@@ -188,13 +188,20 @@ fn summary_of(c: &Value, r18_default: bool) -> Option<Summary> {
             })
             .unwrap_or_default(),
         thumb: s(c, "thumb"),
-        pages: c.get("pages").and_then(|p| p.as_u64()).unwrap_or(1).clamp(1, 10_000) as u32,
-        r18: c.get("r18").and_then(|x| x.as_bool()).unwrap_or(r18_default),
+        pages: c
+            .get("pages")
+            .and_then(|p| p.as_u64())
+            .unwrap_or(1)
+            .clamp(1, 10_000) as u32,
+        r18: c
+            .get("r18")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(r18_default),
     })
 }
 
-/// The core's ranking answer (`{mode, page, items, next}`). `r18_mode` marks every item R-18
-/// (the core's ranking rows carry no age flag; the R-18 modes are the only source of such rows).
+/// The core/App ranking shape (`{mode, page, items, next}`). An item's own `r18` flag
+/// takes precedence; web ranking rows without a flag use the mode's default.
 pub fn parse_ranking(v: &Value, page: u32, r18_mode: bool) -> Listing {
     let items = v
         .get("items")
@@ -221,7 +228,10 @@ pub fn parse_search(v: &Value, page: u32) -> Listing {
         .unwrap_or_default();
     let num_pages = v.get("num_pages").and_then(|n| n.as_u64());
     Listing {
-        has_more: num_pages.is_some_and(|n| (page as u64) < n) && !items.is_empty(),
+        has_more: v
+            .get("hasMore")
+            .and_then(Value::as_bool)
+            .unwrap_or_else(|| num_pages.is_some_and(|n| (page as u64) < n) && !items.is_empty()),
         items,
         page,
         total: v.get("total").and_then(|n| n.as_u64()),
@@ -264,8 +274,11 @@ pub fn parse_illust(v: &Value) -> Option<Illust> {
             bookmarks: u(&stats, "bookmarks"),
             comments: u(&stats, "comments"),
         },
-        page_count: v.get("page_count").and_then(|p| p.as_u64()).unwrap_or(1).clamp(1, 10_000)
-            as u32,
+        page_count: v
+            .get("page_count")
+            .and_then(|p| p.as_u64())
+            .unwrap_or(1)
+            .clamp(1, 10_000) as u32,
         cover: s(v, "cover"),
         tags: v
             .get("tags")
@@ -324,11 +337,17 @@ mod tests {
     fn popular_tier_reads_the_digits_before_users_iri() {
         assert_eq!(popular_tier(&["VOCALOID1000users入り"]), Some(1000));
         assert_eq!(popular_tier(&["100users入り"]), Some(100));
-        assert_eq!(popular_tier(&["ミク10000users入り", "500users入り"]), Some(10000));
+        assert_eq!(
+            popular_tier(&["ミク10000users入り", "500users入り"]),
+            Some(10000)
+        );
         assert_eq!(popular_tier(&["users入り"]), None);
         assert_eq!(popular_tier(&["2024年"]), None);
         assert_eq!(popular_tier::<&str>(&[]), None);
-        assert_eq!(popular_tier(&["99999999999999999999999users入り"]), Some(MAX_TIER));
+        assert_eq!(
+            popular_tier(&["99999999999999999999999users入り"]),
+            Some(MAX_TIER)
+        );
     }
 
     #[test]

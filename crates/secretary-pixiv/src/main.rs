@@ -12,18 +12,21 @@
 //! | `PIXIV_GATEWAY_SECRET_FILE` | required | the secret p1's Caddy sends as `X-Lucina-Gateway` |
 //! | `PIXIV_SIGNING_KEY_FILE` | `$PIXIV_DATA_DIR/signing.key` | image URL HMAC key, created (0600) when missing |
 //! | `PIXIV_API_INTERVAL_MS` | `1500` | spacing between pixiv.net requests; never below 1000 |
-//! | `PIXIV_IMAGE_INTERVAL_MS` | `250` | spacing between i.pximg.net request starts; never below 100 |
-//! | `PIXIV_IMAGE_CONCURRENCY` | `3` | parallel image requests (1 to 6) |
+//! | `PIXIV_IMAGE_INTERVAL_MS` | `20` | spacing between i.pximg.net request starts (a CDN; 429s still back off) |
+//! | `PIXIV_IMAGE_CONCURRENCY` | `12` | parallel image requests (1 to 16), over one HTTP/2 connection |
 //! | `PIXIV_LIST_TTL_SECS` / `PIXIV_ILLUST_TTL_SECS` | `300` / `1800` | JSON cache lifetime |
-//! | `PIXIV_SESSION_FILE` | none | 0600 file with the pixiv.net `PHPSESSID` value; missing or empty = anonymous |
+//! | `PIXIV_BROKER_SOCKET` | `/run/infisical-broker/broker.sock` | Infisical broker socket |
+//! | `PIXIV_BROKER_TOKEN_FILE` | none | caller token file; unset disables connection |
+//! | `PIXIV_TOKEN_REF` | `secret://lucina/prod#PIXIV_REFRESH_TOKEN` | exact broker secret reference |
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use secretary_pixiv::backend::CoreBackend;
+use secretary_pixiv::backend::SwitchBackend;
 use secretary_pixiv::cache::{DiskCache, DEFAULT_MAX_BYTES};
+use secretary_pixiv::connection::{Config as ConnectionConfig, Connection};
 use secretary_pixiv::http::{router, Http};
 use secretary_pixiv::images::ImageConfig;
 use secretary_pixiv::service::{Config, Service};
@@ -67,14 +70,6 @@ fn signing_key(path: &PathBuf) -> anyhow::Result<Vec<u8>> {
     Ok(k)
 }
 
-/// The pixiv.net session cookie value, if a non-empty session file is configured. Never logged.
-fn session() -> Option<String> {
-    let path = env("PIXIV_SESSION_FILE")?;
-    let s = std::fs::read_to_string(path).ok()?;
-    let s = s.trim();
-    (!s.is_empty()).then(|| s.to_string())
-}
-
 async fn shutdown_signal() {
     use tokio::signal::unix::{signal, SignalKind};
     let mut term = signal(SignalKind::terminate()).expect("SIGTERM handler");
@@ -93,9 +88,8 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(|_| "info,reqwest=warn,hyper=warn".into()),
         )
         .init();
-    let data = PathBuf::from(
-        env("PIXIV_DATA_DIR").unwrap_or_else(|| "/var/lib/secretary-pixiv".into()),
-    );
+    let data =
+        PathBuf::from(env("PIXIV_DATA_DIR").unwrap_or_else(|| "/var/lib/secretary-pixiv".into()));
     std::fs::create_dir_all(&data)?;
     let cache_dir = env("PIXIV_CACHE_DIR")
         .map(PathBuf::from)
@@ -116,8 +110,8 @@ async fn main() -> anyhow::Result<()> {
             ..GateConfig::default()
         },
         images: ImageConfig {
-            spacing: Duration::from_millis(num("PIXIV_IMAGE_INTERVAL_MS").unwrap_or(250).max(100)),
-            concurrency: num("PIXIV_IMAGE_CONCURRENCY").unwrap_or(3).clamp(1, 6) as usize,
+            spacing: Duration::from_millis(num("PIXIV_IMAGE_INTERVAL_MS").unwrap_or(20)),
+            concurrency: num("PIXIV_IMAGE_CONCURRENCY").unwrap_or(12).clamp(1, 16) as usize,
             ..ImageConfig::default()
         },
         ..Config::default()
@@ -136,12 +130,25 @@ async fn main() -> anyhow::Result<()> {
         cache_dir,
         num("PIXIV_CACHE_MAX_BYTES").unwrap_or(DEFAULT_MAX_BYTES),
     )?;
-    let session = session();
-    tracing::info!(
-        session = if session.is_some() { "configured" } else { "none" },
-        "pixiv session"
-    );
-    let service = Service::new(Arc::new(CoreBackend::new(session)), cache, spool, cfg)?;
+    let mut connection_cfg = ConnectionConfig::default();
+    if let Some(path) = env("PIXIV_BROKER_SOCKET") {
+        connection_cfg.broker.socket = path.into();
+    }
+    connection_cfg.broker.token_file = env("PIXIV_BROKER_TOKEN_FILE").map(PathBuf::from);
+    if let Some(reference) = env("PIXIV_TOKEN_REF") {
+        connection_cfg.broker.token_ref = reference;
+    }
+    let connection = Connection::new(connection_cfg);
+    connection.startup();
+    let service = Service::new(
+        Arc::new(SwitchBackend::new(
+            connection,
+            "https://app-api.pixiv.net".into(),
+        )),
+        cache,
+        spool,
+        cfg,
+    )?;
     let st = Arc::new(Http {
         service,
         store: Store::open(

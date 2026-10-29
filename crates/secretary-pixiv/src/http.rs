@@ -16,7 +16,7 @@ use axum::extract::{Path, Query, Request, State};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, put};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use hmac::{Hmac, Mac};
 use serde::Deserialize;
@@ -24,7 +24,7 @@ use serde_json::{json, Value};
 use subtle::ConstantTimeEq;
 
 use crate::error::SvcError;
-use crate::images::allowed;
+use crate::images::{allowed, grid_thumb};
 use crate::model::{Content, Illust, Listing, Summary};
 use crate::service::{SearchParams, Service};
 use crate::store::Store;
@@ -129,7 +129,7 @@ impl Http {
             "author": s.author,
             "authorId": s.author_id,
             "tags": s.tags,
-            "thumbUrl": self.signed_url(&s.thumb),
+            "thumbUrl": self.signed_url(&grid_thumb(&s.thumb)),
             "pages": s.pages,
             "r18": s.r18,
             "popularTier": s.popular_tier(),
@@ -171,7 +171,7 @@ impl Http {
             "tags": i.tags,
             "pages": i.pages.iter().enumerate().map(|(n, p)| json!({
                 "index": n,
-                "thumbUrl": self.signed_url(&p.thumb),
+                "thumbUrl": self.signed_url(&grid_thumb(&p.thumb)),
                 "url": self.signed_url(&p.regular),
                 "originalUrl": self.signed_url(&p.orig),
             })).collect::<Vec<_>>(),
@@ -198,14 +198,15 @@ async fn gateway(State(st): State<St>, req: Request, next: Next) -> Response {
 pub fn router(st: St) -> Router {
     let api = Router::new()
         .route("/status", get(status))
+        .route("/connect/start", post(connect_start))
+        .route("/connect/finish", post(connect_finish))
+        .route("/disconnect", post(disconnect))
+        .route("/settings", get(settings).put(update_settings))
         .route("/ranking", get(ranking))
         .route("/search", get(search))
         .route("/illust/{id}", get(illust))
         .route("/bookmarks", get(bookmarks))
-        .route(
-            "/bookmarks/{id}",
-            put(add_bookmark).delete(remove_bookmark),
-        )
+        .route("/bookmarks/{id}", put(add_bookmark).delete(remove_bookmark))
         .route("/save", axum::routing::post(save))
         .route_layer(middleware::from_fn_with_state(st.clone(), gateway));
     let signed = Router::new().route("/s/{exp}/{token}/{sig}", get(image));
@@ -243,10 +244,85 @@ async fn status(State(st): State<St>) -> Response {
     ok(json!({
         "enabled": true,
         "account": account,
+        "connection": st.service.connection().map(|c| c.json()).unwrap_or_else(|| crate::connection::Connection::new(Default::default()).json()),
+        "settings": st.store.settings(),
         "cacheBytes": st.service.cache.total_bytes(),
         "cacheMaxBytes": st.service.cache.max_bytes(),
         "apiIntervalMs": st.service.config().gate.interval.as_millis() as u64,
     }))
+}
+
+fn connection_error(e: crate::connection::ConnectError) -> Response {
+    err(StatusCode::from_u16(e.0).unwrap(), e.1)
+}
+async fn connect_start(State(st): State<St>) -> Response {
+    match st.service.connection() {
+        Some(c) => match c.start() {
+            Ok(v) => ok(v),
+            Err(e) => connection_error(e),
+        },
+        None => err(StatusCode::SERVICE_UNAVAILABLE, "broker_unconfigured"),
+    }
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Finish {
+    state: String,
+    code: String,
+}
+fn url_safe(s: &str) -> bool {
+    (1..=512).contains(&s.len())
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~'))
+}
+async fn connect_finish(
+    State(st): State<St>,
+    body: Result<Json<Finish>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let Ok(Json(f)) = body else {
+        return err(StatusCode::BAD_REQUEST, "bad_request");
+    };
+    if !url_safe(&f.state) || !url_safe(&f.code) {
+        return err(StatusCode::BAD_REQUEST, "bad_request");
+    }
+    match st.service.connection() {
+        Some(c) => {
+            let result = c.finish(&f.state, &f.code).await;
+            st.service.reset_account().await;
+            match result {
+                Ok(v) => ok(v),
+                Err(e) => connection_error(e),
+            }
+        }
+        None => err(StatusCode::BAD_REQUEST, "connect_expired"),
+    }
+}
+async fn disconnect(State(st): State<St>) -> Response {
+    let v = st
+        .service
+        .connection()
+        .map(|c| c.disconnect())
+        .unwrap_or_else(|| crate::connection::Connection::new(Default::default()).disconnect());
+    st.service.reset_account().await;
+    ok(v)
+}
+async fn settings(State(st): State<St>) -> Response {
+    ok(json!(st.store.settings()))
+}
+async fn update_settings(
+    State(st): State<St>,
+    body: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let Ok(Json(patch)) = body else {
+        return err(StatusCode::BAD_REQUEST, "bad_request");
+    };
+    match st.store.update_settings(&patch) {
+        Ok(settings) => ok(json!(settings)),
+        Err(crate::store::SettingsError::Invalid) => err(StatusCode::BAD_REQUEST, "bad_request"),
+        Err(crate::store::SettingsError::Io) => {
+            err(StatusCode::INTERNAL_SERVER_ERROR, "settings_failed")
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -428,10 +504,11 @@ async fn image(
                 header::X_CONTENT_TYPE_OPTIONS,
                 HeaderValue::from_static("nosniff"),
             );
-            h.insert(
-                header::CACHE_CONTROL,
-                HeaderValue::from_static("private, max-age=3600"),
-            );
+            // The bytes behind a signed URL never change: browsers keep them until the URL expires.
+            let max_age = (exp - chrono::Utc::now().timestamp()).clamp(0, URL_LIFETIME.as_secs() as i64 + 3600);
+            if let Ok(v) = HeaderValue::from_str(&format!("private, max-age={max_age}, immutable")) {
+                h.insert(header::CACHE_CONTROL, v);
+            }
             h.insert(
                 header::REFERRER_POLICY,
                 HeaderValue::from_static("no-referrer"),
