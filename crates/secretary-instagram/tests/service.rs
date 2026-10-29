@@ -174,6 +174,36 @@ async fn highlights_left_out_of_the_bundle_come_from_the_highlights_list() {
 }
 
 #[tokio::test]
+async fn empty_highlights_are_retried_by_profile_and_list_even_from_an_old_cache() {
+    use sha2::{Digest, Sha256};
+    let e = env().await;
+    mount_json(&e.server, "/api/v1/users/natgeo/bundle", recorded("bundle")).await;
+    // Simulate an empty tray cached by the previous service version.
+    let key = hex::encode(&Sha256::digest(b"/api/v1/users/natgeo/highlights")[..16]);
+    e.st.service.cache.put(&key, &"[]".to_string());
+    let empty = Mock::given(method("GET"))
+        .and(path("/api/v1/users/natgeo/highlights"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount_as_scoped(&e.server)
+        .await;
+    let r = get(&e.app, "/v1/instagram/profile/natgeo").await;
+    assert_eq!(r.json["data"]["highlights"], json!([]));
+    assert_eq!(count(&e.server, "/api/v1/users/natgeo/highlights").await, 1);
+    drop(empty);
+    mount_json(
+        &e.server,
+        "/api/v1/users/natgeo/highlights",
+        recorded("highlights"),
+    )
+    .await;
+    let r = get(&e.app, "/v1/instagram/highlights/natgeo").await;
+    assert_eq!(r.json["data"]["items"][0]["title"], "BOTW 2027");
+    let r = get(&e.app, "/v1/instagram/profile/natgeo").await;
+    assert_eq!(r.json["data"]["highlights"][0]["title"], "BOTW 2027");
+    assert_eq!(count(&e.server, "/api/v1/users/natgeo/highlights").await, 2);
+}
+
+#[tokio::test]
 async fn a_private_profile_never_asks_for_the_highlights_list() {
     let e = env().await;
     let mut b = recorded("bundle");

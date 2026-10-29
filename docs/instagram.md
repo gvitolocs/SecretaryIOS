@@ -153,6 +153,37 @@ thumbnail (`/v1/media/items/{id}/thumb?size=256`, the owner's session).
 - **Logs:** method, route template, status. No usernames, cursors, ids or captions.
 - **Shutdown:** SIGTERM finishes requests in flight and exits 0.
 
+## Empty highlights and upstream failures (2026-10-29)
+
+The web Highlights tab uses the profile bundle's tray when nonempty. Otherwise it asks
+`GET /v1/instagram/highlights/{username}` on entry. An empty tray remains unknown: leaving
+and reopening the tab, or pressing Try again, requests it again. Loading and errors are shown
+separately. Covers use the signed `coverUrl`; opening a highlight loads its items into the
+existing tile grid before opening an individual item in the viewer.
+
+The profile endpoint also falls back to StoryView's list when the bundle omits highlights.
+Both service paths share the same tray cache. Only parsed, nonempty trays are reusable for
+10 minutes; old cached empty trays are bypassed, and new empty responses are not cached.
+Private profiles skip the fallback. The service's internal list fallback is logged as part of
+`/profile/{username}`, so the absence of `/highlights/{username}` in access logs alone does
+not mean the backend list was never requested. The previous web client had no list call.
+
+Live curl checks against `100.107.164.33:8871` around 21:54–21:56 UTC (22:54–22:56 Copenhagen):
+
+- `profile/natgeo` and `highlights/natgeo`: 200, one highlight with a signed cover. The cover
+  returned 200 (7163 bytes) and `highlights/items` returned four items.
+- `profile/_ter.restre` and `highlights/_ter.restre`: 200, empty highlights. Direct StoryView
+  `/api/v1/users/_ter.restre/highlights` also returned 200 with `[]`. Retrying can recover when
+  the provider returns the tray again; the app cannot reconstruct a tray absent upstream.
+- `posts/natgeo`: 200, 12 items. `posts/_ter.restre` with the profile's next cursor: 502
+  `upstream_unavailable`. Direct StoryView `/api/v1/users/_ter.restre/posts` returned 503 with
+  `{"detail":"Instagram feed temporarily unavailable"}`. The service retries upstream 5xx
+  twice before returning 502. This reproduces a provider failure; the earlier 21:52:05 request
+  cannot be attributed to an account/cursor from the deliberately anonymous access log.
+
+The gateway header was supplied to curl through stdin from the configured secret file;
+no secret or signed URL is included here. No deployment was performed.
+
 ## Deploy (nezopt + p1)
 
 ```sh

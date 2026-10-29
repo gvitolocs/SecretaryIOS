@@ -496,23 +496,34 @@ impl Service {
     /// some, while `/users/{u}/highlights` still lists them. Asked through the same cache entry as
     /// [`Service::highlights`]; a failure only costs the list, never the profile.
     async fn fallback_highlights(&self, username: &str) -> Vec<HighlightSummary> {
-        let text = self
-            .fetch_text(
-                &rel(core_url::user_highlights_url(username)),
-                TTL_HIGHLIGHTS,
-            )
-            .await;
-        match text.map(|t| parse_highlights(&t)) {
-            Ok(Some(hs)) => hs,
-            Ok(None) => {
-                tracing::warn!("instagram profile: the highlights list did not parse");
-                Vec::new()
-            }
+        match self.fetch_highlights(username).await {
+            Ok(hs) => hs,
             Err(e) => {
                 tracing::warn!(error = ?e, "instagram profile: the highlights list failed");
                 Vec::new()
             }
         }
+    }
+
+    /// Empty trays are unknown, including entries written by older versions. Retry them on
+    /// the next request; only a parsed, nonempty tray is reusable for the highlights TTL.
+    async fn fetch_highlights(
+        &self,
+        username: &str,
+    ) -> Result<Vec<HighlightSummary>, ServiceError> {
+        let path = rel(core_url::user_highlights_url(username));
+        let key = hash_key(&path);
+        if let Some(text) = self.cache.get::<String>(&key, TTL_HIGHLIGHTS) {
+            if let Some(hs) = parse_highlights(&text).filter(|hs| !hs.is_empty()) {
+                return Ok(hs);
+            }
+        }
+        let text = self.up.api_get(&path).await?;
+        let hs = parse_highlights(&text).ok_or(ServiceError::Upstream)?;
+        if !hs.is_empty() {
+            self.cache.put(&key, &text);
+        }
+        Ok(hs)
     }
 
     fn first_page_key(username: &str) -> String {
@@ -592,13 +603,7 @@ impl Service {
     pub async fn highlights(&self, raw_username: &str) -> Result<Value, ServiceError> {
         let username =
             normalize_username(raw_username).ok_or(ServiceError::BadRequest("username"))?;
-        let text = self
-            .fetch_text(
-                &rel(core_url::user_highlights_url(&username)),
-                TTL_HIGHLIGHTS,
-            )
-            .await?;
-        let hs = parse_highlights(&text).ok_or(ServiceError::Upstream)?;
+        let hs = self.fetch_highlights(&username).await?;
         Ok(json!({"items": self.highlights_json(&hs)}))
     }
 
