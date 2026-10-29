@@ -50,6 +50,7 @@ fn config(dir: &Path, google: &str) -> Config {
         places_url: google.into(),
         routes_url: google.into(),
         photon_url: None,
+        aufind_url: None,
         osrm_url: None,
         state_dir: dir.join("state"),
         upstream_key: None,
@@ -418,7 +419,7 @@ async fn google_happy_cache_and_persistence() {
     assert_eq!(s, StatusCode::OK);
     assert_eq!(
         json_of(&b),
-        json!({"results":[{"name":"Folkehuset","address":"Møllestien, Aarhus","lat":56.1611,"lng":10.2006}]})
+        json!({"results":[{"name":"Folkehuset","address":"Møllestien, Aarhus","lat":56.1611,"lng":10.2006,"source":"Google"}]})
     );
     send(&a, get_req("/v1/maps/geocode?q=folkehuset%20aarhus")).await;
     assert_eq!(hits.load(Ordering::SeqCst), 1);
@@ -771,7 +772,7 @@ async fn self_hosted_photon_and_osrm_without_google() {
     assert_eq!(s, StatusCode::OK);
     assert_eq!(
         json_of(&b),
-        json!({"results":[{"name":"Folkehuset","address":"Møllestien, Aarhus","lat":56.1611,"lng":10.2006}]})
+        json!({"results":[{"name":"Folkehuset","address":"Møllestien, Aarhus","lat":56.1611,"lng":10.2006,"source":"Photon"}]})
     );
     // Cached in memory.
     send(&a, get_req("/v1/maps/geocode?q=folkehuset")).await;
@@ -967,4 +968,191 @@ async fn google_client_keys_in_config() {
     ));
     let (_, _, b) = send(&a, get_req("/v1/maps/config")).await;
     assert_eq!(json_of(&b)["google"], json!({"webKey":null,"iosKey":null}));
+}
+
+async fn fake_aufind(
+    hits: Arc<AtomicUsize>,
+    body: Arc<Mutex<Value>>,
+) -> (String, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        let router = Router::new().route(
+            "/api/buildings",
+            get(
+                move |axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>| {
+                    let hits = hits.clone();
+                    let body = body.clone();
+                    async move {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        assert_eq!(q.get("q").map(String::as_str), Some("5522"));
+                        Json(body.lock().unwrap().clone())
+                    }
+                },
+            ),
+        );
+        axum::serve(listener, router).await.unwrap();
+    });
+    (format!("http://{addr}"), task)
+}
+
+fn au_building() -> Value {
+    json!({"id":"5522","names":["Bygning 5522","INCUBA, IT-Huset"],
+        "address":"Åbogade 15 , 8200 Aarhus N","latitude":56.1726,"longitude":10.1872,
+        "polygon":[[10.0,56.0]]})
+}
+
+fn setup_au_gazetteer(dir: &Path) {
+    std::fs::create_dir_all(dir.join("gazetteer")).unwrap();
+    std::fs::write(
+        dir.join("gazetteer/au.json"),
+        r#"[{"ref":"5522","name":"OSM name","lat":56.17,"lng":10.18}]"#,
+    )
+    .unwrap();
+}
+
+const AU_QUERY: &str = "/v1/maps/geocode?q=5522-115%20Undervisningslokale";
+
+#[tokio::test]
+async fn aufind_before_gazetteer_and_cached_by_normalized_query_bias_and_limit() {
+    let tmp = tempfile::tempdir().unwrap();
+    setup_au_gazetteer(tmp.path());
+    let hits = Arc::new(AtomicUsize::new(0));
+    let body = Arc::new(Mutex::new(json!([
+        {"id":"15522","latitude":1.0,"longitude":1.0}, au_building()
+    ])));
+    let (url, task) = fake_aufind(hits.clone(), body).await;
+    let mut c = config(tmp.path(), "http://127.0.0.1:1");
+    c.aufind_url = Some(url);
+    let a = app(AppState::new(c));
+    let (status, _, b) = send(&a, get_req(AU_QUERY)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        json_of(&b),
+        json!({"results":[{
+            "name":"Aarhus Universitet 5522 INCUBA, IT-Huset",
+            "address":"Åbogade 15, 8200 Aarhus N", "lat":56.1726,"lng":10.1872,
+            "label":"Building 5522 (INCUBA, IT-Huset), room 115, floor 1", "source":"AU Find"
+        }]})
+    );
+    let (_, _, cached) = send(
+        &a,
+        get_req("/v1/maps/geocode?q=%205522-115%20%20UNDERVISNINGSLOKALE%20"),
+    )
+    .await;
+    assert_eq!(json_of(&cached), json_of(&b));
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    send(&a, get_req(&format!("{AU_QUERY}&limit=1"))).await;
+    send(&a, get_req(&format!("{AU_QUERY}&lat=56&lng=10"))).await;
+    assert_eq!(hits.load(Ordering::SeqCst), 3);
+    task.abort();
+}
+
+#[tokio::test]
+async fn aufind_down_uses_gazetteer() {
+    let tmp = tempfile::tempdir().unwrap();
+    setup_au_gazetteer(tmp.path());
+    let mut c = config(tmp.path(), "http://127.0.0.1:1");
+    c.aufind_url = Some("http://127.0.0.1:1".into());
+    let a = app(AppState::new(c));
+    let (status, _, b) = send(&a, get_req(AU_QUERY)).await;
+    assert_eq!(status, StatusCode::OK);
+    let hit = &json_of(&b)["results"][0];
+    assert_eq!(hit["source"], "OpenStreetMap");
+    assert_eq!(hit["address"], "5522-115 Undervisningslokale");
+    assert_eq!(hit["label"], "Building 5522 (OSM name), room 115, floor 1");
+}
+
+#[tokio::test]
+async fn aufind_missing_exact_id_or_invalid_response_falls_through_without_caching() {
+    let tmp = tempfile::tempdir().unwrap();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let body = Arc::new(Mutex::new(json!([])));
+    let (url, task) = fake_aufind(hits.clone(), body.clone()).await;
+    let mut c = config(tmp.path(), "http://127.0.0.1:1");
+    c.aufind_url = Some(url.clone());
+    let a = app(AppState::new(c));
+    for invalid in [
+        json!([]),
+        json!([{"id":"15522","latitude":56.0,"longitude":10.0}]),
+        json!([{"id":"5522","latitude":0.0,"longitude":0.0}]),
+        json!({"error":"broken"}),
+    ] {
+        *body.lock().unwrap() = invalid;
+        let (status, _, _) = send(&a, get_req(AU_QUERY)).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+    assert_eq!(hits.load(Ordering::SeqCst), 4);
+    *body.lock().unwrap() = json!([au_building()]);
+    assert_eq!(send(&a, get_req(AU_QUERY)).await.0, StatusCode::OK);
+    assert_eq!(hits.load(Ordering::SeqCst), 5);
+
+    // A missing exact match continues through the normal Google chain too.
+    *body.lock().unwrap() = json!([]);
+    let (google, google_task) = fake_google(Arc::default(), Arc::default(), "none", false).await;
+    let mut c = keyed(tmp.path(), &google);
+    c.aufind_url = Some(url);
+    let (_, _, b) = send(&app(AppState::new(c)), get_req(AU_QUERY)).await;
+    assert_eq!(json_of(&b)["results"][0]["source"], "Google");
+    google_task.abort();
+    task.abort();
+}
+
+#[tokio::test]
+async fn aufind_unset_or_non_university_query_makes_no_call() {
+    let tmp = tempfile::tempdir().unwrap();
+    setup_au_gazetteer(tmp.path());
+    let hits = Arc::new(AtomicUsize::new(0));
+    let (url, task) = fake_aufind(hits.clone(), Arc::new(Mutex::new(json!([au_building()])))).await;
+    let mut env = HashMap::from([
+        ("HOME", tmp.path().display().to_string()),
+        ("MAPS_DIR", tmp.path().display().to_string()),
+    ]);
+    let c = Config::from_env(|k| env.get(k).cloned()).unwrap();
+    assert!(c.aufind_url.is_none());
+    let (_, _, b) = send(&app(AppState::new(c)), get_req(AU_QUERY)).await;
+    assert_eq!(json_of(&b)["results"][0]["source"], "OpenStreetMap");
+    assert_eq!(hits.load(Ordering::SeqCst), 0);
+    env.insert("MAPS_AUFIND_URL", format!(" {url}/ "));
+    let c = Config::from_env(|k| env.get(k).cloned()).unwrap();
+    assert_eq!(c.aufind_url.as_deref(), Some(url.as_str()));
+    send(
+        &app(AppState::new(c)),
+        get_req("/v1/maps/geocode?q=8000%20Aarhus%20C"),
+    )
+    .await;
+    assert_eq!(hits.load(Ordering::SeqCst), 0);
+    task.abort();
+}
+
+#[tokio::test]
+async fn aufind_deadline_falls_back_to_gazetteer() {
+    let tmp = tempfile::tempdir().unwrap();
+    setup_au_gazetteer(tmp.path());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        let router = Router::new().route(
+            "/api/buildings",
+            get(|| async {
+                tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+                Json(json!([au_building()]))
+            }),
+        );
+        axum::serve(listener, router).await.unwrap();
+    });
+    let mut c = config(tmp.path(), "http://127.0.0.1:1");
+    c.aufind_url = Some(format!("http://{addr}"));
+    let a = app(AppState::new(c));
+    let start = std::time::Instant::now();
+    let (status, _, b) = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        send(&a, get_req(AU_QUERY)),
+    )
+    .await
+    .expect("AU Find must not use the client's four-second deadline");
+    assert!(start.elapsed() >= std::time::Duration::from_millis(1500));
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json_of(&b)["results"][0]["source"], "OpenStreetMap");
+    task.abort();
 }

@@ -8,6 +8,10 @@ use serde_json::json;
 pub struct GeoResult {
     pub name: String,
     pub address: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
     pub lat: f64,
     pub lng: f64,
 }
@@ -65,6 +69,8 @@ pub async fn google(
             Some(GeoResult {
                 name,
                 address,
+                label: None,
+                source: Some("Google".into()),
                 lat: kernel::e7_to_deg(lat),
                 lng: kernel::e7_to_deg(lng),
             })

@@ -6,6 +6,7 @@
 //! loaded; the self-hosted gazetteer, Photon and OSRM and straight-line estimates otherwise).
 //! p1's Caddy authenticates the owner (forward_auth) and, when the service is started with
 //! an upstream key, adds `X-Maps-Upstream-Key`.
+pub mod aufind;
 pub mod cache;
 pub mod gazetteer;
 pub mod geocode;
@@ -59,6 +60,8 @@ pub struct Config {
     pub routes_url: String,
     /// Self-hosted Photon (`MAPS_PHOTON_URL`): geocoding when Google is missing or fails.
     pub photon_url: Option<String>,
+    /// AU Find building directory (`MAPS_AUFIND_URL`), before the local gazetteer.
+    pub aufind_url: Option<String>,
     /// Self-hosted OSRM (`MAPS_OSRM_URL`): drive/walk/bike routes when Google is missing or fails.
     pub osrm_url: Option<String>,
     pub state_dir: PathBuf,
@@ -68,7 +71,7 @@ pub struct Config {
 impl Config {
     /// Reads `MAPS_DIR`, `MAPS_TILES`, `MAPS_HOME_LAT`/`_LNG`/`_LABEL`, `GOOGLE_MAPS_SERVER_KEY`
     /// or `MAPS_GOOGLE_KEY_FILE`, the client keys `GOOGLE_MAPS_WEB_KEY` / `MAPS_GOOGLE_WEB_KEY_FILE`
-    /// and `GOOGLE_MAPS_IOS_KEY` / `MAPS_GOOGLE_IOS_KEY_FILE`, `MAPS_PHOTON_URL`, `MAPS_OSRM_URL`
+    /// and `GOOGLE_MAPS_IOS_KEY` / `MAPS_GOOGLE_IOS_KEY_FILE`, `MAPS_PHOTON_URL`, `MAPS_AUFIND_URL`, `MAPS_OSRM_URL`
     /// and `MAPS_UPSTREAM_KEY_FILE` through `var` (`std::env::var` in the binary). No Google key
     /// is ever required: a missing, empty, unreadable (or, for client keys, malformed) key is
     /// only not configured.
@@ -149,6 +152,7 @@ impl Config {
         );
         let base_url = |k: &str| get(k).map(|u| u.trim_end_matches('/').to_string());
         let photon_url = base_url("MAPS_PHOTON_URL");
+        let aufind_url = base_url("MAPS_AUFIND_URL");
         let osrm_url = base_url("MAPS_OSRM_URL");
         let places_url = get("MAPS_GOOGLE_PLACES_URL")
             .map(|url| provider::endpoint(&url, "v1/places:searchText"))
@@ -183,6 +187,7 @@ impl Config {
             places_url,
             routes_url,
             photon_url,
+            aufind_url,
             osrm_url,
             state_dir,
             upstream_key,
@@ -498,7 +503,21 @@ async fn geocode_route(State(st): State<Arc<AppState>>, Query(p): Query<GeocodeQ
         _ => None,
     };
     let bias = from_query.or(st.config.home.as_ref().map(|h| (h.lat_e7, h.lng_e7)));
-    // University room codes: answered locally, with or without a Google key.
+    // University codes: AU Find first, then local OSM buildings, with or without Google.
+    if let (Some(base), Some(room)) = (&st.config.aufind_url, gazetteer::au_room(q)) {
+        let key = format!("aufind|{}", geocode::cache_key(q, bias, limit));
+        if let Some(results) = st.cache.lock().unwrap().get(&key) {
+            return Json(json!({ "results": results })).into_response();
+        }
+        if let Some(hit) = aufind::lookup(&st.http, base, &room).await {
+            let results = json!([hit]);
+            st.cache
+                .lock()
+                .unwrap()
+                .insert(key, results.clone(), 86400, false);
+            return Json(json!({ "results": results })).into_response();
+        }
+    }
     if let Some(hit) = st.gazetteer.lookup(q) {
         tracing::info!(q_len = n, results = 1, "geocode gazetteer");
         return Json(json!({ "results": [hit] })).into_response();
