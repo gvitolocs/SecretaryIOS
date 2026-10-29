@@ -101,6 +101,7 @@ targets:
       - target: SecretaryScreenTimeReport
       - target: SecretaryScreenTimeMonitor
       - target: SecretaryWidgets
+      - target: SecretaryCallerDirectory
       - sdk: Security.framework
       - package: GoogleMaps
         product: GoogleMaps
@@ -291,6 +292,36 @@ targets:
         CURRENT_PROJECT_VERSION: "1"
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_EMIT_LOC_STRINGS: YES
+  # Labels on the incoming-call screen for numbers Lucina has screened (Settings > Phone > Call Blocking & Identification).
+  # The app saves the list (Secretary/Shared/Callers) and calls CXCallDirectoryManager.reloadExtension.
+  SecretaryCallerDirectory:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Extensions/CallerDirectory
+        excludes: ["Info.plist", "*.entitlements"]
+      - path: Secretary/Shared/Callers
+      - path: Secretary/Core/Keychain.swift
+    dependencies:
+      - sdk: CallKit.framework
+    info:
+      path: Extensions/CallerDirectory/Info.plist
+      properties:
+        CFBundleDisplayName: Secretary Caller Labels
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        SecretaryKeychainGroup: "$(AppIdentifierPrefix)tech.getsecretary.shared"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.callkit.call-directory
+          NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).CallDirectoryHandler"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: tech.getsecretary.app.calldirectory
+        PRODUCT_NAME: SecretaryCallerDirectory
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        CODE_SIGN_ENTITLEMENTS: Extensions/CallerDirectory/CallerDirectory.entitlements
+        APPLICATION_EXTENSION_API_ONLY: YES
   SecretaryTests:
     type: bundle.unit-test
     platform: iOS

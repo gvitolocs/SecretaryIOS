@@ -188,6 +188,7 @@ struct MainTabs: View {
                     }
                 }
                 group.addTask { await app.health.poll() }
+                group.addTask { await app.callers.syncIfDue() }
                 group.addTask { await app.watchPrimary() }
                 group.addTask { await app.notifications.foregroundLoop() }
                 group.addTask { @MainActor in if app.backup.settings.enabled { await app.backup.requestAccessAndRun() } }

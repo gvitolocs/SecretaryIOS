@@ -190,3 +190,22 @@ Plugins → Agents: the coding agents on nezopt (`/v1/agents/*`, contract `docs/
   (`/v1/agents/workspaces/{id}/diff`). Strings are English only. No terminals.
 - Device tests run in English: `xcodebuild test … -testLanguage en -testRegion US` (the iPhone is Danish).
 - `-SecretaryInitialTab agents` opens the screen (SCREENSHOTS builds).
+
+## Who called? (Features/Callers, Extensions/CallerDirectory)
+
+Plugins → Who called?: caller screening with Jev (contract: `POST /v1/callers/screen`, `GET /v1/callers/directory`).
+- **Lookup:** one number or a pasted list (new lines, commas, semicolons, or `+45… +357…` side by side; 20 per request, longer
+  lists make several). One card per number: label, spam and pick-up odds, kind + odds, reasons, source (`jev`, `rules` when Jev
+  was down, `contact`). `lang` is the app's language (en/it/da). A lookup is never recorded as an incoming call.
+- **Call Directory extension** `tech.getsecretary.app.calldirectory` (CallKit `CXCallDirectoryProvider`, full reload only): adds
+  the saved labels as identification entries, strictly ascending. The owner turns it on once in Settings › Phone › Call Blocking
+  & Identification; the screen shows the status (`getEnabledStatusForExtension`) and an Open Settings button.
+- **Sync** (`CallersStore`): on launch and each time the app comes to the front, at most every 15 min (60 s after a failure) →
+  fetch, validate, sort, dedup (`CallerDirectoryList`) → save → `reloadExtension`, only when the list changed (or never loaded)
+  and the extension is on. Sign-out removes the list and empties the extension.
+- **Storage:** the app and the extension share the list through the shared keychain group (one item, plain text, readable after
+  first unlock), because the App Group `group.tech.getsecretary.shared` is not registered yet; it switches to a file in the group
+  container by itself once the group is in every entitlement (same as `WidgetStore`). Do not add the group to only some targets:
+  the widgets and the app would then look in different places.
+- **Tests:** `SecretaryTests/CallersTests.swift`. `-SecretaryInitialTab callers` opens the screen and
+  `-SecretaryCallersLookup "+45 70 40 52 05"` fills in and runs a lookup (SCREENSHOTS/DEBUG builds).
