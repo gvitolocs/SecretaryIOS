@@ -454,6 +454,20 @@ final class ApprovalsTests: XCTestCase {
         XCTAssertEqual(notifier.posted, ["apr_1"])
     }
 
+    func testTheActiveAppLongPollsFromTheLastCursor() async throws {
+        // p1 saw ~20 polls a minute from the iPhone (2026-10-29); now one long poll per change or per 25 s.
+        StubURLProtocol.handler = { _ in .init(body: #"{"approvals":[],"cursor":"1792.4"}"#) }
+        let task = Task { await store.foregroundLoop() }
+        try await Task.sleep(for: .milliseconds(1600))
+        task.cancel()
+        let queries = StubURLProtocol.requests.map { $0.url?.query ?? "" }
+        XCTAssertEqual(queries.first, "status=pending")
+        XCTAssertEqual(queries.dropFirst().first, "status=pending&since=1792.4&wait=25")
+        XCTAssertLessThanOrEqual(queries.count, 3)
+        XCTAssertEqual(store.interval, ApprovalsStore.longPollPause)
+        XCTAssertGreaterThan(StubURLProtocol.requests[1].timeoutInterval, 25)
+    }
+
     func testOfflineAndServerErrorsStayQuietButSignOutEndsTheSession() async throws {
         StubURLProtocol.handler = { _ in .init(error: URLError(.notConnectedToInternet)) }
         await store.poll()

@@ -6,8 +6,18 @@ struct ApprovalsAPI: Sendable {
 
     /// The requests this device may decide now, newest first.
     func pending() async throws -> [ApprovalItem] {
-        let list: ApprovalList = try await client.get("/v1/approvals", query: [URLQueryItem(name: "status", value: "pending")])
-        return list.items
+        try await pending(since: nil, wait: 0).items
+    }
+
+    /// With `since` (the last list's cursor) and `wait`, the server holds the request up to `wait` seconds until
+    /// the list changes: one request per change or per `wait` instead of a poll every few seconds.
+    func pending(since: String?, wait: Int) async throws -> ApprovalList {
+        var query = [URLQueryItem(name: "status", value: "pending")]
+        if let since, wait > 0 {
+            query += [URLQueryItem(name: "since", value: since), URLQueryItem(name: "wait", value: String(wait))]
+        }
+        return try await client.get("/v1/approvals", query: query,
+                                    timeout: wait > 0 ? TimeInterval(wait + 15) : APIClient.defaultTimeout)
     }
 
     /// One request, also when it was answered or expired.

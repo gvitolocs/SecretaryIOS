@@ -32,6 +32,10 @@ final class ApprovalsStore {
     }
 
     static let pollInterval: Duration = .seconds(3)
+    /// Seconds the server may hold a long poll (it allows 30).
+    static let longPollWait = 25
+    /// Between two long polls: keeps a server that answers at once from turning into a busy loop.
+    static let longPollPause: Duration = .seconds(1)
     static let backoffInterval: Duration = .seconds(30)
     static let errorInterval: Duration = .seconds(10)
     static let notifiedKey = "secretary.approvals.notified"
@@ -67,6 +71,8 @@ final class ApprovalsStore {
     /// Requests the owner closed without answering; they come back when the app becomes active again.
     @ObservationIgnored private var dismissed: Set<String> = []
     @ObservationIgnored private var polling = false
+    /// The last list's cursor (nil: none yet, or the server does not long-poll).
+    @ObservationIgnored private var cursor: String?
     /// Fixture data for the screenshots: nothing is polled.
     @ObservationIgnored private(set) var isFixture = false
 
@@ -83,11 +89,13 @@ final class ApprovalsStore {
 
     // MARK: - Polling
 
-    /// While the app is active: a poll now, then every 3 s, until cancelled.
+    /// While the app is active, until cancelled: a long poll the server answers when the list changes (or after
+    /// `longPollWait`), then the next one. A server without long polls is asked every 3 s.
     func foregroundLoop() async {
         dismissed.removeAll()
+        cursor = nil
         while !Task.isCancelled {
-            await poll()
+            await poll(wait: cursor == nil ? 0 : Self.longPollWait)
             try? await Task.sleep(for: interval)
         }
     }
@@ -96,19 +104,26 @@ final class ApprovalsStore {
         switch availability {
         case .unsupported: return Self.backoffInterval
         case .failing: return Self.errorInterval
-        case .unknown, .available: return Self.pollInterval
+        case .unknown, .available: return cursor == nil ? Self.pollInterval : Self.longPollPause
         }
     }
 
     /// One look at the pending requests (also the background refresh's). Never throws, never shows an error.
     func poll() async {
-        guard !isFixture, !polling, let api = api() else { return }
+        guard !polling else { return }
         polling = true
         defer { polling = false }
+        await poll(wait: 0)
+    }
+
+    /// `wait` > 0: a long poll from the last `cursor`. It never blocks `poll()` (a push or the widget asks at once).
+    private func poll(wait: Int) async {
+        guard !isFixture, let api = api() else { return }
         do {
-            let items = try await api.pending()
+            let list = try await api.pending(since: cursor, wait: wait)
+            cursor = list.cursor
             availability = .available
-            await apply(items)
+            await apply(list.items)
         } catch {
             let e = APIError.wrap(error)
             if e.status == 404 || e.status == 405 {

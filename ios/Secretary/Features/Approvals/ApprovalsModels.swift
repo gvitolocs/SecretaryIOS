@@ -147,8 +147,13 @@ struct ApprovalItem: Decodable, Equatable, Identifiable, Sendable {
 /// The list answer: a bare array, or an object holding the array (`approvals`, `items`, `requests`, `data`).
 struct ApprovalList: Decodable, Sendable {
     let items: [ApprovalItem]
+    /// The server's version of this list; sent back as `since` to long-poll until it changes (nil: an older server).
+    var cursor: String?
 
-    init(items: [ApprovalItem]) { self.items = items }
+    init(items: [ApprovalItem], cursor: String? = nil) {
+        self.items = items
+        self.cursor = cursor
+    }
 
     init(from decoder: Decoder) throws {
         if var array = try? decoder.unkeyedContainer() {
@@ -156,6 +161,7 @@ struct ApprovalList: Decodable, Sendable {
             return
         }
         let c = try decoder.container(keyedBy: AnyKey.self)
+        if let key = AnyKey(stringValue: "cursor") { cursor = try? c.decodeIfPresent(String.self, forKey: key) }
         for name in ["approvals", "items", "requests", "data", "pending"] {
             if let key = AnyKey(stringValue: name), c.contains(key), var array = try? c.nestedUnkeyedContainer(forKey: key) {
                 items = Self.drain(&array)
