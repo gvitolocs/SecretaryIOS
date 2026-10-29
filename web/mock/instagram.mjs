@@ -5,7 +5,8 @@
 //   nasa     no stories, no highlights, 12 posts whose cursor page is "exhausted" (the real backend ignores cursors)
 //   private  a private account with nothing public
 //   Watching: natgeo (2 new stories + 1 new post), nasa (auto-save off) and private (1 new post) are watched; opening an
-//            account clears its badge. natgeo has an Archive of 9 saved items.
+//            account clears its badge. natgeo has an Archive of 9 saved items. GET/PUT /watch-settings: every
+//            23 h by default (6, 12 or 23), and each entry's nextCheck follows it.
 //   slow     answers 429 with Retry-After: 12 (the rate-limit message)
 //   anything else: 404 not_found
 // Save: POST /v1/instagram/save answers every item as saved; a URL saved twice is a duplicate.
@@ -83,7 +84,8 @@ const PROFILES = {
       { id: "highlight:18023864549864045", title: "Best of the World", coverUrl: media("avatar", 11), mediaCount: 4 },
       { id: "highlight:18023864549864046", title: "Wild", coverUrl: media("avatar", 12), mediaCount: 3 },
       { id: "highlight:18023864549864047", title: "Travel", coverUrl: media("avatar", 13), mediaCount: 3 },
-      { id: "highlight:18023864549864048", title: "Behind the lens", coverUrl: media("avatar", 14), mediaCount: 2 },
+      // The real backend now says 0 for every highlight; the server sends that as null.
+      { id: "highlight:18023864549864048", title: "Behind the lens", coverUrl: media("avatar", 14), mediaCount: null },
     ],
     stories: [story(1, "image"), story(2, "video"), story(3, "image"), story(4, "image"), story(5, "video")],
     posts: (cursor) => (cursor === "P2" ? { items: postsPage("natgeo", 12, 6), nextCursor: null } : { items: postsPage("natgeo", 0, 12), nextCursor: "P2" }),
@@ -119,11 +121,14 @@ const saved = new Set();
 
 /** The watch list (GET /watch) and each account's saved items (GET /archive). */
 const seedWatched = () => [
-  { username: "natgeo", autoSave: true, lastCheck: NOW - 900, newStories: 2, newPosts: 1, private: false, fullName: "National Geographic", picUrl: media("avatar", 1), isVerified: true, gone: false, status: null, archived: 9 },
-  { username: "nasa", autoSave: false, lastCheck: NOW - 1800, newStories: 0, newPosts: 0, private: false, fullName: "NASA", picUrl: media("avatar", 2), isVerified: true, gone: false, status: null, archived: 0 },
-  { username: "private", autoSave: true, lastCheck: NOW - 600, newStories: 0, newPosts: 1, private: true, fullName: "A private account", picUrl: media("avatar", 3), isVerified: false, gone: false, status: null, archived: 0 },
+  { username: "natgeo", autoSave: true, lastCheck: NOW - 900, nextCheck: NOW - 900 + 23 * 3600, newStories: 2, newPosts: 1, private: false, fullName: "National Geographic", picUrl: media("avatar", 1), isVerified: true, gone: false, status: null, archived: 9 },
+  { username: "nasa", autoSave: false, lastCheck: NOW - 1800, nextCheck: NOW - 1800 + 23 * 3600, newStories: 0, newPosts: 0, private: false, fullName: "NASA", picUrl: media("avatar", 2), isVerified: true, gone: false, status: null, archived: 0 },
+  { username: "private", autoSave: true, lastCheck: NOW - 600, nextCheck: NOW - 600 + 23 * 3600, newStories: 0, newPosts: 1, private: true, fullName: "A private account", picUrl: media("avatar", 3), isVerified: false, gone: false, status: null, archived: 0 },
 ];
 let watched = seedWatched();
+/** GET/PUT /watch-settings; a change moves every checked account's next check. */
+let intervalHours = 23;
+const watchSettings = () => ({ intervalHours, defaultHours: 23, jitterMinutes: 30, choices: [6, 12, 23] });
 const badges = () => {
   const accounts = Object.fromEntries(watched.filter((w) => w.newStories + w.newPosts > 0).map((w) => [w.username, w.newStories + w.newPosts]));
   return { total: Object.values(accounts).reduce((a, b) => a + b, 0), accounts };
@@ -230,7 +235,17 @@ export async function handleInstagram(req, res, { path, method, url, send, readJ
   if (rest === "/_reset" && method === "POST") {
     // A dev hook (like the server's /v1/_mock/*): back to the seeded watch list and badges.
     watched = seedWatched();
+    intervalHours = 23;
     return ok({ reset: true }), true;
+  }
+  if (rest === "/watch-settings" && method === "GET") return ok(watchSettings()), true;
+  if (rest === "/watch-settings" && method === "PUT") {
+    const body = await readJson(req).catch(() => ({}));
+    const n = body.intervalHours;
+    if (!Number.isInteger(n) || n < 1 || n > 23) return err(400, "bad_request"), true;
+    intervalHours = n;
+    for (const w of watched) if (w.lastCheck) w.nextCheck = w.lastCheck + n * 3600;
+    return ok(watchSettings()), true;
   }
   if (rest === "/watch" && method === "GET") return ok(watched), true;
   if (rest === "/badges" && method === "GET") return ok(badges()), true;
@@ -254,7 +269,7 @@ export async function handleInstagram(req, res, { path, method, url, send, readJ
     let w = watched.find((x) => x.username === u);
     if (!w) {
       const p = PROFILES[u]?.profile;
-      w = { username: u, autoSave: true, lastCheck: null, newStories: 0, newPosts: 0, private: p ? p.isPrivate : null, fullName: p?.fullName ?? "", picUrl: p?.picUrl ?? null, isVerified: !!p?.isVerified, gone: false, status: null, archived: 0 };
+      w = { username: u, autoSave: true, lastCheck: null, nextCheck: Math.floor(Date.now() / 1000) + 2, newStories: 0, newPosts: 0, private: p ? p.isPrivate : null, fullName: p?.fullName ?? "", picUrl: p?.picUrl ?? null, isVerified: !!p?.isVerified, gone: false, status: null, archived: 0 };
       watched.push(w);
     }
     if (typeof body.autoSave === "boolean") w.autoSave = body.autoSave;

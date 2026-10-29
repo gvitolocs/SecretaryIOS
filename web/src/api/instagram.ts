@@ -13,6 +13,11 @@ import { request } from "./client";
 // GET  /v1/instagram/resolve?url=                  -> Page (one post or reel)
 // GET  /v1/instagram/recent                        -> {items}
 // POST /v1/instagram/save {items:[{url,kind,username,takenAt?,caption?}]} -> {saved, failed}
+// GET  /v1/instagram/watch                         -> [IgWatch]
+// PUT  /v1/instagram/watch/{username} {autoSave?}  -> IgWatch; DELETE removes it
+// GET  /v1/instagram/watch/{username}/new, POST …/opened, GET /v1/instagram/badges, GET /v1/instagram/archive/{username}
+// GET  /v1/instagram/watch-settings                -> IgWatchSettings
+// PUT  /v1/instagram/watch-settings {intervalHours} -> IgWatchSettings (1-23; all watched accounts)
 
 export type IgKind = "image" | "video";
 
@@ -64,7 +69,8 @@ export interface IgHighlight {
   id: string;
   title: string;
   coverUrl: string | null;
-  mediaCount: number;
+  /** null when the backend doesn't say (it answers 0 for highlights with items). */
+  mediaCount: number | null;
 }
 
 export interface IgProfileBundle {
@@ -100,6 +106,8 @@ export interface IgWatch {
   autoSave: boolean;
   /** Unix seconds of the last refresh; null before the first. */
   lastCheck: number | null;
+  /** Unix seconds of the next refresh. */
+  nextCheck?: number | null;
   newStories: number;
   newPosts: number;
   /** null until the first refresh. */
@@ -110,6 +118,16 @@ export interface IgWatch {
   gone?: boolean;
   status?: string | null;
   archived?: number;
+}
+
+/** How often watched accounts are checked (GET /v1/instagram/watch-settings). */
+export interface IgWatchSettings {
+  /** The owner's choice, else `defaultHours`. */
+  intervalHours: number;
+  defaultHours: number;
+  /** Each check lands this much before or after the interval, at random. */
+  jitterMinutes: number;
+  choices: number[];
 }
 
 export interface IgBadges {
@@ -150,6 +168,12 @@ export const instagramApi = {
   /** The owner opened the account: its badge clears. Answers the badges that are left. */
   async opened(username: string): Promise<IgBadges> {
     const r = await request<{ ok: boolean; data: IgBadges }>("POST", `${BASE}/watch/${user(username)}/opened`);
+    return r.data;
+  },
+  watchSettings: () => get<IgWatchSettings>("/watch-settings"),
+  /** For all watched accounts; applies to their next check. */
+  async setWatchSettings(intervalHours: number): Promise<IgWatchSettings> {
+    const r = await request<{ ok: boolean; data: IgWatchSettings }>("PUT", `${BASE}/watch-settings`, { body: { intervalHours } });
     return r.data;
   },
   badges: () => get<IgBadges>("/badges"),

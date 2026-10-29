@@ -20,7 +20,7 @@ const item = (id: string, kind: IgItem["kind"] = "image", extra: Partial<IgItem>
 
 const posts = (ids: string[], next: string | null = null, exhausted?: boolean): IgPage => ({ items: ids.map((i) => item(i)), nextCursor: next, ...(exhausted ? { exhausted } : {}) });
 
-const bundle = (over: { hasStories?: boolean; isPrivate?: boolean; highlights?: boolean; next?: string | null } = {}) => ({
+const bundle = (over: { hasStories?: boolean; isPrivate?: boolean; highlights?: boolean; highlightCount?: number | null; next?: string | null } = {}) => ({
   profile: {
     username: "natgeo",
     fullName: "National Geographic",
@@ -37,7 +37,7 @@ const bundle = (over: { hasStories?: boolean; isPrivate?: boolean; highlights?: 
     externalUrl: "https://example.test/x",
   },
   posts: posts(["p1", "p2", "p3"], over.next === undefined ? "C2" : over.next),
-  highlights: over.highlights ? [{ id: "highlight:1", title: "Best of", coverUrl: "/v1/instagram/s/9/x/h", mediaCount: 2 }] : [],
+  highlights: over.highlights ? [{ id: "highlight:1", title: "Best of", coverUrl: "/v1/instagram/s/9/x/h", mediaCount: over.highlightCount === undefined ? 2 : over.highlightCount }] : [],
 });
 
 interface Routes {
@@ -56,6 +56,11 @@ function serve(r: Routes) {
     if (url.startsWith("/v1/instagram/highlights/items")) return { body: { ok: true, data: r.highlightItems } };
     if (url.startsWith("/v1/instagram/resolve")) return { body: { ok: true, data: r.resolve } };
     if (url === "/v1/instagram/watch" && call.method === "GET") return { body: { ok: true, data: r.watched ?? [] } };
+    if (url === "/v1/instagram/watch-settings") {
+      if (call.method === "PUT" && r.settingsStatus) return { status: r.settingsStatus as number, body: { ok: false, error: "bad_request" } };
+      const hours = call.method === "PUT" ? (call.body as { intervalHours: number }).intervalHours : ((r.intervalHours as number | undefined) ?? 23);
+      return { body: { ok: true, data: { intervalHours: hours, defaultHours: 23, jitterMinutes: 30, choices: [6, 12, 23] } } };
+    }
     if (url.startsWith("/v1/instagram/watch/") && url.endsWith("/opened")) return { body: { ok: true, data: r.opened ?? { total: 0, accounts: {} } } };
     if (url.startsWith("/v1/instagram/watch/")) return { body: { ok: true, data: { username: "natgeo", autoSave: true } } };
     if (url === "/v1/instagram/badges") return { body: { ok: true, data: { total: 0, accounts: {} } } };
@@ -166,6 +171,22 @@ describe("Instagram", () => {
     expect(within(dialog).getByText("1 of 2")).toBeInTheDocument();
   });
 
+  it("shows a highlight's count only when the server knows it", async () => {
+    serve({ profile: bundle({ highlights: true }) });
+    renderIg("/instagram/natgeo");
+    fireEvent.click(await screen.findByRole("tab", { name: "Highlights" }));
+    expect(screen.getByRole("button", { name: /Best of/ })).toHaveTextContent("2 items");
+  });
+
+  it("shows no count for a highlight whose mediaCount is null", async () => {
+    serve({ profile: bundle({ highlights: true, highlightCount: null }) });
+    renderIg("/instagram/natgeo");
+    fireEvent.click(await screen.findByRole("tab", { name: "Highlights" }));
+    const button = screen.getByRole("button", { name: /Best of/ });
+    expect(button).toHaveTextContent(/^Best of$/);
+    expect(button.querySelector(".ig-highlight__count")).toBeNull();
+  });
+
   it("explains a private account, a missing one and a rate limit", async () => {
     serve({ profile: bundle({ isPrivate: true }) });
     renderIg("/instagram/natgeo");
@@ -261,6 +282,49 @@ describe("Instagram", () => {
       fireEvent.click(screen.getByRole("button", { name: "Watching" }));
       expect(await screen.findByRole("button", { name: "Watch" })).toBeInTheDocument();
       expect(calls.some((c) => c.method === "DELETE" && c.url === "/v1/instagram/watch/natgeo")).toBe(true);
+    });
+
+    it("says a watched account is checked about once a day, and when next", async () => {
+      vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
+      serve({ watched: [entry({ nextCheck: 1_800_000_000 + 22 * 3600 })], profile: bundle() });
+      renderIg("/instagram/natgeo");
+      const hint = await screen.findByText(/Checked about once a day\. Nothing is marked as seen on Instagram\./);
+      expect(hint).toHaveTextContent("Next check in 22 hours.");
+      expect(hint).toHaveTextContent("Applies to all watched accounts.");
+      const select = screen.getByRole("combobox", { name: "Check" }) as HTMLSelectElement;
+      expect(select).toHaveAccessibleDescription("Applies to all watched accounts.");
+      expect([...select.options].map((o) => o.textContent)).toEqual(["About once a day", "Every 12 hours", "Every 6 hours"]);
+      expect(select.value).toBe("23");
+    });
+
+    it("says every 12 hours when that is the setting", async () => {
+      serve({ watched: [entry()], profile: bundle(), intervalHours: 12 });
+      renderIg("/instagram/natgeo");
+      expect(await screen.findByText(/Checked about every 12 hours\. Nothing is marked as seen on Instagram\./)).toBeInTheDocument();
+      expect((screen.getByRole("combobox", { name: "Check" }) as HTMLSelectElement).value).toBe("12");
+    });
+
+    it("choosing every 12 hours sends the setting", async () => {
+      const calls = serve({ watched: [entry()], profile: bundle() });
+      renderIg("/instagram/natgeo");
+      await screen.findByText(/Checked about once a day/);
+      const select = screen.getByRole("combobox", { name: "Check" });
+      fireEvent.change(select, { target: { value: "12" } });
+      expect(await screen.findByText(/Checked about every 12 hours/)).toBeInTheDocument();
+      const put = calls.find((c) => c.method === "PUT" && c.url === "/v1/instagram/watch-settings")!;
+      expect(put.body).toEqual({ intervalHours: 12 });
+      expect(put.headers["x-secretary-csrf"]).toBe("1");
+    });
+
+    it("tells the owner when the setting could not be changed", async () => {
+      serve({ watched: [entry()], profile: bundle(), settingsStatus: 502 });
+      renderIg("/instagram/natgeo");
+      await screen.findByText(/Checked about once a day/);
+      const select = screen.getByRole("combobox", { name: "Check" }) as HTMLSelectElement;
+      fireEvent.change(select, { target: { value: "6" } });
+      expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't change how often accounts are checked.");
+      expect(select.value).toBe("23");
+      expect(screen.getByText(/Checked about once a day/)).toBeInTheDocument();
     });
 
     it("tells the owner when a watched account stopped answering", async () => {

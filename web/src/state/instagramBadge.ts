@@ -1,5 +1,5 @@
 import { createSignal } from "solid-js";
-import { instagramApi, type IgBadges, type IgWatch } from "../api/instagram";
+import { instagramApi, type IgBadges, type IgWatch, type IgWatchSettings } from "../api/instagram";
 
 // The red dots of the Instagram plugin: new stories and posts of the accounts the owner watches
 // (GET /v1/instagram/badges). Polled while the app is open; the total also goes to the desktop rail
@@ -21,6 +21,22 @@ export async function refreshInstagramWatched(): Promise<void> {
     setWatched(await instagramApi.watchList());
   } catch {
     // Offline or not the owner: keep what we had.
+  }
+}
+
+const [watchSettings, setWatchSettings] = createSignal<IgWatchSettings | null>(null);
+/** How often watched accounts are checked (GET /v1/instagram/watch-settings); null until loaded. */
+export { watchSettings as instagramWatchSettings, setWatchSettings as setInstagramWatchSettings };
+
+let settingsAsked = false;
+/** Load the settings once per session (again after a failure). */
+export async function loadInstagramWatchSettings(): Promise<void> {
+  if (settingsAsked) return;
+  settingsAsked = true;
+  try {
+    setWatchSettings(await instagramApi.watchSettings());
+  } catch {
+    settingsAsked = false;
   }
 }
 
@@ -48,6 +64,8 @@ export async function refreshInstagramBadges(): Promise<void> {
 
 export function resetInstagramBadges(): void {
   setWatched([]);
+  setWatchSettings(null);
+  settingsAsked = false;
   apply(NONE);
 }
 

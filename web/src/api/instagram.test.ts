@@ -47,6 +47,23 @@ describe("instagramApi", () => {
     expect((err as ApiError).retryAfterSeconds).toBe(12);
   });
 
+  it("reads and changes the watch settings", async () => {
+    const data = { intervalHours: 12, defaultHours: 23, jitterMinutes: 30, choices: [6, 12, 23] };
+    const calls = stubFetch(() => ({ body: { ok: true, data } }));
+    expect(await instagramApi.watchSettings()).toEqual(data);
+    expect(await instagramApi.setWatchSettings(12)).toEqual(data);
+    expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual(["GET /v1/instagram/watch-settings", "PUT /v1/instagram/watch-settings"]);
+    expect(calls[1]!.body).toEqual({ intervalHours: 12 });
+    expect(calls[1]!.headers["x-secretary-csrf"]).toBe("1");
+  });
+
+  it("passes a refused setting on as an ApiError", async () => {
+    stubFetch(() => ({ status: 400, body: { ok: false, error: "bad_request" } }));
+    const err = await instagramApi.setWatchSettings(24).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).status).toBe(400);
+  });
+
   it("talks to the watch routes", async () => {
     const calls = stubFetch((c) => ({ body: { ok: true, data: c.url.endsWith("/badges") ? { total: 0, accounts: {} } : [] } }));
     await instagramApi.watchList();

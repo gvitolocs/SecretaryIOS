@@ -2,8 +2,9 @@ import { useNavigate, useParams } from "@solidjs/router";
 import { createEffect, createSignal, For, onCleanup, Show } from "solid-js";
 import { Card, EmptyState, ErrorState, ListRow, LoadingState, Page, PageGrid, PageHeader, PrimaryAction, RowList, useWide } from "../components/page";
 import { api } from "../api/secretary";
-import { parseTs, type TimelineItem } from "../api/timeline";
-import { locale, t } from "../i18n";
+import type { TimelineItem } from "../api/timeline";
+import { relativeTime } from "../lib/relativeTime";
+import { t } from "../i18n";
 import { conversationKey, getState, readItems, setState, type Scope } from "../lib/chatdb";
 import { olderScope, syncScope, type Conversation } from "../lib/chatSync";
 import { chatDevice, fromItem, onTimelineConnected, onTimelineItem, setReplyTarget } from "../state/chat";
@@ -19,15 +20,6 @@ import "../styles/tool-steps.css";
 // IndexedDB for an instant list); /chats/:key shows one read-only from the local store, then
 // syncs it with `conversation=<key>`. A device conversation can be continued here: the main
 // chat opens replying to its last message. This device's own conversation is the main chat.
-
-/** "3 minutes ago", "yesterday": `ts` relative to now, in the app's locale. */
-export function relativeTime(ts: number | string): string {
-  const seconds = Math.round(((parseTs(ts) ?? Date.now()) - Date.now()) / 1000);
-  const abs = Math.abs(seconds);
-  const [unit, size]: [Intl.RelativeTimeFormatUnit, number] =
-    abs >= 86_400 ? ["day", 86_400] : abs >= 3_600 ? ["hour", 3_600] : abs >= 60 ? ["minute", 60] : ["second", 1];
-  return new Intl.RelativeTimeFormat(locale(), { numeric: "auto" }).format(Math.round(seconds / size), unit);
-}
 
 /** The route's `:key`, decoded (`device%3Aabc` → `device:abc`); undefined on the list. */
 function routeKey(raw: string | undefined): string | undefined {

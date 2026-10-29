@@ -77,6 +77,7 @@
 .ig-highlight { display: grid; justify-items: center; gap: 6px; width: 100%; padding: 0; border: 0; background: none; color: inherit; cursor: pointer; }
 .ig-highlight[aria-busy="true"] .ig-avatar { outline: 2px solid var(--lu-accent); }
 .ig-highlight .ig-avatar { width: 68px; height: 68px; box-shadow: 0 0 0 2px var(--lu-bg), 0 0 0 4px var(--lu-separator); }
+.ig-highlight__count { font-size: var(--lu-type-caption-2); color: var(--lu-text-tertiary); }
 .ig-highlight__title { max-width: 100%; font-size: var(--lu-type-caption-2); color: var(--lu-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* The full-screen viewer. It is in a Portal on <body>, above the shell. */
@@ -113,6 +114,8 @@
 .ig-btn--on { background: var(--lu-accent-soft); color: var(--lu-accent); }
 .ig-switch { display: inline-flex; align-items: center; gap: 8px; font-size: var(--lu-type-subheadline); min-width: 0; }
 .ig-switch input { width: 18px; height: 18px; accent-color: var(--lu-accent-fill); flex: none; }
+.ig-interval { display: inline-flex; align-items: center; gap: 8px; font-size: var(--lu-type-subheadline); }
+.ig-interval select { background: var(--lu-bg); border: 1px solid var(--lu-separator); border-radius: 8px; padding: 4px 8px; }
 .ig-watched { display: grid; gap: var(--lu-space-sm); }
 .ig-chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--lu-space-sm); }
 .ig-chip { position: relative; display: inline-flex; align-items: center; gap: 8px; max-width: 100%; padding: 6px 14px 6px 6px; border: 0; border-radius: var(--lu-radius-pill); background: var(--lu-card); color: inherit; cursor: pointer; }

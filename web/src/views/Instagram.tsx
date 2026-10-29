@@ -2,7 +2,15 @@ import { A, useNavigate, useParams } from "@solidjs/router";
 import { createEffect, createResource, createSignal, For, on, onMount, Show, type Accessor } from "solid-js";
 import { ApiError } from "../api/client";
 import { instagramApi, type IgItem, type IgPage, type IgProfileBundle } from "../api/instagram";
-import { instagramWatched, refreshInstagramBadges, refreshInstagramWatched, setInstagramBadges } from "../state/instagramBadge";
+import {
+  instagramWatched,
+  instagramWatchSettings,
+  loadInstagramWatchSettings,
+  refreshInstagramBadges,
+  refreshInstagramWatched,
+  setInstagramBadges,
+  setInstagramWatchSettings,
+} from "../state/instagramBadge";
 import { BackIcon, BellIcon, CheckIcon, ExternalIcon, SearchIcon } from "../components/Icons";
 import {
   Card,
@@ -19,6 +27,7 @@ import {
 import InstagramViewer from "../components/InstagramViewer";
 import { t } from "../i18n";
 import { formatCount, parseTyped, slideIndexOf, slidesOf } from "../lib/instagram";
+import { relativeTime } from "../lib/relativeTime";
 import "../styles/media.css";
 import "../styles/instagram.css";
 
@@ -183,6 +192,22 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
     ),
   );
 
+  void loadInstagramWatchSettings();
+  const intervalHours = () => instagramWatchSettings()?.intervalHours ?? 23;
+  const intervalChoices = () => [...(instagramWatchSettings()?.choices ?? [6, 12, 23])].sort((a, b) => b - a);
+  const intervalLabel = (n: number) => (n === 23 ? t("instagram.watchDaily") : t("instagram.watchEveryHours", { n }));
+
+  async function changeInterval(select: HTMLSelectElement) {
+    setNotice("");
+    try {
+      setInstagramWatchSettings(await instagramApi.setWatchSettings(Number(select.value)));
+      await refreshInstagramWatched();
+    } catch {
+      select.value = String(intervalHours());
+      setNotice(t("instagram.watchIntervalFailed"));
+    }
+  }
+
   async function changeWatch(run: () => Promise<unknown>) {
     setNotice("");
     try {
@@ -289,7 +314,17 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
                       <input type="checkbox" checked={w().autoSave} onChange={(e) => void changeWatch(() => instagramApi.watch(props.username, { autoSave: e.currentTarget.checked }))} />
                       <span>{t("instagram.autoSave")}</span>
                     </label>
-                    <p class="ig-muted ig-watch__hint">{t("instagram.watchHint")}</p>
+                    <label class="ig-interval">
+                      <span>{t("instagram.watchInterval")}</span>
+                      <select value={String(intervalHours())} aria-describedby="ig-interval-note" onChange={(e) => void changeInterval(e.currentTarget)}>
+                        <For each={intervalChoices()}>{(n) => <option value={String(n)}>{intervalLabel(n)}</option>}</For>
+                      </select>
+                    </label>
+                    <p class="ig-muted ig-watch__hint">
+                      {intervalHours() === 23 ? t("instagram.watchHintDay") : t("instagram.watchHintHours", { n: intervalHours() })}
+                      <Show when={w().nextCheck}>{(at) => <> {t("instagram.nextCheck", { when: relativeTime(at()) })}.</>}</Show>
+                      {" "}<span id="ig-interval-note">{t("instagram.watchIntervalNote")}</span>
+                    </p>
                     <Show when={w().gone}>
                       <p class="ig-note" role="status">{t("instagram.gone")}</p>
                     </Show>
@@ -326,6 +361,7 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
                           <button type="button" class="ig-highlight" aria-busy={opening() === h.id} disabled={opening() !== null} onClick={() => void openHighlight(h.id)}>
                             <Avatar url={h.coverUrl} name={h.title} size="lg" />
                             <span class="ig-highlight__title">{h.title}</span>
+                            <Show when={h.mediaCount}>{(n) => <span class="ig-highlight__count">{t("instagram.items", { count: n() })}</span>}</Show>
                           </button>
                         </li>
                       )}
