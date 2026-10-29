@@ -31,12 +31,13 @@ const LOCK: &str = "/tmp/lucina-merge.lock";
 /// (lucina-rs, server-live, web-live, ios-app, main-next) were retired on 2026-10-30.
 const TRUNK: &str = "main";
 
-/// Until this day (UTC, exclusive) `record` also fast-forwards the runtime's
-/// retired deploy line to the deployed commit, so the old names keep pointing at
-/// what is live for sessions that still use them.
-const ALIASES_UNTIL: &str = "2026-11-06";
+/// While this file is absent from the ledger directory, `record` also fast-forwards
+/// the runtime's retired deploy line to the deployed commit, so the old names keep
+/// pointing at what is live for sessions that still use them. It is created once
+/// every session has acknowledged the trunk workflow and the aliases are deleted.
+const ALIASES_RETIRED: &str = "aliases-retired";
 
-/// The retired deploy line a runtime used to deploy from (kept as a read-only alias for a week).
+/// The retired deploy line a runtime used to deploy from (kept as a read-only alias until every session has moved to main).
 fn legacy_line(runtime: &str) -> &'static str {
     match runtime {
         "secretary-server" | "secretary-mcp" => "server-live",
@@ -472,7 +473,7 @@ fn tag_and_alias(repo: &Path, runtime: &str, commit: &str, note: &str) {
         Ok(o) => eprintln!("deploy-guard: warning: push {tag}: {}", String::from_utf8_lossy(&o.stderr).trim()),
         Err(e) => eprintln!("deploy-guard: warning: push {tag}: {e}"),
     }
-    if utc("+%F").as_str() >= ALIASES_UNTIL {
+    if ledger_dir().join(ALIASES_RETIRED).exists() {
         return;
     }
     let line = legacy_line(runtime);
