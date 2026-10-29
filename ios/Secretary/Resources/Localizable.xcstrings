@@ -305,22 +305,6 @@
         }
       }
     },
-    "Delivery" : {
-      "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Consegna"
-          }
-        },
-        "da" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Levering"
-          }
-        }
-      }
-    },
     "Telemarketing" : {
       "localizations" : {
         "it" : {

@@ -211,6 +211,19 @@ struct CallerResultCard: View {
                     }
                 }
             }
+            if let report = result.known?.publicReport, let url = URL(string: report.url) {
+                VStack(alignment: .leading, spacing: 2) {
+                    if let comment = report.latestComment, (report.reports ?? 0) > 0 {
+                        Text(verbatim: "“\(comment)”")
+                            .font(LucinaTokens.Fonts.footnote)
+                            .foregroundStyle(Theme.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Link(destination: url) {
+                        Text(verbatim: "\(report.source) ↗").font(LucinaTokens.Fonts.footnote)
+                    }
+                }
+            }
         }
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("callerResult")
