@@ -7,9 +7,10 @@
 //! Writes go to Google only (the iPhone calendar is written by the app's
 //! EventKit bridge, ICS feeds are read-only). Edits and deletes need
 //! `confirm: true` (`?confirm=true` for DELETE): the app asks the owner
-//! first, Lucina asks through her confirmation flow. Clients that may not
-//! write (the Lucina MCP) file a proposal instead, which the owner accepts
-//! in the app.
+//! first. Creates from the owner's own turns with Lucina go straight to
+//! `POST /v1/calendar/events`; clients that may not write (the Lucina MCP,
+//! agents) file a proposal instead, which the owner accepts in the app, and
+//! so does Lucina when her direct create failed (with a `reason`).
 
 use std::time::Duration;
 
@@ -908,6 +909,13 @@ async fn propose(
         Some(f) => text_field("from", &f, 64)?,
         None => ident.device_name.clone(),
     };
+    let reason = match body
+        .remove("reason")
+        .and_then(|v| v.as_str().map(str::to_owned))
+    {
+        Some(r) => Some(text_field("reason", &r, 300)?),
+        None => None,
+    };
     // Validate now so the owner only sees proposals that would work.
     google_body(&body, hub.tz, false)?;
     let keep: Map<String, Value> = body
@@ -930,6 +938,7 @@ async fn propose(
         id: random_id("prop_"),
         event: Value::Object(keep),
         from,
+        reason,
         created_at: now_iso(),
         expires_at_ms: now + PROPOSAL_TTL_MS,
     };

@@ -672,7 +672,7 @@ pub fn specs() -> Vec<ToolSpec> {
         spec!("calendar_list", "Calendar", Scope::Read, ro = true, destructive = false, idempotent = true, CalendarListArgs,
             "The owner's calendar: events from Google Calendar, the iPhone calendar and subscribed ICS calendars, merged, with times in the owner's time zone and event ids. Default: the next 7 days from today."),
         spec!("calendar_create", "Propose calendar event", Scope::Write, ro = false, destructive = false, idempotent = false, CalendarCreateArgs,
-            "Propose a new event for the owner's Google Calendar. It is NOT created directly: it waits for the owner's confirmation in the Secretary app (Links), and the owner can accept or dismiss it. Tell the owner to confirm it there."),
+            "Propose a new event for the owner's Google Calendar. From an agent or MCP client it is NOT created directly: it waits for the owner's confirmation in the Secretary app (Links), and the owner can accept or dismiss it. Tell the owner to confirm it there. (When the owner asks Lucina himself in his own chat, she adds the event directly; that is not this tool.)"),
         spec!("gym_summary", "Gym summary", Scope::Read, ro = true, destructive = false, idempotent = true, GymArgs,
             "The owner's training: workouts this week vs. the weekly goal, recent workouts with volume, exercises and personal records, and weekly volume."),
         spec!("body_summary", "Body weight summary", Scope::Read, ro = true, destructive = false, idempotent = true, NoArgs,
