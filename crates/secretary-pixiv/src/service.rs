@@ -3,28 +3,48 @@
 //!
 //! The adult gate lives here, not in the HTTP layer: R-18 ranking modes and searches, R-18
 //! works (detail, bookmark, save) answer `AdultOff` unless the caller passed `adult = true`, and
-//! R-18 items are filtered out of every list in that case.
+//! R-18 items are filtered out of every list in that case (one `Content` filter for all lists).
+//!
+//! R-18 needs a logged-in session whose account shows R-18: without one, an R-18 list answers
+//! empty with a `notice` and makes no upstream request.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use crate::account::{parse_account, Account};
 use crate::backend::Backend;
 use crate::cache::DiskCache;
 use crate::error::SvcError;
 use crate::images::{allowed, ImageConfig, ImageFetcher};
 use crate::model::{
-    empty_listing, parse_illust, parse_ranking, parse_search, Illust, Listing, Summary,
+    empty_listing, filter_content, parse_illust, parse_ranking, parse_search, Content, Illust,
+    Listing, Sort, Summary,
 };
 use crate::upstream::{ApiGate, GateConfig, Op};
 
 pub const MAX_DISPLAY_IMAGE: usize = 32 * 1024 * 1024;
 pub const MAX_ORIGINAL: usize = 64 * 1024 * 1024;
 const MAX_SAVE_PAGES: usize = 200;
+/// How long pixiv's answer about the session's account is reused.
+pub const ACCOUNT_TTL: Duration = Duration::from_secs(30 * 60);
+/// The bookmark-tier fallback of `order=popular` reads this many upstream pages at most.
+pub const TIER_PAGES: u64 = 3;
+/// Local page size of the bookmark-tier fallback (pixiv's own page size).
+pub const TIER_PAGE_SIZE: usize = 60;
+/// The bookmark-tier tags, largest first, OR-ed after the user's words.
+pub const TIERS: &[u64] = &[
+    100_000, 50_000, 30_000, 20_000, 10_000, 5_000, 1_000, 500, 300, 100,
+];
+
+pub const R18_NEEDS_SESSION: &str = "r18_needs_session";
+pub const R18_DISABLED_IN_ACCOUNT: &str = "r18_disabled_in_account";
+pub const ALL_AGES_ONLY: &str = "all_ages_only";
 
 pub const RANKING_MODES: &[&str] = &[
     "day",
@@ -93,9 +113,17 @@ pub struct SaveOutcome {
     pub failed: Vec<FailedItem>,
 }
 
+/// The bookmark-tier fallback's merged, sorted list (cached as one).
+#[derive(Debug, Serialize, serde::Deserialize)]
+struct TierList {
+    items: Vec<Summary>,
+    total: Option<u64>,
+}
+
 pub struct Service {
     backend: Arc<dyn Backend>,
     gate: ApiGate,
+    account: tokio::sync::Mutex<Option<(Instant, Account)>>,
     images: ImageFetcher,
     pub cache: DiskCache,
     spool: PathBuf,
@@ -151,6 +179,7 @@ impl Service {
         }
         Ok(Service {
             gate: ApiGate::new(cfg.gate.clone()),
+            account: tokio::sync::Mutex::new(None),
             images: ImageFetcher::new(cfg.images.clone())?,
             http: reqwest::Client::builder()
                 .connect_timeout(Duration::from_secs(5))
@@ -167,6 +196,33 @@ impl Service {
         &self.cfg
     }
 
+    // ---- account -------------------------------------------------------------------------
+
+    /// The session's account: anonymous without a session (no request), else pixiv's answer,
+    /// reused for `ACCOUNT_TTL`. A failed check is not kept and reads as "ok, flags unknown".
+    pub async fn account(&self) -> Account {
+        if !self.backend.has_session() {
+            return Account::anonymous();
+        }
+        let mut slot = self.account.lock().await;
+        if let Some((at, a)) = slot.as_ref() {
+            if at.elapsed() < ACCOUNT_TTL {
+                return a.clone();
+            }
+        }
+        match self.gate.call(&self.backend, &Op::SelfStatus).await {
+            Ok(v) => {
+                let a = parse_account(&v);
+                *slot = Some((Instant::now(), a.clone()));
+                a
+            }
+            Err(_) => {
+                tracing::warn!("pixiv account status unavailable");
+                Account::unknown()
+            }
+        }
+    }
+
     // ---- lists -----------------------------------------------------------------------------
 
     pub async fn ranking(&self, mode: &str, page: u32, adult: bool) -> Result<Listing, SvcError> {
@@ -177,8 +233,19 @@ impl Service {
         if r18 && !adult {
             return Err(SvcError::AdultOff);
         }
+        let content = match (r18, adult) {
+            (true, _) => Content::R18,
+            (false, true) => Content::All,
+            (false, false) => Content::Safe,
+        };
         let page = page.clamp(1, 100);
-        let key = digest(&format!("ranking/{mode}/{page}"));
+        let account = self.account().await;
+        if r18 {
+            if let Some(notice) = r18_refusal(&account) {
+                return Ok(notice_listing(page, notice));
+            }
+        }
+        let key = digest(&format!("ranking/{}/{mode}/{page}", account.fingerprint()));
         let listing = match self.cache.get_json::<Listing>(&key, self.cfg.list_ttl) {
             Some(l) => l,
             None => {
@@ -195,7 +262,7 @@ impl Service {
                 l
             }
         };
-        Ok(gate_list(listing, adult))
+        Ok(filtered(listing, content, &account))
     }
 
     pub async fn search(&self, p: &SearchParams, adult: bool) -> Result<Listing, SvcError> {
@@ -203,61 +270,167 @@ impl Service {
         if q.is_empty() || q.chars().count() > 200 {
             return Err(SvcError::BadRequest("q"));
         }
-        if !matches!(p.order.as_str(), "date_d" | "date") {
+        if !matches!(p.order.as_str(), "date_d" | "date" | "popular") {
             return Err(SvcError::BadRequest("order"));
         }
-        if !matches!(p.mode.as_str(), "safe" | "all" | "r18") {
-            return Err(SvcError::BadRequest("mode"));
-        }
+        let content = Content::parse(&p.mode).ok_or(SvcError::BadRequest("mode"))?;
         if !matches!(p.kind.as_str(), "all" | "illust" | "manga" | "ugoira") {
             return Err(SvcError::BadRequest("type"));
         }
-        if p.mode == "r18" && !adult {
-            return Err(SvcError::AdultOff);
+        // Without adult, "all" asks pixiv for the all-ages results only.
+        let content = content.gated(adult).ok_or(SvcError::AdultOff)?;
+        let words = query_words(q);
+        if words.is_empty() {
+            return Err(SvcError::BadRequest("q"));
         }
         let page = p.page.clamp(1, 1000);
-        // Without adult, "all" asks pixiv for the all-ages results only.
-        let mode = if !adult && p.mode == "all" { "safe" } else { p.mode.as_str() };
-        let key = digest(&format!("search/{q}/{}/{mode}/{}/{page}", p.order, p.kind));
-        let listing = match self.cache.get_json::<Listing>(&key, self.cfg.list_ttl) {
+        let account = self.account().await;
+        if content == Content::R18 {
+            if let Some(notice) = r18_refusal(&account) {
+                return Ok(notice_listing(page, notice));
+            }
+        }
+        let fp = account.fingerprint();
+        let mode = content.wire();
+        let (mut listing, used) = match (p.order.as_str(), account.premium) {
+            ("popular", true) => (
+                self.search_page(&fp, &words, "popular_d", mode, &p.kind, page).await?,
+                "pixiv_popular",
+            ),
+            ("popular", false) => self.search_tiers(&fp, &words, mode, &p.kind, page).await?,
+            (order, _) => (
+                self.search_page(&fp, &words, order, mode, &p.kind, page).await?,
+                order,
+            ),
+        };
+        listing.sort = Some(Sort {
+            requested: p.order.clone(),
+            used: used.to_string(),
+        });
+        let mut listing = filtered(listing, content, &account);
+        if content == Content::All && !account.usable() {
+            listing.notice = Some(ALL_AGES_ONLY.into());
+        }
+        Ok(listing)
+    }
+
+    /// One upstream search page (cached per account), unfiltered.
+    async fn search_page(
+        &self,
+        fp: &str,
+        words: &[String],
+        order: &str,
+        mode: &str,
+        kind: &str,
+        page: u32,
+    ) -> Result<Listing, SvcError> {
+        let key = search_key(fp, words, order, mode, kind, page);
+        if let Some(l) = self.cache.get_json::<Listing>(&key, self.cfg.list_ttl) {
+            return Ok(l);
+        }
+        let args = search_args(words, order, mode, kind, page);
+        let l = match self.gate.call(&self.backend, &Op::Search { args }).await? {
+            Value::Null => empty_listing(page),
+            v => parse_search(&v, page),
+        };
+        self.cache.put_json(&key, &l);
+        Ok(l)
+    }
+
+    /// `order=popular` without Premium: first the works carrying a bookmark-tier tag (the words
+    /// AND any tier tag, newest first, up to `TIER_PAGES` upstream pages merged and sorted by tier,
+    /// then id, both descending) in local pages 1..=k, then the plain `date_d` search from page
+    /// k + 1 on, without the works already shown. `date_d_fallback` when no work has a tier tag
+    /// (k = 0: the plain search alone).
+    async fn search_tiers(
+        &self,
+        fp: &str,
+        words: &[String],
+        mode: &str,
+        kind: &str,
+        page: u32,
+    ) -> Result<(Listing, &'static str), SvcError> {
+        let key = digest(&format!("search-tiers/{fp}/{}/{mode}/{kind}", words.join(" ")));
+        let list = match self.cache.get_json::<TierList>(&key, self.cfg.list_ttl) {
             Some(l) => l,
             None => {
-                // The core takes CLI-style arguments: words first (a word never starts with
-                // "--"), then the flags.
-                let mut args: Vec<String> = q
-                    .split_whitespace()
-                    .map(|w| {
-                        if w.starts_with("--") {
-                            w.trim_start_matches('-').to_string()
-                        } else {
-                            w.to_string()
-                        }
-                    })
-                    .filter(|w| !w.is_empty())
-                    .collect();
-                if args.is_empty() {
-                    return Err(SvcError::BadRequest("q"));
+                let (list, complete) = self.fetch_tiers(words, mode, kind).await?;
+                if complete {
+                    self.cache.put_json(&key, &list);
                 }
-                args.extend([
-                    "--order".into(),
-                    p.order.clone(),
-                    "--mode".into(),
-                    mode.to_string(),
-                    "--type".into(),
-                    p.kind.clone(),
-                    "--page".into(),
-                    page.to_string(),
-                ]);
-                let l = match self.gate.call(&self.backend, &Op::Search { args }).await {
-                    Ok(Value::Null) => empty_listing(page),
-                    Ok(v) => parse_search(&v, page),
-                    Err(e) => return Err(e),
-                };
-                self.cache.put_json(&key, &l);
-                l
+                list
             }
         };
-        Ok(gate_list(listing, adult))
+        let used = if list.items.is_empty() { "date_d_fallback" } else { "users_tags" };
+        let k = list.items.len().div_ceil(TIER_PAGE_SIZE) as u32;
+        if page > k {
+            let mut l = self.search_page(fp, words, "date_d", mode, kind, page - k).await?;
+            let shown: HashSet<&str> = list.items.iter().map(|s| s.id.as_str()).collect();
+            l.items.retain(|s| !shown.contains(s.id.as_str()));
+            l.page = page;
+            l.total = l.total.or(list.total);
+            l.num_pages = l.num_pages.map(|n| n + k as u64);
+            return Ok((l, used));
+        }
+        // The plain query's first page: fetched for the last tier page (does anything follow?),
+        // otherwise only read from the cache for the totals.
+        let plain = if page == k {
+            Some(self.search_page(fp, words, "date_d", mode, kind, 1).await?)
+        } else {
+            self.cache
+                .get_json::<Listing>(&search_key(fp, words, "date_d", mode, kind, 1), self.cfg.list_ttl)
+        };
+        let mut l = tier_page(&list, page);
+        if let Some(plain) = plain {
+            if page == k {
+                l.has_more = !plain.items.is_empty() || plain.num_pages.unwrap_or(0) > 0;
+            }
+            l.total = plain.total.or(list.total);
+            l.num_pages = plain.num_pages.map(|n| n + k as u64).or(l.num_pages);
+        }
+        Ok((l, used))
+    }
+
+    /// The upstream pages of the tier query. A failure after the first page keeps what was read
+    /// (`complete == false`: not cached).
+    async fn fetch_tiers(
+        &self,
+        words: &[String],
+        mode: &str,
+        kind: &str,
+    ) -> Result<(TierList, bool), SvcError> {
+        let mut tier_words = words.to_vec();
+        tier_words.extend(tier_group());
+        let mut items: Vec<Summary> = Vec::new();
+        let mut total = None;
+        let mut last = 1;
+        let mut complete = true;
+        let mut n = 1u64;
+        while n <= last {
+            let args = search_args(&tier_words, "date_d", mode, kind, n as u32);
+            let l = match self.gate.call(&self.backend, &Op::Search { args }).await {
+                Ok(Value::Null) => empty_listing(n as u32),
+                Ok(v) => parse_search(&v, n as u32),
+                Err(e) if n == 1 => return Err(e),
+                Err(_) => {
+                    complete = false;
+                    break;
+                }
+            };
+            if n == 1 {
+                total = l.total;
+                last = l.num_pages.unwrap_or(1).min(TIER_PAGES);
+            }
+            items.extend(l.items);
+            n += 1;
+        }
+        Ok((
+            TierList {
+                items: by_tier(items),
+                total,
+            },
+            complete,
+        ))
     }
 
     // ---- one work --------------------------------------------------------------------------
@@ -420,9 +593,114 @@ impl Service {
     }
 }
 
-fn gate_list(mut l: Listing, adult: bool) -> Listing {
-    if !adult {
-        l.items.retain(|s: &Summary| !s.r18);
+/// The user's words as the core's word arguments (a word never starts with "--", so it cannot
+/// become a flag).
+fn query_words(q: &str) -> Vec<String> {
+    q.split_whitespace()
+        .map(|w| {
+            if w.starts_with("--") {
+                w.trim_start_matches('-')
+            } else {
+                w
+            }
+        })
+        .filter(|w| !w.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn search_key(fp: &str, words: &[String], order: &str, mode: &str, kind: &str, page: u32) -> String {
+    digest(&format!(
+        "search/{fp}/{}/{order}/{mode}/{kind}/{page}",
+        words.join(" ")
+    ))
+}
+
+/// The core takes CLI-style arguments: words first, then the flags.
+fn search_args(words: &[String], order: &str, mode: &str, kind: &str, page: u32) -> Vec<String> {
+    let mut args = words.to_vec();
+    args.extend([
+        "--order".into(),
+        order.to_string(),
+        "--mode".into(),
+        mode.to_string(),
+        "--type".into(),
+        kind.to_string(),
+        "--page".into(),
+        page.to_string(),
+    ]);
+    args
+}
+
+/// `(100000users入り OR ... OR 100users入り)` as separate words (the core joins them with spaces).
+fn tier_group() -> Vec<String> {
+    let mut out = Vec::with_capacity(TIERS.len() * 2);
+    for (i, t) in TIERS.iter().enumerate() {
+        if i > 0 {
+            out.push("OR".to_string());
+        }
+        let open = if i == 0 { "(" } else { "" };
+        let close = if i + 1 == TIERS.len() { ")" } else { "" };
+        out.push(format!("{open}{t}users入り{close}"));
+    }
+    out
+}
+
+/// Deduplicated by id, sorted by bookmark tier, then id (numeric), both descending.
+fn by_tier(items: Vec<Summary>) -> Vec<Summary> {
+    let mut seen = HashSet::new();
+    let mut items: Vec<Summary> = items.into_iter().filter(|s| seen.insert(s.id.clone())).collect();
+    let id_num = |s: &Summary| s.id.parse::<u64>().unwrap_or(0);
+    items.sort_by(|a, b| {
+        b.popular_tier()
+            .cmp(&a.popular_tier())
+            .then_with(|| id_num(b).cmp(&id_num(a)))
+    });
+    items
+}
+
+/// One local page of the merged tier list.
+fn tier_page(list: &TierList, page: u32) -> Listing {
+    let n = list.items.len();
+    let pages = n.div_ceil(TIER_PAGE_SIZE);
+    let from = ((page as usize - 1) * TIER_PAGE_SIZE).min(n);
+    let to = (from + TIER_PAGE_SIZE).min(n);
+    Listing {
+        items: list.items[from..to].to_vec(),
+        page,
+        has_more: (page as usize) < pages,
+        total: list.total,
+        num_pages: Some(pages as u64),
+        notice: None,
+        sort: None,
+    }
+}
+
+/// Why an R-18 list cannot be had from this account, if it cannot.
+fn r18_refusal(a: &Account) -> Option<&'static str> {
+    if !a.usable() {
+        Some(R18_NEEDS_SESSION)
+    } else if a.r18 == Some(false) {
+        Some(R18_DISABLED_IN_ACCOUNT)
+    } else {
+        None
+    }
+}
+
+fn notice_listing(page: u32, notice: &str) -> Listing {
+    Listing {
+        notice: Some(notice.to_string()),
+        ..empty_listing(page)
+    }
+}
+
+/// The content filter, plus the after-the-fact notice of an account whose R-18 display is
+/// unknown: R-18 asked, an upstream page with items, none of them R-18.
+fn filtered(l: Listing, content: Content, account: &Account) -> Listing {
+    let had_items = !l.items.is_empty();
+    let mut l = filter_content(l, content);
+    if content == Content::R18 && account.r18.is_none() && had_items && l.items.is_empty() {
+        l.notice = Some(R18_DISABLED_IN_ACCOUNT.into());
     }
     l
 }

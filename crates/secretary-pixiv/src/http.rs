@@ -4,7 +4,8 @@
 //! i.pximg.net URL itself, in lowercase hex), so the apps' image loaders need no header and never contact pixiv.
 //!
 //! Adult content: `adult=1` (query) switches R-18 on for that request; without it R-18 modes and
-//! works answer 403 `adult_off` and R-18 items never appear in a list.
+//! works answer 403 `adult_off` and R-18 items never appear in a list. Lists take a content
+//! filter (`safe|all|r18`: search `mode`, bookmarks `content`).
 //!
 //! Logs carry the route template and status only: never queries, ids, titles or tags.
 
@@ -24,7 +25,7 @@ use subtle::ConstantTimeEq;
 
 use crate::error::SvcError;
 use crate::images::allowed;
-use crate::model::{Illust, Listing, Summary};
+use crate::model::{Content, Illust, Listing, Summary};
 use crate::service::{SearchParams, Service};
 use crate::store::Store;
 
@@ -131,6 +132,7 @@ impl Http {
             "thumbUrl": self.signed_url(&s.thumb),
             "pages": s.pages,
             "r18": s.r18,
+            "popularTier": s.popular_tier(),
             "bookmarked": self.store.contains(&s.id),
         })
     }
@@ -142,6 +144,8 @@ impl Http {
             "hasMore": l.has_more,
             "total": l.total,
             "numPages": l.num_pages,
+            "notice": l.notice,
+            "sort": l.sort,
         })
     }
 
@@ -235,8 +239,10 @@ fn page_of(v: &Option<String>) -> Result<u32, SvcError> {
 }
 
 async fn status(State(st): State<St>) -> Response {
+    let account = st.service.account().await;
     ok(json!({
         "enabled": true,
+        "account": account,
         "cacheBytes": st.service.cache.total_bytes(),
         "cacheMaxBytes": st.service.cache.max_bytes(),
         "apiIntervalMs": st.service.config().gate.interval.as_millis() as u64,
@@ -312,13 +318,31 @@ async fn illust(State(st): State<St>, Path(id): Path<String>, Query(q): Query<Ad
     }
 }
 
-async fn bookmarks(State(st): State<St>, Query(q): Query<AdultQ>) -> Response {
+#[derive(Deserialize)]
+struct BookmarksQ {
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    adult: Option<String>,
+}
+
+async fn bookmarks(State(st): State<St>, Query(q): Query<BookmarksQ>) -> Response {
     let adult = truthy(&q.adult);
+    let content = match q.content.as_deref() {
+        None | Some("") => Some(if adult { Content::All } else { Content::Safe }),
+        Some(c) => Content::parse(c),
+    };
+    let Some(content) = content else {
+        return SvcError::BadRequest("content").into_response();
+    };
+    let Some(content) = content.gated(adult) else {
+        return SvcError::AdultOff.into_response();
+    };
     let items: Vec<Value> = st
         .store
         .list()
         .iter()
-        .filter(|b| adult || !b.illust.r18)
+        .filter(|b| content.keeps(b.illust.r18))
         .map(|b| {
             let mut v = st.summary_json(&b.illust);
             v["addedAt"] = json!(b.added_at);

@@ -34,8 +34,14 @@ fn orig(n: u32, page: u32) -> String {
 
 // ---- the mock core ------------------------------------------------------------------------
 
+type SearchFn = fn(&[String]) -> Result<Value, String>;
+
 #[derive(Default)]
 struct Mock_ {
+    /// `Some(user_status)`: a session is configured and pixiv answers this about it.
+    session: Mutex<Option<Value>>,
+    /// Replaces the default search answer.
+    search_fn: Mutex<Option<SearchFn>>,
     calls: Mutex<Vec<String>>,
     /// Errors handed out first, whatever the operation.
     failures: Mutex<VecDeque<String>>,
@@ -59,6 +65,12 @@ impl Mock_ {
     fn calls(&self) -> Vec<String> {
         self.calls.lock().unwrap().clone()
     }
+    fn login(&self, status: Value) {
+        *self.session.lock().unwrap() = Some(status);
+    }
+    fn on_search(&self, f: SearchFn) {
+        *self.search_fn.lock().unwrap() = Some(f);
+    }
 }
 
 impl Backend for Mock_ {
@@ -71,12 +83,17 @@ impl Backend for Mock_ {
                  "tags": ["sky", "風景"], "thumb": img(1001, 0), "pages": 1},
                 {"id": "1002", "title": "Comic", "author": "Bob", "author_id": "8",
                  "tags": [], "thumb": img(1002, 0), "pages": 3},
+                {"id": "1003", "title": "Late", "author": "Cat", "author_id": "9",
+                 "tags": [], "thumb": img(1003, 0), "pages": 1, "r18": true},
             ],
         }))
     }
 
     fn search(&self, args: &[String]) -> Result<Value, String> {
         self.gate(format!("search {}", args.join(" ")))?;
+        if let Some(f) = *self.search_fn.lock().unwrap() {
+            return f(args);
+        }
         Ok(json!({
             "word": "w", "page": 1, "total": 3, "num_pages": 2,
             "items": [
@@ -109,6 +126,15 @@ impl Backend for Mock_ {
                 "regular": img(n, p), "orig": orig(n, p),
             })).collect::<Vec<_>>(),
         }))
+    }
+
+    fn self_status(&self) -> Result<Value, String> {
+        self.gate("self_status".into())?;
+        Ok(self.session.lock().unwrap().clone().unwrap_or(json!({"is_logged_in": false})))
+    }
+
+    fn has_session(&self) -> bool {
+        self.session.lock().unwrap().is_some()
     }
 }
 
@@ -275,6 +301,20 @@ async fn get(app: &axum::Router, uri: &str) -> Reply {
     send(app, "GET", uri, true, None).await
 }
 
+fn ids(r: &Reply) -> Vec<String> {
+    r.json["data"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// A logged-in account with R-18 display on.
+fn r18_account() -> Value {
+    json!({"is_logged_in": true, "is_premium": false, "x_restrict": 1})
+}
+
 async fn cdn_hits(e: &Env) -> usize {
     e.cdn.received_requests().await.unwrap().len()
 }
@@ -358,7 +398,7 @@ async fn ranking_returns_signed_urls_and_caches_the_answer() {
 }
 
 #[tokio::test]
-async fn r18_ranking_modes_need_adult() {
+async fn r18_ranking_modes_need_adult_and_a_session() {
     let e = env().await;
     for mode in ["day_r18", "week_r18", "day_male_r18", "day_female_r18"] {
         let r = get(&e.app, &format!("/v1/pixiv/ranking?mode={mode}")).await;
@@ -368,10 +408,22 @@ async fn r18_ranking_modes_need_adult() {
         assert_eq!(r.status, StatusCode::FORBIDDEN, "{mode}");
     }
     assert!(e.mock.calls().is_empty(), "refused before any upstream call");
+    // anonymous: pixiv would answer 403, so the service answers an empty list with a notice
+    let r = get(&e.app, "/v1/pixiv/ranking?mode=day_r18&adult=1").await;
+    assert_eq!(r.status, StatusCode::OK);
+    let d = &r.json["data"];
+    assert_eq!(d["notice"], "r18_needs_session");
+    assert_eq!((d["hasMore"].clone(), d["total"].clone(), d["numPages"].clone()), (json!(false), json!(0), json!(0)));
+    assert!(d["items"].as_array().unwrap().is_empty());
+    assert!(e.mock.calls().is_empty(), "no upstream request");
+    // with a session that shows R-18
+    e.mock.login(r18_account());
     let r = get(&e.app, "/v1/pixiv/ranking?mode=day_r18&adult=1").await;
     assert_eq!(r.status, StatusCode::OK);
     assert_eq!(r.json["data"]["items"][0]["r18"], true);
-    assert_eq!(e.mock.calls(), vec!["ranking day_r18 1"]);
+    assert_eq!(r.json["data"]["items"].as_array().unwrap().len(), 3);
+    assert_eq!(r.json["data"]["notice"], Value::Null);
+    assert_eq!(e.mock.calls(), vec!["self_status", "ranking day_r18 1"]);
     // the cached R-18 page is not handed to a request without adult
     assert_eq!(get(&e.app, "/v1/pixiv/ranking?mode=day_r18").await.status, StatusCode::FORBIDDEN);
 }
@@ -407,6 +459,9 @@ async fn search_filters_r18_items_unless_adult() {
         .collect();
     assert_eq!(ids, vec!["2001", "2002", "2003"]);
     assert!(e.mock.calls()[1].contains("--mode all"));
+    // anonymous: pixiv only hands out all-ages works, and says so
+    assert_eq!(r.json["data"]["notice"], "all_ages_only");
+    assert_eq!(r.json["data"]["sort"], json!({"requested": "date", "used": "date"}));
 }
 
 #[tokio::test]
@@ -416,7 +471,11 @@ async fn r18_search_mode_is_refused_without_adult() {
     assert_eq!(r.status, StatusCode::FORBIDDEN);
     assert_eq!(r.json["error"], "adult_off");
     assert!(e.mock.calls().is_empty());
-    assert_eq!(get(&e.app, "/v1/pixiv/search?q=cat&mode=r18&adult=1").await.status, StatusCode::OK);
+    let r = get(&e.app, "/v1/pixiv/search?q=cat&mode=r18&adult=1").await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.json["data"]["notice"], "r18_needs_session");
+    assert!(r.json["data"]["items"].as_array().unwrap().is_empty());
+    assert!(e.mock.calls().is_empty(), "anonymous R-18 makes no upstream request");
 }
 
 #[tokio::test]
@@ -426,6 +485,7 @@ async fn search_validates_its_input() {
         "q=",
         "q=%20%20",
         "q=cat&order=popular_d",
+        "q=cat&order=popularity",
         "q=cat&mode=weird",
         "q=cat&type=video",
         "q=cat&page=-1",
@@ -867,4 +927,313 @@ async fn save_reports_a_media_outage_per_page_and_cleans_the_spool() {
     assert_eq!(failed.len(), 2);
     assert_eq!(failed[0]["error"], "ingest_failed");
     assert_eq!(std::fs::read_dir(e.dir.path().join("spool")).unwrap().count(), 0);
+}
+
+// ---- session, account, content, popular order ---------------------------------------------
+
+/// One search item; `tags` drive `popularTier`.
+fn item(id: u64, r18: bool, tags: &[&str]) -> Value {
+    json!({"id": id.to_string(), "title": "t", "author": "a", "author_id": "1",
+           "thumb": img(id as u32, 0), "pages": 1, "r18": r18, "tags": tags})
+}
+
+fn arg<'a>(args: &'a [String], flag: &str) -> &'a str {
+    let i = args.iter().position(|a| a == flag).unwrap();
+    &args[i + 1]
+}
+
+/// The tier query: 5 upstream pages of 2 works each (the service reads 3); page 3 repeats an id.
+/// The plain query: 3 pages, newest first, partly the same works as the tier query.
+fn tier_pages(args: &[String]) -> Result<Value, String> {
+    let page: u64 = arg(args, "--page").parse().unwrap();
+    if !args.join(" ").contains("users入り") {
+        let items = match page {
+            1 => vec![item(40, false, &[]), item(31, false, &["2024年"]), item(22, false, &["100users入り"]), item(12, false, &[])],
+            2 => vec![item(30, false, &[]), item(21, false, &[]), item(20, false, &[])],
+            _ => vec![item(10, false, &[])],
+        };
+        return Ok(json!({"word": "w", "page": page, "total": 368, "num_pages": 3, "items": items}));
+    }
+    let items = match page {
+        1 => vec![item(11, false, &["100users入り"]), item(12, false, &["ミク10000users入り", "500users入り"])],
+        2 => vec![item(21, false, &["VOCALOID1000users入り"]), item(22, false, &["100users入り"])],
+        3 => vec![item(12, false, &["ミク10000users入り"]), item(31, false, &["2024年"])],
+        _ => vec![item(99, false, &["100000users入り"])],
+    };
+    Ok(json!({"word": "w", "page": page, "total": 9, "num_pages": 5, "items": items}))
+}
+
+/// No work carries a tier tag; plain searches answer as usual.
+fn no_tiers(args: &[String]) -> Result<Value, String> {
+    if args.join(" ").contains("users入り") {
+        return Err("search: no illustManga (word may have no results)".into());
+    }
+    Ok(json!({"word": "w", "page": 1, "total": 1, "num_pages": 1,
+              "items": [item(7, false, &["猫"])]}))
+}
+
+#[tokio::test]
+async fn popular_with_premium_asks_pixiv_for_popular_d() {
+    let e = env().await;
+    e.mock.login(json!({"is_logged_in": true, "is_premium": 1, "x_restrict": 0}));
+    let r = get(&e.app, "/v1/pixiv/search?q=cat&order=popular").await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.json["data"]["sort"], json!({"requested": "popular", "used": "pixiv_popular"}));
+    assert_eq!(
+        e.mock.calls(),
+        vec!["self_status", "search cat --order popular_d --mode safe --type all --page 1"]
+    );
+}
+
+#[tokio::test]
+async fn popular_without_premium_merges_bookmark_tier_pages_then_continues_newest_first() {
+    let e = env().await;
+    e.mock.on_search(tier_pages);
+    let base = "/v1/pixiv/search?q=blue%20sky&order=popular&type=illust";
+    let r = get(&e.app, base).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let d = &r.json["data"];
+    assert_eq!(d["sort"], json!({"requested": "popular", "used": "users_tags"}));
+    // three tier pages at most, newest first, the tier group after the words; then the plain
+    // query's first page, to know whether anything follows the last tier page
+    let group = "(100000users入り OR 50000users入り OR 30000users入り OR 20000users入り OR \
+                 10000users入り OR 5000users入り OR 1000users入り OR 500users入り OR 300users入り OR 100users入り)";
+    let calls = e.mock.calls();
+    assert_eq!(calls.len(), 4, "{calls:?}");
+    for (n, c) in calls[..3].iter().enumerate() {
+        assert_eq!(c, &format!("search blue sky {group} --order date_d --mode safe --type illust --page {}", n + 1));
+    }
+    assert_eq!(calls[3], "search blue sky --order date_d --mode safe --type illust --page 1");
+    // deduplicated, by tier then id, both descending
+    assert_eq!(ids(&r), vec!["12", "21", "22", "11", "31"]);
+    let tiers: Vec<Value> = d["items"].as_array().unwrap().iter().map(|i| i["popularTier"].clone()).collect();
+    assert_eq!(tiers, vec![json!(10000), json!(1000), json!(100), json!(100), Value::Null]);
+    // the last tier page: more follows; totals are the plain query's (1 tier page + 3 plain)
+    assert_eq!((d["page"].clone(), d["hasMore"].clone(), d["numPages"].clone(), d["total"].clone()),
+               (json!(1), json!(true), json!(4), json!(368)));
+
+    // page 2 = plain page 1 without the works already shown (cached: no new call)
+    let r = get(&e.app, &format!("{base}&page=2")).await;
+    assert_eq!(ids(&r), vec!["40"]);
+    let d = &r.json["data"];
+    assert_eq!((d["page"].clone(), d["hasMore"].clone(), d["numPages"].clone(), d["total"].clone()),
+               (json!(2), json!(true), json!(4), json!(368)));
+    assert_eq!(d["sort"]["used"], "users_tags");
+    assert_eq!(e.mock.calls().len(), 4);
+    // page 3 = plain page 2, page 4 = plain page 3 (the last)
+    let r = get(&e.app, &format!("{base}&page=3")).await;
+    assert_eq!(ids(&r), vec!["30", "20"]);
+    assert_eq!(r.json["data"]["hasMore"], true);
+    let r = get(&e.app, &format!("{base}&page=4")).await;
+    assert_eq!(ids(&r), vec!["10"]);
+    assert_eq!((r.json["data"]["page"].clone(), r.json["data"]["hasMore"].clone()), (json!(4), json!(false)));
+    let calls = e.mock.calls();
+    assert_eq!(calls.len(), 6);
+    assert!(calls[4].ends_with("--type illust --page 2") && !calls[4].contains("users入り"));
+    assert!(calls[5].ends_with("--type illust --page 3") && !calls[5].contains("users入り"));
+    // no work twice across the pages (all cached now)
+    let mut all = Vec::new();
+    for page in 1..=4 {
+        all.extend(ids(&get(&e.app, &format!("{base}&page={page}")).await));
+    }
+    assert_eq!(all.len(), 9, "{all:?}");
+    all.sort();
+    all.dedup();
+    assert_eq!(all.len(), 9, "a work appeared twice");
+    assert_eq!(e.mock.calls().len(), 6);
+}
+
+#[tokio::test]
+async fn popular_tier_pages_before_the_last_need_no_plain_query() {
+    let e = env().await;
+    // 70 tier works on one upstream page: two local tier pages
+    e.mock.on_search(|args| {
+        if !args.join(" ").contains("users入り") {
+            return Ok(json!({"total": 500, "num_pages": 9, "items": [item(1, false, &[])]}));
+        }
+        let items: Vec<Value> = (100..170).map(|i| item(i, false, &["100users入り"])).collect();
+        Ok(json!({"total": 70, "num_pages": 1, "items": items}))
+    });
+    let r = get(&e.app, "/v1/pixiv/search?q=cat&order=popular").await;
+    let d = &r.json["data"];
+    assert_eq!(d["items"].as_array().unwrap().len(), 60);
+    assert_eq!(d["items"][0]["id"], "169");
+    assert_eq!((d["hasMore"].clone(), d["numPages"].clone(), d["total"].clone()), (json!(true), json!(2), json!(70)));
+    assert_eq!(e.mock.calls().len(), 1, "the tier query only");
+    let r = get(&e.app, "/v1/pixiv/search?q=cat&order=popular&page=2").await;
+    let d = &r.json["data"];
+    assert_eq!(d["items"].as_array().unwrap().len(), 10);
+    assert_eq!((d["hasMore"].clone(), d["numPages"].clone(), d["total"].clone()), (json!(true), json!(11), json!(500)));
+    assert_eq!(e.mock.calls().len(), 2);
+    let r = get(&e.app, "/v1/pixiv/search?q=cat&order=popular&page=3").await;
+    assert_eq!(ids(&r), vec!["1"]);
+    assert_eq!(r.json["data"]["page"], 3);
+    assert_eq!(e.mock.calls().len(), 2, "plain page 1 was cached");
+}
+
+#[tokio::test]
+async fn popular_falls_back_to_date_d_when_no_tier_matches() {
+    let e = env().await;
+    e.mock.on_search(no_tiers);
+    let r = get(&e.app, "/v1/pixiv/search?q=cat&order=popular").await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.json["data"]["sort"]["used"], "date_d_fallback");
+    assert_eq!(ids(&r), vec!["7"]);
+    let calls = e.mock.calls();
+    assert_eq!(calls.len(), 2);
+    assert!(calls[0].contains("users入り"));
+    assert_eq!(calls[1], "search cat --order date_d --mode safe --type all --page 1");
+    assert_eq!((r.json["data"]["page"].clone(), r.json["data"]["hasMore"].clone()), (json!(1), json!(false)));
+    // its later pages are the plain query's, still reported as the fallback
+    let r = get(&e.app, "/v1/pixiv/search?q=cat&order=popular&page=2").await;
+    assert_eq!(r.json["data"]["sort"]["used"], "date_d_fallback");
+    assert_eq!(r.json["data"]["page"], 2);
+    assert_eq!(e.mock.calls()[2], "search cat --order date_d --mode safe --type all --page 2");
+}
+
+#[tokio::test]
+async fn date_orders_pass_through_and_carry_popular_tier() {
+    let e = env().await;
+    e.mock.on_search(|args| {
+        Ok(json!({"total": 1, "num_pages": 1, "items": [item(5, false, &["VOCALOID500users入り"])],
+                  "word": args[0]}))
+    });
+    for order in ["date_d", "date"] {
+        let r = get(&e.app, &format!("/v1/pixiv/search?q=miku&order={order}")).await;
+        assert_eq!(r.json["data"]["sort"], json!({"requested": order, "used": order}));
+        assert_eq!(r.json["data"]["items"][0]["popularTier"], 500);
+        assert_eq!(r.json["data"]["items"][0]["tags"][0], "VOCALOID500users入り");
+    }
+    assert_eq!(
+        e.mock.calls(),
+        vec![
+            "search miku --order date_d --mode safe --type all --page 1",
+            "search miku --order date --mode safe --type all --page 1",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn one_content_filter_for_search_ranking_and_bookmarks() {
+    let e = env().await;
+    e.mock.login(r18_account());
+    // search
+    assert_eq!(ids(&get(&e.app, "/v1/pixiv/search?q=cat&mode=safe&adult=1").await), vec!["2001", "2003"]);
+    assert_eq!(ids(&get(&e.app, "/v1/pixiv/search?q=cat&mode=r18&adult=1").await), vec!["2002"]);
+    let r = get(&e.app, "/v1/pixiv/search?q=cat&mode=all&adult=1").await;
+    assert_eq!(ids(&r), vec!["2001", "2002", "2003"]);
+    assert_eq!(r.json["data"]["notice"], Value::Null, "a session gets R-18 from pixiv");
+    // without adult: r18 refused, all is safe
+    assert_eq!(get(&e.app, "/v1/pixiv/search?q=cat&mode=r18").await.json["error"], "adult_off");
+    assert_eq!(ids(&get(&e.app, "/v1/pixiv/search?q=cat&mode=all").await), vec!["2001", "2003"]);
+    // ranking: R-18 rows only with adult
+    assert_eq!(ids(&get(&e.app, "/v1/pixiv/ranking?mode=day").await), vec!["1001", "1002"]);
+    assert_eq!(ids(&get(&e.app, "/v1/pixiv/ranking?mode=day&adult=1").await), vec!["1001", "1002", "1003"]);
+    // bookmarks
+    send(&e.app, "PUT", "/v1/pixiv/bookmarks/1001", true, None).await;
+    send(&e.app, "PUT", "/v1/pixiv/bookmarks/3003?adult=1", true, None).await;
+    let b = |q: &'static str| {
+        let app = e.app.clone();
+        async move { get(&app, &format!("/v1/pixiv/bookmarks{q}")).await }
+    };
+    assert_eq!(ids(&b("?adult=1").await), vec!["1001", "3003"], "all by default with adult");
+    assert_eq!(ids(&b("?adult=1&content=safe").await), vec!["1001"]);
+    assert_eq!(ids(&b("?adult=1&content=r18").await), vec!["3003"]);
+    assert_eq!(ids(&b("").await), vec!["1001"], "safe by default without adult");
+    assert_eq!(ids(&b("?content=all").await), vec!["1001"]);
+    let r = b("?content=r18").await;
+    assert_eq!((r.status, r.json["error"].clone()), (StatusCode::FORBIDDEN, json!("adult_off")));
+    assert_eq!(b("?content=weird&adult=1").await.status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn r18_disabled_in_the_account_answers_empty_without_a_list_call() {
+    let e = env().await;
+    e.mock.login(json!({"is_logged_in": true, "x_restrict": 0}));
+    for uri in ["/v1/pixiv/search?q=cat&mode=r18&adult=1", "/v1/pixiv/ranking?mode=week_r18&adult=1"] {
+        let r = get(&e.app, uri).await;
+        assert_eq!(r.status, StatusCode::OK, "{uri}");
+        assert_eq!(r.json["data"]["notice"], "r18_disabled_in_account", "{uri}");
+        assert!(ids(&r).is_empty());
+    }
+    assert_eq!(e.mock.calls(), vec!["self_status"], "only the account check");
+}
+
+#[tokio::test]
+async fn an_unknown_r18_setting_is_found_out_from_the_answer() {
+    let e = env().await;
+    e.mock.login(json!({"is_logged_in": true}));
+    e.mock.on_search(|_| Ok(json!({"total": 1, "num_pages": 1, "items": [item(8, false, &[])]})));
+    let r = get(&e.app, "/v1/pixiv/search?q=cat&mode=r18&adult=1").await;
+    assert!(ids(&r).is_empty());
+    assert_eq!(r.json["data"]["notice"], "r18_disabled_in_account");
+    assert_eq!(e.mock.calls().len(), 2, "the account check and the search");
+}
+
+#[tokio::test]
+async fn the_account_shows_in_status() {
+    let e = env().await;
+    let r = get(&e.app, "/v1/pixiv/status").await;
+    assert_eq!(r.json["data"]["account"], json!({"session": "none", "premium": false, "r18": false}));
+    assert!(e.mock.calls().is_empty(), "no session, no request");
+
+    for (status, want) in [
+        (json!({"is_logged_in": false}), json!({"session": "expired", "premium": false, "r18": false})),
+        (json!({"is_logged_in": true, "is_premium": true, "x_restrict": "1"}), json!({"session": "ok", "premium": true, "r18": true})),
+        (json!({"is_logged_in": true, "is_premium": "0", "x_restrict": 1}), json!({"session": "ok", "premium": false, "r18": true})),
+        (json!({"is_logged_in": true, "x_restrict": 2}), json!({"session": "ok", "premium": false, "r18": true})),
+        (json!({"is_logged_in": true, "x_restrict": 0}), json!({"session": "ok", "premium": false, "r18": false})),
+        (json!({"is_logged_in": true}), json!({"session": "ok", "premium": false, "r18": null})),
+    ] {
+        let e = env().await;
+        e.mock.login(status.clone());
+        assert_eq!(get(&e.app, "/v1/pixiv/status").await.json["data"]["account"], want, "{status}");
+        // kept for half an hour
+        assert_eq!(get(&e.app, "/v1/pixiv/status").await.json["data"]["account"], want);
+        assert_eq!(e.mock.calls(), vec!["self_status"], "{status}");
+    }
+}
+
+#[tokio::test]
+async fn a_failed_account_check_is_not_kept() {
+    let e = env().await;
+    e.mock.login(r18_account());
+    e.mock.failures.lock().unwrap().push_back("HTTP 403 Forbidden: no".into());
+    let r = get(&e.app, "/v1/pixiv/status").await;
+    assert_eq!(r.json["data"]["account"], json!({"session": "ok", "premium": false, "r18": null}));
+    let r = get(&e.app, "/v1/pixiv/status").await;
+    assert_eq!(r.json["data"]["account"]["r18"], true);
+    assert_eq!(e.mock.calls(), vec!["self_status", "self_status"]);
+}
+
+#[tokio::test]
+async fn an_expired_session_needs_a_new_one_for_r18() {
+    let e = env().await;
+    e.mock.login(json!({"is_logged_in": false}));
+    let r = get(&e.app, "/v1/pixiv/search?q=cat&mode=r18&adult=1").await;
+    assert_eq!(r.json["data"]["notice"], "r18_needs_session");
+    let r = get(&e.app, "/v1/pixiv/search?q=cat&mode=all&adult=1").await;
+    assert_eq!(r.json["data"]["notice"], "all_ages_only");
+    assert_eq!(e.mock.calls().len(), 2, "the account check, then the all-ages search");
+}
+
+#[tokio::test]
+async fn anonymous_answers_are_never_served_to_a_session() {
+    let e = env().await;
+    let uri = "/v1/pixiv/search?q=cat&mode=all&adult=1";
+    assert_eq!(get(&e.app, uri).await.json["data"]["notice"], "all_ages_only");
+    assert_eq!(get(&e.app, "/v1/pixiv/ranking?mode=day&adult=1").await.status, StatusCode::OK);
+    assert_eq!(e.mock.calls().len(), 2);
+    e.mock.login(r18_account());
+    let r = get(&e.app, uri).await;
+    assert_eq!(r.json["data"]["notice"], Value::Null);
+    get(&e.app, "/v1/pixiv/ranking?mode=day&adult=1").await;
+    assert_eq!(
+        e.mock.calls()[2..],
+        ["self_status", "search cat --order date_d --mode all --type all --page 1", "ranking day 1"]
+    );
+    // and the session's own answers are cached under its key
+    get(&e.app, uri).await;
+    get(&e.app, "/v1/pixiv/ranking?mode=day&adult=1").await;
+    assert_eq!(e.mock.calls().len(), 5);
 }

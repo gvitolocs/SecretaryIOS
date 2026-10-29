@@ -11,23 +11,34 @@ pub trait Backend: Send + Sync + 'static {
     /// `args` are the core's CLI-style arguments: the words, then `--order X --mode X ...`.
     fn search(&self, args: &[String]) -> Result<Value, String>;
     fn illust(&self, id: &str) -> Result<Value, String>;
+    /// The session's account flags (`user_status`: `is_logged_in`, `is_premium`, `x_restrict`).
+    fn self_status(&self) -> Result<Value, String>;
+    /// Whether a pixiv.net session is configured (no request).
+    fn has_session(&self) -> bool;
 }
 
 pub struct CoreBackend {
     client: pixiv::api::PixivClient,
+    session: bool,
 }
 
 impl CoreBackend {
-    pub fn new() -> CoreBackend {
+    /// `session`: the pixiv.net `PHPSESSID` value; `None` or blank is anonymous.
+    pub fn new(session: Option<String>) -> CoreBackend {
+        let session = session.filter(|s| !s.trim().is_empty());
+        let mut client = pixiv::api::PixivClient::new(String::new());
+        let has = session.is_some();
+        client.set_session(session);
         CoreBackend {
-            client: pixiv::api::PixivClient::new(String::new()),
+            client,
+            session: has,
         }
     }
 }
 
 impl Default for CoreBackend {
     fn default() -> Self {
-        Self::new()
+        Self::new(None)
     }
 }
 
@@ -40,6 +51,12 @@ impl Backend for CoreBackend {
     }
     fn illust(&self, id: &str) -> Result<Value, String> {
         self.client.illust(id)
+    }
+    fn self_status(&self) -> Result<Value, String> {
+        self.client.self_status()
+    }
+    fn has_session(&self) -> bool {
+        self.session
     }
 }
 
