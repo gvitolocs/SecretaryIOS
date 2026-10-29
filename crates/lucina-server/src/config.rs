@@ -219,6 +219,9 @@ pub struct Config {
     pub au_enabled: bool,
     /// `LUCINA_AU_URL` (default `http://127.0.0.1:18211`): the af-server.
     pub au_url: String,
+    /// `LUCINA_CALLERS` (default on; `off` disables): screening unknown callers with Jev
+    /// (`/api/secretary/callers/*`, the `caller_screen` tool and chat turn).
+    pub callers_enabled: bool,
 }
 
 impl std::fmt::Debug for Config {
@@ -550,6 +553,12 @@ impl Config {
                 num("LUCINA_DELIVERY_ALERT_AFTER_MIN", 5).max(1) * 60,
             ),
             au_enabled: !get("LUCINA_AU").is_some_and(|v| {
+                matches!(
+                    v.trim().to_ascii_lowercase().as_str(),
+                    "off" | "false" | "0" | "no"
+                )
+            }),
+            callers_enabled: !get("LUCINA_CALLERS").is_some_and(|v| {
                 matches!(
                     v.trim().to_ascii_lowercase().as_str(),
                     "off" | "false" | "0" | "no"

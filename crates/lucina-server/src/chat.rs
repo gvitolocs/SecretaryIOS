@@ -39,6 +39,7 @@ use lucina_store::recent::RecentChat;
 use lucina_store::timeline::{Attachment, TimelineStore};
 
 mod au_turn;
+pub mod callers_turn;
 pub mod drive_turn;
 pub mod media_turn;
 pub mod memo_turn;
@@ -949,8 +950,10 @@ async fn run_turn_scoped(
             &t.message,
             &finish.action,
             &finish.action_result,
-            // Secrets replies are fixed texts, AU Find answers keep their checked wording: no model rewrite.
-            !finish.action.starts_with("secrets_") && finish.action != au_turn::ACTION,
+            // Secrets replies are fixed texts, AU Find and caller answers keep their checked wording: no model rewrite.
+            !finish.action.starts_with("secrets_")
+                && finish.action != au_turn::ACTION
+                && finish.action != callers_turn::ACTION,
             &finish.calendar_events,
             finish.agenda.as_ref(),
         )
@@ -960,7 +963,7 @@ async fn run_turn_scoped(
     // composer is off or gave none.
     let rich_msg = match rich_msg {
         None if t.origin.is_none()
-            && finish.action == au_turn::ACTION
+            && (finish.action == au_turn::ACTION || finish.action == callers_turn::ACTION)
             && (!finish.blocks.is_empty() || !finish.routes.is_empty()) =>
         {
             Some(lucina_store::rich::RichMessage {
@@ -1534,6 +1537,11 @@ async fn json_turn(
 
     // AU Find (Aarhus University people, buildings, campus maps): read-only, MCP turns included.
     if let Some(f) = au_turn::try_turn(t, memory).await {
+        return f;
+    }
+
+    // "Who called me from <number>?" / a pasted list: Jev's table, read-only, MCP turns included.
+    if let Some(f) = callers_turn::try_turn(t, memory).await {
         return f;
     }
 
@@ -3003,8 +3011,10 @@ async fn tools_turn(
         &message,
         &finish.action,
         &finish.action_result,
-        // Secrets replies are fixed texts, AU Find answers keep their checked wording: no model rewrite.
-        !finish.action.starts_with("secrets_") && finish.action != au_turn::ACTION,
+        // Secrets replies are fixed texts, AU Find and caller answers keep their checked wording: no model rewrite.
+        !finish.action.starts_with("secrets_")
+            && finish.action != au_turn::ACTION
+            && finish.action != callers_turn::ACTION,
         &finish.calendar_events,
         finish.agenda.as_ref(),
     )

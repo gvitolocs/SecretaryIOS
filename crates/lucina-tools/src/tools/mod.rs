@@ -4,6 +4,7 @@ pub mod computer;
 pub mod au;
 pub mod avatar;
 pub mod calculator;
+pub mod callers;
 pub mod calendar;
 pub mod delegate;
 pub mod diagnostics;
@@ -41,6 +42,7 @@ pub fn builtin() -> Vec<Arc<dyn Tool>> {
         Arc::new(au::AuPeopleSearchTool),
         Arc::new(au::AuBuildingTool),
         Arc::new(au::AuCampusMapTool),
+        Arc::new(callers::CallerScreenTool),
         Arc::new(notes::NotesTool),
         Arc::new(reminders::RemindersTool),
         Arc::new(calendar::CalendarTool),

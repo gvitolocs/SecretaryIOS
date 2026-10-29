@@ -12,6 +12,7 @@ pub mod agenda;
 pub mod agentd;
 pub mod api;
 pub mod au;
+pub mod callers;
 pub mod bot_hospital;
 pub mod bridges;
 pub mod capabilities;
@@ -249,6 +250,11 @@ impl AppState {
         env.secretary_service_token_file = cfg.secretary_service_token_file.clone();
         env.secrets = secret_store.clone();
         env.au_url = cfg.au_enabled.then(|| cfg.au_url.clone());
+        env.callers = cfg.callers_enabled.then(|| {
+            Arc::new(lucina_tools::tools::callers::CallerStore::in_data_dir(
+                &cfg.data_dir,
+            ))
+        });
         // Instagram / Pixiv plugin services (loopback; gateway secrets are read per call).
         {
             let (c, p) = (&cfg.plugins, &mut env.plugins);
@@ -370,6 +376,9 @@ impl AppState {
         let mut registry = Registry::builtin(&cfg.tools);
         if !cfg.au_enabled {
             registry = registry.without(lucina_tools::tools::au::NAMES);
+        }
+        if !cfg.callers_enabled {
+            registry = registry.without(lucina_tools::tools::callers::NAMES);
         }
         if delegator.is_none() {
             registry = registry.without(lucina_tools::tools::delegate::DELEGATION_TOOLS);
