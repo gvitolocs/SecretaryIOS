@@ -462,8 +462,10 @@ pub struct ScreenResponse {
 /// design (checked 2026-10-29), so reqwest cannot reach it.
 #[derive(Debug, Clone, Default)]
 pub struct PublicLookup {
-    /// `https://www.180.dk` (a test server in tests); `None`: no page lookup.
+    /// `https://www.180.dk` (a test server in tests): Danish numbers; `None`: no page lookup.
     pub base: Option<String>,
+    /// `https://spamcalls.net` (a test server in tests): Italian numbers; `None`: off.
+    pub spamcalls_base: Option<String>,
     /// IPQualityScore's phone API (`IPQS_API_KEY`), when the owner has a key.
     pub ipqs: Option<Ipqs>,
     /// tellows' partner Scorelist for Denmark, refreshed daily ([`refresh_tellows`]).
@@ -505,13 +507,13 @@ const PUBLIC_MAX_BYTES: usize = 2 * 1024 * 1024;
 const USER_AGENT: &str = "Lucina/1.0 (personal caller lookup for one owner)";
 
 /// Reads the number's public page; `None` on any failure or timeout.
-pub async fn fetch_public(p: &PublicLookup, n: &Number, timeout: Duration) -> Option<PublicReport> {
-    let url = caller::url_180(p.base.as_deref()?, n)?;
+/// One page through curl: its HTTP status and body (`None` when curl failed or timed out).
+async fn curl_page(url: &str, timeout: Duration) -> Option<(u16, String)> {
+    const MARK: &str = "\n__lucina_status__";
     let mut cmd = tokio::process::Command::new("curl");
     cmd.args([
         "--silent",
         "--show-error",
-        "--fail",
         "--proto",
         "=https,http",
         "--max-redirs",
@@ -523,8 +525,10 @@ pub async fn fetch_public(p: &PublicLookup, n: &Number, timeout: Duration) -> Op
     .arg(PUBLIC_MAX_BYTES.to_string())
     .arg("--user-agent")
     .arg(USER_AGENT)
+    .arg("--write-out")
+    .arg(format!("{MARK}%{{http_code}}"))
     .arg("--")
-    .arg(&url)
+    .arg(url)
     .stdin(std::process::Stdio::null())
     .kill_on_drop(true);
     let out = match tokio::time::timeout(timeout + Duration::from_millis(200), cmd.output()).await {
@@ -538,7 +542,7 @@ pub async fn fetch_public(p: &PublicLookup, n: &Number, timeout: Duration) -> Op
             return None;
         }
     };
-    if !out.status.success() || out.stdout.len() > PUBLIC_MAX_BYTES {
+    if !out.status.success() || out.stdout.len() > PUBLIC_MAX_BYTES + 64 {
         tracing::info!(
             code = out.status.code(),
             error = %String::from_utf8_lossy(&out.stderr).trim(),
@@ -546,11 +550,46 @@ pub async fn fetch_public(p: &PublicLookup, n: &Number, timeout: Duration) -> Op
         );
         return None;
     }
-    let html = String::from_utf8_lossy(&out.stdout);
-    // Quote the page people can open, not a test server's.
-    let public_url = caller::url_180(PUBLIC_BASE, n).unwrap_or(url);
-    caller::parse_180(&html, &public_url)
+    let text = String::from_utf8_lossy(&out.stdout);
+    let (body, status) = text.rsplit_once(MARK)?;
+    Some((status.trim().parse().ok()?, body.to_owned()))
 }
+
+/// The number's public page: 180.dk for Danish numbers, spamcalls.net for
+/// Italian ones (HTTP 410 there = nobody reported it), nothing for other
+/// countries (owner's choice: Jev only). `None` on any failure or timeout.
+pub async fn fetch_public(p: &PublicLookup, n: &Number, timeout: Duration) -> Option<PublicReport> {
+    match n.country {
+        "DK" => {
+            let url = caller::url_180(p.base.as_deref()?, n)?;
+            let (status, html) = curl_page(&url, timeout).await?;
+            if status != 200 {
+                tracing::info!(status, "180.dk page refused");
+                return None;
+            }
+            // Quote the page people can open, not a test server's.
+            let public_url = caller::url_180(PUBLIC_BASE, n).unwrap_or(url);
+            caller::parse_180(&html, &public_url)
+        }
+        "IT" => {
+            let url = caller::url_spamcalls(p.spamcalls_base.as_deref()?, n)?;
+            let public_url =
+                caller::url_spamcalls(SPAMCALLS_BASE, n).unwrap_or_else(|| url.clone());
+            let (status, html) = curl_page(&url, timeout).await?;
+            match status {
+                200 => caller::parse_spamcalls(&html, &public_url, "IT"),
+                410 => Some(caller::spamcalls_none(&public_url, "IT")),
+                s => {
+                    tracing::info!(status = s, "spamcalls.net page refused");
+                    None
+                }
+            }
+        }
+        _ => None,
+    }
+}
+
+pub const SPAMCALLS_BASE: &str = "https://spamcalls.net";
 
 /// The public report for `n`: the cache when fresh, else the page (cached on success), else a stale cache.
 async fn public_report(
@@ -560,6 +599,9 @@ async fn public_report(
     ringing: bool,
     now: DateTime<Utc>,
 ) -> Option<PublicReport> {
+    if !caller::has_database(n.country) {
+        return None;
+    }
     let fresh = if ringing {
         PUBLIC_FRESH_RINGING
     } else {
@@ -587,6 +629,7 @@ async fn public_report(
 /// IPQS's answer as a report: abuse flags count as a report; the fraud score and
 /// line facts are quoted as the database states them.
 pub fn ipqs_report(v: &Value, n: &Number) -> Option<PublicReport> {
+    let covers = Some(n.country.to_owned()).filter(|c| !c.is_empty());
     if v["success"] != Value::Bool(true) {
         return None;
     }
@@ -619,6 +662,7 @@ pub fn ipqs_report(v: &Value, n: &Number) -> Option<PublicReport> {
         ),
         reports: u32::from(abuse),
         score: fraud.map(|f| format!("fraud {f}/100")),
+        covers,
         operator: v["carrier"]
             .as_str()
             .filter(|c| !c.is_empty() && *c != "N/A")
@@ -688,6 +732,7 @@ pub fn tellows_rows(csv: &str) -> BTreeMap<String, PublicReport> {
             searches: get(searches).parse().unwrap_or(0),
             reports,
             score: Some(format!("{}/9", get(Some(score)))).filter(|s| s != "/9"),
+            covers: Some("DK".into()),
             ..PublicReport::default()
         };
         if let Some(k) = Some(get(kind)).filter(|k| !k.is_empty()) {
@@ -726,6 +771,7 @@ fn tellows_lookup(path: &Path, n: &Number, now: DateTime<Utc>) -> Option<PublicR
     Some(rows.get(&n.e164).cloned().unwrap_or_else(|| PublicReport {
         source: "tellows".into(),
         url: format!("https://www.tellows.dk/num/{}", n.national),
+        covers: Some("DK".into()),
         ..PublicReport::default()
     }))
 }
@@ -780,11 +826,11 @@ async fn database_reports(
     ringing: bool,
     now: DateTime<Utc>,
 ) -> Vec<PublicReport> {
-    let Some(p) = p else {
+    let Some(p) = p.filter(|_| caller::has_database(n.country)) else {
         return Vec::new();
     };
     let mut out = Vec::new();
-    if let Some(path) = &p.tellows_list {
+    if let Some(path) = p.tellows_list.as_ref().filter(|_| n.country == "DK") {
         out.extend(tellows_lookup(path, n, now));
     }
     if let Some(q) = &p.ipqs {
@@ -962,6 +1008,7 @@ impl Tool for CallerScreenTool {
             .as_ref()
             .map(|base| PublicLookup {
                 base: Some(base.clone()),
+                spamcalls_base: Some(SPAMCALLS_BASE.into()),
                 ..PublicLookup::default()
             });
         let r = screen(
@@ -1132,19 +1179,24 @@ mod tests {
             .expect(1)
             .mount(&site)
             .await;
+        // Italian numbers go to spamcalls.net: 410 = nobody reported it.
         Mock::given(method("GET"))
-            .and(path("/nummer/0035794095733"))
-            .respond_with(ResponseTemplate::new(404))
+            .and(path("/en/num/393331740069"))
+            .respond_with(
+                ResponseTemplate::new(410).set_body_string("<title>+ 393331740069</title>"),
+            )
+            .expect(1)
             .mount(&site)
             .await;
         let dir = tempfile::tempdir().unwrap();
         let store = CallerStore::in_data_dir(dir.path());
         let lookup = PublicLookup {
             base: Some(site.uri()),
+            spamcalls_base: Some(site.uri()),
             ..PublicLookup::default()
         };
         let now: DateTime<Utc> = "2026-10-29T12:00:00Z".parse().unwrap();
-        let r = req(&["+45 20 68 27 58", "+357 94 095733"]);
+        let r = req(&["+45 20 68 27 58", "+357 94 095733", "+39 333 174 0069"]);
         let out = screen(&off(), Some(&store), Some(&lookup), &r, now, &|_| {
             Vec::new()
         })
@@ -1169,7 +1221,25 @@ mod tests {
             "{}",
             out.table
         );
+        // Cyprus: no database, no lookup at all (wiremock would refuse an unknown path).
         assert!(out.results[1].known.public.is_none());
+        assert!(
+            out.results[1]
+                .label
+                .ends_with("· no database for this country"),
+            "{}",
+            out.results[1].label
+        );
+        let it = out.results[2]
+            .known
+            .public
+            .as_ref()
+            .expect("spamcalls report");
+        assert_eq!(
+            (it.source.as_str(), it.reports, it.covers.as_deref()),
+            ("spamcalls.net", 0, Some("IT"))
+        );
+        assert_eq!(it.url, "https://spamcalls.net/en/num/393331740069");
         // The second lookup within a day uses the cache (the page is asked for once).
         let again = screen(
             &off(),

@@ -46,6 +46,8 @@ pub fn parse_features(body: &Value, limit: usize) -> Vec<GeoResult> {
             .collect();
             let name = prop(p, "name").or_else(|| parts.first().cloned())?;
             Some(GeoResult {
+                label: None,
+                source: Some("Photon".into()),
                 name: kernel::clip(&name, kernel::TITLE_MAX_CHARS),
                 address: kernel::clip(&parts.join(", "), kernel::ADDRESS_MAX_CHARS),
                 lat: kernel::e7_to_deg(lat_e7),

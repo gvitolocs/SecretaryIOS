@@ -400,6 +400,10 @@ pub struct PublicReport {
     /// Other facts the database states ("line type: VOIP", "recent abuse").
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub flags: Vec<String>,
+    /// The country (ISO) whose numbers this source really covers ("DK" for 180.dk).
+    /// Only a covering source's zero counts as "no reports".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub covers: Option<String>,
 }
 
 impl PublicReport {
@@ -463,6 +467,15 @@ fn fmt_percent(p: f64) -> String {
     }
 }
 
+/// The countries with a report database (owner's choice 2026-10-29: "focus on
+/// dk and ita numbers and others get just jev filter"): Denmark (180.dk, tellows)
+/// and Italy (spamcalls.net). Other numbers: Jev on the number facts only.
+pub const REPORT_COUNTRIES: [&str; 2] = ["DK", "IT"];
+
+pub fn has_database(country: &str) -> bool {
+    REPORT_COUNTRIES.contains(&country)
+}
+
 /// What Lucina knows about one number: facts about the number only.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -493,17 +506,22 @@ impl Known {
         self.public.iter().chain(self.databases.iter()).collect()
     }
 
-    /// At least one source answered and none has a report: the owner's "safe
-    /// indicator" (2026-10-29). Failed or timed-out lookups never count.
-    pub fn no_reports(&self) -> bool {
+    /// The owner's "safe indicator" (2026-10-29): for a country with a report
+    /// database (DK, IT), a source covering that country answered and no
+    /// source has a report. Failed or timed-out lookups never count, and a
+    /// zero from a source that does not cover the country means nothing.
+    pub fn no_reports_in(&self, country: &str) -> bool {
         let c = self.checked();
-        !c.is_empty() && c.iter().all(|r| r.reports == 0)
+        has_database(country)
+            && c.iter().all(|r| r.reports == 0)
+            && c.iter().any(|r| r.covers.as_deref() == Some(country))
     }
 
-    /// "180.dk, tellows".
-    pub fn checked_sources(&self) -> String {
+    /// "180.dk, tellows": the sources covering `country`.
+    pub fn covering_sources(&self, country: &str) -> String {
         self.checked()
             .iter()
+            .filter(|r| r.covers.as_deref() == Some(country))
             .map(|r| r.source.as_str())
             .collect::<Vec<_>>()
             .join(", ")
@@ -584,13 +602,22 @@ pub fn state(n: &Number, ctx: &Context) -> Value {
         .iter()
         .map(|p| format!("{} ({})", p.summary(), p.url))
         .collect();
-    if k.no_reports() {
+    if k.no_reports_in(n.country) {
         public.push(format!(
             "Checked {}: zero reports, not on any spam list.",
-            k.checked_sources()
+            k.covering_sources(n.country)
         ));
     }
-    let public = if public.is_empty() {
+    let public = if !has_database(n.country) {
+        format!(
+            "No report database covers {} numbers: judge from the facts above only.",
+            if n.country_name.is_empty() {
+                "these"
+            } else {
+                n.country_name
+            }
+        )
+    } else if public.is_empty() {
         "No public caller-ID report could be checked.".to_owned()
     } else {
         public.join(" ")
@@ -696,7 +723,16 @@ fn unwanted_share(p: &PublicReport) -> f64 {
         .filter(|c| {
             matches!(
                 c.category.as_str(),
-                "caution" | "annoying" | "robocall" | "telemarketing" | "market research" | "poll"
+                "caution"
+                    | "annoying"
+                    | "robocall"
+                    | "telemarketing"
+                    | "market research"
+                    | "poll"
+                    | "spam"
+                    | "scam"
+                    | "fraud"
+                    | "ping call"
             )
         })
         .map(|c| c.percent)
@@ -741,8 +777,8 @@ pub const NO_REPORTS_PICK_UP_CAP: f64 = 0.95;
 
 /// The owner's rule (2026-10-29): no online reports is a safe indicator. Applied
 /// after Jev, deterministic and bounded; only when a source really answered.
-pub fn no_reports_boost(p: &Probs, k: &Known) -> Probs {
-    if !k.no_reports() || k.contact.is_some() {
+pub fn no_reports_boost(p: &Probs, k: &Known, country: &str) -> Probs {
+    if !k.no_reports_in(country) || k.contact.is_some() {
         return p.clone();
     }
     Probs {
@@ -959,6 +995,7 @@ struct Words {
     reports: &'static str,
     no_reports: &'static str,
     likely_ok: &'static str,
+    no_database: &'static str,
 }
 
 fn words(lang: &str) -> Words {
@@ -982,6 +1019,7 @@ fn words(lang: &str) -> Words {
             reports: "{src}: {n} segnalazioni",
             no_reports: "{src}: nessuna segnalazione",
             likely_ok: "Nessuna segnalazione su {src} → probabilmente ok",
+            no_database: "nessun database per questo paese",
         },
         "da" => Words {
             kinds: ["privatperson", "virksomhed", "telemarketing", "svindel", "ukendt"],
@@ -1002,6 +1040,7 @@ fn words(lang: &str) -> Words {
             reports: "{src}: {n} anmeldelser",
             no_reports: "{src}: ingen anmeldelser",
             likely_ok: "Ingen anmeldelser på {src} → sandsynligvis ok",
+            no_database: "ingen database for dette land",
         },
         _ => Words {
             kinds: ["person", "business", "telemarketing", "scam", "unknown"],
@@ -1022,6 +1061,7 @@ fn words(lang: &str) -> Words {
             reports: "{src}: {n} reports",
             no_reports: "{src}: no reports",
             likely_ok: "No reports in {src} → likely OK",
+            no_database: "no database for this country",
         },
     }
 }
@@ -1098,7 +1138,7 @@ fn unwanted(kind: &str) -> bool {
 pub fn verdict(n: &Number, ctx: &Context, p: &Probs, source: &str, lang: &str) -> Verdict {
     let w = words(lang);
     let k = &ctx.known;
-    let boosted = no_reports_boost(p, k);
+    let boosted = no_reports_boost(p, k, n.country);
     let p = &boosted;
     let (kind, kind_p) = p.top();
     let mut source = source.to_owned();
@@ -1122,13 +1162,21 @@ pub fn verdict(n: &Number, ctx: &Context, p: &Probs, source: &str, lang: &str) -
             format!("{} {} ({})", w.likely, w.spam, p2(p.spam, lang)),
             format!("Spam {:.0}%", p.spam * 100.0),
         )
-    } else if k.no_reports() {
+    } else if k.no_reports_in(n.country) {
         let l = w
             .likely_ok
-            .replace("{src}", &k.checked_sources().replace(", ", "/"));
+            .replace("{src}", &k.covering_sources(n.country).replace(", ", "/"));
         (l, "No reports · OK?".to_owned())
     } else {
         (w.unknown_caller.to_owned(), w.unknown_caller.to_owned())
+    };
+    // Other countries: Jev on the number facts only, and the label says so.
+    let jev_only =
+        n.valid() && !has_database(n.country) && source != "contact" && k.owner_label.is_none();
+    let label = if jev_only {
+        format!("{label} · {}", w.no_database)
+    } else {
+        label
     };
     let mut reasons = Vec::new();
     if n.valid() {
@@ -1140,7 +1188,10 @@ pub fn verdict(n: &Number, ctx: &Context, p: &Probs, source: &str, lang: &str) -
     if k.owner_label.is_some() {
         reasons.push(w.own_label.to_owned());
     }
-    for pr in k.checked() {
+    if jev_only {
+        reasons.push(w.no_database.to_owned());
+    }
+    for pr in k.checked().into_iter().filter(|_| has_database(n.country)) {
         reasons.push(if pr.reports == 0 {
             w.no_reports.replace("{src}", &pr.source)
         } else {
@@ -1464,7 +1515,158 @@ pub fn parse_180(html: &str, url: &str) -> Option<PublicReport> {
         operator: operator.cloned(),
         score: None,
         flags: Vec::new(),
+        covers: Some("DK".into()),
     })
+}
+
+// ---------------------------------------------------------------- spamcalls.net (Italy)
+
+pub const SOURCE_SPAMCALLS: &str = "spamcalls.net";
+
+/// spamcalls.net's page for a number: `/en/num/<digits with country code>`.
+pub fn url_spamcalls(base: &str, n: &Number) -> Option<String> {
+    n.valid().then(|| {
+        format!(
+            "{}/en/num/{}",
+            base.trim_end_matches('/'),
+            n.e164.trim_start_matches('+')
+        )
+    })
+}
+
+/// spamcalls.net answers HTTP 410 for a number nobody reported: that is a
+/// successful lookup with zero reports for the country it covers.
+pub fn spamcalls_none(url: &str, country: &str) -> PublicReport {
+    PublicReport {
+        source: SOURCE_SPAMCALLS.into(),
+        url: url.to_owned(),
+        covers: Some(country.to_owned()),
+        ..PublicReport::default()
+    }
+}
+
+/// Reads a spamcalls.net number page: user reports, spam risk, the category
+/// estimations, lookups and the latest comment. `None` when it is not one.
+pub fn parse_spamcalls(html: &str, url: &str, country: &str) -> Option<PublicReport> {
+    let lines = text_lines(html);
+    let reports_of = |l: &str| -> Option<u32> {
+        let n = l
+            .strip_suffix(" User Reports")
+            .or_else(|| l.strip_suffix(" User Report"))?;
+        count(&n.replace(',', ""))
+    };
+    let reports = lines.iter().find_map(|l| reports_of(l))?;
+    let after = |label: &str| {
+        lines
+            .iter()
+            .position(|l| l == label)
+            .and_then(|i| lines.get(i + 1))
+            .cloned()
+    };
+    let risk = after("Spam-Risk");
+    let latest = after("Latest User Report");
+    let searches = lines.iter().find_map(|l| {
+        let i = l.find("has already been requested ")?;
+        let rest = &l[i + "has already been requested ".len()..];
+        count(&rest.split_whitespace().next()?.replace(',', ""))
+    });
+    let mut categories = Vec::new();
+    if let Some(i) = lines.iter().position(|l| l == "Estimations") {
+        let mut j = i + 1;
+        while j + 2 < lines.len() && reports_of(&lines[j + 1]).is_some() {
+            let name = lines[j].to_lowercase();
+            let pct = lines[j + 2].trim_end_matches('%').trim().replace(',', ".");
+            if let Ok(p) = pct.parse::<f64>() {
+                let name = match name.as_str() {
+                    "probably spam" => "spam".to_owned(),
+                    _ => name,
+                };
+                categories.push(ReportShare {
+                    category: name,
+                    percent: p,
+                });
+            }
+            j += 3;
+        }
+    }
+    let comment = lines
+        .iter()
+        .position(|l| l == "this other report from")
+        .and_then(|i| lines.get(i + 2))
+        .filter(|c| !c.starts_with("Helpful"))
+        .map(|c| match &latest {
+            Some(d) => format!("{d} — {c}"),
+            None => c.clone(),
+        });
+    Some(PublicReport {
+        source: SOURCE_SPAMCALLS.into(),
+        url: url.to_owned(),
+        searches: searches.unwrap_or(0),
+        reports,
+        categories: if reports > 0 { categories } else { Vec::new() },
+        latest_comment: if reports > 0 {
+            comment.map(|c| clip(&c, MAX_COMMENT))
+        } else {
+            None
+        },
+        score: risk.map(|r| format!("spam risk {r}")),
+        covers: Some(country.to_owned()),
+        ..PublicReport::default()
+    })
+}
+
+#[cfg(test)]
+mod tests_spamcalls {
+    use super::*;
+
+    /// The structure of spamcalls.net's page for +390519528114 on 2026-10-29 (text as served, tags reduced).
+    const PAGE: &str = r#"<title>+390519528114 ☎ Who owns +39 051-952-8114 from Italy? | SpamCalls</title>
+<div>+390519528114</div><div>Italy</div><span>people</span><span>9 User Reports</span>
+<span>gpp_maybe</span><span>Spam-Risk</span><b>High</b><span>(9 User Reports)</span>
+<span>Latest User Report</span><span>October 2, 2026 at 12:36 pm</span>
+<h3>Estimations</h3><div>Probably Spam</div><div>4 User Reports</div><div>44 %</div>
+<div>Not specified</div><div>2 User Reports</div><div>22 %</div><div>Other</div><div>1 User Report</div><div>11 %</div>
+<h3>Activity</h3><p>In total, the phone number +39 051-952-8114 has already been requested 1,160 times.</p>
+<p>rate</p><p>this other report from</p><p>Ed naan ?</p><p>Only some foreign voice , but did not answer</p><p>Helpful</p>"#;
+
+    #[test]
+    fn reads_a_reported_italian_number() {
+        let r = parse_spamcalls(PAGE, "u", "IT").unwrap();
+        assert_eq!((r.reports, r.searches), (9, 1160));
+        assert_eq!(r.score.as_deref(), Some("spam risk High"));
+        assert_eq!(r.covers.as_deref(), Some("IT"));
+        let cats: Vec<_> = r
+            .categories
+            .iter()
+            .map(|c| (c.category.as_str(), c.percent))
+            .collect();
+        assert_eq!(
+            cats,
+            vec![("spam", 44.0), ("not specified", 22.0), ("other", 11.0)]
+        );
+        assert_eq!(
+            r.latest_comment.as_deref(),
+            Some("October 2, 2026 at 12:36 pm — Only some foreign voice , but did not answer")
+        );
+        assert!(parse_spamcalls("<title>Oops</title><p>nothing</p>", "u", "IT").is_none());
+        let none = spamcalls_none("u", "IT");
+        assert_eq!((none.reports, none.covers.as_deref()), (0, Some("IT")));
+        assert_eq!(
+            url_spamcalls("https://spamcalls.net/", &parse("+39 333 174 0069")).unwrap(),
+            "https://spamcalls.net/en/num/393331740069"
+        );
+    }
+
+    /// The real page, when saved: `CALLER_SPAMCALLS_PAGE=<file>`.
+    #[test]
+    fn real_page_when_given() {
+        let Ok(f) = std::env::var("CALLER_SPAMCALLS_PAGE") else {
+            return;
+        };
+        let r = parse_spamcalls(&std::fs::read_to_string(f).unwrap(), "u", "IT").unwrap();
+        assert!(r.reports > 0 && r.searches > 0, "{r:?}");
+        eprintln!("{}", r.summary());
+    }
 }
 
 #[cfg(test)]
@@ -1581,14 +1783,31 @@ mod reject_tests {
             url: format!("https://example/{source}"),
             searches: 10,
             reports,
+            covers: Some(
+                if source == SOURCE_SPAMCALLS {
+                    "IT"
+                } else {
+                    "DK"
+                }
+                .into(),
+            ),
             ..PublicReport::default()
+        }
+    }
+
+    /// The page source Lucina reads for a number: 180.dk (Danish numbers) or spamcalls.net (others).
+    fn page_for(raw: &str) -> &'static str {
+        if parse(raw).country == "DK" {
+            "180.dk"
+        } else {
+            SOURCE_SPAMCALLS
         }
     }
 
     /// A verdict from Jev's probabilities (spam, pick-up) and the report facts.
     fn v(raw: &str, spam: f64, pick_up: f64, reports: Option<u32>) -> Verdict {
         let mut ctx = Context::default();
-        ctx.known.public = reports.map(|n| report("180.dk", n));
+        ctx.known.public = reports.map(|n| report(page_for(raw), n));
         let p = Probs {
             spam,
             kinds: KINDS
@@ -1735,6 +1954,62 @@ mod reject_tests {
     }
 
     #[test]
+    fn coverage_decides_what_zero_reports_means() {
+        // The owner's live example: an Italian mobile, no reports on the Italian source.
+        let mut ctx = Context::default();
+        ctx.known.public = Some(report(SOURCE_SPAMCALLS, 0));
+        let mut kinds: BTreeMap<String, f64> =
+            KINDS.iter().map(|(k, _)| ((*k).to_owned(), 0.09)).collect();
+        kinds.insert("person".into(), 0.63);
+        let jev = Probs {
+            spam: 0.28,
+            kinds,
+            pick_up: 0.35,
+        };
+        let x = verdict(&parse("+39 333 174 0069"), &ctx, &jev, "jev", "en");
+        assert_eq!((x.spam, x.pick_up), (0.17, 0.55));
+        assert_eq!(x.label, "Likely person (0.63)");
+        assert!(decide("+39 333 174 0069", &x).is_err());
+        // A 180.dk zero says nothing about an Italian number: no boost.
+        ctx.known.public = Some(report("180.dk", 0));
+        let y = verdict(&parse("+39 333 174 0069"), &ctx, &jev, "jev", "en");
+        assert_eq!((y.spam, y.pick_up), (0.28, 0.35));
+        // Countries without a database: Jev only, and the label says so.
+        for raw in ["+357 94 095733", "+44 7459 508537"] {
+            let z = v(raw, 0.30, 0.50, Some(0));
+            assert_eq!((z.spam, z.pick_up), (0.30, 0.50), "{raw}");
+            assert!(
+                z.label.ends_with(" · no database for this country"),
+                "{}",
+                z.label
+            );
+            assert!(z
+                .reasons
+                .contains(&"no database for this country".to_owned()));
+            let st = state(&parse(raw), &Context::default()).to_string();
+            assert!(st.contains("No report database covers"), "{st}");
+        }
+        let it = v("+357 94 095733", 0.85, 0.3, None);
+        assert_eq!(
+            it.label,
+            "Likely spam (0.85) · no database for this country"
+        );
+        assert!(decide("+357 94 095733", &it).is_ok());
+        let da = verdict(
+            &parse("+44 7459 508537"),
+            &Context::default(),
+            &jev,
+            "jev",
+            "da",
+        );
+        assert!(
+            da.label.ends_with(" · ingen database for dette land"),
+            "{}",
+            da.label
+        );
+    }
+
+    #[test]
     fn zero_reports_is_a_safe_indicator() {
         // A "scam-looking" Italian mobile with zero reports: never rejected at 0.60 / 0.25.
         for (spam, pick) in [(0.65, 0.3), (0.95, 0.2), (0.99, 0.1)] {
@@ -1746,8 +2021,8 @@ mod reject_tests {
                 x.pick_up
             );
             assert!(decide("+39 338 303 7513", &x).is_err());
-            assert_eq!(x.label, "No reports in 180.dk → likely OK");
-            assert!(x.reasons.contains(&"180.dk: no reports".to_owned()));
+            assert_eq!(x.label, "No reports in spamcalls.net → likely OK");
+            assert!(x.reasons.contains(&"spamcalls.net: no reports".to_owned()));
         }
         // A failed lookup is unknown, not safe: no boost.
         let unknown = v("+39 338 303 7513", 0.65, 0.3, None);
@@ -1757,7 +2032,7 @@ mod reject_tests {
         let mut ctx = Context::default();
         ctx.known.public = Some(report("180.dk", 0));
         ctx.known.databases = vec![report("tellows", 4)];
-        assert!(!ctx.known.no_reports());
+        assert!(!ctx.known.no_reports_in("DK"));
         let st = state(&parse("+4520000001"), &ctx).to_string();
         assert!(!st.contains("zero reports"));
         ctx.known.databases = vec![report("tellows", 0)];
@@ -1777,10 +2052,11 @@ mod reject_tests {
             // The same number when the report lookup failed: Jev alone.
             ("+45 20 68 27 58", 0.43, 0.34, None, false),
             ("+45 66 77 87 02", 0.50, 0.32, Some(0), false),
-            // Zero reports on 180.dk: the owner's safe indicator keeps them (spam × 0.6, pick-up + 0.2).
-            ("+357 94 095733", 0.30, 0.50, Some(0), false),
-            ("+357 94 462808", 0.30, 0.47, Some(0), false),
-            ("+44 7459 508537", 0.36, 0.43, Some(0), false),
+            // Cyprus and the UK have no report database: Jev only, no boost.
+            ("+357 94 095733", 0.30, 0.50, None, false),
+            ("+357 94 462808", 0.30, 0.47, None, false),
+            ("+44 7459 508537", 0.36, 0.43, None, false),
+            ("+357 94 095733", 0.85, 0.30, None, true),
         ];
         for (raw, spam, pick, reports, rejected) in cases {
             let x = v(raw, spam, pick, reports);
@@ -1827,6 +2103,7 @@ mod tests {
             operator: None,
             score: None,
             flags: Vec::new(),
+            covers: Some("DK".into()),
         }
     }
 
@@ -1957,16 +2234,16 @@ mod tests {
         let n = parse("+35794095733");
         let p = probs(0.93, "scam", 0.93, 0.04);
         let v = verdict(&n, &ctx(), &p, "jev", "en");
-        assert_eq!(v.label, "Likely scam (0.93)");
+        assert_eq!(v.label, "Likely scam (0.93) · no database for this country");
         assert_eq!(v.short, "Scam 93%");
         assert_eq!(v.source, "jev");
         assert_eq!(
             verdict(&n, &ctx(), &p, "jev", "da").label,
-            "Sandsynligvis svindel (0,93)"
+            "Sandsynligvis svindel (0,93) · ingen database for dette land"
         );
         assert_eq!(
             verdict(&n, &ctx(), &p, "jev", "it").label,
-            "Probabile truffa (0,93)"
+            "Probabile truffa (0,93) · nessun database per questo paese"
         );
 
         let mut r = ctx();
