@@ -453,6 +453,10 @@ async fn route(
     if resource == Some("agentd") {
         return Ok(crate::agentd::forward(method, uri, headers, body).await);
     }
+    // Lucina Notebooks (crate::notebooks): the lucina-notebooks router.
+    if resource == Some("notebooks") {
+        return Ok(crate::notebooks::route(st, method, uri, headers, body).await);
+    }
     // Lucina Prompter's judge (crate::prompter), for lucina-memo's live stream.
     if resource == Some("prompter") {
         return crate::prompter::route(method, &parts[1..], body).await;

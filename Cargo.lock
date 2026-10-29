@@ -2812,6 +2812,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "lucina-notebooks"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "chrono",
+ "futures-util",
+ "http-body-util",
+ "lucina-llm",
+ "pdf-extract",
+ "regex",
+ "reqwest 0.12.28",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tower",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "lucina-ops"
 version = "0.1.0"
 dependencies = [
@@ -2949,6 +2977,7 @@ dependencies = [
  "lucina-memo",
  "lucina-memory",
  "lucina-meshy",
+ "lucina-notebooks",
  "lucina-ops",
  "lucina-phone-core",
  "lucina-prompter",

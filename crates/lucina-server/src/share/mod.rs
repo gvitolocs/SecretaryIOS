@@ -2,7 +2,7 @@
 //! the per-file-type handling behind them (docs/attachments.md). The gateway
 //! authenticates the device; this service authenticates the gateway before
 //! reading a request body.
-mod extract;
+pub(crate) mod extract;
 pub mod guidance;
 pub mod handlers;
 pub mod library;

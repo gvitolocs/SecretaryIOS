@@ -77,7 +77,7 @@ pub(super) fn public_ip(ip: IpAddr) -> bool {
         }
     }
 }
-async fn download(st: &AppState, input: &str) -> anyhow::Result<(Vec<u8>, String)> {
+pub(crate) async fn download(st: &AppState, input: &str) -> anyhow::Result<(Vec<u8>, String)> {
     // `st` only carries the test-only loopback override.
     #[cfg(not(debug_assertions))]
     let _ = st;
@@ -115,7 +115,7 @@ async fn download(st: &AppState, input: &str) -> anyhow::Result<(Vec<u8>, String
     }).await.context("page fetch timed out")?
 }
 
-pub(super) fn html_text(input: &str) -> (String, String) {
+pub(crate) fn html_text(input: &str) -> (String, String) {
     let html = Html::parse_document(input);
     let title = html
         .select(&Selector::parse("title").expect("static selector"))
@@ -163,7 +163,7 @@ pub(super) fn html_text(input: &str) -> (String, String) {
 
 /// Office/ODF text with structure: headings and slide titles on their own
 /// lines. Up to `MAX_TEXT` characters.
-pub(super) fn document(path: &Path) -> anyhow::Result<String> {
+pub(crate) fn document(path: &Path) -> anyhow::Result<String> {
     let mut archive = zip::ZipArchive::new(std::fs::File::open(path)?)?;
     let mut names: Vec<String> = (0..archive.len().min(4096))
         .filter_map(|i| archive.by_index(i).ok().map(|f| f.name().to_owned()))
@@ -268,7 +268,7 @@ pub(super) async fn command(bin: &str, args: &[&str]) -> anyhow::Result<String> 
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
-async fn ocr(path: &Path) -> anyhow::Result<String> {
+pub(crate) async fn ocr(path: &Path) -> anyhow::Result<String> {
     let langs = command("tesseract", &["--list-langs"])
         .await
         .unwrap_or_default();
@@ -377,7 +377,7 @@ async fn image(st: &AppState, path: &Path) -> anyhow::Result<Extracted> {
     }
     Ok(x)
 }
-async fn pdf(st: &AppState, path: &Path) -> anyhow::Result<Extracted> {
+pub(crate) async fn pdf(st: &AppState, path: &Path) -> anyhow::Result<Extracted> {
     let path_owned = path.to_owned();
     let (text, pages, images) = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
         let doc = lopdf::Document::load(&path_owned)?;

@@ -28,6 +28,7 @@ members = [
     "crates/lucina-computer-use",
     "crates/lucina-agents",
     "crates/lucina-agentd",
+    "crates/lucina-notebooks",
     "crates/lucina-tools",
     "crates/lucina-discord",
     "crates/lucina-intent",

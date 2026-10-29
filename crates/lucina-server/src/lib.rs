@@ -36,6 +36,7 @@ pub mod jev_route;
 pub mod jev_yesno;
 pub mod grocery_turn;
 pub mod jobs;
+pub mod notebooks;
 pub mod lan;
 pub mod ops;
 pub mod otp;
@@ -587,6 +588,8 @@ impl AppState {
     /// Background tasks: the grocery deal watch when `GROCERY_OFFER_WATCH_ENABLED=true`,
     /// the reminder scheduler only when `LUCINA_SCHEDULER=true`.
     pub fn spawn_background(&self) {
+        // Notebooks: open the store and resume unfinished ingest, insights and podcasts.
+        crate::notebooks::start(self);
         // A shopping drive that reaches the checkout asks the owner (decision + app notification).
         let st = self.clone();
         lucina_computer_use::jev_drive::set_handover_sink(Arc::new(move |h| {
