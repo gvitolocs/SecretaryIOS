@@ -2,8 +2,9 @@
 //! (secretary-server `/v1/callers/screen` → Lucina's `/api/secretary/callers/screen`).
 //!
 //! Read-only, scope `read`; an agent-scoped token may call it too
-//! (`crate::tools::also_allowed`). Lucina asks Jev (P(spam), who is calling,
-//! P(pick up)) with what she knows; this module checks the arguments and
+//! (`crate::tools::also_allowed`). Lucina reads the public caller-ID page
+//! (180.dk) first, then asks Jev (P(spam), who is calling, P(pick up)) on facts
+//! about the number only; this module checks the arguments and
 //! returns her table, then the raw JSON. It never touches a call.
 
 use reqwest::Method;
@@ -16,7 +17,7 @@ use crate::computer::caller_headers;
 use crate::tools::{ToolError, Tools};
 
 /// Footer of every answer.
-pub const SOURCE: &str = "Source: Jev (TypeSafe) through Lucina, judging from the number's country and line type and what she knows (earlier calls, his messages, his Wolt shift). Not a spam database; show the table as is.";
+pub const SOURCE: &str = "Source: Jev (TypeSafe) through Lucina, from facts about each number only (country, line type, his contacts and calls with it, public caller-ID reports from 180.dk, quoted with their URL). Show the table as is.";
 
 /// Reply language of the labels and the table.
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
