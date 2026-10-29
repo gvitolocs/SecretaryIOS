@@ -91,16 +91,17 @@ pub const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; connect-src 'self
 /// Plus `base-uri 'none'`. Same directives as the standalone `/lucina/`
 /// page in `deploy/Caddyfile.p1`, with embedded font data also admitted (below).
 ///
-/// The in-app maps (MapLibre GL with self-hosted Protomaps tiles, fonts and
-/// sprites under `/v1/maps/*`) need nothing beyond that: tiles, glyphs and
-/// sprites are same-origin fetches, the MapLibre worker is a same-origin
-/// module (`worker-src 'self'`), and its canvas images are `data:`/`blob:`.
-/// No third-party origin is allowed; `font-src data:` admits fonts inlined
-/// into the app's own CSS. The one other origin is Lucina's own home-network
+/// The in-app maps are Google Maps (Maps JavaScript API, with the
+/// referrer-restricted browser key from `/v1/maps/config`): its script, tiles,
+/// map data and Roboto font come from `*.googleapis.com`, `*.gstatic.com`,
+/// `*.google.com` and `*.googleusercontent.com` (Google's documented allowlist,
+/// without `'unsafe-eval'`); those are the only third-party origins.
+/// `font-src data:` admits fonts inlined into the app's own CSS. The one other
+/// origin is Lucina's own home-network
 /// door to the live view (`https://lan.getsecretary.tech:9443`, lucina-server
 /// `lan.rs`): the computer page probes it (`connect-src`) and frames the viewer
 /// from it (`frame-src`) when the owner is at home.
-pub const WEB_CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' data: blob:; connect-src 'self' blob: data: https://lan.getsecretary.tech:9443; frame-src 'self' https://lan.getsecretary.tech:9443; media-src 'self' blob:; worker-src 'self' blob:; manifest-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; frame-ancestors 'none'; base-uri 'none'";
+pub const WEB_CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://*.googleapis.com https://*.gstatic.com https://*.google.com; img-src 'self' data: blob: https://*.googleapis.com https://*.gstatic.com https://*.google.com https://*.googleusercontent.com; connect-src 'self' blob: data: https://lan.getsecretary.tech:9443 https://*.googleapis.com https://*.gstatic.com https://*.google.com; frame-src 'self' https://lan.getsecretary.tech:9443; media-src 'self' blob:; worker-src 'self' blob:; manifest-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; frame-ancestors 'none'; base-uri 'none'";
 
 pub struct Inner {
     pub lucina: Option<LucinaClient>,
