@@ -597,17 +597,6 @@ export function FilmIcon() {
   );
 }
 
-/** Travel modes share the app's inline, stroked icon style. */
-export function RouteModeIcon(props: { mode: "transit" | "walk" | "bike" | "drive" }) {
-  const paths = {
-    transit: "M6 17V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v12H6Zm0-9h12M9 17l-2 4m8-4 2 4M9 13h.01M15 13h.01",
-    walk: "M13 7a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm-2 2 4 4 4 1M11 9l-4 4-3 1m7-5-1 7-4 5m4-5 5 1 2 4",
-    bike: "M7 17a4 4 0 1 0-8 0 4 4 0 0 0 8 0Zm18 0a4 4 0 1 0-8 0 4 4 0 0 0 8 0ZM3 17l5-9 5 9H3Zm10 0 5-11h-4M6 5h4",
-    drive: "M4 10l2-6h12l2 6M4 10h16v9H4v-9Zm3 4h2m6 0h2M6 19v2m12-2v2",
-  };
-  return <svg class="icon" viewBox={props.mode === "bike" ? "-2 0 29 24" : "0 0 24 24"} aria-hidden="true"><path d={paths[props.mode]} /></svg>;
-}
-
 export function FolderIcon() {
   return (
     <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -666,6 +655,17 @@ export function SortIcon() {
       <path d="M7 4v16M3.5 16.5 7 20l3.5-3.5M17 20V4M13.5 7.5 17 4l3.5 3.5" />
     </svg>
   );
+}
+
+/** Travel modes share the app's inline, stroked icon style. */
+export function RouteModeIcon(props: { mode: "transit" | "walk" | "bike" | "drive" }) {
+  const paths = {
+    transit: "M6 17V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v12H6Zm0-9h12M9 17l-2 4m8-4 2 4M9 13h.01M15 13h.01",
+    walk: "M13 7a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm-2 2 4 4 4 1M11 9l-4 4-3 1m7-5-1 7-4 5m4-5 5 1 2 4",
+    bike: "M7 17a4 4 0 1 0-8 0 4 4 0 0 0 8 0Zm18 0a4 4 0 1 0-8 0 4 4 0 0 0 8 0ZM3 17l5-9 5 9H3Zm10 0 5-11h-4M6 5h4",
+    drive: "M4 10l2-6h12l2 6M4 10h16v9H4v-9Zm3 4h2m6 0h2M6 19v2m12-2v2",
+  };
+  return <svg class="icon" viewBox={props.mode === "bike" ? "-2 0 29 24" : "0 0 24 24"} aria-hidden="true"><path d={paths[props.mode]} /></svg>;
 }
 
 export function QrIcon() {

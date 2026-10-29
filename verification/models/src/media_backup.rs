@@ -26,7 +26,7 @@
 //! - `gone_410`: a finish whose spool file is gone answers 410 and the client starts the asset
 //!   again (before: the hash of the missing file failed, 500 on every retry);
 //! - `pause_on_429`: the client waits for the window after a 429 (before: retried at once);
-//! - `recheck_ingest` (proposed, M3): the insert step decides again under the lock, so a
+//! - `recheck_ingest` (M3, fixed in cc5e663): the insert step decides again under the lock, so a
 //!   concurrent finish of the same bytes becomes a duplicate instead of a second item.
 
 use stateright::{Model, Property};
@@ -484,14 +484,14 @@ pub fn cases(deep: bool) -> Vec<Case> {
         ),
         Case::new(
             PROTOCOL,
-            "M current (410 + pause on 429; ingest decides once)",
+            "M before fix M3 (ingest decided once)",
             model(true, true, false),
             None,
             expect(Violated, Holds, Holds),
         ),
         Case::new(
             PROTOCOL,
-            "M + fix M3 (ingest decides again under the lock)",
+            "M current (M3 fixed: ingest decides again under the lock)",
             model(true, true, true),
             None,
             expect(Holds, Holds, Holds),

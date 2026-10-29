@@ -1,0 +1,27 @@
+# Lucina media library (docs/media-library.md). User unit on nezopt:
+#   install -m 0755 target/release/lucina-media ~/.local/bin/
+#   cp deploy/lucina-media.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now lucina-media
+#
+# Public API on the tailnet address only, behind p1 Caddy: ufw does not filter tailnet traffic
+# on nezopt, so every non-token route requires X-Media-Upstream-Key
+# (~/.config/secretary-media/upstream.key, same value as p1 /etc/caddy/media-upstream.key).
+# /internal (voice-memo registration, imports) listens on 127.0.0.1 only.
+[Unit]
+Description=Lucina media library on 100.107.164.33:8830 (internal 127.0.0.1:8830)
+After=network-online.target tailscaled.service
+Conflicts=secretary-media-stream.service
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/lucina-media/env
+ExecStart=%h/.local/bin/lucina-media serve
+Restart=on-failure
+RestartSec=5
+UMask=0077
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+
+[Install]
+WantedBy=default.target

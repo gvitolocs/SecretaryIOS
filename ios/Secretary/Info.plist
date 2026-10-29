@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>tech.getsecretary.app.refresh</string>
+		<string>tech.getsecretary.app.photobackup</string>
+	</array>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>Secretary</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>en</string>
+		<string>it</string>
+		<string>da</string>
+	</array>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>tech.getsecretary.app.widgets</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>secretary</string>
+			</array>
+		</dict>
+	</array>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>INAlternativeAppNames</key>
+	<array>
+		<dict>
+			<key>INAlternativeAppName</key>
+			<string>Lucina</string>
+		</dict>
+	</array>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<key>NSAlarmKitUsageDescription</key>
+	<string>Lucina sets alarms and timers for you when you ask.</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Lucina sees your upcoming events and adds or removes them when you ask.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Lucina mirrors your face or appears in your room when you turn it on, and you can take photos and videos to send her in the chat. Nothing leaves this iPhone unless you send it.</string>
+	<key>NSHealthShareUsageDescription</key>
+	<string>Lucina reads your weight, workouts, steps and sleep so the Weight tab stays complete and she knows how you are doing.</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>Your weigh-ins and gym workouts are saved to Apple Health.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>To notice when you arrive at or leave a place, even when Secretary is closed.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Lucina learns which places you visit, so she can remind you of things where they matter.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Lucina listens when you tap the microphone, so you can talk to her instead of typing, and records your voice memos.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Photos Lucina's chat shows you are saved to your library when you tap Save.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Secretary backs up your photos and videos to your own server and shows them in the Gallery. Nothing is deleted from this iPhone.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Lucina adds, completes and reads your reminders when you ask.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Your words are turned into text so Lucina can answer them.</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
+	<key>NSUserActivityTypes</key>
+	<array>
+		<string>INSendMessageIntent</string>
+	</array>
+	<key>SecretaryAPNsEnabled</key>
+	<false/>
+	<key>SecretaryKeychainGroup</key>
+	<string>$(AppIdentifierPrefix)tech.getsecretary.shared</string>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<false/>
+	</dict>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>fetch</string>
+		<string>audio</string>
+		<string>processing</string>
+	</array>
+	<key>UILaunchScreen</key>
+	<dict>
+		<key>UIColorName</key>
+		<string>AccentColor</string>
+	</dict>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+</dict>
+</plist>

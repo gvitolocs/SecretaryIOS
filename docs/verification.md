@@ -70,7 +70,7 @@ BFS for each counterexample, because Stateright reports the last violating path 
 | 6 | Lucina Ink device sync (outbox, `POST /v1/library/sync`) | `ink_sync.rs` (I1–I7) | `inksync/InkSync.tla` | `library_merge.rs` | `crates/ink-sync` (`outbox.rs`, `client.rs`, `state.rs`, `transport.rs`); `crates/secretary-server/src/library.rs::sync`; `crates/ink-library/src/import.rs::merge` |
 | 7 | Multi-session merge and deploy (`/tmp/lucina-merge.lock`, the shared main checkout, deploys of secretary-server, the web app, lucina-rs) | `deploy.rs` (D1–D5) | `deploy/Deploy.tla` | `deploy_guard.rs` | `tools/deploy-guard`; the merge/deploy steps in each session's runbook (`deploy/README.md`, `deploy/lucina-rs/`) |
 | 8 | Lucina's Pokémon Red: game control (one emulator, macros, pause/play from chat, iPhone, web, viewer) and the planner | `game.rs` (Pk) | `game/GameControl.tla` | `game_planner.rs` (P1–P4) | Lucina repo `rust/lucina-pokemon/src/{main,macros,world,plan}.rs` (branch `lucina-game-link`); `/control` callers: `src/game-bridge.js`, lucina-rs `lucina_intent::game` and `api.rs::game`, secretary-server `/v1/game/*` |
-| 9 | Lucina media library: iPhone photo backup (resumable upload, dedupe, p1 rate limit) | `media_backup.rs` (M) | `media/MediaBackup.tla` | `media_upload.rs` | `crates/lucina-media/src/{protocol,http,ingest}.rs`, `ios/Secretary/Features/Gallery/PhotoBackup.swift` (branch `media-library`, merged in `ios-app`); p1 Caddy `@media_upload` (forward_auth, 60/min per device) |
+| 9 | Lucina media library: iPhone photo backup (resumable upload, dedupe, p1 rate limit) | `media_backup.rs` (M) | `media/MediaBackup.tla` | `media_upload.rs` | `crates/lucina-media/src/{protocol,http,ingest}.rs`, `ios/Secretary/Features/Gallery/PhotoBackup.swift`; p1 Caddy `@media_upload` (forward_auth, 60/min per device) |
 | 10 | Voice memos: recorder + Live Activity, upload queue, pipeline, GPU lease, speaker labels, vault, notifications | `memos.rs` (V) | `memos/Memos.tla` | `memo_kernel.rs` (K1–K7, K11) | `crates/lucina-memo` (`kernel.rs`, `worker.rs`, `store.rs`, `notify.rs`; branch `lucina-rs`), `tests/upload_model.rs` (upload protocol, Stateright); iOS `Features/Memos/*` (`MemoRecorder`, `MemoUploadQueue.recoverOrphans`, `MemoOnDeviceTranscriber`; branch `ios-app`) |
 | 11 | Media player resume positions across devices (iPhone, web, Mac) and the server | `player.rs` (`ResumeSync`) | `player/ResumeSync.tla` | `player_kernels.rs` MP1–MP5 | `crates/secretary-player/src/{progress,prefs}.rs` (every device: iOS through `secretary-ffi`, web through `crates/secretary-player-wasm`); server `crates/secretary-media-stream/src/{progress,token}.rs` (branch `media-player`, mounted by `lucina-media`) |
 | 12 | Share to Lucina (`POST /v1/share`: clients, voice notes, gateway, receive, recovery, processing, chat bubble) | `share.rs` (SH) | `share/Share.tla` | `share_kernels.rs` SK1, SK4; `share_reconcile.rs` SK2, SK3 | `lucina-server/src/share/{mod.rs,router.rs}`, `lucina-store/src/timeline.rs::normalize` (branch `lucina-rs`); voice notes: `share/{mod.rs,router.rs,extract.rs}`, `chat.rs` (`ShareTurn`, `tools_turn`), `timeline.rs::valid_waveform` (branch `voice-notes`, 438d748); p1 Caddy `@share` (forward_auth + `X-Share-Gateway`); iOS `ios/Extensions/ShareShared/*`, `Features/Share/ShareUploads.swift`, `Features/Chat/{ChatShares,Timeline}.swift` (`ios-app`); Android `android/secretary/src/Share{Activity,JobService}.kt`, `crates/lucina-android-calls/src/share.rs` (`lucina-rs`); web `web/src/state/chat.ts` |
@@ -79,6 +79,8 @@ BFS for each counterexample, because Stateright reports the last violating path 
 | 15 | In-app maps (place blocks, the map server: tiles, assets, geocoder, routes) | – | – | `map_kernels.rs` (MK1–MK7) | `crates/secretary-maps/src/{kernel,lib,geocode,routes,provider,cache}.rs` (reference `normalize_place`; lucina-rs and the web app mirror it), `deploy/secretary-maps.service`; differential test `crates/secretary-maps/tests/kernel_model.rs` |
 | 16 | Meetings: Mac recorder upload (create, resumable tracks, complete), meetings pipeline (Whisper per track, diarization, voice profiles, roles/kinds, brief, archive, note, memory, notification, voice question) | `meetings.rs` (MT) | `meetings/Meetings.tla` | `meeting_kernel.rs` (MT1–MT8) | `crates/lucina-memo/src/meetings/{kernel,store,api,worker,publish,timeline}.rs`, `src/diarize/profiles.rs` (branch `meetings-local`); differential test `tests/verus_meeting_kernel.rs`; Mac uploader `SecretaryCode/packages/desktop/src/main/secretary/recorder/uploader.ts` |
 | 17 | Node retirement: Rust owns Telegram, Discord and reminders (no Node change) | `retirement.rs` (R1–R5) | `retirement/{Reminders,Delivery,Telegram,Updates,Discord}.tla` | `retirement_kernels.rs` | `lucina-telegram/src/{outcome,lease_decision,lease,lib}.rs`, `lucina-store/src/reminders.rs::process_due`, `lucina-server/src/reminder_delivery.rs` (branch `lucina-rs`; checked at 3c22447), `lucina-telegram/src/{claim,poller}.rs`, `lucina-server/src/delivery_monitor.rs::step` (f26eb90, NR4 fix 5c87ae0; Verus `delivery_monitor.rs`), `lucina-discord/src/lease.rs` (290b946), `deploy/lucina-rs/*`; Node `Lucina/src/gateway-lock.js`, `index.js` (68b38dc), telegraf 4.16.3 |
+| 18 | Lucina Drive: the folder index (every file of the Drive folders indexed in place; scans racing unmounts, deletes and edits; dedupe of a phone copy against a Drive file; the gallery/films/drive split; path guards; the thermal pause) | `drive_index.rs` (DI) | `drive/DriveIndex.tla` | `drive_kernels.rs` DK1–DK5 | `crates/lucina-media/src/{drive,drive_kernel,drive_kernel_shared,extract,ingest,db,http}.rs` (branch `cloud/drive-all-files` from `media-instant`) |
+| 19 | Album share links (`/v1/media/a/{token}`: the only part of the library reachable from the internet without the upstream key) | – (a per-request check, no protocol between processes) | – | `album_share.rs` AS1 | `crates/lucina-media/src/{share,share_kernel_shared,share_http}.rs` |
 
 Other Verus files in `verification/verus/` include `body_kernel.rs`, `gym_kernel.rs`, `gym_lifecycle.rs` and
 `sync_kernel.rs`. Branch `verus-proofs` adds `avatar_validation.rs`, `notes_kernel.rs`, `secrets_redactor.rs` and the
@@ -188,6 +190,10 @@ files named in the table. `verify.sh` runs every top-level `verification/verus/*
 | G3 Node and Rust both running (rule witness) | 1 969 101 | 29 | the four **violated** |
 | G4 current, no server dedup | 1 215 167 | 29 | the four **violated** |
 | G5 fixes, no server dedup | 1 188 512 | 33 | `no_repeat`, `one_digest_per_day`, `silent_when_unchanged` **violated** |
+| DI current (DK3 upgrade, DK4 with the filesystem check) | 9 090 | 22 | all hold (+ prune, stray, walk-error, upgrade witnesses); `--deep` 22 284, depth 28 |
+| DI ablation: DK4 without the filesystem check | 10 296 | 22 | `unmount_never_trashes` **violated** (a stray file in the empty mountpoint) |
+| DI ablation: trash whatever the walk did not see | 15 768 | 22 | `unmount_never_trashes` **violated** (an unmount mid-scan) |
+| DI before DK3 (a phone copy of Drive bytes was dropped) | 9 090 | 22 | `phone_original_kept` **violated** |
 | R1–R5 (protocol 17, 21 cases) | 26 – 4 186 | ≤ 20 | see §17 |
 
 TLC, default cfgs: from 20 to 82 317 distinct states per cfg (`Timeline_fixed`: 82 317, `Cutover_fixed`: 13 605,
@@ -197,7 +203,7 @@ property `EventuallyAllApplied` under weak fairness); `InkSync_highlights_deep` 
 bounds): 501 634, the same space as I2 (about 5 min); `InkSync_status_deep` (the I1 bounds, with liveness):
 1 715 162 (about 20 min; TLC's state differs from Stateright's in ghost variables, hence the different count).
 `GameControl_fixed`: 11 208; `GameControl_current_driver` (one driver in the current code): 116 344.
-`MediaBackup_current`: 3 019 895 and `MediaBackup_fixed`: 2 000 522, the same spaces as the Stateright M cases;
+`MediaBackup_fixed` (the current code): 2 000 522, the same space as the Stateright `M current` case;
 `MediaBackup_fixed_deep` (`--deep`, the deep M bounds): 8 518 209, the same space as the deep Stateright case (about 80 s).
 1 715 162 (about 20 min; TLC's state differs from Stateright's in ghost variables, hence the different count). `Memos_fixed`: 26 874, the same space as Stateright's M + fixes.
 `OtpForwarding`: 950 738, `OtpForwarding_owner`: 1 877 816, `OtpForwarding_restart`: 1 017 387 (the failed
@@ -206,6 +212,13 @@ bounds): 501 634, the same space as I2 (about 5 min); `InkSync_status_deep` (the
 `formal/deals/`: `DealWatch_fixed` 1 149 598, `DealWatch_cutover_fixed` 958 309 and `DealWatch_current_nofaults` 138 980
 distinct states (the same counts as Stateright G1 + fixes, G2 + fixes and G0), each under 10 s; the `MUST FAIL` cfgs stop
 at their first violation.
+
+`formal/drive/`: `DriveIndex_fixed` (MUST PASS), `DriveIndex_fixed_deep` (`--deep`), three `MUST FAIL` bug cfgs
+(`nofs_bug`, `noguard_bug`, `dedupe_bug`, the Stateright ablations) and four witnesses (pruned, stray, walk error,
+upgrade). First `verify-gate` run on nezopt (2026-10-26): `DriveIndex_fixed` 9 090 distinct states (the same as
+Stateright DI current); `dedupe_bug` 62 (`PhoneOriginalKept` violated), `nofs_bug` 885 and `noguard_bug` 521
+(`UnmountNeverTrashes` violated); witnesses pruned 924, stray 570, upgraded 15, walk error 251; each under 2 s.
+`DriveIndex_fixed_deep` not run.
 
 ## Invariants, models and mapping
 
@@ -1205,6 +1218,43 @@ Default Stateright results (all 21 cases meet their expectations; the TLC twins 
 TLC (`formal/retirement/`): `Reminders` 1 229, `Reminders_rollback_safety` 1 648 (NR3 keeps the safety invariants),
 `Delivery` 46 and `Delivery_fail_known` 36 (both with `<>Finished` under weak fairness), `Telegram` 1 250,
 `Updates` 70, `Discord` 26 distinct states, each under 2 s; 18 `*_witness.cfg` and 15 `*_bug.cfg` fail as required.
+### 18. Lucina Drive: the folder index
+
+The Drive (`docs/media-library.md`, "The Drive") indexes every regular file of the Drive folders
+(`LUCINA_MEDIA_FOLDERS` minus the film folders) in place. Every 30 minutes a scan walks a folder
+(`drive::index_drive_folder`: junk and symlinks skipped, an unchanged file costs one lookup, a new or changed one is
+hashed and registered with its path), then trashes, in the catalog only, the rows of files it did not see. The big
+disk can be unmounted at any time; an unmounted mountpoint is an empty directory on the NVMe's filesystem, where
+anything can write a stray file. A phone can upload the same bytes as a Drive file.
+
+Invariants (Stateright name / TLA+ name):
+
+- `unmount_never_trashes` / `UnmountNeverTrashes`: a scan never trashes the row of a file that stayed on the disk
+  through the scan (an unmount, an empty mountpoint or a stray file in it never empties the Drive).
+- `phone_original_kept` / `PhoneOriginalKept`: a phone's upload always has its bytes: owned by the library, or still in
+  the Drive file whose bytes they matched.
+- `owned_never_downgraded` / `OwnedNeverDowngraded`: once the library owns a copy of some bytes it keeps owning it.
+
+Witnesses (`sometimes` / `DriveIndex_witness_*.cfg`): `pruned_a_deleted_file`, `stray_file_seen`, `walk_error`,
+`dedupe_upgraded`.
+
+Verus (`drive_kernels.rs`, the same bodies the server compiles from `drive_kernel_shared.rs`):
+DK1 `segment_ok` accepts only Normal segments, and a root joined with Normal segments never climbs out of it, while
+one `..` can (`safe_rel` / `join_under` split on `/` and require every segment to pass, so `browse?path=`, catalog
+paths and the walk's paths all stay inside the folder); DK2 `scope_of` / `in_scope` (its `phone` input is "came from a device" since 2026-10-27: `db::FROM_DEVICE`, a phone source or a `device` set) partition the library into
+gallery, films and drive (`db::scope_condition` is that predicate in SQL; `tests/drive.rs::scope_sql_matches_the_kernel`
+checks all four combinations through the API); DK3 `blob_action`; DK4 `may_prune` / `may_adopt_fs`; DK5
+`drive_may_work` (Tctl at or above `LUCINA_MEDIA_DRIVE_MAX_TEMP`, 90 °C, or the load limit pauses the hashing, text
+extraction, PDF pages and Office conversion). Verus on nezopt (2026-10-26, through `verify-gate`): 15 verified, 0 errors.
+
+| Model action | Code |
+|---|---|
+| `StartScan` | `drive::index_drive_folder`: `root.is_dir()`, the folder's `st_dev` against `drive_folders.dev` (`same_fs`) |
+| `Visit` | the `walkdir` loop: `entry.metadata()` (an error counts in `errors`), `index_one` → `ingest::register_external` + the `drive_files` row |
+| `Finish` | `may_adopt_fs` → `drive_folders.dev`; `may_prune` → `drive::prune` (items `trashed_at`, `drive_files` and `drive_fts` rows; never a file) |
+| `Unmount`, `Mount`, `StrayWrite` | mybook unmounted or back; something writing into `~/mnt/mybook/…` while it is away |
+| `Delete`, `Edit` | the owner deletes or edits a Drive file (an edit is a new mtime: re-hashed at the next visit) |
+| `PhoneUpload` | `ingest::ingest_file` → `keep_owned_bytes` (DK3) under the catalog lock |
 
 ## Bugs found
 
@@ -1515,11 +1565,11 @@ Found live (a 429 storm against p1's 60/min, which the gallery's tiles also spen
 play tokens so tiles no longer spend the device's requests. Verus (e) proves the decision and the 48-per-minute
 budget.
 
-### M3: two finishes of the same bytes can both create an item (low; found by the model)
+### M3: two finishes of the same bytes could both create an item (low; found by the model). **Fixed.**
 
 `ingest::ingest_file` reads `known_for` (by hash, by asset) under one catalog lock, then moves the file into the
 store (`place_new`, a durable copy to the big disk: seconds for a video) and runs `insert_item` under the lock
-again. Two finishes of the same bytes in that window both decide New. Shortest trace (`M current`):
+again. Two finishes of the same bytes in that window both decide New. Shortest trace (`M before fix M3`):
 
 ```
 Request(0, Ok) x3      device 0: create, put, finish photo 0 (decide: unknown bytes → New)
@@ -1530,10 +1580,36 @@ FinishStep(1)          insert item B, the same hash: the photo shows twice
 
 The two finishes can come from two devices or from a phone upload racing a Lucina ingest (`/internal/v1/ingest`:
 a Telegram or share-sheet attachment) of the same picture. There is no unique index on `items.hash` (an edit can
-legitimately bring two items to the same bytes), so nothing catches it. Proposed fix, modelled as `M + fix M3`
-(all hold): decide again inside `insert_item`'s transaction, and turn the insert into a duplicate when an item with
-this hash appeared meanwhile (the `by_asset` branch already has the unique `items_asset` index behind it). Not
-changed here: it is a lucina-media change with a deploy, outside this verification pass.
+legitimately bring two items to the same bytes), so nothing catches it.
+
+Fixed in cc5e663 (modelled as `M current`, all hold): `insert_new_or_duplicate` looks for an item with this hash
+again in the same `Db::with` as the insert and turns the insert into a duplicate of that item when one appeared
+meanwhile (recording the phone asset on it, as the Duplicate branch does). Regression tests in `ingest.rs`: the
+decided-then-raced insert, and two threads ingesting the same new bytes 20 times, which fails 3 runs out of 3 on
+the old code.
+
+### DI1: a phone copy of bytes a Drive file held was dropped (low-medium). **Fixed.**
+
+`ingest::ingest_file` removed the uploaded file whenever a `blobs` row existed for its hash, also when that row only
+referenced a file in place (a folder file, a voice memo). The phone's item then depended on a Drive file the owner
+can move, edit or delete; the phone itself never deletes, but the owner may, trusting the backup. The folder
+indexer already saw the owner's computer photo backups, so this was reachable before the Drive indexed everything.
+Shortest trace (`DI before DK3`): `Delete(0)`, `PhoneUpload` (the bytes are gone from the disk; the upload is dropped
+because the row exists). Fixed by DK3 (`keep_owned_bytes`): an in-place row is upgraded to the phone's owned copy;
+`tests/drive.rs::a_phone_copy_of_a_drive_file_is_owned_by_the_library`.
+
+### DI2: an empty mountpoint with a stray file would have emptied the Drive (medium; found by the model before release). **Fixed.**
+
+The first prune guard (an existing folder, a clean walk, at least one file seen) let a scan of the unmounted
+mountpoint with one stray file in it trash every real row. Trace (`DI ablation: DK4 without the filesystem check`):
+`Unmount`, `StartScan`, `Visit`, `Visit`, `StrayWrite`, `Visit`, `Finish`. Fixed before merge: each folder's `st_dev`
+is recorded (`drive_folders`), pruning needs the same filesystem, and a new filesystem is adopted only by a clean walk
+that sees every known file (`may_adopt_fs`); `drive.rs::prune_only_after_a_clean_full_scan`.
+
+### DI3: a phone backup filed in a film album was in both the Gallery and Films (low). **Fixed.**
+
+`scope=films` was "in a film album", without "not a phone backup", so the scopes overlapped. Now DK2 is a partition
+(phone backups are the Gallery).
 ### B1: a crash after the vault copy, then a rename, makes a second note (low). **Fixed.**
 
 The worker recorded the note's path only after the rsync. If it crashed in between and the owner renamed the memo
@@ -1806,6 +1882,10 @@ Node change this cannot be closed; the rollback runbook should say so and run wh
   cooldown (10 min) is not modelled (a retry may come at any later time). Item names, body length and the five-item
   limit are not modelled (the real-code tests keep `compose` exact). The server keeps every dedup key (true for a few
   watch messages: 4096 LRU keys, 500 inbox items, no deletions).
+- **Drive index.** Two Drive files and a stray position; the folder is the disk's mountpoint (the harder case: a
+  Drive folder below it simply disappears when the disk does, and `root_ok` is false). A file read by path while its
+  filesystem is gone is an error (Linux: `metadata` fails); a scan started on the empty mountpoint sees only what is
+  there. blake3 collisions are ignored; the text index and the worker are not in the model (they only add rows).
 - **Node retirement.** One Rust crash per model; operator steps are atomic restarts. R3 has three Telegram ticks
   of 30 s and one boot (the Verus lease kernel covers boot ids and exact times); R4 has two queued updates and no
   new arrivals; the Discord presence watcher (a separate read-only session) is out of scope.
