@@ -607,7 +607,12 @@ async fn public_report(
     } else {
         PUBLIC_FRESH
     };
-    if let Some(r) = store.and_then(|s| s.public(&n.e164, now, fresh)) {
+    let cached = |max_age| {
+        store
+            .and_then(|s| s.public(&n.e164, now, max_age))
+            .and_then(|r| current_source(r, n))
+    };
+    if let Some(r) = cached(fresh) {
         return Some(r);
     }
     let timeout = if ringing {
@@ -622,8 +627,26 @@ async fn public_report(
             }
             Some(r)
         }
-        None => store.and_then(|s| s.public(&n.e164, now, Duration::MAX)),
+        None => cached(Duration::MAX),
     }
+}
+
+/// A cached page counts only when it came from the source for the number's
+/// country (an Italian number once read on 180.dk is read again on
+/// spamcalls.net); 180.dk pages cached before `covers` existed cover Denmark.
+fn current_source(mut r: PublicReport, n: &Number) -> Option<PublicReport> {
+    let expected = match n.country {
+        "DK" => caller::SOURCE_180,
+        "IT" => caller::SOURCE_SPAMCALLS,
+        _ => return None,
+    };
+    if r.source != expected {
+        return None;
+    }
+    if r.covers.is_none() && r.source == caller::SOURCE_180 {
+        r.covers = Some("DK".into());
+    }
+    Some(r)
 }
 
 /// IPQS's answer as a report: abuse flags count as a report; the fraud score and
@@ -1357,6 +1380,21 @@ mod tests {
         assert_eq!(store.digest_sent(), None);
         store.set_digest_sent("2026-10-29");
         assert_eq!(store.digest_sent().as_deref(), Some("2026-10-29"));
+    }
+
+    #[test]
+    fn cached_pages_must_come_from_the_country_s_source() {
+        let old_180 = PublicReport {
+            source: caller::SOURCE_180.into(),
+            url: "u".into(),
+            ..PublicReport::default()
+        };
+        let dk = current_source(old_180.clone(), &caller::parse("+4566778702")).unwrap();
+        assert_eq!(dk.covers.as_deref(), Some("DK"));
+        assert!(current_source(old_180, &caller::parse("+393383037513")).is_none());
+        let sc = caller::spamcalls_none("u", "IT");
+        assert!(current_source(sc.clone(), &caller::parse("+393383037513")).is_some());
+        assert!(current_source(sc, &caller::parse("+35794095733")).is_none());
     }
 
     #[test]
