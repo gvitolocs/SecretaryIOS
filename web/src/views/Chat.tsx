@@ -403,6 +403,24 @@ export function SourceBadge(props: { message: ChatMessage }) {
   );
 }
 
+/** "Jev · 93% · 412 ms": a reply Jev decided (meta.jev), with its certainty and latency. */
+export function JevBadge(props: { jev: NonNullable<ChatMessage["meta"]>["jev"] }) {
+  const parts = () => {
+    const j = props.jev;
+    if (!j) return [];
+    const out = ["Jev"];
+    if (typeof j.p === "number" && (j.answer === "yes" || j.answer === "no")) out.push(`${Math.round(j.p * 100)}%`);
+    if (typeof j.ms === "number") out.push(`${j.ms} ms`);
+    return out;
+  };
+  return (
+    <span class="jev-badge" title={t("chat.jevBadge")} data-answer={props.jev?.answer}>
+      <span class="sr-only">{t("chat.jevBadge")}: </span>
+      {parts().join(" · ")}
+    </span>
+  );
+}
+
 export { Attachments };
 
 export function MessageItem(props: { message: ChatMessage; focused?: boolean; inferredChoice?: string; readOnly?: boolean }) {
@@ -514,6 +532,7 @@ export function MessageItem(props: { message: ChatMessage; focused?: boolean; in
       <Show when={props.message.job}>{(job) => <JobCard job={job()} />}</Show>
       <div class="msg-info">
         <SourceBadge message={props.message} />
+        <Show when={!isUser() && props.message.meta?.jev}>{(j) => <JevBadge jev={j()} />}</Show>
         <Show when={props.message.backfilled}>
           <span class="msg-imported">{t("chat.imported")}</span>
         </Show>

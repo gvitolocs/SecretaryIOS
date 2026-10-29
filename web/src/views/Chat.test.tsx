@@ -324,6 +324,25 @@ describe("Chat", () => {
     expect(screen.getByText("From Alexa").closest(".msg")!.textContent).not.toContain("Imported from history");
   });
 
+  it("shows the Jev badge with certainty and latency on a reply Jev decided", async () => {
+    const now = new Date().toISOString();
+    const items = [
+      { id: "j1", ts: now, channel: "web", role: "user", text: "Ho palestra oggi?" },
+      { id: "j2", ts: now, channel: "web", role: "lucina", text: "Sì (93%, quasi sicuro). Oggi alle 17:00 hai Palestra.",
+        meta: { jev: { feature: "yesno", answer: "yes", p: 0.93, ms: 412, totalMs: 1300 } } },
+      { id: "j3", ts: now, channel: "web", role: "lucina", text: "Plain reply",
+        meta: { jev: { feature: "<b>", p: 7 } } },
+    ];
+    serve(() => ({ status: 404 }), () => ({ body: { items, nextBefore: null } }));
+    render(() => <ChatView />);
+    const msg = (await screen.findByText(/Oggi alle 17:00 hai Palestra/)).closest(".msg")!;
+    const badge = msg.querySelector(".jev-badge")!;
+    expect(badge.textContent).toContain("Jev · 93% · 412 ms");
+    expect(badge).toHaveAttribute("data-answer", "yes");
+    expect(screen.getByText("Plain reply").closest(".msg")!.querySelector(".jev-badge")).toBeNull();
+    expect(screen.getByText("Ho palestra oggi?").closest(".msg")!.querySelector(".jev-badge")).toBeNull();
+  });
+
   it("separates days and reveals a message's time on tap", async () => {
     serve(() => ({ status: 404 }), () => ({ body: { items: MIXED, nextBefore: null } }));
     render(() => <ChatView />);

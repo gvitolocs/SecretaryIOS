@@ -2223,6 +2223,21 @@ select.text-input option {
   font-style: italic;
 }
 
+/* A reply Jev decided (yes/no answers): certainty and latency, like the source badge. */
+.jev-badge {
+  --ch: var(--violet);
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--ch) 32%, transparent);
+  background: color-mix(in srgb, var(--ch) 10%, transparent);
+  color: color-mix(in srgb, var(--ch) 80%, var(--text));
+  font-family: var(--mono);
+  font-size: 0.625rem;
+  white-space: nowrap;
+}
+
 .msg-time {
   opacity: 0;
   font-family: var(--mono);

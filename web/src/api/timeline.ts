@@ -61,6 +61,33 @@ export interface ItemMeta {
   /** With kind "share": the POST /v1/share idempotency key and the quick action. */
   shareId?: string;
   intent?: string;
+  /** A reply Jev decided (Lucina's yes/no answers): the bubble shows a badge with the latency. */
+  jev?: JevBadge;
+}
+
+export interface JevBadge {
+  /** "yesno". */
+  feature: string;
+  /** "yes" | "no" | "unsure" | "hedge". */
+  answer?: string;
+  /** Certainty of the answer, 0..1. */
+  p?: number;
+  /** Jev's own milliseconds. */
+  ms?: number;
+}
+
+export function parseJevBadge(v: unknown): JevBadge | undefined {
+  if (!v || typeof v !== "object") return undefined;
+  const m = v as Record<string, unknown>;
+  const word = (x: unknown) => (typeof x === "string" && /^[a-z0-9_.-]{1,32}$/i.test(x) ? x : undefined);
+  const feature = word(m.feature);
+  if (!feature) return undefined;
+  const out: JevBadge = { feature };
+  const answer = word(m.answer);
+  if (answer) out.answer = answer;
+  if (typeof m.p === "number" && m.p >= 0 && m.p <= 1) out.p = m.p;
+  if (typeof m.ms === "number" && Number.isFinite(m.ms) && m.ms >= 0 && m.ms < 600_000) out.ms = Math.round(m.ms);
+  return out;
 }
 
 export type ProactivePriority = "low" | "normal" | "high";
@@ -214,6 +241,8 @@ function parseMeta(v: unknown): ItemMeta | undefined {
     if (typeof m.shareId === "string" && /^[A-Za-z0-9-]{8,64}$/.test(m.shareId)) out.shareId = m.shareId;
     if (typeof m.intent === "string" && /^[a-z]{1,16}$/.test(m.intent)) out.intent = m.intent;
   }
+  const jev = parseJevBadge(m.jev);
+  if (jev) out.jev = jev;
   if (m.format === "v1") {
     const blocks = parseModel3dBlocks(m.blocks);
     if (blocks.length) out.blocks = blocks;
