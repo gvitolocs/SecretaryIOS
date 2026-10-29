@@ -71,6 +71,8 @@ export interface Proposal {
   id: string;
   event: ProposedEvent;
   from: string;
+  /** Why it is a proposal: Lucina's direct create for the owner failed. */
+  reason?: string;
   createdAt: string;
   expiresAtMs: number;
 }

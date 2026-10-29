@@ -167,16 +167,21 @@ pub struct IphoneCache {
     pub items: Vec<Item>,
 }
 
-/// An event proposed by a client that may not write (the Lucina MCP),
-/// waiting for the owner's confirmation in the app.
+/// An event proposed by a client that may not write (the Lucina MCP, an
+/// agent), or one Lucina could not create directly for the owner, waiting for
+/// the owner's confirmation in the app.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Proposal {
     pub id: String,
     /// What would be sent to `POST /v1/calendar/events`.
     pub event: Value,
-    /// Who proposed it (`mcp:claude-code`, …).
+    /// Who proposed it (`mcp:claude-code`, `lucina:ios`, …).
     pub from: String,
+    /// Why it is a proposal and not an event (Lucina's direct create failed:
+    /// "Google Calendar needs reconnecting", …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
     pub created_at: String,
     pub expires_at_ms: i64,
 }

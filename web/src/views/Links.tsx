@@ -583,6 +583,7 @@ function ProposalRow(props: { p: Proposal; onDone: (msg: string | null) => void;
           <Show when={props.p.event.location}>{(l) => ` · ${l()}`}</Show>
         </span>
         <span class="muted small">{t("links.proposalFrom", { from: props.p.from })}</span>
+        <Show when={props.p.reason}>{(r) => <span class="muted small">{r()}</span>}</Show>
       </div>
       <div class="link-actions">
         <button type="button" class="btn btn--small btn--primary" disabled={pending()} onClick={() => void run(true)}>
