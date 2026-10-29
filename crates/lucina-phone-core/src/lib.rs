@@ -9,10 +9,13 @@
 //! - [`intent`]: the owner asking for a code (`/otp`, "what's my OTP").
 //! - [`proto`]: relay request/response bodies and their validation.
 //! - [`reply`]: the owner-facing replies, so every surface says the same.
+//! - [`caller`]: screening unknown callers with Jev (number parsing, the
+//!   state and questions, labels, fallback rules, the table).
 //!
 //! Codes are secrets with a two-minute life: never log them, never put them in
 //! model context, deliver them once to the owner's private chat.
 
+pub mod caller;
 pub mod intent;
 pub mod otp;
 pub mod proto;
