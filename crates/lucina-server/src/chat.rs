@@ -1041,6 +1041,7 @@ fn calendar_finish(o: crate::bridges::Outcome) -> Finish {
     let mut f = Finish::reply(o.reply, &o.action).with(o.action_result, o.meta);
     f.calendar_events = o.events;
     f.agenda = o.agenda;
+    f.routes = o.routes;
     f
 }
 
@@ -1764,14 +1765,24 @@ async fn json_turn_rest(
         }
     }
 
-    // Calendar questions and confirmed event creation (LUCINA_CALENDAR=true).
+    // Calendar questions and event creation (LUCINA_CALENDAR=true): the owner's own message
+    // creates the event at once (with an Undo), one of his MCP clients files a proposal.
     if st.cfg.calendar_enabled {
+        let caller = match &t.mcp {
+            _ if t.guarded => crate::bridges::CalendarCaller::Guarded,
+            Some(m) => crate::bridges::CalendarCaller::Client {
+                from: format!("mcp:{}", m.caller),
+            },
+            None => crate::bridges::CalendarCaller::Owner {
+                channel: t.channel.clone(),
+            },
+        };
         match crate::bridges::calendar_turn(
             &st.secretary,
             &st.bridge_state,
             &t.message,
             &t.session,
-            t.guarded,
+            &caller,
             Utc::now(),
             st.cfg.time_zone,
         )
@@ -2720,6 +2731,12 @@ fn effects_to_finish(effects: &[Effect], reply: String) -> Finish {
         })
         .cloned()
         .collect();
+    if effects
+        .iter()
+        .any(|e| matches!(e, Effect::CalendarCreated { .. }))
+    {
+        f.routes.push(crate::bridges::undo_action(lang));
+    }
     if let Some((reminder, created)) = effects.iter().rev().find_map(|e| match e {
         Effect::ReminderCreated { reminder, created } => Some((reminder.clone(), *created)),
         _ => None,
@@ -2870,6 +2887,8 @@ async fn tools_turn(
     };
     st.recent.append(&session, "user", &message, now);
     let ctx = Ctx::new(st.tool_env.clone(), &channel, &session).with_origin(origin);
+    // The owner's own message from the app: calendar creates go straight to Google.
+    let ctx = if from_mcp { ctx } else { ctx.owner_turn() };
     let on_tool = |r: &ToolRecord| {
         if reply_meta.is_some() {
             return;

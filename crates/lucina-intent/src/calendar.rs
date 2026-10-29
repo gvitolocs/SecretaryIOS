@@ -1,7 +1,8 @@
 //! The calendar bridge's parser and texts (`src/calendar-bridge.js`):
 //! questions ("cosa ho in calendario domani?", "what's on my calendar",
-//! "hvad har jeg i kalenderen"), event creation that needs the owner's yes,
-//! and the it/en/da answers.
+//! "hvad har jeg i kalenderen"), event creation (direct for the owner's own
+//! turns, with an undo; a proposal in Links otherwise), and the it/en/da
+//! answers.
 
 use chrono::{DateTime, Datelike, Duration, LocalResult, NaiveDate, TimeZone, Timelike, Utc};
 use chrono_tz::Tz;
@@ -732,6 +733,88 @@ pub fn created_text(c: &Create, tz: Tz) -> String {
     }
 }
 
+/// The owner's own request, created at once: "Added to your calendar: <title>, <day date time>",
+/// plus the event's Google Calendar link when there is one.
+pub fn added_text(c: &Create, tz: Tz, link: Option<&str>) -> String {
+    let title = c.event["title"].as_str().unwrap_or("");
+    let when = when_text(c, tz);
+    let (head, open) = match c.lang {
+        "it" => (format!("Aggiunto al calendario: «{title}», {when}."), "Apri in Google Calendar"),
+        "da" => (format!("Tilføjet til din kalender: \"{title}\", {when}."), "Åbn i Google Kalender"),
+        _ => (format!("Added to your calendar: \"{title}\", {when}."), "Open in Google Calendar"),
+    };
+    match link.filter(|l| l.starts_with("https://")) {
+        Some(l) => format!("{head} [{open}]({l})"),
+        None => head,
+    }
+}
+
+/// Why a direct create did not happen, for the reply and the proposal's `reason`.
+pub fn reason_text(lang: &str, code: &str) -> String {
+    match (code, lang) {
+        ("google_reconnect_needed", "it") => "Google Calendar va ricollegato".into(),
+        ("google_reconnect_needed", "da") => "Google Kalender skal forbindes igen".into(),
+        ("google_reconnect_needed", _) => "Google Calendar needs reconnecting".into(),
+        ("google_not_connected", "it") => "Google Calendar non è collegato".into(),
+        ("google_not_connected", "da") => "Google Kalender er ikke forbundet".into(),
+        ("google_not_connected", _) => "Google Calendar isn't connected".into(),
+        (_, "it") => format!("Google Calendar ha risposto con un errore ({code})"),
+        (_, "da") => format!("Google Kalender svarede med en fejl ({code})"),
+        _ => format!("Google Calendar answered with an error ({code})"),
+    }
+}
+
+/// A proposal waiting in Links: `reason` says why it was not created directly
+/// (`None`: the caller may only propose, e.g. an MCP client).
+pub fn proposed_text(c: &Create, tz: Tz, reason: Option<&str>) -> String {
+    let title = c.event["title"].as_str().unwrap_or("");
+    let when = when_text(c, tz);
+    match (c.lang, reason) {
+        ("it", Some(r)) => format!("Non sono riuscita ad aggiungerlo direttamente ({r}), quindi l'ho proposto: «{title}», {when}. Confermalo in Secretary → Collegamenti."),
+        ("da", Some(r)) => format!("Jeg kunne ikke tilføje den direkte ({r}), så jeg har foreslået den: \"{title}\", {when}. Bekræft den i Secretary → Forbindelser."),
+        (_, Some(r)) => format!("I couldn't add it directly ({r}), so I proposed it instead: \"{title}\", {when}. Confirm it in Secretary → Links."),
+        ("it", None) => format!("Ho proposto «{title}», {when}: confermalo in Secretary → Collegamenti."),
+        ("da", None) => format!("Jeg har foreslået \"{title}\", {when}: bekræft den i Secretary → Forbindelser."),
+        _ => format!("I proposed \"{title}\", {when}: confirm it in Secretary → Links."),
+    }
+}
+
+/// How long the undo of a direct create stays available.
+pub const UNDO_MINUTES: i64 = 10;
+
+/// The Undo button: `(label, text it sends)`.
+pub fn undo_action(lang: &str) -> (&'static str, &'static str) {
+    match lang {
+        "it" => ("Annulla", "annulla"),
+        "da" => ("Fortryd", "fortryd"),
+        _ => ("Undo", "undo"),
+    }
+}
+
+/// "annulla" / "undo" / "fortryd" (the Undo button's text, or the owner typing it).
+pub fn is_undo(text: &str) -> bool {
+    let t = text.to_lowercase();
+    let t = re!(r"[^\p{L}\p{N}' ]+", "u").replace_all(&t, " ");
+    let t = re!(r"\s+").replace_all(&t, " ");
+    re!(r"^(?:annulla(?:lo)?|annulla l'evento|toglilo|undo|undo that|undo it|remove it|fortryd|fortryd det|slet den)$", "iu").test(t.trim())
+}
+
+pub fn undone_text(lang: &str, title: &str) -> String {
+    match lang {
+        "it" => format!("Annullato: ho tolto «{title}» dal calendario."),
+        "da" => format!("Fortrudt: \"{title}\" er fjernet fra din kalender."),
+        _ => format!("Undone: \"{title}\" is off your calendar."),
+    }
+}
+
+pub fn undo_failed_text(lang: &str, code: &str) -> String {
+    match lang {
+        "it" => format!("Non sono riuscita a toglierlo ({code}). Puoi eliminarlo da Google Calendar."),
+        "da" => format!("Jeg kunne ikke fjerne den ({code}). Du kan slette den i Google Kalender."),
+        _ => format!("I couldn't remove it ({code}). You can delete it in Google Calendar."),
+    }
+}
+
 pub fn create_failed_text(lang: &str, code: &str) -> String {
     match lang {
         "it" => format!("Non sono riuscita ad aggiungerlo ({code}). Riprova tra poco."),
@@ -843,6 +926,38 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(c.event["start"], "2026-10-27T18:00:00+01:00");
+        assert_eq!(
+            added_text(&c, TZ, Some("https://calendar.google.com/event?eid=x")),
+            "Aggiunto al calendario: «Palestra», martedì 27 ottobre alle 18:00. [Apri in Google Calendar](https://calendar.google.com/event?eid=x)"
+        );
+        assert_eq!(
+            added_text(&c, TZ, Some("javascript:alert(1)")),
+            "Aggiunto al calendario: «Palestra», martedì 27 ottobre alle 18:00."
+        );
+        assert_eq!(
+            proposed_text(&c, TZ, Some(&reason_text("it", "google_reconnect_needed"))),
+            "Non sono riuscita ad aggiungerlo direttamente (Google Calendar va ricollegato), quindi l'ho proposto: «Palestra», martedì 27 ottobre alle 18:00. Confermalo in Secretary → Collegamenti."
+        );
+        let en = parse_create("add Claude Max 5x unlocks to my calendar on 30/10 at 23:00", now(), TZ)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            added_text(&en, TZ, None),
+            "Added to your calendar: \"Claude Max 5x unlocks\", Friday 30 October at 23:00."
+        );
+        assert_eq!(
+            proposed_text(&en, TZ, None),
+            "I proposed \"Claude Max 5x unlocks\", Friday 30 October at 23:00: confirm it in Secretary → Links."
+        );
+        assert_eq!(reason_text("en", "http_500"), "Google Calendar answered with an error (http_500)");
+        for t in ["annulla", "Annulla!", "undo", "Undo that", "fortryd"] {
+            assert!(is_undo(t), "{t}");
+        }
+        for t in ["annulla il promemoria", "no", "undo the last reminder"] {
+            assert!(!is_undo(t), "{t}");
+        }
+        assert_eq!(undo_action("en"), ("Undo", "undo"));
+        assert!(is_undo(undo_action("it").1) && is_undo(undo_action("da").1));
         assert_eq!(classify_yes_no("Sì, grazie!"), "yes");
         assert_eq!(classify_yes_no("no"), "no");
         assert_eq!(classify_yes_no("domani invece"), "other");

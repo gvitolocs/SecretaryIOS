@@ -222,7 +222,7 @@ impl Capabilities {
         );
         add(self.notes, "Notes in the Secretary app: I save, append to and read notes (\"salva come nota …\", \"cosa c'è nella nota …\").".into(), Some("Notes from chat are off (LUCINA_NOTES)."));
         add(self.tasks, "Tasks synced with Todoist: I list today's and overdue tasks, add tasks and mark them done (\"cosa devo fare oggi?\", \"aggiungi task …\", \"fatto lo shadowing\"); deleting stays with Giuseppe.".into(), Some("Tasks from chat are off (LUCINA_TASKS)."));
-        add(self.calendar, "Google Calendar: I read the agenda and add an event only after Giuseppe's explicit yes.".into(), Some("Calendar from chat is off (LUCINA_CALENDAR)."));
+        add(self.calendar, "Google Calendar: I read the agenda; when Giuseppe asks me himself I add the event at once (with an Undo for 10 minutes), and anything not from him, or that Google refuses, becomes a proposal he confirms in Secretary → Links.".into(), Some("Calendar from chat is off (LUCINA_CALENDAR)."));
         add(self.grocery, "Shopping lists v2 and grocery accounting: lists, items, purchases, offers, prices, pantry.".into(), None);
         add(self.presence, "I see Giuseppe's Discord presence (online, idle, playing) as context. It describes him, it is not a channel of mine.".into(), None);
         if self.secretary {

@@ -26,7 +26,8 @@ use reqwest::Method;
 use serde_json::{json, Value};
 
 pub const PART_TTL: Duration = Duration::from_secs(30 * 60);
-pub const CALENDAR_PENDING_TTL: Duration = Duration::from_secs(10 * 60);
+/// How long the Undo of a calendar event created from a chat stays available.
+pub const CALENDAR_UNDO_TTL: Duration = Duration::from_secs(cal::UNDO_MINUTES as u64 * 60);
 const LIST_CACHE: Duration = Duration::from_secs(60);
 const CALL_TIMEOUT: Duration = Duration::from_secs(8);
 
@@ -143,6 +144,8 @@ pub struct Outcome {
     pub events: Vec<Value>,
     /// Calendar: the answer is an agenda (one sentence, then a card per event).
     pub agenda: Option<crate::agenda::Agenda>,
+    /// The reply's own buttons (the Undo of a calendar event just created).
+    pub routes: Vec<Value>,
 }
 
 fn meta_note(slug: &str) -> lucina_store::timeline::Meta {
@@ -152,12 +155,20 @@ fn meta_note(slug: &str) -> lucina_store::timeline::Meta {
     }
 }
 
-/// In-memory bridge state: multi-part saves, calendar confirmations, the
-/// notes list cache.
+/// A calendar event created from a chat, kept for its Undo.
+#[derive(Debug, Clone)]
+struct Created {
+    id: String,
+    title: String,
+    lang: &'static str,
+}
+
+/// In-memory bridge state: multi-part saves, the calendar events created in
+/// the last 10 minutes (per session, for the Undo), the notes list cache.
 #[derive(Default)]
 pub struct BridgeState {
     parts: Mutex<HashMap<String, (String, Instant)>>,
-    calendar: Mutex<HashMap<String, (Create, Instant)>>,
+    calendar: Mutex<HashMap<String, (Created, Instant)>>,
     notes_cache: Mutex<Option<(Instant, Vec<Value>)>>,
 }
 
@@ -373,6 +384,7 @@ pub async fn notes_turn(
                 read_note: None,
                 events: Vec::new(),
                 agenda: None,
+                routes: Vec::new(),
             }
         }
         NotesIntent::Part { content, more, .. } => {
@@ -414,6 +426,7 @@ pub async fn notes_turn(
                 read_note: None,
                 events: Vec::new(),
                 agenda: None,
+                routes: Vec::new(),
             }
         }
     }
@@ -472,13 +485,44 @@ pub(crate) async fn events(s: &Secretary, from: &str, to: &str) -> Answer {
     .await
 }
 
-/// A calendar part of a chat turn: `Err(blocked)` for an MCP create.
+/// Who asked for a calendar event in a chat turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CalendarCaller {
+    /// The owner's own message (his app, his Telegram/Discord DMs, voice), on `channel`:
+    /// the event is created at once, with an Undo.
+    Owner { channel: String },
+    /// One of the owner's assistant apps through trusted Lucina MCP (`mcp:<caller>`): a
+    /// client, not the owner himself, so the event is a proposal he confirms in Links.
+    Client { from: String },
+    /// A guarded turn (an agent's MCP turn, someone else in a channel): refused, the
+    /// agent files a proposal with the `calendar_create` MCP tool instead.
+    Guarded,
+}
+
+/// The Undo button of a direct create (the clients send its text back as the owner's message).
+pub fn undo_action(lang: &str) -> Value {
+    let (label, text) = cal::undo_action(lang);
+    json!({"id": "calendar-undo", "label": label, "emoji": "↩️", "kind": "reply", "payload": {"text": text}})
+}
+
+/// Files `created` as a proposal in Links (`reason`: why it was not created directly).
+async fn propose(s: &Secretary, created: &Create, from: &str, reason: Option<&str>) -> Answer {
+    let mut body = created.event.clone();
+    body["from"] = json!(from.chars().take(64).collect::<String>());
+    if let Some(r) = reason {
+        body["reason"] = json!(r);
+    }
+    s.call(Method::POST, "/v1/calendar/proposals", Some(&body))
+        .await
+}
+
+/// A calendar part of a chat turn: `Err(blocked)` for a guarded create.
 pub async fn calendar_turn(
     s: &Secretary,
     st: &BridgeState,
     message: &str,
     session: &str,
-    mcp: bool,
+    caller: &CalendarCaller,
     now: DateTime<Utc>,
     tz: Tz,
 ) -> Option<Result<Outcome, &'static str>> {
@@ -495,82 +539,124 @@ pub async fn calendar_turn(
         meta: Some(lucina_store::timeline::Meta::kind("calendar")),
         ..Outcome::default()
     };
-    if !mcp {
-        let waiting = {
+    // "annulla" / "undo" right after a direct create: the event comes off the calendar.
+    if matches!(caller, CalendarCaller::Owner { .. }) && cal::is_undo(message) {
+        let undo = {
             let mut map = st.calendar.lock().unwrap_or_else(|e| e.into_inner());
-            map.retain(|_, (_, at)| at.elapsed() < CALENDAR_PENDING_TTL);
+            map.retain(|_, (_, at)| at.elapsed() < CALENDAR_UNDO_TTL);
             map.remove(&key)
         };
-        if let Some((created, _)) = waiting {
-            match cal::classify_yes_no(message) {
-                "yes" => {
-                    let r = s
-                        .call(Method::POST, "/v1/calendar/events", Some(&created.event))
-                        .await;
-                    let title = created.event["title"].as_str().unwrap_or("");
-                    if r.ok {
-                        return Some(Ok(Outcome {
-                            events: r
-                                .data
-                                .get("event")
-                                .filter(|e| e.is_object())
-                                .cloned()
-                                .into_iter()
-                                .collect(),
-                            ..out(
-                                cal::created_text(&created, tz),
-                                "calendar_create",
-                                format!("[calendar event created: {title}]"),
-                            )
-                        }));
-                    }
-                    let reply = if r.code == "google_reconnect_needed"
-                        || r.code == "google_not_connected"
-                    {
-                        cal::text(created.lang, "reconnect").to_owned()
-                    } else {
-                        cal::create_failed_text(created.lang, &r.code)
-                    };
-                    return Some(Ok(out(
-                        reply,
-                        "calendar_create",
-                        format!("[calendar create failed: {}]", r.code),
-                    )));
-                }
-                "no" => {
-                    return Some(Ok(out(
-                        cal::text(created.lang, "declined").into(),
-                        "calendar_create",
-                        "[calendar create declined]".into(),
-                    )));
-                }
-                _ => {}
-            }
+        if let Some((c, _)) = undo {
+            let r = s
+                .call(
+                    Method::DELETE,
+                    &format!("/v1/calendar/events/{}?confirm=true", enc(&c.id)),
+                    None,
+                )
+                .await;
+            return Some(Ok(if r.ok {
+                out(
+                    cal::undone_text(c.lang, &c.title),
+                    "calendar_undo",
+                    format!("[calendar event removed: {}]", c.title),
+                )
+            } else {
+                out(
+                    cal::undo_failed_text(c.lang, &r.code),
+                    "calendar_undo",
+                    format!("[calendar undo failed: {}]", r.code),
+                )
+            }));
         }
     }
     if let Some(parsed) = cal::parse_create(message, now, tz) {
-        if mcp {
+        if *caller == CalendarCaller::Guarded {
             return Some(Err("calendar.create"));
         }
-        return Some(Ok(match parsed {
-            Err((error, lang)) => out(
-                cal::text(lang, "unclear").into(),
-                "calendar_confirm",
-                format!("[calendar create unclear: {error}]"),
-            ),
-            Ok(created) => {
-                let q = cal::confirm_question(&created, tz);
-                st.calendar
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(key, (created, Instant::now()));
-                out(
-                    q,
-                    "calendar_confirm",
-                    "[calendar event awaiting confirmation]".into(),
-                )
+        let created = match parsed {
+            Err((error, lang)) => {
+                return Some(Ok(out(
+                    cal::text(lang, "unclear").into(),
+                    "calendar_create",
+                    format!("[calendar create unclear: {error}]"),
+                )))
             }
-        }));
+            Ok(c) => c,
+        };
+        let title = created.event["title"].as_str().unwrap_or("").to_owned();
+        let channel = match caller {
+            CalendarCaller::Owner { channel } => channel,
+            CalendarCaller::Client { from } => {
+                let p = propose(s, &created, from, None).await;
+                return Some(Ok(if p.ok {
+                    out(
+                        cal::proposed_text(&created, tz, None),
+                        "calendar_create",
+                        format!("[calendar event proposed: {title}]"),
+                    )
+                } else {
+                    out(
+                        cal::create_failed_text(created.lang, &p.code),
+                        "calendar_create",
+                        format!("[calendar proposal failed: {}]", p.code),
+                    )
+                }));
+            }
+            CalendarCaller::Guarded => unreachable!("refused above"),
+        };
+        let r = s
+            .call(Method::POST, "/v1/calendar/events", Some(&created.event))
+            .await;
+        let event = r.data.get("event").filter(|e| e.is_object()).cloned();
+        if let (true, Some(event)) = (r.ok, event) {
+            let id = event["id"].as_str().unwrap_or("").to_owned();
+            let mut routes = Vec::new();
+            if !id.is_empty() {
+                st.calendar.lock().unwrap_or_else(|e| e.into_inner()).insert(
+                    key,
+                    (
+                        Created {
+                            id,
+                            title: title.clone(),
+                            lang: created.lang,
+                        },
+                        Instant::now(),
+                    ),
+                );
+                routes.push(undo_action(created.lang));
+            }
+            return Some(Ok(Outcome {
+                routes,
+                events: vec![event.clone()],
+                ..out(
+                    cal::added_text(&created, tz, event["url"].as_str()),
+                    "calendar_create",
+                    format!("[calendar event created: {title}]"),
+                )
+            }));
+        }
+        // Not connected, or Google failed: a proposal in Links, and the reply says why.
+        let code = if r.ok { "no_event".to_owned() } else { r.code.clone() };
+        let reason = cal::reason_text(created.lang, &code);
+        let channel = if channel.is_empty() { "chat" } else { channel.as_str() };
+        let p = propose(s, &created, &format!("lucina:{channel}"), Some(&reason)).await;
+        if p.ok {
+            return Some(Ok(out(
+                cal::proposed_text(&created, tz, Some(&reason)),
+                "calendar_create",
+                format!("[calendar create failed: {code}; proposed instead]"),
+            )));
+        }
+        let reply = if code == "google_reconnect_needed" || code == "google_not_connected" {
+            cal::text(created.lang, "reconnect").to_owned()
+        } else {
+            cal::create_failed_text(created.lang, &code)
+        };
+        return Some(Ok(out(
+            reply,
+            "calendar_create",
+            format!("[calendar create failed: {code}]"),
+        )));
     }
     calendar_read(s, message, now, tz).await.map(Ok)
 }
@@ -1191,5 +1277,188 @@ mod game_tests {
         assert!(!b.contains("Your last moves: a"), "only the last two moves");
         let live = game_block(&json!({"running": true}), &obs, true);
         assert!(live.contains(GAME_IDENTITY) && live.contains(GAME_OVERRIDE));
+    }
+}
+
+#[cfg(test)]
+mod calendar_create_tests {
+    use super::*;
+    use wiremock::matchers::{body_partial_json, method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    const TZ: Tz = chrono_tz::Europe::Copenhagen;
+
+    fn now() -> DateTime<Utc> {
+        // Thursday 29 October 2026, 20:00 in Copenhagen.
+        DateTime::parse_from_rfc3339("2026-10-29T19:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    fn secretary(server: &MockServer, dir: &std::path::Path) -> Secretary {
+        let tok = dir.join("svc.token");
+        std::fs::write(&tok, "svc_test\n").unwrap();
+        Secretary {
+            http: reqwest::Client::new(),
+            url: Some(server.uri()),
+            token_file: Some(tok),
+        }
+    }
+
+    const ASK: &str = "add Claude Max 5x unlocks to my calendar on 30/10 at 23:00";
+
+    fn owner() -> CalendarCaller {
+        CalendarCaller::Owner {
+            channel: "ios".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_owner_gets_the_event_at_once_with_an_undo() {
+        let server = MockServer::start().await;
+        let event = json!({"id": "google:new1", "title": "Claude Max 5x unlocks", "start": "2026-10-30T22:00:00.000Z",
+                           "end": "2026-10-30T23:00:00.000Z", "allDay": false, "url": "https://calendar.google.com/event?eid=new1"});
+        Mock::given(method("POST"))
+            .and(path("/v1/calendar/events"))
+            .and(body_partial_json(json!({"title": "Claude Max 5x unlocks", "start": "2026-10-30T23:00:00+01:00"})))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"created": true, "event": event})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/calendar/proposals"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": "prop_x"})))
+            .expect(0)
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path("/v1/calendar/events/google%3Anew1"))
+            .and(query_param("confirm", "true"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"deleted": true})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let s = secretary(&server, dir.path());
+        let st = BridgeState::default();
+        let o = calendar_turn(&s, &st, ASK, "chat-1", &owner(), now(), TZ)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            o.reply,
+            "Added to your calendar: \"Claude Max 5x unlocks\", Friday 30 October at 23:00. [Open in Google Calendar](https://calendar.google.com/event?eid=new1)"
+        );
+        assert_eq!(o.action_result, "[calendar event created: Claude Max 5x unlocks]");
+        assert_eq!(o.events.len(), 1);
+        assert_eq!(o.routes, vec![undo_action("en")]);
+        assert_eq!(o.routes[0]["payload"]["text"], "undo");
+        // Undo in another chat does nothing; in the same chat it deletes the event, once.
+        assert!(calendar_turn(&s, &st, "undo", "chat-2", &owner(), now(), TZ)
+            .await
+            .is_none());
+        let u = calendar_turn(&s, &st, "undo", "chat-1", &owner(), now(), TZ)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(u.reply, "Undone: \"Claude Max 5x unlocks\" is off your calendar.");
+        assert!(calendar_turn(&s, &st, "undo", "chat-1", &owner(), now(), TZ)
+            .await
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn clients_propose_and_agents_are_refused() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/calendar/events"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(0)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/calendar/proposals"))
+            .and(body_partial_json(json!({"title": "Claude Max 5x unlocks", "from": "mcp:claude-ai"})))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": "prop_1"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let s = secretary(&server, dir.path());
+        let st = BridgeState::default();
+        let client = CalendarCaller::Client {
+            from: "mcp:claude-ai".into(),
+        };
+        let o = calendar_turn(&s, &st, ASK, "m", &client, now(), TZ)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            o.reply,
+            "I proposed \"Claude Max 5x unlocks\", Friday 30 October at 23:00: confirm it in Secretary → Links."
+        );
+        assert!(o.routes.is_empty());
+        assert_eq!(
+            calendar_turn(&s, &st, ASK, "g", &CalendarCaller::Guarded, now(), TZ)
+                .await
+                .unwrap()
+                .unwrap_err(),
+            "calendar.create"
+        );
+        // No undo for a client's turn.
+        assert!(calendar_turn(&s, &st, "undo", "m", &client, now(), TZ)
+            .await
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn a_google_failure_becomes_a_proposal_with_the_reason() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/calendar/events"))
+            .respond_with(ResponseTemplate::new(409).set_body_json(
+                json!({"error": {"code": "google_not_connected", "message": "Connect Google Calendar in Links first"}}),
+            ))
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/calendar/proposals"))
+            .and(body_partial_json(json!({"from": "lucina:ios", "reason": "Google Calendar isn't connected"})))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": "prop_2"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/calendar/proposals"))
+            .and(body_partial_json(json!({"from": "lucina:telegram"})))
+            .respond_with(ResponseTemplate::new(503))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let s = secretary(&server, dir.path());
+        let st = BridgeState::default();
+        let o = calendar_turn(&s, &st, ASK, "chat-1", &owner(), now(), TZ)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            o.reply,
+            "I couldn't add it directly (Google Calendar isn't connected), so I proposed it instead: \"Claude Max 5x unlocks\", Friday 30 October at 23:00. Confirm it in Secretary → Links."
+        );
+        assert!(o.routes.is_empty());
+        // The proposal fails too: say so plainly.
+        let tg = CalendarCaller::Owner {
+            channel: "telegram".into(),
+        };
+        let o = calendar_turn(&s, &st, ASK, "chat-2", &tg, now(), TZ)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            o.reply,
+            "I couldn't: Google Calendar needs reconnecting in Secretary → Links."
+        );
     }
 }

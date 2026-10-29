@@ -4,14 +4,23 @@
 //!
 //! - `list` (today, tomorrow, week, or a from/to range) and `free` (the next
 //!   free slots of a given length) only read.
-//! - `create`, `move` and `delete` write to Google Calendar and always go
-//!   through the confirmation flow: the call becomes a pending action and runs
-//!   only after the owner's explicit yes. The server also demands
-//!   `confirm: true` for edits and deletes, which this tool sends only when
-//!   the confirmed action runs.
+//! - `create` in the owner's own turn ([`Ctx::owner_turn`]) writes the event
+//!   to Google Calendar at once; the reply offers an Undo for 10 minutes (a
+//!   `delete` of that id in the same chat, which then needs no yes). When
+//!   Google is not connected or the write fails, and in every other turn (an
+//!   MCP client, an agent, Lucina's own initiative), it files a proposal the
+//!   owner confirms in Secretary → Links.
+//! - `move` and `delete` go through the confirmation flow: the call becomes a
+//!   pending action and runs only after the owner's explicit yes. The server
+//!   also demands `confirm: true` for edits and deletes, which this tool sends
+//!   only when the confirmed action (or the undo) runs.
 //!
 //! Configuration: `LUCINA_SECRETARY_SERVER_URL` and
 //! `LUCINA_SECRETARY_SERVICE_TOKEN_FILE` (shared with `avatar_outfit`).
+
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
+use std::time::Instant;
 
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use chrono_tz::Tz;
@@ -66,6 +75,24 @@ struct Args {
 }
 
 pub struct CalendarTool;
+
+/// How long the Undo of a direct create stays available.
+const UNDO_FOR: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// Events created directly in the owner's turns: id → (session, when), for the Undo.
+static CREATED: LazyLock<Mutex<HashMap<String, (String, Instant)>>> =
+    LazyLock::new(Default::default);
+
+fn created() -> std::sync::MutexGuard<'static, HashMap<String, (String, Instant)>> {
+    let mut m = CREATED.lock().unwrap_or_else(|e| e.into_inner());
+    m.retain(|_, (_, at)| at.elapsed() < UNDO_FOR);
+    m
+}
+
+/// The session that created event `id` directly, within the undo window.
+fn undo_session(id: &str) -> Option<String> {
+    created().get(id).map(|(s, _)| s.clone())
+}
 
 /// secretary-server's base URL and the service token, when configured.
 pub fn server_of(env: &ToolEnv) -> Option<(String, String)> {
@@ -203,10 +230,11 @@ impl Tool for CalendarTool {
         "Giuseppe's calendar (Google Calendar, his iPhone calendar and subscribed ICS calendars, merged). \
          list: events for today, tomorrow, the week, or from/to dates (with event ids). \
          free: the next free slots of `minutes` (default 60) in working hours. \
-         create: a new Google Calendar event (title, start, end?, location?). \
+         create: a new Google Calendar event (title, start, end?, location?). When Giuseppe asks for it himself \
+         it is added at once (no yes needed; the reply has an Undo for 10 minutes, which is `delete` of that id); \
+         if Google fails, or the request is not his, it becomes a proposal he confirms in Secretary → Links. \
          move: change an event's start/end by id. delete: remove an event by id. \
-         create, move and delete wait for Giuseppe's explicit yes before anything changes; \
-         only Google events can be moved or deleted."
+         move and delete wait for Giuseppe's explicit yes; only Google events can be moved or deleted."
     }
     fn parameters(&self) -> Value {
         schema_for::<Args>()
@@ -215,10 +243,17 @@ impl Tool for CalendarTool {
         SideEffect::Local
     }
     fn needs_confirmation(&self, args: &Value) -> bool {
-        !matches!(
-            args.get("action").and_then(Value::as_str),
-            Some("list" | "free")
-        )
+        match args.get("action").and_then(Value::as_str) {
+            // Direct for the owner, a proposal for everyone else: never a pending action.
+            Some("list" | "free" | "create") => false,
+            // The Undo of an event just created in a chat (`call` checks the session).
+            Some("delete") => args
+                .get("id")
+                .and_then(Value::as_str)
+                .and_then(undo_session)
+                .is_none(),
+            _ => true,
+        }
     }
     fn summarize(&self, args: &Value) -> String {
         let s = |k: &str| args.get(k).and_then(Value::as_str).unwrap_or("");
@@ -297,19 +332,45 @@ impl Tool for CalendarTool {
                         body[k] = json!(x);
                     }
                 }
-                let v = send(
+                if !(ctx.owner_turn || ctx.confirmed) {
+                    return propose(ctx, &base, &token, body, None).await;
+                }
+                let v = match send(
                     env,
                     http.post(format!("{base}/v1/calendar/events"))
                         .bearer_auth(&token)
                         .json(&body),
                 )
-                .await?;
-                if v["event"].is_object() {
-                    ctx.push_effect(Effect::CalendarEvents {
-                        events: vec![v["event"].clone()],
-                    });
+                .await
+                {
+                    Ok(v) if v["event"].is_object() => v,
+                    Ok(_) => {
+                        return propose(ctx, &base, &token, body, Some("secretary-server returned no event".into())).await
+                    }
+                    Err(e) => return propose(ctx, &base, &token, body, Some(e.0)).await,
+                };
+                let event = v["event"].clone();
+                ctx.push_effect(Effect::CalendarEvents {
+                    events: vec![event.clone()],
+                });
+                ctx.push_effect(Effect::CalendarCreated {
+                    event: event.clone(),
+                });
+                let id = event["id"].as_str().unwrap_or_default().to_owned();
+                if !id.is_empty() {
+                    created().insert(id.clone(), (ctx.session_id.clone(), Instant::now()));
                 }
-                Ok(json!({"created": true, "event": compact(&[v["event"].clone()], tz).first()}))
+                let c = compact(std::slice::from_ref(&event), tz);
+                // "Fri 30 Oct 23:00", or the date of an all-day event.
+                let when = c[0]["start"].as_str().unwrap_or_default().to_owned();
+                let title = event["title"].as_str().unwrap_or_default();
+                Ok(json!({
+                    "created": true,
+                    "event": c.first(),
+                    "link": event["url"],
+                    "undo": {"action": "delete", "id": id, "minutes": UNDO_FOR.as_secs() / 60},
+                    "instruction": format!("Done, it is in his Google Calendar. Reply in the owner's language like: Added to your calendar: {title}, {when} (with the link if there is one). The reply has an Undo button for 10 minutes; if he says undo, call delete with this id."),
+                }))
             }
             Action::Move => {
                 let id = event_id(a.id.as_deref())?;
@@ -334,6 +395,10 @@ impl Tool for CalendarTool {
             }
             Action::Delete => {
                 let id = event_id(a.id.as_deref())?;
+                let undo = !ctx.confirmed;
+                if undo && !(ctx.owner_turn && undo_session(&id).as_deref() == Some(ctx.session_id.as_str())) {
+                    return Err(ToolError::new("delete needs the owner's explicit yes (only an event created in this chat in the last 10 minutes can be undone without it)"));
+                }
                 send(
                     env,
                     http.delete(format!("{base}/v1/calendar/events/{}", seg(&id)))
@@ -341,10 +406,54 @@ impl Tool for CalendarTool {
                         .query(&[("confirm", "true")]),
                 )
                 .await?;
-                Ok(json!({"deleted": true, "id": id}))
+                created().remove(&id);
+                Ok(json!({"deleted": true, "id": id, "undone": undo}))
             }
         }
     }
+}
+
+/// Files `body` as a proposal the owner confirms in Secretary → Links: the
+/// turn is not the owner's own (`reason: None`), or the direct create failed.
+async fn propose(
+    ctx: &Ctx,
+    base: &str,
+    token: &str,
+    mut body: Value,
+    reason: Option<String>,
+) -> ToolResult {
+    let channel = if ctx.channel.is_empty() { "chat" } else { ctx.channel.as_str() };
+    body["from"] = json!(match ctx.origin {
+        crate::Origin::Mcp => "lucina-mcp".to_owned(),
+        crate::Origin::Owner => format!("lucina:{channel}"),
+    });
+    if let Some(r) = &reason {
+        body["reason"] = json!(r.chars().take(300).collect::<String>());
+    }
+    let p = send(
+        &ctx.env,
+        ctx.env
+            .http
+            .post(format!("{base}/v1/calendar/proposals"))
+            .bearer_auth(token)
+            .json(&body),
+    )
+    .await
+    .map_err(|e| match &reason {
+        Some(r) => ToolError::new(format!("not created ({r}) and the proposal failed too: {}", e.0)),
+        None => e,
+    })?;
+    let instruction = match &reason {
+        Some(r) => format!("Not created: {r}. It is now a proposal waiting in Secretary → Links; tell the owner why in one short sentence and that he can confirm it there."),
+        None => "Not created: this turn is not the owner's own request, so the event is a proposal he confirms in Secretary → Links. Say so.".to_owned(),
+    };
+    Ok(json!({
+        "created": false,
+        "proposed": true,
+        "proposalId": p["id"],
+        "reason": reason,
+        "instruction": instruction,
+    }))
 }
 
 /// One context line with today's events for the chat prompt, or `None`
@@ -480,10 +589,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn writes_need_confirmation_and_send_confirm() {
+    async fn owner_creates_directly_and_edits_need_confirmation() {
         assert!(!CalendarTool.needs_confirmation(&json!({"action": "list"})));
         assert!(!CalendarTool.needs_confirmation(&json!({"action": "free"})));
-        for a in ["create", "move", "delete"] {
+        assert!(!CalendarTool.needs_confirmation(&json!({"action": "create"})));
+        for a in ["move", "delete"] {
             assert!(
                 CalendarTool.needs_confirmation(&json!({"action": a})),
                 "{a}"
@@ -531,14 +641,29 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({"slots": [{"start": "2026-10-22T09:00:00Z", "end": "2026-10-22T12:00:00Z"}]})))
             .mount(&server)
             .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/calendar/proposals"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": "prop_x"})))
+            .expect(0)
+            .mount(&server)
+            .await;
         let dir = tempfile::tempdir().unwrap();
         let e = env(&server, dir.path()).await;
-        let ctx = Ctx::new(e, "web", "s");
+        let ctx = Ctx::new(e, "web", "s").owner_turn();
         let c = CalendarTool
             .call(json!({"action": "create", "title": "Padel", "start": "2026-10-24T10:00:00+02:00", "location": "Club"}), &ctx)
             .await
             .unwrap();
         assert_eq!(c["created"], true);
+        assert_eq!(c["undo"], json!({"action": "delete", "id": "google:abc", "minutes": 10}));
+        assert!(
+            c["instruction"].as_str().unwrap().contains("Added to your calendar: Dentist, Fri 23 Oct 09:30"),
+            "{c}"
+        );
+        assert!(ctx
+            .effects()
+            .iter()
+            .any(|e| matches!(e, Effect::CalendarCreated { event } if event["id"] == "google:abc")));
         CalendarTool
             .call(
                 json!({"action": "move", "id": "google:abc", "start": "2026-10-23T11:00:00+02:00"}),
@@ -567,6 +692,8 @@ mod tests {
             })
             .collect();
         assert_eq!(returned, vec![vec![ev()], vec![ev()]]);
+        // The delete above was the Undo (same chat, within 10 minutes); used up, a delete needs a yes again.
+        assert!(CalendarTool.needs_confirmation(&json!({"action": "delete", "id": "google:abc"})));
         assert!(CalendarTool
             .call(json!({"action": "delete", "id": "../x"}), &ctx)
             .await
@@ -598,7 +725,7 @@ mod tests {
             ))
             .mount(&server)
             .await;
-        let ctx = Ctx::new(env(&server, dir.path()).await, "web", "s");
+        let ctx = Ctx::new(env(&server, dir.path()).await, "web", "s").owner_turn();
         let err = CalendarTool
             .call(
                 json!({"action": "create", "title": "x", "start": "2026-10-24"}),
@@ -607,5 +734,110 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.0.contains("Reconnect"), "{}", err.0);
+    }
+
+    #[tokio::test]
+    async fn agents_and_failures_propose() {
+        let server = MockServer::start().await;
+        // Every POST to events fails: Google needs reconnecting.
+        Mock::given(method("POST"))
+            .and(path("/v1/calendar/events"))
+            .respond_with(ResponseTemplate::new(409).set_body_json(
+                json!({"error": {"code": "google_reconnect_needed", "message": "x"}}),
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/calendar/proposals"))
+            .and(body_json(json!({"title": "Padel", "start": "2026-10-24T10:00:00+02:00", "from": "lucina-mcp"})))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": "prop_mcp"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/calendar/proposals"))
+            .and(body_json(json!({"title": "Padel", "start": "2026-10-24T10:00:00+02:00", "from": "lucina:telegram"})))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": "prop_bg"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/calendar/proposals"))
+            .and(body_json(json!({"title": "Dentist", "start": "2026-10-24T10:00:00+02:00", "from": "lucina:ios",
+                "reason": "Google Calendar needs reconnecting: ask the owner to open Secretary → Links and tap Reconnect."})))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": "prop_fail"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let e = env(&server, dir.path()).await;
+        let padel = json!({"action": "create", "title": "Padel", "start": "2026-10-24T10:00:00+02:00"});
+
+        // An agent through Lucina MCP: a proposal, not a refusal, and never a Google write.
+        let mcp = Ctx::new(e.clone(), "web", "m").with_origin(crate::Origin::Mcp);
+        let mut reg = crate::Registry::new();
+        reg.register(Arc::new(CalendarTool)).unwrap();
+        let gate = crate::agent::call_gate(&reg, "calendar", &padel, crate::Origin::Mcp);
+        assert_eq!(gate, crate::agent::CallGate::Execute);
+        let p = CalendarTool.call(padel.clone(), &mcp).await.unwrap();
+        assert_eq!((p["created"].as_bool(), p["proposed"].as_bool(), p["proposalId"].as_str()), (Some(false), Some(true), Some("prop_mcp")));
+        assert!(p["reason"].is_null());
+        assert!(mcp.effects().is_empty());
+
+        // Not the owner's own message (Lucina's own initiative): a proposal too.
+        let bg = Ctx::new(e.clone(), "telegram", "b");
+        let p = CalendarTool.call(padel, &bg).await.unwrap();
+        assert_eq!(p["proposalId"], "prop_bg");
+
+        // The owner's turn, but Google fails: a proposal with the reason.
+        let owner = Ctx::new(e.clone(), "ios", "o").owner_turn();
+        let p = CalendarTool
+            .call(json!({"action": "create", "title": "Dentist", "start": "2026-10-24T10:00:00+02:00"}), &owner)
+            .await
+            .unwrap();
+        assert_eq!((p["created"].as_bool(), p["proposalId"].as_str()), (Some(false), Some("prop_fail")));
+        assert!(p["reason"].as_str().unwrap().contains("reconnecting"), "{p}");
+        assert!(p["instruction"].as_str().unwrap().contains("Secretary → Links"));
+        assert!(!owner.effects().iter().any(|e| matches!(e, Effect::CalendarCreated { .. })));
+    }
+
+    #[tokio::test]
+    async fn undo_only_in_the_chat_that_created_it() {
+        let server = MockServer::start().await;
+        let made = json!({"id": "google:undo1", "title": "Claude Max 5x si sblocca", "start": "2026-10-30T22:00:00.000Z",
+                          "end": "2026-10-30T23:00:00.000Z", "allDay": false, "url": "https://calendar.google.com/event?eid=undo1"});
+        Mock::given(method("POST"))
+            .and(path("/v1/calendar/events"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"created": true, "event": made})))
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path("/v1/calendar/events/google:undo1"))
+            .and(query_param("confirm", "true"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"deleted": true})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let e = env(&server, dir.path()).await;
+        let owner = Ctx::new(e.clone(), "ios", "chat-1").owner_turn();
+        let c = CalendarTool
+            .call(json!({"action": "create", "title": "Claude Max 5x si sblocca", "start": "2026-10-30T23:00:00+01:00"}), &owner)
+            .await
+            .unwrap();
+        assert_eq!(c["link"], "https://calendar.google.com/event?eid=undo1");
+        assert!(c["instruction"].as_str().unwrap().contains("Added to your calendar: Claude Max 5x si sblocca, Fri 30 Oct 23:00"), "{c}");
+        let undo = json!({"action": "delete", "id": "google:undo1"});
+        assert!(!CalendarTool.needs_confirmation(&undo));
+        // Another chat, or a turn that is not the owner's, cannot use the undo.
+        let other = Ctx::new(e.clone(), "ios", "chat-2").owner_turn();
+        assert!(CalendarTool.call(undo.clone(), &other).await.is_err());
+        let not_owner = Ctx::new(e.clone(), "ios", "chat-1");
+        assert!(CalendarTool.call(undo.clone(), &not_owner).await.is_err());
+        let next = Ctx::new(e, "ios", "chat-1").owner_turn();
+        let d = CalendarTool.call(undo.clone(), &next).await.unwrap();
+        assert_eq!((d["deleted"].as_bool(), d["undone"].as_bool()), (Some(true), Some(true)));
+        assert!(CalendarTool.needs_confirmation(&undo));
     }
 }

@@ -136,6 +136,11 @@ pub enum Effect {
     /// The turn used an owner-only plugin tool (Instagram, Pixiv): the server
     /// keeps the exchange out of Honcho (the long-term memory).
     PrivateTurn,
+    /// `calendar` created an event directly for the owner (secretary-server
+    /// shape): the reply gets an Undo button for its first 10 minutes.
+    CalendarCreated {
+        event: Value,
+    },
 }
 
 /// External endpoints (overridable for tests).
@@ -333,6 +338,10 @@ pub struct Ctx {
     pub origin: Origin,
     /// True only while running a pending action the owner confirmed.
     pub confirmed: bool,
+    /// The owner's own message started this turn (his app, his DMs, his voice): not an MCP
+    /// client, an agent or Lucina's own initiative. Calendar creates go straight to Google
+    /// only then; otherwise they become proposals in Links. Off unless the caller says so.
+    pub owner_turn: bool,
     effects: Mutex<Vec<Effect>>,
 }
 
@@ -345,6 +354,7 @@ impl Ctx {
             now: Utc::now(),
             origin: Origin::Owner,
             confirmed: false,
+            owner_turn: false,
             effects: Mutex::new(Vec::new()),
         }
     }
@@ -352,6 +362,12 @@ impl Ctx {
     /// Running an action the owner confirmed.
     pub fn confirmed(mut self) -> Self {
         self.confirmed = true;
+        self
+    }
+
+    /// The turn is the owner's own message (see [`Ctx::owner_turn`]).
+    pub fn owner_turn(mut self) -> Self {
+        self.owner_turn = true;
         self
     }
 
