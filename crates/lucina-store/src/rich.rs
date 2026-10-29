@@ -26,6 +26,11 @@ const MAX_LABEL: usize = 40;
 const MAX_CELL: usize = 80;
 const MAX_PAYLOAD_TEXT: usize = 500;
 pub const MAX_PLACES: usize = 3;
+/// `image` blocks per message.
+pub const MAX_IMAGES: usize = 2;
+const MAX_IMAGE_SRC: usize = 300;
+const MAX_ALT: usize = 200;
+const MAX_IMAGE_SIDE: u64 = 4096;
 const MAX_ADDRESS: usize = 200;
 const MAX_EVENT_ID: usize = 200;
 /// A `route` to the in-app place map, `/map/place?<query>` (iOS: `secretary://open/map/place?…`).
@@ -424,7 +429,85 @@ pub fn normalize_block(raw: &Value) -> Option<Value> {
         }
         "model3d" => crate::model3d::normalize(raw),
         "place" => normalize_place(raw),
+        "image" => normalize_image(raw),
         _ => None,
+    }
+}
+
+/// An image `src`: a path of this API (`/v1/…`, no `..`, no `//`) or an
+/// `https://` URL on getsecretary.tech; at most 300 characters.
+pub fn valid_image_src(src: &str) -> bool {
+    if src.is_empty() || src.len() > MAX_IMAGE_SRC || src.contains("..") {
+        return false;
+    }
+    let safe = |p: &str| {
+        !p.contains("//")
+            && p.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"/_-.%?=&~".contains(&b))
+    };
+    if src.starts_with("/v1/") {
+        return safe(src);
+    }
+    let Some(rest) = src.strip_prefix("https://") else {
+        return false;
+    };
+    let (host, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+    host.eq_ignore_ascii_case("getsecretary.tech") && (path.is_empty() || safe(path))
+}
+
+/// An `image` block: a safe `src` (else dropped), `alt`/`caption` clipped,
+/// `width`/`height` kept when sensible.
+fn normalize_image(raw: &Value) -> Option<Value> {
+    let src = raw["src"].as_str()?.trim();
+    if !valid_image_src(src) {
+        return None;
+    }
+    let mut b = Map::new();
+    b.insert("type".into(), str_v("image"));
+    b.insert("src".into(), str_v(src));
+    for k in ["alt", "caption"] {
+        let t = line(&raw[k], MAX_ALT);
+        if !t.is_empty() {
+            b.insert(k.into(), str_v(&t));
+        }
+    }
+    for k in ["width", "height"] {
+        if let Some(n) = raw[k].as_u64().filter(|n| (1..=MAX_IMAGE_SIDE).contains(n)) {
+            b.insert(k.into(), json!(n));
+        }
+    }
+    Some(Value::Object(b))
+}
+
+static PUBLIC_BASE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// The public base URL of the apps' API (`LUCINA_PUBLIC_URL`): plain-text
+/// image lines link to it. Unset: no link.
+pub fn set_public_base(url: &str) {
+    let url = url.trim().trim_end_matches('/');
+    if url.starts_with("https://") || url.starts_with("http://") {
+        let _ = PUBLIC_BASE.set(url.to_owned());
+    }
+}
+
+/// `🗺️ <caption>`, plus the image's link when it can be opened from outside.
+pub fn image_text(block: &Value) -> String {
+    let src = s(block, "src");
+    let mut label = s(block, "caption").to_owned();
+    if label.is_empty() {
+        label = s(block, "alt").to_owned();
+    }
+    if label.is_empty() {
+        label = "Map".into();
+    }
+    let link = if src.starts_with("https://") {
+        Some(src.to_owned())
+    } else {
+        PUBLIC_BASE.get().map(|b| format!("{b}{src}"))
+    };
+    match link {
+        Some(l) => format!("🗺️ {label} — {l}"),
+        None => format!("🗺️ {label}"),
     }
 }
 
@@ -658,9 +741,13 @@ pub fn normalize(input: &Value) -> Result<(RichMessage, Vec<String>), Vec<String
         .unwrap_or(&[])
     {
         let places = blocks.iter().filter(|b| b["type"] == "place").count();
+        let images = blocks.iter().filter(|b| b["type"] == "image").count();
         match normalize_block(raw) {
             Some(b) if b["type"] == "place" && places >= MAX_PLACES => {
                 dropped.push("block \"place\" (over 3)".into())
+            }
+            Some(b) if b["type"] == "image" && images >= MAX_IMAGES => {
+                dropped.push("block \"image\" (over 2)".into())
             }
             Some(b) if blocks.len() >= MAX_BLOCKS => {
                 dropped.push(format!("block {} (over {MAX_BLOCKS})", b["type"]));
@@ -707,6 +794,23 @@ pub fn normalize(input: &Value) -> Result<(RichMessage, Vec<String>), Vec<String
         },
         dropped,
     ))
+}
+
+/// Code-made blocks first (a tool's map card or image), then the composer's:
+/// each normalized, within the block limits (8 in all, 3 places, 2 images).
+pub fn merge_blocks(primary: &[Value], secondary: Vec<Value>) -> Vec<Value> {
+    let mut out: Vec<Value> = Vec::new();
+    let preset = primary.iter().filter_map(normalize_block);
+    for b in preset.chain(secondary) {
+        let count = |t: &str| out.iter().filter(|x| x["type"] == t).count();
+        let full = out.len() >= MAX_BLOCKS
+            || (b["type"] == "place" && count("place") >= MAX_PLACES)
+            || (b["type"] == "image" && count("image") >= MAX_IMAGES);
+        if !full {
+            out.push(b);
+        }
+    }
+    out
 }
 
 /// Code-made actions first (confirmations, hints), then the model's: at most
@@ -947,6 +1051,7 @@ pub fn block_to_text(block: &Value, lang: &str, list_limit: usize) -> Vec<String
         "link_preview" => vec![format!("🔗 [{}]({})", s(block, "title"), s(block, "url"))],
         "model3d" => vec![crate::model3d::plain_text(block)],
         "place" => vec![place_text(block)],
+        "image" => vec![image_text(block)],
         _ => Vec::new(),
     }
 }
@@ -1726,5 +1831,57 @@ mod secret_action_tests {
         )
         .unwrap();
         assert!(a["payload"].get("name").is_none());
+    }
+
+    #[test]
+    fn image_blocks_are_safe_and_few() {
+        let img = |src: &str| {
+            normalize_block(
+                &json!({"type": "image", "src": src, "alt": "Map", "caption": "AU building 1532", "width": 800, "height": 600}),
+            )
+        };
+        let b = img("/v1/au/map.png?building=1532&z=17").unwrap();
+        assert_eq!(b["src"], "/v1/au/map.png?building=1532&z=17");
+        assert_eq!(b["width"], 800);
+        assert_eq!(b["caption"], "AU building 1532");
+        assert!(img("https://getsecretary.tech/v1/au/map.png?z=17").is_some());
+        for bad in [
+            "//evil.example/x.png",
+            "/v1//evil.example/x.png",
+            "javascript:alert(1)",
+            "/v1/../etc/passwd",
+            "/v1/au/../../x",
+            "https://evil.example/x.png",
+            "https://getsecretary.tech.evil.example/x.png",
+            "http://getsecretary.tech/x.png",
+            "/api/secretary/au/map.png",
+            "data:image/png;base64,AAAA",
+            "/v1/au/map.png?q=a b",
+        ] {
+            assert!(img(bad).is_none(), "{bad}");
+        }
+        assert!(img(&format!("/v1/{}", "a".repeat(300))).is_none());
+        let long = normalize_block(
+            &json!({"type": "image", "src": "/v1/x.png", "alt": "a".repeat(500), "width": 0}),
+        )
+        .unwrap();
+        assert_eq!(long["alt"].as_str().unwrap().chars().count(), 200);
+        assert!(long.get("width").is_none());
+        let (m, dropped) = normalize(&json!({"bubbles": ["Ecco"], "blocks": [
+            {"type": "image", "src": "/v1/a.png"}, {"type": "image", "src": "/v1/b.png"}, {"type": "image", "src": "/v1/c.png"}
+        ]})).unwrap();
+        assert_eq!(m.blocks.len(), 2);
+        assert_eq!(dropped, [r#"block "image" (over 2)"#]);
+        assert_eq!(block_to_text(&m.blocks[0], "it", 5), ["🗺️ Map"]);
+        assert_eq!(image_text(&b), "🗺️ AU building 1532");
+        let merged = merge_blocks(
+            &[
+                json!({"type": "image", "src": "/v1/x.png"}),
+                json!({"type": "image", "src": "//evil"}),
+            ],
+            m.blocks.clone(),
+        );
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0]["src"], "/v1/x.png");
     }
 }

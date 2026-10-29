@@ -13,7 +13,8 @@
 //!   expiry) is stored and runs only after the owner's explicit yes in a
 //!   later turn.
 //! - [`tools`]: `time`, `weather`, `calculator`, `unit_convert`, `places`,
-//!   `notes`, `reminders`, `calendar`, `tasks`, `memos` (voice memos), `shopping`, `presence`, `avatar_outfit`, `notify`,
+//!   `au_people_search`, `au_building`, `au_campus_map` (AU Find, Aarhus
+//!   University, through the local af-server; [`tools::au`]), `notes`, `reminders`, `calendar`, `tasks`, `memos` (voice memos), `shopping`, `presence`, `avatar_outfit`, `notify`,
 //!   the owner-only `secrets_status` / `secrets_audit` ([`OWNER_ONLY_TOOLS`]),
 //!   the delegation tools `ask_claude`, `ask_grok`, `ask_chatgpt`, `delegate`
 //!   ([`SideEffect::Delegate`]: Lucina's own decision, no confirmation); none of
@@ -124,6 +125,12 @@ pub enum Effect {
     /// times): the reply gets a map card for those it names that have a location.
     CalendarEvents {
         events: Vec<Value>,
+    },
+    /// An image for the reply (an `image` block: the AU campus map PNG).
+    Image {
+        src: String,
+        alt: String,
+        caption: String,
     },
     /// The turn used an owner-only plugin tool (Instagram, Pixiv): the server
     /// keeps the exchange out of Honcho (the long-term memory).
@@ -241,6 +248,8 @@ pub struct ToolEnv {
     pub approvals: Option<Arc<lucina_approvals::Approvals>>,
     /// The ops record (`ops`): deploys, incidents, decisions of every project.
     pub ops: Option<Arc<lucina_ops::Ops>>,
+    /// af-server (AU Find) base URL (`LUCINA_AU_URL`); `None`: `LUCINA_AU=off`.
+    pub au_url: Option<String>,
 }
 
 impl ToolEnv {
@@ -292,6 +301,7 @@ impl ToolEnv {
             plugins: tools::plugins::Plugins::default(),
             approvals: None,
             ops: None,
+            au_url: None,
         }
     }
 }
@@ -679,10 +689,11 @@ mod tests {
             .unwrap_err()
             .contains("no money movement"));
         let all = Registry::builtin(&ToolSelection::All);
-        assert_eq!(all.names().len(), 32);
-        assert_eq!(all.without(OWNER_ONLY_TOOLS).names().len(), 20);
+        assert_eq!(all.names().len(), 35);
+        assert_eq!(all.without(OWNER_ONLY_TOOLS).names().len(), 23);
         let mcp = all.without(NO_MCP_TOOLS);
-        assert_eq!(mcp.names().len(), 16);
+        assert_eq!(mcp.names().len(), 19);
+        assert!(mcp.get("au_people_search").is_some());
         for n in tools::plugins::NAMES {
             assert!(OWNER_ONLY_TOOLS.contains(n) && all.get(n).is_some(), "{n}");
             assert!(mcp.get(n).is_none(), "{n}");

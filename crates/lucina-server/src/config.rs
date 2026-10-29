@@ -214,6 +214,11 @@ pub struct Config {
     pub hospital: crate::bot_hospital::HospitalConfig,
     /// `LUCINA_DELIVERY_ALERT_AFTER_MIN` (default 5): a delivery path down this long alerts the owner.
     pub delivery_alert_after: Duration,
+    /// `LUCINA_AU` (default on; `off` disables): AU Find (Aarhus University) people,
+    /// buildings and campus maps, see `lucina_tools::tools::au`.
+    pub au_enabled: bool,
+    /// `LUCINA_AU_URL` (default `http://127.0.0.1:18211`): the af-server.
+    pub au_url: String,
 }
 
 impl std::fmt::Debug for Config {
@@ -544,6 +549,15 @@ impl Config {
             delivery_alert_after: Duration::from_secs(
                 num("LUCINA_DELIVERY_ALERT_AFTER_MIN", 5).max(1) * 60,
             ),
+            au_enabled: !get("LUCINA_AU").is_some_and(|v| {
+                matches!(
+                    v.trim().to_ascii_lowercase().as_str(),
+                    "off" | "false" | "0" | "no"
+                )
+            }),
+            au_url: get("LUCINA_AU_URL")
+                .map(|u| u.trim().trim_end_matches('/').to_owned())
+                .unwrap_or_else(|| lucina_tools::tools::au::DEFAULT_URL.into()),
             plugins: PluginsConfig {
                 instagram_url: get("LUCINA_INSTAGRAM_URL"),
                 instagram_secret_file: get("LUCINA_INSTAGRAM_GATEWAY_SECRET_FILE")

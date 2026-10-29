@@ -38,6 +38,7 @@ use crate::{jobs, AppState, PlannerMode};
 use lucina_store::recent::RecentChat;
 use lucina_store::timeline::{Attachment, TimelineStore};
 
+mod au_turn;
 pub mod drive_turn;
 pub mod media_turn;
 pub mod memo_turn;
@@ -405,6 +406,8 @@ struct Finish {
     job_plan: Option<Value>,
     /// Buttons the tools asked for (a Gallery page with what Lucina found).
     routes: Vec<Value>,
+    /// Widgets the turn made itself (an AU map card and image), before the composer's.
+    blocks: Vec<Value>,
     /// Calendar events the turn read: the reply gets map cards for those it names.
     calendar_events: Vec<Value>,
     /// A calendar question the calendar answered: the reply is its agenda (crate::agenda).
@@ -422,6 +425,7 @@ impl Finish {
             job: None,
             job_plan: None,
             routes: Vec::new(),
+            blocks: Vec::new(),
             calendar_events: Vec::new(),
             agenda: None,
         }
@@ -451,12 +455,11 @@ async fn not_run(t: &Turn<'_>, memory: &str, action: &str) -> Finish {
         "{} The agent's message reads like a request for \"{action}\": do not claim you started, scheduled or ran anything. Answer it as a consultation, briefly.",
         t.extra_system
     );
-    let text = t
-        .st
-        .planner
-        .generate_reply(&t.input(memory, t.platform_label()), &extra, "", "reply")
-        .await
-        .unwrap_or_default();
+    let text =
+        t.st.planner
+            .generate_reply(&t.input(memory, t.platform_label()), &extra, "", "reply")
+            .await
+            .unwrap_or_default();
     let text = if text.trim().is_empty() {
         "I only answer agents here: I did not start anything.".to_owned()
     } else {
@@ -464,7 +467,8 @@ async fn not_run(t: &Turn<'_>, memory: &str, action: &str) -> Finish {
     };
     let mut f = Finish::reply(text, "reply");
     f.extra.insert("notRun".into(), json!(action));
-    f.extra.insert("hint".into(), json!(mcp::consult_hint(action)));
+    f.extra
+        .insert("hint".into(), json!(mcp::consult_hint(action)));
     f
 }
 
@@ -952,7 +956,24 @@ async fn run_turn_scoped(
         )
         .await
     };
-    let rich_msg = with_routes(rich_msg, &finish.routes);
+    // A turn's own blocks and buttons (an AU map, "Search au.dk") need a rich message even when the
+    // composer is off or gave none.
+    let rich_msg = match rich_msg {
+        None if t.origin.is_none()
+            && finish.action == au_turn::ACTION
+            && (!finish.blocks.is_empty() || !finish.routes.is_empty()) =>
+        {
+            Some(lucina_store::rich::RichMessage {
+                format: "v1".into(),
+                bubbles: vec![reply.clone()],
+                lang: Some(crate::rich::guess_language(&reply, &t.message).to_owned()),
+                blocks: Vec::new(),
+                actions: Vec::new(),
+            })
+        }
+        m => m,
+    };
+    let rich_msg = with_blocks(with_routes(rich_msg, &finish.routes), &finish.blocks);
     t.recent()
         .append(t.recent_key(), "assistant", &remembered, Utc::now());
     remember_turn(&st, &t, &finish.action, &remembered, &finish.action_result);
@@ -1470,7 +1491,8 @@ async fn json_turn(
     }
     // A decision's status ("what's the state of dc-…?"), for anyone who asks: from the log, no routing.
     if let Some(reply) = crate::decide::status_answer(st, &t.message) {
-        return Finish::reply(reply, "decision").with("[decision status]", Some(Meta::kind("decision")));
+        return Finish::reply(reply, "decision")
+            .with("[decision status]", Some(Meta::kind("decision")));
     }
 
     // A YouTube link and "transcribe / report / summarise" (crate::video): a background job.
@@ -1507,6 +1529,11 @@ async fn json_turn(
 
     // The ops record (crate::ops): "what happened with X" from the record; the owner's decisions recorded.
     if let Some(f) = ops_turn::try_turn(t, memory, Utc::now()).await {
+        return f;
+    }
+
+    // AU Find (Aarhus University people, buildings, campus maps): read-only, MCP turns included.
+    if let Some(f) = au_turn::try_turn(t, memory).await {
         return f;
     }
 
@@ -1591,7 +1618,10 @@ async fn json_turn(
     if st.cfg.notes_enabled {
         let pending = !st.bridge_state.pending_part(&t.session).is_empty();
         if let Some(intent) = nt::parse_notes_intent(&t.message, pending) {
-            let read = matches!(intent, nt::NotesIntent::Read { .. } | nt::NotesIntent::List { .. });
+            let read = matches!(
+                intent,
+                nt::NotesIntent::Read { .. } | nt::NotesIntent::List { .. }
+            );
             if !(t.may("notes") || (t.consult && read)) {
                 return not_run(t, memory, "notes").await;
             }
@@ -2586,6 +2616,18 @@ fn with_routes(
     Some(msg)
 }
 
+/// The turn's own blocks first, then the composer's (within the format's limits).
+fn with_blocks(
+    msg: Option<lucina_store::rich::RichMessage>,
+    blocks: &[Value],
+) -> Option<lucina_store::rich::RichMessage> {
+    let mut msg = msg?;
+    if !blocks.is_empty() {
+        msg.blocks = lucina_store::rich::merge_blocks(blocks, std::mem::take(&mut msg.blocks));
+    }
+    Some(msg)
+}
+
 fn effects_to_finish(effects: &[Effect], reply: String) -> Finish {
     let lang = crate::rich::guess_language(&reply, "");
     let mut f = Finish::reply(reply, "reply");
@@ -2595,6 +2637,15 @@ fn effects_to_finish(effects: &[Effect], reply: String) -> Finish {
     }) {
         f.routes.push(gallery_action(&path, count, lang));
     }
+    f.blocks = effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::Image { src, alt, caption } => Some(json!({
+                "type": "image", "src": src, "alt": alt, "caption": caption, "width": 800, "height": 600,
+            })),
+            _ => None,
+        })
+        .collect();
     if effects.iter().any(|e| matches!(e, Effect::PrivateTurn)) {
         // Instagram / Pixiv: never remembered (see `remember_turn`).
         f.action = PRIVATE_ACTION.into();

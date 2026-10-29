@@ -70,6 +70,8 @@ pub struct Capabilities {
     pub drive: bool,
     /// My own Cua computers (`LUCINA_COMPUTER_USE_ENABLED`, the `computer` tool).
     pub computer_use: bool,
+    /// `LUCINA_AU` (default on; `off` disables): AU Find through the local af-server.
+    pub au: bool,
 }
 
 impl Capabilities {
@@ -109,6 +111,12 @@ impl Capabilities {
             mcp_trusted: is_true("LUCINA_MCP_TRUSTED"),
             drive: is_true("LUCINA_DRIVE"),
             computer_use: is_true("LUCINA_COMPUTER_USE_ENABLED"),
+            au: get("LUCINA_AU").is_none_or(|v| {
+                !matches!(
+                    v.trim().to_ascii_lowercase().as_str(),
+                    "off" | "false" | "0" | "no"
+                )
+            }),
         }
     }
 
@@ -183,6 +191,7 @@ impl Capabilities {
             add(self.secretary, format!("Lucina MCP: ChatGPT, Grok and Claude Code can ask me on Giuseppe's behalf. MCP guard: they may only {}; anything else waits for Giuseppe's own yes in the app or on Telegram.", Self::mcp_allowed_phrase()), None);
         }
         add(self.computer_use, "My own isolated computers on nezopt (the `computer` tool): a Linux desktop, lucina-workspace, with Chromium, a terminal and files, and an Android sandbox, lucina-android. I use them myself for real browsing, downloads, web forms and checking how things look: a whole job via action `task` (my computer-use engine, Hermes with the official Cua plugin), or direct steps (bash, screenshot, driver tools). They have no access to Giuseppe's own machines or files. Giuseppe can watch and take over the desktop from the Secretary apps. The desktop is a sandbox container on nezopt, not nezopt's host and not Giuseppe's Mac. Its only browser is Chromium, one window already open and signed in to Giuseppe's accounts (Outlook, Google): for web pages I work in that window with get_window_state, click, type_text and press_key (action `tool`), and I never open a second browser or install or launch Firefox. In those signed-in sessions I read and navigate, but never send email or messages, buy anything, accept terms or change account settings without Giuseppe's explicit OK.".into(), Some("My own computers are off on this runtime (LUCINA_COMPUTER_USE_ENABLED)."));
+        add(self.au, "AU Find: Aarhus University people (position, building-room, email, phone), buildings and campus maps from AU Find (aufind); the `au_people_search`, `au_building` and `au_campus_map` tools.".into(), Some("AU Find is off on this runtime (LUCINA_AU)."));
         add(self.drive, "My own Google Drive (mylucina20@gmail.com): list, search, read and write my files, make folders, rename, move and trash (the `drive` tool); the operator moves files in and out with `lucina drive get` / `lucina drive put`.".into(), None);
         add(
             self.reminders,
@@ -304,6 +313,12 @@ mod tests {
         assert!(b.contains("- Tasks from chat are off (LUCINA_TASKS)."));
         assert!(looks_like_self_description("cosa sai fare?"));
         assert!(!looks_like_self_description("ciao"));
+        assert!(b.contains("- AU Find: Aarhus University people (position, building-room, email, phone), buildings and campus maps from AU Find (aufind)"));
+        let off =
+            Capabilities::from_lookup(&|k: &str| (k == "LUCINA_AU").then(|| "off".to_owned()));
+        assert!(off
+            .block()
+            .contains("AU Find is off on this runtime (LUCINA_AU)."));
     }
 
     fn caps(flags: &[(&str, &str)]) -> Capabilities {

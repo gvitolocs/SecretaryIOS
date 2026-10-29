@@ -8,6 +8,10 @@
 //! that asks her to check, explore, open or read the owner's Outlook or Gmail,
 //! goes straight to the `computer_task` action (read-only by default).
 //!
+//! Asking her to read an Aarhus University site in her browser ("use your
+//! browser on www.au.dk to find …", the AU Find fallback button) goes there
+//! too, read-only, with the AU site rules.
+//!
 //! Speech-to-text slips are corrected by context first ("Explode outlook" is
 //! "Explore Outlook"); the task carries the corrected text.
 
@@ -52,6 +56,12 @@ pub const CONFIRM_SUFFIX: &str = "Use the Outlook (givi@au.dk) tab already open 
 
 /// Added when the question is about mail already sent.
 pub const SENT_HINT: &str = "For a question about sent mail, open the Sent folder (Sent Items, Posta inviata) first, and answer briefly with what you actually saw (yes or no).";
+
+/// For an AU site in her browser (not the mail): the four AU sites, quoted text, no logins.
+pub const AU_WEB_SUFFIX: &str = "Use your one Chromium window (a new tab with ctrl+t) through accessibility tools (get_window_state, click, type_text, press_key). Read only: stay on www.au.dk, mit.au.dk, brightspace.au.dk and pure.au.dk and links actually seen on their pages; quote the exact page text with its URL; stop at any login or credentials page and never type the owner's AU credentials.";
+
+/// Aarhus University's sites she may read.
+const AU_SITE: &str = r"\b(?:www|mit|brightspace|pure)\.au\.dk\b";
 
 const REMINDER: &str = r"\b(?:remind me|set a reminder|reminders?|ricordami|promemoria|avvisami|mi ricordi|minde mig|p[åa]mind\w*)\b";
 
@@ -105,6 +115,16 @@ pub fn fix_stt(text: &str) -> String {
     out
 }
 
+/// The AU site a browser request names (`www.au.dk`), when it is not about the mail.
+fn au_site(text: &str) -> Option<String> {
+    if re!(MAIL_STRONG, "i").test(text) {
+        return None;
+    }
+    re!(AU_SITE, "i")
+        .find(text)
+        .map(|(_, _, site)| site.to_ascii_lowercase())
+}
+
 fn app_of(text: &str) -> App {
     if re!(r"\b(?:g[\s-]?mail|google mail)\b", "i").test(text)
         && !re!(r"\bout[\s-]?look\b", "i").test(text)
@@ -130,7 +150,8 @@ pub fn classify(text: &str) -> Option<Mode> {
     let routed = (computer && (strong || weak))
         || (strong && re!(LOOK, "i").test(t))
         || (re!(OWNER_SENT, "i").test(t) && (strong || weak))
-        || (re!(MY_MAIL, "i").test(t) && re!(LOOK, "i").test(t));
+        || (re!(MY_MAIL, "i").test(t) && re!(LOOK, "i").test(t))
+        || (computer && re!(AU_SITE, "i").test(t) && re!(LOOK, "i").test(t));
     if !routed {
         return None;
     }
@@ -150,6 +171,9 @@ pub fn wants_computer(text: &str) -> bool {
 pub fn task_text(text: &str, mode: Mode) -> String {
     let fixed = fix_stt(text);
     let fixed = fixed.trim();
+    if mode == Mode::ReadOnly && au_site(fixed).is_some() {
+        return format!("{fixed}\n\n{AU_WEB_SUFFIX}");
+    }
     let app = app_of(fixed);
     let suffix = match (mode, app) {
         (Mode::NeedsConfirmation, _) => CONFIRM_SUFFIX,
@@ -217,10 +241,18 @@ pub fn plan(text: &str) -> Option<Value> {
     let mode = classify(text)?;
     let fixed = fix_stt(text);
     let lang = lang_of(&fixed);
+    let ack = match au_site(&fixed).filter(|_| mode == Mode::ReadOnly) {
+        Some(site) => match lang {
+            "it" => format!("Ok, apro {site} sul mio computer e do un'occhiata — solo lettura."),
+            "da" => format!("Ok, jeg åbner {site} på min computer og kigger — kun læsning."),
+            _ => format!("Ok, I'm opening {site} on my computer and having a look — read-only."),
+        },
+        None => ack(lang, app_of(&fixed), mode),
+    };
     Some(json!({
         "action": "computer_task",
         "task": task_text(text, mode),
-        "ack": ack(lang, app_of(&fixed), mode),
+        "ack": ack,
     }))
 }
 
@@ -359,5 +391,22 @@ mod tests {
         let p = plan("open Gmail in your own browser").unwrap();
         assert!(p["task"].as_str().unwrap().contains(READ_ONLY_SUFFIX_GMAIL));
         assert!(plan("ciao").is_none());
+    }
+
+    #[test]
+    fn an_au_site_in_her_browser_is_read_only_with_the_au_rules() {
+        for text in [
+            "Use your browser on www.au.dk to find \"Dennis Vittrup\" (staff pages only; quote the page text and its URL; stop at any login).",
+            "Usa il tuo browser su www.au.dk per cercare \"Dennis Vittrup\" (solo pagine del personale; cita il testo della pagina e il suo URL; fermati a qualsiasi login).",
+        ] {
+            assert_eq!(classify(text), Some(Mode::ReadOnly), "{text}");
+            let p = plan(text).unwrap();
+            let task = p["task"].as_str().unwrap();
+            assert!(task.ends_with(AU_WEB_SUFFIX), "{task}");
+            assert!(!task.contains("Outlook"), "{task}");
+            assert!(p["ack"].as_str().unwrap().contains("www.au.dk"), "{p}");
+        }
+        assert!(classify("what is www.au.dk?").is_none());
+        assert!(classify("find Dennis on www.au.dk").is_none());
     }
 }

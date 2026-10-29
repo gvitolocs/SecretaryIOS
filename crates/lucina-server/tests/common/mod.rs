@@ -49,6 +49,8 @@ pub async fn harness_with(
     cfg.reminders_writer = WriterKind::Local;
     cfg.memory_mode = MemoryMode::Off;
     cfg.planner = PlannerMode::Json;
+    // Hermetic: never read the live AU Find (af-server) on this machine; tests/au.rs turns it on.
+    cfg.au_enabled = false;
     // The tests' dates and reminders are written for Rome; the production default is Europe/Copenhagen.
     cfg.time_zone = chrono_tz::Europe::Rome;
     cfg.recovery_companion_path = Some(dir.path().join("none.md"));

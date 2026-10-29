@@ -1,6 +1,7 @@
 //! Built-in tools.
 
 pub mod computer;
+pub mod au;
 pub mod avatar;
 pub mod calculator;
 pub mod calendar;
@@ -37,6 +38,9 @@ pub fn builtin() -> Vec<Arc<dyn Tool>> {
         Arc::new(calculator::CalculatorTool),
         Arc::new(units::UnitConvertTool),
         Arc::new(places::PlacesTool),
+        Arc::new(au::AuPeopleSearchTool),
+        Arc::new(au::AuBuildingTool),
+        Arc::new(au::AuCampusMapTool),
         Arc::new(notes::NotesTool),
         Arc::new(reminders::RemindersTool),
         Arc::new(calendar::CalendarTool),

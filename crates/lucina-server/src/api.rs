@@ -457,6 +457,10 @@ async fn route(
     if resource == Some("prompter") {
         return crate::prompter::route(method, &parts[1..], body).await;
     }
+    // AU Find (crate::au): Aarhus University people, buildings, map PNGs for secretary-server and the MCP.
+    if resource == Some("au") && parts.len() == 2 {
+        return crate::au::route(st, method, uri, &parts[1..]).await;
+    }
     // The ops record (crate::ops): records, search, Map/ pages.
     if resource == Some("ops") && parts.len() <= 3 {
         return crate::ops::route(st, method, uri, headers, &parts[1..], body).await;
