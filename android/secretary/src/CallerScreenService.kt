@@ -1,18 +1,14 @@
 package tech.getsecretary.secretary
 
-import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import android.provider.ContactsContract
-import android.net.Uri
 import android.telecom.Call
 import android.telecom.CallScreeningService
 import java.util.Locale
@@ -23,12 +19,14 @@ import java.util.concurrent.atomic.AtomicBoolean
 import org.json.JSONObject
 
 /**
- * Screens incoming calls with Jev through Rust (`Native.localVerdict` / `Native.screenCall`).
+ * Screens incoming calls with Jev through Rust (`Native.localVerdict` / `Native.screenCall`) and applies the owner's
+ * auto-reject rule, which is the shared core's `reject_decision` run in Rust.
  *
- * The call is allowed at once. It is silenced or rejected only when the owner turned that switch on himself and
- * Rust says the verdict is Jev's and reaches the threshold; then the answer waits for the verdict, but never
- * longer than [WAIT_MS], far inside the system's 5 s. The call log and the missed-call notification are never skipped.
- * A heads-up notification shows the instant rules verdict and is replaced by the server's. Nothing is logged.
+ * The phone-side guards (contact, called or answered before, emergency number) are read first. If one of them already
+ * puts the call through, or one could not be checked, or the rule is off, the call is allowed at once and the verdict
+ * only labels it. Otherwise the answer waits for the server's verdict, at most [WAIT_MS] (far inside the system's 5 s),
+ * and rejects only if Rust says so in time; the fallback rules never reject. A rejected call stays in the call log and is
+ * announced by a quiet note with the Allow buttons ([RejectNotice]). Nothing is logged.
  */
 class CallerScreenService : CallScreeningService() {
     override fun onScreenCall(details: Call.Details) {
@@ -44,15 +42,16 @@ class CallerScreenService : CallScreeningService() {
             ""
         }
         val lang = Locale.getDefault().language
-        val waits = try {
-            unwrap(Native.callerState(dir)).getJSONObject("settings").let { it.optBoolean("silence") || it.optBoolean("reject") }
-        } catch (e: Exception) {
-            false
-        }
+        val checks = CallFacts.collect(app, number)
+        val unchecked = ScreenPlan.unchecked(checks)
+        val input = CallFacts.json(checks)
+        input.put("number", number)
+        val inputJson = input.toString()
+        val waits = !unchecked && safely(false) { unwrap(Native.dialer(dir, "plan", inputJson)).optBoolean("wait") }
+        val started = SystemClock.elapsedRealtime()
         val answered = AtomicBoolean(false)
-        val answer = { action: String ->
-            if (answered.compareAndSet(false, true)) respondToCall(details, response(action))
-        }
+        /** Sends the response once; true only if this call is the one that went out. */
+        val answer = { action: String -> answered.compareAndSet(false, true).also { if (it) respondToCall(details, response(action)) } }
         // Telecom may ask this service twice for one call (as the call-screening app and as the phone app):
         // the second ask waits for the first one's verdict and gives the same answer, so a number is looked up once.
         val key = number.ifEmpty { "private" }
@@ -85,24 +84,27 @@ class CallerScreenService : CallScreeningService() {
             ""
         }
         Thread {
-            var action = "allow"
+            var sent = "allow"
             try {
-                val input = JSONObject()
-                contactName(app, number)?.let { input.put("contact", it) }
-                val json = input.toString()
                 // As the phone app, the call screen shows the label itself (and its heads-up has the buttons);
-                // a second heads-up would only repeat it.
+                // a second heads-up would only repeat it. While waiting to reject, no label is shown before the verdict.
                 val own = !Phone.isDefaultDialer(app)
-                if (own) post(app, number, unwrap(Native.localVerdict(dir, number, json, lang)))
-                val verdict = unwrap(Native.screenCall(dir, cookie, number, json, lang))
-                if (own) post(app, number, verdict)
-                action = verdict.optString("action", "allow")
+                if (own && !waits) post(app, number, unwrap(Native.localVerdict(dir, number, inputJson, lang)))
+                val verdict = unwrap(Native.screenCall(dir, cookie, number, inputJson, lang))
+                val inTime = SystemClock.elapsedRealtime() - started <= WAIT_MS
+                val action = ScreenPlan.action(verdict.optString("action"), waits, unchecked, inTime)
+                if (answer(action) && action == "reject") {
+                    sent = "reject"
+                    afterRejection(app, cookie, dir, verdict)
+                } else if (own) {
+                    post(app, number, verdict)
+                }
             } catch (e: Throwable) {
                 // Screening never gets in the way of the call.
             } finally {
-                mine.action = action
+                mine.action = sent
                 mine.done.countDown()
-                answer(action)
+                answer("allow")
                 // The verdict is now in the cache: refresh the call screen and its notification.
                 try {
                     LucinaCallService.live?.refresh()
@@ -113,12 +115,21 @@ class CallerScreenService : CallScreeningService() {
     }
 
     private fun response(action: String): CallResponse {
-        val b = CallResponse.Builder()
-        when (action) {
-            "silence" -> b.setSilenceCall(true)
-            "reject" -> b.setDisallowCall(true).setRejectCall(true).setSkipCallLog(false).setSkipNotification(false)
-        }
-        return b.build()
+        val r = ScreenPlan.response(action)
+        return CallResponse.Builder()
+            .setDisallowCall(r.disallow)
+            .setRejectCall(r.reject)
+            .setSkipCallLog(r.skipLog)
+            .setSkipNotification(r.skipNotification)
+            .build()
+    }
+
+    /** The call really was rejected: log it, tell Lucina (queued), and leave the quiet note with the Allow buttons. */
+    private fun afterRejection(app: Context, cookie: String, dir: String, verdict: JSONObject) {
+        val r = verdict.optJSONObject("reject") ?: return
+        val logged = safely<JSONObject?>(null) { unwrap(Native.dialer(dir, "rejected", r.toString())) }
+        RejectNotice.post(app, logged?.optString("id") ?: System.currentTimeMillis().toString(), r.optString("number"), r.optString("line"))
+        safely(Unit) { Native.callerFlush(dir, cookie) }
     }
 
     /** One screening of one call, shared by a second ask for the same number. */
@@ -131,7 +142,7 @@ class CallerScreenService : CallScreeningService() {
     }
 
     companion object {
-        /** The longest the answer waits for Jev, when silence or reject is on. */
+        /** The longest the answer waits for Jev, when the call could be rejected. */
         const val WAIT_MS = 1500L
 
         /** Two asks for one number this close together are one call. */
@@ -140,19 +151,6 @@ class CallerScreenService : CallScreeningService() {
         private const val CHANNEL = "caller_screening"
         private const val TAG = "caller"
         private const val TIMEOUT_MS = 120_000L
-
-        /** The contact's name, if the owner allowed contacts and the number is in them. */
-        private fun contactName(c: Context, number: String): String? {
-            if (number.isEmpty() || c.checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) return null
-            return try {
-                val uri = Uri.withAppendedPath(ContactsContract.PhoneLookup.CONTENT_FILTER_URI, Uri.encode(number))
-                c.contentResolver.query(uri, arrayOf(ContactsContract.PhoneLookup.DISPLAY_NAME), null, null, null)?.use {
-                    if (it.moveToFirst()) it.getString(0) else null
-                }
-            } catch (e: Exception) {
-                null
-            }
-        }
 
         /** Shows or replaces the heads-up notification for [number] (one per number). */
         private fun post(c: Context, number: String, s: JSONObject) {

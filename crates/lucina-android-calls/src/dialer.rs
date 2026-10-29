@@ -8,6 +8,7 @@
 //! | `callLog` | `{"rows": [LogIn…], "tzOffsetMin"?, "lang"?}` → `{"rows": [LogRow…]}` |
 //! | `missed` | `{"count", "number"?, "name"?, "lang"?}` → `{"title", "text"}` |
 //! | `voicemail` | `{"count"}` → `{"clear": bool, "title", "text"}` |
+//! | `plan`, `rejected`, `allow`, `rejections`, `order` | auto-reject, see [`crate::reject`] |
 //!
 //! Nothing here places, answers or rejects a call, and nothing here is on the
 //! emergency-call path: dialing an emergency number never reaches this module.
@@ -251,6 +252,9 @@ pub fn run(store: &Store, op: &str, v: &Value, now: u64) -> Result<Value> {
             now,
         )),
         "voicemail" => Ok(voicemail(v["count"].as_i64().unwrap_or(-1))),
+        "plan" | "rejected" | "allow" | "rejections" | "order" => {
+            crate::reject::run(store, op, v, now)
+        }
         _ => Err("Unknown phone operation.".into()),
     }
 }

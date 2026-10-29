@@ -25,5 +25,5 @@ compiler_cp+=:$(m2jar org.jetbrains annotations 13.0)
 out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
 "$java" -Xmx1g -cp "$compiler_cp" org.jetbrains.kotlin.cli.jvm.K2JVMCompiler -no-stdlib -no-reflect -jvm-target 11 \
-  -cp "$stdlib" -d "$out" "$here/../src/DialPlan.kt" "$here/../src/CallPlan.kt" "$here/DialPlanTest.kt" 2>&1 | grep -v '^warning: ' || true
+  -cp "$stdlib" -d "$out" "$here/../src/DialPlan.kt" "$here/../src/CallPlan.kt" "$here/../src/ScreenPlan.kt" "$here/DialPlanTest.kt" 2>&1 | grep -v '^warning: ' || true
 "$java" -cp "$out:$stdlib" DialPlanTestKt

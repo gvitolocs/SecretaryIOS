@@ -8,11 +8,12 @@
 //! | [`screen`] | `POST /v1/callers/screen` with `call: {source: "android"}`, about [`SCREEN_TIMEOUT`] in total. Any error, bad answer or a different number falls back to [`local`] with `source: "rules"`. |
 //! | [`Store`] | The settings, the last screened call and the remembered verdicts, as small files in the app's files directory (mode 0600, written atomically). |
 //!
-//! Settings: the label (heads-up notification) is on by default; "silence
-//! likely scams" and "reject likely scams" are off by default and act only on
-//! a Jev verdict ([`Verdict`]'s `source == "jev"`) whose spam probability
-//! reaches the threshold (0.90). The fallback rules never act, and neither
-//! does a contact. If both toggles are on, reject wins.
+//! Settings: the label (heads-up notification) and the owner's auto-reject
+//! ([`RejectSettings`]), both on by default. The decision is the shared core's
+//! [`caller::reject_decision`]; this module only gathers the facts it needs
+//! (the phone's guards, the allow list, the order signal) and never rejects
+//! when a guard could not be checked, for a hidden number, for a contact, or on
+//! the fallback rules without report facts.
 //!
 //! No number is logged here. The number stays in the request and, as the
 //! display form, in `caller-last.json` for the app's own screen.
@@ -26,7 +27,7 @@ use std::{
     time::Duration,
 };
 
-use lucina_phone_core::caller::{self, Context, Known, Number, Verdict};
+use lucina_phone_core::caller::{self, Context, Guards, Known, Number, RejectSettings, Verdict};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -36,12 +37,10 @@ use crate::{net::Backend, Result};
 pub const SCREEN_TIMEOUT: Duration = Duration::from_millis(1200);
 /// The server path.
 pub const SCREEN_PATH: &str = "/v1/callers/screen";
-/// The default spam probability from which silence/reject may act.
-pub const DEFAULT_THRESHOLD: f64 = 0.90;
 /// Largest settings or last-call file read.
 const MAX_FILE_BYTES: u64 = 16 * 1024;
 /// Largest cache file read.
-const MAX_CACHE_BYTES: u64 = 256 * 1024;
+const MAX_CACHE_BYTES: u64 = 1024 * 1024;
 /// Numbers whose verdict is remembered; the oldest go first.
 pub const CACHE_ENTRIES: usize = 300;
 /// A remembered verdict is used for this long.
@@ -52,7 +51,7 @@ const CACHE_KEEP_JEV_MS: u64 = 6 * 3_600_000;
 const MAX_SHOWN_CHARS: usize = 240;
 
 /// Serialises every read-modify-write of the files within the process.
-static LOCK: Mutex<()> = Mutex::new(());
+pub(crate) static LOCK: Mutex<()> = Mutex::new(());
 
 // ------------------------------------------------------------------ files
 
@@ -63,62 +62,68 @@ pub struct Settings {
     /// Show the heads-up notification with the verdict.
     #[serde(default = "yes")]
     pub label: bool,
-    /// Silence the ringer of a likely scam (the call still shows as missed).
-    #[serde(default)]
-    pub silence: bool,
-    /// Reject a likely scam (the call log keeps it).
-    #[serde(default)]
-    pub reject: bool,
-    /// Spam probability from which silence/reject act.
-    #[serde(default = "threshold")]
-    pub threshold: f64,
+    /// Auto-reject likely spam (on by default; his explicit choice).
+    #[serde(default, deserialize_with = "lenient_reject")]
+    pub reject: RejectSettings,
 }
 
 fn yes() -> bool {
     true
 }
 
-fn threshold() -> f64 {
-    DEFAULT_THRESHOLD
+/// A settings file from 0.6 has `"reject": false` and a `silence` switch: they were off by default and are
+/// replaced by the one rule, so anything that is not the new object means the defaults.
+fn lenient_reject<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<RejectSettings, D::Error> {
+    let v = Value::deserialize(d)?;
+    Ok(serde_json::from_value(v).unwrap_or_default())
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
             label: true,
-            silence: false,
-            reject: false,
-            threshold: DEFAULT_THRESHOLD,
+            reject: RejectSettings::default(),
         }
     }
 }
 
 impl Settings {
-    /// Whether the service has to wait for the verdict before it answers.
-    pub fn acts(&self) -> bool {
-        self.silence || self.reject
-    }
-
-    /// Apply `{"label"?, "silence"?, "reject"?, "threshold"?}`.
+    /// Apply `{"label"?: bool, "reject"?: {"enabled"?, "spamMin"?, "pickUpMax"?, "orderSpamMin"?}}`.
+    /// Thresholds must be numbers in 0..=1; nothing changes if any part is refused.
     fn patch(&mut self, v: &Value) -> Result<()> {
         let obj = v.as_object().ok_or("Invalid settings.")?;
+        let mut next = *self;
         for (k, val) in obj {
             match (k.as_str(), val) {
-                ("label", Value::Bool(b)) => self.label = *b,
-                ("silence", Value::Bool(b)) => self.silence = *b,
-                ("reject", Value::Bool(b)) => self.reject = *b,
-                ("threshold", Value::Number(n)) => {
-                    let t = n.as_f64().unwrap_or(f64::NAN);
-                    if !(0.5..=1.0).contains(&t) {
-                        return Err("The threshold must be between 0.5 and 1.".into());
+                ("label", Value::Bool(b)) => next.label = *b,
+                ("reject", Value::Object(r)) => {
+                    for (rk, rv) in r {
+                        match (rk.as_str(), rv) {
+                            ("enabled", Value::Bool(b)) => next.reject.enabled = *b,
+                            ("spamMin", n) => next.reject.spam_min = unit(n)?,
+                            ("pickUpMax", n) => next.reject.pick_up_max = unit(n)?,
+                            ("orderSpamMin", n) => next.reject.order_spam_min = unit(n)?,
+                            _ => return Err("Invalid settings.".into()),
+                        }
                     }
-                    self.threshold = t;
                 }
                 _ => return Err("Invalid settings.".into()),
             }
         }
+        if !next.reject.valid() {
+            return Err("The limits must be between 0 and 1.".into());
+        }
+        *self = next;
         Ok(())
     }
+}
+
+fn unit(v: &Value) -> Result<f64> {
+    v.as_f64()
+        .filter(|x| x.is_finite() && (0.0..=1.0).contains(x))
+        .ok_or_else(|| "The limits must be between 0 and 1.".into())
 }
 
 /// The last screened call, for the app's own screen.
@@ -138,7 +143,7 @@ pub struct Last {
 /// The files of caller screening in the app's files directory.
 #[derive(Debug, Clone)]
 pub struct Store {
-    dir: PathBuf,
+    pub(crate) dir: PathBuf,
 }
 
 impl Store {
@@ -149,7 +154,7 @@ impl Store {
         })
     }
 
-    fn read<T: serde::de::DeserializeOwned>(&self, name: &str) -> Option<T> {
+    pub(crate) fn read<T: serde::de::DeserializeOwned>(&self, name: &str) -> Option<T> {
         self.read_max(name, MAX_FILE_BYTES)
     }
 
@@ -167,7 +172,7 @@ impl Store {
         serde_json::from_slice(&bytes).ok()
     }
 
-    fn write<T: Serialize>(&self, name: &str, value: &T) -> Result<()> {
+    pub(crate) fn write<T: Serialize>(&self, name: &str, value: &T) -> Result<()> {
         let encoded = serde_json::to_vec(value).map_err(|_| "Screening save failed.")?;
         let path = self.dir.join(name);
         let temp = self.dir.join(format!("{name}.tmp"));
@@ -188,8 +193,8 @@ impl Store {
     /// The settings; the defaults when none were saved or the file is unreadable.
     pub fn settings(&self) -> Settings {
         let mut s: Settings = self.read("caller-settings.json").unwrap_or_default();
-        if !(0.5..=1.0).contains(&s.threshold) {
-            s.threshold = DEFAULT_THRESHOLD;
+        if !s.reject.valid() {
+            s.reject = RejectSettings::default();
         }
         s
     }
@@ -300,108 +305,65 @@ fn last_line(last: Option<&Last>, now: u64) -> String {
 
 // ----------------------------------------------------------------- verdicts
 
-/// What the shell may be told to do with the call.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Action {
-    Allow,
-    Silence,
-    Reject,
-}
+/// What is shown about one number: the server's verdict, or the rules' guess.
+type Shown = Verdict;
 
-impl Action {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Allow => "allow",
-            Self::Silence => "silence",
-            Self::Reject => "reject",
-        }
+/// The first result of a server answer for `n`, cleaned; `None` if it is not
+/// what was asked (another number, no label, probabilities out of range).
+fn from_response(v: &Value, n: &Number) -> Option<Shown> {
+    let r = v["results"].as_array()?;
+    if r.len() != 1 {
+        return None;
     }
-}
-
-/// Silence or reject only on the owner's switches, only for Jev's own
-/// verdict (never the fallback rules) and only from the threshold.
-pub fn decide(settings: &Settings, source: &str, spam: f64) -> Action {
-    if source != "jev" || !spam.is_finite() || spam < settings.threshold {
-        return Action::Allow;
+    let r = &r[0];
+    if r["number"].as_str()? != n.e164 {
+        return None;
     }
-    if settings.reject {
-        Action::Reject
-    } else if settings.silence {
-        Action::Silence
+    let p = |k: &str| r[k].as_f64().filter(|x| (0.0..=1.0).contains(x));
+    let mut shown = serde_json::from_value::<Verdict>(r.clone()).unwrap_or_else(|_| Verdict {
+        number: n.e164.clone(),
+        display: n.display(),
+        country: n.country.to_owned(),
+        country_name: n.country_name.to_owned(),
+        line: n.line,
+        spam: 0.0,
+        kind: r["kind"].as_str().unwrap_or("unknown").to_owned(),
+        kind_p: 0.5,
+        kinds: Default::default(),
+        pick_up: 0.5,
+        label: String::new(),
+        short: String::new(),
+        source: String::new(),
+        known: Known::default(),
+        reasons: r["reasons"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default(),
+    });
+    shown.spam = p("spam")?;
+    shown.pick_up = p("pickUp").unwrap_or(0.5);
+    shown.label = clean(r["label"].as_str()?, MAX_SHOWN_CHARS);
+    if shown.label.is_empty() {
+        return None;
+    }
+    shown.short = clean(&shown.short, 40);
+    shown.display = if shown.display.trim().is_empty() {
+        n.display()
     } else {
-        Action::Allow
-    }
-}
-
-/// What is shown about one number, from the server or from the rules.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct Shown {
-    label: String,
-    kind: String,
-    spam: f64,
-    pick_up: f64,
-    source: String,
-    display: String,
-    number: String,
-    reasons: Vec<String>,
-}
-
-impl Shown {
-    fn from_verdict(v: &Verdict) -> Self {
-        Self {
-            label: v.label.clone(),
-            kind: v.kind.clone(),
-            spam: v.spam,
-            pick_up: v.pick_up,
-            source: v.source.clone(),
-            display: v.display.clone(),
-            number: v.number.clone(),
-            reasons: v.reasons.clone(),
-        }
-    }
-
-    /// The first result of a server answer for `n`; `None` if it is not
-    /// what was asked (another number, no label, probabilities out of range).
-    fn from_response(v: &Value, n: &Number) -> Option<Self> {
-        let r = v["results"].as_array()?;
-        if r.len() != 1 {
-            return None;
-        }
-        let r = &r[0];
-        if r["number"].as_str()? != n.e164 {
-            return None;
-        }
-        let label = clean(r["label"].as_str()?, MAX_SHOWN_CHARS);
-        let p = |k: &str| r[k].as_f64().filter(|x| (0.0..=1.0).contains(x));
-        let source = match r["source"].as_str().unwrap_or("jev") {
-            s @ ("jev" | "rules" | "contact") => s.to_owned(),
-            _ => "rules".to_owned(),
-        };
-        if label.is_empty() {
-            return None;
-        }
-        Some(Self {
-            label,
-            kind: r["kind"].as_str().unwrap_or("unknown").to_owned(),
-            spam: p("spam")?,
-            pick_up: p("pickUp").unwrap_or(0.5),
-            source,
-            display: r["display"]
-                .as_str()
-                .map_or_else(|| n.display(), |s| clean(s, 40)),
-            number: n.e164.clone(),
-            reasons: r["reasons"]
-                .as_array()
-                .map(|a| {
-                    a.iter()
-                        .filter_map(Value::as_str)
-                        .take(6)
-                        .map(|s| clean(s, 80))
-                        .collect()
-                })
-                .unwrap_or_default(),
-        })
-    }
+        clean(&shown.display, 40)
+    };
+    shown.number = n.e164.clone();
+    shown.source = match r["source"].as_str().unwrap_or("jev") {
+        s @ ("jev" | "rules" | "contact") => s.to_owned(),
+        _ => "rules".to_owned(),
+    };
+    shown.reasons = shown.reasons.iter().take(6).map(|s| clean(s, 80)).collect();
+    Some(shown)
 }
 
 fn clean(s: &str, max: usize) -> String {
@@ -419,8 +381,10 @@ fn clean(s: &str, max: usize) -> String {
 pub struct Screen {
     /// Show a notification (false for a hidden number, a contact or when the label is off).
     pub notify: bool,
-    /// `allow`, `silence` or `reject`.
+    /// `allow` or `reject` (the owner's auto-reject rule, from the core).
     pub action: &'static str,
+    /// Why it is rejected, when it is.
+    pub reject: Option<RejectOut>,
     /// The verdict's label.
     pub title: String,
     /// Kind, pick-up hint and reasons.
@@ -434,21 +398,43 @@ pub struct Screen {
     pub kind: String,
 }
 
-/// What the app tells about a caller.
+/// A rejection as the shell reports it back after the call was really rejected.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RejectOut {
+    /// E.164.
+    pub number: String,
+    /// "Rejected likely telemarketer +45 … · 180.dk 6 reports".
+    pub line: String,
+    pub spam: Option<f64>,
+    pub pick_up: Option<f64>,
+    pub sources: String,
+}
+
+/// What the app tells about a caller: facts the phone checked at ring time.
 #[derive(Debug, Clone, Default)]
 pub struct Input {
     /// The contact's name, when the number is in his contacts.
     pub contact: Option<String>,
+    /// He called this number, or answered a call from it, before (the call log).
+    pub called_or_answered: bool,
+    /// Telephony says this is an emergency number.
+    pub emergency: bool,
+    /// A check could not run (permission missing, a query failed): never reject.
+    pub unchecked: bool,
 }
 
 impl Input {
-    /// `{"contact"?: string}`.
+    /// `{"contact"?: string, "calledOrAnswered"?, "emergency"?, "unchecked"?}`.
     pub fn from_json(v: &Value) -> Self {
         Self {
             contact: v["contact"]
                 .as_str()
                 .map(|s| clean(s, 80))
                 .filter(|s| !s.is_empty()),
+            called_or_answered: v["calledOrAnswered"].as_bool() == Some(true),
+            emergency: v["emergency"].as_bool() == Some(true),
+            unchecked: v["unchecked"].as_bool() == Some(true),
         }
     }
 }
@@ -466,7 +452,7 @@ fn context(input: &Input) -> Context {
 
 fn local_shown(n: &Number, ctx: &Context, lang: &str) -> Shown {
     let p = caller::rules(n, ctx);
-    Shown::from_verdict(&caller::verdict(n, ctx, &p, "rules", lang))
+    caller::verdict(n, ctx, &p, "rules", lang)
 }
 
 /// The instant verdict, without the network.
@@ -500,9 +486,13 @@ pub fn screen(
     let shown = backend
         .post(SCREEN_PATH, &request(&n, lang, now))
         .ok()
-        .and_then(|v| Shown::from_response(&v, &n))
+        .and_then(|v| from_response(&v, &n))
         .unwrap_or(fallback);
-    let out = present(&n, &shown, &settings, input, lang);
+    let mut out = present(&n, &shown, &settings, input, lang);
+    if let Some(r) = rejection(store, &n, number, &shown, input, &settings, now) {
+        out.action = "reject";
+        out.reject = Some(r);
+    }
     store.cache_put(&shown, now);
     store.set_last(&Last {
         at_ms: now,
@@ -551,6 +541,67 @@ pub fn cached(store: &Store, number: &str, lang: &str, now: u64) -> Option<Scree
     ))
 }
 
+/// The owner's rule for this call, or `None` to put it through. Every check that
+/// could not run counts as a reason to put the call through.
+fn rejection(
+    store: &Store,
+    n: &Number,
+    raw: &str,
+    v: &Verdict,
+    input: &Input,
+    settings: &Settings,
+    now: u64,
+) -> Option<RejectOut> {
+    if input.unchecked || input.emergency || input.contact.is_some() || !n.valid() {
+        return None;
+    }
+    let guards = Guards {
+        contact: false,
+        called_or_answered: input.called_or_answered,
+        allowed: store.is_allowed(&n.e164),
+        order_active: store.order_active(now),
+    };
+    let r = caller::reject_decision(raw, v, &guards, &settings.reject).ok()?;
+    Some(RejectOut {
+        number: n.e164.clone(),
+        line: caller::reject_line(v, &r),
+        spam: r.spam,
+        pick_up: r.pick_up,
+        sources: r.sources,
+    })
+}
+
+/// Whether the screening has to wait for the server before it answers: the rule is on and no
+/// phone-side guard already puts the call through. Decided with a verdict that would be rejected,
+/// so the core's own guard order applies.
+pub fn must_wait(store: &Store, number: &str, input: &Input, now: u64) -> bool {
+    let n = caller::parse(number);
+    let settings = store.settings();
+    if !settings.reject.enabled
+        || input.unchecked
+        || input.emergency
+        || input.contact.is_some()
+        || !n.valid()
+    {
+        return false;
+    }
+    let ctx = context(input);
+    let mut worst = caller::verdict(
+        &n,
+        &ctx,
+        &caller::Probs {
+            spam: 1.0,
+            kinds: Default::default(),
+            pick_up: 0.0,
+        },
+        "jev",
+        "en",
+    );
+    worst.spam = 1.0;
+    worst.pick_up = 0.0;
+    rejection(store, &n, number, &worst, input, &settings, now).is_some()
+}
+
 /// The request body of `POST /v1/callers/screen`.
 fn request(n: &Number, lang: &str, now: u64) -> Value {
     json!({
@@ -561,14 +612,10 @@ fn request(n: &Number, lang: &str, now: u64) -> Value {
 }
 
 fn present(n: &Number, s: &Shown, settings: &Settings, input: &Input, lang: &str) -> Screen {
-    let action = if input.contact.is_some() {
-        Action::Allow
-    } else {
-        decide(settings, &s.source, s.spam)
-    };
     Screen {
         notify: settings.label && n.valid() && input.contact.is_none(),
-        action: action.as_str(),
+        action: "allow",
+        reject: None,
         title: s.label.clone(),
         text: body(s, lang),
         sub: s.display.clone(),
@@ -728,24 +775,78 @@ mod tests {
     }
 
     #[test]
-    fn settings_default_to_label_only_and_persist() {
+    fn settings_default_to_label_and_auto_reject_and_persist() {
         let s = store("settings");
         assert_eq!(s.settings(), Settings::default());
-        assert!(s.settings().label && !s.settings().silence && !s.settings().reject);
-        assert_eq!(s.settings().threshold, 0.90);
-        let on = s.patch_settings(&json!({"silence": true})).unwrap();
-        assert!(on.silence && on.label && !on.reject);
-        assert_eq!(s.settings(), on);
-        assert!(s.patch_settings(&json!({"reject": "yes"})).is_err());
-        assert!(s.patch_settings(&json!({"nope": true})).is_err());
-        assert!(s.patch_settings(&json!({"threshold": 0.2})).is_err());
-        assert!(s.patch_settings(&json!({"threshold": 0.8})).is_ok());
-        assert_eq!(s.settings().threshold, 0.8);
-        // A failed patch changes nothing.
-        assert!(s
-            .patch_settings(&json!({"label": false, "reject": 3}))
-            .is_err());
-        assert!(s.settings().label);
+        let d = s.settings();
+        assert!(d.label && d.reject.enabled);
+        assert_eq!(
+            (
+                d.reject.spam_min,
+                d.reject.pick_up_max,
+                d.reject.order_spam_min
+            ),
+            (0.60, 0.25, 0.97)
+        );
+        let off = s
+            .patch_settings(&json!({"reject": {"enabled": false}}))
+            .unwrap();
+        assert!(!off.reject.enabled && off.label);
+        assert_eq!(s.settings(), off);
+        let edited = s
+            .patch_settings(
+                &json!({"reject": {"spamMin": 0.7, "pickUpMax": 0.1, "orderSpamMin": 1.0}}),
+            )
+            .unwrap();
+        assert_eq!(
+            (
+                edited.reject.spam_min,
+                edited.reject.pick_up_max,
+                edited.reject.order_spam_min
+            ),
+            (0.7, 0.1, 1.0)
+        );
+        // Limits outside 0..1, wrong types and unknown keys are refused, and a refused patch changes nothing.
+        for bad in [
+            json!({"reject": {"spamMin": 1.5}}),
+            json!({"reject": {"spamMin": -0.1}}),
+            json!({"reject": {"pickUpMax": "low"}}),
+            json!({"reject": {"enabled": "yes"}}),
+            json!({"reject": true}),
+            json!({"silence": true}),
+            json!({"nope": true}),
+            json!({"label": false, "reject": {"spamMin": 7}}),
+        ] {
+            assert!(s.patch_settings(&bad).is_err(), "{bad}");
+        }
+        assert_eq!(s.settings(), edited);
+    }
+
+    #[test]
+    fn a_settings_file_from_0_6_gives_way_to_the_one_rule() {
+        let dir = app_dir("migrate");
+        fs::write(
+            format!("{dir}/caller-settings.json"),
+            br#"{"label":false,"silence":true,"reject":false,"threshold":0.9}"#,
+        )
+        .unwrap();
+        let s = Store::open(&dir).unwrap().settings();
+        assert!(!s.label, "the label choice is kept");
+        assert_eq!(
+            s.reject,
+            RejectSettings::default(),
+            "the old switches are replaced by the defaults"
+        );
+        // Limits that are not valid on disk fall back to the defaults.
+        fs::write(
+            format!("{dir}/caller-settings.json"),
+            br#"{"label":true,"reject":{"enabled":true,"spamMin":9,"pickUpMax":0.25,"orderSpamMin":0.97}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            Store::open(&dir).unwrap().settings().reject,
+            RejectSettings::default()
+        );
     }
 
     #[test]
@@ -784,7 +885,7 @@ mod tests {
         let st = s.state(NOW);
         assert_eq!(st["lastLine"], "No call screened yet.");
         assert_eq!(st["settings"]["label"], true);
-        assert_eq!(st["settings"]["silence"], false);
+        assert_eq!(st["settings"]["reject"]["enabled"], true);
     }
 
     #[test]
@@ -848,7 +949,6 @@ mod tests {
         let out = screen(&s, &fake, "70405205", &Input::default(), "en", NOW);
         assert_eq!(out.title, "Likely scam (0.93)");
         assert_eq!(out.source, "jev");
-        assert_eq!(out.action, "allow");
         assert_eq!(
             out.text,
             "Scam · probably not worth picking up\nDanish 70 number (company line); called 2 times before"
@@ -923,38 +1023,13 @@ mod tests {
         assert_eq!(s.last().unwrap().source, "rules");
     }
 
-    #[test]
-    fn silence_and_reject_need_the_owners_switch_jev_and_the_threshold() {
-        let off = Settings::default();
-        assert_eq!(decide(&off, "jev", 0.99), Action::Allow);
-        let silence = Settings {
-            silence: true,
-            ..off
-        };
-        let reject = Settings {
-            reject: true,
-            ..off
-        };
-        let both = Settings {
-            silence: true,
-            reject: true,
-            ..off
-        };
-        assert_eq!(decide(&silence, "jev", 0.93), Action::Silence);
-        assert_eq!(decide(&silence, "jev", 0.90), Action::Silence);
-        assert_eq!(decide(&silence, "jev", 0.89), Action::Allow);
-        assert_eq!(decide(&reject, "jev", 0.93), Action::Reject);
-        assert_eq!(decide(&both, "jev", 0.93), Action::Reject);
-        // The fallback rules and contacts never act, whatever the number.
-        assert_eq!(decide(&both, "rules", 1.0), Action::Allow);
-        assert_eq!(decide(&both, "contact", 1.0), Action::Allow);
-        assert_eq!(decide(&both, "jev", f64::NAN), Action::Allow);
+    fn rejects(s: &Store, answer: Value, input: &Input) -> Option<RejectOut> {
+        screen(s, &Fake::ok(answer), "70405205", input, "en", NOW).reject
     }
 
     #[test]
-    fn a_screen_follows_the_settings() {
-        let s = store("acts");
-        s.patch_settings(&json!({"silence": true})).unwrap();
+    fn the_owners_rule_rejects_with_evidence() {
+        let s = store("rule");
         let out = screen(
             &s,
             &Fake::ok(server_answer(0.93, "jev")),
@@ -963,27 +1038,178 @@ mod tests {
             "en",
             NOW,
         );
-        assert_eq!(out.action, "silence");
-        let low = screen(
+        assert_eq!(out.action, "reject");
+        let r = out.reject.unwrap();
+        assert_eq!(r.number, "+4570405205");
+        assert_eq!(r.spam, Some(0.93));
+        assert_eq!(r.pick_up, Some(0.04));
+        assert!(
+            r.line.starts_with("Rejected likely scam +45 70 40 52 05"),
+            "{}",
+            r.line
+        );
+        // Either threshold is enough; neither means keep.
+        let mut low_spam = server_answer(0.3, "jev");
+        low_spam["results"][0]["pickUp"] = json!(0.1);
+        assert_eq!(rejects(&s, low_spam, &Input::default()).unwrap().spam, None);
+        let mut middle = server_answer(0.5, "jev");
+        middle["results"][0]["pickUp"] = json!(0.5);
+        assert_eq!(rejects(&s, middle, &Input::default()), None);
+        // The rule off: nothing is rejected.
+        s.patch_settings(&json!({"reject": {"enabled": false}}))
+            .unwrap();
+        assert_eq!(
+            rejects(&s, server_answer(0.99, "jev"), &Input::default()),
+            None
+        );
+    }
+
+    #[test]
+    fn every_guard_and_every_unknown_keeps_the_call() {
+        let s = store("guards");
+        let bad = server_answer(0.99, "jev");
+        assert!(rejects(&s, bad.clone(), &Input::default()).is_some());
+        for (name, input) in [
+            (
+                "called or answered before",
+                Input {
+                    called_or_answered: true,
+                    ..Default::default()
+                },
+            ),
+            (
+                "emergency",
+                Input {
+                    emergency: true,
+                    ..Default::default()
+                },
+            ),
+            (
+                "a check could not run",
+                Input {
+                    unchecked: true,
+                    ..Default::default()
+                },
+            ),
+            ("contact", Input::from_json(&json!({"contact": "Mamma"}))),
+        ] {
+            assert_eq!(rejects(&s, bad.clone(), &input), None, "{name}");
+        }
+        // The core's floor: emergency and short numbers are never rejected, whatever the phone says.
+        for number in ["112", "999", "1813", "12345", "+4570405205x"] {
+            let out = screen(
+                &s,
+                &Fake::ok(bad.clone()),
+                number,
+                &Input::default(),
+                "en",
+                NOW,
+            );
+            assert_eq!(out.action, "allow", "{number}");
+        }
+        // No evidence (the fallback rules, Jev unreachable): never.
+        let down = screen(&s, &Fake::down(), "70405205", &Input::default(), "en", NOW);
+        assert_eq!((down.action, down.reject), ("allow", None));
+        // The owner's own allow list.
+        s.allow("+4570405205").unwrap();
+        assert_eq!(rejects(&s, bad, &Input::default()), None);
+    }
+
+    #[test]
+    fn an_active_order_raises_the_bar_and_stays_on_the_phone() {
+        let s = store("order");
+        assert!(!s.order_active(NOW));
+        s.set_order(NOW - 10 * 60_000, NOW).unwrap();
+        assert!(s.order_active(NOW));
+        assert!(
+            !s.order_active(NOW + 40 * 60_000),
+            "46 minutes later it is over"
+        );
+        assert!(
+            s.set_order(NOW + 3_600_000, NOW).is_err(),
+            "a link from the future is refused"
+        );
+        // During an order only 0.97 and up rejects.
+        let fake = Fake::ok(server_answer(0.93, "jev"));
+        let out = screen(&s, &fake, "70405205", &Input::default(), "en", NOW);
+        assert_eq!(out.action, "allow");
+        let out = screen(
             &s,
-            &Fake::ok(server_answer(0.6, "jev")),
+            &Fake::ok(server_answer(0.98, "jev")),
             "70405205",
             &Input::default(),
             "en",
             NOW,
         );
-        assert_eq!(low.action, "allow");
-        // Jev down: the rules guess (0.65) is far below the threshold anyway, and never acts.
-        let down = screen(&s, &Fake::down(), "70405205", &Input::default(), "en", NOW);
-        assert_eq!(down.action, "allow");
-        // The instant local verdict never silences.
-        assert_eq!(
-            local(&s, "70405205", &Input::default(), "en", NOW).action,
-            "allow"
+        assert_eq!(out.action, "reject");
+        // After it is over the normal rule applies again.
+        let out = screen(
+            &s,
+            &fake,
+            "70405205",
+            &Input::default(),
+            "en",
+            NOW + 50 * 60_000,
         );
-        // Label off: no notification, the action still follows.
-        s.patch_settings(&json!({"label": false, "reject": true}))
+        assert_eq!(out.action, "reject");
+        // The signal is in no request.
+        for (_, body) in fake.sent.borrow().iter() {
+            assert!(!body.to_string().to_lowercase().contains("order"), "{body}");
+        }
+    }
+
+    #[test]
+    fn the_screening_waits_for_the_server_only_when_it_could_reject() {
+        let s = store("wait");
+        let n = "70405205";
+        assert!(must_wait(&s, n, &Input::default(), NOW));
+        for (name, input) in [
+            (
+                "called",
+                Input {
+                    called_or_answered: true,
+                    ..Default::default()
+                },
+            ),
+            (
+                "emergency",
+                Input {
+                    emergency: true,
+                    ..Default::default()
+                },
+            ),
+            (
+                "unchecked",
+                Input {
+                    unchecked: true,
+                    ..Default::default()
+                },
+            ),
+            ("contact", Input::from_json(&json!({"contact": "Mamma"}))),
+        ] {
+            assert!(!must_wait(&s, n, &input, NOW), "{name}");
+        }
+        assert!(!must_wait(&s, "", &Input::default(), NOW), "hidden number");
+        assert!(
+            !must_wait(&s, "112", &Input::default(), NOW),
+            "emergency number"
+        );
+        s.allow("70405205").unwrap();
+        assert!(!must_wait(&s, n, &Input::default(), NOW), "allowed");
+        let off = store("wait3");
+        off.patch_settings(&json!({"reject": {"enabled": false}}))
             .unwrap();
+        assert!(!must_wait(&off, n, &Input::default(), NOW), "rule off");
+        // With an order active it still waits (0.97 can reject).
+        let order = store("wait4");
+        order.set_order(NOW, NOW).unwrap();
+        assert!(must_wait(&order, n, &Input::default(), NOW));
+    }
+
+    #[test]
+    fn label_off_keeps_the_rule() {
+        let s = store("acts");
+        s.patch_settings(&json!({"label": false})).unwrap();
         let quiet = screen(
             &s,
             &Fake::ok(server_answer(0.95, "jev")),
@@ -994,6 +1220,11 @@ mod tests {
         );
         assert!(!quiet.notify);
         assert_eq!(quiet.action, "reject");
+        // The instant local verdict never rejects.
+        assert_eq!(
+            local(&s, "70405205", &Input::default(), "en", NOW).action,
+            "allow"
+        );
     }
 
     #[test]
@@ -1006,8 +1237,6 @@ mod tests {
             assert_eq!(out.action, "allow");
         }
         let contact = Input::from_json(&json!({"contact": "Mamma"}));
-        s.patch_settings(&json!({"silence": true, "reject": true}))
-            .unwrap();
         let out = screen(&s, &fake, "+4570405205", &contact, "en", NOW);
         assert!(!out.notify);
         assert_eq!(out.action, "allow");

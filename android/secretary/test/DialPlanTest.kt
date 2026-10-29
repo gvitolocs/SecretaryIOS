@@ -2,6 +2,7 @@ import tech.getsecretary.secretary.CallPlan
 import tech.getsecretary.secretary.DialPlan
 import tech.getsecretary.secretary.DialPlan.Kind
 import tech.getsecretary.secretary.DialPlan.Outcome
+import tech.getsecretary.secretary.ScreenPlan
 
 /** Host tests for the pure Kotlin logic (run by android/secretary/test/run.sh). Exit code 1 on any failure. */
 var failures = 0
@@ -86,6 +87,29 @@ fun main() {
     same(CallPlan.fallback(emptyList(), false, 1, 1).notice, null, "no calls, no notification")
     // safely() swallows Errors such as a missing native library.
     same(tech.getsecretary.secretary.safely("x") { throw UnsatisfiedLinkError("no lib") }, "x", "safely")
+
+    // Decision -> CallResponse.
+    same(ScreenPlan.response("reject"), ScreenPlan.Response(disallow = true, reject = true, skipLog = false, skipNotification = true), "reject response")
+    val allow = ScreenPlan.Response(disallow = false, reject = false, skipLog = false, skipNotification = false)
+    for (a in listOf("allow", "silence", "", "REJECT", "rejected", "block")) same(ScreenPlan.response(a), allow, "'$a' puts the call through")
+    // Never reject when any guard is unknown, the screening did not wait, or the verdict was late.
+    same(ScreenPlan.action("reject", waited = true, unchecked = false, inTime = true), "reject", "all clear")
+    same(ScreenPlan.action("reject", waited = true, unchecked = true, inTime = true), "allow", "a guard could not be checked")
+    same(ScreenPlan.action("reject", waited = false, unchecked = false, inTime = true), "allow", "guards said no wait")
+    same(ScreenPlan.action("reject", waited = true, unchecked = false, inTime = false), "allow", "late verdict")
+    same(ScreenPlan.action("allow", waited = true, unchecked = false, inTime = true), "allow", "rust said allow")
+    same(ScreenPlan.action(null, waited = true, unchecked = false, inTime = true), "allow", "no answer")
+    same(ScreenPlan.action("silence", waited = true, unchecked = false, inTime = true), "allow", "no silence mode")
+    val ok = ScreenPlan.Checks(emergency = false, contactRan = true, contactName = null, callsRan = true, calledOrAnswered = false)
+    check(!ScreenPlan.unchecked(ok), "all checks ran")
+    check(ScreenPlan.unchecked(ok.copy(contactRan = false)), "contacts not checked")
+    check(ScreenPlan.unchecked(ok.copy(callsRan = false)), "call log not checked")
+    check(ScreenPlan.unchecked(ok.copy(contactRan = false, callsRan = false)), "neither checked")
+    // Every combination of unknowns: unchecked => allow, whatever Rust said.
+    for (c in listOf(true, false)) for (l in listOf(true, false)) {
+        val u = ScreenPlan.unchecked(ok.copy(contactRan = c, callsRan = l))
+        same(ScreenPlan.action("reject", true, u, true), if (c && l) "reject" else "allow", "contacts=$c calls=$l")
+    }
 
     println("$checks checks, $failures failures")
     if (failures > 0) System.exit(1)

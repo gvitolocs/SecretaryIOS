@@ -394,6 +394,12 @@ pub struct PublicReport {
     /// The operator the site names, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operator: Option<String>,
+    /// A database's own score, as it states it ("tellows 9/9", "IPQS fraud 92/100").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score: Option<String>,
+    /// Other facts the database states ("line type: VOIP", "recent abuse").
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub flags: Vec<String>,
 }
 
 impl PublicReport {
@@ -430,6 +436,12 @@ impl PublicReport {
                     .collect::<Vec<_>>()
                     .join(", "),
             );
+        }
+        if let Some(score) = &self.score {
+            s.push_str(&format!("; score {score}"));
+        }
+        if !self.flags.is_empty() {
+            s.push_str(&format!("; {}", self.flags.join(", ")));
         }
         if let Some(op) = &self.operator {
             s.push_str(&format!("; operator {op}"));
@@ -470,6 +482,32 @@ pub struct Known {
     /// Public caller-ID reports (180.dk), looked up first.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub public: Option<PublicReport>,
+    /// Report databases asked through their APIs (tellows, IPQS, …), when keys exist.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub databases: Vec<PublicReport>,
+}
+
+impl Known {
+    /// Every report source that answered (the page and the APIs).
+    pub fn checked(&self) -> Vec<&PublicReport> {
+        self.public.iter().chain(self.databases.iter()).collect()
+    }
+
+    /// At least one source answered and none has a report: the owner's "safe
+    /// indicator" (2026-10-29). Failed or timed-out lookups never count.
+    pub fn no_reports(&self) -> bool {
+        let c = self.checked();
+        !c.is_empty() && c.iter().all(|r| r.reports == 0)
+    }
+
+    /// "180.dk, tellows".
+    pub fn checked_sources(&self) -> String {
+        self.checked()
+            .iter()
+            .map(|r| r.source.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
 }
 
 impl Known {
@@ -541,9 +579,21 @@ pub fn state(n: &Number, ctx: &Context) -> Value {
     for m in &k.mentions {
         facts.push(format!("He wrote about it to Lucina: \"{m}\""));
     }
-    let public = match &k.public {
-        Some(p) => format!("{} ({})", p.summary(), p.url),
-        None => "No public caller-ID report was found.".to_owned(),
+    let mut public: Vec<String> = k
+        .checked()
+        .iter()
+        .map(|p| format!("{} ({})", p.summary(), p.url))
+        .collect();
+    if k.no_reports() {
+        public.push(format!(
+            "Checked {}: zero reports, not on any spam list.",
+            k.checked_sources()
+        ));
+    }
+    let public = if public.is_empty() {
+        "No public caller-ID report could be checked.".to_owned()
+    } else {
+        public.join(" ")
     };
     json!({
         "call": if ctx.ringing { "An incoming call is ringing now." } else { "The owner asks about a number that called him." },
@@ -681,6 +731,212 @@ pub fn rules(n: &Number, ctx: &Context) -> Probs {
     }
 }
 
+// ---------------------------------------------------------------- zero reports
+
+/// Spam is multiplied by this when every checked source has zero reports.
+pub const NO_REPORTS_SPAM_FACTOR: f64 = 0.6;
+/// Pick-up is raised by this (capped at [`NO_REPORTS_PICK_UP_CAP`]).
+pub const NO_REPORTS_PICK_UP_BOOST: f64 = 0.2;
+pub const NO_REPORTS_PICK_UP_CAP: f64 = 0.95;
+
+/// The owner's rule (2026-10-29): no online reports is a safe indicator. Applied
+/// after Jev, deterministic and bounded; only when a source really answered.
+pub fn no_reports_boost(p: &Probs, k: &Known) -> Probs {
+    if !k.no_reports() || k.contact.is_some() {
+        return p.clone();
+    }
+    Probs {
+        spam: (p.spam * NO_REPORTS_SPAM_FACTOR).clamp(0.0, 1.0),
+        kinds: p.kinds.clone(),
+        pick_up: (p.pick_up + NO_REPORTS_PICK_UP_BOOST).min(NO_REPORTS_PICK_UP_CAP.max(p.pick_up)),
+    }
+}
+
+// ---------------------------------------------------------------- auto-reject
+
+/// The owner's auto-reject setting (his words 2026-10-29: "spam ≥ 0.60, or
+/// pick-up ≤ 0.25"). On by default, editable in the apps.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RejectSettings {
+    pub enabled: bool,
+    pub spam_min: f64,
+    pub pick_up_max: f64,
+    /// While a Wolt order is active, only spam at or above this rejects.
+    pub order_spam_min: f64,
+}
+
+impl Default for RejectSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            spam_min: 0.60,
+            pick_up_max: 0.25,
+            order_spam_min: 0.97,
+        }
+    }
+}
+
+impl RejectSettings {
+    /// Thresholds in 0..=1 (anything else is refused by the apps).
+    pub fn valid(&self) -> bool {
+        [self.spam_min, self.pick_up_max, self.order_spam_min]
+            .iter()
+            .all(|v| v.is_finite() && (0.0..=1.0).contains(v))
+    }
+}
+
+/// What only the phone knows at ring time.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Guards {
+    /// In his contacts.
+    pub contact: bool,
+    /// He called this number, or answered a call from it, before.
+    pub called_or_answered: bool,
+    /// He allowed it himself ("Allow & call back").
+    pub allowed: bool,
+    /// He is on an active Wolt order (Lucina Maps; never sent to Jev).
+    pub order_active: bool,
+}
+
+/// Why a call is not rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Keep {
+    Off,
+    Invalid,
+    Emergency,
+    ShortNumber,
+    Contact,
+    CalledOrAnswered,
+    Allowed,
+    NoEvidence,
+    OrderActive,
+    BelowThresholds,
+}
+
+/// Why a call is rejected: which threshold, with the value.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Reject {
+    pub spam: Option<f64>,
+    pub pick_up: Option<f64>,
+    /// "180.dk 6 reports" etc., for the log and the notification.
+    pub sources: String,
+}
+
+/// Emergency numbers on European and North American networks (the phone also
+/// asks its own emergency-number table; this is the floor).
+pub fn is_emergency(raw: &str) -> bool {
+    let d: String = raw.chars().filter(char::is_ascii_digit).collect();
+    matches!(
+        d.as_str(),
+        "112"
+            | "911"
+            | "999"
+            | "000"
+            | "114"
+            | "1813"
+            | "110"
+            | "113"
+            | "118"
+            | "119"
+            | "15"
+            | "17"
+            | "18"
+    )
+}
+
+/// Short service numbers (fewer than 8 digits nationally): never rejected.
+pub fn is_short(raw: &str) -> bool {
+    let d: String = raw.chars().filter(char::is_ascii_digit).collect();
+    !raw.trim_start().starts_with('+') && !d.starts_with("00") && d.len() < 8
+}
+
+/// The decision for a ringing call. Never rejects what the owner knows or
+/// needs, never on a guess without evidence (the rules without reports).
+pub fn reject_decision(
+    raw: &str,
+    v: &Verdict,
+    g: &Guards,
+    s: &RejectSettings,
+) -> Result<Reject, Keep> {
+    if !s.enabled || !s.valid() {
+        return Err(Keep::Off);
+    }
+    if is_emergency(raw) {
+        return Err(Keep::Emergency);
+    }
+    if is_short(raw) {
+        return Err(Keep::ShortNumber);
+    }
+    if v.line == LineType::Invalid {
+        return Err(Keep::Invalid);
+    }
+    if g.contact || v.source == "contact" || v.known.contact.is_some() {
+        return Err(Keep::Contact);
+    }
+    if g.called_or_answered {
+        return Err(Keep::CalledOrAnswered);
+    }
+    if g.allowed || v.known.owner_label.is_some() {
+        return Err(Keep::Allowed);
+    }
+    // The fallback rules decide only from report facts; without any, never reject.
+    let reported = v.known.checked().iter().any(|r| r.reports > 0);
+    if v.source != "jev" && !reported {
+        return Err(Keep::NoEvidence);
+    }
+    let sources = v
+        .known
+        .checked()
+        .iter()
+        .map(|r| match &r.score {
+            Some(sc) => format!("{} {sc}", r.source),
+            None if r.reports > 0 => format!("{} {} reports", r.source, r.reports),
+            None => format!("{} no reports", r.source),
+        })
+        .collect::<Vec<_>>()
+        .join(" · ");
+    if g.order_active {
+        return if v.spam >= s.order_spam_min {
+            Ok(Reject {
+                spam: Some(v.spam),
+                pick_up: None,
+                sources,
+            })
+        } else {
+            Err(Keep::OrderActive)
+        };
+    }
+    let spam = (v.spam >= s.spam_min).then_some(v.spam);
+    let pick_up = (v.pick_up <= s.pick_up_max).then_some(v.pick_up);
+    if spam.is_none() && pick_up.is_none() {
+        return Err(Keep::BelowThresholds);
+    }
+    Ok(Reject {
+        spam,
+        pick_up,
+        sources,
+    })
+}
+
+/// "Rejected likely telemarketer +45 20 68 27 58 · 180.dk 6 reports".
+pub fn reject_line(v: &Verdict, r: &Reject) -> String {
+    let what = match v.kind.as_str() {
+        "telemarketing" => "likely telemarketer",
+        "scam" => "likely scam",
+        _ if r.spam.is_some() => "likely spam",
+        _ => "unlikely to need you",
+    };
+    let mut s = format!("Rejected {what} {}", v.display);
+    if !r.sources.is_empty() {
+        s.push_str(&format!(" · {}", r.sources));
+    }
+    s
+}
+
 // ---------------------------------------------------------------- words
 
 #[derive(Debug, Clone, Copy)]
@@ -702,6 +958,7 @@ struct Words {
     dk70: &'static str,
     reports: &'static str,
     no_reports: &'static str,
+    likely_ok: &'static str,
 }
 
 fn words(lang: &str) -> Words {
@@ -724,6 +981,7 @@ fn words(lang: &str) -> Words {
             dk70: "numero 70 danese (linea aziendale)",
             reports: "{src}: {n} segnalazioni",
             no_reports: "{src}: nessuna segnalazione",
+            likely_ok: "Nessuna segnalazione su {src} → probabilmente ok",
         },
         "da" => Words {
             kinds: ["privatperson", "virksomhed", "telemarketing", "svindel", "ukendt"],
@@ -743,6 +1001,7 @@ fn words(lang: &str) -> Words {
             dk70: "dansk 70-nummer (firmalinje)",
             reports: "{src}: {n} anmeldelser",
             no_reports: "{src}: ingen anmeldelser",
+            likely_ok: "Ingen anmeldelser på {src} → sandsynligvis ok",
         },
         _ => Words {
             kinds: ["person", "business", "telemarketing", "scam", "unknown"],
@@ -762,6 +1021,7 @@ fn words(lang: &str) -> Words {
             dk70: "Danish 70-number (company line)",
             reports: "{src}: {n} reports",
             no_reports: "{src}: no reports",
+            likely_ok: "No reports in {src} → likely OK",
         },
     }
 }
@@ -838,6 +1098,8 @@ fn unwanted(kind: &str) -> bool {
 pub fn verdict(n: &Number, ctx: &Context, p: &Probs, source: &str, lang: &str) -> Verdict {
     let w = words(lang);
     let k = &ctx.known;
+    let boosted = no_reports_boost(p, k);
+    let p = &boosted;
     let (kind, kind_p) = p.top();
     let mut source = source.to_owned();
     let (label, short) = if !n.valid() {
@@ -860,6 +1122,11 @@ pub fn verdict(n: &Number, ctx: &Context, p: &Probs, source: &str, lang: &str) -
             format!("{} {} ({})", w.likely, w.spam, p2(p.spam, lang)),
             format!("Spam {:.0}%", p.spam * 100.0),
         )
+    } else if k.no_reports() {
+        let l = w
+            .likely_ok
+            .replace("{src}", &k.checked_sources().replace(", ", "/"));
+        (l, "No reports · OK?".to_owned())
     } else {
         (w.unknown_caller.to_owned(), w.unknown_caller.to_owned())
     };
@@ -873,7 +1140,7 @@ pub fn verdict(n: &Number, ctx: &Context, p: &Probs, source: &str, lang: &str) -
     if k.owner_label.is_some() {
         reasons.push(w.own_label.to_owned());
     }
-    if let Some(pr) = &k.public {
+    for pr in k.checked() {
         reasons.push(if pr.reports == 0 {
             w.no_reports.replace("{src}", &pr.source)
         } else {
@@ -1195,6 +1462,8 @@ pub fn parse_180(html: &str, url: &str) -> Option<PublicReport> {
         categories: if reports > 0 { categories } else { Vec::new() },
         latest_comment: latest_comment.map(|c| clip(&c, MAX_COMMENT)),
         operator: operator.cloned(),
+        score: None,
+        flags: Vec::new(),
     })
 }
 
@@ -1303,6 +1572,237 @@ mod tests_180 {
 }
 
 #[cfg(test)]
+mod reject_tests {
+    use super::*;
+
+    fn report(source: &str, reports: u32) -> PublicReport {
+        PublicReport {
+            source: source.into(),
+            url: format!("https://example/{source}"),
+            searches: 10,
+            reports,
+            ..PublicReport::default()
+        }
+    }
+
+    /// A verdict from Jev's probabilities (spam, pick-up) and the report facts.
+    fn v(raw: &str, spam: f64, pick_up: f64, reports: Option<u32>) -> Verdict {
+        let mut ctx = Context::default();
+        ctx.known.public = reports.map(|n| report("180.dk", n));
+        let p = Probs {
+            spam,
+            kinds: KINDS
+                .iter()
+                .map(|(k, _)| ((*k).to_owned(), if *k == "unknown" { 0.6 } else { 0.1 }))
+                .collect(),
+            pick_up,
+        };
+        verdict(&parse(raw), &ctx, &p, "jev", "en")
+    }
+
+    fn decide(raw: &str, verdict: &Verdict) -> Result<Reject, Keep> {
+        reject_decision(raw, verdict, &Guards::default(), &RejectSettings::default())
+    }
+
+    #[test]
+    fn the_defaults_are_the_owners() {
+        let s = RejectSettings::default();
+        assert!(s.enabled && s.valid());
+        assert_eq!(
+            (s.spam_min, s.pick_up_max, s.order_spam_min),
+            (0.60, 0.25, 0.97)
+        );
+    }
+
+    #[test]
+    fn thresholds() {
+        assert!(decide("+4520000001", &v("+4520000001", 0.60, 0.5, Some(3))).is_ok());
+        assert_eq!(
+            decide("+4520000001", &v("+4520000001", 0.59, 0.5, Some(3))),
+            Err(Keep::BelowThresholds)
+        );
+        let r = decide("+4520000001", &v("+4520000001", 0.2, 0.25, Some(3))).unwrap();
+        assert_eq!((r.spam, r.pick_up), (None, Some(0.25)));
+        assert_eq!(
+            decide("+4520000001", &v("+4520000001", 0.2, 0.26, Some(3))),
+            Err(Keep::BelowThresholds)
+        );
+        let off = RejectSettings {
+            enabled: false,
+            ..RejectSettings::default()
+        };
+        assert_eq!(
+            reject_decision(
+                "+4520000001",
+                &v("+4520000001", 0.99, 0.0, Some(9)),
+                &Guards::default(),
+                &off
+            ),
+            Err(Keep::Off)
+        );
+        let bad = RejectSettings {
+            spam_min: 1.5,
+            ..RejectSettings::default()
+        };
+        assert_eq!(
+            reject_decision(
+                "+4520000001",
+                &v("+4520000001", 0.99, 0.0, Some(9)),
+                &Guards::default(),
+                &bad
+            ),
+            Err(Keep::Off)
+        );
+    }
+
+    #[test]
+    fn never_reject_what_he_knows_or_needs() {
+        let spammy = v("+4520000001", 0.99, 0.01, Some(20));
+        let s = RejectSettings::default();
+        for (g, keep) in [
+            (
+                Guards {
+                    contact: true,
+                    ..Guards::default()
+                },
+                Keep::Contact,
+            ),
+            (
+                Guards {
+                    called_or_answered: true,
+                    ..Guards::default()
+                },
+                Keep::CalledOrAnswered,
+            ),
+            (
+                Guards {
+                    allowed: true,
+                    ..Guards::default()
+                },
+                Keep::Allowed,
+            ),
+        ] {
+            assert_eq!(reject_decision("+4520000001", &spammy, &g, &s), Err(keep));
+        }
+        for raw in ["112", "1813", "114", "911"] {
+            assert_eq!(
+                reject_decision(raw, &spammy, &Guards::default(), &s),
+                Err(Keep::Emergency),
+                "{raw}"
+            );
+        }
+        for raw in ["1850", "90909", "4444"] {
+            assert_eq!(
+                reject_decision(raw, &spammy, &Guards::default(), &s),
+                Err(Keep::ShortNumber),
+                "{raw}"
+            );
+        }
+        assert_eq!(
+            reject_decision(
+                "hidden",
+                &v("hidden", 0.99, 0.0, None),
+                &Guards::default(),
+                &s
+            ),
+            Err(Keep::ShortNumber)
+        );
+        // During a Wolt order only near-certain spam is rejected.
+        let order = Guards {
+            order_active: true,
+            ..Guards::default()
+        };
+        assert_eq!(
+            reject_decision(
+                "+4520000001",
+                &v("+4520000001", 0.95, 0.01, Some(20)),
+                &order,
+                &s
+            ),
+            Err(Keep::OrderActive)
+        );
+        assert!(reject_decision(
+            "+4520000001",
+            &v("+4520000001", 0.98, 0.5, Some(20)),
+            &order,
+            &s
+        )
+        .is_ok());
+        // The fallback rules never reject without report facts.
+        let mut rules = v("+4520000001", 0.99, 0.0, None);
+        rules.source = "rules".into();
+        assert_eq!(decide("+4520000001", &rules), Err(Keep::NoEvidence));
+    }
+
+    #[test]
+    fn zero_reports_is_a_safe_indicator() {
+        // A "scam-looking" Italian mobile with zero reports: never rejected at 0.60 / 0.25.
+        for (spam, pick) in [(0.65, 0.3), (0.95, 0.2), (0.99, 0.1)] {
+            let x = v("+39 338 303 7513", spam, pick, Some(0));
+            assert!(
+                x.spam < 0.6 && x.pick_up > 0.25,
+                "{spam} {pick} → {} {}",
+                x.spam,
+                x.pick_up
+            );
+            assert!(decide("+39 338 303 7513", &x).is_err());
+            assert_eq!(x.label, "No reports in 180.dk → likely OK");
+            assert!(x.reasons.contains(&"180.dk: no reports".to_owned()));
+        }
+        // A failed lookup is unknown, not safe: no boost.
+        let unknown = v("+39 338 303 7513", 0.65, 0.3, None);
+        assert_eq!((unknown.spam, unknown.pick_up), (0.65, 0.3));
+        assert!(decide("+39 338 303 7513", &unknown).is_ok());
+        // Two sources, one with reports: no boost.
+        let mut ctx = Context::default();
+        ctx.known.public = Some(report("180.dk", 0));
+        ctx.known.databases = vec![report("tellows", 4)];
+        assert!(!ctx.known.no_reports());
+        let st = state(&parse("+4520000001"), &ctx).to_string();
+        assert!(!st.contains("zero reports"));
+        ctx.known.databases = vec![report("tellows", 0)];
+        assert!(state(&parse("+4520000001"), &ctx)
+            .to_string()
+            .contains("Checked 180.dk, tellows: zero reports, not on any spam list."));
+    }
+
+    /// Today's 7 numbers (2026-10-29) with live Jev's probabilities and 180.dk's facts.
+    #[test]
+    fn replay_of_the_owners_seven_callers() {
+        let cases = [
+            // (number, Jev spam, Jev pick-up, 180.dk reports, rejected?)
+            ("+45 70 40 52 05", 0.75, 0.16, Some(23), true),
+            ("+45 70 40 52 20", 0.82, 0.11, Some(1), true),
+            ("+45 20 68 27 58", 0.67, 0.15, Some(6), true),
+            // The same number when the report lookup failed: Jev alone.
+            ("+45 20 68 27 58", 0.43, 0.34, None, false),
+            ("+45 66 77 87 02", 0.50, 0.32, Some(0), false),
+            // Zero reports on 180.dk: the owner's safe indicator keeps them (spam × 0.6, pick-up + 0.2).
+            ("+357 94 095733", 0.30, 0.50, Some(0), false),
+            ("+357 94 462808", 0.30, 0.47, Some(0), false),
+            ("+44 7459 508537", 0.36, 0.43, Some(0), false),
+        ];
+        for (raw, spam, pick, reports, rejected) in cases {
+            let x = v(raw, spam, pick, reports);
+            let d = decide(raw, &x);
+            assert_eq!(
+                d.is_ok(),
+                rejected,
+                "{raw} {spam}/{pick} {reports:?}: {d:?} ({} / {})",
+                x.spam,
+                x.pick_up
+            );
+        }
+        let x = v("+45 20 68 27 58", 0.67, 0.15, Some(6));
+        let line = reject_line(&x, &decide("+45 20 68 27 58", &x).unwrap());
+        assert_eq!(
+            line,
+            "Rejected likely spam +45 20 68 27 58 · 180.dk 6 reports"
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1325,6 +1825,8 @@ mod tests {
                 .collect(),
             latest_comment: Some("26 Oct 2026 — Irriterende: De ringer i min arbejdstid".into()),
             operator: None,
+            score: None,
+            flags: Vec::new(),
         }
     }
 
@@ -1569,7 +2071,7 @@ mod tests {
         assert!(text.contains("https://www.180.dk/nummer/20682758"));
         assert!(text.contains("De ringer i min arbejdstid"));
         let none = state(&parse("+4566778702"), &ctx()).to_string();
-        assert!(none.contains("No public caller-ID report was found."));
+        assert!(none.contains("No public caller-ID report could be checked."));
         assert!(state(&parse("+4570405205"), &ctx())
             .to_string()
             .contains("Danish 70-number (a non-geographic company number)"));

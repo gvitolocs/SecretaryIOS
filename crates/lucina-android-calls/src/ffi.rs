@@ -10,6 +10,7 @@
 //! | `shareUpload(filesDir: String, cookie: String, manifestPath: String): String` | Unwrapped [`crate::share::upload`] job result. |
 //! | `ui(op: String, json: String): String` | Envelope around [`crate::ui::run`]. |
 //! | `dialer(filesDir: String, op: String, json: String): String` | Envelope around [`crate::dialer::run`]: `label`, `callLog`, `missed`, `voicemail`. |
+//! | `callerFlush(filesDir: String, cookie: String): String` | Envelope `{waiting}`: sends the queued rejection and allow reports. Blocks on the network. |
 //! | `callerState(filesDir: String): String` | Envelope: `{settings, last, lastLine}` ([`crate::caller::Store::state`]). |
 //! | `callerSettings(filesDir: String, json: String): String` | Envelope: patch `{label?, silence?, reject?}`, then the new state. |
 //! | `localVerdict(filesDir: String, number: String, json: String, lang: String): String` | Envelope around [`crate::caller::Screen`], no network. `json` is `{contact?}`. |
@@ -196,6 +197,25 @@ pub extern "system" fn Java_tech_getsecretary_secretary_Native_dialer<'l>(
         let op = string(env, &op, "Invalid operation.")?;
         let v = json_arg(env, &data)?;
         dialer::run(&store, &op, &v, crate::now_ms())
+    })
+}
+
+/// `Native.callerFlush`: send the queued reports (rejections, allowed numbers) to Lucina.
+#[no_mangle]
+pub extern "system" fn Java_tech_getsecretary_secretary_Native_callerFlush<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    files_dir: JString<'l>,
+    cookie: JString<'l>,
+) -> jstring {
+    guarded(&mut env, |env| {
+        let store = caller::Store::open(&string(env, &files_dir, "Storage unavailable.")?)?;
+        let cookie = string(env, &cookie, "").unwrap_or_default();
+        if cookie.trim().is_empty() {
+            return Ok(json!({ "waiting": store.outbox_len() }));
+        }
+        let left = store.flush(&Https::with_timeout(&cookie, crate::reject::OUTBOX_TIMEOUT));
+        Ok(json!({ "waiting": left }))
     })
 }
 

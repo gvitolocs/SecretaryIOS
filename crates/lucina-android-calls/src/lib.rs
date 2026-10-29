@@ -30,6 +30,7 @@ pub mod journal;
 pub mod net;
 pub mod number;
 pub mod phone;
+pub mod reject;
 pub mod share;
 pub mod ui;
 

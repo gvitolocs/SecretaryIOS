@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Secretary · Lucina 0.6.1: Kotlin shell (src/*.kt) over liblucina_calls.so (crates/lucina-android-calls). -->
+<!-- Secretary · Lucina 0.7.0: Kotlin shell (src/*.kt) over liblucina_calls.so (crates/lucina-android-calls). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="tech.getsecretary.secretary"
-    android:versionCode="8" android:versionName="0.6.1">
+    android:versionCode="9" android:versionName="0.7.0">
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.CALL_PHONE"/>
     <uses-permission android:name="android.permission.READ_PHONE_STATE"/>
@@ -17,6 +17,8 @@
     <uses-permission android:name="android.permission.WRITE_CALL_LOG"/>
     <!-- Proximity wake lock during a call at the ear. -->
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <!-- Lucina Maps requests this to tell the phone a navigation link arrived (auto-reject raises its bar for 45 minutes); install Secretary first. -->
+    <permission android:name="tech.getsecretary.secretary.permission.ORDER_SIGNAL" android:protectionLevel="normal"/>
     <uses-feature android:name="android.hardware.location" android:required="false"/>
     <uses-feature android:name="android.hardware.location.gps" android:required="false"/>
     <queries>
@@ -81,6 +83,13 @@
             <intent-filter><action android:name="android.telecom.InCallService"/></intent-filter>
         </service>
         <activity android:name=".CallerScreenActivity" android:exported="false"/>
+        <!-- Lucina Maps: an orderAtMs (Long) extra on each navigation link; senders must hold the ORDER_SIGNAL permission. Used only by the auto-reject guard. -->
+        <receiver android:name=".OrderSignalReceiver" android:exported="true"
+            android:permission="tech.getsecretary.secretary.permission.ORDER_SIGNAL">
+            <intent-filter><action android:name="tech.getsecretary.secretary.action.ORDER_SIGNAL"/></intent-filter>
+        </receiver>
+        <!-- "Allow" and "Allow & call back" on the note after a rejection: this app's own PendingIntents only. -->
+        <receiver android:name=".RejectActionReceiver" android:exported="false"/>
         <!-- The notification buttons (Answer, Decline, Hang up): this app's own PendingIntents only. -->
         <receiver android:name=".CallActionReceiver" android:exported="false"/>
         <!-- The system tells the phone app to show missed calls and voicemail; only senders holding READ_PHONE_STATE (the system) reach it. -->
