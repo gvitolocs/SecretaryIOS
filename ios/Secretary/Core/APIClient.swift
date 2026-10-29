@@ -14,7 +14,8 @@ import os
 /// - Errors: every failure becomes an `APIError`.
 final class APIClient: @unchecked Sendable {
     static let defaultTimeout: TimeInterval = 15
-    static let chatTimeout: TimeInterval = ChatSendQueue.timeout
+    /// Also `ChatSendQueue.timeout`. The number lives here because the widget extension compiles this file without the chat.
+    static let chatTimeout: TimeInterval = 45
     static let preferredEndpointKey = "secretary.server.lastWorkingEndpoint"
 
     struct Response: Sendable {

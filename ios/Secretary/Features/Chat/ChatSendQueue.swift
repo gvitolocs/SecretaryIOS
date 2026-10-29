@@ -7,7 +7,7 @@ import Foundation
 /// up the messages behind it. A failed message stays here until it is retried (it goes to the back of the
 /// line) or dropped.
 struct ChatSendQueue: Equatable, Sendable {
-    static let timeout: TimeInterval = 45
+    static let timeout: TimeInterval = APIClient.chatTimeout
 
     enum State: Equatable, Sendable {
         case queued
