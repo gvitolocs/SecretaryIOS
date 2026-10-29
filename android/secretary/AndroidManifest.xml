@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Secretary · Lucina 0.5.0: Kotlin shell (src/*.kt) over liblucina_calls.so (crates/lucina-android-calls). -->
+<!-- Secretary · Lucina 0.6.0: Kotlin shell (src/*.kt) over liblucina_calls.so (crates/lucina-android-calls). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="tech.getsecretary.secretary"
-    android:versionCode="6" android:versionName="0.5.0">
+    android:versionCode="7" android:versionName="0.6.0">
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.CALL_PHONE"/>
     <uses-permission android:name="android.permission.READ_PHONE_STATE"/>
@@ -12,6 +12,11 @@
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT"/>
     <!-- Optional, asked in "Caller screening": leaves the owner's own contacts out of screening. -->
     <uses-permission android:name="android.permission.READ_CONTACTS"/>
+    <!-- The phone role grants these; the call log screen and the missed-call clean-up use them. -->
+    <uses-permission android:name="android.permission.READ_CALL_LOG"/>
+    <uses-permission android:name="android.permission.WRITE_CALL_LOG"/>
+    <!-- Proximity wake lock during a call at the ear. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <!-- Lucina Maps requests this to send COURIER_STATE; install Secretary before Lucina Maps. -->
     <permission android:name="tech.getsecretary.secretary.permission.COURIER_STATE" android:protectionLevel="normal"/>
     <uses-feature android:name="android.hardware.location" android:required="false"/>
@@ -20,6 +25,9 @@
         <intent><action android:name="android.speech.RecognitionService"/></intent>
         <intent><action android:name="android.media.action.IMAGE_CAPTURE"/></intent>
         <intent><action android:name="android.media.action.VIDEO_CAPTURE"/></intent>
+        <!-- "Use Samsung Phone again" -->
+        <package android:name="com.samsung.android.dialer"/>
+        <package android:name="com.google.android.dialer"/>
     </queries>
     <application android:label="Secretary · Lucina" android:allowBackup="false" android:usesCleartextTraffic="false"
         android:extractNativeLibs="false" android:theme="@android:style/Theme.DeviceDefault.NoActionBar" android:icon="@drawable/lucina">
@@ -52,8 +60,21 @@
                 <category android:name="android.intent.category.DEFAULT"/>
                 <data android:scheme="tel"/>
             </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="tel"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.CALL_BUTTON"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+            </intent-filter>
         </activity>
-        <activity android:name=".InCallActivity" android:exported="false" android:showWhenLocked="true" android:turnScreenOn="true"/>
+        <activity android:name=".CallLogActivity" android:exported="false"/>
+        <activity android:name=".ContactsActivity" android:exported="false"/>
+        <activity android:name=".InCallActivity" android:exported="false" android:showWhenLocked="true" android:turnScreenOn="true"
+            android:launchMode="singleTop" android:excludeFromRecents="true" android:configChanges="orientation|screenSize|keyboardHidden"/>
         <activity android:name=".VoiceActivity" android:exported="false"/>
         <activity android:name=".TranscriptActivity" android:exported="false"/>
         <service android:name=".LucinaCallService" android:permission="android.permission.BIND_INCALL_SERVICE" android:exported="true">
@@ -62,6 +83,13 @@
             <intent-filter><action android:name="android.telecom.InCallService"/></intent-filter>
         </service>
         <activity android:name=".CallerScreenActivity" android:exported="false"/>
+        <!-- The notification buttons (Answer, Decline, Hang up): this app's own PendingIntents only. -->
+        <receiver android:name=".CallActionReceiver" android:exported="false"/>
+        <!-- The system tells the phone app to show missed calls and voicemail; only senders holding READ_PHONE_STATE (the system) reach it. -->
+        <receiver android:name=".PhoneEventsReceiver" android:exported="true" android:permission="android.permission.READ_PHONE_STATE">
+            <intent-filter><action android:name="android.telecom.action.SHOW_MISSED_CALLS_NOTIFICATION"/></intent-filter>
+            <intent-filter><action android:name="android.telephony.action.SHOW_VOICEMAIL_NOTIFICATION"/></intent-filter>
+        </receiver>
         <!-- Screens incoming calls with Jev. Held through ROLE_CALL_SCREENING; allows every call unless the owner's switches say otherwise. -->
         <service android:name=".CallerScreenService" android:permission="android.permission.BIND_SCREENING_SERVICE" android:exported="true">
             <intent-filter><action android:name="android.telecom.CallScreeningService"/></intent-filter>

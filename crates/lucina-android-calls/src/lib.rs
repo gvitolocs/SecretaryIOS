@@ -12,6 +12,8 @@
 //! - [`caller`]: screening incoming callers (instant rules verdict, Jev's
 //!   verdict from the server, the owner's silence/reject switches, the
 //!   courier state from Lucina Maps).
+//! - [`dialer`]: the phone app's call log, missed-call and voicemail
+//!   notifications and the remembered Jev label of a number.
 //! - [`share`]: validated manifests and streaming multipart share uploads.
 //! - [`ui`]: what the in-call screen, notification, keypad, transcript list
 //!   and WebView router show or do.
@@ -23,6 +25,7 @@
 //! for one never reaches the network.
 
 pub mod caller;
+pub mod dialer;
 pub mod ffi;
 pub mod journal;
 pub mod net;

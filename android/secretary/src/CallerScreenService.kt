@@ -10,11 +10,15 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.ContactsContract
 import android.net.Uri
 import android.telecom.Call
 import android.telecom.CallScreeningService
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import org.json.JSONObject
 
@@ -49,6 +53,25 @@ class CallerScreenService : CallScreeningService() {
         val answer = { action: String ->
             if (answered.compareAndSet(false, true)) respondToCall(details, response(action))
         }
+        // Telecom may ask this service twice for one call (as the call-screening app and as the phone app):
+        // the second ask waits for the first one's verdict and gives the same answer, so a number is looked up once.
+        val key = number.ifEmpty { "private" }
+        val mine = Flight()
+        flights.entries.removeIf { SystemClock.elapsedRealtime() - it.value.startedAt > SAME_CALL_MS }
+        val prior = flights.putIfAbsent(key, mine)
+        if (prior != null && SystemClock.elapsedRealtime() - prior.startedAt < SAME_CALL_MS) {
+            if (waits) {
+                Handler(Looper.getMainLooper()).postDelayed({ answer("allow") }, WAIT_MS)
+                Thread {
+                    prior.done.await(WAIT_MS, TimeUnit.MILLISECONDS)
+                    answer(prior.action)
+                }.start()
+            } else {
+                answer("allow")
+            }
+            return
+        }
+        if (prior != null) flights[key] = mine
         if (waits) {
             // Whatever happens below, the call is allowed before the system's limit.
             Handler(Looper.getMainLooper()).postDelayed({ answer("allow") }, WAIT_MS)
@@ -67,15 +90,24 @@ class CallerScreenService : CallScreeningService() {
                 val input = JSONObject()
                 contactName(app, number)?.let { input.put("contact", it) }
                 val json = input.toString()
-                val first = unwrap(Native.localVerdict(dir, number, json, lang))
-                post(app, number, first)
+                // As the phone app, the call screen shows the label itself (and its heads-up has the buttons);
+                // a second heads-up would only repeat it.
+                val own = !Phone.isDefaultDialer(app)
+                if (own) post(app, number, unwrap(Native.localVerdict(dir, number, json, lang)))
                 val verdict = unwrap(Native.screenCall(dir, cookie, number, json, lang))
-                post(app, number, verdict)
+                if (own) post(app, number, verdict)
                 action = verdict.optString("action", "allow")
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 // Screening never gets in the way of the call.
             } finally {
+                mine.action = action
+                mine.done.countDown()
                 answer(action)
+                // The verdict is now in the cache: refresh the call screen and its notification.
+                try {
+                    LucinaCallService.live?.refresh()
+                } catch (e: Throwable) {
+                }
             }
         }.start()
     }
@@ -89,9 +121,22 @@ class CallerScreenService : CallScreeningService() {
         return b.build()
     }
 
+    /** One screening of one call, shared by a second ask for the same number. */
+    private class Flight {
+        val startedAt = SystemClock.elapsedRealtime()
+        val done = CountDownLatch(1)
+
+        @Volatile
+        var action = "allow"
+    }
+
     companion object {
         /** The longest the answer waits for Jev, when silence or reject is on. */
         const val WAIT_MS = 1500L
+
+        /** Two asks for one number this close together are one call. */
+        private const val SAME_CALL_MS = 15_000L
+        private val flights = ConcurrentHashMap<String, Flight>()
         private const val CHANNEL = "caller_screening"
         private const val TAG = "caller"
         private const val TIMEOUT_MS = 120_000L

@@ -44,6 +44,14 @@ pub const COURIER_STALE_MS: u64 = 16 * 3_600_000;
 pub const DEFAULT_THRESHOLD: f64 = 0.90;
 /// Largest settings, courier or last-call file read.
 const MAX_FILE_BYTES: u64 = 16 * 1024;
+/// Largest cache file read.
+const MAX_CACHE_BYTES: u64 = 256 * 1024;
+/// Numbers whose verdict is remembered; the oldest go first.
+pub const CACHE_ENTRIES: usize = 300;
+/// A remembered verdict is used for this long.
+pub const CACHE_TTL_MS: u64 = 30 * 24 * 3_600_000;
+/// A Jev verdict this fresh is not replaced by the fallback rules.
+const CACHE_KEEP_JEV_MS: u64 = 6 * 3_600_000;
 /// Longest label, text or hint passed to the notification, in characters.
 const MAX_SHOWN_CHARS: usize = 240;
 
@@ -174,14 +182,18 @@ impl Store {
     }
 
     fn read<T: serde::de::DeserializeOwned>(&self, name: &str) -> Option<T> {
+        self.read_max(name, MAX_FILE_BYTES)
+    }
+
+    fn read_max<T: serde::de::DeserializeOwned>(&self, name: &str, max: u64) -> Option<T> {
         let path = self.dir.join(name);
         let mut bytes = Vec::new();
         fs::File::open(path)
             .ok()?
-            .take(MAX_FILE_BYTES + 1)
+            .take(max + 1)
             .read_to_end(&mut bytes)
             .ok()?;
-        if bytes.len() as u64 > MAX_FILE_BYTES {
+        if bytes.len() as u64 > max {
             return None;
         }
         serde_json::from_slice(&bytes).ok()
@@ -264,6 +276,49 @@ impl Store {
         }
     }
 
+    fn cache(&self) -> Vec<Cached> {
+        self.read_max("caller-cache.json", MAX_CACHE_BYTES)
+            .unwrap_or_default()
+    }
+
+    /// Remember the verdict for a number (the call screen and the call log
+    /// show it later without asking again). A fresh Jev verdict is not
+    /// replaced by the fallback rules.
+    fn cache_put(&self, shown: &Shown, now: u64) {
+        let Ok(_lock) = LOCK.lock() else { return };
+        let key = digits(&shown.number);
+        if key.is_empty() {
+            return;
+        }
+        let mut all = self.cache();
+        if let Some(old) = all.iter().find(|e| digits(&e.shown.number) == key) {
+            if shown.source == "rules"
+                && old.shown.source != "rules"
+                && now.saturating_sub(old.at_ms) < CACHE_KEEP_JEV_MS
+            {
+                return;
+            }
+        }
+        all.retain(|e| digits(&e.shown.number) != key);
+        all.push(Cached {
+            at_ms: now,
+            shown: shown.clone(),
+        });
+        if all.len() > CACHE_ENTRIES {
+            let excess = all.len() - CACHE_ENTRIES;
+            all.drain(..excess);
+        }
+        let _ = self.write("caller-cache.json", &all);
+    }
+
+    fn cache_get(&self, number: &str, now: u64) -> Option<Shown> {
+        let key = digits(number);
+        self.cache()
+            .into_iter()
+            .find(|e| digits(&e.shown.number) == key && now.saturating_sub(e.at_ms) <= CACHE_TTL_MS)
+            .map(|e| e.shown)
+    }
+
     /// Settings, courier state and last call, with the lines the app shows.
     pub fn state(&self, now: u64) -> Value {
         let settings = self.settings();
@@ -282,6 +337,18 @@ impl Store {
             "lastLine": last_line(last.as_ref(), now),
         })
     }
+}
+
+/// One remembered verdict.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct Cached {
+    at_ms: u64,
+    #[serde(flatten)]
+    shown: Shown,
+}
+
+fn digits(s: &str) -> String {
+    s.chars().filter(char::is_ascii_digit).collect()
 }
 
 fn ago(ms: u64, now: u64) -> String {
@@ -361,7 +428,7 @@ pub fn decide(settings: &Settings, source: &str, spam: f64) -> Action {
 }
 
 /// What is shown about one number, from the server or from the rules.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct Shown {
     label: String,
     kind: String,
@@ -531,6 +598,7 @@ pub fn screen(
         .and_then(|v| Shown::from_response(&v, &n))
         .unwrap_or(fallback);
     let out = present(&n, &shown, &settings, input, lang);
+    store.cache_put(&shown, now);
     store.set_last(&Last {
         at_ms: now,
         display: shown.display.clone(),
@@ -542,6 +610,40 @@ pub fn screen(
         action: out.action.to_owned(),
     });
     out
+}
+
+/// What to show for `number` on the call screen: the remembered verdict
+/// (Jev's, if the screening already heard back), else the instant rules
+/// guess. Nothing is sent anywhere.
+pub fn label(store: &Store, number: &str, input: &Input, lang: &str, now: u64) -> Screen {
+    let lang = caller::lang(lang);
+    let n = caller::parse(number);
+    if n.valid() && input.contact.is_none() {
+        if let Some(shown) = store.cache_get(&n.e164, now) {
+            return present(&n, &shown, &store.settings(), input, lang);
+        }
+    }
+    local(store, number, input, lang, now)
+}
+
+/// The number written for reading (`+45 70 40 52 05`), if it is a phone number.
+pub fn display_of(number: &str) -> Option<String> {
+    let n = caller::parse(number);
+    n.valid().then(|| n.display())
+}
+
+/// The remembered verdict for `number`, if there is one.
+pub fn cached(store: &Store, number: &str, lang: &str, now: u64) -> Option<Screen> {
+    let lang = caller::lang(lang);
+    let n = caller::parse(number);
+    let shown = store.cache_get(&n.e164, now).filter(|_| n.valid())?;
+    Some(present(
+        &n,
+        &shown,
+        &store.settings(),
+        &Input::default(),
+        lang,
+    ))
 }
 
 /// The request body of `POST /v1/callers/screen`.

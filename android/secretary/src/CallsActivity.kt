@@ -1,7 +1,6 @@
 package tech.getsecretary.secretary
 
 import android.Manifest
-import android.app.role.RoleManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
@@ -11,7 +10,7 @@ import android.view.Gravity
 import android.view.View
 import android.widget.EditText
 import android.widget.LinearLayout
-import org.json.JSONObject
+import tech.getsecretary.design.ValueRow
 import tech.getsecretary.design.LucinaTokens
 
 /** The dialer (DIAL intents), the voice conversation and the transcript list. */
@@ -33,7 +32,11 @@ class CallsActivity : Ui() {
         for (row in 0 until 4) {
             val views = (0 until 3).map { col ->
                 val (digit, letters) = keys[row * 3 + col]
-                ui.keypadKey(digit, letters, onLong = if (digit == "0") ({ type("+") }) else null) { type(digit) }
+                ui.keypadKey(digit, letters, onLong = when (digit) {
+                    "0" -> ({ type("+") })
+                    "1" -> ({ voicemail() }) // long-press 1 calls the carrier voicemail, as on every phone
+                    else -> null
+                }) { type(digit) }
             }
             body.addView(ui.spread(*views.toTypedArray()).apply { layoutParams = ui.lp(bottom = 14f) })
         }
@@ -48,28 +51,73 @@ class CallsActivity : Ui() {
             layoutParams = ui.lp(top = 4f)
         })
 
+        body.addView(ui.sectionHeader("Phone"))
+        body.addView(ui.group(
+            ui.valueRow("Recent calls", chevron = true) { startActivity(Intent(this, CallLogActivity::class.java)) }.view,
+            ui.valueRow("Contacts", chevron = true) { startActivity(Intent(this, ContactsActivity::class.java)) }.view,
+            ui.valueRow("Voicemail", chevron = true) { voicemail() }.view,
+        ))
+        body.addView(ui.footnote("Emergency numbers such as 112 are dialed straight through Android, with no checks of ours in between."))
         body.addView(ui.sectionHeader("Lucina"))
         body.addView(ui.group(
             ui.valueRow("Talk to Lucina", "Internet", chevron = true) { startActivity(Intent(this, VoiceActivity::class.java)) }.view,
             ui.valueRow("Call history & transcripts", chevron = true) { startActivity(Intent(this, TranscriptActivity::class.java)) }.view,
+            ui.valueRow("Caller screening", chevron = true) { startActivity(Intent(this, CallerScreenActivity::class.java)) }.view,
         ))
-        body.addView(ui.sectionHeader("Phone"))
-        body.addView(ui.group(
-            ui.actionRow("Set up SIM call controls") {
-                val roles = getSystemService(RoleManager::class.java)
-                if (roles.isRoleAvailable(RoleManager.ROLE_DIALER) && !roles.isRoleHeld(RoleManager.ROLE_DIALER)) {
-                    startActivityForResult(roles.createRequestRoleIntent(RoleManager.ROLE_DIALER), REQUEST_ROLE)
-                } else {
-                    notice("Secretary already handles phone calls.")
-                    notifications()
-                }
-            }.view,
-        ))
+        body.addView(ui.sectionHeader("Default phone app"))
+        role = ui.valueRow("Secretary is the phone app")
+        makeDefault = ui.actionRow("Make Secretary your phone app") { requestRole() }
+        val back = ui.actionRow("Use ${Phone.previousDialer(this)?.let { label(it) } ?: "Samsung Phone"} again") { switchBack() }
+        body.addView(ui.group(role.view, makeDefault.view, back.view))
         body.addView(ui.footnote(
-            "SIM calls use Android’s phone role. Recording both sides is not available to a normal app. " +
-                "Import an existing call recording to transcribe it. Internet conversations here are with Lucina; " +
-                "other VoIP services are not connected.",
+            "Only you can change the default phone app: Android asks you to confirm. Calls, call waiting, the call log " +
+                "and voicemail then run here; Samsung Phone stays installed and the button above hands the role back. " +
+                "SIM audio is not available to a normal app, so SIM calls are not recorded; import a recording to transcribe it.",
         ))
+        refreshRole()
+    }
+
+    private lateinit var role: ValueRow
+    private lateinit var makeDefault: ValueRow
+
+    override fun onResume() {
+        super.onResume()
+        if (::role.isInitialized) refreshRole()
+    }
+
+    private fun label(pkg: String): String = try {
+        packageManager.getApplicationInfo(pkg, 0).loadLabel(packageManager).toString()
+    } catch (e: Exception) {
+        "Samsung Phone"
+    }
+
+    private fun refreshRole() {
+        val held = Phone.isDefaultDialer(this)
+        role.set(if (held) "Yes" else "No", if (held) ui.c.positive else ui.c.negative)
+        makeDefault.view.visibility = if (held || !Phone.roleAvailable(this)) View.GONE else View.VISIBLE
+    }
+
+    private fun requestRole() {
+        val intent = Phone.requestRole(this)
+        if (intent == null) {
+            notice(if (Phone.roleHeld(this)) "Secretary is already the phone app." else "This phone does not offer the phone role.")
+        } else {
+            startActivityForResult(intent, REQUEST_ROLE)
+        }
+    }
+
+    private fun switchBack() {
+        if (Phone.switchBack(this, REQUEST_BACK) < 0) notice("Pick the Phone app in Default apps.")
+    }
+
+    private fun voicemail() {
+        if (!Phone.callVoicemail(this)) {
+            if (checkSelfPermission(Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf(Manifest.permission.CALL_PHONE), REQUEST_VOICEMAIL)
+            } else {
+                notice("No voicemail number is set up on this SIM.")
+            }
+        }
     }
 
     /** Types at the cursor when the field is focused (replacing a selection), otherwise at the end. */
@@ -102,38 +150,56 @@ class CallsActivity : Ui() {
     override fun onActivityResult(request: Int, result: Int, data: Intent?) {
         super.onActivityResult(request, result, data)
         if (request == REQUEST_ROLE && result == RESULT_OK) notifications()
+        if (::role.isInitialized) refreshRole()
     }
 
-    /** Rust validates the number and checks CALL_PHONE before Telecom sees it. */
+    /**
+     * An emergency number is placed at once through Telecom, with no permission request, no confirmation and no
+     * Rust or network on the way (see [DialPlan]). Other numbers need CALL_PHONE, which the phone role grants.
+     */
     private fun dial() {
         val n = number.text.toString().trim()
         if (n.isEmpty()) {
             notice("Enter a phone number.")
             return
         }
-        val result = try {
-            JSONObject(Native.phoneCall(this, n, false))
-        } catch (e: Exception) {
-            notice("Phone function failed.")
-            return
+        val plan = DialPlan.plan(n) { Phone.isEmergency(this, it) }
+        when (plan.kind) {
+            DialPlan.Kind.INVALID -> notice("Enter a valid phone number.")
+            DialPlan.Kind.EMERGENCY -> Phone.dial(this, plan.number)
+            DialPlan.Kind.CALL -> {
+                if (checkSelfPermission(Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED) {
+                    pending = plan.number
+                    requestPermissions(arrayOf(Manifest.permission.CALL_PHONE), REQUEST_CALL)
+                } else {
+                    place(plan.number)
+                }
+            }
         }
-        if (result.optString("status") == "needs_permission") {
-            requestPermissions(arrayOf(Manifest.permission.CALL_PHONE), REQUEST_CALL)
-            return
-        }
-        notice(result.optString("message", result.optString("status")))
+    }
+
+    private var pending: String? = null
+
+    private fun place(n: String) {
+        val out = Phone.dial(this, n)
+        if (out is DialPlan.Outcome.Failed) notice("Android refused the call. Check the SIM and phone permission.")
     }
 
     override fun onRequestPermissionsResult(r: Int, p: Array<String>, g: IntArray) {
         super.onRequestPermissionsResult(r, p, g)
-        if (r == REQUEST_CALL && g.isNotEmpty() && g[0] == PackageManager.PERMISSION_GRANTED) {
-            notice("Call permission enabled. Tap Call when ready.")
+        val granted = g.isNotEmpty() && g[0] == PackageManager.PERMISSION_GRANTED
+        if (r == REQUEST_CALL && granted) {
+            pending?.let { place(it) } // the number he already typed and tapped Call for
         }
+        if (r == REQUEST_VOICEMAIL && granted) voicemail()
+        pending = null
     }
 
     private companion object {
         const val REQUEST_ROLE = 1
         const val REQUEST_CALL = 2
         const val REQUEST_NOTIFICATIONS = 4
+        const val REQUEST_BACK = 5
+        const val REQUEST_VOICEMAIL = 6
     }
 }

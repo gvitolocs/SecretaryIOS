@@ -31,6 +31,9 @@ object Native {
     /** Screen decisions: `callView`, `dtmf`, `route`. */
     @JvmStatic external fun ui(op: String, json: String): String
 
+    /** The phone app's own screens (`label`, `callLog`, `missed`, `voicemail`), an envelope. Cheap; never the emergency path. */
+    @JvmStatic external fun dialer(filesDir: String, op: String, json: String): String
+
     /** Caller screening state, an envelope: `{settings, courier, courierLine, last, lastLine}`. Cheap. */
     @JvmStatic external fun callerState(filesDir: String): String
 
