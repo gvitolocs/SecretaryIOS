@@ -372,9 +372,10 @@ fn settle_matches_kernel_exhaustively() {
 fn built_in_tools_are_not_denied() {
     let all = Registry::builtin(&lucina_tools::ToolSelection::All);
     // 12 + tasks + media + memos + diagnostics + secrets_status + secrets_audit
-    // + ask_claude/grok/chatgpt + delegate + the 10 plugin tools + au_people_search/au_building/au_campus_map;
+    // + ask_claude/grok/chatgpt + delegate + the 10 plugin tools + au_people_search/au_building/au_campus_map
+    // + caller_screen;
     // `meshy` is registered by the server, not here.
-    assert_eq!(all.names().len(), 35, "the 35 built-in tools of lib.rs");
+    assert_eq!(all.names().len(), 36, "the 36 built-in tools of lib.rs");
     for n in all.names() {
         assert!(!is_denied_name(n), "{n}");
     }

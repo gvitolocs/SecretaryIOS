@@ -39,6 +39,7 @@ use lucina_store::recent::RecentChat;
 use lucina_store::timeline::{Attachment, TimelineStore};
 
 mod au_turn;
+pub mod callers_turn;
 pub mod drive_turn;
 pub mod media_turn;
 pub mod memo_turn;
@@ -949,9 +950,10 @@ async fn run_turn_scoped(
             &t.message,
             &finish.action,
             &finish.action_result,
-            // Secrets replies are fixed texts, AU Find and Jev yes/no answers keep their wording: no model rewrite.
+            // Secrets replies are fixed texts, AU Find, caller and Jev yes/no answers keep their wording: no model rewrite.
             !finish.action.starts_with("secrets_")
                 && finish.action != au_turn::ACTION
+                && finish.action != callers_turn::ACTION
                 && finish.action != crate::jev_yesno::ACTION,
             &finish.calendar_events,
             finish.agenda.as_ref(),
@@ -962,7 +964,7 @@ async fn run_turn_scoped(
     // composer is off or gave none.
     let rich_msg = match rich_msg {
         None if t.origin.is_none()
-            && finish.action == au_turn::ACTION
+            && (finish.action == au_turn::ACTION || finish.action == callers_turn::ACTION)
             && (!finish.blocks.is_empty() || !finish.routes.is_empty()) =>
         {
             Some(lucina_store::rich::RichMessage {
@@ -1538,6 +1540,11 @@ async fn json_turn(
         return f;
     }
 
+    // "Who called me from <number>?" / a pasted list: Jev's table, read-only, MCP turns included.
+    if let Some(f) = callers_turn::try_turn(t, memory).await {
+        return f;
+    }
+
     // A yes/no question (crate::jev_yesno): Jev answers from what she knows, or she says she isn't sure
     // (or hedges a medical, legal or financial one) before the normal answer. The owner's own turns only
     // (no MCP, no other senders); it answers and never acts.
@@ -1582,7 +1589,7 @@ async fn json_turn(
 }
 
 /// The JSON turn after the read-only shortcuts that come before yes/no questions (decisions, YouTube,
-/// shares, her computer, the ops record, AU Find).
+/// shares, her computer, the ops record, AU Find, caller screening).
 async fn json_turn_rest(
     t: &Turn<'_>,
     prepared: &crate::context::Prepared,
@@ -3058,10 +3065,11 @@ async fn tools_turn(
         &message,
         &finish.action,
         &finish.action_result,
-        // Secrets replies are fixed texts, AU Find and Jev yes/no answers keep their wording: no model rewrite.
+        // Secrets replies are fixed texts, AU Find, caller and Jev yes/no answers keep their wording: no model rewrite.
         !finish.action.starts_with("secrets_")
-                && finish.action != au_turn::ACTION
-                && finish.action != crate::jev_yesno::ACTION,
+            && finish.action != au_turn::ACTION
+            && finish.action != callers_turn::ACTION
+            && finish.action != crate::jev_yesno::ACTION,
         &finish.calendar_events,
         finish.agenda.as_ref(),
     )

@@ -60,6 +60,12 @@ pub const SENT_HINT: &str = "For a question about sent mail, open the Sent folde
 /// For an AU site in her browser (not the mail): the four AU sites, quoted text, no logins.
 pub const AU_WEB_SUFFIX: &str = "Use your one Chromium window (a new tab with ctrl+t) through accessibility tools (get_window_state, click, type_text, press_key). Read only: stay on www.au.dk, mit.au.dk, brightspace.au.dk and pure.au.dk and links actually seen on their pages; quote the exact page text with its URL; stop at any login or credentials page and never type the owner's AU credentials.";
 
+/// For a public "who called" lookup in her browser: search pages and who-called sites, quoted, read only.
+pub const CALLER_WEB_SUFFIX: &str = "Use your one Chromium window (a new tab with ctrl+t) through accessibility tools (get_window_state, click, type_text, press_key). Read only: search the web for each phone number (a search engine and public who-called pages such as tellows, hvemringer.dk or who-called sites); for each number quote the exact text you saw with its URL, or say nothing was found. Never call, text, report or rate the number, never sign in, and decline cookies and terms.";
+
+/// "who called from <number>" asked of her browser.
+const CALLER_LOOKUP: &str = r"\b(?:who\s+(?:called|owns|is\s+calling)|caller\s+lookup|chi\s+(?:ha\s+chiamato|mi\s+ha\s+chiamato|è\s+il\s+numero)|hvem\s+(?:der\s+)?(?:ringede|har\s+ringet|ejer))\b";
+
 /// Aarhus University's sites she may read.
 const AU_SITE: &str = r"\b(?:www|mit|brightspace|pure)\.au\.dk\b";
 
@@ -125,6 +131,15 @@ fn au_site(text: &str) -> Option<String> {
         .map(|(_, _, site)| site.to_ascii_lowercase())
 }
 
+/// A who-called lookup of phone numbers in her browser (not about the mail).
+fn caller_lookup(text: &str) -> bool {
+    re!(COMPUTER, "i").test(text)
+        && re!(CALLER_LOOKUP, "i").test(text)
+        && re!(LOOK, "i").test(text)
+        && re!(r"\d[\d ]{6,}\d", "").test(text)
+        && !re!(MAIL_STRONG, "i").test(text)
+}
+
 fn app_of(text: &str) -> App {
     if re!(r"\b(?:g[\s-]?mail|google mail)\b", "i").test(text)
         && !re!(r"\bout[\s-]?look\b", "i").test(text)
@@ -151,7 +166,8 @@ pub fn classify(text: &str) -> Option<Mode> {
         || (strong && re!(LOOK, "i").test(t))
         || (re!(OWNER_SENT, "i").test(t) && (strong || weak))
         || (re!(MY_MAIL, "i").test(t) && re!(LOOK, "i").test(t))
-        || (computer && re!(AU_SITE, "i").test(t) && re!(LOOK, "i").test(t));
+        || (computer && re!(AU_SITE, "i").test(t) && re!(LOOK, "i").test(t))
+        || caller_lookup(t);
     if !routed {
         return None;
     }
@@ -173,6 +189,9 @@ pub fn task_text(text: &str, mode: Mode) -> String {
     let fixed = fixed.trim();
     if mode == Mode::ReadOnly && au_site(fixed).is_some() {
         return format!("{fixed}\n\n{AU_WEB_SUFFIX}");
+    }
+    if mode == Mode::ReadOnly && caller_lookup(fixed) {
+        return format!("{fixed}\n\n{CALLER_WEB_SUFFIX}");
     }
     let app = app_of(fixed);
     let suffix = match (mode, app) {
@@ -246,6 +265,11 @@ pub fn plan(text: &str) -> Option<Value> {
             "it" => format!("Ok, apro {site} sul mio computer e do un'occhiata — solo lettura."),
             "da" => format!("Ok, jeg åbner {site} på min computer og kigger — kun læsning."),
             _ => format!("Ok, I'm opening {site} on my computer and having a look — read-only."),
+        },
+        None if mode == Mode::ReadOnly && caller_lookup(&fixed) => match lang {
+            "it" => "Ok, cerco questi numeri sul web dal mio computer — solo lettura, con le fonti.".to_owned(),
+            "da" => "Ok, jeg slår numrene op på nettet fra min computer — kun læsning, med kilder.".to_owned(),
+            _ => "Ok, I'm looking these numbers up on the web from my computer — read-only, with sources.".to_owned(),
         },
         None => ack(lang, app_of(&fixed), mode),
     };
@@ -391,6 +415,23 @@ mod tests {
         let p = plan("open Gmail in your own browser").unwrap();
         assert!(p["task"].as_str().unwrap().contains(READ_ONLY_SUFFIX_GMAIL));
         assert!(plan("ciao").is_none());
+    }
+
+    #[test]
+    fn a_who_called_lookup_in_her_browser_is_read_only_with_sources() {
+        let en = "Use your browser to search the web for who called from +45 70 40 52 05 and +357 94 095733.";
+        assert_eq!(classify(en), Some(Mode::ReadOnly));
+        let p = plan(en).unwrap();
+        assert!(p["task"].as_str().unwrap().ends_with(CALLER_WEB_SUFFIX), "{p}");
+        assert!(p["ack"].as_str().unwrap().contains("read-only"), "{p}");
+        let it = "Usa il tuo browser per cercare sul web chi ha chiamato da +45 70 40 52 05.";
+        assert_eq!(classify(it), Some(Mode::ReadOnly));
+        assert!(plan(it).unwrap()["ack"].as_str().unwrap().starts_with("Ok, cerco"));
+        let da = "Brug din browser og find hvem der har ringet fra 70 40 52 05.";
+        assert_eq!(classify(da), Some(Mode::ReadOnly));
+        // Not her browser, or no number: not routed here.
+        assert!(classify("who called from +45 70 40 52 05?").is_none());
+        assert!(classify("use your browser to find who called me yesterday").is_none());
     }
 
     #[test]

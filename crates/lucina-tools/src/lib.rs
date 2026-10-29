@@ -14,7 +14,8 @@
 //!   later turn.
 //! - [`tools`]: `time`, `weather`, `calculator`, `unit_convert`, `places`,
 //!   `au_people_search`, `au_building`, `au_campus_map` (AU Find, Aarhus
-//!   University, through the local af-server; [`tools::au`]), `notes`, `reminders`, `calendar`, `tasks`, `memos` (voice memos), `shopping`, `presence`, `avatar_outfit`, `notify`,
+//!   University, through the local af-server; [`tools::au`]), `caller_screen`
+//!   (unknown callers judged by Jev; [`tools::callers`]), `notes`, `reminders`, `calendar`, `tasks`, `memos` (voice memos), `shopping`, `presence`, `avatar_outfit`, `notify`,
 //!   the owner-only `secrets_status` / `secrets_audit` ([`OWNER_ONLY_TOOLS`]),
 //!   the delegation tools `ask_claude`, `ask_grok`, `ask_chatgpt`, `delegate`
 //!   ([`SideEffect::Delegate`]: Lucina's own decision, no confirmation); none of
@@ -250,6 +251,8 @@ pub struct ToolEnv {
     pub ops: Option<Arc<lucina_ops::Ops>>,
     /// af-server (AU Find) base URL (`LUCINA_AU_URL`); `None`: `LUCINA_AU=off`.
     pub au_url: Option<String>,
+    /// Numbers the phones reported and the answers `caller_screen` gave; `None`: no store.
+    pub callers: Option<Arc<tools::callers::CallerStore>>,
 }
 
 impl ToolEnv {
@@ -302,6 +305,7 @@ impl ToolEnv {
             approvals: None,
             ops: None,
             au_url: None,
+            callers: None,
         }
     }
 }
@@ -689,10 +693,10 @@ mod tests {
             .unwrap_err()
             .contains("no money movement"));
         let all = Registry::builtin(&ToolSelection::All);
-        assert_eq!(all.names().len(), 35);
-        assert_eq!(all.without(OWNER_ONLY_TOOLS).names().len(), 23);
+        assert_eq!(all.names().len(), 36);
+        assert_eq!(all.without(OWNER_ONLY_TOOLS).names().len(), 24);
         let mcp = all.without(NO_MCP_TOOLS);
-        assert_eq!(mcp.names().len(), 19);
+        assert_eq!(mcp.names().len(), 20);
         assert!(mcp.get("au_people_search").is_some());
         for n in tools::plugins::NAMES {
             assert!(OWNER_ONLY_TOOLS.contains(n) && all.get(n).is_some(), "{n}");

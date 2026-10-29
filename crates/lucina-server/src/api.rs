@@ -461,6 +461,10 @@ async fn route(
     if resource == Some("au") && parts.len() == 2 {
         return crate::au::route(st, method, uri, &parts[1..]).await;
     }
+    // Caller screening (crate::callers): Jev's verdict on numbers for the phones, the iOS Call Directory.
+    if resource == Some("callers") && parts.len() == 2 {
+        return crate::callers::route(st, method, uri, &parts[1..], body).await;
+    }
     // The ops record (crate::ops): records, search, Map/ pages.
     if resource == Some("ops") && parts.len() <= 3 {
         return crate::ops::route(st, method, uri, headers, &parts[1..], body).await;
