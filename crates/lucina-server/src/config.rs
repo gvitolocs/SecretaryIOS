@@ -225,6 +225,9 @@ pub struct Config {
     /// `LUCINA_CALLERS_PUBLIC_URL` (default `https://www.180.dk`; `off` disables): the public
     /// caller-ID pages read before Jev decides.
     pub callers_public_url: Option<String>,
+    /// `LUCINA_CALLERS_IT_URL` (default `https://spamcalls.net`; `off` disables): the Italian
+    /// numbers' public report pages.
+    pub callers_it_url: Option<String>,
     /// `IPQS_API_KEY`: IPQualityScore's phone reputation API (the owner's key, via Infisical).
     pub callers_ipqs_key: Option<String>,
     /// `TELLOWS_PARTNER` + `TELLOWS_APIKEY`: tellows' partner Scorelist for Denmark.
@@ -567,6 +570,11 @@ impl Config {
                     "off" | "false" | "0" | "no"
                 )
             }),
+            callers_it_url: match get("LUCINA_CALLERS_IT_URL") {
+                Some(v) if matches!(v.trim().to_ascii_lowercase().as_str(), "off" | "false" | "0" | "no" | "") => None,
+                Some(v) => Some(v.trim().trim_end_matches('/').to_owned()),
+                None => Some(lucina_tools::tools::callers::SPAMCALLS_BASE.to_owned()),
+            },
             callers_public_url: match get("LUCINA_CALLERS_PUBLIC_URL") {
                 Some(v) if matches!(v.trim().to_ascii_lowercase().as_str(), "off" | "false" | "0" | "no" | "") => None,
                 Some(v) => Some(v.trim().trim_end_matches('/').to_owned()),

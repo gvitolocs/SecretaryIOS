@@ -58,7 +58,7 @@ async fn screen_records_calls_and_feeds_the_directory() {
         .await;
     assert_eq!(s, 200, "{b}");
     assert_eq!(b["data"]["lang"], "da");
-    assert_eq!(b["data"]["results"][0]["label"], "Ukendt opkald", "{b}");
+    assert_eq!(b["data"]["results"][0]["label"], "Ukendt opkald · ingen database for dette land", "{b}");
     assert_eq!(b["data"]["results"][1]["type"], "invalid", "{b}");
     let (_, b) = h
         .post(

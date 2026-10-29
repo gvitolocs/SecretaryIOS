@@ -93,6 +93,7 @@ pub fn tellows_path(st: &AppState) -> std::path::PathBuf {
 pub fn lookup(st: &AppState) -> tc::PublicLookup {
     tc::PublicLookup {
         base: st.cfg.callers_public_url.clone(),
+        spamcalls_base: st.cfg.callers_it_url.clone(),
         ipqs: st.cfg.callers_ipqs_key.as_ref().map(|key| tc::Ipqs {
             http: st.tool_env.http.clone(),
             key: key.clone(),
