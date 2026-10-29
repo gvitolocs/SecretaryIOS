@@ -38,7 +38,7 @@ struct ApprovalsSettingsSection: View {
             .disabled(store.settings?.thisDeviceId == nil || store.settingsBusy)
             .accessibilityIdentifier("approvalsMainDevice")
 
-            Label(faceIDOn ? "Face ID or passcode: on" : "Face ID or passcode: off", systemImage: "faceid")
+            Label(faceIDOn ? "Approve with passcode: on" : "Approve with passcode: off", systemImage: "lock")
                 .foregroundStyle(faceIDOn ? Theme.positive : Color.primary)
                 .accessibilityIdentifier("approvalsFaceIDState")
             Button {
@@ -49,7 +49,7 @@ struct ApprovalsSettingsSection: View {
                 }
             } label: {
                 HStack {
-                    Text(faceIDOn ? "Set up Face ID again" : "Set up")
+                    Text(faceIDOn ? "Set up again" : "Set up")
                     Spacer()
                     if store.settingsBusy { ProgressView() }
                 }
@@ -57,7 +57,7 @@ struct ApprovalsSettingsSection: View {
             .disabled(store.settingsBusy || store.availability == .unsupported)
             .accessibilityIdentifier("approvalsSetUpFaceID")
             if store.keyStatus == .ready || store.keyStatus == .notRegistered {
-                Button("Remove Face ID", systemImage: "trash", role: .destructive) { prompts.confirmRemoveKey = true }
+                Button("Remove passcode approvals", systemImage: "trash", role: .destructive) { prompts.confirmRemoveKey = true }
                     .disabled(store.settingsBusy)
             }
 
@@ -83,7 +83,7 @@ struct ApprovalsSettingsSection: View {
         } header: {
             Text("Approvals").task { await store.loadSettings() }
         } footer: {
-            Text("When Lucina needs your OK, the main device gets the prompt first. Your other devices get it after \(store.settings?.escalateAfterSecs ?? 30) seconds. Secrets, root commands, messages and payments need Face ID or the passcode, or your PIN, on the device that approves them.")
+            Text("When Lucina needs your OK, the main device gets the prompt first. Your other devices get it after \(store.settings?.escalateAfterSecs ?? 30) seconds. Secrets, root commands, messages and payments need this iPhone's passcode (or your PIN) on the device that approves them.")
         }
     }
 
@@ -117,7 +117,7 @@ struct ApprovalsSettingsPromptsModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .confirmationDialog("Remove Face ID for approvals?", isPresented: $prompts.confirmRemoveKey, titleVisibility: .visible) {
+            .confirmationDialog("Remove passcode approvals?", isPresented: $prompts.confirmRemoveKey, titleVisibility: .visible) {
                 Button("Remove", role: .destructive) { Task { await app.approvals.removeFaceID() } }
             } message: {
                 Text("This iPhone will approve secrets, root commands, messages and payments only with your PIN, if you set one.")
@@ -129,7 +129,7 @@ struct ApprovalsSettingsPromptsModifier: ViewModifier {
                     }
                 }
             } message: {
-                Text("Face ID or your passcode will confirm it.")
+                Text("Your passcode will confirm it.")
             }
             .sheet(item: $prompts.pinFlow) { kind in
                 PinFlowSheet(kind: kind, store: app.approvals)
@@ -191,9 +191,9 @@ struct PinFlowSheet: View {
 
     private var explanation: String {
         switch kind {
-        case .choose: return "Optional. Your PIN approves sensitive requests when Face ID isn't available."
-        case .change: return "Your PIN approves sensitive requests when Face ID isn't available."
-        case .remove: return "Without a PIN, sensitive requests need Face ID or your passcode."
+        case .choose: return "Optional. Your PIN approves sensitive requests when the passcode key isn't available."
+        case .change: return "Your PIN approves sensitive requests when the passcode key isn't available."
+        case .remove: return "Without a PIN, sensitive requests need your passcode."
         }
     }
 

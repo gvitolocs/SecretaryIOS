@@ -30,15 +30,6 @@ final class FakeApprovalSigner: ApprovalSigning, @unchecked Sendable {
         return ApprovalProof(keyId: keyId ?? "", signature: "c2ln")
     }
 
-    /// Whether a Face ID unlock just happened (a lock-screen Approve can sign without a prompt).
-    var recentlyUnlocked = false
-    private(set) var signedAfterUnlock: [String] = []
-
-    func signAfterUnlock(_ message: String) async throws -> ApprovalProof {
-        guard recentlyUnlocked, keyId != nil else { throw ApprovalSignError.needsInteraction }
-        signedAfterUnlock.append(message)
-        return ApprovalProof(keyId: keyId ?? "", signature: "dW5sb2Nr")
-    }
 }
 
 /// Records what would go to `UNUserNotificationCenter`, delivered removals included.
@@ -72,8 +63,6 @@ final class FakeApprovalNotifier: ApprovalNotifying {
 
     func postFailure(for item: ApprovalItem) async { failures.append(item.id) }
     func remove(ids: [String]) async { removed.append(contentsOf: ids) }
-    private(set) var confirms: [String] = []
-    func postConfirm(for item: ApprovalItem) async { confirms.append(item.id) }
 }
 
 private func itemJSON(id: String, sensitive: Bool, status: String? = nil, extra: String = "") -> String {
@@ -319,7 +308,7 @@ final class ApprovalsTests: XCTestCase {
         XCTAssertEqual(ApprovalNotificationAction.deny.route(sensitive: true), .decide(.deny))
         XCTAssertEqual(ApprovalNotificationAction.deny.route(sensitive: false), .decide(.deny))
         XCTAssertEqual(ApprovalNotificationAction.approve.route(sensitive: false), .decide(.approve))
-        XCTAssertEqual(ApprovalNotificationAction.approve.route(sensitive: true), .decide(.approve))
+        XCTAssertEqual(ApprovalNotificationAction.approve.route(sensitive: true), .openSheet)
         XCTAssertEqual(ApprovalNotificationAction.open.route(sensitive: false), .openSheet)
         XCTAssertEqual(ApprovalNotificationAction.open.route(sensitive: true), .openSheet)
     }
@@ -396,41 +385,20 @@ final class ApprovalsTests: XCTestCase {
         XCTAssertTrue(signer.signed.isEmpty)
     }
 
-    func testSensitiveApproveFromTheLockScreenIsSignedAfterTheFaceIDUnlock() async throws {
+    func testSensitiveApproveButtonOpensTheCardInsteadOfSigning() async throws {
         let secret = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_secret", sensitive: true))
         await store.apply([secret])
         await store.dismissSheet()
-        signer.recentlyUnlocked = true
-        await store.handleNotification(actionIdentifier: ApprovalNotifier.approveAction, approvalId: "apr_secret", sensitive: true)
-        XCTAssertEqual(decideRequests().count, 1)
-        let body = decodeBody(decideRequests()[0])
-        XCTAssertEqual(body["decision"] as? String, "approve")
-        XCTAssertEqual((body["proof"] as? [String: Any])?["signature"] as? String, "dW5sb2Nr")
-        XCTAssertEqual(signer.signedAfterUnlock, [secret.signingString(for: .approve)])
-        // No Face ID prompt, no sheet: the app stayed in the background.
-        XCTAssertTrue(signer.signed.isEmpty)
         XCTAssertNil(store.sheetItem)
-        XCTAssertTrue(notifier.removed.contains("apr_secret"))
-    }
-
-    func testSensitiveApproveWithoutARecentFaceIDUnlockAsksInTheApp() async throws {
-        let secret = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_secret", sensitive: true))
-        await store.apply([secret])
-        await store.dismissSheet()
-        // Unlocked with the passcode (or long ago): nothing is sent, a "Confirm with Face ID" notification opens the prompt.
-        signer.recentlyUnlocked = false
         await store.handleNotification(actionIdentifier: ApprovalNotifier.approveAction, approvalId: "apr_secret", sensitive: true)
+        XCTAssertEqual(store.sheetItem?.id, "apr_secret")
         XCTAssertTrue(decideRequests().isEmpty)
-        XCTAssertEqual(notifier.confirms, ["apr_secret"])
-        XCTAssertTrue(signer.signed.isEmpty)
-        // A request that turned sensitive after the notification was made is not approved without the proof either.
+        XCTAssertTrue(signer.signed.isEmpty, "the passcode is asked only when Approve is tapped on the card")
+        // A request that turned sensitive after the notification was made is not approved blindly either.
         let turned = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_turned", sensitive: true))
         await store.apply([secret, turned])
         await store.handleNotification(actionIdentifier: ApprovalNotifier.approveAction, approvalId: "apr_turned", sensitive: false)
         XCTAssertTrue(decideRequests().isEmpty)
-        XCTAssertEqual(notifier.confirms, ["apr_secret", "apr_turned"])
-        // Its tap opens the prompt.
-        await store.handleNotification(actionIdentifier: UNNotificationDefaultActionIdentifier, approvalId: "apr_turned", sensitive: true)
         XCTAssertEqual(store.sheetItem?.id, "apr_turned")
     }
 
@@ -566,7 +534,7 @@ final class ApprovalsTests: XCTestCase {
         let post = try XCTUnwrap(StubURLProtocol.requests.first { $0.httpMethod == "POST" && $0.url?.path == "/v1/approvals/keys" })
         let body = decodeBody(post)
         XCTAssertEqual(body["publicKey"] as? String, sentKey)
-        XCTAssertEqual(body["label"] as? String, "Face ID on iPhone")
+        XCTAssertEqual(body["label"] as? String, "Passcode on iPhone")
         XCTAssertEqual(body["proof"] as? [String: String], ["signature": "bmV3c2ln"])
         XCTAssertNil(body["password"])
         XCTAssertEqual(Set(body.keys), ["publicKey", "label", "proof"])

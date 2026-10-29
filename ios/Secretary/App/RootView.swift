@@ -36,12 +36,17 @@ struct RootView: View {
 struct MainTabs: View {
     @Environment(AppModel.self) private var app
     @Environment(\.scenePhase) private var scenePhase
+    /// Active, or only inactive under an approval's passcode prompt (which must not restart the foreground work).
+    private var foreground: Bool { scenePhase == .active || (scenePhase == .inactive && app.approvals.working != nil) }
     /// The launch's foreground work waits this long after the first frame (cold start only).
     @State private var launchDelay: Duration? = .seconds(2)
 
     var body: some View {
         tabs
         .onChange(of: scenePhase, initial: true) { _, phase in
+            // The passcode prompt of an approval makes the app inactive for a moment: keep everything as it is,
+            // or Lucina's stage, the chat and the prompt behind it redraw while the owner types.
+            if phase == .inactive, app.approvals.working != nil { return }
             if phase != .active { app.lucina.stopEverything() } else { Task { await app.device.resume() } }
         }
         .onAppear { app.openPendingWidgetRoute() }
@@ -150,6 +155,7 @@ struct MainTabs: View {
         }
         // The timeline stream runs only in the foreground; it pauses in the background.
         .onChange(of: scenePhase, initial: true) { _, phase in
+            if phase == .inactive, app.approvals.working != nil { return } // an approval's passcode prompt (above)
             app.chat.setForeground(phase == .active)
             app.isForeground = phase == .active
             if phase == .background {
@@ -160,12 +166,12 @@ struct MainTabs: View {
             }
         }
         // Pending approvals: a look now and every 3 s while the app is active (no launch delay: someone is waiting).
-        .task(id: scenePhase) {
-            guard scenePhase == .active else { return }
+        .task(id: foreground) {
+            guard foreground else { return }
             await app.approvals.foregroundLoop()
         }
-        .task(id: scenePhase) {
-            guard scenePhase == .active else { return }
+        .task(id: foreground) {
+            guard foreground else { return }
             // Cold start: the first chat frame and the chat's own refresh go first; uploads, the
             // inbox, the photo backup and the memo queue start a moment later. (The wardrobe loads
             // with the Lucina tab.)

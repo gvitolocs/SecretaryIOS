@@ -7,12 +7,6 @@ protocol ApprovalNotifying: AnyObject {
     func post(_ item: ApprovalItem, previews: Bool) async
     func postFailure(for item: ApprovalItem) async
     func remove(ids: [String]) async
-    /// A lock-screen Approve that could not be signed there (no recent Face ID unlock): a tap opens the prompt.
-    func postConfirm(for item: ApprovalItem) async
-}
-
-extension ApprovalNotifying {
-    func postConfirm(for item: ApprovalItem) async {}
 }
 
 /// What a notification button or tap asks for.
@@ -35,13 +29,12 @@ enum ApprovalNotificationAction: Equatable {
         case openSheet
     }
 
-    /// Deny and Approve are answered from the notification, also from the lock screen. Approve needs the iPhone
-    /// unlocked (`.authenticationRequired`); a sensitive one is signed with the Face ID key right after that
-    /// unlock, without a prompt, and falls back to the prompt when it can't be. A tap opens the sheet.
+    /// Deny, and a non-sensitive approve, are answered from the notification. A sensitive approve (or a tap) opens
+    /// the card: the owner reads it there, and the passcode is asked only when he taps Approve on it.
     func route(sensitive: Bool) -> Route {
         switch self {
         case .deny: return .decide(.deny)
-        case .approve: return .decide(.approve)
+        case .approve: return sensitive ? .openSheet : .decide(.approve)
         case .open: return .openSheet
         }
     }
@@ -50,9 +43,9 @@ enum ApprovalNotificationAction: Equatable {
 /// Local notifications for approvals, identifier `approval.<id>`; the server's APNs pushes use the same categories
 /// and `userInfo` keys, and a request already on the lock screen from APNs is not posted again.
 ///
-/// Categories `APPROVAL` and `APPROVAL_SENSITIVE` both have Approve (the iPhone must be unlocked: Face ID) and Deny
-/// (no unlock). Both answer without opening the app; a sensitive Approve is signed after the unlock
-/// (`ApprovalSigning.signAfterUnlock`). Older servers send `APPROVAL` for every request.
+/// Category `APPROVAL` has Approve (the iPhone must be unlocked) and Deny (no unlock), both answered without
+/// opening the app. `APPROVAL_SENSITIVE`'s Approve opens the card instead: a sensitive approve needs the passcode,
+/// asked on the card. Older servers send `APPROVAL` for every request; the store opens the card for a sensitive one.
 @MainActor
 final class ApprovalNotifier: ApprovalNotifying {
     nonisolated static let category = "APPROVAL"
@@ -74,12 +67,15 @@ final class ApprovalNotifier: ApprovalNotifying {
     /// Registers the two categories (the app sets no others).
     nonisolated static func registerCategories(on center: UNUserNotificationCenter = .current()) {
         let approve = UNNotificationAction(identifier: approveAction, title: String(localized: "Approve"), options: [.authenticationRequired],
-                                           icon: UNNotificationActionIcon(systemImageName: "faceid"))
+                                           icon: UNNotificationActionIcon(systemImageName: "checkmark"))
+        let approveInApp = UNNotificationAction(identifier: approveAction, title: String(localized: "Review and approve"),
+                                                options: [.authenticationRequired, .foreground],
+                                                icon: UNNotificationActionIcon(systemImageName: "lock"))
         let deny = UNNotificationAction(identifier: denyAction, title: String(localized: "Deny"), options: [.destructive],
                                         icon: UNNotificationActionIcon(systemImageName: "xmark"))
         let mine: Set<UNNotificationCategory> = [
             UNNotificationCategory(identifier: category, actions: [approve, deny], intentIdentifiers: [], options: []),
-            UNNotificationCategory(identifier: sensitiveCategory, actions: [approve, deny], intentIdentifiers: [], options: []),
+            UNNotificationCategory(identifier: sensitiveCategory, actions: [approveInApp, deny], intentIdentifiers: [], options: []),
             DecisionNotifier.pushCategoryDefinition(),
         ]
         // Decision categories (DecisionNotifier) registered earlier keep their buttons.
@@ -117,20 +113,10 @@ final class ApprovalNotifier: ApprovalNotifying {
         try? await center.add(UNNotificationRequest(identifier: "approval.failed.\(item.id)", content: c, trigger: nil))
     }
 
-    func postConfirm(for item: ApprovalItem) async {
-        let c = UNMutableNotificationContent()
-        c.title = String(localized: "Confirm with Face ID")
-        c.body = String(localized: "Tap to approve in Secretary: \(item.summary)")
-        c.sound = .default
-        c.interruptionLevel = .timeSensitive
-        c.userInfo = [Self.idKey: item.id, Self.sensitiveKey: item.sensitive]
-        try? await center.add(UNNotificationRequest(identifier: "approval.confirm.\(item.id)", content: c, trigger: nil))
-    }
-
     func remove(ids: [String]) async {
         guard !ids.isEmpty else { return }
         // The server's APNs pushes have identifiers of their own: find them by their approval id.
         let pushed = await center.deliveredApprovals(Set(ids))
-        await center.removeDelivered(ids.flatMap { [Self.identifier($0), "approval.failed.\($0)", "approval.confirm.\($0)"] } + pushed)
+        await center.removeDelivered(ids.flatMap { [Self.identifier($0), "approval.failed.\($0)"] } + pushed)
     }
 }

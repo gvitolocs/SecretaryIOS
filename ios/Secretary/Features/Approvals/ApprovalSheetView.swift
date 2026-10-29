@@ -151,7 +151,7 @@ private struct RequestView: View {
                 }
                 HStack {
                     if hasKey {
-                        Button("Use Face ID instead") { store.showPinPad(false) }
+                        Button("Use the passcode instead") { store.showPinPad(false) }
                             .accessibilityIdentifier("approvalUseFaceID")
                     }
                     Spacer()
@@ -173,7 +173,7 @@ private struct RequestView: View {
                         } else {
                             Image(systemName: item.sensitive ? "faceid" : "checkmark")
                         }
-                        Text(item.sensitive ? LocalizedStringKey("Approve with Face ID") : LocalizedStringKey("Approve"))
+                        Text(item.sensitive ? LocalizedStringKey("Approve with passcode") : LocalizedStringKey("Approve"))
                     }
                     .font(.headline)
                     .frame(maxWidth: .infinity, minHeight: 28)

@@ -325,9 +325,8 @@ final class ApprovalsStore {
         }
     }
 
-    /// A notification button or tap (AppDelegate). A button answers without opening the app, also from the lock
-    /// screen: a sensitive approve is signed right after the Face ID unlock the button asked for, or, when it can't
-    /// be (passcode unlock, no key), a "Confirm with Face ID" notification opens the prompt.
+    /// A notification button or tap (AppDelegate). A button answers without opening the app, except a sensitive
+    /// approve, which opens the card (the passcode is asked there, on Approve).
     func handleNotification(actionIdentifier: String, approvalId: String, sensitive: Bool) async {
         guard let action = ApprovalNotificationAction(identifier: actionIdentifier) else { return }
         switch action.route(sensitive: sensitive) {
@@ -344,17 +343,12 @@ final class ApprovalsStore {
                 await notifier.remove(ids: [item.id])
                 return
             }
-            let result: ApprovalOutcome
+            // The request became sensitive since the notification was made: ask on the card.
             if decision == .approve, item.sensitive {
-                guard let signed = await approveAfterUnlock(item) else {
-                    await notifier.postConfirm(for: item)
-                    return
-                }
-                result = signed
-            } else {
-                guard let answered = await answer(item, decision) else { return }
-                result = answered
+                await open(id: approvalId)
+                return
             }
+            guard let result = await answer(item, decision) else { return }
             if result.isFinal {
                 pending.removeAll { $0.id == item.id }
                 onPendingChanged?(pending)
@@ -363,26 +357,6 @@ final class ApprovalsStore {
             } else {
                 await notifier.postFailure(for: item)
             }
-        }
-    }
-
-    /// A sensitive approve from a notification button: signed without a prompt after the unlock. Nil when it
-    /// can't be signed here (the caller asks in the app instead).
-    private func approveAfterUnlock(_ item: ApprovalItem) async -> ApprovalOutcome? {
-        guard let api = api() else { return .failed(APIError.network(message: "").userMessage) }
-        let proof: ApprovalProof
-        do {
-            proof = try await signer.signAfterUnlock(item.signingString(for: .approve))
-        } catch {
-            return nil
-        }
-        do {
-            try await api.decide(item.id, decision: .approve, payloadHash: item.payloadHash, proof: proof, pin: nil)
-            return .approved
-        } catch {
-            let e = APIError.wrap(error)
-            if e.endsSession { onTransportError?(e) }
-            return ApprovalOutcome.from(error)
         }
     }
 
@@ -462,7 +436,7 @@ final class ApprovalsStore {
             let signature = try await signer.signWithPreparedKey(
                 ApprovalsAPI.registrationString(deviceId: deviceId, publicKey: publicKey),
                 reason: String(localized: "Set up approvals on this iPhone"))
-            let keyId = try await api.registerKey(publicKey: publicKey, label: "Face ID on \(deviceLabel())", signature: signature)
+            let keyId = try await api.registerKey(publicKey: publicKey, label: "Passcode on \(deviceLabel())", signature: signature)
             try signer.commitKey(keyId: keyId)
             settingsMessage = nil
             registered = true
