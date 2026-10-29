@@ -773,7 +773,9 @@ pub fn verdict(n: &Number, ctx: &Context, p: &Probs, source: &str, lang: &str) -
             format!("{} ({})", w.maybe_delivery, p2(kind_p, lang)),
             w.maybe_delivery.to_owned(),
         )
-    } else if kind != "unknown" && kind_p >= 0.5 {
+    } else if kind != "unknown"
+        && (kind_p >= 0.5 || (unwanted(kind) && kind_p >= UNWANTED_MIN && p.spam >= 0.5))
+    {
         let name = kind_word(&w, kind);
         (
             format!("{} {name} ({})", w.likely, p2(kind_p, lang)),
@@ -831,6 +833,15 @@ pub fn verdict(n: &Number, ctx: &Context, p: &Probs, source: &str, lang: &str) -
         known: k.clone(),
         reasons,
     }
+}
+
+/// A telemarketing or scam top kind is named from this probability when Jev
+/// also finds the call unwanted (live 2026-10-29: a Danish 70-number came back
+/// telemarketing 0.46 with spam 0.62 and was labelled "Unknown caller").
+const UNWANTED_MIN: f64 = 0.4;
+
+fn unwanted(kind: &str) -> bool {
+    matches!(kind, "telemarketing" | "scam")
 }
 
 fn round2(p: f64) -> f64 {
@@ -1034,6 +1045,23 @@ mod tests {
         assert_eq!(d.label, "Likely Wolt customer");
         assert!(d.reasons.iter().any(|r| r.contains("order")));
 
+        // An unwanted kind under 0.5 still names itself when the call is spam.
+        let t = verdict(
+            &parse("+4570405205"),
+            &ctx(),
+            &probs(0.62, "telemarketing", 0.46, 0.3),
+            "jev",
+            "en",
+        );
+        assert_eq!(t.label, "Likely telemarketing (0.46)");
+        let t = verdict(
+            &parse("+4570405205"),
+            &ctx(),
+            &probs(0.45, "telemarketing", 0.46, 0.3),
+            "jev",
+            "en",
+        );
+        assert_eq!(t.label, "Unknown caller");
         let u = verdict(
             &parse("+4566778702"),
             &ctx(),
