@@ -27,6 +27,8 @@ final class NotificationCenterStore {
     /// Upcoming timed calendar events (EventKit, when calendar access is on).
     @ObservationIgnored var calendarEvents: () async -> [CalendarAlert] = { [] }
     @ObservationIgnored var onTransportError: ((APIError) -> Void)?
+    /// A decision Lucina asks about (its options for the notification's buttons).
+    @ObservationIgnored var decisionLookup: ((String) async -> DecisionItem?)?
     /// Timeline ids alerted from the stream (their inbox entries are skipped).
     @ObservationIgnored private var alertedTimeline: [String] = []
 
@@ -136,6 +138,15 @@ final class NotificationCenterStore {
             && now.timeIntervalSince(item.ts) < Self.freshness && !alertedTimeline.contains(item.id) {
             alertedTimeline.append(item.id)
             if item.meta?.isDeviceCommand == true { continue } // the confirmation sheet handles these
+            // Her question to the owner: a decision notification (buttons, opens the decision), not a chat line.
+            if item.meta?.kind == "decision", item.meta?.via == nil, let id = item.meta?.decisionId,
+               let d = await decisionLookup?(id), d.isPending {
+                guard rules.shouldAlert(.lucinaMessage, at: now) else { continue }
+                if await !DecisionNotifier.delivered(id: id).isEmpty { continue }
+                await DecisionNotifier.post(id: id, title: String(localized: "Decision needed: \(d.asker)"), body: d.question,
+                                            options: d.options, previews: rules.settings.previews)
+                continue
+            }
             let category: NotificationCategory = item.meta?.isReminder == true ? .reminder : .lucinaMessage
             guard rules.shouldAlert(category, at: now), !item.text.isEmpty else { continue }
             await notifier.post(timelineId: item.id, category: category, text: item.text, previews: rules.settings.previews)

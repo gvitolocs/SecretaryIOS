@@ -7,7 +7,7 @@ import WidgetKit
 /// in the app at their Home Screen and Lock Screen sizes from the cached sections, so a device
 /// screenshot shows them without placing them by hand. Run `-SecretaryWidgetSelfTest YES` first
 /// to fill the cache. Pages: 0 Ask + appointment, 1 shopping, 2 weight + training,
-/// 3 tasks + countdown, 4 Pokémon, 5 films + memo, 6 Lock Screen, 7 Lock Screen while locked (privacy redaction).
+/// 3 tasks + countdown, 4 Pokémon, 5 films + memo + server, 6 Lock Screen, 7 Lock Screen while locked (privacy redaction).
 struct WidgetGallery: View {
     let page: Int
 
@@ -20,15 +20,37 @@ struct WidgetGallery: View {
     private static let inline = CGSize(width: 300, height: 22)
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                Text("Widget gallery · page \(page)").font(.caption).foregroundStyle(.secondary)
-                content
-            }
-            .padding(.vertical, 24)
-            .frame(maxWidth: .infinity)
+        ScrollView { sheet }
+            .background(Color(white: page >= 6 ? 0.08 : 0.55).ignoresSafeArea())
+    }
+
+    /// The page itself, without the scroll view (also what `export` renders).
+    private var sheet: some View {
+        VStack(spacing: 16) {
+            Text("Widget gallery · page \(page)").font(.caption).foregroundStyle(.secondary)
+            content
         }
-        .background(Color(white: page >= 6 ? 0.08 : 0.55).ignoresSafeArea())
+        .padding(.vertical, 24)
+        .frame(maxWidth: .infinity)
+    }
+
+    /// `-SecretaryWidgetGalleryExport YES`: every page rendered to Documents/widget-gallery-<n>.png
+    /// (390 pt wide, @3x, dark), for `devicectl device copy from` when no USB screenshot is possible.
+    static func exportIfRequested() {
+        guard UserDefaults.standard.bool(forKey: "SecretaryWidgetGalleryExport"),
+              let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        for page in 0...7 {
+            let view = WidgetGallery(page: page).sheet
+                .frame(width: 390)
+                .background(Color(white: page >= 6 ? 0.08 : 0.55))
+                .environment(\.colorScheme, .dark)
+            let renderer = ImageRenderer(content: view)
+            renderer.scale = 3
+            if let data = renderer.uiImage?.pngData() {
+                try? data.write(to: docs.appendingPathComponent("widget-gallery-\(page).png"), options: .atomic)
+            }
+        }
+        try? "done\n".write(to: docs.appendingPathComponent("widget-gallery-done.txt"), atomically: true, encoding: .utf8)
     }
 
     @ViewBuilder private var content: some View {
@@ -88,6 +110,12 @@ struct WidgetGallery: View {
                 home(Self.small) { TasksWidgetView(familyOverride: .systemSmall,
                                                    entry: SectionEntry(date: now, section: WidgetStore.read(TasksSection.self), state: .signedOut)) }
             }
+            let server = SectionEntry(date: now, section: WidgetStore.read(ServerSection.self), state: .ok)
+            HStack(spacing: 22) {
+                home(Self.small) { ServerWidgetView(familyOverride: .systemSmall, entry: server) }
+                home(Self.small) { ServerWidgetView(familyOverride: .systemSmall, entry: SectionEntry<ServerSection>(date: now, section: nil, state: .offline)) }
+            }
+            home(Self.medium) { ServerWidgetView(familyOverride: .systemMedium, entry: server) }
         default:
             lockScreen(redacted: page >= 7)
         }
@@ -104,6 +132,7 @@ struct WidgetGallery: View {
         let pokemon = PokemonWidget.Entry(date: now, section: WidgetStore.read(PokemonSection.self), state: .ok)
         let films = FilmsWidget.Entry(date: now, section: WidgetStore.read(FilmsSection.self), state: .ok)
         let countdown = Self.countdown(now)
+        let server = SectionEntry(date: now, section: WidgetStore.read(ServerSection.self), state: .ok)
         Group {
             lock(Self.inline) { AppointmentWidgetView(familyOverride: .accessoryInline, entry: next) }
             lock(Self.inline) { WeightWidgetView(familyOverride: .accessoryInline, entry: weight) }
@@ -135,7 +164,10 @@ struct WidgetGallery: View {
                 lock(Self.rectangular) { FilmsWidgetView(familyOverride: .accessoryRectangular, entry: films) }
             }
             lock(Self.inline) { CountdownWidgetView(familyOverride: .accessoryInline, entry: countdown) }
-            lock(Self.rectangular) { CountdownWidgetView(familyOverride: .accessoryRectangular, entry: countdown) }
+            HStack(spacing: 10) {
+                lock(Self.rectangular) { CountdownWidgetView(familyOverride: .accessoryRectangular, entry: countdown) }
+                lock(Self.rectangular) { ServerWidgetView(familyOverride: .accessoryRectangular, entry: server) }
+            }
         }
         .redacted(reason: redacted ? .privacy : [])
     }

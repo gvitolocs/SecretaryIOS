@@ -17,6 +17,8 @@ enum WidgetKind: String, CaseIterable, Sendable {
     case pokemon = "tech.getsecretary.widget.pokemon"
     case films = "tech.getsecretary.widget.films"
     case countdown = "tech.getsecretary.widget.countdown"
+    case approvals = "tech.getsecretary.widget.approvals"
+    case server = "tech.getsecretary.widget.server"
 }
 
 protocol WidgetSection: Codable, Equatable, Sendable {
@@ -65,6 +67,9 @@ struct ShoppingSection: WidgetSection {
         var spec: String
         /// The catalogue emoji (`ShoppingEmojiSection`); nil in a copy saved before it existed.
         var icon: String?
+        /// The catalogue item's illustration (`item-<catalogId>` in ItemIcons.xcassets), drawn instead of
+        /// the emoji when bundled; nil for free text, custom items and hand-picked emoji.
+        var art: String?
 
         var emoji: String { icon ?? ShoppingEmojiSection.defaultEmoji }
     }
@@ -184,4 +189,46 @@ struct FilmsSection: WidgetSection {
 
     var fetchedAt: Date
     var films: [Film]
+}
+
+/// The owner's pending approvals (`GET /v1/approvals?status=pending`): a root plan's reason and its commands.
+struct ApprovalsSection: WidgetSection {
+    static let key = "approvals"
+    struct Item: Codable, Equatable, Sendable, Identifiable {
+        var id: String
+        var requester: String
+        var summary: String
+        /// The commands (or other details), one per line.
+        var details: String
+        var sensitive: Bool
+        var payloadHash: String
+        var expiresAt: Date?
+
+        var lines: [String] { details.split(separator: "\n", omittingEmptySubsequences: true).map(String.init) }
+
+        /// "Run 3 commands as root on nezopt: upgrade window" → "upgrade window"; anything else as is.
+        var reason: String {
+            if summary.hasPrefix("Run "), let r = summary.range(of: " on nezopt: ") { return String(summary[r.upperBound...]) }
+            return summary
+        }
+    }
+
+    var fetchedAt: Date
+    var items: [Item]
+
+    /// Without the ones that ran out (a widget entry outlives its fetch).
+    func live(at now: Date = Date()) -> [Item] { items.filter { ($0.expiresAt ?? .distantFuture) > now } }
+}
+
+/// The homelab's status (`GET /v1/system/overview`): worst state, how many things need attention, the first titles.
+struct ServerSection: WidgetSection {
+    static let key = "server"
+    var fetchedAt: Date
+    /// `ok`, `warn`, `crit` (or `unknown`).
+    var overall: String
+    var attentionCount: Int
+    /// The first attention items, worst first.
+    var titles: [String]
+    /// When the server built the overview.
+    var generatedAt: Date?
 }

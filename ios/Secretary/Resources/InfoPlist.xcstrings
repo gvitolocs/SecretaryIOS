@@ -2,25 +2,25 @@
   "sourceLanguage": "en",
   "strings": {
     "NSCameraUsageDescription": {
-      "comment": "Camera permission: face tracking and AR for Lucina, photos and videos for the chat.",
+      "comment": "Camera permission: face tracking and AR for Lucina, photos and videos for the chat, QR sign-in codes.",
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Lucina mirrors your face or appears in your room when you turn it on, and you can take photos and videos to send her in the chat. Nothing leaves this iPhone unless you send it."
+            "value": "Lucina mirrors your face or appears in your room when you turn it on, you can take photos and videos to send her in the chat, and you can scan a QR code to sign in another device. Nothing leaves this iPhone unless you send it."
           }
         },
         "it": {
           "stringUnit": {
             "state": "translated",
-            "value": "Lucina imita il tuo viso o compare nella tua stanza quando lo attivi, e puoi scattare foto e video da mandarle in chat. Niente lascia questo iPhone se non lo invii tu."
+            "value": "Lucina imita il tuo viso o compare nella tua stanza quando lo attivi, puoi scattare foto e video da mandarle in chat e inquadrare un codice QR per far accedere un altro dispositivo. Niente lascia questo iPhone se non lo invii tu."
           }
         },
         "da": {
           "stringUnit": {
             "state": "translated",
-            "value": "Lucina spejler dit ansigt eller dukker op i dit rum, når du slår det til, og du kan tage billeder og videoer og sende dem til hende i chatten. Intet forlader denne iPhone, medmindre du sender det."
+            "value": "Lucina spejler dit ansigt eller dukker op i dit rum, når du slår det til, du kan tage billeder og videoer og sende dem til hende i chatten, og du kan scanne en QR-kode for at logge en anden enhed ind. Intet forlader denne iPhone, medmindre du sender det."
           }
         }
       }

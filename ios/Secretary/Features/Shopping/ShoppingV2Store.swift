@@ -197,6 +197,7 @@ final class ShoppingV2Store {
     func visual(for item: ShopItem) -> ItemVisual {
         let catalogId = item.isCustom ? nil : (item.catalogId ?? item.objectId.flatMap { catalog.item($0)?.id })
         return ItemVisual.resolve(icon: item.icon, catalogId: catalogId, name: item.name, section: item.section,
+                                  iconPicked: item.iconPicked == true,
                                   catalog: catalog, search: search, hasArt: ItemVisual.bundled)
     }
 

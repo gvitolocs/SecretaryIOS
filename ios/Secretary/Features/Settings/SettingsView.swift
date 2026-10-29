@@ -6,8 +6,11 @@ struct SettingsView: View {
     @AppStorage("share.lastResultMessage", store: UserDefaults(suiteName: ShareRequestBuilder.group)) private var lastShareResult = ""
     @State private var confirmSignOut = false
     @State private var showPassword = false
+    @State private var showQrSignIn = false
+    @State private var approvalPrompts = ApprovalsSettingsPrompts()
     @State private var developerTaps = 0
     @AppStorage("secretary.debug.showDeveloper") private var showDeveloper = false
+    @AppStorage(LucinaVoiceReplies.settingKey) private var voiceReplies = true
     @State private var serverDraft = ""
     @State private var serverError: String?
     @State private var languageChanged = false
@@ -21,6 +24,32 @@ struct SettingsView: View {
                 if !lastShareResult.isEmpty { Text(lastShareResult).font(.caption).foregroundStyle(.secondary) }
                 Text("Lucina is in the share sheet. To keep her first: Share → scroll the app row to the end → More → Edit → add Lucina to Favorites and drag her to the top. iOS orders the rest by how often you use them.")
                     .font(.footnote).foregroundStyle(.secondary)
+            }
+
+            Section {
+                Toggle(isOn: $voiceReplies) {
+                    Label("Lucina answers voice notes with her voice", systemImage: "speaker.wave.2")
+                }
+                .accessibilityIdentifier("voiceRepliesToggle")
+            } header: {
+                Text("Voice notes")
+            } footer: {
+                Text("Hold the mic in the chat to send Lucina a voice note. When she answers one, she reads the answer aloud while Secretary is open; tap the speaker under it to hear it again.")
+            }
+
+            if !app.chat.hiddenIds.isEmpty {
+                Section {
+                    Button {
+                        app.chat.unhideAll()
+                    } label: {
+                        Label("Unhide all messages", systemImage: "eye")
+                    }
+                    .accessibilityIdentifier("unhideAllMessages")
+                } header: {
+                    Text("Chat")
+                } footer: {
+                    Text("\(app.chat.hiddenIds.count) messages are hidden on this iPhone. Lucina and your other devices still have them.")
+                }
             }
 
             Section {
@@ -38,6 +67,20 @@ struct SettingsView: View {
                     }
                 }
                 .accessibilityIdentifier("openLinks")
+                NavigationLink {
+                    NotebooksView()
+                } label: {
+                    Label {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Notebooks")
+                            Text("Sources, notes and chats that answer from them")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        Image(systemName: "books.vertical")
+                    }
+                }
+                .accessibilityIdentifier("openNotebooks")
             }
 
             Section("Server") {
@@ -91,8 +134,21 @@ struct SettingsView: View {
                 .accessibilityIdentifier("notificationSettings")
             }
 
+            Section("Plugins") {
+                NavigationLink {
+                    PixivSettingsScreen(app: app)
+                } label: {
+                    Label("Pixiv", systemImage: "paintpalette")
+                }
+                .accessibilityIdentifier("pixivSettings")
+            }
+
+            ApprovalsSettingsSection(prompts: approvalPrompts)
+
             Section("This device") {
                 LabeledContent("Device name", value: app.deviceName ?? "—")
+                Button("Sign in another device", systemImage: "qrcode.viewfinder") { showQrSignIn = true }
+                    .accessibilityIdentifier("qrSignIn")
                 Button("Change password", systemImage: "key") { showPassword = true }
                 Button("Sign out", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) { confirmSignOut = true }
                     .accessibilityIdentifier("signOut")
@@ -161,12 +217,14 @@ struct SettingsView: View {
             }
         }
         .navigationTitle("Settings")
+        .modifier(ApprovalsSettingsPromptsModifier(prompts: approvalPrompts))
         .confirmationDialog("Sign out of Secretary on this iPhone?", isPresented: $confirmSignOut, titleVisibility: .visible) {
             Button("Sign out", role: .destructive) { app.signOut() }
         } message: {
             Text("The device token is deleted from this iPhone. The local chat history is cleared too.")
         }
         .sheet(isPresented: $showPassword) { ChangePasswordView() }
+        .sheet(isPresented: $showQrSignIn) { QrSignInSheet() }
     }
 
     private func runConnectionTest() async {

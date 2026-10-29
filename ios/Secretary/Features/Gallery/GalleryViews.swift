@@ -15,6 +15,11 @@ final class GalleryStore {
     var filter: GalleryAPI.Filter
     /// `gallery` (the Gallery: the phones' photos and videos) or `drive` (the Drive plugin).
     let scope: String?
+    /// This iPhone's device id (the photo backup's): the Gallery opens on its photos.
+    let thisDevice: String?
+    private(set) var devices: [GalleryDevice] = []
+    /// What the store shows when nothing is filtered: this device's photos, in this scope.
+    var defaultFilter: GalleryAPI.Filter { GalleryAPI.Filter(scope: scope, device: thisDevice) }
     @ObservationIgnored private var cursor: String?
     @ObservationIgnored let api: () -> GalleryAPI
 
@@ -33,10 +38,16 @@ final class GalleryStore {
             .appendingPathComponent("\(scope ?? "gallery")-listing.json")
     }
 
-    init(api: @escaping () -> GalleryAPI, scope: String? = nil) {
+    /// `items`: a fixed list for the viewer (the photos and videos of a Drive folder), not the saved listing.
+    init(api: @escaping () -> GalleryAPI, scope: String? = nil, thisDevice: String? = nil, items fixed: [GalleryItem]? = nil) {
         self.api = api
         self.scope = scope
-        filter = GalleryAPI.Filter(scope: scope)
+        self.thisDevice = thisDevice
+        filter = GalleryAPI.Filter(scope: scope, device: thisDevice)
+        if let fixed {
+            items = fixed
+            return
+        }
         // The saved listing can be thousands of items: decoded off the main thread, not at launch.
         let url = listingURL
         Task { [weak self] in
@@ -68,7 +79,7 @@ final class GalleryStore {
             error = nil
             showingCachedListing = false
             hasServerPage = true
-            if requestedFilter == GalleryAPI.Filter(scope: scope) {
+            if requestedFilter == defaultFilter {
                 let saved = Listing(items: page.items, nextCursor: page.nextCursor, total: page.total)
                 let url = listingURL
                 await Task.detached(priority: .utility) {
@@ -92,6 +103,10 @@ final class GalleryStore {
             items += page.items.filter { !known.contains($0.id) }
             self.cursor = page.nextCursor
         }
+    }
+
+    func loadDevices() async {
+        if let d = try? await api().devices() { devices = d }
     }
 
     func loadAlbums() async {
@@ -188,6 +203,7 @@ struct GalleryScreen: View {
             await store.reload()
         }
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) { DeviceMenu() }
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button { showAlbums = true } label: { Image(systemName: "rectangle.stack") }
                     .accessibilityLabel("Albums")
@@ -228,7 +244,7 @@ struct GalleryScreen: View {
         }
         }
         .fullScreenCover(item: $viewing) { item in
-            GalleryViewer(start: item, shown: $shownID)
+            GalleryViewer(start: item, shown: $shownID, zoomDismiss: true)
                 .presentationBackground(.clear)
                 .zoomTransition(from: shownID ?? item.id, in: zoom)
         }
@@ -305,6 +321,45 @@ struct GalleryThumb: View {
                 }
             }
         }
+    }
+}
+
+/// The owner's devices (2026-10-27): the Gallery opens on this iPhone's photos; the menu shows another
+/// device's (a Mac, an Android, the old backups) or every device's. Everything is in the Lucina cloud.
+private struct DeviceMenu: View {
+    @Environment(GalleryStore.self) private var store
+
+    var body: some View {
+        @Bindable var store = store
+        Menu {
+            Picker("Device", selection: $store.filter.device) {
+                if let mine = store.thisDevice {
+                    Label("This iPhone", systemImage: "iphone").tag(Optional(mine))
+                }
+                ForEach(store.devices.filter { $0.id != store.thisDevice }) { d in
+                    Label("\(d.name) · \(d.photos + d.videos)", systemImage: d.icon).tag(Optional(d.id))
+                }
+                Label("All devices", systemImage: "square.stack.3d.up").tag(String?.none)
+            }
+        } label: {
+            Label(title, systemImage: icon)
+                .labelStyle(.iconOnly)
+        }
+        .accessibilityLabel("Device: \(title)")
+        .accessibilityIdentifier("galleryDevice")
+        .task { await store.loadDevices() }
+    }
+
+    private var title: String {
+        guard let id = store.filter.device else { return String(localized: "All devices") }
+        if id == store.thisDevice { return String(localized: "This iPhone") }
+        return store.devices.first { $0.id == id }?.name ?? id
+    }
+
+    private var icon: String {
+        guard let id = store.filter.device else { return "square.stack.3d.up" }
+        if id == store.thisDevice { return "iphone" }
+        return store.devices.first { $0.id == id }?.icon ?? "photo.on.rectangle"
     }
 }
 
@@ -496,10 +551,13 @@ struct GalleryViewer: View {
 
     /// The photo on screen, for the grid (the tile the viewer zooms back into).
     @Binding var shown: String?
+    /// Presented with the zoom transition (the Gallery grid): its own interactive dismiss does the swipe down.
+    let zoomDismiss: Bool
 
-    init(start: GalleryItem, shown: Binding<String?> = .constant(nil)) {
+    init(start: GalleryItem, shown: Binding<String?> = .constant(nil), zoomDismiss: Bool = false) {
         self.start = start
         _shown = shown
+        self.zoomDismiss = zoomDismiss
         _current = State(initialValue: start.id)
     }
 
@@ -509,42 +567,46 @@ struct GalleryViewer: View {
         NavigationStack {
             pager
             // Google Photos: swipe down to close, up for the details.
-            // Swipe down closes into the grid tile (the zoom transition, iOS 18), swipe up shows the details.
-            .photoDragOut(enabled: zoomedID != current, systemDismiss: true, dragging: $dragging,
+            // From the grid the swipe down is the zoom transition's: the photo follows the finger and
+            // shrinks back into its tile (owning it ourselves, 69c33557, only faded it out). Elsewhere
+            // (Drive) there is no zoom transition, so our pan does both directions.
+            .photoDragOut(enabled: zoomedID != current, systemDismiss: zoomDismiss, dragging: $dragging,
                           onDismiss: { dismiss() }, onInfo: { showInfo = true })
-            .interactiveDismissDisabled(zoomedID == current)
-            // Google Photos: the photo is always full screen; the bars float over it on dark
-            // gradients (its bottom_dark_gradient: clear to 75% black), so nothing resizes on a tap.
+            .interactiveDismissDisabled(!zoomDismiss || zoomedID == current)
+            // The top bar floats over a dark gradient; the bottom stays free.
             .overlay(alignment: .top) { ViewerScrim(top: true).opacity(bare ? 0 : 1) }
-            .overlay(alignment: .bottom) { ViewerScrim(top: false).opacity(bare ? 0 : 1) }
             .clearNavigationBackground()
             .ignoresSafeArea()
-            .toolbarBackground(.hidden, for: .navigationBar, .bottomBar)
+            .toolbarBackground(.hidden, for: .navigationBar)
             // White date and buttons on the scrims, in light mode too.
-            .toolbarColorScheme(.dark, for: .navigationBar, .bottomBar)
-            .toolbar(bare ? .hidden : .visible, for: .navigationBar, .bottomBar)
+            .toolbarColorScheme(.dark, for: .navigationBar)
+            .toolbar(bare ? .hidden : .visible, for: .navigationBar)
             .statusBarHidden(bare)
             .animation(.easeInOut(duration: 0.2), value: bare)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { dismiss() } label: { Image(systemName: "chevron.left") }
+                        .accessibilityLabel("Close")
+                }
                 ToolbarItem(placement: .principal) {
                     VStack(spacing: 0) {
                         Text(item.date.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? item.title).font(.subheadline.weight(.semibold))
                         if let p = item.place { Text(p.name).font(.caption).foregroundStyle(.secondary) }
                     }
                 }
-                ToolbarItemGroup(placement: .bottomBar) {
-                    Button { toggleFavorite(item) } label: { Image(systemName: item.favorite == true ? "heart.fill" : "heart") }
-                        .accessibilityLabel("Favourite")
-                    Spacer()
+                ToolbarItemGroup(placement: .topBarTrailing) {
                     Button { showInfo = true } label: { Image(systemName: "info.circle") }
                         .accessibilityLabel("Info")
-                    Spacer()
-                    Button { addToAlbum = true } label: { Image(systemName: "rectangle.stack.badge.plus") }
-                        .accessibilityLabel("Add to album")
-                    Spacer()
+                    Button { toggleFavorite(item) } label: { Image(systemName: item.favorite == true ? "heart.fill" : "heart") }
+                        .accessibilityLabel("Favourite")
                     Button(role: .destructive) { confirmTrash = true } label: { Image(systemName: "trash") }
                         .accessibilityLabel("Move to the server's trash")
+                    Menu {
+                        Button { addToAlbum = true } label: { Label("Add to album", systemImage: "rectangle.stack.badge.plus") }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                    .accessibilityLabel("More")
                 }
             }
         }

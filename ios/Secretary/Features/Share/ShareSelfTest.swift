@@ -2,6 +2,7 @@
 #if DEBUG || SCREENSHOTS
 import Foundation
 import OSLog
+import AVFoundation
 import Photos
 import PhotosUI
 import SwiftUI
@@ -9,12 +10,14 @@ import UIKit
 import UniformTypeIdentifiers
 
 /// Debug builds only: an on-device self-test of "Share to Lucina" (XCUITest can't drive the iPhone).
-/// `-SecretaryShareSelfTest all` (or a comma list of `photo,pdf,url,text,album,paste,intent`) feeds real
+/// `-SecretaryShareSelfTest all` (or a comma list of `photo,pdf,url,text,album,paste,intent,voice,voice-whisper,reply,readaloud,
+/// shareitems,selectshare`) feeds real
 /// items through the code the share extension, the chat composer and the Shortcuts intent run, and logs
 /// every step to `Documents/share-selftest.txt` (and os_log `tech.getsecretary.app` / `ShareSelfTest`).
 @MainActor
 enum ShareSelfTest {
-    static let allCases = ["photo", "pdf", "url", "text", "album", "paste", "intent"]
+    static let allCases = ["photo", "pdf", "url", "text", "album", "paste", "intent", "voice", "voice-whisper",
+                           "reply", "readaloud", "shareitems", "selectshare"]
     private static var runner: ShareSelfTestRunner?
 
     static func runIfRequested(app: AppModel, defaults: UserDefaults = .standard) {
@@ -161,6 +164,12 @@ final class ShareSelfTestRunner {
         case "album": return try await caseAlbum()
         case "paste": return try await casePaste()
         case "intent": return try await caseIntent()
+        case "voice": return try await caseVoice(whisper: false)
+        case "voice-whisper": return try await caseVoice(whisper: true)
+        case "reply": return try await caseReply()
+        case "readaloud": return await caseReadAloud()
+        case "shareitems": return try await caseShareItems()
+        case "selectshare": return try await caseSelectShare()
         default: return Outcome(pass: false, reason: "unknown case")
         }
     }
@@ -275,6 +284,12 @@ final class ShareSelfTestRunner {
             return Outcome(pass: false, reason: "sendShare took it but no new outgoing share appeared")
         }
         log("send: ChatStore.sendShare share \(shareId) caption \"\(text)\" (source ios-chat, background session)")
+        return await awaitChatUpload(shareId)
+    }
+
+    /// Follows a chat share's bubble until the upload's outcome, then polls its status (as the composer does).
+    private func awaitChatUpload(_ shareId: String) async -> Outcome {
+        let chat = app.chat
         let localId = TimelineItem.localPrefix + shareId
         var lastBubble = ""
         func bubbleState() -> String {
@@ -481,6 +496,306 @@ final class ShareSelfTestRunner {
             return Outcome(pass: false, reason: "paste(_:) pasted as text instead of attaching (text view: \"\(view.text ?? "")\")")
         }
         return await composerShare(model, caption: "[selftest] cosa significa questo errore?")
+    }
+
+    // MARK: - Case: voice note (the mic button's send path)
+
+    /// A spoken Italian clip made on the iPhone, sent through `ChatStore.sendVoiceNote` exactly as the mic
+    /// button sends a recording (waveform from the file, on-device transcript unless `whisper`).
+    private func caseVoice(whisper: Bool) async throws -> Outcome {
+        let phrase = "Ciao Lucina, ricordami di comprare il latte domani mattina"
+        let clip = try await synthesizeClip(phrase)
+        log("voice: synthesized \"\(phrase)\" with AVSpeechSynthesizer.write (voice \(clip.voice)) into "
+            + "\"\(clip.url.lastPathComponent)\" ADTS AAC, \(String(format: "%.2f", clip.duration)) s, \(clip.bytes) bytes")
+        let chat = app.chat
+        let before = Set(chat.outgoing.keys)
+        let note = VoiceNote(url: clip.url, duration: clip.duration, levels: [], recordedAt: Date())
+        log("send: ChatStore.sendVoiceNote (the mic button's path) transcribe \(!whisper)")
+        guard await chat.sendVoiceNote(note, transcribe: !whisper) else {
+            try? FileManager.default.removeItem(at: clip.url)
+            return Outcome(pass: false, reason: "ChatStore.sendVoiceNote returned false")
+        }
+        guard let shareId = Set(chat.outgoing.keys).subtracting(before).first, let share = chat.outgoing[shareId] else {
+            return Outcome(pass: false, reason: "sendVoiceNote took it but no new outgoing share appeared")
+        }
+        let file = share.files.first
+        log("send: share \(shareId) part \"\(file?.name ?? "?")\" \(file?.mime ?? "?") \(file?.size ?? 0) bytes, "
+            + "meta \((try? share.meta.json()) ?? "-")")
+        if whisper {
+            log("voice: on-device transcript left out on purpose: the server's Whisper transcribes it")
+        } else {
+            log("voice: on-device transcript \(file?.transcript.map { "\"\($0)\"" } ?? "none (speech recognition not authorized, unavailable on device, or timed out)")")
+        }
+        var outcome = await awaitChatUpload(shareId)
+        // What the bubble shows under the note, and what Lucina's reply carries.
+        let user = chat.items.first { $0.meta?.shareId == shareId && $0.role == .user }
+        let userItemId = chat.outgoing[shareId]?.userItemId ?? user.flatMap { $0.isLocal ? nil : $0.id }
+        if let user, let voice = BubbleEntry.entries(user.attachments).first(where: { $0.attachment.isVoice }) {
+            let seen = chat.voiceTranscript(for: user, attachment: voice.attachment, fileIndex: voice.fileIndex)
+            log("voice: bubble kind voice, waveform \(voice.attachment.waveform.map { "\(Data(base64Encoded: $0)?.count ?? 0) bytes" } ?? "none"), "
+                + "transcript shown \(seen.map { "\"\($0)\"" } ?? "none")")
+        } else {
+            log("voice: no voice bubble found for share \(shareId) (user item \(user?.id ?? "none"))")
+        }
+        if let userItemId, let reply = chat.items.first(where: { $0.role == .lucina && $0.replyTo == userItemId }) {
+            log("voice: reply \(reply.id) meta.transcript \(reply.meta?.transcript.map { "\"\($0)\"" } ?? "none"), "
+                + "meta.voiceReply \(reply.meta?.voiceReply.map(String.init) ?? "absent"), "
+                + "spoken by the app \(chat.voiceReplies.playedIds.contains(reply.id) ? "yes" : "no") "
+                + "(setting \(LucinaVoiceReplies.isEnabled() ? "on" : "off"))")
+        } else {
+            log("voice: Lucina's reply item for \(userItemId ?? "?") is not in the timeline")
+        }
+        if outcome.pass { outcome.reason += whisper ? " (Whisper path)" : " (on-device transcript path)" }
+        return outcome
+    }
+
+    private struct SpokenClip {
+        var url: URL
+        var duration: TimeInterval
+        var bytes: Int
+        var voice: String
+    }
+
+    /// Writes the synthesizer's PCM buffers straight into an ADTS AAC file in Caches/ChatNotes (where the
+    /// mic button's recordings go), so the clip is the same kind of file a recording is.
+    private func synthesizeClip(_ text: String) async throws -> SpokenClip {
+        let utterance = AVSpeechUtterance(string: text)
+        let voice = AVSpeechSynthesisVoice(language: "it-IT")
+        utterance.voice = voice
+        let url = VoiceNoteFiles.directory.appendingPathComponent("selftest-\(UUID().uuidString.lowercased()).aac")
+        let writer = SpokenClipWriter(url: url)
+        let synthesizer = AVSpeechSynthesizer()
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            writer.continuation = continuation
+            synthesizer.write(utterance) { buffer in writer.append(buffer) }
+            Task {
+                // Some iOS versions never send the empty end-of-audio buffer: keep what was written.
+                try? await Task.sleep(for: .seconds(30))
+                writer.end()
+            }
+        }
+        withExtendedLifetime(synthesizer) {}
+        let file = try AVAudioFile(forReading: url)
+        let duration = Double(file.length) / file.fileFormat.sampleRate
+        let bytes = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        guard duration > 0.5, bytes > 0 else { throw SelfTestError("the synthesized clip is empty (\(bytes) bytes)") }
+        return SpokenClip(url: url, duration: duration, bytes: bytes, voice: voice.map { "\($0.name) \($0.language)" } ?? "default")
+    }
+
+    /// Collects the synthesizer's buffers (on its own queue) into the AAC file; resumes once.
+    private final class SpokenClipWriter: @unchecked Sendable {
+        private let lock = NSLock()
+        private let url: URL
+        private var file: AVAudioFile?
+        var continuation: CheckedContinuation<Void, Error>?
+
+        init(url: URL) { self.url = url }
+
+        func append(_ buffer: AVAudioBuffer) {
+            guard let pcm = buffer as? AVAudioPCMBuffer else { return }
+            if pcm.frameLength == 0 {
+                end()
+                return
+            }
+            lock.lock()
+            var failure: Error?
+            do {
+                if file == nil {
+                    let settings: [String: Any] = [AVFormatIDKey: kAudioFormatMPEG4AAC,
+                                                   AVSampleRateKey: pcm.format.sampleRate,
+                                                   AVNumberOfChannelsKey: pcm.format.channelCount,
+                                                   AVEncoderBitRateKey: 64_000]
+                    file = try AVAudioFile(forWriting: url, settings: settings, commonFormat: pcm.format.commonFormat,
+                                           interleaved: pcm.format.isInterleaved)
+                }
+                try file?.write(from: pcm)
+            } catch {
+                file = nil
+                failure = error
+            }
+            lock.unlock()
+            if let failure { finish(failure) }
+        }
+
+        /// Closes the file and resumes: success when audio was written.
+        func end() {
+            lock.lock()
+            let written = file != nil
+            file = nil // closes it
+            lock.unlock()
+            finish(written ? nil : SelfTestError("the synthesizer produced no audio"))
+        }
+
+        func finish(_ error: Error?) {
+            lock.lock()
+            let pending = continuation
+            continuation = nil
+            lock.unlock()
+            guard let pending else { return }
+            if let error { pending.resume(throwing: error) } else { pending.resume() }
+        }
+    }
+
+    // MARK: - Cases: message actions (reply, read aloud, share items)
+
+    /// A text replying to Lucina's newest message of the self-test conversation through the swipe's path
+    /// (`beginReply` → the composer's `takeReply` → `ask(_:replyTo:)`). `[selftest]` turns run in the server's
+    /// self-test conversation (`GET /v1/timeline?conversation=selftest`), never the owner's chat; one seed turn
+    /// is sent there first when it has no Lucina message yet. PASS: her answer arrives, the self-test copy of
+    /// the user item has `replyTo` set to that message, and the owner's timeline doesn't have it.
+    private func caseReply() async throws -> Outcome {
+        let chat = app.chat
+        var target = try await selftestLucinaItem()
+        if target == nil {
+            let seed = ChatRequest(message: "[selftest] dimmi in una frase com'è l'autunno a Copenaghen.",
+                                   sessionId: chat.sessionId, clientMessageId: UUID().uuidString)
+            let seeded = try await app.api.chat(seed)
+            log("reply: seeded the self-test conversation: \"\(seeded.reply.prefix(120))\"")
+            target = try await selftestLucinaItem()
+        }
+        guard let target else {
+            return Outcome(pass: false, reason: "no Lucina message in the self-test conversation")
+        }
+        log("reply: target \(target.id) (conversation selftest) \"\(ChatQuote.summary(target).prefix(120))\"")
+        guard chat.beginReply(target) else { return Outcome(pass: false, reason: "beginReply refused the target") }
+        log("reply: quote bar \(chat.replyingTo?.id ?? "nil") sender \(ChatQuote.sender(target))")
+        let text = "[selftest] rispondo a questo messaggio: di cosa parlava, in una frase?"
+        let reply = chat.takeReply()
+        var sent: ChatRequest?
+        chat.onChatRequest = { sent = $0 }
+        defer { chat.onChatRequest = nil }
+        let answer = await chat.ask(text, replyTo: reply?.id)
+        if let sent, let body = try? APIClient.encoder.encode(sent) {
+            log("reply: POST /v1/chat replyTo \(sent.replyTo ?? "nil") body \(String(decoding: body, as: UTF8.self))")
+        } else {
+            log("reply: no POST /v1/chat was made")
+        }
+        guard let answer, !answer.isEmpty else {
+            return Outcome(pass: false, reason: answer == nil ? "not sent" : "the send failed (no answer)")
+        }
+        let cleaned = ChatStore.clean(text)
+        guard let user = chat.items.last(where: { $0.role == .user && !$0.isLocal && $0.text == cleaned }) else {
+            return Outcome(pass: false, reason: "the user item has no server id", reply: answer)
+        }
+        // The two bubbles `ask` added belong to the self-test conversation: off this phone's chat afterwards.
+        defer {
+            for item in chat.items where item.id == user.id || item.role == .lucina && item.replyTo == user.id {
+                chat.hide(item.id)
+            }
+        }
+        let page = try await app.api.timeline(limit: 30, conversation: "selftest")
+        let server = page.items.first { $0.id == user.id }
+        log("reply: self-test user item \(server?.id ?? "missing from the newest page") replyTo \(server?.replyTo ?? "nil")")
+        let owner = try await app.api.timeline(limit: 30)
+        let leaked = owner.items.contains { $0.id == user.id }
+        log("reply: in the owner's timeline: \(leaked ? "yes" : "no")")
+        guard !leaked else { return Outcome(pass: false, reason: "the self-test turn reached the owner's timeline", reply: answer) }
+        guard server?.replyTo == target.id else {
+            return Outcome(pass: false, reason: "the self-test user item has replyTo \(server?.replyTo ?? "nil"), want \(target.id)", reply: answer)
+        }
+        return Outcome(pass: true, reason: "answer arrived in the self-test conversation, user item replyTo \(target.id)", reply: answer)
+    }
+
+    /// Lucina's newest message in the server's self-test conversation.
+    private func selftestLucinaItem() async throws -> TimelineItem? {
+        try await app.api.timeline(limit: 30, conversation: "selftest").items.first { $0.role == .lucina }
+    }
+
+    /// The right swipe's action on Lucina's newest message, twice (a TTS fetch, then the cache), muted.
+    /// PASS: the first run played more than 1 s and the second came from the cache and played too.
+    private func caseReadAloud() async -> Outcome {
+        let chat = app.chat
+        await chat.refresh()
+        guard let target = chat.items.last(where: { $0.role == .lucina && !$0.isLocal && chat.speechText(for: $0) != nil }) else {
+            return Outcome(pass: false, reason: "no Lucina message with words in the timeline")
+        }
+        let reader = chat.readAloud
+        reader.muted = true
+        defer {
+            reader.stop()
+            reader.muted = false
+        }
+        reader.cache.remove(target.id)
+        log("readaloud: target \(target.id) speech \"\(chat.speechText(for: target)?.prefix(120) ?? "")\" (muted: volume 0; "
+            + "cache file \(TTSCache.fileName(for: target.id)))")
+        var played: [Bool] = []
+        var hits: [Bool] = []
+        for run in 1...2 {
+            let outcome = await chat.toggleReadAloud(target)
+            let report = reader.lastReport
+            log("readaloud run \(run): outcome \(outcome) TTS HTTP \(report?.status.map(String.init) ?? "-") bytes \(report?.bytes ?? 0) "
+                + "cache hit \(report?.cacheHit == true ? "yes" : "no") session \(report?.session ?? "-")")
+            guard outcome == .started else { return Outcome(pass: false, reason: "run \(run): \(outcome)") }
+            try? await Task.sleep(for: .milliseconds(1400))
+            let time = reader.currentTime
+            log("readaloud run \(run): isPlaying \(reader.isPlaying) currentTime \(String(format: "%.2f", time)) s of "
+                + "\(String(format: "%.2f", reader.duration)) s, indicator on \(reader.playingId ?? "none")")
+            played.append(time > 1)
+            hits.append(report?.cacheHit == true)
+            reader.stop()
+            try? await Task.sleep(for: .milliseconds(300))
+        }
+        log("readaloud: session after stop \(ChatAudio.sessionDescription)")
+        guard played.allSatisfy({ $0 }) else { return Outcome(pass: false, reason: "audio did not play past 1 s (\(played))") }
+        guard hits == [false, true] else { return Outcome(pass: false, reason: "cache hits \(hits), want [false, true]") }
+        return Outcome(pass: true, reason: "played > 1 s twice; TTS then cache hit")
+    }
+
+    /// The share items of the newest message with a picture and a caption (the `album` case sends one), built
+    /// as the Share… action builds them, without presenting the sheet. PASS: an image item and a text item.
+    private func caseShareItems() async throws -> Outcome {
+        let chat = app.chat
+        await chat.refresh()
+        let candidates = chat.items.filter { !chat.isHidden($0.id) && $0.attachments.contains(where: \.isImage) }
+        guard let target = candidates.last(where: { !$0.displayText.isEmpty }) ?? candidates.last else {
+            return Outcome(pass: false, reason: "no message with a picture in the timeline")
+        }
+        log("shareitems: message \(target.id) \(target.attachments.count) attachment(s) caption \"\(target.displayText.prefix(80))\"")
+        let items = try await logShareItems(ChatShareBuilder.parts(for: target, transcript: chat.voiceTranscript(of: target)), label: "shareitems")
+        let image = items.contains(where: \.isImage)
+        let text = items.contains(where: \.isText)
+        guard image, text else { return Outcome(pass: false, reason: "image item \(image), text item \(text)") }
+        return Outcome(pass: true, reason: "\(items.count) items: image and text present")
+    }
+
+    /// "Share conversation" for the last three visible messages: the transcript and their files.
+    private func caseSelectShare() async throws -> Outcome {
+        let chat = app.chat
+        await chat.refresh()
+        let chosen = Array(chat.items.filter { !$0.isLocal && !chat.isHidden($0.id) }.suffix(3))
+        guard chosen.count == 3 else { return Outcome(pass: false, reason: "\(chosen.count) message(s) in the timeline, need 3") }
+        let userName = ChatShareBuilder.ownerName(deviceName: app.deviceName)
+        log("selectshare: messages \(chosen.map(\.id).joined(separator: ", ")), owner name \"\(userName)\"")
+        let parts = ChatShareBuilder.conversationParts(chosen, userName: userName) { chat.voiceTranscript(of: $0) }
+        let items = try await logShareItems(parts, label: "selectshare")
+        guard case let .text(transcript)? = items.first?.payload else { return Outcome(pass: false, reason: "no transcript item first") }
+        log("selectshare: transcript \"\(transcript.prefix(600).replacingOccurrences(of: "\n", with: "⏎"))\"")
+        let headers = transcript.components(separatedBy: "\n").filter { $0.range(of: #" — \d"#, options: .regularExpression) != nil }.count
+        guard headers >= 3 else { return Outcome(pass: false, reason: "the transcript has \(headers) speaker lines, want 3") }
+        return Outcome(pass: true, reason: "transcript with \(headers) speaker lines + \(items.count - 1) more item(s)")
+    }
+
+    /// Resolves the parts like the share sheet (downloads included) and logs each item's type and size.
+    private func logShareItems(_ parts: [ChatSharePart], label: String) async throws -> [ChatShareItem] {
+        log("\(label): \(parts.count) part(s): " + parts.map { part in
+            switch part {
+            case .text: return "text"
+            case let .link(url): return "link \(url.host ?? url.absoluteString)"
+            case let .media(media): return "\(media.kind.rawValue) \(media.attachment.mediaId ?? "local")"
+            }
+        }.joined(separator: ", "))
+        let started = Date()
+        let items = try await ChatShareResolver.resolve(parts, store: app.chat, client: app.client)
+        log("\(label): resolved in \(String(format: "%.2f", Date().timeIntervalSince(started))) s")
+        for (index, item) in items.enumerated() {
+            var line = "\(label): item \(index) UTType \(item.type.identifier) bytes \(item.bytes)"
+            if let name = item.name { line += " name \"\(name)\"" }
+            if let file = item.fileURL, let provider = NSItemProvider(contentsOf: file) {
+                line += " provider types \(provider.registeredTypeIdentifiers)"
+            }
+            log(line)
+        }
+        return items
     }
 
     // MARK: - Case: Shortcuts intent

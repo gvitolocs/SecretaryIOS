@@ -14,6 +14,10 @@ extension AppModel {
         case "chat/compose":
             selectedTab = .chat
             chat.requestPrefill("")
+        case let r where ChatComposeRoute.text(r) != nil:
+            // `chat/compose?text=…`: the chat with a message ready to send (the Server plugin's Ask Lucina).
+            selectedTab = .chat
+            chat.requestPrefill(ChatComposeRoute.text(r) ?? "")
         case "shopping/add":
             selectedTab = .shopping
             showShoppingAdd = true
@@ -32,6 +36,11 @@ extension AppModel {
         case "memos/record":
             openMemo(nil)
             Task { if !memos.recorder.isActive { await memos.record() } }
+        case "approvals":
+            Task { await approvals.poll() }
+        case let r where r.hasPrefix("approvals/"):
+            let id = String(r.dropFirst("approvals/".count)).removingPercentEncoding ?? ""
+            Task { await approvals.open(id: id) }
         case "pokemon":
             selectedTab = .plugins
             showPokemon = true
@@ -41,6 +50,16 @@ extension AppModel {
         default:
             open(route: route)
         }
+    }
+
+    /// The approvals widget shows what the app just learned (a poll, or an approval push that woke it).
+    static func publishApprovals(_ items: [ApprovalItem], now: Date = Date()) {
+        let section = ApprovalsSection(fetchedAt: now, items: items.map {
+            .init(id: $0.id, requester: $0.requester.displayName, summary: $0.summary, details: $0.details,
+                  sensitive: $0.sensitive, payloadHash: $0.payloadHash, expiresAt: $0.expiresAt)
+        })
+        WidgetStore.write(section)
+        WidgetStore.reload([.approvals])
     }
 
     /// Called when the tabs appear: the link that launched the app before sign-in was checked.
@@ -70,5 +89,24 @@ extension AppModel {
                 activeSince: active.map { Date(timeIntervalSince1970: Double($0.startedMs) / 1000) }))
         }
         WidgetStore.reload()
+    }
+}
+
+/// `chat/compose?text=<percent-encoded>`: the chat with `text` in the field, ready to send.
+enum ChatComposeRoute {
+    static func route(text: String) -> String {
+        "chat/compose?text=" + (text.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "")
+    }
+
+    /// The text of a `chat/compose?text=` route, nil for any other route.
+    static func text(_ route: String) -> String? {
+        let path = route.hasPrefix("/") ? String(route.dropFirst()) : route
+        guard path.hasPrefix("chat/compose?") else { return nil }
+        let query = path.dropFirst("chat/compose?".count)
+        for pair in query.split(separator: "&") {
+            let kv = pair.split(separator: "=", maxSplits: 1).map(String.init)
+            if kv.count == 2, kv[0] == "text" { return kv[1].removingPercentEncoding ?? kv[1] }
+        }
+        return nil
     }
 }

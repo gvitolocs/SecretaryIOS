@@ -25,8 +25,8 @@ final class ItemVisualTests: XCTestCase {
     }
 
     private func visual(_ icon: String?, _ catalogId: String? = nil, _ name: String, section: String? = nil,
-                        search: Bool = true) -> ItemVisual {
-        ItemVisual.resolve(icon: icon, catalogId: catalogId, name: name, section: section, catalog: catalog,
+                        picked: Bool = false, search: Bool = true) -> ItemVisual {
+        ItemVisual.resolve(icon: icon, catalogId: catalogId, name: name, section: section, iconPicked: picked, catalog: catalog,
                            search: search ? CatalogSearch(catalog: catalog, lang: "it") : nil, hasArt: hasArt)
     }
 
@@ -38,7 +38,10 @@ final class ItemVisualTests: XCTestCase {
     }
 
     func testAnEmojiThePickedOwnerKeeps() {
-        XCTAssertEqual(visual("🍒", "milk", "Latte"), .emoji("🍒"))
+        XCTAssertEqual(visual("🍒", "milk", "Latte", picked: true), .emoji("🍒"))
+        // Not hand-picked: a stored emoji that differs from this catalog's loses to the art.
+        XCTAssertEqual(visual("🍒", "milk", "Latte"), .art("item-milk"))
+        XCTAssertEqual(visual("🍗", "prosciutto", "Prosciutto crudo"), .art("item-prosciutto"))
     }
 
     func testFreeTextAndCustomItemsFindArtByName() {

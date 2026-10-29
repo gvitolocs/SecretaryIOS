@@ -370,6 +370,8 @@ struct ShopItem: Codable, Identifiable, Equatable, Hashable, Sendable {
     var unit: String?
     var section: String?
     var icon: String?
+    /// The server says `icon` is the row's own, hand-picked emoji (else it is the catalog's).
+    var iconPicked: Bool?
     var status: Status
     var position: Double
     var updatedAt: String
@@ -432,6 +434,7 @@ struct ShopItem: Codable, Identifiable, Equatable, Hashable, Sendable {
                   section: json["section"]?.nonEmptyString, icon: json["icon"]?.nonEmptyString, status: status,
                   position: json["position"]?.numberValue ?? Double(index),
                   updatedAt: json["updatedAt"]?.nonEmptyString ?? "", updatedBy: json["updatedBy"]?.nonEmptyString ?? "")
+        iconPicked = json["iconPicked"]?.boolValue
     }
 
     static func items(from json: JSONValue?) -> [ShopItem] {

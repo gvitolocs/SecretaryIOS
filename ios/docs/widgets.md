@@ -18,6 +18,7 @@ All of these live in the `SecretaryWidgets` extension (`Extensions/SecretaryWidg
 | Voice memo | small | circular, inline | opens the recorder recording |
 | Lucina plays Pokémon | small, medium, large (live screen) | rectangular, inline | the Pokémon plugin |
 | Continue watching | small, medium (3 films) | rectangular | plays the film where it stopped |
+| Server | small, medium (top 2 attention items) | rectangular | the Server plugin (`server-health`) |
 | Countdown | small (the soonest pinned event, big), medium (up to 3, one per line) | rectangular, inline | the Countdown plugin (`countdowns`) |
 
 The shopping widget is configurable (long-press → Edit widget → List).
@@ -28,6 +29,10 @@ once past (an all-day one after its day, a timed one when it ends). The events a
 event's map screen, a long-press on an event card or a calendar row (Settings › Links), or the Countdown plugin.
 Pins (`CountdownPinsSection`) are written by the app only; the coming year's events (`CountdownUpcomingSection`,
 `GET /v1/calendar/events?days=365`, kept 6 h) give the widget's list and a moved event's new time. No server change.
+
+**Server**: `GET /v1/system/overview`, refreshed by the extension every 15 minutes and cached in `ServerSection`.
+The app also writes this section after every successful Server load and reloads the widget when the overall state,
+attention count or top titles change. Medium-widget attention titles are redacted while locked.
 
 **Shopping emoji**: the row's own emoji, else its catalogue item's (`GET /v1/shopping/catalog`, the same icons as the
 Shopping tab; kept a day and revalidated with its ETag), else its section's, else a built-in category emoji, else 🛒.

@@ -49,8 +49,8 @@ struct PhotoDragOut: ViewModifier {
     private func dismissGesture<V: View>(_ view: V, _ size: CGSize) -> some View {
         if #available(iOS 18.0, *) {
             view.gesture(VerticalPan(enabled: enabled, upOnly: systemDismiss,
-                                     changed: { t, vy in changed(t, vy, size) },
-                                     ended: { t, vy in ended(t, vy, size) }))
+                                     changed: { t, v in changed(t, v, size) },
+                                     ended: { t, v in ended(t, v, size) }))
         } else {
             view.simultaneousGesture(DragGesture(minimumDistance: 10)
                 .onChanged { g in changed(g.translation, Self.velocity(g), size) }
@@ -58,32 +58,33 @@ struct PhotoDragOut: ViewModifier {
         }
     }
 
-    /// The vertical velocity that `ask` turns back into SwiftUI's predicted end.
-    private static func velocity(_ g: DragGesture.Value) -> CGFloat {
-        (g.predictedEndTranslation.height - g.translation.height) / 0.25
+    /// Estimate finger velocity in points per second from the predicted travel.
+    private static func velocity(_ g: DragGesture.Value) -> CGSize {
+        CGSize(width: (g.predictedEndTranslation.width - g.translation.width) / 0.25,
+               height: (g.predictedEndTranslation.height - g.translation.height) / 0.25)
     }
 
-    private func changed(_ t: CGSize, _ vy: CGFloat, _ size: CGSize) {
+    private func changed(_ t: CGSize, _ v: CGSize, _ size: CGSize) {
         guard axis == "undecided" || axis == "out" else { return }
-        guard let d = Self.ask(t, vy, size, ended: false) else {
+        guard let d = Self.ask(t, v, size, ended: false) else {
             dragLog.error("GalleryDrag no drag answer from the core (an old SecretaryCore?)")
             return
         }
         if axis == "undecided" {
             axis = d.axis
             if axis != "undecided" {
-                dragLog.notice("GalleryDrag axis=\(d.axis, privacy: .public) dx=\(Int(t.width)) dy=\(Int(t.height))")
+                dragLog.notice("GalleryDrag axis=\(d.axis, privacy: .public) dx=\(Int(t.width)) dy=\(Int(t.height)) vx=\(Int(v.width)) vy=\(Int(v.height))")
             }
             if axis == "out" { dragging = true }
         }
         if axis == "out" { out = d.out }
     }
 
-    private func ended(_ t: CGSize, _ vy: CGFloat, _ size: CGSize) {
+    private func ended(_ t: CGSize, _ v: CGSize, _ size: CGSize) {
         defer { axis = "undecided" }
         guard axis == "out" else { return }
-        let end = Self.ask(t, vy, size, ended: true)?.end
-        dragLog.notice("GalleryDrag end=\(end ?? "none", privacy: .public) dy=\(Int(t.height)) vy=\(Int(vy)) h=\(Int(size.height))")
+        let end = Self.ask(t, v, size, ended: true)?.end
+        dragLog.notice("GalleryDrag end=\(end ?? "none", privacy: .public) dy=\(Int(t.height)) vx=\(Int(v.width)) vy=\(Int(v.height)) h=\(Int(size.height))")
         switch end {
         case "dismiss":
             // Carry on down and fade out, then close without the cover's slide.
@@ -109,24 +110,49 @@ struct PhotoDragOut: ViewModifier {
         dragging = false
     }
 
-    /// `vy`: vertical velocity in points per second; a flick's predicted end is about a quarter
+    /// Velocity is in points per second; a flick's predicted end is about a quarter
     /// second of it further on (SwiftUI's `predictedEndTranslation` for a decelerating drag).
-    private static func ask(_ t: CGSize, _ vy: CGFloat, _ size: CGSize, ended: Bool) -> (axis: String, out: Out, end: String?)? {
+    private static func ask(_ t: CGSize, _ v: CGSize, _ size: CGSize, ended: Bool) -> (axis: String, out: Out, end: String?)? {
+        guard let drag = request(t, v, size, ended: ended),
+              let axis = drag["axis"] as? String,
+              let o = drag["out"] as? [String: Double] else { return nil }
+        let out = Out(x: o["offset_x"] ?? 0, y: o["offset_y"] ?? 0, scale: o["scale"] ?? 1, backdrop: o["backdrop"] ?? 1)
+        return (axis, out, drag["end"] as? String)
+    }
+
+    /// One FFI request for gesture admission and the drag's drawing/release decision.
+    fileprivate static func request(_ t: CGSize, _ v: CGSize, _ size: CGSize, ended: Bool) -> [String: Any]? {
         let request: [String: Any] = [
             "new": [1, 1, size.width, size.height],
-            "drag": ["dx": t.width, "dy": t.height, "predicted_dy": t.height + vy * 0.25, "ended": ended],
+            "drag": ["dx": t.width, "dy": t.height, "vx": v.width, "vy": v.height, "predicted_dy": t.height + v.height * 0.25, "ended": ended],
         ]
         guard let body = try? JSONSerialization.data(withJSONObject: request),
               let json = String(data: body, encoding: .utf8),
               let raw = json.withCString({ secretary_image_view($0) }) else { return nil }
         defer { secretary_string_free(raw) }
         guard let data = String(cString: raw).data(using: .utf8),
-              let answer = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let drag = answer["drag"] as? [String: Any],
-              let axis = drag["axis"] as? String,
-              let o = drag["out"] as? [String: Double] else { return nil }
-        let out = Out(x: o["offset_x"] ?? 0, y: o["offset_y"] ?? 0, scale: o["scale"] ?? 1, backdrop: o["backdrop"] ?? 1)
-        return (axis, out, drag["end"] as? String)
+              let answer = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return answer["drag"] as? [String: Any]
+    }
+
+    /// Whether the vertical pan starts, with the core's axis. The pan asks after only a few points
+    /// (dy 0-5 on iOS 27), under the core's 10 pt slop, so the finger's heading decides: its travel,
+    /// else its velocity, else its travel stretched to 12 pt. A slow drag (vy about 180) used to stay
+    /// "undecided" and never start. With `upOnly` a drag heading down is left to the zoom transition.
+    static func admits(_ t: CGSize, _ v: CGSize, _ size: CGSize, upOnly: Bool) -> (begin: Bool, axis: String?) {
+        var axis = request(t, v, size, ended: false)?["axis"] as? String
+        var heading = t
+        if axis == "undecided" {
+            let speed = hypot(v.width, v.height)
+            let travel = hypot(t.width, t.height)
+            let (dir, length) = speed > 0 ? (v, speed) : (t, travel)
+            if length > 0 {
+                heading = CGSize(width: dir.width * 12 / length, height: dir.height * 12 / length)
+                axis = request(heading, v, size, ended: false)?["axis"] as? String
+            }
+        }
+        let up = v.height != 0 ? v.height < 0 : heading.height < 0
+        return (axis == "out" && (!upOnly || up), axis)
     }
 }
 
@@ -136,8 +162,8 @@ struct PhotoDragOut: ViewModifier {
 struct VerticalPan: UIGestureRecognizerRepresentable {
     var enabled: Bool
     var upOnly = false
-    var changed: (CGSize, CGFloat) -> Void
-    var ended: (CGSize, CGFloat) -> Void
+    var changed: (CGSize, CGSize) -> Void
+    var ended: (CGSize, CGSize) -> Void
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         var enabled = true
@@ -146,8 +172,11 @@ struct VerticalPan: UIGestureRecognizerRepresentable {
         func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
             guard enabled, let pan = gesture as? UIPanGestureRecognizer else { return false }
             let v = pan.velocity(in: pan.view)
-            let begin = abs(v.y) > abs(v.x) && (!upOnly || v.y < 0)
-            dragLog.notice("GalleryDrag pan should_begin=\(begin) vx=\(Int(v.x)) vy=\(Int(v.y))")
+            let t = pan.translation(in: pan.view)
+            let size = pan.view?.bounds.size ?? .zero
+            let (begin, axis) = PhotoDragOut.admits(CGSize(width: t.x, height: t.y), CGSize(width: v.x, height: v.y),
+                                                    size, upOnly: upOnly)
+            dragLog.notice("GalleryDrag pan should_begin=\(begin) axis=\(axis ?? "none", privacy: .public) dx=\(Int(t.x)) dy=\(Int(t.y)) vx=\(Int(v.x)) vy=\(Int(v.y))")
             return begin
         }
 
@@ -174,10 +203,11 @@ struct VerticalPan: UIGestureRecognizerRepresentable {
     func handleUIGestureRecognizerAction(_ recognizer: UIPanGestureRecognizer, context: Context) {
         let p = recognizer.translation(in: recognizer.view)
         let t = CGSize(width: p.x, height: p.y)
-        let vy = recognizer.velocity(in: recognizer.view).y
+        let velocity = recognizer.velocity(in: recognizer.view)
+        let v = CGSize(width: velocity.x, height: velocity.y)
         switch recognizer.state {
-        case .began, .changed: changed(t, vy)
-        case .ended, .cancelled, .failed: ended(t, vy)
+        case .began, .changed: changed(t, v)
+        case .ended, .cancelled, .failed: ended(t, v)
         default: break
         }
     }

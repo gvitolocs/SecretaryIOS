@@ -84,6 +84,15 @@ enum APIError: Error, Equatable, Sendable {
         return false
     }
 
+    /// How a `pin_wrong` answer carries the tries left in `message`.
+    static let attemptsLeftPrefix = "attemptsLeft:"
+
+    /// The approval PIN tries left, from a `pin_wrong` answer.
+    var attemptsLeft: Int? {
+        guard case let .server(_, code, message) = self, code == "pin_wrong", message.hasPrefix(Self.attemptsLeftPrefix) else { return nil }
+        return Int(message.dropFirst(Self.attemptsLeftPrefix.count))
+    }
+
     var isLucinaOffline: Bool {
         if case .lucinaOffline = self { return true }
         return false

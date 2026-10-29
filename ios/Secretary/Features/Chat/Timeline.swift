@@ -48,14 +48,21 @@ struct TimelineAttachment: Codable, Equatable, Hashable, Sendable {
     /// A shared location.
     var lat: Double? = nil
     var lon: Double? = nil
+    /// A voice note (`kind == "voice"`): base64 of up to 64 loudness bytes, and its words.
+    var waveform: String? = nil
+    var transcript: String? = nil
 
     init(kind: String, name: String? = nil, mime: String? = nil, mediaId: String? = nil, url: String? = nil, bytes: Int64? = nil,
-         thumbhash: String? = nil, width: Int? = nil, height: Int? = nil, durationMs: Int? = nil, lat: Double? = nil, lon: Double? = nil) {
+         thumbhash: String? = nil, width: Int? = nil, height: Int? = nil, durationMs: Int? = nil, lat: Double? = nil, lon: Double? = nil,
+         waveform: String? = nil, transcript: String? = nil) {
         self.kind = kind; self.name = name; self.mime = mime; self.mediaId = mediaId; self.url = url; self.bytes = bytes
         self.thumbhash = thumbhash; self.width = width; self.height = height; self.durationMs = durationMs; self.lat = lat; self.lon = lon
+        self.waveform = waveform; self.transcript = transcript
     }
 
-    private enum CodingKeys: String, CodingKey { case kind, name, mime, mediaId, url, bytes, thumbhash, width, height, durationMs, lat, lon }
+    private enum CodingKeys: String, CodingKey {
+        case kind, name, mime, mediaId, url, bytes, thumbhash, width, height, durationMs, lat, lon, waveform, transcript
+    }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         kind = (try? c.decode(String.self, forKey: .kind)) ?? "file"
@@ -70,6 +77,8 @@ struct TimelineAttachment: Codable, Equatable, Hashable, Sendable {
         durationMs = try? c.decode(Int.self, forKey: .durationMs)
         lat = try? c.decode(Double.self, forKey: .lat)
         lon = try? c.decode(Double.self, forKey: .lon)
+        waveform = try? c.decode(String.self, forKey: .waveform)
+        transcript = try? c.decode(String.self, forKey: .transcript)
     }
 
     var normalizedKind: String { kind.lowercased() == "photo" ? "image" : kind.lowercased() }
@@ -77,6 +86,8 @@ struct TimelineAttachment: Codable, Equatable, Hashable, Sendable {
     var isVideo: Bool { normalizedKind == "video" }
     var isVisual: Bool { isImage || isVideo }
     var isAudio: Bool { ["audio", "voice"].contains(normalizedKind) }
+    /// A voice note (the chat's mic button, or Telegram's voice messages): the waveform bubble.
+    var isVoice: Bool { normalizedKind == "voice" }
     /// Not a file part: links, plain text and locations ride along as their own attachments.
     var isFilePart: Bool { !["link", "text", "location"].contains(normalizedKind) }
 
@@ -123,6 +134,8 @@ struct ProactiveAction: Codable, Equatable, Hashable, Sendable {
 }
 
 struct TimelineMeta: Codable, Equatable, Hashable, Sendable {
+    var device: String?
+    var deviceName: String?
     var via: String?
     var caller: String?
     var chatTitle: String?
@@ -130,6 +143,9 @@ struct TimelineMeta: Codable, Equatable, Hashable, Sendable {
     var channelName: String?
     var isDm: Bool?
     var kind: String?
+    /// With `kind == "tool"`: the tool Lucina called for this step, and whether it succeeded.
+    var tool: String?
+    var ok: Bool?
     /// `{id, type, args}` when `kind == "device_command"`.
     var command: JSONValue?
     /// With `kind == "avatar_outfit"`: the outfit / hairstyle Lucina put on (neither: back to automatic).
@@ -149,6 +165,11 @@ struct TimelineMeta: Codable, Equatable, Hashable, Sendable {
     var place: Place?
     /// With `kind == "share"`: the share (files from the share sheet or the chat composer) behind the item.
     var shareId: String?
+    /// With `kind == "decision"`: the decision (`dc-…`) Lucina asks about.
+    var decisionId: String?
+    /// On Lucina's reply to a voice note: what she heard, and whether she wants it read aloud.
+    var transcript: String?
+    var voiceReply: Bool?
 
     var isReminder: Bool { kind == "reminder" }
     var isProactive: Bool {
@@ -169,6 +190,8 @@ struct TimelineMeta: Codable, Equatable, Hashable, Sendable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        device = c.lenientOptional(String.self, .device)
+        deviceName = c.lenientOptional(String.self, .deviceName)
         via = c.lenientOptional(String.self, .via)
         caller = c.lenientOptional(String.self, .caller)
         chatTitle = c.lenientOptional(String.self, .chatTitle)
@@ -176,6 +199,8 @@ struct TimelineMeta: Codable, Equatable, Hashable, Sendable {
         channelName = c.lenientOptional(String.self, .channelName)
         isDm = c.lenientOptional(Bool.self, .isDm)
         kind = c.lenientOptional(String.self, .kind)
+        tool = c.lenientOptional(String.self, .tool)
+        ok = c.lenientOptional(Bool.self, .ok)
         command = c.lenientOptional(JSONValue.self, .command)
         outfit = c.lenientOptional(String.self, .outfit)
         hair = c.lenientOptional(String.self, .hair)
@@ -187,11 +212,13 @@ struct TimelineMeta: Codable, Equatable, Hashable, Sendable {
         actions = c.lenientOptional([ProactiveAction].self, .actions)
         place = Place.parse(c.lenientOptional(JSONValue.self, .place))
         shareId = c.lenientOptional(String.self, .shareId)
+        transcript = c.lenientOptional(String.self, .transcript)
+        voiceReply = c.lenientOptional(Bool.self, .voiceReply)
     }
 
     private enum CodingKeys: String, CodingKey {
-        case via, caller, chatTitle, guildName, channelName, isDm, kind, command, outfit, hair, slug
-        case outreachId, priority, topic, why, actions, place, shareId
+        case device, deviceName, via, caller, chatTitle, guildName, channelName, isDm, kind, tool, ok, command, outfit, hair, slug
+        case outreachId, priority, topic, why, actions, place, shareId, transcript, voiceReply
     }
 }
 
@@ -371,7 +398,12 @@ struct TimelinePage: Decodable, Equatable, Sendable {
     /// Cursor for the next older page; nil when there is none.
     let nextBefore: String?
 
-    init(items: [TimelineItem], nextBefore: String?) {
+    let cursor: String?
+    let hasMore: Bool
+
+    init(items: [TimelineItem], nextBefore: String?, cursor: String? = nil, hasMore: Bool = false) {
+        self.cursor = cursor
+        self.hasMore = hasMore
         self.items = items
         self.nextBefore = nextBefore
     }
@@ -381,9 +413,11 @@ struct TimelinePage: Decodable, Equatable, Sendable {
         // One odd item must not hide the page: undecodable ones are skipped.
         items = (try c.decodeIfPresent([Lossy<TimelineItem>].self, forKey: .items) ?? []).compactMap(\.value)
         nextBefore = c.lenientOptional(FlexibleID.self, .nextBefore)?.value
+        cursor = c.lenientOptional(String.self, .cursor)
+        hasMore = c.lenient(Bool.self, .hasMore, false)
     }
 
-    private enum CodingKeys: String, CodingKey { case items, nextBefore }
+    private enum CodingKeys: String, CodingKey { case items, nextBefore, cursor, hasMore }
 }
 
 enum TimelineMerge {

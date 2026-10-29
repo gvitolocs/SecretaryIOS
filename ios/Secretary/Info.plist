@@ -61,7 +61,9 @@
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>Lucina sees your upcoming events and adds or removes them when you ask.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>Lucina mirrors your face or appears in your room when you turn it on, and you can take photos and videos to send her in the chat. Nothing leaves this iPhone unless you send it.</string>
+	<string>Lucina mirrors your face or appears in your room when you turn it on, you can take photos and videos to send her in the chat, and you can scan a QR code to sign in another device. Nothing leaves this iPhone unless you send it.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Secretary asks for Face ID before it approves a sensitive request for you, like revealing a secret or running a command as root.</string>
 	<key>NSHealthShareUsageDescription</key>
 	<string>Lucina reads your weight, workouts, steps and sleep so the Weight tab stays complete and she knows how you are doing.</string>
 	<key>NSHealthUpdateUsageDescription</key>
@@ -87,7 +89,7 @@
 		<string>INSendMessageIntent</string>
 	</array>
 	<key>SecretaryAPNsEnabled</key>
-	<false/>
+	<true/>
 	<key>SecretaryKeychainGroup</key>
 	<string>$(AppIdentifierPrefix)tech.getsecretary.shared</string>
 	<key>UIApplicationSceneManifest</key>
@@ -100,6 +102,7 @@
 		<string>fetch</string>
 		<string>audio</string>
 		<string>processing</string>
+		<string>remote-notification</string>
 	</array>
 	<key>UILaunchScreen</key>
 	<dict>

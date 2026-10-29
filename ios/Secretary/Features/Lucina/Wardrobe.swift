@@ -752,13 +752,13 @@ struct WardrobeView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    /// Every category in view: the chips wrap onto a second line instead of scrolling off the edge.
     private var categoryChips: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                chip(nil, title: "All", symbol: "square.grid.2x2")
-                ForEach(categories) { c in chip(c, title: c.title, symbol: c.symbol) }
-            }
+        FlowRow(spacing: 8) {
+            chip(nil, title: "All", symbol: "square.grid.2x2")
+            ForEach(categories) { c in chip(c, title: c.title, symbol: c.symbol) }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func chip(_ c: Outfit.Category?, title: LocalizedStringKey, symbol: String) -> some View {
@@ -781,12 +781,15 @@ struct WardrobeView: View {
             art()
                 .aspectRatio(3 / 4, contentMode: .fit)
                 .overlay(alignment: .top) {
+                    // Up to two lines, so long names ("School blazer") are not cut.
                     Text(name)
                         .font(.caption.weight(.semibold))
-                        .lineLimit(1)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.center)
                         .padding(.horizontal, 8).padding(.vertical, 4)
                         .frame(maxWidth: .infinity)
-                        .background(on ? AnyShapeStyle(Theme.accentFill) : AnyShapeStyle(.regularMaterial), in: Capsule())
+                        .background(on ? AnyShapeStyle(Theme.accentFill) : AnyShapeStyle(.regularMaterial),
+                                    in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                         .foregroundStyle(on ? .white : .primary)
                         .padding(6)
                 }

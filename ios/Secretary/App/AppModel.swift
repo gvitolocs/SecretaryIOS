@@ -33,6 +33,7 @@ final class AppModel {
 
     private(set) var phase: Phase = .checking
     private(set) var deviceName: String?
+    private(set) var deviceId = UserDefaults.standard.string(forKey: ChatStore.deviceIdKey)
     /// The endpoint requests currently go to first (public or the tailnet name).
     private(set) var baseURL: URL
     /// Why the user is looking at the sign-in screen (expired token, ...).
@@ -46,6 +47,12 @@ final class AppModel {
     var showNotes = false
     /// Tasks, a plugin like Notes.
     var showTasks = false
+    /// Lucina Agents (the coding agents on nezopt), a plugin pushed on the Plugins tab.
+    var showAgents = false
+    /// The Server plugin: hosts, what needs attention, services, incidents and deploys (/v1/system/overview).
+    var showServer = false
+    /// Scan a QR sign-in code and approve it (Features/Login/QrSignIn.swift), a sheet from Plugins.
+    var showQrSignIn = false
     /// The Countdown plugin (pinned events for the countdown widget, `/countdowns`).
     var showCountdowns = false
     /// The grocery deals map, pushed on the Shopping tab (`/shopping/map`).
@@ -62,10 +69,19 @@ final class AppModel {
     var showGallery = false
     /// The Drive (films, shared files, voice memos: what is not a phone backup), a plugin.
     var showDrive = false
+    /// `/drive/file/<id>` (a document Lucina found): the Drive opens its preview.
+    var openDriveFileID: String?
     /// Voice memos, a plugin.
     var showMemos = false
     /// Lucina's Pokémon game (live screen, team, play/pause), a plugin.
     var showPokemon = false
+    /// Lucina's computer (her desktop and Android sandbox, live; takeover), a plugin.
+    var showComputer = false
+    var showAllChats = false
+    /// "Who called?": caller screening with Jev and the Call Directory labels, a plugin.
+    var showCallers = false
+    /// Notebooks as a sheet (a `notebooks` link); in Settings it is a pushed screen.
+    var showNotebooks = false
     /// The quick weight entry sheet on the Training tab (widget "+", Log weight control).
     var showQuickWeight = false
     /// The Shopping tab's add field (Add to shopping control, widget "+").
@@ -92,6 +108,12 @@ final class AppModel {
     let notes: NotesStore
     /// Tasks synced with Todoist (/v1/tasks).
     let tasks: TasksStore
+    /// Lucina Agents: the list and the live stream (/v1/agents).
+    let agents: AgentsStore
+    /// The homelab's status (/v1/system/overview), for the Server plugin and its widget.
+    let server: ServerStore
+    /// "Who called?": the Call Directory label list and the lookup (/v1/callers).
+    let callers: CallersStore
     let health: HealthStore
     let lucina: LucinaStageController
     /// Lucina's outfit (GET/PUT /v1/avatar), applied to the stage.
@@ -99,11 +121,17 @@ final class AppModel {
     let device: DeviceHub
     /// Inbox, settings and local notifications.
     let notifications: NotificationCenterStore
+    /// The owner's approvals: the prompt, its local notifications and the Face ID proof (/v1/approvals).
+    let approvals: ApprovalsStore
+    /// Decisions Lucina asks the owner about (/v1/decisions): the sheet and the notification buttons.
+    let decisions: DecisionsStore
     /// Videos, audio and photos on the server (/v1/media), played with AVPlayer.
     let media: MediaPlayer
     /// The photo library on the server (/v1/media), shown by the Gallery plugin.
     let gallery: GalleryStore
     let drive: GalleryStore
+    /// The Drive's folder levels, sort and roots (`/drive/folder/...` links set its stack).
+    let driveNav: DriveNavigator
     /// Automatic backup of this iPhone's photos and videos to the server.
     let backup: PhotoBackup
     /// Voice memos: recorder, upload queue, list (/v1/memos on lucina-memo).
@@ -155,6 +183,9 @@ final class AppModel {
         weight = PerfLog.measure("weight") { WeightStore(client: { BodyClient(client: client) }) }
         notes = PerfLog.measure("notes") { NotesStore(api: { NotesAPI(client: client) }) }
         tasks = PerfLog.measure("tasks") { TasksStore(api: { TasksAPI(client: client) }) }
+        agents = PerfLog.measure("agents") { AgentsStore(api: { client.accessKey?.isEmpty == false ? AgentsAPI(client: client) : nil }) }
+        server = ServerStore(api: { client.accessKey?.isEmpty == false ? ServerAPI(client: client) : nil })
+        callers = CallersStore(api: { client.accessKey?.isEmpty == false ? CallersAPI(client: client) : nil }, manager: SystemCallDirectory())
         health = HealthStore(api: { SecretaryAPI(client: client) })
         // Cheap: no web view, model or voice engine until the Lucina tab first opens.
         lucina = PerfLog.measure("lucina") { LucinaStageController(client: client, chat: chat) }
@@ -162,6 +193,19 @@ final class AppModel {
         let weight = weight
         device = PerfLog.measure("device") { DeviceHub(client: client, weight: weight) }
         notifications = PerfLog.measure("notifications") { NotificationCenterStore(api: { NotificationsClient(client: client) }) }
+        let notificationStore = notifications
+        approvals = PerfLog.measure("approvals") {
+            ApprovalsStore(api: { client.accessKey?.isEmpty == false ? ApprovalsAPI(client: client) : nil },
+                           signer: SecureEnclaveApprovalSigner(), notifier: ApprovalNotifier(),
+                           previews: { notificationStore.rules.settings.previews },
+                           deviceLabel: { UIDevice.current.name })
+        }
+        decisions = DecisionsStore(api: { DecisionsAPI(client: client) }, send: { text in
+            let request = ChatRequest(message: text, sessionId: chat.sessionId, clientMessageId: UUID().uuidString)
+            return try await SecretaryAPI(client: client).chat(request).reply
+        })
+        let decisionStore = decisions
+        notifications.decisionLookup = { id in await decisionStore.lookup(id) }
         var mediaBase = client.primaryURL
         #if DEBUG || SCREENSHOTS
         let selftest = Logger(subsystem: "tech.getsecretary.app", category: "GalleryImages")
@@ -185,8 +229,11 @@ final class AppModel {
             return mediaClient
         }
         media = PerfLog.measure("media") { MediaPlayer(api: { MediaAPI(client: mediaAPI()) }) }
-        gallery = PerfLog.measure("gallery") { GalleryStore(api: { GalleryAPI(client: mediaAPI()) }, scope: "gallery") }
+        gallery = PerfLog.measure("gallery") {
+            GalleryStore(api: { GalleryAPI(client: mediaAPI()) }, scope: "gallery", thisDevice: PhotoBackup.stableDeviceId())
+        }
         drive = PerfLog.measure("drive") { GalleryStore(api: { GalleryAPI(client: mediaAPI()) }, scope: "drive") }
+        driveNav = DriveNavigator()
         backup = PerfLog.measure("backup") { PhotoBackup(api: { GalleryAPI(client: mediaAPI()) }) }
         let memoClient = APIClient(baseURL: client.primaryURL, accessKey: client.accessKey)
         self.memoClient = memoClient
@@ -226,6 +273,9 @@ final class AppModel {
         pendingWidgetRoute = WidgetRouter.pending
         WidgetRouter.pending = nil
         if launch.openSettings { showSettings = true }
+        #if DEBUG || SCREENSHOTS
+        if let name = launch.approvalFixture { approvals.loadFixture(name) }
+        #endif
         if launch.openNotes {
             selectedTab = .plugins
             showNotes = true
@@ -233,6 +283,14 @@ final class AppModel {
         if launch.openTasks {
             selectedTab = .plugins
             showTasks = true
+        }
+        if launch.openAgents {
+            selectedTab = .plugins
+            showAgents = true
+        }
+        if launch.openServer {
+            selectedTab = .plugins
+            showServer = true
         }
         if launch.openMemos {
             selectedTab = .plugins
@@ -250,6 +308,10 @@ final class AppModel {
             selectedTab = .plugins
             showPokemon = true
         }
+        if launch.openCallers {
+            selectedTab = .plugins
+            showCallers = true
+        }
 
         let onError: (APIError) -> Void = { [weak self] error in self?.handle(error) }
         let onSuccess: () -> Void = { [weak self] in self?.lucinaNotice = nil }
@@ -257,8 +319,13 @@ final class AppModel {
         chat.onTransportSuccess = onSuccess
         // Attachments sent from the chat report their upload progress and outcome to its bubbles.
         ShareUploads.shared.observer = chat
-        // Leftover trays: a directory walk nobody waits for.
-        Task.detached(priority: .utility) { AttachmentStore.purgePending() }
+        // Leftover trays, voice notes that never left (the app was killed while recording or before
+        // sending) and old share copies: directory walks nobody waits for.
+        Task.detached(priority: .utility) {
+            AttachmentStore.purgePending()
+            VoiceNoteFiles.purge()
+            ChatShareResolver.purgeScratch()
+        }
         let device = device
         let wardrobe = wardrobe
         let notes = notes
@@ -276,6 +343,11 @@ final class AppModel {
         }
         weight.onLogged = { grams, date in Task { await device.health.exportWeight(grams: grams, at: date) } }
         gym.onFinished = { start, end in Task { await device.health.exportWorkout(start: start, end: end) } }
+        approvals.onTransportError = onError
+        approvals.onPendingChanged = { items in AppModel.publishApprovals(items) }
+        agents.onTransportError = onError
+        server.onTransportError = onError
+        callers.onTransportError = onError
         shopping.onTransportError = onError
         shopping.onTransportSuccess = onSuccess
         shoppingV2.onTransportError = onError
@@ -315,6 +387,9 @@ final class AppModel {
             let session = try await api.session()
             if session.authenticated {
                 deviceName = session.deviceName
+                deviceId = session.deviceId
+                chat.setDeviceId(session.deviceId)
+                await chat.refresh()
             } else {
                 signOut(reason: "Your sign-in expired. Please sign in again.")
             }
@@ -357,10 +432,13 @@ final class AppModel {
             }
             try keychain.save(token)
             self.deviceName = session.deviceName ?? deviceName
+            self.deviceId = session.deviceId
+            chat.setDeviceId(session.deviceId)
             signedOutReason = nil
             phase = .signedIn
             device.syncCredentials()
             await health.refresh()
+            await chat.refresh()
         } catch {
             client.accessKey = previous
             throw error
@@ -376,6 +454,7 @@ final class AppModel {
         try? keychain.delete()
         client.accessKey = nil
         deviceName = nil
+        deviceId = nil
         lucina.stopEverything()
         lucina.releaseStage()
         device.bridge.reset()
@@ -388,6 +467,13 @@ final class AppModel {
         gym.reset()
         weight.reset()
         notifications.reset()
+        approvals.reset()
+        agents.reset()
+        showAgents = false
+        server.reset()
+        showServer = false
+        callers.reset()
+        showCallers = false
         memos.reset()
         showMemos = false
         lucinaNotice = nil
@@ -409,7 +495,34 @@ final class AppModel {
         }
     }
 
+    /// The Drive plugin: its root, a folder (every level pushed, so back walks up) or a file's preview.
+    func openDrive(_ link: DriveLink = .root) {
+        selectedTab = .plugins
+        switch link {
+        case .root:
+            driveNav.stack = []
+        case let .folder(location):
+            driveNav.stack = DriveStack.chain(to: location)
+        case let .file(id):
+            driveNav.stack = []
+            openDriveFileID = id
+        }
+        showDrive = true
+    }
+
     /// `/memos/<id>` (the "memo ready" notification): the memo's detail screen.
+    /// A decision ("" or nil: the pending list).
+    func openDecision(_ id: String?) {
+        decisions.open(id?.isEmpty == true ? nil : id)
+    }
+
+    /// The Server plugin, at a tab or with an item, component or host open (pushes, widget, routes).
+    func openServer(_ link: ServerLink) {
+        selectedTab = .plugins
+        showServer = true
+        server.open(link)
+    }
+
     func openMemo(_ id: String?) {
         selectedTab = .plugins
         showMemos = true
@@ -535,14 +648,22 @@ struct LaunchOptions {
     var openNotes = false
     /// `-SecretaryInitialTab tasks`: start on the Tasks screen.
     var openTasks = false
+    /// `-SecretaryInitialTab agents`: start on the Agents screen.
+    var openAgents = false
     /// `-SecretaryInitialTab media`: start on the media library.
     var openMedia = false
     /// `-SecretaryInitialTab gallery`: start on the Gallery.
     var openGallery = false
     /// `-SecretaryInitialTab memos`: start on the voice memos.
     var openMemos = false
+    /// `-SecretaryInitialTab server`: start on the Server plugin.
+    var openServer = false
     /// `-SecretaryInitialTab pokemon`: start on Lucina's Pokémon game.
     var openPokemon = false
+    /// `-SecretaryInitialTab callers`: start on "Who called?".
+    var openCallers = false
+    /// `-SecretaryInitialTab approval | approval-plain | approval-done | approval-already`: the approval prompt with fixture data.
+    var approvalFixture: String?
 
     init(defaults: UserDefaults) {
         #if DEBUG || SCREENSHOTS
@@ -551,10 +672,14 @@ struct LaunchOptions {
         openSettings = defaults.string(forKey: "SecretaryInitialTab") == "settings"
         openNotes = defaults.string(forKey: "SecretaryInitialTab") == "notes"
         openTasks = defaults.string(forKey: "SecretaryInitialTab") == "tasks"
+        openAgents = defaults.string(forKey: "SecretaryInitialTab") == "agents"
         openMedia = ["media", "films"].contains(defaults.string(forKey: "SecretaryInitialTab") ?? "")
         openGallery = defaults.string(forKey: "SecretaryInitialTab") == "gallery"
         openMemos = defaults.string(forKey: "SecretaryInitialTab") == "memos"
+        openServer = defaults.string(forKey: "SecretaryInitialTab") == "server"
         openPokemon = defaults.string(forKey: "SecretaryInitialTab") == "pokemon"
+        openCallers = defaults.string(forKey: "SecretaryInitialTab") == "callers"
+        approvalFixture = defaults.string(forKey: "SecretaryInitialTab").flatMap { $0.hasPrefix("approval") ? $0 : nil }
         #endif
     }
 }

@@ -36,15 +36,24 @@ struct RootView: View {
 struct MainTabs: View {
     @Environment(AppModel.self) private var app
     @Environment(\.scenePhase) private var scenePhase
+    /// Active, or only inactive under an approval's passcode prompt (which must not restart the foreground work).
+    private var foreground: Bool { scenePhase == .active || (scenePhase == .inactive && app.approvals.working != nil) }
     /// The launch's foreground work waits this long after the first frame (cold start only).
     @State private var launchDelay: Duration? = .seconds(2)
 
     var body: some View {
         tabs
         .onChange(of: scenePhase, initial: true) { _, phase in
+            // The passcode prompt of an approval makes the app inactive for a moment: keep everything as it is,
+            // or Lucina's stage, the chat and the prompt behind it redraw while the owner types.
+            if phase == .inactive, app.approvals.working != nil { return }
             if phase != .active { app.lucina.stopEverything() } else { Task { await app.device.resume() } }
         }
         .onAppear { app.openPendingWidgetRoute() }
+        // A `notebooks` link (in Settings the same screen is pushed).
+        .sheet(isPresented: Binding(get: { app.showNotebooks }, set: { app.showNotebooks = $0 })) {
+            NavigationStack { NotebooksView() }
+        }
         // A place opened by a widget, a notification or a route (`/map/place?...`): the in-app map.
         .modifier(OpenPlaceHost())
         // A maps link (Apple Maps, Google Maps) tapped in the chat opens on Lucina's map too.
@@ -54,8 +63,13 @@ struct MainTabs: View {
             return .handled
         })
         #if DEBUG || SCREENSHOTS
-        .task { await WidgetSelfTest.runIfRequested(app) }
+        .task {
+            await WidgetSelfTest.runIfRequested(app)
+            WidgetGallery.exportIfRequested()
+        }
         #endif
+        // The owner's approval prompt, over every tab and every sheet (a window of its own).
+        .modifier(ApprovalHost(store: app.approvals, openSettings: { app.showSettings = true }))
         // Lucina in the room (AR), over everything.
         .modifier(LucinaARHost(controller: app.lucina))
         #if SCREENSHOTS
@@ -93,7 +107,13 @@ struct MainTabs: View {
 
     private var tabs: some View {
         @Bindable var app = app
-        return TabView(selection: $app.selectedTab) {
+        let selection = Binding(get: { app.selectedTab }, set: { tab in
+            if tab == .chat {
+                NotificationCenter.default.post(name: .chatScrollToLatest, object: nil)
+            }
+            app.selectedTab = tab
+        })
+        return TabView(selection: selection) {
             NavigationStack { ChatView().lucinaStatusToolbar() }
                 .onAppear { PerfLog.tabAppeared(.chat) }
                 .tabItem { Label("Chat", systemImage: "bubble.left.and.bubble.right") }
@@ -119,6 +139,10 @@ struct MainTabs: View {
         // sets the others' secondary colour at launch).
         .tint(LucinaTokens.TabBar.active)
         // Settings: a sheet from the gear button in every tab's toolbar.
+        // A decision Lucina asks about (her push, the bell's Decisions button, a `/decisions` route).
+        .sheet(isPresented: Binding(get: { app.decisions.presented }, set: { app.decisions.presented = $0 })) {
+            DecisionsSheet()
+        }
         .sheet(isPresented: $app.showSettings) {
             NavigationStack {
                 SettingsView()
@@ -135,6 +159,7 @@ struct MainTabs: View {
         }
         // The timeline stream runs only in the foreground; it pauses in the background.
         .onChange(of: scenePhase, initial: true) { _, phase in
+            if phase == .inactive, app.approvals.working != nil { return } // an approval's passcode prompt (above)
             app.chat.setForeground(phase == .active)
             app.isForeground = phase == .active
             if phase == .background {
@@ -144,8 +169,14 @@ struct MainTabs: View {
                 Task { await app.notifications.reschedule() }
             }
         }
-        .task(id: scenePhase) {
-            guard scenePhase == .active else { return }
+        // Pending approvals: a look now, then a long poll while the app is active (the server answers when the list
+        // changes; no launch delay: someone is waiting). Nothing in the background.
+        .task(id: foreground) {
+            guard foreground else { return }
+            await app.approvals.foregroundLoop()
+        }
+        .task(id: foreground) {
+            guard foreground else { return }
             // Cold start: the first chat frame and the chat's own refresh go first; uploads, the
             // inbox, the photo backup and the memo queue start a moment later. (The wardrobe loads
             // with the Lucina tab.)
@@ -162,6 +193,7 @@ struct MainTabs: View {
                     }
                 }
                 group.addTask { await app.health.poll() }
+                group.addTask { await app.callers.syncIfDue() }
                 group.addTask { await app.watchPrimary() }
                 group.addTask { await app.notifications.foregroundLoop() }
                 group.addTask { @MainActor in if app.backup.settings.enabled { await app.backup.requestAccessAndRun() } }

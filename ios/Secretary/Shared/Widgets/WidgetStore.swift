@@ -42,7 +42,7 @@ enum WidgetStore {
     static func removeAll() {
         for key in [AskSection.key, AppointmentSection.key, ShoppingSection.key, WeightSection.key, TrainingSection.key,
                     TasksSection.key, PokemonSection.key, FilmsSection.key, ShoppingEmojiSection.key,
-                    CountdownPinsSection.key, CountdownUpcomingSection.key] {
+                    CountdownPinsSection.key, CountdownUpcomingSection.key, ApprovalsSection.key, ServerSection.key] {
             if let url = fileURL(key) { try? FileManager.default.removeItem(at: url) }
             try? keychain(key)?.delete()
         }
@@ -63,6 +63,8 @@ enum WidgetStore {
         case .pokemon: markStale(PokemonSection.self)
         case .films: markStale(FilmsSection.self)
         case .countdown: markStale(CountdownUpcomingSection.self)
+        case .approvals: markStale(ApprovalsSection.self)
+        case .server: markStale(ServerSection.self)
         }
         reload([kind])
     }

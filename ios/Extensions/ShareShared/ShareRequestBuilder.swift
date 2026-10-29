@@ -50,9 +50,14 @@ struct ShareMeta: Codable, Equatable, Sendable {
         var takenAt: String?
         var lat: Double?
         var lon: Double?
+        /// A voice note recorded in Lucina's chat (Telegram style), not an audio file.
+        var voice: Bool?
+        /// Base64 of up to 64 bytes: the note's loudness in 64 buckets, 0-255.
+        var waveform: String?
 
         var hasFacts: Bool {
             transcript != nil || width != nil || height != nil || durationMs != nil || takenAt != nil || lat != nil || lon != nil
+                || voice != nil || waveform != nil
         }
     }
 
@@ -148,7 +153,8 @@ enum ShareRequestBuilder {
     static func build(payload: SharePayload, intent: String, note: String, source: String,
                       credentials: BridgeCredentials, directory: URL, shareId: String = UUID().uuidString,
                       boundary: String = "Lucina-" + UUID().uuidString, language: String = String((Locale.preferredLanguages.first ?? "en").prefix(2)),
-                      sessionId: String? = nil, meta: ShareMeta? = nil, origin: String? = nil) throws -> ShareRecord {
+                      sessionId: String? = nil, meta: ShareMeta? = nil, origin: String? = nil,
+                      replyTo: String? = nil) throws -> ShareRecord {
         let hasContent = !payload.files.isEmpty || !payload.texts.isEmpty || !payload.urls.isEmpty
         guard hasContent || meta?.location != nil else { throw ShareFailure.empty }
         var fields = [("shareId", shareId), ("intent", intent), ("note", String(note.prefix(4000))),
@@ -158,6 +164,8 @@ enum ShareRequestBuilder {
         // A location on its own still has one part, so servers without `meta` see it too.
         if !hasContent, let location = meta?.location { fields.append(("text", "geo:\(location.lat),\(location.lon)")) }
         if let sessionId, !sessionId.isEmpty { fields.append(("sessionId", sessionId)) }
+        // The message this share answers (Lucina's chat: swipe left, then send a file or a voice note).
+        if let replyTo, !replyTo.isEmpty { fields.append(("replyTo", replyTo)) }
         if let meta, !meta.isEmpty { fields.append(("meta", try meta.json())) }
         guard fields.count + payload.files.count <= 32 else { throw ShareFailure.tooManyParts }
         var estimated = Int64(fields.reduce(0) { $0 + $1.1.utf8.count })

@@ -9,6 +9,15 @@ protocol NotificationScheduling: AnyObject, Sendable {
     func authorizationStatus() async -> UNAuthorizationStatus
     func requestAuthorization() async throws -> Bool
     func setBadge(_ count: Int) async
+    /// Takes notifications off the lock screen and Notification Center (an approval answered elsewhere).
+    func removeDelivered(_ identifiers: [String]) async
+    /// The identifiers of delivered notifications (local or APNs) about these approval ids.
+    func deliveredApprovals(_ ids: Set<String>) async -> [String]
+}
+
+extension NotificationScheduling {
+    func removeDelivered(_ identifiers: [String]) async {}
+    func deliveredApprovals(_ ids: Set<String>) async -> [String] { [] }
 }
 
 final class SystemNotificationCenter: NotificationScheduling, @unchecked Sendable {
@@ -27,6 +36,19 @@ final class SystemNotificationCenter: NotificationScheduling, @unchecked Sendabl
     }
 
     func setBadge(_ count: Int) async { try? await center.setBadgeCount(count) }
+
+    func removeDelivered(_ identifiers: [String]) async {
+        center.removeDeliveredNotifications(withIdentifiers: identifiers)
+        center.removePendingNotificationRequests(withIdentifiers: identifiers)
+    }
+
+    /// The identifiers of delivered notifications (local or APNs) about these approval ids.
+    func deliveredApprovals(_ ids: Set<String>) async -> [String] {
+        await center.deliveredNotifications().compactMap { n in
+            guard let id = n.request.content.userInfo[ApprovalNotifier.idKey] as? String, ids.contains(id) else { return nil }
+            return n.request.identifier
+        }
+    }
 }
 
 /// Local notifications: immediate ones for what arrives while the app runs or
@@ -66,6 +88,13 @@ final class LocalNotifier {
 
     /// An inbox notification, now.
     func post(_ n: AppNotification, previews: Bool = true) async {
+        if let id = n.decisionId {
+            // Already on the lock screen from the server's push: the push's wake-up replaces it with the labelled one.
+            if await !DecisionNotifier.delivered(id: id).isEmpty { return }
+            // Its own category: long-press shows one button per option; a tap opens the decision.
+            await DecisionNotifier.post(id: id, title: n.displayTitle, body: n.body, options: n.decisionOptions, previews: previews)
+            return
+        }
         let body = previews ? n.body : String(localized: "Open Secretary to read it.")
         let request = UNNotificationRequest(identifier: "inbox.\(n.id)",
                                             content: content(title: n.displayTitle, body: body, category: n.category, route: n.route, id: n.id),

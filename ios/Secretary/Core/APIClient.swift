@@ -5,7 +5,8 @@ import os
 ///
 /// - Auth: `Authorization: Bearer <device key>` on every request when a key is set
 ///   (Bearer requests need no CSRF header).
-/// - Timeouts: 15 s by default, 125 s for chat (the server allows Lucina 120 s).
+/// - Timeouts: 15 s by default, 45 s for chat (`ChatSendQueue.timeout`: a longer answer still arrives on the
+///   timeline stream, and the bubble is replaced by the server's copy).
 /// - Endpoints: an ordered list of base URLs for the *same* server (public, then the
 ///   private Tailscale name). A request that fails at the network layer is retried once
 ///   on the next endpoint; HTTP answers (any status) never fall back. The endpoint that
@@ -13,7 +14,8 @@ import os
 /// - Errors: every failure becomes an `APIError`.
 final class APIClient: @unchecked Sendable {
     static let defaultTimeout: TimeInterval = 15
-    static let chatTimeout: TimeInterval = 125
+    /// Also `ChatSendQueue.timeout`. The number lives here because the widget extension compiles this file without the chat.
+    static let chatTimeout: TimeInterval = 45
     static let preferredEndpointKey = "secretary.server.lastWorkingEndpoint"
 
     struct Response: Sendable {
@@ -105,8 +107,9 @@ final class APIClient: @unchecked Sendable {
 
     // MARK: - Typed helpers
 
-    func get<T: Decodable>(_ path: String, query: [URLQueryItem] = [], timeout: TimeInterval = defaultTimeout) async throws -> T {
-        let response = try await send("GET", path, query: query, body: nil, timeout: timeout)
+    func get<T: Decodable>(_ path: String, query: [URLQueryItem] = [], timeout: TimeInterval = defaultTimeout,
+                           headers: [String: String] = [:]) async throws -> T {
+        let response = try await send("GET", path, query: query, body: nil, timeout: timeout, headers: headers)
         return try decode(T.self, from: response)
     }
 
@@ -213,7 +216,10 @@ final class APIClient: @unchecked Sendable {
         for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
         if let body {
             request.httpBody = body
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            // A caller that sends something other than JSON (a multipart upload) names its own type.
+            if request.value(forHTTPHeaderField: "Content-Type") == nil {
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            }
         }
         return request
     }
@@ -299,8 +305,11 @@ final class APIClient: @unchecked Sendable {
         struct Body: Decodable {
             let code: String?
             let message: String?
+            let attemptsLeft: Int?
         }
         let error: Body?
+        /// `pin_wrong` carries the tries left next to (or inside) the error.
+        let attemptsLeft: Int?
     }
 
     /// Engine-shaped failure: `{"ok": false, "code": "...", "error": "..."}`.
@@ -316,6 +325,7 @@ final class APIClient: @unchecked Sendable {
         if let envelope = try? decoder.decode(ErrorEnvelope.self, from: response.data), let body = envelope.error {
             if let c = body.code, !c.isEmpty { code = c }
             if let m = body.message { message = m }
+            if code == "pin_wrong", let left = body.attemptsLeft ?? envelope.attemptsLeft { message = "\(APIError.attemptsLeftPrefix)\(left)" }
         } else if let engine = try? decoder.decode(EngineErrorBody.self, from: response.data) {
             if let c = engine.code, !c.isEmpty { code = c }
             if let m = engine.error { message = m }

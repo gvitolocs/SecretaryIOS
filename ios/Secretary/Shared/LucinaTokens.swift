@@ -76,6 +76,10 @@ enum LucinaTokens {
         static let info = Color(lucinaDark: 0x64D2FFFF, light: 0x32ADE6FF)
         #endif
         static let scrim = Color(lucinaDark: 0x00000099, light: 0x00000033)
+        static let glass = Color(lucinaDark: 0x14162899, light: 0xFFFFFF99)
+        static let glassBorder = Color(lucinaDark: 0xFFFFFF1A, light: 0x3C3C4317)
+        static let glassHighlight = Color(lucinaDark: 0xFFFFFF14, light: 0xFFFFFFCC)
+        static let glassFallback = Color(lucinaDark: 0x16182AFF, light: 0xF7F7FAFF)
     }
 
     /// Dynamic Type styles at the token weights.
@@ -114,6 +118,7 @@ enum LucinaTokens {
         static let field: CGFloat = 12
         static let button: CGFloat = 14
         static let sheet: CGFloat = 24
+        static let glass: CGFloat = 28
         static let pill: CGFloat = 999
     }
 

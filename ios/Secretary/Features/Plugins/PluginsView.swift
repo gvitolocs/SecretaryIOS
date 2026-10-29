@@ -19,7 +19,7 @@ struct Plugin: Identifiable {
                    detail: app.backup.backedUp > 0 ? String(localized: "\(app.backup.backedUp) backed up") : nil,
                    isActive: app.backup.remaining > 0) { app.showGallery = true },
             Plugin(id: "drive", icon: "externaldrive", title: "Drive",
-                   detail: String(localized: "Archive, files and audio")) { app.showDrive = true },
+                   detail: String(localized: "Archive, files and audio")) { app.openDrive() },
             Plugin(id: "memos", icon: app.memos.recorder.isActive ? "waveform.circle.fill" : "waveform",
                    title: "Voice memos",
                    detail: app.memos.recorder.isActive ? String(localized: "Recording") : nil,
@@ -28,14 +28,37 @@ struct Plugin: Identifiable {
                    detail: app.media.current.map(\.title) ?? String(localized: "Film and Dansk film")) { app.showMedia = true },
             Plugin(id: "pokemon", icon: "gamecontroller", title: "Pokémon",
                    detail: String(localized: "Lucina's game")) { app.showPokemon = true },
+            Plugin(id: "allChats", icon: "bubble.left.and.bubble.right", title: "All chats",
+                   detail: String(localized: "Conversations across devices and channels")) { app.showAllChats = true },
+            Plugin(id: "computer", icon: "desktopcomputer", title: "Lucina's computer",
+                   detail: String(localized: "Watch her desktop live, take over")) { app.showComputer = true },
+            Plugin(id: "callers", icon: "person.fill.questionmark", title: "Who called?",
+                   detail: app.callers.extensionStatus == .disabled ? String(localized: "Turn on caller labels")
+                       : String(localized: "Screen unknown numbers with Jev"),
+                   isActive: app.callers.extensionStatus == .disabled) { app.showCallers = true },
+            Plugin(id: "qrSignIn", icon: "qrcode.viewfinder", title: "Scan QR code",
+                   detail: String(localized: "Sign in another device")) { app.showQrSignIn = true },
             Plugin(id: "notes", icon: "doc.text", title: "Notes") { app.showNotes = true },
             Plugin(id: "tasks", icon: "checkmark.circle", title: "Tasks") { app.showTasks = true },
+            Plugin(id: "agents", icon: "terminal", title: "Agents",
+                   detail: agentsDetail(app)) { app.showAgents = true },
+            Plugin(id: "server", icon: "server.rack", title: "Server",
+                   detail: ServerText.pluginDetail(app.server.overview),
+                   isActive: app.server.overview?.overall == .crit) { app.showServer = true },
             Plugin(id: "countdown", icon: "hourglass", title: "Countdown",
                    detail: Countdown.visible(Countdown.pinned, fresher: [], now: Date()).first
                        .map { "\(Countdown.label($0, now: Date())) · \($0.title)" }) { app.showCountdowns = true },
             Plugin(id: "wardrobe", icon: "tshirt", title: "Wardrobe",
                    detail: String(localized: "Lucina's outfits")) { app.wardrobe.presented = true },
         ]
+    }
+
+    /// "2 need you" / "1 running" once the list has been loaded.
+    @MainActor private static func agentsDetail(_ app: AppModel) -> String? {
+        let needs = app.agents.items.filter { $0.bucket == .needsInput }.count
+        if needs > 0 { return String(localized: "\(needs) need you") }
+        let running = app.agents.items.filter { $0.bucket == .running }.count
+        return running > 0 ? String(localized: "\(running) running") : String(localized: "Coding agents on nezopt")
     }
 }
 
@@ -55,14 +78,22 @@ struct PluginsView: View {
             .padding(.bottom, LucinaTokens.Space.xxl)
         }
         .lucinaScreen("Plugins")
+        // The Server card's status line ("All systems normal"): one look when the tab first shows.
+        .task { if app.server.overview == nil, !AppModel.isUnitTestHost { await app.server.load() } }
         .navigationDestination(isPresented: $app.showGallery) { GalleryScreen() }
-        .navigationDestination(isPresented: $app.showDrive) { DriveScreen().environment(app.drive) }
+        .navigationDestination(isPresented: $app.showDrive) { DriveScreen().environment(app.drive).environment(app.driveNav) }
         .navigationDestination(isPresented: $app.showMemos) { MemosView().environment(app.memos) }
         .navigationDestination(isPresented: $app.showMedia) { FilmsView() }
         .navigationDestination(isPresented: $app.showNotes) { NotesView() }
         .navigationDestination(isPresented: $app.showTasks) { TasksView() }
+        .navigationDestination(isPresented: $app.showAgents) { AgentsView() }
+        .navigationDestination(isPresented: $app.showServer) { ServerView() }
         .navigationDestination(isPresented: $app.showCountdowns) { CountdownsView() }
         .navigationDestination(isPresented: $app.showPokemon) { PokemonView() }
+        .navigationDestination(isPresented: $app.showAllChats) { AllChatsView() }
+        .navigationDestination(isPresented: $app.showComputer) { LucinaComputerView() }
+        .navigationDestination(isPresented: $app.showCallers) { CallersView() }
+        .sheet(isPresented: $app.showQrSignIn) { QrSignInSheet() }
     }
 }
 

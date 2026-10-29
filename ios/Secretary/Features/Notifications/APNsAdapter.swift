@@ -3,20 +3,11 @@ import Foundation
 import UIKit
 import UserNotifications
 
-/// Remote push (APNs): **ready, and off.**
-///
-/// The app is signed with a free Personal Team, which cannot use the
-/// `aps-environment` entitlement, so `registerForRemoteNotifications()` would
-/// fail and nothing can wake the app from the server. With a paid Apple
-/// Developer Program team (docs/notifications.md, "APNs with a paid account"):
-/// 1. add `aps-environment: development` to `Secretary.entitlements`
-///    (`production` for TestFlight/App Store) and the Push Notifications
-///    capability for the App ID;
-/// 2. set `SecretaryAPNsEnabled` to `true` in `project.yml` (Info.plist);
-/// 3. create an APNs auth key (.p8) for that team and set `SECRETARY_APNS_*`
-///    on the server.
-/// The app then sends its device token to `POST /v1/push/apns`, and the server
-/// pushes every notification there too.
+/// Remote push (APNs): **on** (paid team 2N4DA9L8VH, `aps-environment: development` in
+/// `Secretary.entitlements`, `SecretaryAPNsEnabled` in `project.yml`). The app sends its device token to
+/// `POST /v1/push/apns`; the server pushes there once it has an APNs auth key (`SECRETARY_APNS_*`,
+/// docs/notifications.md). Approval pushes carry `approvalId`, so their Approve / Deny buttons work from the
+/// lock screen, and `content-available`, so the app refreshes its approvals and the widget.
 enum APNsAdapter {
     static var isEnabled: Bool {
         Bundle.main.object(forInfoDictionaryKey: "SecretaryAPNsEnabled") as? Bool == true
@@ -50,6 +41,7 @@ enum BackgroundRefresh {
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+        ApprovalNotifier.registerCategories()
         Task { @MainActor in APNsAdapter.registerIfEnabled() }
         // Photo backup: longer passes when iOS grants processing time (Wi-Fi, often charging).
         BGTaskScheduler.shared.register(forTaskWithIdentifier: PhotoBackup.processingIdentifier, using: nil) { task in
@@ -90,16 +82,67 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     }
 
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
-        // Expected without a paid team; local notifications keep working.
+        // Local notifications keep working.
+    }
+
+    /// An approval push woke the app (`content-available`): refresh the approvals and the widget. The push's own
+    /// banner is already showing, so the request is not posted again.
+    func application(_ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any]) async -> UIBackgroundFetchResult {
+        // A decision push: swap in the notification with the options' own buttons.
+        if let decisionId = userInfo[DecisionNotifier.idKey] as? String {
+            let options = userInfo[DecisionNotifier.optionsKey] as? [String] ?? []
+            let alert = (userInfo["aps"] as? [String: Any])?["alert"] as? [String: Any]
+            let title = alert?["title"] as? String ?? String(localized: "Lucina needs your decision")
+            // The push's text is the question plus the numbered options; the labelled buttons make the list redundant.
+            let body = (alert?["body"] as? String ?? "").components(separatedBy: "\n1. ").first ?? ""
+            guard !options.isEmpty else { return .noData }
+            await DecisionNotifier.replacePush(id: decisionId, title: title, body: body, options: options, previews: true)
+            return .newData
+        }
+        guard let approvalId = userInfo[ApprovalNotifier.idKey] as? String else { return .noData }
+        return await Task { @MainActor in
+            let app = AppModel.shared
+            guard app.phase == .signedIn else { return UIBackgroundFetchResult.noData }
+            app.approvals.markNotified(approvalId)
+            await app.approvals.poll()
+            return .newData
+        }.value
     }
 
     /// Show banners while the app is open (the store only posts what the owner isn't looking at).
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
-        [.banner, .list, .sound]
+        // An approval is already on screen as the prompt while the app is open: no banner on top of it.
+        if notification.request.content.userInfo[ApprovalNotifier.idKey] != nil { return [.list] }
+        return [.banner, .list, .sound]
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
         let info = response.notification.request.content.userInfo
+        // An approval: Approve / Deny from the notification, or its tap opens the prompt.
+        if let approvalId = info[ApprovalNotifier.idKey] as? String {
+            // Local notifications say `approvalSensitive`, older server pushes only `sensitive`; unknown = sensitive.
+            let sensitive = info[ApprovalNotifier.sensitiveKey] as? Bool ?? info["sensitive"] as? Bool ?? true
+            let action = response.actionIdentifier
+            await AppModel.shared.approvals.handleNotification(actionIdentifier: action, approvalId: approvalId, sensitive: sensitive)
+            return
+        }
+        // A decision: an option or the owner's words from the notification, or its tap opens it.
+        if let decisionId = info[DecisionNotifier.idKey] as? String {
+            let options = info[DecisionNotifier.optionsKey] as? [String] ?? []
+            let text = (response as? UNTextInputNotificationResponse)?.userText
+            guard let r = DecisionNotifier.response(actionIdentifier: response.actionIdentifier, userText: text) else { return }
+            await Task { @MainActor in
+                let app = AppModel.shared
+                switch r {
+                case .open: app.openDecision(decisionId)
+                case .option(let i) where options.indices.contains(i):
+                    await app.decisions.answer(id: decisionId, index: i, option: options[i])
+                case .option: app.openDecision(decisionId)
+                case .words(let w): await app.decisions.answer(id: decisionId, words: w)
+                }
+            }.value
+            return
+        }
         let route = info[LocalNotifier.routeKey] as? String
         let id = info[LocalNotifier.idKey] as? String
         await MainActor.run {
@@ -112,6 +155,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
                 if let route, NotificationRoute.isSafe(route), Place.fromRoute(route) != nil { app.open(route: route) }
                 if let route, NotificationRoute.opensDealsMap(route) { app.showDealsMap = true }
                 if let route, let memo = NotificationRoute.memo(route) { app.openMemo(memo.isEmpty ? nil : memo) }
+                if let route, let decision = NotificationRoute.decision(route) { app.openDecision(decision) }
+                if let route, let server = NotificationRoute.server(route) { app.openServer(server) }
             }
         }
     }
@@ -124,6 +169,7 @@ extension BackgroundRefresh {
         let app = AppModel.shared
         guard app.client.accessKey?.isEmpty == false else { return }
         await app.notifications.backgroundRefresh()
+        await app.approvals.poll()
         app.memos.queue.kick()
     }
 }

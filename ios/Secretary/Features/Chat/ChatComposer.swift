@@ -133,9 +133,14 @@ struct ChatComposer: View {
     @State private var showFiles = false
     @State private var showCamera = false
     @State private var pickerItems: [PhotosPickerItem] = []
+    @State private var voice = VoiceNoteController()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
+            if let reply = store.replyingTo {
+                ComposerReplyBar(item: reply) { store.cancelReply() }
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
             if !model.attachments.isEmpty {
                 AttachmentTray(attachments: $model.attachments)
             }
@@ -146,26 +151,44 @@ struct ChatComposer: View {
                     Text("Preparing attachments…").font(.caption).foregroundStyle(Theme.textSecondary)
                 }
             }
-            if let error = model.error {
+            if let error = model.error ?? voice.error {
                 Text(error).font(.caption).foregroundStyle(Theme.negative)
             }
             HStack(alignment: .bottom, spacing: 8) {
-                attachMenu
-                ComposerTextView(text: $model.draft, focused: $focused, placeholder: String(localized: "Message Lucina"),
-                                 onSubmit: send, onPaste: { model.add(providers: $0) })
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(Theme.card, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-                Button(action: send) {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 34))
-                        .symbolRenderingMode(.hierarchical)
+                ZStack {
+                    // The field stays in place (and keeps the keyboard) under the recording bar.
+                    HStack(alignment: .bottom, spacing: 8) {
+                        attachMenu
+                        ComposerTextView(text: $model.draft, focused: $focused, placeholder: String(localized: "Message Lucina"),
+                                         onSubmit: send, onPaste: { model.add(providers: $0) })
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .background(Theme.card, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                    }
+                    .opacity(voice.isRecording ? 0 : 1)
+                    .allowsHitTesting(!voice.isRecording)
+                    .accessibilityHidden(voice.isRecording)
+                    if voice.isRecording {
+                        VoiceRecordingBar(voice: voice, recorder: store.noteRecorder)
+                            .transition(.opacity)
+                    }
                 }
-                .disabled(!canSend)
-                .accessibilityLabel("Send")
-                .accessibilityIdentifier("chatSend")
+                if showsMic {
+                    VoiceMicButton(voice: voice)
+                } else {
+                    Button(action: send) {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.system(size: 34))
+                            .symbolRenderingMode(.hierarchical)
+                    }
+                    .disabled(!canSend)
+                    .accessibilityLabel("Send")
+                    .accessibilityIdentifier("chatSend")
+                }
             }
+            .animation(.easeOut(duration: 0.15), value: voice.isRecording)
         }
+        .animation(.easeOut(duration: 0.2), value: store.replyingTo?.id)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(.bar)
@@ -178,6 +201,7 @@ struct ChatComposer: View {
                     .offset(y: -14)
             }
         }
+        .onAppear { voice.attach(store) }
         .onChange(of: store.prefill) { _, request in
             // A button asked for text in the composer: the owner finishes and sends it.
             guard let request else { return }
@@ -246,30 +270,43 @@ struct ChatComposer: View {
         .background(Theme.card, in: Capsule())
     }
 
+    /// An empty field and an empty tray: the send button is the mic (and stays it while a note records).
+    private var showsMic: Bool {
+        voice.isRecording || (ChatStore.clean(model.draft).isEmpty && !model.hasAttachments && model.loading == 0 && !model.locating)
+    }
+
     private var canSend: Bool {
         let cleaned = ChatStore.clean(model.draft)
         guard cleaned.count <= ChatStore.maxCharacters, model.loading == 0, !model.sending, !model.locating else { return false }
         if model.hasAttachments { return true }
-        return !cleaned.isEmpty && !store.isSending
+        // Never blocked by a message still on its way: this one queues behind it.
+        return !cleaned.isEmpty
     }
 
+    /// Sends the draft (and the tray), as a reply when the quote bar is up: `replyTo` rides with it and the
+    /// bar closes; it comes back if nothing was sent.
     private func send() {
         guard canSend else { return }
         let text = model.draft
+        let reply = store.takeReply()
         if !model.hasAttachments {
             model.draft = ""
             focused = true
             Task {
-                if !(await store.send(text)) { model.draft = text }
+                if !(await store.send(text, replyTo: reply?.id)) {
+                    model.draft = text
+                    if let reply { store.beginReply(reply) }
+                }
             }
             return
         }
         model.draft = ""
         Task {
             let taken = await model.takeAll()
-            if !store.sendShare(caption: text, attachments: taken.attachments, location: taken.location) {
+            if !store.sendShare(caption: text, attachments: taken.attachments, location: taken.location, replyTo: reply?.id) {
                 model.restore(taken.attachments, location: taken.location)
                 if model.draft.isEmpty { model.draft = text }
+                if let reply { store.beginReply(reply) }
                 model.error = String(localized: "Couldn't send this. Try again.")
             }
         }

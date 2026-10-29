@@ -64,6 +64,8 @@ targets:
         NSLocationAlwaysAndWhenInUseUsageDescription: "To notice when you arrive at or leave a place, even when Secretary is closed."
         NSCalendarsFullAccessUsageDescription: "Lucina sees your upcoming events and adds or removes them when you ask."
         NSRemindersFullAccessUsageDescription: "Lucina adds, completes and reads your reminders when you ask."
+        # Face ID unlocks the key that signs sensitive approvals (Features/Approvals); English only.
+        NSFaceIDUsageDescription: "Secretary asks for Face ID before it approves a sensitive request for you, like revealing a secret or running a command as root."
         NSAlarmKitUsageDescription: "Lucina sets alarms and timers for you when you ask."
         NSSupportsLiveActivities: true
         SecretaryKeychainGroup: "$(AppIdentifierPrefix)tech.getsecretary.shared"
@@ -73,7 +75,7 @@ targets:
         NSSpeechRecognitionUsageDescription: "Your words are turned into text so Lucina can answer them."
         # Face tracking (Lucina mirrors your face), AR (Lucina in your room) and the chat's camera; localized in
         # Secretary/Resources/InfoPlist.xcstrings.
-        NSCameraUsageDescription: "Lucina mirrors your face or appears in your room when you turn it on, and you can take photos and videos to send her in the chat. Nothing leaves this iPhone unless you send it."
+        NSCameraUsageDescription: "Lucina mirrors your face or appears in your room when you turn it on, you can take photos and videos to send her in the chat, and you can scan a QR code to sign in another device. Nothing leaves this iPhone unless you send it."
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
         # secretary://open/<route>: the widgets' and controls' links into the app (Shared/Widgets/WidgetRoutes.swift).
@@ -82,13 +84,14 @@ targets:
             CFBundleURLSchemes: [secretary]
         # Notifications (docs/notifications.md): background refresh syncs the inbox and the
         # local schedules; `audio` keeps the media player (and Picture in Picture) playing and voice
-        # memos recording with the screen locked. APNs stays off on the free Personal Team; with a paid
-        # team set SecretaryAPNsEnabled to true and add aps-environment to Secretary.entitlements.
+        # memos recording with the screen locked. APNs is on (paid team; aps-environment in
+        # Secretary.entitlements); `remote-notification` lets an approval push refresh the approvals and the widget.
         # `processing`: the photo backup pass (Features/Gallery/PhotoBackup.swift).
-        UIBackgroundModes: [fetch, audio, processing]
+        UIBackgroundModes: [fetch, audio, processing, remote-notification]
         BGTaskSchedulerPermittedIdentifiers: [tech.getsecretary.app.refresh, tech.getsecretary.app.photobackup]
-        SecretaryAPNsEnabled: false
+        SecretaryAPNsEnabled: true
     dependencies:
+      - sdk: libsqlite3.tbd
       # Built by scripts/build-ios-core.sh (gitignored): the Rust gym/body engines.
       - framework: Frameworks/SecretaryCore.xcframework
         embed: false
@@ -98,6 +101,7 @@ targets:
       - target: SecretaryScreenTimeReport
       - target: SecretaryScreenTimeMonitor
       - target: SecretaryWidgets
+      - target: SecretaryCallerDirectory
       - sdk: Security.framework
       - package: GoogleMaps
         product: GoogleMaps
@@ -256,6 +260,8 @@ targets:
       - path: Secretary/Shared/LucinaTokens.swift
       # Home Screen / Lock Screen widgets: sections, store, fetcher, routes, and the API client they use.
       - path: Secretary/Shared/Widgets
+      # Item illustrations, so the shopping widget draws the same art as the app.
+      - path: Secretary/Resources/ItemIcons.xcassets
       - path: Secretary/Core/APIClient.swift
       - path: Secretary/Core/APIError.swift
       - path: Secretary/Core/JSONValue.swift
@@ -286,6 +292,36 @@ targets:
         CURRENT_PROJECT_VERSION: "1"
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_EMIT_LOC_STRINGS: YES
+  # Labels on the incoming-call screen for numbers Lucina has screened (Settings > Phone > Call Blocking & Identification).
+  # The app saves the list (Secretary/Shared/Callers) and calls CXCallDirectoryManager.reloadExtension.
+  SecretaryCallerDirectory:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Extensions/CallerDirectory
+        excludes: ["Info.plist", "*.entitlements"]
+      - path: Secretary/Shared/Callers
+      - path: Secretary/Core/Keychain.swift
+    dependencies:
+      - sdk: CallKit.framework
+    info:
+      path: Extensions/CallerDirectory/Info.plist
+      properties:
+        CFBundleDisplayName: Secretary Caller Labels
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        SecretaryKeychainGroup: "$(AppIdentifierPrefix)tech.getsecretary.shared"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.callkit.call-directory
+          NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).CallDirectoryHandler"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: tech.getsecretary.app.calldirectory
+        PRODUCT_NAME: SecretaryCallerDirectory
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        CODE_SIGN_ENTITLEMENTS: Extensions/CallerDirectory/CallerDirectory.entitlements
+        APPLICATION_EXTENSION_API_ONLY: YES
   SecretaryTests:
     type: bundle.unit-test
     platform: iOS

@@ -60,6 +60,18 @@ enum Countdown {
         label(days: days(until: event.start, from: now, calendar: calendar))
     }
 
+    /// The big figure and the small label above it, as in the owner's reference countdown
+    /// (2026-10-26): "15" with "days"; "Today" or "Tomorrow" with the time (none all day).
+    static func parts(_ event: CountdownEvent, now: Date, calendar: Calendar = .current) -> (value: String, unit: String?) {
+        let left = days(until: event.start, from: now, calendar: calendar)
+        let time = event.allDay ? nil : event.start.formatted(date: .omitted, time: .shortened)
+        switch left {
+        case ...0: return (String(localized: "Today"), time)
+        case 1: return (String(localized: "Tomorrow"), time)
+        default: return (String(left), String(localized: "days"))
+        }
+    }
+
     /// The event's date under the countdown: "Tue 10 Nov 2026", with the time when it has one.
     static func dateText(_ event: CountdownEvent) -> String {
         let day = event.start.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated).year())

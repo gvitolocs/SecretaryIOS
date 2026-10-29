@@ -85,4 +85,26 @@ final class RichMessageTests: XCTestCase {
         XCTAssertEqual(RichMessage.typingDelay(""), .milliseconds(350))
         XCTAssertEqual(RichMessage.typingDelay(String(repeating: "x", count: 1000)), .milliseconds(900))
     }
+
+    /// Lucina's "Naviga" buttons: long `/map/place?navigate=1&…` routes to the in-app navigation
+    /// (they were dropped by the 121-character app-path rule until 2026-10-28).
+    func testNavigaMapRoutesSurvive() throws {
+        let path = "/map/place?navigate=1&lat=56.172282&lng=10.192006&title=Security%20and%20Privacy&when=2026-11-02T07%3A00%3A00.000Z&address=5789-003B%20Seminarrum&end=2026-11-02T11%3A00%3A00.000Z&eventId=iphone%3A317472A7-C62C-48AE-A2C5-B500C692EFFC%3A2020%21261176-15%40mytimetable.au.dk%401793602800000"
+        let raw = try json("""
+        {"format":"v1","bubbles":["Lunedì hai Security and Privacy 📅"],
+         "actions":[
+          {"id":"nav-1","label":"Naviga","emoji":"🧭","kind":"route","payload":{"path":"\(path)"}},
+          {"id":"nomap","label":"x","kind":"route","payload":{"path":"/map/place?"}},
+          {"id":"js","label":"x","kind":"route","payload":{"path":"/map/place?title=a<script>"}},
+          {"id":"other","label":"x","kind":"route","payload":{"path":"/notes?x=1"}}
+         ]}
+        """)
+        let message = try XCTUnwrap(RichMessage.parse(raw))
+        XCTAssertEqual(message.actions.map(\.id), ["nav-1"])
+        let action = try XCTUnwrap(message.actions.first)
+        XCTAssertEqual(action.path, path)
+        XCTAssertTrue(PlaceLinks.navigates(path))
+        XCTAssertEqual(Place.fromRoute(path)?.title, "Security and Privacy")
+        XCTAssertFalse(RichMessage.isMapRoute("/map/place?title=" + String(repeating: "x", count: 600)))
+    }
 }

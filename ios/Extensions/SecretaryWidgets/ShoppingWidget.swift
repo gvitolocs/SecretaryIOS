@@ -1,5 +1,6 @@
 import AppIntents
 import SwiftUI
+import UIKit
 import WidgetKit
 
 /// The shopping list: tick items off right on the widget, and the deals nearby for list items.
@@ -139,10 +140,16 @@ struct ShoppingWidgetView: View {
         Button(intent: CheckShoppingItemIntent(listId: entry.section?.listId ?? "default", itemId: item.id)) {
             HStack(spacing: compact ? LucinaTokens.Space.xs : LucinaTokens.Space.sm) {
                 Image(systemName: "circle").font(compact ? .caption2 : .footnote).foregroundStyle(LucinaTokens.Colors.accent).widgetAccentable()
-                Text(verbatim: item.emoji)
-                    .font(.system(size: compact ? LucinaTokens.FontSize.footnote : LucinaTokens.FontSize.callout))
-                    .frame(width: compact ? 18 : 22)
-                    .accessibilityHidden(true)
+                Group {
+                    if let art = item.art, UIImage(named: art) != nil {
+                        Image(art).resizable().scaledToFit()
+                    } else {
+                        Text(verbatim: item.emoji)
+                            .font(.system(size: compact ? LucinaTokens.FontSize.footnote : LucinaTokens.FontSize.callout))
+                    }
+                }
+                .frame(width: compact ? 18 : 22, height: compact ? 18 : 22)
+                .accessibilityHidden(true)
                 Text(item.name).font(compact ? LucinaTokens.Fonts.footnote : LucinaTokens.Fonts.callout)
                     .foregroundStyle(LucinaTokens.Colors.text).lineLimit(1)
                 if !item.spec.isEmpty {

@@ -92,6 +92,29 @@ final class MemoRecorder: NSObject, AVAudioRecorderDelegate {
 
     var isActive: Bool { state != .idle }
 
+    /// Where `start()` writes `<clientId>.aac`.
+    let directory: URL
+    /// Whether a recording shows on the Lock Screen / Dynamic Island (memos do, chat voice notes don't).
+    let liveActivity: Bool
+
+    /// Memos record into Application Support/Memos with a Live Activity; Lucina's chat keeps its own
+    /// recorder for voice notes elsewhere (never in Memos/, where the memo queue would adopt them).
+    init(directory: URL = MemoFiles.directory, liveActivity: Bool = true) {
+        self.directory = directory
+        self.liveActivity = liveActivity
+        super.init()
+    }
+
+    /// Every level of the current (or last) recording, about 20 per second: the voice note's waveform.
+    @ObservationIgnored private(set) var levelHistory: [Float] = []
+
+    /// The recorder that holds the microphone. Only one may record at a time: the memos and the chat
+    /// voice notes each have one, and the second refuses to start while the first is going.
+    private static weak var micHolder: MemoRecorder?
+
+    /// Some recorder (memo or chat voice note) has the microphone now.
+    static var isAnyActive: Bool { micHolder?.isActive == true }
+
     /// The file being recorded (diagnostics).
     var currentFileName: String? { current?.url.lastPathComponent }
     /// The recording in progress (orphan recovery leaves its file alone).
@@ -145,10 +168,13 @@ final class MemoRecorder: NSObject, AVAudioRecorderDelegate {
     func start() async {
         guard state == .idle else { return }
         error = nil
+        guard micIsFree() else { return }
         guard await AVAudioApplication.requestRecordPermission() else {
             error = String(localized: "Secretary can't use the microphone. Allow it in Settings › Privacy › Microphone.")
             return
         }
+        // The other recorder may have started while the permission prompt was up.
+        guard state == .idle, micIsFree() else { return }
         let session = AVAudioSession.sharedInstance()
         let setup: (channels: Int, route: String)
         do {
@@ -161,7 +187,8 @@ final class MemoRecorder: NSObject, AVAudioRecorderDelegate {
         // memo's Live Activity shows. The film player registers them again when it plays.
         NowPlayingSession.deactivate()
         let clientId = UUID().uuidString.lowercased()
-        let url = MemoFiles.audio(clientId, ext: "aac")
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("\(clientId).aac")
         MemoLog.write("record: \(setup.route)")
         do {
             let r = try AVAudioRecorder(url: url, settings: Self.settings(channels: setup.channels))
@@ -185,12 +212,22 @@ final class MemoRecorder: NSObject, AVAudioRecorderDelegate {
             if self?.current?.clientId == clientId { self?.location = fix }
         }
         levels = []
+        levelHistory = []
         elapsed = 0
         interrupted = false
         state = .recording
-        startActivity()
+        Self.micHolder = self
+        if liveActivity { startActivity() }
         observe()
         meterTask = Task { [weak self] in await self?.meter() }
+    }
+
+    /// False (with a short message in `error`) while the other recorder has the microphone.
+    private func micIsFree() -> Bool {
+        guard let other = Self.micHolder, other !== self, other.isActive else { return true }
+        error = other.liveActivity ? String(localized: "A voice memo is recording. Stop it first.")
+            : String(localized: "A voice note for Lucina is recording. Finish it first.")
+        return false
     }
 
     func pause() {
@@ -247,6 +284,7 @@ final class MemoRecorder: NSObject, AVAudioRecorderDelegate {
         current = nil
         state = .idle
         interrupted = false
+        if Self.micHolder === self { Self.micHolder = nil }
         try? AVAudioSession.sharedInstance().setPrefersNoInterruptionsFromSystemAlerts(false)
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
@@ -259,6 +297,7 @@ final class MemoRecorder: NSObject, AVAudioRecorderDelegate {
                 // -50 dB (room noise) ... 0 dB, a little curve so speech fills the bar.
                 let level = Float(pow(Double(max(0, min(1, (db + 50) / 50))), 1.6))
                 levels.append(level)
+                levelHistory.append(level)
                 if levels.count > Self.maxLevels { levels.removeFirst(levels.count - Self.maxLevels) }
                 elapsed = recorder.currentTime
             }

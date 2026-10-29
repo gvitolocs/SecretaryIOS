@@ -77,7 +77,7 @@ final class PlaceTests: XCTestCase {
         XCTAssertEqual(google.title, "Dokk1")
         XCTAssertEqual(google.lng, 10.2143)
 
-        XCTAssertNil(Place.fromMapsURL(XCTUnwrap(URL(string: "https://maps.app.goo.gl/abc")), name: nil), "no coordinates in a short link")
-        XCTAssertNil(Place.fromMapsURL(XCTUnwrap(URL(string: "https://example.com/@56.1,10.2")), name: nil))
+        XCTAssertNil(try Place.fromMapsURL(XCTUnwrap(URL(string: "https://maps.app.goo.gl/abc")), name: nil), "no coordinates in a short link")
+        XCTAssertNil(try Place.fromMapsURL(XCTUnwrap(URL(string: "https://example.com/@56.1,10.2")), name: nil))
     }
 }

@@ -29,6 +29,28 @@ struct WidgetFetcher: Sendable {
         return ["it", "en", "da"].contains(code) ? code : "en"
     }
 
+    // MARK: Approvals
+
+    func approvals() async throws -> ApprovalsSection {
+        let page: JSONValue = try await client.get("/v1/approvals", query: [URLQueryItem(name: "status", value: "pending")], timeout: 10)
+        let items = (page["approvals"]?.arrayValue ?? []).compactMap(Self.approval)
+        return ApprovalsSection(fetchedAt: Date(), items: items)
+    }
+
+    static func approval(_ v: JSONValue) -> ApprovalsSection.Item? {
+        guard let id = v["id"]?.nonEmptyString, let hash = v["payloadHash"]?.nonEmptyString else { return nil }
+        let who = v["requester"]
+        return ApprovalsSection.Item(id: id, requester: who?["name"]?.nonEmptyString ?? who?["kind"]?.nonEmptyString ?? "",
+                                     summary: v["summary"]?.stringValue ?? "", details: v["details"]?.stringValue ?? "",
+                                     sensitive: v["sensitive"]?.boolValue ?? true, payloadHash: hash, expiresAt: date(v["expiresAt"]))
+    }
+
+    /// Deny needs no Face ID (the contract): the widget's button sends it from the extension.
+    func denyApproval(_ id: String, payloadHash: String) async throws {
+        struct Body: Encodable { let decision = "deny"; let payloadHash: String }
+        let _: JSONValue = try await client.send("POST", "/v1/approvals/\(Self.segment(id))/decide", body: Body(payloadHash: payloadHash))
+    }
+
     // MARK: Ask Lucina
 
     func ask() async throws -> AskSection {
@@ -128,8 +150,10 @@ struct WidgetFetcher: Sendable {
             guard let name = names?[language]?.nonEmptyString ?? row["name"]?.nonEmptyString else { return nil }
             let icon = emoji.emoji(icon: row["icon"]?.nonEmptyString, catalogId: row["catalogId"]?.nonEmptyString,
                                    name: name, section: row["section"]?.nonEmptyString)
+            let art = emoji.art(icon: row["icon"]?.nonEmptyString, catalogId: row["catalogId"]?.nonEmptyString,
+                                section: row["section"]?.nonEmptyString, picked: row["iconPicked"]?.boolValue == true)
             return (row["position"]?.numberValue ?? Double(index),
-                    ShoppingSection.Item(id: id, name: name, spec: row["spec"]?.stringValue ?? "", icon: icon))
+                    ShoppingSection.Item(id: id, name: name, spec: row["spec"]?.stringValue ?? "", icon: icon, art: art))
         }
         return rows.sorted { $0.0 < $1.0 }.map(\.1)
     }
@@ -348,6 +372,26 @@ struct WidgetFetcher: Sendable {
         #else
         return nil
         #endif
+    }
+
+    // MARK: Server
+
+    /// The homelab's status, as the Server plugin shows it (`GET /v1/system/overview`, the server's 30 s cache).
+    func server() async throws -> ServerSection {
+        let json: JSONValue = try await client.get("/v1/system/overview", timeout: 20)
+        return Self.serverSection(json)
+    }
+
+    static func serverSection(_ json: JSONValue, fetchedAt: Date = Date()) -> ServerSection {
+        let attention = (json["attention"]?.arrayValue ?? []).filter { $0["key"]?.nonEmptyString != nil }
+        let count = number(json["attention_count"]).flatMap { Int(exactly: $0) } ?? attention.count
+        let overall = json["overall"]?.nonEmptyString ?? "unknown"
+        // No item, but a host is down or hot: the hosts are what need attention.
+        let hosts = (json["hosts"]?.arrayValue ?? []).filter { ["warn", "crit"].contains($0["state"]?.stringValue ?? "") }.count
+        let needs = max(count, attention.count) > 0 ? max(count, attention.count) : (overall == "ok" ? 0 : hosts)
+        let titles = attention.prefix(3).compactMap { $0["title"]?.nonEmptyString ?? $0["component_id"]?.nonEmptyString ?? $0["key"]?.nonEmptyString }
+        return ServerSection(fetchedAt: fetchedAt, overall: overall, attentionCount: needs, titles: titles,
+                             generatedAt: date(json["generated_at"]))
     }
 
     // MARK: Helpers

@@ -7,8 +7,10 @@ import Foundation
 struct SessionInfo: Decodable, Equatable, Sendable {
     let authenticated: Bool
     let deviceName: String?
+    let deviceId: String?
 
-    init(authenticated: Bool, deviceName: String?) {
+    init(authenticated: Bool, deviceName: String?, deviceId: String? = nil) {
+        self.deviceId = deviceId
         self.authenticated = authenticated
         self.deviceName = deviceName
     }
@@ -16,10 +18,11 @@ struct SessionInfo: Decodable, Equatable, Sendable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         authenticated = (try? c.decode(Bool.self, forKey: .authenticated)) ?? false
+        deviceId = try? c.decodeIfPresent(String.self, forKey: .deviceId)
         deviceName = try? c.decodeIfPresent(String.self, forKey: .deviceName)
     }
 
-    private enum CodingKeys: String, CodingKey { case authenticated, deviceName }
+    private enum CodingKeys: String, CodingKey { case authenticated, deviceName, deviceId }
 }
 
 struct HealthInfo: Decodable, Equatable, Sendable {
@@ -65,6 +68,8 @@ struct ChatRequest: Encodable, Equatable, Sendable {
     let message: String
     let sessionId: String
     let clientMessageId: String
+    /// The timeline id of the message this one replies to (left out when nil).
+    var replyTo: String? = nil
 }
 
 struct JobRef: Codable, Equatable, Sendable {
@@ -200,17 +205,30 @@ struct SecretaryAPI: Sendable {
     /// `POST /v1/tts`: MP3 bytes of Lucina's voice for `text` (1-1200 characters).
     func tts(_ text: String, lang: String? = nil) async throws -> Data {
         struct Body: Encodable { let text: String; let lang: String? }
-        let body = try APIClient.encoder.encode(Body(text: String(text.prefix(1200)), lang: lang))
+        // The server's voices are Italian and English only (it answers 400 "lang: it or en" otherwise);
+        // for other languages it picks the voice from the text itself.
+        let voiceLang = lang.map { String($0.prefix(2)).lowercased() }.flatMap { ["it", "en"].contains($0) ? $0 : nil }
+        let body = try APIClient.encoder.encode(Body(text: String(text.prefix(1200)), lang: voiceLang))
         let response = try await client.send("POST", "/v1/tts", body: body, timeout: 60, idempotent: true,
                                              headers: ["Accept": "audio/mpeg"])
         return response.data
     }
 
     /// `GET /v1/timeline?before=&limit=`: newest first.
-    func timeline(before: String? = nil, limit: Int = 50) async throws -> TimelinePage {
+    func timeline(before: String? = nil, limit: Int = 50, after: String? = nil, scope: String? = nil, conversation: String? = nil) async throws -> TimelinePage {
         var query = [URLQueryItem(name: "limit", value: String(limit))]
         if let before { query.append(URLQueryItem(name: "before", value: before)) }
-        return try await client.get("/v1/timeline", query: query)
+        if let after { query.append(URLQueryItem(name: "after", value: after)) }
+        if let scope { query.append(URLQueryItem(name: "scope", value: scope)) }
+        if let conversation { query.append(URLQueryItem(name: "conversation", value: conversation)) }
+        // `scope=mine` is this iPhone's part of the timeline: the server reads the client channel from this header
+        // (without it, it assumes web and returns the web's older messages instead of the iPhone's).
+        return try await client.get("/v1/timeline", query: query, headers: ["X-Secretary-Client": "ios"])
+    }
+
+    func conversations() async throws -> [ChatConversation] {
+        let page: ConversationPage = try await client.get("/v1/timeline/conversations")
+        return page.items
     }
 
     /// `POST /v1/proactive/outreach/{id}/feedback`: "Utile" / "Non ora" / "Basta così" on a
