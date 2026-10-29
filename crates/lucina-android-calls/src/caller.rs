@@ -5,8 +5,8 @@
 //! | Flow | What happens |
 //! |---|---|
 //! | [`local`] | No network. The shared core's fallback rules ([`lucina_phone_core::caller::rules`]) give the first, instant verdict. |
-//! | [`screen`] | `POST /v1/callers/screen` with `call: {source: "android"}` and the courier state, about [`SCREEN_TIMEOUT`] in total. Any error, bad answer or a different number falls back to [`local`] with `source: "rules"`. |
-//! | [`Store`] | The settings, the last courier state from Lucina Maps and the last screened call, as small files in the app's files directory (mode 0600, written atomically). |
+//! | [`screen`] | `POST /v1/callers/screen` with `call: {source: "android"}`, about [`SCREEN_TIMEOUT`] in total. Any error, bad answer or a different number falls back to [`local`] with `source: "rules"`. |
+//! | [`Store`] | The settings, the last screened call and the remembered verdicts, as small files in the app's files directory (mode 0600, written atomically). |
 //!
 //! Settings: the label (heads-up notification) is on by default; "silence
 //! likely scams" and "reject likely scams" are off by default and act only on
@@ -26,7 +26,7 @@ use std::{
     time::Duration,
 };
 
-use lucina_phone_core::caller::{self, Context, Courier, Known, Number, Verdict};
+use lucina_phone_core::caller::{self, Context, Known, Number, Verdict};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -36,13 +36,9 @@ use crate::{net::Backend, Result};
 pub const SCREEN_TIMEOUT: Duration = Duration::from_millis(1200);
 /// The server path.
 pub const SCREEN_PATH: &str = "/v1/callers/screen";
-/// An order link from Lucina Maps counts as active for this long.
-pub const ORDER_ACTIVE_MS: u64 = 45 * 60_000;
-/// A courier state older than this is ignored (Lucina Maps stopped telling).
-pub const COURIER_STALE_MS: u64 = 16 * 3_600_000;
 /// The default spam probability from which silence/reject may act.
 pub const DEFAULT_THRESHOLD: f64 = 0.90;
-/// Largest settings, courier or last-call file read.
+/// Largest settings or last-call file read.
 const MAX_FILE_BYTES: u64 = 16 * 1024;
 /// Largest cache file read.
 const MAX_CACHE_BYTES: u64 = 256 * 1024;
@@ -122,34 +118,6 @@ impl Settings {
             }
         }
         Ok(())
-    }
-}
-
-/// The last broadcast from Lucina Maps.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CourierState {
-    pub on_shift: bool,
-    /// The last Wolt link (ms since the epoch), 0 = none.
-    pub order_at_ms: u64,
-    /// When this phone received it.
-    pub received_at_ms: u64,
-}
-
-impl CourierState {
-    /// The courier context for a call at `now`, or `None` when the state is stale.
-    pub fn at(&self, now: u64) -> Option<Courier> {
-        if now.saturating_sub(self.received_at_ms) > COURIER_STALE_MS {
-            return None;
-        }
-        let active = self.order_at_ms > 0
-            && self.order_at_ms <= now.saturating_add(60_000)
-            && now.saturating_sub(self.order_at_ms) <= ORDER_ACTIVE_MS;
-        Some(Courier {
-            on_shift: self.on_shift,
-            order_active: active,
-            order_age_min: active.then(|| (now.saturating_sub(self.order_at_ms) / 60_000) as u32),
-        })
     }
 }
 
@@ -235,36 +203,6 @@ impl Store {
         Ok(s)
     }
 
-    /// The last courier state, if Lucina Maps ever sent one.
-    pub fn courier(&self) -> Option<CourierState> {
-        self.read("caller-courier.json")
-    }
-
-    /// Keep what Lucina Maps broadcast: `{"onShift": bool, "orderAtMs": ms}`.
-    pub fn set_courier(&self, v: &Value, now: u64) -> Result<CourierState> {
-        let on_shift = match &v["onShift"] {
-            Value::Bool(b) => *b,
-            Value::Null => false,
-            _ => return Err("Invalid courier state.".into()),
-        };
-        let order_at_ms = match &v["orderAtMs"] {
-            Value::Null => 0,
-            n => n.as_u64().ok_or("Invalid courier state.")?,
-        };
-        // A link from the future would stay "active" for ever.
-        if order_at_ms > now.saturating_add(10 * 60_000) {
-            return Err("Invalid courier state.".into());
-        }
-        let state = CourierState {
-            on_shift,
-            order_at_ms,
-            received_at_ms: now,
-        };
-        let _lock = LOCK.lock().map_err(|_| "Screening busy.")?;
-        self.write("caller-courier.json", &state)?;
-        Ok(state)
-    }
-
     /// The last screened call.
     pub fn last(&self) -> Option<Last> {
         self.read("caller-last.json")
@@ -319,20 +257,12 @@ impl Store {
             .map(|e| e.shown)
     }
 
-    /// Settings, courier state and last call, with the lines the app shows.
+    /// Settings and the last call, with the line the app shows.
     pub fn state(&self, now: u64) -> Value {
         let settings = self.settings();
-        let courier = self.courier();
         let last = self.last();
         json!({
             "settings": settings,
-            "courier": courier.map(|c| json!({
-                "onShift": c.on_shift,
-                "orderAtMs": c.order_at_ms,
-                "receivedAtMs": c.received_at_ms,
-                "fresh": c.at(now).is_some(),
-            })),
-            "courierLine": courier_line(courier, now),
             "last": last,
             "lastLine": last_line(last.as_ref(), now),
         })
@@ -359,30 +289,6 @@ fn ago(ms: u64, now: u64) -> String {
         60..=2879 => format!("{} h ago", min / 60),
         _ => format!("{} days ago", min / 1440),
     }
-}
-
-fn courier_line(c: Option<CourierState>, now: u64) -> String {
-    let Some(c) = c else {
-        return "Nothing received from Lucina Maps yet.".into();
-    };
-    let shift = if c.on_shift { "On shift" } else { "Off shift" };
-    let order = match c.at(now) {
-        None => {
-            return format!(
-                "{shift}, but the report is old ({}).",
-                ago(c.received_at_ms, now)
-            )
-        }
-        Some(courier) => match courier.order_age_min {
-            Some(0) => "order link just now".to_owned(),
-            Some(m) => format!("order link {m} min ago"),
-            None => "no recent order link".to_owned(),
-        },
-    };
-    format!(
-        "{shift}, {order} (reported {}).",
-        ago(c.received_at_ms, now)
-    )
 }
 
 fn last_line(last: Option<&Last>, now: u64) -> String {
@@ -528,7 +434,7 @@ pub struct Screen {
     pub kind: String,
 }
 
-/// What the app tells about a caller besides the courier state.
+/// What the app tells about a caller.
 #[derive(Debug, Clone, Default)]
 pub struct Input {
     /// The contact's name, when the number is in his contacts.
@@ -547,14 +453,13 @@ impl Input {
     }
 }
 
-fn context(store: &Store, input: &Input, now: u64) -> Context {
+/// Only facts about the number: the phone knows a contact's name, nothing else.
+fn context(input: &Input) -> Context {
     Context {
-        courier: store.courier().and_then(|c| c.at(now)),
         known: Known {
             contact: input.contact.clone(),
             ..Known::default()
         },
-        local_time: None,
         ringing: true,
     }
 }
@@ -565,10 +470,10 @@ fn local_shown(n: &Number, ctx: &Context, lang: &str) -> Shown {
 }
 
 /// The instant verdict, without the network.
-pub fn local(store: &Store, number: &str, input: &Input, lang: &str, now: u64) -> Screen {
+pub fn local(store: &Store, number: &str, input: &Input, lang: &str, _now: u64) -> Screen {
     let lang = caller::lang(lang);
     let n = caller::parse(number);
-    let ctx = context(store, input, now);
+    let ctx = context(input);
     let shown = local_shown(&n, &ctx, lang);
     present(&n, &shown, &store.settings(), input, lang)
 }
@@ -585,7 +490,7 @@ pub fn screen(
 ) -> Screen {
     let lang = caller::lang(lang);
     let n = caller::parse(number);
-    let ctx = context(store, input, now);
+    let ctx = context(input);
     let fallback = local_shown(&n, &ctx, lang);
     let settings = store.settings();
     // Nothing leaves the phone for a hidden number or one of his contacts.
@@ -593,7 +498,7 @@ pub fn screen(
         return present(&n, &fallback, &settings, input, lang);
     }
     let shown = backend
-        .post(SCREEN_PATH, &request(&n, &ctx, lang, now))
+        .post(SCREEN_PATH, &request(&n, lang, now))
         .ok()
         .and_then(|v| Shown::from_response(&v, &n))
         .unwrap_or(fallback);
@@ -647,15 +552,10 @@ pub fn cached(store: &Store, number: &str, lang: &str, now: u64) -> Option<Scree
 }
 
 /// The request body of `POST /v1/callers/screen`.
-fn request(n: &Number, ctx: &Context, lang: &str, now: u64) -> Value {
-    let mut context = json!({});
-    if let Some(c) = ctx.courier {
-        context["courier"] = serde_json::to_value(c).unwrap_or(Value::Null);
-    }
+fn request(n: &Number, lang: &str, now: u64) -> Value {
     json!({
         "numbers": [n.e164],
         "lang": lang,
-        "context": context,
         "call": {"source": "android", "at": rfc3339(now)},
     })
 }
@@ -872,66 +772,19 @@ mod tests {
     fn a_corrupt_file_means_the_defaults() {
         let dir = app_dir("corrupt");
         fs::write(format!("{dir}/caller-settings.json"), b"{not json").unwrap();
-        fs::write(format!("{dir}/caller-courier.json"), vec![b' '; 20_000]).unwrap();
+        fs::write(format!("{dir}/caller-last.json"), vec![b' '; 20_000]).unwrap();
         let s = Store::open(&dir).unwrap();
         assert_eq!(s.settings(), Settings::default());
-        assert_eq!(s.courier(), None);
-    }
-
-    #[test]
-    fn courier_state_windows() {
-        let s = store("courier");
-        assert_eq!(s.courier(), None);
-        let order = NOW - 7 * 60_000;
-        s.set_courier(&json!({"onShift": true, "orderAtMs": order}), NOW)
-            .unwrap();
-        let c = s.courier().unwrap().at(NOW).unwrap();
-        assert_eq!(
-            c,
-            Courier {
-                on_shift: true,
-                order_active: true,
-                order_age_min: Some(7)
-            }
-        );
-        // 46 minutes later the order is no longer active.
-        let later = s.courier().unwrap().at(NOW + 39 * 60_000).unwrap();
-        assert!(later.on_shift && !later.order_active && later.order_age_min.is_none());
-        // Stopped recording, no link yet.
-        s.set_courier(&json!({"onShift": false, "orderAtMs": 0}), NOW)
-            .unwrap();
-        let c = s.courier().unwrap().at(NOW).unwrap();
-        assert!(!c.on_shift && !c.order_active);
-        // Old reports are ignored.
-        assert_eq!(s.courier().unwrap().at(NOW + COURIER_STALE_MS + 1), None);
-        // Missing fields are false/0; wrong types and future links are refused.
-        assert!(s.set_courier(&json!({}), NOW).is_ok());
-        assert!(s.set_courier(&json!({"onShift": "yes"}), NOW).is_err());
-        assert!(s.set_courier(&json!({"orderAtMs": -5}), NOW).is_err());
-        assert!(s
-            .set_courier(&json!({"orderAtMs": NOW + 3_600_000}), NOW)
-            .is_err());
+        assert_eq!(s.last(), None);
     }
 
     #[test]
     fn state_lines() {
         let s = store("state");
         let st = s.state(NOW);
-        assert_eq!(st["courierLine"], "Nothing received from Lucina Maps yet.");
         assert_eq!(st["lastLine"], "No call screened yet.");
         assert_eq!(st["settings"]["label"], true);
         assert_eq!(st["settings"]["silence"], false);
-        s.set_courier(
-            &json!({"onShift": true, "orderAtMs": NOW - 120_000}),
-            NOW - 60_000,
-        )
-        .unwrap();
-        let st = s.state(NOW);
-        assert_eq!(
-            st["courierLine"],
-            "On shift, order link 2 min ago (reported 1 min ago)."
-        );
-        assert_eq!(st["courier"]["fresh"], true);
     }
 
     #[test]
@@ -941,22 +794,18 @@ mod tests {
         assert!(out.notify);
         assert_eq!(out.action, "allow");
         assert_eq!(out.source, "rules");
-        assert!(
-            out.title.starts_with("Likely telemarketing"),
-            "{}",
-            out.title
-        );
+        // From the number alone (a Danish 70 company line) the phone claims nothing.
+        assert_eq!(out.title, "Unknown caller");
         assert_eq!(out.sub, "+45 70 40 52 05");
-        assert!(out
-            .text
-            .starts_with("Telemarketing · probably not worth picking up · quick guess"));
+        assert!(
+            out.text
+                .starts_with("Business · unsure whether to pick up · quick guess"),
+            "{}",
+            out.text
+        );
         assert!(out.text.contains("Danish 70-number"));
         let da = local(&s, "70405205", &Input::default(), "da-DK", NOW);
-        assert!(
-            da.title.starts_with("Sandsynligvis telemarketing"),
-            "{}",
-            da.title
-        );
+        assert_eq!(da.title, "Ukendt opkald");
         assert!(da.text.contains("hurtigt gæt"));
         let it = local(&s, "+39 333 1234567", &Input::default(), "it", NOW);
         assert!(it.text.contains("stima rapida"), "{}", it.text);
@@ -965,26 +814,36 @@ mod tests {
     }
 
     #[test]
-    fn the_courier_state_changes_the_rules_verdict() {
-        let s = store("ctx");
-        let plain = local(&s, "+4522334455", &Input::default(), "en", NOW);
-        assert!(!plain.title.contains("Wolt"));
-        s.set_courier(&json!({"onShift": true, "orderAtMs": NOW - 60_000}), NOW)
-            .unwrap();
-        let on = local(&s, "+4522334455", &Input::default(), "en", NOW);
-        assert_eq!(on.title, "Likely Wolt customer");
-        assert!(on.text.contains("order in progress"), "{}", on.text);
-        assert!(on.pick_up > 0.5);
+    fn no_label_assumes_who_is_calling() {
+        // Labels come from facts about the number only: never a shift, a delivery or a customer.
+        let s = store("neutral");
+        for number in [
+            "+4522334455",
+            "70405205",
+            "+35799123456",
+            "+447459508537",
+            "+393331234567",
+            "+4586123456",
+            "80123456",
+            "+4590123456",
+        ] {
+            for lang in ["en", "it", "da"] {
+                let out = local(&s, number, &Input::default(), lang, NOW);
+                let all = format!("{} {} {}", out.title, out.text, out.kind).to_lowercase();
+                for word in [
+                    "wolt", "deliver", "levering", "consegna", "customer", "kunde", "cliente",
+                    "courier", "shift", "vagt", "turno", "order", "ordre", "ordine",
+                ] {
+                    assert!(!all.contains(word), "{number} {lang}: {all}");
+                }
+                assert_ne!(out.kind, "delivery");
+            }
+        }
     }
 
     #[test]
     fn the_server_verdict_replaces_the_local_one() {
         let s = store("screen");
-        s.set_courier(
-            &json!({"onShift": true, "orderAtMs": NOW - 7 * 60_000}),
-            NOW,
-        )
-        .unwrap();
         let fake = Fake::ok(server_answer(0.93, "jev"));
         let out = screen(&s, &fake, "70405205", &Input::default(), "en", NOW);
         assert_eq!(out.title, "Likely scam (0.93)");
@@ -1002,7 +861,6 @@ mod tests {
             json!({
                 "numbers": ["+4570405205"],
                 "lang": "en",
-                "context": {"courier": {"onShift": true, "orderActive": true, "orderAgeMin": 7}},
                 "call": {"source": "android", "at": "2026-10-29T12:00:00Z"},
             })
         );
@@ -1019,13 +877,19 @@ mod tests {
     }
 
     #[test]
-    fn without_courier_state_the_request_has_no_courier() {
-        let s = store("nocourier");
+    fn the_request_carries_the_number_the_language_and_the_call_only() {
+        let s = store("request");
         let fake = Fake::ok(server_answer(0.5, "jev"));
         screen(&s, &fake, "+4570405205", &Input::default(), "da", NOW);
         let body = fake.sent.borrow()[0].1.clone();
-        assert_eq!(body["context"], json!({}));
-        assert_eq!(body["lang"], "da");
+        assert_eq!(
+            body,
+            json!({
+                "numbers": ["+4570405205"],
+                "lang": "da",
+                "call": {"source": "android", "at": "2026-10-29T12:00:00Z"},
+            })
+        );
     }
 
     #[test]
@@ -1053,7 +917,7 @@ mod tests {
             let out = screen(&s, fake, "70405205", &Input::default(), "en", NOW);
             assert_eq!(out.source, "rules");
             assert_eq!(out.action, "allow");
-            assert!(out.title.starts_with("Likely telemarketing"));
+            assert_eq!(out.title, "Unknown caller");
             assert_eq!(fake.sent.borrow().len(), 1);
         }
         assert_eq!(s.last().unwrap().source, "rules");

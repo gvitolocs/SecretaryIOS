@@ -10,9 +10,8 @@
 //! | `shareUpload(filesDir: String, cookie: String, manifestPath: String): String` | Unwrapped [`crate::share::upload`] job result. |
 //! | `ui(op: String, json: String): String` | Envelope around [`crate::ui::run`]. |
 //! | `dialer(filesDir: String, op: String, json: String): String` | Envelope around [`crate::dialer::run`]: `label`, `callLog`, `missed`, `voicemail`. |
-//! | `callerState(filesDir: String): String` | Envelope: `{settings, courier, courierLine, last, lastLine}` ([`crate::caller::Store::state`]). |
+//! | `callerState(filesDir: String): String` | Envelope: `{settings, last, lastLine}` ([`crate::caller::Store::state`]). |
 //! | `callerSettings(filesDir: String, json: String): String` | Envelope: patch `{label?, silence?, reject?}`, then the new state. |
-//! | `setCourier(filesDir: String, json: String): String` | Envelope: keep Lucina Maps' `{onShift, orderAtMs}`, then the new state. |
 //! | `localVerdict(filesDir: String, number: String, json: String, lang: String): String` | Envelope around [`crate::caller::Screen`], no network. `json` is `{contact?}`. |
 //! | `screenCall(filesDir: String, cookie: String, number: String, json: String, lang: String): String` | The same, from the server (about 1.2 s at most), else the rules. Blocks on the network. |
 //!
@@ -200,7 +199,7 @@ pub extern "system" fn Java_tech_getsecretary_secretary_Native_dialer<'l>(
     })
 }
 
-/// `Native.callerState`: settings, courier state and the last screened call.
+/// `Native.callerState`: settings and the last screened call.
 #[no_mangle]
 pub extern "system" fn Java_tech_getsecretary_secretary_Native_callerState<'l>(
     mut env: JNIEnv<'l>,
@@ -226,23 +225,6 @@ pub extern "system" fn Java_tech_getsecretary_secretary_Native_callerSettings<'l
         let v = json_arg(env, &data)?;
         store.patch_settings(&v)?;
         Ok(store.state(crate::now_ms()))
-    })
-}
-
-/// `Native.setCourier`: keep what Lucina Maps broadcast.
-#[no_mangle]
-pub extern "system" fn Java_tech_getsecretary_secretary_Native_setCourier<'l>(
-    mut env: JNIEnv<'l>,
-    _class: JClass<'l>,
-    files_dir: JString<'l>,
-    data: JString<'l>,
-) -> jstring {
-    guarded(&mut env, |env| {
-        let store = caller::Store::open(&string(env, &files_dir, "Storage unavailable.")?)?;
-        let v = json_arg(env, &data)?;
-        let now = crate::now_ms();
-        store.set_courier(&v, now)?;
-        Ok(store.state(now))
     })
 }
 

@@ -548,7 +548,7 @@ mod tests {
         // A contact shows by name, the number stays available; a calm label is not a warning.
         let mut c = call(state::ACTIVE, "+4522334455");
         c.name = Some("Mamma".into());
-        c.jev = Some("Likely Wolt customer".into());
+        c.jev = Some("Unknown caller".into());
         c.jev_spam = 0.1;
         let v = call_view(&[c]);
         assert_eq!(v.calls[0].peer, "Mamma");

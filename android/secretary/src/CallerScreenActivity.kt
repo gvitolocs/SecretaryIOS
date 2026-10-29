@@ -12,7 +12,7 @@ import android.widget.Switch
 import org.json.JSONObject
 import tech.getsecretary.design.ValueRow
 
-/** "Caller screening": the call-screening role, the owner's switches, Lucina Maps' courier state and the last call. */
+/** "Caller screening": the call-screening role, the owner's switches and the last screened call. */
 class CallerScreenActivity : Ui() {
     private lateinit var role: ValueRow
     private lateinit var enable: View
@@ -21,7 +21,6 @@ class CallerScreenActivity : Ui() {
     private lateinit var reject: Switch
     private lateinit var notifications: LinearLayout
     private lateinit var contacts: LinearLayout
-    private lateinit var courier: ValueRow
     private lateinit var last: ValueRow
 
     override fun onCreate(b: Bundle?) {
@@ -55,9 +54,8 @@ class CallerScreenActivity : Ui() {
         body.addView(ui.footnote("Contacts are only looked up on this phone, to leave your own contacts out. Their names are not sent anywhere."))
 
         body.addView(ui.sectionHeader("Lately"))
-        courier = ui.valueRow("Courier (Lucina Maps)")
         last = ui.valueRow("Last screened call")
-        body.addView(ui.group(courier.view, last.view))
+        body.addView(ui.group(last.view))
         refresh()
     }
 
@@ -110,7 +108,6 @@ class CallerScreenActivity : Ui() {
         notifications.visibility = if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) View.VISIBLE else View.GONE
         contacts.visibility = if (checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED) View.GONE else View.VISIBLE
-        courier.set(state.optString("courierLine"))
         last.set(state.optString("lastLine"))
     }
 

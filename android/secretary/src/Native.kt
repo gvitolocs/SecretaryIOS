@@ -34,14 +34,11 @@ object Native {
     /** The phone app's own screens (`label`, `callLog`, `missed`, `voicemail`), an envelope. Cheap; never the emergency path. */
     @JvmStatic external fun dialer(filesDir: String, op: String, json: String): String
 
-    /** Caller screening state, an envelope: `{settings, courier, courierLine, last, lastLine}`. Cheap. */
+    /** Caller screening state, an envelope: `{settings, last, lastLine}`. Cheap. */
     @JvmStatic external fun callerState(filesDir: String): String
 
     /** Changes the owner's switches `{label?, silence?, reject?}`; returns the state. Cheap. */
     @JvmStatic external fun callerSettings(filesDir: String, json: String): String
-
-    /** Keeps Lucina Maps' courier state `{onShift, orderAtMs}`; returns the state. Cheap. */
-    @JvmStatic external fun setCourier(filesDir: String, json: String): String
 
     /** The instant, offline verdict for a ringing number: an envelope around `{notify, action, title, text, sub, ...}`. */
     @JvmStatic external fun localVerdict(filesDir: String, number: String, json: String, lang: String): String

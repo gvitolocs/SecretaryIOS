@@ -10,8 +10,7 @@
 //! - [`journal`]: the private on-device call history and transcripts.
 //! - [`net`]: Lucina voice turns and recording transcription over HTTPS.
 //! - [`caller`]: screening incoming callers (instant rules verdict, Jev's
-//!   verdict from the server, the owner's silence/reject switches, the
-//!   courier state from Lucina Maps).
+//!   verdict from the server, the owner's silence/reject switches).
 //! - [`dialer`]: the phone app's call log, missed-call and voicemail
 //!   notifications and the remembered Jev label of a number.
 //! - [`share`]: validated manifests and streaming multipart share uploads.

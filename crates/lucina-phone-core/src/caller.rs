@@ -4,9 +4,10 @@
 //! [`SPAM_QUESTION`] / [`KIND_QUESTION`] / [`PICK_UP_QUESTION`], the phones
 //! use [`rules`] when Lucina is out of reach, and both build a [`Verdict`].
 //!
-//! Jev has no phone-number reputation database: it judges from the number's
-//! country and type and from what Lucina knows (contact, earlier calls,
-//! mentions in her messages, the owner's Wolt shift). Replies say so.
+//! Jev judges from facts about the number only: its country and line type,
+//! his contacts, his own calls with it, his messages about it and public
+//! caller-ID reports (180.dk), which Lucina looks up first. Never guesses
+//! about who might call him (owner's rule, 2026-10-29).
 //!
 //! Nothing here answers, rejects or silences a call.
 
@@ -347,7 +348,9 @@ pub fn find_numbers(text: &str) -> Vec<Number> {
 
 // ---------------------------------------------------------------- context
 
-/// The owner's Wolt shift, as Lucina Maps reports it on the courier phone.
+/// Kept for the phones' request format (the Android app still sends it): never
+/// put into the state, the rules or the labels. Who might call him is not a
+/// fact about the number (owner's rule, 2026-10-29).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Courier {
@@ -359,7 +362,96 @@ pub struct Courier {
     pub order_age_min: Option<u32>,
 }
 
-/// What Lucina knows about one number.
+/// One category share of the public reports ("Telemarketing (25%)").
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportShare {
+    /// English name: caution, annoying, robocall, telemarketing, market research,
+    /// poll, safe, delivery, other.
+    pub category: String,
+    pub percent: f64,
+}
+
+/// What a public caller-ID site says about the number, as read from its page.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicReport {
+    /// "180.dk".
+    pub source: String,
+    /// The page read, quoted with every answer that uses it.
+    pub url: String,
+    /// How often people looked the number up.
+    #[serde(default)]
+    pub searches: u32,
+    /// Reports from users.
+    #[serde(default)]
+    pub reports: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub categories: Vec<ReportShare>,
+    /// The latest user comment: date, title and text as written (clipped).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_comment: Option<String>,
+    /// The operator the site names, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator: Option<String>,
+}
+
+impl PublicReport {
+    /// Categories with a share, largest first.
+    pub fn top_categories(&self, n: usize) -> Vec<&ReportShare> {
+        let mut v: Vec<&ReportShare> = self.categories.iter().filter(|c| c.percent > 0.0).collect();
+        v.sort_by(|a, b| b.percent.total_cmp(&a.percent));
+        v.truncate(n);
+        v
+    }
+
+    /// One line for Jev and the reply: what the page says, nothing inferred.
+    pub fn summary(&self) -> String {
+        let mut s = if self.reports == 0 {
+            format!(
+                "{}: no user reports (looked up {} times)",
+                self.source, self.searches
+            )
+        } else {
+            format!(
+                "{}: {} user report{} (looked up {} times)",
+                self.source,
+                self.reports,
+                if self.reports == 1 { "" } else { "s" },
+                self.searches
+            )
+        };
+        let top = self.top_categories(4);
+        if self.reports > 0 && !top.is_empty() {
+            s.push_str("; categories: ");
+            s.push_str(
+                &top.iter()
+                    .map(|c| format!("{} {}%", c.category, fmt_percent(c.percent)))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+        }
+        if let Some(op) = &self.operator {
+            s.push_str(&format!("; operator {op}"));
+        }
+        if self.reports > 0 {
+            if let Some(c) = &self.latest_comment {
+                s.push_str(&format!("; latest comment: \"{c}\""));
+            }
+        }
+        s
+    }
+}
+
+fn fmt_percent(p: f64) -> String {
+    if (p - p.round()).abs() < 0.05 {
+        format!("{:.0}", p)
+    } else {
+        format!("{:.1}", p)
+    }
+}
+
+/// What Lucina knows about one number: facts about the number only.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Known {
@@ -369,15 +461,15 @@ pub struct Known {
     pub previous_calls: u32,
     /// The last of them (RFC 3339).
     pub last_call: Option<String>,
-    /// Whether he was on a Wolt shift during the earlier calls (any of them).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub called_during_shift: bool,
     /// The number's mentions in his messages to Lucina (short snippets).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mentions: Vec<String>,
     /// A label the owner gave the number himself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_label: Option<String>,
+    /// Public caller-ID reports (180.dk), looked up first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public: Option<PublicReport>,
 }
 
 impl Known {
@@ -389,21 +481,15 @@ impl Known {
 /// Everything Jev is told about one call or lookup.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Context {
-    pub courier: Option<Courier>,
     pub known: Known,
-    /// "Thursday 13:05" in his time zone.
-    pub local_time: Option<String>,
     /// Is this a call ringing now (a phone asked) or a lookup afterwards?
     pub ringing: bool,
 }
 
-/// Who the owner is, for Jev.
-pub const OWNER: &str = "The owner lives in Aarhus, Denmark, and works as a Wolt bike courier. While he delivers, restaurants and customers often call him from Danish mobile numbers (Wolt also routes calls through Danish numbers). He is Italian and has Danish, Italian and international contacts. Most cold calls he gets are Danish 70-numbers (call centres) and foreign mobiles from Cyprus or the UK (investment and crypto scams).";
-
 fn line_phrase(n: &Number) -> String {
     match (n.country, n.line) {
         ("DK", LineType::NonGeographic) => {
-            "Danish 70-number: a company line with no location, typical of call centres and customer service".to_owned()
+            "Danish 70-number (a non-geographic company number)".to_owned()
         }
         (_, LineType::Invalid) => "not a valid phone number".to_owned(),
         (_, l) => format!(
@@ -425,65 +511,48 @@ fn line_phrase(n: &Number) -> String {
     }
 }
 
-/// The state Jev decides on.
+/// The state Jev decides on: facts about this number only (its country and
+/// line type, his contacts, his own call history with it, his messages about
+/// it, public caller-ID reports). Never guesses about who might call him.
 pub fn state(n: &Number, ctx: &Context) -> Value {
     let k = &ctx.known;
-    let mut known = vec![];
+    let mut facts = vec![];
     match &k.contact {
-        Some(name) => known.push(format!("In his contacts as \"{name}\".")),
-        None => known.push("Not in his contacts.".to_owned()),
+        Some(name) => facts.push(format!("In his contacts as \"{name}\".")),
+        None => facts.push("Not in his contacts.".to_owned()),
     }
     if let Some(l) = &k.owner_label {
-        known.push(format!("He labelled this number himself: \"{l}\"."));
+        facts.push(format!("He labelled this number himself: \"{l}\"."));
     }
-    known.push(match k.previous_calls {
+    facts.push(match k.previous_calls {
         0 => "No earlier calls from this number that Lucina saw.".to_owned(),
         1 => format!(
-            "Called once before{}{}.",
+            "Called him once before{}.",
             k.last_call
                 .as_deref()
                 .map(|t| format!(" ({t})"))
-                .unwrap_or_default(),
-            if k.called_during_shift {
-                ", during a Wolt shift"
-            } else {
-                ""
-            }
+                .unwrap_or_default()
         ),
         c => format!(
-            "Called {c} times before, last {}{}.",
-            k.last_call.as_deref().unwrap_or("recently"),
-            if k.called_during_shift {
-                "; some during his Wolt shifts"
-            } else {
-                ""
-            }
+            "Called him {c} times before, last {}.",
+            k.last_call.as_deref().unwrap_or("recently")
         ),
     });
     for m in &k.mentions {
-        known.push(format!("He mentioned it to Lucina: \"{m}\""));
+        facts.push(format!("He wrote about it to Lucina: \"{m}\""));
     }
-    let shift = match ctx.courier {
-        Some(c) if c.order_active => format!(
-            "He is on a Wolt shift with an order in progress{}.",
-            c.order_age_min
-                .map(|m| format!(" (started {m} min ago)"))
-                .unwrap_or_default()
-        ),
-        Some(c) if c.on_shift => "He is on a Wolt shift, between orders.".to_owned(),
-        Some(_) => "He is not on a Wolt shift right now.".to_owned(),
-        None => "His Wolt shift status is unknown.".to_owned(),
+    let public = match &k.public {
+        Some(p) => format!("{} ({})", p.summary(), p.url),
+        None => "No public caller-ID report was found.".to_owned(),
     };
     json!({
-        "owner": OWNER,
-        "call": if ctx.ringing { "An incoming call is ringing now." } else { "He asks about a number that called him." },
+        "call": if ctx.ringing { "An incoming call is ringing now." } else { "The owner asks about a number that called him." },
         "number": n.display(),
         "country": if n.country_name.is_empty() { "unknown" } else { n.country_name },
         "line": line_phrase(n),
-        "known": known,
-        "wolt": shift,
-        "localTime": ctx.local_time.clone().unwrap_or_default(),
-        "note": "There is no spam database: judge from the number, its country and type, and what Lucina knows.",
+        "facts": facts,
+        "publicReports": public,
+        "note": "Judge only from these facts about the number. There is no other information about who calls him.",
     })
 }
 
@@ -493,22 +562,15 @@ pub const KIND_QUESTION: &str = "Who is most likely calling?";
 pub const PICK_UP_QUESTION: &str = "Should the owner pick up this call?";
 
 /// The kinds, in table order, with what each means for Jev.
-pub const KINDS: [(&str, &str); 6] = [
-    (
-        "person",
-        "A private person he may know (friend, family, classmate, landlord).",
-    ),
+pub const KINDS: [(&str, &str); 5] = [
+    ("person", "A private person he may know."),
     (
         "business",
-        "A legitimate business or service: bank, doctor, delivery firm, employer, a shop.",
-    ),
-    (
-        "delivery",
-        "About a Wolt delivery: the customer or the restaurant of an order he is on.",
+        "A legitimate business or service: bank, doctor, employer, authority, a shop.",
     ),
     (
         "telemarketing",
-        "A sales or survey call centre, legitimate but unwanted.",
+        "A sales, survey or market-research call centre: legitimate but unwanted.",
     ),
     (
         "scam",
@@ -576,27 +638,46 @@ fn probs(spam: f64, kind: &str, p: f64, pick_up: f64) -> Probs {
     }
 }
 
-/// The deterministic guess when Jev is out of reach (the phone offline, the
-/// quota spent). Deliberately modest: never above 0.7.
+/// Unwanted shares of the public reports (telemarketing, robocall, research,
+/// polls, "caution", "annoying"), in percent.
+fn unwanted_share(p: &PublicReport) -> f64 {
+    p.categories
+        .iter()
+        .filter(|c| {
+            matches!(
+                c.category.as_str(),
+                "caution" | "annoying" | "robocall" | "telemarketing" | "market research" | "poll"
+            )
+        })
+        .map(|c| c.percent)
+        .sum()
+}
+
+/// The deterministic guess when Jev is out of reach: from the facts only
+/// (contact, public reports, line type). Deliberately modest: never above 0.7.
 pub fn rules(n: &Number, ctx: &Context) -> Probs {
-    let shift = ctx.courier.unwrap_or_default();
     if ctx.known.contact.is_some() {
         return probs(0.02, "person", 0.9, 0.95);
     }
+    if n.line == LineType::Invalid {
+        return probs(0.0, "unknown", 1.0, 0.0);
+    }
+    if let Some(p) = ctx.known.public.as_ref().filter(|p| p.reports >= 3) {
+        let unwanted = unwanted_share(p);
+        if unwanted >= 50.0 {
+            return probs(0.7, "telemarketing", 0.5, 0.15);
+        }
+        if p.categories
+            .iter()
+            .any(|c| c.category == "safe" && c.percent >= 50.0)
+        {
+            return probs(0.15, "business", 0.5, 0.6);
+        }
+    }
     match (n.country, n.line) {
-        (_, LineType::Invalid) => probs(0.0, "unknown", 1.0, 0.0),
-        (_, LineType::Premium) => probs(0.7, "scam", 0.6, 0.05),
-        ("DK", LineType::NonGeographic) => probs(0.65, "telemarketing", 0.6, 0.2),
-        ("DK", LineType::Freephone) => probs(0.5, "telemarketing", 0.45, 0.3),
-        ("DK", LineType::Mobile) if shift.order_active => probs(0.08, "delivery", 0.65, 0.85),
-        ("DK", LineType::Mobile) if shift.on_shift => probs(0.12, "delivery", 0.45, 0.7),
-        ("DK", LineType::Mobile) => probs(0.2, "person", 0.4, 0.55),
-        ("DK", LineType::Landline) => probs(0.3, "business", 0.45, 0.5),
-        ("DK", _) => probs(0.35, "unknown", 0.4, 0.4),
-        ("IT", _) => probs(0.25, "person", 0.4, 0.5),
-        ("CY" | "GB", LineType::Mobile) => probs(0.7, "scam", 0.6, 0.1),
-        (_, LineType::Mobile) => probs(0.5, "scam", 0.4, 0.25),
-        _ => probs(0.45, "unknown", 0.4, 0.3),
+        (_, LineType::Premium) => probs(0.5, "unknown", 0.4, 0.2),
+        ("DK", LineType::NonGeographic) => probs(0.4, "business", 0.45, 0.4),
+        _ => probs(0.3, "unknown", 0.5, 0.4),
     }
 }
 
@@ -604,91 +685,83 @@ pub fn rules(n: &Number, ctx: &Context) -> Probs {
 
 #[derive(Debug, Clone, Copy)]
 struct Words {
-    kinds: [&'static str; 6],
+    kinds: [&'static str; 5],
     likely: &'static str,
     unknown_caller: &'static str,
     contact: &'static str,
     not_a_number: &'static str,
-    wolt_customer: &'static str,
-    maybe_delivery: &'static str,
     spam: &'static str,
     head: [&'static str; 4],
     source_jev: &'static str,
     source_rules: &'static str,
     called_before: &'static str,
     once_before: &'static str,
-    on_shift: &'static str,
-    order: &'static str,
     mentioned: &'static str,
     own_label: &'static str,
     in_contacts: &'static str,
     dk70: &'static str,
+    reports: &'static str,
+    no_reports: &'static str,
 }
 
 fn words(lang: &str) -> Words {
     match lang {
         "it" => Words {
-            kinds: ["persona", "azienda", "consegna Wolt", "telemarketing", "truffa", "sconosciuto"],
+            kinds: ["persona", "azienda", "telemarketing", "truffa", "sconosciuto"],
             likely: "Probabile",
             unknown_caller: "Chiamante sconosciuto",
             contact: "Contatto",
             not_a_number: "Non è un numero di telefono",
-            wolt_customer: "Probabile cliente Wolt",
-            maybe_delivery: "Forse una consegna Wolt",
             spam: "spam",
             head: ["Numero", "Spam", "Tipo", "Rispondere"],
-            source_jev: "Fonte: Jev (TypeSafe), in base a numero, paese, tipo di linea e a quello che so (contatti, chiamate precedenti, turno Wolt). Non è un database antispam.",
-            source_rules: "Fonte: regole di base (Jev non raggiungibile): solo paese e tipo di linea.",
+            source_jev: "Fonte: Jev (TypeSafe), solo dai fatti sul numero: paese, tipo di linea, contatti, le tue chiamate con quel numero e le segnalazioni pubbliche (180.dk).",
+            source_rules: "Fonte: regole di base (Jev non raggiungibile): contatti, segnalazioni pubbliche e tipo di linea.",
             called_before: "ha già chiamato {n} volte",
             once_before: "ha già chiamato una volta",
-            on_shift: "sei in turno Wolt",
-            order: "hai un ordine in corso",
             mentioned: "citato nei tuoi messaggi",
             own_label: "etichetta tua",
             in_contacts: "nei contatti",
             dk70: "numero 70 danese (linea aziendale)",
+            reports: "{src}: {n} segnalazioni",
+            no_reports: "{src}: nessuna segnalazione",
         },
         "da" => Words {
-            kinds: ["privatperson", "virksomhed", "Wolt-levering", "telemarketing", "svindel", "ukendt"],
+            kinds: ["privatperson", "virksomhed", "telemarketing", "svindel", "ukendt"],
             likely: "Sandsynligvis",
             unknown_caller: "Ukendt opkald",
             contact: "Kontakt",
             not_a_number: "Ikke et telefonnummer",
-            wolt_customer: "Sandsynligvis Wolt-kunde",
-            maybe_delivery: "Måske en Wolt-levering",
             spam: "spam",
             head: ["Nummer", "Spam", "Type", "Tag den"],
-            source_jev: "Kilde: Jev (TypeSafe) ud fra nummer, land, linjetype og det jeg ved (kontakter, tidligere opkald, Wolt-vagt). Ikke en spamdatabase.",
-            source_rules: "Kilde: enkle regler (Jev kan ikke nås): kun land og linjetype.",
+            source_jev: "Kilde: Jev (TypeSafe), kun ud fra fakta om nummeret: land, linjetype, kontakter, dine opkald med nummeret og offentlige anmeldelser (180.dk).",
+            source_rules: "Kilde: enkle regler (Jev kan ikke nås): kontakter, offentlige anmeldelser og linjetype.",
             called_before: "har ringet {n} gange før",
             once_before: "har ringet én gang før",
-            on_shift: "du er på Wolt-vagt",
-            order: "du har en ordre i gang",
             mentioned: "nævnt i dine beskeder",
             own_label: "din egen etiket",
             in_contacts: "i kontakter",
             dk70: "dansk 70-nummer (firmalinje)",
+            reports: "{src}: {n} anmeldelser",
+            no_reports: "{src}: ingen anmeldelser",
         },
         _ => Words {
-            kinds: ["person", "business", "Wolt delivery", "telemarketing", "scam", "unknown"],
+            kinds: ["person", "business", "telemarketing", "scam", "unknown"],
             likely: "Likely",
             unknown_caller: "Unknown caller",
             contact: "Contact",
             not_a_number: "Not a phone number",
-            wolt_customer: "Likely Wolt customer",
-            maybe_delivery: "Maybe a Wolt delivery",
             spam: "spam",
             head: ["Number", "Spam", "Kind", "Pick up"],
-            source_jev: "Source: Jev (TypeSafe), judging from the number, country, line type and what I know (contacts, earlier calls, your Wolt shift). Not a spam database.",
-            source_rules: "Source: basic rules (Jev unreachable): country and line type only.",
+            source_jev: "Source: Jev (TypeSafe), from facts about each number only: country, line type, your contacts, your calls with it and public caller-ID reports (180.dk).",
+            source_rules: "Source: basic rules (Jev unreachable): contacts, public reports and line type.",
             called_before: "called {n} times before",
             once_before: "called once before",
-            on_shift: "you are on a Wolt shift",
-            order: "you have an order in progress",
             mentioned: "mentioned in your messages",
             own_label: "your own label",
             in_contacts: "in contacts",
             dk70: "Danish 70-number (company line)",
+            reports: "{src}: {n} reports",
+            no_reports: "{src}: no reports",
         },
     }
 }
@@ -716,7 +789,7 @@ fn kind_word(w: &Words, kind: &str) -> &'static str {
     KINDS
         .iter()
         .position(|(k, _)| *k == kind)
-        .map_or(w.kinds[5], |i| w.kinds[i])
+        .map_or(w.kinds[4], |i| w.kinds[i])
 }
 
 /// The localized kind name.
@@ -751,13 +824,21 @@ fn country_line(n: &Number, lang: &str) -> String {
     format!("{country} {line}")
 }
 
+/// A telemarketing or scam top kind is named from this probability when Jev
+/// also finds the call unwanted (live 2026-10-29: a Danish 70-number came back
+/// telemarketing 0.46 with spam 0.62 and was labelled "Unknown caller").
+const UNWANTED_MIN: f64 = 0.4;
+
+fn unwanted(kind: &str) -> bool {
+    matches!(kind, "telemarketing" | "scam")
+}
+
 /// Builds the answer for one number. A contact or the owner's own label wins
 /// over the probabilities for the label.
 pub fn verdict(n: &Number, ctx: &Context, p: &Probs, source: &str, lang: &str) -> Verdict {
     let w = words(lang);
     let k = &ctx.known;
     let (kind, kind_p) = p.top();
-    let shift = ctx.courier.unwrap_or_default();
     let mut source = source.to_owned();
     let (label, short) = if !n.valid() {
         (w.not_a_number.to_owned(), w.not_a_number.to_owned())
@@ -766,13 +847,6 @@ pub fn verdict(n: &Number, ctx: &Context, p: &Probs, source: &str, lang: &str) -
         (format!("{}: {name}", w.contact), name.clone())
     } else if let Some(l) = &k.owner_label {
         (l.clone(), l.clone())
-    } else if kind == "delivery" && kind_p >= 0.5 && shift.on_shift {
-        (w.wolt_customer.to_owned(), w.wolt_customer.to_owned())
-    } else if kind == "delivery" && kind_p >= 0.4 {
-        (
-            format!("{} ({})", w.maybe_delivery, p2(kind_p, lang)),
-            w.maybe_delivery.to_owned(),
-        )
     } else if kind != "unknown"
         && (kind_p >= 0.5 || (unwanted(kind) && kind_p >= UNWANTED_MIN && p.spam >= 0.5))
     {
@@ -799,6 +873,15 @@ pub fn verdict(n: &Number, ctx: &Context, p: &Probs, source: &str, lang: &str) -
     if k.owner_label.is_some() {
         reasons.push(w.own_label.to_owned());
     }
+    if let Some(pr) = &k.public {
+        reasons.push(if pr.reports == 0 {
+            w.no_reports.replace("{src}", &pr.source)
+        } else {
+            w.reports
+                .replace("{src}", &pr.source)
+                .replace("{n}", &pr.reports.to_string())
+        });
+    }
     match k.previous_calls {
         0 => {}
         1 => reasons.push(w.once_before.to_owned()),
@@ -806,11 +889,6 @@ pub fn verdict(n: &Number, ctx: &Context, p: &Probs, source: &str, lang: &str) -
     }
     if !k.mentions.is_empty() {
         reasons.push(w.mentioned.to_owned());
-    }
-    if shift.order_active {
-        reasons.push(w.order.to_owned());
-    } else if shift.on_shift {
-        reasons.push(w.on_shift.to_owned());
     }
     Verdict {
         number: n.e164.clone(),
@@ -835,15 +913,6 @@ pub fn verdict(n: &Number, ctx: &Context, p: &Probs, source: &str, lang: &str) -
     }
 }
 
-/// A telemarketing or scam top kind is named from this probability when Jev
-/// also finds the call unwanted (live 2026-10-29: a Danish 70-number came back
-/// telemarketing 0.46 with spam 0.62 and was labelled "Unknown caller").
-const UNWANTED_MIN: f64 = 0.4;
-
-fn unwanted(kind: &str) -> bool {
-    matches!(kind, "telemarketing" | "scam")
-}
-
 fn round2(p: f64) -> f64 {
     (p.clamp(0.0, 1.0) * 100.0).round() / 100.0
 }
@@ -866,7 +935,8 @@ fn clip(s: &str, max: usize) -> String {
     }
 }
 
-/// The table every surface shows, with the source line under it.
+/// The table every surface shows, with the source lines under it (each public
+/// report page quoted with its URL).
 pub fn table(results: &[Verdict], lang: &str) -> String {
     let w = words(lang);
     let mut out = format!(
@@ -903,6 +973,11 @@ pub fn table(results: &[Verdict], lang: &str) -> String {
         out.push('\n');
         out.push_str(w.source_rules);
     }
+    for v in results {
+        if let Some(p) = v.known.public.as_ref().filter(|p| p.reports > 0) {
+            out.push_str(&format!("\n- {}: {} — {}", v.display, p.summary(), p.url));
+        }
+    }
     out
 }
 
@@ -921,12 +996,336 @@ pub fn directory(verdicts: &[Verdict]) -> Vec<(i64, String)> {
     out.into_iter().collect()
 }
 
+// ---------------------------------------------------------------- 180.dk
+
+/// The public caller-ID site Lucina reads first.
+pub const SOURCE_180: &str = "180.dk";
+/// Characters of a quoted comment.
+const MAX_COMMENT: usize = 200;
+
+/// The 180.dk page of a number: Danish numbers by their 8 digits, others as
+/// `00<country code><number>` (the site's own links use these forms).
+pub fn url_180(base: &str, n: &Number) -> Option<String> {
+    if !n.valid() || n.cc.is_empty() {
+        return None;
+    }
+    let base = base.trim_end_matches('/');
+    Some(if n.cc == "45" {
+        format!("{base}/nummer/{}", n.national)
+    } else {
+        format!("{base}/nummer/00{}{}", n.cc, n.national)
+    })
+}
+
+/// `&amp;`, `&#x2013;`, `&#248;` and friends.
+fn unescape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find('&') {
+        out.push_str(&rest[..i]);
+        let tail = &rest[i..];
+        let Some(end) = tail[..tail.len().min(12)].find(';') else {
+            out.push('&');
+            rest = &tail[1..];
+            continue;
+        };
+        let ent = &tail[1..end];
+        let ch = match ent {
+            "amp" => Some('&'),
+            "lt" => Some('<'),
+            "gt" => Some('>'),
+            "quot" => Some('"'),
+            "apos" => Some('\''),
+            "nbsp" => Some(' '),
+            _ if ent.starts_with("#x") || ent.starts_with("#X") => {
+                u32::from_str_radix(&ent[2..], 16)
+                    .ok()
+                    .and_then(char::from_u32)
+            }
+            _ if ent.starts_with('#') => ent[1..].parse().ok().and_then(char::from_u32),
+            _ => None,
+        };
+        match ch {
+            Some(c) => {
+                out.push(c);
+                rest = &tail[end + 1..];
+            }
+            None => {
+                out.push('&');
+                rest = &tail[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The page's visible text, one trimmed line per text node.
+fn text_lines(html: &str) -> Vec<String> {
+    let mut body = String::with_capacity(html.len() / 4);
+    let lower = html.to_ascii_lowercase();
+    let mut i = 0;
+    while i < html.len() {
+        let skip = ["<script", "<style"]
+            .iter()
+            .find(|t| lower[i..].starts_with(*t))
+            .map(|t| {
+                if *t == "<script" {
+                    "</script>"
+                } else {
+                    "</style>"
+                }
+            });
+        if let Some(close) = skip {
+            match lower[i..].find(close) {
+                Some(j) => {
+                    i += j + close.len();
+                    continue;
+                }
+                None => break,
+            }
+        }
+        if html.as_bytes()[i] == b'<' {
+            match html[i..].find('>') {
+                Some(j) => {
+                    body.push('\n');
+                    i += j + 1;
+                    continue;
+                }
+                None => break,
+            }
+        }
+        let next = html[i..].find('<').map_or(html.len(), |j| i + j);
+        body.push_str(&html[i..next]);
+        i = next;
+    }
+    unescape(&body)
+        .lines()
+        .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+/// "2.135" → 2135.
+fn count(s: &str) -> Option<u32> {
+    let d: String = s.chars().filter(|c| *c != '.' && *c != ' ').collect();
+    d.parse().ok()
+}
+
+/// The page's report categories in English.
+fn category_180(da: &str) -> Option<&'static str> {
+    Some(match da {
+        "Forsigtig" => "caution",
+        "Irriterende" => "annoying",
+        "Robocall" => "robocall",
+        "Telemarketing" => "telemarketing",
+        "Markedsundersøgelse" => "market research",
+        "Meningsmåling" => "poll",
+        "Sikkert" => "safe",
+        "Bud/levering" => "delivery",
+        "Andet" => "other",
+        _ => return None,
+    })
+}
+
+/// Reads a 180.dk number page: searches, user reports, report categories,
+/// operator and the latest comment. `None` when the page is not a number page.
+pub fn parse_180(html: &str, url: &str) -> Option<PublicReport> {
+    let lines = text_lines(html);
+    let at = |label: &str| lines.iter().position(|l| l == label);
+    let searched = at("Antal gange søgte")?;
+    let reported = at("Rapporteret af brugere")?;
+    let searches = searched
+        .checked_sub(1)
+        .and_then(|i| count(&lines[i]))
+        .unwrap_or(0);
+    let reports = reported
+        .checked_sub(1)
+        .and_then(|i| count(&lines[i]))
+        .unwrap_or(0);
+    let operator = searched.checked_sub(2).map(|i| &lines[i]).filter(|l| {
+        !l.starts_with('+')
+            && !l.starts_with('(')
+            && !l
+                .chars()
+                .all(|c| c.is_ascii_digit() || c == '.' || c == ' ')
+    });
+    let mut categories = Vec::new();
+    for l in &lines {
+        let Some(open) = l.rfind(" (") else { continue };
+        if !l.ends_with("%)") {
+            continue;
+        }
+        let (name, pct) = (&l[..open], &l[open + 2..l.len() - 2]);
+        if let (Some(cat), Ok(p)) = (category_180(name), pct.replace(',', ".").parse::<f64>()) {
+            if !categories.iter().any(|c: &ReportShare| c.category == cat) {
+                categories.push(ReportShare {
+                    category: cat.to_owned(),
+                    percent: p,
+                });
+            }
+        }
+    }
+    let latest_comment = if reports > 0 {
+        at("Seneste kommentar").and_then(|i| {
+            let parts: Vec<&str> = lines[i + 1..]
+                .iter()
+                .take(3)
+                .map(String::as_str)
+                .take_while(|l| {
+                    !l.starts_with("Kommentar fra")
+                        && !l.starts_with("Stop ")
+                        && !l.starts_with("Dette nummer")
+                })
+                .collect();
+            match parts.as_slice() {
+                [date, title, text] => Some(format!("{date} — {title}: {text}")),
+                [date, title] => Some(format!("{date} — {title}")),
+                _ => None,
+            }
+        })
+    } else {
+        None
+    };
+    Some(PublicReport {
+        source: SOURCE_180.into(),
+        url: url.to_owned(),
+        searches,
+        reports,
+        categories: if reports > 0 { categories } else { Vec::new() },
+        latest_comment: latest_comment.map(|c| clip(&c, MAX_COMMENT)),
+        operator: operator.cloned(),
+    })
+}
+
+#[cfg(test)]
+mod tests_180 {
+    use super::*;
+
+    /// The structure of 180.dk's page for 20682758 on 2026-10-29 (text as served, tags reduced).
+    const PAGE: &str = r#"<html><head><title>20682758 | ADVARSEL &#x2013; rapporter: 6</title>
+<style>.x{color:red}</style><script>var a = "<div>Antal gange søgte</div>";</script></head><body>
+<h1>20682758</h1><span>(Danmark)</span><span>+4520682758</span>
+<div><b>374</b><small>Antal gange s&#xF8;gte</small></div>
+<div><b>6</b><small>Rapporteret af brugere</small></div>
+<div><b>29. okt.</b><small>Sidste s&#xF8;gte</small></div>
+<h3>Seneste kommentar</h3><p>26. oktober 2026</p><p>Irriterende</p><p>De ringer i min arbejdstid</p>
+<p>Kommentar fra bruger</p>
+<ul><li>Forsigtig (37,5%)</li><li>Irriterende (37,5%)</li><li>Robocall (0%)</li><li>Telemarketing (25%)</li>
+<li>Bud/levering (0%)</li><li>Andet (0%)</li></ul></body></html>"#;
+
+    const EMPTY: &str = r#"<title>+35794095733 &#x2013; Ukendt nummer?</title>
+<span>+35794095733</span><span>(Cypern)</span><span>+35794095733</span><span>Lemontel</span>
+<b>1</b><small>Antal gange søgte</small><b>0</b><small>Rapporteret af brugere</small>
+<p>Dette nummer har ingen rapporter eller vurderinger endnu.</p><h3>Seneste kommentar</h3><p>Stop robotopkald</p>"#;
+
+    #[test]
+    fn reads_a_reported_number() {
+        let r = parse_180(PAGE, "https://www.180.dk/nummer/20682758").unwrap();
+        assert_eq!((r.searches, r.reports), (374, 6));
+        assert_eq!(r.operator, None);
+        assert_eq!(
+            r.latest_comment.as_deref(),
+            Some("26. oktober 2026 — Irriterende: De ringer i min arbejdstid")
+        );
+        let top: Vec<_> = r
+            .top_categories(5)
+            .iter()
+            .map(|c| (c.category.clone(), c.percent))
+            .collect();
+        assert_eq!(
+            top,
+            vec![
+                ("caution".to_owned(), 37.5),
+                ("annoying".to_owned(), 37.5),
+                ("telemarketing".to_owned(), 25.0)
+            ]
+        );
+        assert!(r.summary().starts_with(
+            "180.dk: 6 user reports (looked up 374 times); categories: caution 37.5%"
+        ));
+    }
+
+    #[test]
+    fn reads_an_unreported_number_and_refuses_other_pages() {
+        let r = parse_180(EMPTY, "u").unwrap();
+        assert_eq!((r.searches, r.reports), (1, 0));
+        assert_eq!(r.operator.as_deref(), Some("Lemontel"));
+        assert!(r.categories.is_empty() && r.latest_comment.is_none());
+        assert_eq!(
+            r.summary(),
+            "180.dk: no user reports (looked up 1 times); operator Lemontel"
+        );
+        assert!(parse_180("<html><title>404</title><p>Not found</p></html>", "u").is_none());
+        assert_eq!(count("2.135"), Some(2135));
+        assert_eq!(
+            unescape("a &amp; b &#x2013; &#248; &bogus; &"),
+            "a & b – ø &bogus; &"
+        );
+    }
+
+    #[test]
+    fn page_urls() {
+        let b = "https://www.180.dk/";
+        assert_eq!(
+            url_180(b, &parse("+45 20 68 27 58")).unwrap(),
+            "https://www.180.dk/nummer/20682758"
+        );
+        assert_eq!(
+            url_180(b, &parse("+357 94 095733")).unwrap(),
+            "https://www.180.dk/nummer/0035794095733"
+        );
+        assert_eq!(
+            url_180(b, &parse("+44 7459 508537")).unwrap(),
+            "https://www.180.dk/nummer/00447459508537"
+        );
+        assert!(url_180(b, &parse("hello")).is_none());
+    }
+
+    /// The real pages, when saved: `CALLER_180_PAGES=<dir with n<number>.html>`.
+    #[test]
+    fn real_pages_when_given() {
+        let Ok(dir) = std::env::var("CALLER_180_PAGES") else {
+            return;
+        };
+        for (file, reports) in [
+            ("n20682758.html", 6),
+            ("n70405205.html", 23),
+            ("n66778702.html", 0),
+        ] {
+            let html = std::fs::read_to_string(format!("{dir}/{file}")).unwrap();
+            let r = parse_180(&html, file).unwrap();
+            assert_eq!(r.reports, reports, "{file}: {r:?}");
+            assert!(r.searches > 0, "{file}");
+            eprintln!("{file}: {}", r.summary());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn ctx() -> Context {
         Context::default()
+    }
+
+    fn report_180(reports: u32, cats: &[(&str, f64)]) -> PublicReport {
+        PublicReport {
+            source: "180.dk".into(),
+            url: "https://www.180.dk/nummer/20682758".into(),
+            searches: 374,
+            reports,
+            categories: cats
+                .iter()
+                .map(|(c, p)| ReportShare {
+                    category: (*c).into(),
+                    percent: *p,
+                })
+                .collect(),
+            latest_comment: Some("26 Oct 2026 — Irriterende: De ringer i min arbejdstid".into()),
+            operator: None,
+        }
     }
 
     #[test]
@@ -979,7 +1378,9 @@ mod tests {
 
     #[test]
     fn finds_numbers_in_messages_and_lists() {
-        let found = find_numbers("Who called me from +45 70 40 52 05? Also 0035794095733 and 20682758, again +4570405205");
+        let found = find_numbers(
+            "Who called me from +45 70 40 52 05? Also 0035794095733 and 20682758, again +4570405205",
+        );
         let e: Vec<_> = found.iter().map(|n| n.e164.as_str()).collect();
         assert_eq!(e, ["+4570405205", "+35794095733", "+4520682758"]);
         let list = "+45 70 40 52 05\n+357 94 095733\n+45 70 40 52 20\n+357 94 462808\n+45 20 68 27 58\n+44 7459 508537\n+45 66 77 87 02";
@@ -989,24 +1390,61 @@ mod tests {
     }
 
     #[test]
-    fn rules_are_modest_and_sensible() {
+    fn no_delivery_kind_and_no_guesses_about_callers() {
+        assert!(KINDS.iter().all(|(k, d)| *k != "delivery"
+            && !d.to_lowercase().contains("wolt")
+            && !d.to_lowercase().contains("deliver")));
+        for lang in ["en", "it", "da"] {
+            let w = words(lang);
+            let all = format!("{:?}", w).to_lowercase();
+            assert!(!all.contains("wolt"), "{lang}: {all}");
+        }
         let mut c = ctx();
-        let (k, p) = rules(&parse("+4570405205"), &c).top();
-        assert_eq!(k, "telemarketing");
-        assert!(p <= 0.7);
-        assert_eq!(rules(&parse("+35794095733"), &c).top().0, "scam");
-        assert_eq!(rules(&parse("+447459508537"), &c).top().0, "scam");
-        assert_eq!(rules(&parse("+4520682758"), &c).top().0, "person");
-        c.courier = Some(Courier {
-            on_shift: true,
-            order_active: true,
-            order_age_min: Some(4),
-        });
-        let p = rules(&parse("+4520682758"), &c);
-        assert_eq!(p.top().0, "delivery");
-        assert!(p.pick_up > 0.8);
-        c.known.contact = Some("Mamma".into());
-        assert_eq!(rules(&parse("+393331234567"), &c).top().0, "person");
+        c.ringing = true;
+        let text = state(&parse("+4520682758"), &c).to_string().to_lowercase();
+        for banned in [
+            "wolt",
+            "courier",
+            "restaurant",
+            "deliver",
+            "shift",
+            "cyprus or the uk",
+        ] {
+            assert!(!text.contains(banned), "{banned} in {text}");
+        }
+    }
+
+    #[test]
+    fn rules_use_facts_only() {
+        let c = ctx();
+        // Without facts, a number is just unknown, whatever its country.
+        for n in [
+            "+35794095733",
+            "+447459508537",
+            "+4520682758",
+            "+4566778702",
+        ] {
+            assert_eq!(rules(&parse(n), &c).top().0, "unknown", "{n}");
+        }
+        assert_eq!(rules(&parse("+4570405205"), &c).top().0, "business");
+        // Public reports decide when there are enough of them.
+        let mut r = ctx();
+        r.known.public = Some(report_180(
+            6,
+            &[
+                ("caution", 37.5),
+                ("annoying", 37.5),
+                ("telemarketing", 25.0),
+            ],
+        ));
+        let p = rules(&parse("+4520682758"), &r);
+        assert_eq!(p.top().0, "telemarketing");
+        assert!(p.spam <= 0.7 && p.pick_up < 0.3);
+        r.known.public = Some(report_180(2, &[("telemarketing", 100.0)]));
+        assert_eq!(rules(&parse("+4520682758"), &r).top().0, "unknown");
+        let mut k = ctx();
+        k.known.contact = Some("Mamma".into());
+        assert_eq!(rules(&parse("+393331234567"), &k).top().0, "person");
         for (_, v) in rules(&parse("+4570405205"), &ctx()).kinds {
             assert!((0.0..=1.0).contains(&v));
         }
@@ -1029,21 +1467,21 @@ mod tests {
             "Probabile truffa (0,93)"
         );
 
-        let mut c = ctx();
-        c.courier = Some(Courier {
-            on_shift: true,
-            order_active: true,
-            order_age_min: None,
-        });
-        let d = verdict(
+        let mut r = ctx();
+        r.known.public = Some(report_180(6, &[("telemarketing", 25.0)]));
+        let t = verdict(
             &parse("+4520682758"),
-            &c,
-            &probs(0.05, "delivery", 0.7, 0.9),
+            &r,
+            &probs(0.67, "telemarketing", 0.56, 0.15),
             "jev",
             "en",
         );
-        assert_eq!(d.label, "Likely Wolt customer");
-        assert!(d.reasons.iter().any(|r| r.contains("order")));
+        assert_eq!(t.label, "Likely telemarketing (0.56)");
+        assert!(
+            t.reasons.contains(&"180.dk: 6 reports".to_owned()),
+            "{:?}",
+            t.reasons
+        );
 
         // An unwanted kind under 0.5 still names itself when the call is spam.
         let t = verdict(
@@ -1065,7 +1503,7 @@ mod tests {
         let u = verdict(
             &parse("+4566778702"),
             &ctx(),
-            &probs(0.3, "unknown", 0.6, 0.4),
+            &probs(0.3, "unknown", 0.68, 0.34),
             "jev",
             "en",
         );
@@ -1079,6 +1517,7 @@ mod tests {
         );
         assert_eq!(s.label, "Likely spam (0.80)");
 
+        let mut c = ctx();
         c.known.contact = Some("Jerry's Pizza".into());
         let k = verdict(
             &parse("+4520682758"),
@@ -1105,25 +1544,35 @@ mod tests {
     }
 
     #[test]
-    fn state_tells_jev_what_lucina_knows() {
+    fn state_holds_the_facts_and_the_public_reports() {
         let mut c = ctx();
         c.known.previous_calls = 2;
         c.known.last_call = Some("2026-10-28T10:00:00Z".into());
         c.known.mentions = vec!["the 70 number again".into()];
-        c.courier = Some(Courier {
-            on_shift: true,
-            order_active: false,
-            order_age_min: None,
-        });
+        c.known.public = Some(report_180(
+            6,
+            &[
+                ("caution", 37.5),
+                ("annoying", 37.5),
+                ("telemarketing", 25.0),
+            ],
+        ));
         c.ringing = true;
-        let s = state(&parse("+4570405205"), &c);
+        let s = state(&parse("+4520682758"), &c);
         let text = s.to_string();
-        assert!(text.contains("Danish 70-number"));
-        assert!(text.contains("Called 2 times before"));
-        assert!(text.contains("between orders"));
+        assert!(text.contains("Called him 2 times before"));
         assert!(text.contains("ringing now"));
         assert!(text.contains("the 70 number again"));
-        assert!(text.contains("no spam database"));
+        assert!(text.contains(
+            "180.dk: 6 user reports (looked up 374 times); categories: caution 37.5%, annoying 37.5%, telemarketing 25%"
+        ));
+        assert!(text.contains("https://www.180.dk/nummer/20682758"));
+        assert!(text.contains("De ringer i min arbejdstid"));
+        let none = state(&parse("+4566778702"), &ctx()).to_string();
+        assert!(none.contains("No public caller-ID report was found."));
+        assert!(state(&parse("+4570405205"), &ctx())
+            .to_string()
+            .contains("Danish 70-number (a non-geographic company number)"));
     }
 
     #[test]
@@ -1151,6 +1600,18 @@ mod tests {
         );
         assert!(table(std::slice::from_ref(&a), "da")
             .contains("| +45 70 40 52 05 | 0,86 | telemarketing 0,81 | 0,12 |"));
+        let mut r = ctx();
+        r.known.public = Some(report_180(6, &[("telemarketing", 25.0)]));
+        let q = verdict(
+            &parse("+4520682758"),
+            &r,
+            &probs(0.67, "telemarketing", 0.56, 0.15),
+            "jev",
+            "en",
+        );
+        assert!(table(&[q], "en").contains(
+            "\n- +45 20 68 27 58: 180.dk: 6 user reports (looked up 374 times); categories: telemarketing 25%"
+        ));
         let d = directory(&[b, a]);
         assert_eq!(
             d,
@@ -1200,7 +1661,8 @@ mod tests {
         assert_eq!(lang("da-DK"), "da");
         assert_eq!(lang("it"), "it");
         assert_eq!(lang("fr"), "en");
-        assert_eq!(kind_name("delivery", "da"), "Wolt-levering");
+        assert_eq!(kind_name("telemarketing", "da"), "telemarketing");
+        assert_eq!(kind_name("delivery", "en"), "unknown");
         assert_eq!(p2(1.3, "en"), "1.00");
     }
 }

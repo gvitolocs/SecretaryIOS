@@ -25,7 +25,7 @@ import org.json.JSONObject
  * ([CallPlan.fallback] is the screen without Rust).
  *
  * Incoming calls get a full-screen intent (screen off or locked) or a heads-up (screen in use, for example
- * Wolt in the foreground) with Answer and Decline buttons that act only on the owner's tap. The system plays
+ * another app in the foreground) with Answer and Decline buttons that act only on the owner's tap. The system plays
  * the ringtone (`IN_CALL_SERVICE_RINGING` is false), so the notification channels are silent.
  */
 class LucinaCallService : InCallService() {

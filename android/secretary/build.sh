@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Secretary · Lucina 0.6.0: Kotlin shell + Rust core (crates/lucina-android-calls). No Gradle, no AndroidX.
+# Secretary · Lucina 0.6.1: Kotlin shell + Rust core (crates/lucina-android-calls). No Gradle, no AndroidX.
 # cargo ndk -> kotlinc (embeddable compiler from the Gradle cache) -> aapt2 -> R8 -> zip -> zipalign -> apksigner.
 # Env: KEYSTORE_DIR (signing.p12 + signing.pass, alias secretary), OUT, CARGO_TARGET_DIR, SKIP_RUST=1 (reuse the last .so).
 # The certificate must match $OUT/secretary-0.1.0.apk (the installed 0.1.0), so the install upgrades in place.
@@ -54,13 +54,13 @@ fi
 lib="$out/native/lib/arm64-v8a/liblucina_calls.so"
 "$llvm/llvm-strip" --strip-unneeded -o "$lib" "$so"
 exports=$("$llvm/llvm-nm" -D --defined-only "$lib" | awk '{print $3}' | sort)
-expected=$(printf 'Java_tech_getsecretary_secretary_Native_%s\n' callerSettings callerState dialer journal localVerdict phoneCall screenCall setCourier shareUpload transcribe ui voiceTurn | sort)
+expected=$(printf 'Java_tech_getsecretary_secretary_Native_%s\n' callerSettings callerState dialer journal localVerdict phoneCall screenCall shareUpload transcribe ui voiceTurn | sort)
 if [[ "$exports" != "$expected" ]]; then
   echo "ERROR: unexpected exports in liblucina_calls.so:" >&2
   echo "$exports" >&2
   exit 1
 fi
-echo "native: exports only the 12 JNI functions"
+echo "native: exports only the 11 JNI functions"
 
 # 2. Kotlin -> classes (against android.jar only, no JDK APIs).
 "$java" -Xmx1g -cp "$compiler_cp" org.jetbrains.kotlin.cli.jvm.K2JVMCompiler \

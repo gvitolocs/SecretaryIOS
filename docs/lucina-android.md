@@ -211,7 +211,7 @@ log a code, a token or a message body. `"result"` values are the snake_case stri
   token moved into the encrypted `state.bin`, and the pref was deleted.
 - **Not yet verified:** a real carrier SMS, and a notification-sourced code.
 
-## Caller screening (Secretary · Lucina 0.5.0, versionCode 6)
+## Caller screening (Secretary · Lucina 0.6.1, versionCode 8)
 
 Unknown callers are screened with Jev (`POST /v1/callers/screen`, contract in `crates/lucina-phone-core/src/caller.rs` and the server's
 `/v1/callers/*`). Rust does the work in `crates/lucina-android-calls/src/caller.rs`; Kotlin only hosts the Android pieces.
@@ -219,16 +219,14 @@ Unknown callers are screened with Jev (`POST /v1/callers/screen`, contract in `c
 | Kotlin | Job |
 |---|---|
 | `CallerScreenService` (`CallScreeningService`, `BIND_SCREENING_SERVICE`, held through `ROLE_CALL_SCREENING`) | Incoming calls only. Answers ALLOW at once, then shows the heads-up notification. |
-| `CourierStateReceiver` | Keeps Lucina Maps' `COURIER_STATE` broadcast (`onShift`, `orderAtMs`). |
-| `CallerScreenActivity` (MainActivity's "Callers" button) | Role status and request, the three switches, permissions, the courier state and the last screened call. |
+| `CallerScreenActivity` (MainActivity's "Callers" button) | Role status and request, the three switches, permissions and the last screened call. |
 
-- **Flow:** `Native.localVerdict` (no network: the shared core's fallback rules, with the courier state) posts the first notification;
-  `Native.screenCall` asks the server (`call: {source: "android"}`, `context.courier`, 1.2 s in total, the WebView cookie read on the
+- **Flow:** `Native.localVerdict` (no network: the shared core's fallback rules, from facts about the number only) posts the first notification;
+  `Native.screenCall` asks the server (`call: {source: "android"}`, 1.2 s in total, the WebView cookie read on the
   main thread like the share job) and replaces it. Any error, an answer for another number or an out-of-range probability falls back to
   the rules (`source: "rules"`, marked "quick guess" in the text). Hidden numbers get no notification and no request.
-- **Courier state:** `orderActive` is an order link within the last 45 minutes; a report older than 16 hours is ignored. The receiver is
-  exported but protected by the normal-level permission `tech.getsecretary.secretary.permission.COURIER_STATE`, which Lucina Maps
-  requests (install Secretary first). The state only colours the verdict and can never silence or reject.
+- **Facts only:** the phone sends the number, the language and `call.source`. It makes no assumption about who might call (no shift, delivery or
+  customer guesses): the labels come from the number, his contacts, his earlier calls and the server's public caller-ID reports.
 - **Switches** (`caller-settings.json` in `filesDir`, 0600): label on by default; "Silence likely scams" and "Reject likely scams" off.
   They act only on a verdict whose `source` is `jev` with spam >= 0.90; the rules and contacts never act, and reject wins over silence.
   When one is on, the answer waits for the verdict for 1.5 s at most (the system allows 5 s), then allows. Rejected calls keep the call
@@ -236,10 +234,10 @@ Unknown callers are screened with Jev (`POST /v1/callers/screen`, contract in `c
 - **Contacts:** `READ_CONTACTS` is optional (asked in the screen). With it, a caller who is a contact is looked up on the phone only and
   gets no notification and no request; without it every caller is screened.
 - **Privacy:** nothing is logged. The last screened call (display number, label) is kept in `caller-last.json` for the screen, 0600.
-- **JNI additions:** `callerState`, `callerSettings`, `setCourier`, `localVerdict`, `screenCall` (11 exports in all, checked by `build.sh`).
+- **JNI additions:** `callerState`, `callerSettings`, `localVerdict`, `screenCall` (11 exports in all, checked by `build.sh`).
 - **Role:** `adb shell cmd role add-role-holder android.app.role.CALL_SCREENING tech.getsecretary.secretary` or the screen's button.
 
-## Phone app (Secretary · Lucina 0.6.0, versionCode 7)
+## Phone app (Secretary · Lucina 0.6.1, versionCode 8)
 
 Secretary can be the phone app (`ROLE_DIALER`); Samsung Phone stays installed. **Only the owner makes it the default**:
 the app asks (`RoleManager.createRequestRoleIntent`), Android shows its own dialog, and he taps. Nothing grants the role over adb unless he says so.
@@ -258,7 +256,7 @@ the app asks (`RoleManager.createRequestRoleIntent`), Android shows its own dial
   `InCallActivity` and the notification fall back to `CallPlan.fallback` when the native library fails, and every call-control tap is guarded.
   Check without dialing: `content call --uri content://tech.getsecretary.secretary.calls --method emergency --arg 112`.
 - **Incoming:** Telecom adds the call after the screening service answered. `IN_CALL_SERVICE_RINGING` is false, so the system rings and
-  the notification channels are silent. Screen off or locked: full-screen intent. Screen in use (Wolt in the foreground): heads-up with
+  the notification channels are silent. Screen off or locked: full-screen intent. Screen in use (another app in the foreground): heads-up with
   **Answer** and **Decline**, which act only on his tap. Nothing answers or rejects by itself except his own silence/reject switches (unchanged).
 - **One label, one lookup:** the call screen reads the cached verdict (or the instant rules guess) and refreshes when the screening service
   gets Jev's answer. As the phone app the screening service posts no second heads-up. If Telecom asks it twice for one number within 15 s,
@@ -276,7 +274,7 @@ the app asks (`RoleManager.createRequestRoleIntent`), Android shows its own dial
 
 ### Device test checklist (owner present; nothing is placed, answered or rejected by an agent)
 
-0. Wolt idle, USB or wireless adb. `adb install -r secretary-0.6.0.apk`. Run `test/device-check.sh`: version 0.6.0, DIAL activities listed,
+0. Phone not in use for work, USB or wireless adb. `adb install -r secretary-0.6.1.apk`. Run `test/device-check.sh`: version 0.6.1, DIAL activities listed,
    InCallService and CallScreeningService listed, missed/voicemail receivers listed, `112 -> EMERGENCY`, `placed:false`.
 1. Open Secretary > Calls > "Make Secretary your phone app". Android shows its dialog: **he taps "Set as default"**. Then
    `adb shell cmd role get-role-holders android.app.role.DIALER` shows `tech.getsecretary.secretary`.
@@ -285,8 +283,8 @@ the app asks (`RoleManager.createRequestRoleIntent`), Android shows its own dial
    screen turns off when the phone is at his ear (earpiece route) and on again when he takes it away. The call appears in Recent calls.
 3. Incoming (screen off, locked): the full-screen call screen appears, the system ringtone plays once (no second sound), the Jev label
    shows within about a second, Answer works only when tapped. Decline works only when tapped; it then shows in Recent calls.
-4. Incoming with Wolt in the foreground and the phone unlocked: a heads-up with Answer and Decline appears over Wolt; Wolt is not
-   interrupted. Tapping Answer answers and leaves Wolt in front; the ongoing-call notification has Hang up and opens the call screen.
+4. Incoming with another app in the foreground (the one he works with) and the phone unlocked: a heads-up with Answer and Decline appears over it and the app is not
+   interrupted. Tapping Answer answers and leaves that app in front; the ongoing-call notification has Hang up and opens the call screen.
 5. Call waiting: during a call, a second call rings. The screen offers Answer, "End current call & answer", Decline. Answer holds the first;
    Resume swaps back; End ends one at a time.
 6. Missed call: let one ring out (his other phone). A "Missed call" notification appears with the Jev label for an unknown number;

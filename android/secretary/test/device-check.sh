@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Read-only checks of the phone role on the S20 FE over adb. Places, answers and rejects NOTHING, changes no
-# setting, never dials (not even 112: the "emergency" method only reports the route). Run only while Wolt is idle.
+# setting, never dials (not even 112: the "emergency" method only reports the route). Run only while the owner is not using the phone for work.
 # Usage: device-check.sh [adb serial or host:port]
 set -uo pipefail
 adb=${ADB:-$HOME/Android/Sdk/platform-tools/adb}
