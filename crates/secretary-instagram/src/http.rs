@@ -121,6 +121,11 @@ pub fn router(st: St) -> Router {
         .route("/recent", get(recent))
         .route("/save", post(save))
         .route("/watch", get(watch_list))
+        // Not `/watch/settings`: that is `/watch/{username}` for an account named `settings`.
+        .route(
+            "/watch-settings",
+            get(watch_settings).put(watch_settings_put),
+        )
         .route("/watch/{username}", put(watch_put).delete(watch_delete))
         .route("/watch/{username}/new", get(watch_new))
         .route("/watch/{username}/opened", post(watch_opened))
@@ -261,6 +266,26 @@ async fn watch_put(State(st): State<St>, Path(username): Path<String>, body: Byt
         }
     };
     match st.service.watch_put(&username, b.auto_save) {
+        Ok(v) => ok(v),
+        Err(e) => e.into_response(),
+    }
+}
+
+async fn watch_settings(State(st): State<St>) -> Response {
+    ok(st.service.watch_settings_json())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WatchSettingsBody {
+    interval_hours: u32,
+}
+
+async fn watch_settings_put(State(st): State<St>, body: Bytes) -> Response {
+    let Ok(b) = serde_json::from_slice::<WatchSettingsBody>(&body) else {
+        return err(StatusCode::BAD_REQUEST, "bad_request");
+    };
+    match st.service.set_watch_interval(b.interval_hours) {
         Ok(v) => ok(v),
         Err(e) => e.into_response(),
     }
