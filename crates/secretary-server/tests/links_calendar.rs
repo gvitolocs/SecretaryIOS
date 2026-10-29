@@ -676,6 +676,28 @@ async fn google_oauth_sync_writes_and_revocation() {
             .0,
         StatusCode::UNAUTHORIZED
     );
+    // The owner's own turn with Lucina: she creates the event directly with the service token
+    // (the same Google write as accepting a proposal), and gets the event link for her reply.
+    let (s, c) = t
+        .call(reqwest::Method::POST, "/v1/calendar/events", Some(json!({"title": "Claude Max 5x si sblocca", "start": "2026-10-30T23:00:00+01:00"})), Some(&svc))
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{c}");
+    assert_eq!(c["event"]["id"], "google:new1");
+    assert_eq!(c["event"]["url"], "https://calendar.google.com/event?eid=new1");
+    let w = t.mock.lock().unwrap().writes.last().unwrap().clone();
+    assert_eq!((w.0.as_str(), w.2["summary"].as_str()), ("POST", Some("Claude Max 5x si sblocca")));
+    assert_eq!(
+        t.get("/v1/calendar/proposals").await.1["proposals"],
+        json!([])
+    );
+    // Undo: the service token deletes it again.
+    assert_eq!(
+        t.call(reqwest::Method::DELETE, "/v1/calendar/events/google:new1?confirm=true", None, Some(&svc))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    // An agent (MCP caller) proposes instead.
     let (s, p) = t
         .call(reqwest::Method::POST, "/v1/calendar/proposals", Some(json!({"title": "Padel", "start": "2026-11-07T10:00:00+01:00", "from": "mcp:claude-code"})), Some(&svc))
         .await;
@@ -738,6 +760,32 @@ async fn google_oauth_sync_writes_and_revocation() {
         (s, e["error"]["code"].as_str()),
         (StatusCode::CONFLICT, Some("google_reconnect_needed"))
     );
+    // Lucina's direct create for the owner fails the same way, so she files a proposal with the reason.
+    let writes = t.mock.lock().unwrap().writes.len();
+    let (s, e) = t
+        .call(reqwest::Method::POST, "/v1/calendar/events", Some(json!({"title": "Dentist", "start": "2026-11-06T15:00:00+01:00"})), Some(&svc))
+        .await;
+    assert_eq!(
+        (s, e["error"]["code"].as_str()),
+        (StatusCode::CONFLICT, Some("google_reconnect_needed"))
+    );
+    let (s, p) = t
+        .call(reqwest::Method::POST, "/v1/calendar/proposals", Some(json!({"title": "Dentist", "start": "2026-11-06T15:00:00+01:00", "from": "lucina:ios", "reason": "Google Calendar needs reconnecting"})), Some(&svc))
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{p}");
+    assert_eq!(t.mock.lock().unwrap().writes.len(), writes, "nothing reached Google");
+    let (_, links) = t.get("/v1/links").await;
+    assert_eq!(
+        (links["proposals"][0]["from"].as_str(), links["proposals"][0]["reason"].as_str()),
+        (Some("lucina:ios"), Some("Google Calendar needs reconnecting"))
+    );
+    let (s, _) = t
+        .call(reqwest::Method::POST, "/v1/calendar/proposals", Some(json!({"title": "x", "start": "2026-11-06T15:00:00+01:00", "reason": "a\u{7}b"})), Some(&svc))
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let pid = p["id"].as_str().unwrap().to_owned();
+    t.call(reqwest::Method::DELETE, &format!("/v1/calendar/proposals/{pid}"), None, None)
+        .await;
     assert!(!T::titles(
         &t.get("/v1/calendar/events?from=2026-11-02&to=2026-11-30")
             .await

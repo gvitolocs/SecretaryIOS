@@ -1523,7 +1523,7 @@ All-day events have `start`/`end` as `YYYY-MM-DD` (end exclusive) and
 | `POST /v1/calendar/events` | `{title, start, end?, allDay?, location?, description?, timeZone?}` → Google primary calendar. `start` RFC 3339 with offset (default end +1 h) or `YYYY-MM-DD` (all-day, default +1 day). `201 {created, event}`. |
 | `PATCH /v1/calendar/events/{id}` | **`confirm: true` required** (`428 confirmation_required` otherwise) + any of the create fields. Moving `start` without `end` keeps the duration. Google events only (`422 read_only_source` for ICS/iPhone). |
 | `DELETE /v1/calendar/events/{id}?confirm=true` | Same rules. Deleting a recurring instance id cancels that instance only. |
-| `GET /v1/calendar/proposals` · `POST /v1/calendar/proposals` | Proposals from clients that may not write (the Lucina MCP): body as for create plus `from`; validated, kept 7 days, ≤ 50. |
+| `GET /v1/calendar/proposals` · `POST /v1/calendar/proposals` | Proposals from clients that may not write (the Lucina MCP, agents), and from Lucina when her direct create for the owner failed: body as for create plus `from` and an optional `reason` (≤ 300 characters, why it is not an event yet); validated, kept 7 days, ≤ 50. The owner's own requests to Lucina go straight to `POST /v1/calendar/events`. |
 | `POST /v1/calendar/proposals/{id}/accept` `{confirm: true}` · `DELETE /v1/calendar/proposals/{id}` | The owner accepts (creates the event) or dismisses it **in the app**; the service token gets `403 owner_only`. |
 
 Errors: `409 google_not_connected`, `409 google_reconnect_needed` (show
