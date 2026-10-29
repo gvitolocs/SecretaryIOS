@@ -77,7 +77,10 @@
 .px-reader__body { position: relative; display: grid; grid-template-columns: minmax(0, 1fr); min-height: 0; min-width: 0; }
 .px-stage { position: relative; min-height: 0; min-width: 0; overflow: hidden; background: #000; touch-action: none; user-select: none; -webkit-user-select: none; cursor: zoom-in; display: grid; place-items: center; }
 .px-stage--zoomed { cursor: grab; }
-.px-stage__img { width: 100%; height: 100%; object-fit: contain; transform-origin: center; will-change: transform; -webkit-user-drag: none; }
+/* Until the image and stage sizes are known: the whole image, contained. Then Reader + zoom.ts place it (Fit, zoom, pan). */
+.px-stage__img { position: absolute; inset: 0; width: 100%; height: 100%; max-width: none; max-height: none; object-fit: contain; transform-origin: center; will-change: transform; -webkit-user-drag: none; }
+.px-stage__img--sized { inset: auto; left: 50%; top: 50%; object-fit: fill; }
+.px-zoom__level { min-width: 4.5em; font-variant-numeric: tabular-nums; }
 .px-stage__note { position: absolute; margin: 0; color: #fff; font-size: var(--lu-type-footnote); text-align: center; padding: var(--lu-space-lg); }
 .px-nav { position: absolute; top: 50%; transform: translateY(-50%); display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border: 0; border-radius: var(--lu-radius-pill); background: var(--lu-scrim); color: #fff; cursor: pointer; }
 .px-nav--prev { left: var(--lu-space-sm); }

@@ -2,14 +2,16 @@ import { createEffect, createMemo, createResource, createSignal, For, on, onClea
 import { isAdultOff, pixivApi, type PixivIllust, type PixivItem } from "../../api/pixiv";
 import { t } from "../../i18n";
 import { BackIcon, BookmarkIcon, CloseIcon, DownloadIcon, SearchIcon } from "../Icons";
+import { clampPan, clampZoom, fitScale, isTall, MAX_ZOOM, pannable, stepZoom, topPan, wheelFactor, widthScale, zoomAround, zoomLabel, type Pan, type Size } from "./zoom";
 
 // The Pixiv work viewer: every page of a work, one at a time. Swipe or the arrow keys turn pages; the
-// zoom buttons, a double click or a two-finger pinch zoom (drag to pan); the next page is fetched in
-// advance. It also bookmarks the work, saves it (or one page) to Lucina's Gallery, and lists its tags
-// (a tag opens a search). Escape or the close button leaves; a zoomed page un-zooms first.
+// next page is fetched in advance. A page opens in Fit (the whole image, letterboxed; zoom.ts) and re-fits when the
+// window changes. The zoom goes from Fit to 400 % of the image's pixels: the buttons and +/- keys, a double click
+// (Fit <-> 100 %), ⌘/ctrl + scroll and a pinch zoom around the cursor; a zoomed page pans by dragging or scrolling.
+// Tall pages offer "Fit width", which scrolls vertically. It also bookmarks the work, saves it (or one page) to
+// Lucina's Gallery, and lists its tags (a tag opens a search). Escape or the close button leaves; a zoomed page
+// goes back to Fit first.
 
-const MIN_ZOOM = 1;
-const MAX_ZOOM = 5;
 const SWIPE_PX = 50;
 
 export interface ReaderProps {
@@ -38,7 +40,11 @@ export function Reader(props: ReaderProps) {
   const work = () => result()?.work;
   const loadError = () => result()?.error;
   const [index, setIndex] = createSignal(0);
-  const [scale, setScale] = createSignal(1);
+  // The shown image's own pixels and the stage's size; null until known (the image then fills the stage, contained).
+  const [natural, setNatural] = createSignal<Size | null>(null);
+  const [view, setView] = createSignal<Size | null>(null);
+  const [mode, setMode] = createSignal<"fit" | "width" | "free">("fit");
+  const [free, setFree] = createSignal(1);
   const [tx, setTx] = createSignal(0);
   const [ty, setTy] = createSignal(0);
   const [details, setDetails] = createSignal(false);
@@ -56,10 +62,16 @@ export function Reader(props: ReaderProps) {
   const title = () => work()?.title ?? props.preview?.title ?? "";
   const author = () => work()?.author ?? props.preview?.author ?? "";
   const src = () => current()?.url || props.preview?.thumbUrl || "";
+  // The list's small thumbnail stands in while the page loads: it may be enlarged to fill the stage.
+  const fit = () => fitScale(natural(), view(), current()?.url ? 1 : Number.POSITIVE_INFINITY);
+  const scale = () => (mode() === "fit" ? fit() : mode() === "width" ? widthScale(natural(), view()) : free());
+  const atFit = () => mode() === "fit" || scale() <= fit() + 1e-9;
+  const canPan = () => pannable(natural(), view(), scale());
+  const tall = () => !!current()?.url && isTall(natural(), view());
   const failedAdult = createMemo(() => !!loadError() && isAdultOff(loadError()));
 
   // A new work starts at its first page.
-  createEffect(on(() => props.id, () => { setIndex(0); setBookmarked(null); setMessage(""); resetZoom(); }, { defer: true }));
+  createEffect(on(() => props.id, () => { setIndex(0); setBookmarked(null); setMessage(""); setNatural(null); resetZoom(); }, { defer: true }));
 
   // The next page (and the previous one) are fetched before they are asked for.
   createEffect(() => {
@@ -71,7 +83,7 @@ export function Reader(props: ReaderProps) {
   });
 
   function resetZoom() {
-    setScale(1);
+    setMode("fit");
     setTx(0);
     setTy(0);
   }
@@ -80,26 +92,71 @@ export function Reader(props: ReaderProps) {
     const n = clamp(to, 0, Math.max(0, total() - 1));
     if (n === index()) return;
     setIndex(n);
+    setNatural(null);
     resetZoom();
   }
 
-  function bounds() {
-    const w = stage?.clientWidth ?? 0;
-    const h = stage?.clientHeight ?? 0;
-    return { x: (w * (scale() - 1)) / 2, y: (h * (scale() - 1)) / 2 };
+  /** Move the image, kept inside its limits at the current scale. */
+  function setPan(p: Pan) {
+    const c = clampPan(p, natural(), view(), scale());
+    setTx(c.x);
+    setTy(c.y);
   }
 
-  function setZoom(next: number) {
-    const s = clamp(next, MIN_ZOOM, MAX_ZOOM);
-    setScale(s);
-    if (s === 1) {
-      setTx(0);
-      setTy(0);
+  /** Zoom to `next` (clamped to Fit..400 %), keeping the image point under `at` (stage-centre coordinates) in place. */
+  function zoomTo(next: number, at?: Pan) {
+    const from = scale();
+    const s = clampZoom(next, fit());
+    if (s <= fit() + 1e-9) return resetZoom();
+    const pan = at ? zoomAround({ x: tx(), y: ty() }, at, from, s) : { x: (tx() * s) / from, y: (ty() * s) / from };
+    setFree(s);
+    setMode("free");
+    setPan(pan);
+  }
+
+  function toggleFitWidth() {
+    if (mode() === "width") return resetZoom();
+    setMode("width");
+    const top = topPan(natural(), view(), scale());
+    setTx(top.x);
+    setTy(top.y);
+  }
+
+  /** A pointer's position relative to the stage centre. */
+  function at(e: { clientX: number; clientY: number }): Pan {
+    const r = stage?.getBoundingClientRect();
+    if (!r || !r.width) return { x: 0, y: 0 };
+    return { x: e.clientX - r.left - r.width / 2, y: e.clientY - r.top - r.height / 2 };
+  }
+
+  // The stage's size: Fit and Fit width follow it (window resize, full screen, the details panel).
+  function measure() {
+    if (!stage) return;
+    const w = stage.clientWidth;
+    const h = stage.clientHeight;
+    if (!w || !h) return;
+    const prev = view();
+    if (prev && prev.w === w && prev.h === h) return;
+    setView({ w, h });
+    if (mode() === "free" && free() <= fit() + 1e-9) resetZoom();
+    else setPan({ x: tx(), y: ty() });
+  }
+  onMount(() => {
+    measure();
+    if (typeof ResizeObserver !== "undefined" && stage) {
+      const ro = new ResizeObserver(() => measure());
+      ro.observe(stage);
+      onCleanup(() => ro.disconnect());
     } else {
-      const b = bounds();
-      setTx(clamp(tx(), -b.x, b.x));
-      setTy(clamp(ty(), -b.y, b.y));
+      window.addEventListener("resize", measure);
+      onCleanup(() => window.removeEventListener("resize", measure));
     }
+  });
+
+  function loaded(e: Event) {
+    const img = e.currentTarget as HTMLImageElement;
+    if (img.naturalWidth > 0 && img.naturalHeight > 0) setNatural({ w: img.naturalWidth, h: img.naturalHeight });
+    measure();
   }
 
   // ---- keys ---------------------------------------------------------------------------------
@@ -107,12 +164,12 @@ export function Reader(props: ReaderProps) {
     if (e.target instanceof HTMLElement && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
     if (e.key === "Escape") {
       if (saveMenu()) setSaveMenu(false);
-      else if (scale() > 1) resetZoom();
+      else if (mode() !== "fit") resetZoom();
       else props.onClose();
-    } else if (e.key === "ArrowRight" && scale() === 1) go(index() + 1);
-    else if (e.key === "ArrowLeft" && scale() === 1) go(index() - 1);
-    else if (e.key === "+" || e.key === "=") setZoom(scale() + 0.5);
-    else if (e.key === "-") setZoom(scale() - 0.5);
+    } else if (e.key === "ArrowRight" && !canPan()) go(index() + 1);
+    else if (e.key === "ArrowLeft" && !canPan()) go(index() - 1);
+    else if (e.key === "+" || e.key === "=") zoomTo(stepZoom(scale(), true, fit()));
+    else if (e.key === "-") zoomTo(stepZoom(scale(), false, fit()));
     else if (e.key === "0") resetZoom();
     else return;
     e.preventDefault();
@@ -126,7 +183,7 @@ export function Reader(props: ReaderProps) {
   // ---- pointers: swipe, pan, pinch ----------------------------------------------------------
   const pointers = new Map<number, { x: number; y: number }>();
   let gesture: { x: number; y: number; at: number; tx: number; ty: number; moved: boolean } | null = null;
-  let pinch: { dist: number; scale: number } | null = null;
+  let pinch: { dist: number; scale: number; at: Pan } | null = null;
 
   const distance = () => {
     const [a, b] = [...pointers.values()];
@@ -143,7 +200,8 @@ export function Reader(props: ReaderProps) {
     if (pointers.size === 1) gesture = { x: e.clientX, y: e.clientY, at: Date.now(), tx: tx(), ty: ty(), moved: false };
     else if (pointers.size === 2) {
       gesture = null;
-      pinch = { dist: distance(), scale: scale() };
+      const [a, b] = [...pointers.values()];
+      pinch = { dist: distance(), scale: scale(), at: a && b ? at({ clientX: (a.x + b.x) / 2, clientY: (a.y + b.y) / 2 }) : { x: 0, y: 0 } };
     }
   }
 
@@ -151,11 +209,9 @@ export function Reader(props: ReaderProps) {
     if (!pointers.has(e.pointerId)) return;
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (pointers.size === 2 && pinch && pinch.dist > 0) {
-      setZoom((pinch.scale * distance()) / pinch.dist);
-    } else if (gesture && scale() > 1) {
-      const b = bounds();
-      setTx(clamp(gesture.tx + e.clientX - gesture.x, -b.x, b.x));
-      setTy(clamp(gesture.ty + e.clientY - gesture.y, -b.y, b.y));
+      zoomTo((pinch.scale * distance()) / pinch.dist, pinch.at);
+    } else if (gesture && canPan()) {
+      setPan({ x: gesture.tx + e.clientX - gesture.x, y: gesture.ty + e.clientY - gesture.y });
       gesture.moved = true;
     }
   }
@@ -168,7 +224,7 @@ export function Reader(props: ReaderProps) {
     gesture = null;
     const dx = e.clientX - g.x;
     const dy = e.clientY - g.y;
-    if (scale() === 1 && Math.abs(dx) > SWIPE_PX && Math.abs(dx) > Math.abs(dy) * 1.5 && Date.now() - g.at < 900) {
+    if (!canPan() && Math.abs(dx) > SWIPE_PX && Math.abs(dx) > Math.abs(dy) * 1.5 && Date.now() - g.at < 900) {
       go(index() + (dx < 0 ? 1 : -1));
     }
   }
@@ -179,9 +235,22 @@ export function Reader(props: ReaderProps) {
     if (pointers.size === 0) gesture = null;
   }
 
+  // ⌘/ctrl + scroll (and a trackpad pinch, which arrives as ctrl + wheel) zooms around the cursor; a plain scroll
+  // pans a page that is larger than the stage (Fit width scrolls this way).
   function wheel(e: WheelEvent) {
-    e.preventDefault();
-    setZoom(scale() * (e.deltaY < 0 ? 1.15 : 1 / 1.15));
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      zoomTo(scale() * wheelFactor(e.deltaY), at(e));
+    } else if (canPan()) {
+      e.preventDefault();
+      setPan({ x: tx() - e.deltaX, y: ty() - e.deltaY });
+    }
+  }
+
+  // Double click: Fit -> 100 % at the cursor (200 % when Fit is already the image's own size), anything else -> Fit.
+  function doubleClick(e: MouseEvent) {
+    if (!atFit()) return resetZoom();
+    zoomTo(fit() < 1 ? 1 : Math.min(2, MAX_ZOOM), at(e));
   }
 
   // ---- actions ------------------------------------------------------------------------------
@@ -254,21 +323,31 @@ export function Reader(props: ReaderProps) {
         <div
           ref={stage}
           class="px-stage"
-          classList={{ "px-stage--zoomed": scale() > 1 }}
+          classList={{ "px-stage--zoomed": canPan() }}
           onPointerDown={down}
           onPointerMove={move}
           onPointerUp={up}
           onPointerCancel={cancel}
-          onDblClick={() => (scale() > 1 ? resetZoom() : setZoom(2.5))}
+          onDblClick={doubleClick}
           onWheel={wheel}
         >
           <Show when={src()} fallback={<p class="px-stage__note">{t("pixiv.loading")}</p>}>
             <img
               class="px-stage__img"
+              classList={{ "px-stage__img--sized": !!natural() && !!view() }}
               src={src()}
               alt={t("pixiv.pageOf", { page: index() + 1, total: total() })}
               draggable={false}
-              style={{ transform: `translate(${tx()}px, ${ty()}px) scale(${scale()})` }}
+              onLoad={loaded}
+              style={
+                natural() && view()
+                  ? {
+                      width: `${natural()!.w}px`,
+                      height: `${natural()!.h}px`,
+                      transform: `translate(-50%, -50%) translate(${tx()}px, ${ty()}px) scale(${scale()})`,
+                    }
+                  : {}
+              }
             />
           </Show>
           <Show when={failedAdult()}>
@@ -331,9 +410,12 @@ export function Reader(props: ReaderProps) {
       <footer class="px-reader__foot">
         <p class="px-reader__msg" role="status" aria-live="polite">{message()}</p>
         <div class="px-zoom" role="group" aria-label={t("pixiv.zoomReset")}>
-          <button type="button" class="px-iconbtn px-iconbtn--text" aria-label={t("pixiv.zoomOut")} disabled={scale() <= MIN_ZOOM} onClick={() => setZoom(scale() - 0.5)}>−</button>
-          <button type="button" class="px-iconbtn px-iconbtn--text" aria-label={t("pixiv.zoomReset")} disabled={scale() === 1} onClick={resetZoom}>{Math.round(scale() * 100)}%</button>
-          <button type="button" class="px-iconbtn px-iconbtn--text" aria-label={t("pixiv.zoomIn")} disabled={scale() >= MAX_ZOOM} onClick={() => setZoom(scale() + 0.5)}>+</button>
+          <Show when={tall()}>
+            <button type="button" class="px-iconbtn px-iconbtn--text" aria-pressed={mode() === "width"} onClick={toggleFitWidth}>{t("pixiv.fitWidth")}</button>
+          </Show>
+          <button type="button" class="px-iconbtn px-iconbtn--text" aria-label={t("pixiv.zoomOut")} disabled={atFit()} onClick={() => zoomTo(stepZoom(scale(), false, fit()))}>−</button>
+          <button type="button" class="px-iconbtn px-iconbtn--text px-zoom__level" aria-label={t("pixiv.zoomReset")} disabled={mode() === "fit"} onClick={resetZoom}>{zoomLabel(atFit(), scale(), t("pixiv.zoomFit"))}</button>
+          <button type="button" class="px-iconbtn px-iconbtn--text" aria-label={t("pixiv.zoomIn")} disabled={scale() >= MAX_ZOOM} onClick={() => zoomTo(stepZoom(scale(), true, fit()))}>+</button>
         </div>
         <p class="px-reader__count" aria-live="polite">{index() + 1} / {total()}</p>
       </footer>
