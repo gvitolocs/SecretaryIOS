@@ -82,7 +82,7 @@ describe("share sheet", () => {
     vi.mocked(fetch).mockResolvedValue(new Response('{}', { status: 202 }));
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     await waitFor(() => expect(sent).toHaveBeenCalledOnce());
-    expect((vi.mocked(fetch).mock.calls[1]![1]!.body as FormData).get("shareId")).toBe(share.id);
+    expect((vi.mocked(fetch).mock.calls.filter(call => call[0] === "/v1/share")[1]![1]!.body as FormData).get("shareId")).toBe(share.id);
   });
 
   it("recovers pending shares without a query and reopens them from the pending button", async () => {

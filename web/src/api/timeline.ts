@@ -33,13 +33,18 @@ export interface Attachment {
 }
 
 export interface ItemMeta {
+  device?: string;
+  deviceName?: string;
   via?: string;
   caller?: string;
   chatTitle?: string;
   guildName?: string;
   channelName?: string;
   isDm?: boolean;
-  kind?: "reminder" | "avatar_outfit" | "note" | "notes" | "proactive" | "share";
+  kind?: "reminder" | "avatar_outfit" | "note" | "notes" | "proactive" | "share" | "tool";
+  /** With kind "tool": the tool Lucina called for this step, and whether it succeeded. */
+  tool?: string;
+  ok?: boolean;
   /** With kind "avatar_outfit": what Lucina put on (neither: back to automatic). */
   outfit?: string;
   hair?: string;
@@ -56,6 +61,33 @@ export interface ItemMeta {
   /** With kind "share": the POST /v1/share idempotency key and the quick action. */
   shareId?: string;
   intent?: string;
+  /** A reply Jev decided (Lucina's yes/no answers): the bubble shows a badge with the latency. */
+  jev?: JevBadge;
+}
+
+export interface JevBadge {
+  /** "yesno". */
+  feature: string;
+  /** "yes" | "no" | "unsure" | "hedge". */
+  answer?: string;
+  /** Certainty of the answer, 0..1. */
+  p?: number;
+  /** Jev's own milliseconds. */
+  ms?: number;
+}
+
+export function parseJevBadge(v: unknown): JevBadge | undefined {
+  if (!v || typeof v !== "object") return undefined;
+  const m = v as Record<string, unknown>;
+  const word = (x: unknown) => (typeof x === "string" && /^[a-z0-9_.-]{1,32}$/i.test(x) ? x : undefined);
+  const feature = word(m.feature);
+  if (!feature) return undefined;
+  const out: JevBadge = { feature };
+  const answer = word(m.answer);
+  if (answer) out.answer = answer;
+  if (typeof m.p === "number" && m.p >= 0 && m.p <= 1) out.p = m.p;
+  if (typeof m.ms === "number" && Number.isFinite(m.ms) && m.ms >= 0 && m.ms < 600_000) out.ms = Math.round(m.ms);
+  return out;
 }
 
 export type ProactivePriority = "low" | "normal" | "high";
@@ -136,6 +168,8 @@ export interface TimelineItem {
 
 export interface TimelinePage {
   items: unknown;
+  cursor?: string | null;
+  hasMore?: boolean;
   nextBefore?: string | number | null;
 }
 
@@ -164,6 +198,8 @@ function parseMeta(v: unknown): ItemMeta | undefined {
   if (!v || typeof v !== "object") return undefined;
   const m = v as Record<string, unknown>;
   const out: ItemMeta = {};
+  if (typeof m.device === "string") out.device = m.device;
+  if (typeof m.deviceName === "string") out.deviceName = m.deviceName;
   if (typeof m.via === "string") out.via = m.via;
   if (typeof m.caller === "string") out.caller = m.caller;
   const chatTitle = str(m.chatTitle);
@@ -180,6 +216,11 @@ function parseMeta(v: unknown): ItemMeta | undefined {
     if (typeof m.hair === "string" && /^[a-z0-9][a-z0-9_-]{0,39}$/.test(m.hair)) out.hair = m.hair;
   }
   if (m.kind === "notes") out.kind = "notes";
+  if (m.kind === "tool") {
+    out.kind = "tool";
+    if (typeof m.tool === "string" && /^[A-Za-z][\w.-]{0,63}$/.test(m.tool)) out.tool = m.tool;
+    if (typeof m.ok === "boolean") out.ok = m.ok;
+  }
   const rich = parseRich(m);
   if (rich) out.rich = rich;
   if (m.kind === "proactive") {
@@ -200,6 +241,8 @@ function parseMeta(v: unknown): ItemMeta | undefined {
     if (typeof m.shareId === "string" && /^[A-Za-z0-9-]{8,64}$/.test(m.shareId)) out.shareId = m.shareId;
     if (typeof m.intent === "string" && /^[a-z]{1,16}$/.test(m.intent)) out.intent = m.intent;
   }
+  const jev = parseJevBadge(m.jev);
+  if (jev) out.jev = jev;
   if (m.format === "v1") {
     const blocks = parseModel3dBlocks(m.blocks);
     if (blocks.length) out.blocks = blocks;

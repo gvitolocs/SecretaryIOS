@@ -159,16 +159,6 @@ h3 {
   text-transform: uppercase;
 }
 
-/* ---------- Glass ---------- */
-
-.glass {
-  background: var(--glass);
-  border: 1px solid var(--border);
-  box-shadow: var(--shadow);
-  -webkit-backdrop-filter: blur(var(--blur)) saturate(1.4);
-  backdrop-filter: blur(var(--blur)) saturate(1.4);
-}
-
 /* ---------- Buttons and inputs ---------- */
 
 .btn {
@@ -791,6 +781,20 @@ select.text-input option {
   margin: 0 auto;
   padding: 16px var(--pad-right) 32px var(--pad-left);
 }
+.scan-page--wide {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+}
+.pg.scan-desk .scan-desk-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+/* Desktop: the viewfinder keeps a phone-sized square instead of filling the column. */
+.pg.scan-desk .scan-viewfinder {
+  max-width: 420px;
+}
 
 .scan-head {
   display: flex;
@@ -1198,6 +1202,10 @@ select.text-input option {
 
 .shell-body > .content {
   min-width: 0;
+  /* Pages that scroll themselves (chat, shopping, gym) fill it exactly; the rest (server, gallery, films, chats)
+     scroll here, since the shell body is clipped (overflow: hidden) on wide screens and inside Secretary Code. */
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 @media (max-width: 420px) {
@@ -1913,6 +1921,7 @@ select.text-input option {
   flex-direction: column;
   flex: 1;
   min-height: 0;
+  background: var(--lu-chat-bg);
 }
 
 .messages {
@@ -1931,6 +1940,13 @@ select.text-input option {
   mask-image: linear-gradient(to bottom, transparent, #000 18px, #000 calc(100% - 10px), transparent);
   scrollbar-width: thin;
   scrollbar-color: var(--surface-3) transparent;
+}
+
+.messages-content {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: inherit;
 }
 
 .messages > *,
@@ -2205,6 +2221,21 @@ select.text-input option {
 
 .msg-imported {
   font-style: italic;
+}
+
+/* A reply Jev decided (yes/no answers): certainty and latency, like the source badge. */
+.jev-badge {
+  --ch: var(--violet);
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--ch) 32%, transparent);
+  background: color-mix(in srgb, var(--ch) 10%, transparent);
+  color: color-mix(in srgb, var(--ch) 80%, var(--text));
+  font-family: var(--mono);
+  font-size: 0.625rem;
+  white-space: nowrap;
 }
 
 .msg-time {

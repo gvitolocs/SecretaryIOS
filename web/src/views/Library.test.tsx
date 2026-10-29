@@ -1,10 +1,11 @@
 import { Route } from "@solidjs/router";
 import { fireEvent, screen, waitFor } from "@solidjs/testing-library";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Book, Brief, Highlight } from "../api/library";
 import { setLocale } from "../i18n";
 import { stubFetch, type Call } from "../test/fetch";
 import { renderAt } from "../test/router";
+import { stubWide } from "../test/wide";
 import LibraryView from "./Library";
 
 const BOOK: Book = {
@@ -282,5 +283,37 @@ describe("Library", () => {
     expect(screen.getByText(/Removed from Kindle:/)).toBeInTheDocument();
     expect(screen.queryByText("Owned")).not.toBeInTheDocument();
     expect(screen.queryByText("On Kindle")).not.toBeInTheDocument();
+  });
+});
+
+
+describe("Library desktop page", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it("keeps Library above filters, book rows and Activity", async () => {
+    stubWide(); server(); renderLibrary();
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Library");
+    expect(await screen.findByRole("link", { name: BOOK.title })).toHaveAttribute("href", `/library/${BOOK.id}`);
+    expect(screen.getByRole("region", { name: "Library" }).querySelector(".pg-rows")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Activity / stats" })).toBeInTheDocument();
+    expect(screen.getByRole("searchbox")).toHaveClass("pg-input");
+    expect(document.querySelectorAll(".pg-cta").length).toBeLessThanOrEqual(1);
+    expect(document.querySelector(".view-title, .library-filters, .pg-seg")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Reading" }));
+    expect(await screen.findByText("No books match these filters.")).toHaveClass("pg-empty-text");
+  });
+  it("keeps the Library header on a book with highlights and facts in a rail", async () => {
+    stubWide(); server(); renderLibrary(`/library/${BOOK.id}`);
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Library");
+    expect(await screen.findByRole("heading", { level: 2, name: BOOK.title })).toHaveClass("library-detail-title");
+    expect(screen.getByRole("link", { name: "Back to library" })).toHaveClass("pg-back");
+    expect(screen.getByRole("region", { name: "Highlights" })).toHaveTextContent(HIGHLIGHT.text);
+    expect(document.querySelector(".pg-rail")).toHaveTextContent("B123");
+    expect(document.querySelectorAll(".pg-cta")).toHaveLength(0);
+  });
+  it("combines failed book and Activity loads into one retry", async () => {
+    stubWide(); server(() => ({ status: 503, body: {} })); renderLibrary();
+    expect(await screen.findByRole("alert")).toHaveClass("pg-error");
+    expect(document.querySelectorAll(".pg-error")).toHaveLength(1);
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Library");
   });
 });

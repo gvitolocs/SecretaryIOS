@@ -188,6 +188,7 @@ export type GymCommand =
   | { type: "finish_workout" }
   | { type: "cancel_workout" }
   | { type: "save_routine"; name: string; exercise_ids?: string[]; from_active?: boolean }
+  | { type: "update_routine"; routine_id: string; name?: string; exercise_ids?: string[] }
   | { type: "delete_routine"; routine_id: string }
   | { type: "delete_workout"; workout_id: string }
   | { type: "create_exercise"; name: string; muscle: string; equipment: string; kind: ExerciseKind }

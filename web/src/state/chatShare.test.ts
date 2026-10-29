@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { stubFetch } from "../test/fetch";
+import { readItems } from "../lib/chatdb";
 import { draftFor } from "../lib/attachments";
 import {
   chat,
   clearChat,
   receiveItem,
-  reloadChatFromStorage,
   retryMessage,
   sendAttachmentMessage,
   stopSharePolling,
@@ -103,7 +103,7 @@ describe("chat attachment sends", () => {
     expect(chat.messages[0]).toMatchObject({ status: "error", error: "Not sent — Retry" });
     expect(chat.messages[0]!.share).toMatchObject({ phase: "error", error: "Unavailable" });
     // The files cannot survive a reload, so the unsent bubble is not cached.
-    expect(sessionStorage.getItem("secretary.timeline.v1")).toBe("[]");
+    expect(sessionStorage.getItem("secretary.timeline.v1")).toBeNull();
 
     const retry = retryMessage(key);
     const second = FakeXHR.instances[1]!;
@@ -114,11 +114,9 @@ describe("chat attachment sends", () => {
     expect(chat.messages[0]).toMatchObject({ status: "sent", itemId: "u2" });
     expect(chat.messages[0]!.share?.phase).toBe("reading");
 
-    // Once accepted it is cached as a plain message (no share state, no blob previews).
-    reloadChatFromStorage();
-    expect(chat.messages[0]).toMatchObject({ text: "retry me", status: "sent", itemId: "u2" });
-    expect(chat.messages[0]!.share).toBeUndefined();
-    expect(chat.messages[0]!.attachments?.[0]?.previewUrl).toBeUndefined();
+    const cached = await readItems("mine");
+    expect(cached[0]).toMatchObject({ text: "retry me", id: "u2" });
+    expect(cached[0]!.attachments?.[0]?.previewUrl).toBeUndefined();
   });
 
   it("applies status polling and marks a server error as retryable", async () => {

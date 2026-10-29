@@ -1,0 +1,104 @@
+/* NClient, using the same Lucina tokens as the other plugin pages. Phone first: nothing here is wider than
+   the viewport, also inside Secretary Code (?shell=1) at 390 px. */
+.nclient { display: grid; gap: var(--lu-space-md); width: 100%; max-width: 1200px; margin: 0 auto; padding: var(--lu-space-lg) var(--lu-space-gutter) 120px; color: var(--lu-text); background: var(--lu-bg); border-radius: var(--lu-radius-card); font-family: var(--lu-font); box-sizing: border-box; overflow-x: clip; }
+.nclient > * { min-width: 0; }
+.nclient > .media-back { color: var(--lu-accent); text-decoration: none; width: fit-content; }
+.nclient h1 { margin: 0; font-size: var(--lu-type-large-title); font-weight: var(--lu-type-large-title-weight); }
+.nclient h2, .nclient h3 { margin: 0; overflow-wrap: anywhere; }
+.nclient h3 { font-size: 17px; color: var(--lu-text-secondary); font-weight: 600; margin-top: var(--lu-space-sm); }
+.nclient select option { color: var(--lu-text); background: var(--lu-card); }
+.nclient button, .nclient input, .nclient select { font: inherit; color: inherit; border: 1px solid var(--lu-separator); border-radius: var(--lu-radius-tile); padding: var(--lu-space-sm) 14px; background: var(--lu-field); min-height: 44px; box-sizing: border-box; max-width: 100%; }
+.nclient button { cursor: pointer; }
+.nclient button:disabled { opacity: .45; cursor: default; }
+.nclient button[aria-pressed="true"] { color: var(--lu-accent); border-color: var(--lu-accent); }
+.nclient .nclient-primary { background: var(--lu-accent); border-color: var(--lu-accent); color: var(--lu-on-accent, #fff); }
+.nclient :is(button, input, select, summary):focus-visible { outline: 2px solid var(--lu-accent); outline-offset: 3px; }
+.nclient label { display: flex; align-items: center; flex-wrap: wrap; gap: var(--lu-space-xs); }
+.nclient-note { margin: 0; color: var(--lu-text-secondary); overflow-wrap: anywhere; }
+.nclient-bar { display: flex; align-items: center; flex-wrap: wrap; gap: var(--lu-space-sm); }
+.nclient-bar--nav { justify-content: space-between; }
+.nclient-bar-page { color: var(--lu-text-secondary); font-variant-numeric: tabular-nums; }
+
+/* Search */
+.nclient-search { display: flex; flex-wrap: wrap; align-items: end; gap: var(--lu-space-sm); }
+.nclient-search label { display: grid; gap: 4px; }
+.nclient-search-q { flex: 1 1 220px; }
+.nclient-search-q input { width: 100%; }
+.nclient-filters { display: grid; gap: var(--lu-space-sm); }
+.nclient-filters summary { cursor: pointer; padding-block: var(--lu-space-sm); color: var(--lu-text-secondary); }
+.nclient-filters label { display: grid; gap: 4px; }
+.nclient-filters input { width: 100%; }
+.nclient-tags { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.nclient-tags li { display: inline-flex; align-items: center; gap: 4px; padding-left: 12px; border-radius: 999px; background: var(--lu-card); }
+.nclient-tags li button { min-height: 36px; min-width: 36px; padding: 0; border-radius: 50%; border: 0; background: transparent; color: var(--lu-accent); font-size: 18px; }
+.nclient-tag-name { overflow-wrap: anywhere; }
+.nclient-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.nclient .nclient-chip { min-height: 36px; padding: 0 12px; border-radius: 999px; color: var(--lu-accent); border-color: var(--lu-accent); }
+.nclient .nclient-chip--minus { color: var(--lu-negative); border-color: var(--lu-negative); }
+
+/* Results */
+.nclient-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: var(--lu-space-grid-gap); }
+.nclient .nclient-card { display: flex; flex-direction: column; align-items: stretch; gap: var(--lu-space-xs); padding: 0; border: 0; background: transparent; text-align: left; overflow: hidden; min-height: 0; }
+.nclient-card-art { position: relative; display: block; }
+.nclient-thumb { width: 100%; aspect-ratio: 2 / 3; object-fit: cover; border-radius: var(--lu-radius-tile); background: var(--lu-field); display: block; }
+.nclient-thumb--empty { aspect-ratio: 2 / 3; }
+.nclient-badge { position: absolute; top: 6px; right: 6px; padding: 2px 7px; border-radius: 999px; background: rgb(0 0 0 / .55); color: #fff; font-size: 13px; }
+.nclient-progress { position: absolute; left: 6px; right: 6px; bottom: 6px; height: 4px; border-radius: 2px; background: rgb(0 0 0 / .45); overflow: hidden; }
+.nclient-progress > span { display: block; height: 100%; background: var(--lu-accent); }
+.nclient-card-title { overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.nclient-card small { color: var(--lu-text-secondary); }
+
+/* Detail */
+.nclient .nclient-back { width: fit-content; border: 0; background: transparent; color: var(--lu-accent); padding-inline: 0; }
+.nclient-detail { display: grid; grid-template-columns: minmax(0, 240px) minmax(0, 1fr); gap: var(--lu-space-lg); align-items: start; }
+.nclient-cover { width: 100%; aspect-ratio: 2 / 3; object-fit: cover; border-radius: var(--lu-radius-tile); background: var(--lu-field); }
+.nclient-detail-main { display: grid; gap: var(--lu-space-sm); min-width: 0; }
+.nclient-meta { margin: 0; color: var(--lu-text-secondary); }
+.nclient-taglist { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.nclient-taglist li { padding: 4px 10px; border-radius: 999px; background: var(--lu-card); font-size: 14px; overflow-wrap: anywhere; }
+.nclient-pages { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 8px; }
+.nclient .nclient-pagethumb { position: relative; padding: 0; border: 0; background: transparent; min-height: 0; display: grid; overflow: hidden; border-radius: var(--lu-radius-tile); }
+.nclient-pagethumb small { position: absolute; left: 4px; bottom: 4px; padding: 0 6px; border-radius: 999px; background: rgb(0 0 0 / .55); color: #fff; font-size: 12px; }
+.nclient .nclient-more { width: fit-content; }
+
+/* Save to Lucina */
+.nclient-save { display: grid; gap: 6px; justify-items: start; min-width: 0; }
+.nclient-save--compact { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.nclient-save-state { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--lu-text-secondary); font-size: 14px; min-width: 0; }
+.nclient-save-state progress { width: 140px; max-width: 100%; height: 8px; accent-color: var(--lu-accent); }
+
+/* Reader */
+.nclient-reader { display: grid; gap: var(--lu-space-sm); min-width: 0; }
+.nclient-zoom { display: flex; align-items: center; gap: 6px; }
+.nclient-zoom button { min-width: 44px; padding-inline: 0; }
+.nclient-zoom input[type="range"] { width: 110px; padding: 0; min-height: 44px; }
+.nclient-zoom-value { min-width: 3.4em; text-align: right; font-variant-numeric: tabular-nums; color: var(--lu-text-secondary); }
+.nclient-viewport { width: 100%; height: max(280px, calc(100svh - 270px)); overflow: auto; overscroll-behavior: contain; background: var(--lu-field); border-radius: var(--lu-radius-tile); -webkit-overflow-scrolling: touch; touch-action: pan-x pan-y; }
+.nclient-page { display: block; margin-inline: auto; max-width: none; object-fit: contain; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.nclient-page--height { height: calc(max(280px, 100svh - 270px) * var(--nc-zoom)); width: auto; }
+.nclient-page--width { width: calc(100% * var(--nc-zoom)); height: auto; }
+.nclient-page--original { width: calc(var(--nc-width) * var(--nc-zoom)); height: auto; }
+.nclient-reader input[type="number"] { width: 5.5rem; }
+
+.nclient .nclient-heart { min-width: 44px; padding-inline: 0; font-size: 20px; line-height: 1; }
+
+@media (max-width: 520px) {
+  .nclient-reader { gap: 6px; }
+  .nclient-reader .nclient-bar { gap: 6px; }
+  .nclient-reader :is(button, select, input[type="number"]) { min-height: 40px; padding: 4px 10px; }
+  .nclient-reader .nclient-zoom button { min-width: 40px; padding-inline: 0; }
+  .nclient-reader .nclient-heart { min-width: 40px; padding-inline: 0; }
+  .nclient-save--compact { flex: 1 1 100%; gap: 6px; }
+  .nclient-save--compact .nclient-save-state { font-size: 13px; }
+  .nclient-save--compact progress { width: 70px; }
+  .nclient-detail { grid-template-columns: minmax(0, 110px) minmax(0, 1fr); gap: var(--lu-space-sm); }
+  .nclient-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .nclient-zoom input[type="range"] { width: 80px; }
+  .nclient-viewport { height: max(280px, calc(100svh - 250px)); }
+  .nclient-page--height { height: calc(max(280px, 100svh - 250px) * var(--nc-zoom)); }
+}
+
+/* Desktop page system: no plugin panel chrome. */
+.nclient--wide { max-width: none; margin: 0; padding: 0; background: transparent; border-radius: 0; }
+.pg.nclient-desk .nclient-desk-main { padding: var(--pg-pad, 24px); }
+.pg.nclient-desk .nclient-desk-pager { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 16px; flex-wrap: wrap; }

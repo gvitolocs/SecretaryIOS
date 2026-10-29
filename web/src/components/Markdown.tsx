@@ -1,9 +1,49 @@
-import { createMemo, For, Match, Show, Switch, type JSX } from "solid-js";
+import { createContext, createMemo, For, Match, Show, Switch, useContext, type JSX } from "solid-js";
 import { Dynamic } from "solid-js/web";
-import { inlineText, parseInline, parseMarkdown, type Block, type Inline } from "../lib/markdown";
+import { t } from "../i18n";
+import { citationRefs, inlineText, parseInline, parseMarkdown, type Block, type Inline } from "../lib/markdown";
+import { InAppLink } from "./InAppLink";
 
 // Renders lib/markdown's tree as elements with text children only: no
 // innerHTML anywhere, links open in a new tab without a referrer.
+
+/** What a Notebooks citation chip needs to say about its passage (api/notebooks.ts Citation). */
+export interface CiteInfo {
+  ref: string;
+  title: string;
+  excerpt?: string;
+  page?: number | null;
+}
+
+/** Present where citations are live (a notebook chat): the numbers, the passages and the click. */
+const CiteContext = createContext<{ order: () => string[]; info: () => CiteInfo[]; open: (ref: string) => void }>();
+
+/** [source:<chunk id>] / [insight:<id>] as a small numbered chip; plain text where nothing can open it. */
+function Cite(props: { node: Extract<Inline, { t: "cite" }> }) {
+  const ctx = useContext(CiteContext);
+  return (
+    <Show when={ctx} fallback={`[${props.node.ref}]`}>
+      {(c) => {
+        const info = () => c().info().find((i) => i.ref === props.node.ref);
+        const n = () => c().order().indexOf(props.node.ref) + 1;
+        const label = () => info()?.title ?? props.node.ref;
+        const page = () => (info()?.page ? ` · p. ${info()?.page}` : "");
+        return (
+          <button
+            type="button"
+            class="md-cite"
+            data-kind={props.node.kind}
+            title={`${label()}${page()}${info()?.excerpt ? `\n${info()?.excerpt}` : ""}`}
+            aria-label={t("notebooks.citeLabel", { n: n(), title: label() })}
+            onClick={() => c().open(props.node.ref)}
+          >
+            {n()}
+          </button>
+        );
+      }}
+    </Show>
+  );
+}
 
 function Inlines(props: { nodes: Inline[] }): JSX.Element {
   return (
@@ -15,6 +55,7 @@ function Inlines(props: { nodes: Inline[] }): JSX.Element {
             <br />
           </Match>
           <Match when={n.t === "code" && n}>{(x) => <code>{x().text}</code>}</Match>
+          <Match when={n.t === "cite" && n}>{(x) => <Cite node={x()} />}</Match>
           <Match when={n.t === "strong" && n}>
             {(x) => (
               <strong>
@@ -38,9 +79,18 @@ function Inlines(props: { nodes: Inline[] }): JSX.Element {
           </Match>
           <Match when={n.t === "link" && n}>
             {(x) => (
-              <a href={x().href} target="_blank" rel="noopener noreferrer nofollow">
-                <Inlines nodes={x().children} />
-              </a>
+              <Show
+                when={x().route}
+                fallback={
+                  <a href={x().href} target="_blank" rel="noopener noreferrer nofollow">
+                    <Inlines nodes={x().children} />
+                  </a>
+                }
+              >
+                <InAppLink href={x().href} class="md-note-link">
+                  <Inlines nodes={x().children} />
+                </InAppLink>
+              </Show>
             )}
           </Match>
         </Switch>
@@ -150,8 +200,10 @@ export function InlineMarkdown(props: { text: string }) {
 /**
  * Markdown text as safe elements. Headings start at h2 (the page owns h1).
  * `skipHeading`: drop a first heading with this text (the page shows the title).
+ * `onCite`: Notebooks citations ([source:…], [insight:…]) become numbered chips that call it
+ * (`citations` gives them their titles); without it they stay plain text.
  */
-export function Markdown(props: { text: string; class?: string; skipHeading?: string }) {
+export function Markdown(props: { text: string; class?: string; skipHeading?: string; citations?: CiteInfo[]; onCite?: (ref: string) => void }) {
   const blocks = createMemo(() => {
     const all = parseMarkdown(props.text);
     const first = all[0];
@@ -159,9 +211,15 @@ export function Markdown(props: { text: string; class?: string; skipHeading?: st
     if (skip && first?.t === "heading" && inlineText(first.children).trim().toLowerCase() === skip) return all.slice(1);
     return all;
   });
-  return (
+  const order = createMemo(() => citationRefs(blocks()));
+  const body = () => (
     <div class={props.class ? `md ${props.class}` : "md"}>
       <Blocks blocks={blocks()} />
     </div>
+  );
+  return (
+    <Show when={props.onCite} fallback={body()}>
+      {(open) => <CiteContext.Provider value={{ order, info: () => props.citations ?? [], open: open() }}>{body()}</CiteContext.Provider>}
+    </Show>
   );
 }

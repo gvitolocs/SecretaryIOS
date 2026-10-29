@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { inlineText, parseInline, parseMarkdown, safeLink, type Block, type Inline } from "./markdown";
+import { citationRefs, inlineText, parseInline, parseMarkdown, safeLink, type Block, type Inline } from "./markdown";
 
 const links = (nodes: Inline[]): string[] =>
   nodes.flatMap((n) => (n.t === "link" ? [n.href, ...links(n.children)] : "children" in n ? links(n.children) : []));
@@ -91,5 +91,82 @@ describe("plainExcerpt", async () => {
     expect(plainExcerpt("a cookbook (*Il cucchiaio d'argento*) Marco")).toBe("a cookbook (Il cucchiaio d'argento) Marco");
     expect(plainExcerpt("*Briefing di ChatGPT, cut off before the clos…")).toBe("Briefing di ChatGPT, cut off before the clos…");
     expect(parseTags("Work, #rome , work,, ")).toEqual(["work", "rome"]);
+  });
+});
+
+describe("[note:<slug>] citations", () => {
+  const cite = (src: string) => parseInline(src).filter((n) => n.t === "link");
+
+  it("turns a citation into an in-app link to the note in Keep", () => {
+    const nodes = parseInline("Saved it in [note:gift-ideas-xmas] for you.");
+    expect(nodes).toEqual([
+      { t: "text", text: "Saved it in " },
+      { t: "link", href: "/keep/note/gift-ideas-xmas", route: true, children: [{ t: "text", text: "note:gift-ideas-xmas" }] },
+      { t: "text", text: " for you." },
+    ]);
+  });
+
+  it("finds several, and keeps the rest of the text, bold and links as they are", () => {
+    const nodes = parseInline("**See** [note:a] and [note:b-2], also [the site](https://x.org).");
+    expect(links(nodes)).toEqual(["/keep/note/a", "/keep/note/b-2", "https://x.org/"]);
+    expect(nodes[0]).toMatchObject({ t: "strong" });
+  });
+
+  it("only accepts a slug of [a-z0-9-], 1 to 64 characters", () => {
+    expect(cite("[note:Upper]")).toHaveLength(0);
+    expect(cite("[note:with space]")).toHaveLength(0);
+    expect(cite("[note:]")).toHaveLength(0);
+    expect(cite("[note:a_b]")).toHaveLength(0);
+    expect(cite(`[note:${"a".repeat(64)}]`)).toHaveLength(1);
+    expect(cite(`[note:${"a".repeat(65)}]`)).toHaveLength(0);
+    expect(inlineText(parseInline("[note:Upper]"))).toBe("[note:Upper]");
+  });
+
+  it("leaves code and a markdown link that happens to start with note: alone", () => {
+    expect(links(parseInline("`[note:x]`"))).toEqual([]);
+    expect(links(parseInline("[note:x](https://y.org)"))).toEqual(["https://y.org/"]);
+  });
+
+  it("is inline in paragraphs and list items of a whole document", () => {
+    const blocks = parseMarkdown("- one [note:x]\n- two");
+    const first = (blocks[0] as Extract<Block, { t: "list" }>).items[0]!.children[0] as Extract<Block, { t: "paragraph" }>;
+    expect(links(first.children)).toEqual(["/keep/note/x"]);
+  });
+});
+
+
+describe("[source:<chunk id>] and [insight:<id>] citations (Notebooks)", () => {
+  it("turns them into cite nodes that keep the ref as written", () => {
+    expect(parseInline("True [source:s0a9be3c112-14].")).toEqual([
+      { t: "text", text: "True " },
+      { t: "cite", kind: "source", id: "s0a9be3c112-14", ref: "source:s0a9be3c112-14" },
+      { t: "text", text: "." },
+    ]);
+    expect(parseInline("[insight:i4f1c09a2e7]")).toEqual([{ t: "cite", kind: "insight", id: "i4f1c09a2e7", ref: "insight:i4f1c09a2e7" }]);
+  });
+
+  it("keeps [note:<slug>] as the link to Keep, next to the new ones", () => {
+    const nodes = parseInline("a [source:s1-2] b [note:my-note] c [source:s1-9]");
+    expect(nodes.map((n) => n.t)).toEqual(["text", "cite", "text", "link", "text", "cite"]);
+    expect(links(nodes)).toEqual(["/keep/note/my-note"]);
+  });
+
+  it("leaves lookalikes, markdown links and code as they are", () => {
+    expect(parseInline("[source:]").some((n) => n.t === "cite")).toBe(false);
+    expect(parseInline("[source:a b]").some((n) => n.t === "cite")).toBe(false);
+    expect(parseInline("[other:s1-2]").some((n) => n.t === "cite")).toBe(false);
+    expect(parseInline("`[source:s1-2]`")).toEqual([{ t: "code", text: "[source:s1-2]" }]);
+    expect(links(parseInline("[source:s1-2](https://y.org)"))).toEqual(["https://y.org/"]);
+    expect(inlineText(parseInline("[source:]"))).toBe("[source:]");
+  });
+
+  it("reads as [ref] in plain text", () => {
+    expect(inlineText(parseInline("see [source:s1-2]"))).toBe("see [source:s1-2]");
+  });
+
+  it("lists each cited ref once, in the order the chips are numbered, through lists, quotes and tables", () => {
+    const doc = ["First [source:s1-4] and [insight:i1].", "", "- item [source:s1-2]", "- again [source:s1-4]", "", "> quoted [source:s2-0]", "", "| a |", "|---|", "| [source:s3-1] |"].join("\n");
+    expect(citationRefs(parseMarkdown(doc))).toEqual(["source:s1-4", "insight:i1", "source:s1-2", "source:s2-0", "source:s3-1"]);
+    expect(citationRefs(parseMarkdown("nothing here"))).toEqual([]);
   });
 });

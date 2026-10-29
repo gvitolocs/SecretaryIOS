@@ -1,0 +1,945 @@
+/* The Gallery (views/Gallery.tsx, components/gallery/Grid*.tsx, SourceBar, SelectionBar), on the Lucina tokens (--lu-*).
+ *
+ * Scrolling. The shell gives .content a definite height (a flex item with min-height: 0) and, from 1024px, clips
+ * .shell-body (overflow: hidden, character-shell.css), so a page that is simply taller than .content can't scroll:
+ * the old /media page was exactly that. The Gallery therefore owns one scroll box: .gallery fills .content
+ * (flex: 1; min-height: 0), .g-main takes what the toolbars leave (flex: 1; min-height: 0) and .g-scroll is
+ * absolutely laid over it (inset: 0; overflow-y: auto), so its height is definite however the shell nests it.
+ * Nothing above it scrolls and the page never grows past the window. */
+
+.gallery {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  color: var(--lu-text, inherit);
+  font-family: var(--lu-font, inherit);
+  --g-fg-soft: var(--lu-text-secondary, #8e8e93);
+  --g-line: var(--lu-separator, rgba(84, 84, 88, 0.45));
+  --g-field: var(--lu-field, rgba(118, 118, 128, 0.24));
+  --g-accent: var(--lu-accent, #7f8fe0);
+  --g-accent-fill: var(--lu-accent-fill, #4a5bb5);
+  --g-on-accent: var(--lu-on-accent, #fff);
+  --g-bg: var(--lu-bg, #0b0d10);
+}
+
+/* ---- the toolbars (they take their own height; the grid takes the rest) ---- */
+
+.g-top {
+  container-type: inline-size;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 12px 8px;
+  min-width: 0;
+}
+
+.g-bar,
+.g-selbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  min-width: 0;
+}
+
+.g-title {
+  margin: 0 auto 0 0;
+  font-size: var(--lu-type-title-2, 22px);
+  font-weight: var(--lu-type-title-2-weight, 600);
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+html[data-shell="desktop"] .g-title {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.g-search {
+  flex: 0 1 280px;
+  min-width: 120px;
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 12px;
+  border-radius: var(--lu-radius-field, 12px);
+  background: var(--g-field);
+  color: var(--g-fg-soft);
+}
+
+.g-search .icon {
+  width: 18px;
+  height: 18px;
+  flex: none;
+}
+
+.g-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--lu-text, inherit);
+  font: inherit;
+  font-size: 16px;
+  outline: none;
+}
+
+.g-iconbtn,
+.g-back {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  flex: none;
+  border-radius: 50%;
+  color: inherit;
+  text-decoration: none;
+}
+
+.g-iconbtn:hover,
+.g-back:hover {
+  background: var(--g-field);
+}
+
+.g-iconbtn:focus-visible,
+.g-back:focus-visible,
+.g-act:focus-visible,
+.g-chip:focus-visible,
+.g-source:focus-visible,
+.g-seg__btn:focus-visible,
+.g-scrubber:focus-visible,
+.g-selbar__all:focus-visible {
+  outline: 2px solid var(--g-accent);
+  outline-offset: 2px;
+}
+
+.g-note {
+  margin: 0;
+  color: var(--g-fg-soft);
+  font-size: var(--lu-type-footnote, 13px);
+}
+
+/* ---- sources ---- */
+
+.g-sources {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 2px 0;
+  margin: 0 -12px;
+  padding-inline: 12px;
+}
+
+.g-sources::-webkit-scrollbar {
+  display: none;
+}
+
+.g-source {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 14px 0 10px;
+  border: 0;
+  border-radius: var(--lu-radius-pill, 999px);
+  background: var(--g-field);
+  color: inherit;
+  font: inherit;
+  font-size: var(--lu-type-subheadline, 15px);
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.g-source__icon {
+  width: 18px;
+  height: 18px;
+}
+
+.g-source__count {
+  color: var(--g-fg-soft);
+  font-size: var(--lu-type-caption, 12px);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.g-source--on {
+  background: var(--g-accent-fill);
+  color: var(--g-on-accent);
+}
+
+.g-source--on .g-source__count {
+  color: inherit;
+  opacity: 0.8;
+}
+
+/* ---- filters ---- */
+
+.g-filters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.g-seg {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: var(--lu-radius-pill, 999px);
+  background: var(--g-field);
+}
+
+.g-seg--end {
+  margin-left: auto;
+}
+
+.g-seg__btn {
+  height: 30px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--lu-radius-pill, 999px);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: var(--lu-type-footnote, 13px);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.g-seg__btn[aria-pressed="true"] {
+  background: var(--g-accent-fill);
+  color: var(--g-on-accent);
+}
+
+.g-chip {
+  height: 34px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: var(--lu-radius-pill, 999px);
+  background: var(--g-field);
+  color: inherit;
+  font: inherit;
+  font-size: var(--lu-type-footnote, 13px);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.g-chip[aria-pressed="true"],
+.g-chip--on {
+  background: var(--g-accent-fill);
+  color: var(--g-on-accent);
+}
+
+.g-chip--quiet {
+  background: transparent;
+  color: var(--g-accent);
+}
+
+.g-dates {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.g-dates label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--lu-type-footnote, 13px);
+  color: var(--g-fg-soft);
+}
+
+.g-dates input {
+  height: 34px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--lu-radius-field, 12px);
+  background: var(--g-field);
+  color: var(--lu-text, inherit);
+  font: inherit;
+  font-size: 16px;
+  color-scheme: dark light;
+}
+
+/* ---- the selection bar ---- */
+
+.g-selbar {
+  padding: 4px 4px 4px 2px;
+  border-radius: var(--lu-radius-card, 18px);
+  background: var(--lu-card-raised, #2c2c2e);
+}
+
+.g-selbar__count {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.g-selbar__all {
+  border: 0;
+  background: transparent;
+  color: var(--g-accent);
+  font: inherit;
+  font-size: var(--lu-type-footnote, 13px);
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.g-selbar__spacer {
+  flex: 1;
+}
+
+.g-act {
+  flex: none;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 40px;
+  height: 40px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--lu-radius-pill, 999px);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: var(--lu-type-footnote, 13px);
+  font-weight: 600;
+  cursor: pointer;
+  justify-content: center;
+}
+
+.g-act:hover:not(:disabled) {
+  background: var(--g-field);
+}
+
+.g-act:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.g-act--danger {
+  color: var(--lu-negative, #ff453a);
+}
+
+.g-act--icon {
+  padding: 0;
+}
+
+.g-act .icon {
+  width: 20px;
+  height: 20px;
+}
+
+/* ---- the grid ---- */
+
+.g-main {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.g-body {
+  position: absolute;
+  inset: 0;
+}
+
+.g-scroll {
+  position: absolute;
+  inset: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-gutter: stable;
+  user-select: none;
+  -webkit-user-select: none;
+  outline: none;
+}
+
+.g-content {
+  position: relative;
+}
+
+.g-section {
+  position: absolute;
+  left: 0;
+  right: 0;
+}
+
+.g-head {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 42px;
+  margin: 0;
+  padding: 0 2px;
+  font-size: var(--lu-type-subheadline, 15px);
+  font-weight: 600;
+  background: color-mix(in srgb, var(--g-bg) 92%, transparent);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+}
+
+.g-head__label {
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.g-head__count {
+  color: var(--g-fg-soft);
+  font-size: var(--lu-type-caption, 12px);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.g-head__check,
+.g-check {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  flex: none;
+  padding: 0;
+  border: 1.5px solid var(--g-fg-soft);
+  border-radius: 50%;
+  background: transparent;
+  color: transparent;
+  cursor: pointer;
+}
+
+.g-head__check svg,
+.g-check svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.g-head__check {
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.g-head:hover .g-head__check,
+.g-head__check:focus-visible,
+.g-head__check[aria-checked="true"],
+.g-content:has(.g-tile--selecting) .g-head__check {
+  opacity: 1;
+}
+
+.g-head__check[aria-checked="true"],
+.g-check[aria-checked="true"] {
+  border-color: var(--g-accent-fill);
+  background: var(--g-accent-fill);
+  color: var(--g-on-accent);
+}
+
+.g-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+}
+
+.g-tile {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--g-field);
+  contain: strict;
+}
+
+.g-open {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #fff;
+  cursor: pointer;
+  overflow: hidden;
+  -webkit-touch-callout: none;
+  touch-action: manipulation;
+}
+
+.g-open:focus-visible {
+  outline: 3px solid var(--g-accent);
+  outline-offset: -3px;
+}
+
+.g-ph,
+.g-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.g-ph {
+  background-size: cover;
+  background-position: center;
+  filter: saturate(1.1);
+}
+
+.g-img {
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 0.18s ease-out;
+  -webkit-user-drag: none;
+  pointer-events: none;
+}
+
+.g-img--in {
+  opacity: 1;
+}
+
+.g-img--turned {
+  inset: auto;
+}
+
+.g-tile--selected .g-img,
+.g-tile--selected .g-ph {
+  transform: scale(0.86);
+  border-radius: 6px;
+}
+
+.g-tile--selected .g-img--turned {
+  /* The turned picture is placed by its own transform; keep it, shrunk. */
+  scale: 0.86;
+  transform-origin: center;
+}
+
+.g-tile--selected {
+  background: color-mix(in srgb, var(--g-accent-fill) 55%, transparent);
+}
+
+.g-img,
+.g-ph {
+  transition: transform 0.12s ease-out, opacity 0.18s ease-out;
+}
+
+.g-badge {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.3;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+.g-badge--video {
+  right: 6px;
+  bottom: 6px;
+}
+
+.g-badge__play {
+  width: 9px;
+  height: 9px;
+  fill: currentColor;
+}
+
+.g-badge--source {
+  left: 6px;
+  bottom: 6px;
+  padding: 3px;
+}
+
+.g-badge--source .icon {
+  width: 13px;
+  height: 13px;
+  stroke-width: 2;
+}
+
+.g-badge--fav {
+  right: 6px;
+  top: 6px;
+  padding: 3px;
+  color: #ff6b81;
+}
+
+.g-badge--fav svg {
+  width: 13px;
+  height: 13px;
+  fill: currentColor;
+}
+
+.g-badge--days {
+  right: 6px;
+  top: 6px;
+}
+
+.gallery--trash .g-badge--fav {
+  display: none;
+}
+
+.g-check {
+  position: absolute;
+  left: 6px;
+  top: 6px;
+  z-index: 2;
+  border-color: #fff;
+  background: rgba(0, 0, 0, 0.28);
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.g-tile:hover .g-check,
+.g-check:focus-visible,
+.g-tile--selected .g-check,
+.g-tile--selecting .g-check {
+  opacity: 1;
+}
+
+.g-check[aria-checked="true"] {
+  border-color: #fff;
+  color: #fff;
+}
+
+.g-band {
+  position: absolute;
+  z-index: 5;
+  border: 1px solid var(--g-accent);
+  background: color-mix(in srgb, var(--g-accent) 22%, transparent);
+  pointer-events: none;
+}
+
+.g-foot {
+  position: absolute;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--g-fg-soft);
+  font-size: var(--lu-type-footnote, 13px);
+}
+
+.g-retry {
+  height: 32px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: var(--lu-radius-pill, 999px);
+  background: var(--g-field);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.g-spinner {
+  width: 22px;
+  height: 22px;
+  border: 2.5px solid var(--g-line);
+  border-top-color: var(--g-accent);
+  border-radius: 50%;
+  animation: g-spin 0.8s linear infinite;
+}
+
+@keyframes g-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.g-state {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  color: var(--g-fg-soft);
+  text-align: center;
+  pointer-events: none;
+}
+
+.g-state p {
+  margin: 0;
+}
+
+.g-state button {
+  pointer-events: auto;
+}
+
+/* ---- the month scrubber (wide areas only; GridView hides it on narrow ones) ---- */
+
+.g-scrubber {
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  right: 2px;
+  z-index: 6;
+  width: 32px;
+  cursor: ns-resize;
+  touch-action: none;
+  outline: none;
+  opacity: 0.55;
+  transition: opacity 0.15s;
+}
+
+.g-scrubber:hover,
+.g-scrubber:focus-visible,
+.g-scrubber--drag {
+  opacity: 1;
+}
+
+.g-scrubber__track {
+  position: absolute;
+  inset: 0;
+}
+
+.g-scrubber__tick {
+  position: absolute;
+  right: 6px;
+  width: 6px;
+  height: 1px;
+  background: var(--g-fg-soft);
+  opacity: 0.6;
+}
+
+.g-scrubber__year {
+  position: absolute;
+  right: 14px;
+  transform: translateY(-50%);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--g-fg-soft);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+.g-scrubber__thumb {
+  position: absolute;
+  right: 3px;
+  width: 4px;
+  height: 18px;
+  margin-top: -9px;
+  border-radius: 2px;
+  background: var(--g-accent);
+}
+
+.g-scrubber__bubble {
+  position: absolute;
+  right: 30px;
+  transform: translateY(-50%);
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--lu-card-raised, #2c2c2e);
+  color: var(--lu-text, #fff);
+  font-size: var(--lu-type-footnote, 13px);
+  font-weight: 600;
+  white-space: nowrap;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+
+/* ---- the status line ---- */
+
+.g-status {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100% - 24px);
+  padding: 8px 8px 8px 16px;
+  border-radius: var(--lu-radius-pill, 999px);
+  background: var(--lu-card-raised, #2c2c2e);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+  font-size: var(--lu-type-footnote, 13px);
+  transform: translateX(-50%);
+}
+
+.g-status--error {
+  color: var(--lu-negative, #ff453a);
+}
+
+.g-status button {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+/* ---- narrow areas: phones, and the Mac shell's content area when the window is small ---- */
+
+/* The selection bar's words give way to icons when the area is narrow (the width of the toolbar, not the window's). */
+@container (max-width: 640px) {
+  .g-act__label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+}
+
+@media (max-width: 640px) {
+  .g-top {
+    padding-inline: 8px;
+    gap: 6px;
+  }
+
+  /* One scrolling row of filters instead of a wrapping block that eats the screen. */
+  .g-filters {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    margin-inline: -8px;
+    padding-inline: 8px;
+  }
+
+  .g-filters::-webkit-scrollbar {
+    display: none;
+  }
+
+  .g-filters > * {
+    flex: none;
+  }
+
+  .g-seg--end {
+    margin-left: 0;
+  }
+
+  .g-sources {
+    margin-inline: -8px;
+    padding-inline: 8px;
+  }
+
+  .g-search {
+    flex-basis: 160px;
+  }
+
+  .g-head {
+    height: 36px;
+  }
+
+  /* Touch has no hover: the tile's check shows once something is selected. */
+  .g-head__check {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .g-img,
+  .g-ph,
+  .g-spinner,
+  .g-scrubber {
+    transition: none;
+    animation: none;
+  }
+}
+
+/* Desktop Gallery frames share the page system's spacing and surfaces. */
+.pg .g-detail-title { font-size: 20px; font-weight: 600; }
+.g-page-root { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; }
+.pg .al-grid { max-width: none; gap: 16px; margin: 0; }
+.pg .al-section { margin: 24px 0 16px; color: var(--pg-muted); font-size: 16px; font-weight: 600; }
+
+/* Give the virtual grid a definite height inside the desktop page frame. */
+.pg.g-grid-page, .pg.g-grid-page > .pg-inner, .pg.g-grid-page .pg-grid--full,
+.pg.g-grid-page .pg-main { display: flex; flex: 1; min-height: 0; flex-direction: column; }
+.pg.g-grid-page > .pg-inner { width: 100%; }
+/* .pg-grid aligns its items to the start; as a flex column that would shrink the toolbar and the photo grid to their (container-contained, so zero) content width. */
+.pg.g-grid-page .pg-grid--full { align-items: stretch; }
+.pg.g-grid-page .pg-main { width: 100%; }
+.pg.g-grid-page .pg-main { gap: 16px; }
+.pg.g-grid-page .g-top { padding: 0; gap: 12px; }
+.pg .g-desktop-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.pg .g-desktop-tools .g-search { margin-left: 0; margin-right: auto; }
+.pg .g-main > .pg-card { position: relative; }
+.pg .g-search { background: var(--pg-fill); border-radius: var(--pg-radius-control); color: var(--pg-muted); }
+.pg .g-search input { font: inherit; color: var(--pg-text); }
+.pg .g-chip, .pg .g-seg__btn, .pg .g-source { font: inherit; color: var(--pg-muted); background: var(--pg-fill); border-color: var(--pg-border); }
+.pg .g-chip[aria-pressed="true"], .pg .g-seg__btn[aria-pressed="true"], .pg .g-source[aria-pressed="true"] { color: var(--pg-text); background: var(--pg-fill-hover); }
+.pg .g-note { color: var(--pg-muted); }
+
+/* The shelves (people, places, shared, lab, duplicates) on the page system: the gallery variables follow the page tokens. */
+.pg.g-lib {
+  --g-fg-soft: var(--pg-muted);
+  --g-line: var(--pg-border);
+  --g-field: var(--pg-fill);
+  --g-accent: var(--pg-data);
+  --g-accent-fill: var(--pg-accent);
+  --g-on-accent: var(--pg-on-accent);
+  --g-bg: var(--pg-surface);
+}
+.pg .g-desktop-tools { margin-bottom: 16px; }
+.pg .pp-grid, .pg .pp-scan { max-width: none; margin: 0 0 16px; }
+.pg .pp-unassigned { max-width: none; margin: 16px 0 0; }
+.pg .pp-off-card { max-width: 560px; }
+.pg .pp-off-card p { margin-bottom: 8px; }
+.pg .pp-card__actions { margin-top: 16px; }
+.pg .pp-menu__list { background: var(--pg-surface-raised); border: 1px solid var(--pg-border); }
+.pg .sl-line { display: block; }
+.pg .sl-row--over { opacity: 0.65; }
+.pg .sl-cover { flex: none; width: 56px; height: 56px; overflow: hidden; border-radius: var(--pg-radius-control); background: var(--pg-fill); }
+.pg .sl-cover img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.pg .sl-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.pg .sl-ask { color: var(--pg-muted); font-size: 13px; }
+.pg .pg-card--list + .pg-card--list { margin-top: 16px; }
+.pg .g-places-card { padding: 0; overflow: hidden; }
+.pg .g-places__main { position: relative; height: clamp(420px, 68vh, 880px); }
+.pg .g-place-thumb { width: 56px; height: 56px; flex: none; border-radius: var(--pg-radius-control); object-fit: cover; }
+.pg .g-places__state { position: static; margin: 0; }
+.pg .g-detail-title { margin: 0 0 16px; }
+.pg .lab-list { margin: 0; }
+.pg .lab-card { border-color: var(--pg-border); border-radius: var(--pg-radius); background: var(--pg-surface); }
+.pg .lab-badge, .pg .lab-bar { color: var(--pg-text); }
+.pg .lab-prompt-heading, .pg .lab-note, .pg .lab-when, .pg .lab-ref-line { color: var(--pg-muted); }
+.pg .dd-intro, .pg .dd-summary, .pg .dd-note, .pg .dd-banner, .pg .dd-groups, .pg .dd-bursts, .pg .dd-more, .pg .dd-state { max-width: none; margin-left: 0; margin-right: 0; }
+.pg .dd-intro { margin-bottom: 16px; }
+.pg .dd-banner { margin-top: 0; margin-bottom: 16px; padding: 12px 16px; background: var(--pg-surface); border-radius: var(--pg-radius); }
+.pg .dd-groups { gap: 16px; }
+.pg .dd-group.pg-card { padding: 20px 24px 24px; border-radius: var(--pg-radius); background: var(--pg-surface); }
+.pg .dd-suggestion { border-radius: var(--pg-radius-control); background: var(--pg-surface); border: 1px solid var(--pg-border); }
+.pg .dd-score--weak, .pg .dd-weak { color: var(--pg-warning); }
+.pg .dd-reason { color: var(--pg-data); }
+.pg .dd-member--suggested, .pg .dd-strip__item--primary { border-color: var(--pg-data); }
+.pg .dd-more { justify-content: flex-start; }

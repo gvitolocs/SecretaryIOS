@@ -2,6 +2,19 @@ import { A } from "@solidjs/router";
 import { createMemo, createResource, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { formatTime, mediaApi, type MediaItem, type MediaKind, type SubtitleTrack } from "../api/player";
 import { BackIcon, CloseIcon, FilmIcon, MicIcon, SearchIcon } from "../components/Icons";
+import {
+  Card,
+  EmptyState,
+  ErrorState,
+  ListRow,
+  LoadingState,
+  Page,
+  PageGrid,
+  PageHeader,
+  RowList,
+  SectionNav,
+  useWide,
+} from "../components/page";
 import { locale, t } from "../i18n";
 import {
   attachElement,
@@ -51,7 +64,7 @@ export function trackDetail(track: SubtitleTrack): string {
   return parts.join(" · ");
 }
 
-function Poster(props: { url?: string | null; kind: string; class?: string }) {
+export function Poster(props: { url?: string | null; kind: string; class?: string }) {
   const [failed, setFailed] = createSignal(false);
   return (
     <Show
@@ -64,6 +77,52 @@ function Poster(props: { url?: string | null; kind: string; class?: string }) {
     >
       <img class={`media-poster ${props.class ?? ""}`} src={props.url!} alt="" loading="lazy" onError={() => setFailed(true)} />
     </Show>
+  );
+}
+
+function DeskRow(props: { item: MediaItem; list: MediaItem[]; onPhoto?: (index: number) => void; photoIndex?: number }) {
+  const progress = () => progressOf(props.item);
+  const isCurrent = () => media.current()?.id === props.item.id;
+  const play = () => {
+    if (props.item.kind === "photo") {
+      props.onPhoto?.(props.photoIndex ?? 0);
+      return;
+    }
+    void playQueue(props.list, props.list.indexOf(props.item));
+    media.setOpen(true);
+  };
+  const meta = () => {
+    if (props.item.kind === "photo") return props.item.album ?? "";
+    if (props.item.duration_ms) return formatTime((props.item.duration_ms ?? 0) / 1000);
+    return "";
+  };
+  const badge = () => {
+    if (isFinished(props.item)) return t("media.watched");
+    if (isCurrent()) return media.playing() ? "▶" : "❚❚";
+    return undefined;
+  };
+  return (
+    <ListRow
+      leading={
+        <button type="button" class="media-desk-thumb" onClick={play} aria-label={props.item.title}>
+          <Poster url={props.item.poster_url ?? props.item.thumb_url} kind={props.item.kind} />
+        </button>
+      }
+      title={
+        <button type="button" class="pg-row-name" onClick={play}>
+          {props.item.title}
+        </button>
+      }
+      badge={badge()}
+      meta={meta()}
+      trailing={
+        <Show when={progress() !== null && props.item.kind !== "photo"}>
+          <span class="media-progress media-progress--row" aria-hidden="true">
+            <span style={{ width: `${Math.round((progress() ?? 0) * 100)}%` }} />
+          </span>
+        </Show>
+      }
+    />
   );
 }
 
@@ -105,7 +164,7 @@ function Row(props: { item: MediaItem; list: MediaItem[] }) {
   );
 }
 
-function Player() {
+export function Player() {
   let surface!: HTMLDivElement;
   onMount(() => onCleanup(attachElement(surface)));
   const item = () => media.current();
@@ -165,7 +224,7 @@ function Player() {
   );
 }
 
-function MiniPlayer() {
+export function MiniPlayer() {
   return (
     <Show when={media.current() && !media.open()}>
       <div class="media-mini">
@@ -219,10 +278,12 @@ function PhotoViewer(props: { photos: MediaItem[]; index: number; onClose: () =>
 }
 
 export default function MediaView() {
+  const measured = useWide();
+  const wide = measured.wide;
   const [kind, setKind] = createSignal<MediaKind>("video");
   const [query, setQuery] = createSignal("");
   const [photo, setPhoto] = createSignal<number | null>(null);
-  const [items] = createResource(kind, (k) => mediaApi.allItems(k));
+  const [items, { refetch }] = createResource(kind, (k) => mediaApi.allItems(k));
   onMount(() => {
     void ready();
     void syncProgress();
@@ -244,36 +305,43 @@ export default function MediaView() {
   });
   const resume = () => (query() ? [] : continueItems(items() ?? []));
   const empty = () => ({ video: t("media.noVideos"), audio: t("media.noAudio"), photo: t("media.noPhotos") })[kind()];
-
-  return (
-    <section class="media" aria-labelledby="media-title">
-      <A href="/plugins" class="media-back">
-        <BackIcon /> {t("media.back")}
-      </A>
-      <h1 id="media-title">{t("media.title")}</h1>
-      <div class="media-tools">
-        <div class="media-chips" role="tablist">
-          <For each={KINDS}>
-            {(k) => (
-              <button type="button" role="tab" class="media-chip" aria-selected={kind() === k.kind} onClick={() => setKind(k.kind)}>
-                {k.label()}
-              </button>
-            )}
-          </For>
-        </div>
-        <label class="media-search">
-          <SearchIcon />
-          <input type="search" placeholder={t("media.search")} aria-label={t("media.search")} value={query()} onInput={(e) => setQuery(e.currentTarget.value)} />
-        </label>
-      </div>
-
+  const deskList = createMemo(() => {
+    const all = filtered();
+    const cont = resume();
+    const seen = new Set(cont.map((i) => i.id));
+    return [...cont, ...all.filter((i) => !seen.has(i.id))];
+  });
+  const sectionNav = () => (
+    <SectionNav
+      label={t("media.sections")}
+      items={KINDS.map((k) => ({
+        label: k.label(),
+        onSelect: () => setKind(k.kind),
+        current: kind() === k.kind,
+      }))}
+    />
+  );
+  const searchField = () => (
+    <label class="media-search">
+      <SearchIcon />
+      <input
+        type="search"
+        class={wide() ? "pg-input" : undefined}
+        placeholder={t("media.search")}
+        aria-label={t("media.search")}
+        value={query()}
+        onInput={(e) => setQuery(e.currentTarget.value)}
+      />
+    </label>
+  );
+  const phoneBody = () => (
+    <>
       <Show when={items.error}>
         <p class="media-muted" role="alert">{String(items.error?.message ?? items.error)}</p>
       </Show>
       <Show when={!items.loading && (items() ?? []).length === 0 && !items.error}>
         <p class="media-muted">{empty()}</p>
       </Show>
-
       <Show
         when={kind() === "photo"}
         fallback={
@@ -307,6 +375,70 @@ export default function MediaView() {
           </For>
         </div>
       </Show>
+    </>
+  );
+
+  return (
+    <div ref={measured.track}>
+      <Show
+        when={wide()}
+        fallback={
+          <section class="media" aria-labelledby="media-title">
+            <A href="/plugins" class="media-back">
+              <BackIcon /> {t("media.back")}
+            </A>
+            <h1 id="media-title">{t("media.title")}</h1>
+            <div class="media-tools">
+              <div class="media-chips" role="tablist">
+                <For each={KINDS}>
+                  {(k) => (
+                    <button type="button" role="tab" class="media-chip" aria-selected={kind() === k.kind} onClick={() => setKind(k.kind)}>
+                      {k.label()}
+                    </button>
+                  )}
+                </For>
+              </div>
+              {searchField()}
+            </div>
+            {phoneBody()}
+          </section>
+        }
+      >
+        <Page class="media-desk">
+          <PageHeader title={t("media.title")} nav={sectionNav()} action={searchField()} />
+          <Show when={items.error}>
+            <ErrorState
+              message={String(items.error?.message ?? items.error)}
+              retryLabel={t("common.tryAgain")}
+              onRetry={() => void refetch()}
+            />
+          </Show>
+          <Show when={items.loading && !items() && !items.error}>
+            <LoadingState label={t("common.loading")} />
+          </Show>
+          <Show when={!items.loading && (items() ?? []).length === 0 && !items.error}>
+            <EmptyState text={empty()} />
+          </Show>
+          <Show when={(items() ?? []).length > 0}>
+            <PageGrid layout="single">
+              <Card list title={KINDS.find((k) => k.kind === kind())!.label()} label={t("media.library")}>
+                <RowList label={t("media.library")}>
+                  <For each={deskList()}>
+                    {(item) => (
+                      <DeskRow
+                        item={item}
+                        list={deskList()}
+                        onPhoto={(index) => setPhoto(index)}
+                        photoIndex={filtered().findIndex((i) => i.id === item.id)}
+                      />
+                    )}
+                  </For>
+                </RowList>
+              </Card>
+            </PageGrid>
+          </Show>
+        </Page>
+      </Show>
 
       <MiniPlayer />
       <Show when={media.open() && media.current()}>
@@ -315,6 +447,6 @@ export default function MediaView() {
       <Show when={photo() !== null}>
         <PhotoViewer photos={filtered()} index={photo()!} onClose={() => setPhoto(null)} onIndex={setPhoto} />
       </Show>
-    </section>
+    </div>
   );
 }

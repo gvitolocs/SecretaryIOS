@@ -64,6 +64,31 @@ function ListWidget(props: { block: RichBlock & { type: "list" } }) {
   );
 }
 
+/** A picture from this server (a map PNG): same-origin, so the session cookie loads it; a tap opens it full size. */
+function ImageWidget(props: { block: RichBlock & { type: "image" } }) {
+  const [failed, setFailed] = createSignal(false);
+  return (
+    <figure class="rw rw-image">
+      <Show when={!failed()} fallback={<p class="rw-image-error">{t("chat.richImageUnavailable")}</p>}>
+        <a href={props.block.src} target="_blank" rel="noopener noreferrer" aria-label={t("chat.richImageOpen", { title: props.block.alt })}>
+          <img
+            src={props.block.src}
+            alt={props.block.alt}
+            width={props.block.width}
+            height={props.block.height}
+            loading="lazy"
+            decoding="async"
+            onError={() => setFailed(true)}
+          />
+        </a>
+      </Show>
+      <Show when={props.block.caption}>
+        <figcaption>{props.block.caption}</figcaption>
+      </Show>
+    </figure>
+  );
+}
+
 function Widget(props: { block: RichBlock }) {
   return (
     <Switch>
@@ -204,6 +229,7 @@ function Widget(props: { block: RichBlock }) {
           </a>
         )}
       </Match>
+      <Match when={props.block.type === "image" && props.block}>{(b) => <ImageWidget block={b()} />}</Match>
     </Switch>
   );
 }
@@ -224,12 +250,12 @@ function sendsMessage(a: RichAction): boolean {
   return false;
 }
 
-function Actions(props: { message: ChatMessage; actions: RichAction[]; inferred?: string }) {
+function Actions(props: { message: ChatMessage; actions: RichAction[]; inferred?: string; readOnly?: boolean }) {
   const navigate = useAppNavigate();
   const chosen = () => chosenAction(props.message) ?? props.inferred;
 
   function run(a: RichAction) {
-    if (chosen() || (sending() && sendsMessage(a))) return;
+    if (props.readOnly || chosen() || (sending() && sendsMessage(a))) return;
     switch (a.kind) {
       case "reply":
         if (a.payload.prefill) requestPrefill(a.payload.text);
@@ -263,7 +289,7 @@ function Actions(props: { message: ChatMessage; actions: RichAction[]; inferred?
               class="rich-action"
               classList={{ "rich-action--chosen": isChosen(), [`rich-action--${a.kind}`]: true }}
               data-answer={a.kind === "confirm" ? a.payload.answer : undefined}
-              disabled={!!chosen() || (sending() && sendsMessage(a))}
+              disabled={props.readOnly || !!chosen() || (sending() && sendsMessage(a))}
               aria-pressed={isChosen() ? "true" : undefined}
               aria-label={isChosen() ? t("chat.richChosen", { label: a.label }) : undefined}
               onClick={() => run(a)}
@@ -291,6 +317,7 @@ export function RichReply(props: {
   rich: RichMessage;
   onBubbleClick?: (e: MouseEvent) => void;
   inferredChoice?: string;
+  readOnly?: boolean;
 }) {
   const total = () => props.rich.bubbles.length;
   const animate = !!props.message.reveal && !prefersReducedMotion() && total() > 1;
@@ -343,7 +370,7 @@ export function RichReply(props: {
           </div>
         </Show>
         <Show when={props.rich.actions.length}>
-          <Actions message={props.message} actions={props.rich.actions} inferred={props.inferredChoice} />
+          <Actions readOnly={props.readOnly} message={props.message} actions={props.rich.actions} inferred={props.inferredChoice} />
         </Show>
       </Show>
     </div>

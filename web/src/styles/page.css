@@ -1,0 +1,799 @@
+/*
+ * The page system (docs/design/page-system.md, components/page/). Lifted from the
+ * desktop Training page (styles/gym-desk.css) so every page reads alike:
+ *
+ * - one card surface (--pg-surface) with a 1 px border and a 16 px radius;
+ * - spacing from 4 / 8 inside a control and 12 / 16 / 24 between things, page
+ *   padding 32 / 40 / 48 on a desktop and the 16 px gutter on a phone;
+ * - type: title 28, card title 16, row title 15, body 14, secondary 13, caption 12;
+ *   weights 400 and 600 only; tabular figures;
+ * - one filled accent button per page (.pg-cta). Data (badges, charts, focus
+ *   rings) uses --pg-data; status uses the semantic colours.
+ *
+ * The layout switches at a content width of 880 px (container `pg`), the same
+ * WIDE_MIN_PX the Gym pages measure.
+ *
+ * The tokens are set on the frame (and the sheet), not on :root, so they follow
+ * the surface and accent overrides of the part of the app they sit in.
+ */
+
+.pg,
+.pg-sheet-overlay {
+  --pg-surface: var(--glass);
+  --pg-surface-raised: var(--surface-3);
+  --pg-border: var(--border);
+  --pg-border-strong: var(--border-strong);
+  --pg-hair: color-mix(in srgb, var(--text) 8%, transparent);
+  --pg-fill: color-mix(in srgb, var(--text) 6%, transparent);
+  --pg-fill-hover: color-mix(in srgb, var(--text) 10%, transparent);
+  --pg-text: var(--text);
+  --pg-muted: var(--text-muted);
+  --pg-accent: var(--cyan);
+  --pg-on-accent: color-mix(in srgb, var(--pg-accent) 12%, #000);
+  --pg-data: var(--lu-accent);
+  --pg-success: var(--lu-positive);
+  --pg-warning: var(--lu-warning);
+  --pg-danger: var(--lu-negative);
+  --pg-radius: 16px;
+  --pg-radius-control: 10px;
+  --pg-gap: 24px;
+}
+
+.pg {
+  container: pg / inline-size;
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--pg-text);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.45;
+  font-variant-numeric: tabular-nums;
+}
+
+.pg-inner {
+  box-sizing: border-box;
+  max-width: 1320px;
+  margin: 0 auto;
+  padding: 16px var(--pad-right, 16px) 32px var(--pad-left, 16px);
+}
+
+@container pg (min-width: 880px) {
+  .pg-inner {
+    padding: 32px max(40px, var(--safe-right, 0px)) 48px max(40px, var(--safe-left, 0px));
+  }
+}
+
+.pg :is(h1, h2, h3, p, dl, dd, ol, ul) {
+  margin: 0;
+}
+
+.pg .pg-icon,
+.pg-sheet .pg-icon,
+.pg .icon {
+  width: 16px;
+  height: 16px;
+}
+
+.pg-icon {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.pg-muted {
+  color: var(--pg-muted);
+}
+
+.pg-strong {
+  color: var(--pg-text);
+  font-weight: 600;
+}
+
+.pg-num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Header row ---------- */
+
+.pg-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px 24px;
+  margin-bottom: 24px;
+}
+
+.pg-titles {
+  min-width: 0;
+}
+
+.pg-title {
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.4px;
+}
+
+.pg-context {
+  margin-top: 4px;
+  color: var(--pg-muted);
+}
+
+.pg-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* On a phone the nav takes its own line and scrolls sideways. */
+@container pg (max-width: 879px) {
+  .pg-head {
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+
+  .pg-title {
+    font-size: 24px;
+  }
+
+  .pg-head-actions {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+  }
+
+  .pg-seg {
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+}
+
+/* ---------- Section nav ---------- */
+
+.pg-seg {
+  display: inline-flex;
+  flex: none;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--pg-border);
+  border-radius: 12px;
+  background: var(--pg-surface);
+}
+
+.pg-seg-item {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--pg-muted);
+  font: inherit;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.pg-seg-item:hover {
+  color: var(--pg-text);
+  background: var(--pg-fill);
+}
+
+.pg-seg-item[aria-current="page"] {
+  color: var(--pg-text);
+  font-weight: 600;
+  background: var(--pg-fill-hover);
+}
+
+.pg-seg-icon {
+  padding: 0 8px;
+}
+
+.pg-seg-item .pg-icon,
+.pg-seg-item .icon {
+  width: 16px;
+  height: 16px;
+}
+
+/* ---------- The accent action ---------- */
+
+.pg-cta {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 16px 0 14px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--pg-accent);
+  color: var(--pg-on-accent);
+  font: inherit;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: filter 120ms ease, transform 120ms ease;
+}
+
+.pg-cta:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.pg-cta:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.pg-cta:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.pg-cta :is(.pg-icon, .icon) {
+  width: 14px;
+  height: 14px;
+}
+
+/* ---------- Content grid ---------- */
+
+.pg-grid {
+  display: grid;
+  gap: var(--pg-gap);
+  align-items: start;
+}
+
+.pg-main,
+.pg-rail,
+.pg-side {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.pg-grid--single {
+  max-width: 880px;
+}
+
+@container pg (min-width: 880px) {
+  .pg-grid--rail {
+    grid-template-columns: minmax(0, 62fr) minmax(300px, 38fr);
+  }
+
+  .pg-rail {
+    position: sticky;
+    top: 16px;
+  }
+
+  .pg-grid--split {
+    grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
+  }
+
+  /* The list column scrolls by itself, so the selected item stays in view. */
+  .pg-side {
+    position: sticky;
+    top: 16px;
+    max-height: calc(100dvh - 160px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+}
+
+/* ---------- Cards ---------- */
+
+.pg-card {
+  padding: 20px 24px 24px;
+  border: 1px solid var(--pg-border);
+  border-radius: var(--pg-radius);
+  background: var(--pg-surface);
+}
+
+.pg-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 32px;
+}
+
+/* Every card title sits on one 32 px line, so titles in both columns share a baseline. */
+.pg-card-title {
+  display: flex;
+  align-items: center;
+  min-height: 32px;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.pg-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pg-card > .pg-card-head + * {
+  margin-top: 8px;
+}
+
+.pg-card--list {
+  padding: 20px 0 8px;
+}
+
+.pg-card--list:not(:has(> .pg-card-head)) {
+  padding-top: 8px;
+}
+
+.pg-card--list > .pg-card-head {
+  padding: 0 16px 8px 24px;
+}
+
+.pg-card--list > .pg-card-head + * {
+  margin-top: 0;
+}
+
+.pg-card--list > :not(.pg-card-head, .pg-rows, .pg-empty) {
+  padding-inline: 24px;
+}
+
+@container pg (max-width: 879px) {
+  .pg-card {
+    padding: 16px;
+  }
+
+  .pg-card--list {
+    padding: 16px 0 4px;
+  }
+
+  .pg-card--list > .pg-card-head {
+    padding: 0 8px 8px 16px;
+  }
+
+  .pg-card--list > :not(.pg-card-head, .pg-rows, .pg-empty) {
+    padding-inline: 16px;
+  }
+}
+
+/* ---------- List rows ---------- */
+
+.pg-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pg-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 64px;
+  padding: 12px 16px 12px 24px;
+  border-top: 1px solid var(--pg-hair);
+}
+
+/* Without trailing controls the row's text lines up with the card's 24 px edge. */
+.pg-row:has(> :is(.pg-row-main, .pg-row-meta):last-child) {
+  padding-right: 24px;
+}
+
+.pg-card--list:not(:has(> .pg-card-head)) .pg-row:first-child {
+  border-top: 0;
+}
+
+.pg-row-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.pg-row-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.pg-row-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pg-row-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* A row title that acts in place (play, open a profile) is a button that reads as the title. */
+button.pg-row-name,
+button.pg-row-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+button.pg-row-name:hover,
+.pg-row-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.pg-row-sub {
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--pg-muted);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pg-row-meta {
+  flex: none;
+  color: var(--pg-muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+@container pg (max-width: 879px) {
+  .pg-row {
+    gap: 12px;
+    min-height: 56px;
+    padding: 10px 8px 10px 16px;
+  }
+}
+
+.pg-badge {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--pg-data) 18%, transparent);
+  color: var(--pg-data);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* ---------- Key / value stats ---------- */
+
+.pg-stats {
+  margin-top: 4px;
+}
+
+.pg-stat {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 0;
+  border-top: 1px solid var(--pg-hair);
+}
+
+.pg-stat:first-child {
+  border-top: 0;
+}
+
+.pg-stat:last-child {
+  padding-bottom: 0;
+}
+
+.pg-stat dt {
+  color: var(--pg-muted);
+}
+
+.pg-stat dd {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 600;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pg-big {
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.3px;
+}
+
+/* ---------- Empty, loading, error ---------- */
+
+.pg-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  color: var(--pg-muted);
+}
+
+.pg-card--list > .pg-empty {
+  padding: 4px 24px 16px;
+}
+
+.pg-empty-text {
+  color: var(--pg-muted);
+}
+
+.pg-empty-title {
+  color: var(--pg-text);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.pg-empty-title + .pg-empty-text {
+  margin-top: -8px;
+}
+
+.pg-loading {
+  padding: 48px 0;
+  color: var(--pg-muted);
+  text-align: center;
+}
+
+.pg-error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.pg-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 12px 16px;
+  border: 1px solid color-mix(in srgb, var(--pg-warning) 35%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--pg-warning) 12%, transparent);
+  color: var(--pg-warning);
+}
+
+/* ---------- Buttons, links, inputs ---------- */
+
+.pg-btn {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid color-mix(in srgb, var(--pg-text) 14%, transparent);
+  border-radius: var(--pg-radius-control);
+  background: var(--pg-fill);
+  color: var(--pg-text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.pg-btn:hover:not(:disabled) {
+  background: var(--pg-fill-hover);
+}
+
+.pg-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.pg-btn :is(.pg-icon, .icon) {
+  width: 14px;
+  height: 14px;
+}
+
+.pg-btn--ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--pg-muted);
+}
+
+.pg-btn--ghost:hover:not(:disabled) {
+  color: var(--pg-text);
+}
+
+.pg-btn--danger {
+  border-color: color-mix(in srgb, var(--pg-danger) 40%, transparent);
+  background: color-mix(in srgb, var(--pg-danger) 16%, transparent);
+  color: var(--pg-danger);
+}
+
+.pg-btn--danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--pg-danger) 24%, transparent);
+}
+
+.pg-icon-btn {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--pg-muted);
+  cursor: pointer;
+}
+
+.pg-icon-btn:hover,
+.pg-icon-btn[aria-expanded="true"] {
+  background: var(--pg-fill);
+  color: var(--pg-text);
+}
+
+.pg-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--pg-muted);
+  font: inherit;
+  font-size: 13px;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.pg-link:hover {
+  color: var(--pg-text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.pg-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
+.pg-input {
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--pg-border);
+  border-radius: var(--pg-radius-control);
+  background: color-mix(in srgb, var(--pg-text) 4%, transparent);
+  color: var(--pg-text);
+  font: inherit;
+}
+
+.pg-input::placeholder {
+  color: var(--pg-muted);
+}
+
+.pg-input:focus {
+  border-color: color-mix(in srgb, var(--pg-data) 70%, transparent);
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--pg-data) 20%, transparent);
+}
+
+.pg-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pg-field-label {
+  color: var(--pg-muted);
+  font-size: 13px;
+}
+
+.pg :is(button, a, input, select, textarea):focus-visible,
+.pg-sheet :is(button, a, input, select, textarea):focus-visible {
+  outline: 2px solid var(--pg-data);
+  outline-offset: 2px;
+}
+
+/* ---------- Sheet / dialog ---------- */
+
+.pg-sheet-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: var(--scrim, rgb(0 0 0 / 0.5));
+}
+
+.pg-sheet {
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  width: 100%;
+  max-height: 92vh;
+  overflow: hidden;
+  border: 1px solid var(--pg-border-strong);
+  border-bottom: 0;
+  border-radius: var(--pg-radius) var(--pg-radius) 0 0;
+  background: var(--surface-solid);
+  color: var(--pg-text);
+  font-size: 14px;
+  line-height: 1.45;
+  padding-bottom: var(--safe-bottom, 0px);
+}
+
+.pg-sheet:focus {
+  outline: none;
+}
+
+.pg-sheet-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 16px 12px 24px;
+}
+
+.pg-sheet-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.pg-sheet-tools {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0 24px 12px;
+  border-bottom: 1px solid var(--pg-border);
+}
+
+.pg-sheet-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 16px 24px 24px;
+}
+
+.pg-sheet-foot {
+  display: flex;
+  flex: none;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 24px 16px;
+  border-top: 1px solid var(--pg-border);
+}
+
+@media (min-width: 880px) {
+  .pg-sheet-overlay {
+    align-items: center;
+  }
+
+  .pg-sheet {
+    width: min(640px, calc(100vw - 48px));
+    max-height: 80vh;
+    border-bottom: 1px solid var(--pg-border-strong);
+    border-radius: var(--pg-radius);
+    box-shadow: 0 24px 64px rgb(0 0 0 / 0.4);
+    padding-bottom: 0;
+  }
+
+  .pg-sheet--wide {
+    width: min(800px, calc(100vw - 48px));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :is(.pg-cta, .pg-btn, .pg-seg-item) {
+    transition: none;
+  }
+}
