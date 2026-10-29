@@ -163,6 +163,109 @@ pub struct LiveStats {
     /// Turns with both a tier-0 rule and a Jev intent, and how many agree.
     pub tier0_compared: usize,
     pub tier0_agreed: usize,
+    /// Yes/no questions answered by Jev (`event="jev_yesno"`, crate::jev_yesno); empty in older summaries.
+    #[serde(default)]
+    pub yesno: YesNoStats,
+}
+
+/// One `jev_yesno` journal line of a chat turn (previews from the replay endpoint are not counted).
+#[derive(Debug, Clone, PartialEq)]
+pub struct YesNoTurn {
+    /// answer, unsure, hedge, pass.
+    pub outcome: String,
+    pub why: Option<String>,
+    pub gate: Option<f64>,
+    pub kind: Option<String>,
+    pub p_yes: Option<f64>,
+    pub jev_ms: Option<u64>,
+}
+
+pub fn parse_yesno_line(line: &str) -> Option<YesNoTurn> {
+    if !line.contains("jev_yesno") {
+        return None;
+    }
+    let line = strip_ansi(line);
+    let at = line.find(r#"event="jev_yesno""#)?;
+    let fields = format!(" {}", &line[at..]);
+    let get = |k: &str| {
+        raw_field(&fields, k)
+            .and_then(field_value)
+            .filter(|v| !v.is_empty())
+    };
+    if get("source").as_deref() != Some("turn") {
+        return None;
+    }
+    Some(YesNoTurn {
+        outcome: get("outcome")?,
+        why: get("why"),
+        gate: get("gate").and_then(|v| v.parse().ok()),
+        kind: get("kind"),
+        p_yes: get("p_yes").and_then(|v| v.parse().ok()),
+        jev_ms: get("jev_ms").and_then(|v| v.parse().ok()),
+    })
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct YesNoStats {
+    /// Question-shaped owner turns that reached the yes/no path.
+    pub turns: usize,
+    /// Jev's gate said yes/no (≥ the gate threshold).
+    pub yes_no: usize,
+    pub answered: usize,
+    pub answered_yes: usize,
+    pub unsure: usize,
+    pub hedged: usize,
+    /// Why the normal path answered alone (not_yes_no, live_lookup, jev_unavailable, …).
+    pub passes: BTreeMap<String, usize>,
+    pub kinds: BTreeMap<String, usize>,
+    /// Gate P, by [`BUCKETS`].
+    pub gate_buckets: [usize; 5],
+    pub jev_ms_total: u64,
+    pub jev_ms_n: usize,
+}
+
+impl YesNoStats {
+    pub fn add(&mut self, t: &YesNoTurn) {
+        self.turns += 1;
+        match t.outcome.as_str() {
+            "answer" => {
+                self.answered += 1;
+                if t.p_yes.is_some_and(|p| p >= 0.5) {
+                    self.answered_yes += 1;
+                }
+            }
+            "unsure" => self.unsure += 1,
+            "hedge" => self.hedged += 1,
+            _ => {
+                *self
+                    .passes
+                    .entry(t.why.clone().unwrap_or_else(|| "none".into()))
+                    .or_default() += 1
+            }
+        }
+        if t.outcome != "pass" || t.why.as_deref() == Some("live_lookup") {
+            self.yes_no += 1;
+            if let Some(k) = &t.kind {
+                *self.kinds.entry(k.clone()).or_default() += 1;
+            }
+        }
+        if let Some(g) = t.gate {
+            self.gate_buckets[bucket(g)] += 1;
+        }
+        if let Some(ms) = t.jev_ms.filter(|ms| *ms > 0) {
+            self.jev_ms_total += ms;
+            self.jev_ms_n += 1;
+        }
+    }
+
+    /// Of the yes/no questions, how many Jev answered itself.
+    pub fn answered_rate(&self) -> Option<f64> {
+        (self.yes_no > 0).then(|| self.answered as f64 / self.yes_no as f64)
+    }
+
+    pub fn mean_jev_ms(&self) -> Option<u64> {
+        (self.jev_ms_n > 0).then(|| self.jev_ms_total / self.jev_ms_n as u64)
+    }
 }
 
 impl LiveStats {
@@ -227,8 +330,11 @@ pub fn journal_stats(days: u32) -> anyhow::Result<LiveStats> {
     let mut stats = LiveStats::default();
     let mut buf = Vec::new();
     while out.read_until(b'\n', &mut buf)? > 0 {
-        if let Some(t) = parse_log_line(&String::from_utf8_lossy(&buf)) {
+        let line = String::from_utf8_lossy(&buf);
+        if let Some(t) = parse_log_line(&line) {
             stats.add(&t);
+        } else if let Some(t) = parse_yesno_line(&line) {
+            stats.yesno.add(&t);
         }
         buf.clear();
     }
@@ -501,6 +607,19 @@ pub fn drift(prev: &Summary, cur: &Summary) -> Vec<String> {
             }
         }
     }
+    let (py, cy) = (&prev.live.yesno, &cur.live.yesno);
+    if py.yes_no >= DRIFT_MIN_SAMPLES && cy.yes_no >= DRIFT_MIN_SAMPLES {
+        if let (Some(a), Some(b)) = (py.answered_rate(), cy.answered_rate()) {
+            if (b - a).abs() >= DRIFT_USED_RATE - EPS {
+                out.push(format!(
+                    "yes/no questions Jev answered itself moved {:+.0} points ({:.0}% → {:.0}%)",
+                    (b - a) * 100.0,
+                    a * 100.0,
+                    b * 100.0
+                ));
+            }
+        }
+    }
     if let (Some(a), Some(b)) = (prev.live.used_rate(), cur.live.used_rate()) {
         if (b - a).abs() >= DRIFT_USED_RATE - EPS {
             out.push(format!(
@@ -606,6 +725,35 @@ pub fn render(
         b += &format!("Guards: {}.\n", counts(&l.guards));
     }
     b += &format!("Intents: {}.\n", counts(&l.intents));
+
+    let y = &l.yesno;
+    b += &format!(
+        "\n**Yes/no questions** (`jev_yesno`, Jev gate ≥ {:.2}, answer ≥ {:.2}): {} question-shaped turns, {} yes/no; Jev answered {} ({}; yes {}, no {}), unsure {}, hedged {}; mean Jev latency {}.\n",
+        crate::jev_yesno::GATE_MIN,
+        crate::jev_yesno::ANSWER_MIN,
+        y.turns,
+        y.yes_no,
+        y.answered,
+        y.answered_rate().map_or("-".into(), |x| format!("{:.0}%", x * 100.0)),
+        y.answered_yes,
+        y.answered - y.answered_yes,
+        y.unsure,
+        y.hedged,
+        y.mean_jev_ms().map_or("-".into(), |ms| format!("{ms} ms")),
+    );
+    if y.turns > 0 {
+        b += &format!(
+            "Kinds: {}. Normal path alone: {}. Gate P by bucket: {}.\n",
+            counts(&y.kinds),
+            counts(&y.passes),
+            BUCKET_LABELS
+                .iter()
+                .zip(y.gate_buckets)
+                .map(|(l, n)| format!("{l} {n}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
 
     match (&cur.replay, replay_note) {
         (Some(r), _) => {
@@ -802,6 +950,50 @@ pub async fn run(a: Args) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn yes_no_lines_are_counted_from_chat_turns_only() {
+        let line = |source: &str, outcome: &str, why: &str, p_yes: &str| {
+            format!("2026-10-29T12:00:00Z  INFO lucina_jev::route: jev_yesno event=\"jev_yesno\" source=\"{source}\" outcome=\"{outcome}\" why=\"{why}\" gate=Some(0.93) kind=Some(\"personal\") sensitive=None p_yes={p_yes} grounded=Some(0.9) facts=12 jev_ms=410 total_ms=1300")
+        };
+        let t = parse_yesno_line(&line("turn", "answer", "", "Some(0.97)")).unwrap();
+        assert_eq!(t.outcome, "answer");
+        assert_eq!(t.why, None);
+        assert_eq!(t.gate, Some(0.93));
+        assert_eq!(t.kind.as_deref(), Some("personal"));
+        assert_eq!(t.p_yes, Some(0.97));
+        assert_eq!(t.jev_ms, Some(410));
+        assert!(parse_yesno_line(&line("preview", "answer", "", "Some(0.97)")).is_none());
+        assert!(parse_log_line(&line("turn", "answer", "", "None")).is_none(), "not a jev_first line");
+
+        let mut y = YesNoStats::default();
+        y.add(&t);
+        y.add(&parse_yesno_line(&line("turn", "answer", "", "Some(0.1)")).unwrap());
+        y.add(&parse_yesno_line(&line("turn", "unsure", "", "Some(0.5)")).unwrap());
+        y.add(&parse_yesno_line(&line("turn", "pass", "not_yes_no", "None")).unwrap());
+        y.add(&parse_yesno_line(&line("turn", "pass", "live_lookup", "Some(0.5)")).unwrap());
+        assert_eq!((y.turns, y.yes_no, y.answered, y.answered_yes, y.unsure), (5, 4, 2, 1, 1));
+        assert_eq!(y.passes.get("not_yes_no"), Some(&1));
+        assert_eq!(y.answered_rate(), Some(0.5));
+        assert_eq!(y.mean_jev_ms(), Some(410));
+        assert_eq!(y.gate_buckets[4], 5);
+
+        // Older summaries have no yes/no section.
+        let old: LiveStats = serde_json::from_value(serde_json::json!({"turns": 3, "used": 1, "reasons": {}, "intents": {},
+            "guards": {}, "buckets": [0, 0, 0, 0, 0], "no_confidence": 0, "tier0_compared": 0, "tier0_agreed": 0}))
+            .unwrap();
+        assert_eq!(old.yesno, YesNoStats::default());
+
+        let mut a = Summary { date: "2026-10-22".into(), days: 7, live: LiveStats::default(), replay: None };
+        let mut b = a.clone();
+        b.date = "2026-10-29".into();
+        a.live.yesno = YesNoStats { yes_no: 20, answered: 16, ..YesNoStats::default() };
+        b.live.yesno = YesNoStats { yes_no: 20, answered: 10, ..YesNoStats::default() };
+        let flags = drift(&a, &b);
+        assert!(flags.iter().any(|f| f.starts_with("yes/no questions Jev answered itself moved -30 points")), "{flags:?}");
+        let (_, body) = render(&b, Some(&a), &flags, None, None);
+        assert!(body.contains("**Yes/no questions**"), "{body}");
+    }
 
     const USED: &str = "\u{1b}[2m2026-10-28T18:01:29.483962Z\u{1b}[0m \u{1b}[32m INFO\u{1b}[0m \u{1b}[2mlucina_jev::route\u{1b}[0m\u{1b}[2m:\u{1b}[0m jev_first \u{1b}[3mevent\u{1b}[0m\u{1b}[2m=\u{1b}[0m\"jev_first\" \u{1b}[3mused\u{1b}[0m\u{1b}[2m=\u{1b}[0mtrue \u{1b}[3mintent\u{1b}[0m\u{1b}[2m=\u{1b}[0mtemporal_query \u{1b}[3mconfidence\u{1b}[0m\u{1b}[2m=\u{1b}[0m0.77 \u{1b}[3mtier0\u{1b}[0m\u{1b}[2m=\u{1b}[0mSome(\"chat\") \u{1b}[3mguard\u{1b}[0m\u{1b}[2m=\u{1b}[0m\"\"";
 

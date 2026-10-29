@@ -112,7 +112,7 @@ impl Secretary {
     }
 }
 
-fn enc(s: &str) -> String {
+pub(crate) fn enc(s: &str) -> String {
     s.bytes()
         .map(|b| {
             if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
@@ -463,7 +463,7 @@ pub async fn notes_context(s: &Secretary, st: &BridgeState, prompt: &str) -> Str
 
 // ---------------------------------------------------------------- calendar
 
-async fn events(s: &Secretary, from: &str, to: &str) -> Answer {
+pub(crate) async fn events(s: &Secretary, from: &str, to: &str) -> Answer {
     s.call(
         Method::GET,
         &format!("/v1/calendar/events?from={}&to={}", enc(from), enc(to)),

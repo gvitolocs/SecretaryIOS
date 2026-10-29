@@ -157,6 +157,9 @@ pub struct Meta {
     pub blocks: Option<Vec<serde_json::Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actions: Option<Vec<serde_json::Value>>,
+    /// A reply Jev decided (the bubble's badge): `{"feature": "yesno", "answer", "p", "ms", "model"}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jev: Option<serde_json::Value>,
 }
 
 impl Meta {
@@ -193,6 +196,7 @@ impl Meta {
             && self.command.is_none()
             && self.tool.is_none()
             && self.format.is_none()
+            && self.jev.is_none()
     }
 
     /// The meta of a rich reply (merged onto the turn's own meta).
@@ -241,7 +245,8 @@ impl Meta {
             bubbles,
             lang,
             blocks,
-            actions
+            actions,
+            jev
         );
         self
     }
@@ -442,6 +447,31 @@ fn normalize_command(raw: &RawValue) -> Option<Box<RawValue>> {
     RawValue::from_string(text).ok()
 }
 
+/// The Jev badge: a short feature name, an answer word, a probability and milliseconds; anything else is dropped.
+fn normalize_jev(v: serde_json::Value) -> Option<serde_json::Value> {
+    let word = |k: &str| {
+        v[k].as_str()
+            .filter(|s| !s.is_empty() && s.len() <= 32)
+            .filter(|s| s.bytes().all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b)))
+    };
+    let feature = word("feature")?;
+    let mut out = serde_json::json!({ "feature": feature });
+    for k in ["answer", "model"] {
+        if let Some(w) = word(k) {
+            out[k] = w.into();
+        }
+    }
+    if let Some(p) = v["p"].as_f64().filter(|p| (0.0..=1.0).contains(p)) {
+        out["p"] = ((p * 1000.0).round() / 1000.0).into();
+    }
+    for k in ["ms", "totalMs"] {
+        if let Some(ms) = v[k].as_u64().filter(|ms| *ms < 600_000) {
+            out[k] = ms.into();
+        }
+    }
+    Some(out)
+}
+
 fn normalize_meta(meta: Option<Meta>) -> Option<Meta> {
     let m = meta?;
     let s = |v: Option<String>| clean_string(v.as_deref(), MAX_META_STRING_CHARS);
@@ -473,6 +503,7 @@ fn normalize_meta(meta: Option<Meta>) -> Option<Meta> {
         voice_reply: m.voice_reply,
         command: m.command.as_deref().and_then(normalize_command),
         tool: s(m.tool),
+        jev: m.jev.and_then(normalize_jev),
         ..Meta::default()
     };
     // Rich reply parts: validated again here, the timeline is what the apps render.
@@ -1505,6 +1536,27 @@ mod tests {
                 item.id
             )
         );
+    }
+
+    #[test]
+    fn jev_badges_keep_only_their_known_fields() {
+        let m = normalize_meta(Some(Meta {
+            jev: Some(serde_json::json!({"feature": "yesno", "answer": "yes", "p": 0.93456, "ms": 412,
+                "totalMs": 1300, "model": "jev-1.14.0", "reply": "x", "evil": {"a": 1}})),
+            ..Meta::default()
+        }))
+        .unwrap();
+        assert_eq!(
+            m.jev.unwrap(),
+            serde_json::json!({"feature": "yesno", "answer": "yes", "p": 0.935, "ms": 412, "totalMs": 1300, "model": "jev-1.14.0"})
+        );
+        let bad = normalize_meta(Some(Meta {
+            jev: Some(serde_json::json!({"feature": "<script>", "p": 3})),
+            ..Meta::default()
+        }));
+        assert!(bad.is_none_or(|m| m.jev.is_none()));
+        let merged = Meta::kind("x").merge(Meta { jev: Some(serde_json::json!({"feature": "yesno"})), ..Meta::default() });
+        assert_eq!(merged.jev.unwrap()["feature"], "yesno");
     }
 
     #[test]

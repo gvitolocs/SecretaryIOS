@@ -601,6 +601,23 @@ async fn route(
                            "replyMode": routed.reply_mode, "tier0": routed.tier0()},
             })))
         }
+        // Yes/no questions (crate::jev_yesno): Jev's gate on a text and the answer it would give from
+        // the owner's live data. Reads only (no turn, no timeline); not forwarded by secretary-server.
+        (Some("jev"), Some("yesno")) => {
+            only(&["POST"])?;
+            let body = read_json(body, MAX_BODY_BYTES).await?;
+            let text = body["text"].as_str().map(str::trim).filter(|t| !t.is_empty())
+                .ok_or_else(|| ApiError::bad_request("text is required"))?;
+            let recent = body["recent"].as_str().unwrap_or("");
+            let lang = match body["lang"].as_str() {
+                Some("it") => "it",
+                Some("da") => "da",
+                Some(_) => "en",
+                None => lucina_intent::lang::detect(text).map_or("en", |l| l.code()),
+            };
+            let gate_only = body["gateOnly"].as_bool().unwrap_or(false);
+            Ok(ok(crate::jev_yesno::preview(st, text, recent, lang, gate_only).await))
+        }
         // Go-aheads for agents (crate::decide, docs/design/decisions-api.md).
         (Some("decisions"), None) => match method.as_str() {
             "POST" => {
