@@ -1,6 +1,6 @@
 import { useNavigate } from "@solidjs/router";
 import { For, Show, type JSX } from "solid-js";
-import { AgentsIcon, BookIcon, BulbIcon, BubbleIcon, CheckCircleIcon, CodeIcon, ComputerIcon, DriveIcon, FilmIcon, GamepadIcon, GridIcon, HangerIcon, InstagramIcon, LinkIcon, ListIcon, MicIcon, NoteIcon, PagesIcon, PhoneIcon, PixivIcon, PulseIcon, QrIcon } from "../components/Icons";
+import { AgentsIcon, BookIcon, BulbIcon, BubbleIcon, CheckCircleIcon, CodeIcon, ComputerIcon, DriveIcon, FilmIcon, GamepadIcon, GridIcon, HangerIcon, InstagramIcon, LinkIcon, ListIcon, MicIcon, NoteIcon, NotebookIcon, PagesIcon, PhoneIcon, PixivIcon, PulseIcon, QrIcon } from "../components/Icons";
 import { EmptyState, Page, PageGrid, PageHeader, useWide } from "../components/page";
 import { t } from "../i18n";
 import { desktopShell } from "../lib/desktopShell";
@@ -62,6 +62,8 @@ export const PLUGINS: Plugin[] = [
   { id: "films", icon: FilmIcon, title: () => t("plugins.films"), detail: () => t("plugins.filmsDetail"), href: "/films" },
   { id: "drive", icon: DriveIcon, title: () => t("plugins.drive"), detail: () => t("plugins.driveDetail"), href: "/drive" },
   { id: "library", icon: BookIcon, title: () => t("plugins.library"), detail: () => t("plugins.libraryDetail"), href: "/library" },
+  // Notebooks: sources, linked Keep notes and a cited chat, from Open Notebook (views/Notebooks.tsx).
+  { id: "notebooks", icon: NotebookIcon, title: () => t("notebooks.title"), detail: () => t("notebooks.detail"), href: "/notebooks" },
   { id: "notes", icon: NoteIcon, title: () => t("plugins.notes"), detail: () => t("plugins.notesDetail"), href: "/notes" },
   // Adult, owner-only (secretary-nclient's child-safety filter is on the server): hidden when "Show adult plugins" is off.
   { id: "nclient", icon: PagesIcon, title: () => t("nclient.title"), detail: () => t("nclient.detail"), href: "/nclient", adult: true },

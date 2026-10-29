@@ -1,6 +1,6 @@
 import { createMemoryHistory, MemoryRouter, Route } from "@solidjs/router";
 import { fireEvent, render, screen } from "@solidjs/testing-library";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { Markdown } from "./Markdown";
 
 describe("Markdown: [note:<slug>] citations", () => {
@@ -24,5 +24,36 @@ describe("Markdown: [note:<slug>] citations", () => {
     ));
     fireEvent.click(screen.getByRole("link", { name: "note:gift-ideas" }));
     expect(await screen.findByText("Keep opened")).toBeInTheDocument();
+  });
+});
+
+describe("Markdown: Notebooks citations", () => {
+  const text = "Reliable means consistent [source:s1-3] and valid means meaningful [source:s1-5], again [source:s1-3] and [insight:i9].";
+  const citations = [
+    { ref: "source:s1-3", title: "RM Class 2", excerpt: "Consistency.", page: 7 },
+    { ref: "source:s1-5", title: "RM Class 2", excerpt: "Meaning." },
+  ];
+
+  it("shows numbered chips: one number per citation, in order of first use, the same number for a repeat", () => {
+    render(() => <Markdown text={text} citations={citations} onCite={() => {}} />);
+    const chips = screen.getAllByRole("button");
+    expect(chips.map((c) => c.textContent)).toEqual(["1", "2", "1", "3"]);
+    expect(chips[0]).toHaveAttribute("aria-label", "Citation 1: RM Class 2");
+    expect(chips[0]).toHaveAttribute("title", expect.stringContaining("p. 7"));
+    expect(chips[3]).toHaveAttribute("aria-label", "Citation 3: insight:i9");
+    expect(chips[3]).toHaveAttribute("data-kind", "insight");
+  });
+
+  it("calls onCite with the ref of the chip that was clicked", () => {
+    const open = vi.fn();
+    render(() => <Markdown text={text} citations={citations} onCite={open} />);
+    fireEvent.click(screen.getAllByRole("button")[1]!);
+    expect(open).toHaveBeenCalledWith("source:s1-5");
+  });
+
+  it("leaves them as plain text where nothing can open them", () => {
+    render(() => <Markdown text="Said so [source:s1-3]." />);
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.getByText("Said so [source:s1-3].")).toBeInTheDocument();
   });
 });

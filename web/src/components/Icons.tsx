@@ -714,3 +714,12 @@ export function AgentsIcon() {
     </svg>
   );
 }
+
+export function NotebookIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="5.5" y="3.5" width="13" height="17" rx="2" />
+      <path d="M9 3.5v17M12 8h4M12 11.5h4" />
+    </svg>
+  );
+}

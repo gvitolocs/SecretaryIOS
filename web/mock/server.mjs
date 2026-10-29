@@ -62,6 +62,8 @@
 //   Links shows a Todoist card (paste any 20+ character token; "bad…" is refused).
 // NClient (docs/nclient.md; mock/nclient.mjs): /v1/nclient/* over neutral placeholder galleries and generated SVG images;
 //   POST /v1/_mock/nclient {enabled, media:"down", slow} switches the plugin off or fails/slows its saves.
+// Notebooks (docs/design/notebooks-api.md; mock/notebooks.mjs): /v1/notebooks, in memory, with a
+//   cited chat that streams, sources and podcasts that move through their states by the clock.
 // Notes (docs/server-api.md, "Notes"; mock/notes.mjs): /v1/notes, /v1/notes/{id|slug},
 //   /append, /trash, /trash/{id}/restore. Seeded from deploy/seed/notes plus samples.
 // MOCK_STRICT=1 emulates the older lucina-gym-core view (no estimated_1rm, exercise_charts,
@@ -1911,7 +1913,9 @@ async function route(req, res) {
     return fail(res, 403, "csrf", "missing X-Secretary-CSRF header");
   }
   // Keep's raw bodies (an attachment, the Takeout zip) are not JSON.
-  const rawNotesBody = method === "POST" && (/^\/v1\/notes\/[^/]+\/attachments$/.test(path) || path === "/v1/notes/import/google-keep");
+  const rawNotesBody =
+    method === "POST" &&
+    (/^\/v1\/notes\/[^/]+\/attachments$/.test(path) || path === "/v1/notes/import/google-keep" || /^\/v1\/notebooks\/[^/]+\/sources\/upload$/.test(path));
   if (["POST", "PUT", "PATCH"].includes(method) && !rawNotesBody && !String(req.headers["content-type"] ?? "").startsWith("application/json")) {
     return fail(res, 415, "unsupported_media_type", "Content-Type must be application/json");
   }
@@ -2017,6 +2021,7 @@ async function route(req, res) {
   if (path.startsWith("/v1/tasks")) return proxyTasks(req, res, url);
   if (await (await import("./links.mjs")).handleLinks(req, res, { path, method, url, send, fail, readJson })) return;
   if (await (await import("./notes.mjs")).handleNotes(req, res, { path, method, url, send, fail, readJson })) return;
+  if (await (await import("./notebooks.mjs")).handleNotebooks(req, res, { path, method, url, send, fail, readJson })) return;
   if (await (await import("./nclient.mjs")).handleNClient(req, res, { path, method, url, send, fail, readJson })) return;
   if (await (await import("./instagram.mjs")).handleInstagram(req, res, { path, method, url, send, fail, readJson })) return;
   if (await (await import("./agents.mjs")).handleAgents(req, res, { path, method, url, send, fail, readJson })) return;

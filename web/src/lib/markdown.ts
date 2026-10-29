@@ -7,7 +7,8 @@
 // numbered lists (nested by indentation, `[ ]`/`[x]` task items), block
 // quotes, fenced code, horizontal rules, simple pipe tables; inline code,
 // **bold**, *italic*, ~~strike~~, [links](url), <autolinks> and bare URLs.
-// Images become links to the image.
+// Images become links to the image. Notebook answers cite passages as [source:<chunk id>] and
+// insights as [insight:<id>]; those become `cite` nodes (rendered as numbered chips).
 
 import { linkify, safeHref } from "./linkify";
 
@@ -18,7 +19,9 @@ export type Inline =
   | { t: "strong"; children: Inline[] }
   | { t: "em"; children: Inline[] }
   | { t: "del"; children: Inline[] }
-  | { t: "link"; href: string; children: Inline[]; /** An in-app route (a citation like [note:slug]): opened in the app, not in a new tab. */ route?: true };
+  | { t: "link"; href: string; children: Inline[]; /** An in-app route (a citation like [note:slug]): opened in the app, not in a new tab. */ route?: true }
+  /** A Notebooks citation: `ref` is "source:<chunk id>" or "insight:<id>", as written in the text. */
+  | { t: "cite"; kind: "source" | "insight"; id: string; ref: string };
 
 export interface ListItem {
   children: Block[];
@@ -39,6 +42,9 @@ const MAX_DEPTH = 8;
 
 /** `[note:<slug>]`, a slug being `[a-z0-9-]{1,64}`. */
 const NOTE_CITE = /^\[note:([a-z0-9-]{1,64})\]/;
+
+/** `[source:<chunk id>]` (a source id, a dash and the chunk number) or `[insight:<id>]`. */
+const NOTEBOOK_CITE = /^\[(source|insight):([A-Za-z0-9][A-Za-z0-9_-]{0,79})\]/;
 
 /** `mailto:` with an address, or what `safeHref` accepts. */
 export function safeLink(raw: string): string | null {
@@ -166,6 +172,13 @@ export function parseInline(src: string, depth = 0): Inline[] {
         flush();
         out.push({ t: "link", href: `/keep/note/${cite[1]}`, route: true, children: [{ t: "text", text: `note:${cite[1]}` }] });
         i += cite[0].length;
+        continue;
+      }
+      const nb = NOTEBOOK_CITE.exec(rest);
+      if (nb && src[i + nb[0].length] !== "(") {
+        flush();
+        out.push({ t: "cite", kind: nb[1] as "source" | "insight", id: nb[2]!, ref: `${nb[1]}:${nb[2]}` });
+        i += nb[0].length;
         continue;
       }
       const close = closeBracket(src, i);
@@ -386,7 +399,30 @@ export function inlineText(nodes: Inline[]): string {
     .map((n) => {
       if (n.t === "text" || n.t === "code") return n.text;
       if (n.t === "br") return "\n";
+      if (n.t === "cite") return `[${n.ref}]`;
       return inlineText(n.children);
     })
     .join("");
+}
+
+function inlineCites(nodes: Inline[], out: string[]): void {
+  for (const n of nodes) {
+    if (n.t === "cite") {
+      if (!out.includes(n.ref)) out.push(n.ref);
+    } else if ("children" in n) inlineCites(n.children, out);
+  }
+}
+
+/** The Notebooks citation refs of a document, each once, in the order they first appear (chip 1, 2, 3 ...). */
+export function citationRefs(blocks: Block[], out: string[] = []): string[] {
+  for (const b of blocks) {
+    if (b.t === "heading" || b.t === "paragraph") inlineCites(b.children, out);
+    else if (b.t === "quote") citationRefs(b.children, out);
+    else if (b.t === "list") for (const item of b.items) citationRefs(item.children, out);
+    else if (b.t === "table") {
+      for (const cell of b.head) inlineCites(cell, out);
+      for (const row of b.rows) for (const cell of row) inlineCites(cell, out);
+    }
+  }
+  return out;
 }

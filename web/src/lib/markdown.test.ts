@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { inlineText, parseInline, parseMarkdown, safeLink, type Block, type Inline } from "./markdown";
+import { citationRefs, inlineText, parseInline, parseMarkdown, safeLink, type Block, type Inline } from "./markdown";
 
 const links = (nodes: Inline[]): string[] =>
   nodes.flatMap((n) => (n.t === "link" ? [n.href, ...links(n.children)] : "children" in n ? links(n.children) : []));
@@ -134,3 +134,39 @@ describe("[note:<slug>] citations", () => {
   });
 });
 
+
+describe("[source:<chunk id>] and [insight:<id>] citations (Notebooks)", () => {
+  it("turns them into cite nodes that keep the ref as written", () => {
+    expect(parseInline("True [source:s0a9be3c112-14].")).toEqual([
+      { t: "text", text: "True " },
+      { t: "cite", kind: "source", id: "s0a9be3c112-14", ref: "source:s0a9be3c112-14" },
+      { t: "text", text: "." },
+    ]);
+    expect(parseInline("[insight:i4f1c09a2e7]")).toEqual([{ t: "cite", kind: "insight", id: "i4f1c09a2e7", ref: "insight:i4f1c09a2e7" }]);
+  });
+
+  it("keeps [note:<slug>] as the link to Keep, next to the new ones", () => {
+    const nodes = parseInline("a [source:s1-2] b [note:my-note] c [source:s1-9]");
+    expect(nodes.map((n) => n.t)).toEqual(["text", "cite", "text", "link", "text", "cite"]);
+    expect(links(nodes)).toEqual(["/keep/note/my-note"]);
+  });
+
+  it("leaves lookalikes, markdown links and code as they are", () => {
+    expect(parseInline("[source:]").some((n) => n.t === "cite")).toBe(false);
+    expect(parseInline("[source:a b]").some((n) => n.t === "cite")).toBe(false);
+    expect(parseInline("[other:s1-2]").some((n) => n.t === "cite")).toBe(false);
+    expect(parseInline("`[source:s1-2]`")).toEqual([{ t: "code", text: "[source:s1-2]" }]);
+    expect(links(parseInline("[source:s1-2](https://y.org)"))).toEqual(["https://y.org/"]);
+    expect(inlineText(parseInline("[source:]"))).toBe("[source:]");
+  });
+
+  it("reads as [ref] in plain text", () => {
+    expect(inlineText(parseInline("see [source:s1-2]"))).toBe("see [source:s1-2]");
+  });
+
+  it("lists each cited ref once, in the order the chips are numbered, through lists, quotes and tables", () => {
+    const doc = ["First [source:s1-4] and [insight:i1].", "", "- item [source:s1-2]", "- again [source:s1-4]", "", "> quoted [source:s2-0]", "", "| a |", "|---|", "| [source:s3-1] |"].join("\n");
+    expect(citationRefs(parseMarkdown(doc))).toEqual(["source:s1-4", "insight:i1", "source:s1-2", "source:s2-0", "source:s3-1"]);
+    expect(citationRefs(parseMarkdown("nothing here"))).toEqual([]);
+  });
+});
