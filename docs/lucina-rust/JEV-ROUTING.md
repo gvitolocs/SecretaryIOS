@@ -65,3 +65,37 @@ one-shot.
 
 Units (not installed here): `deploy/lucina-rs/lucina-jev-drift.timer` (Wednesday 08:00
 Europe/Copenhagen) and `lucina-jev-recal.timer` (2026-11-04 09:00 Europe/Copenhagen).
+
+## Yes/no questions (`crate::jev_yesno`)
+
+The owner's closed questions ("Ho palestra oggi?", "Is milk on my shopping list?", "Har jeg en
+forelæsning i morgen?") are answered by Jev on the JSON planner path, after decisions, YouTube,
+shares, her computer, the ops record and AU Find, before every other shortcut. His own turns only
+(app, Telegram, Discord, Alexa); MCP turns and other senders keep the normal path.
+
+1. **Screen** (no call): a `?`, or an English/Danish yes/no lead word without one. Open questions
+   (what, cosa, hvad, …) and Italian without a `?` are skipped.
+2. **Gate** (`purpose=yesno_gate`): P(closed yes/no question) ≥ `LUCINA_JEV_YESNO_GATE_MIN` (0.75),
+   the kind (personal / general / opinion / live) and medical, legal or financial
+   (≥ `LUCINA_JEV_YESNO_SENSITIVE_MIN`, 0.5).
+3. **State:** the calendar for the next 7 days, the shopping list, pending reminders, the gym week
+   and body weight as numbered facts (sources in parallel, 2.5 s each, a failed source says so),
+   then her memory context and the recent turns as background. General knowledge gets no personal data.
+4. **Answer** (`purpose=yesno`): P(yes), `grounded` (the facts settle it) and `evidence` (which fact).
+   P(yes) ≥ `LUCINA_JEV_YESNO_MIN` (0.75) → yes, ≤ 0.25 → no; a personal or live question also needs
+   grounded ≥ `LUCINA_JEV_YESNO_GROUNDED_MIN` (0.6).
+5. **Reply:** "Sì / Ja / Yes" or "No / Nej" with the percentage and a confidence word, then one
+   sentence of reason written by her text model (thinking off, 90 tokens) from the evidence fact and
+   its source only; if the model fails, the fact itself. For general knowledge the model may answer
+   DISAGREE, which makes the answer unsure. The bubble's `meta.jev` carries the badge
+   (`feature`, `answer`, `p`, `ms`, `totalMs`, `model`); the web shows "Jev · 93% · 412 ms".
+6. **Otherwise:** between the bars she says she is not sure, then her normal answer; a medical, legal
+   or financial question gets a hedge line, then the normal answer; a live question her data does not
+   settle, Jev failing (quota, breaker, timeout) or `LUCINA_JEV_YESNO=off` → the normal path alone.
+
+It only answers: the action is `yesno`, with no job, tool or decision. Each turn logs one
+`event="jev_yesno"` line; the drift report counts them (answered / unsure / hedged, kinds, why the
+normal path answered alone, gate buckets, mean Jev latency) and flags a move of ≥ 15 points in the
+share Jev answered itself. `POST /api/secretary/jev/yesno {"text", "recent"?, "lang"?, "gateOnly"?}`
+replays a text (no turn), also while `LUCINA_JEV_YESNO=off`; `gateOnly` stops after the gate (for
+old questions about "today").

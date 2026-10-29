@@ -949,8 +949,10 @@ async fn run_turn_scoped(
             &t.message,
             &finish.action,
             &finish.action_result,
-            // Secrets replies are fixed texts, AU Find answers keep their checked wording: no model rewrite.
-            !finish.action.starts_with("secrets_") && finish.action != au_turn::ACTION,
+            // Secrets replies are fixed texts, AU Find and Jev yes/no answers keep their wording: no model rewrite.
+            !finish.action.starts_with("secrets_")
+                && finish.action != au_turn::ACTION
+                && finish.action != crate::jev_yesno::ACTION,
             &finish.calendar_events,
             finish.agenda.as_ref(),
         )
@@ -1479,7 +1481,6 @@ async fn json_turn(
     cmid: Option<&str>,
 ) -> Finish {
     let st = t.st;
-    let persona = t.persona().to_owned();
     let memory = prepared.memory_context.as_str();
 
     // The owner's answer to a decision Lucina asked him about (crate::decide): his own turns only.
@@ -1536,6 +1537,60 @@ async fn json_turn(
     if let Some(f) = au_turn::try_turn(t, memory).await {
         return f;
     }
+
+    // A yes/no question (crate::jev_yesno): Jev answers from what she knows, or she says she isn't sure
+    // (or hedges a medical, legal or financial one) before the normal answer. The owner's own turns only
+    // (no MCP, no other senders); it answers and never acts.
+    if t.guarded || t.consult || t.mcp.is_some() || !crate::jev_yesno::enabled() {
+        return json_turn_rest(t, prepared, cmid).await;
+    }
+    let yn = crate::jev_yesno::run(
+        st,
+        &t.message,
+        memory,
+        &prepared.recent_context,
+        crate::jev_yesno::turn_lang_code(),
+        Utc::now(),
+    )
+    .await;
+    yn.log("turn");
+    let badge = |f: Finish| {
+        let jev = Meta {
+            jev: yn.badge(),
+            ..Meta::default()
+        };
+        Finish {
+            meta: Some(f.meta.clone().unwrap_or_default().merge(jev)),
+            ..f
+        }
+    };
+    match &yn.outcome {
+        crate::jev_yesno::Outcome::Answer { reply } => badge(
+            Finish::reply(reply.clone(), crate::jev_yesno::ACTION).with("[jev yes/no]", None),
+        ),
+        crate::jev_yesno::Outcome::Pass { .. } => json_turn_rest(t, prepared, cmid).await,
+        crate::jev_yesno::Outcome::Unsure { line } | crate::jev_yesno::Outcome::Hedge { line } => {
+            let mut f = json_turn_rest(t, prepared, cmid).await;
+            // A job's ack or a refusal is said as it is.
+            if f.job.is_some() || f.action == "needs_confirmation" {
+                return f;
+            }
+            f.reply = format!("{line}\n\n{}", f.reply.trim());
+            badge(f)
+        }
+    }
+}
+
+/// The JSON turn after the read-only shortcuts that come before yes/no questions (decisions, YouTube,
+/// shares, her computer, the ops record, AU Find).
+async fn json_turn_rest(
+    t: &Turn<'_>,
+    prepared: &crate::context::Prepared,
+    cmid: Option<&str>,
+) -> Finish {
+    let st = t.st;
+    let persona = t.persona().to_owned();
+    let memory = prepared.memory_context.as_str();
 
     // Meshy 3D (LUCINA_MESHY=true): a pending plan's yes/no, or a 3D request. Not for agents.
     if !t.consult {
@@ -3003,8 +3058,10 @@ async fn tools_turn(
         &message,
         &finish.action,
         &finish.action_result,
-        // Secrets replies are fixed texts, AU Find answers keep their checked wording: no model rewrite.
-        !finish.action.starts_with("secrets_") && finish.action != au_turn::ACTION,
+        // Secrets replies are fixed texts, AU Find and Jev yes/no answers keep their wording: no model rewrite.
+        !finish.action.starts_with("secrets_")
+                && finish.action != au_turn::ACTION
+                && finish.action != crate::jev_yesno::ACTION,
         &finish.calendar_events,
         finish.agenda.as_ref(),
     )

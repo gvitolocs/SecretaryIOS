@@ -32,6 +32,7 @@ pub mod fake;
 pub mod geocode;
 pub mod jev_drift;
 pub mod jev_route;
+pub mod jev_yesno;
 pub mod grocery_turn;
 pub mod jobs;
 pub mod lan;
