@@ -372,6 +372,55 @@ impl Call {
         Self::new(Method::GET, &["callers", "directory"])
     }
 
+    /// `GET /callers/directory?block=1&spam=&pickup=`: the labels plus the numbers above
+    /// the owner's auto-reject thresholds (0..1 each; Lucina's defaults when absent).
+    pub fn callers_directory_block(spam: Option<&str>, pickup: Option<&str>) -> Result<Self> {
+        let mut c = Self::callers_directory();
+        c.query.push(("block", "1".to_owned()));
+        for (field, v) in [("spam", spam), ("pickup", pickup)] {
+            if let Some(v) = present(v) {
+                let ok = v.len() <= 8
+                    && v.parse::<f64>()
+                        .is_ok_and(|f| f.is_finite() && (0.0..=1.0).contains(&f));
+                if !ok {
+                    return Err(Error::Invalid {
+                        field,
+                        message: "must be a number 0..1".into(),
+                    });
+                }
+                c.query.push((field, v.to_owned()));
+            }
+        }
+        Ok(c)
+    }
+
+    /// `POST /callers/rejected`: a phone rejected a call (Lucina validates the body).
+    pub fn callers_rejected(body: Value) -> Result<Self> {
+        if !body.is_object() || body.to_string().len() > 4 * 1024 {
+            return Err(Error::Invalid {
+                field: "body",
+                message: "must be a JSON object of at most 4 KiB".into(),
+            });
+        }
+        Ok(Self::new(Method::POST, &["callers", "rejected"]).with_body(body))
+    }
+
+    /// `POST /callers/allow` `{number}`: the owner allows a number (never rejected or blocked again).
+    pub fn callers_allow(body: Value) -> Result<Self> {
+        let ok = body
+            .get("number")
+            .and_then(Value::as_str)
+            .is_some_and(|n| !n.trim().is_empty() && n.chars().count() <= 40)
+            && body.as_object().is_some_and(|o| o.len() == 1);
+        if !ok {
+            return Err(Error::Invalid {
+                field: "number",
+                message: "must be one phone number of at most 40 characters".into(),
+            });
+        }
+        Ok(Self::new(Method::POST, &["callers", "allow"]).with_body(body))
+    }
+
     /// `GET /au/health`: whether AU Find answers (`{reachable, af_server, error?}`).
     pub fn au_health() -> Self {
         Self::new(Method::GET, &["au", "health"]).bare()
@@ -1449,6 +1498,29 @@ mod tests {
             }
         }
         assert!(Call::ops_search(None, Some(&"p".repeat(65)), None, None, None, None).is_err());
+    }
+
+    #[test]
+    fn callers_block_reject_allow_calls() {
+        let c = client("http://h:1");
+        assert_eq!(
+            c.url(&Call::callers_directory_block(Some("0.6"), Some("0.25")).unwrap()).as_str(),
+            "http://h:1/api/secretary/callers/directory?block=1&spam=0.6&pickup=0.25"
+        );
+        assert_eq!(
+            c.url(&Call::callers_directory_block(None, None).unwrap()).as_str(),
+            "http://h:1/api/secretary/callers/directory?block=1"
+        );
+        for bad in ["1.5", "-0.1", "NaN", "x", "0.600000001"] {
+            assert!(Call::callers_directory_block(Some(bad), None).is_err(), "{bad}");
+        }
+        assert!(Call::callers_rejected(json!({"number": "+4570405220", "line": "l", "source": "android"})).is_ok());
+        assert!(Call::callers_rejected(json!([1])).is_err());
+        assert!(Call::callers_rejected(json!({"line": "x".repeat(5000)})).is_err());
+        assert!(Call::callers_allow(json!({"number": "+4570405205"})).is_ok());
+        for bad in [json!({}), json!({"number": ""}), json!({"number": "1", "x": 1}), json!({"number": 5})] {
+            assert!(Call::callers_allow(bad.clone()).is_err(), "{bad}");
+        }
     }
 
     #[test]

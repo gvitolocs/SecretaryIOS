@@ -6,7 +6,9 @@
 //! through unchanged.
 //!
 //! - `POST /v1/callers/screen`    `{numbers, lang?, context?, call?}` → `{lang, results, table}`
-//! - `GET  /v1/callers/directory` `{generatedAt, entries: [{number, label}]}` (iOS Call Directory)
+//! - `GET  /v1/callers/directory[?block=1&spam=&pickup=]` `{generatedAt, entries, block}` (iOS Call Directory)
+//! - `POST /v1/callers/rejected` a phone rejected a call (the log and Lucina's daily digest)
+//! - `POST /v1/callers/allow` `{number}` the owner's "Allow"
 //!
 //! Lucina unreachable, timing out or lacking the routes → 503 `callers_unavailable`.
 
@@ -17,7 +19,7 @@ use axum::{Json, Router};
 use secretary_core::Call;
 use serde_json::Value;
 
-use crate::error::{ApiError, JsonBody};
+use crate::error::{ApiError, JsonBody, QueryArgs};
 use crate::AppState;
 
 type ApiResult = Result<(StatusCode, Json<Value>), ApiError>;
@@ -63,8 +65,56 @@ async fn screen(
     .await
 }
 
-async fn directory(State(st): State<AppState>) -> ApiResult {
-    forward(&st, Call::callers_directory()).await
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DirectoryQuery {
+    block: Option<String>,
+    spam: Option<String>,
+    pickup: Option<String>,
+}
+
+async fn directory(
+    State(st): State<AppState>,
+    QueryArgs(q): QueryArgs<DirectoryQuery>,
+) -> ApiResult {
+    let call = match q.block.as_deref() {
+        Some("1" | "true") => {
+            Call::callers_directory_block(q.spam.as_deref(), q.pickup.as_deref())?
+        }
+        None | Some("" | "0" | "false") => Call::callers_directory(),
+        Some(_) => {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "bad_request",
+                "block must be 0 or 1",
+            ))
+        }
+    };
+    forward(&st, call).await
+}
+
+async fn rejected(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    JsonBody(body): JsonBody<Value>,
+) -> ApiResult {
+    forward(
+        &st,
+        Call::callers_rejected(body)?.with_caller(&crate::computer::caller(&headers)),
+    )
+    .await
+}
+
+async fn allow(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    JsonBody(body): JsonBody<Value>,
+) -> ApiResult {
+    forward(
+        &st,
+        Call::callers_allow(body)?.with_caller(&crate::computer::caller(&headers)),
+    )
+    .await
 }
 
 /// Owner routes (behind `auth::require_device`).
@@ -72,4 +122,6 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/v1/callers/screen", post(screen))
         .route("/v1/callers/directory", get(directory))
+        .route("/v1/callers/rejected", post(rejected))
+        .route("/v1/callers/allow", post(allow))
 }
