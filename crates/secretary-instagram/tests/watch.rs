@@ -658,8 +658,8 @@ async fn a_429_the_owner_hit_also_holds_the_warmer_back() {
 async fn the_warmer_spaces_accounts_with_jitter_and_does_nothing_when_none_is_due() {
     let e = env_with(Opts {
         watch: WatchConfig {
-            interval_min: Duration::from_secs(50),
-            interval_max: Duration::from_secs(70),
+            interval: Duration::from_secs(60),
+            jitter: Duration::from_secs(10),
             ..Opts::default().watch
         },
         ..Default::default()
@@ -693,6 +693,148 @@ async fn the_warmer_spaces_accounts_with_jitter_and_does_nothing_when_none_is_du
         requests_to(&e, "/api/v1/users/natgeo/bundle").await.len(),
         before
     );
+}
+
+#[tokio::test]
+async fn by_default_an_account_is_checked_again_after_about_23_hours() {
+    let e = env().await;
+    mount_account(&e, false, "1", &["p1"], &[]).await;
+    watch(&e, "natgeo", json!({})).await;
+    e.st.service.watch.update("natgeo", |a| a.next_due = 0);
+    assert_eq!(
+        e.st.service.watch_tick().await,
+        TickOutcome::Checked("natgeo".into())
+    );
+    let next = e.st.service.watch.get("natgeo").unwrap().next_due - chrono::Utc::now().timestamp();
+    assert!(
+        (22 * 3600 + 1800 - 2..=23 * 3600 + 1800).contains(&next),
+        "{next}"
+    );
+    let w = get(&e.app, "/v1/instagram/watch").await;
+    assert_eq!(
+        w.json["data"][0]["nextCheck"],
+        e.st.service.watch.get("natgeo").unwrap().next_due
+    );
+}
+
+async fn put_settings(e: &Env, body: Value) -> Resp {
+    send(
+        &e.app,
+        "PUT",
+        "/v1/instagram/watch-settings",
+        Some(SECRET),
+        Some(body),
+        &[],
+    )
+    .await
+}
+
+#[tokio::test]
+async fn the_owner_chooses_the_interval_and_it_applies_to_the_next_check() {
+    let e = env().await;
+    for gw in [None, Some("wrong")] {
+        for m in ["GET", "PUT"] {
+            let r = send(
+                &e.app,
+                m,
+                "/v1/instagram/watch-settings",
+                gw,
+                Some(json!({"intervalHours": 12})),
+                &[],
+            )
+            .await;
+            assert_eq!(r.status, StatusCode::UNAUTHORIZED, "{m}");
+        }
+    }
+    let r = get(&e.app, "/v1/instagram/watch-settings").await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(
+        r.json["data"],
+        json!({"intervalHours": 23, "defaultHours": 23, "jitterMinutes": 30, "choices": [6, 12, 23]})
+    );
+
+    // An account checked an hour ago, due again in 22 hours.
+    watch(&e, "natgeo", json!({})).await;
+    let now = chrono::Utc::now().timestamp();
+    e.st.service.watch.update("natgeo", |a| {
+        a.last_check = Some(now - 3600);
+        a.next_due = now + 22 * 3600;
+    });
+
+    for bad in [
+        json!({"intervalHours": 0}),
+        json!({"intervalHours": 24}),
+        json!({"intervalHours": "x"}),
+        json!({}),
+    ] {
+        let r = put_settings(&e, bad.clone()).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{bad}");
+        assert_eq!(r.json["error"], "bad_request");
+    }
+    assert_eq!(
+        e.st.service.watch.get("natgeo").unwrap().next_due,
+        now + 22 * 3600,
+        "a refused change moves nothing"
+    );
+
+    let r = put_settings(&e, json!({"intervalHours": 12})).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.json["data"]["intervalHours"], 12);
+    assert_eq!(r.json["data"]["defaultHours"], 23);
+    let due = e.st.service.watch.get("natgeo").unwrap().next_due;
+    let want = now - 3600 + 12 * 3600;
+    assert!(
+        (want - 1800..=want + 1800).contains(&due),
+        "{due} vs {want}"
+    );
+    assert_eq!(
+        get(&e.app, "/v1/instagram/watch-settings").await.json["data"]["intervalHours"],
+        12
+    );
+
+    let reopened =
+        secretary_instagram::watch::WatchStore::open(Some(e.dir.path().join("state/watch.json")));
+    assert_eq!(reopened.settings().interval_hours, Some(12));
+    assert_eq!(reopened.get("natgeo").unwrap().next_due, due);
+}
+
+#[tokio::test]
+async fn a_restart_does_not_add_checks() {
+    let e = env().await;
+    // Scheduled by the old 20-40 minute warmer, five minutes after a check.
+    watch(&e, "natgeo", json!({})).await;
+    watch(&e, "nasa", json!({})).await;
+    let now = chrono::Utc::now().timestamp();
+    e.st.service.watch.update("natgeo", |a| {
+        a.last_check = Some(now - 300);
+        a.next_due = now - 300 + 30 * 60;
+    });
+    let nasa_due = e.st.service.watch.get("nasa").unwrap().next_due;
+    let state = e.dir.path().join("state");
+    let svc = secretary_instagram::service::Service::new(
+        secretary_instagram::upstream::Upstream::new(Default::default()).unwrap(),
+        secretary_instagram::cache::DiskCache::new(e.dir.path().join("cache2"), 1 << 20).unwrap(),
+        secretary_instagram::recent::Recent::open(e.dir.path().join("recent2.json")),
+        secretary_instagram::media::Signer::new(KEY.to_vec()),
+        secretary_instagram::service::ServiceConfig::new(
+            e.dir.path().join("spool2"),
+            e.server.uri(),
+            state,
+        ),
+    )
+    .unwrap();
+    let due = svc.watch.get("natgeo").unwrap().next_due;
+    let want = now - 300 + 23 * 3600;
+    assert!(
+        (want - 1800..=want + 1800).contains(&due),
+        "{due} vs {want}"
+    );
+    assert_eq!(
+        svc.watch.get("nasa").unwrap().next_due,
+        nasa_due,
+        "never checked: still checked within seconds"
+    );
+    assert_eq!(svc.watch_tick().await, TickOutcome::Idle);
 }
 
 #[tokio::test]

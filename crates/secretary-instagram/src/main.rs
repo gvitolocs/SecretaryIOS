@@ -14,7 +14,7 @@
 //! | `INSTAGRAM_INGEST_URL` | `http://127.0.0.1:8830` | lucina-media's loopback |
 //! | `INSTAGRAM_SPOOL_DIR` | `$INSTAGRAM_DATA_DIR/spool` | saved items wait here until lucina-media takes them |
 //! | `INSTAGRAM_WATCH` | `1` | `0` turns the warmer off (no refreshes, no auto-save, no change notices) |
-//! | `INSTAGRAM_WATCH_INTERVAL_MIN_SECS` / `_MAX_SECS` | `1200` / `2400` | each watched account is refreshed after a random time in this range |
+//! | `INSTAGRAM_WATCH_INTERVAL_H` | `23` | hours between two checks of a watched account (1-23, ± 30 min of jitter); the owner's choice in the app (`/v1/instagram/watch-settings`) wins |
 //! | `INSTAGRAM_WATCH_PAUSE_SECS` | `1800` | the warmer's rest after the backend says 429 |
 //! | `INSTAGRAM_WATCH_DAILY_MAX_BYTES` | `524288000` | auto-saved bytes per account per UTC day |
 //! | `INSTAGRAM_NOTIFY_URL` | unset | secretary-server's base URL, for the owner's change notices (`POST /v1/notify`) |
@@ -133,11 +133,13 @@ async fn main() -> anyhow::Result<()> {
     let secs = |name: &str, default: u64| {
         Duration::from_secs(env(name).and_then(|v| v.parse().ok()).unwrap_or(default))
     };
-    let interval_min = secs("INSTAGRAM_WATCH_INTERVAL_MIN_SECS", 1200);
+    let interval_h = env("INSTAGRAM_WATCH_INTERVAL_H")
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(23)
+        .clamp(1, 23);
     let mut watch = WatchConfig {
         enabled: env("INSTAGRAM_WATCH").is_none_or(|v| v != "0"),
-        interval_min,
-        interval_max: secs("INSTAGRAM_WATCH_INTERVAL_MAX_SECS", 2400).max(interval_min),
+        interval: Duration::from_secs(interval_h * 3600),
         pause: secs("INSTAGRAM_WATCH_PAUSE_SECS", 1800),
         ..Default::default()
     };

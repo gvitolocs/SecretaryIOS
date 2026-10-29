@@ -50,12 +50,8 @@ impl Default for Opts {
             backoff_base: Duration::from_millis(10),
             default_block: Duration::from_secs(2),
             watch: WatchConfig {
-                enabled: true,
-                interval_min: Duration::from_secs(1200),
-                interval_max: Duration::from_secs(2400),
-                pause: Duration::from_secs(1800),
-                daily_cap_bytes: 500 << 20,
                 first_check_jitter: Duration::ZERO,
+                ..WatchConfig::default()
             },
             notify: true,
         }

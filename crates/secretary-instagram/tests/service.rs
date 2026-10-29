@@ -111,6 +111,116 @@ async fn the_profile_has_only_our_signed_urls_and_drops_foreign_hosts() {
     }
 }
 
+/// Recorded from the backend on 2026-10-29 (the bundle's posts cut to two).
+fn recorded(name: &str) -> Value {
+    let text = match name {
+        "bundle" => include_str!("fixtures/natgeo.bundle.json"),
+        "highlights" => include_str!("fixtures/natgeo.hl.json"),
+        "items" => include_str!("fixtures/natgeo.items.json"),
+        _ => unreachable!(),
+    };
+    serde_json::from_str(text).unwrap()
+}
+
+#[tokio::test]
+async fn highlights_left_out_of_the_bundle_come_from_the_highlights_list() {
+    let e = env().await;
+    assert_eq!(recorded("bundle")["highlights"], json!([]));
+    mount_json(&e.server, "/api/v1/users/natgeo/bundle", recorded("bundle")).await;
+    mount_json(
+        &e.server,
+        "/api/v1/users/natgeo/highlights",
+        recorded("highlights"),
+    )
+    .await;
+    mount_json(&e.server, "/api/v1/highlights/items", recorded("items")).await;
+
+    let r = get(&e.app, "/v1/instagram/profile/natgeo").await;
+    assert_eq!(r.status, StatusCode::OK);
+    let d = &r.json["data"];
+    assert_eq!(d["profile"]["username"], "natgeo");
+    assert_eq!(d["posts"]["items"].as_array().unwrap().len(), 2);
+    let hs = d["highlights"].as_array().unwrap();
+    assert_eq!(hs.len(), 1);
+    assert_eq!(hs[0]["id"], "highlight:18023864549864045");
+    assert_eq!(hs[0]["title"], "BOTW 2027");
+    assert!(
+        hs[0]["coverUrl"]
+            .as_str()
+            .unwrap()
+            .starts_with("/v1/instagram/s/"),
+        "{}",
+        hs[0]["coverUrl"]
+    );
+    assert_eq!(
+        hs[0]["mediaCount"],
+        Value::Null,
+        "the backend's 0 is not a count"
+    );
+
+    // The highlights route shares the profile's cache entry.
+    let r = get(&e.app, "/v1/instagram/highlights/natgeo").await;
+    assert_eq!(r.json["data"]["items"][0]["title"], "BOTW 2027");
+    assert_eq!(count(&e.server, "/api/v1/users/natgeo/highlights").await, 1);
+
+    let r = get(
+        &e.app,
+        "/v1/instagram/highlights/items?id=highlight%3A18023864549864045",
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.json["data"]["items"].as_array().unwrap().len(), 4);
+    assert_eq!(r.json["data"]["nextCursor"], Value::Null);
+}
+
+#[tokio::test]
+async fn a_private_profile_never_asks_for_the_highlights_list() {
+    let e = env().await;
+    let mut b = recorded("bundle");
+    b["profile"]["is_private"] = json!(true);
+    mount_json(&e.server, "/api/v1/users/natgeo/bundle", b).await;
+    mount_json(
+        &e.server,
+        "/api/v1/users/natgeo/highlights",
+        recorded("highlights"),
+    )
+    .await;
+    let r = get(&e.app, "/v1/instagram/profile/natgeo").await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.json["data"]["highlights"], json!([]));
+    assert_eq!(count(&e.server, "/api/v1/users/natgeo/highlights").await, 0);
+}
+
+#[tokio::test]
+async fn a_bundle_with_highlights_needs_no_second_call() {
+    let e = env().await;
+    mount_json(&e.server, "/api/v1/users/natgeo/bundle", bundle()).await;
+    let r = get(&e.app, "/v1/instagram/profile/natgeo").await;
+    assert_eq!(r.json["data"]["highlights"][0]["title"], "BOTW");
+    assert_eq!(count(&e.server, "/api/v1/users/natgeo/highlights").await, 0);
+}
+
+#[tokio::test]
+async fn a_failing_highlights_list_still_gives_the_profile() {
+    let e = env().await;
+    mount_json(&e.server, "/api/v1/users/natgeo/bundle", recorded("bundle")).await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/users/natgeo/highlights"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&e.server)
+        .await;
+    let r = get(&e.app, "/v1/instagram/profile/natgeo").await;
+    assert_eq!(
+        r.status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&r.bytes)
+    );
+    assert_eq!(r.json["data"]["profile"]["username"], "natgeo");
+    assert_eq!(r.json["data"]["highlights"], json!([]));
+    assert!(count(&e.server, "/api/v1/users/natgeo/highlights").await >= 1);
+}
+
 #[tokio::test]
 async fn bad_input_is_a_400_and_never_reaches_the_backend() {
     let e = env().await;
