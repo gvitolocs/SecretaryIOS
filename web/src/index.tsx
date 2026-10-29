@@ -68,7 +68,7 @@ const DecisionDetailView = lazy(() => import("./views/DecisionDetail"));
 const ApprovalsView = lazy(() => import("./views/Approvals"));
 const ApprovalDetailView = lazy(() => import("./views/ApprovalDetail"));
 
-// The service worker (Web Push, static asset cache). It never caches /v1.
+// The service worker (Web Push, static asset cache). It never caches /v1, and Secretary Code gets none.
 void registerServiceWorker();
 
 const root = document.getElementById("root");

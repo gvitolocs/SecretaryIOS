@@ -93,13 +93,35 @@ export function urlBase64ToBytes(s: string): Uint8Array<ArrayBuffer> {
 
 let registration: Promise<ServiceWorkerRegistration | null> | null = null;
 
-/** Register /sw.js once (on app start). Never throws. */
+/**
+ * Register /sw.js once (on app start). Never throws. Not inside Secretary Code: the app ships this UI itself, and a
+ * worker there answered page loads with an older cached shell, whose routes point at chunks the new build no longer
+ * has (the rail's Gallery and Films did nothing, 2026-10-29) and whose CSP is old. There any worker goes instead.
+ */
 export function registerServiceWorker(): Promise<ServiceWorkerRegistration | null> {
   if (registration) return registration;
   const n = nav();
   if (!n || !("serviceWorker" in n)) return (registration = Promise.resolve(null));
+  if (isDesktopApp(n)) return (registration = dropServiceWorkers(n).then(() => null));
   registration = n.serviceWorker.register(SW_URL, { scope: "/" }).catch(() => null);
   return registration;
+}
+
+/** Unregisters every service worker of this origin and deletes their static caches. Never throws. */
+async function dropServiceWorkers(n: Navigator): Promise<void> {
+  try {
+    const registrations = await n.serviceWorker.getRegistrations();
+    await Promise.all(registrations.map((r) => r.unregister().catch(() => false)));
+  } catch {
+    // Nothing registered, or the API is unavailable.
+  }
+  try {
+    if (typeof caches === "undefined") return;
+    const keys = await caches.keys();
+    await Promise.all(keys.filter((k) => k.startsWith("secretary-static-")).map((k) => caches.delete(k)));
+  } catch {
+    // Cache storage blocked: nothing to delete.
+  }
 }
 
 async function readyRegistration(): Promise<ServiceWorkerRegistration | null> {
