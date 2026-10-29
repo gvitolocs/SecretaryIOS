@@ -1,8 +1,9 @@
 import { Route } from "@solidjs/router";
-import { fireEvent, screen, waitFor, within } from "@solidjs/testing-library";
+import { cleanup, fireEvent, screen, waitFor, within } from "@solidjs/testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IgItem, IgPage } from "../api/instagram";
-import { stubFetch, type Call } from "../test/fetch";
+import { pageCache } from "../lib/pageCache";
+import { deferred, stubFetch, type Call } from "../test/fetch";
 import { renderAt } from "../test/router";
 import { stubWide } from "../test/wide";
 import { instagramBadges, resetInstagramBadges } from "../state/instagramBadge";
@@ -75,6 +76,95 @@ function serve(r: Routes) {
 function renderIg(path = "/instagram") {
   return renderAt(path, () => <Route path="/instagram/:username?" component={InstagramView} />);
 }
+
+// Visited pages open on their last copy while the server is asked again (owner, 2026-10-29: "the pages that I
+// visit should be cached ... just check and fetch for updates").
+describe("Instagram: cached pages", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    resetInstagramBadges();
+  });
+
+  it("shows a revisited profile before the server answers, then merges the new post in front", async () => {
+    serve({ profile: bundle() });
+    renderIg("/instagram/natgeo");
+    await screen.findByRole("button", { name: /^Posts 3/ });
+    cleanup();
+
+    const held = deferred<{ body: unknown }>();
+    stubFetch((call) => {
+      if (call.url.startsWith("/v1/instagram/profile/")) return held.promise;
+      return { body: { ok: true, data: call.url.endsWith("/badges") || call.url.endsWith("/opened") ? { total: 0, accounts: {} } : [] } };
+    });
+    renderIg("/instagram/natgeo");
+    // The copy, on the first frame: no "Loading…", the old posts, and the quiet "Updating…" pill.
+    expect(screen.getByRole("heading", { name: /National Geographic/ })).toBeInTheDocument();
+    expect(screen.queryByText("Loading…")).toBeNull();
+    expect(screen.getByRole("button", { name: /^Posts 1: caption p1/ })).toBeInTheDocument();
+    expect(await screen.findByText("Updating…")).toHaveClass("swr-updating");
+
+    const update = bundle();
+    held.resolve({ body: { ok: true, data: { ...update, posts: posts(["p0", "p1", "p2", "p3"], null) } } });
+    expect(await screen.findByRole("button", { name: /^Posts 1: caption p0/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Posts 4: caption p3/ })).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText("Updating…")).toBeNull());
+  });
+
+  it("comes back (Back) from memory at once, on the same tab and scroll offset", async () => {
+    let scrollTop = 0;
+    const Scrolling = () => (
+      <main
+        class="content"
+        ref={(el) => {
+          Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => 4000 });
+          Object.defineProperty(el, "clientHeight", { configurable: true, get: () => 800 });
+          Object.defineProperty(el, "scrollTop", { configurable: true, get: () => scrollTop, set: (v: number) => (scrollTop = v) });
+        }}
+      >
+        <InstagramView />
+      </main>
+    );
+    serve({ profile: bundle(), reels: posts(["r1", "r2"]) });
+    renderAt("/instagram/natgeo", () => <Route path="/instagram/:username?" component={Scrolling} />);
+    fireEvent.click(await screen.findByRole("tab", { name: "Reels" }));
+    await screen.findByRole("button", { name: /^Reels 2/ });
+    scrollTop = 640;
+    document.querySelector("main.content")!.dispatchEvent(new Event("scroll"));
+    cleanup();
+    scrollTop = 0;
+
+    serve({ profile: bundle(), reels: posts(["r1", "r2"]) });
+    renderAt("/instagram/natgeo", () => <Route path="/instagram/:username?" component={Scrolling} />);
+    expect(screen.queryByText("Loading…")).toBeNull();
+    expect(screen.getByRole("tab", { name: "Reels" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("button", { name: /^Reels 2/ })).toBeInTheDocument();
+    await waitFor(() => expect(scrollTop).toBe(640));
+  });
+
+  it("opens a cached highlight on its tiles at once and refreshes it", async () => {
+    await pageCache.put("instagram:highlight:highlight:1", "instagram", { items: [item("h1"), item("h2")], nextCursor: null });
+    const held = deferred<IgPage>();
+    serve({ profile: bundle({ highlights: true }) });
+    // Everything as usual, except the highlight's items, which answer when the test says.
+    const usual = globalThis.fetch;
+    let asked = 0;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (!String(input).startsWith("/v1/instagram/highlights/items")) return usual(input, init);
+      asked++;
+      const page = await held.promise;
+      return new Response(JSON.stringify({ ok: true, data: page }), { headers: { "Content-Type": "application/json" } });
+    });
+    renderIg("/instagram/natgeo");
+    fireEvent.click(await screen.findByRole("tab", { name: "Highlights" }));
+    fireEvent.click(screen.getByRole("button", { name: /Best of/ }));
+    // The copy's two items, before the server answered (jsdom gives the grid no size, so its header counts them).
+    const tiles = await screen.findByRole("dialog", { name: /Best of/ });
+    expect(tiles).toHaveTextContent("2 items");
+    expect(asked).toBe(1);
+    held.resolve({ items: [item("h0"), item("h1"), item("h2")], nextCursor: null });
+    await waitFor(() => expect(tiles).toHaveTextContent("3 items"));
+  });
+});
 
 describe("Instagram", () => {
   afterEach(() => {

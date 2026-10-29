@@ -2,6 +2,7 @@
 // nezopt. A NotebookLM-style workspace ported from Open Notebook by Luis Novo (MIT): sources, linked
 // Keep notes, chats that cite passages, insights, and podcasts.
 
+import { pageCache } from "../lib/pageCache";
 import { ApiError, request } from "./client";
 
 export type SourceKind = "pdf" | "youtube" | "web" | "text" | "audio" | "file" | "note";
@@ -320,14 +321,23 @@ export async function sendMessage(
 
 // ---------------------------------------------------------------- the API
 
+/** A notebook changed here: the cached lists and notebooks (lib/pageCache) are dropped, so none shows it stale. */
+function changed<T>(answer: Promise<T>): Promise<T> {
+  return answer.then((value) => {
+    void pageCache.clear("notebooks");
+    return value;
+  });
+}
+
 export const notebooksApi = {
   list: (archived: ArchivedFilter = "exclude") =>
     request<{ notebooks: Notebook[] }>("GET", `${BASE}${query({ archived: archived === "exclude" ? undefined : archived })}`).then((r) => r.notebooks ?? []),
-  create: (body: { name: string; description?: string }) => request<Notebook>("POST", BASE, { body }),
+  create: (body: { name: string; description?: string }) => changed(request<Notebook>("POST", BASE, { body })),
   get: (id: string) => request<NotebookDetail>("GET", `${BASE}/${enc(id)}`),
-  update: (id: string, body: { name?: string; description?: string; archived?: boolean }) => request<Notebook>("PATCH", `${BASE}/${enc(id)}`, { body }),
+  update: (id: string, body: { name?: string; description?: string; archived?: boolean }) =>
+    changed(request<Notebook>("PATCH", `${BASE}/${enc(id)}`, { body })),
   remove: (id: string, sources: "keep" | "delete-exclusive" = "keep") =>
-    request<{ deleted: boolean; sources_deleted: number }>("DELETE", `${BASE}/${enc(id)}${query({ sources })}`),
+    changed(request<{ deleted: boolean; sources_deleted: number }>("DELETE", `${BASE}/${enc(id)}${query({ sources })}`)),
 
   // sources
   addSource: (id: string, body: NewSource & { transformations?: string[] }) => request<Source>("POST", `${BASE}/${enc(id)}/sources`, { body }),

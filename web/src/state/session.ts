@@ -11,6 +11,7 @@ import { resetKeep } from "./keep";
 import { resetNotifications } from "./notifications";
 import { resetShopping } from "./shopping";
 import { desktopShell } from "../lib/desktopShell";
+import { pageCache } from "../lib/pageCache";
 
 export type SessionState =
   | { status: "loading" }
@@ -22,6 +23,8 @@ const [session, setSession] = createSignal<SessionState>({ status: "loading" });
 export { session };
 
 function forgetLocalData(): void {
+  // The plugin pages' copies (Instagram, Pixiv, Notebooks): gone from memory at once, from IndexedDB next.
+  void pageCache.clear();
   clearChat();
   resetShopping();
   resetGym();
