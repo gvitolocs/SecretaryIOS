@@ -5,6 +5,8 @@ import { hasPending, notebooksApi, type NotebookDetail } from "../api/notebooks"
 import { BackIcon, GearIcon, MicIcon, PlusIcon, SearchIcon } from "../components/Icons";
 import { Button, ErrorState, LoadingState, Page, PageHeader, PrimaryAction, SectionNav, Sheet, useWide } from "../components/page";
 import { t } from "../i18n";
+import { rememberScroll } from "../lib/pageScroll";
+import { createCached } from "../lib/swr";
 import { AddSourceSheet } from "./notebooks/AddSource";
 import { ChatColumn } from "./notebooks/ChatColumn";
 import { NotesColumn } from "./notebooks/NotesColumn";
@@ -24,8 +26,13 @@ export default function NotebookView() {
   const params = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { wide, track } = useWide();
-  const [nb, setNb] = createSignal<NotebookDetail | null>(null);
-  const [error, setError] = createSignal<ApiError | null>(null);
+  // The notebook opens on its copy from an earlier visit while it is asked again (lib/swr).
+  const detail = createCached<NotebookDetail>("notebooks", () => `notebooks:detail:${params.id}`, () => notebooksApi.get(params.id));
+  const nb = (): NotebookDetail | null => detail.value() ?? null;
+  const error = (): ApiError | null => {
+    const e = detail.error();
+    return e ? toApiError(e) : null;
+  };
   const [notice, setNotice] = createSignal<string | null>(null);
   const [tab, setTab] = createSignal<Tab>("sources");
   const [adding, setAdding] = createSignal(false);
@@ -33,32 +40,18 @@ export default function NotebookView() {
   const [searching, setSearching] = createSignal(false);
   const [settings, setSettings] = createSignal(false);
   const [reader, setReader] = createSignal<{ id: string; around: number | null } | null>(null);
-  let generation = 0;
+  const load = () => detail.refresh();
+  rememberScroll(() => `notebooks:detail:${params.id}`, () => nb() !== null);
 
-  async function load() {
-    const mine = generation;
-    try {
-      const detail = await notebooksApi.get(params.id);
-      if (mine === generation) {
-        setNb(detail);
-        setError(null);
-      }
-    } catch (e) {
-      if (mine === generation) setError(toApiError(e));
-    }
-  }
-
+  // Another notebook: its own copy and request (createCached follows the id); this one's notices and reader go.
   createEffect(
     on(
       () => params.id,
       () => {
-        generation++;
-        setNb(null);
-        setError(null);
         setNotice(null);
         setReader(null);
-        void load();
       },
+      { defer: true },
     ),
   );
 
@@ -121,6 +114,9 @@ export default function NotebookView() {
           >
             <ErrorState message={error()!.message} retryLabel={t("common.tryAgain")} onRetry={() => void load()} />
           </Show>
+        </Show>
+        <Show when={detail.updating()}>
+          <p class="swr-updating" role="status">{t("common.updating")}</p>
         </Show>
         <Show when={!error() && !nb()}>
           <LoadingState label={t("notebooks.loading")} />

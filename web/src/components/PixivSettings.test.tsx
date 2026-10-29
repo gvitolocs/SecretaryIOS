@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@solidjs/te
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseConnection, pixivApi } from "../api/pixiv";
 import { setShowAdult } from "../lib/adult";
+import { pageCache } from "../lib/pageCache";
 import { stubFetch } from "../test/fetch";
 import { PixivSettings } from "./PixivSettings";
 
@@ -74,6 +75,15 @@ describe("Pixiv settings", () => {
     expect(within(confirm).getByText(/saved sign-in is deleted/)).toBeInTheDocument();
     fireEvent.click(within(confirm).getByRole("button", { name: "Disconnect" }));
     await waitFor(() => expect(calls.some(c => c.url.endsWith("/disconnect"))).toBe(true));
+  });
+  it("forgets the cached Pixiv pages on Disconnect, and only those", async () => {
+    await pageCache.put("pixiv:ranking:day:1", "pixiv", { items: [] });
+    await pageCache.put("instagram:profile:ann", "instagram", {});
+    serve(connected); render(() => <PixivSettings />); await screen.findByText(/Connected as/);
+    fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
+    fireEvent.click(within(screen.getByRole("group", { name: "Disconnect" })).getByRole("button", { name: "Disconnect" }));
+    await waitFor(() => expect(pageCache.peek("pixiv:ranking:day:1")).toBeUndefined());
+    expect(pageCache.peek("instagram:profile:ann")).toBeDefined();
   });
   it("polls pending approval every 3 seconds, stops on settlement and cleans up", async () => {
     vi.useFakeTimers();

@@ -6,6 +6,8 @@ import { Button, Card as PageCard, EmptyState, ErrorState, Page, PageGrid, PageH
 import { Reader } from "../components/pixiv/Reader";
 import { t } from "../i18n";
 import { showAdult } from "../lib/adult";
+import { pageCache } from "../lib/pageCache";
+import { rememberScroll } from "../lib/pageScroll";
 import { createFeed, sortMessage, type Feed } from "../lib/pixivFeed";
 import "../styles/pixiv.css";
 
@@ -117,6 +119,9 @@ function FeedGrid(props: { feed: Feed; empty: string; onOpen: (item: PixivItem) 
       <Show when={notice()}>
         <p class="px-notice" role="status">{notice()} <Show when={props.feed.notice() === "r18_needs_session"}><a href="/account?section=plugins">{t("plugins.settings")}</a></Show></p>
       </Show>
+      <Show when={props.feed.updating()}>
+        <p class="swr-updating" role="status">{t("common.updating")}</p>
+      </Show>
       <div class="px-grid" role="list" aria-busy={props.feed.loading()}>
         <For each={props.feed.items()}>{(item) => <div role="listitem" class="px-grid__cell"><Card item={item} onOpen={props.onOpen} /></div>}</For>
       </div>
@@ -155,17 +160,35 @@ function FeedGrid(props: { feed: Feed; empty: string; onOpen: (item: PixivItem) 
   );
 }
 
+/** The list view's choices, kept for Back while the app runs. */
+interface PixivViewState {
+  tab: Tab;
+  mode: RankingMode;
+  draft: string;
+  query: string;
+  order: SearchOrder;
+  kind: SearchType;
+  content: PixivContent;
+}
+
 export default function PixivView() {
   const params = useParams<{ id?: string }>();
   const navigate = useNavigate();
-  const [tab, setTab] = createSignal<Tab>("ranking");
-  const [mode, setMode] = createSignal<RankingMode>("day");
-  const [draft, setDraft] = createSignal("");
-  const [query, setQuery] = createSignal("");
-  const [order, setOrder] = createSignal<SearchOrder>("date_d");
-  const [kind, setKind] = createSignal<SearchType>("all");
-  const [content, setContent] = createSignal<PixivContent>("safe");
-  let contentChanged = false, orderChanged = false;
+  // Back to /pixiv restores the tab and the filters of this visit (and each list opens on its copy, lib/pixivFeed).
+  const saved = pageCache.snapshots.get("pixiv:view") as PixivViewState | undefined;
+  const [tab, setTab] = createSignal<Tab>(saved?.tab ?? "ranking");
+  const [mode, setMode] = createSignal<RankingMode>(saved?.mode ?? "day");
+  const [draft, setDraft] = createSignal(saved?.draft ?? "");
+  const [query, setQuery] = createSignal(saved?.query ?? "");
+  const [order, setOrder] = createSignal<SearchOrder>(saved?.order ?? "date_d");
+  const [kind, setKind] = createSignal<SearchType>(saved?.kind ?? "all");
+  const [content, setContent] = createSignal<PixivContent>(saved?.content ?? "safe");
+  // Choices restored from this visit are the owner's: late settings don't replace them.
+  let contentChanged = !!saved, orderChanged = !!saved;
+  createEffect(() => {
+    const state: PixivViewState = { tab: tab(), mode: mode(), draft: draft(), query: query(), order: order(), kind: kind(), content: content() };
+    pageCache.snapshots.set("pixiv:view", state);
+  });
   onMount(() => {
     let active = true;
     onCleanup(() => { active = false; });
@@ -199,16 +222,21 @@ export default function PixivView() {
   });
   createEffect(() => setMode(rankingMode()));
 
-  const startRanking = () => void ranking.start((page) => pixivApi.ranking(rankingMode(), page));
+  // Each list's cache key names everything that changes its answer, the adult switch included.
+  const adult = () => (showAdult() ? 1 : 0);
+  const startRanking = () => {
+    const m = rankingMode();
+    void ranking.start((page) => pixivApi.ranking(m, page), `pixiv:ranking:${m}:${adult()}`);
+  };
   const startSearch = () => {
     const q = query().trim();
     if (!q) return void search.start(null);
     const params = { q, order: order(), type: kind(), mode: contentNow() };
-    void search.start((page) => pixivApi.search({ ...params, page }));
+    void search.start((page) => pixivApi.search({ ...params, page }), `pixiv:search:${q}|${params.order}|${params.type}|${params.mode}:${adult()}`);
   };
   const startBookmarks = () => {
     const c = contentNow();
-    void bookmarks.start(async () => ({ ...(await pixivApi.bookmarks(c)), page: 1, hasMore: false }));
+    void bookmarks.start(async () => ({ ...(await pixivApi.bookmarks(c)), page: 1, hasMore: false }), `pixiv:bookmarks:${c}:${adult()}`);
   };
 
   // Ranking follows its mode (and the adult switch, since the service filters by it).
@@ -227,6 +255,12 @@ export default function PixivView() {
     }, { defer: true }),
   );
   const feedOf = (): Feed => (tab() === "ranking" ? ranking : tab() === "search" ? search : bookmarks);
+  // Back to a restored search or bookmarks tab opens its list again (the ranking follows its own effect).
+  onMount(() => {
+    if (tab() === "search" && query()) startSearch();
+    if (tab() === "bookmarks") startBookmarks();
+  });
+  rememberScroll(() => `pixiv:scroll:${tab()}`, () => feedOf().items().length > 0);
   const openWork = (item: PixivItem) => {
     setPreview(item);
     navigate(`/pixiv/${encodeURIComponent(item.id)}`);

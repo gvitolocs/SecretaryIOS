@@ -1,6 +1,8 @@
-import { createEffect, createMemo, createResource, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
 import { isAdultOff, pixivApi, type PixivIllust, type PixivItem } from "../../api/pixiv";
 import { t } from "../../i18n";
+import { showAdult } from "../../lib/adult";
+import { createCached } from "../../lib/swr";
 import { BackIcon, BookmarkIcon, CloseIcon, DownloadIcon, SearchIcon } from "../Icons";
 import { clampPan, clampZoom, fitScale, isTall, MAX_ZOOM, pannable, stepZoom, topPan, wheelFactor, widthScale, zoomAround, zoomLabel, type Pan, type Size } from "./zoom";
 
@@ -26,19 +28,11 @@ export interface ReaderProps {
 const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
 
 export function Reader(props: ReaderProps) {
-  // The fetcher never throws: reading a failed resource would throw inside every memo that reads it.
-  const [result] = createResource(
-    () => props.id,
-    async (id): Promise<{ work?: PixivIllust; error?: unknown }> => {
-      try {
-        return { work: await pixivApi.illust(id) };
-      } catch (error) {
-        return { error };
-      }
-    },
-  );
-  const work = () => result()?.work;
-  const loadError = () => result()?.error;
+  // The work opens on its copy from an earlier visit while it is asked again (lib/swr); the key carries the adult
+  // switch, so an R-18 copy never shows with it off.
+  const cached = createCached<PixivIllust>("pixiv", () => `pixiv:illust:${props.id}:${showAdult() ? 1 : 0}`, () => pixivApi.illust(props.id));
+  const work = cached.value;
+  const loadError = cached.error;
   const [index, setIndex] = createSignal(0);
   // The shown image's own pixels and the stage's size; null until known (the image then fills the stage, contained).
   const [natural, setNatural] = createSignal<Size | null>(null);
@@ -261,6 +255,8 @@ export function Reader(props: ReaderProps) {
       if (want) await pixivApi.addBookmark(props.id);
       else await pixivApi.removeBookmark(props.id);
       props.onBookmark(props.id, want);
+      const w = work();
+      if (w) cached.set({ ...w, bookmarked: want });
     } catch {
       setBookmarked(!want);
       setMessage(t("pixiv.failed"));
@@ -408,7 +404,7 @@ export function Reader(props: ReaderProps) {
       </div>
 
       <footer class="px-reader__foot">
-        <p class="px-reader__msg" role="status" aria-live="polite">{message()}</p>
+        <p class="px-reader__msg" role="status" aria-live="polite">{message() || (cached.updating() ? t("common.updating") : "")}</p>
         <div class="px-zoom" role="group" aria-label={t("pixiv.zoomReset")}>
           <Show when={tall()}>
             <button type="button" class="px-iconbtn px-iconbtn--text" aria-pressed={mode() === "width"} onClick={toggleFitWidth}>{t("pixiv.fitWidth")}</button>

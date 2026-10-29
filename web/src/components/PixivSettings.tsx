@@ -1,4 +1,5 @@
 import { createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import { pageCache } from "../lib/pageCache";
 import { parseConnection, parseSettings, pixivApi, type PixivConnection, type PixivSettings as Settings } from "../api/pixiv";
 import { toApiError } from "../api/client";
 import { t, type MessageKey } from "../i18n";
@@ -63,7 +64,8 @@ export function PixivSettings(props: { desktop?: boolean }) {
   }
   async function disconnect() {
     setConfirm(false); setBusy(true); setMessage("");
-    try { accept(await pixivApi.disconnect()); }
+    // Disconnected: the cached Pixiv pages (lib/pageCache) go too.
+    try { accept(await pixivApi.disconnect()); void pageCache.clear("pixiv"); }
     catch (e) { if (!disposed) setMessage(t(errorKeys[toApiError(e).code] ?? "pixiv.remove_failed")); }
     finally { if (!disposed) setBusy(false); }
   }

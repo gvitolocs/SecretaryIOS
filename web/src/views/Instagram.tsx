@@ -1,7 +1,7 @@
 import { A, useNavigate, useParams } from "@solidjs/router";
 import { createEffect, createResource, createSignal, For, on, onMount, Show, type Accessor } from "solid-js";
 import { ApiError } from "../api/client";
-import { instagramApi, type IgHighlight, type IgItem, type IgPage, type IgProfileBundle } from "../api/instagram";
+import { instagramApi, type IgHighlight, type IgItem, type IgPage } from "../api/instagram";
 import {
   instagramWatched,
   instagramWatchSettings,
@@ -27,7 +27,10 @@ import {
 import InstagramOpened from "../components/InstagramOpened";
 import { t } from "../i18n";
 import { formatCount, parseTyped, slideIndexOf, slidesOf } from "../lib/instagram";
+import { mergeFirstPage, pageCache } from "../lib/pageCache";
+import { rememberScroll } from "../lib/pageScroll";
 import { relativeTime } from "../lib/relativeTime";
+import { createCached } from "../lib/swr";
 import "../styles/media.css";
 import "../styles/instagram.css";
 
@@ -51,40 +54,105 @@ interface Feed {
   items: Accessor<IgItem[]>;
   hasMore: Accessor<boolean>;
   loading: Accessor<boolean>;
+  /** Cached items show while the first page is asked again. */
+  updating: Accessor<boolean>;
   error: Accessor<unknown>;
   loaded: Accessor<boolean>;
+  /** The first page: fetched, or (with items on screen) fetched again and merged in. */
   load: () => Promise<void>;
   more: () => Promise<void>;
+  /** A first page that came with something else (the profile bundle's posts), merged like a refresh. */
+  absorb: (page: IgPage) => void;
 }
 
-/** A list that is fetched a page at a time (optionally starting from a page we already have). */
-function createFeed(fetchPage: (cursor: string | null) => Promise<IgPage>, initial?: IgPage): Feed {
-  const [items, setItems] = createSignal<IgItem[]>(initial?.items ?? []);
-  const [cursor, setCursor] = createSignal<string | null>(initial && !initial.exhausted ? initial.nextCursor : null);
+/** What a feed keeps in lib/pageCache: the items loaded so far and where the next page starts. */
+interface FeedCopy {
+  items: IgItem[];
+  nextCursor: string | null;
+}
+
+/**
+ * A list that is fetched a page at a time (optionally starting from a page we already have). With `cacheKey` it opens
+ * on its last copy (stale-while-revalidate): `load` then asks for the first page and merges it in place, and "load
+ * more" goes on from where the copy ended.
+ */
+function createFeed(fetchPage: (cursor: string | null) => Promise<IgPage>, initial?: IgPage, cacheKey?: string): Feed {
+  const copy = cacheKey ? pageCache.peek<FeedCopy>(cacheKey)?.value : undefined;
+  const [items, setItems] = createSignal<IgItem[]>(copy?.items ?? initial?.items ?? []);
+  const [cursor, setCursor] = createSignal<string | null>(copy ? copy.nextCursor : initial && !initial.exhausted ? initial.nextCursor : null);
   const [loading, setLoading] = createSignal(false);
+  const [updating, setUpdating] = createSignal(false);
   const [error, setError] = createSignal<unknown>(null);
-  const [loaded, setLoaded] = createSignal(!!initial);
-  async function run(from: string | null, append: boolean) {
-    if (loading()) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const page = await fetchPage(from);
-      const seen = new Set(append ? items().map((i) => i.id) : []);
-      const fresh = page.items.filter((i) => !seen.has(i.id));
-      setItems(append ? [...items(), ...fresh] : fresh);
-      setCursor(page.exhausted || fresh.length === 0 ? null : page.nextCursor);
+  const [loaded, setLoaded] = createSignal(!!copy || !!initial);
+  const revision = pageCache.revision("instagram");
+  const current = () => revision === pageCache.revision("instagram");
+  function store() {
+    if (cacheKey && current()) void pageCache.put(cacheKey, "instagram", { items: items().slice(0, 300), nextCursor: cursor() } satisfies FeedCopy);
+  }
+  function absorb(page: IgPage) {
+    if (loaded()) setItems((old) => mergeFirstPage(old, page.items));
+    else {
+      setItems(page.items);
+      setCursor(page.exhausted ? null : page.nextCursor);
       setLoaded(true);
+    }
+    store();
+  }
+  // Started from a page in hand with no copy in memory: a longer copy from an earlier visit may be stored.
+  if (cacheKey && initial && !copy) {
+    void pageCache.get<FeedCopy>(cacheKey).then((stored) => {
+      if (!stored || !current() || stored.value.items.length <= items().length) return;
+      setItems((now) => mergeFirstPage(stored.value.items, now));
+      setCursor(stored.value.nextCursor);
+    });
+  }
+  async function run(from: string | null, append: boolean) {
+    if (loading() || updating()) return;
+    setError(null);
+    const answer = fetchPage(from).then(
+      (page) => ({ page }),
+      (failure: unknown) => ({ failure }),
+    );
+    if (!append && !loaded() && cacheKey) {
+      setLoading(true);
+      const stored = await pageCache.get<FeedCopy>(cacheKey);
+      if (stored && current()) {
+        setItems(stored.value.items);
+        setCursor(stored.value.nextCursor);
+        setLoaded(true);
+        setLoading(false);
+      }
+    }
+    const refreshing = !append && loaded();
+    if (refreshing) setUpdating(true);
+    else setLoading(true);
+    const result = await answer;
+    try {
+      if (!current()) return;
+      if ("failure" in result) throw result.failure;
+      if (refreshing) absorb(result.page);
+      else {
+        const page = result.page;
+        const seen = new Set(append ? items().map((i) => i.id) : []);
+        const fresh = page.items.filter((i) => !seen.has(i.id));
+        setItems(append ? [...items(), ...fresh] : fresh);
+        setCursor(page.exhausted || fresh.length === 0 ? null : page.nextCursor);
+        setLoaded(true);
+        store();
+      }
     } catch (e) {
-      setError(e);
+      // A failed refresh keeps the copy on screen; a failed first or next page says so.
+      if (!refreshing) setError(e);
     } finally {
       setLoading(false);
+      setUpdating(false);
     }
   }
   return {
     items,
     hasMore: () => cursor() !== null,
     loading,
+    updating,
     error,
     loaded,
     load: () => run(null, false),
@@ -92,6 +160,7 @@ function createFeed(fetchPage: (cursor: string | null) => Promise<IgPage>, initi
       const c = cursor();
       return c ? run(c, true) : Promise.resolve();
     },
+    absorb,
   };
 }
 
@@ -156,40 +225,49 @@ interface Opened {
 }
 
 function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
-  // Not a createResource: reading one that failed throws, and a 404 is an ordinary answer here.
-  const [bundle, setBundle] = createSignal<IgProfileBundle>();
-  const [loadError, setLoadError] = createSignal<unknown>(null);
-  const [fetching, setFetching] = createSignal(true);
-  const [highlights, setHighlights] = createSignal<IgHighlight[]>([]);
+  // Not a createResource: reading one that failed throws, and a 404 is an ordinary answer here. The profile opens on
+  // its last copy (lib/swr) while it is asked again; so do the highlight tray, the tab and the scroll offset.
+  const key = `instagram:profile:${props.username}`;
+  const trayKey = `instagram:tray:${props.username}`;
+  const profile = createCached("instagram", () => key, () => instagramApi.profile(props.username));
+  const bundle = profile.value;
+  const loadError = profile.error;
+  const fetching = () => profile.loading() || profile.updating();
+  const refetch = () => profile.refresh();
+  const [highlights, setHighlights] = createSignal<IgHighlight[]>(pageCache.peek<IgHighlight[]>(trayKey)?.value ?? []);
   const [highlightsLoading, setHighlightsLoading] = createSignal(false);
   const [highlightsError, setHighlightsError] = createSignal<unknown>(null);
+  let posts: Feed | undefined;
   async function loadHighlights() {
     if (highlightsLoading() || highlights().length || bundle()?.profile.isPrivate) return;
     setHighlightsLoading(true);
     setHighlightsError(null);
     try {
-      setHighlights(await instagramApi.highlights(props.username));
+      const tray = await instagramApi.highlights(props.username);
+      setHighlights(tray);
+      if (tray.length) void pageCache.put(trayKey, "instagram", tray);
     } catch (e) {
       setHighlightsError(e);
     } finally {
       setHighlightsLoading(false);
     }
   }
-  async function refetch() {
-    setFetching(true);
-    setLoadError(null);
-    try {
-      const result = await instagramApi.profile(props.username);
-      setHighlights(result.highlights);
-      setBundle(result);
-    } catch (e) {
-      setLoadError(e);
-    } finally {
-      setFetching(false);
-    }
-  }
-  void refetch();
-  const [tab, setTab] = createSignal<Tab>("posts");
+  // The bundle's own tray, when it has one; an empty one never hides the tray fetched on its own.
+  createEffect(
+    on(bundle, (b) => {
+      if (!b) return;
+      if (b.highlights.length) {
+        setHighlights(b.highlights);
+        void pageCache.put(trayKey, "instagram", b.highlights);
+      }
+      posts?.absorb(b.posts);
+    }),
+  );
+  const tabSlot = `${key}:tab`;
+  const savedTab = pageCache.snapshots.get(tabSlot) as Tab | undefined;
+  const [tab, setTab] = createSignal<Tab>(savedTab ?? "posts");
+  createEffect(on(tab, (tb) => pageCache.snapshots.set(tabSlot, tb)));
+  rememberScroll(() => key, () => !!bundle());
   const [notice, setNotice] = createSignal("");
   const [opening, setOpening] = createSignal<string | null>(null);
   const watchEntry = () => instagramWatched().find((w) => w.username === props.username);
@@ -238,26 +316,30 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
     }
   }
 
-  let posts: Feed | undefined;
-  const reels = createFeed((c) => instagramApi.reels(props.username, c));
-  const stories = createFeed(() => instagramApi.stories(props.username));
-  const archive = createFeed((c) => instagramApi.archive(props.username, c));
-  const postsFeed = () => (posts ??= createFeed((c) => instagramApi.posts(props.username, c), bundle()?.posts));
+  const feedKey = (tb: Tab) => `instagram:feed:${props.username}:${tb}`;
+  const reels = createFeed((c) => instagramApi.reels(props.username, c), undefined, feedKey("reels"));
+  const stories = createFeed(() => instagramApi.stories(props.username), undefined, feedKey("stories"));
+  const archive = createFeed((c) => instagramApi.archive(props.username, c), undefined, feedKey("archive"));
+  const postsFeed = () => (posts ??= createFeed((c) => instagramApi.posts(props.username, c), bundle()?.posts, feedKey("posts")));
 
   const feedOf = (tb: Tab): Feed | undefined => (tb === "posts" ? (bundle() ? postsFeed() : undefined) : tb === "reels" ? reels : tb === "stories" ? stories : tb === "archive" ? archive : undefined);
 
-  // Stories first when there are some; each tab is fetched the first time it is shown.
+  // Stories first when there are some (unless Back restored a tab); each tab is asked once per visit when it is first
+  // shown: fetched, or refreshed over its copy. Posts come with the profile, which is refreshed anyway.
   createEffect(
     on(
       () => bundle()?.profile.username,
       (name) => {
-        if (name) setTab(bundle()?.profile.hasStories ? "stories" : "posts");
+        if (name && !savedTab) setTab(bundle()?.profile.hasStories ? "stories" : "posts");
       },
     ),
   );
+  const asked = new Set<Feed>();
   createEffect(() => {
     const f = bundle() ? feedOf(tab()) : undefined;
-    if (f && !f.loaded() && !f.loading() && !f.error()) void f.load();
+    if (!f || asked.has(f)) return;
+    asked.add(f);
+    if (f !== posts || !f.loaded()) void f.load();
   });
 
   // Track tab entries only: an empty response stays unknown, without a request loop.
@@ -268,7 +350,16 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
   async function openHighlight(id: string, title: string) {
     setNotice("");
     setOpening(id);
-    const feed = createFeed((c) => instagramApi.highlightItems(id, c));
+    // Its copy from an earlier visit (also after a restart) opens the tiles at once, and the feed refreshes it.
+    const cacheKey = `instagram:highlight:${id}`;
+    await pageCache.get(cacheKey);
+    const feed = createFeed((c) => instagramApi.highlightItems(id, c), undefined, cacheKey);
+    if (feed.loaded() && feed.items().length) {
+      setOpening(null);
+      props.open({ feed, start: 0, username: props.username, tiles: true, title });
+      void feed.load();
+      return;
+    }
     await feed.load();
     setOpening(null);
     if (feed.error()) setNotice(errorText(feed.error()));
@@ -292,6 +383,9 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
       </Show>
       <Show when={fetching() && !bundle()}>
         <p class="ig-muted" role="status">{t("instagram.loading")}</p>
+      </Show>
+      <Show when={profile.updating()}>
+        <p class="swr-updating" role="status">{t("common.updating")}</p>
       </Show>
 
       <Show when={bundle()}>
@@ -427,6 +521,9 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
                           </Show>
                           <Show when={f().loading()}>
                             <p class="ig-muted" role="status">{t("instagram.loading")}</p>
+                          </Show>
+                          <Show when={f().updating()}>
+                            <p class="swr-updating" role="status">{t("common.updating")}</p>
                           </Show>
                           <Show when={f().error()}>
                             <div class="ig-state" role="alert">

@@ -1,7 +1,9 @@
 import { useNavigate } from "@solidjs/router";
-import { createEffect, createSignal, For, on, Show } from "solid-js";
+import { createSignal, For, Show } from "solid-js";
 import { toApiError } from "../api/client";
 import { notebooksApi, type ArchivedFilter, type Notebook } from "../api/notebooks";
+import { rememberScroll } from "../lib/pageScroll";
+import { createCached } from "../lib/swr";
 import { PlusIcon } from "../components/Icons";
 import { Button, Card, EmptyState, ErrorState, ListRow, LoadingState, Page, PageGrid, PageHeader, PrimaryAction, RowList, SectionNav, Sheet } from "../components/page";
 import { t } from "../i18n";
@@ -22,31 +24,20 @@ function counts(nb: Notebook): string {
 export default function NotebooksView() {
   const navigate = useNavigate();
   const [filter, setFilter] = createSignal<ArchivedFilter>("exclude");
-  const [items, setItems] = createSignal<Notebook[] | null>(null);
-  const [error, setError] = createSignal<string | null>(null);
+  // The list opens on its copy from an earlier visit while it is asked again (lib/swr), per filter.
+  const list = createCached<Notebook[]>("notebooks", () => `notebooks:list:${filter()}`, () => notebooksApi.list(filter()));
+  const items = (): Notebook[] | null => list.value() ?? null;
+  const error = (): string | null => {
+    const e = list.error();
+    return e ? toApiError(e).message : null;
+  };
   const [creating, setCreating] = createSignal(false);
   const [name, setName] = createSignal("");
   const [description, setDescription] = createSignal("");
   const [saving, setSaving] = createSignal(false);
   const [formError, setFormError] = createSignal<string | null>(null);
-  let generation = 0;
-
-  async function load() {
-    const mine = ++generation;
-    setError(null);
-    try {
-      const list = await notebooksApi.list(filter());
-      if (mine === generation) setItems(list);
-    } catch (e) {
-      if (mine === generation) setError(toApiError(e).message);
-    }
-  }
-  createEffect(
-    on(filter, () => {
-      setItems(null);
-      void load();
-    }),
-  );
+  const load = () => list.refresh();
+  rememberScroll(() => `notebooks:list:${filter()}`, () => items() !== null);
 
   function openCreate() {
     setName("");
@@ -100,6 +91,9 @@ export default function NotebooksView() {
       <PageGrid layout="single">
         <Show when={error()}>
           <ErrorState message={error()!} retryLabel={t("common.tryAgain")} onRetry={() => void load()} />
+        </Show>
+        <Show when={list.updating()}>
+          <p class="swr-updating" role="status">{t("common.updating")}</p>
         </Show>
         <Show when={!error() && items() === null}>
           <LoadingState label={t("notebooks.loading")} />

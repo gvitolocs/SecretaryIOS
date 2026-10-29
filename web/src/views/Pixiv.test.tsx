@@ -2,7 +2,7 @@ import { Route } from "@solidjs/router";
 import { cleanup, fireEvent, screen, waitFor, within } from "@solidjs/testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setShowAdult } from "../lib/adult";
-import { stubFetch, type Call } from "../test/fetch";
+import { deferred, stubFetch, type Call } from "../test/fetch";
 import { renderAt } from "../test/router";
 import PixivView from "./Pixiv";
 
@@ -540,6 +540,33 @@ describe("Pixiv", () => {
       renderPixiv("/pixiv/12");
       expect(await screen.findByText("Adult content is switched off on this device.")).toBeInTheDocument();
     });
+  });
+});
+
+describe("Pixiv: cached lists", () => {
+  beforeEach(() => setShowAdult(true));
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it("shows a revisited ranking before the server answers, then merges page one in the server's order", async () => {
+    serve();
+    renderPixiv();
+    await screen.findByRole("button", { name: "Open Work 12 by Ann" });
+    cleanup();
+
+    const held = deferred<ReturnType<typeof ok>>();
+    serve((c) => (c.url.startsWith("/v1/pixiv/ranking") ? (held.promise as never) : undefined));
+    renderPixiv();
+    expect(screen.getByRole("button", { name: "Open Work 11 by Ann" })).toBeInTheDocument();
+    expect(screen.queryByText("Loading…")).toBeNull();
+    expect(await screen.findByText("Updating…")).toBeInTheDocument();
+
+    held.resolve(ok({ items: [item("10"), item("11", { pages: 3 })], page: 1, hasMore: true, total: null, numPages: null }));
+    await waitFor(() => expect(document.querySelector(".px-card")?.getAttribute("data-work")).toBe("10"));
+    // Work 12 was on the cached page and is kept after the fresh ones; "more" goes on from the copy.
+    expect([...document.querySelectorAll(".px-card")].map((e) => e.getAttribute("data-work"))).toEqual(["10", "11", "12"]);
   });
 });
 
