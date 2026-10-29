@@ -949,8 +949,8 @@ async fn run_turn_scoped(
             &t.message,
             &finish.action,
             &finish.action_result,
-            // Secrets replies are fixed texts: no model rewrite.
-            !finish.action.starts_with("secrets_"),
+            // Secrets replies are fixed texts, AU Find answers keep their checked wording: no model rewrite.
+            !finish.action.starts_with("secrets_") && finish.action != au_turn::ACTION,
             &finish.calendar_events,
             finish.agenda.as_ref(),
         )
@@ -3003,8 +3003,8 @@ async fn tools_turn(
         &message,
         &finish.action,
         &finish.action_result,
-        // Secrets replies are fixed texts: no model rewrite.
-        !finish.action.starts_with("secrets_"),
+        // Secrets replies are fixed texts, AU Find answers keep their checked wording: no model rewrite.
+        !finish.action.starts_with("secrets_") && finish.action != au_turn::ACTION,
         &finish.calendar_events,
         finish.agenda.as_ref(),
     )

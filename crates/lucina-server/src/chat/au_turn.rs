@@ -29,7 +29,7 @@ use super::{Finish, Turn};
 pub const ACTION: &str = "au_find";
 
 /// The AU sites and their rules, for the reply model.
-const CONTRACT: &str = "AU answer contract: answer only from the AU Find block. Say the source: \"AU Find (aufind)\" for search fields, \"www.au.dk profile <url>\" for profile fields. Quote rooms as <building>-<room> (e.g. 1872-237; the room's first digit is the floor). Never invent emails, phones, rooms, coordinates or URLs; leave out what the block does not have. No door-by-door routes.";
+const CONTRACT: &str = "AU answer contract: answer only from the AU Find block. Say the source: \"AU Find (aufind)\" for search fields, \"www.au.dk profile <url>\" for profile fields. Quote rooms as <building>-<room> (e.g. 1872-237; the room's first digit is the floor). Never invent emails, phones, rooms, coordinates or URLs; leave out what the block does not have. Add nothing of your own about the place either (no districts, neighbourhoods, distances or directions). No door-by-door routes.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -682,14 +682,20 @@ pub(super) async fn try_turn(t: &Turn<'_>, memory: &str) -> Option<Finish> {
                 .people_search(&ask.query, if lang == "da" { "da" } else { "en" })
                 .await;
             let fallback = render_people(&r, lang);
-            let reply = write_reply(
-                t,
-                memory,
-                &[status_line(r.status)],
-                &knowledge_people(&r),
-                fallback,
-            )
-            .await;
+            // Several matches: the numbered list as is. The reply model led with one of them
+            // ("closest match …") in a live test, which the procedure forbids.
+            let reply = if r.status == Status::Ambiguous {
+                fallback
+            } else {
+                write_reply(
+                    t,
+                    memory,
+                    &[status_line(r.status)],
+                    &knowledge_people(&r),
+                    fallback,
+                )
+                .await
+            };
             let mut f = Finish::reply(reply, ACTION).with(
                 format!(
                     "[au people: {} {}/{}]",

@@ -168,6 +168,30 @@ async fn routes_say_when_af_server_is_down_or_au_is_off() {
 }
 
 #[tokio::test]
+async fn chat_lists_three_numbered_matches_and_never_picks_one() {
+    let af = af_server().await;
+    let uri = af.uri();
+    // A reply model that would pick one: it must not be asked.
+    let h = harness(
+        script(json!({"rules": [
+            {"kind": "reply", "content": "Closest match is Anna Jensen 0."}
+        ]})),
+        |c| {
+            c.au_enabled = true;
+            c.au_url = uri;
+        },
+    )
+    .await;
+    let d = h.chat("Who is Jensen at AU?").await;
+    assert_eq!(d["action"], "au_find", "{d}");
+    let reply = d["reply"].as_str().unwrap();
+    for n in ["1. **Anna Jensen 0**", "2. **Anna Jensen 1**", "3. **Anna Jensen 2**", "AU Find (aufind)", "1530-310"] {
+        assert!(reply.contains(n), "{n} missing: {reply}");
+    }
+    assert!(!reply.contains("Closest match"), "{reply}");
+}
+
+#[tokio::test]
 async fn chat_answers_from_au_find_with_its_source_and_a_map() {
     let af = af_server().await;
     let uri = af.uri();
