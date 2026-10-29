@@ -934,7 +934,7 @@ cargo test -p secretary-maps
 |---|---|
 | `coord_valid` | `kernel::coord_valid`, `parse_coord`; `Config::from_env` (home), `geocode::google`, route endpoints, the geocode bias |
 | `fit_bounds` | `kernel::fit_bounds` (the clients' fit-to-pins) |
-| `simplify` | `kernel::simplify` → Google route polyline, ≤400 points |
+| `simplify` | `kernel::simplify` → route polylines (Google, OSRM), ≤400 points; step polylines, ≤100 points |
 | `leave_at` | `kernel::leave_at` → route `leaveAt`, 300 s buffer |
 | `safe_asset_path` | `kernel::safe_asset_path` → `resolve_asset` → `GET /v1/maps/assets/{*path}` |
 | `travel_minutes` | `kernel::travel_minutes`, `travel_estimate_min` (with `distance_m`) |

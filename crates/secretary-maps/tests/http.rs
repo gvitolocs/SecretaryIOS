@@ -45,6 +45,8 @@ fn config(dir: &Path, google: &str) -> Config {
         }),
         // Port 1: nothing listens, connections are refused at once.
         google_key: None,
+        google_web_key: None,
+        google_ios_key: None,
         places_url: google.into(),
         routes_url: google.into(),
         photon_url: None,
@@ -83,7 +85,8 @@ async fn config_and_health() {
         json_of(&b),
         json!({"tiles":"/v1/maps/tiles/region.pmtiles","assets":"/v1/maps/assets",
             "home":{"lat":56.19633,"lng":10.2011,"label":"Home"},"geocoder":false,"routes":false,
-            "attribution":"© OpenStreetMap contributors · Protomaps"})
+            "attribution":"© OpenStreetMap contributors · Protomaps",
+            "google":{"webKey":null,"iosKey":null}})
     );
     let (s, _, b) = send(&a, get_req("/v1/maps/health")).await;
     assert_eq!(s, StatusCode::OK);
@@ -370,7 +373,11 @@ async fn fake_google(
                 (
                     StatusCode::OK,
                     Json(
-                        json!({"routes":[{"duration":"540s","staticDuration":"480s","distanceMeters":4200,"polyline":{"encodedPolyline":"_p~iF~ps|U_ulLnnqC_mqNvxq`@"},"legs":[{"steps":[{"transitDetails":{"transitLine":{"nameShort":"2A","name":"Bus 2A","vehicle":{"type":"BUS"}},"stopDetails":{"departureStop":{"name":"Home stop"},"arrivalStop":{"name":"City stop"},"departureTime":"2099-10-27T16:40:00Z","arrivalTime":"2099-10-27T16:49:00Z"}}}]}]}]}),
+                        json!({"routes":[{"duration":"540s","staticDuration":"480s","distanceMeters":4200,"polyline":{"encodedPolyline":"_p~iF~ps|U_ulLnnqC_mqNvxq`@"},"legs":[{"steps":[
+                            {"navigationInstruction":{"maneuver":"DEPART","instructions":"Kør mod nord ad\nMøllestien"},"distanceMeters":120,"staticDuration":"30s","polyline":{"encodedPolyline":"_p~iF~ps|U_ulLnnqC"},"travelMode":body["travelMode"]},
+                            {"navigationInstruction":{"maneuver":"TURN_LEFT"},"staticDuration":"12.5s","polyline":{"encodedPolyline":"broken_"}},
+                            {"distanceMeters":5,"staticDuration":"1s"},
+                            {"transitDetails":{"transitLine":{"nameShort":"2A","name":"Bus 2A","vehicle":{"type":"BUS"}},"stopDetails":{"departureStop":{"name":"Home stop"},"arrivalStop":{"name":"City stop"},"departureTime":"2099-10-27T16:40:00Z","arrivalTime":"2099-10-27T16:49:00Z"}}}]}]}]}),
                     ),
                 )
             }
@@ -552,7 +559,24 @@ async fn errors_timeouts_and_secret_redaction() {
         assert!(!String::from_utf8(b).unwrap().contains("stub-google-secret"));
         task.abort();
     }
+    // Client keys: a malformed one is logged as such, never with its value.
+    let env = HashMap::from([
+        ("HOME", tmp.path().display().to_string()),
+        (
+            "GOOGLE_MAPS_WEB_KEY",
+            "AIzaSy.malformed/web-key-value".to_string(),
+        ),
+        ("GOOGLE_MAPS_IOS_KEY", IOS_KEY.to_string()),
+    ]);
+    let c = Config::from_env(|k| env.get(k).cloned()).unwrap();
+    assert!(c.google_web_key.is_none());
+    let a = app(AppState::new(c));
+    send(&a, get_req("/v1/maps/config")).await;
+    send(&a, get_req("/v1/maps/health")).await;
     let text = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+    assert!(text.contains("client key malformed"));
+    assert!(!text.contains("malformed/web-key-value"));
+    assert!(!text.contains(IOS_KEY));
     assert!(!text.contains("stub-google-secret"));
     assert!(!text.contains("private-address"));
     assert!(!text.contains("56.19633"));
@@ -816,4 +840,131 @@ fn google_key_from_the_environment_never_required() {
     env.insert("MAPS_GOOGLE_KEY_FILE", tmp.path().display().to_string());
     let c = Config::from_env(|k| env.get(k).cloned()).unwrap();
     assert!(c.google_key.is_none());
+}
+
+#[tokio::test]
+async fn google_steps_for_bike_and_walk() {
+    let tmp = tempfile::tempdir().unwrap();
+    let seen: Seen = Arc::default();
+    let (url, task) = fake_google(seen.clone(), Arc::default(), "none", false).await;
+    let a = app(AppState::new(keyed(tmp.path(), &url)));
+    let (s, _, b) = send(&a, get_req(&format!("{ROUTE}&modes=walk,bike"))).await;
+    assert_eq!(s, StatusCode::OK);
+    let v = json_of(&b);
+    let routes = v["routes"].as_array().unwrap();
+    assert_eq!(routes.len(), 2);
+    for (r, mode) in routes.iter().zip(["walk", "bike"]) {
+        assert_eq!(r["mode"], mode);
+        // The empty step is omitted; an instruction-less step keeps its maneuver; a malformed
+        // step polyline is empty.
+        assert_eq!(
+            r["steps"],
+            json!([
+                {"instruction":"Kør mod nord ad Møllestien","maneuver":"DEPART","distanceM":120,
+                    "durationS":30,"polyline":[[38.5,-120.2],[40.7,-120.95]]},
+                {"instruction":"","maneuver":"TURN_LEFT","distanceM":0,"durationS":13,"polyline":[]}
+            ])
+        );
+    }
+    {
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        for (h, b) in seen.iter() {
+            let mask = h["x-goog-fieldmask"].to_str().unwrap();
+            for field in [
+                "routes.legs.steps.navigationInstruction",
+                "routes.legs.steps.distanceMeters",
+                "routes.legs.steps.staticDuration",
+                "routes.legs.steps.polyline.encodedPolyline",
+                "routes.legs.steps.travelMode",
+                "routes.legs.steps.transitDetails",
+            ] {
+                assert!(mask.split(',').any(|f| f == field), "{field}");
+            }
+            assert_eq!(b["languageCode"], "da");
+        }
+    }
+    // Steps are cached with the route.
+    let (_, _, b) = send(&a, get_req(&format!("{ROUTE}&modes=bike"))).await;
+    assert_eq!(seen.lock().unwrap().len(), 2);
+    assert_eq!(json_of(&b)["routes"][0]["steps"], routes[1]["steps"]);
+    // Straight-line estimates have no steps.
+    let a = app(AppState::new(config(tmp.path(), "http://127.0.0.1:1")));
+    let (_, _, b) = send(&a, get_req(&format!("{ROUTE}&estimate=1"))).await;
+    for r in json_of(&b)["routes"].as_array().unwrap() {
+        assert_eq!(r["steps"], json!([]));
+    }
+    task.abort();
+}
+
+const WEB_KEY: &str = "AIzaSyWEB-key_0123456789abcdefghi";
+const IOS_KEY: &str = "AIzaSyIOS-key_0123456789abcdefghi";
+
+#[tokio::test]
+async fn google_client_keys_in_config() {
+    let tmp = tempfile::tempdir().unwrap();
+    setup(tmp.path());
+    let web = tmp.path().join("web.key");
+    std::fs::write(&web, format!("  {WEB_KEY}\n")).unwrap();
+    let mut env = HashMap::from([
+        ("HOME", tmp.path().display().to_string()),
+        ("MAPS_DIR", tmp.path().display().to_string()),
+        ("MAPS_GOOGLE_WEB_KEY_FILE", web.display().to_string()),
+        ("GOOGLE_MAPS_IOS_KEY", format!(" {IOS_KEY} ")),
+    ]);
+    let c = Config::from_env(|k| env.get(k).cloned()).unwrap();
+    assert!(!format!("{c:?}").contains(WEB_KEY));
+    assert!(!format!("{c:?}").contains(IOS_KEY));
+    let a = app(AppState::new(c));
+    let (s, _, b) = send(&a, get_req("/v1/maps/config")).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(
+        json_of(&b)["google"],
+        json!({"webKey":WEB_KEY,"iosKey":IOS_KEY})
+    );
+    let (_, _, b) = send(&a, get_req("/v1/maps/health")).await;
+    let health = String::from_utf8(b).unwrap();
+    assert!(!health.contains(WEB_KEY) && !health.contains(IOS_KEY));
+    // The variable wins over the file.
+    env.insert("GOOGLE_MAPS_WEB_KEY", IOS_KEY.into());
+    let c = Config::from_env(|k| env.get(k).cloned()).unwrap();
+    assert_eq!(c.google_web_key.unwrap().as_str(), IOS_KEY);
+    // Default files under ~/.config/secretary-maps.
+    std::fs::create_dir_all(tmp.path().join(".config/secretary-maps")).unwrap();
+    std::fs::write(
+        tmp.path().join(".config/secretary-maps/google-ios.key"),
+        WEB_KEY,
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join(".config/secretary-maps/google-web.key"),
+        IOS_KEY,
+    )
+    .unwrap();
+    let defaults = HashMap::from([("HOME", tmp.path().display().to_string())]);
+    let c = Config::from_env(|k| defaults.get(k).cloned()).unwrap();
+    assert_eq!(c.google_web_key.unwrap().as_str(), IOS_KEY);
+    assert_eq!(c.google_ios_key.unwrap().as_str(), WEB_KEY);
+    // Malformed (too short, too long, other characters), empty or unreadable: null, never an error.
+    for bad in [
+        "short-key",
+        &"a".repeat(101),
+        "AIzaSy key with spaces 0123",
+        "AIzaSy.key/0123456789abcdef",
+    ] {
+        env.insert("GOOGLE_MAPS_WEB_KEY", bad.to_string());
+        let c = Config::from_env(|k| env.get(k).cloned()).unwrap();
+        assert!(c.google_web_key.is_none(), "{bad}");
+    }
+    assert!(secretary_maps::provider::ClientKey::new(&"a".repeat(20)).is_some());
+    assert!(secretary_maps::provider::ClientKey::new(&"a".repeat(100)).is_some());
+    assert!(secretary_maps::provider::ClientKey::new(&"a".repeat(19)).is_none());
+    env.insert("GOOGLE_MAPS_WEB_KEY", "  ".into());
+    env.insert("GOOGLE_MAPS_IOS_KEY", "bad key".into());
+    env.insert("MAPS_GOOGLE_WEB_KEY_FILE", tmp.path().display().to_string());
+    let a = app(AppState::new(
+        Config::from_env(|k| env.get(k).cloned()).unwrap(),
+    ));
+    let (_, _, b) = send(&a, get_req("/v1/maps/config")).await;
+    assert_eq!(json_of(&b)["google"], json!({"webKey":null,"iosKey":null}));
 }
