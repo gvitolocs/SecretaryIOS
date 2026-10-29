@@ -571,9 +571,10 @@ fn allow_all_is_never_offered_and_an_unticked_selection_declines() {
         assert!(guard::risky(l, Kind::Browse) && guard::risky(l, Kind::Shopping), "{l}");
     }
     let rows = |ticked: bool| {
-        let mut perf = el(45, "check box", "Performance cookies", &["click"], 400.0, 300.0);
+        // As the driver reports it: a ticked box offers "uncheck" (and is "selected").
+        let mut perf = el(45, "check box", "Performance cookies", &[if ticked { "uncheck" } else { "check" }], 400.0, 300.0);
         if ticked {
-            perf["checked"] = json!(true);
+            perf["selected"] = json!(true);
         }
         vec![
             el(39, "static", "These cookies are essential for the website to function properly.", &[], 400.0, 250.0),
@@ -587,4 +588,6 @@ fn allow_all_is_never_offered_and_an_unticked_selection_declines() {
     assert_eq!(s.cookie_decline.as_ref().map(|e| e.label.as_str()), Some("Allow selection"));
     let s = screen_of(&page("Rejseplan", rows(true)), "Rejseplan - Chromium", Kind::Browse, None);
     assert_eq!(s.cookie_decline, None, "a ticked optional box: saving the selection would consent");
+    let perf = s.elements.iter().find(|e| e.label == "Performance cookies").unwrap();
+    assert_eq!(perf.state, "checked");
 }

@@ -71,8 +71,24 @@ fn state_of(e: &Value) -> (String, String) {
         .and_then(Value::as_array)
         .map(|a| a.iter().filter_map(Value::as_str).map(str::to_lowercase).collect())
         .unwrap_or_default();
+    // The driver says a box is ticked by offering to untick it, and an
+    // expander is open by offering to collapse it.
+    let acts: Vec<&str> = e
+        .get("actions")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    let role = s(e, "role");
+    let ticked_role = matches!(role, "check box" | "radio button" | "toggle button" | "check menu item" | "radio menu item");
     for f in ["checked", "selected", "expanded", "pressed"] {
-        if truthy(e.get(f)) || states.iter().any(|s| s == f) {
+        let by_action = match f {
+            "checked" => acts.contains(&"uncheck"),
+            "expanded" => acts.contains(&"collapse"),
+            _ => false,
+        };
+        // A ticked box also reports "selected": say "checked" once.
+        let dup = f == "selected" && ticked_role && flags.contains(&"checked");
+        if (truthy(e.get(f)) || states.iter().any(|s| s == f) || by_action) && !dup {
             flags.push(f);
         }
     }
