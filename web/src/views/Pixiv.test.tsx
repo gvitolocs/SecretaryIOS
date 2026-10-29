@@ -370,38 +370,119 @@ describe("Pixiv", () => {
       }
     });
 
-    it("zooms with the buttons, keys and a double click, and Escape un-zooms before it closes", async () => {
+    /** jsdom has no layout: give the stage a size and the page its pixels, then let it load. */
+    function size(dialog: HTMLElement, stageW: number, stageH: number, imgW: number, imgH: number) {
+      const stage = dialog.querySelector(".px-stage") as HTMLElement;
+      const img = within(dialog).getByRole("img") as HTMLImageElement;
+      Object.defineProperty(stage, "clientWidth", { configurable: true, value: stageW });
+      Object.defineProperty(stage, "clientHeight", { configurable: true, value: stageH });
+      Object.defineProperty(img, "naturalWidth", { configurable: true, value: imgW });
+      Object.defineProperty(img, "naturalHeight", { configurable: true, value: imgH });
+      fireEvent.load(img);
+      return { stage, img };
+    }
+    const scaleOf = (img: HTMLElement) => Number(/scale\(([\d.e-]+)\)/.exec(img.style.transform)?.[1]);
+    const level = (dialog: HTMLElement) => within(dialog).getByRole("button", { name: "Fit to screen" });
+
+    it("opens a tall page in Fit (the whole image), zooms from Fit to 400 % and back, and Escape returns to Fit before it closes", async () => {
       const { dialog } = await openWork();
-      const img = within(dialog).getByRole("img");
-      expect(img.style.transform).toContain("scale(1)");
+      // The owner's case: a 1200x1700 page in a 1400x760 viewer used to open at 100 %, cropped top and bottom.
+      const { img } = size(dialog, 1400, 760, 1200, 1700);
+      const fit = 760 / 1700;
+      expect(scaleOf(img)).toBeCloseTo(fit, 6);
+      expect(img.style.width).toBe("1200px");
+      expect(level(dialog)).toHaveTextContent("Fit");
+      expect(level(dialog)).toBeDisabled();
+      expect(within(dialog).getByRole("button", { name: "Zoom out" })).toBeDisabled();
       fireEvent.click(within(dialog).getByRole("button", { name: "Zoom in" }));
-      expect(img.style.transform).toContain("scale(1.5)");
+      expect(scaleOf(img)).toBeCloseTo(fit * 1.25, 6);
+      expect(level(dialog)).toHaveTextContent("56%");
       fireEvent.keyDown(window, { key: "+" });
-      expect(img.style.transform).toContain("scale(2)");
-      // while zoomed the arrows don't turn the page
+      expect(level(dialog)).toHaveTextContent("70%");
+      // while zoomed (taller than the stage) the arrows don't turn the page
       fireEvent.keyDown(window, { key: "ArrowRight" });
       expect(within(dialog).getByText("1 / 3")).toBeInTheDocument();
       fireEvent.keyDown(window, { key: "Escape" });
-      expect(img.style.transform).toContain("scale(1)");
+      expect(scaleOf(img)).toBeCloseTo(fit, 6);
       expect(screen.getByRole("dialog")).toBeInTheDocument();
+      // double click: Fit -> 100 % -> Fit
       fireEvent.doubleClick(dialog.querySelector(".px-stage") as HTMLElement);
-      expect(img.style.transform).toContain("scale(2.5)");
-      fireEvent.click(within(dialog).getByRole("button", { name: "Fit to screen" }));
-      expect(img.style.transform).toContain("scale(1)");
+      expect(level(dialog)).toHaveTextContent("100%");
+      fireEvent.doubleClick(dialog.querySelector(".px-stage") as HTMLElement);
+      expect(level(dialog)).toHaveTextContent("Fit");
+      // up to 400 %, then "−" all the way back down to Fit
+      for (let i = 0; i < 20; i++) fireEvent.click(within(dialog).getByRole("button", { name: "Zoom in" }));
+      expect(level(dialog)).toHaveTextContent("400%");
+      expect(within(dialog).getByRole("button", { name: "Zoom in" })).toBeDisabled();
+      for (let i = 0; i < 20; i++) fireEvent.click(within(dialog).getByRole("button", { name: "Zoom out" }));
+      expect(level(dialog)).toHaveTextContent("Fit");
+      expect(scaleOf(img)).toBeCloseTo(fit, 6);
+      fireEvent.click(within(dialog).getByRole("button", { name: "Zoom in" }));
+      fireEvent.click(level(dialog));
+      expect(level(dialog)).toHaveTextContent("Fit");
+    });
+
+    it("fits wide and square pages, and never enlarges a small one", async () => {
+      const { dialog } = await openWork();
+      const { img } = size(dialog, 1400, 760, 2400, 1200);
+      expect(scaleOf(img)).toBeCloseTo(1400 / 2400, 6);
+      size(dialog, 390, 640, 1200, 1200);
+      expect(scaleOf(img)).toBeCloseTo(390 / 1200, 6);
+      size(dialog, 1400, 760, 400, 300);
+      expect(scaleOf(img)).toBe(1);
+      expect(level(dialog)).toHaveTextContent("Fit");
+    });
+
+    it("re-fits when the window changes size", async () => {
+      const { dialog } = await openWork();
+      const { stage, img } = size(dialog, 1400, 760, 1200, 1700);
+      Object.defineProperty(stage, "clientWidth", { configurable: true, value: 700 });
+      Object.defineProperty(stage, "clientHeight", { configurable: true, value: 380 });
+      fireEvent(window, new Event("resize"));
+      if (typeof ResizeObserver !== "undefined") fireEvent.load(img); // a stubbed observer never calls back
+      expect(scaleOf(img)).toBeCloseTo(380 / 1700, 6);
+    });
+
+    it("zooms with ⌘/ctrl + scroll, pans with a plain scroll only when zoomed", async () => {
+      const { dialog } = await openWork();
+      const { stage, img } = size(dialog, 1400, 760, 1200, 1700);
+      const fit = 760 / 1700;
+      fireEvent.wheel(stage, { deltaY: 100 });
+      expect(scaleOf(img)).toBeCloseTo(fit, 6); // a plain scroll at Fit does nothing
+      fireEvent.wheel(stage, { deltaY: -100, ctrlKey: true });
+      expect(scaleOf(img)).toBeGreaterThan(fit);
+      fireEvent.wheel(stage, { deltaY: -100, metaKey: true });
+      const zoomed = scaleOf(img);
+      const before = img.style.transform;
+      fireEvent.wheel(stage, { deltaY: 80 });
+      expect(scaleOf(img)).toBeCloseTo(zoomed, 6);
+      expect(img.style.transform).not.toBe(before); // panned
+    });
+
+    it("offers Fit width for a tall page and starts it at the top", async () => {
+      const { dialog } = await openWork();
+      const { img } = size(dialog, 1400, 760, 800, 6000);
+      const button = within(dialog).getByRole("button", { name: "Fit width" });
+      expect(button).toHaveAttribute("aria-pressed", "false");
+      fireEvent.click(button);
+      expect(button).toHaveAttribute("aria-pressed", "true");
+      expect(scaleOf(img)).toBe(1);
+      expect(img.style.transform).toContain(`translate(0px, ${(6000 - 760) / 2}px)`);
+      fireEvent.click(button);
+      expect(scaleOf(img)).toBeCloseTo(760 / 6000, 6);
     });
 
     it("pinches to zoom", async () => {
       const { dialog } = await openWork();
-      const stage = dialog.querySelector(".px-stage") as HTMLElement;
-      const img = within(dialog).getByRole("img");
+      const { stage, img } = size(dialog, 1400, 760, 1200, 1700);
       const pointer = (type: string, id: number, x: number) => fireEvent(stage, Object.assign(new Event(type, { bubbles: true }), { pointerId: id, clientX: x, clientY: 100 }));
       pointer("pointerdown", 1, 100);
       pointer("pointerdown", 2, 200);
       pointer("pointermove", 2, 300);
-      expect(img.style.transform).toContain("scale(2)");
+      expect(scaleOf(img)).toBeCloseTo((760 / 1700) * 2, 6);
       pointer("pointerup", 2, 300);
       pointer("pointerup", 1, 100);
-      expect(img.style.transform).toContain("scale(2)");
+      expect(scaleOf(img)).toBeCloseTo((760 / 1700) * 2, 6);
     });
 
     it("closes with the button and with Escape", async () => {
