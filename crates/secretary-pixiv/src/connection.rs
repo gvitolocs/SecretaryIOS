@@ -31,6 +31,8 @@ struct Inner {
     connected_at: Option<String>,
     logins: VecDeque<Login>,
     generation: u64,
+    /// The last broker read failed (set by `startup`, cleared when a read answers).
+    broker_down: bool,
 }
 pub struct Connection {
     cfg: Config,
@@ -59,6 +61,7 @@ impl Connection {
                 connected_at: None,
                 logins: VecDeque::new(),
                 generation: 0,
+                broker_down: false,
             }),
             refresh_lock: Mutex::new(()),
             mutations: tokio::sync::Mutex::new(()),
@@ -83,6 +86,7 @@ impl Connection {
                                 return;
                             }
                             i.error = None;
+                            i.broker_down = false;
                             i.state = if token.is_some() {
                                 "connected"
                             } else {
@@ -102,6 +106,7 @@ impl Connection {
                         }
                         i.state = "unavailable";
                         i.error = Some("broker_unavailable");
+                        i.broker_down = true;
                     }
                 }
                 tokio::time::sleep(Duration::from_secs(60)).await;
@@ -153,6 +158,10 @@ impl Connection {
         let mut i = self.inner.lock().unwrap();
         if Self::busy(&i) {
             return Err(ConnectError(409, "busy"));
+        }
+        // The token could not be saved: refuse before the owner signs in on pixiv for nothing.
+        if i.broker_down {
+            return Err(ConnectError(503, "broker_unavailable"));
         }
         let verifier = oauth::verifier().map_err(|_| ConnectError(502, "pixiv_login_failed"))?;
         let state = oauth::random_hex().map_err(|_| ConnectError(502, "pixiv_login_failed"))?;
@@ -363,6 +372,17 @@ impl Connection {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn no_login_while_the_broker_is_unreachable() {
+        let mut cfg = Config::default();
+        cfg.broker.token_file = Some("/no-such-test-token".into());
+        let c = Connection::new(cfg);
+        c.inner.lock().unwrap().broker_down = true;
+        assert_eq!(c.start().unwrap_err(), ConnectError(503, "broker_unavailable"));
+        c.inner.lock().unwrap().broker_down = false;
+        assert!(c.start().is_ok());
+    }
+
     #[tokio::test]
     async fn expired_pkce_state_is_not_exchanged() {
         let mut cfg = Config::default();
