@@ -32,6 +32,10 @@ struct Plugin: Identifiable {
                    detail: String(localized: "Conversations across devices and channels")) { app.showAllChats = true },
             Plugin(id: "computer", icon: "desktopcomputer", title: "Lucina's computer",
                    detail: String(localized: "Watch her desktop live, take over")) { app.showComputer = true },
+            Plugin(id: "callers", icon: "person.fill.questionmark", title: "Who called?",
+                   detail: app.callers.extensionStatus == .disabled ? String(localized: "Turn on caller labels")
+                       : String(localized: "Screen unknown numbers with Jev"),
+                   isActive: app.callers.extensionStatus == .disabled) { app.showCallers = true },
             Plugin(id: "qrSignIn", icon: "qrcode.viewfinder", title: "Scan QR code",
                    detail: String(localized: "Sign in another device")) { app.showQrSignIn = true },
             Plugin(id: "notes", icon: "doc.text", title: "Notes") { app.showNotes = true },
@@ -88,6 +92,7 @@ struct PluginsView: View {
         .navigationDestination(isPresented: $app.showPokemon) { PokemonView() }
         .navigationDestination(isPresented: $app.showAllChats) { AllChatsView() }
         .navigationDestination(isPresented: $app.showComputer) { LucinaComputerView() }
+        .navigationDestination(isPresented: $app.showCallers) { CallersView() }
         .sheet(isPresented: $app.showQrSignIn) { QrSignInSheet() }
     }
 }

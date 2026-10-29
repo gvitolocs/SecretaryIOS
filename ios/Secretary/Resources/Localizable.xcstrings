@@ -1,6 +1,518 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Who called?" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chi ha chiamato?"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hvem ringede?"
+          }
+        }
+      }
+    },
+    "Screen unknown numbers with Jev" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Controlla i numeri sconosciuti con Jev"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tjek ukendte numre med Jev"
+          }
+        }
+      }
+    },
+    "Turn on caller labels" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Attiva le etichette chiamate"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Slå opkaldsetiketter til"
+          }
+        }
+      }
+    },
+    "Number or list" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Numero o elenco"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nummer eller liste"
+          }
+        }
+      }
+    },
+    "One number, or a pasted list: one per line, or separated by commas." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Un numero, oppure un elenco incollato: uno per riga, o separati da virgole."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ét nummer eller en indsat liste: ét pr. linje eller adskilt af kommaer."
+          }
+        }
+      }
+    },
+    "Look up" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cerca"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Slå op"
+          }
+        }
+      }
+    },
+    "Caller labels on this iPhone" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Etichette chiamate su questo iPhone"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Opkaldsetiketter på denne iPhone"
+          }
+        }
+      }
+    },
+    "Update labels" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aggiorna etichette"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Opdater etiketter"
+          }
+        }
+      }
+    },
+    "Not updated yet." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Non ancora aggiornate."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ikke opdateret endnu."
+          }
+        }
+      }
+    },
+    "%lld labels saved, updated %@" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld etichette salvate, aggiornate %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld etiketter gemt, opdateret %@"
+          }
+        }
+      }
+    },
+    "On. Numbers Lucina has screened show their label when they call." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Attive. I numeri controllati da Lucina mostrano la loro etichetta quando chiamano."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Slået til. Numre, som Lucina har tjekket, viser deres etiket, når de ringer."
+          }
+        }
+      }
+    },
+    "Off. Turn on Secretary under Settings › Phone › Call Blocking & Identification, so calls from numbers Lucina has screened show a label." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Disattivate. Attiva Secretary in Impostazioni › Telefono › Blocco e identificazione chiamate, così le chiamate dai numeri controllati da Lucina mostrano un'etichetta."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Slået fra. Slå Secretary til under Indstillinger › Telefon › Opkaldsblokering og -identifikation, så opkald fra numre, som Lucina har tjekket, viser en etiket."
+          }
+        }
+      }
+    },
+    "Checking whether caller labels are on…" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Controllo se le etichette chiamate sono attive…"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tjekker, om opkaldsetiketter er slået til…"
+          }
+        }
+      }
+    },
+    "Caller labels aren't available in this build." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Le etichette chiamate non sono disponibili in questa versione."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Opkaldsetiketter er ikke tilgængelige i denne version."
+          }
+        }
+      }
+    },
+    "Contact: %@" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Contatto: %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kontakt: %@"
+          }
+        }
+      }
+    },
+    "Spam" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spam"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spam"
+          }
+        }
+      }
+    },
+    "Pick up" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rispondere"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tag den"
+          }
+        }
+      }
+    },
+    "Person" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Persona"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Person"
+          }
+        }
+      }
+    },
+    "Business" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Azienda"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Virksomhed"
+          }
+        }
+      }
+    },
+    "Delivery" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Consegna"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Levering"
+          }
+        }
+      }
+    },
+    "Telemarketing" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Telemarketing"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Telemarketing"
+          }
+        }
+      }
+    },
+    "Scam" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Truffa"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Svindel"
+          }
+        }
+      }
+    },
+    "Source: Jev" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fonte: Jev"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kilde: Jev"
+          }
+        }
+      }
+    },
+    "Source: rules (Jev was unavailable)" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fonte: regole (Jev non disponibile)"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kilde: regler (Jev var ikke tilgængelig)"
+          }
+        }
+      }
+    },
+    "Source: contact" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fonte: contatto"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kilde: kontakt"
+          }
+        }
+      }
+    },
+    "Mobile" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cellulare"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mobil"
+          }
+        }
+      }
+    },
+    "Landline" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fisso"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fastnet"
+          }
+        }
+      }
+    },
+    "Non-geographic" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Non geografico"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ikke-geografisk"
+          }
+        }
+      }
+    },
+    "Freephone" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Numero verde"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gratisnummer"
+          }
+        }
+      }
+    },
+    "Premium rate" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A tariffa maggiorata"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Betalingsnummer"
+          }
+        }
+      }
+    },
+    "Turn on caller labels in Settings first." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prima attiva le etichette chiamate in Impostazioni."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Slå først opkaldsetiketter til i Indstillinger."
+          }
+        }
+      }
+    },
+    "Couldn't update the caller labels: %@" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Impossibile aggiornare le etichette chiamate: %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kunne ikke opdatere opkaldsetiketterne: %@"
+          }
+        }
+      }
+    },
     "days" : {
       "localizations" : {
         "it" : {

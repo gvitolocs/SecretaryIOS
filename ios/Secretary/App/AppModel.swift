@@ -78,6 +78,8 @@ final class AppModel {
     /// Lucina's computer (her desktop and Android sandbox, live; takeover), a plugin.
     var showComputer = false
     var showAllChats = false
+    /// "Who called?": caller screening with Jev and the Call Directory labels, a plugin.
+    var showCallers = false
     /// The quick weight entry sheet on the Training tab (widget "+", Log weight control).
     var showQuickWeight = false
     /// The Shopping tab's add field (Add to shopping control, widget "+").
@@ -108,6 +110,8 @@ final class AppModel {
     let agents: AgentsStore
     /// The homelab's status (/v1/system/overview), for the Server plugin and its widget.
     let server: ServerStore
+    /// "Who called?": the Call Directory label list and the lookup (/v1/callers).
+    let callers: CallersStore
     let health: HealthStore
     let lucina: LucinaStageController
     /// Lucina's outfit (GET/PUT /v1/avatar), applied to the stage.
@@ -179,6 +183,7 @@ final class AppModel {
         tasks = PerfLog.measure("tasks") { TasksStore(api: { TasksAPI(client: client) }) }
         agents = PerfLog.measure("agents") { AgentsStore(api: { client.accessKey?.isEmpty == false ? AgentsAPI(client: client) : nil }) }
         server = ServerStore(api: { client.accessKey?.isEmpty == false ? ServerAPI(client: client) : nil })
+        callers = CallersStore(api: { client.accessKey?.isEmpty == false ? CallersAPI(client: client) : nil }, manager: SystemCallDirectory())
         health = HealthStore(api: { SecretaryAPI(client: client) })
         // Cheap: no web view, model or voice engine until the Lucina tab first opens.
         lucina = PerfLog.measure("lucina") { LucinaStageController(client: client, chat: chat) }
@@ -301,6 +306,10 @@ final class AppModel {
             selectedTab = .plugins
             showPokemon = true
         }
+        if launch.openCallers {
+            selectedTab = .plugins
+            showCallers = true
+        }
 
         let onError: (APIError) -> Void = { [weak self] error in self?.handle(error) }
         let onSuccess: () -> Void = { [weak self] in self?.lucinaNotice = nil }
@@ -336,6 +345,7 @@ final class AppModel {
         approvals.onPendingChanged = { items in AppModel.publishApprovals(items) }
         agents.onTransportError = onError
         server.onTransportError = onError
+        callers.onTransportError = onError
         shopping.onTransportError = onError
         shopping.onTransportSuccess = onSuccess
         shoppingV2.onTransportError = onError
@@ -460,6 +470,8 @@ final class AppModel {
         showAgents = false
         server.reset()
         showServer = false
+        callers.reset()
+        showCallers = false
         memos.reset()
         showMemos = false
         lucinaNotice = nil
@@ -646,6 +658,8 @@ struct LaunchOptions {
     var openServer = false
     /// `-SecretaryInitialTab pokemon`: start on Lucina's Pokémon game.
     var openPokemon = false
+    /// `-SecretaryInitialTab callers`: start on "Who called?".
+    var openCallers = false
     /// `-SecretaryInitialTab approval | approval-plain | approval-done | approval-already`: the approval prompt with fixture data.
     var approvalFixture: String?
 
@@ -662,6 +676,7 @@ struct LaunchOptions {
         openMemos = defaults.string(forKey: "SecretaryInitialTab") == "memos"
         openServer = defaults.string(forKey: "SecretaryInitialTab") == "server"
         openPokemon = defaults.string(forKey: "SecretaryInitialTab") == "pokemon"
+        openCallers = defaults.string(forKey: "SecretaryInitialTab") == "callers"
         approvalFixture = defaults.string(forKey: "SecretaryInitialTab").flatMap { $0.hasPrefix("approval") ? $0 : nil }
         #endif
     }
