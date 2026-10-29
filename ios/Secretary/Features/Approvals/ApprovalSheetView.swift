@@ -151,8 +151,14 @@ private struct RequestView: View {
                 }
                 HStack {
                     if hasKey {
-                        Button("Use the passcode instead") { store.showPinPad(false) }
+                        Button("Use Face ID instead") { store.showPinPad(false) }
                             .accessibilityIdentifier("approvalUseFaceID")
+                    } else {
+                        // No key on this iPhone (after an update that changed the key, or a reinstall): one Face ID
+                        // sets it up, and this card then offers Approve with Face ID.
+                        Button("Set up Face ID") { Task { await store.setUpFaceID() } }
+                            .disabled(store.settingsBusy)
+                            .accessibilityIdentifier("approvalSetUpFaceID")
                     }
                     Spacer()
                     Button("Deny", role: .destructive) { Task { await store.decide(.deny) } }
@@ -173,7 +179,7 @@ private struct RequestView: View {
                         } else {
                             Image(systemName: item.sensitive ? "faceid" : "checkmark")
                         }
-                        Text(item.sensitive ? LocalizedStringKey("Approve with passcode") : LocalizedStringKey("Approve"))
+                        Text(item.sensitive ? LocalizedStringKey("Approve with Face ID") : LocalizedStringKey("Approve"))
                     }
                     .font(.headline)
                     .frame(maxWidth: .infinity, minHeight: 28)
@@ -389,16 +395,29 @@ final class ApprovalPresenter: NSObject, UIAdaptivePresentationControllerDelegat
     }
 }
 
-/// Keeps the prompt window in step with the store; attached once, to the tabs.
+/// Keeps the prompt window in step with the store; attached once, to the tabs. At launch it also asks, once, to set
+/// up Face ID again when the server has an approval key for this iPhone that the app no longer holds (a new key
+/// version after an update, a reinstall): one tap, one Face ID.
 struct ApprovalHost: ViewModifier {
     let store: ApprovalsStore
     var openSettings: () -> Void
     @State private var presenter = ApprovalPresenter()
+    @State private var askSetup = false
 
     func body(content: Content) -> some View {
         content
             .onChange(of: store.sheetItem?.id, initial: true) { _, id in
                 presenter.sync(store: store, visible: id != nil, openSettings: openSettings)
+            }
+            .task {
+                await store.loadSettings()
+                if store.keyStatus == .lostLocally { askSetup = true }
+            }
+            .alert("Set up Face ID for approvals", isPresented: $askSetup) {
+                Button("Set up") { Task { await store.setUpFaceID() } }
+                Button("Later", role: .cancel) {}
+            } message: {
+                Text("Root commands and other sensitive requests are approved with Face ID again. It takes one Face ID now.")
             }
     }
 }

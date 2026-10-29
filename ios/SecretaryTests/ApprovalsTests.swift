@@ -534,7 +534,7 @@ final class ApprovalsTests: XCTestCase {
         let post = try XCTUnwrap(StubURLProtocol.requests.first { $0.httpMethod == "POST" && $0.url?.path == "/v1/approvals/keys" })
         let body = decodeBody(post)
         XCTAssertEqual(body["publicKey"] as? String, sentKey)
-        XCTAssertEqual(body["label"] as? String, "Passcode on iPhone")
+        XCTAssertEqual(body["label"] as? String, "Face ID on iPhone")
         XCTAssertEqual(body["proof"] as? [String: String], ["signature": "bmV3c2ln"])
         XCTAssertNil(body["password"])
         XCTAssertEqual(Set(body.keys), ["publicKey", "label", "proof"])

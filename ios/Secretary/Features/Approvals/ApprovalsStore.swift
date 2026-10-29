@@ -436,7 +436,7 @@ final class ApprovalsStore {
             let signature = try await signer.signWithPreparedKey(
                 ApprovalsAPI.registrationString(deviceId: deviceId, publicKey: publicKey),
                 reason: String(localized: "Set up approvals on this iPhone"))
-            let keyId = try await api.registerKey(publicKey: publicKey, label: "Passcode on \(deviceLabel())", signature: signature)
+            let keyId = try await api.registerKey(publicKey: publicKey, label: "Face ID on \(deviceLabel())", signature: signature)
             try signer.commitKey(keyId: keyId)
             settingsMessage = nil
             registered = true

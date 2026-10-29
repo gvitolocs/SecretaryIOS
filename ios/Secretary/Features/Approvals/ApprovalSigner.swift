@@ -30,10 +30,10 @@ enum ApprovalSignError: Error, Equatable {
 
     var userMessage: String {
         switch self {
-        case .noKey: return String(localized: "Approvals with your passcode aren't set up on this iPhone.")
+        case .noKey: return String(localized: "Face ID or passcode isn't set up for approvals on this iPhone.")
         case .cancelled: return ""
         case .needsDeviceSecurity:
-            return String(localized: "Set a passcode in Settings → Face ID & Passcode first.")
+            return String(localized: "Set up Face ID in Settings → Face ID & Passcode, or approve with your passcode.")
         case .unavailable: return String(localized: "This iPhone can't keep an approval key.")
         case let .failed(message): return message
         }
@@ -49,20 +49,20 @@ enum ApprovalSignError: Error, Equatable {
     }
 }
 
-/// A P-256 key in the Secure Enclave, usable only after the owner types the iPhone's passcode
-/// (`.devicePasscode`: no Face ID, the owner's choice of 2026-10-29). The key's opaque `dataRepresentation` and
-/// the server's key id sit in the Keychain. Keys of earlier versions (1: Face ID only, 2: Face ID or passcode) are
-/// ignored, so the next setup replaces them.
+/// A P-256 key in the Secure Enclave, usable only after Face ID, or the device passcode when Face ID fails or isn't
+/// available (`.userPresence`; it survives a change of the enrolled faces). The key's opaque `dataRepresentation`
+/// and the server's key id sit in the Keychain. Keys of earlier versions (1: Face ID only, 2: the same as now,
+/// 3: passcode only, tried on 2026-10-29 and dropped the same day) are ignored, so the next setup replaces them.
 final class SecureEnclaveApprovalSigner: ApprovalSigning, @unchecked Sendable {
     static let store = KeychainStore(service: "tech.getsecretary.app", account: "approval-key")
-    /// 3: `[.privateKeyUsage, .devicePasscode]`.
-    static let keyVersion = 3
+    /// 4: `[.privateKeyUsage, .userPresence]`.
+    static let keyVersion = 4
 
-    /// The key's access control: the device passcode, nothing else.
+    /// The key's access control: Face ID, or the passcode.
     static func accessControl() -> SecAccessControl? {
         var error: Unmanaged<CFError>?
         let access = SecAccessControlCreateWithFlags(
-            nil, kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly, [.privateKeyUsage, .devicePasscode], &error)
+            nil, kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly, [.privateKeyUsage, .userPresence], &error)
         _ = error?.takeRetainedValue()
         return access
     }
@@ -135,16 +135,16 @@ final class SecureEnclaveApprovalSigner: ApprovalSigning, @unchecked Sendable {
         return try await Self.sign(message, reason: reason, keyData: key.dataRepresentation)
     }
 
-    /// The passcode, then the Secure Enclave signature (base64 DER) over `message`. The prompt is the key's own
-    /// access control (passcode only), evaluated once, here, when the owner tapped Approve.
+    /// Face ID, or the passcode, then the Secure Enclave signature (base64 DER) over `message`. Asked once, here,
+    /// when the owner tapped Approve on the card.
     private static func sign(_ message: String, reason: String, keyData blob: Data) async throws -> String {
-        guard let access = accessControl() else { throw ApprovalSignError.needsDeviceSecurity }
         let context = LAContext()
         context.localizedReason = reason
         context.localizedCancelTitle = String(localized: "Cancel")
         let signature: Data
         do {
-            _ = try await context.evaluateAccessControl(access, operation: .useKeySign, localizedReason: reason)
+            // Face ID first; the passcode when Face ID fails, is locked out or is not set up.
+            try await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)
             // Off the main thread: the key may still ask.
             signature = try await Task.detached {
                 let key = try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: blob, authenticationContext: context)
