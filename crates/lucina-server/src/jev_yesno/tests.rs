@@ -89,9 +89,17 @@ fn thresholds_answer_only_when_sure_and_settled() {
     assert_eq!(d(Kind::Personal, 0.99, Some(0.4)), Decision::Unsure);
     assert_eq!(d(Kind::Personal, 0.99, None), Decision::Unsure);
     assert_eq!(d(Kind::Live, 0.02, Some(0.3)), Decision::Unsure);
+    assert_eq!(d(Kind::Lucina, 0.99, None), Decision::Unsure);
     // General knowledge and advice need no facts.
     assert!(matches!(d(Kind::General, 0.97, None), Decision::Answer { yes: true, .. }));
     assert!(matches!(d(Kind::Opinion, 0.1, None), Decision::Answer { yes: false, .. }));
+}
+
+#[test]
+fn every_kind_option_round_trips() {
+    for (name, _) in KIND_OPTIONS {
+        assert_eq!(Kind::from_name(name).map(Kind::name), Some(name));
+    }
 }
 
 #[test]

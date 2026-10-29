@@ -76,7 +76,7 @@ shares, her computer, the ops record and AU Find, before every other shortcut. H
 1. **Screen** (no call): a `?`, or an English/Danish yes/no lead word without one. Open questions
    (what, cosa, hvad, …) and Italian without a `?` are skipped.
 2. **Gate** (`purpose=yesno_gate`): P(closed yes/no question) ≥ `LUCINA_JEV_YESNO_GATE_MIN` (0.75),
-   the kind (personal / general / opinion / live) and medical, legal or financial
+   the kind (personal / general / opinion / live / about_lucina) and medical, legal or financial
    (≥ `LUCINA_JEV_YESNO_SENSITIVE_MIN`, 0.5).
 3. **State:** the calendar for the next 7 days, the shopping list, pending reminders, the gym week
    and body weight as numbered facts (sources in parallel, 2.5 s each, a failed source says so),
@@ -89,7 +89,9 @@ shares, her computer, the ops record and AU Find, before every other shortcut. H
    its source only; if the model fails, the fact itself. For general knowledge the model may answer
    DISAGREE, which makes the answer unsure. The bubble's `meta.jev` carries the badge
    (`feature`, `answer`, `p`, `ms`, `totalMs`, `model`); the web shows "Jev · 93% · 412 ms".
-6. **Otherwise:** between the bars she says she is not sure, then her normal answer; a medical, legal
+6. **Otherwise:** a question about Lucina herself or the conversation ("sei sicura?", "are you
+   online?", "can you access Gmail?") goes to her normal path alone; between the bars she says she is
+   not sure, then her normal answer; a medical, legal
    or financial question gets a hedge line, then the normal answer; a live question her data does not
    settle, Jev failing (quota, breaker, timeout) or `LUCINA_JEV_YESNO=off` → the normal path alone.
 

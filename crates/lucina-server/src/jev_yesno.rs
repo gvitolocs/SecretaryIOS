@@ -3,7 +3,8 @@
 //! - **Screen:** [`looks_like_question`] is a cheap word check (a `?`, or a yes/no lead word for
 //!   voice and Alexa turns, never an open "what / cosa / hvad" question), so plain messages cost no call.
 //! - **Gate:** one Jev call ([`gate`]): is it a closed yes/no question ([`GATE_MIN`], 0.75), which
-//!   [`Kind`] (his own data or plans / general knowledge / opinion or advice / a live lookup), and is it
+//!   [`Kind`] (his own data or plans / general knowledge / opinion or advice / a live lookup / about
+//!   Lucina herself), and is it
 //!   medical, legal or financial.
 //! - **State:** what Lucina knows that may matter ([`gather`]): the calendar for the next week, the
 //!   shopping list, pending reminders, the gym week and body weight, as numbered facts; her memory
@@ -15,8 +16,9 @@
 //!   the facts only, else the fact itself; Jev writes no text.
 //! - **Otherwise:** in between she says she is not sure and her normal path answers ([`Outcome::Unsure`]);
 //!   a medical, legal or financial question gets a hedge line and the normal path ([`Outcome::Hedge`]);
-//!   a live question the facts do not settle, Jev down or over quota, or a feature switched off go on to
-//!   the normal path unchanged ([`Outcome::Pass`]).
+//!   a question about Lucina herself or the conversation ("sei sicura?", "are you online?"), a live
+//!   question the facts do not settle, Jev down or over quota, or the feature switched off go on to the
+//!   normal path unchanged ([`Outcome::Pass`]).
 //! - **Safety:** this only answers. A "yes" here never starts an action: the turn's action is
 //!   [`ACTION`], with no job, tool or decision behind it; go-aheads still go through `crate::decide`.
 //! - Each turn logs one `event="jev_yesno"` line (`crate::jev_drift` counts them).
@@ -140,6 +142,8 @@ pub enum Kind {
     General,
     Opinion,
     Live,
+    /// About Lucina or the conversation ("are you sure?", "are you online?", "did you do it?").
+    Lucina,
 }
 
 impl Kind {
@@ -149,6 +153,7 @@ impl Kind {
             Kind::General => "general",
             Kind::Opinion => "opinion",
             Kind::Live => "live",
+            Kind::Lucina => "about_lucina",
         }
     }
     fn from_name(s: &str) -> Option<Self> {
@@ -157,17 +162,19 @@ impl Kind {
             "general" => Kind::General,
             "opinion" => Kind::Opinion,
             "live" => Kind::Live,
+            "about_lucina" => Kind::Lucina,
             _ => return None,
         })
     }
 }
 
 /// The kinds, his own data first (Jev leans towards the first option).
-pub const KIND_OPTIONS: [(&str, &str); 4] = [
+pub const KIND_OPTIONS: [(&str, &str); 5] = [
     ("personal", "About the owner's own data, plans or life: his calendar, lectures, appointments, gym, shopping list, reminders, notes, tasks, body weight, or what he said or did."),
     ("general", "General knowledge: a fact about the world that does not change from day to day."),
     ("opinion", "Asks for an opinion, advice or a recommendation (should I…?, is it a good idea…?, dovrei…?, bør jeg…?)."),
     ("live", "Needs a live fact from outside Lucina's own data: weather, opening hours, prices, news, traffic, departures, whether a site or service is up right now."),
+    ("about_lucina", "About Lucina herself or the conversation: whether she is sure, understood him, can hear him, is online, did what he asked, can do or access something, or how she works."),
 ];
 
 pub const SENSITIVE_OPTIONS: [(&str, &str); 4] = [
@@ -690,7 +697,7 @@ pub fn decide(kind: Kind, v: &Verdict) -> Decision {
 
 pub fn decide_with(kind: Kind, v: &Verdict, min: f64, grounded: f64) -> Decision {
     let settled = match kind {
-        Kind::Personal | Kind::Live => v.grounded.is_some_and(|g| g >= grounded),
+        Kind::Personal | Kind::Live | Kind::Lucina => v.grounded.is_some_and(|g| g >= grounded),
         Kind::General | Kind::Opinion => true,
     };
     if !settled {
@@ -1037,6 +1044,10 @@ pub async fn run(
     };
     if !g.is_yes_no() {
         return finish(run, Outcome::Pass { why: "not_yes_no" });
+    }
+    // About her or the conversation ("sei sicura?", "are you online?"): her own words answer best.
+    if g.kind == Kind::Lucina {
+        return finish(run, Outcome::Pass { why: "about_lucina" });
     }
     if let Some(topic) = g.sensitive {
         return finish(run, Outcome::Hedge { line: hedge_line(lang, topic) });
