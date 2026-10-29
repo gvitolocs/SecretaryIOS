@@ -26,6 +26,17 @@ extension CallDirectoryManaging {
     }
 }
 
+/// A number iOS blocks, with the label the server gave it (when it has one).
+struct CallerBlockedNumber: Equatable, Identifiable, Sendable {
+    let number: Int64
+    let label: String?
+
+    var id: Int64 { number }
+    /// `+4570405205`: what `POST /v1/callers/allow` takes.
+    var e164: String { "+\(number)" }
+    var display: String { e164 }
+}
+
 /// "Who called?": the label list on this iPhone (Call Directory extension) and the lookup screen.
 @Observable
 @MainActor
@@ -45,6 +56,16 @@ final class CallersStore {
     private(set) var syncError: String?
     private(set) var isSyncing = false
 
+    /// "Block likely spam": on by default; changing it saves it and refreshes the lists (see `setBlockSettings`).
+    private(set) var blockSettings = CallerBlockSettings.standard
+    /// The numbers iOS blocks now, from the saved list.
+    private(set) var blocked: [CallerBlockedNumber] = []
+    /// Numbers an Allow is in flight for (digits only).
+    private(set) var allowing: Set<String> = []
+    /// Numbers the owner allowed since the app started (digits only): no "Would be blocked" for them.
+    private(set) var allowed: Set<String> = []
+    private(set) var blockError: String?
+
     private(set) var results: [CallerResult] = []
     private(set) var isLookingUp = false
     private(set) var lookupError: String?
@@ -58,19 +79,31 @@ final class CallersStore {
     @ObservationIgnored private let readSaved: () -> CallerDirectorySnapshot?
     @ObservationIgnored private let writeSaved: (CallerDirectorySnapshot) throws -> Void
     @ObservationIgnored private let removeSaved: () -> Void
+    @ObservationIgnored private let readSettings: () -> CallerBlockSettings?
+    @ObservationIgnored private let writeSettings: (CallerBlockSettings) throws -> Void
+    @ObservationIgnored private let removeSettings: () -> Void
     @ObservationIgnored private var lastAttempt: Date?
+    @ObservationIgnored private var loadedSaved = false
+    @ObservationIgnored private var resyncRequested = false
+    @ObservationIgnored private var settingsTask: Task<Void, Never>?
 
     init(api: @escaping () -> CallersAPI?, manager: CallDirectoryManaging,
          defaults: UserDefaults = .standard,
          readSaved: @escaping () -> CallerDirectorySnapshot? = CallerDirectoryStore.read,
          writeSaved: @escaping (CallerDirectorySnapshot) throws -> Void = CallerDirectoryStore.write,
-         removeSaved: @escaping () -> Void = CallerDirectoryStore.remove) {
+         removeSaved: @escaping () -> Void = CallerDirectoryStore.remove,
+         readSettings: @escaping () -> CallerBlockSettings? = CallerBlockSettingsStore.read,
+         writeSettings: @escaping (CallerBlockSettings) throws -> Void = CallerBlockSettingsStore.write,
+         removeSettings: @escaping () -> Void = CallerBlockSettingsStore.remove) {
         self.api = api
         self.manager = manager
         self.defaults = defaults
         self.readSaved = readSaved
         self.writeSaved = writeSaved
         self.removeSaved = removeSaved
+        self.readSettings = readSettings
+        self.writeSettings = writeSettings
+        self.removeSettings = removeSettings
         let last = defaults.double(forKey: Self.lastSyncKey)
         lastSync = last > 0 ? Date(timeIntervalSince1970: last) : nil
         entryCount = defaults.object(forKey: Self.countKey) as? Int
@@ -96,6 +129,19 @@ final class CallersStore {
         return now.timeIntervalSince(lastSync) >= interval
     }
 
+    /// The saved settings and lists, read once (the keychain is not touched before the first frame).
+    func loadSaved() {
+        guard !loadedSaved else { return }
+        loadedSaved = true
+        if let settings = readSettings() { blockSettings = settings }
+        if let snapshot = readSaved() { publishBlocked(snapshot) }
+    }
+
+    private func publishBlocked(_ snapshot: CallerDirectorySnapshot) {
+        let labels = Dictionary(snapshot.entries.map { ($0.number, $0.label) }, uniquingKeysWith: { first, _ in first })
+        blocked = snapshot.block.map { CallerBlockedNumber(number: $0, label: labels[$0]) }
+    }
+
     /// On launch and whenever the app comes to the front.
     func syncIfDue(now: Date = Date()) async {
         guard Self.isDue(lastSync: lastSync, lastAttempt: lastAttempt, now: now) else {
@@ -105,17 +151,31 @@ final class CallersStore {
         await sync(now: now)
     }
 
-    /// Fetches the labels, saves them for the extension and has iOS reload it (only when the list changed,
-    /// or never loaded, and the extension is on: iOS loads it by itself when the owner turns it on).
+    /// Fetches the labels (and, with "Block likely spam" on, the numbers above the thresholds), saves them for the
+    /// extension and has iOS reload it (only when a list changed, or never loaded, and the extension is on: iOS
+    /// loads it by itself when the owner turns it on). A sync asked for while one runs runs again right after it.
     func sync(now: Date = Date()) async {
-        guard !isSyncing else { return }
-        guard let api = api() else { return }
+        guard api() != nil else { return }
+        if isSyncing {
+            resyncRequested = true
+            return
+        }
+        loadSaved()
         isSyncing = true
-        lastAttempt = now
         defer { isSyncing = false }
+        repeat {
+            resyncRequested = false
+            await runSync(now: now)
+        } while resyncRequested && !Task.isCancelled
+    }
+
+    private func runSync(now: Date) async {
+        guard let api = api() else { return }
+        lastAttempt = now
+        let settings = blockSettings
         let response: CallerDirectoryResponse
         do {
-            response = try await api.directory()
+            response = try await api.directory(query: settings.directoryQuery)
         } catch is CancellationError {
             return
         } catch {
@@ -125,18 +185,15 @@ final class CallersStore {
             onTransportError?(wrapped)
             return
         }
-        let snapshot = CallerDirectorySnapshot(generatedAt: response.generatedAt, entries: CallerDirectoryList.normalize(response.entries))
-        let changed = readSaved()?.entries != snapshot.entries
+        // Switched off while the request ran: the lists carry no block numbers.
+        let block = blockSettings.enabled && settings.enabled ? CallerDirectoryList.normalizeBlock(response.block) : []
+        let snapshot = CallerDirectorySnapshot(generatedAt: response.generatedAt, entries: CallerDirectoryList.normalize(response.entries), block: block)
+        let previous = readSaved()
+        let changed = previous?.entries != snapshot.entries || previous?.block != snapshot.block
         do {
             try writeSaved(snapshot)
-            let status = await manager.enabledStatus()
-            extensionStatus = status
-            if status == .enabled, changed || !defaults.bool(forKey: Self.reloadedKey) {
-                try await manager.reload()
-                defaults.set(true, forKey: Self.reloadedKey)
-            } else if status != .enabled {
-                defaults.set(false, forKey: Self.reloadedKey)
-            }
+            publishBlocked(snapshot)
+            try await reloadIfNeeded(changed: changed)
             syncError = nil
         } catch {
             syncError = manager.reloadMessage(for: error)
@@ -146,6 +203,100 @@ final class CallersStore {
         lastSync = now
         defaults.set(now.timeIntervalSince1970, forKey: Self.lastSyncKey)
         defaults.set(snapshot.entries.count, forKey: Self.countKey)
+    }
+
+    private func reloadIfNeeded(changed: Bool) async throws {
+        let status = await manager.enabledStatus()
+        extensionStatus = status
+        if status == .enabled, changed || !defaults.bool(forKey: Self.reloadedKey) {
+            try await manager.reload()
+            defaults.set(true, forKey: Self.reloadedKey)
+        } else if status != .enabled {
+            defaults.set(false, forKey: Self.reloadedKey)
+        }
+    }
+
+    // MARK: Block likely spam
+
+    /// Saves the switch and thresholds. Off: the block list is emptied and the extension reloaded at once. On, or
+    /// new thresholds: the lists are fetched again a moment later (a stepper tapped five times syncs once).
+    func setBlockSettings(_ new: CallerBlockSettings) {
+        loadSaved()
+        let settings = new.clamped
+        guard settings != blockSettings else { return }
+        let wasEnabled = blockSettings.enabled
+        blockSettings = settings
+        do { try writeSettings(settings) } catch { blockError = String(localized: "Couldn't save the setting: \(error.localizedDescription)") }
+        settingsTask?.cancel()
+        if !settings.enabled {
+            settingsTask = Task { await emptyBlockList() }
+        } else if api() != nil {
+            settingsTask = Task {
+                if wasEnabled { try? await Task.sleep(for: .seconds(1)) }
+                guard !Task.isCancelled else { return }
+                await sync()
+            }
+        }
+    }
+
+    /// Blocking off: the saved block list goes, the extension drops its blocking entries.
+    private func emptyBlockList() async {
+        guard var snapshot = readSaved(), !snapshot.block.isEmpty else {
+            blocked = []
+            return
+        }
+        snapshot.block = []
+        do {
+            try writeSaved(snapshot)
+            blocked = []
+            try await reloadIfNeeded(changed: true)
+            syncError = nil
+        } catch {
+            syncError = manager.reloadMessage(for: error)
+        }
+    }
+
+    nonisolated static func digits(_ number: String) -> String { number.filter(\.isNumber) }
+
+    /// Whether the thresholds would block this looked-up number: not a contact, not allowed, not invalid.
+    func wouldBlock(_ result: CallerResult) -> Bool {
+        guard !result.isInvalid, result.source != "contact", result.known?.contact == nil,
+              !allowed.contains(Self.digits(result.number)) else { return false }
+        return blockSettings.blocks(spam: result.spam, pickUp: result.pickUp)
+    }
+
+    func isAllowed(_ result: CallerResult) -> Bool { allowed.contains(Self.digits(result.number)) }
+
+    /// "Allow": the server never rejects or blocks this number again; the lists are fetched again and the
+    /// extension reloaded. `number` is `+4570405205` or any spelling the server reads.
+    func allow(_ number: String) async {
+        let key = Self.digits(number)
+        guard !key.isEmpty, !allowing.contains(key), let api = api() else { return }
+        allowing.insert(key)
+        defer { allowing.remove(key) }
+        blockError = nil
+        do {
+            let response = try await api.allow(number: number)
+            guard response.allowed else {
+                blockError = String(localized: "Couldn't allow this number.")
+                return
+            }
+            allowed.insert(key)
+            blocked.removeAll { String($0.number) == key }
+            // Looked-up cards pick up the new label too.
+            if let index = results.firstIndex(where: { Self.digits($0.number) == key }) {
+                var row = results[index]
+                row.label = String(localized: "Allowed")
+                results[index] = row
+            }
+            await sync()
+        } catch is CancellationError {
+            return
+        } catch {
+            let wrapped = APIError.wrap(error)
+            blockError = wrapped.userMessage
+            onTransportError?(wrapped)
+        }
     }
 
     #if DEBUG || SCREENSHOTS
@@ -172,6 +323,14 @@ final class CallersStore {
     /// Sign-out: the labels leave this iPhone too.
     func reset() {
         removeSaved()
+        removeSettings()
+        settingsTask?.cancel()
+        blockSettings = .standard
+        blocked = []
+        allowed = []
+        allowing = []
+        blockError = nil
+        loadedSaved = false
         defaults.removeObject(forKey: Self.lastSyncKey)
         defaults.removeObject(forKey: Self.countKey)
         defaults.removeObject(forKey: Self.reloadedKey)

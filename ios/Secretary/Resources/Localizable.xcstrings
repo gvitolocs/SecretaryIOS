@@ -1,6 +1,166 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Block likely spam" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Blocca probabile spam"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bloker sandsynlig spam"
+          }
+        }
+      }
+    },
+    "Spam at least %@" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spam almeno %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spam mindst %@"
+          }
+        }
+      }
+    },
+    "Pick up at most %@" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rispondere al massimo %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tag den højst %@"
+          }
+        }
+      }
+    },
+    "iOS can't decide while a call rings, so only numbers already above these limits are blocked. Contacts and numbers you allow never are." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "iOS non può decidere mentre una chiamata squilla, quindi si bloccano solo i numeri già oltre questi limiti. I contatti e i numeri che consenti non vengono mai bloccati."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "iOS kan ikke afgøre noget, mens et opkald ringer, så kun numre, der allerede er over disse grænser, blokeres. Kontakter og numre, du tillader, blokeres aldrig."
+          }
+        }
+      }
+    },
+    "Blocked" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bloccati"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Blokeret"
+          }
+        }
+      }
+    },
+    "No numbers are blocked." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nessun numero è bloccato."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ingen numre er blokeret."
+          }
+        }
+      }
+    },
+    "Allowed" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Consentito"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tilladt"
+          }
+        }
+      }
+    },
+    "Would be blocked" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Verrebbe bloccato"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ville blive blokeret"
+          }
+        }
+      }
+    },
+    "Couldn't save the setting: %@" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Impossibile salvare l'impostazione: %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kunne ikke gemme indstillingen: %@"
+          }
+        }
+      }
+    },
+    "Couldn't allow this number." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Impossibile consentire questo numero."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kunne ikke tillade dette nummer."
+          }
+        }
+      }
+    },
     "Who called?" : {
       "localizations" : {
         "it" : {

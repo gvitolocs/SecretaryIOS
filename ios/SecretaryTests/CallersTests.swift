@@ -168,7 +168,7 @@ final class CallersTests: XCTestCase {
         ])
         let data = CallerDirectoryList.encode(snapshot)
         let text = String(decoding: data, as: UTF8.self)
-        XCTAssertEqual(text, "SCD1\n2026-10-29T12:00:00Z\n2\n4570405205\tTelemarketing 86%\n35794095733\tLikely scam (0.93)\n")
+        XCTAssertEqual(text, "SCD2\n2026-10-29T12:00:00Z\n2\n0\n4570405205\tTelemarketing 86%\n35794095733\tLikely scam (0.93)\n")
         let back = try XCTUnwrap(CallerDirectoryList.decode(data))
         XCTAssertEqual(back.generatedAt, "2026-10-29T12:00:00Z")
         XCTAssertEqual(back.entries.map(\.number), [4_570_405_205, 35_794_095_733])
@@ -177,7 +177,7 @@ final class CallersTests: XCTestCase {
 
     func testEmptyFileRoundTrip() throws {
         let data = CallerDirectoryList.encode(CallerDirectorySnapshot(generatedAt: nil, entries: []))
-        XCTAssertEqual(String(decoding: data, as: UTF8.self), "SCD1\n-\n0\n")
+        XCTAssertEqual(String(decoding: data, as: UTF8.self), "SCD2\n-\n0\n0\n")
         let back = try XCTUnwrap(CallerDirectoryList.decode(data))
         XCTAssertNil(back.generatedAt)
         XCTAssertTrue(back.entries.isEmpty)
@@ -186,7 +186,7 @@ final class CallersTests: XCTestCase {
     func testDecodeRejectsDamagedFiles() {
         let good = "SCD1\n-\n2\n4570405205\tA\n4570405206\tB\n"
         XCTAssertNotNil(CallerDirectoryList.decode(Data(good.utf8)))
-        XCTAssertNil(CallerDirectoryList.decode(Data("SCD2\n-\n0\n".utf8)), "wrong version")
+        XCTAssertNil(CallerDirectoryList.decode(Data("SCD3\n-\n0\n0\n".utf8)), "wrong version")
         XCTAssertNil(CallerDirectoryList.decode(Data("SCD1\n-\n3\n4570405205\tA\n4570405206\tB\n".utf8)), "truncated: fewer lines than the count")
         XCTAssertNil(CallerDirectoryList.decode(Data("SCD1\n-\nx\n".utf8)), "bad count")
         XCTAssertNil(CallerDirectoryList.decode(Data("SCD1\n-\n1\nnot-a-number\tA\n".utf8)), "bad number")
@@ -284,6 +284,7 @@ final class CallersTests: XCTestCase {
         let directory: FakeDirectory
         let defaults: UserDefaults
         let saved: Saved
+        let settings: SavedSettings
     }
 
     final class Saved: @unchecked Sendable {
@@ -292,18 +293,28 @@ final class CallersTests: XCTestCase {
         var removed = false
     }
 
-    private func makeStore(status: CallerExtensionStatus = .enabled, signedIn: Bool = true) -> Harness {
+    final class SavedSettings: @unchecked Sendable {
+        var saved: CallerBlockSettings?
+        var removed = false
+    }
+
+    private func makeStore(status: CallerExtensionStatus = .enabled, signedIn: Bool = true,
+                           settings: CallerBlockSettings? = nil, saved initial: CallerDirectorySnapshot? = nil) -> Harness {
         let name = "callers-tests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!
         addTeardownBlock { defaults.removePersistentDomain(forName: name) }
         let directory = FakeDirectory()
         directory.status = status
         let saved = Saved()
+        saved.snapshot = initial
+        let box = SavedSettings()
+        box.saved = settings
         let client = StubURLProtocol.makeClient()
         let store = CallersStore(api: { signedIn ? CallersAPI(client: client) : nil }, manager: directory, defaults: defaults,
                                  readSaved: { saved.snapshot }, writeSaved: { saved.snapshot = $0; saved.writes += 1 },
-                                 removeSaved: { saved.snapshot = nil; saved.removed = true })
-        return Harness(store: store, directory: directory, defaults: defaults, saved: saved)
+                                 removeSaved: { saved.snapshot = nil; saved.removed = true },
+                                 readSettings: { box.saved }, writeSettings: { box.saved = $0 }, removeSettings: { box.saved = nil; box.removed = true })
+        return Harness(store: store, directory: directory, defaults: defaults, saved: saved, settings: box)
     }
 
     private func serveDirectory(_ json: String = CallersTests.directoryJSON) {
@@ -502,6 +513,255 @@ final class CallersTests: XCTestCase {
         XCTAssertNil(CallerText.kind("delivery"), "no delivery kind any more")
         XCTAssertNotNil(CallerText.kind("telemarketing"))
     }
+
+    // MARK: Block likely spam
+
+    nonisolated static let blockDirectoryJSON = """
+    {"generatedAt": "2026-10-29T12:00:00Z",
+     "entries": [{"number": 4570405205, "label": "Telemarketing 86%"}, {"number": 35794095733, "label": "Likely scam (0.93)"}],
+     "block": [35794095733, 4570405205, 4570405205, 5, "4520682758", "junk", null]}
+    """
+
+    func testDirectoryResponseDecodesTheBlockList() throws {
+        let response = try Fixtures.decode(CallerDirectoryResponse.self, Self.blockDirectoryJSON)
+        XCTAssertEqual(response.block, [35_794_095_733, 4_570_405_205, 4_570_405_205, 5, 4_520_682_758])
+        XCTAssertEqual(try Fixtures.decode(CallerDirectoryResponse.self, Self.directoryJSON).block, [], "without block=1 the list is empty")
+        XCTAssertEqual(try Fixtures.decode(CallerDirectoryResponse.self, #"{"entries":[],"block":[]}"#).block, [])
+    }
+
+    func testBlockListIsSortedUniqueAndValid() {
+        XCTAssertEqual(CallerDirectoryList.normalizeBlock([35_794_095_733, 4_570_405_205, 4_570_405_205, 5, 0, -4, 4_520_682_758]),
+                       [4_520_682_758, 4_570_405_205, 35_794_095_733])
+        XCTAssertEqual(CallerDirectoryList.normalizeBlock([]), [])
+        let many = (0 ..< CallerDirectoryList.maxEntries + 20).reversed().map { 4_500_000_000 + Int64($0) }
+        let capped = CallerDirectoryList.normalizeBlock(many)
+        XCTAssertEqual(capped.count, CallerDirectoryList.maxEntries)
+        XCTAssertEqual(capped.first, 4_500_000_000)
+    }
+
+    func testFileRoundTripKeepsTheBlockList() throws {
+        let snapshot = CallerDirectorySnapshot(generatedAt: "2026-10-29T12:00:00Z",
+                                               entries: [.init(number: 4_570_405_205, label: "Telemarketing 86%")],
+                                               block: [35_794_095_733, 4_570_405_205])
+        let data = CallerDirectoryList.encode(snapshot)
+        XCTAssertEqual(String(decoding: data, as: UTF8.self),
+                       "SCD2\n2026-10-29T12:00:00Z\n1\n2\n4570405205\tTelemarketing 86%\n4570405205\n35794095733\n")
+        let back = try XCTUnwrap(CallerDirectoryList.decode(data))
+        XCTAssertEqual(back.block, [4_570_405_205, 35_794_095_733])
+        XCTAssertEqual(back.entries.count, 1)
+    }
+
+    func testDecodeSortsAndChecksTheBlockSection() throws {
+        let messy = "SCD2\n-\n0\n4\n35794095733\n4570405205\n35794095733\n0\n"
+        XCTAssertEqual(CallerDirectoryList.decode(Data(messy.utf8))?.block, [4_570_405_205, 35_794_095_733])
+        XCTAssertNil(CallerDirectoryList.decode(Data("SCD2\n-\n0\n3\n4570405205\n".utf8)), "truncated block section")
+        XCTAssertNil(CallerDirectoryList.decode(Data("SCD2\n-\n0\nx\n".utf8)), "bad block count")
+        XCTAssertNil(CallerDirectoryList.decode(Data("SCD2\n-\n0\n1\nabc\n".utf8)), "bad block number")
+        // A list written before blocking existed still reads, with nothing to block.
+        XCTAssertEqual(CallerDirectoryList.decode(Data("SCD1\n-\n1\n4570405205\tA\n".utf8))?.block, [])
+    }
+
+    func testBlockSettingsDefaultsAndRule() {
+        let standard = CallerBlockSettings.standard
+        XCTAssertTrue(standard.enabled, "on by default")
+        XCTAssertEqual(standard.spamMin, 0.60)
+        XCTAssertEqual(standard.pickUpMax, 0.25)
+        XCTAssertTrue(standard.blocks(spam: 0.60, pickUp: 0.25), "the limits themselves are blocked")
+        XCTAssertTrue(standard.blocks(spam: 0.86, pickUp: 0.12))
+        XCTAssertFalse(standard.blocks(spam: 0.59, pickUp: 0.12))
+        XCTAssertFalse(standard.blocks(spam: 0.86, pickUp: 0.26))
+        XCTAssertFalse(standard.blocks(spam: nil, pickUp: 0.1))
+        XCTAssertFalse(standard.blocks(spam: 0.9, pickUp: nil))
+        var off = standard
+        off.enabled = false
+        XCTAssertFalse(off.blocks(spam: 0.99, pickUp: 0.01), "off blocks nothing")
+    }
+
+    func testBlockSettingsQueryAndClamping() {
+        let query = CallerBlockSettings.standard.directoryQuery
+        XCTAssertEqual(query.map { "\($0.name)=\($0.value ?? "")" }, ["block=1", "spam=0.60", "pickup=0.25"])
+        var custom = CallerBlockSettings(enabled: true, spamMin: 0.8, pickUpMax: 0.1)
+        XCTAssertEqual(custom.directoryQuery.map { $0.value }, ["1", "0.80", "0.10"])
+        custom.enabled = false
+        XCTAssertTrue(custom.directoryQuery.isEmpty, "off sends no block parameters")
+        let wild = CallerBlockSettings(enabled: true, spamMin: 7, pickUpMax: -1).clamped
+        XCTAssertEqual(wild.spamMin, 0.99)
+        XCTAssertEqual(wild.pickUpMax, 0.05)
+        XCTAssertEqual(CallerBlockSettings(enabled: true, spamMin: .nan, pickUpMax: 0.3).clamped.spamMin, 0.30)
+    }
+
+    func testBlockSettingsCoding() throws {
+        let data = try JSONEncoder().encode(CallerBlockSettings.standard)
+        XCTAssertEqual(try JSONDecoder().decode(CallerBlockSettings.self, from: data), .standard)
+        let partial = try JSONDecoder().decode(CallerBlockSettings.self, from: Data(#"{"enabled":false,"spamMin":0.7,"pickUpMax":0.2}"#.utf8))
+        XCTAssertEqual(partial, CallerBlockSettings(enabled: false, spamMin: 0.7, pickUpMax: 0.2))
+    }
+
+    func testAllowRequestEncodingAndResponse() throws {
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: APIClient.encoder.encode(CallerAllowRequest(number: "+4570405205"))) as? [String: Any])
+        XCTAssertEqual(object["number"] as? String, "+4570405205")
+        XCTAssertEqual(object.count, 1)
+        XCTAssertEqual(try Fixtures.decode(CallerAllowResponse.self, #"{"allowed":true}"#).allowed, true)
+    }
+
+    func testSyncAsksForTheBlockListAndSavesIt() async throws {
+        let h = makeStore()
+        var asked: URLRequest?
+        StubURLProtocol.handler = { request in
+            asked = request
+            return .init(body: CallersTests.blockDirectoryJSON)
+        }
+        await h.store.sync()
+        let url = try XCTUnwrap(asked?.url)
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.map { "\($0.name)=\($0.value ?? "")" }
+        XCTAssertEqual(items, ["block=1", "spam=0.60", "pickup=0.25"])
+        XCTAssertEqual(h.saved.snapshot?.block, [4_520_682_758, 4_570_405_205, 35_794_095_733])
+        XCTAssertEqual(h.store.blocked.map(\.number), [4_520_682_758, 4_570_405_205, 35_794_095_733])
+        XCTAssertEqual(h.store.blocked.map(\.label), [nil, "Telemarketing 86%", "Likely scam (0.93)"], "labels come from the entries")
+        XCTAssertEqual(h.store.blocked.first?.e164, "+4520682758")
+        XCTAssertEqual(h.directory.reloads, 1)
+    }
+
+    func testChangedBlockListReloadsEvenWhenLabelsDidNot() async {
+        let h = makeStore()
+        serveDirectory("""
+        {"generatedAt":"2026-10-29T12:00:00Z","entries":[{"number":4570405205,"label":"A"}],"block":[4570405205]}
+        """)
+        await h.store.sync()
+        await h.store.sync()
+        XCTAssertEqual(h.directory.reloads, 1)
+        serveDirectory("""
+        {"generatedAt":"2026-10-29T12:05:00Z","entries":[{"number":4570405205,"label":"A"}],"block":[4570405205,35794095733]}
+        """)
+        await h.store.sync()
+        XCTAssertEqual(h.directory.reloads, 2, "a new blocked number needs a reload")
+    }
+
+    func testSettingBlockingOffEmptiesTheListAndReloads() async throws {
+        let h = makeStore()
+        StubURLProtocol.handler = { _ in .init(body: CallersTests.blockDirectoryJSON) }
+        await h.store.sync()
+        XCTAssertEqual(h.saved.snapshot?.block.count, 3)
+        var settings = h.store.blockSettings
+        settings.enabled = false
+        h.store.setBlockSettings(settings)
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(h.saved.snapshot?.block, [], "the saved block list is emptied")
+        XCTAssertEqual(h.saved.snapshot?.entries.count, 2, "the labels stay")
+        XCTAssertTrue(h.store.blocked.isEmpty)
+        XCTAssertEqual(h.directory.reloads, 2)
+        XCTAssertEqual(h.settings.saved?.enabled, false)
+        // The next sync sends no block parameters and saves no block list.
+        var asked: URLRequest?
+        StubURLProtocol.handler = { request in
+            asked = request
+            return .init(body: CallersTests.blockDirectoryJSON)
+        }
+        await h.store.sync()
+        XCTAssertNil(asked?.url?.query)
+        XCTAssertEqual(h.saved.snapshot?.block, [])
+    }
+
+    func testSettingBlockingOnSyncsAtOnce() async throws {
+        let h = makeStore(settings: CallerBlockSettings(enabled: false, spamMin: 0.6, pickUpMax: 0.25))
+        StubURLProtocol.handler = { _ in .init(body: CallersTests.blockDirectoryJSON) }
+        h.store.loadSaved()
+        XCTAssertFalse(h.store.blockSettings.enabled)
+        h.store.setBlockSettings(CallerBlockSettings(enabled: true, spamMin: 0.7, pickUpMax: 0.2))
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(h.settings.saved, CallerBlockSettings(enabled: true, spamMin: 0.7, pickUpMax: 0.2))
+        let query = StubURLProtocol.requests.last?.url?.query
+        XCTAssertEqual(query, "block=1&spam=0.70&pickup=0.20")
+        XCTAssertEqual(h.saved.snapshot?.block.count, 3)
+    }
+
+    func testThresholdChangesAreDebounced() async throws {
+        let h = makeStore()
+        StubURLProtocol.handler = { _ in .init(body: CallersTests.blockDirectoryJSON) }
+        h.store.loadSaved()
+        for spam in [0.65, 0.70, 0.75] {
+            var next = h.store.blockSettings
+            next.spamMin = spam
+            h.store.setBlockSettings(next)
+        }
+        try await Task.sleep(for: .milliseconds(1700))
+        XCTAssertEqual(StubURLProtocol.requests.count, 1, "three taps, one sync")
+        XCTAssertEqual(StubURLProtocol.requests.last?.url?.query, "block=1&spam=0.75&pickup=0.25")
+    }
+
+    func testStartsFromSavedSettingsAndList() {
+        let h = makeStore(settings: CallerBlockSettings(enabled: true, spamMin: 0.8, pickUpMax: 0.15),
+                          saved: CallerDirectorySnapshot(generatedAt: nil, entries: [.init(number: 4_570_405_205, label: "A")], block: [4_570_405_205]))
+        XCTAssertEqual(h.store.blockSettings, .standard, "nothing is read before it is needed")
+        h.store.loadSaved()
+        XCTAssertEqual(h.store.blockSettings.spamMin, 0.8)
+        XCTAssertEqual(h.store.blocked, [CallerBlockedNumber(number: 4_570_405_205, label: "A")])
+    }
+
+    func testAllowSendsTheNumberThenResyncs() async throws {
+        let h = makeStore()
+        var calls: [String] = []
+        StubURLProtocol.handler = { request in
+            calls.append("\(request.httpMethod ?? "") \(request.url?.path ?? "")")
+            if request.url?.path == "/v1/callers/allow" {
+                let body = try? JSONSerialization.jsonObject(with: request.httpBody ?? Data()) as? [String: Any]
+                XCTAssertEqual(body?["number"] as? String, "+4570405205")
+                return .init(body: #"{"allowed":true}"#)
+            }
+            // After the allow the server no longer lists the number.
+            return .init(body: #"{"generatedAt":"2026-10-29T12:10:00Z","entries":[{"number":4570405205,"label":"Allowed"}],"block":[35794095733]}"#)
+        }
+        h.store.loadSaved()
+        await h.store.allow("+4570405205")
+        XCTAssertEqual(calls, ["POST /v1/callers/allow", "GET /v1/callers/directory"])
+        XCTAssertEqual(h.store.blocked.map(\.number), [35_794_095_733])
+        XCTAssertEqual(h.saved.snapshot?.block, [35_794_095_733])
+        XCTAssertEqual(h.saved.snapshot?.entries.first?.label, "Allowed")
+        XCTAssertEqual(h.directory.reloads, 1)
+        XCTAssertNil(h.store.blockError)
+        XCTAssertTrue(h.store.allowing.isEmpty)
+    }
+
+    func testAllowFailureIsShownAndNothingChanges() async {
+        let h = makeStore()
+        StubURLProtocol.handler = { _ in .init(status: 503, body: #"{"error":{"code":"callers_unavailable","message":"Lucina is down"}}"#) }
+        await h.store.allow("+4570405205")
+        XCTAssertNotNil(h.store.blockError)
+        XCTAssertEqual(StubURLProtocol.requests.count, 1, "no resync after a failed allow")
+        XCTAssertFalse(h.store.allowed.contains("4570405205"))
+        StubURLProtocol.handler = { _ in .init(body: #"{"allowed":false}"#) }
+        await h.store.allow("+4570405205")
+        XCTAssertNotNil(h.store.blockError)
+    }
+
+    func testWouldBlockFollowsTheThresholdsAndSkipsContacts() throws {
+        let h = makeStore()
+        let spam = CallerResult(number: "+4570405205", type: "mobile", spam: 0.86, pickUp: 0.12, source: "jev")
+        XCTAssertTrue(h.store.wouldBlock(spam))
+        XCTAssertFalse(h.store.wouldBlock(CallerResult(number: "+4570405205", spam: 0.86, pickUp: 0.5)))
+        XCTAssertFalse(h.store.wouldBlock(CallerResult(number: "+4570405205", spam: 0.5, pickUp: 0.1)))
+        XCTAssertFalse(h.store.wouldBlock(CallerResult(number: "+4570405205", type: "invalid", spam: 0.9, pickUp: 0.1)))
+        XCTAssertFalse(h.store.wouldBlock(CallerResult(number: "+4570405205", spam: 0.9, pickUp: 0.1, source: "contact")))
+        XCTAssertFalse(h.store.wouldBlock(CallerResult(number: "+4570405205", spam: 0.9, pickUp: 0.1, known: try Fixtures.decode(CallerResult.Known.self, #"{"contact":"Mum"}"#))))
+        var off = h.store.blockSettings
+        off.enabled = false
+        h.store.setBlockSettings(off)
+        XCTAssertFalse(h.store.wouldBlock(spam), "nothing would be blocked with the setting off")
+    }
+
+    func testResetForgetsTheBlockStateAndSettings() async throws {
+        let h = makeStore()
+        StubURLProtocol.handler = { _ in .init(body: CallersTests.blockDirectoryJSON) }
+        await h.store.sync()
+        var next = h.store.blockSettings
+        next.spamMin = 0.9
+        h.store.setBlockSettings(next)
+        h.store.reset()
+        XCTAssertTrue(h.store.blocked.isEmpty)
+        XCTAssertEqual(h.store.blockSettings, .standard)
+        XCTAssertTrue(h.settings.removed)
+    }
+
 }
 
 /// An error like the one iOS gives when the extension is off.

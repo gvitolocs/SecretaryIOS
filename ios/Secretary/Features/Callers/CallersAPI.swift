@@ -130,9 +130,24 @@ struct CallersAPI: Sendable {
         try await client.send("POST", "/v1/callers/screen", body: request, timeout: 30, idempotent: true)
     }
 
-    func directory() async throws -> CallerDirectoryResponse {
-        try await client.get("/v1/callers/directory", timeout: 30)
+    /// `block=1&spam=…&pickup=…` (from `CallerBlockSettings.directoryQuery`) asks for the blocking list too.
+    func directory(query: [URLQueryItem] = []) async throws -> CallerDirectoryResponse {
+        try await client.get("/v1/callers/directory", query: query, timeout: 30)
     }
+
+    /// The owner's "Allow": this number is never rejected or blocked again, and its label reads "Allowed".
+    func allow(number: String) async throws -> CallerAllowResponse {
+        try await client.send("POST", "/v1/callers/allow", body: CallerAllowRequest(number: number), timeout: 20, idempotent: true)
+    }
+}
+
+/// `POST /v1/callers/allow {number}` → `{allowed: true}`.
+struct CallerAllowRequest: Encodable, Equatable, Sendable {
+    var number: String
+}
+
+struct CallerAllowResponse: Decodable, Equatable, Sendable {
+    var allowed: Bool
 }
 
 /// What the owner types or pastes into the lookup field: one number or a list.

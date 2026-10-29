@@ -1281,5 +1281,15 @@
   "Freephone": ["Numero verde", "Gratisnummer"],
   "Premium rate": ["A tariffa maggiorata", "Betalingsnummer"],
   "Turn on caller labels in Settings first.": ["Prima attiva le etichette chiamate in Impostazioni.", "Slå først opkaldsetiketter til i Indstillinger."],
-  "Couldn't update the caller labels: %@": ["Impossibile aggiornare le etichette chiamate: %@", "Kunne ikke opdatere opkaldsetiketterne: %@"]
+  "Couldn't update the caller labels: %@": ["Impossibile aggiornare le etichette chiamate: %@", "Kunne ikke opdatere opkaldsetiketterne: %@"],
+  "Block likely spam": ["Blocca probabile spam", "Bloker sandsynlig spam"],
+  "Spam at least %@": ["Spam almeno %@", "Spam mindst %@"],
+  "Pick up at most %@": ["Rispondere al massimo %@", "Tag den højst %@"],
+  "iOS can't decide while a call rings, so only numbers already above these limits are blocked. Contacts and numbers you allow never are.": ["iOS non può decidere mentre una chiamata squilla, quindi si bloccano solo i numeri già oltre questi limiti. I contatti e i numeri che consenti non vengono mai bloccati.", "iOS kan ikke afgøre noget, mens et opkald ringer, så kun numre, der allerede er over disse grænser, blokeres. Kontakter og numre, du tillader, blokeres aldrig."],
+  "Blocked": ["Bloccati", "Blokeret"],
+  "No numbers are blocked.": ["Nessun numero è bloccato.", "Ingen numre er blokeret."],
+  "Allowed": ["Consentito", "Tilladt"],
+  "Would be blocked": ["Verrebbe bloccato", "Ville blive blokeret"],
+  "Couldn't save the setting: %@": ["Impossibile salvare l'impostazione: %@", "Kunne ikke gemme indstillingen: %@"],
+  "Couldn't allow this number.": ["Impossibile consentire questo numero.", "Kunne ikke tillade dette nummer."]
 }

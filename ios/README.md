@@ -209,3 +209,11 @@ Plugins → Who called?: caller screening with Jev (contract: `POST /v1/callers/
   the widgets and the app would then look in different places.
 - **Tests:** `SecretaryTests/CallersTests.swift`. `-SecretaryInitialTab callers` opens the screen and
   `-SecretaryCallersLookup "+45 70 40 52 05"` fills in and runs a lookup (SCREENSHOTS/DEBUG builds).
+- **Block likely spam** (on by default, owner 2026-10-29): iOS cannot decide while a call rings, so the blocking list holds only
+  numbers already above the owner's limits (spam ≥ 0.60 and pick-up ≤ 0.25 by default, steppers on the screen). With the setting on
+  the sync asks `GET /v1/callers/directory?block=1&spam=0.60&pickup=0.25`; the answer's `block` list is saved beside `entries`
+  (file format `SCD2`; `SCD1` still reads) and the extension adds it with `addBlockingEntry`, ascending, before the labels. The
+  switch and thresholds sit in the same shared store (`CallerBlockSettings`), so the extension never blocks with the switch off.
+  Off: the block list is emptied and the extension reloaded at once. The screen lists the blocked numbers (label from the entries)
+  with **Allow** (`POST /v1/callers/allow {number}`, then a new sync and reload); a looked-up number above the limits says "Would
+  be blocked" next to the same button. Contacts, allowed and invalid numbers are never listed by the server.

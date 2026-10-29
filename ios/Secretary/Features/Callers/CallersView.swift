@@ -14,8 +14,13 @@ struct CallersView: View {
                 lookupCard(store)
                 if let error = store.lookupError { ErrorBanner(message: error) }
                 ForEach(Array(store.results.enumerated()), id: \.offset) { _, result in
-                    CallerResultCard(result: result)
+                    CallerResultCard(result: result, wouldBlock: store.wouldBlock(result), allowed: store.isAllowed(result),
+                                     allowing: store.allowing.contains(CallersStore.digits(result.number))) {
+                        Task { await store.allow(result.number) }
+                    }
                 }
+                blockCard(store)
+                if store.blockSettings.enabled { blockedSection(store) }
                 if store.extensionStatus == .enabled { labelsCard(store) }
             }
             .padding(.horizontal, LucinaTokens.Space.gutter)
@@ -25,6 +30,7 @@ struct CallersView: View {
         .lucinaScreen("Who called?")
         .scrollDismissesKeyboard(.interactively)
         .task {
+            store.loadSaved()
             await store.refreshStatus()
             #if DEBUG || SCREENSHOTS
             // `-SecretaryCallersLookup "+45 70 40 52 05"`: fills the field and looks it up (screenshots, device tests).
@@ -69,6 +75,71 @@ struct CallersView: View {
                 }
                 .disabled(CallerNumbers.parse(store.input).isEmpty)
                 .accessibilityIdentifier("callersLookup")
+            }
+        }
+    }
+
+    /// "Block likely spam": the switch and the two thresholds.
+    private func blockCard(_ store: CallersStore) -> some View {
+        let settings = store.blockSettings
+        let binding = Binding(get: { store.blockSettings }, set: { store.setBlockSettings($0) })
+        return Card(spacing: LucinaTokens.Space.md) {
+            Toggle(isOn: Binding(get: { settings.enabled }, set: { on in var next = binding.wrappedValue; next.enabled = on; binding.wrappedValue = next })) {
+                Label("Block likely spam", systemImage: "nosign")
+                    .font(LucinaTokens.Fonts.headline)
+            }
+            .accessibilityIdentifier("callersBlockToggle")
+            if settings.enabled {
+                Stepper(value: Binding(get: { settings.spamMin }, set: { value in var next = binding.wrappedValue; next.spamMin = value; binding.wrappedValue = next }),
+                        in: CallerBlockSettings.spamRange, step: CallerBlockSettings.step) {
+                    Text("Spam at least \(CallerText.percent(settings.spamMin))").font(LucinaTokens.Fonts.callout)
+                }
+                .accessibilityIdentifier("callersSpamStepper")
+                Stepper(value: Binding(get: { settings.pickUpMax }, set: { value in var next = binding.wrappedValue; next.pickUpMax = value; binding.wrappedValue = next }),
+                        in: CallerBlockSettings.pickUpRange, step: CallerBlockSettings.step) {
+                    Text("Pick up at most \(CallerText.percent(settings.pickUpMax))").font(LucinaTokens.Fonts.callout)
+                }
+                .accessibilityIdentifier("callersPickUpStepper")
+            }
+            Text("iOS can't decide while a call rings, so only numbers already above these limits are blocked. Contacts and numbers you allow never are.")
+                .font(LucinaTokens.Fonts.caption2)
+                .foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let error = store.blockError { Text(error).font(LucinaTokens.Fonts.caption2).foregroundStyle(Theme.warning) }
+        }
+    }
+
+    /// The numbers iOS blocks now, each with Allow.
+    private func blockedSection(_ store: CallersStore) -> some View {
+        VStack(alignment: .leading, spacing: LucinaTokens.Space.sm) {
+            SectionHeader("Blocked")
+            if store.blocked.isEmpty {
+                Text("No numbers are blocked.")
+                    .font(LucinaTokens.Fonts.subheadline)
+                    .foregroundStyle(Theme.textSecondary)
+                    .accessibilityIdentifier("callersBlockedEmpty")
+            }
+            ForEach(store.blocked) { item in
+                Card(spacing: LucinaTokens.Space.sm) {
+                    HStack(alignment: .center, spacing: LucinaTokens.Space.md) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(verbatim: item.display)
+                                .font(LucinaTokens.Fonts.headline.monospacedDigit())
+                                .foregroundStyle(Theme.text)
+                            if let label = item.label {
+                                Text(verbatim: label)
+                                    .font(LucinaTokens.Fonts.subheadline)
+                                    .foregroundStyle(Theme.negative)
+                            }
+                        }
+                        Spacer(minLength: 8)
+                        AllowButton(busy: store.allowing.contains(CallersStore.digits(item.e164))) {
+                            Task { await store.allow(item.e164) }
+                        }
+                    }
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("callerBlocked")
             }
         }
     }
@@ -160,6 +231,12 @@ extension CallerExtensionStatus {
 /// One screened number: the number, Jev's label, the odds, why, and where the verdict came from.
 struct CallerResultCard: View {
     let result: CallerResult
+    /// Above the owner's thresholds with "Block likely spam" on: iOS would block this number.
+    var wouldBlock = false
+    /// The owner allowed it (this session).
+    var allowed = false
+    var allowing = false
+    var onAllow: () -> Void = {}
 
     var body: some View {
         Card(spacing: LucinaTokens.Space.sm) {
@@ -201,6 +278,22 @@ struct CallerResultCard: View {
                     Text("Contact: \(contact)").font(LucinaTokens.Fonts.callout).foregroundStyle(Theme.text)
                 }
             }
+            if wouldBlock || allowed {
+                HStack(spacing: LucinaTokens.Space.md) {
+                    if allowed {
+                        Label("Allowed", systemImage: "checkmark.circle.fill")
+                            .font(LucinaTokens.Fonts.subheadline.weight(.semibold))
+                            .foregroundStyle(Theme.positive)
+                    } else {
+                        Label("Would be blocked", systemImage: "nosign")
+                            .font(LucinaTokens.Fonts.subheadline.weight(.semibold))
+                            .foregroundStyle(Theme.negative)
+                            .accessibilityIdentifier("callerWouldBlock")
+                        Spacer(minLength: 8)
+                        AllowButton(busy: allowing, action: onAllow)
+                    }
+                }
+            }
             if !result.reasons.isEmpty {
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(Array(result.reasons.enumerated()), id: \.offset) { _, reason in
@@ -225,7 +318,7 @@ struct CallerResultCard: View {
                 }
             }
         }
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("callerResult")
     }
 }
@@ -236,5 +329,25 @@ extension CallerText {
         if spam >= 0.7 { return Theme.negative }
         if spam >= 0.4 { return Theme.warning }
         return Theme.positive
+    }
+}
+
+/// "Allow": never block or reject this number again.
+struct AllowButton: View {
+    let busy: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            if busy {
+                ProgressView()
+            } else {
+                Label("Allow", systemImage: "checkmark")
+                    .lineLimit(1)
+            }
+        }
+        .buttonStyle(.bordered)
+        .disabled(busy)
+        .accessibilityIdentifier("callerAllow")
     }
 }

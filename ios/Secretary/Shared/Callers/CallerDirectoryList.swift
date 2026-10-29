@@ -15,12 +15,15 @@ struct CallerDirectoryEntry: Equatable, Hashable, Sendable {
 struct CallerDirectoryResponse: Decodable, Equatable, Sendable {
     var generatedAt: String?
     var entries: [CallerDirectoryEntry]
+    /// Numbers to block (`?block=1` only): already above the owner's thresholds, ascending. Empty without `block=1`.
+    var block: [Int64]
 
-    private enum CodingKeys: String, CodingKey { case generatedAt, entries }
+    private enum CodingKeys: String, CodingKey { case generatedAt, entries, block }
 
-    init(generatedAt: String?, entries: [CallerDirectoryEntry]) {
+    init(generatedAt: String?, entries: [CallerDirectoryEntry], block: [Int64] = []) {
         self.generatedAt = generatedAt
         self.entries = entries
+        self.block = block
     }
 
     init(from decoder: Decoder) throws {
@@ -36,6 +39,19 @@ struct CallerDirectoryResponse: Decodable, Equatable, Sendable {
             }
         }
         self.entries = entries
+        var numbers: [Int64] = []
+        if var blocked = try? container.nestedUnkeyedContainer(forKey: .block) {
+            while !blocked.isAtEnd {
+                if let number = try? blocked.decode(Int64.self) {
+                    numbers.append(number)
+                } else if let text = try? blocked.decode(String.self), let number = Int64(text) {
+                    numbers.append(number)
+                } else {
+                    _ = try? blocked.decode(Skip.self)
+                }
+            }
+        }
+        block = numbers
     }
 
     /// When the server built the list.
@@ -68,6 +84,8 @@ struct CallerDirectoryResponse: Decodable, Equatable, Sendable {
 struct CallerDirectorySnapshot: Equatable, Sendable {
     var generatedAt: String?
     var entries: [CallerDirectoryEntry]
+    /// Numbers iOS blocks (Call Directory blocking entries). Empty when the owner turned blocking off.
+    var block: [Int64] = []
 }
 
 enum CallerDirectoryList {
@@ -113,32 +131,49 @@ enum CallerDirectoryList {
         return kept.count > maxEntries ? Array(kept.prefix(maxEntries)) : kept
     }
 
+    /// Blocking numbers for CallKit: valid, strictly ascending, unique, at most `maxEntries` (the lowest).
+    static func normalizeBlock(_ numbers: [Int64]) -> [Int64] {
+        let kept = Set(numbers.filter { numberRange.contains($0) }).sorted()
+        return kept.count > maxEntries ? Array(kept.prefix(maxEntries)) : kept
+    }
+
     // MARK: File format
     //
-    //   SCD1
+    //   SCD2
     //   <generatedAt, or "-">
     //   <entry count>
-    //   <number><TAB><label>      one per line, ascending
+    //   <block count>
+    //   <number><TAB><label>      one per entry, ascending
+    //   <number>                  one per blocked number, ascending
     //
     // Plain text keeps the extension's parse loop trivial and the file readable when something goes wrong.
+    // SCD1 (labels only, no block count) is still read.
 
-    static let magic = "SCD1"
+    static let magic = "SCD2"
+    static let legacyMagic = "SCD1"
 
     static func encode(_ snapshot: CallerDirectorySnapshot) -> Data {
         let entries = normalize(snapshot.entries)
+        let block = normalizeBlock(snapshot.block)
         let stamp = cleanLabel(snapshot.generatedAt ?? "")
-        var text = "\(magic)\n\(stamp.isEmpty ? "-" : stamp)\n\(entries.count)\n"
+        var text = "\(magic)\n\(stamp.isEmpty ? "-" : stamp)\n\(entries.count)\n\(block.count)\n"
         for entry in entries { text += "\(entry.number)\t\(entry.label)\n" }
+        for number in block { text += "\(number)\n" }
         return Data(text.utf8)
     }
 
     /// The saved list, or nil when the data is not a list this version wrote (wrong header, truncated, garbled).
-    /// The entries are normalized again: the extension must never hand CallKit an unsorted list.
+    /// Everything is normalized again: the extension must never hand CallKit an unsorted list.
     static func decode(_ data: Data) -> CallerDirectorySnapshot? {
         guard let text = String(data: data, encoding: .utf8) else { return nil }
         var lines = text.split(separator: "\n", omittingEmptySubsequences: false).makeIterator()
-        guard lines.next() == Substring(magic), let generated = lines.next(), let countLine = lines.next(),
-              let count = Int(countLine), count >= 0 else { return nil }
+        guard let header = lines.next(), header == Substring(magic) || header == Substring(legacyMagic),
+              let generated = lines.next(), let countLine = lines.next(), let count = Int(countLine), count >= 0 else { return nil }
+        var blockCount = 0
+        if header == Substring(magic) {
+            guard let line = lines.next(), let value = Int(line), value >= 0 else { return nil }
+            blockCount = value
+        }
         var entries: [CallerDirectoryEntry] = []
         entries.reserveCapacity(min(count, maxEntries))
         for _ in 0 ..< count {
@@ -146,7 +181,14 @@ enum CallerDirectoryList {
                   let number = Int64(line[line.startIndex ..< tab]) else { return nil }
             entries.append(CallerDirectoryEntry(number: number, label: String(line[line.index(after: tab)...])))
         }
-        return CallerDirectorySnapshot(generatedAt: generated == "-" ? nil : String(generated), entries: normalize(entries))
+        var block: [Int64] = []
+        block.reserveCapacity(min(blockCount, maxEntries))
+        for _ in 0 ..< blockCount {
+            guard let line = lines.next(), let number = Int64(line) else { return nil }
+            block.append(number)
+        }
+        return CallerDirectorySnapshot(generatedAt: generated == "-" ? nil : String(generated), entries: normalize(entries),
+                                       block: normalizeBlock(block))
     }
 
     // MARK: Dates
