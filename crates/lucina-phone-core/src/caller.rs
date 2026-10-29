@@ -1118,8 +1118,10 @@ mod tests {
         assert!(t.starts_with("| Number | Spam | Kind | Pick up |\n|---|---|---|---|\n"));
         assert!(t.contains("| +45 70 40 52 05 | 0.86 | telemarketing 0.81 | 0.12 |"));
         assert!(t.contains("Source: Jev (TypeSafe)"));
-        assert!(table(&[a.clone()], "it").contains("| Numero | Spam | Tipo | Rispondere |"));
-        assert!(table(&[a.clone()], "da")
+        assert!(
+            table(std::slice::from_ref(&a), "it").contains("| Numero | Spam | Tipo | Rispondere |")
+        );
+        assert!(table(std::slice::from_ref(&a), "da")
             .contains("| +45 70 40 52 05 | 0,86 | telemarketing 0,81 | 0,12 |"));
         let d = directory(&[b, a]);
         assert_eq!(
