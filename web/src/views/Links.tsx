@@ -839,6 +839,7 @@ function ProposalRow(props: {
           <>
             {when()} {props.p.event.location} ·{" "}
             {t("links.proposalFrom", { from: props.p.from })}
+            <Show when={props.p.reason}>{(r) => <> · {r()}</>}</Show>
           </>
         }
         trailing={
@@ -870,6 +871,9 @@ function ProposalRow(props: {
           <span class="muted small">
             {t("links.proposalFrom", { from: props.p.from })}
           </span>
+          <Show when={props.p.reason}>
+            {(r) => <span class="muted small">{r()}</span>}
+          </Show>
         </div>
         <div class="link-actions">
           <button

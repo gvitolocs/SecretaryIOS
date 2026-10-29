@@ -73,6 +73,8 @@ export interface Proposal {
   from: string;
   createdAt: string;
   expiresAtMs: number;
+  /** Why it is a proposal: Lucina's direct create for the owner failed. */
+  reason?: string;
 }
 
 export interface LinksOverview {
