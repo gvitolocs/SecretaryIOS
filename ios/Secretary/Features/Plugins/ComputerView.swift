@@ -11,6 +11,12 @@ import WebKit
 // closes. Lucina logs every takeover and input batch. The web plugin (/computer) has the same controls
 // plus a screenshot mode. The screen shows "Connecting to her screen…" until Cua's status dot says
 // `streaming` (read by a user script in an isolated content world).
+//
+// Views live in Lucina's memory: when she restarts (a deploy) or the phone was in the background, the view
+// is gone and Cua's viewer can only report that it "could not be re-attached". So a dropped, closed or
+// stalled stream opens a fresh view by itself, with backoff (1, 2, 4, 8, 16 s), and so does coming back
+// to the foreground. While it does, our overlay covers Cua's page completely: one message, in the app's
+// language. "Her screen didn't load" + Try again appears only after the fifth failed try.
 
 struct ComputerControl: Decodable, Equatable, Sendable {
     struct Owner: Decodable, Equatable, Sendable { let device: String }
@@ -70,6 +76,17 @@ struct LucinaComputerView: View {
     @State private var notice: String?
     @State private var busy = false
     @State private var confirmTake = false
+    /// Fresh views opened in a row without reaching `streaming`.
+    @State private var failures = 0
+    /// After `maxRetries` failures: show the error and Try again.
+    @State private var gaveUp = false
+    @State private var reconnect: Task<Void, Never>?
+    /// When the current view was opened (a stream still not live 20 s later is treated as dropped).
+    @State private var openedAt = Date.distantPast
+    @Environment(\.scenePhase) private var scenePhase
+
+    static let maxRetries = 5
+    static let connectTimeout: TimeInterval = 20
 
     var body: some View {
         ScrollView {
@@ -135,7 +152,7 @@ struct LucinaComputerView: View {
                 ZStack {
                     Color.black
                     if let viewURL {
-                        ComputerWebView(url: viewURL, onState: { stream = $0 })
+                        ComputerWebView(url: viewURL, onState: { streamChanged($0) })
                             .accessibilityLabel(Text("Lucina's screen"))
                     }
                     streamOverlay
@@ -173,11 +190,23 @@ struct LucinaComputerView: View {
                 await refresh()
                 if mine, tick % 5 == 4 { await heartbeat() }
                 if Date() > viewExpires { await openView(mode: mine ? "control" : "watch") }
+                // Connected but never streaming (the socket hangs): count it as a drop.
+                if viewURL != nil, stream != "streaming", reconnect == nil, !gaveUp,
+                   Date().timeIntervalSince(openedAt) > Self.connectTimeout {
+                    scheduleReconnect()
+                }
                 tick += 1
                 try? await Task.sleep(for: .seconds(3))
             }
         }
+        // Back from the background: the socket is gone (iOS suspends it), so open a fresh view at once.
+        .onChange(of: scenePhase) { old, phase in
+            guard phase == .active, old == .background, viewURL != nil else { return }
+            restartReconnecting()
+        }
         .onDisappear {
+            reconnect?.cancel()
+            reconnect = nil
             if mine {
                 let api = app.api, sb = sandbox
                 Task { _ = try? await api.computerControl(sb, action: "release") }
@@ -190,34 +219,78 @@ struct LucinaComputerView: View {
             if viewURL == nil {
                 if error == nil { ProgressView().tint(.white) }
             } else if stream != "streaming" {
-                if stream == "failed" || stream == "closed" {
-                    VStack(spacing: LucinaTokens.Space.sm) {
-                        Text("Her screen didn't load.")
+                // Opaque: Cua's own connecting and error screens never show through (one message, the app's language).
+                ZStack {
+                    Color.black
+                    if gaveUp {
+                        VStack(spacing: LucinaTokens.Space.sm) {
+                            Text("Her screen didn't load.")
+                                .font(LucinaTokens.Fonts.footnote)
+                                .foregroundStyle(.white.opacity(0.8))
+                            Button("Try again") { restartReconnecting() }
+                                .buttonStyle(.bordered)
+                        }
+                    } else {
+                        VStack(spacing: LucinaTokens.Space.sm) {
+                            ProgressView().tint(.white)
+                            Group {
+                                if failures > 0 || stream == "reconnecting" {
+                                    Text("Reconnecting…")
+                                } else {
+                                    Text("Connecting to her screen…")
+                                }
+                            }
                             .font(LucinaTokens.Fonts.footnote)
                             .foregroundStyle(.white.opacity(0.8))
-                        Button("Try again") {
-                            Task { await openView(mode: mine ? "control" : "watch") }
                         }
-                        .buttonStyle(.bordered)
+                        .allowsHitTesting(false)
                     }
-                } else {
-                    VStack(spacing: LucinaTokens.Space.sm) {
-                        ProgressView().tint(.white)
-                        Group {
-                            if stream == "reconnecting" {
-                                Text("Reconnecting…")
-                            } else {
-                                Text("Connecting to her screen…")
-                            }
-                        }
-                        .font(LucinaTokens.Fonts.footnote)
-                        .foregroundStyle(.white.opacity(0.8))
-                    }
-                    .allowsHitTesting(false)
                 }
             }
         }
         .accessibilityElement(children: .combine)
+    }
+
+    /// Cua's status dot changed.
+    private func streamChanged(_ state: String) {
+        stream = state
+        switch state {
+        case "streaming":
+            failures = 0
+            gaveUp = false
+            reconnect?.cancel()
+            reconnect = nil
+        case "failed", "closed":
+            scheduleReconnect()
+        default:
+            break
+        }
+    }
+
+    /// A fresh view after a short wait; the wait doubles with each failure in a row, and the fifth gives up.
+    private func scheduleReconnect() {
+        guard reconnect == nil, !gaveUp else { return }
+        failures += 1
+        guard failures <= Self.maxRetries else {
+            gaveUp = true
+            return
+        }
+        let delay = Double(1 << (failures - 1))
+        reconnect = Task {
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else { return }
+            await openView(mode: mine ? "control" : "watch")
+            reconnect = nil
+        }
+    }
+
+    /// Try again, or back from the background: start over with a fresh view now.
+    private func restartReconnecting() {
+        reconnect?.cancel()
+        reconnect = nil
+        failures = 0
+        gaveUp = false
+        Task { await openView(mode: mine ? "control" : "watch") }
     }
 
     private var driverLabel: String {
@@ -265,6 +338,7 @@ struct LucinaComputerView: View {
         do {
             let ticket = try await app.api.computerView(sandbox, mode: mode)
             stream = ""
+            openedAt = Date()
             viewURL = app.api.computerViewURL(ticket)
             viewExpires = Date().addingTimeInterval(TimeInterval(max(ticket.ttlSecs - 60, 30)))
         } catch {
