@@ -24,6 +24,7 @@ struct OwnerData {
 pub struct Store {
     path: PathBuf,
     data: Mutex<OwnerData>,
+    settings: Mutex<Settings>,
 }
 
 impl Store {
@@ -41,10 +42,58 @@ impl Store {
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
+        let settings = match std::fs::read(dir.join("settings.json")) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(std::io::Error::other)?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Settings::default(),
+            Err(e) => return Err(e),
+        };
         Ok(Store {
+            settings: Mutex::new(settings),
             path,
             data: Mutex::new(data),
         })
+    }
+
+    pub fn settings(&self) -> Settings {
+        self.settings.lock().unwrap().clone()
+    }
+
+    pub fn update_settings(&self, patch: &serde_json::Value) -> Result<Settings, SettingsError> {
+        let fields = patch.as_object().ok_or(SettingsError::Invalid)?;
+        let mut slot = self.settings.lock().unwrap();
+        let mut next = slot.clone();
+        for (key, value) in fields {
+            let s = value.as_str().ok_or(SettingsError::Invalid)?;
+            match key.as_str() {
+                "defaultContent" if matches!(s, "safe" | "all" | "r18") => {
+                    next.default_content = s.into()
+                }
+                "defaultSort" if matches!(s, "date_d" | "popular") => next.default_sort = s.into(),
+                _ => return Err(SettingsError::Invalid),
+            }
+        }
+        let path = self.path.parent().unwrap().join("settings.json");
+        let tmp = path.with_extension("tmp");
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let result = (|| -> std::io::Result<()> {
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&tmp)?;
+            file.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+            file.write_all(&serde_json::to_vec(&next)?)?;
+            file.sync_all()?;
+            std::fs::rename(&tmp, &path)
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(SettingsError::Io);
+        }
+        *slot = next.clone();
+        Ok(next)
     }
 
     fn save(&self, data: &OwnerData) {
@@ -146,4 +195,24 @@ mod tests {
             assert_eq!(mode & 0o777, 0o600);
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Settings {
+    pub default_content: String,
+    pub default_sort: String,
+}
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            default_content: "safe".into(),
+            default_sort: "date_d".into(),
+        }
+    }
+}
+#[derive(Debug)]
+pub enum SettingsError {
+    Invalid,
+    Io,
 }

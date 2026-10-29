@@ -13,3 +13,8 @@ pub mod model;
 pub mod service;
 pub mod store;
 pub mod upstream;
+
+pub mod app_api;
+pub mod broker;
+pub mod connection;
+pub mod oauth;

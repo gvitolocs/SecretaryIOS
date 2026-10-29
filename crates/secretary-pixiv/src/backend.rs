@@ -7,6 +7,9 @@
 use serde_json::Value;
 
 pub trait Backend: Send + Sync + 'static {
+    fn connection(&self) -> Option<&std::sync::Arc<crate::connection::Connection>> {
+        None
+    }
     fn ranking(&self, mode: &str, page: u32) -> Result<Value, String>;
     /// `args` are the core's CLI-style arguments: the words, then `--order X --mode X ...`.
     fn search(&self, args: &[String]) -> Result<Value, String>;
@@ -17,22 +20,15 @@ pub trait Backend: Send + Sync + 'static {
     fn has_session(&self) -> bool;
 }
 
-pub struct CoreBackend {
-    client: pixiv::api::PixivClient,
-    session: bool,
-}
-
+/// Anonymous core adapter. Construct and drop the core's blocking client on the worker.
+/// A blocking reqwest client owns a runtime and cannot be created/dropped on an async worker.
+pub struct CoreBackend;
 impl CoreBackend {
-    /// `session`: the pixiv.net `PHPSESSID` value; `None` or blank is anonymous.
-    pub fn new(session: Option<String>) -> CoreBackend {
-        let session = session.filter(|s| !s.trim().is_empty());
-        let mut client = pixiv::api::PixivClient::new(String::new());
-        let has = session.is_some();
-        client.set_session(session);
-        CoreBackend {
-            client,
-            session: has,
-        }
+    pub fn new(_session: Option<String>) -> Self {
+        Self
+    }
+    fn client(&self) -> pixiv::api::PixivClient {
+        pixiv::api::PixivClient::new(String::new())
     }
 }
 
@@ -44,19 +40,65 @@ impl Default for CoreBackend {
 
 impl Backend for CoreBackend {
     fn ranking(&self, mode: &str, page: u32) -> Result<Value, String> {
-        self.client.ranking(mode, page)
+        self.client().ranking(mode, page)
     }
     fn search(&self, args: &[String]) -> Result<Value, String> {
-        self.client.search(args)
+        self.client().search(args)
     }
     fn illust(&self, id: &str) -> Result<Value, String> {
-        self.client.illust(id)
+        self.client().illust(id)
     }
     fn self_status(&self) -> Result<Value, String> {
-        self.client.self_status()
+        self.client().self_status()
     }
     fn has_session(&self) -> bool {
-        self.session
+        false
+    }
+}
+
+/// Anonymous web API or the connected App API, sharing exactly the HTTP connection.
+pub struct SwitchBackend {
+    anonymous: CoreBackend,
+    app: crate::app_api::AppBackend,
+    connection: std::sync::Arc<crate::connection::Connection>,
+}
+impl SwitchBackend {
+    pub fn new(
+        connection: std::sync::Arc<crate::connection::Connection>,
+        app_base: String,
+    ) -> Self {
+        Self {
+            anonymous: CoreBackend::new(None),
+            app: crate::app_api::AppBackend::new(connection.clone(), app_base),
+            connection,
+        }
+    }
+    fn active(&self) -> &dyn Backend {
+        if self.connection.connected() {
+            &self.app
+        } else {
+            &self.anonymous
+        }
+    }
+}
+impl Backend for SwitchBackend {
+    fn connection(&self) -> Option<&std::sync::Arc<crate::connection::Connection>> {
+        Some(&self.connection)
+    }
+    fn ranking(&self, mode: &str, page: u32) -> Result<Value, String> {
+        self.active().ranking(mode, page)
+    }
+    fn search(&self, args: &[String]) -> Result<Value, String> {
+        self.active().search(args)
+    }
+    fn illust(&self, id: &str) -> Result<Value, String> {
+        self.active().illust(id)
+    }
+    fn has_session(&self) -> bool {
+        self.connection.has_session()
+    }
+    fn self_status(&self) -> Result<Value, String> {
+        self.app.self_status()
     }
 }
 
@@ -108,7 +150,10 @@ mod tests {
 
     #[test]
     fn classifies_core_errors() {
-        assert_eq!(classify("HTTP 429 Too Many Requests: slow"), Fail::RateLimited);
+        assert_eq!(
+            classify("HTTP 429 Too Many Requests: slow"),
+            Fail::RateLimited
+        );
         assert_eq!(classify("HTTP 404 Not Found: x"), Fail::NotFound);
         assert_eq!(classify("HTTP 503 Service Unavailable: x"), Fail::Transient);
         assert_eq!(classify("HTTP 403 Forbidden: x"), Fail::Other);
