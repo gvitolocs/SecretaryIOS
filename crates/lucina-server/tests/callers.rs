@@ -175,3 +175,78 @@ async fn the_public_page_is_read_first_and_quoted() {
         assert!(reply.contains(s), "{s} missing: {reply}");
     }
 }
+
+#[tokio::test]
+async fn rejections_allow_and_the_block_list() {
+    let h = harness(script(json!({"rules": []})), |c| c.callers_enabled = true).await;
+    // A reported number (the fake 180.dk is off here, so seed it through the store).
+    let store = h.state.tool_env.callers.clone().unwrap();
+    let (s, b) = h
+        .post("/callers/screen", json!({"numbers": ["+45 70 40 52 05"]}))
+        .await;
+    assert_eq!(s, 200, "{b}");
+    // Rules without report facts never block.
+    let (_, b) = h.get("/callers/directory?block=1").await;
+    assert_eq!(b["data"]["block"], json!([]), "{b}");
+    assert_eq!(b["data"]["entries"][0]["number"], 4570405205_i64, "{b}");
+
+    let (s, b) = h
+        .post(
+            "/callers/rejected",
+            json!({"number": "+45 70 40 52 20", "line": "Rejected likely telemarketer +45 70 40 52 20 · 180.dk 1 reports",
+                   "spam": 0.82, "pickUp": 0.11, "sources": "180.dk 1 reports", "source": "android"}),
+        )
+        .await;
+    assert_eq!(
+        (s, b["data"]["recorded"].clone()),
+        (200, json!(true)),
+        "{b}"
+    );
+    assert_eq!(
+        store
+            .rejections_since(chrono::Utc::now() - chrono::Duration::hours(1))
+            .len(),
+        1
+    );
+    for bad in [
+        json!({"number": "x", "line": "l", "source": "android"}),
+        json!({"number": "+4570405220", "line": "", "source": "android"}),
+        json!({"number": "+4570405220", "line": "l", "source": "pager"}),
+        json!({"number": "+4570405220", "line": "l", "source": "android", "spam": 2.0}),
+    ] {
+        let (s, b) = h.post("/callers/rejected", bad.clone()).await;
+        assert_eq!(s, 400, "{bad} → {b}");
+    }
+
+    let (s, b) = h
+        .post("/callers/allow", json!({"number": "70 40 52 05"}))
+        .await;
+    assert_eq!(
+        (s, b["data"]["number"].clone()),
+        (200, json!("+4570405205")),
+        "{b}"
+    );
+    let (_, b) = h
+        .get("/callers/directory?block=1&spam=0.5&pickup=0.3")
+        .await;
+    assert_eq!(b["data"]["entries"][0]["label"], "Allowed", "{b}");
+    let (s, _) = h.get("/callers/directory?block=1&spam=2").await;
+    assert_eq!(s, 400);
+    let (s, _) = h.post("/callers/allow", json!({"number": "hello"})).await;
+    assert_eq!(s, 400);
+
+    // "allow <number>" in chat.
+    let d = h.chat("allow +45 20 68 27 58").await;
+    assert_eq!(d["action"], "caller_screen", "{d}");
+    assert!(
+        d["reply"]
+            .as_str()
+            .unwrap()
+            .contains("+45 20 68 27 58 is allowed"),
+        "{d}"
+    );
+    assert_eq!(
+        store.known("+4520682758").owner_label.as_deref(),
+        Some("Allowed")
+    );
+}

@@ -225,6 +225,12 @@ pub struct Config {
     /// `LUCINA_CALLERS_PUBLIC_URL` (default `https://www.180.dk`; `off` disables): the public
     /// caller-ID pages read before Jev decides.
     pub callers_public_url: Option<String>,
+    /// `IPQS_API_KEY`: IPQualityScore's phone reputation API (the owner's key, via Infisical).
+    pub callers_ipqs_key: Option<String>,
+    /// `TELLOWS_PARTNER` + `TELLOWS_APIKEY`: tellows' partner Scorelist for Denmark.
+    pub callers_tellows: Option<(String, String)>,
+    /// `LUCINA_CALLERS_DIGEST_HOUR` (default 21, local; `off` disables): the rejected-calls digest in chat.
+    pub callers_digest_hour: Option<u32>,
 }
 
 impl std::fmt::Debug for Config {
@@ -565,6 +571,20 @@ impl Config {
                 Some(v) if matches!(v.trim().to_ascii_lowercase().as_str(), "off" | "false" | "0" | "no" | "") => None,
                 Some(v) => Some(v.trim().trim_end_matches('/').to_owned()),
                 None => Some(lucina_tools::tools::callers::PUBLIC_BASE.to_owned()),
+            },
+            callers_ipqs_key: get("IPQS_API_KEY")
+                .map(|k| k.trim().to_owned())
+                .filter(|k| !k.is_empty()),
+            callers_tellows: match (get("TELLOWS_PARTNER"), get("TELLOWS_APIKEY")) {
+                (Some(p), Some(k)) if !p.trim().is_empty() && !k.trim().is_empty() => {
+                    Some((p.trim().to_owned(), k.trim().to_owned()))
+                }
+                _ => None,
+            },
+            callers_digest_hour: match get("LUCINA_CALLERS_DIGEST_HOUR") {
+                Some(v) if matches!(v.trim().to_ascii_lowercase().as_str(), "off" | "false" | "no" | "") => None,
+                Some(v) => v.trim().parse().ok().filter(|h: &u32| *h < 24).or(Some(21)),
+                None => Some(21),
             },
             callers_enabled: !get("LUCINA_CALLERS").is_some_and(|v| {
                 matches!(

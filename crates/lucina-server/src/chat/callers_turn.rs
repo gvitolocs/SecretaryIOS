@@ -80,6 +80,18 @@ async fn jev_says_lookup(text: &str) -> bool {
     p >= min
 }
 
+/// "allow +45 …" / "tillad …" / "consenti …": the owner allows a number the phone rejected.
+pub fn allow_request(text: &str) -> Option<caller::Number> {
+    static R: OnceLock<Regex> = OnceLock::new();
+    if !rx(&R, r"(?i)^\s*(?:please\s+)?(?:allow|unblock|whitelist|tillad|fjern\s+blokering\s+af|consenti|permetti|sblocca)\b").is_match(text) {
+        return None;
+    }
+    let found = caller::find_numbers(text);
+    (found.len() == 1)
+        .then(|| found.into_iter().next())
+        .flatten()
+}
+
 /// Should this message be a caller screen? (Jev only for the unclear ones.)
 pub async fn routes(text: &str) -> bool {
     if caller::find_numbers(text).is_empty()
@@ -154,6 +166,30 @@ pub(super) async fn try_turn(t: &Turn<'_>, _memory: &str) -> Option<Finish> {
         return None;
     }
     let text = t.message.as_str();
+    if let Some(n) = allow_request(text) {
+        // The verb says the language ("allow" / "tillad" / "consenti"); short commands fool the detector.
+        let verb = text.trim_start().to_lowercase();
+        let lang = if verb.starts_with("tillad") || verb.starts_with("fjern") {
+            "da"
+        } else if ["consenti", "permetti", "sblocca"].iter().any(|v| verb.starts_with(v)) {
+            "it"
+        } else {
+            "en"
+        };
+        let store = st.tool_env.callers.as_ref()?;
+        if t.consult {
+            return None;
+        }
+        store.allow(&n.e164, &chrono::Utc::now().to_rfc3339());
+        let reply = match lang {
+            "it" => format!("Ok, {} è consentito: non lo rifiuterò più. Il telefono lo saprà al prossimo aggiornamento.", n.display()),
+            "da" => format!("Ok, {} er tilladt: jeg afviser det ikke igen. Telefonen får det ved næste opdatering.", n.display()),
+            _ => format!("Ok, {} is allowed: I won't reject it again. Your phones pick it up on their next sync.", n.display()),
+        };
+        return Some(
+            Finish::reply(reply, ACTION).with(format!("[caller allow: {}]", n.e164), None),
+        );
+    }
     if !routes(text).await {
         return None;
     }
@@ -237,6 +273,25 @@ mod tests {
         assert!(!routes("my new number is 20682758, write it down").await);
         // Her browser button goes to the computer, not here.
         assert!(!routes(&browser_request(&["+45 70 40 52 05".into()], "en")).await);
+    }
+
+    #[test]
+    fn allow_requests() {
+        assert_eq!(
+            allow_request("allow +45 70 40 52 05").unwrap().e164,
+            "+4570405205"
+        );
+        assert_eq!(
+            allow_request("Tillad 20 68 27 58").unwrap().e164,
+            "+4520682758"
+        );
+        assert_eq!(
+            allow_request("consenti il +39 338 303 7513").unwrap().e164,
+            "+393383037513"
+        );
+        assert!(allow_request("who called me from +45 70 40 52 05").is_none());
+        assert!(allow_request("allow notifications").is_none());
+        assert!(allow_request("allow 20682758 and 70405205").is_none());
     }
 
     #[test]
