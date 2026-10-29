@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Secretary · Lucina 0.7.0: Kotlin shell + Rust core (crates/lucina-android-calls). No Gradle, no AndroidX.
+# Secretary · Lucina 0.7.1: Kotlin shell + Rust core (crates/lucina-android-calls). No Gradle, no AndroidX.
 # cargo ndk -> kotlinc (embeddable compiler from the Gradle cache) -> aapt2 -> R8 -> zip -> zipalign -> apksigner.
 # Env: KEYSTORE_DIR (signing.p12 + signing.pass, alias secretary), OUT, CARGO_TARGET_DIR, SKIP_RUST=1 (reuse the last .so).
 # The certificate must match $OUT/secretary-0.1.0.apk (the installed 0.1.0), so the install upgrades in place.

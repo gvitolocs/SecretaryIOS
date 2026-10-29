@@ -211,7 +211,7 @@ log a code, a token or a message body. `"result"` values are the snake_case stri
   token moved into the encrypted `state.bin`, and the pref was deleted.
 - **Not yet verified:** a real carrier SMS, and a notification-sourced code.
 
-## Caller screening (Secretary · Lucina 0.7.0, versionCode 9)
+## Caller screening (Secretary · Lucina 0.7.1, versionCode 10)
 
 Unknown callers are screened with Jev (`POST /v1/callers/screen`, contract in `crates/lucina-phone-core/src/caller.rs` and the server's
 `/v1/callers/*`). Rust does the work in `crates/lucina-android-calls/src/caller.rs`; Kotlin only hosts the Android pieces.
@@ -249,7 +249,7 @@ Unknown callers are screened with Jev (`POST /v1/callers/screen`, contract in `c
 - **JNI additions:** `callerState`, `callerSettings`, `callerFlush`, `localVerdict`, `screenCall` (12 exports in all, checked by `build.sh`).
 - **Role:** `adb shell cmd role add-role-holder android.app.role.CALL_SCREENING tech.getsecretary.secretary` or the screen's button.
 
-## Phone app (Secretary · Lucina 0.7.0, versionCode 9)
+## Phone app (Secretary · Lucina 0.7.1, versionCode 10)
 
 Secretary can be the phone app (`ROLE_DIALER`); Samsung Phone stays installed. **Only the owner makes it the default**:
 the app asks (`RoleManager.createRequestRoleIntent`), Android shows its own dialog, and he taps. Nothing grants the role over adb unless he says so.
@@ -286,7 +286,7 @@ the app asks (`RoleManager.createRequestRoleIntent`), Android shows its own dial
 
 ### Device test checklist (owner present; nothing is placed, answered or rejected by an agent)
 
-0. Phone not in use for work, USB or wireless adb. `adb install -r secretary-0.7.0.apk`. Run `test/device-check.sh`: version 0.7.0, DIAL activities listed,
+0. Phone not in use for work, USB or wireless adb. `adb install -r secretary-0.7.1.apk`. Run `test/device-check.sh`: version 0.7.1, DIAL activities listed,
    InCallService and CallScreeningService listed, missed/voicemail receivers listed, `112 -> EMERGENCY`, `placed:false`.
 1. Open Secretary > Calls > "Make Secretary your phone app". Android shows its dialog: **he taps "Set as default"**. Then
    `adb shell cmd role get-role-holders android.app.role.DIALER` shows `tech.getsecretary.secretary`.
