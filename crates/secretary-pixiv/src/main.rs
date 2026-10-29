@@ -12,8 +12,8 @@
 //! | `PIXIV_GATEWAY_SECRET_FILE` | required | the secret p1's Caddy sends as `X-Lucina-Gateway` |
 //! | `PIXIV_SIGNING_KEY_FILE` | `$PIXIV_DATA_DIR/signing.key` | image URL HMAC key, created (0600) when missing |
 //! | `PIXIV_API_INTERVAL_MS` | `1500` | spacing between pixiv.net requests; never below 1000 |
-//! | `PIXIV_IMAGE_INTERVAL_MS` | `250` | spacing between i.pximg.net request starts; never below 100 |
-//! | `PIXIV_IMAGE_CONCURRENCY` | `3` | parallel image requests (1 to 6) |
+//! | `PIXIV_IMAGE_INTERVAL_MS` | `20` | spacing between i.pximg.net request starts (a CDN; 429s still back off) |
+//! | `PIXIV_IMAGE_CONCURRENCY` | `12` | parallel image requests (1 to 16), over one HTTP/2 connection |
 //! | `PIXIV_LIST_TTL_SECS` / `PIXIV_ILLUST_TTL_SECS` | `300` / `1800` | JSON cache lifetime |
 //! | `PIXIV_BROKER_SOCKET` | `/run/infisical-broker/broker.sock` | Infisical broker socket |
 //! | `PIXIV_BROKER_TOKEN_FILE` | none | caller token file; unset disables connection |
@@ -110,8 +110,8 @@ async fn main() -> anyhow::Result<()> {
             ..GateConfig::default()
         },
         images: ImageConfig {
-            spacing: Duration::from_millis(num("PIXIV_IMAGE_INTERVAL_MS").unwrap_or(250).max(100)),
-            concurrency: num("PIXIV_IMAGE_CONCURRENCY").unwrap_or(3).clamp(1, 6) as usize,
+            spacing: Duration::from_millis(num("PIXIV_IMAGE_INTERVAL_MS").unwrap_or(20)),
+            concurrency: num("PIXIV_IMAGE_CONCURRENCY").unwrap_or(12).clamp(1, 16) as usize,
             ..ImageConfig::default()
         },
         ..Config::default()

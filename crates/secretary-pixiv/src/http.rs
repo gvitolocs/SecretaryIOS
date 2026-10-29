@@ -24,7 +24,7 @@ use serde_json::{json, Value};
 use subtle::ConstantTimeEq;
 
 use crate::error::SvcError;
-use crate::images::allowed;
+use crate::images::{allowed, grid_thumb};
 use crate::model::{Content, Illust, Listing, Summary};
 use crate::service::{SearchParams, Service};
 use crate::store::Store;
@@ -129,7 +129,7 @@ impl Http {
             "author": s.author,
             "authorId": s.author_id,
             "tags": s.tags,
-            "thumbUrl": self.signed_url(&s.thumb),
+            "thumbUrl": self.signed_url(&grid_thumb(&s.thumb)),
             "pages": s.pages,
             "r18": s.r18,
             "popularTier": s.popular_tier(),
@@ -171,7 +171,7 @@ impl Http {
             "tags": i.tags,
             "pages": i.pages.iter().enumerate().map(|(n, p)| json!({
                 "index": n,
-                "thumbUrl": self.signed_url(&p.thumb),
+                "thumbUrl": self.signed_url(&grid_thumb(&p.thumb)),
                 "url": self.signed_url(&p.regular),
                 "originalUrl": self.signed_url(&p.orig),
             })).collect::<Vec<_>>(),
@@ -504,10 +504,11 @@ async fn image(
                 header::X_CONTENT_TYPE_OPTIONS,
                 HeaderValue::from_static("nosniff"),
             );
-            h.insert(
-                header::CACHE_CONTROL,
-                HeaderValue::from_static("private, max-age=3600"),
-            );
+            // The bytes behind a signed URL never change: browsers keep them until the URL expires.
+            let max_age = (exp - chrono::Utc::now().timestamp()).clamp(0, URL_LIFETIME.as_secs() as i64 + 3600);
+            if let Ok(v) = HeaderValue::from_str(&format!("private, max-age={max_age}, immutable")) {
+                h.insert(header::CACHE_CONTROL, v);
+            }
             h.insert(
                 header::REFERRER_POLICY,
                 HeaderValue::from_static("no-referrer"),

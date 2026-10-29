@@ -20,15 +20,18 @@ pub trait Backend: Send + Sync + 'static {
     fn has_session(&self) -> bool;
 }
 
-/// Anonymous core adapter. Construct and drop the core's blocking client on the worker.
-/// A blocking reqwest client owns a runtime and cannot be created/dropped on an async worker.
+/// Anonymous core adapter. The core's blocking client lives in a static (see `client`): a blocking
+/// reqwest client owns a runtime and must never be dropped on an async worker.
 pub struct CoreBackend;
 impl CoreBackend {
     pub fn new(_session: Option<String>) -> Self {
         Self
     }
-    fn client(&self) -> pixiv::api::PixivClient {
-        pixiv::api::PixivClient::new(String::new())
+    /// Built on first use (always on a blocking worker) and kept for the process: its connections to
+    /// pixiv.net are reused instead of a TLS handshake per call.
+    fn client(&self) -> &'static pixiv::api::PixivClient {
+        static CLIENT: std::sync::OnceLock<pixiv::api::PixivClient> = std::sync::OnceLock::new();
+        CLIENT.get_or_init(|| pixiv::api::PixivClient::new(String::new()))
     }
 }
 

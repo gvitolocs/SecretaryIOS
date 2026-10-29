@@ -32,8 +32,8 @@ impl Default for ImageConfig {
     fn default() -> Self {
         ImageConfig {
             base_override: None,
-            spacing: Duration::from_millis(250),
-            concurrency: 3,
+            spacing: Duration::from_millis(20),
+            concurrency: 12,
             backoff_base: Duration::from_secs(2),
             attempts: 3,
             cooldown: Duration::from_secs(30),
@@ -48,6 +48,36 @@ pub struct ImageFetcher {
     pool: Semaphore,
     next_start: Mutex<Instant>,
     cooldown_until: StdMutex<Option<Instant>>,
+}
+
+/// The grid size of a work's thumbnail: pixiv's 540 px "medium" master (aspect kept, ~40 KB) instead of
+/// the 480x960 crops of the ranking (~240 KB) or the 250 px squares of the search. Measured 2026-10-29: a
+/// 50-work ranking page is 2 MB instead of 12 MB. Other URLs (custom thumbnails, originals) are unchanged.
+pub fn grid_thumb(raw: &str) -> String {
+    const HOST: &str = "https://i.pximg.net/";
+    let Some(rest) = raw.strip_prefix(HOST) else {
+        return raw.to_string();
+    };
+    // Optional size prefix: `c/<params>/`.
+    let rest = match rest.strip_prefix("c/") {
+        Some(r) => match r.split_once('/') {
+            Some((_, after)) => after,
+            None => return raw.to_string(),
+        },
+        None => rest,
+    };
+    let Some(path) = rest.strip_prefix("img-master/") else {
+        return raw.to_string();
+    };
+    let stem = path
+        .strip_suffix("_master1200.jpg")
+        .or_else(|| path.strip_suffix("_square1200.jpg"));
+    match stem {
+        Some(stem) if !stem.is_empty() && !stem.contains(['?', '#', '\\']) && !stem.contains("..") => {
+            format!("{HOST}c/540x540_70/img-master/{stem}_master1200.jpg")
+        }
+        _ => raw.to_string(),
+    }
 }
 
 /// `Some(url)` only for `https://i.pximg.net/...`.
@@ -202,6 +232,39 @@ mod tests {
             "not a url",
         ] {
             assert!(allowed(bad).is_none(), "{bad}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod grid_thumb_tests {
+    use super::grid_thumb;
+
+    const M: &str = "https://i.pximg.net/c/540x540_70/img-master/img/2026/10/01/00/00/30/150302261_p0_master1200.jpg";
+
+    #[test]
+    fn ranking_search_and_app_thumbs_become_the_540_master() {
+        for raw in [
+            "https://i.pximg.net/c/480x960/img-master/img/2026/10/01/00/00/30/150302261_p0_master1200.jpg",
+            "https://i.pximg.net/c/250x250_80_a2/img-master/img/2026/10/01/00/00/30/150302261_p0_square1200.jpg",
+            "https://i.pximg.net/c/360x360_70/img-master/img/2026/10/01/00/00/30/150302261_p0_square1200.jpg",
+            "https://i.pximg.net/img-master/img/2026/10/01/00/00/30/150302261_p0_master1200.jpg",
+            M,
+        ] {
+            assert_eq!(grid_thumb(raw), M, "{raw}");
+        }
+    }
+
+    #[test]
+    fn other_urls_are_left_alone() {
+        for raw in [
+            "https://i.pximg.net/c/250x250_80_a2/custom-thumb/img/2026/10/01/00/00/30/1_p0_custom1200.jpg",
+            "https://i.pximg.net/img-original/img/2026/10/01/00/00/30/1_p0.png",
+            "https://example.com/c/480x960/img-master/img/1_p0_master1200.jpg",
+            "https://i.pximg.net/c/480x960/img-master/img/../x_master1200.jpg",
+            "",
+        ] {
+            assert_eq!(grid_thumb(raw), raw);
         }
     }
 }

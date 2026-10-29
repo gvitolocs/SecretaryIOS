@@ -12,12 +12,19 @@ impl AppBackend {
         Self { connection, base }
     }
     fn get(&self, path: &str, query: &[(&str, String)]) -> Result<Value, String> {
-        let client = reqwest::blocking::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(Duration::from_secs(5))
-            .timeout(Duration::from_secs(30))
-            .build()
-            .map_err(|_| "network: client unavailable")?;
+        // One client for the process (built on a blocking worker, never dropped): reused connections.
+        static CLIENT: std::sync::OnceLock<Option<reqwest::blocking::Client>> = std::sync::OnceLock::new();
+        let client = CLIENT
+            .get_or_init(|| {
+                reqwest::blocking::Client::builder()
+                    .redirect(reqwest::redirect::Policy::none())
+                    .connect_timeout(Duration::from_secs(5))
+                    .timeout(Duration::from_secs(30))
+                    .build()
+                    .ok()
+            })
+            .as_ref()
+            .ok_or("network: client unavailable")?;
         for attempt in 0..2 {
             let token = self.connection.access(attempt == 1)?;
             let bearer = zeroize::Zeroizing::new(format!("Bearer {}", token.expose()));

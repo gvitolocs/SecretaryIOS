@@ -553,6 +553,8 @@ async fn signed_urls_serve_images_with_the_referer_and_cache_them() {
     assert_eq!(img1.status, StatusCode::OK);
     assert_eq!(img1.headers["content-type"], "image/png");
     assert_eq!(img1.headers["x-content-type-options"], "nosniff");
+    let cc = img1.headers["cache-control"].to_str().unwrap().to_string();
+    assert!(cc.starts_with("private, max-age=") && cc.ends_with(", immutable"), "{cc}");
     assert_eq!(img1.bytes.len(), 300);
     assert_eq!(cdn_hits(&e).await, 1);
     let req = &e.cdn.received_requests().await.unwrap()[0];
@@ -573,7 +575,11 @@ async fn signed_url_tokens_are_lowercase_hex() {
     let thumb = r.json["data"]["items"][0]["thumbUrl"].as_str().unwrap().to_string();
     let token = thumb.trim_start_matches("/v1/pixiv/s/").split('/').nth(1).unwrap();
     assert!(token.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)), "{token}");
-    assert_eq!(String::from_utf8(hex::decode(token).unwrap()).unwrap(), img(1001, 0));
+    // The grid asks for pixivs 540 px master, not the rankings 480x960 crop.
+    assert_eq!(
+        String::from_utf8(hex::decode(token).unwrap()).unwrap(),
+        secretary_pixiv::images::grid_thumb(&img(1001, 0))
+    );
     assert_eq!(send(&e.app, "GET", &thumb, false, None).await.status, StatusCode::OK);
 }
 
