@@ -943,7 +943,7 @@ async fn security_headers_on_every_response() {
     // `WEB` mirrors `WEB_CONTENT_SECURITY_POLICY`: the app's own origin, the
     // Google Maps JavaScript API origins for the in-app maps, and the computer
     // page's probe and frame of Lucina's home-network door.
-    const WEB: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://*.googleapis.com https://*.gstatic.com https://*.google.com; img-src 'self' data: blob: https://*.googleapis.com https://*.gstatic.com https://*.google.com https://*.googleusercontent.com; connect-src 'self' blob: data: https://lan.getsecretary.tech:9443 https://*.googleapis.com https://*.gstatic.com https://*.google.com; frame-src 'self' https://lan.getsecretary.tech:9443; media-src 'self' blob:; worker-src 'self' blob:; manifest-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; frame-ancestors 'none'; base-uri 'none'";
+    const WEB: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://*.googleapis.com https://*.gstatic.com https://*.google.com; img-src 'self' data: blob: https://*.googleapis.com https://*.gstatic.com https://*.google.com https://*.googleusercontent.com; connect-src 'self' blob: data: https://lan.getsecretary.tech:9443 wss://lan.getsecretary.tech:9443 https://*.googleapis.com https://*.gstatic.com https://*.google.com; frame-src 'self' https://lan.getsecretary.tech:9443; media-src 'self' blob:; worker-src 'self' blob:; manifest-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; frame-ancestors 'none'; base-uri 'none'";
     let responses = [
         (
             STRICT,

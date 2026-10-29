@@ -102,9 +102,10 @@ pub const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; connect-src 'self
 /// `font-src data:` admits fonts inlined into the app's own CSS. The one other
 /// origin is Lucina's own home-network
 /// door to the live view (`https://lan.getsecretary.tech:9443`, lucina-server
-/// `lan.rs`): the computer page probes it (`connect-src`) and frames the viewer
-/// from it (`frame-src`) when the owner is at home.
-pub const WEB_CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://*.googleapis.com https://*.gstatic.com https://*.google.com; img-src 'self' data: blob: https://*.googleapis.com https://*.gstatic.com https://*.google.com https://*.googleusercontent.com; connect-src 'self' blob: data: https://lan.getsecretary.tech:9443 https://*.googleapis.com https://*.gstatic.com https://*.google.com; frame-src 'self' https://lan.getsecretary.tech:9443; media-src 'self' blob:; worker-src 'self' blob:; manifest-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; frame-ancestors 'none'; base-uri 'none'";
+/// `lan.rs`): the computer page probes it (`connect-src`), frames the viewer
+/// from it (`frame-src`) and opens the LucinaDesk stream on it (`wss:`) when the
+/// owner is at home.
+pub const WEB_CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://*.googleapis.com https://*.gstatic.com https://*.google.com; img-src 'self' data: blob: https://*.googleapis.com https://*.gstatic.com https://*.google.com https://*.googleusercontent.com; connect-src 'self' blob: data: https://lan.getsecretary.tech:9443 wss://lan.getsecretary.tech:9443 https://*.googleapis.com https://*.gstatic.com https://*.google.com; frame-src 'self' https://lan.getsecretary.tech:9443; media-src 'self' blob:; worker-src 'self' blob:; manifest-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; frame-ancestors 'none'; base-uri 'none'";
 
 pub struct Inner {
     pub lucina: Option<LucinaClient>,
