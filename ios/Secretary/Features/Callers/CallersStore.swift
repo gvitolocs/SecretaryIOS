@@ -148,6 +148,27 @@ final class CallersStore {
         defaults.set(snapshot.entries.count, forKey: Self.countKey)
     }
 
+    #if DEBUG || SCREENSHOTS
+    /// `-SecretaryCallersSeed 5000`: saves that many synthetic labels (numbers 99 900 000 000 and up, no real
+    /// subscriber), reads them back and reloads the extension, to try the storage and iOS's reload on the phone.
+    /// `-SecretaryCallersReset YES` removes them again.
+    func seedForTesting(count: Int) async {
+        let entries = (0 ..< count).map { CallerDirectoryEntry(number: 99_900_000_000 + Int64($0), label: "Test label \($0)") }
+        let snapshot = CallerDirectorySnapshot(generatedAt: nil, entries: entries)
+        do {
+            try writeSaved(snapshot)
+            let back = readSaved()
+            entryCount = back?.entries.count
+            lastSync = Date()
+            syncError = back?.entries == CallerDirectoryList.normalize(entries) ? nil : "Seed read-back differs: \(back?.entries.count ?? -1) of \(count)"
+            extensionStatus = await manager.enabledStatus()
+            if extensionStatus == .enabled { try await manager.reload() }
+        } catch {
+            syncError = "Seed failed: \(error.localizedDescription)"
+        }
+    }
+    #endif
+
     /// Sign-out: the labels leave this iPhone too.
     func reset() {
         removeSaved()

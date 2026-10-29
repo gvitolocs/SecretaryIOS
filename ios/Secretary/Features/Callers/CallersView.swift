@@ -28,6 +28,10 @@ struct CallersView: View {
             await store.refreshStatus()
             #if DEBUG || SCREENSHOTS
             // `-SecretaryCallersLookup "+45 70 40 52 05"`: fills the field and looks it up (screenshots, device tests).
+            if let count = UserDefaults.standard.string(forKey: "SecretaryCallersSeed").flatMap(Int.init), count > 0 {
+                await store.seedForTesting(count: count)
+            }
+            if UserDefaults.standard.bool(forKey: "SecretaryCallersReset") { store.reset() }
             if let text = UserDefaults.standard.string(forKey: "SecretaryCallersLookup"), !text.isEmpty, store.input.isEmpty {
                 store.input = text
                 await store.lookup(text)
@@ -93,7 +97,7 @@ struct CallersView: View {
                     Button {
                         Task { await store.openCallBlockingSettings() }
                     } label: {
-                        Label("Open Settings", systemImage: "gearshape")
+                        Label("Open Settings", systemImage: "gearshape").lineLimit(1).minimumScaleFactor(0.7)
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(Theme.accentFill)
@@ -105,7 +109,7 @@ struct CallersView: View {
                         await store.refreshStatus()
                     }
                 } label: {
-                    if store.isSyncing { ProgressView() } else { Label("Update labels", systemImage: "arrow.clockwise") }
+                    if store.isSyncing { ProgressView() } else { Label("Update labels", systemImage: "arrow.clockwise").lineLimit(1).minimumScaleFactor(0.7) }
                 }
                 .buttonStyle(.bordered)
                 .disabled(store.isSyncing)
