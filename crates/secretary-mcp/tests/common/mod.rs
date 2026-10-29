@@ -292,6 +292,26 @@ async fn handle(
             "result": {"status": "completed", "reply": "The title is Example Domain.", "executedTools": ["terminal"]},
         }))
         .into_response(),
+        // AU Find (crate::au): a person, a building, a map; "down" answers as AU Find unreachable.
+        ("GET", ["v1", "au", "people"]) if device_ok(&headers) => {
+            if query.contains("q=down") {
+                return err(StatusCode::SERVICE_UNAVAILABLE, "au_unavailable");
+            }
+            Json(json!({"source": "aufind", "status": "found", "query": "Jens Hansen", "total": 1,
+                "tried": [{"q": "Jens Hansen", "total": 1}],
+                "people": [{"uuid": "u1", "name": "Jens Hansen", "position": "Lektor", "units": ["Datalogi"],
+                    "email": "jh@cs.au.dk", "phone": "+45 8715 0000", "au_room": "1532-123",
+                    "profile_url": "https://www.au.dk/en/jh@cs", "source": "aufind"}]}))
+            .into_response()
+        }
+        ("GET", ["v1", "au", "buildings"]) if device_ok(&headers) => Json(json!({"source": "aufind", "status": "found", "query": "1532",
+            "buildings": [{"id": "1532", "names": ["Nygaard"], "address": ["Åbogade 34"], "latitude": 56.17, "longitude": 10.19}]}))
+        .into_response(),
+        ("GET", ["v1", "au", "map.png"]) if device_ok(&headers) => (
+            [(axum::http::header::CONTENT_TYPE, "image/png")],
+            vec![0x89u8, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a],
+        )
+            .into_response(),
         ("POST", ["v1", "computer", "call"]) if device_ok(&headers) => match body["op"].as_str() {
             Some("screenshot") => Json(json!({"text": "Visible windows: pid=1 window_id=2", "image": {"mimeType": "image/png", "data": "iVBORw0KGgo="}})).into_response(),
             Some("bash") if body["sandbox"] == "android" => err(StatusCode::CONFLICT, "owner_driving"),

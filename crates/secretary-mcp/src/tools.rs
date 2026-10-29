@@ -602,9 +602,9 @@ pub struct ToolSpec {
 }
 
 /// A second scope that also allows a tool: every coding agent (scope `agents`)
-/// reports to and reads Lucina's ops record.
+/// reports to and reads Lucina's ops record, and looks things up in AU Find.
 pub fn also_allowed(name: &str) -> Option<Scope> {
-    name.starts_with("ops_").then_some(Scope::Agents)
+    (name.starts_with("ops_") || name.starts_with("au_")).then_some(Scope::Agents)
 }
 
 impl ToolSpec {
@@ -694,6 +694,13 @@ pub fn specs() -> Vec<ToolSpec> {
             "Search Lucina's record of the owner's projects (deploys, incidents, decisions, status, findings) by words, project, kind and dates: answers 'what happened with X', 'why did we decide Y', 'when did Z go live'. Newest first when q is empty."),
         spec!("ops_get", "Read a record", Scope::Read, ro = true, destructive = false, idempotent = true, crate::ops::GetArgs,
             "One record of Lucina's ops record in full (timeline, cause, fix, follow-ups, links, pages), by the id ops_record or ops_search returned."),
+        // AU Find (crate::au): Aarhus University people, buildings, campus maps; `agents` tokens too.
+        spec!("au_people_search", "AU people search", Scope::Read, ro = true, destructive = false, idempotent = true, crate::au::PeopleArgs,
+            "Aarhus University people lookup through AU Find. Retries (surname, then prefix) and disambiguation (top 3, never pick one) are built in. Quote fields as returned and cite the source; never invent emails, phones, rooms, coordinates or URLs. If status is not_found, say 'not found in AU Find'; if unavailable, say AU Find is unreachable and fall back to au.dk pages (www.au.dk, mit.au.dk, brightspace.au.dk, pure.au.dk only), quoting text and URL, stopping at any login. Answers a numbered list (name, position, units, AU room, email, phone, profile URL), then the raw JSON."),
+        spec!("au_building", "AU building", Scope::Read, ro = true, destructive = false, idempotent = true, crate::au::BuildingArgs,
+            "Aarhus University building lookup through AU Find, by building number (e.g. 1532), name or address: id, names, address and coordinates, then the raw JSON. Quote fields as returned and cite the source; never invent addresses, coordinates or URLs. If status is not_found, say 'not found in AU Find'. Draw a building with au_campus_map."),
+        spec!("au_campus_map", "AU campus map", Scope::Read, ro = true, destructive = false, idempotent = true, crate::au::MapArgs,
+            "An 800x600 PNG map of an Aarhus University building (building id from au_building; zoom 17 by default) or of a point (latitude, longitude), zoom 14-18; with nothing given, the AU park in Aarhus at zoom 15. Cite the caption's source (AU Find map, OpenStreetMap tiles)."),
         spec!("tasks_list", "Tasks", Scope::Read, ro = true, destructive = false, idempotent = true, TasksListArgs,
             "The owner's tasks (synced with Todoist): by default Today with the overdue ones first, like Todoist's Today view; or upcoming, inbox, a project, a search or Todoist filter, or what was completed. Each task shows its id, project, due date (↻ = recurring), priority and labels, plus the daily goal."),
         spec!("task_add", "Add task", Scope::Write, ro = false, destructive = false, idempotent = false, TaskAddArgs,

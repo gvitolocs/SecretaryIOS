@@ -5,7 +5,7 @@ mod common;
 use common::*;
 use serde_json::{json, Value};
 
-const ALL_TOOLS: [&str; 39] = [
+const ALL_TOOLS: [&str; 42] = [
     "ask_lucina",
     "lucina_decide",
     "lucina_decision_status",
@@ -31,6 +31,9 @@ const ALL_TOOLS: [&str; 39] = [
     "ops_record",
     "ops_search",
     "ops_get",
+    "au_people_search",
+    "au_building",
+    "au_campus_map",
     "tasks_list",
     "task_add",
     "task_complete",
@@ -1783,6 +1786,99 @@ async fn computer_tools_need_the_computer_scope() {
         h.mock.requests("/v1/computer/task")[0].body["task"],
         "open example.com"
     );
+}
+
+#[tokio::test]
+async fn au_find_tools() {
+    let h = start().await;
+    let read = h.issue("claude", "read");
+    let r = h.rpc(&read, "tools/list", json!({})).await;
+    let tools = r["tools"].as_array().unwrap();
+    for name in ["au_people_search", "au_building", "au_campus_map"] {
+        let t = tools.iter().find(|t| t["name"] == name).unwrap_or_else(|| panic!("{name}"));
+        assert_eq!(t["annotations"]["readOnlyHint"], true, "{t}");
+        assert_eq!(t["annotations"]["destructiveHint"], false, "{t}");
+        assert_eq!(t["inputSchema"]["additionalProperties"], false, "{t}");
+    }
+    let people = tools.iter().find(|t| t["name"] == "au_people_search").unwrap();
+    assert_eq!(people["inputSchema"]["required"], json!(["query"]));
+    assert!(people["description"].as_str().unwrap().contains("never pick one"));
+    let init = h
+        .rpc(
+            &read,
+            "initialize",
+            json!({"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}}),
+        )
+        .await;
+    assert!(init["instructions"].as_str().unwrap().contains("au_campus_map"));
+    // a coding agent may look things up too
+    let agent = h.issue("agent-x", "agents");
+    let names = h.tool_names(&agent).await;
+    for t in ["au_people_search", "au_building", "au_campus_map"] {
+        assert!(names.contains(&t.to_owned()), "{t} missing");
+    }
+    let (err, _) = h.call(&agent, "au_building", json!({"query": "1532"})).await;
+    assert!(!err);
+
+    let r = h
+        .rpc(
+            &read,
+            "tools/call",
+            json!({"name": "au_people_search", "arguments": {"query": " Jens Hansen ", "lang": "da"}}),
+        )
+        .await;
+    assert_eq!(r["isError"], false, "{r}");
+    let text = r["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("1. Jens Hansen — Lektor — Datalogi — room 1532-123 — jh@cs.au.dk — +45 8715 0000 — https://www.au.dk/en/jh@cs"),
+        "{text}"
+    );
+    assert!(text.ends_with("Raw fields only; nothing inferred."), "{text}");
+    let raw: Value = serde_json::from_str(r["content"][1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(raw["people"][0]["uuid"], "u1");
+    let sent = h.mock.requests("/v1/au/people");
+    assert_eq!(sent[0].query, "q=Jens+Hansen&lang=da");
+    assert_eq!(sent[0].headers["x-secretary-caller"], "mcp:claude");
+
+    let (err, text) = h.call(&read, "au_people_search", json!({"query": "down"})).await;
+    assert!(err && text.contains("unreachable") && text.contains("pure.au.dk"), "{text}");
+
+    // arguments are checked before the round trip
+    for (tool, args) in [
+        ("au_people_search", json!({"query": ""})),
+        ("au_people_search", json!({"query": "x".repeat(201)})),
+        ("au_people_search", json!({"query": "x", "lang": "it"})),
+        ("au_building", json!({})),
+        ("au_campus_map", json!({"zoom": 19})),
+        ("au_campus_map", json!({"building": "../etc"})),
+        ("au_campus_map", json!({"latitude": 56.1})),
+        ("au_campus_map", json!({"latitude": 40.0, "longitude": 10.0})),
+    ] {
+        let (err, text) = h.call(&read, tool, args.clone()).await;
+        assert!(err, "{tool} {args}: {text}");
+    }
+    assert_eq!(h.mock.requests("/v1/au/people").len(), 2);
+    assert!(h.mock.requests("/v1/au/map.png").is_empty());
+
+    let r = h
+        .rpc(
+            &read,
+            "tools/call",
+            json!({"name": "au_campus_map", "arguments": {"building": "1532"}}),
+        )
+        .await;
+    assert_eq!(r["isError"], false, "{r}");
+    assert_eq!(r["content"][0]["type"], "image");
+    assert_eq!(r["content"][0]["mimeType"], "image/png");
+    assert_eq!(r["content"][0]["data"], "iVBORw0KGgo=");
+    let caption = r["content"][1]["text"].as_str().unwrap();
+    assert!(caption.contains("building 1532, zoom 17"), "{caption}");
+    assert!(caption.contains("© OpenStreetMap contributors"), "{caption}");
+    let (err, caption) = h.call(&read, "au_campus_map", json!({})).await;
+    assert!(!err && caption.contains("AU park") && caption.contains("zoom 15"), "{caption}");
+    let maps = h.mock.requests("/v1/au/map.png");
+    assert_eq!(maps[0].query, "building=1532&z=17");
+    assert_eq!(maps[1].query, "lat=56.1697&lng=10.2039&z=15");
 }
 
 #[tokio::test]

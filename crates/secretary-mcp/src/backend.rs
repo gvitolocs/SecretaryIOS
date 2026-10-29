@@ -303,6 +303,58 @@ impl Backend {
             .map(|(_, _, v)| v)
     }
 
+    /// A device-token GET whose answer is not JSON (the AU campus map PNG):
+    /// its content type and body. Failures are classified like JSON calls.
+    pub(crate) async fn get_device_bytes(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+        extra: HeaderMap,
+    ) -> BResult<(String, Vec<u8>)> {
+        let token = self.device_token.as_deref().ok_or_else(|| {
+            BackendError::local(
+                "backend_not_configured",
+                "SECRETARY_MCP_BACKEND_TOKEN_FILE is not set",
+            )
+        })?;
+        let transport = |e: reqwest::Error| {
+            if e.is_timeout() {
+                BackendError::local("backend_timeout", "secretary-server did not answer in time")
+            } else {
+                BackendError::local("backend_unreachable", e.without_url().to_string())
+            }
+        };
+        let resp = self
+            .http
+            .get(format!("{}{path}", self.base))
+            .query(query)
+            .timeout(DEFAULT_TIMEOUT)
+            .headers(extra)
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(transport)?;
+        let status = resp.status();
+        let content_type = resp
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("application/octet-stream")
+            .to_owned();
+        let retry_after = resp
+            .headers()
+            .get(RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse().ok());
+        let bytes = resp.bytes().await.map_err(transport)?;
+        if status.is_success() {
+            return Ok((content_type, bytes.to_vec()));
+        }
+        let mut err = error_from(status, &serde_json::from_slice(&bytes).unwrap_or(Value::Null));
+        err.retry_after = retry_after;
+        Err(err)
+    }
+
     pub async fn get(&self, path: &str, query: &[(&str, String)]) -> BResult<Value> {
         self.call(Method::GET, path, query, None).await
     }

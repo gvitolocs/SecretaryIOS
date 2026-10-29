@@ -72,6 +72,9 @@ pub struct Call {
     extract: Option<&'static str>,
     /// `x-lucina-caller`: who asks (`app`, `mcp:claude`), for Lucina's computer log.
     caller: Option<String>,
+    /// The route may answer bare JSON instead of the `{ok, data}` envelope
+    /// (the AU Find routes); an envelope is still unwrapped.
+    bare: bool,
 }
 
 impl fmt::Debug for Call {
@@ -90,6 +93,7 @@ impl fmt::Debug for Call {
             .field("class", &self.class)
             .field("extract", &self.extract)
             .field("caller", &self.caller)
+            .field("bare", &self.bare)
             .finish()
     }
 }
@@ -128,6 +132,7 @@ impl Call {
             class: TimeoutClass::Default,
             extract: None,
             caller: None,
+            bare: false,
         }
     }
 
@@ -334,6 +339,78 @@ impl Call {
             c.query.push(("limit", n.to_string()));
         }
         Ok(c)
+    }
+
+    /// `GET /au/health`: whether AU Find answers (`{reachable, af_server, error?}`).
+    pub fn au_health() -> Self {
+        Self::new(Method::GET, &["au", "health"]).bare()
+    }
+
+    /// `GET /au/people?q=&lang=`: Aarhus University people through AU Find
+    /// (retries and disambiguation happen on Lucina's side).
+    pub fn au_people(q: Option<&str>, lang: Option<&str>) -> Result<Self> {
+        let mut c = Self::new(Method::GET, &["au", "people"]).bare();
+        c.query.push(("q", au_query(q)?));
+        if let Some(lang) = lang {
+            if !matches!(lang, "da" | "en") {
+                return Err(Error::Invalid {
+                    field: "lang",
+                    message: "must be da or en".into(),
+                });
+            }
+            c.query.push(("lang", lang.to_owned()));
+        }
+        Ok(c)
+    }
+
+    /// `GET /au/buildings?q=`: Aarhus University buildings through AU Find.
+    pub fn au_buildings(q: Option<&str>) -> Result<Self> {
+        let mut c = Self::new(Method::GET, &["au", "buildings"]).bare();
+        c.query.push(("q", au_query(q)?));
+        Ok(c)
+    }
+
+    /// `GET /au/map.png?building=&z=` or `?lat=&lng=&z=`: an 800×600 campus map
+    /// (send with [`LucinaClient::bytes`]). A building or both coordinates;
+    /// `z` 14..=18 is optional.
+    pub fn au_map(
+        building: Option<&str>,
+        lat: Option<&str>,
+        lng: Option<&str>,
+        z: Option<&str>,
+    ) -> Result<Self> {
+        let mut c = Self::new(Method::GET, &["au", "map.png"]);
+        match (building, lat, lng) {
+            (Some(b), None, None) => {
+                if b.is_empty() || b.len() > 6 || !b.bytes().all(|b| b.is_ascii_alphanumeric()) {
+                    return Err(Error::Invalid {
+                        field: "building",
+                        message: "must be 1-6 letters or digits".into(),
+                    });
+                }
+                c.query.push(("building", b.to_owned()));
+            }
+            (None, Some(lat), Some(lng)) => {
+                c.query.push(("lat", au_coord("lat", lat, 54.0, 58.0)?));
+                c.query.push(("lng", au_coord("lng", lng, 8.0, 16.0)?));
+            }
+            _ => {
+                return Err(Error::Invalid {
+                    field: "building",
+                    message: "give a building, or lat and lng (not both)".into(),
+                })
+            }
+        }
+        if let Some(z) = z {
+            c.query
+                .push(("z", validate::bounded_int("z", z, 14, 18)?.to_string()));
+        }
+        Ok(c)
+    }
+
+    fn bare(mut self) -> Self {
+        self.bare = true;
+        self
     }
 
     /// `POST /game/control`: start (`true`) or pause the run.
@@ -741,6 +818,33 @@ impl Call {
     }
 }
 
+/// An AU Find search: trimmed, 1..=200 characters, no control characters.
+fn au_query(q: Option<&str>) -> Result<String> {
+    match present(q) {
+        Some(q) if q.chars().count() <= 200 && !q.chars().any(char::is_control) => {
+            Ok(q.to_owned())
+        }
+        _ => Err(Error::Invalid {
+            field: "q",
+            message: "must be 1..200 characters".into(),
+        }),
+    }
+}
+
+/// A decimal coordinate within `min..=max` (Denmark), passed on as given.
+fn au_coord(field: &'static str, s: &str, min: f64, max: f64) -> Result<String> {
+    let ok = s.len() <= 24
+        && s.bytes().all(|b| b.is_ascii_digit() || b == b'.' || b == b'-')
+        && s.parse::<f64>().is_ok_and(|v| (min..=max).contains(&v));
+    if !ok {
+        return Err(Error::Invalid {
+            field,
+            message: format!("must be a number {min}..={max}"),
+        });
+    }
+    Ok(s.to_owned())
+}
+
 /// A query parameter that was given and is not blank, trimmed.
 fn present(s: Option<&str>) -> Option<&str> {
     s.map(str::trim).filter(|s| !s.is_empty())
@@ -1021,7 +1125,17 @@ impl LucinaClient {
         let resp = req.send().await.map_err(Error::from_reqwest)?;
         let status = resp.status();
         let bytes = resp.bytes().await.map_err(Error::from_reqwest)?;
-        let data: Value = decode_response(status.as_u16(), &bytes)?;
+        let data: Value = if call.bare && status.is_success() {
+            match serde_json::from_slice::<Value>(&bytes) {
+                Ok(v) if v.get("ok").is_some_and(Value::is_boolean) => {
+                    decode_response(status.as_u16(), &bytes)?
+                }
+                Ok(v) => v,
+                Err(e) => return Err(Error::Decode(e.to_string())),
+            }
+        } else {
+            decode_response(status.as_u16(), &bytes)?
+        };
         let data = match call.extract {
             None => data,
             Some(key) => match data {
@@ -1304,6 +1418,64 @@ mod tests {
             }
         }
         assert!(Call::ops_search(None, Some(&"p".repeat(65)), None, None, None, None).is_err());
+    }
+
+    #[test]
+    fn au_calls() {
+        let c = client("http://h:1");
+        assert_eq!(
+            c.url(&Call::au_health()).as_str(),
+            "http://h:1/api/secretary/au/health"
+        );
+        let p = Call::au_people(Some(" Jens Hansen "), Some("da")).unwrap();
+        assert!(p.bare);
+        assert_eq!(
+            c.url(&p).as_str(),
+            "http://h:1/api/secretary/au/people?q=Jens+Hansen&lang=da"
+        );
+        assert!(Call::au_people(Some(&"é".repeat(200)), None).is_ok());
+        for (q, lang) in [
+            (None, None),
+            (Some(" "), None),
+            (Some("a\nb"), None),
+            (Some(&*"x".repeat(201)), None),
+            (Some("x"), Some("it")),
+        ] {
+            assert!(Call::au_people(q, lang).is_err(), "{q:?} {lang:?}");
+        }
+        assert_eq!(
+            c.url(&Call::au_buildings(Some("1532")).unwrap()).as_str(),
+            "http://h:1/api/secretary/au/buildings?q=1532"
+        );
+        assert!(Call::au_buildings(None).is_err());
+
+        let m = Call::au_map(Some("1532"), None, None, Some("17")).unwrap();
+        assert!(!m.bare);
+        assert_eq!(
+            c.url(&m).as_str(),
+            "http://h:1/api/secretary/au/map.png?building=1532&z=17"
+        );
+        let m = Call::au_map(None, Some("56.1697"), Some("10.2039"), None).unwrap();
+        assert_eq!(
+            c.url(&m).as_str(),
+            "http://h:1/api/secretary/au/map.png?lat=56.1697&lng=10.2039"
+        );
+        for (b, lat, lng, z) in [
+            (None, None, None, None),
+            (Some("1532"), Some("56"), Some("10"), None),
+            (None, Some("56"), None, None),
+            (Some("../x"), None, None, None),
+            (Some("1234567"), None, None, None),
+            (Some(""), None, None, None),
+            (Some("1532"), None, None, Some("13")),
+            (Some("1532"), None, None, Some("19")),
+            (None, Some("53.9"), Some("10"), None),
+            (None, Some("56"), Some("16.1"), None),
+            (None, Some("NaN"), Some("10"), None),
+            (None, Some("5e1"), Some("10"), None),
+        ] {
+            assert!(Call::au_map(b, lat, lng, z).is_err(), "{b:?} {lat:?} {lng:?} {z:?}");
+        }
     }
 
     #[test]

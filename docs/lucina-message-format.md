@@ -66,6 +66,8 @@ Text fields marked *md* allow inline markdown; the others are plain text.
 | `link_preview` | `url`, `title` | `url` must be `http(s)`. Opens in a new tab / Safari. |
 | `place` | `title`, `address?`, `lat?`+`lng?`, `when?`, `end?` (RFC 3339), `eventId?`, `kind: event\|place`, `travelMin?`+`travelMode?` (`walk\|bike\|transit\|drive`), `travelApprox?` | A title plus an address or a valid coordinate pair (both or neither, not (0,0)); at most 3 per message. The card opens the in-app place map (`/map/place`). `travelMin` (1-1440) is Lucina's travel time from home, `travelApprox: true` when it is a straight-line estimate. |
 
+| `image` | `src`, `alt`, `caption?`, `width?`, `height?` | A picture Lucina made, e.g. an AU campus map. `src` is a relative `/v1/…` path on secretary-server (fetched with the app's auth) or `https://getsecretary.tech/…`; any other `src` drops the block. Tapping opens it full size. |
+
 Lengths: titles 120, item texts 400, card bodies 600, labels and stat values 40,
 table cells 80 characters.
 

@@ -1874,6 +1874,26 @@ NewRecord (snake_case; unknown fields are refused): `kind` deploy|incident|decis
 Lucina answers 404 `ops_disabled` when the record is off (`LUCINA_OPS_VAULT_DIR` unset). MCP tools: `ops_record`
 (scope write), `ops_search` and `ops_get` (scope read); `agents` tokens may call all three.
 
+## AU Find
+
+Aarhus University people, buildings and campus maps through AU Find (aufind.au.dk), forwarded to Lucina's
+`/api/secretary/au/*` (lucina-rs), which applies the retries (surname, then prefix) and the disambiguation (top 3 when
+ambiguous). Read-only; any owner device (device token or web session) and the MCP's device token. The query is
+validated first and only the parameters below travel on (unknown ones are 400); Lucina's JSON passes through as is.
+
+| Method | Path | Query | Answer |
+| --- | --- | --- | --- |
+| GET | `/v1/au/health` | — | `{reachable, af_server: {…}\|null, error?}` |
+| GET | `/v1/au/people` | `q` (1-200 characters), `lang` da\|en | `{source: "aufind", status: found\|ambiguous\|not_found\|unavailable, query, tried: [{q, total}], total, people: [{uuid, name, position, units, email, phone, building, room, au_room, address, profile_url, map_url, source, profile_source}], more?, fallback?, upstream}` |
+| GET | `/v1/au/buildings` | `q` (1-200 characters) | `{source, status, buildings: [{id, names, address, latitude, longitude, polygon}], map?: {z, path}}` |
+| GET | `/v1/au/map.png` | `building` (`[0-9A-Za-z]{1,6}`) or `lat` (54-58) + `lng` (8-16); `z` 14-18 | `image/png` 800×600, `Cache-Control: private, max-age=3600` |
+
+Lucina unreachable, timing out, failing (5xx) or without the routes → 503 `au_unavailable`. Lucina's chat replies show
+the maps as an `image` block whose `src` is `/v1/au/map.png?…` (see `docs/lucina-message-format.md`). MCP tools (scope
+read; `agents` tokens too): `au_people_search {query, lang?}` and `au_building {query}` (a numbered text rendering
+ending with the source line, then the raw JSON), `au_campus_map {building?, latitude?, longitude?, zoom?}` (the PNG as
+an image block and a caption; building → zoom 17, nothing → the AU park 56.1697, 10.2039 at zoom 15).
+
 ## Library
 
 Books and clippings imported from a read-only Kindle USB scan. Ownership,
@@ -2384,6 +2404,7 @@ video?, rigged?}`. Clients build the file URLs from the id on their own origin.
 | 502 | `lucina_unreachable` | server | Could not connect to Lucina. |
 | 502 | `tts_unavailable` | server | Kokoro unreachable or failed (`POST /v1/tts`). |
 | 503 | `lucina_not_configured` | server | The server has no Lucina token configured. |
+| 503 | `au_unavailable` | server | `/v1/au/*`: Lucina or AU Find is not reachable right now. |
 | 503 | `catalog_unavailable` | server | `catalog.{lang}.json` missing from `SECRETARY_CATALOG_DIR`. |
 | 503 | `service_token_not_configured` | server | `/v1/insights/summary` or `/v1/notify` without `SECRETARY_SERVICE_TOKEN_FILE`. |
 | 503 | `apns_disabled` | server | `POST /v1/push/apns` without APNs configured. |

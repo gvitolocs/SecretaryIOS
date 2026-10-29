@@ -14,6 +14,7 @@
 //! - [`backend`]: the secretary-server client.
 
 pub mod agents;
+pub mod au;
 pub mod auth;
 pub mod backend;
 pub mod cli;
