@@ -449,9 +449,25 @@ final class ApprovalsTests: XCTestCase {
         XCTAssertEqual(store.availability, .available)
         XCTAssertEqual(store.sheetItem?.id, "apr_1")
         XCTAssertEqual(notifier.posted, ["apr_1"])
-        XCTAssertEqual(store.interval, ApprovalsStore.pollInterval)
+        XCTAssertEqual(store.interval, ApprovalsStore.cardInterval, "a prompt on screen: every 5 s")
         await store.poll()
         XCTAssertEqual(notifier.posted, ["apr_1"])
+    }
+
+    func testPollingSlowsDownWithoutAPromptOnScreen() async throws {
+        StubURLProtocol.handler = { _ in .init(body: #"{"approvals":[]}"#) }
+        await store.poll()
+        XCTAssertEqual(store.availability, .available)
+        XCTAssertNil(store.sheetItem)
+        XCTAssertEqual(store.interval, ApprovalsStore.idleInterval)
+        XCTAssertEqual(ApprovalsStore.idleInterval, .seconds(30))
+        XCTAssertEqual(ApprovalsStore.cardInterval, .seconds(5))
+
+        // The loop asks once, then waits: no second request within the idle interval.
+        let task = Task { await store.foregroundLoop() }
+        try await Task.sleep(for: .milliseconds(1500))
+        task.cancel()
+        XCTAssertEqual(StubURLProtocol.requests.filter { $0.url?.path == "/v1/approvals" }.count, 2)
     }
 
     func testOfflineAndServerErrorsStayQuietButSignOutEndsTheSession() async throws {

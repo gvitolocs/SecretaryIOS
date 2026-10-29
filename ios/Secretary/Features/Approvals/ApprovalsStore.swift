@@ -4,9 +4,10 @@ import Observation
 /// The owner's approvals on this iPhone: polls the pending requests, shows the global prompt, posts a local
 /// notification once per request, and answers (a sensitive "yes" is signed with the Face ID key).
 ///
-/// The app has no remote push (free Personal Team), so it asks: every 3 s while it is active, and once when
-/// iOS wakes it for a background refresh. A server without the approvals routes (404) is left alone: no banner,
-/// no error, one request every 30 s.
+/// While the app is active it asks every 30 s, and every 5 s while a request's prompt is on screen (someone is
+/// deciding, or one may be answered elsewhere). In the background it does not poll: a push or a background
+/// refresh asks once. A server without the approvals routes (404) is left alone: no banner, no error, one
+/// request every 30 s.
 @Observable
 @MainActor
 final class ApprovalsStore {
@@ -31,9 +32,14 @@ final class ApprovalsStore {
         case unavailable
     }
 
-    static let pollInterval: Duration = .seconds(3)
+    /// Active, no prompt on screen.
+    static let idleInterval: Duration = .seconds(30)
+    /// Active with a prompt on screen.
+    static let cardInterval: Duration = .seconds(5)
     static let backoffInterval: Duration = .seconds(30)
     static let errorInterval: Duration = .seconds(10)
+    /// How often the loop checks whether the interval changed (a prompt opened); no request.
+    static let tick: Duration = .seconds(1)
     static let notifiedKey = "secretary.approvals.notified"
     static let notifiedLimit = 100
 
@@ -83,20 +89,25 @@ final class ApprovalsStore {
 
     // MARK: - Polling
 
-    /// While the app is active: a poll now, then every 3 s, until cancelled.
+    /// While the app is active: a poll now, then one every `interval`, until cancelled (the app left the
+    /// foreground). The wait is re-read each second, so a prompt that opens shortens it at once.
     func foregroundLoop() async {
         dismissed.removeAll()
+        let clock = ContinuousClock()
         while !Task.isCancelled {
             await poll()
-            try? await Task.sleep(for: interval)
+            let polled = clock.now
+            while !Task.isCancelled, clock.now - polled < interval {
+                try? await Task.sleep(for: Self.tick)
+            }
         }
     }
 
     var interval: Duration {
         switch availability {
         case .unsupported: return Self.backoffInterval
-        case .failing: return Self.errorInterval
-        case .unknown, .available: return Self.pollInterval
+        case .failing: return sheetItem == nil ? Self.idleInterval : Self.errorInterval
+        case .unknown, .available: return sheetItem == nil ? Self.idleInterval : Self.cardInterval
         }
     }
 

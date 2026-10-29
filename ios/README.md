@@ -125,8 +125,9 @@ route (CSRF-exempt, as on the real server), `POST /v1/auth/device` and
 When Lucina, the secrets broker or agentd need the owner's permission, the server holds a request
 (`/v1/approvals`, contract "Owner approvals v1") and this iPhone asks:
 
-- `ApprovalsStore` polls `GET /v1/approvals?status=pending` every 3 s while the app is active and once per
-  background refresh. A server without the routes (404) is left alone: no banner, one request every 30 s.
+- `ApprovalsStore` polls `GET /v1/approvals?status=pending` every 30 s while the app is active, every 5 s while
+  a prompt is on screen, never in the background (a push or a background refresh asks once). A server without
+  the routes (404) is left alone: no banner, one request every 30 s.
 - The prompt is a bottom sheet in a window of its own (`ApprovalPresenter`), above every tab and every other
   sheet: who is asking, the summary, the exact details in monospace, risk and sensitive badges, a countdown.
 - Each new request id posts one local notification (`approval.<id>`, category `APPROVAL`; `APPROVAL_SENSITIVE`
