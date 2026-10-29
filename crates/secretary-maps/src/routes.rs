@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
-const MASK: &str = "routes.duration,routes.staticDuration,routes.distanceMeters,routes.polyline.encodedPolyline,routes.legs.steps.transitDetails";
+const MASK: &str = "routes.duration,routes.staticDuration,routes.distanceMeters,routes.polyline.encodedPolyline,routes.legs.steps.transitDetails,routes.legs.steps.navigationInstruction,routes.legs.steps.distanceMeters,routes.legs.steps.staticDuration,routes.legs.steps.polyline.encodedPolyline,routes.legs.steps.travelMode";
 const MODES: [&str; 4] = ["drive", "walk", "bike", "transit"];
 #[derive(Deserialize)]
 pub struct RoutesQuery {
@@ -44,6 +44,59 @@ fn seconds(v: &Value) -> Option<u64> {
 fn waypoint(p: (i64, i64)) -> Value {
     json!({"location":{"latLng":{"latitude":kernel::e7_to_deg(p.0),"longitude":kernel::e7_to_deg(p.1)}}})
 }
+/// A decoded precision-5 polyline as `[[lat, lng], ...]`, at most `max` points.
+pub(crate) fn polyline_json(points: &[(i64, i64)], max: usize) -> Vec<[f64; 2]> {
+    kernel::simplify(points, max)
+        .iter()
+        .map(|(a, b)| [*a as f64 / 1e5, *b as f64 / 1e5])
+        .collect()
+}
+/// One turn-by-turn step: `None` when it has neither an instruction nor a maneuver.
+pub(crate) fn step(
+    instruction: &str,
+    maneuver: Option<&str>,
+    distance_m: u64,
+    duration_s: u64,
+    polyline: Option<&str>,
+) -> Option<Value> {
+    let instruction = kernel::one_line(instruction);
+    let maneuver = maneuver.filter(|m| !m.is_empty() && *m != "MANEUVER_UNSPECIFIED");
+    if instruction.is_empty() && maneuver.is_none() {
+        return None;
+    }
+    // A step with a malformed polyline keeps its instruction.
+    let points = polyline
+        .and_then(kernel::decode_polyline)
+        .map(|p| polyline_json(&p, STEP_POINTS))
+        .unwrap_or_default();
+    Some(
+        json!({"instruction":instruction,"maneuver":maneuver,"distanceM":distance_m,"durationS":duration_s,"polyline":points}),
+    )
+}
+pub(crate) const MAX_STEPS: usize = 200;
+const STEP_POINTS: usize = 100;
+/// Google's steps over all legs (every mode), at most [`MAX_STEPS`].
+fn google_steps(r: &Value) -> Vec<Value> {
+    r["legs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|leg| leg["steps"].as_array())
+        .flatten()
+        .filter_map(|s| {
+            let nav = &s["navigationInstruction"];
+            step(
+                nav["instructions"].as_str().unwrap_or(""),
+                nav["maneuver"].as_str(),
+                // Google omits zero values.
+                s["distanceMeters"].as_u64().unwrap_or(0),
+                seconds(&s["staticDuration"]).unwrap_or(0),
+                s["polyline"]["encodedPolyline"].as_str(),
+            )
+        })
+        .take(MAX_STEPS)
+        .collect()
+}
 fn parse_route(body: &Value, mode: &str, arrive: Option<i64>) -> Option<Value> {
     let r = body.get("routes")?.as_array()?.first()?;
     let duration = seconds(&r["duration"])?;
@@ -53,11 +106,8 @@ fn parse_route(body: &Value, mode: &str, arrive: Option<i64>) -> Option<Value> {
     if points.is_empty() {
         return None;
     }
-    let points: Vec<_> = kernel::simplify(&points, 400)
-        .iter()
-        .map(|(a, b)| [*a as f64 / 1e5, *b as f64 / 1e5])
-        .collect();
-    let mut out = json!({"mode":mode,"durationS":duration,"staticDurationS":static_duration,"distanceM":distance,"polyline":points});
+    let points = polyline_json(&points, 400);
+    let mut out = json!({"mode":mode,"durationS":duration,"staticDurationS":static_duration,"distanceM":distance,"polyline":points,"steps":google_steps(r)});
     if let Some(arrive) = arrive {
         out["leaveAt"] = json!(timestamp(kernel::leave_at(arrive, duration, 300))?);
     }
@@ -106,7 +156,7 @@ async fn one(
     }
     let start = std::time::Instant::now();
     let result = tokio::time::timeout(std::time::Duration::from_secs(4), async {
-        let mut body = json!({"origin":waypoint(from),"destination":waypoint(to),"travelMode":match mode {"drive"=>"DRIVE","walk"=>"WALK","bike"=>"BICYCLE",_=>"TRANSIT"},"polylineQuality":"OVERVIEW","polylineEncoding":"ENCODED_POLYLINE"});
+        let mut body = json!({"origin":waypoint(from),"destination":waypoint(to),"travelMode":match mode {"drive"=>"DRIVE","walk"=>"WALK","bike"=>"BICYCLE",_=>"TRANSIT"},"polylineQuality":"OVERVIEW","polylineEncoding":"ENCODED_POLYLINE","languageCode":"da"});
         let now = OffsetDateTime::now_utc();
         if mode == "drive" || mode == "transit" {
             body["departureTime"] = json!(now.format(&Rfc3339).map_err(|_| Unavailable)?);

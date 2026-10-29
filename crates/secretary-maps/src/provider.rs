@@ -24,6 +24,29 @@ impl Secret {
     }
 }
 
+/// A Google client key (Maps JavaScript API on web, Maps SDK for iOS). Google restricts it to
+/// the web referrer or the iOS bundle id; the apps receive it from `/v1/maps/config` and it is
+/// never logged (`Debug` is redacted).
+#[derive(Clone, PartialEq)]
+pub struct ClientKey(String);
+impl std::fmt::Debug for ClientKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[REDACTED]")
+    }
+}
+impl ClientKey {
+    /// 20..=100 characters of `[A-Za-z0-9_-]` (the shape of a Google API key), else `None`.
+    pub fn new(s: &str) -> Option<Self> {
+        ((20..=100).contains(&s.len())
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'))
+        .then(|| Self(s.to_string()))
+    }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 pub async fn post(
     st: &AppState,
     url: &str,

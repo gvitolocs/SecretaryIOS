@@ -51,6 +51,10 @@ pub struct Config {
     pub tiles: String,
     pub home: Option<Home>,
     pub google_key: Option<provider::Secret>,
+    /// Client keys the apps render Google Maps with (`/v1/maps/config`): web (referrer
+    /// restricted) and iOS (bundle restricted).
+    pub google_web_key: Option<provider::ClientKey>,
+    pub google_ios_key: Option<provider::ClientKey>,
     pub places_url: String,
     pub routes_url: String,
     /// Self-hosted Photon (`MAPS_PHOTON_URL`): geocoding when Google is missing or fails.
@@ -63,9 +67,11 @@ pub struct Config {
 
 impl Config {
     /// Reads `MAPS_DIR`, `MAPS_TILES`, `MAPS_HOME_LAT`/`_LNG`/`_LABEL`, `GOOGLE_MAPS_SERVER_KEY`
-    /// or `MAPS_GOOGLE_KEY_FILE`, `MAPS_PHOTON_URL`, `MAPS_OSRM_URL` and `MAPS_UPSTREAM_KEY_FILE`
-    /// through `var` (`std::env::var` in the binary). The Google key is never required: a
-    /// missing, empty or unreadable key only turns Google off.
+    /// or `MAPS_GOOGLE_KEY_FILE`, the client keys `GOOGLE_MAPS_WEB_KEY` / `MAPS_GOOGLE_WEB_KEY_FILE`
+    /// and `GOOGLE_MAPS_IOS_KEY` / `MAPS_GOOGLE_IOS_KEY_FILE`, `MAPS_PHOTON_URL`, `MAPS_OSRM_URL`
+    /// and `MAPS_UPSTREAM_KEY_FILE` through `var` (`std::env::var` in the binary). No Google key
+    /// is ever required: a missing, empty, unreadable (or, for client keys, malformed) key is
+    /// only not configured.
     pub fn from_env(var: impl Fn(&str) -> Option<String>) -> Result<Config, String> {
         let get = |k: &str| {
             var(k)
@@ -97,21 +103,50 @@ impl Config {
             _ => None,
         };
         let home_dir = var("HOME").map(PathBuf::from).unwrap_or_default();
-        let key_path = get("MAPS_GOOGLE_KEY_FILE")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home_dir.join(".config/secretary-maps/google.key"));
-        // The secret's own name (Infisical) wins over the key file.
-        let google_key = match get("GOOGLE_MAPS_SERVER_KEY") {
-            Some(k) => provider::Secret::new(&k),
-            None => match std::fs::read_to_string(key_path) {
-                Ok(k) => provider::Secret::new(k.trim()),
+        // A key: the secret's own name (Infisical) wins over the key file; trimmed; missing,
+        // empty or unreadable is `None`, never an error.
+        let read_key = |secret: &str, file_var: &str, default_file: &str| {
+            if let Some(k) = get(secret) {
+                return Some(k);
+            }
+            let path = get(file_var)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home_dir.join(".config/secretary-maps").join(default_file));
+            match std::fs::read_to_string(path) {
+                Ok(k) => Some(k.trim().to_string()).filter(|k| !k.is_empty()),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
                 Err(_) => {
-                    tracing::warn!("Google key file unreadable: Google geocoding and routes off");
+                    tracing::warn!(key = secret, "key file unreadable: key not configured");
                     None
                 }
-            },
+            }
         };
+        let google_key = read_key(
+            "GOOGLE_MAPS_SERVER_KEY",
+            "MAPS_GOOGLE_KEY_FILE",
+            "google.key",
+        )
+        .and_then(|k| provider::Secret::new(&k));
+        // Client keys for the apps' Google map; a malformed key is logged (never its value)
+        // and served as null.
+        let client_key = |secret: &str, file_var: &str, default_file: &str| {
+            let k = read_key(secret, file_var, default_file)?;
+            let key = provider::ClientKey::new(&k);
+            if key.is_none() {
+                tracing::warn!(key = secret, "client key malformed: not configured");
+            }
+            key
+        };
+        let google_web_key = client_key(
+            "GOOGLE_MAPS_WEB_KEY",
+            "MAPS_GOOGLE_WEB_KEY_FILE",
+            "google-web.key",
+        );
+        let google_ios_key = client_key(
+            "GOOGLE_MAPS_IOS_KEY",
+            "MAPS_GOOGLE_IOS_KEY_FILE",
+            "google-ios.key",
+        );
         let base_url = |k: &str| get(k).map(|u| u.trim_end_matches('/').to_string());
         let photon_url = base_url("MAPS_PHOTON_URL");
         let osrm_url = base_url("MAPS_OSRM_URL");
@@ -143,6 +178,8 @@ impl Config {
             tiles,
             home,
             google_key,
+            google_web_key,
+            google_ios_key,
             places_url,
             routes_url,
             photon_url,
@@ -280,6 +317,10 @@ async fn config(State(st): State<Arc<AppState>>) -> Json<Value> {
         "geocoder": st.geocoder(),
         "routes": st.router(),
         "attribution": ATTRIBUTION,
+        "google": {
+            "webKey": c.google_web_key.as_ref().map(provider::ClientKey::as_str),
+            "iosKey": c.google_ios_key.as_ref().map(provider::ClientKey::as_str),
+        },
     }))
 }
 
