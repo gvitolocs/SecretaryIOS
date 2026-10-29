@@ -46,8 +46,9 @@ pub const GATE_MIN: f64 = 0.75;
 pub const ANSWER_MIN: f64 = 0.75;
 /// The facts settle a personal or live question from this P up (`LUCINA_JEV_YESNO_GROUNDED_MIN`).
 pub const GROUNDED_MIN: f64 = 0.6;
-/// Medical, legal or financial from this P up (`LUCINA_JEV_YESNO_SENSITIVE_MIN`).
-pub const SENSITIVE_MIN: f64 = 0.5;
+/// Medical, legal or financial from this P up (`LUCINA_JEV_YESNO_SENSITIVE_MIN`; 0.5 hedged "is oracle
+/// alright?", his server, as financial in the replay).
+pub const SENSITIVE_MIN: f64 = 0.75;
 /// Numbered facts in the state (Jev takes up to 255 options; the reason question offers each).
 pub const MAX_FACTS: usize = 80;
 // The facts plus "none" fit one Jev choice question.
@@ -181,7 +182,7 @@ pub const SENSITIVE_OPTIONS: [(&str, &str); 4] = [
     ("none", "Not a medical, legal or financial question."),
     ("medical", "About health, symptoms, medicines, doses or treatment."),
     ("legal", "About the law, rights, contracts, permits, taxes owed or legal risk."),
-    ("financial", "About investments, loans, buying or selling assets, or other money decisions."),
+    ("financial", "About investments, loans, buying or selling assets, or other money decisions. A company or server name alone (Oracle, p1, nezopt) is not financial."),
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -337,6 +338,18 @@ pub fn calendar_facts(events: &[Value], now: DateTime<Utc>, tz: Tz) -> Vec<Fact>
         .collect()
 }
 
+/// Which days the calendar facts cover: anything else is unknown, not empty.
+pub fn calendar_coverage(ranges: &[(String, String)]) -> String {
+    let r: Vec<String> = ranges
+        .iter()
+        .map(|(f, t)| if f == t { f.clone() } else { format!("{f}..{t}") })
+        .collect();
+    format!(
+        "Calendar shown for {} only; other days are not shown here (unknown, not empty).",
+        r.join(" and ")
+    )
+}
+
 /// The shopping list: one fact per item to buy, one for the recently bought ones, or "nothing to buy".
 pub fn shopping_facts(items: &[Value]) -> Vec<Fact> {
     let name = |i: &Value| {
@@ -485,6 +498,7 @@ fn unavailable(source: &'static str) -> Vec<Fact> {
 /// so instead of looking empty).
 pub async fn gather(
     st: &AppState,
+    question: &str,
     memory: &str,
     recent: &str,
     now: DateTime<Utc>,
@@ -493,24 +507,40 @@ pub async fn gather(
     let local = now.with_timezone(&tz).date_naive();
     let from = local.format("%Y-%m-%d").to_string();
     let to = (local + chrono::Days::new(7)).format("%Y-%m-%d").to_string();
+    // A day he names outside the next week ("per il 28 agosto…") is read too.
+    let asked = lucina_intent::calendar::parse_question(question, now, tz)
+        .map(|q| (q.from, q.to))
+        .filter(|(f, t)| *f < from || *t > to);
     let calendar = within(async {
         if !st.cfg.calendar_enabled {
             return Vec::new();
         }
-        let r = crate::bridges::events(&st.secretary, &from, &to).await;
-        if !r.ok {
-            return unavailable("calendar");
+        let mut ranges = vec![(from.clone(), to.clone())];
+        ranges.extend(asked.clone());
+        let mut facts = vec![Fact {
+            source: "calendar",
+            text: calendar_coverage(&ranges),
+        }];
+        for (f, t) in &ranges {
+            let r = crate::bridges::events(&st.secretary, f, t).await;
+            if !r.ok {
+                return unavailable("calendar");
+            }
+            let evs = r.data["events"].as_array().cloned().unwrap_or_default();
+            let found = calendar_facts(&evs, now, tz);
+            if found.is_empty() {
+                facts.push(Fact {
+                    source: "calendar",
+                    text: format!("Calendar {f}..{t}: nothing scheduled."),
+                });
+            }
+            for e in found {
+                if !facts.contains(&e) {
+                    facts.push(e);
+                }
+            }
         }
-        let evs = r.data["events"].as_array().cloned().unwrap_or_default();
-        let facts = calendar_facts(&evs, now, tz);
-        if facts.is_empty() {
-            vec![Fact {
-                source: "calendar",
-                text: format!("Calendar {from}..{to}: nothing scheduled."),
-            }]
-        } else {
-            facts
-        }
+        facts
     });
     let shopping = within(async {
         let Some(repo) = st.grocery.as_deref() else {
@@ -686,8 +716,10 @@ pub async fn answer(jev: &Jev, question: &str, kind: Kind, facts: &Facts) -> Opt
 pub enum Decision {
     /// Yes or no, with the certainty of that answer (P(yes) or 1 - P(yes)).
     Answer { yes: bool, certainty: f64 },
-    /// Between the bars, or the facts do not settle it.
+    /// Between the bars.
     Unsure,
+    /// His own data or a live fact, and the facts do not settle it (not his calendar or list, say).
+    NotSettled,
 }
 
 /// The thresholds: a sure P either way, and for his own data or a live fact, facts that settle it.
@@ -701,7 +733,7 @@ pub fn decide_with(kind: Kind, v: &Verdict, min: f64, grounded: f64) -> Decision
         Kind::General | Kind::Opinion => true,
     };
     if !settled {
-        return Decision::Unsure;
+        return Decision::NotSettled;
     }
     if v.p_yes >= min {
         Decision::Answer {
@@ -1058,7 +1090,7 @@ pub async fn run(
             ..Facts::default()
         }
     } else {
-        gather(st, memory, recent, now).await
+        gather(st, question, memory, recent, now).await
     };
     run.facts = facts.facts.len();
     let Some(v) = answer(jev, question, g.kind, &facts).await else {
@@ -1068,10 +1100,11 @@ pub async fn run(
     run.verdict = Some(v.clone());
     let (yes, certainty) = match decide(g.kind, &v) {
         Decision::Answer { yes, certainty } => (yes, certainty),
-        // A live fact her data does not settle: the normal path looks it up, no "not sure" first.
-        Decision::Unsure if g.kind == Kind::Live => {
+        // Her facts do not cover it (his email, a live fact): the normal path looks it up, no "not sure".
+        Decision::NotSettled if g.kind == Kind::Live => {
             return finish(run, Outcome::Pass { why: "live_lookup" })
         }
+        Decision::NotSettled => return finish(run, Outcome::Pass { why: "not_in_facts" }),
         Decision::Unsure => {
             return finish(run, Outcome::Unsure { line: unsure_line(lang).into() })
         }
@@ -1093,6 +1126,10 @@ pub async fn run(
             .map(|f| clip(&f.text, 160))
             .unwrap_or_default(),
     };
+    // No reason to give: a bare "No (94%)" is not an answer he can check.
+    if reason.trim().is_empty() {
+        return finish(run, Outcome::Unsure { line: unsure_line(lang).into() });
+    }
     finish(
         run,
         Outcome::Answer {

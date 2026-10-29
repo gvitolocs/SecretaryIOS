@@ -77,13 +77,15 @@ shares, her computer, the ops record and AU Find, before every other shortcut. H
    (what, cosa, hvad, …) and Italian without a `?` are skipped.
 2. **Gate** (`purpose=yesno_gate`): P(closed yes/no question) ≥ `LUCINA_JEV_YESNO_GATE_MIN` (0.75),
    the kind (personal / general / opinion / live / about_lucina) and medical, legal or financial
-   (≥ `LUCINA_JEV_YESNO_SENSITIVE_MIN`, 0.5).
-3. **State:** the calendar for the next 7 days, the shopping list, pending reminders, the gym week
+   (≥ `LUCINA_JEV_YESNO_SENSITIVE_MIN`, 0.75).
+3. **State:** the calendar for the next 7 days (plus a day he names outside them, with a line saying
+   which days are shown), the shopping list, pending reminders, the gym week
    and body weight as numbered facts (sources in parallel, 2.5 s each, a failed source says so),
    then her memory context and the recent turns as background. General knowledge gets no personal data.
 4. **Answer** (`purpose=yesno`): P(yes), `grounded` (the facts settle it) and `evidence` (which fact).
    P(yes) ≥ `LUCINA_JEV_YESNO_MIN` (0.75) → yes, ≤ 0.25 → no; a personal or live question also needs
-   grounded ≥ `LUCINA_JEV_YESNO_GROUNDED_MIN` (0.6).
+   grounded ≥ `LUCINA_JEV_YESNO_GROUNDED_MIN` (0.6); when her facts do not settle it (his email, say)
+   the normal path answers alone, with no "not sure" first.
 5. **Reply:** "Sì / Ja / Yes" or "No / Nej" with the percentage and a confidence word, then one
    sentence of reason written by her text model (thinking off, 90 tokens) from the evidence fact and
    its source only; if the model fails, the fact itself. For general knowledge the model may answer

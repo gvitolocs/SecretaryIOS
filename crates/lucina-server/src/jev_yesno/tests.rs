@@ -86,10 +86,12 @@ fn thresholds_answer_only_when_sure_and_settled() {
     assert_eq!(d(Kind::Opinion, 0.5, None), Decision::Unsure);
     assert_eq!(d(Kind::General, 0.26, None), Decision::Unsure);
     // His own data or a live fact: the facts must settle it, however sure P(yes) is.
-    assert_eq!(d(Kind::Personal, 0.99, Some(0.4)), Decision::Unsure);
-    assert_eq!(d(Kind::Personal, 0.99, None), Decision::Unsure);
-    assert_eq!(d(Kind::Live, 0.02, Some(0.3)), Decision::Unsure);
-    assert_eq!(d(Kind::Lucina, 0.99, None), Decision::Unsure);
+    assert_eq!(d(Kind::Personal, 0.99, Some(0.4)), Decision::NotSettled);
+    assert_eq!(d(Kind::Personal, 0.99, None), Decision::NotSettled);
+    assert_eq!(d(Kind::Live, 0.02, Some(0.3)), Decision::NotSettled);
+    assert_eq!(d(Kind::Lucina, 0.99, None), Decision::NotSettled);
+    // Settled but between the bars: unsure, not "not settled".
+    assert_eq!(d(Kind::Personal, 0.6, Some(0.9)), Decision::Unsure);
     // General knowledge and advice need no facts.
     assert!(matches!(d(Kind::General, 0.97, None), Decision::Answer { yes: true, .. }));
     assert!(matches!(d(Kind::Opinion, 0.1, None), Decision::Answer { yes: false, .. }));
@@ -106,6 +108,7 @@ fn every_kind_option_round_trips() {
 fn threshold_defaults_and_env_overrides() {
     assert_eq!(GATE_MIN, 0.75);
     assert_eq!(ANSWER_MIN, 0.75);
+    assert_eq!(SENSITIVE_MIN, 0.75);
     assert_eq!(env_f64("LUCINA_JEV_YESNO_TEST_UNSET", 0.75), 0.75);
 }
 
@@ -125,6 +128,20 @@ fn calendar_facts_carry_the_day_and_today_or_tomorrow() {
     assert!(f[0].text.contains("@ 5124-038"));
     assert!(f[1].text.starts_with("Fri 2026-10-30 (tomorrow) 08:00–12:00 Ethical Hacking"), "{}", f[1].text);
     assert!(f[2].text.starts_with("Sat 2026-10-31 all day Halloween"), "{}", f[2].text);
+}
+
+#[test]
+fn the_calendar_says_which_days_it_covers() {
+    let r = |f: &str, t: &str| (f.to_owned(), t.to_owned());
+    assert_eq!(
+        calendar_coverage(&[r("2026-10-29", "2026-11-05"), r("2027-08-28", "2027-08-28")]),
+        "Calendar shown for 2026-10-29..2026-11-05 and 2027-08-28 only; other days are not shown here (unknown, not empty)."
+    );
+    // The day he names is read when the parser knows it.
+    let q = lucina_intent::calendar::parse_question("per il 28 agosto ho da fare qualcosa?", now(), tz());
+    if let Some(q) = q {
+        assert!(q.from.ends_with("-08-28"), "{}", q.from);
+    }
 }
 
 #[test]

@@ -243,7 +243,9 @@ impl YesNoStats {
                     .or_default() += 1
             }
         }
-        if t.outcome != "pass" || t.why.as_deref() == Some("live_lookup") {
+        // Past the gate: every outcome but a pass before it (not question-shaped, not yes/no, Jev down).
+        let past_gate = matches!(t.why.as_deref(), Some("live_lookup" | "not_in_facts" | "about_lucina"));
+        if t.outcome != "pass" || past_gate {
             self.yes_no += 1;
             if let Some(k) = &t.kind {
                 *self.kinds.entry(k.clone()).or_default() += 1;
