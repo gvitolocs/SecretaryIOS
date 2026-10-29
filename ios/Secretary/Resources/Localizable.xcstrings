@@ -21203,6 +21203,566 @@
           }
         }
       }
+    },
+    "Account" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Konto"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Account"
+          }
+        }
+      }
+    },
+    "All ages" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Alle aldre"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tutte le età"
+          }
+        }
+      }
+    },
+    "Approvals weren't reachable; try again later." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Godkendelser kunne ikke nås; prøv igen senere."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Le approvazioni non erano raggiungibili; riprova più tardi."
+          }
+        }
+      }
+    },
+    "Approve or decline the pending request first." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Godkend eller afvis først den afventende anmodning."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prima approva o rifiuta la richiesta in sospeso."
+          }
+        }
+      }
+    },
+    "Can't reach the secrets service right now." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hemmelighedstjenesten kan ikke nås lige nu."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Il servizio dei segreti non è raggiungibile in questo momento."
+          }
+        }
+      }
+    },
+    "Connect Pixiv" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Forbind Pixiv"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Collega Pixiv"
+          }
+        }
+      }
+    },
+    "Connected as %@" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Forbundet som %@"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connesso come %@"
+          }
+        }
+      }
+    },
+    "Couldn't finish the Pixiv sign-in." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pixiv-login kunne ikke gennemføres."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Impossibile completare l'accesso a Pixiv."
+          }
+        }
+      }
+    },
+    "Couldn't save the defaults. Try again." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Standarderne kunne ikke gemmes. Prøv igen."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Impossibile salvare i predefiniti. Riprova."
+          }
+        }
+      }
+    },
+    "Default content" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Standardindhold"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Contenuto predefinito"
+          }
+        }
+      }
+    },
+    "Default sort" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Standardsortering"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ordinamento predefinito"
+          }
+        }
+      }
+    },
+    "Defaults" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Standarder"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Predefiniti"
+          }
+        }
+      }
+    },
+    "Disconnect Pixiv?" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Afbryde Pixiv?"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scollegare Pixiv?"
+          }
+        }
+      }
+    },
+    "Newest" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nyeste"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Più recenti"
+          }
+        }
+      }
+    },
+    "Not connected. Without an account Pixiv shows all-ages works only." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ikke forbundet. Uden en konto viser Pixiv kun værker for alle aldre."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Non connesso. Senza un account Pixiv mostra solo opere per tutte le età."
+          }
+        }
+      }
+    },
+    "Not set up on the server yet." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Er endnu ikke sat op på serveren."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Non ancora configurato sul server."
+          }
+        }
+      }
+    },
+    "Open pixiv.net settings" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Åbn indstillinger på pixiv.net"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apri le impostazioni di pixiv.net"
+          }
+        }
+      }
+    },
+    "Pixiv" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pixiv"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pixiv"
+          }
+        }
+      }
+    },
+    "Pixiv didn't accept the sign-in; try again." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pixiv accepterede ikke login; prøv igen."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pixiv non ha accettato l'accesso; riprova."
+          }
+        }
+      }
+    },
+    "Pixiv no longer accepts the saved sign-in. Connect again." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pixiv accepterer ikke længere det gemte login. Forbind igen."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pixiv non accetta più l'accesso salvato. Collegati di nuovo."
+          }
+        }
+      }
+    },
+    "Popular" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Populære"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Più popolari"
+          }
+        }
+      }
+    },
+    "Premium: No" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Premium: nej"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Premium: no"
+          }
+        }
+      }
+    },
+    "Premium: Yes" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Premium: ja"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Premium: sì"
+          }
+        }
+      }
+    },
+    "R-18" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "R-18"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "R-18"
+          }
+        }
+      }
+    },
+    "Removing failed; try again." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Det mislykkedes at fjerne det; prøv igen."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rimozione non riuscita; riprova."
+          }
+        }
+      }
+    },
+    "Removing the saved sign-in: approve with Face ID." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fjerner det gemte login: godkend med Face ID."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rimozione dell'accesso salvato: approva con Face ID."
+          }
+        }
+      }
+    },
+    "Saving failed; connect again." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Det mislykkedes at gemme; forbind igen."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Salvataggio non riuscito; collegati di nuovo."
+          }
+        }
+      }
+    },
+    "Saving the sign-in to your secrets: approve with Face ID." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gemmer login i dine hemmeligheder: godkend med Face ID."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Salvataggio dell'accesso nei tuoi segreti: approva con Face ID."
+          }
+        }
+      }
+    },
+    "The approval timed out; connect again." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Godkendelsen udløb; forbind igen."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "L'approvazione è scaduta; collegati di nuovo."
+          }
+        }
+      }
+    },
+    "The saved sign-in is deleted from your secrets after you approve with Face ID." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Det gemte login slettes fra dine hemmeligheder, når du godkender med Face ID."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "L'accesso salvato viene eliminato dai tuoi segreti dopo che approvi con Face ID."
+          }
+        }
+      }
+    },
+    "The sign-in took too long; try again." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Login tog for lang tid; prøv igen."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "L'accesso ha richiesto troppo tempo; riprova."
+          }
+        }
+      }
+    },
+    "You declined removing it; the saved sign-in stays until you disconnect again." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Du afslog at fjerne det; det gemte login bliver, indtil du afbryder igen."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hai rifiutato la rimozione; l'accesso salvato resta finché non scolleghi di nuovo."
+          }
+        }
+      }
+    },
+    "You declined saving it; nothing was stored." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Du afslog at gemme det; intet blev gemt."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hai rifiutato il salvataggio; non è stato memorizzato nulla."
+          }
+        }
+      }
+    },
+    "You sign in on pixiv's own page. The app only receives a sign-in token, which goes to your secrets after you approve it with Face ID." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Du logger ind på pixivs egen side. Appen modtager kun et login-token, som lægges i dine hemmeligheder, når du godkender det med Face ID."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Accedi sulla pagina di pixiv. L'app riceve solo un token di accesso, che va nei tuoi segreti dopo che lo approvi con Face ID."
+          }
+        }
+      }
+    },
+    "Your Pixiv account hides R-18 works. Pixiv only lets you change this on its website: Settings → Viewing restrictions → Explicit content (R-18): Show." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Din Pixiv-konto skjuler R-18-værker. Pixiv lader dig kun ændre det på sit website: Indstillinger → Visningsbegrænsninger → Eksplicit indhold (R-18): Vis."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Il tuo account Pixiv nasconde le opere R-18. Pixiv permette di cambiarlo solo sul suo sito: Impostazioni → Restrizioni di visualizzazione → Contenuti espliciti (R-18): Mostra."
+          }
+        }
+      }
     }
   },
   "version" : "1.0"

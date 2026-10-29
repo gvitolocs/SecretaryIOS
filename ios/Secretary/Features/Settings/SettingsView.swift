@@ -134,6 +134,15 @@ struct SettingsView: View {
                 .accessibilityIdentifier("notificationSettings")
             }
 
+            Section("Plugins") {
+                NavigationLink {
+                    PixivSettingsScreen(app: app)
+                } label: {
+                    Label("Pixiv", systemImage: "paintpalette")
+                }
+                .accessibilityIdentifier("pixivSettings")
+            }
+
             ApprovalsSettingsSection(prompts: approvalPrompts)
 
             Section("This device") {
