@@ -1,14 +1,15 @@
-import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from "solid-js";
 import { Portal } from "solid-js/web";
 import { instagramApi, type IgSaveItem } from "../api/instagram";
 import { ApiError } from "../api/client";
 import { t } from "../i18n";
 import { formatTaken, type Slide } from "../lib/instagram";
-import { BackIcon, CheckIcon, CloseIcon, DownloadIcon, ExternalIcon } from "./Icons";
+import { CheckIcon, DownloadIcon, ExternalIcon } from "./Icons";
+import { PhotoViewer, type ViewerItem } from "./PhotoViewer";
 
-// The full-screen viewer for stories, highlights, posts and reels: swipe (touch) or arrow keys,
-// video playback, and "Save to Lucina" on every slide (POST /v1/instagram/save). It sits in a
-// Portal on <body>: the page transition transforms <main>, which would break `position: fixed`.
+// The full-size viewer for stories, highlights, posts and reels: the Gallery's PhotoViewer (pinch,
+// ⌘/ctrl + wheel, double tap or click, drag while zoomed, swipe, arrows, Esc, full screen) with
+// "Save to Lucina" on every slide (POST /v1/instagram/save) and the post's caption in its panel.
 
 type SaveState = "idle" | "saving" | "saved";
 
@@ -32,8 +33,6 @@ export default function InstagramViewer(props: {
   const [saves, setSaves] = createSignal<Record<string, SaveState>>({});
   const [toast, setToast] = createSignal("");
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
-  let closeButton: HTMLButtonElement | undefined;
-  const opener = typeof document !== "undefined" ? (document.activeElement as HTMLElement | null) : null;
 
   const slide = createMemo(() => props.slides[index()]);
   const total = () => props.slides.length;
@@ -42,10 +41,15 @@ export default function InstagramViewer(props: {
     const s = slide();
     return s ? props.slides.filter((x) => x.item.id === s.item.id) : [];
   });
-
-  function move(delta: number) {
-    setIndex((i) => Math.max(0, Math.min(total() - 1, i + delta)));
-  }
+  const items = createMemo<ViewerItem[]>(() =>
+    props.slides.map((s) => ({
+      src: s.url,
+      kind: s.kind === "video" ? "video" : "photo",
+      poster: s.thumbUrl,
+      name: `@${props.username}`,
+      id: s.key,
+    })),
+  );
 
   function say(message: string) {
     setToast(message);
@@ -59,7 +63,7 @@ export default function InstagramViewer(props: {
     const mark = (state: SaveState, only?: Slide[]) =>
       setSaves((m) => ({ ...m, ...Object.fromEntries((only ?? fresh).map((s) => [s.key, state])) }));
     mark("saving");
-    const items: IgSaveItem[] = fresh.map((s) => ({
+    const body: IgSaveItem[] = fresh.map((s) => ({
       url: s.url,
       kind: s.kind,
       username: props.username,
@@ -67,7 +71,7 @@ export default function InstagramViewer(props: {
       caption: s.item.caption ?? null,
     }));
     try {
-      const result = await instagramApi.save(items);
+      const result = await instagramApi.save(body);
       const savedAt = new Set(result.saved.map((r) => r.index));
       mark("saved", fresh.filter((_, i) => savedAt.has(i)));
       mark("idle", fresh.filter((_, i) => !savedAt.has(i)));
@@ -87,130 +91,96 @@ export default function InstagramViewer(props: {
     }
   }
 
-  onMount(() => {
-    closeButton?.focus();
-    const key = (e: KeyboardEvent) => {
-      if (e.altKey || e.ctrlKey || e.metaKey) return;
-      if (e.key === "ArrowRight") {
-        e.preventDefault();
-        move(1);
-      } else if (e.key === "ArrowLeft") {
-        e.preventDefault();
-        move(-1);
-      } else if (e.key === "Escape") {
-        e.preventDefault();
-        props.onClose();
-      }
-    };
-    window.addEventListener("keydown", key);
-    onCleanup(() => window.removeEventListener("keydown", key));
-  });
-  onCleanup(() => {
-    clearTimeout(toastTimer);
-    opener?.focus?.();
-  });
+  onCleanup(() => clearTimeout(toastTimer));
 
   createEffect(on(index, (i) => total() - i <= 3 && props.onNearEnd?.()));
 
-  let touch: { x: number; y: number } | undefined;
-  const onTouchStart = (e: TouchEvent) => {
-    const p = e.touches[0];
-    touch = e.touches.length === 1 && p ? { x: p.clientX, y: p.clientY } : undefined;
-  };
-  const onTouchEnd = (e: TouchEvent) => {
-    const p = e.changedTouches[0];
-    if (touch && p) {
-      const dx = p.clientX - touch.x;
-      const dy = p.clientY - touch.y;
-      if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) move(dx < 0 ? 1 : -1);
-      else if (dy > 90 && Math.abs(dy) > Math.abs(dx) * 1.5) props.onClose();
-    }
-    touch = undefined;
-  };
+  const Toolbar = () => (
+    <>
+      <Show when={formatTaken(slide()?.item.takenAt)}>{(d) => <span class="ig-pv-date">{d()}</span>}</Show>
+      <Show when={slide()?.item.permalink}>
+        {(href) => (
+          <a class="pv-btn" href={href()} target="_blank" rel="noopener noreferrer" aria-label={t("instagram.openOnInstagram")} title={t("instagram.openOnInstagram")}>
+            <ExternalIcon />
+          </a>
+        )}
+      </Show>
+      <Show when={siblings().length > 1 && !props.archived}>
+        <button type="button" class="pv-btn pv-text" disabled={siblings().some((s) => stateOf(s.key) === "saving")} onClick={() => void save(siblings())}>
+          {t("instagram.saveAll", { count: siblings().length })}
+        </button>
+      </Show>
+      <Show when={props.archived ? undefined : slide()}>
+        {(s) => (
+          <button
+            type="button"
+            class="pv-btn pv-text ig-pv-save"
+            classList={{ "pv-save--done": stateOf(s().key) === "saved" }}
+            disabled={stateOf(s().key) === "saving"}
+            onClick={() => void save([s()])}
+          >
+            <Show when={stateOf(s().key) === "saved"} fallback={<DownloadIcon />}>
+              <CheckIcon />
+            </Show>
+            <span>{stateOf(s().key) === "saving" ? t("instagram.saving") : stateOf(s().key) === "saved" ? t("instagram.saved") : t("instagram.save")}</span>
+          </button>
+        )}
+      </Show>
+    </>
+  );
+
+  // The caption and a carousel's frames, beside the picture (a short sheet on a phone).
+  const hasPanel = () => !!slide()?.item.caption || siblings().length > 1;
+  const Panel = () => (
+    <div class="ig-pv-panel">
+      <p class="ig-pv-who">
+        @{props.username}
+        <Show when={formatTaken(slide()?.item.takenAt)}>{(d) => <small> · {d()}</small>}</Show>
+      </p>
+      <Show when={siblings().length > 1}>
+        <div class="ig-pv-dots" aria-hidden="true">
+          <For each={siblings()}>{(s) => <span classList={{ "ig-pv-dot": true, "ig-pv-dot--on": s.key === slide()?.key }} />}</For>
+        </div>
+      </Show>
+      <Show when={slide()?.item.caption}>{(c) => <p class="ig-pv-caption">{c()}</p>}</Show>
+    </div>
+  );
 
   return (
-    <Portal>
-      <div class="ig-viewer" role="dialog" aria-modal="true" aria-label={t("instagram.viewer")} onTouchStart={onTouchStart} onTouchEnd={onTouchEnd} onTouchCancel={() => (touch = undefined)}>
-        <header class="ig-viewer__bar">
-          <button type="button" class="ig-viewer__icon" ref={closeButton} aria-label={t("instagram.close")} onClick={() => props.onClose()}>
-            <CloseIcon />
-          </button>
-          <span class="ig-viewer__who">
-            @{props.username}
-            <Show when={formatTaken(slide()?.item.takenAt)}>{(d) => <small> · {d()}</small>}</Show>
-          </span>
-          <span class="ig-viewer__count" aria-live="polite">{t("instagram.position", { n: index() + 1, total: total() })}</span>
-        </header>
-
-        <div class="ig-viewer__stage">
-          <button type="button" class="ig-viewer__nav ig-viewer__nav--prev" aria-label={t("instagram.previous")} disabled={index() === 0} onClick={() => move(-1)}>
-            <BackIcon />
-          </button>
-          <Show keyed when={slide()}>
-            {(s) =>
-              s.kind === "video" ? (
-                <video
-                  class="ig-viewer__media"
-                  src={s.url}
-                  poster={s.thumbUrl ?? undefined}
-                  controls
-                  autoplay
-                  loop
-                  playsinline
-                  preload="auto"
-                  ref={(el) => {
-                    el.muted = true;
-                  }}
-                />
-              ) : (
-                <img class="ig-viewer__media" src={s.url} alt={t("instagram.alt", { name: props.username })} referrerpolicy="no-referrer" />
-              )
-            }
-          </Show>
-          <button type="button" class="ig-viewer__nav ig-viewer__nav--next" aria-label={t("instagram.next")} disabled={index() >= total() - 1} onClick={() => move(1)}>
-            <BackIcon />
-          </button>
-        </div>
-
-        <Show when={siblings().length > 1}>
-          <div class="ig-viewer__dots" aria-hidden="true">
-            <For each={siblings()}>{(s) => <span classList={{ "ig-viewer__dot": true, "ig-viewer__dot--on": s.key === slide()?.key }} />}</For>
-          </div>
-        </Show>
-
-        <footer class="ig-viewer__foot">
-          <Show when={slide()?.item.caption}>{(c) => <p class="ig-viewer__caption">{c()}</p>}</Show>
-          <div class="ig-viewer__actions">
-            <Show when={props.archived ? undefined : slide()}>
-              {(s) => (
-                <button type="button" class="ig-btn ig-btn--primary" disabled={stateOf(s().key) === "saving"} onClick={() => void save([s()])}>
-                  <Show when={stateOf(s().key) === "saved"} fallback={<DownloadIcon />}>
-                    <CheckIcon />
-                  </Show>
-                  <span>{stateOf(s().key) === "saving" ? t("instagram.saving") : stateOf(s().key) === "saved" ? t("instagram.saved") : t("instagram.save")}</span>
-                </button>
-              )}
-            </Show>
-            <Show when={siblings().length > 1 && !props.archived}>
-              <button type="button" class="ig-btn" disabled={siblings().some((s) => stateOf(s.key) === "saving")} onClick={() => void save(siblings())}>
-                {t("instagram.saveAll", { count: siblings().length })}
-              </button>
-            </Show>
-            <Show when={slide()?.item.permalink}>
-              {(href) => (
-                <a class="ig-btn" href={href()} target="_blank" rel="noopener noreferrer">
-                  <ExternalIcon />
-                  <span>{t("instagram.openOnInstagram")}</span>
-                </a>
-              )}
-            </Show>
-          </div>
-        </footer>
-
+    <>
+      <PhotoViewer
+        items={items()}
+        index={index()}
+        onIndex={setIndex}
+        onClose={() => props.onClose()}
+        label={(n, count) => t("instagram.position", { n, total: count })}
+        toolbar={<Toolbar />}
+        panel={hasPanel() ? <Panel /> : undefined}
+        renderVideo={({ item, current }) =>
+          current ? (
+            <video
+              class="pv-video"
+              src={item.src ?? undefined}
+              poster={item.poster ?? undefined}
+              controls
+              autoplay
+              loop
+              playsinline
+              preload="auto"
+              ref={(el) => {
+                el.muted = true;
+              }}
+            />
+          ) : (
+            <Show when={item.poster}>{(poster) => <img class="pv-img" src={poster()} alt="" draggable={false} />}</Show>
+          )
+        }
+      />
+      <Portal>
         <div class="ig-toast" role="status" aria-live="polite">
           {toast()}
         </div>
-      </div>
-    </Portal>
+      </Portal>
+    </>
   );
 }

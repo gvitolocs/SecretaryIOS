@@ -81,31 +81,19 @@
 .ig-highlight__title { max-width: 100%; font-size: var(--lu-type-caption-2); color: var(--lu-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* The full-screen viewer. It is in a Portal on <body>, above the shell. */
-.ig-viewer { position: fixed; inset: 0; z-index: 3000; display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; background: #000; color: #fff; font-family: var(--lu-font); touch-action: pan-y; }
-.ig-viewer__bar { display: flex; align-items: center; gap: var(--lu-space-md); padding: max(10px, env(safe-area-inset-top)) var(--lu-space-lg) 10px; min-width: 0; }
-.ig-viewer__who { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ig-viewer__who small { color: #ffffffb3; font-weight: 400; }
-.ig-viewer__count { color: #ffffffb3; font-size: var(--lu-type-footnote); flex: none; }
-.ig-viewer__icon { display: grid; place-items: center; width: 40px; height: 40px; padding: 0; border: 0; border-radius: var(--lu-radius-pill); background: #ffffff1f; color: #fff; cursor: pointer; flex: none; }
-.ig-viewer__icon .icon, .ig-viewer__nav .icon { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-.ig-viewer__stage { position: relative; display: grid; place-items: center; min-height: 0; min-width: 0; overflow: hidden; }
-.ig-viewer__media { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; display: block; background: #000; }
-.ig-viewer__nav { position: absolute; top: 50%; translate: 0 -50%; z-index: 2; display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border: 0; border-radius: var(--lu-radius-pill); background: #00000080; color: #fff; cursor: pointer; }
-.ig-viewer__nav:disabled { opacity: 0; pointer-events: none; }
-.ig-viewer__nav--prev { left: 10px; }
-.ig-viewer__nav--next { right: 10px; }
-.ig-viewer__nav--next .icon { transform: scaleX(-1); }
-@media (hover: none) { .ig-viewer__nav { display: none; } }
-.ig-viewer__nav:focus-visible, .ig-viewer__icon:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
-.ig-viewer__dots { display: flex; justify-content: center; gap: 5px; padding: 8px 0 0; }
-.ig-viewer__dot { width: 6px; height: 6px; border-radius: var(--lu-radius-pill); background: #ffffff55; }
-.ig-viewer__dot--on { background: #fff; }
-.ig-viewer__foot { display: grid; gap: var(--lu-space-sm); padding: var(--lu-space-md) var(--lu-space-lg) max(16px, env(safe-area-inset-bottom)); min-width: 0; }
-.ig-viewer__caption { margin: 0; max-height: 4.6em; overflow: auto; font-size: var(--lu-type-footnote); line-height: 1.35; color: #ffffffe0; overflow-wrap: anywhere; white-space: pre-line; }
-.ig-viewer__actions { display: flex; flex-wrap: wrap; gap: var(--lu-space-sm); }
-.ig-viewer .ig-btn { background: #ffffff24; color: #fff; }
-.ig-viewer .ig-btn--primary { background: var(--lu-accent-fill); }
-.ig-toast { position: absolute; left: 50%; top: calc(max(10px, env(safe-area-inset-top)) + 56px); translate: -50% 0; max-width: calc(100% - 32px); padding: 8px 14px; border-radius: var(--lu-radius-pill); background: #2c2c2ef2; color: #fff; font-size: var(--lu-type-footnote); text-align: center; pointer-events: none; opacity: 1; transition: opacity var(--lu-motion-base) ease; }
+/* The viewer (components/InstagramViewer.tsx) is the Gallery's PhotoViewer (styles/viewer.css); these are its extras. */
+.ig-pv-date { align-self: center; padding: 0 6px; font-size: var(--lu-type-footnote); color: #ffffffb3; white-space: nowrap; }
+.ig-pv-save { display: inline-flex; align-items: center; gap: 6px; }
+.ig-pv-save .icon { width: 18px; height: 18px; }
+.ig-pv-panel { display: grid; gap: var(--lu-space-sm); padding: var(--lu-space-lg); font-family: var(--lu-font); }
+.ig-pv-who { margin: 0; font-weight: 600; }
+.ig-pv-who small { color: #ffffffb3; font-weight: 400; }
+.ig-pv-caption { margin: 0; font-size: var(--lu-type-footnote); line-height: 1.4; color: #ffffffe0; overflow-wrap: anywhere; white-space: pre-line; }
+.ig-pv-dots { display: flex; gap: 5px; }
+.ig-pv-dot { width: 6px; height: 6px; border-radius: var(--lu-radius-pill); background: #ffffff55; }
+.ig-pv-dot--on { background: #fff; }
+@media (max-width: 700px) { .pv--panel:has(.ig-pv-panel) { --pv-sheet-h: min(32dvh, 240px); } }
+.ig-toast { position: fixed; z-index: 2001; left: 50%; top: calc(max(10px, env(safe-area-inset-top)) + 56px); translate: -50% 0; max-width: calc(100% - 32px); padding: 8px 14px; border-radius: var(--lu-radius-pill); background: #2c2c2ef2; color: #fff; font-size: var(--lu-type-footnote); text-align: center; pointer-events: none; opacity: 1; transition: opacity var(--lu-motion-base) ease; }
 .ig-toast:empty { opacity: 0; }
 
 /* Watching: the button and switch on a profile, the chips with their red dots on the first page */

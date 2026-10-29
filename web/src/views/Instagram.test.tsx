@@ -168,7 +168,7 @@ describe("Instagram", () => {
     fireEvent.click(await screen.findByRole("tab", { name: "Highlights" }));
     fireEvent.click(screen.getByRole("button", { name: /Best of/ }));
     const dialog = await screen.findByRole("dialog");
-    expect(within(dialog).getByText("1 of 2")).toBeInTheDocument();
+    expect(dialog).toHaveAttribute("aria-label", "1 of 2");
   });
 
   it("shows a highlight's count only when the server knows it", async () => {
@@ -214,7 +214,7 @@ describe("Instagram", () => {
     fireEvent.input(screen.getByRole("searchbox"), { target: { value: "https://www.instagram.com/natgeo/p/DeXzbFEl5DG/" } });
     fireEvent.click(screen.getByRole("button", { name: "Open" }));
     const dialog = await screen.findByRole("dialog");
-    expect(within(dialog).getByText("@natgeo")).toBeInTheDocument();
+    expect(dialog.querySelector(".pv-name")).toHaveTextContent("@natgeo");
     expect(calls.some((c) => c.url.startsWith("/v1/instagram/resolve?url="))).toBe(true);
   });
 
@@ -344,7 +344,7 @@ describe("Instagram", () => {
       expect(calls.some((c) => c.url === "/v1/instagram/archive/natgeo")).toBe(true);
       fireEvent.click(screen.getByRole("button", { name: /^Archive 1/ }));
       const dialog = await screen.findByRole("dialog");
-      expect(within(dialog).getByText("1 of 2")).toBeInTheDocument();
+      expect(dialog).toHaveAttribute("aria-label", "1 of 2");
       expect(within(dialog).queryByRole("button", { name: /Save/ })).toBeNull();
     });
 
@@ -366,30 +366,34 @@ describe("Instagram", () => {
 
     it("moves with the arrow keys and closes with Escape", async () => {
       const { dialog } = await openFirst();
-      expect(within(dialog).getByText("1 of 3")).toBeInTheDocument();
+      expect(dialog).toHaveAttribute("aria-label", "1 of 3");
       expect(within(dialog).getByText("caption p1")).toBeInTheDocument();
       fireEvent.keyDown(window, { key: "ArrowRight" });
-      expect(within(dialog).getByText("2 of 3")).toBeInTheDocument();
+      expect(dialog).toHaveAttribute("aria-label", "2 of 3");
       expect(within(dialog).getByText("caption p2")).toBeInTheDocument();
       fireEvent.keyDown(window, { key: "ArrowLeft" });
       fireEvent.keyDown(window, { key: "ArrowLeft" });
-      expect(within(dialog).getByText("1 of 3")).toBeInTheDocument();
+      expect(dialog).toHaveAttribute("aria-label", "1 of 3");
       fireEvent.keyDown(window, { key: "Escape" });
       expect(screen.queryByRole("dialog")).toBeNull();
     });
 
     it("swipes", async () => {
       const { dialog } = await openFirst();
-      fireEvent.touchStart(dialog, { touches: [{ clientX: 300, clientY: 400 }] });
-      fireEvent.touchEnd(dialog, { changedTouches: [{ clientX: 120, clientY: 410 }] });
-      expect(within(dialog).getByText("2 of 3")).toBeInTheDocument();
-      fireEvent.touchStart(dialog, { touches: [{ clientX: 100, clientY: 400 }] });
-      fireEvent.touchEnd(dialog, { changedTouches: [{ clientX: 260, clientY: 380 }] });
-      expect(within(dialog).getByText("1 of 3")).toBeInTheDocument();
-      // A mostly vertical drag is not a swipe.
-      fireEvent.touchStart(dialog, { touches: [{ clientX: 100, clientY: 100 }] });
-      fireEvent.touchEnd(dialog, { changedTouches: [{ clientX: 85, clientY: 20 }] });
-      expect(within(dialog).getByText("1 of 3")).toBeInTheDocument();
+      const stage = dialog.querySelector<HTMLElement>(".pv-stage")!;
+      const drag = (from: [number, number], to: [number, number]) => {
+        fireEvent.pointerDown(stage, { pointerId: 1, clientX: from[0], clientY: from[1] });
+        fireEvent.pointerMove(stage, { pointerId: 1, clientX: to[0], clientY: to[1] });
+        fireEvent.pointerUp(stage, { pointerId: 1, clientX: to[0], clientY: to[1] });
+      };
+      drag([300, 400], [120, 410]);
+      await waitFor(() => expect(dialog).toHaveAttribute("aria-label", "2 of 3"));
+      drag([100, 400], [260, 380]);
+      await waitFor(() => expect(dialog).toHaveAttribute("aria-label", "1 of 3"));
+      // A mostly vertical drag upwards is not a swipe (nor a close).
+      drag([100, 300], [95, 200]);
+      await new Promise((r) => setTimeout(r, 300));
+      expect(screen.getByRole("dialog")).toHaveAttribute("aria-label", "1 of 3");
     });
 
     it("plays a video slide", async () => {
@@ -401,13 +405,15 @@ describe("Instagram", () => {
       expect(video).not.toBeNull();
       expect(video!.getAttribute("src")).toBe("/v1/instagram/s/9/x/v1");
       expect(video!.hasAttribute("controls")).toBe(true);
+      expect(video!.autoplay && video!.loop && video!.muted).toBe(true);
+      expect(video!.hasAttribute("playsinline")).toBe(true);
       expect(calls).toBeTruthy();
     });
 
     it("saves the current slide and tells the owner", async () => {
       const { calls, dialog } = await openFirst();
       fireEvent.click(within(dialog).getByRole("button", { name: "Save to Lucina" }));
-      expect(await within(dialog).findByText("Saved to Lucina", { selector: ".ig-toast" })).toBeInTheDocument();
+      expect(await screen.findByText("Saved to Lucina", { selector: ".ig-toast" })).toBeInTheDocument();
       const save = calls.find((c) => c.url === "/v1/instagram/save")!;
       expect(save.method).toBe("POST");
       expect(save.headers["x-secretary-csrf"]).toBe("1");
@@ -417,13 +423,13 @@ describe("Instagram", () => {
     it("says it is a duplicate", async () => {
       const { dialog } = await openFirst({ save: { saved: [{ index: 0, itemId: "itm_1", duplicate: true }], failed: [] } });
       fireEvent.click(within(dialog).getByRole("button", { name: "Save to Lucina" }));
-      expect(await within(dialog).findByText("Already in Lucina", { selector: ".ig-toast" })).toBeInTheDocument();
+      expect(await screen.findByText("Already in Lucina", { selector: ".ig-toast" })).toBeInTheDocument();
     });
 
     it("reports a failed save and lets the owner try again", async () => {
       const { dialog } = await openFirst({ save: { saved: [], failed: [{ index: 0, error: "expired" }] } });
       fireEvent.click(within(dialog).getByRole("button", { name: "Save to Lucina" }));
-      expect(await within(dialog).findByText(/Couldn't save: the link expired/)).toBeInTheDocument();
+      expect(await screen.findByText(/Couldn't save: the link expired/)).toBeInTheDocument();
       expect(within(dialog).getByRole("button", { name: "Save to Lucina" })).toBeEnabled();
     });
 
@@ -436,9 +442,9 @@ describe("Instagram", () => {
       renderIg("/instagram/natgeo");
       fireEvent.click(await screen.findByRole("button", { name: /^Posts 1/ }));
       const dialog = await screen.findByRole("dialog");
-      expect(within(dialog).getByText("1 of 2")).toBeInTheDocument();
+      expect(dialog).toHaveAttribute("aria-label", "1 of 2");
       fireEvent.click(within(dialog).getByRole("button", { name: "Save all 2" }));
-      expect(await within(dialog).findByText("Saved 2 to Lucina", { selector: ".ig-toast" })).toBeInTheDocument();
+      expect(await screen.findByText("Saved 2 to Lucina", { selector: ".ig-toast" })).toBeInTheDocument();
       const body = calls.find((c) => c.url === "/v1/instagram/save")!.body as { items: { url: string; kind: string }[] };
       expect(body.items.map((i) => [i.url, i.kind])).toEqual([["/v1/instagram/s/9/x/c0", "image"], ["/v1/instagram/s/9/x/c1", "video"]]);
     });

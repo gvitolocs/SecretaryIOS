@@ -1,6 +1,8 @@
 import { children, createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, untrack, type Accessor, type JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 import { t } from "../i18n";
+import { hasFocusMode, onFocusModeChange, setFocusMode } from "../lib/focusMode";
+import { ExitFullscreenIcon, FullscreenIcon } from "./Icons";
 import { imageCore, type CoreView, type DragOut, type Gesture, type ImageCore, type Rect, type ViewRequest } from "../lib/imageCore";
 import "../styles/viewer.css";
 
@@ -11,7 +13,8 @@ import "../styles/viewer.css";
  * Zoom, pan, double tap and the swipe down to close follow the Rust view core (image-core.wasm,
  * the rules the iPhone viewer uses); pictures show fitted while it loads. Horizontal drags,
  * the arrow keys and a two-finger trackpad swipe move between items; a tap shows or hides the
- * controls, as in Google Photos.
+ * controls, as in Google Photos. "Full screen" (F) is the shell's focus mode in Secretary Code and
+ * the Fullscreen API in a browser; closing the viewer leaves it.
  */
 
 export interface ViewerItem {
@@ -247,6 +250,8 @@ export function PhotoViewer(props: PhotoViewerProps) {
   let pinchMid: Pointer = { x: 0, y: 0 };
   let lastTap: Sample | null = null;
   let tapTimer: number | undefined;
+  /** When the pointers last made a double tap, so the mouse's own dblclick doesn't undo it. */
+  let doubledAt = -Infinity;
 
   const local = (e: { clientX: number; clientY: number }): Pointer => {
     const r = stage?.getBoundingClientRect();
@@ -363,6 +368,7 @@ export function PhotoViewer(props: PhotoViewerProps) {
     if (lastTap && now - lastTap.t < DOUBLE_TAP_MS && Math.hypot(p.x - lastTap.x, p.y - lastTap.y) < 30) {
       window.clearTimeout(tapTimer);
       lastTap = null;
+      doubledAt = now;
       if (!isVideo(current())) apply({ op: "double_tap", x: p.x, y: p.y });
       return;
     }
@@ -416,6 +422,17 @@ export function PhotoViewer(props: PhotoViewerProps) {
     axis = "undecided";
   };
 
+  // A mouse double click slower than DOUBLE_TAP_MS (the system's double-click time is often longer) still toggles
+  // fit and 100 %; a quick one was already a double tap.
+  const onDblClick = (e: MouseEvent) => {
+    if ((e.target as Element | null)?.closest?.("button, video, .pv-top, [role=menu]")) return;
+    if (performance.now() - doubledAt < DOUBLE_TAP_MS || isVideo(current())) return;
+    window.clearTimeout(tapTimer);
+    lastTap = null;
+    const p = local(e);
+    apply({ op: "double_tap", x: p.x, y: p.y });
+  };
+
   const onPointerCancel = (e: PointerEvent) => {
     pointers.delete(e.pointerId);
     start = null;
@@ -432,8 +449,8 @@ export function PhotoViewer(props: PhotoViewerProps) {
   const onWheel = (e: WheelEvent) => {
     e.preventDefault();
     const p = local(e);
-    if (e.ctrlKey) {
-      // A trackpad pinch (Chromium and Firefox report it as a wheel with ctrl held).
+    if (e.ctrlKey || e.metaKey) {
+      // A trackpad pinch (Chromium and Firefox report it as a wheel with ctrl held), or ⌘ + a mouse wheel.
       apply({ op: "pinch", factor: Math.exp(-e.deltaY * 0.01), x: p.x, y: p.y });
     } else if (zoomed()) {
       apply({ op: "pan", dx: -e.deltaX, dy: -e.deltaY });
@@ -471,6 +488,36 @@ export function PhotoViewer(props: PhotoViewerProps) {
     apply({ op: "pinch", factor, x: s.w / 2, y: s.h / 2 });
   };
 
+  // ---- full screen --------------------------------------------------------------------------
+
+  const inShell = hasFocusMode();
+  const canFullScreen = inShell || (typeof document !== "undefined" && document.fullscreenEnabled === true);
+  const [fullScreen, setFullScreen] = createSignal(false);
+  /** What the shell last said or was told, so its own changes are not echoed back to it. */
+  let shellFocus = false;
+
+  const enterFullScreen = () => {
+    if (inShell) {
+      shellFocus = true;
+      setFocusMode(true);
+      setFullScreen(true);
+      return;
+    }
+    if (panel && typeof panel.requestFullscreen === "function") {
+      panel.requestFullscreen().then(() => setFullScreen(true)).catch(() => undefined);
+    }
+  };
+  const leaveFullScreen = () => {
+    if (inShell) {
+      if (shellFocus) setFocusMode(false);
+      shellFocus = false;
+    } else if (document.fullscreenElement) {
+      void document.exitFullscreen().catch(() => undefined);
+    }
+    setFullScreen(false);
+  };
+  const toggleFullScreen = () => (fullScreen() ? leaveFullScreen() : enterFullScreen());
+
   onMount(() => {
     const previous = document.activeElement as HTMLElement | null;
     panel?.focus();
@@ -495,8 +542,20 @@ export function PhotoViewer(props: PhotoViewerProps) {
       } else if (e.key === "0") {
         e.preventDefault();
         setView(null);
+      } else if ((e.key === "f" || e.key === "F") && canFullScreen && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        toggleFullScreen();
       }
     };
+    // The shell leaves focus mode by itself (Esc, its "Exit focus", another view): follow it.
+    const unFocus = onFocusModeChange((on) => {
+      shellFocus = on;
+      setFullScreen(on);
+    });
+    const onFullscreenChange = () => {
+      if (!inShell) setFullScreen(!!panel && document.fullscreenElement === panel);
+    };
+    document.addEventListener("fullscreenchange", onFullscreenChange);
     window.addEventListener("keydown", onKey);
     window.addEventListener("resize", measure);
     const observer = typeof ResizeObserver === "function" ? new ResizeObserver(measure) : null;
@@ -505,6 +564,10 @@ export function PhotoViewer(props: PhotoViewerProps) {
     stage?.addEventListener("gesturestart", onGestureStart);
     stage?.addEventListener("gesturechange", onGestureChange);
     onCleanup(() => {
+      unFocus();
+      document.removeEventListener("fullscreenchange", onFullscreenChange);
+      if (shellFocus) setFocusMode(false);
+      if (!inShell && panel && document.fullscreenElement === panel) void document.exitFullscreen().catch(() => undefined);
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("resize", measure);
       observer?.disconnect();
@@ -625,6 +688,7 @@ export function PhotoViewer(props: PhotoViewerProps) {
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
           onPointerCancel={onPointerCancel}
+          onDblClick={onDblClick}
         >
           <For each={slots()}>
             {(s) => {
@@ -680,6 +744,17 @@ export function PhotoViewer(props: PhotoViewerProps) {
               <button type="button" class="pv-btn" aria-label={t("viewer.share")} onClick={() => void share()}><svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 16V3m-5 5 5-5 5 5M5 13v8h14v-8" /></svg></button>
             </Show>
             {toolbar()}
+            <Show when={canFullScreen}>
+              <button
+                type="button"
+                class="pv-btn pv-full"
+                aria-label={fullScreen() ? t("viewer.exitFullScreen") : t("viewer.fullScreen")}
+                aria-pressed={fullScreen()}
+                onClick={toggleFullScreen}
+              >
+                <Show when={fullScreen()} fallback={<FullscreenIcon />}><ExitFullscreenIcon /></Show>
+              </button>
+            </Show>
             <Show when={props.actions?.saveToLucina}>
               <button
                 type="button"

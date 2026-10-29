@@ -13,6 +13,8 @@ const en = {
   saved: "Saved to Lucina",
   already: "Already in Lucina",
   saveFailed: "Not saved · Retry",
+  fullScreen: "Full screen",
+  exitFullScreen: "Exit full screen",
   empty: "Open a picture with Secretary Code to see it here.",
 };
 
@@ -29,6 +31,8 @@ export const viewer: FeatureDictionary<typeof en> = {
     saved: "Salvata su Lucina",
     already: "Già su Lucina",
     saveFailed: "Non salvata · Riprova",
+    fullScreen: "Schermo intero",
+    exitFullScreen: "Esci dallo schermo intero",
     empty: "Apri un'immagine con Secretary Code per vederla qui.",
   },
   da: {
@@ -42,6 +46,8 @@ export const viewer: FeatureDictionary<typeof en> = {
     saved: "Gemt i Lucina",
     already: "Allerede i Lucina",
     saveFailed: "Ikke gemt · Prøv igen",
+    fullScreen: "Fuld skærm",
+    exitFullScreen: "Afslut fuld skærm",
     empty: "Åbn et billede med Secretary Code for at se det her.",
   },
 };

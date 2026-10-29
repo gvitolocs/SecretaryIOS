@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createSignal } from "solid-js";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { imageCoreFromBytes, setImageCoreForTests, type ImageCore } from "../lib/imageCore";
 import { PhotoViewer, type ViewerItem } from "./PhotoViewer";
 
@@ -242,5 +242,64 @@ describe("PhotoViewer", () => {
     await waitFor(() => expect(screen.getByRole("dialog").classList.contains("pv--chrome")).toBe(false));
     fireEvent.keyDown(window, { key: "Escape" });
     expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("zooms on ⌘ + a mouse wheel and toggles fit and 100 % on a slow mouse double click", async () => {
+    open();
+    const img = await placed();
+    fireEvent.wheel(stage(), { metaKey: true, deltaY: -50, clientX: 400, clientY: 300 });
+    expect(parseFloat(img.style.width)).toBeGreaterThan(800);
+
+    fireEvent.keyDown(window, { key: "0" });
+    await waitFor(() => expect(img.style.width).toBe("800px"));
+    fireEvent.dblClick(stage(), { clientX: 400, clientY: 300 });
+    await waitFor(() => expect(parseFloat(img.style.width)).toBeGreaterThan(800));
+    fireEvent.dblClick(stage(), { clientX: 400, clientY: 300 });
+    await waitFor(() => expect(img.style.width).toBe("800px"));
+  });
+
+  describe("full screen", () => {
+    const shell = (window as { secretaryShell?: unknown });
+    afterEach(() => {
+      delete shell.secretaryShell;
+    });
+
+    it("is Secretary Code's focus mode in the Mac app, toggled by the button and F, and left on close", async () => {
+      const setFocusMode = vi.fn();
+      let tell: ((on: boolean) => void) | undefined;
+      shell.secretaryShell = { setFocusMode, onFocusModeChange: (l: (on: boolean) => void) => { tell = l; return () => undefined; } };
+      const [index, setIndex] = createSignal(0);
+      const view = render(() => <PhotoViewer items={items} index={index()} onIndex={setIndex} onClose={() => undefined} />);
+
+      fireEvent.click(screen.getByRole("button", { name: "Full screen" }));
+      expect(setFocusMode).toHaveBeenLastCalledWith(true);
+      expect(screen.getByRole("button", { name: "Exit full screen" })).toHaveAttribute("aria-pressed", "true");
+      fireEvent.keyDown(window, { key: "f" });
+      expect(setFocusMode).toHaveBeenLastCalledWith(false);
+      fireEvent.keyDown(window, { key: "F" });
+      expect(setFocusMode).toHaveBeenLastCalledWith(true);
+
+      // The shell leaving focus mode by itself (its Esc) is followed, not echoed back.
+      tell?.(false);
+      await waitFor(() => expect(screen.getByRole("button", { name: "Full screen" })).toBeInTheDocument());
+      const calls = setFocusMode.mock.calls.length;
+      view.unmount();
+      expect(setFocusMode.mock.calls.length).toBe(calls);
+    });
+
+    it("leaves focus mode when the viewer closes while in it", () => {
+      const setFocusMode = vi.fn();
+      shell.secretaryShell = { setFocusMode };
+      const [index, setIndex] = createSignal(0);
+      const view = render(() => <PhotoViewer items={items} index={index()} onIndex={setIndex} onClose={() => undefined} />);
+      fireEvent.click(screen.getByRole("button", { name: "Full screen" }));
+      view.unmount();
+      expect(setFocusMode).toHaveBeenLastCalledWith(false);
+    });
+
+    it("has no button without the shell or the Fullscreen API", () => {
+      open();
+      expect(screen.queryByRole("button", { name: "Full screen" })).toBeNull();
+    });
   });
 });
