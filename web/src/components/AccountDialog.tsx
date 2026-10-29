@@ -328,7 +328,7 @@ export function AccountDialog(props: {
           <Section id="plugins" title={t("plugins.title")}>
             <div id="plugin-settings" class={props.desktop ? "pg-form" : "settings-form"}>
               <Show when={!props.desktop}><h3 class="field-label">{t("plugins.title")}</h3></Show>
-              <label class="check-row"><input type="checkbox" role="switch" checked={showAdult()} onChange={e => setShowAdult(e.currentTarget.checked)} />{t("plugins.showAdult")}</label>
+              <label class={props.desktop ? "plugins-desk-adult" : "plugins-adult"}><input type="checkbox" checked={showAdult()} onChange={e => setShowAdult(e.currentTarget.checked)} /><span>{t("plugins.showAdult")}</span></label>
               <PixivSettings desktop={props.desktop} />
             </div>
           </Section>

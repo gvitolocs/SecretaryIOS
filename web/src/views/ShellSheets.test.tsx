@@ -57,7 +57,7 @@ describe("plugin settings route", () => {
     stubFetch(() => ({ body: { ok: true, data: { connection: { state: "disconnected" } }, items: [] } }));
     renderAt("/account?section=plugins", routes);
     expect(await screen.findByRole("heading", { name: "Pixiv" })).toBeInTheDocument();
-    expect(screen.getByRole("switch", { name: "Show adult plugins on this device" })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Show adult plugins on this device" })).toBeInTheDocument();
     if (desktop) {
       expect(screen.getByRole("link", { name: "Plugins" })).toHaveAttribute("aria-current", "page");
       expect(screen.queryByRole("dialog")).toBeNull();

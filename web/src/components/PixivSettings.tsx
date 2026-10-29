@@ -84,7 +84,7 @@ export function PixivSettings(props: { desktop?: boolean }) {
   };
   const buttonClass = () => props.desktop ? "pg-btn" : "btn";
   return <section class="pixiv-settings" aria-labelledby="pixiv-settings-title">
-    <h3 id="pixiv-settings-title">{t("pixiv.title")}</h3>
+    <h3 id="pixiv-settings-title" class={props.desktop ? "pg-strong" : "field-label"}>{t("pixiv.title")}</h3>
     <p role="status">{statusText()}</p>
     <Show when={message()}><p role="alert">{message()}</p></Show>
     <Show when={desktopShell()?.pixivLogin} fallback={<p>{t("pixiv.browserHint")}</p>}>
@@ -103,14 +103,14 @@ export function PixivSettings(props: { desktop?: boolean }) {
       <p>{t("pixiv.r18Notice")}</p>
       <a class="pg-link" href="https://www.pixiv.net/settings/viewing" target="_blank" rel="noopener">{t("pixiv.openSettings")}</a>
     </Show>
-    <span id="pixiv-default-content" class="field-label">{t("pixiv.defaultContent")}</span>
+    <span id="pixiv-default-content" class={props.desktop ? "pg-field-label" : "field-label"}>{t("pixiv.defaultContent")}</span>
     <div class={props.desktop ? "pg-choices" : "segmented segmented--wide"} role="group" aria-labelledby="pixiv-default-content">
-      <For each={["safe", "r18", "all"] as const}>{value => <button type="button" class={props.desktop ? "pg-btn" : "segmented-btn"} aria-pressed={settings().defaultContent === value} disabled={saving() || (value !== "safe" && !showAdult())} onClick={() => void save({ defaultContent: value })}>{t(value === "safe" ? "pixiv.safetySafe" : value === "r18" ? "pixiv.safetyR18" : "pixiv.safetyAll")}</button>}</For>
+      <For each={["safe", "r18", "all"] as const}>{value => <button type="button" class={props.desktop ? "pg-btn" : "segmented-btn"} classList={{ "segmented-btn--active": settings().defaultContent === value }} aria-pressed={settings().defaultContent === value} disabled={saving() || (value !== "safe" && !showAdult())} onClick={() => void save({ defaultContent: value })}>{t(value === "safe" ? "pixiv.safetySafe" : value === "r18" ? "pixiv.safetyR18" : "pixiv.safetyAll")}</button>}</For>
     </div>
     <Show when={!showAdult()}><p class="muted small">{t("pixiv.adultHint")}</p></Show>
-    <span id="pixiv-default-sort" class="field-label">{t("pixiv.defaultSort")}</span>
+    <span id="pixiv-default-sort" class={props.desktop ? "pg-field-label" : "field-label"}>{t("pixiv.defaultSort")}</span>
     <div class={props.desktop ? "pg-choices" : "segmented segmented--wide"} role="group" aria-labelledby="pixiv-default-sort">
-      <For each={["date_d", "popular"] as const}>{value => <button type="button" class={props.desktop ? "pg-btn" : "segmented-btn"} aria-pressed={settings().defaultSort === value} disabled={saving()} onClick={() => void save({ defaultSort: value })}>{t(value === "popular" ? "pixiv.orderPopular" : "pixiv.defaultNewest")}</button>}</For>
+      <For each={["date_d", "popular"] as const}>{value => <button type="button" class={props.desktop ? "pg-btn" : "segmented-btn"} classList={{ "segmented-btn--active": settings().defaultSort === value }} aria-pressed={settings().defaultSort === value} disabled={saving()} onClick={() => void save({ defaultSort: value })}>{t(value === "popular" ? "pixiv.orderPopular" : "pixiv.defaultNewest")}</button>}</For>
     </div>
     <Show when={saveMessage()}><p class="muted small" role="status">{saveMessage()}</p></Show>
   </section>;
