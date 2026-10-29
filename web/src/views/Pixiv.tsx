@@ -77,6 +77,10 @@ function Card(props: { item: PixivItem; onOpen: (item: PixivItem) => void }) {
 }
 
 /** The grid of works with its footer: loading, errors, "load more" and the end-of-list note. */
+// How far below the screen the next page starts loading: a cold listing takes 1.5-3 s (pixiv is asked one request
+// at a time), so it starts about two screens early and its thumbnails are there when the grid gets to them.
+const PREFETCH_PX = 1600;
+
 function FeedGrid(props: { feed: Feed; empty: string; onOpen: (item: PixivItem) => void; infinite?: boolean; wide?: boolean }) {
   let sentinel: HTMLDivElement | undefined;
   onMount(() => {
@@ -85,7 +89,7 @@ function FeedGrid(props: { feed: Feed; empty: string; onOpen: (item: PixivItem) 
       (entries) => {
         if (entries.some((e) => e.isIntersecting) && props.feed.hasMore() && !props.feed.loading()) void props.feed.more();
       },
-      { rootMargin: "600px 0px" },
+      { rootMargin: `${PREFETCH_PX}px 0px` },
     );
     io.observe(sentinel);
     onCleanup(() => io.disconnect());
@@ -98,7 +102,7 @@ function FeedGrid(props: { feed: Feed; empty: string; onOpen: (item: PixivItem) 
         if (!sentinel || typeof IntersectionObserver === "undefined") return;
         queueMicrotask(() => {
           const r = sentinel?.getBoundingClientRect();
-          if (r && r.top < window.innerHeight + 600 && props.feed.hasMore() && !props.feed.loading()) void props.feed.more();
+          if (r && r.top < window.innerHeight + PREFETCH_PX && props.feed.hasMore() && !props.feed.loading()) void props.feed.more();
         });
       },
       { defer: true },
