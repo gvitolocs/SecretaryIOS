@@ -13,14 +13,21 @@
 //! - [`mcp`] / [`tools`]: the MCP handler and its tools.
 //! - [`backend`]: the secretary-server client.
 
+pub mod agents;
+pub mod au;
+pub mod callers;
 pub mod auth;
 pub mod backend;
 pub mod cli;
+pub mod computer;
 pub mod config;
 pub mod format;
+pub mod keep;
 pub mod login;
 pub mod mcp;
+pub mod notebooks;
 pub mod oauth;
+pub mod ops;
 pub mod ratelimit;
 pub mod scope;
 pub mod status;
@@ -49,6 +56,8 @@ pub struct App {
     pub tokens: tokens::TokenStore,
     pub oauth: oauth::OAuth,
     pub backend: backend::Backend,
+    /// Per-token `agent_run` history (rate limit) for `crate::agents`.
+    pub agents: agents::RunLog,
 }
 
 pub type AppState = Arc<App>;
@@ -60,11 +69,13 @@ impl App {
             &cfg.backend_url,
             cfg.backend_token.clone(),
             cfg.service_token.clone(),
-        );
+        )
+        .with_agents_token(cfg.agents_token.clone());
         Ok(Arc::new(App {
             tokens: tokens::TokenStore::new(&cfg.data_dir),
             oauth: oauth::OAuth::new(&cfg),
             backend,
+            agents: agents::RunLog::default(),
             cfg,
         }))
     }

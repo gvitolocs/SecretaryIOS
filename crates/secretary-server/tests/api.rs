@@ -126,6 +126,7 @@ async fn mock_handler(
             "result": "here you go", "error": null, "imageUrl": "https://img.example/x.png",
             "createdAt": "t0", "updatedAt": "t1",
         })),
+        (_, p) if p.starts_with("/api/secretary/decisions") => ok(echo),
         ("GET", "/api/secretary/reminders") => ok(json!({
             "scope": "today", "includeSent": true, "timeZone": "Europe/Rome",
             "reminders": [reminder("r1", "call mum", "pending")], "query": seen.query,
@@ -660,7 +661,7 @@ async fn session_login_cookie_flags_and_status() {
     assert_eq!(s, StatusCode::OK);
     assert_eq!(
         b,
-        json!({"authenticated": true, "deviceName": "test iPhone"})
+        json!({"authenticated": true, "deviceId": h.device_id, "deviceName": "test iPhone"})
     );
     let cookie = hd["set-cookie"].to_str().unwrap();
     assert!(cookie.starts_with("sec_session="));
@@ -687,12 +688,16 @@ async fn session_login_cookie_flags_and_status() {
     assert_eq!(s, StatusCode::OK);
     assert_eq!(
         b,
-        json!({"authenticated": true, "deviceName": "test iPhone"})
+        json!({"authenticated": true, "deviceId": h.device_id, "deviceName": "test iPhone"})
     );
     let (_, b, _) = h.send(h.http.get(h.url("/v1/session"))).await;
-    assert_eq!(b, json!({"authenticated": false, "deviceName": null}));
+    assert_eq!(
+        b,
+        json!({"authenticated": false, "deviceId": null, "deviceName": null})
+    );
     let (_, b, _) = h.send(h.req(Method::GET, "/v1/session")).await;
     assert_eq!(b["authenticated"], true, "Bearer counts too");
+    assert_eq!(b["deviceId"], h.device_id);
 
     // bad tokens
     let (s, b, hd) = h
@@ -935,9 +940,10 @@ async fn security_headers_on_every_response() {
     let h = Harness::new(move |c, _| c.web_dir = Some(web)).await;
     const STRICT: &str = "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'";
     // The web app (3D stage: WebAssembly decoder, blob textures/audio/workers).
-    // `WEB` mirrors `WEB_CONTENT_SECURITY_POLICY`: the app's own policy only;
-    // the in-app maps load tiles, fonts and sprites from this origin.
-    const WEB: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' data: blob:; connect-src 'self' blob: data:; media-src 'self' blob:; worker-src 'self' blob:; manifest-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; frame-ancestors 'none'; base-uri 'none'";
+    // `WEB` mirrors `WEB_CONTENT_SECURITY_POLICY`: the app's own origin, the
+    // Google Maps JavaScript API origins for the in-app maps, and the computer
+    // page's probe and frame of Lucina's home-network door.
+    const WEB: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://*.googleapis.com https://*.gstatic.com https://*.google.com; img-src 'self' data: blob: https://*.googleapis.com https://*.gstatic.com https://*.google.com https://*.googleusercontent.com; connect-src 'self' blob: data: https://lan.getsecretary.tech:9443 wss://lan.getsecretary.tech:9443 https://*.googleapis.com https://*.gstatic.com https://*.google.com; frame-src 'self' https://lan.getsecretary.tech:9443; media-src 'self' blob:; worker-src 'self' blob:; manifest-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; frame-ancestors 'none'; base-uri 'none'";
     let responses = [
         (
             STRICT,
@@ -1142,4 +1148,137 @@ async fn token_cli_issue_list_revoke_roundtrip() {
 
     let (ok, _) = cli(&data, &["token", "revoke", "dev_nope"]);
     assert!(!ok);
+}
+
+#[tokio::test]
+async fn decisions_forward_and_validate() {
+    assert_eq!(
+        secretary_server::routes::DECISION_TIMEOUT,
+        Duration::from_secs(60)
+    );
+    let h = Harness::default().await;
+    let body = json!({"question":"Ship?", "extra":{"unchanged":true}});
+    let (status, response, _) = h
+        .send(h.req(Method::POST, "/v1/decisions").json(&body))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["body"], body);
+    assert_eq!(
+        h.mock.last().auth.as_deref(),
+        Some("Bearer lucina-server-secret")
+    );
+    assert_eq!(h.mock.last().path, "/api/secretary/decisions");
+    assert_eq!(
+        h.get("/v1/decisions/dc-012345abcdef").await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        h.mock.last().path,
+        "/api/secretary/decisions/dc-012345abcdef"
+    );
+    assert_eq!(
+        h.get("/v1/decisions?status=pending&limit=010").await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        h.mock.last().query.as_deref(),
+        Some("status=pending&limit=010")
+    );
+    for status in ["decided", "expired"] {
+        assert_eq!(
+            h.get(&format!("/v1/decisions?status={status}&limit=100"))
+                .await
+                .0,
+            StatusCode::OK
+        );
+    }
+    let count = h.mock.count();
+    for path in [
+        "/v1/decisions/nope",
+        "/v1/decisions/dc-012345ABCDEF",
+        "/v1/decisions/dc-012345abcde",
+        "/v1/decisions/dc-012345abcdef0",
+        "/v1/decisions/dc-012345abcdeg",
+        "/v1/decisions/a%2F..%2Fadmin",
+        "/v1/decisions?status=bad",
+        "/v1/decisions?limit=0",
+        "/v1/decisions?limit=101",
+        "/v1/decisions?other=x",
+    ] {
+        assert_eq!(h.get(path).await.0, StatusCode::BAD_REQUEST, "{path}");
+    }
+    assert_eq!(
+        h.send(h.req(Method::POST, "/v1/decisions").json(&json!([])))
+            .await
+            .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        h.send(
+            h.req(Method::POST, "/v1/decisions")
+                .json(&json!({"context":"x".repeat(32768)}))
+        )
+        .await
+        .0,
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
+    assert_eq!(h.mock.count(), count);
+}
+
+#[tokio::test]
+async fn decision_withdraw_forwards_and_validates() {
+    let h = Harness::default().await;
+    assert_eq!(
+        h.send(h.http.delete(h.url("/v1/decisions/dc-012345abcdef")))
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(h.mock.count(), 0);
+    let (status, _, _) = h
+        .send(h.req(
+            Method::DELETE,
+            "/v1/decisions/dc-012345abcdef?reason=%20settled%20%26%20done%20",
+        ))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let seen = h.mock.last();
+    assert_eq!(seen.method, "DELETE");
+    assert_eq!(seen.path, "/api/secretary/decisions/dc-012345abcdef");
+    assert_eq!(seen.query.as_deref(), Some("reason=settled+%26+done"));
+    assert_eq!(seen.auth.as_deref(), Some("Bearer lucina-server-secret"));
+
+    let (status, _, _) = h
+        .send(h.req(Method::DELETE, "/v1/decisions/dc-012345abcdef"))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(h.mock.last().query, None);
+
+    let (status, _, _) = h
+        .send(h.req(Method::DELETE, "/v1/decisions/dc-012345abcdef?reason=%20%20"))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(h.mock.last().query, None);
+
+    let at_max = format!("/v1/decisions/dc-012345abcdef?reason={}", "x".repeat(500));
+    assert_eq!(
+        h.send(h.req(Method::DELETE, &at_max)).await.0,
+        StatusCode::OK
+    );
+    let count = h.mock.count();
+    let too_long = format!("/v1/decisions/dc-012345abcdef?reason={}", "x".repeat(501));
+    for path in [
+        "/v1/decisions/nope",
+        "/v1/decisions/dc-012345ABCDEF",
+        "/v1/decisions/a%2F..%2Fadmin",
+        "/v1/decisions/dc-012345abcdef?other=x",
+        too_long.as_str(),
+    ] {
+        assert_eq!(
+            h.send(h.req(Method::DELETE, path)).await.0,
+            StatusCode::BAD_REQUEST,
+            "{path}"
+        );
+    }
+    assert_eq!(h.mock.count(), count);
 }

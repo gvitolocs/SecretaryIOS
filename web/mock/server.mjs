@@ -1885,6 +1885,7 @@ async function route(req, res) {
   if (path.startsWith("/v1/tasks")) return proxyTasks(req, res, url);
   if (await (await import("./links.mjs")).handleLinks(req, res, { path, method, url, send, fail, readJson })) return;
   if (await (await import("./notes.mjs")).handleNotes(req, res, { path, method, url, send, fail, readJson })) return;
+  if (await (await import("./systemHealth.mjs")).handleSystemHealth(req, res, { path, method, send })) return;
 
   if (mockServerDown && (path.startsWith("/v1/gym/") || path.startsWith("/v1/body/"))) {
     res.writeHead(502, { "Cache-Control": "no-store" });

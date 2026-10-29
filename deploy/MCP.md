@@ -26,6 +26,9 @@ client ──HTTPS──▶ Caddy (getsecretary.tech) ──▶ secretary-mcp 12
 | Tool | Scope | What it does |
 |---|---|---|
 | `ask_lucina {message, conversation?}` | `chat` | One Lucina turn (`POST /v1/chat`); returns her reply. See the note below the table. |
+| `lucina_decide {question, options, reversible, impact, recommendation?, context?, urgency?, topic?, asking_session?, wait_seconds?}` | `chat` | Ask for a go-ahead; pending means wait for the owner's answer. |
+| `lucina_decision_status {decision_id, wait_seconds?}` | `chat` | Check a decision, optionally polling for up to 100 seconds. |
+| `lucina_decision_withdraw {decision_id, reason?}` | `chat` | Take back a pending decision; the owner's buttons then say it was withdrawn. The optional reason is trimmed and limited to 500 characters. |
 | `lucina_timeline {limit?, before?, channel?}` | `read` | Recent messages on all channels, newest first; paginate with `before`. |
 | `shopping_list {list?}` | `read` | v2 list state: needed items with ids, recently bought, other lists. Falls back to legacy `/v1/shopping` when v2 answers 404/502. |
 | `shopping_add {items: [name \| {name, spec?, quantity?, unit?}], list?}` | `write` | v2 `add` ops (new UUID `opId`s); legacy `POST /v1/shopping` as fallback. |
@@ -37,10 +40,12 @@ client ──HTTPS──▶ Caddy (getsecretary.tech) ──▶ secretary-mcp 12
 | `calendar_create {title, start, end?, location?, description?}` | `write` | **Never writes.** Files a proposal (`POST /v1/calendar/proposals`, `from: mcp:<caller>`) and answers that it needs owner confirmation in the app (Links → Waiting for your OK). |
 | `gym_summary {workouts?}` | `read` | `GET /v1/insights/summary` (service token). Without it, `GET /v1/gym/state`. |
 | `body_summary` | `read` | `GET /v1/body/state`: current weight, 7-day average, trends, goal, latest entries. |
-| `note_save {title, content, slug?, tags?, pinned?, replace?}` | `write` | `POST /v1/notes` with `source: <caller>`. An existing slug is refused unless `replace: true` (then `PATCH`). Up to 256 KB of Markdown. |
-| `note_append {slug \| id, content, continuation?}` | `write` | `POST /v1/notes/{key}/append`: a new paragraph (`separator: "\n\n"`), or glued on exactly with `continuation: true` (chunked uploads). |
-| `note_get {slug \| id, offset?, max_chars?}` | `read` | `GET /v1/notes/{key}`: title, tags, source, update time and the content, paged (40 000 characters by default). |
-| `notes_search {q?, tag?, limit?}` | `read` | `GET /v1/notes?q=&tag=`: slug, title, source and an excerpt per hit; without `q`, the latest notes. |
+| `note_save {title, content?, items?, slug?, tags?, labels?, color?, pinned?, archived?, replace?}` | `write` | `POST /v1/notes` with `source: <caller>`. `items` (strings or `{text, checked}`) makes a Keep checklist (content then optional); `labels` are display names (same field as `tags`); `color` is Keep's palette. An existing slug is refused unless `replace: true` (then `PATCH`). Up to 256 KB of Markdown. |
+| `note_append {slug \| id, content, continuation?}` | `write` | `POST /v1/notes/{key}/append`: a new paragraph (`separator: "\n\n"`), or glued on exactly with `continuation: true` (chunked uploads). On a checklist note each line becomes an item. |
+| `note_update {slug \| id, title?, content?, color?, pinned?, archived?, addLabels?, removeLabels?, reminderAt?, reminderRepeat?, check?, uncheck?, addItems?, removeItems?, convert?}` | `write` | `GET` the note, then `PATCH /v1/notes/{key}` with `baseUpdatedAt` (one retry on `409 conflict`, edits re-applied to the new version by item id). Items are named by the number `note_get` shows or by exact text. `reminderAt` is RFC 3339 (null clears; the server creates the Lucina reminder). `convert` is `list` or `text`. Not destructive: removed items and labels are only taken off the note. |
+| `note_get {slug \| id, offset?, max_chars?}` | `read` | `GET /v1/notes/{key}`: title, labels (display names from `GET /v1/notes/labels`), colour, pinned/archived/trashed, source, update time, reminder, attachments (name, type, size), links, collaborators and the content, paged (40 000 characters by default). A checklist shows numbered items with their state instead. |
+| `notes_search {q?, tag?, label?, color?, type?, archived?, limit?}` | `read` | `GET /v1/notes?q=&tag=&color=&type=&archived=`: slug, title, source, labels, colour, checklist progress, reminder and an excerpt per hit; without `q`, the latest notes. `archived` is `include` (default), `exclude` or `only`. |
+| `note_labels` | `read` | `GET /v1/notes/labels`: label display names with note counts. |
 | `lucina_status` | `read` | Server and Lucina health, whether the backend token is accepted, owner time zone and local time, this caller's scopes. |
 
 **`ask_lucina` details.** The message reaches Lucina prefixed `[via Lucina MCP, from <caller>] `, so
@@ -53,7 +58,7 @@ accepts 12 000 after the prefix; secretary-server 12 100 with it).
 (Notes, web and iOS) with the caller as its source, and Lucina recalls it by slug ("cosa c'è nella nota
 craftit-meeting"). For a document too long for one call, `note_save` the first part and
 `note_append` the rest in order. Notes are the owner's own local data, so `note_save` and
-`note_append` need only the `write` scope and no confirmation; each write is also logged on
+`note_append` and `note_update` need only the `write` scope and no confirmation; each write is also logged on
 `secretary_mcp::audit` (`event = "note_write"`, slug, id, size, caller).
 
 **Resources** (`read`):
@@ -73,8 +78,8 @@ agenda is unavailable, it falls back to today's reminders.
 - No tool buys anything, messages third parties, or deletes data. There are no shopping `remove`, list
   delete, note delete, gym/body delete or post tools. `note_save` only overwrites a note with an explicit
   `replace: true`.
-- Anything with consequences goes through `ask_lucina`, so it is handled by Lucina's own pipeline and
-  her own confirmation flow.
+- Go-aheads go through `lucina_decide`, so Lucina can decide or ask the owner on his phone.
+  `ask_lucina` is for consultation and memory.
 - Every call is logged on target `secretary_mcp::audit` with tool, caller, auth kind, token or grant
   id, duration and ok. Arguments, bodies and tokens are never logged.
 

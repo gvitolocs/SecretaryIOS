@@ -1,6 +1,6 @@
 import { useNavigate } from "@solidjs/router";
 import { For, type JSX } from "solid-js";
-import { BookIcon, CheckCircleIcon, FilmIcon, GamepadIcon, GridIcon, HangerIcon, LinkIcon, MicIcon, NoteIcon, PhoneIcon } from "../components/Icons";
+import { BookIcon, CheckCircleIcon, ComputerIcon, FilmIcon, GamepadIcon, GridIcon, HangerIcon, LinkIcon, MicIcon, NoteIcon, PhoneIcon, PulseIcon, QrIcon } from "../components/Icons";
 import { t } from "../i18n";
 import { openWardrobe } from "../state/wardrobe";
 
@@ -26,6 +26,8 @@ export function inAndroidApp(): boolean {
 
 export const PLUGINS: Plugin[] = [
   { id: "desk", icon: CheckCircleIcon, title: () => "My desk", href: "/desk" },
+  // Approve a QR sign-in on another screen (views/ScanQr.tsx).
+  { id: "scan", icon: QrIcon, title: () => t("login.scanOpen"), detail: () => t("login.scanOpenHint"), href: "/scan" },
   { id: "memos", icon: MicIcon, title: () => t("plugins.memos"), detail: () => t("plugins.memosDetail"), href: "/memos" },
   { id: "media", icon: FilmIcon, title: () => t("plugins.media"), detail: () => t("plugins.mediaDetail"), href: "/media" },
   { id: "library", icon: BookIcon, title: () => t("plugins.library"), detail: () => t("plugins.libraryDetail"), href: "/library" },
@@ -39,6 +41,7 @@ export const PLUGINS: Plugin[] = [
     detail: () => t("plugins.pokemonDetail"),
     href: "/pokemon",
   },
+  { id: "computer", icon: ComputerIcon, title: () => t("computer.title"), detail: () => t("computer.detail"), href: "/computer" },
   { id: "wardrobe", icon: HangerIcon, title: () => t("plugins.wardrobe"), detail: () => t("plugins.wardrobeDetail"), run: () => openWardrobe() },
   {
     id: "phone",
@@ -51,6 +54,7 @@ export const PLUGINS: Plugin[] = [
       window.location.href = "secretary://calls";
     },
   },
+  { id: "server", icon: PulseIcon, title: () => t("plugins.server"), detail: () => t("plugins.serverDetail"), href: "/server-health" },
   { id: "models", icon: GridIcon, title: () => t("plugins.models"), detail: () => t("plugins.modelsDetail"), href: "/models" },
 ];
 

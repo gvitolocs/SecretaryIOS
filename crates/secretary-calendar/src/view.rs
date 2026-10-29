@@ -120,6 +120,7 @@ impl Ctx<'_> {
             Source::Iphone => format!("iphone:{}", item.uid),
         };
         Some(Event {
+            attendees: item.attendees.iter().take(30).cloned().collect(),
             id,
             source: self.src.source,
             source_id: item.instance_of.clone().unwrap_or_else(|| item.uid.clone()),

@@ -84,6 +84,24 @@ enum Admit {
     Stored(Box<Notification>, bool),
 }
 
+/// Which devices a push goes to (by the device that registered the subscription).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Audience {
+    All,
+    Only(String),
+    Except(String),
+}
+
+impl Audience {
+    pub fn includes(&self, device_id: &str) -> bool {
+        match self {
+            Audience::All => true,
+            Audience::Only(d) => d == device_id,
+            Audience::Except(d) => d != device_id,
+        }
+    }
+}
+
 pub struct Notifier {
     pub cfg: NotifyConfig,
     pub inbox: Inbox,
@@ -184,7 +202,9 @@ impl Notifier {
         let _guard = self.admit_lock.lock().unwrap_or_else(|e| e.into_inner());
         let category = n.category.unwrap_or(Category::System);
         let keys = n.keys();
-        if keys.iter().any(|k| self.seen.contains(k)) || self.inbox.has_any_key(&keys) {
+        let replace = category.replaces_by_key() && n.dedup_key.is_some();
+        if !replace && (keys.iter().any(|k| self.seen.contains(k)) || self.inbox.has_any_key(&keys))
+        {
             return Ok(Admit::Skip(Outcome::Duplicate));
         }
         let remember = || {
@@ -202,6 +222,7 @@ impl Notifier {
             return Ok(Admit::Skip(Outcome::Present));
         }
         let quiet = settings.quiet_at(now)
+            && !category.always_on()
             && !(category == Category::Reminder && settings.reminders_bypass_quiet);
         let notification = Notification {
             id: model::new_id(now),
@@ -220,23 +241,40 @@ impl Notifier {
             read_at: None,
             deferred: quiet && settings.digest,
         };
+        if replace {
+            if let Some(k) = &notification.dedup_key {
+                self.inbox.remove_key(k)?;
+            }
+        }
         self.inbox.add(notification.clone())?;
         remember();
-        Ok(Admit::Stored(Box::new(notification), !quiet))
+        // Agents (Paseo): while an app is in front the inbox shows it, no push.
+        let in_app = category == Category::Agent && self.present();
+        Ok(Admit::Stored(Box::new(notification), !quiet && !in_app))
     }
 
-    /// Store and (unless quiet) push one notification.
+    /// Store and (unless quiet) push one notification to every device.
     pub async fn publish(self: &Arc<Self>, n: NewNotification) -> io::Result<Outcome> {
+        self.publish_to(n, &Audience::All).await
+    }
+
+    /// [`Self::publish`], with the push going only to `audience` (the inbox
+    /// entry is the same either way).
+    pub async fn publish_to(
+        self: &Arc<Self>,
+        n: NewNotification,
+        audience: &Audience,
+    ) -> io::Result<Outcome> {
         let me = self.clone();
         let now = model::now_ms();
         match blocking(move || me.admit(n, now)).await? {
             Admit::Skip(o) => Ok(o),
             Admit::Stored(notification, push) => {
                 let pushed = if push {
-                    let targets = self.targets_for(&notification, now);
+                    let targets = self.targets_for_audience(&notification, now, audience);
                     let count = targets.len();
                     if count > 0 {
-                        let opts = PushOpts::for_category(notification.category);
+                        let opts = PushOpts::for_notification(&notification);
                         tokio::spawn(push::deliver_all(self.clone(), targets, opts));
                     }
                     count
@@ -256,8 +294,31 @@ impl Notifier {
         settings.allows(c, &s.id) && settings.allows(c, &s.device_id)
     }
 
+    /// Push an already stored notification to `audience` (the escalation of
+    /// an approval to the devices that were not asked first). Returns how
+    /// many subscriptions were sent to.
+    pub async fn push_stored(self: &Arc<Self>, n: &Notification, audience: &Audience) -> usize {
+        let targets = self.targets_for_audience(n, model::now_ms(), audience);
+        let count = targets.len();
+        if count > 0 {
+            let opts = PushOpts::for_notification(n);
+            push::deliver_all(self.clone(), targets, opts).await;
+        }
+        count
+    }
+
     /// The subscriptions this notification goes to, each with its payload.
     pub fn targets_for(&self, n: &Notification, now: i64) -> Vec<(Subscription, Payload)> {
+        self.targets_for_audience(n, now, &Audience::All)
+    }
+
+    /// [`Self::targets_for`], narrowed to `audience`.
+    pub fn targets_for_audience(
+        &self,
+        n: &Notification,
+        now: i64,
+        audience: &Audience,
+    ) -> Vec<(Subscription, Payload)> {
         let settings = self.settings.get();
         let unread = self.inbox.unread();
         let burst = if n.category == Category::LucinaMessage {
@@ -269,12 +330,16 @@ impl Notifier {
         self.pusher
             .list()
             .into_iter()
+            .filter(|s| audience.includes(&s.device_id))
             .filter(|s| Self::sub_allows(&settings, n.category, s))
             .map(|s| {
                 let l = text::lang(s.lang.as_deref().or(Some(settings.language.as_str())));
                 let title = match &n.title {
                     Some(t) => t.clone(),
                     None if burst >= 2 => text::lucina_burst(burst, l),
+                    None if n.category == Category::Agent => {
+                        text::agent_title(n.data.as_ref().and_then(|d| d["reason"].as_str()), l).to_owned()
+                    }
                     None => text::title(n.category, l).to_owned(),
                 };
                 let body = if settings.previews {
@@ -282,20 +347,51 @@ impl Notifier {
                 } else {
                     text::hidden_body(l).to_owned()
                 };
+                let approval = (n.category == Category::Approval)
+                    .then(|| {
+                        let d = n.data.as_ref()?;
+                        Some((
+                            d["approvalId"].as_str()?.to_owned(),
+                            d["sensitive"].as_bool().unwrap_or(false),
+                        ))
+                    })
+                    .flatten();
+                // Lucina's decision ({kind: "decision", decisionId, options}); its options only with previews on.
+                let decision = n
+                    .data
+                    .as_ref()
+                    .filter(|d| d["kind"] == "decision")
+                    .and_then(|d| {
+                        let id = d["decisionId"].as_str()?.to_owned();
+                        let options = d["options"]
+                            .as_array()
+                            .map(|a| a.iter().filter_map(|o| o.as_str().map(str::to_owned)).collect())
+                            .filter(|_: &Vec<String>| settings.previews)
+                            .unwrap_or_default();
+                        Some((id, options))
+                    });
                 let payload = Payload {
                     id: Some(n.id.clone()),
                     category: n.category.as_str().to_owned(),
                     title,
                     body,
                     route: n.route.clone(),
-                    tag: Some(
-                        n.category
-                            .collapse_key()
-                            .map_or_else(|| n.id.clone(), str::to_owned),
-                    ),
+                    tag: Some(push::tag_for(n)),
                     ts: n.ts,
                     unread,
                     digest: false,
+                    url: approval.as_ref().map(|_| n.route.clone()),
+                    sensitive: approval.as_ref().map(|(_, s)| *s),
+                    // The exact commands, for the lock screen's expanded view; hidden with previews off.
+                    detail: approval
+                        .as_ref()
+                        .filter(|_| settings.previews)
+                        .and_then(|_| n.data.as_ref()?["details"].as_str())
+                        .filter(|d| !d.trim().is_empty())
+                        .map(str::to_owned),
+                    approval_id: approval.map(|(id, _)| id),
+                    decision_id: decision.as_ref().map(|(id, _)| id.clone()),
+                    decision_options: decision.map(|(_, o)| o).unwrap_or_default(),
                 };
                 (s, payload)
             })
@@ -453,6 +549,12 @@ impl Notifier {
                 ts: now,
                 unread,
                 digest: true,
+                url: None,
+                approval_id: None,
+                sensitive: None,
+                detail: None,
+                decision_id: None,
+                decision_options: Vec::new(),
             };
             targets.push((s, payload));
         }
@@ -487,6 +589,12 @@ impl Notifier {
                     ts: now,
                     unread,
                     digest: false,
+                    url: None,
+                    approval_id: None,
+                    sensitive: None,
+                    detail: None,
+                    decision_id: None,
+                    decision_options: Vec::new(),
                 };
                 (s, payload)
             })
@@ -637,6 +745,23 @@ mod tests {
             items[0].dedup_key.as_deref(),
             Some(format!("cal:E1:{in5}").as_str())
         );
+    }
+
+    #[tokio::test]
+    async fn agent_notices_stay_in_the_inbox_while_an_app_is_in_front() {
+        let dir = tempfile::tempdir().unwrap();
+        let n = notifier(dir.path());
+        n.set_presence("dev_1", true);
+        let mut a = NewNotification::new(Category::Agent, "Run npm test");
+        a.dedup_key = Some("perm:agent-1/req-1".into());
+        a.data = Some(json!({"kind": "agent", "reason": "permission", "agentId": "agent-1", "requestId": "req-1"}));
+        // Unlike a Lucina message it is kept (Paseo: in-app instead of a push).
+        assert!(matches!(n.publish(a.clone()).await.unwrap(), Outcome::Created { pushed: 0, .. }));
+        assert_eq!(n.publish(a).await.unwrap(), Outcome::Duplicate);
+        assert_eq!(text::agent_title(Some("permission"), "it"), "Un agente chiede il permesso");
+        assert_eq!(text::agent_title(None, "en"), "Agent finished");
+        n.settings.update(|s| s.categories.agent = false).unwrap();
+        assert_eq!(n.publish(NewNotification::new(Category::Agent, "done")).await.unwrap(), Outcome::Disabled);
     }
 
     #[tokio::test]

@@ -103,7 +103,7 @@ fn settings_view(st: &AppState, ident: &Identity) -> Value {
     let subs: Vec<_> = n.pusher.list().iter().map(Subscription::view).collect();
     json!({
         "settings": n.settings.get(),
-        "categories": Category::ALL.iter().map(|c| json!({"id": c.as_str(), "defaultOn": c.default_on()})).collect::<Vec<_>>(),
+        "categories": Category::ALL.iter().map(|c| json!({"id": c.as_str(), "defaultOn": c.default_on(), "locked": c.always_on()})).collect::<Vec<_>>(),
         "subscriptions": subs,
         "currentDevice": {"id": ident.device_id, "name": ident.device_name},
         "webPush": {"enabled": true, "publicKey": n.pusher.vapid.public_key},
@@ -332,7 +332,7 @@ async fn notify(
     JsonBody(b): JsonBody<NotifyBody>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let category = Category::parse(&b.category).ok_or_else(|| {
-        bad("category: one of lucina_message, reminder, calendar, device_confirm, shopping, presence, system")
+        bad("category: one of lucina_message, reminder, calendar, device_confirm, agent, shopping, presence, system")
     })?;
     let body = b.body.trim();
     if body.is_empty() || body.chars().count() > 2000 {

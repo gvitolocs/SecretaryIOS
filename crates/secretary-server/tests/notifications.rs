@@ -574,6 +574,8 @@ async fn inbox_settings_and_auth() {
     assert_eq!((s, b["status"].as_str()), (200, Some("disabled")));
 
     for i in 0..3 {
+        // Inbox ids sort by milliseconds, then a random suffix: avoid timestamp ties.
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
         let (s, _) = h
             .notify(json!({"category": "lucina_message", "title": "Lucina", "body": format!("m{i}"), "channel": "telegram"}))
             .await;
@@ -636,7 +638,7 @@ async fn inbox_settings_and_auth() {
     assert_eq!(v["settings"]["categories"]["presence"], false);
     assert_eq!(v["webPush"]["enabled"], true);
     assert_eq!(v["apns"]["enabled"], false);
-    assert_eq!(v["categories"].as_array().unwrap().len(), 7);
+    assert_eq!(v["categories"].as_array().unwrap().len(), 9, "7 + agent + approval");
     assert!(v["currentDevice"]["id"]
         .as_str()
         .unwrap()

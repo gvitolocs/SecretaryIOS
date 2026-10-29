@@ -152,6 +152,15 @@ export function GamepadIcon() {
   );
 }
 
+export function ComputerIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="3" y="4" width="18" height="12" rx="2" />
+      <path d="M8.5 20h7M12 16v4" />
+    </svg>
+  );
+}
+
 export function SpeakerIcon() {
   return (
     <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -564,4 +573,15 @@ export function RouteModeIcon(props: { mode: "transit" | "walk" | "bike" | "driv
     drive: "M4 10l2-6h12l2 6M4 10h16v9H4v-9Zm3 4h2m6 0h2M6 19v2m12-2v2",
   };
   return <svg class="icon" viewBox={props.mode === "bike" ? "-2 0 29 24" : "0 0 24 24"} aria-hidden="true"><path d={paths[props.mode]} /></svg>;
+}
+
+export function QrIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="4" y="4" width="6" height="6" rx="1" />
+      <rect x="14" y="4" width="6" height="6" rx="1" />
+      <rect x="4" y="14" width="6" height="6" rx="1" />
+      <path d="M14 14h2v2h-2zM18 18h2v2h-2zM14 18h2M18 14h2" />
+    </svg>
+  );
 }
