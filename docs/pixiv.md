@@ -134,7 +134,7 @@ content filter. Images retain Pixiv's original i.pximg.net URLs internally and a
   adds `Referer: https://www.pixiv.net/`. Thumbnails of other hosts get no URL.
 - **Politeness:** pixiv.net is called one request at a time, ≥ 1.5 s apart (`PIXIV_API_INTERVAL_MS`, never below
   1 s), with exponential backoff and jitter on 429/5xx, and a 60 s cool-down after a 429 that outlasted the
-  retries. Image requests (i.pximg.net CDN) start ≥ 250 ms apart, 3 at a time, same backoff, `Retry-After` honoured.
+  retries. Image requests (i.pximg.net CDN) go over one HTTP/2 connection, 12 at a time, starts ≥ 20 ms apart, same backoff, `Retry-After` honoured. Grid thumbnails are pixiv's 540 px master (`c/540x540_70/img-master/…_master1200.jpg`, ~40 KB), not the ranking's 480x960 crop (~240 KB); signed images are `private, max-age=<until expiry>, immutable`.
 - **Disk cache** `PIXIV_CACHE_DIR`, capped by `PIXIV_CACHE_MAX_BYTES` (2 GiB), least recently used out first.
   JSON answers are kept 5 min (works 30 min); they hold original URLs, never signatures.
 - **Save:** originals (`img-original`) are downloaded into the spool (0700) and handed to lucina-media's
