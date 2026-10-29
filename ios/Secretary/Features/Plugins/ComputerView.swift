@@ -9,7 +9,8 @@ import WebKit
 // view with touch, keyboard and text clipboard. Taking over stops Lucina's running task and refuses her
 // and the agents' next steps; it is a 45 s lease this screen renews every 15 s and gives back when it
 // closes. Lucina logs every takeover and input batch. The web plugin (/computer) has the same controls
-// plus a screenshot mode.
+// plus a screenshot mode. The screen shows "Connecting to her screen…" until Cua's status dot says
+// `streaming` (read by a user script in an isolated content world).
 
 struct ComputerControl: Decodable, Equatable, Sendable {
     struct Owner: Decodable, Equatable, Sendable { let device: String }
@@ -63,6 +64,7 @@ struct LucinaComputerView: View {
     @State private var state: ComputerControl?
     @State private var mine = false
     @State private var viewURL: URL?
+    @State private var stream = ""
     @State private var viewExpires = Date.distantPast
     @State private var error: String?
     @State private var notice: String?
@@ -133,14 +135,17 @@ struct LucinaComputerView: View {
                 ZStack {
                     Color.black
                     if let viewURL {
-                        ComputerWebView(url: viewURL)
+                        ComputerWebView(url: viewURL, onState: { stream = $0 })
                             .accessibilityLabel(Text("Lucina's screen"))
-                    } else {
-                        ProgressView().tint(.white)
                     }
+                    streamOverlay
                 }
                 .aspectRatio(1280.0 / 800.0, contentMode: .fit)
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(Theme.separator, lineWidth: 1)
+                )
             }
             .padding(.horizontal, LucinaTokens.Space.gutter)
             .padding(.top, LucinaTokens.Space.sm)
@@ -161,6 +166,7 @@ struct LucinaComputerView: View {
             if mine { await release(other: true) }
             state = nil
             viewURL = nil
+            stream = ""
             await openView(mode: "watch")
             var tick = 0
             while !Task.isCancelled {
@@ -177,6 +183,41 @@ struct LucinaComputerView: View {
                 Task { _ = try? await api.computerControl(sb, action: "release") }
             }
         }
+    }
+
+    @ViewBuilder private var streamOverlay: some View {
+        Group {
+            if viewURL == nil {
+                if error == nil { ProgressView().tint(.white) }
+            } else if stream != "streaming" {
+                if stream == "failed" || stream == "closed" {
+                    VStack(spacing: LucinaTokens.Space.sm) {
+                        Text("Her screen didn't load.")
+                            .font(LucinaTokens.Fonts.footnote)
+                            .foregroundStyle(.white.opacity(0.8))
+                        Button("Try again") {
+                            Task { await openView(mode: mine ? "control" : "watch") }
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                } else {
+                    VStack(spacing: LucinaTokens.Space.sm) {
+                        ProgressView().tint(.white)
+                        Group {
+                            if stream == "reconnecting" {
+                                Text("Reconnecting…")
+                            } else {
+                                Text("Connecting to her screen…")
+                            }
+                        }
+                        .font(LucinaTokens.Fonts.footnote)
+                        .foregroundStyle(.white.opacity(0.8))
+                    }
+                    .allowsHitTesting(false)
+                }
+            }
+        }
+        .accessibilityElement(children: .combine)
     }
 
     private var driverLabel: String {
@@ -223,6 +264,7 @@ struct LucinaComputerView: View {
     private func openView(mode: String) async {
         do {
             let ticket = try await app.api.computerView(sandbox, mode: mode)
+            stream = ""
             viewURL = app.api.computerViewURL(ticket)
             viewExpires = Date().addingTimeInterval(TimeInterval(max(ticket.ttlSecs - 60, 30)))
         } catch {
@@ -277,11 +319,33 @@ struct LucinaComputerView: View {
 
 /// Cua's viewer: a non-persistent WKWebView (no cookies or storage shared with anything else).
 struct ComputerWebView: UIViewRepresentable {
+    static let dataStore = WKWebsiteDataStore.nonPersistent()
     let url: URL
+    let onState: @MainActor (String) -> Void
 
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .nonPersistent()
+        configuration.websiteDataStore = Self.dataStore
+        configuration.userContentController.add(WeakMessageHandler(context.coordinator), contentWorld: .defaultClient, name: "lucinaView")
+        configuration.userContentController.addUserScript(WKUserScript(source: """
+        (function () {
+          if (window.top !== window) return;
+          var last = "";
+          function report(s) {
+            if (!s || s === last) return;
+            last = s;
+            try { window.webkit.messageHandlers.lucinaView.postMessage(s); } catch (e) {}
+          }
+          var timer = setInterval(function () {
+            var dot = document.querySelector(".cua-dot");
+            if (!dot) return;
+            clearInterval(timer);
+            report(dot.getAttribute("data-state") || "connecting");
+            new MutationObserver(function () { report(dot.getAttribute("data-state") || ""); })
+              .observe(dot, { attributes: true, attributeFilter: ["data-state"] });
+          }, 250);
+        })();
+        """, injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: .defaultClient))
         configuration.allowsInlineMediaPlayback = true
         configuration.mediaTypesRequiringUserActionForPlayback = []
         let view = WKWebView(frame: .zero, configuration: configuration)
@@ -295,14 +359,34 @@ struct ComputerWebView: UIViewRepresentable {
     }
 
     func updateUIView(_ view: WKWebView, context: Context) {
+        context.coordinator.onState = onState
         guard context.coordinator.loaded != url else { return }
         context.coordinator.loaded = url
+        Task { @MainActor in onState("") }
         view.load(URLRequest(url: url))
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
+    static func dismantleUIView(_ view: WKWebView, coordinator: Coordinator) {
+        view.configuration.userContentController.removeScriptMessageHandler(forName: "lucinaView", contentWorld: .defaultClient)
+    }
 
-    final class Coordinator {
+    func makeCoordinator() -> Coordinator { Coordinator(onState: onState) }
+
+    @MainActor final class Coordinator {
         var loaded: URL?
+        var onState: @MainActor (String) -> Void
+
+        init(onState: @escaping @MainActor (String) -> Void) { self.onState = onState }
+    }
+
+    final class WeakMessageHandler: NSObject, WKScriptMessageHandler {
+        weak var coordinator: Coordinator?
+
+        init(_ coordinator: Coordinator) { self.coordinator = coordinator }
+
+        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            guard let state = message.body as? String else { return }
+            Task { @MainActor [weak coordinator] in coordinator?.onState(state) }
+        }
     }
 }
