@@ -244,7 +244,7 @@ struct GalleryScreen: View {
         }
         }
         .fullScreenCover(item: $viewing) { item in
-            GalleryViewer(start: item, shown: $shownID)
+            GalleryViewer(start: item, shown: $shownID, zoomDismiss: true)
                 .presentationBackground(.clear)
                 .zoomTransition(from: shownID ?? item.id, in: zoom)
         }
@@ -551,10 +551,13 @@ struct GalleryViewer: View {
 
     /// The photo on screen, for the grid (the tile the viewer zooms back into).
     @Binding var shown: String?
+    /// Presented with the zoom transition (the Gallery grid): its own interactive dismiss does the swipe down.
+    let zoomDismiss: Bool
 
-    init(start: GalleryItem, shown: Binding<String?> = .constant(nil)) {
+    init(start: GalleryItem, shown: Binding<String?> = .constant(nil), zoomDismiss: Bool = false) {
         self.start = start
         _shown = shown
+        self.zoomDismiss = zoomDismiss
         _current = State(initialValue: start.id)
     }
 
@@ -564,10 +567,12 @@ struct GalleryViewer: View {
         NavigationStack {
             pager
             // Google Photos: swipe down to close, up for the details.
-            // Our pan owns both directions, including while the zoom transition opens.
-            .photoDragOut(enabled: zoomedID != current, systemDismiss: false, dragging: $dragging,
+            // From the grid the swipe down is the zoom transition's: the photo follows the finger and
+            // shrinks back into its tile (owning it ourselves, 69c33557, only faded it out). Elsewhere
+            // (Drive) there is no zoom transition, so our pan does both directions.
+            .photoDragOut(enabled: zoomedID != current, systemDismiss: zoomDismiss, dragging: $dragging,
                           onDismiss: { dismiss() }, onInfo: { showInfo = true })
-            .interactiveDismissDisabled(true)
+            .interactiveDismissDisabled(!zoomDismiss || zoomedID == current)
             // The top bar floats over a dark gradient; the bottom stays free.
             .overlay(alignment: .top) { ViewerScrim(top: true).opacity(bare ? 0 : 1) }
             .clearNavigationBackground()

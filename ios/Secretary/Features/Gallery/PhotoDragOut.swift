@@ -134,6 +134,26 @@ struct PhotoDragOut: ViewModifier {
               let answer = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         return answer["drag"] as? [String: Any]
     }
+
+    /// Whether the vertical pan starts, with the core's axis. The pan asks after only a few points
+    /// (dy 0-5 on iOS 27), under the core's 10 pt slop, so the finger's heading decides: its travel,
+    /// else its velocity, else its travel stretched to 12 pt. A slow drag (vy about 180) used to stay
+    /// "undecided" and never start. With `upOnly` a drag heading down is left to the zoom transition.
+    static func admits(_ t: CGSize, _ v: CGSize, _ size: CGSize, upOnly: Bool) -> (begin: Bool, axis: String?) {
+        var axis = request(t, v, size, ended: false)?["axis"] as? String
+        var heading = t
+        if axis == "undecided" {
+            let speed = hypot(v.width, v.height)
+            let travel = hypot(t.width, t.height)
+            let (dir, length) = speed > 0 ? (v, speed) : (t, travel)
+            if length > 0 {
+                heading = CGSize(width: dir.width * 12 / length, height: dir.height * 12 / length)
+                axis = request(heading, v, size, ended: false)?["axis"] as? String
+            }
+        }
+        let up = v.height != 0 ? v.height < 0 : heading.height < 0
+        return (axis == "out" && (!upOnly || up), axis)
+    }
 }
 
 /// One finger, mostly vertical at the start, recognised together with the pager's scroll pan (which
@@ -154,12 +174,8 @@ struct VerticalPan: UIGestureRecognizerRepresentable {
             let v = pan.velocity(in: pan.view)
             let t = pan.translation(in: pan.view)
             let size = pan.view?.bounds.size ?? .zero
-            let velocity = CGSize(width: v.x, height: v.y)
-            var axis = PhotoDragOut.request(CGSize(width: t.x, height: t.y), velocity, size, ended: false)?["axis"] as? String
-            if axis == "undecided" {
-                axis = PhotoDragOut.request(CGSize(width: v.x * 0.05, height: v.y * 0.05), velocity, size, ended: false)?["axis"] as? String
-            }
-            let begin = axis == "out" && (!upOnly || v.y < 0)
+            let (begin, axis) = PhotoDragOut.admits(CGSize(width: t.x, height: t.y), CGSize(width: v.x, height: v.y),
+                                                    size, upOnly: upOnly)
             dragLog.notice("GalleryDrag pan should_begin=\(begin) axis=\(axis ?? "none", privacy: .public) dx=\(Int(t.x)) dy=\(Int(t.y)) vx=\(Int(v.x)) vy=\(Int(v.y))")
             return begin
         }

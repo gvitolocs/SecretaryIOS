@@ -1,3 +1,5 @@
+import CoreGraphics
+@testable import Secretary
 import SecretaryCore
 import XCTest
 
@@ -44,5 +46,32 @@ final class ImageDragTests: XCTestCase {
     func testDragWhileOpeningIsOut() throws {
         let result = try drag(#"{"new":[1,1,390,844],"drag":{"dx":20,"dy":30,"vx":0,"vy":700}}"#)
         XCTAssertEqual(result["axis"] as? String, "out")
+    }
+
+    // The pan asks to start after a few points (iOS 27: dy 0-5), under the core's slop. These are the
+    // owner's slow swipes from the phone's log (2026-10-29) that never started.
+    private let screen = CGSize(width: 390, height: 844)
+
+    func testSlowSwipeDownStartsOurPanWithoutTheZoomTransition() {
+        let (begin, axis) = PhotoDragOut.admits(CGSize(width: 0, height: 2), CGSize(width: 0, height: 189), screen, upOnly: false)
+        XCTAssertTrue(begin)
+        XCTAssertEqual(axis, "out")
+    }
+
+    func testSwipeDownIsLeftToTheZoomTransitionFromTheGrid() {
+        XCTAssertFalse(PhotoDragOut.admits(CGSize(width: 0, height: 2), CGSize(width: 0, height: 189), screen, upOnly: true).begin)
+        XCTAssertFalse(PhotoDragOut.admits(CGSize(width: 0, height: 27), CGSize(width: -23, height: 1262), screen, upOnly: true).begin)
+    }
+
+    func testSlowSwipeUpStartsTheDetails() {
+        XCTAssertTrue(PhotoDragOut.admits(CGSize(width: 0, height: -3), CGSize(width: 5, height: -187), screen, upOnly: true).begin)
+    }
+
+    func testSlowSidewaysSwipeStaysWithThePager() {
+        XCTAssertFalse(PhotoDragOut.admits(CGSize(width: 3, height: 0), CGSize(width: 327, height: 55), screen, upOnly: false).begin)
+    }
+
+    func testStillFingerDoesNotStart() {
+        XCTAssertFalse(PhotoDragOut.admits(.zero, .zero, screen, upOnly: false).begin)
     }
 }
