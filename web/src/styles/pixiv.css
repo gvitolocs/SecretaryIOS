@@ -29,6 +29,9 @@
 .px-search .px-search__field input { flex: 1; min-width: 0; width: 100%; }
 .px-search .px-btn { height: 40px; }
 .px-select { display: grid; gap: 2px; min-width: 0; font-size: var(--lu-type-caption); color: var(--lu-text-secondary); }
+/* The Content filter above the ranking chips and the bookmarks. */
+.px-filters { display: flex; flex-wrap: wrap; gap: var(--lu-space-sm); min-width: 0; }
+.px-filters .px-select { width: min(100%, 220px); }
 .px-select select { min-height: 36px; width: 100%; padding: 0 var(--lu-space-sm); border: 0; border-radius: var(--lu-radius-field); background: var(--lu-field); color: var(--lu-text); font: inherit; font-size: var(--lu-type-subheadline); }
 
 /* The grid of works. */
@@ -43,11 +46,15 @@
 .px-badge { position: absolute; display: inline-grid; place-items: center; min-width: 22px; height: 22px; padding: 0 6px; border-radius: var(--lu-radius-pill); background: var(--lu-scrim); color: #fff; font-size: var(--lu-type-caption-2); font-weight: 600; }
 .px-badge--pages { top: var(--lu-space-xs); right: var(--lu-space-xs); }
 .px-badge--r18 { top: var(--lu-space-xs); left: var(--lu-space-xs); background: var(--lu-negative); }
+.px-badge--tier { bottom: var(--lu-space-xs); left: var(--lu-space-xs); max-width: calc(100% - 44px); overflow: hidden; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .px-badge--mark { bottom: var(--lu-space-xs); right: var(--lu-space-xs); background: var(--lu-accent-fill); padding: 0; width: 24px; }
 .px-badge--mark .icon { width: 14px; height: 14px; }
 .px-foot { display: grid; justify-items: center; gap: var(--lu-space-sm); padding: var(--lu-space-md) 0; min-height: 24px; }
 .px-note { margin: 0; color: var(--lu-text-secondary); font-size: var(--lu-type-footnote); text-align: center; }
 .px-note--error { color: var(--lu-negative); }
+.px-note--sort { text-align: left; }
+/* Why a list is short or empty (R-18 needs Pixiv's session, the account hides R-18, ...). */
+.px-notice { margin: 0; padding: var(--lu-space-sm) var(--lu-space-md); border-radius: var(--lu-radius-field); border-left: 3px solid var(--lu-accent); background: var(--lu-accent-soft); color: var(--lu-text); font-size: var(--lu-type-footnote); line-height: 1.4; overflow-wrap: anywhere; min-width: 0; }
 
 /* ---- the reader ---- */
 .px-reader { position: fixed; inset: 0; z-index: 60; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; background: var(--lu-bg); color: var(--lu-text); font-family: var(--lu-font); min-width: 0; }

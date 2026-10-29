@@ -8,9 +8,21 @@ const LIST = { ok: true, data: { items: [{ id: "1", title: "Sky", author: "Ann",
 
 describe("parsing", () => {
   it("fills the defaults of a thin item and drops items without an id", () => {
-    expect(parseItem({ id: "5" })).toEqual({ id: "5", title: "", author: "", authorId: "", tags: [], thumbUrl: "", pages: 1, r18: false, bookmarked: false });
+    expect(parseItem({ id: "5" })).toEqual({ id: "5", title: "", author: "", authorId: "", tags: [], thumbUrl: "", pages: 1, r18: false, bookmarked: false, popularTier: null });
     expect(parseListing({ items: [{ id: "1" }, { nope: 1 }], hasMore: true }).items.map((i) => i.id)).toEqual(["1"]);
-    expect(parseListing(undefined)).toEqual({ items: [], page: 1, hasMore: false, total: null, numPages: null });
+    expect(parseListing(undefined)).toEqual({ items: [], page: 1, hasMore: false, total: null, numPages: null, notice: null, sort: null });
+  });
+
+  it("reads the notice, the sort and the popularity tier, and shrugs off garbage", () => {
+    const l = parseListing({ items: [{ id: "1", popularTier: 1000 }, { id: "2", popularTier: "1000" }], notice: "r18_needs_session", sort: { requested: "popular", used: "users_tags" } });
+    expect(l.notice).toBe("r18_needs_session");
+    expect(l.sort).toEqual({ requested: "popular", used: "users_tags" });
+    expect(l.items.map((i) => i.popularTier)).toEqual([1000, null]);
+    for (const junk of [{ notice: 3, sort: "popular" }, { notice: "", sort: { requested: "popular" } }, { notice: null, sort: [] }]) {
+      expect(parseListing(junk)).toMatchObject({ notice: null, sort: null });
+    }
+    expect(parseListing({ sort: { used: "date_d" } }).sort).toEqual({ requested: "", used: "date_d" });
+    for (const tier of [0, -5, Number.NaN, null, {}]) expect(parseItem({ id: "1", popularTier: tier }).popularTier).toBeNull();
   });
 
   it("reads a work with its pages and tags", () => {
@@ -46,7 +58,16 @@ describe("requests", () => {
     await pixivApi.illust("12");
     await pixivApi.bookmarks();
     expect(calls[3]!.url).toBe("/v1/pixiv/illust/12");
-    expect(calls[4]!.url).toBe("/v1/pixiv/bookmarks");
+    expect(calls[4]!.url).toBe("/v1/pixiv/bookmarks?content=safe");
+  });
+
+  it("asks for the popular order and passes the bookmarks' content filter", async () => {
+    const calls = stubFetch(() => ({ body: { ok: true, data: { items: [], notice: "all_ages_only" } } }));
+    await pixivApi.search({ q: "sky", order: "popular", mode: "all" });
+    expect(calls[0]!.url).toBe("/v1/pixiv/search?q=sky&order=popular&type=all&mode=all&page=1&adult=1");
+    const l = await pixivApi.bookmarks("r18");
+    expect(calls[1]!.url).toBe("/v1/pixiv/bookmarks?content=r18&adult=1");
+    expect(l.notice).toBe("all_ages_only");
   });
 
   it("returns the parsed listing", async () => {

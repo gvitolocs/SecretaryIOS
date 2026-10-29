@@ -82,35 +82,74 @@ describe("Pixiv", () => {
     await waitFor(() => expect(calls.some((c) => c.url.startsWith("/v1/pixiv/ranking?mode=week"))).toBe(true));
   });
 
-  it("lists R-18 ranking modes and the R-18 search filter only while adult plugins are shown", async () => {
+  it("labels the Content filter All ages, R-18 and All, the last two only while adult plugins are shown", async () => {
     serve();
     renderPixiv();
     await screen.findByRole("button", { name: "Open Work 11 by Ann" });
-    expect(screen.getByRole("button", { name: "Daily R-18" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Weekly R-18" })).toBeInTheDocument();
+    const options = () => within(screen.getByLabelText("Content")).getAllByRole("option").map((o) => o.textContent);
+    expect(options()).toEqual(["All ages", "R-18", "All"]);
     fireEvent.click(screen.getByRole("tab", { name: "Search" }));
-    expect(within(screen.getByLabelText("Content")).getByRole("option", { name: "R-18" })).toBeInTheDocument();
+    expect(options()).toEqual(["All ages", "R-18", "All"]);
+    fireEvent.click(screen.getByRole("tab", { name: "Bookmarks" }));
+    expect(options()).toEqual(["All ages", "R-18", "All"]);
 
     setShowAdult(false);
-    await waitFor(() => expect(within(screen.getByLabelText("Content")).queryByRole("option", { name: "R-18" })).toBeNull());
+    await waitFor(() => expect(options()).toEqual(["All ages"]));
     fireEvent.click(screen.getByRole("tab", { name: "Ranking" }));
     expect(screen.queryByRole("button", { name: /R-18/ })).toBeNull();
     expect(screen.getByRole("button", { name: "Daily" })).toBeInTheDocument();
+  });
+
+  it("offers the ranking modes the content filter allows", async () => {
+    const calls = serve();
+    renderPixiv();
+    await screen.findByRole("button", { name: "Open Work 11 by Ann" });
+    expect(screen.queryByRole("button", { name: /R-18/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Weekly" }));
+    fireEvent.change(screen.getByLabelText("Content"), { target: { value: "r18" } });
+    const chips = () => within(screen.getByRole("group", { name: "Ranking mode" })).getAllByRole("button").map((b) => b.textContent);
+    expect(chips()).toEqual(["Daily R-18", "Weekly R-18", "Male R-18", "Female R-18"]);
+    // the weekly mode is gone, so the first R-18 one takes over
+    expect(screen.getByRole("button", { name: "Daily R-18" })).toHaveAttribute("aria-pressed", "true");
+    await waitFor(() => expect(calls.at(-1)!.url).toBe("/v1/pixiv/ranking?mode=day_r18&page=1&adult=1"));
+    fireEvent.change(screen.getByLabelText("Content"), { target: { value: "all" } });
+    expect(chips()).toHaveLength(11);
+    expect(chips().slice(0, 2)).toEqual(["Daily", "Weekly"]);
+    expect(screen.getByRole("button", { name: "Daily R-18" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.change(screen.getByLabelText("Content"), { target: { value: "safe" } });
+    expect(screen.getByRole("button", { name: "Daily" })).toHaveAttribute("aria-pressed", "true");
+    await waitFor(() => expect(calls.at(-1)!.url).toBe("/v1/pixiv/ranking?mode=day&page=1&adult=1"));
+  });
+
+  it("marks R-18 works in the ranking and in a search", async () => {
+    serve((c) => (c.url.startsWith("/v1/pixiv/search") ? ok({ items: [item("21"), item("22", { r18: true })], page: 1, hasMore: false }) : undefined));
+    renderPixiv();
+    const r18 = await screen.findByRole("button", { name: "Open Work 12 by Ann" });
+    expect(r18.querySelector(".px-badge--r18")).toHaveTextContent("R-18");
+    expect(screen.getByRole("button", { name: "Open Work 11 by Ann" }).querySelector(".px-badge--r18")).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "Search" }));
+    fireEvent.input(screen.getByRole("searchbox"), { target: { value: "sky" } });
+    fireEvent.submit(screen.getByRole("search"));
+    const hit = await screen.findByRole("button", { name: "Open Work 22 by Ann" });
+    expect(hit.querySelector(".px-badge--r18")).toHaveTextContent("R-18");
+    expect(screen.getByRole("button", { name: "Open Work 21 by Ann" }).querySelector(".px-badge--r18")).toBeNull();
   });
 
   it("falls back to the daily ranking when the switch goes off on an R-18 mode, and stops sending adult=1", async () => {
     const calls = serve();
     renderPixiv();
     await screen.findByRole("button", { name: "Open Work 11 by Ann" });
+    fireEvent.change(screen.getByLabelText("Content"), { target: { value: "all" } });
     fireEvent.click(screen.getByRole("button", { name: "Daily R-18" }));
     await waitFor(() => expect(calls.some((c) => c.url.startsWith("/v1/pixiv/ranking?mode=day_r18"))).toBe(true));
     setShowAdult(false);
     await waitFor(() => expect(calls.at(-1)!.url).toBe("/v1/pixiv/ranking?mode=day&page=1"));
     expect(screen.getByRole("button", { name: "Daily" })).toHaveAttribute("aria-pressed", "true");
     expect(calls.filter((c) => c.url.includes("day_r18")).every((c) => c.url.includes("adult=1"))).toBe(true);
+    expect(screen.getByLabelText("Content")).toHaveValue("safe");
   });
 
-  it("an R-18 search choice goes back to Safe when the switch goes off", async () => {
+  it("an R-18 search choice goes back to All ages when the switch goes off", async () => {
     const calls = serve();
     renderPixiv();
     fireEvent.click(await screen.findByRole("tab", { name: "Search" }));
@@ -138,12 +177,122 @@ describe("Pixiv", () => {
     expect(calls.at(-1)!.url).toBe("/v1/pixiv/search?q=blue+sky&order=date&type=manga&mode=safe&page=1&adult=1");
   });
 
+  it("searches by popularity, says how, and shows the bookmark tier", async () => {
+    const calls = serve((c) =>
+      c.url.startsWith("/v1/pixiv/search")
+        ? ok({ items: [item("21", { popularTier: 10000 }), item("22", { popularTier: 1000 }), item("23")], page: 1, hasMore: false, sort: { requested: "popular", used: c.url.includes("order=popular") ? "users_tags" : "date_d" } })
+        : undefined,
+    );
+    renderPixiv();
+    fireEvent.click(await screen.findByRole("tab", { name: "Search" }));
+    const order = screen.getByLabelText("Order");
+    expect(within(order).getAllByRole("option").map((o) => o.textContent)).toEqual(["Newest first", "Oldest first", "Popular"]);
+    fireEvent.input(screen.getByRole("searchbox"), { target: { value: "sky" } });
+    fireEvent.submit(screen.getByRole("search"));
+    await screen.findByRole("button", { name: "Open Work 21 by Ann" });
+    expect(screen.queryByText(/Popular by bookmark tags/)).toBeNull(); // a date order says nothing
+    fireEvent.change(order, { target: { value: "popular" } });
+    await waitFor(() => expect(calls.at(-1)!.url).toBe("/v1/pixiv/search?q=sky&order=popular&type=all&mode=safe&page=1&adult=1"));
+    expect(await screen.findByText("Popular by bookmark tags (users入り), then the newest. Pixiv's own popular sort needs Premium.")).toBeInTheDocument();
+    const top = screen.getByRole("button", { name: "Open Work 21 by Ann" });
+    expect(within(top).getByRole("img", { name: "Bookmarked by 10k+ people" })).toHaveTextContent("♥ 10k+");
+    expect(within(screen.getByRole("button", { name: "Open Work 22 by Ann" })).getByRole("img", { name: "Bookmarked by 1000+ people" })).toHaveTextContent("♥ 1000+");
+    expect(screen.getByRole("button", { name: "Open Work 23 by Ann" }).querySelector(".px-badge--tier")).toBeNull();
+  });
+
+  it("says when Pixiv's own popular sort or the newest works stood in", async () => {
+    let used = "pixiv_popular";
+    serve((c) => (c.url.startsWith("/v1/pixiv/search") ? ok({ items: [item("21")], page: 1, hasMore: false, sort: { requested: "popular", used } }) : undefined));
+    renderPixiv();
+    fireEvent.click(await screen.findByRole("tab", { name: "Search" }));
+    fireEvent.change(screen.getByLabelText("Order"), { target: { value: "popular" } });
+    fireEvent.input(screen.getByRole("searchbox"), { target: { value: "sky" } });
+    fireEvent.submit(screen.getByRole("search"));
+    expect(await screen.findByText("Sorted by Pixiv's popularity (Premium).")).toBeInTheDocument();
+    used = "date_d_fallback";
+    fireEvent.change(screen.getByLabelText("Type"), { target: { value: "manga" } });
+    expect(await screen.findByText("No works here have popularity tags yet, so these are the newest.")).toBeInTheDocument();
+    expect(screen.queryByText("Sorted by Pixiv's popularity (Premium).")).toBeNull();
+  });
+
   it("shows the bookmarks", async () => {
-    serve();
+    const calls = serve();
     renderPixiv();
     fireEvent.click(await screen.findByRole("tab", { name: "Bookmarks" }));
     const card = await screen.findByRole("button", { name: "Open Work 31 by Ann" });
     expect(within(card).getByRole("img", { name: "Bookmarked" })).toBeInTheDocument();
+    expect(calls.at(-1)!.url).toBe("/v1/pixiv/bookmarks?content=safe&adult=1");
+  });
+
+  it("filters the bookmarks by content and reloads them when it changes", async () => {
+    const calls = serve();
+    renderPixiv();
+    fireEvent.click(await screen.findByRole("tab", { name: "Bookmarks" }));
+    await screen.findByRole("button", { name: "Open Work 31 by Ann" });
+    fireEvent.change(screen.getByLabelText("Content"), { target: { value: "r18" } });
+    await waitFor(() => expect(calls.at(-1)!.url).toBe("/v1/pixiv/bookmarks?content=r18&adult=1"));
+    fireEvent.change(screen.getByLabelText("Content"), { target: { value: "all" } });
+    await waitFor(() => expect(calls.at(-1)!.url).toBe("/v1/pixiv/bookmarks?content=all&adult=1"));
+    // the filter is shared: the search uses it too
+    fireEvent.click(screen.getByRole("tab", { name: "Search" }));
+    expect(screen.getByLabelText("Content")).toHaveValue("all");
+    fireEvent.input(screen.getByRole("searchbox"), { target: { value: "cat" } });
+    fireEvent.submit(screen.getByRole("search"));
+    await waitFor(() => expect(calls.at(-1)!.url).toBe("/v1/pixiv/search?q=cat&order=date_d&type=all&mode=all&page=1&adult=1"));
+  });
+
+  describe("notices", () => {
+    const NEEDS = "R-18 works need the plugin to be signed in to Pixiv. Signed-out visitors only get all-ages works.";
+    const DISABLED = "Your Pixiv account hides R-18 works. On pixiv.net open Settings → Viewing restrictions and set Explicit content (R-18) to Show.";
+    const ALL_AGES = "Showing all-ages works only: the plugin isn't signed in to Pixiv.";
+
+    it("an empty R-18 ranking says the plugin needs Pixiv's session instead of Nothing here", async () => {
+      serve((c) => (c.url.includes("mode=day_r18") ? ok({ items: [], page: 1, hasMore: false, notice: "r18_needs_session" }) : undefined));
+      renderPixiv();
+      await screen.findByRole("button", { name: "Open Work 11 by Ann" });
+      fireEvent.change(screen.getByLabelText("Content"), { target: { value: "r18" } });
+      expect(await screen.findByText(NEEDS)).toHaveAttribute("role", "status");
+      expect(screen.getByText(NEEDS)).toHaveClass("px-notice");
+      expect(screen.queryByText("Nothing here.")).toBeNull();
+      fireEvent.change(screen.getByLabelText("Content"), { target: { value: "safe" } });
+      await screen.findByRole("button", { name: "Open Work 11 by Ann" });
+      expect(screen.queryByText(NEEDS)).toBeNull();
+    });
+
+    it("an empty search says the account hides R-18 instead of Nothing here", async () => {
+      serve((c) => (c.url.startsWith("/v1/pixiv/search") ? ok({ items: [], page: 1, hasMore: false, notice: "r18_disabled_in_account" }) : undefined));
+      renderPixiv();
+      fireEvent.click(await screen.findByRole("tab", { name: "Search" }));
+      fireEvent.change(screen.getByLabelText("Content"), { target: { value: "r18" } });
+      fireEvent.input(screen.getByRole("searchbox"), { target: { value: "cat" } });
+      fireEvent.submit(screen.getByRole("search"));
+      expect(await screen.findByText(DISABLED)).toBeInTheDocument();
+      expect(screen.queryByText("Nothing here.")).toBeNull();
+    });
+
+    it("a search for All while signed out says only all-ages works are shown, above them", async () => {
+      serve((c) => (c.url.startsWith("/v1/pixiv/search") ? ok({ items: [item("21")], page: 1, hasMore: false, notice: "all_ages_only" }) : undefined));
+      renderPixiv();
+      fireEvent.click(await screen.findByRole("tab", { name: "Search" }));
+      fireEvent.change(screen.getByLabelText("Content"), { target: { value: "all" } });
+      fireEvent.input(screen.getByRole("searchbox"), { target: { value: "cat" } });
+      fireEvent.submit(screen.getByRole("search"));
+      expect(await screen.findByText(ALL_AGES)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Open Work 21 by Ann" })).toBeInTheDocument();
+    });
+
+    it("the bookmarks show a notice in place of the empty note, and ignore unknown notices", async () => {
+      let notice = "r18_needs_session";
+      serve((c) => (c.url.startsWith("/v1/pixiv/bookmarks") && c.method === "GET" ? ok({ items: [], notice }) : undefined));
+      renderPixiv();
+      fireEvent.click(await screen.findByRole("tab", { name: "Bookmarks" }));
+      expect(await screen.findByText(NEEDS)).toBeInTheDocument();
+      expect(screen.queryByText("No bookmarks yet. Open a work and tap the bookmark.")).toBeNull();
+      notice = "something_new";
+      fireEvent.change(screen.getByLabelText("Content"), { target: { value: "all" } });
+      expect(await screen.findByText("No bookmarks yet. Open a work and tap the bookmark.")).toBeInTheDocument();
+      expect(document.querySelector(".px-notice")).toBeNull();
+    });
   });
 
   it("says when Pixiv asks to slow down, and retries", async () => {

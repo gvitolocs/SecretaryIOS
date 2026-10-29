@@ -1,6 +1,6 @@
 import { A, useNavigate, useParams } from "@solidjs/router";
 import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
-import { pixivApi, RANKING_MODES, RANKING_MODES_R18, type PixivItem, type RankingMode, type SearchOrder, type SearchSafety, type SearchType } from "../api/pixiv";
+import { pixivApi, RANKING_MODES, RANKING_MODES_R18, type PixivContent, type PixivItem, type RankingMode, type SearchOrder, type SearchType } from "../api/pixiv";
 import { BackIcon, BookmarkIcon, SearchIcon } from "../components/Icons";
 import { Button, Card as PageCard, EmptyState, ErrorState, Page, PageGrid, PageHeader, SectionNav, useWide, type SectionNavItem } from "../components/page";
 import { Reader } from "../components/pixiv/Reader";
@@ -11,8 +11,10 @@ import "../styles/pixiv.css";
 
 // Pixiv (/pixiv, a Plugins card; owner, 2026-10-28): the ranking, a search and the owner's bookmarks, with a
 // reader for multi-page works and "Save to Lucina". The service is crates/secretary-pixiv (docs/pixiv.md).
-// R-18 ranking modes and the R-18 search filter exist only while "Show adult plugins" is on; the service
-// refuses them without `adult=1` in any case. `/pixiv/<id>` opens a work over the list.
+// One Content filter (all ages, R-18, all) serves every tab: the search's mode, the ranking modes on offer and
+// the bookmarks' filter. Its R-18 choices exist only while "Show adult plugins" is on; the service refuses them
+// without `adult=1` in any case, and says (a notice) when its Pixiv session can't show R-18 at all.
+// `/pixiv/<id>` opens a work over the list.
 
 type Tab = "ranking" | "search" | "bookmarks";
 
@@ -30,6 +32,25 @@ const MODE_LABEL: Record<RankingMode, () => string> = {
   day_female_r18: () => t("pixiv.modeDayFemaleR18"),
 };
 
+/** The notices the service may attach to a listing; any other value is ignored. */
+const NOTICE: Record<string, () => string> = {
+  r18_needs_session: () => t("pixiv.noticeNeedsSession"),
+  r18_disabled_in_account: () => t("pixiv.noticeDisabled"),
+  all_ages_only: () => t("pixiv.noticeAllAgesOnly"),
+};
+
+/** What a search's popular order turned out to be (`sort.used`); date orders say nothing. */
+const SORT_NOTE: Record<string, () => string> = {
+  pixiv_popular: () => t("pixiv.sortPopular"),
+  users_tags: () => t("pixiv.sortUsersTags"),
+  date_d_fallback: () => t("pixiv.sortFallback"),
+};
+
+/** 1000 → "1000+", 10000 → "10k+", 100000 → "100k+". */
+export function tierLabel(n: number): string {
+  return n >= 10_000 ? `${Math.floor(n / 1000)}k+` : `${n}+`;
+}
+
 function Card(props: { item: PixivItem; onOpen: (item: PixivItem) => void }) {
   return (
     <button type="button" class="px-card" data-work={props.item.id} aria-label={t("pixiv.openWork", { title: props.item.title, author: props.item.author })} onClick={() => props.onOpen(props.item)}>
@@ -42,6 +63,13 @@ function Card(props: { item: PixivItem; onOpen: (item: PixivItem) => void }) {
         </Show>
         <Show when={props.item.r18}>
           <span class="px-badge px-badge--r18">{t("pixiv.r18")}</span>
+        </Show>
+        <Show when={props.item.popularTier}>
+          {(tier) => (
+            <span class="px-badge px-badge--tier" role="img" aria-label={t("pixiv.tier", { count: tierLabel(tier()) })}>
+              ♥ {tierLabel(tier())}
+            </span>
+          )}
         </Show>
         <Show when={props.item.bookmarked}>
           <span class="px-badge px-badge--mark" role="img" aria-label={t("pixiv.bookmarked")}>
@@ -83,8 +111,15 @@ function FeedGrid(props: { feed: Feed; empty: string; onOpen: (item: PixivItem) 
       { defer: true },
     ),
   );
+  const notice = () => {
+    const n = props.feed.notice();
+    return n ? NOTICE[n]?.() ?? "" : "";
+  };
   return (
     <>
+      <Show when={notice()}>
+        <p class="px-notice" role="status">{notice()}</p>
+      </Show>
       <div class="px-grid" role="list" aria-busy={props.feed.loading()}>
         <For each={props.feed.items()}>{(item) => <div role="listitem" class="px-grid__cell"><Card item={item} onOpen={props.onOpen} /></div>}</For>
       </div>
@@ -110,7 +145,7 @@ function FeedGrid(props: { feed: Feed; empty: string; onOpen: (item: PixivItem) 
             <Button onClick={() => void props.feed.more()}>{t("pixiv.loadMore")}</Button>
           </Show>
         </Show>
-        <Show when={!props.feed.loading() && !props.feed.error() && props.feed.started() && props.feed.items().length === 0}>
+        <Show when={!props.feed.loading() && !props.feed.error() && props.feed.started() && props.feed.items().length === 0 && !notice()}>
           <Show when={props.wide} fallback={<p class="px-note">{props.empty}</p>}>
             <EmptyState text={props.empty} />
           </Show>
@@ -132,36 +167,52 @@ export default function PixivView() {
   const [query, setQuery] = createSignal("");
   const [order, setOrder] = createSignal<SearchOrder>("date_d");
   const [kind, setKind] = createSignal<SearchType>("all");
-  const [safety, setSafety] = createSignal<SearchSafety>("safe");
+  const [content, setContent] = createSignal<PixivContent>("safe");
   const ranking = createFeed();
   const search = createFeed();
   const bookmarks = createFeed();
   /** The work opened from a card, so the reader has something to show before the work arrives. */
   const [preview, setPreview] = createSignal<PixivItem>();
 
-  const modes = createMemo<RankingMode[]>(() => (showAdult() ? [...RANKING_MODES, ...RANKING_MODES_R18] : [...RANKING_MODES]));
-
-  // R-18 choices vanish with the switch.
-  createEffect(() => {
-    if (showAdult()) return;
-    if (mode().endsWith("_r18")) setMode("day");
-    if (safety() === "r18") setSafety("safe");
+  /** The content filter in force: R-18 choices vanish with the switch (read here, so no list asks for them first). */
+  const contentNow = createMemo<PixivContent>(() => (showAdult() ? content() : "safe"));
+  const modes = createMemo<RankingMode[]>(() => {
+    const c = contentNow();
+    return c === "safe" ? [...RANKING_MODES] : c === "r18" ? [...RANKING_MODES_R18] : [...RANKING_MODES, ...RANKING_MODES_R18];
   });
+  /** The chosen ranking mode, or the first one the content filter shows when it hides that one. */
+  const rankingMode = createMemo<RankingMode>(() => (modes().includes(mode()) ? mode() : modes()[0]!));
 
-  const startRanking = () => void ranking.start((page) => pixivApi.ranking(mode(), page));
+  createEffect(() => {
+    if (!showAdult() && content() !== "safe") setContent("safe");
+  });
+  createEffect(() => setMode(rankingMode()));
+
+  const startRanking = () => void ranking.start((page) => pixivApi.ranking(rankingMode(), page));
   const startSearch = () => {
     const q = query().trim();
     if (!q) return void search.start(null);
-    const params = { q, order: order(), type: kind(), mode: safety() };
+    const params = { q, order: order(), type: kind(), mode: contentNow() };
     void search.start((page) => pixivApi.search({ ...params, page }));
+  };
+  const startBookmarks = () => {
+    const c = contentNow();
+    void bookmarks.start(async () => ({ ...(await pixivApi.bookmarks(c)), page: 1, hasMore: false }));
   };
 
   // Ranking follows its mode (and the adult switch, since the service filters by it).
-  createEffect(on([mode, showAdult], () => (tab() === "ranking" ? startRanking() : void ranking.start(null))));
+  createEffect(on([rankingMode, showAdult], () => (tab() === "ranking" ? startRanking() : void ranking.start(null))));
   createEffect(
     on(tab, (current) => {
       if (current === "ranking" && !ranking.started()) startRanking();
-      if (current === "bookmarks") void bookmarks.start(async () => ({ items: await pixivApi.bookmarks(), page: 1, hasMore: false, total: null, numPages: null }));
+      if (current === "bookmarks") startBookmarks();
+    }, { defer: true }),
+  );
+  // Search and bookmarks follow the content filter (ranking does through its modes).
+  createEffect(
+    on(contentNow, () => {
+      if (query()) startSearch();
+      if (tab() === "bookmarks") startBookmarks();
     }, { defer: true }),
   );
   const feedOf = (): Feed => (tab() === "ranking" ? ranking : tab() === "search" ? search : bookmarks);
@@ -182,7 +233,7 @@ export default function PixivView() {
   };
   const onBookmark = (id: string, on: boolean) => {
     for (const feed of [ranking, search]) feed.patch(id, { bookmarked: on });
-    if (tab() === "bookmarks" && !on) void bookmarks.start(async () => ({ items: await pixivApi.bookmarks(), page: 1, hasMore: false, total: null, numPages: null }));
+    if (tab() === "bookmarks" && !on) startBookmarks();
     else bookmarks.patch(id, { bookmarked: on });
   };
   const openId = () => (params.id ? decodeURIComponent(params.id) : undefined);
@@ -208,13 +259,31 @@ export default function PixivView() {
       current: tab() === id,
     }));
 
+  const contentSelect = () => (
+    <label class="px-select px-content">
+      <span>{t("pixiv.safety")}</span>
+      <select name="content" value={contentNow()} onChange={(e) => setContent(e.currentTarget.value as PixivContent)}>
+        <option value="safe">{t("pixiv.safetySafe")}</option>
+        <Show when={showAdult()}>
+          <option value="r18">{t("pixiv.safetyR18")}</option>
+          <option value="all">{t("pixiv.safetyAll")}</option>
+        </Show>
+      </select>
+    </label>
+  );
+  const sortNote = () => {
+    const used = search.sort()?.used;
+    return used ? SORT_NOTE[used]?.() ?? "" : "";
+  };
+
   const panel = (desk: boolean) => (
     <div id="px-panel" role="tabpanel" aria-labelledby={`px-tab-${tab()}`} class="px-panel">
       <Show when={tab() === "ranking"}>
+        <div class="px-filters">{contentSelect()}</div>
         <div class="px-chips" role="group" aria-label={t("pixiv.modes")}>
           <For each={modes()}>
             {(m) => (
-              <button type="button" class="px-chip" classList={{ "px-chip--on": mode() === m, "px-chip--adult": m.endsWith("_r18") }} aria-pressed={mode() === m} data-mode={m} onClick={() => setMode(m)}>
+              <button type="button" class="px-chip" classList={{ "px-chip--on": rankingMode() === m, "px-chip--adult": m.endsWith("_r18") }} aria-pressed={rankingMode() === m} data-mode={m} onClick={() => setMode(m)}>
                 {MODE_LABEL[m]()}
               </button>
             )}
@@ -236,6 +305,7 @@ export default function PixivView() {
             <select name="order" value={order()} onChange={(e) => { setOrder(e.currentTarget.value as SearchOrder); if (query()) startSearch(); }}>
               <option value="date_d">{t("pixiv.orderNew")}</option>
               <option value="date">{t("pixiv.orderOld")}</option>
+              <option value="popular">{t("pixiv.orderPopular")}</option>
             </select>
           </label>
           <label class="px-select">
@@ -247,22 +317,20 @@ export default function PixivView() {
               <option value="ugoira">{t("pixiv.typeUgoira")}</option>
             </select>
           </label>
-          <label class="px-select">
-            <span>{t("pixiv.safety")}</span>
-            <select name="safety" value={safety()} onChange={(e) => { setSafety(e.currentTarget.value as SearchSafety); if (query()) startSearch(); }}>
-              <option value="safe">{t("pixiv.safetySafe")}</option>
-              <option value="all">{t("pixiv.safetyAll")}</option>
-              <Show when={showAdult()}>
-                <option value="r18">{t("pixiv.safetyR18")}</option>
-              </Show>
-            </select>
-          </label>
+          {contentSelect()}
         </form>
+        <Show when={query() && sortNote()}>
+          <p class="px-note px-note--sort">{sortNote()}</p>
+        </Show>
         <Show when={!query()}>
           <Show when={desk} fallback={<p class="px-note">{t("pixiv.searchHint")}</p>}>
             <EmptyState text={t("pixiv.searchHint")} />
           </Show>
         </Show>
+      </Show>
+
+      <Show when={tab() === "bookmarks"}>
+        <div class="px-filters">{contentSelect()}</div>
       </Show>
 
       <Show when={tab() !== "search" || query()}>

@@ -21,6 +21,9 @@ export function createFeed() {
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal("");
   const [started, setStarted] = createSignal(false);
+  // The newest page's notice and sort, so the screen can say why the list looks as it does.
+  const [notice, setNotice] = createSignal<string | null>(null);
+  const [sort, setSort] = createSignal<PixivListing["sort"]>(null);
   let loader: Loader | null = null;
   let page = 0;
   let generation = 0;
@@ -36,6 +39,8 @@ export function createFeed() {
       if (mine !== generation) return;
       page = listing.page || page + 1;
       setHasMore(listing.hasMore);
+      setNotice(listing.notice);
+      setSort(listing.sort);
       setItems((old) => {
         const seen = new Set(old.map((i) => i.id));
         return [...old, ...listing.items.filter((i) => !seen.has(i.id))];
@@ -55,6 +60,8 @@ export function createFeed() {
     loading,
     error,
     started,
+    notice,
+    sort,
     /** Begin a new list (or `null` to empty it). */
     start(l: Loader | null): Promise<void> {
       generation += 1;
@@ -63,6 +70,8 @@ export function createFeed() {
       setItems([]);
       setHasMore(false);
       setError("");
+      setNotice(null);
+      setSort(null);
       setLoading(false);
       setStarted(l !== null);
       return l ? next() : Promise.resolve();

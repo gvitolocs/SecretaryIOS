@@ -3,12 +3,19 @@
 // nine is marked R-18 so the adult switch can be tried (its picture is just as plain).
 //
 //   MOCK_PIXIV_WORKS=300 npm run dev:mock     # how many works (default 160)
+//   MOCK_PIXIV_SESSION=none npm run dev:mock  # the plugin isn't signed in to Pixiv (default ok)
 //
 // Like the real service: R-18 modes/searches/works answer 403 adult_off unless `adult=1`, R-18 items never
 // appear in lists without it, answers are {ok:true,data} / {ok:false,error}, and image URLs are signed-looking
 // `/v1/pixiv/s/...` paths that need no session. Bookmarks and saves live in memory.
+// Content: `safe` lists only all-ages works, `r18` only R-18 ones, `all` both (search `mode`, bookmarks
+// `content`). Signed out, R-18 lists answer empty with the `r18_needs_session` notice and `all` adds
+// `all_ages_only`. `order=popular` sorts by a synthetic "<N>users入り" tier (`sort.used` = users_tags), as a
+// signed-in account without Premium gets it.
 
 const COUNT = Math.max(1, Number(process.env.MOCK_PIXIV_WORKS ?? 160) || 160);
+const SESSION = process.env.MOCK_PIXIV_SESSION === "none" ? "none" : "ok";
+const TIERS = [100, 500, 1000, 5000, 10000];
 const PAGE = 30;
 
 function rng(seed) {
@@ -30,6 +37,8 @@ const TAGS = ["landscape", "original", "sky", "cat", "city", "風景", "sketch",
 const works = [];
 {
   const r = rng(77);
+  // The tiers come from their own stream so the works themselves stay what they were.
+  const rt = rng(91);
   for (let i = 0; i < COUNT; i++) {
     const id = String(10001 + i * 37);
     const pages = r() < 0.55 ? 1 : 2 + Math.floor(r() * 6);
@@ -47,6 +56,8 @@ const works = [];
       h,
       hue: Math.floor(r() * 360),
       r18: i % 9 === 4,
+      // About a third of the works carry a bookmark tier tag.
+      popularTier: rt() < 0.34 ? TIERS[Math.floor(rt() * TIERS.length)] : null,
       kind: pages > 1 && r() < 0.6 ? "manga" : r() < 0.06 ? "ugoira" : "illust",
       views: Math.floor(r() * 90000),
       likes: Math.floor(r() * 5000),
@@ -75,15 +86,26 @@ function item(w) {
     pages: w.pages,
     r18: w.r18,
     bookmarked: bookmarks.has(w.id),
+    popularTier: w.popularTier,
   };
 }
 
-function listing(all, page, adult) {
+function listing(all, page, adult, extra = {}) {
   const shown = adult ? all : all.filter((w) => !w.r18);
   const slice = shown.slice((page - 1) * PAGE, page * PAGE);
   const numPages = Math.max(1, Math.ceil(shown.length / PAGE));
-  return { items: slice.map(item), page, hasMore: page < numPages, total: shown.length, numPages };
+  return { items: slice.map(item), page, hasMore: page < numPages, total: shown.length, numPages, notice: null, ...extra };
 }
+
+/** Keeps the works a content filter allows, and the notice the signed-out service would attach. */
+function byContent(list, content) {
+  if (content === "r18" && SESSION === "none") return { list: [], notice: "r18_needs_session" };
+  if (content === "r18") return { list: list.filter((w) => w.r18), notice: null };
+  if (content === "safe" || SESSION === "none") return { list: list.filter((w) => !w.r18), notice: content === "all" ? "all_ages_only" : null };
+  return { list, notice: null };
+}
+
+const EMPTY_R18 = (page) => ({ items: [], page, hasMore: false, total: 0, numPages: 0, notice: "r18_needs_session" });
 
 function detail(w) {
   return {
@@ -129,30 +151,45 @@ export async function handlePixiv(req, res, { path, method, url, send, fail, rea
     return true;
   }
 
-  if (rest === "status" && method === "GET") return ok({ enabled: true, cacheBytes: 0, cacheMaxBytes: 2147483648, apiIntervalMs: 1500 }), true;
+  if (rest === "status" && method === "GET") {
+    const account = { session: SESSION, premium: false, r18: SESSION === "ok" ? true : null };
+    return ok({ enabled: true, cacheBytes: 0, cacheMaxBytes: 2147483648, apiIntervalMs: 1500, account }), true;
+  }
 
   if (rest === "ranking" && method === "GET") {
     const mode = p.get("mode") ?? "day";
     if (!RANKING.includes(mode)) return err(400, "bad_request"), true;
     if (mode.endsWith("_r18") && !adult) return err(403, "adult_off"), true;
+    const page = Math.max(1, Number(p.get("page")) || 1);
+    if (mode.endsWith("_r18") && SESSION === "none") return ok(EMPTY_R18(page)), true;
     // A ranking is a fixed shuffle of the works per mode.
     const r = rng([...mode].reduce((a, c) => a + c.charCodeAt(0), 0));
-    const pool = works.filter((w) => (mode.endsWith("_r18") ? w.r18 : true));
+    const pool = works.filter((w) => (mode.endsWith("_r18") ? w.r18 : SESSION === "ok" || !w.r18));
     const order = pool.map((w) => [r(), w]).sort((a, b) => a[0] - b[0]).map((x) => x[1]);
-    return ok(listing(order, Math.max(1, Number(p.get("page")) || 1), adult)), true;
+    return ok(listing(order, page, adult)), true;
   }
 
   if (rest === "search" && method === "GET") {
     const q = (p.get("q") ?? "").trim().toLowerCase();
     if (!q) return err(400, "bad_request"), true;
     const mode = p.get("mode") ?? "safe";
-    if (mode === "r18" && !adult) return err(403, "adult_off"), true;
+    if (mode !== "safe" && !adult) return err(403, "adult_off"), true;
     const type = p.get("type") ?? "all";
-    let found = works.filter((w) => (w.title.toLowerCase().includes(q) || w.tags.some((t) => t.toLowerCase().includes(q)) || ARTISTS[w.artist].toLowerCase().includes(q)) && (type === "all" || w.kind === type));
-    if (mode === "r18") found = found.filter((w) => w.r18);
-    else if (mode === "safe") found = found.filter((w) => !w.r18);
-    if (p.get("order") === "date") found = [...found].reverse();
-    return ok(listing(found, Math.max(1, Number(p.get("page")) || 1), adult)), true;
+    const order = p.get("order") ?? "date_d";
+    const page = Math.max(1, Number(p.get("page")) || 1);
+    const matching = works.filter((w) => (w.title.toLowerCase().includes(q) || w.tags.some((t) => t.toLowerCase().includes(q)) || ARTISTS[w.artist].toLowerCase().includes(q)) && (type === "all" || w.kind === type));
+    let { list: found, notice } = byContent(matching, mode);
+    let used = order;
+    if (order === "date") found = [...found].reverse();
+    else if (order === "popular") {
+      // Without Premium: the works with a "<N>users入り" tag, highest tier first (newest within a tier), then
+      // the rest newest first; with none of them, just the newest works.
+      const tiered = found.filter((w) => w.popularTier).sort((a, b) => b.popularTier - a.popularTier || a.index - b.index);
+      used = tiered.length > 0 ? "users_tags" : "date_d_fallback";
+      if (tiered.length > 0) found = [...tiered, ...found.filter((w) => !w.popularTier)];
+    }
+    if (notice === "r18_needs_session") return ok({ ...EMPTY_R18(page), sort: { requested: order, used } }), true;
+    return ok(listing(found, page, adult, { notice, sort: { requested: order, used } })), true;
   }
 
   const ill = /^illust\/(\d+)$/.exec(rest);
@@ -164,8 +201,10 @@ export async function handlePixiv(req, res, { path, method, url, send, fail, rea
   }
 
   if (rest === "bookmarks" && method === "GET") {
-    const items = [...bookmarks.entries()].reverse().map(([id]) => item(byId.get(id))).filter((i) => adult || !i.r18);
-    return ok({ items }), true;
+    const content = p.get("content") ?? "safe";
+    if (content !== "safe" && !adult) return err(403, "adult_off"), true;
+    const { list, notice } = byContent([...bookmarks.keys()].reverse().map((id) => byId.get(id)), content);
+    return ok({ items: list.map(item).filter((i) => adult || !i.r18), notice }), true;
   }
   const bm = /^bookmarks\/(\d+)$/.exec(rest);
   if (bm && method === "PUT") {
