@@ -214,6 +214,8 @@ enum NoteText {
 /// The rendered note.
 struct NoteMarkdownView: View {
     let blocks: [NoteBlock]
+    /// Turns a run of inline markdown into text; the notebook chat swaps in one that draws citation chips.
+    var inline: (String) -> AttributedString = NoteText.inline
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -229,12 +231,12 @@ struct NoteMarkdownView: View {
     private func view(for block: NoteBlock) -> some View {
         switch block {
         case let .heading(level, text):
-            Text(NoteText.inline(text))
+            Text(inline(text))
                 .font(level <= 1 ? .title2.bold() : level == 2 ? .title3.bold() : .headline)
                 .padding(.top, 6)
                 .accessibilityAddTraits(.isHeader)
         case let .paragraph(text):
-            Text(NoteText.inline(text)).fixedSize(horizontal: false, vertical: true)
+            Text(inline(text)).fixedSize(horizontal: false, vertical: true)
         case let .list(items):
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(Array(items.enumerated()), id: \.offset) { _, item in
@@ -250,13 +252,13 @@ struct NoteMarkdownView: View {
                             }
                         }
                         .accessibilityHidden(item.checked == nil)
-                        Text(NoteText.inline(item.text)).fixedSize(horizontal: false, vertical: true)
+                        Text(inline(item.text)).fixedSize(horizontal: false, vertical: true)
                     }
                     .padding(.leading, CGFloat(min(item.depth, 4)) * 16)
                 }
             }
         case let .quote(text):
-            Text(NoteText.inline(text))
+            Text(inline(text))
                 .foregroundStyle(.secondary)
                 .padding(.leading, 12)
                 .overlay(alignment: .leading) {
@@ -273,12 +275,12 @@ struct NoteMarkdownView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 8) {
                     GridRow {
-                        ForEach(Array(header.enumerated()), id: \.offset) { _, h in Text(NoteText.inline(h)).bold() }
+                        ForEach(Array(header.enumerated()), id: \.offset) { _, h in Text(inline(h)).bold() }
                     }
                     Divider()
                     ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
                         GridRow {
-                            ForEach(Array(row.enumerated()), id: \.offset) { _, cell in Text(NoteText.inline(cell)) }
+                            ForEach(Array(row.enumerated()), id: \.offset) { _, cell in Text(inline(cell)) }
                         }
                     }
                 }
