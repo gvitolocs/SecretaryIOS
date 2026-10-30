@@ -5,7 +5,7 @@ is live is marked with tags, not with branches.
 
 ## Why
 
-Until 2026-10-29 the repo had five deploy-line branches: `lucina-rs` (nezopt), `server-live` (p1 server and MCP),
+Until 2026-10-30 the repo had five deploy-line branches: `lucina-rs` (nezopt), `server-live` (p1 server and MCP),
 `web-live` (p1 web, bundled by the Mac app), `ios-app` (iPhone) and `main-next` (media, local to nezopt). Fixes were
 cherry-picked from line to line, so one patch had a different hash on each line. That broke three things:
 - `--is-ancestor` checks failed;
@@ -46,15 +46,11 @@ specified with one `main`. The lines were a drift away from the verified design.
 5. **Deployed versions are tags.** `deploy-guard record` writes the ledger with the `main` sha and creates and pushes
    the annotated tag `deploy/<runtime>/<UTC yyyymmddThhmmZ>-<sha8>`. To find what is live, read the newest
    `deploy/<runtime>/*` tag or run `deploy-guard status`.
-6. **The old branch names stay as read-only aliases until every active session has acknowledged the switch**, so
-   sessions that are mid-flight don't break:
-   - `lucina-rs`, `server-live`, `web-live` and `ios-app` stay on GitHub. (`main-next` was never on GitHub and gets no
-     alias.)
-   - Only `deploy-guard record` moves them: each one is fast-forwarded to its runtime's latest deploy.
-   - A commit pushed to an alias goes nowhere: deploy-guard refuses to deploy it and warns that the alias has commits
-     not on `main`. Merge such commits into `main`.
-   - When the last session has acknowledged, the aliases are deleted and `~/.local/state/deploy-guard/aliases-retired`
-     is created, which stops the alias updates. The tags stay.
+6. **The old branch names are gone.** `lucina-rs`, `server-live`, `web-live` and `ios-app` were read-only aliases (moved
+   only by `deploy-guard record`) until all six active sessions had acknowledged the switch. They were deleted on
+   2026-10-30, and `~/.local/state/deploy-guard/aliases-retired` stops deploy-guard from recreating them. The
+   `deploy/<runtime>/*` tags record every deploy since then. To see an old line's last state, use the merge
+   commits on `main`.
 
 ## Deploy targets
 
