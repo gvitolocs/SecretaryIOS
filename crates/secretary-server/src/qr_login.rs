@@ -130,6 +130,15 @@ fn is_short_code(c: &str) -> bool {
     c.len() == 6 && c.bytes().all(|b| b.is_ascii_digit())
 }
 
+/// A typed short code with its spaces and dashes removed, if it then is six digits.
+fn normalize_short_code(c: &str) -> Option<String> {
+    let digits: String = c
+        .chars()
+        .filter(|ch| !ch.is_ascii_whitespace() && *ch != '-')
+        .collect();
+    is_short_code(&digits).then_some(digits)
+}
+
 /// The pending requests, by `code`.
 pub struct QrLogins {
     ttl: Duration,
@@ -204,10 +213,10 @@ impl QrLogins {
 
     /// The request's key for `c`, a code or a live short code.
     fn key_for(&self, map: &HashMap<String, Pending>, c: &str, now: Instant) -> Option<String> {
-        if is_short_code(c) {
+        if let Some(short) = normalize_short_code(c) {
             return map
                 .iter()
-                .find(|(_, p)| p.short_code == c && self.alive(p, now))
+                .find(|(_, p)| p.short_code == short && self.alive(p, now))
                 .map(|(k, _)| k.clone());
         }
         map.contains_key(c).then(|| c.to_owned())
@@ -568,6 +577,40 @@ mod tests {
             s.decide_at(&c.short_code, true, t0 + TTL),
             Err(DecideError::NotFound)
         );
+    }
+
+    #[test]
+    fn typed_short_codes_with_spaces_or_dashes_answer() {
+        let s = store();
+        let t0 = Instant::now();
+        let c = s.create_at("1.2.3.4", "ua", t0).unwrap().unwrap();
+        let d = &c.short_code;
+        let spaced = format!("{} {}", &d[..3], &d[3..]);
+        let padded = format!(" {d} ");
+        let dashed = format!("{}-{}", &d[..3], &d[3..]);
+        for typed in [&spaced, &padded, &dashed] {
+            assert_eq!(s.info_at(typed, t0).unwrap().ip, "1.2.3.4", "{typed}");
+        }
+        // A long code is not trimmed: a space in the middle is a different key.
+        let long_padded = format!(" {code} ", code = c.code);
+        assert!(s.info_at(&long_padded, t0).is_none());
+        s.decide_at(&spaced, true, t0).unwrap();
+        assert_eq!(s.poll_at(&c.poll_token, t0), Poll::Approved);
+    }
+
+    #[test]
+    fn malformed_short_codes_are_not_found() {
+        let s = store();
+        let t0 = Instant::now();
+        s.create_at("1.2.3.4", "ua", t0).unwrap().unwrap();
+        for bad in ["12345", "1234567", "12a456", ""] {
+            assert!(s.info_at(bad, t0).is_none(), "{bad:?}");
+            assert_eq!(
+                s.decide_at(bad, true, t0),
+                Err(DecideError::NotFound),
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]

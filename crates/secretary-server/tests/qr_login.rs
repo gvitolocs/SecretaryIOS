@@ -225,6 +225,20 @@ async fn an_answered_request_cannot_be_answered_again() {
 }
 
 #[tokio::test]
+async fn a_typed_short_code_with_a_space_can_approve() {
+    let h = harness(|_| {}).await;
+    let req = h.start().await;
+    let phone = h.device_token();
+    let typed = format!("{} {}", &req.short_code[..3], &req.short_code[3..]);
+    let (s, v) = h.approve_with_bearer(&phone, &typed, true).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v, json!({"status": "approved"}));
+    let (status, sid) = h.poll(&req.poll_token).await;
+    assert_eq!(status, "approved");
+    assert!(sid.is_some());
+}
+
+#[tokio::test]
 async fn requests_expire() {
     let h = harness(|c| c.qr_login_ttl = Duration::from_millis(300)).await;
     let r = h

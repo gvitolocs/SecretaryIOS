@@ -5,7 +5,7 @@ import { Button, Card, ErrorState, Page, PageGrid, PageHeader, useWide } from ".
 import { t } from "../i18n";
 import { approveCodeFrom, createQrReader, type QrReader } from "../lib/qrScan";
 
-// /scan: approve a QR sign-in from this signed-in app (Account → Scan QR code, or Plugins).
+// /scan: approve a QR sign-in from this signed-in app (Plugins → Scan QR code, or Account → Scan QR code on the web).
 // The phone's own camera app would open the link in a browser that is not signed in (a
 // home-screen app keeps its own cookies), so the scan happens here, with this app's session.
 // A found code opens /approve?c=…, which shows who is asking and asks Approve / Deny.

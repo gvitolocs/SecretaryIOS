@@ -70,7 +70,7 @@ describe("QR sign-in", () => {
     expect(screen.getByText("Scan with your phone to sign in")).toBeInTheDocument();
     expect(screen.getByLabelText("Password")).toBeInTheDocument();
     expect(screen.getByText("Or type 482 911 there instead of scanning.")).toBeInTheDocument();
-    expect(screen.getByText(/Account → Scan QR code/)).toBeInTheDocument();
+    expect(screen.getByText(/Plugins → Scan QR code/)).toBeInTheDocument();
   });
 
   it("polls every 2 s and opens the app once the phone approves", async () => {
@@ -179,7 +179,7 @@ describe("QR sign-in", () => {
       expect(s.calls).toHaveLength(0);
       // The phone's browser is not signed in: point to the app's scanner.
       expect(screen.getByRole("note")).toHaveTextContent("Approve from the Secretary app");
-      expect(screen.getByRole("note")).toHaveTextContent("Account → Scan QR code");
+      expect(screen.getByRole("note")).toHaveTextContent("Plugins → Scan QR code");
       expect(screen.getByLabelText("Password")).toBeInTheDocument();
     } finally {
       window.history.replaceState(null, "", "/");
