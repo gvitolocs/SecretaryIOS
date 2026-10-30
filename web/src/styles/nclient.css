@@ -1,6 +1,6 @@
 /* NClient, using the same Lucina tokens as the other plugin pages. Phone first: nothing here is wider than
    the viewport, also inside Secretary Code (?shell=1) at 390 px. */
-.nclient { display: grid; gap: var(--lu-space-md); width: 100%; max-width: 1200px; margin: 0 auto; padding: var(--lu-space-lg) var(--lu-space-gutter) 120px; color: var(--lu-text); background: var(--lu-bg); border-radius: var(--lu-radius-card); font-family: var(--lu-font); box-sizing: border-box; overflow-x: clip; }
+.nclient { display: grid; gap: var(--lu-space-md); width: 100%; max-width: 1200px; margin: 0 auto; padding: var(--lu-space-lg) var(--lu-space-gutter) 120px; color: var(--lu-text); background: transparent; border-radius: var(--lu-radius-card); font-family: var(--lu-font); box-sizing: border-box; overflow-x: clip; }
 .nclient > * { min-width: 0; }
 .nclient > .media-back { color: var(--lu-accent); text-decoration: none; width: fit-content; }
 .nclient h1 { margin: 0; font-size: var(--lu-type-large-title); font-weight: var(--lu-type-large-title-weight); }

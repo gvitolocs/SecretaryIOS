@@ -307,6 +307,8 @@
 }
 .ag-desk-list {
   display: grid;
+  /* The search field and the rows fit the list column instead of widening it under the detail. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
   min-height: 0;
 }

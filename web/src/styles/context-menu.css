@@ -1,5 +1,5 @@
 /* The context menu (components/ContextMenu.tsx): a popover at the pointer, or a bottom sheet on a phone. The surface is
-   the shared glass material (styles/glass.css); this file only lays out the rows. Above the photo viewer (2000). */
+   the shared opaque raised surface (styles/ui.css); this file only lays out the rows. Above the photo viewer (2000). */
 
 .cm-menu {
   position: fixed;

@@ -416,7 +416,7 @@ export default function MemosView() {
         when={params.id}
         fallback={
           <>
-            <h1>{t("memos.title")}</h1>
+            <h1 id="memos-title">{t("memos.title")}</h1>
             <Show when={memos.error}>
               <p role="alert" class="memo-chip" data-state="failed">{toApiError(memos.error).message}</p>
             </Show>

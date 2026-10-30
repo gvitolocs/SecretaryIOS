@@ -1,0 +1,534 @@
+/*
+ * The shared layer under every page (docs/design/page-system.md, "Shared layer"): what styles/page.css does not
+ * own because it sits outside a page or predates it. One look for
+ * - floating surfaces (popovers, menus, sheets, dialogs): opaque, over one dimmed and blurred scrim;
+ * - the notifications popover, anchored under the bell (top right) on a desktop, a bottom sheet on a phone;
+ * - filter chips, the page title, the "‹ Plugins" back link and the filled accent button, on every page.
+ *
+ * Owner, 2026-10-30, on the see-through notifications panel: "a layout ux ui failure". Surfaces that float over
+ * content are opaque; only the bars (phone tab bar, composer) stay glass (styles/glass.css).
+ *
+ * The tokens sit on :root so overlays portalled to <body> (outside .shell--character) get the same navy as the
+ * page under them. Imported last (index.tsx); the lists are doubled up on :root to win over each surface's own
+ * rules, some in lazily loaded chunks, without !important.
+ */
+
+:root {
+  --ui-raised: #151c33;
+  --ui-raised-border: #8c9fce40;
+  --ui-scrim: rgb(5 7 20 / 0.62);
+  --ui-scrim-blur: blur(3px);
+  --ui-shadow-pop: 0 24px 64px rgb(0 0 0 / 0.5), 0 2px 8px rgb(0 0 0 / 0.3);
+  --ui-text: #f0f0f2;
+  --ui-muted: #a9afb9;
+  --ui-hair: #ffffff14;
+  --ui-fill: #ffffff0f;
+  --ui-fill-hover: #ffffff1a;
+  --ui-accent: #50dfff;
+  --ui-on-accent: #06222a;
+  --ui-radius-pop: 16px;
+  --ui-radius-control: 10px;
+  --ui-chip-h: 32px;
+}
+
+/* Keep has its own light look: its menus and dialogs float in its colours. */
+.kp[data-theme="light"] {
+  --ui-raised: #ffffff;
+  --ui-raised-border: #3c3c4326;
+  --ui-scrim: rgb(32 33 36 / 0.4);
+  --ui-shadow-pop: 0 18px 48px rgb(60 64 67 / 0.28);
+  --ui-text: #202124;
+  --ui-muted: #5f6368;
+  --ui-hair: #3c3c431a;
+}
+
+/* ---------- Floating surfaces: opaque, one shadow, one border ---------- */
+
+:root:root
+  :is(
+    .notif-panel,
+    .pg-sheet,
+    .picker-sheet,
+    .account-sheet,
+    .apv-dialog,
+    .attach-menu,
+    .bring-menu,
+    .bring-sheet,
+    .cat-menu,
+    .drivebar-pop,
+    .gv-dialog,
+    .gv-menu,
+    .kp-modal,
+    .kp-pop,
+    .kp-menu,
+    .place-directions-menu,
+    .pp-menu,
+    .px-menu,
+    .qa-modal,
+    .share-sheet,
+    .shop-menu,
+    .sh-sheet,
+    .trd-menu-pop,
+    .cm-menu,
+    .cm-sheet
+  ) {
+  border: 1px solid var(--ui-raised-border);
+  background: var(--ui-raised);
+  color: var(--ui-text);
+  box-shadow: var(--ui-shadow-pop);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/* The gradient hairlines some sheets drew on top: one plain border instead. */
+:root:root :is(.notif-panel, .account-sheet)::before {
+  content: none;
+}
+
+/* One scrim under all of them: the page dims and softens, so the surface on top is the only thing to read. */
+:root:root
+  :is(
+    .notif-overlay,
+    .pg-sheet-overlay,
+    .picker-overlay,
+    .apv-overlay,
+    .gv-overlay,
+    .bring-scrim,
+    .kp-scrim,
+    .share-backdrop,
+    .tasks-backdrop,
+    .tasks-scrim,
+    .wardrobe-scrim,
+    .cm-backdrop
+  ) {
+  background: var(--ui-scrim);
+  -webkit-backdrop-filter: var(--ui-scrim-blur);
+  backdrop-filter: var(--ui-scrim-blur);
+}
+
+/* ---------- Notifications popover ---------- */
+
+:root:root .notif-panel {
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.notif-head {
+  min-height: 56px;
+  padding: 8px 8px 8px 20px;
+  border-bottom: 1px solid var(--ui-hair);
+}
+
+:root:root .notif-heading {
+  gap: 8px;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+:root:root .notif-count {
+  min-width: 22px;
+  height: 20px;
+  padding: 0 6px;
+  border: 0;
+  background: color-mix(in srgb, var(--ui-accent) 18%, transparent);
+  color: var(--ui-accent);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.notif-head-actions {
+  gap: 4px;
+}
+
+/* "Mark all read" is a quiet button like every other secondary action, not shouted small caps. */
+:root:root .notif-markall {
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid #ffffff24;
+  border-radius: var(--ui-radius-control);
+  background: var(--ui-fill);
+  color: var(--ui-text);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+:root:root .notif-markall:hover {
+  background: var(--ui-fill-hover);
+}
+
+/* The gear and the close button: the page system icon button (32 px, quiet). */
+:root:root .notif-head-actions .icon-btn {
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ui-muted);
+  font-size: 20px;
+  box-shadow: none;
+}
+
+:root:root .notif-head-actions .icon-btn:hover {
+  background: var(--ui-fill);
+  color: var(--ui-text);
+}
+
+:root:root .notif-head-actions .icon-btn .icon {
+  width: 18px;
+  height: 18px;
+}
+
+.notif-panel > :is(.notif-cta, .notif-cta-desktop, .form-error) {
+  margin: 12px 16px 0;
+}
+
+/* The push prompt reads as one of the popover's rows: no tinted card, the same quiet icon tile. */
+:root:root .notif-panel .notif-cta {
+  grid-template-columns: 32px minmax(0, 1fr);
+  padding: 12px;
+  border: 1px solid var(--ui-hair);
+  border-radius: 12px;
+  background: var(--ui-fill);
+}
+
+:root:root .notif-cta-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ui-accent) 16%, transparent);
+  color: var(--ui-accent);
+}
+
+:root:root .notif-cta-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.notif-panel > .notif-empty {
+  padding: 32px 20px;
+}
+
+:root:root .notif-scroll {
+  margin: 0;
+  padding: 4px 0 8px;
+}
+
+:root:root .notif-group {
+  margin: 12px 20px 4px;
+  color: var(--ui-muted);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+/* One list, hairline rows (the page system list row), not a stack of cards. */
+:root:root .notif-list {
+  gap: 0;
+}
+
+:root:root .notif-item {
+  grid-template-columns: 32px minmax(0, 1fr) 8px;
+  gap: 12px;
+  padding: 12px 20px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+:root:root .notif-list > li + li .notif-item {
+  box-shadow: inset 0 1px 0 var(--ui-hair);
+}
+
+:root:root .notif-item:hover {
+  background: var(--ui-fill);
+}
+
+:root:root .notif-item--unread {
+  background: color-mix(in srgb, var(--ui-accent) 6%, transparent);
+}
+
+:root:root .notif-item--unread:hover {
+  background: color-mix(in srgb, var(--ui-accent) 10%, transparent);
+}
+
+/* One icon style for every kind: a quiet tile; the kind shows in the glyph, not in a different box. */
+:root:root .notif-icon {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--ui-fill);
+  color: var(--ui-muted);
+}
+
+:root:root .notif-icon .icon {
+  width: 16px;
+  height: 16px;
+}
+
+:root:root .notif-item--unread .notif-icon {
+  color: var(--ui-accent);
+}
+
+:root:root .notif-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+:root:root .notif-body {
+  font-size: 13px;
+}
+
+:root:root .notif-meta {
+  margin-top: 2px;
+  color: var(--ui-muted);
+  font-family: inherit;
+  font-size: 12px;
+  letter-spacing: 0;
+}
+
+:root:root .notif-dot {
+  width: 8px;
+  height: 8px;
+  margin-top: 6px;
+  background: var(--ui-accent);
+  box-shadow: none;
+}
+
+/* Desktop and tablet: a popover under the bell, which sits top right (Secretary Code titlebar, web top bar). */
+@media (min-width: 768px) {
+  :root:root .notif-overlay {
+    align-items: flex-start;
+    justify-content: flex-end;
+    padding: max(8px, var(--safe-top)) max(12px, var(--safe-right)) 12px 12px;
+    background: rgb(5 7 20 / 0.35);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+
+  :root:root .notif-panel {
+    width: 400px;
+    max-height: min(640px, calc(100dvh - 24px));
+    border-radius: var(--ui-radius-pop);
+    animation: notif-drop 180ms cubic-bezier(0.16, 1, 0.3, 1) both;
+    transform-origin: top right;
+  }
+
+  /* With the web top bar (a browser, not the desktop shell) the popover starts under it. */
+  html:not([data-shell="desktop"]) .notif-overlay {
+    padding-top: calc(var(--safe-top) + 64px);
+  }
+}
+
+@keyframes notif-drop {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.98);
+  }
+}
+
+/* Phone: the bottom sheet every phone sheet uses. */
+@media (max-width: 767px) {
+  :root:root .notif-panel {
+    max-height: 86dvh;
+    padding-bottom: var(--safe-bottom);
+    border-bottom: 0;
+    border-radius: var(--ui-radius-pop) var(--ui-radius-pop) 0 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root:root .notif-panel {
+    animation: none;
+  }
+}
+
+/* ---------- Filter chips: one chip on every page ---------- */
+
+:root:root :is(.chip, .px-chip, .media-chip, .g-chip, .nclient-chip, .deals-chipbtn, .bring-chip) {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: var(--ui-chip-h);
+  padding: 0 12px;
+  border: 1px solid #ffffff1f;
+  border-radius: 999px;
+  background: var(--ui-fill);
+  color: var(--ui-muted);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: nowrap;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+:root:root :is(.chip, .px-chip, .media-chip, .g-chip, .nclient-chip, .deals-chipbtn, .bring-chip):hover {
+  border-color: #ffffff33;
+  color: var(--ui-text);
+}
+
+:root:root
+  :is(.chip, .px-chip, .media-chip, .g-chip, .nclient-chip, .deals-chipbtn, .bring-chip):is(
+    [aria-pressed="true"],
+    [aria-selected="true"],
+    [aria-current="page"],
+    .chip--active,
+    .px-chip--on,
+    .g-chip--on,
+    .bring-chip--on
+  ),
+:root:root .pg .pg-btn[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--ui-accent) 55%, transparent);
+  background: color-mix(in srgb, var(--ui-accent) 16%, transparent);
+  color: var(--ui-text);
+  box-shadow: none;
+}
+
+/* ---------- Page titles: one size and weight on every page ---------- */
+
+:root:root
+  .content
+  :is(
+    .pg-title,
+    .view-title,
+    .apv-page-title,
+    .g-title,
+    .al-h1,
+    .pp-h1,
+    .sl-h1,
+    .dd-h1,
+    .deals-title,
+    .scan-title,
+    #computer-title,
+    #films-title,
+    #instagram-title,
+    #pixiv-title,
+    #nclient-title,
+    #chats-title,
+    #plugins-title,
+    #agents-title,
+    #drive-title,
+    #media-title,
+    #pokemon-title,
+    #desk-title,
+    #memos-title,
+    #models-title
+  ):not(.workout-title) {
+  font-family: inherit;
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.4px;
+  text-transform: none;
+}
+
+/* ---------- Back links ("‹ Plugins", "‹ Gallery", "‹ The list"): one quiet link ---------- */
+
+:root:root .content :is(.media-back, .computer-back, .pokemon-back, .g-back, .deals-back) {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--ui-muted);
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-decoration: none;
+  text-transform: none;
+  box-shadow: none;
+}
+
+:root:root .content :is(.media-back, .computer-back, .pokemon-back, .g-back, .deals-back):hover {
+  color: var(--ui-text);
+}
+
+:root:root .content :is(.media-back, .computer-back, .pokemon-back, .g-back, .deals-back) :is(svg, .icon) {
+  width: 16px;
+  height: 16px;
+}
+
+/* ---------- The filled accent button: the page system CTA everywhere ---------- */
+
+:root:root .btn--primary {
+  border: 0;
+  border-radius: 12px;
+  background: var(--ui-accent);
+  color: var(--ui-on-accent);
+  text-shadow: none;
+  box-shadow: none;
+}
+
+:root:root .btn--primary:not(:disabled):hover {
+  background: color-mix(in srgb, var(--ui-accent) 85%, #fff);
+  box-shadow: none;
+}
+
+/* Quiet buttons: the page system control radius, not a pill next to a rectangle. */
+:root:root .btn:not(.btn--primary, .btn-link) {
+  border-radius: var(--ui-radius-control);
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/* ---------- Lucina's chat: the royal blue column (chatBg, owner 2026-10-28) ---------- */
+
+/* The composer fades into the chat's own blue, not into a black band. */
+:root:root .chat .composer {
+  background: linear-gradient(transparent, var(--lu-chat-bg) 40%);
+}
+
+:root:root .chat .send-btn {
+  border-radius: 12px;
+}
+
+:root:root .chat .chat-bar {
+  border-bottom-color: #ffffff1f;
+}
+
+/* ---------- Section nav: page-local button styles (NClient's) never restyle its items ---------- */
+
+:root:root .pg-seg .pg-seg-item {
+  min-height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--pg-muted, var(--ui-muted));
+  font-size: 14px;
+  font-weight: 400;
+  box-shadow: none;
+}
+
+:root:root .pg-seg .pg-seg-item:hover {
+  color: var(--pg-text, var(--ui-text));
+}
+
+:root:root .pg-seg .pg-seg-item:is([aria-current="page"], [aria-pressed="true"], [aria-selected="true"]) {
+  background: var(--pg-fill-hover, var(--ui-fill-hover));
+  color: var(--pg-text, var(--ui-text));
+  font-weight: 600;
+}

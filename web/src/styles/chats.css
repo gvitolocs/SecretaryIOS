@@ -1,5 +1,6 @@
-.chats-page { padding: 1rem; width: 100%; min-height: 0; }
-.conversation-list { display: grid; gap: .65rem; }
+.chats-page { box-sizing: border-box; padding: 1rem; width: 100%; min-height: 0; }
+/* minmax(0, 1fr): a long last message ellipsises instead of widening the list past the screen. */
+.conversation-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: .65rem; }
 .conversation-row { text-align: left; padding: 1rem; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: inherit; display: flex; flex-wrap: wrap; gap: .6rem; align-items: center; cursor: pointer; }
 .conversation-row p { flex-basis: 100%; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conversation-kind { border: 1px solid currentColor; border-radius: 1rem; padding: .1rem .5rem; font-size: .75rem; }

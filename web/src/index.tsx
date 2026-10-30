@@ -8,6 +8,8 @@ import "./styles.css";
 import "./styles/lucina-look.css";
 // The frosted glass material, last so it wins over each surface's own rules.
 import "./styles/glass.css";
+// The shared layer (floating surfaces, chips, titles, back links), after the glass so popovers come out opaque.
+import "./styles/ui.css";
 import ChatView from "./views/Chat";
 import ShoppingView from "./views/Shopping";
 import { DesktopViewerHost } from "./components/DesktopViewer";

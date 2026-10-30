@@ -137,7 +137,7 @@
   }
 
   .pg-title {
-    font-size: 24px;
+    font-size: 28px;
   }
 
   .pg-head-actions {
@@ -259,6 +259,11 @@
 }
 
 .pg-grid--single {
+  max-width: 880px;
+}
+
+/* A one-column page keeps its header actions over the column, not at the far edge of a wide window. */
+.pg-inner:has(> .pg-grid--single) > .pg-head {
   max-width: 880px;
 }
 

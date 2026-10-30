@@ -1,4 +1,5 @@
 import { openSecretSheet } from "../state/secretSheet";
+import { tidyDecisionText } from "../lib/decisionText";
 import { useNavigate } from "@solidjs/router";
 import { createMemo, createSignal, For, Match, onCleanup, onMount, Show, Switch } from "solid-js";
 import { t } from "../i18n";
@@ -350,7 +351,7 @@ export function RichReply(props: {
       <For each={props.rich.bubbles.slice(0, shown())}>
         {(b) => (
           <div class="bubble bubble--rich" onClick={(e) => props.onBubbleClick?.(e)}>
-            <Markdown text={b} class="md--chat" />
+            <Markdown text={tidyDecisionText(b)} class="md--chat" />
           </div>
         )}
       </For>

@@ -1,4 +1,5 @@
 import { useNavigate, useParams } from "@solidjs/router";
+import { decisionSummary } from "../lib/decisionText";
 import { createEffect, createSignal, For, onCleanup, Show } from "solid-js";
 import { Card, EmptyState, ErrorState, ListRow, LoadingState, Page, PageGrid, PageHeader, PrimaryAction, RowList, useWide } from "../components/page";
 import { api } from "../api/secretary";
@@ -187,7 +188,7 @@ export default function ChatsView() {
       <RowList label={t("chats.title")}><For each={conversations()}>{c => <ListRow
         leading={<span class="chats-desk-avatar" aria-hidden="true">{c.title.trim()[0] ?? "?"}</span>}
         title={<a class="pg-row-name pg-row-link" href={own(c) ? "/" : `/chats/${encodeURIComponent(c.key)}`} aria-current={c.key === key() ? "page" : undefined}>{c.title}</a>}
-        badge={kindLabel(c)} sub={<>{own(c) ? `${t("chats.thisDevice")} · ` : ""}{c.lastText}</>}
+        badge={kindLabel(c)} sub={<>{own(c) ? `${t("chats.thisDevice")} · ` : ""}{decisionSummary(c.lastText)}</>}
         meta={<time>{relativeTime(c.lastTs)}</time>}
         trailing={<span class="pg-badge" aria-label={t("chats.messageCount", { count: c.count })}>{c.count}</span>}
       />}</For></RowList>
@@ -223,7 +224,7 @@ export default function ChatsView() {
                 <Show when={own(c)}>
                   <span>{t("chats.thisDevice")}</span>
                 </Show>
-                <p>{c.lastText}</p>
+                <p>{decisionSummary(c.lastText)}</p>
                 <time>{relativeTime(c.lastTs)}</time>
                 <span>{c.count}</span>
               </button>

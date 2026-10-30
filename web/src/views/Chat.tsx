@@ -55,6 +55,7 @@ import {
 } from "../lib/attachments";
 import { takeHandOff } from "../lib/chatHandoff";
 import { LinkifiedText } from "../components/LinkifiedText";
+import { tidyDecisionText } from "../lib/decisionText";
 import { Markdown } from "../components/Markdown";
 import { PlaceCard } from "../components/PlaceCard";
 import { RichReply } from "../components/RichReply";
@@ -383,7 +384,9 @@ export function SourceBadge(props: { message: ChatMessage }) {
   const source = () => mcpSource(props.message.role, props.message.text, props.message.meta);
   const label = () => source()?.label ?? channelLabel(props.message.channel);
   const context = () => (source() ? "" : contextCaption(props.message.channel, props.message.meta));
+  // "Other" tells the owner nothing: no badge then (the reminder card already says what it is).
   return (
+    <Show when={source() || props.message.channel !== "other"}>
     <span class="src-badge" data-channel={source() ? "mcp" : props.message.channel}>
       <Show when={source()} fallback={<ChannelGlyph channel={props.message.channel} />}>
         <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -401,6 +404,7 @@ export function SourceBadge(props: { message: ChatMessage }) {
         )}
       </Show>
     </span>
+    </Show>
   );
 }
 
@@ -498,7 +502,7 @@ export function MessageItem(props: { message: ChatMessage; focused?: boolean; in
           </Show>
           <Show when={text()}>
             {/* Her plain replies are markdown too (safe renderer from Notes): no more literal "**". */}
-            <Show when={isUser()} fallback={<Markdown text={props.message.text} class="md--chat" />}>
+            <Show when={isUser()} fallback={<Markdown text={tidyDecisionText(props.message.text)} class="md--chat" />}>
               <Show when={captionUnder()} fallback={<LinkifiedText text={text()} />}>
                 <div class="bubble-caption"><LinkifiedText text={text()} /></div>
               </Show>

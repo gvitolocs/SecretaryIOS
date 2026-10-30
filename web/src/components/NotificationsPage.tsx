@@ -1,4 +1,5 @@
 import { useNavigate } from "@solidjs/router";
+import { decisionSummary } from "../lib/decisionText";
 import { createMemo, For, onMount, Show } from "solid-js";
 import type { AppNotification } from "../api/notifications";
 import { t } from "../i18n";
@@ -15,7 +16,7 @@ import {
   titleOf,
   unreadCount,
 } from "../state/notifications";
-import { CHANNEL_NAMES, groupByDay, ICONS, PushCta, relativeTime } from "./NotificationBell";
+import { channelName, groupByDay, ICONS, PushCta, relativeTime } from "./NotificationBell";
 import { GearIcon } from "./Icons";
 import { Button, Card, EmptyState, ErrorState, ListRow, LoadingState, Page, PageHeader, PageGrid, RowList } from "./page";
 
@@ -41,7 +42,7 @@ export function NotificationsPage() {
             <For each={p.items}>
               {(n) => {
                 const Icon = ICONS[n.category];
-                const channel = () => (n.channel ? (CHANNEL_NAMES[n.channel] ?? n.channel) : null);
+                const channel = () => channelName(n.channel);
                 return (
                   <ListRow
                     leading={
@@ -54,7 +55,7 @@ export function NotificationsPage() {
                         {titleOf(n)}
                       </button>
                     }
-                    sub={n.body}
+                    sub={n.body ? decisionSummary(n.body) : n.body}
                     meta={
                       <time dateTime={new Date(n.ts).toISOString()}>
                         {relativeTime(n.ts)}

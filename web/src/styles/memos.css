@@ -33,7 +33,9 @@
 .memo-actions { display: flex; flex-wrap: wrap; gap: var(--lu-space-sm, 8px); }
 .memo-actions a, .memo-actions button { padding: 6px 14px; border-radius: var(--lu-radius-pill, 999px); border: 0; background: var(--lu-field, rgba(118,118,128,.24)); color: var(--lu-text, inherit); text-decoration: none; cursor: pointer; font: inherit; font-size: var(--lu-type-subheadline, .9rem); }
 
-.memos--wide { max-width: none; padding: 0; padding-bottom: 190px; }
+.memos--wide { display: block; width: 100%; max-width: none; padding: 0; padding-bottom: 190px; }
+/* Desktop: the recorder floats bottom right on the page's raised surface, not a grey bar across the window. */
+.memos--wide .memo-dock { left: auto; right: 24px; bottom: 24px; min-width: 240px; border: 1px solid var(--ui-raised-border); border-radius: 16px; background: var(--ui-raised); box-shadow: var(--ui-shadow-pop); backdrop-filter: none; }
 .pg.memos-desk .memos-desk-detail { min-height: 200px; }
 .pg.memos-desk .pg-row--current { background: var(--pg-fill); }
 .pg.memos-desk .memo-actions { gap: 8px; }

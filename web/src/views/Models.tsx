@@ -152,7 +152,7 @@ export default function ModelsView() {
         fallback={
           <>
             <header class="models-head">
-              <h1>{t("models.title")}</h1>
+              <h1 id="models-title">{t("models.title")}</h1>
               <Show when={notice()}>
                 <p class="models-notice" role="status">
                   {notice()}

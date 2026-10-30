@@ -1,6 +1,7 @@
 /* Lucina's computer (views/Computer.tsx). Generic tokens (--glass, --text, --border…), which the
    character shell overrides, so the page matches it in both schemes. */
-.computer-page { max-width: 1100px; margin: 0 auto; padding: var(--lu-space-sm, 8px) var(--lu-gutter, 16px) var(--lu-space-xxl, 28px); }
+/* width: the auto margins would shrink it to its widest line, past a phone's edge. */
+.computer-page { box-sizing: border-box; width: 100%; max-width: 1100px; margin: 0 auto; padding: var(--lu-space-sm, 8px) var(--lu-gutter, 16px) var(--lu-space-xxl, 28px); }
 .computer-page h1 { margin: 4px 0 12px; }
 .computer-page h2 { font-size: 1.1rem; margin: 20px 0 8px; }
 .computer-back { display: inline-flex; align-items: center; gap: 4px; color: var(--text-muted); text-decoration: none; }

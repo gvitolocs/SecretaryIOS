@@ -5,6 +5,7 @@ import type { AppNotification, Category } from "../api/notifications";
 import { locale, t } from "../i18n";
 import { agentNotificationRoute } from "../lib/agentsRoute";
 import { decisionNotificationRoute } from "../lib/decisionsRoute";
+import { decisionSummary } from "../lib/decisionText";
 import { prefetchPushKey } from "../lib/push";
 import {
   markAllRead,
@@ -51,7 +52,13 @@ export const CHANNEL_NAMES: Record<string, string> = {
   alexa: "Alexa",
   web: "Web",
   ios: "iPhone",
+  memo: "Voice memo",
 };
+
+/** The channel's name for "via …", or null for one the owner would not recognise ("other", internal names). */
+export function channelName(channel?: string | null): string | null {
+  return channel ? (CHANNEL_NAMES[channel] ?? null) : null;
+}
 
 /** "5 min ago", "3 h ago", or a date for older items. */
 export function relativeTime(ts: number, now = Date.now(), loc = locale()): string {
@@ -77,7 +84,7 @@ export function sameDay(a: number, b: number): boolean {
 
 function Item(props: { n: AppNotification; onOpen: (n: AppNotification) => void }) {
   const Icon = ICONS[props.n.category];
-  const channel = () => (props.n.channel ? (CHANNEL_NAMES[props.n.channel] ?? props.n.channel) : null);
+  const channel = () => channelName(props.n.channel);
   return (
     <li>
       <button
@@ -92,7 +99,7 @@ function Item(props: { n: AppNotification; onOpen: (n: AppNotification) => void 
         <span class="notif-text">
           <span class="notif-title">{titleOf(props.n)}</span>
           <Show when={props.n.body}>
-            <span class="notif-body">{props.n.body}</span>
+            <span class="notif-body">{decisionSummary(props.n.body!)}</span>
           </Show>
           <span class="notif-meta">
             <time dateTime={new Date(props.n.ts).toISOString()}>{relativeTime(props.n.ts)}</time>
