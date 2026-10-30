@@ -200,9 +200,8 @@ impl Upstream {
     /// the backend is what makes a page slow, and the request log has only the route.
     async fn api_get_inner(&self, path_and_query: &str) -> Result<String, UpstreamError> {
         let started = Instant::now();
-        let before = self.api_requests.load(Ordering::Relaxed);
-        let r = self.api_call(path_and_query).await;
-        let attempts = self.api_requests.load(Ordering::Relaxed) - before;
+        let mut attempts = 0u32;
+        let r = self.api_call(path_and_query, &mut attempts).await;
         // The path without the account or the cursor: `/api/v1/users/{u}/bundle` -> `users/bundle`.
         let parts: Vec<&str> = path_and_query
             .split('?')
@@ -227,7 +226,11 @@ impl Upstream {
         r
     }
 
-    async fn api_call(&self, path_and_query: &str) -> Result<String, UpstreamError> {
+    async fn api_call(
+        &self,
+        path_and_query: &str,
+        sent_count: &mut u32,
+    ) -> Result<String, UpstreamError> {
         if let Some(s) = self.blocked_for() {
             return Err(UpstreamError::RateLimited(s));
         }
@@ -241,6 +244,7 @@ impl Upstream {
         loop {
             tokio::time::sleep_until(*gate).await;
             self.api_requests.fetch_add(1, Ordering::Relaxed);
+            *sent_count += 1;
             let sent = self
                 .http
                 .get(&url)
