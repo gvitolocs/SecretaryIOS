@@ -569,7 +569,11 @@ pub async fn calendar_turn(
             }));
         }
     }
-    if let Some(parsed) = cal::parse_create(message, now, tz) {
+    // "Aggiungi al calendario …", or an event said plainly ("Mentor session 6 november at
+    // 12:30"); one the event parser cannot complete goes on to the planner.
+    let parsed = cal::parse_create(message, now, tz)
+        .or_else(|| cal::parse_event(message, now, tz).filter(Result::is_ok));
+    if let Some(parsed) = parsed {
         if *caller == CalendarCaller::Guarded {
             return Some(Err("calendar.create"));
         }
@@ -583,36 +587,79 @@ pub async fn calendar_turn(
             }
             Ok(c) => c,
         };
-        let title = created.event["title"].as_str().unwrap_or("").to_owned();
-        let channel = match caller {
-            CalendarCaller::Owner { channel } => channel,
-            CalendarCaller::Client { from } => {
-                let p = propose(s, &created, from, None).await;
-                return Some(Ok(if p.ok {
-                    out(
-                        cal::proposed_text(&created, tz, None),
-                        "calendar_create",
-                        format!("[calendar event proposed: {title}]"),
-                    )
-                } else {
-                    out(
-                        cal::create_failed_text(created.lang, &p.code),
-                        "calendar_create",
-                        format!("[calendar proposal failed: {}]", p.code),
-                    )
-                }));
-            }
-            CalendarCaller::Guarded => unreachable!("refused above"),
-        };
-        let r = s
-            .call(Method::POST, "/v1/calendar/events", Some(&created.event))
-            .await;
-        let event = r.data.get("event").filter(|e| e.is_object()).cloned();
-        if let (true, Some(event)) = (r.ok, event) {
-            let id = event["id"].as_str().unwrap_or("").to_owned();
-            let mut routes = Vec::new();
-            if !id.is_empty() {
-                st.calendar.lock().unwrap_or_else(|e| e.into_inner()).insert(
+        return Some(Ok(create_event(s, st, created, key, caller, tz).await));
+    }
+    calendar_read(s, message, now, tz).await.map(Ok)
+}
+
+/// The link a reply gives to a created event: the Calendar tab for Lucina's own calendar,
+/// the Google Calendar page for a Google event.
+fn event_link(s: &Secretary, event: &Value) -> Option<String> {
+    if let Some(u) = event["url"].as_str().filter(|u| u.starts_with("https://")) {
+        return Some(u.to_owned());
+    }
+    let id = event["id"].as_str().filter(|i| i.starts_with("lucina:"))?;
+    let base = s.url.as_deref()?.trim_end_matches('/');
+    base.starts_with("https://")
+        .then(|| format!("{base}/calendar?event={}", enc(id)))
+}
+
+/// Creates `created` for `caller` (not a guarded one): directly for the owner, with an Undo
+/// for the chat `key`; a proposal for one of his clients, or when the write fails.
+pub async fn create_event(
+    s: &Secretary,
+    st: &BridgeState,
+    created: Create,
+    key: String,
+    caller: &CalendarCaller,
+    tz: Tz,
+) -> Outcome {
+    let out = |reply: String, action: &str, action_result: String| Outcome {
+        reply,
+        action: action.into(),
+        action_result,
+        meta: Some(lucina_store::timeline::Meta::kind("calendar")),
+        ..Outcome::default()
+    };
+    let title = created.event["title"].as_str().unwrap_or("").to_owned();
+    let channel = match caller {
+        CalendarCaller::Owner { channel } => channel,
+        CalendarCaller::Client { from } => {
+            let p = propose(s, &created, from, None).await;
+            return if p.ok {
+                out(
+                    cal::proposed_text(&created, tz, None),
+                    "calendar_create",
+                    format!("[calendar event proposed: {title}]"),
+                )
+            } else {
+                out(
+                    cal::create_failed_text(created.lang, &p.code),
+                    "calendar_create",
+                    format!("[calendar proposal failed: {}]", p.code),
+                )
+            };
+        }
+        CalendarCaller::Guarded => {
+            return out(
+                cal::text(created.lang, "unclear").into(),
+                "calendar_create",
+                "[calendar create refused: guarded turn]".into(),
+            )
+        }
+    };
+    let r = s
+        .call(Method::POST, "/v1/calendar/events", Some(&created.event))
+        .await;
+    let event = r.data.get("event").filter(|e| e.is_object()).cloned();
+    if let (true, Some(event)) = (r.ok, event) {
+        let id = event["id"].as_str().unwrap_or("").to_owned();
+        let mut routes = Vec::new();
+        if !id.is_empty() {
+            st.calendar
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(
                     key,
                     (
                         Created {
@@ -623,42 +670,48 @@ pub async fn calendar_turn(
                         Instant::now(),
                     ),
                 );
-                routes.push(undo_action(created.lang));
-            }
-            return Some(Ok(Outcome {
-                routes,
-                events: vec![event.clone()],
-                ..out(
-                    cal::added_text(&created, tz, event["url"].as_str()),
-                    "calendar_create",
-                    format!("[calendar event created: {title}]"),
-                )
-            }));
+            routes.push(undo_action(created.lang));
         }
-        // Not connected, or Google failed: a proposal in Links, and the reply says why.
-        let code = if r.ok { "no_event".to_owned() } else { r.code.clone() };
-        let reason = cal::reason_text(created.lang, &code);
-        let channel = if channel.is_empty() { "chat" } else { channel.as_str() };
-        let p = propose(s, &created, &format!("lucina:{channel}"), Some(&reason)).await;
-        if p.ok {
-            return Some(Ok(out(
-                cal::proposed_text(&created, tz, Some(&reason)),
+        return Outcome {
+            routes,
+            events: vec![event.clone()],
+            ..out(
+                cal::added_text(&created, tz, event_link(s, &event).as_deref()),
                 "calendar_create",
-                format!("[calendar create failed: {code}; proposed instead]"),
-            )));
-        }
-        let reply = if code == "google_reconnect_needed" || code == "google_not_connected" {
-            cal::text(created.lang, "reconnect").to_owned()
-        } else {
-            cal::create_failed_text(created.lang, &code)
+                format!("[calendar event created: {title}]"),
+            )
         };
-        return Some(Ok(out(
-            reply,
-            "calendar_create",
-            format!("[calendar create failed: {code}]"),
-        )));
     }
-    calendar_read(s, message, now, tz).await.map(Ok)
+    // Not connected, or Google failed: a proposal in Links, and the reply says why.
+    let code = if r.ok {
+        "no_event".to_owned()
+    } else {
+        r.code.clone()
+    };
+    let reason = cal::reason_text(created.lang, &code);
+    let channel = if channel.is_empty() {
+        "chat"
+    } else {
+        channel.as_str()
+    };
+    let p = propose(s, &created, &format!("lucina:{channel}"), Some(&reason)).await;
+    if p.ok {
+        return out(
+            cal::proposed_text(&created, tz, Some(&reason)),
+            "calendar_create",
+            format!("[calendar create failed: {code}; proposed instead]"),
+        );
+    }
+    let reply = if code == "google_reconnect_needed" || code == "google_not_connected" {
+        cal::text(created.lang, "reconnect").to_owned()
+    } else {
+        cal::create_failed_text(created.lang, &code)
+    };
+    out(
+        reply,
+        "calendar_create",
+        format!("[calendar create failed: {code}]"),
+    )
 }
 
 fn calendar_outcome(reply: String, action_result: String) -> Outcome {
@@ -1311,6 +1364,53 @@ mod calendar_create_tests {
         CalendarCaller::Owner {
             channel: "ios".into(),
         }
+    }
+
+    #[tokio::test]
+    async fn an_event_said_plainly_goes_in_his_calendar_with_a_link_to_it() {
+        let server = MockServer::start().await;
+        let event = json!({"id": "lucina:ev_1", "source": "lucina", "title": "Mentor session",
+                           "start": "2026-11-06T11:30:00.000Z", "end": "2026-11-06T12:30:00.000Z", "allDay": false});
+        Mock::given(method("POST"))
+            .and(path("/v1/calendar/events"))
+            .and(body_partial_json(json!({"title": "Mentor session", "start": "2026-11-06T12:30:00+01:00", "end": "2026-11-06T13:30:00+01:00"})))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"created": true, "event": event})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let s = secretary(&server, dir.path());
+        let st = BridgeState::default();
+        let o = calendar_turn(&s, &st, "Mentor session 6 november at 12:30", "chat-1", &owner(), now(), TZ)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            o.reply,
+            "Added to your calendar: \"Mentor session\", Friday 6 November at 12:30."
+        );
+        assert_eq!(o.routes, vec![undo_action("en")]);
+        // Live (an https server) the reply links to the event in the Calendar tab.
+        let live = Secretary {
+            url: Some("https://getsecretary.tech/".into()),
+            ..secretary(&server, dir.path())
+        };
+        let link = event_link(&live, &o.events[0]);
+        assert_eq!(
+            link.as_deref(),
+            Some("https://getsecretary.tech/calendar?event=lucina%3Aev_1")
+        );
+        let created = cal::parse_event("Mentor session 6 november at 12:30", now(), TZ)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            cal::added_text(&created, TZ, link.as_deref()),
+            "Added to your calendar: \"Mentor session\", Friday 6 November at 12:30. [Open in calendar](https://getsecretary.tech/calendar?event=lucina%3Aev_1)"
+        );
+        // A reminder is not the calendar's.
+        assert!(calendar_turn(&s, &st, "ricordami domani alle 9 di pagare", "chat-1", &owner(), now(), TZ)
+            .await
+            .is_none());
     }
 
     #[tokio::test]

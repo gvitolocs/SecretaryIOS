@@ -6,6 +6,10 @@ use lucina_server::planner::TurnInput;
 const CASES: &[(&str, &str)] = &[
     ("ciao Lucina!", "social_greeting"),
     ("ricordami di comprare il latte domani alle 9", "schedule_reminder"),
+    ("ricordami domani alle 9 di pagare", "schedule_reminder"),
+    // 2026-10-30: the owner's answer to her question about his Mentor meeting.
+    ("Mentor session 6 november at 12:30", "calendar_event"),
+    ("lezione di Security giovedì alle 10", "calendar_event"),
     ("che promemoria ho oggi?", "list_reminders"),
     ("aggiungi uova e pane alla lista della spesa", "grocery.shopping_list.add"),
     ("cosa c'è nella lista della spesa?", "grocery.shopping_list.query"),

@@ -1037,6 +1037,92 @@ async fn run_turn_scoped(
 }
 
 /// A calendar bridge answer as the turn's finish.
+/// Who a calendar write is for: the owner (created at once), one of his MCP clients (a
+/// proposal), or a guarded turn (refused).
+fn calendar_caller(t: &Turn<'_>) -> crate::bridges::CalendarCaller {
+    match &t.mcp {
+        _ if t.guarded => crate::bridges::CalendarCaller::Guarded,
+        Some(m) => crate::bridges::CalendarCaller::Client {
+            from: format!("mcp:{}", m.caller),
+        },
+        None => crate::bridges::CalendarCaller::Owner {
+            channel: t.channel.clone(),
+        },
+    }
+}
+
+/// The full planner for a turn whose tier-0 plan carries no fields: `(plan, action)`, the
+/// original ones when planning fails.
+async fn replan(t: &Turn<'_>, memory: &str, plan: Value, action: String) -> (Value, String) {
+    match t
+        .st
+        .planner
+        .plan_response(&t.input(memory, t.planner_platform()))
+        .await
+    {
+        Ok(p) => {
+            let a = p["action"]
+                .as_str()
+                .filter(|a| !a.is_empty())
+                .unwrap_or("reply")
+                .to_owned();
+            tracing::info!(from = %action, to = %a, "replanned a tier-0 plan without fields");
+            (p, a)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "replanning failed");
+            (plan, action)
+        }
+    }
+}
+
+/// The planner's `calendar_event`: created in the owner's calendar like the calendar bridge
+/// does, or one specific question when the name or the day is missing.
+async fn calendar_event_turn(t: &Turn<'_>, plan: &Value, memory: &str) -> Finish {
+    let st = t.st;
+    let tz = st.cfg.time_zone;
+    let lang = lucina_intent::calendar::guess_lang(&t.message);
+    if !st.cfg.calendar_enabled {
+        return Finish::reply(
+            "The calendar is not enabled on this host.".to_owned(),
+            "calendar_event",
+        );
+    }
+    let caller = calendar_caller(t);
+    if caller == crate::bridges::CalendarCaller::Guarded {
+        return not_run(t, memory, "calendar.create").await;
+    }
+    match lucina_intent::calendar::create_from_plan(plan, Utc::now(), tz, lang) {
+        Ok(created) => {
+            let key = if t.session.is_empty() {
+                "default".to_owned()
+            } else {
+                t.session.clone()
+            };
+            calendar_finish(
+                crate::bridges::create_event(
+                    &st.secretary,
+                    &st.bridge_state,
+                    created,
+                    key,
+                    &caller,
+                    tz,
+                )
+                .await,
+            )
+        }
+        Err(missing) => Finish::reply(
+            lucina_intent::calendar::event_question(
+                lang,
+                plan["title"].as_str().unwrap_or(""),
+                missing,
+            ),
+            "calendar_event",
+        )
+        .with(format!("[calendar event unclear: {missing}]"), None),
+    }
+}
+
 fn calendar_finish(o: crate::bridges::Outcome) -> Finish {
     let mut f = Finish::reply(o.reply, &o.action).with(o.action_result, o.meta);
     f.calendar_events = o.events;
@@ -1768,15 +1854,7 @@ async fn json_turn_rest(
     // Calendar questions and event creation (LUCINA_CALENDAR=true): the owner's own message
     // creates the event at once (with an Undo), one of his MCP clients files a proposal.
     if st.cfg.calendar_enabled {
-        let caller = match &t.mcp {
-            _ if t.guarded => crate::bridges::CalendarCaller::Guarded,
-            Some(m) => crate::bridges::CalendarCaller::Client {
-                from: format!("mcp:{}", m.caller),
-            },
-            None => crate::bridges::CalendarCaller::Owner {
-                channel: t.channel.clone(),
-            },
-        };
+        let caller = calendar_caller(t);
         match crate::bridges::calendar_turn(
             &st.secretary,
             &st.bridge_state,
@@ -1885,6 +1963,15 @@ async fn json_turn_rest(
         .filter(|a| !a.is_empty())
         .unwrap_or("reply")
         .to_owned();
+    // Tier 0 settles "calendar_event" without its fields ("6 november at 12:30", answering her
+    // question about his meeting): the planner, which sees the recent turns, fills them in.
+    let (plan, action) = if action == "calendar_event"
+        && plan["start"].as_str().is_none_or(|v| v.trim().is_empty())
+    {
+        replan(t, memory, plan, action).await
+    } else {
+        (plan, action)
+    };
 
     // The channel's own actions (Discord admin): before the guard, which
     // they replace with their own authorisation.
@@ -2000,6 +2087,9 @@ async fn json_turn_rest(
     }
 
     let tz = st.cfg.time_zone;
+    if action == "calendar_event" {
+        return calendar_event_turn(t, &plan, memory).await;
+    }
     if action == "list_reminders" || action == "schedule_reminder" {
         if let Some(refused) = t.reminders_refused() {
             return Finish::reply(refused, &action);
@@ -2044,7 +2134,27 @@ async fn json_turn_rest(
             default_minute: st.cfg.reminder_default_minute,
             now: Utc::now(),
         };
-        let Some((text, due)) = resolve_reminder(&t.message, &plan, &o) else {
+        let resolved = match resolve_reminder(&t.message, &plan, &o) {
+            Some(r) => Some(r),
+            // Tier 0's plan carries no fields: one planner pass (it sees the recent turns) before
+            // giving up; it may also find that this is an event, or ask a question.
+            None if plan["dueDate"].as_str().is_none_or(|v| v.trim().is_empty()) => {
+                let (again, next) = replan(t, memory, plan.clone(), action.clone()).await;
+                match next.as_str() {
+                    "calendar_event" => return calendar_event_turn(t, &again, memory).await,
+                    "schedule_reminder" => resolve_reminder(&t.message, &again, &o),
+                    "reply" => {
+                        if let Some(text) = again["text"].as_str().filter(|x| !x.trim().is_empty()) {
+                            return Finish::reply(text.to_owned(), &action);
+                        }
+                        None
+                    }
+                    _ => None,
+                }
+            }
+            None => None,
+        };
+        let Some((text, due)) = resolved else {
             return Finish::reply("I could not work out when to remind you. Try \"domani mattina di comprare il latte\", \"alle 21:30 di fare la doccia\" or \"28 August 2026 — unsubscribe from Google AI Plus\".".to_owned(), &action);
         };
         return match st

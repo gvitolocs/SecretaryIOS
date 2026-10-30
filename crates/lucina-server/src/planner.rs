@@ -27,6 +27,7 @@ const INTENTS: &[&str] = &[
     "new_topic",
     "list_reminders",
     "schedule_reminder",
+    "calendar_event",
     "generate_image",
     "graph_task",
     "spreadsheet_update",
@@ -547,6 +548,9 @@ impl Planner {
             "schedule_reminder" => {
                 json!({"action": "schedule_reminder", "text": s("text"), "dueDate": s("dueDate"), "ack": if s("ack").is_empty() { "I will schedule that reminder now.".into() } else { s("ack") }})
             }
+            "calendar_event" => {
+                json!({"action": "calendar_event", "title": s("title"), "start": s("start"), "end": s("end"), "location": s("location")})
+            }
             "social_post_task" => json!({"action": "poko_news_scout_retry", "ack": s("ack")}),
             "oracle_monitor_task" if !self.prompts.oracle_monitor_enabled => json!({
                 "action": "reply",
@@ -589,6 +593,7 @@ impl Planner {
             "schedule_reminder" => {
                 json!({"action": "schedule_reminder", "text": "", "dueDate": "", "ack": "Programmo il promemoria adesso."})
             }
+            "calendar_event" => json!({"action": "calendar_event"}),
             "model_status" => {
                 json!({"action": "model_status_task", "ack": "Controllo quale modello è caricato adesso."})
             }

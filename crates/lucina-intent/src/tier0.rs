@@ -17,6 +17,7 @@ pub const INTENTS: &[&str] = &[
     "new_topic",
     "list_reminders",
     "schedule_reminder",
+    "calendar_event",
     "study_focus_reminders",
     "generate_image",
     "graph_task",
@@ -131,6 +132,7 @@ pub fn default_reply_mode(intent: &str) -> &'static str {
         | "lucina_log_inspect"
         | "study_focus_reminders"
         | "social_post"
+        | "calendar_event"
         | "spreadsheet_update" => "direct",
         _ => "full_plan",
     }
@@ -313,6 +315,11 @@ pub fn classify_tier0(text: &str, memory: &str, s: &Settings) -> Option<Classifi
     if len < 120 && re!(CONTINUATION, "i").test(text) {
         return Some(C::t0("continue_current_topic", 0.8, true, false, "chat"));
     }
+    // An appointment, meeting or session with a day ("Mentor session 6 november at 12:30") is
+    // an event for the calendar, ahead of the reminder rule (which takes any "at 12:30").
+    if crate::calendar::looks_like_event(text) || crate::calendar::looks_like_dated_time(text) {
+        return Some(C::t0("calendar_event", 0.95, false, true, "direct"));
+    }
     if looks_like_reminder_request(text) {
         return Some(C::t0("schedule_reminder", 1.0, false, true, "direct"));
     }
@@ -459,6 +466,8 @@ pub fn direct_plan(c: &Classification, text: &str, memory: &str, s: &Settings) -
         "schedule_reminder" => {
             json!({"action": "schedule_reminder", "text": "", "dueDate": "", "ack": "Programmo il promemoria adesso."})
         }
+        // The calendar bridge creates it when it can parse it; otherwise the planner fills it in.
+        "calendar_event" => json!({"action": "calendar_event"}),
         "lucina_log_inspect" => {
             json!({"action": "lucina_log_inspect", "prompt": text.trim(), "ack": "Leggo i log di Lucina (docker + journalctl) adesso."})
         }
@@ -496,6 +505,32 @@ mod tests {
 
     fn intent(t: &str) -> Option<String> {
         classify_tier0(t, "", &s()).map(|c| c.intent)
+    }
+
+    #[test]
+    fn events_go_to_the_calendar_and_reminders_stay_reminders() {
+        // 2026-10-30: this reply to her question about his Mentor meeting became a reminder.
+        for t in [
+            "Mentor session 6 november at 12:30",
+            "6 november at 12:30",
+            "lezione di reti giovedì alle 10",
+            "colloquio con Anna il 3 dicembre alle 15",
+        ] {
+            assert_eq!(intent(t).as_deref(), Some("calendar_event"), "{t}");
+        }
+        for t in [
+            "ricordami domani alle 9 di pagare",
+            "remind me on 6 november at 12:30 about the mentor session",
+            "alle 21:30 di fare la doccia",
+            "timer 20 minuti",
+        ] {
+            assert_eq!(intent(t).as_deref(), Some("schedule_reminder"), "{t}");
+        }
+        let c = classify_tier0("Mentor session 6 november at 12:30", "", &s()).unwrap();
+        assert_eq!(
+            direct_plan(&c, "Mentor session 6 november at 12:30", "", &s()),
+            Some(json!({"action": "calendar_event"}))
+        );
     }
 
     #[test]
