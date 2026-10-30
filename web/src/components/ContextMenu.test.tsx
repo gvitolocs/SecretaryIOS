@@ -101,6 +101,20 @@ describe("ContextMenu", () => {
     expect(onClose).toHaveBeenCalledTimes(3);
   });
 
+  it("ignores the click of the finger that opened it (a long press), and runs on a press inside", async () => {
+    const a = vi.fn();
+    setup(acts({ a }), { x: 0, y: 0, mode: "sheet" });
+    await frame();
+    const alpha = screen.getByRole("menuitem", { name: "Alpha" });
+    // A real pointer's click (detail 1) with no press inside the menu: the long press lifting.
+    fireEvent.click(alpha, { detail: 1 });
+    expect(a).not.toHaveBeenCalled();
+    expect(screen.getByRole("menu")).toBeInTheDocument();
+    fireEvent.pointerDown(alpha);
+    fireEvent.click(alpha, { detail: 1 });
+    expect(a).toHaveBeenCalledOnce();
+  });
+
   it("does nothing for a disabled action", async () => {
     setup(acts());
     await frame();
@@ -110,12 +124,22 @@ describe("ContextMenu", () => {
     expect(screen.getByRole("menu")).toBeInTheDocument();
   });
 
-  it("as a sheet: a title line, the actions and a Cancel row; the backdrop closes it", async () => {
+  it("as a sheet: a title line, the actions and a Cancel row; a new tap on the backdrop closes it", async () => {
     const { onClose } = setup(acts(), { x: 0, y: 0, mode: "sheet", title: "IMG_0001.jpg" });
     await frame();
     const sheet = screen.getByRole("menu", { name: "Photo actions" });
     expect(sheet).toHaveTextContent("IMG_0001.jpg");
     expect(screen.getAllByRole("menuitem")).toHaveLength(4);
+    // The click that ends the long press lands on the backdrop: it stays open. A new tap there closes it.
+    fireEvent.click(document.querySelector(".cm-backdrop")!);
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.pointerDown(document.querySelector(".cm-backdrop")!);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes with the sheet's Cancel row", async () => {
+    const { onClose } = setup(acts(), { x: 0, y: 0, mode: "sheet" });
+    await frame();
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(onClose).toHaveBeenCalledTimes(1);
   });

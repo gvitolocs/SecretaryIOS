@@ -48,6 +48,9 @@ export function ContextMenu(props: { request: MenuRequest | null; actions: MenuA
   let panel: HTMLDivElement | undefined;
   const [active, setActive] = createSignal(0);
   const [place, setPlace] = createSignal<{ left: number; top: number } | null>(null);
+  // The finger that opened the menu (a long press) lifts with a click on whatever row is under it: a row runs on a
+  // click only once a press began inside the menu. Keyboard and assistive clicks (detail 0) always count.
+  let armed = false;
   const enabled = () => props.actions.map((a, i) => (a.disabled ? -1 : i)).filter((i) => i >= 0);
 
   const items = () => [...(panel?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])];
@@ -87,6 +90,7 @@ export function ContextMenu(props: { request: MenuRequest | null; actions: MenuA
     if (!request) return;
     const opener = document.activeElement as HTMLElement | null;
     setPlace(null);
+    armed = false;
     setActive(enabled()[0] ?? 0);
     // Measured once rendered: right and below the pointer, flipped near the edges.
     const frame = requestAnimationFrame(() => {
@@ -132,7 +136,9 @@ export function ContextMenu(props: { request: MenuRequest | null; actions: MenuA
         disabled={action.disabled}
         aria-disabled={action.disabled ? "true" : undefined}
         onPointerMove={() => !action.disabled && setActive(index())}
-        onClick={() => void run(action)}
+        onClick={(e) => {
+          if (armed || e.detail === 0) void run(action);
+        }}
       >
         <span class="cm-icon" aria-hidden="true">{action.icon}</span>
         <span class="cm-label">{action.label}</span>
@@ -158,17 +164,20 @@ export function ContextMenu(props: { request: MenuRequest | null; actions: MenuA
                   visibility: place() ? "visible" : "hidden",
                 }}
                 onKeyDown={onKeyDown}
+                onPointerDown={() => (armed = true)}
                 onContextMenu={(e) => e.preventDefault()}
               >
                 <For each={props.actions}>{row}</For>
               </div>
             }
           >
-            <div class="cm-backdrop" onClick={() => props.onClose()}>
-              <div ref={panel} class="cm-sheet glass" role="menu" aria-label={props.label} onKeyDown={onKeyDown} onClick={(e) => e.stopPropagation()}>
+            {/* A tap on the backdrop closes it through the outside-pointerdown listener. Not its click: the click that
+                ends the long press which opened the sheet lands here too. */}
+            <div class="cm-backdrop">
+              <div ref={panel} class="cm-sheet glass" role="menu" aria-label={props.label} onKeyDown={onKeyDown} onPointerDown={() => (armed = true)}>
                 <Show when={request().title}>{(title) => <p class="cm-title">{title()}</p>}</Show>
                 <For each={props.actions}>{row}</For>
-                <button type="button" class="cm-item cm-cancel" onClick={() => props.onClose()}>
+                <button type="button" class="cm-item cm-cancel" onClick={(e) => (armed || e.detail === 0) && props.onClose()}>
                   <span class="cm-label">{t("common.cancel")}</span>
                 </button>
               </div>

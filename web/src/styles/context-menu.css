@@ -31,12 +31,21 @@
   cursor: pointer;
 }
 
-.cm-item:focus-visible,
-.cm-item:focus,
-.cm-item:hover:not(:disabled) {
+/* The keyboard's row and the mouse's (only where there is a real hover: a tap must not leave a row lit). */
+.cm-item:focus {
   outline: none;
+}
+
+.cm-item:focus-visible {
   background: var(--lu-accent-fill, #4a5bb5);
   color: var(--lu-on-accent, #fff);
+}
+
+@media (hover: hover) {
+  .cm-item:hover:not(:disabled) {
+    background: var(--lu-accent-fill, #4a5bb5);
+    color: var(--lu-on-accent, #fff);
+  }
 }
 
 .cm-item:disabled {
@@ -48,10 +57,16 @@
   color: var(--lu-danger, #ff453a);
 }
 
-.cm-item--danger:focus,
-.cm-item--danger:hover:not(:disabled) {
+.cm-item--danger:focus-visible {
   background: var(--lu-danger, #ff453a);
   color: #fff;
+}
+
+@media (hover: hover) {
+  .cm-item--danger:hover:not(:disabled) {
+    background: var(--lu-danger, #ff453a);
+    color: #fff;
+  }
 }
 
 .cm-icon {

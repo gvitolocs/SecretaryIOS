@@ -36,7 +36,7 @@ import { PersonHeader } from "../components/gallery/people/PersonHeader";
 import { MemoriesStrip } from "../components/gallery/browse/MemoriesStrip";
 import { SourceBar } from "../components/gallery/SourceBar";
 import { SmartHeader } from "../components/gallery/smart/SmartHeader";
-import { AlbumIcon } from "../components/gallery/ViewerIcons";
+import { AlbumIcon, HeartIcon, RestoreIcon } from "../components/gallery/ViewerIcons";
 import { LabIcon } from "../components/gallery/lab/LabIcons";
 import { ShareSheet } from "../components/gallery/share/ShareSheet";
 import { DuplicatesIcon } from "../components/gallery/stacks/StackIcons";
@@ -304,6 +304,9 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
       copyLink: <LinkIcon />,
       download: <DownloadIcon />,
       share: <ShareIcon />,
+      favorite: <HeartIcon />,
+      restore: <RestoreIcon />,
+      archive: <ArchiveBoxIcon />,
       showDay: <CalendarIcon />,
       askLucina: <ChatIcon />,
       select: <CheckIcon />,

@@ -23,17 +23,37 @@ async function fetchPicture(url: string): Promise<Blob> {
   return res.blob();
 }
 
+/** Decodes a picture: createImageBitmap, or an <img> where it refuses (SVG, some older engines). */
+async function decode(blob: Blob): Promise<{ source: CanvasImageSource; width: number; height: number; done: () => void }> {
+  try {
+    const bitmap = await createImageBitmap(blob);
+    return { source: bitmap, width: bitmap.width, height: bitmap.height, done: () => bitmap.close?.() };
+  } catch {
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.decoding = "async";
+    img.src = url;
+    try {
+      await img.decode();
+    } catch (e) {
+      URL.revokeObjectURL(url);
+      throw e;
+    }
+    return { source: img, width: img.naturalWidth, height: img.naturalHeight, done: () => URL.revokeObjectURL(url) };
+  }
+}
+
 /** Re-encodes any decodable picture as PNG. */
 export async function toPng(blob: Blob): Promise<Blob> {
   if (blob.type === "image/png") return blob;
-  const bitmap = await createImageBitmap(blob);
+  const picture = await decode(blob);
   const canvas = document.createElement("canvas");
-  canvas.width = bitmap.width;
-  canvas.height = bitmap.height;
+  canvas.width = picture.width;
+  canvas.height = picture.height;
   const g = canvas.getContext("2d");
   if (!g) throw new Error("no 2d canvas");
-  g.drawImage(bitmap, 0, 0);
-  bitmap.close?.();
+  g.drawImage(picture.source, 0, 0);
+  picture.done();
   return new Promise((resolve, reject) => canvas.toBlob((png) => (png ? resolve(png) : reject(new Error("png encode"))), "image/png"));
 }
 
