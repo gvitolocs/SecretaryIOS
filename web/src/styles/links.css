@@ -428,6 +428,13 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: inherit;
+  text-decoration: none;
+}
+
+.links-agenda-title:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .links-agenda-cal {

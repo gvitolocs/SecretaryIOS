@@ -70,6 +70,26 @@ describe("PlaceCard", () => {
     expect(paths()).toEqual(["/v1/maps/config"]);
   });
 
+  it("opens a calendar event's card in the Calendar tab", async () => {
+    calls = stubFetch((call) => (call.url === "/v1/maps/config" ? { body: CONFIG } : { status: 404, body: {} }));
+    render(() => (
+      <PlaceCard
+        place={{
+          title: "Dentist",
+          address: "Søndergade 20, Aarhus",
+          lat: 56.1545,
+          lng: 10.2085,
+          when: "2026-10-30T14:00:00.000Z",
+          kind: "event",
+          eventId: "lucina:ev_1",
+        }}
+      />
+    ));
+    const link = screen.getByRole("link", { name: /Dentist/ });
+    expect(link.getAttribute("href")).toBe(`/calendar?event=lucina%3Aev_1&at=${Date.parse("2026-10-30T14:00:00.000Z")}`);
+    expect(link).toHaveAttribute("title", "Calendar: Dentist");
+  });
+
   it("shows Lucina's travel time from home", async () => {
     calls = stubFetch((call) => (call.url === "/v1/maps/config" ? { body: CONFIG } : { status: 404, body: {} }));
     render(() => (

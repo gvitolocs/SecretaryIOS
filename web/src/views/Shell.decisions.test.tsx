@@ -51,7 +51,7 @@ describe("Shell: decisions", () => {
     expect(button.nextElementSibling).toHaveClass("notif-bell");
     expect(button.querySelector(".notif-badge")).toHaveTextContent("2");
     expect(document.querySelectorAll('.tabbar a[href="/decisions"]')).toHaveLength(0);
-    expect(document.querySelectorAll(".tabbar a")).toHaveLength(4);
+    expect(document.querySelectorAll(".tabbar a")).toHaveLength(5);
     expect(document.querySelectorAll('.tabs-top a[href="/decisions"]')).toHaveLength(0);
   });
 

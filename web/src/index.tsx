@@ -28,6 +28,7 @@ const WeightView = lazy(() => import("./views/Weight"));
 const TrainingView = lazy(() => import("./views/Training"));
 const ChatsView = lazy(() => import("./views/Chats"));
 const PluginsView = lazy(() => import("./views/Plugins"));
+const CalendarView = lazy(() => import("./views/Calendar"));
 const LibraryView = lazy(() => import("./views/Library"));
 const NotesView = lazy(() => import("./views/Notes"));
 const KeepView = lazy(() => import("./views/Keep"));
@@ -80,6 +81,7 @@ render(
   () => (
     <Router root={App}>
       <Route path="/" component={ChatView} />
+      <Route path="/calendar" component={CalendarView} />
       <Route path="/shopping">
         <Route path="/" component={ShoppingView} />
         <Route path="/map" component={DealsMapView} />

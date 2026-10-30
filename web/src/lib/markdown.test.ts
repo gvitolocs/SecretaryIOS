@@ -170,3 +170,34 @@ describe("[source:<chunk id>] and [insight:<id>] citations (Notebooks)", () => {
     expect(citationRefs(parseMarkdown("nothing here"))).toEqual([]);
   });
 });
+
+describe("calendar links", () => {
+  const route = (src: string) => parseInline(src).find((n) => n.t === "link");
+  const eid = btoa("abc123 owner@example.com").replace(/=+$/, "");
+
+  it("opens Lucina's /calendar links in the app", () => {
+    expect(route("[Open in calendar](https://getsecretary.tech/calendar?event=lucina%3Aev_abc)")).toEqual({
+      t: "link",
+      href: "/calendar?event=lucina%3Aev_abc",
+      route: true,
+      children: [{ t: "text", text: "Open in calendar" }],
+    });
+    expect(route(`[Open](${window.location.origin}/calendar?event=lucina%3Aev_abc)`)).toMatchObject({
+      href: "/calendar?event=lucina%3Aev_abc",
+      route: true,
+    });
+  });
+
+  it("opens Google Calendar event links on the event in the app", () => {
+    expect(route(`[Open in Google Calendar](https://calendar.google.com/calendar/event?eid=${eid})`)).toMatchObject({
+      href: "/calendar?event=google%3Aabc123",
+      route: true,
+    });
+  });
+
+  it("leaves other links alone", () => {
+    const other = route("[Shop](https://getsecretary.tech/shopping)");
+    expect(other).toEqual({ t: "link", href: "https://getsecretary.tech/shopping", children: [{ t: "text", text: "Shop" }] });
+    expect(route("<https://example.com/calendar>")).not.toHaveProperty("route");
+  });
+});

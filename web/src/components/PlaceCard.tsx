@@ -19,6 +19,7 @@ import {
   type LatLng,
   type PlaceInfo,
 } from "../lib/mapKit";
+import { eventRoute } from "../lib/calendar";
 import { LucinaMap } from "./LucinaMap";
 import "../styles/lucinaMap.css";
 
@@ -94,7 +95,14 @@ export function PlaceCard(props: { place: PlaceInfo; class?: string }) {
     const d = formatDistance(distanceM(o.at, p), locale());
     return o.you ? t("maps.fromYou", { d }) : t("maps.fromHome", { d });
   });
-  const route = createMemo(() => placeRoute({ ...props.place, ...(point() ?? {}) }));
+  // A calendar event's card opens the event in the Calendar tab (its sheet has the map link); a place opens the map.
+  const eventLink = createMemo(() => {
+    const p = props.place;
+    if (p.kind !== "event" || !p.eventId) return null;
+    const at = p.when ? Date.parse(p.when) : NaN;
+    return eventRoute(p.eventId, Number.isNaN(at) ? undefined : at);
+  });
+  const route = createMemo(() => eventLink() ?? placeRoute({ ...props.place, ...(point() ?? {}) }));
   const travel = createMemo(() => {
     const p = props.place;
     if (!p.travelMin || !p.travelMode) return "";
@@ -147,7 +155,7 @@ export function PlaceCard(props: { place: PlaceInfo; class?: string }) {
         </div>
       }
     >
-      <a class={`place-card ${props.class ?? ""}`} href={route()} onClick={open} title={t("maps.openPlace", { name: props.place.title })}>
+      <a class={`place-card ${props.class ?? ""}`} href={route()} onClick={open} title={eventLink() ? `${t("calendar.title")}: ${props.place.title}` : t("maps.openPlace", { name: props.place.title })}>
         {head()}
         <Show when={point()}>
           {(p) => (

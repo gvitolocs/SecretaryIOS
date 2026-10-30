@@ -4,6 +4,7 @@ import { createMemo, For, onMount, Show } from "solid-js";
 import type { AppNotification } from "../api/notifications";
 import { t } from "../i18n";
 import { agentNotificationRoute } from "../lib/agentsRoute";
+import { calendarRoute } from "../lib/calendar";
 import { prefetchPushKey } from "../lib/push";
 import {
   markAllRead,
@@ -31,7 +32,7 @@ export function NotificationsPage() {
 
   function open(n: AppNotification) {
     void markRead([n.id]);
-    navigate(agentNotificationRoute(n) ?? safeRoute(n.route));
+    navigate(agentNotificationRoute(n) ?? calendarRoute(n) ?? safeRoute(n.route));
   }
 
   function Group(p: { title: string; items: AppNotification[] }) {
