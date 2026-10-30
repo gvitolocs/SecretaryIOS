@@ -8,9 +8,11 @@ import os
 /// - Timeouts: 15 s by default, 45 s for chat (`ChatSendQueue.timeout`: a longer answer still arrives on the
 ///   timeline stream, and the bubble is replaced by the server's copy).
 /// - Endpoints: an ordered list of base URLs for the *same* server (public, then the
-///   private Tailscale name). A request that fails at the network layer is retried once
-///   on the next endpoint; HTTP answers (any status) never fall back. The endpoint that
-///   last worked is remembered and tried first.
+///   private Tailscale name). Before the first request, after a network failure and on a return
+///   to the foreground, every endpoint gets `/v1/health` at once and the first to answer is used
+///   (at most `raceTimeout` of waiting; requests then go on as before). A request that fails at the
+///   network layer is retried once on the next endpoint; HTTP answers (any status) never fall back.
+///   The endpoint that last worked is remembered and tried first.
 /// - Errors: every failure becomes an `APIError`.
 final class APIClient: @unchecked Sendable {
     static let defaultTimeout: TimeInterval = 15
@@ -29,17 +31,31 @@ final class APIClient: @unchecked Sendable {
         /// Index into `endpoints` of the one tried first.
         var active: Int
         var accessKey: String?
+        /// The active endpoint answered since the last network failure or `resettle`.
+        var settled = false
+        /// When the last race found no endpoint answering (requests then don't wait for another one for a while).
+        var raceFailedAt: Date?
+        var lastAnswer: Date?
     }
 
+    /// How long requests wait for the endpoint race before going on the usual way.
+    static let raceTimeout: TimeInterval = 4
+
     private let config: OSAllocatedUnfairLock<Config>
+    /// The race in flight, shared by every request that waits for it.
+    private let race = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
     private let session: URLSession
     private let defaults: UserDefaults?
+    /// Whether requests wait for the endpoint race (the app's client; tests and the widget go in order).
+    private let racesEndpoints: Bool
     /// Called (on any thread) when the active endpoint changes.
     var onEndpointChange: (@Sendable (URL) -> Void)?
 
-    init(endpoints: [URL], accessKey: String? = nil, session: URLSession? = nil, defaults: UserDefaults? = .standard) {
+    init(endpoints: [URL], accessKey: String? = nil, session: URLSession? = nil, defaults: UserDefaults? = .standard,
+         racesEndpoints: Bool = false) {
         precondition(!endpoints.isEmpty, "at least one endpoint")
         self.defaults = defaults
+        self.racesEndpoints = racesEndpoints
         let remembered = defaults?.string(forKey: Self.preferredEndpointKey)
         let active = endpoints.firstIndex { $0.absoluteString == remembered } ?? 0
         config = OSAllocatedUnfairLock(initialState: Config(endpoints: endpoints, active: active, accessKey: accessKey))
@@ -86,6 +102,8 @@ final class APIClient: @unchecked Sendable {
     /// Makes `url` the endpoint tried first and remembers it.
     func markWorking(_ url: URL) {
         let changed: Bool = config.withLock { config in
+            config.lastAnswer = Date()
+            config.settled = true
             guard let index = config.endpoints.firstIndex(of: url), index != config.active else { return false }
             config.active = index
             return true
@@ -104,6 +122,70 @@ final class APIClient: @unchecked Sendable {
     }()
 
     static let decoder = JSONDecoder()
+
+    // MARK: - Endpoint race
+
+    /// The next request races the endpoints again unless one answered in the last `quiet` seconds
+    /// (a return to the foreground: the network may have changed meanwhile).
+    func resettle(ifQuietFor quiet: TimeInterval = 0) {
+        config.withLock { config in
+            if let last = config.lastAnswer, Date().timeIntervalSince(last) < quiet { return }
+            config.settled = false
+            config.raceFailedAt = nil
+        }
+    }
+
+    /// Starts the endpoint race now (at launch and on a return to the foreground) so it overlaps with the first
+    /// frame instead of delaying the first request; requests that come meanwhile join it.
+    func prewarm() {
+        Task { await settleEndpoint() }
+    }
+
+    /// Waits (up to `raceTimeout`) for the endpoint race when no endpoint is known to answer yet.
+    private func settleEndpoint() async {
+        let endpoints: [URL]? = config.withLock { config in
+            let failedRecently = config.raceFailedAt.map { Date().timeIntervalSince($0) < 30 } ?? false
+            return racesEndpoints && config.endpoints.count > 1 && !config.settled && !failedRecently ? config.endpoints : nil
+        }
+        guard let endpoints else { return }
+        let task: Task<Void, Never> = race.withLock { current in
+            if let current { return current }
+            let task = Task { [weak self] in
+                guard let self else { return }
+                let winner = await self.firstAnswering(endpoints)
+                if let winner {
+                    self.markWorking(winner)
+                } else {
+                    self.config.withLock { $0.raceFailedAt = Date() }
+                }
+                self.race.withLock { $0 = nil }
+            }
+            current = task
+            return task
+        }
+        await task.value
+    }
+
+    /// `/v1/health` on every endpoint at once: the first that answers (the others are cancelled).
+    private func firstAnswering(_ endpoints: [URL]) async -> URL? {
+        let start = Date()
+        let winner = await withTaskGroup(of: URL?.self) { group -> URL? in
+            for url in endpoints {
+                group.addTask { await self.probe(url, timeout: Self.raceTimeout).ok ? url : nil }
+            }
+            for await url in group {
+                if let url {
+                    group.cancelAll()
+                    return url
+                }
+            }
+            return nil
+        }
+        Self.log.notice("endpoint race: \(winner?.host ?? "none answered", privacy: .public) in \(Int(Date().timeIntervalSince(start) * 1000)) ms")
+        return winner
+    }
+
+    private static let log = Logger(subsystem: "tech.getsecretary.app", category: "API")
 
     // MARK: - Typed helpers
 
@@ -156,6 +238,7 @@ final class APIClient: @unchecked Sendable {
     func send(_ method: String, _ path: String, query: [URLQueryItem] = [], body: Data?,
               timeout: TimeInterval = defaultTimeout, passThrough: Set<Int> = [],
               authenticated: Bool = true, idempotent: Bool? = nil, headers: [String: String] = [:]) async throws -> Response {
+        await settleEndpoint()
         let snapshot = config.withLock { $0 }
         let order = [snapshot.active] + snapshot.endpoints.indices.filter { $0 != snapshot.active }
         let canRetry = idempotent ?? (method != "POST")
@@ -184,6 +267,8 @@ final class APIClient: @unchecked Sendable {
                 throw CancellationError()
             } catch let error as URLError {
                 lastError = error
+                // The network may have changed: the next request races the endpoints again.
+                config.withLock { $0.settled = false }
                 if attempt == 0, order.count > 1, Self.shouldFallBack(error.code, idempotent: canRetry) { continue }
                 throw Self.map(error, host: base.host)
             }
@@ -238,6 +323,7 @@ final class APIClient: @unchecked Sendable {
     /// token. Throws the usual `APIError` for non-2xx answers. No endpoint fallback here:
     /// the caller reconnects, and by then the active endpoint reflects other requests.
     func openStream(_ path: String, lastEventId: String?, idleTimeout: TimeInterval = 75) async throws -> URLSession.AsyncBytes {
+        await settleEndpoint()
         let snapshot = config.withLock { $0 }
         let base = snapshot.endpoints[snapshot.active]
         var headers = ["Accept": "text/event-stream", "Cache-Control": "no-cache"]
@@ -256,6 +342,7 @@ final class APIClient: @unchecked Sendable {
         } catch let error as URLError where error.code == .cancelled {
             throw CancellationError()
         } catch let error as URLError {
+            config.withLock { $0.settled = false }
             throw Self.map(error, host: base.host)
         }
     }

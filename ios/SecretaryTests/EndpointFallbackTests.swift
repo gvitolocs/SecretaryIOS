@@ -18,11 +18,48 @@ final class EndpointFallbackTests: XCTestCase {
         defaults.removePersistentDomain(forName: suite)
     }
 
-    private func makeClient() -> APIClient {
+    private func makeClient(races: Bool = false) -> APIClient {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [StubURLProtocol.self]
         return APIClient(endpoints: [primary, secondary], accessKey: "sec_same_token",
-                         session: URLSession(configuration: configuration), defaults: defaults)
+                         session: URLSession(configuration: configuration), defaults: defaults, racesEndpoints: races)
+    }
+
+    private var paths: [String] { StubURLProtocol.requests.compactMap { r in r.url.map { "\($0.host ?? "")\($0.path)" } } }
+
+    func testRaceSendsTheFirstRequestToTheEndpointThatAnswers() async throws {
+        primaryFails(.timedOut)
+        let client = makeClient(races: true)
+        let session: SessionInfo = try await client.get("/v1/session")
+        XCTAssertTrue(session.authenticated)
+        XCTAssertEqual(Set(paths.prefix(2)), ["public.example.test/v1/health", "private.example.ts.net/v1/health"],
+                       "both endpoints are asked at once")
+        XCTAssertEqual(paths.last, "private.example.ts.net/v1/session", "the request goes where the answer came from, without a timeout first")
+        XCTAssertEqual(paths.count, 3)
+        XCTAssertEqual(client.baseURL, secondary)
+
+        // Settled: the next request does not race again.
+        StubURLProtocol.requests = []
+        let _: SessionInfo = try await client.get("/v1/session")
+        XCTAssertEqual(paths, ["private.example.ts.net/v1/session"])
+
+        // A return to the foreground after a quiet spell races again.
+        StubURLProtocol.requests = []
+        client.resettle()
+        let _: SessionInfo = try await client.get("/v1/session")
+        XCTAssertEqual(paths.filter { $0.hasSuffix("/v1/health") }.count, 2)
+    }
+
+    func testRaceWithNoAnswerFallsBackToTheUsualOrder() async {
+        StubURLProtocol.handler = { _ in .init(error: URLError(.cannotFindHost)) }
+        let client = makeClient(races: true)
+        _ = try? await client.get("/v1/session") as SessionInfo
+        XCTAssertEqual(paths.filter { $0.hasSuffix("/v1/session") }, ["public.example.test/v1/session", "private.example.ts.net/v1/session"])
+
+        // No second race right after a failed one.
+        StubURLProtocol.requests = []
+        _ = try? await client.get("/v1/session") as SessionInfo
+        XCTAssertFalse(paths.contains { $0.hasSuffix("/v1/health") })
     }
 
     private var hosts: [String] { StubURLProtocol.requests.compactMap(\.url?.host) }

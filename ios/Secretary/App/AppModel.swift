@@ -157,9 +157,12 @@ final class AppModel {
             defaults.removeObject(forKey: ChatStore.sessionIdKey)
         }
         let client = PerfLog.measure("client") {
-            APIClient(endpoints: ServerConfig.resolvedEndpoints(defaults: defaults), accessKey: try? keychain.read(), defaults: defaults)
+            APIClient(endpoints: ServerConfig.resolvedEndpoints(defaults: defaults), accessKey: try? keychain.read(), defaults: defaults,
+                      racesEndpoints: true)
         }
         self.client = client
+        // Public or Tailscale: found out while the first frame is drawn.
+        client.prewarm()
         self.keychain = keychain
         baseURL = client.baseURL
         // Only the chat's own cache (the newest 50 items) is read before the first frame; every other

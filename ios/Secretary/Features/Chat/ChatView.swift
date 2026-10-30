@@ -117,6 +117,8 @@ struct ChatTranscript: View {
                                 .modifier(MessageActionsModifier(item: item))
                                 .id(item.id)
                                 .onAppear {
+                                    // Once per launch (counting the items is a pass over all of them).
+                                    guard !PerfLog.firstMessageSeen else { return }
                                     let source = store.messageSource
                                     let count = store.items.filter { !store.isHidden($0.id) }.count
                                     DispatchQueue.main.async {
@@ -155,8 +157,9 @@ struct ChatTranscript: View {
                 scrollToEnd(proxy)
             }
             .onAppear {
+                // The bottom anchor opens the list on its end; one jump covers a reappearance (no follow-ups).
                 atBottom = true
-                scrollToEnd(proxy, animated: false)
+                scrollToEnd(proxy, animated: false, follow: false)
             }
         }
     }
@@ -261,7 +264,7 @@ struct ChatTranscript: View {
 
     /// Lazy rows have estimated heights, so one `scrollTo` can land short of the end:
     /// scroll again once the new rows are laid out.
-    private func scrollToEnd(_ proxy: ScrollViewProxy, animated: Bool = true) {
+    private func scrollToEnd(_ proxy: ScrollViewProxy, animated: Bool = true, follow: Bool = true) {
         Task { @MainActor in
             await Task.yield()
             if animated {
@@ -270,6 +273,7 @@ struct ChatTranscript: View {
                 proxy.scrollTo(Self.endId, anchor: .bottom)
             }
             // Rows and photos keep laying out after the first jump: follow them while still pinned.
+            guard follow else { return }
             for delay in [250, 800] {
                 try? await Task.sleep(for: .milliseconds(delay))
                 guard atBottom, !readerScrolling else { return }

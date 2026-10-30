@@ -51,6 +51,8 @@ enum PerfLog {
     private(set) static var firstMessageCount = 0
     private(set) static var chatSyncedMs: Double?
 
+    static var firstMessageSeen: Bool { firstMessageSource != nil }
+
     static func firstMessage(source: String, count: Int = 1) {
         guard firstMessageSource == nil else { return }
         firstMessageSource = source
@@ -64,12 +66,53 @@ enum PerfLog {
     }
 
     static func chatSynced() {
+        if let start = foregroundAt {
+            foregroundAt = nil
+            let total = ms(since: start)
+            foregroundSyncedMs.append(total)
+            logger.notice("perf foreground: chat synced \(format(total), privacy: .public) ms after the app became active")
+        }
         guard chatSyncedMs == nil else { return }
         let now = Date()
         chatSyncedMs = ms(since: processStart ?? appInitAt ?? now, to: now)
         let app = appInitAt.map { format(ms(since: $0, to: now)) } ?? "?"
         signposter.emitEvent("ChatSynced")
         logger.notice("perf launch: chat synced \(format(chatSyncedMs ?? 0), privacy: .public) ms after process start (\(app, privacy: .public) ms after app init)")
+    }
+
+    /// CPU time (user + system) the process used in its first 10 and 30 s, in ms.
+    private(set) static var cpuFirst10sMs: Double?
+    private(set) static var cpuFirst30sMs: Double?
+    /// The app came back from the background (nil once its chat has synced).
+    private static var foregroundAt: Date?
+    private(set) static var foregroundSyncedMs: [Double] = []
+    private(set) static var foregroundCpu10sMs: [Double] = []
+
+    /// CPU time (user + system) this process used so far, in ms.
+    nonisolated static func cpuMs() -> Double {
+        var usage = rusage()
+        guard getrusage(RUSAGE_SELF, &usage) == 0 else { return 0 }
+        func ms(_ t: timeval) -> Double { Double(t.tv_sec) * 1000 + Double(t.tv_usec) / 1000 }
+        return ((ms(usage.ru_utime) + ms(usage.ru_stime)) * 10).rounded() / 10
+    }
+
+    private static var wasInBackground = false
+
+    static func backgrounded() { wasInBackground = true }
+
+    /// The scene became active; measured only when it comes back from the background.
+    static func foregrounded() {
+        guard wasInBackground else { return }
+        wasInBackground = false
+        foregroundAt = Date()
+        let cpu = cpuMs()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
+            MainActor.assumeIsolated {
+                let used = cpuMs() - cpu
+                foregroundCpu10sMs.append(used)
+                logger.notice("perf foreground: \(format(used), privacy: .public) ms CPU in the 10 s after becoming active")
+            }
+        }
     }
 
     private static var launchInterval: OSSignpostIntervalState?
@@ -91,6 +134,18 @@ enum PerfLog {
         launchInterval = signposter.beginInterval("Launch")
         if let processStart {
             logger.notice("perf launch: process start → app init \(format(ms(since: processStart, to: now)), privacy: .public) ms")
+        }
+        // CPU used by the launch and the work deferred after it (the photo backup's first pass starts at ~15 s).
+        let since = processStart ?? now
+        for seconds in [10.0, 30.0] {
+            let delay = max(0, seconds - now.timeIntervalSince(since))
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                MainActor.assumeIsolated {
+                    let used = cpuMs()
+                    if seconds == 10 { cpuFirst10sMs = used } else { cpuFirst30sMs = used }
+                    logger.notice("perf launch: \(format(used), privacy: .public) ms CPU in the first \(Int(seconds)) s")
+                }
+            }
         }
     }
 
@@ -188,6 +243,10 @@ enum PerfLog {
             lines.append("launch: first message items \(firstMessageCount)")
         }
         if let chatSyncedMs { lines.append("launch: chat synced \(format(chatSyncedMs)) ms") }
+        if let cpuFirst10sMs { lines.append("launch: CPU in the first 10 s \(format(cpuFirst10sMs)) ms") }
+        if let cpuFirst30sMs { lines.append("launch: CPU in the first 30 s \(format(cpuFirst30sMs)) ms") }
+        for value in foregroundSyncedMs { lines.append("foreground: chat synced \(format(value)) ms after becoming active") }
+        for value in foregroundCpu10sMs { lines.append("foreground: CPU in the 10 s after becoming active \(format(value)) ms") }
         let setupTotal = setup.reduce(0) { $0 + $1.ms }
         lines.append("setup: AppModel \(format(setupTotal)) ms in \(setup.count) steps")
         for step in setup.sorted(by: { $0.ms > $1.ms }) { lines.append("  setup \(step.name): \(format(step.ms)) ms") }

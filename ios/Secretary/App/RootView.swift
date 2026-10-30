@@ -42,7 +42,8 @@ struct MainTabs: View {
     @State private var launchDelay: Duration? = .seconds(2)
 
     var body: some View {
-        tabs
+        let _ = PerfLog.count("MainTabs.body")
+        return tabs
         .onChange(of: scenePhase, initial: true) { _, phase in
             // The passcode prompt of an approval makes the app inactive for a moment: keep everything as it is,
             // or Lucina's stage, the chat and the prompt behind it redraw while the owner types.
@@ -160,9 +161,16 @@ struct MainTabs: View {
         // The timeline stream runs only in the foreground; it pauses in the background.
         .onChange(of: scenePhase, initial: true) { _, phase in
             if phase == .inactive, app.approvals.working != nil { return } // an approval's passcode prompt (above)
+            if phase == .active {
+                PerfLog.foregrounded()
+                // The network may have changed while away: the first request races the endpoints again.
+                app.client.resettle(ifQuietFor: 60)
+                app.client.prewarm()
+            }
             app.chat.setForeground(phase == .active)
             app.isForeground = phase == .active
             if phase == .background {
+                PerfLog.backgrounded()
                 app.publishWidgets()
                 BackgroundRefresh.schedule()
                 if app.backup.settings.enabled { PhotoBackup.scheduleProcessing(chargingOnly: app.backup.settings.chargingOnly) }
@@ -178,8 +186,9 @@ struct MainTabs: View {
         .task(id: foreground) {
             guard foreground else { return }
             // Cold start: the first chat frame and the chat's own refresh go first; uploads, the
-            // inbox, the photo backup and the memo queue start a moment later. (The wardrobe loads
-            // with the Lucina tab.)
+            // inbox and the memo queue start a moment later, the photo backup later still. (The wardrobe
+            // loads with the Lucina tab.)
+            let coldStart = launchDelay != nil
             if let delay = launchDelay {
                 launchDelay = nil
                 try? await Task.sleep(for: delay)
@@ -196,7 +205,13 @@ struct MainTabs: View {
                 group.addTask { await app.callers.syncIfDue() }
                 group.addTask { await app.watchPrimary() }
                 group.addTask { await app.notifications.foregroundLoop() }
-                group.addTask { @MainActor in if app.backup.settings.enabled { await app.backup.requestAccessAndRun() } }
+                group.addTask { @MainActor in
+                    // A pass reads only what changed in Photos since the last one, but the first after a launch
+                    // still waits until the app has settled (15 s after the first frame), at low priority.
+                    if coldStart { try? await Task.sleep(for: .seconds(13)) }
+                    guard !Task.isCancelled, app.backup.settings.enabled else { return }
+                    await app.backup.requestAccessAndRun()
+                }
                 group.addTask { await MainActor.run { app.memos.queue.kick() } }
             }
         }

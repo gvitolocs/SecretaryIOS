@@ -46,6 +46,8 @@ final class ChatStore {
     /// A message is on the wire (the thinking bubble).
     var isSending: Bool { sendQueue.isSending }
     @ObservationIgnored private var sendTasks: [String: Task<Void, Never>] = [:]
+    /// `messageActions(for:)`, by item id.
+    @ObservationIgnored private var derivedActions: [String: (item: TimelineItem, speech: String?, actions: [MessageAction])] = [:]
     /// The network coming back resets stuck sends, like the foreground does.
     @ObservationIgnored private let pathMonitor = NWPathMonitor()
     @ObservationIgnored private var online = true
@@ -752,6 +754,7 @@ final class ChatStore {
             try? await database.clear()
         }
         persistedItems = [:]
+        derivedActions = [:]
         sentClientIDs = []
         setDeviceId(nil)
         messageSource = "cache"
@@ -1154,6 +1157,17 @@ extension ChatStore {
     /// What "Read aloud" would say for the message (nil: nothing to read).
     func speechText(for item: TimelineItem) -> String? {
         ChatSpeech.text(for: item, transcript: voiceTranscript(of: item))
+    }
+
+    /// The read-aloud text and the long-press actions of a message, worked out once per version of it: every
+    /// visible row asks on each redraw, and markdown to plain text is regex work. Not kept for voice notes,
+    /// whose transcript can arrive later from another message.
+    func messageActions(for item: TimelineItem) -> (speech: String?, actions: [MessageAction]) {
+        if let cached = derivedActions[item.id], cached.item == item { return (cached.speech, cached.actions) }
+        let speech = speechText(for: item)
+        let actions = MessageAction.available(for: item, speech: speech)
+        if !item.attachments.contains(where: \.isVoice) { derivedActions[item.id] = (item, speech, actions) }
+        return (speech, actions)
     }
 
     /// The right swipe's action: Lucina reads the message (or stops, when it is the one reading).

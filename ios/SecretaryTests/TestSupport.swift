@@ -12,6 +12,7 @@ final class StubURLProtocol: URLProtocol, @unchecked Sendable {
 
     nonisolated(unsafe) static var handler: ((URLRequest) -> Reply)?
     nonisolated(unsafe) static var requests: [URLRequest] = []
+    static let lock = NSLock()
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -30,7 +31,8 @@ final class StubURLProtocol: URLProtocol, @unchecked Sendable {
             stream.close()
             recorded.httpBody = data
         }
-        Self.requests.append(recorded)
+        // The endpoint race sends its probes at once.
+        Self.lock.withLock { Self.requests.append(recorded) }
         let reply = Self.handler?(recorded) ?? Reply()
         if let error = reply.error {
             client?.urlProtocol(self, didFailWithError: error)

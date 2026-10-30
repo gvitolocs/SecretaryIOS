@@ -240,8 +240,7 @@ struct MessageActionsModifier: ViewModifier {
     @GestureState private var dragging = false
 
     func body(content: Content) -> some View {
-        let speech = store.speechText(for: item)
-        let available = MessageAction.available(for: item, speech: speech)
+        let available = store.messageActions(for: item).actions
         let canReply = available.contains(.reply) && !actions.selecting
         let canRead = available.contains(.readAloud) && !actions.selecting
         let offset = BubbleSwipe.offset(track, canReply: canReply, canReadAloud: canRead)
@@ -677,7 +676,7 @@ struct DemoMessageMenu: View {
                     MessagePreview(item: item, client: app.client, transcript: store.voiceTranscript(of: item))
                         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                     VStack(spacing: 0) {
-                        let available = MessageAction.available(for: item, speech: store.speechText(for: item))
+                        let available = store.messageActions(for: item).actions
                         ForEach(available) { action in
                             HStack {
                                 Text(MessageActionTitle.text(action))

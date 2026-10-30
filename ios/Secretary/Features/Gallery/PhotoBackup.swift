@@ -8,7 +8,11 @@ import UIKit
 
 // Automatic backup of the iPhone's photos and videos to the owner's server, like Google Photos.
 //
-// - Reads the library with PhotoKit, newest first. Originals are sent as they are (HEIC, MOV,
+// - Reads the library with PhotoKit, newest first. A pass only looks at what changed since the last one
+//   (PhotoKit's persistent change token, plus the assets still waiting to be sent); the whole library is
+//   read only the first time or when PhotoKit can no longer say what changed, and assets already sent and
+//   unchanged since are skipped without asking Photos for their files.
+// - Originals are sent as they are (HEIC, MOV,
 //   Live Photo halves); edited assets send their edited rendering as a new version of the
 //   same server item (the server keeps the earlier original).
 // - Transfers run in a background URLSession, so they continue while Secretary is suspended.
@@ -59,6 +63,8 @@ final class PhotoBackup {
         didSet {
             guard settings != oldValue else { return }
             save()
+            // Videos left out of the earlier passes are not in the changes since then: read everything once.
+            if settings.includeVideos, !oldValue.includeVideos { changeToken = nil }
             if settings.enabled { Task { await requestAccessAndRun() } } else { status = .off }
             Self.scheduleProcessing(chargingOnly: settings.chargingOnly)
         }
@@ -85,6 +91,10 @@ final class PhotoBackup {
         // Assigned only on a real change: every view that asks `localAsset(for:)` observes it.
         if reverse != localAssets { localAssets = reverse }
     }
+    /// PhotoKit's change token when the last scan started (an archived `PHPersistentChangeToken`); nil: scan everything.
+    @ObservationIgnored private var changeToken: Data?
+    /// Ledger keys a scan found to send that are not sent yet: the next pass looks at them again.
+    @ObservationIgnored private var pending: Set<String> = []
     @ObservationIgnored private var running: Task<Void, Never>?
     /// The ledger read at launch, until it has landed.
     @ObservationIgnored private var ledgerLoad: Task<Void, Never>?
@@ -118,6 +128,8 @@ final class PhotoBackup {
             guard let self, let saved else { return }
             self.ledger = saved.entries
             self.lastBackup = saved.lastBackup
+            self.changeToken = saved.changeToken
+            self.pending = Set(saved.pending ?? [])
             self.backedUp = self.ledger.values.filter { $0.itemId != nil }.count
         }
         // A pass that waited for Wi-Fi (or for the first path update) starts again when the network allows it.
@@ -136,6 +148,8 @@ final class PhotoBackup {
     private struct Ledger: Codable {
         var entries: [String: Entry]
         var lastBackup: Date?
+        var changeToken: Data?
+        var pending: [String]?
     }
 
     private func save() {
@@ -144,7 +158,7 @@ final class PhotoBackup {
 
     /// After every asset: the whole ledger is encoded and written off the main thread, in order.
     private func saveLedger() {
-        let snapshot = Ledger(entries: ledger, lastBackup: lastBackup)
+        let snapshot = Ledger(entries: ledger, lastBackup: lastBackup, changeToken: changeToken, pending: Array(pending))
         let url = Self.ledgerURL
         let previous = ledgerWrite
         ledgerWrite = Task.detached(priority: .utility) {
@@ -185,10 +199,24 @@ final class PhotoBackup {
             return
         }
         if observer == nil {
-            observer = LibraryObserver { [weak self] in Task { @MainActor in self?.kick() } }
-            PHPhotoLibrary.shared().register(observer!)
+            let observer = LibraryObserver { [weak self] in Task { @MainActor in self?.libraryChanged() } }
+            self.observer = observer
+            // Registering opens the connection to Photos: not on the main thread.
+            Task.detached(priority: .utility) { PHPhotoLibrary.shared().register(observer) }
         }
         kick()
+    }
+
+    @ObservationIgnored private var libraryChange: Task<Void, Never>?
+
+    /// Photos reports changes in bursts (an iCloud sync, a burst of shots): one pass after they settle.
+    private func libraryChanged() {
+        libraryChange?.cancel()
+        libraryChange = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled else { return }
+            self?.kick()
+        }
     }
 
     /// The BGProcessingTask / app refresh entry point. With a budget, returns after it (the pass
@@ -263,13 +291,24 @@ final class PhotoBackup {
     private func run() async {
         await ledgerLoad?.value
         status = .scanning
-        // Photos is asked for every asset's resources: thousands of calls, off the main thread.
+        // Off the main thread; only the changes since the last scan unless there is no token yet.
         let known = ledger
         let includeVideos = settings.includeVideos
-        let scanned = await Task.detached(priority: .utility) { PhotoBackup.scan(ledger: known, includeVideos: includeVideos) }.value
+        let token = changeToken
+        let waiting = pending
+        let start = Date()
+        let scanned = await Task.detached(priority: token == nil ? .background : .utility) {
+            PhotoBackup.scan(ledger: known, includeVideos: includeVideos, since: token, pending: waiting)
+        }.value
         if !scanned.favoritesChanged.isEmpty { sendFavorites(scanned.favoritesChanged) }
         let work = scanned.work
-        log.info("PhotoBackup scan found \(work.count) to send, \(self.ledger.count) known")
+        let stillPending = Set(work.map(\.key))
+        if scanned.token != token || stillPending != waiting {
+            changeToken = scanned.token
+            pending = stillPending
+            saveLedger()
+        }
+        log.info("PhotoBackup \(scanned.full ? "full" : "incremental", privacy: .public) scan of \(scanned.checked) assets in \(Int(Date().timeIntervalSince(start) * 1000)) ms found \(work.count) to send, \(self.ledger.count) known")
         remaining = work.count
         if work.isEmpty {
             status = .idle
@@ -324,24 +363,70 @@ final class PhotoBackup {
     private struct ScanResult: @unchecked Sendable {
         var work: [Work] = []
         var favoritesChanged: [(String, String, Bool)] = []
+        /// The token to scan from next time.
+        var token: Data?
+        var full = false
+        var checked = 0
+    }
+
+    /// The local identifiers of the assets added or changed since `token`, or nil when PhotoKit can't say
+    /// (no token yet, an expired one): then the whole library is read.
+    nonisolated private static func changedAssets(since token: Data?) -> Set<String>? {
+        guard let token,
+              let previous = try? NSKeyedUnarchiver.unarchivedObject(ofClass: PHPersistentChangeToken.self, from: token) else { return nil }
+        do {
+            var identifiers = Set<String>()
+            for change in try PHPhotoLibrary.shared().fetchPersistentChanges(since: previous) {
+                let details = try change.changeDetails(for: .asset)
+                identifiers.formUnion(details.insertedLocalIdentifiers)
+                identifiers.formUnion(details.updatedLocalIdentifiers)
+            }
+            return identifiers
+        } catch {
+            log.info("PhotoBackup change token unusable, reading the whole library: \(String(describing: error), privacy: .public)")
+            return nil
+        }
     }
 
     /// What needs sending: new assets, edited ones, and Live Photo motion halves (any thread).
-    nonisolated private static func scan(ledger: [String: Entry], includeVideos: Bool) -> ScanResult {
+    nonisolated private static func scan(ledger: [String: Entry], includeVideos: Bool, since token: Data?, pending: Set<String>) -> ScanResult {
+        // Taken before reading: anything that changes during the scan is in the next one.
+        let next = try? NSKeyedArchiver.archivedData(withRootObject: PHPhotoLibrary.shared().currentChangeToken, requiringSecureCoding: true)
         let options = PHFetchOptions()
         options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
         options.includeHiddenAssets = false
         let types: [PHAssetMediaType] = includeVideos ? [.image, .video] : [.image]
         options.predicate = NSPredicate(format: "mediaType IN %@", types.map(\.rawValue))
-        let assets = PHAsset.fetchAssets(with: options)
+        let assets: PHFetchResult<PHAsset>
+        var result = ScanResult(token: next)
+        if var identifiers = changedAssets(since: token) {
+            // Plus what an earlier pass did not get to, and uploads left half done.
+            let motion = "#motion"
+            for key in pending.union(ledger.compactMap { $0.value.uploadId == nil ? nil : $0.key }) {
+                identifiers.insert(key.hasSuffix(motion) ? String(key.dropLast(motion.count)) : key)
+            }
+            if identifiers.isEmpty { return result }
+            assets = PHAsset.fetchAssets(withLocalIdentifiers: Array(identifiers), options: options)
+        } else {
+            result.full = true
+            assets = PHAsset.fetchAssets(with: options)
+        }
+        result.checked = assets.count
         var work: [Work] = []
         var favoritesChanged: [(String, String, Bool)] = []
         assets.enumerateObjects { asset, _, _ in
-            let resources = PHAssetResource.assetResources(for: asset)
             let key = asset.localIdentifier
+            let known = ledger[key]
+            // Sent and not modified since (nor its Live Photo motion half): no need to ask Photos for its files.
+            if let known, let item = known.itemId, known.uploadId == nil, known.modified == asset.modificationDate,
+               !(includeVideos && asset.mediaSubtypes.contains(.photoLive))
+                || ledger[key + "#motion"].map({ $0.itemId != nil && $0.uploadId == nil }) == true {
+                if known.favorite != asset.isFavorite { favoritesChanged.append((key, item, asset.isFavorite)) }
+                return
+            }
+            let resources = PHAssetResource.assetResources(for: asset)
             guard let main = Self.mainResource(asset, resources) else { return }
             let signature = "\(main.type.rawValue):\(main.originalFilename)"
-            let known = ledger[key]
             let edited = known?.modified != asset.modificationDate && known?.signature != signature
             if known?.itemId == nil || edited || known?.uploadId != nil {
                 let pair = resources.contains { $0.type == .pairedVideo || $0.type == .fullSizePairedVideo } ? key + "#motion" : nil
@@ -359,7 +444,9 @@ final class PhotoBackup {
                 }
             }
         }
-        return ScanResult(work: work, favoritesChanged: favoritesChanged)
+        result.work = work
+        result.favoritesChanged = favoritesChanged
+        return result
     }
 
     /// Favourites changed in Photos since they were sent: tell the server.
@@ -468,6 +555,7 @@ final class PhotoBackup {
         entry.signature = w.signature
         entry.favorite = w.motion ? nil : w.asset.isFavorite
         ledger[w.key] = entry
+        pending.remove(w.key)
         backedUp = ledger.values.filter { $0.itemId != nil }.count
         saveLedger()
     }
@@ -543,9 +631,9 @@ final class PhotoBackup {
 }
 
 /// Library changes (a new photo, an edit) start a pass while the app runs.
-private final class LibraryObserver: NSObject, PHPhotoLibraryChangeObserver {
-    let onChange: () -> Void
-    init(onChange: @escaping () -> Void) { self.onChange = onChange }
+private final class LibraryObserver: NSObject, PHPhotoLibraryChangeObserver, @unchecked Sendable {
+    let onChange: @Sendable () -> Void
+    init(onChange: @escaping @Sendable () -> Void) { self.onChange = onChange }
     func photoLibraryDidChange(_ changeInstance: PHChange) { onChange() }
 }
 
