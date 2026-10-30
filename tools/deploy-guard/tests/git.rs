@@ -165,3 +165,39 @@ fn no_ledger_entry_asks_for_a_bootstrap_record() {
     assert_eq!(rc, 3, "{out}");
     assert!(out.contains("--bootstrap"), "{out}");
 }
+
+#[test]
+fn a_retired_line_target_is_refused() {
+    let r = Repo::new("lines");
+    r.take_lock();
+    for line in ["lucina-rs", "server-live", "web-live"] {
+        let (rc, out) = r.guard(&["check", "--runtime", "web", "--target", line]);
+        assert_eq!(rc, 1, "{out}");
+        assert!(out.contains("deploys from main"), "{out}");
+    }
+}
+
+#[test]
+fn record_tags_the_deploy_and_plan_reports_changes() {
+    let r = Repo::new("tags");
+    r.take_lock();
+    std::fs::create_dir_all(r.dir.join("deploy")).unwrap();
+    std::fs::create_dir_all(r.dir.join("web")).unwrap();
+    std::fs::write(r.dir.join("deploy/targets.tsv"), "web\tp1\tweb\nios\tiphone\tios\n").unwrap();
+    std::fs::write(r.dir.join("web/a.ts"), "1").unwrap();
+    sh(&r.dir, &["add", "."]);
+    sh(&r.dir, &["commit", "-q", "-m", "targets"]);
+    let base = sh(&r.dir, &["rev-parse", "HEAD"]);
+    let (rc, out) = r.guard(&["record", "--runtime", "web", "--commit", &base, "--bootstrap"]);
+    assert_eq!(rc, 0, "{out}");
+    let tags = sh(&r.dir, &["tag", "--list", "deploy/web/*"]);
+    assert!(tags.ends_with(&format!("-{}", &base[..8])), "{tags}");
+    let (_, out) = r.guard(&["plan"]);
+    assert!(out.contains("up to date"), "{out}");
+    assert!(out.contains("no ledger entry"), "{out}");
+    std::fs::write(r.dir.join("web/a.ts"), "2").unwrap();
+    sh(&r.dir, &["commit", "-q", "-am", "web change"]);
+    r.commit("other.rs");
+    let (_, out) = r.guard(&["plan", "--runtime", "web"]);
+    assert!(out.contains("1 commit(s) to deploy"), "{out}");
+}

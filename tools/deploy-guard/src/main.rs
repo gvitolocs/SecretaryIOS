@@ -5,32 +5,53 @@
 //! a build may go live only if
 //!
 //! 1. the build tree is clean (no uncommitted or untracked source),
-//! 2. its commit is on the runtime's target branch (main, or lucina-rs for lucina-rs),
+//! 2. its commit is on `main`, the one branch every runtime deploys from (docs/repo-workflow.md),
 //! 3. the commit live now is an ancestor of it (nothing deployed before is missing),
 //! 4. the merge lock is held (check-then-push is only safe inside it).
 //!
 //! ```sh
 //! deploy-guard check  --runtime secretary-server [--repo DIR]   # before the deploy
-//! deploy-guard record --runtime secretary-server [--repo DIR]   # right after it
+//! deploy-guard record --runtime secretary-server [--repo DIR]   # right after it: ledger, tag, ops record
+//! deploy-guard plan   [--runtime NAME] [--repo DIR]             # which runtimes main changed since their live build
 //! deploy-guard status
 //! ```
 //!
 //! The ledger of what is live is one file per runtime in
-//! `$DEPLOY_GUARD_LEDGER` (default `~/.local/state/deploy-guard`). Exit codes:
-//! 0 allowed / recorded, 1 refused, 2 usage or git error, 3 no ledger entry yet.
+//! `$DEPLOY_GUARD_LEDGER` (default `~/.local/state/deploy-guard`). `record` also
+//! pushes the tag `deploy/<runtime>/<UTC stamp>-<sha8>` (`DEPLOY_GUARD_PUSH=off`
+//! skips the pushes). Exit codes: 0 allowed / recorded, 1 refused, 2 usage or
+//! git error, 3 no ledger entry yet.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 const LOCK: &str = "/tmp/lucina-merge.lock";
 
-/// Target branch per known runtime.
-fn default_target(runtime: &str) -> Option<&'static str> {
+/// The one branch every runtime deploys from. The per-target deploy lines
+/// (lucina-rs, server-live, web-live, ios-app, main-next) were retired on 2026-10-30.
+const TRUNK: &str = "main";
+
+/// While this file is absent from the ledger directory, `record` also fast-forwards
+/// the runtime's retired deploy line to the deployed commit, so the old names keep
+/// pointing at what is live for sessions that still use them. It is created once
+/// every session has acknowledged the trunk workflow and the aliases are deleted.
+const ALIASES_RETIRED: &str = "aliases-retired";
+
+/// The retired deploy line a runtime used to deploy from (kept as a read-only alias until every session has moved to main).
+fn legacy_line(runtime: &str) -> &'static str {
     match runtime {
-        "secretary-server" | "secretary-mcp" | "web" => Some("main"),
-        "lucina-rs" => Some("lucina-rs"),
-        _ => None,
+        "secretary-server" | "secretary-mcp" => "server-live",
+        "web" => "web-live",
+        "ios" => "ios-app",
+        "lucina-media" => "main-next",
+        // Every other runtime runs on nezopt and deployed from lucina-rs.
+        _ => "lucina-rs",
     }
+}
+
+/// The deploy tag of a runtime's build, e.g. `deploy/web/20261030T0912Z-f401dc24`.
+pub fn deploy_tag(runtime: &str, stamp: &str, commit: &str) -> String {
+    format!("deploy/{runtime}/{stamp}-{}", &commit[..commit.len().min(8)])
 }
 
 /// What `check` found, as plain facts (the decision is a pure function of them).
@@ -105,7 +126,7 @@ struct Args {
 
 fn parse() -> Result<Args, String> {
     let mut it = std::env::args().skip(1);
-    let cmd = it.next().ok_or("usage: deploy-guard check|record|status --runtime NAME [--repo DIR] [--commit REV] [--target BRANCH] [--note TEXT] [--bootstrap] [--allow-untracked] [--no-lock-check]")?;
+    let cmd = it.next().ok_or("usage: deploy-guard check|record|plan|status --runtime NAME [--repo DIR] [--commit REV] [--target BRANCH] [--note TEXT] [--bootstrap] [--allow-untracked] [--no-lock-check]")?;
     let mut a = Args {
         cmd,
         runtime: None,
@@ -294,13 +315,26 @@ fn run() -> Result<ExitCode, String> {
         }
         return Ok(ExitCode::SUCCESS);
     }
+    if a.cmd == "plan" {
+        return plan(&a);
+    }
     let runtime = a.runtime.clone().ok_or("--runtime is required")?;
-    let target = match (&a.target, default_target(&runtime)) {
-        (Some(t), _) => t.clone(),
-        (None, Some(t)) => t.to_string(),
-        (None, None) => return Err(format!("unknown runtime {runtime}: pass --target BRANCH")),
+    // Only a bootstrap record may name another branch: it records what is live, it deploys nothing.
+    let target = match &a.target {
+        Some(t) if t != TRUNK && !(a.cmd == "record" && a.bootstrap) => {
+            eprintln!(
+                "deploy-guard: REFUSED {runtime}: --target {t}: every runtime deploys from {TRUNK} since 2026-10-30 \
+                 (docs/repo-workflow.md). Merge your branch into {TRUNK}, push it and deploy from {TRUNK}'s tree."
+            );
+            return Ok(ExitCode::from(1));
+        }
+        Some(t) => t.clone(),
+        None => TRUNK.to_string(),
     };
     let f = facts(&a, &runtime, &target)?;
+    if a.cmd == "check" {
+        warn_alias(&a.repo, legacy_line(&runtime));
+    }
     match a.cmd.as_str() {
         "check" => match decide(&f, &target) {
             Verdict::Allowed => {
@@ -392,10 +426,142 @@ fn run() -> Result<ExitCode, String> {
             append_history(&dir, &d);
             report_to_ops(&d);
             println!("deploy-guard: recorded {runtime} = {}", short(&f.commit));
+            if target == TRUNK {
+                tag_and_alias(&a.repo, &runtime, &f.commit, &a.note.clone().unwrap_or_default());
+            }
             Ok(ExitCode::SUCCESS)
         }
         other => Err(format!("unknown command {other}")),
     }
+}
+
+fn utc(fmt: &str) -> String {
+    Command::new("date")
+        .args(["-u", fmt])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default()
+}
+
+fn pushes_enabled(repo: &Path) -> bool {
+    !std::env::var("DEPLOY_GUARD_PUSH").is_ok_and(|v| v.trim() == "off")
+        && git(repo, &["remote", "get-url", "origin"]).is_ok_and(|o| o.status.success())
+}
+
+/// After a record from main: the deploy tag (pushed), and in the transition week a
+/// fast-forward of the runtime's retired line. Failures only warn: the deploy is done.
+fn tag_and_alias(repo: &Path, runtime: &str, commit: &str, note: &str) {
+    let tag = deploy_tag(runtime, &utc("+%Y%m%dT%H%MZ"), commit);
+    let msg = format!("{runtime} deployed {}\n\n{note}", short(commit));
+    match git(repo, &["tag", "-a", &tag, commit, "-m", &msg]) {
+        Ok(o) if o.status.success() => println!("deploy-guard: tagged {tag}"),
+        Ok(o) => {
+            eprintln!("deploy-guard: warning: tag {tag}: {}", String::from_utf8_lossy(&o.stderr).trim());
+            return;
+        }
+        Err(e) => {
+            eprintln!("deploy-guard: warning: tag {tag}: {e}");
+            return;
+        }
+    }
+    if !pushes_enabled(repo) {
+        return;
+    }
+    let tag_ref = format!("refs/tags/{tag}");
+    match git(repo, &["push", "-q", "origin", &tag_ref]) {
+        Ok(o) if o.status.success() => println!("deploy-guard: pushed {tag}"),
+        Ok(o) => eprintln!("deploy-guard: warning: push {tag}: {}", String::from_utf8_lossy(&o.stderr).trim()),
+        Err(e) => eprintln!("deploy-guard: warning: push {tag}: {e}"),
+    }
+    if ledger_dir().join(ALIASES_RETIRED).exists() {
+        return;
+    }
+    let line = legacy_line(runtime);
+    let spec = format!("{commit}:refs/heads/{line}");
+    match git(repo, &["push", "-q", "origin", &spec]) {
+        Ok(o) if o.status.success() => println!("deploy-guard: alias {line} -> {}", short(commit)),
+        _ => eprintln!(
+            "deploy-guard: warning: alias {line} was not fast-forwarded to {}: it has commits that are not on {TRUNK}. \
+             Merge them into {TRUNK} (git log origin/{TRUNK}..origin/{line}).",
+            short(commit)
+        ),
+    }
+}
+
+/// `check`: a retired line that gained commits main lacks means someone still deploys the old way.
+fn warn_alias(repo: &Path, line: &str) {
+    let alias = format!("refs/remotes/origin/{line}");
+    let main = format!("refs/remotes/origin/{TRUNK}");
+    if !git(repo, &["rev-parse", "--verify", "--quiet", &alias]).is_ok_and(|o| o.status.success()) {
+        return;
+    }
+    let range = format!("{main}..{alias}");
+    if let Ok(n) = git_ok(repo, &["rev-list", "--count", &range]) {
+        if n != "0" {
+            eprintln!(
+                "deploy-guard: warning: the retired line {line} has {n} commit(s) not on {TRUNK} \
+                 (git log origin/{TRUNK}..origin/{line}); merge them into {TRUNK} so they are not lost."
+            );
+        }
+    }
+}
+
+/// One line of `deploy/targets.tsv`: runtime, host, the paths its build reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Target {
+    pub runtime: String,
+    pub host: String,
+    pub paths: Vec<String>,
+}
+
+/// `runtime<TAB>host<TAB>path path ...`; blank lines and `#` comments are skipped.
+pub fn parse_targets(text: &str) -> Result<Vec<Target>, String> {
+    let mut out = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        let line = line.trim_end();
+        if line.trim().is_empty() || line.trim_start().starts_with('#') {
+            continue;
+        }
+        let cols: Vec<&str> = line.split('\t').filter(|c| !c.is_empty()).collect();
+        let [runtime, host, paths] = cols[..] else {
+            return Err(format!("deploy/targets.tsv:{}: want runtime<TAB>host<TAB>paths", i + 1));
+        };
+        out.push(Target {
+            runtime: runtime.trim().into(),
+            host: host.trim().into(),
+            paths: paths.split_whitespace().map(String::from).collect(),
+        });
+    }
+    Ok(out)
+}
+
+/// For each runtime: its live commit and how many commits on main touched its paths since.
+fn plan(a: &Args) -> Result<ExitCode, String> {
+    let file = a.repo.join("deploy/targets.tsv");
+    let text = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+    let main = target_ref(&a.repo, TRUNK);
+    for t in parse_targets(&text)? {
+        if a.runtime.as_ref().is_some_and(|r| *r != t.runtime) {
+            continue;
+        }
+        let state = match read_ledger(&t.runtime) {
+            None => "no ledger entry".to_string(),
+            Some(live) if !is_ancestor(&a.repo, &live, &main).unwrap_or(false) => {
+                format!("live {} is not on {TRUNK}", short(&live))
+            }
+            Some(live) => {
+                let range = format!("{live}..{main}");
+                let mut args = vec!["rev-list", "--count", range.as_str(), "--"];
+                args.extend(t.paths.iter().map(String::as_str));
+                match git_ok(&a.repo, &args)?.as_str() {
+                    "0" => format!("up to date (live {})", short(&live)),
+                    n => format!("{n} commit(s) to deploy (live {})", short(&live)),
+                }
+            }
+        };
+        println!("{:<22} {:<7} {state}", t.runtime, t.host);
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 /// One recorded deploy (the ledger entry, for the history and the ops record).
@@ -436,11 +602,12 @@ pub fn ops_place(runtime: &str, project_override: Option<&str>) -> (String, &'st
     let project = match project_override.map(str::trim).filter(|p| !p.is_empty()) {
         Some(p) => p.to_owned(),
         None if runtime == "lucina-agentd" => "lucina-agents".to_owned(),
-        None if matches!(runtime, "secretary-server" | "secretary-mcp" | "web") => "secretary".to_owned(),
+        None if matches!(runtime, "secretary-server" | "secretary-mcp" | "web" | "ios") => "secretary".to_owned(),
         None => "lucina".to_owned(),
     };
     let host = match runtime {
         "secretary-server" | "secretary-mcp" | "web" => "p1",
+        "ios" => "iphone",
         _ => "nezopt",
     };
     (project, host)
@@ -679,6 +846,34 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn deploy_tags_and_retired_lines() {
+        assert_eq!(
+            deploy_tag("web", "20261030T0912Z", "f401dc2435aa"),
+            "deploy/web/20261030T0912Z-f401dc24"
+        );
+        assert_eq!(legacy_line("secretary-mcp"), "server-live");
+        assert_eq!(legacy_line("web"), "web-live");
+        assert_eq!(legacy_line("ios"), "ios-app");
+        assert_eq!(legacy_line("lucina-media"), "main-next");
+        assert_eq!(legacy_line("secretary-instagram"), "lucina-rs");
+        assert_eq!(ops_place("ios", None), ("secretary".into(), "iphone"));
+    }
+
+    #[test]
+    fn targets_file_parses_and_rejects_bad_lines() {
+        let t = parse_targets("# runtime\thost\tpaths\n\nweb\tp1\tweb packages/lucina-stage\n").unwrap();
+        assert_eq!(
+            t,
+            vec![Target {
+                runtime: "web".into(),
+                host: "p1".into(),
+                paths: vec!["web".into(), "packages/lucina-stage".into()],
+            }]
+        );
+        assert!(parse_targets("web p1 web\n").is_err());
     }
 
     #[test]
