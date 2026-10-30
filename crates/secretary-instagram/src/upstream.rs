@@ -196,7 +196,38 @@ impl Upstream {
         self.api_get_inner(path_and_query).await
     }
 
+    /// The request, and one log line with how long it took (the queue for the gate included):
+    /// the backend is what makes a page slow, and the request log has only the route.
     async fn api_get_inner(&self, path_and_query: &str) -> Result<String, UpstreamError> {
+        let started = Instant::now();
+        let before = self.api_requests.load(Ordering::Relaxed);
+        let r = self.api_call(path_and_query).await;
+        let attempts = self.api_requests.load(Ordering::Relaxed) - before;
+        // The path without the account or the cursor: `/api/v1/users/{u}/bundle` -> `users/bundle`.
+        let parts: Vec<&str> = path_and_query
+            .split('?')
+            .next()
+            .unwrap_or("")
+            .trim_start_matches("/api/v1/")
+            .split('/')
+            .collect();
+        let kind: Vec<&str> = match parts.as_slice() {
+            ["users", _, rest @ ..] => std::iter::once("users")
+                .chain(rest.iter().copied())
+                .collect(),
+            _ => parts,
+        };
+        let ms = started.elapsed().as_millis() as u64;
+        match &r {
+            Ok(_) => tracing::info!(kind = kind.join("/"), ms, attempts, "instagram backend"),
+            Err(e) => {
+                tracing::warn!(kind = kind.join("/"), ms, attempts, error = %e, "instagram backend")
+            }
+        }
+        r
+    }
+
+    async fn api_call(&self, path_and_query: &str) -> Result<String, UpstreamError> {
         if let Some(s) = self.blocked_for() {
             return Err(UpstreamError::RateLimited(s));
         }

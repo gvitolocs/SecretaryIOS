@@ -138,8 +138,12 @@ export interface IgBadges {
 
 const BASE = "/v1/instagram";
 
+// The backend takes 10-35 s for an account nobody asked about lately (a cold profile bundle, a highlight's items,
+// with its retries), longer than the client's default 20 s. The views show "Loading" meanwhile.
+const TIMEOUT_MS = 60_000;
+
 async function get<T>(path: string): Promise<T> {
-  const r = await request<{ ok: boolean; data: T }>("GET", `${BASE}${path}`);
+  const r = await request<{ ok: boolean; data: T }>("GET", `${BASE}${path}`, { timeoutMs: TIMEOUT_MS });
   return r.data;
 }
 

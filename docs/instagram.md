@@ -150,7 +150,17 @@ thumbnail (`/v1/media/items/{id}/thumb?size=256`, the owner's session).
   Media is keyed by CDN path plus the `stp`/`efg` rendition parameters, not by the volatile
   `oh`/`oe`, so a fresh backend URL for the same picture hits the cache and an expired link is
   still served from it. JSON bodies live 2-10 minutes. Images up to 32 MiB, videos 256 MiB.
-- **Logs:** method, route template, status. No usernames, cursors, ids or captions.
+- **Older copies (2026-10-30):** a cold bundle takes the backend 10 s or more (35 s with a retry),
+  longer than the web waited (20 s), so the first open of an account showed an error. Now an answer
+  past its TTL but at most 2 days old (more than the warmer's 23 h, so a watched or recently opened
+  account always has one) is sent at once, and a fresh one is fetched behind it at the warmer's low
+  priority; the next open has it. Stories never: yesterday's have expired. Empty highlight trays are
+  still never kept. Every backend fetch runs in a task of its own, one per cache key: a request that
+  comes while one is under way waits for it, and a client that gives up does not cancel it (its
+  retry finds the answer). The web waits 60 s for `/v1/instagram` GETs.
+- **Logs:** method, route template, status; and one `instagram backend` line per backend call
+  with its kind (`users/bundle`, `highlights/items`, ...), `ms` (the queue included) and `attempts`.
+  No usernames, cursors, ids or captions.
 - **Shutdown:** SIGTERM finishes requests in flight and exits 0.
 
 ## Empty highlights and upstream failures (2026-10-29)

@@ -135,10 +135,16 @@ impl DiskCache {
     }
 
     pub fn put<T: Serialize>(&self, key: &str, value: &T) {
+        self.put_aged(key, value, Duration::ZERO);
+    }
+
+    /// `put`, stamped `age` ago (tests: an entry written by an earlier visit or warmer pass).
+    pub fn put_aged<T: Serialize>(&self, key: &str, value: &T, age: Duration) {
         let Some(path) = self.json_path(key) else {
             return;
         };
-        if let Ok(bytes) = serde_json::to_vec(&Stamped { at: now(), value }) {
+        let at = now() - age.as_secs() as i64;
+        if let Ok(bytes) = serde_json::to_vec(&Stamped { at, value }) {
             write_atomic(&path, &bytes);
             self.account(bytes.len() as u64);
         }
