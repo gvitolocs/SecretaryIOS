@@ -477,19 +477,30 @@ describe("selection", () => {
     expect(selected()).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
   });
 
-  it("selects with a long press on touch, and not with a short tap", async () => {
+  it("opens the actions with a long press on touch (Select among them), and nothing with a short tap", async () => {
     await ready();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     fireEvent.pointerDown(open(6), { pointerType: "touch", clientX: 10, clientY: 10 });
     fireEvent.pointerUp(open(6), { pointerType: "touch" });
     vi.advanceTimersByTime(600);
     expect(selected()).toEqual([]);
+    expect(screen.queryByRole("menu")).toBeNull();
     fireEvent.pointerDown(open(6), { pointerType: "touch", clientX: 10, clientY: 10 });
     vi.advanceTimersByTime(600);
-    expect(selected()).toEqual([6]);
-    // The click that ends the press is swallowed (it would otherwise toggle it off again).
+    // The click that ends the press is swallowed (it would otherwise open the photo).
     fireEvent.click(open(6));
+    const sheet = screen.getByRole("menu", { name: "Photo actions" });
+    expect(within(sheet).getByRole("button", { name: "Cancel" })).toBeInTheDocument();
+    fireEvent.click(within(sheet).getByRole("menuitem", { name: "Select" }));
+    expect(screen.queryByRole("menu")).toBeNull();
     expect(selected()).toEqual([6]);
+    // Selecting already: a long press adds the photo, with no sheet.
+    fireEvent.pointerDown(open(7), { pointerType: "touch", clientX: 10, clientY: 10 });
+    vi.advanceTimersByTime(600);
+    fireEvent.click(open(7));
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(selected()).toEqual([6, 7]);
+    fireEvent.click(within(tile(7)).getByRole("checkbox", { name: "Select" }));
     // Moving the finger first (a scroll) cancels the press.
     fireEvent.pointerDown(open(9), { pointerType: "touch", clientX: 10, clientY: 10 });
     fireEvent.pointerMove(open(9), { pointerType: "touch", clientX: 10, clientY: 60 });
@@ -547,6 +558,78 @@ describe("selection", () => {
     expect(selected()).toEqual([0]);
     // One tab stop for the whole grid.
     expect(document.querySelectorAll('.g-open[tabindex="0"]')).toHaveLength(1);
+  });
+});
+
+// Owner, 2026-10-30: "clicking with the right click should open a popup menu with actions and also copy".
+describe("context menu", () => {
+  const frame = () => new Promise((r) => setTimeout(r, 20));
+  async function ready() {
+    const b = backend(library(30));
+    mount();
+    await waitFor(() => expect(tiles().length).toBe(30));
+    return b;
+  }
+  const selected = () => [...document.querySelectorAll<HTMLElement>(".g-tile--selected")].map((t) => Number(t.dataset.index)).sort((a, b) => a - b);
+
+  it("opens on a right-click at the pointer and acts on that photo alone", async () => {
+    const b = await ready();
+    vi.stubGlobal("innerWidth", 1200);
+    fireEvent.contextMenu(open(3), { clientX: 200, clientY: 150 });
+    await frame();
+    const menu = screen.getByRole("menu", { name: "Photo actions" });
+    expect(within(menu).getAllByRole("menuitem").map((m) => m.textContent)).toEqual([
+      "Open", "Copy image", "Copy link", "Download original", "Share", "Favorite", "Show in its day", "Ask Lucina about this photo", "Delete",
+    ]);
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Favorite" }));
+    await waitFor(() => expect(b.batches).toEqual([{ op: "favorite", ids: ["itm00003"] }]));
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(selected()).toEqual([]);
+  });
+
+  it("acts on the whole selection when the right-clicked photo is part of it", async () => {
+    const b = await ready();
+    vi.stubGlobal("innerWidth", 1200);
+    fireEvent.click(open(1), { ctrlKey: true });
+    fireEvent.click(open(2), { ctrlKey: true });
+    fireEvent.contextMenu(open(2), { clientX: 10, clientY: 10 });
+    await frame();
+    const menu = screen.getByRole("menu");
+    expect(within(menu).queryByRole("menuitem", { name: "Copy image" })).toBeNull();
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Delete" }));
+    expect(within(screen.getByRole("dialog", { name: "delete dialog" })).getByText("itm00001,itm00002")).toBeInTheDocument();
+    // A right-click outside the selection is about that photo only.
+    fireEvent.click(screen.getByRole("button", { name: "cancel delete" }));
+    fireEvent.contextMenu(open(7), { clientX: 10, clientY: 10 });
+    await frame();
+    fireEvent.click(within(screen.getByRole("menu")).getByRole("menuitem", { name: "Favorite" }));
+    await waitFor(() => expect(b.batches.at(-1)).toEqual({ op: "favorite", ids: ["itm00007"] }));
+    expect(selected()).toEqual([1, 2]);
+  });
+
+  it("copies the photo's link", async () => {
+    await ready();
+    vi.stubGlobal("innerWidth", 1200);
+    const writeText = vi.fn(async (_text: string) => {});
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    fireEvent.contextMenu(open(0), { clientX: 10, clientY: 10 });
+    await frame();
+    fireEvent.click(within(screen.getByRole("menu")).getByRole("menuitem", { name: "Copy link" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledOnce());
+    expect(writeText.mock.calls[0]![0]).toMatch(/^http:\/\/localhost(:\d+)?\/v1\/media\/items\/itm00000\//);
+    expect(await screen.findByText("Link copied.")).toBeInTheDocument();
+  });
+
+  it("opens from the keyboard (the context-menu key on a focused tile) over the tile", async () => {
+    await ready();
+    vi.stubGlobal("innerWidth", 1200);
+    open(5).focus();
+    fireEvent.contextMenu(open(5));
+    await frame();
+    expect(screen.getByRole("menu", { name: "Photo actions" })).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(document.activeElement).toBe(open(5));
   });
 });
 

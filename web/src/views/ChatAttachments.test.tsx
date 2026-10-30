@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearMediaItems } from "../api/media";
 import type { Attachment } from "../api/timeline";
 import { Attachments } from "../components/ChatAttachments";
+import { handOff, takeHandOff } from "../lib/chatHandoff";
 import { resetJxlSupport } from "../lib/jxl";
 import { reloadChatFromStorage, stopSharePolling } from "../state/chat";
 import { stubFetch } from "../test/fetch";
@@ -70,6 +71,18 @@ afterEach(() => {
 });
 
 describe("chat attachments composer", () => {
+  // The Gallery's "Ask Lucina about this photo" hands the picture over; the chat attaches it and waits for the question.
+  // (Plain files here: jsdom cannot prepare an image draft; the hand-over is the same for any file.)
+  it("attaches what another page handed over, on opening and while open", async () => {
+    handOff([new File(["notes"], "notes.txt", { type: "text/plain" })], "What is this?");
+    render(() => <ChatView />);
+    expect(await screen.findByRole("button", { name: "Remove notes.txt" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Message Lucina")).toHaveValue("What is this?");
+    expect(takeHandOff()).toBeNull();
+    handOff([new File(["more"], "second.txt", { type: "text/plain" })]);
+    expect(await screen.findByRole("button", { name: "Remove second.txt" })).toBeInTheDocument();
+  });
+
   it("attaches files pasted into the composer but leaves plain text alone", async () => {
     render(() => <ChatView />);
     const box = screen.getByLabelText("Message Lucina");

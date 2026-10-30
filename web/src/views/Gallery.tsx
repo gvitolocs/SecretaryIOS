@@ -40,7 +40,8 @@ import { AlbumIcon } from "../components/gallery/ViewerIcons";
 import { LabIcon } from "../components/gallery/lab/LabIcons";
 import { ShareSheet } from "../components/gallery/share/ShareSheet";
 import { DuplicatesIcon } from "../components/gallery/stacks/StackIcons";
-import { BackIcon, LinkIcon, SearchIcon, TrashIcon } from "../components/Icons";
+import { ContextMenu, menuMode, type MenuRequest } from "../components/ContextMenu";
+import { BackIcon, CalendarIcon, ChatIcon, CheckIcon, CopyIcon, DownloadIcon, ExternalIcon, LinkIcon, SearchIcon, ShareIcon, TrashIcon } from "../components/Icons";
 import { t } from "../i18n";
 import { ALBUMS_PATH } from "../lib/galleryAlbums";
 import { albumKey } from "../lib/galleryCategories";
@@ -48,6 +49,10 @@ import { PEOPLE_PATH, personName, personPath } from "../lib/galleryPeople";
 import { rangeIds, sectionKey, sourceIdOf, toggleId, type GroupBy } from "../lib/galleryLayout";
 import { lookedAt, smartPager, smartReady, usesSmart, withSearch, type SearchMode } from "../lib/gallerySmart";
 import { supportsJxl } from "../lib/jxl";
+import { handOff } from "../lib/chatHandoff";
+import { copyPicture, pictureFile } from "../lib/copyImage";
+import { desktopShell } from "../lib/desktopShell";
+import { galleryActions, galleryMenuTitle, type GalleryMenuEnv } from "../lib/galleryMenu";
 import { desktopDevice } from "../lib/desktopViewer";
 import { readString, writeString } from "../lib/storage";
 import "../styles/gallery.css";
@@ -263,6 +268,123 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
     else if (command === "favorite") void favoriteSelected();
   }
 
+  // ---- context menu -------------------------------------------------------------------------------------------------
+  // A right-click (Ctrl-click, the context-menu key) on a tile or on the open photo; a long press on a phone gives the
+  // same actions as a sheet. Inside a selection of two or more it acts on the selection, else on that photo alone.
+
+  const [menu, setMenu] = createSignal<{ request: MenuRequest; targets: GalleryItem[] } | null>(null);
+
+  const targetsAt = (index: number): GalleryItem[] => {
+    const item = items()[index];
+    if (!item) return [];
+    return selected().has(item.id) && selected().size >= 2 ? selectedItems() : [item];
+  };
+
+  function openMenu(index: number, at: { x: number; y: number }, pointerType: string) {
+    const targets = targetsAt(index);
+    if (!targets.length) return;
+    const mode = menuMode(pointerType);
+    setMenu({ request: { ...at, mode, title: mode === "sheet" ? galleryMenuTitle(targets) : undefined }, targets });
+  }
+
+  /** A photo's day, YYYY-MM-DD in local time (the date filter's format). */
+  const dayOf = (item: GalleryItem) => {
+    const d = new Date(item.takenAt ?? item.addedAt);
+    return Number.isNaN(d.getTime()) ? "" : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  };
+
+  const menuEnv = (sheet: boolean): GalleryMenuEnv => ({
+    sheet,
+    trash: trash(),
+    archive: archive(),
+    isSelected: (item) => selected().has(item.id),
+    icons: {
+      open: <ExternalIcon />,
+      copyImage: <CopyIcon />,
+      copyLink: <LinkIcon />,
+      download: <DownloadIcon />,
+      share: <ShareIcon />,
+      showDay: <CalendarIcon />,
+      askLucina: <ChatIcon />,
+      select: <CheckIcon />,
+      delete: <TrashIcon />,
+    },
+    open: (item) => {
+      const at = items().findIndex((i) => i.id === item.id);
+      if (at >= 0) setViewer(at);
+    },
+    // Called straight from the click: the clipboard write starts before anything is awaited (Safari needs that).
+    copyImage: (item) => {
+      void copyPicture(item).then((ok) => say(ok ? t("gallery.copiedImage") : t("gallery.copyFailed"), !ok));
+    },
+    copyLink: (list) => {
+      // The photo's own file (it opens for the signed-in owner); public links stay in the Share sheet.
+      const links = list.map((i) => i.urls.original ?? i.urls.large ?? i.urls.download).filter((u): u is string => !!u).map((u) => new URL(u, location.origin).href);
+      if (!links.length) return say(t("gallery.copyFailed"), true);
+      void navigator.clipboard
+        ?.writeText(links.join("\n"))
+        .then(() => say(t("gallery.copiedLink", { count: links.length })))
+        .catch(() => say(t("gallery.copyFailed"), true));
+    },
+    download: (list) => downloadSelected(list),
+    share: (list) => {
+      const one = list.length === 1 && list[0]!.kind === "photo" ? list[0]! : null;
+      // A phone shares the picture itself through its share sheet; elsewhere the Gallery's links sheet.
+      if (!sheet || !one || typeof navigator.canShare !== "function") return void setSharing(list);
+      void pictureFile(one)
+        .then(async (file) => {
+          if (file && navigator.canShare({ files: [file] })) await navigator.share({ files: [file] });
+          else setSharing(list);
+        })
+        .catch((e: unknown) => {
+          if ((e as { name?: string } | null)?.name !== "AbortError") setSharing(list);
+        });
+    },
+    favorite: (list) => void favoriteSelected(list),
+    archiveToggle: archive() ? (list) => void archiveSelected(list) : undefined,
+    restore: trash() ? (list) => void restoreSelected(list) : undefined,
+    showDay: (item) => {
+      const day = dayOf(item);
+      if (!day) return;
+      setViewer(null);
+      setFrom(day);
+      setTo(day);
+    },
+    askLucina: (item) => {
+      void pictureFile(item)
+        .then((file) => {
+          if (!file) throw new Error("no picture");
+          handOff([file]);
+          setViewer(null);
+          desktopShell()?.show?.("lucina");
+          navigate("/");
+        })
+        .catch(() => say(t("gallery.askLucinaFailed"), true));
+    },
+    select: (item) => {
+      const at = items().findIndex((i) => i.id === item.id);
+      if (at >= 0) toggleAt(at);
+    },
+    remove: (list) => setDeleting(list),
+  });
+
+  // The open photo's menu: the sheets it opens (delete, share) sit under the viewer, so the viewer closes first.
+  const viewerActions = (item: GalleryItem) => {
+    const env = menuEnv(menuMode() === "sheet");
+    return galleryActions([item], {
+      ...env,
+      viewer: true,
+      share: (list) => {
+        setViewer(null);
+        env.share(list);
+      },
+      remove: (list) => {
+        setViewer(null);
+        setDeleting(list);
+      },
+    });
+  };
+
   // ---- batch actions ------------------------------------------------------------------------------------------------
 
   const [deleting, setDeleting] = createSignal<GalleryItem[] | null>(null);
@@ -283,8 +405,7 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
     }
   }
 
-  async function favoriteSelected() {
-    const chosen = selectedItems();
+  async function favoriteSelected(chosen = selectedItems()) {
     if (!chosen.length || busy()) return;
     const make = !chosen.every((i) => i.favorite);
     const done = await run(make ? "favorite" : "unfavorite", chosen);
@@ -296,8 +417,7 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
   }
 
   // Archive / Unarchive: the pictures leave this list (the Gallery or the Archive) for the other.
-  async function archiveSelected() {
-    const chosen = selectedItems();
+  async function archiveSelected(chosen = selectedItems()) {
     if (!chosen.length || busy()) return;
     const done = await run(archive() ? "unarchive" : "archive", chosen);
     if (!done.length) return;
@@ -350,8 +470,7 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
     refreshCounts();
   }
 
-  async function restoreSelected() {
-    const chosen = selectedItems();
+  async function restoreSelected(chosen = selectedItems()) {
     if (!chosen.length || busy()) return;
     const done = await run("restore", chosen);
     if (!done.length) return;
@@ -361,8 +480,8 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
     refreshCounts();
   }
 
-  function downloadSelected() {
-    const urls = selectedItems()
+  function downloadSelected(chosen = selectedItems()) {
+    const urls = chosen
       .map((i) => i.urls.download ?? i.urls.original)
       .filter((u): u is string => !!u);
     urls.forEach((url, n) => {
@@ -549,7 +668,7 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
             onAlbum={() => setAlbumFor(selectedItems().map((i) => i.id))}
             onShare={() => setSharing(selectedItems())}
             onStack={trash() || archive() ? undefined : () => void stackSelected()}
-            onDownload={downloadSelected}
+            onDownload={() => downloadSelected()}
             onDelete={() => onCommand("delete")}
             onRestore={() => void restoreSelected()}
             archive={archive()}
@@ -674,8 +793,12 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
           onTile={onTile}
           onToggle={toggleAt}
           onLongPress={(i) => {
-            if (!selected().has(items()[i]?.id ?? "")) toggleAt(i);
+            // Selecting already: a long press adds the photo. Otherwise it opens the actions (Select among them).
+            if (selected().size > 0) {
+              if (!selected().has(items()[i]?.id ?? "")) toggleAt(i);
+            } else openMenu(i, { x: 0, y: 0 }, "touch");
           }}
+          onContextMenu={openMenu}
           onSection={onSection}
           onBand={onBand}
           onCommand={onCommand}
@@ -747,11 +870,21 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
             navigate(personPath(id));
           }}
           onPeopleChanged={personId() ? () => void refetchPerson() : undefined}
+          contextActions={viewerActions}
         />
       </Show>
       <Show when={deleting()}>
         {(list) => <DeleteDialog items={list()} purge={trash()} onDone={deleted} onCancel={() => setDeleting(null)} />}
       </Show>
+      <ContextMenu
+        request={menu()?.request ?? null}
+        actions={(() => {
+          const m = menu();
+          return m ? galleryActions(m.targets, menuEnv(m.request.mode === "sheet")) : [];
+        })()}
+        label={t("gallery.menuLabel")}
+        onClose={() => setMenu(null)}
+      />
       <Show when={sharing()}>
         {(list) => <ShareSheet target={{ kind: "items", items: list() }} onClose={() => setSharing(null)} />}
       </Show>

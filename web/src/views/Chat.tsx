@@ -53,6 +53,7 @@ import {
   type DraftAttachment,
   type ShareLocation,
 } from "../lib/attachments";
+import { takeHandOff } from "../lib/chatHandoff";
 import { LinkifiedText } from "../components/LinkifiedText";
 import { Markdown } from "../components/Markdown";
 import { PlaceCard } from "../components/PlaceCard";
@@ -786,6 +787,16 @@ export default function ChatView() {
     const shown = () => {
       if (document.visibilityState === "visible" && atBottom) scrollToEnd(false);
     };
+    // Pictures another page handed over ("Ask Lucina about this photo"): attached, the text box ready.
+    const handedOver = () => {
+      const given = takeHandOff();
+      if (!given) return;
+      void addFiles(given.files);
+      if (given.text) setDraft(given.text);
+      input?.focus();
+    };
+    handedOver();
+    window.addEventListener("secretary:chat-handoff", handedOver);
     window.addEventListener("secretary:chat-latest", latest);
     window.addEventListener("pointerup", release);
     window.addEventListener("pointercancel", release);
@@ -793,6 +804,7 @@ export default function ChatView() {
     onCleanup(() => {
       cancelAnimationFrame(frame);
       observer?.disconnect();
+      window.removeEventListener("secretary:chat-handoff", handedOver);
       window.removeEventListener("secretary:chat-latest", latest);
       window.removeEventListener("pointerup", release);
       window.removeEventListener("pointercancel", release);

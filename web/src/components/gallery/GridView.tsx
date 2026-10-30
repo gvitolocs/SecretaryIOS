@@ -79,6 +79,8 @@ export interface GridViewProps {
   onCommand: (command: GridCommand) => void;
   /** Focus and reveal this tile when the grid mounts (back from a viewer, e.g. the Instagram tiles). */
   focusIndex?: number;
+  /** A right-click, a Ctrl-click or the context-menu key on a tile (a long press stays `onLongPress`). */
+  onContextMenu?: (index: number, at: { x: number; y: number }, pointerType: "mouse" | "keyboard") => void;
 }
 
 interface Pad {
@@ -140,6 +142,8 @@ interface Ctx {
   toggle: (index: number) => void;
   longPress: (index: number) => void;
   focused: (index: number) => void;
+  /** Undefined when the page has no menu of its own: the browser's stays. */
+  menu?: (index: number, at: { x: number; y: number }, pointerType: "mouse" | "keyboard") => void;
 }
 
 function tileLabel(item: GalleryItem, trash: boolean): string {
@@ -253,7 +257,18 @@ function Tile(props: { cell: Cell; ctx: Ctx; rowHeight: number }) {
             onPointerCancel={cancel}
             onPointerLeave={cancel}
             onContextMenu={(e) => {
-              if (touched || fired) e.preventDefault();
+              // On touch the long press already did its part; the browser's own menu stays away.
+              if (touched || fired) {
+                e.preventDefault();
+                return;
+              }
+              if (!ctx.menu) return;
+              e.preventDefault();
+              // The context-menu key (or Shift+F10) has no pointer: the menu opens over the tile.
+              const keyboard = e.clientX === 0 && e.clientY === 0;
+              const r = e.currentTarget.getBoundingClientRect();
+              const at = keyboard ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : { x: e.clientX, y: e.clientY };
+              ctx.menu(props.cell.index, at, keyboard ? "keyboard" : "mouse");
             }}
           >
             <span class="g-ph" style={hash() ? { "background-image": `url(${hash()})` } : undefined} aria-hidden="true" />
@@ -636,6 +651,10 @@ export function GridView(props: GridViewProps) {
     toggle: (index) => props.onToggle(index),
     longPress: (index) => props.onLongPress(index),
     focused: (index) => setActive(index),
+    get menu() {
+      const open = props.onContextMenu;
+      return open ? (index: number, at: { x: number; y: number }, pointerType: "mouse" | "keyboard") => open(index, at, pointerType) : undefined;
+    },
   };
 
   return (

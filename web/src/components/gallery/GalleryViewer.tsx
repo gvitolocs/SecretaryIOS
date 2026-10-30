@@ -5,6 +5,7 @@ import { t } from "../../i18n";
 import { nextRotation } from "../../lib/galleryInfo";
 import { isLive } from "../../lib/galleryLive";
 import { supportsJxl } from "../../lib/jxl";
+import { ContextMenu, menuMode, type MenuAction, type MenuRequest } from "../ContextMenu";
 import { PhotoViewer, type ViewerItem } from "../PhotoViewer";
 import "../../styles/gallery-viewer.css";
 import { AlbumPicker } from "./AlbumPicker";
@@ -50,6 +51,8 @@ export interface GalleryViewerProps {
   onPerson?: (id: string) => void;
   /** A face was assigned or unassigned (a person's photo count may have changed). */
   onPeopleChanged?: () => void;
+  /** The page's context menu for the photo shown (a right-click on the picture); none without it. */
+  contextActions?: (item: GalleryItem) => MenuAction[];
 }
 
 type Dialog = "delete" | "album" | "rename" | "share" | "lab" | null;
@@ -109,6 +112,8 @@ function ViewerBody(props: GalleryViewerProps & { onStackPick?: (stack: Stack, i
   const put = (item: GalleryItem, pinned: boolean) =>
     setOverrides((all) => ({ ...all, [item.id]: { item, base: pinned ? null : (listed(item.id) ?? null) } }));
 
+  // The context menu over the picture (a right-click), when the page offers one.
+  const [menuAt, setMenuAt] = createSignal<MenuRequest | null>(null);
   const current = createMemo(() => {
     const item = props.items[props.index];
     return item ? view(item) : undefined;
@@ -436,6 +441,7 @@ function ViewerBody(props: GalleryViewerProps & { onStackPick?: (stack: Stack, i
         toolbar={<Toolbar />}
         panel={infoOpen() ? <Panel /> : undefined}
         onKeyDown={onKeyDown}
+        onContextMenu={props.contextActions ? (_index, at) => setMenuAt({ ...at, mode: menuMode("mouse") }) : undefined}
         renderOverlay={({ item, current: here, style, placed }) => (
           <>
             <Show when={here() && liveOf(item()?.id)}>{(pair) => <LiveVideo pairId={pair()} live={live} style={style} placed={placed} />}</Show>
@@ -445,6 +451,15 @@ function ViewerBody(props: GalleryViewerProps & { onStackPick?: (stack: Stack, i
         renderVideo={({ item, current }) => (
           <GalleryVideo id={item.id ?? ""} poster={item.poster} durationMs={listed(item.id ?? "")?.durationMs} active={current} />
         )}
+      />
+      <ContextMenu
+        request={menuAt()}
+        actions={(() => {
+          const item = current();
+          return menuAt() && item && props.contextActions ? props.contextActions(item) : [];
+        })()}
+        label={t("gallery.menuLabel")}
+        onClose={() => setMenuAt(null)}
       />
       <Show when={error()}>
         {(message) => (

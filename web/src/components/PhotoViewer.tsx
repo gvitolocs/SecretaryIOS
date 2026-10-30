@@ -82,6 +82,8 @@ export interface PhotoViewerProps {
   }) => JSX.Element;
   /** Called first for every key; return true to say the key is handled and the viewer must ignore it. */
   onKeyDown?: (e: KeyboardEvent) => boolean | void;
+  /** A right-click (or Ctrl-click) on the picture: the page's own menu for the item at `index`. */
+  onContextMenu?: (index: number, at: { x: number; y: number }) => void;
 }
 
 /** Points between pages, as on the phone. */
@@ -270,6 +272,8 @@ export function PhotoViewer(props: PhotoViewerProps) {
   const CONTROL_STRIP = 64;
 
   const onPointerDown = (e: PointerEvent) => {
+    // Only the main button drags, taps and pinches; a right-click is the context menu's.
+    if (e.pointerType === "mouse" && e.button !== 0) return;
     const target = e.target as Element | null;
     if (target?.closest?.("button, .pv-top, [role=menu]")) return;
     const video = target?.closest?.("video");
@@ -689,6 +693,11 @@ export function PhotoViewer(props: PhotoViewerProps) {
           onPointerUp={onPointerUp}
           onPointerCancel={onPointerCancel}
           onDblClick={onDblClick}
+          onContextMenu={(e) => {
+            if (!props.onContextMenu || (e.target as Element | null)?.closest?.("button, video, .pv-top, [role=menu]")) return;
+            e.preventDefault();
+            props.onContextMenu(props.index, { x: e.clientX, y: e.clientY });
+          }}
         >
           <For each={slots()}>
             {(s) => {
