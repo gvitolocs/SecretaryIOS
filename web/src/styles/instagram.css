@@ -116,14 +116,43 @@
 .pg .ig-find .media-search { flex: 1; min-width: 12rem; max-width: 20rem; }
 .ig-pv-grid .icon { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; }
 
-/* A highlight (or any opened feed) as tiles (components/InstagramTiles.tsx): the Gallery's grid (styles/gallery.css)
-   in a full-screen layer under the viewer's z-index, so the viewer opens over it. */
-.ig-tiles { position: fixed; inset: 0; z-index: 1999; padding-top: env(safe-area-inset-top); background: var(--lu-bg); outline: none; }
-.ig-tiles__title { display: grid; min-width: 0; margin-right: auto; line-height: 1.25; }
-.ig-tiles__title strong { font-size: var(--lu-type-headline); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ig-tiles__title small { color: var(--lu-text-secondary); font-size: var(--lu-type-footnote); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* The tiles open things; they have no selection: no tick boxes and no rubber band. */
-.ig-tiles .g-check, .ig-tiles .g-head__check, .ig-tiles .g-band { display: none; }
-.ig-tiles .g-back { padding: 0; border: 0; background: none; cursor: pointer; }
-.ig-tiles .g-back:hover { background: var(--g-field); }
-.ig-tiles .g-back .icon { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+/* A highlight (or any opened feed) as tiles (components/InstagramTiles.tsx): a full-screen layer under the viewer's
+   z-index, so the viewer opens over it and the grid keeps its scroll position underneath. Square tiles like Instagram's
+   profile grid: 3 across on a phone, 4-6 on a wider window (container queries on the body, so a narrow Mac window counts
+   as narrow); a month chip on the first tile of each month instead of day headings. */
+.ig-tiles { position: fixed; inset: 0; z-index: 1999; display: flex; flex-direction: column; padding-top: env(safe-area-inset-top); background: var(--lu-bg); color: var(--lu-text); font-family: var(--lu-font); outline: none; }
+.ig-hl__bar { flex: none; display: flex; align-items: center; gap: var(--lu-space-sm); min-height: 52px; padding: 0 var(--lu-space-gutter); border-bottom: 1px solid var(--lu-separator); }
+.ig-hl__back { display: inline-grid; place-items: center; width: 40px; height: 40px; margin-left: -8px; padding: 0; border: 0; border-radius: var(--lu-radius-pill); background: none; color: inherit; cursor: pointer; }
+.ig-hl__back:hover { background: var(--lu-field); }
+.ig-hl__back:focus-visible { outline: 2px solid var(--lu-accent); outline-offset: 2px; }
+.ig-hl__back .icon { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.ig-hl__bar-title { min-width: 0; font-size: var(--lu-type-headline); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ig-hl__scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.ig-hl__body { container-type: inline-size; width: 100%; max-width: 1200px; margin: 0 auto; padding: var(--lu-space-lg) var(--lu-space-gutter) calc(var(--lu-space-xl) + env(safe-area-inset-bottom)); box-sizing: border-box; }
+.ig-hl__head { display: flex; align-items: center; gap: var(--lu-space-lg); margin-bottom: var(--lu-space-lg); min-width: 0; }
+.ig-hl__cover { flex: none; display: inline-grid; place-items: center; width: 88px; height: 88px; border-radius: var(--lu-radius-pill); overflow: hidden; background: var(--lu-card-raised); color: var(--lu-text-secondary); font-size: 2rem; font-weight: 700; box-shadow: 0 0 0 3px var(--lu-bg), 0 0 0 5px var(--lu-separator); }
+.ig-hl__cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ig-hl__text { display: grid; gap: 4px; min-width: 0; }
+.ig-hl__text h2 { margin: 0; font-size: var(--lu-type-title-2, var(--lu-type-title-3)); font-weight: 700; overflow-wrap: anywhere; }
+.ig-hl__text p { margin: 0; color: var(--lu-text-secondary); font-size: var(--lu-type-subheadline); overflow-wrap: anywhere; }
+.ig-hl__grid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2px; }
+@container (min-width: 600px) { .ig-hl__grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; } }
+@container (min-width: 880px) { .ig-hl__grid { grid-template-columns: repeat(5, minmax(0, 1fr)); } }
+@container (min-width: 1100px) { .ig-hl__grid { grid-template-columns: repeat(6, minmax(0, 1fr)); } }
+.ig-hl__grid > li { min-width: 0; }
+/* The tile is the grid's square; the picture fades in over its placeholder as it arrives. */
+.ig-hl__tile { border-radius: 2px; }
+.ig-hl__tile img { opacity: 0; transition: opacity var(--lu-motion-base, .2s) ease; }
+.ig-hl__tile img.is-loaded { opacity: 1; }
+.ig-hl__tile:hover img.is-loaded { opacity: .88; }
+.ig-hl__tile:focus-visible { outline: 2px solid var(--lu-accent); outline-offset: -2px; z-index: 1; }
+.ig-hl__month { position: absolute; left: 6px; bottom: 6px; max-width: calc(100% - 12px); padding: 2px 7px; border-radius: var(--lu-radius-pill); background: #000000a6; color: #fff; font-size: var(--lu-type-caption-2); font-weight: 600; line-height: 1.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; pointer-events: none; }
+.ig-hl__end { height: 1px; }
+.ig-hl__status { margin-top: var(--lu-space-md); text-align: center; }
+@media (prefers-reduced-motion: reduce) { .ig-hl__tile img { transition: none; } }
+
+/* The profile picture opens in the viewer. */
+.ig-head__pic { flex: none; padding: 0; border: 0; border-radius: var(--lu-radius-pill); background: none; cursor: zoom-in; }
+.ig-head__pic:focus-visible { outline: 2px solid var(--lu-accent); outline-offset: 3px; }
+.ig-head__pic:hover .ig-avatar { filter: brightness(1.08); }
+.ig-bio__label { display: block; margin-bottom: 2px; color: var(--lu-text-tertiary, var(--lu-text-secondary)); font-size: var(--lu-type-caption-2); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }

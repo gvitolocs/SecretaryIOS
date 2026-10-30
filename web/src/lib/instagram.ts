@@ -89,3 +89,19 @@ export function formatTaken(seconds: number | null | undefined, locale?: string)
     return "";
   }
 }
+
+/**
+ * When a watched account is checked next, as a clock time: "today 15:40", "tomorrow 09:05", "Sat 15:40". A countdown
+ * ("in 7 seconds") goes stale on screen and read as if the account were checked all the time. `null` for a check that
+ * is due now (the first one after Watch, or one that is late): the caller says "in a moment".
+ */
+export function nextCheckText(seconds: number, nowMs = Date.now(), lang?: string): string | null {
+  const at = new Date(seconds * 1000);
+  if (at.getTime() - nowMs < 60_000) return null;
+  const now = new Date(nowMs);
+  const day = (d: Date) => Math.floor(new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() / 86_400_000);
+  const days = Math.round(day(at) - day(now));
+  const time = at.toLocaleTimeString(lang, { hour: "2-digit", minute: "2-digit" });
+  if (days <= 1) return `${new Intl.RelativeTimeFormat(lang, { numeric: "auto" }).format(days, "day")} ${time}`;
+  return `${at.toLocaleDateString(lang, { weekday: "short" })} ${time}`;
+}

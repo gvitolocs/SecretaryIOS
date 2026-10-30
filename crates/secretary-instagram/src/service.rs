@@ -33,6 +33,31 @@ const TTL_STORIES: Duration = Duration::from_secs(120);
 const TTL_HIGHLIGHTS: Duration = Duration::from_secs(600);
 const TTL_RESOLVE: Duration = Duration::from_secs(600);
 const TTL_FIRST_PAGE: Duration = Duration::from_secs(24 * 3600);
+/// How old a cached answer may be and still be shown while a fresh one is fetched behind it.
+/// More than the warmer's 23 h, so a watched account always opens at once. (Instagram's CDN URLs
+/// in it stay valid for days; media already fetched is served from the disk cache anyway.)
+const STALE_MAX: Duration = Duration::from_secs(2 * 24 * 3600);
+
+/// Per cache key, the lock a backend fetch holds ([`Service::fetch_shared`]).
+type Flights = Arc<std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>;
+
+/// Whose fetch it is: the owner waits for it; a refresh behind a cached copy yields to the owner.
+#[derive(Clone, Copy)]
+enum Priority {
+    Owner,
+    Low,
+}
+
+fn keep_any(_: &str) -> bool {
+    true
+}
+
+/// Empty trays are unknown (the backend answers `[]` for accounts that have highlights): never
+/// cached, so the next request asks again.
+fn nonempty_tray(text: &str) -> bool {
+    parse_highlights(text).is_some_and(|hs| !hs.is_empty())
+}
+
 const MAX_SAVE_ITEMS: usize = 50;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -176,8 +201,8 @@ impl Notifier {
 }
 
 pub struct Service {
-    pub up: Upstream,
-    pub cache: DiskCache,
+    pub up: Arc<Upstream>,
+    pub cache: Arc<DiskCache>,
     pub recent: Recent,
     pub signer: Signer,
     pub watch: WatchStore,
@@ -186,6 +211,8 @@ pub struct Service {
     http: reqwest::Client,
     notifier: Notifier,
     inflight: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// The same for backend JSON: one fetch per cache key at a time ([`Service::fetch_shared`]).
+    json_flights: Flights,
     /// The warmer does nothing until then (a 429 sets it).
     warmer_paused_until: std::sync::Mutex<Option<tokio::time::Instant>>,
     /// Wakes the warmer (a newly watched account).
@@ -320,8 +347,8 @@ impl Service {
             .redirect(reqwest::redirect::Policy::none())
             .build()?;
         let svc = Service {
-            up,
-            cache,
+            up: Arc::new(up),
+            cache: Arc::new(cache),
             recent,
             signer,
             watch: WatchStore::open(Some(cfg.state_dir.join("watch.json"))),
@@ -334,6 +361,7 @@ impl Service {
             cfg,
             http,
             inflight: std::sync::Mutex::new(HashMap::new()),
+            json_flights: Flights::default(),
             warmer_paused_until: std::sync::Mutex::new(None),
             wake: Notify::new(),
         };
@@ -446,14 +474,93 @@ impl Service {
 
     // ---- upstream JSON, cached ----
 
+    /// Fresh from the cache; else an older copy (up to `STALE_MAX`) at once while a fresh one is
+    /// fetched behind it; else the backend. A cold bundle takes the backend 10 s or more
+    /// (2026-10-30), longer than the web waits, and a watched account's copy is up to a day old.
     async fn fetch_text(&self, path: &str, ttl: Duration) -> Result<String, ServiceError> {
+        self.fetch_cached(path, ttl, STALE_MAX, keep_any).await
+    }
+
+    /// [`Service::fetch_text`] with its own limit for an older copy (zero: none) and `keep`, which
+    /// says which answers may be cached at all.
+    async fn fetch_cached(
+        &self,
+        path: &str,
+        ttl: Duration,
+        stale: Duration,
+        keep: fn(&str) -> bool,
+    ) -> Result<String, ServiceError> {
         let key = hash_key(path);
-        if let Some(s) = self.cache.get::<String>(&key, ttl) {
+        if let Some(s) = self.cache.get::<String>(&key, ttl).filter(|s| keep(s)) {
             return Ok(s);
         }
-        let body = self.up.api_get(path).await?;
-        self.cache.put(&key, &body);
-        Ok(body)
+        let old = (stale > ttl)
+            .then(|| self.cache.get::<String>(&key, stale))
+            .flatten()
+            .filter(|s| keep(s));
+        if let Some(s) = old {
+            // Detached: the copy answers now, the fresh one lands in the cache.
+            drop(self.fetch_shared(path, key, ttl, keep, Priority::Low));
+            return Ok(s);
+        }
+        match self
+            .fetch_shared(path, key, ttl, keep, Priority::Owner)
+            .await
+        {
+            Ok(r) => Ok(r?),
+            Err(_) => Err(ServiceError::Upstream),
+        }
+    }
+
+    /// One backend fetch per cache key at a time, in a task of its own: a request that arrives
+    /// while one is under way waits for it and takes its answer from the cache, and a client that
+    /// gives up (the web's timeout, a closed tab) does not throw the answer away.
+    fn fetch_shared(
+        &self,
+        path: &str,
+        key: String,
+        ttl: Duration,
+        keep: fn(&str) -> bool,
+        priority: Priority,
+    ) -> tokio::task::JoinHandle<Result<String, UpstreamError>> {
+        let up = self.up.clone();
+        let cache = self.cache.clone();
+        let flights = self.json_flights.clone();
+        let path = path.to_string();
+        tokio::spawn(async move {
+            let lock = {
+                let mut m = flights.lock().unwrap_or_else(|e| e.into_inner());
+                m.entry(key.clone()).or_default().clone()
+            };
+            let guard = lock.lock().await;
+            let result = match cache.get::<String>(&key, ttl).filter(|s| keep(s)) {
+                Some(s) => Ok(s),
+                None => {
+                    let r = match priority {
+                        Priority::Owner => up.api_get(&path).await,
+                        Priority::Low => up.api_get_low(&path).await,
+                    };
+                    match &r {
+                        Ok(body) if keep(body) => cache.put(&key, body),
+                        Ok(_) => {}
+                        Err(e) if matches!(priority, Priority::Low) => {
+                            tracing::warn!(error = %e, "instagram: refreshing a cached answer failed; the copy stays");
+                        }
+                        Err(_) => {}
+                    }
+                    r
+                }
+            };
+            {
+                let mut m = flights.lock().unwrap_or_else(|e| e.into_inner());
+                // The map's copy and ours: nobody else is waiting on this key.
+                if Arc::strong_count(&lock) <= 2 {
+                    m.remove(&key);
+                }
+            }
+            drop(guard);
+            result
+        })
     }
 
     async fn fetch_page(&self, path: &str, ttl: Duration) -> Result<MediaPage, ServiceError> {
@@ -512,18 +619,10 @@ impl Service {
         username: &str,
     ) -> Result<Vec<HighlightSummary>, ServiceError> {
         let path = rel(core_url::user_highlights_url(username));
-        let key = hash_key(&path);
-        if let Some(text) = self.cache.get::<String>(&key, TTL_HIGHLIGHTS) {
-            if let Some(hs) = parse_highlights(&text).filter(|hs| !hs.is_empty()) {
-                return Ok(hs);
-            }
-        }
-        let text = self.up.api_get(&path).await?;
-        let hs = parse_highlights(&text).ok_or(ServiceError::Upstream)?;
-        if !hs.is_empty() {
-            self.cache.put(&key, &text);
-        }
-        Ok(hs)
+        let text = self
+            .fetch_cached(&path, TTL_HIGHLIGHTS, STALE_MAX, nonempty_tray)
+            .await?;
+        parse_highlights(&text).ok_or(ServiceError::Upstream)
     }
 
     fn first_page_key(username: &str) -> String {
@@ -591,12 +690,16 @@ impl Service {
         let username =
             normalize_username(raw_username).ok_or(ServiceError::BadRequest("username"))?;
         let cursor = valid_cursor(cursor)?;
-        let page = self
-            .fetch_page(
+        // No older copy: yesterday's stories have expired, and today's would be missing.
+        let text = self
+            .fetch_cached(
                 &rel(core_url::user_stories_url(&username, cursor, None)),
                 TTL_STORIES,
+                Duration::ZERO,
+                keep_any,
             )
             .await?;
+        let page = parse_media_page(&text).ok_or(ServiceError::Upstream)?;
         Ok(self.page_json(&page))
     }
 

@@ -400,6 +400,142 @@ async fn upstream_json_is_cached_for_a_short_time() {
     assert_eq!(count(&e.server, "/api/v1/users/natgeo/bundle").await, 1);
 }
 
+fn json_key(p: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(&Sha256::digest(p.as_bytes())[..16])
+}
+
+/// Waits for the backend to have been asked `n` times for `prefix` (a refresh runs behind the
+/// answer), at most two seconds.
+async fn wait_for_count(server: &wiremock::MockServer, prefix: &str, n: usize) {
+    for _ in 0..200 {
+        if count(server, prefix).await >= n {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the backend was not asked for {prefix} {n} times");
+}
+
+#[tokio::test]
+async fn an_older_copy_answers_at_once_and_is_refreshed_behind_it() {
+    let e = env().await;
+    // Yesterday's warmer pass: an older name.
+    let mut old = bundle();
+    old["profile"]["full_name"] = json!("Old Name");
+    e.st.service.cache.put_aged(
+        &json_key("/api/v1/users/natgeo/bundle"),
+        &old.to_string(),
+        Duration::from_secs(20 * 3600),
+    );
+    Mock::given(method("GET"))
+        .and(path("/api/v1/users/natgeo/bundle"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(bundle())
+                .set_delay(Duration::from_millis(1500)),
+        )
+        .mount(&e.server)
+        .await;
+    let t = Instant::now();
+    let r = get(&e.app, "/v1/instagram/profile/natgeo").await;
+    assert!(
+        t.elapsed() < Duration::from_millis(1000),
+        "{:?}",
+        t.elapsed()
+    );
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.json["data"]["profile"]["fullName"], "Old Name");
+    // The refresh behind it lands in the cache; the next open has the new copy, with no
+    // second backend call.
+    wait_for_count(&e.server, "/api/v1/users/natgeo/bundle", 1).await;
+    tokio::time::sleep(Duration::from_millis(1700)).await;
+    let r = get(&e.app, "/v1/instagram/profile/natgeo").await;
+    assert_eq!(r.json["data"]["profile"]["fullName"], "National Geographic");
+    assert_eq!(count(&e.server, "/api/v1/users/natgeo/bundle").await, 1);
+}
+
+#[tokio::test]
+async fn a_copy_older_than_two_days_is_not_shown() {
+    let e = env().await;
+    let mut old = bundle();
+    old["profile"]["full_name"] = json!("Old Name");
+    e.st.service.cache.put_aged(
+        &json_key("/api/v1/users/natgeo/bundle"),
+        &old.to_string(),
+        Duration::from_secs(3 * 24 * 3600),
+    );
+    mount_json(&e.server, "/api/v1/users/natgeo/bundle", bundle()).await;
+    let r = get(&e.app, "/v1/instagram/profile/natgeo").await;
+    assert_eq!(r.json["data"]["profile"]["fullName"], "National Geographic");
+}
+
+#[tokio::test]
+async fn stories_are_never_answered_from_an_older_copy() {
+    let e = env().await;
+    e.st.service.cache.put_aged(
+        &json_key("/api/v1/users/natgeo/stories"),
+        &page(vec![item("old", "image", "s0.jpg", &[])], None).to_string(),
+        Duration::from_secs(3600),
+    );
+    mount_json(
+        &e.server,
+        "/api/v1/users/natgeo/stories",
+        page(vec![item("new", "image", "s1.jpg", &[])], None),
+    )
+    .await;
+    let r = get(&e.app, "/v1/instagram/stories/natgeo").await;
+    assert_eq!(r.json["data"]["items"][0]["id"], "new");
+}
+
+#[tokio::test]
+async fn a_cold_fetch_the_client_gave_up_on_still_fills_the_cache_once() {
+    let e = env().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/users/natgeo/bundle"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(bundle())
+                .set_delay(Duration::from_millis(800)),
+        )
+        .mount(&e.server)
+        .await;
+    // The web's timeout: the request is dropped before the backend answers.
+    let gave_up = tokio::time::timeout(
+        Duration::from_millis(200),
+        get(&e.app, "/v1/instagram/profile/natgeo"),
+    )
+    .await;
+    assert!(gave_up.is_err());
+    // The retry joins the fetch under way instead of starting another.
+    let r = get(&e.app, "/v1/instagram/profile/natgeo").await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(count(&e.server, "/api/v1/users/natgeo/bundle").await, 1);
+}
+
+#[tokio::test]
+async fn concurrent_cold_requests_ask_the_backend_once() {
+    let e = env().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/users/natgeo/bundle"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(bundle())
+                .set_delay(Duration::from_millis(300)),
+        )
+        .mount(&e.server)
+        .await;
+    let (a, b, c) = tokio::join!(
+        get(&e.app, "/v1/instagram/profile/natgeo"),
+        get(&e.app, "/v1/instagram/profile/natgeo"),
+        get(&e.app, "/v1/instagram/profile/natgeo"),
+    );
+    for r in [a, b, c] {
+        assert_eq!(r.status, StatusCode::OK);
+    }
+    assert_eq!(count(&e.server, "/api/v1/users/natgeo/bundle").await, 1);
+}
+
 #[tokio::test]
 async fn a_posts_page_that_is_the_first_page_again_is_the_end() {
     // The backend ignores the cursor on /posts (live, 2026-10-28): the same posts come back.

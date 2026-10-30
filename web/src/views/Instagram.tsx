@@ -1,5 +1,5 @@
 import { A, useNavigate, useParams } from "@solidjs/router";
-import { createEffect, createResource, createSignal, For, on, onMount, Show, type Accessor } from "solid-js";
+import { createEffect, createResource, createSignal, For, on, onCleanup, onMount, Show, type Accessor } from "solid-js";
 import { ApiError } from "../api/client";
 import { instagramApi, type IgHighlight, type IgItem, type IgPage } from "../api/instagram";
 import {
@@ -25,11 +25,11 @@ import {
   useWide,
 } from "../components/page";
 import InstagramOpened from "../components/InstagramOpened";
-import { t } from "../i18n";
-import { formatCount, parseTyped, slideIndexOf, slidesOf } from "../lib/instagram";
+import { PhotoViewer } from "../components/PhotoViewer";
+import { locale, t } from "../i18n";
+import { formatCount, nextCheckText, parseTyped, slideIndexOf, slidesOf } from "../lib/instagram";
 import { mergeFirstPage, pageCache } from "../lib/pageCache";
 import { rememberScroll } from "../lib/pageScroll";
-import { relativeTime } from "../lib/relativeTime";
 import { createCached } from "../lib/swr";
 import "../styles/media.css";
 import "../styles/instagram.css";
@@ -205,6 +205,41 @@ function Avatar(props: { url: string | null; name: string; size?: "lg" }) {
   );
 }
 
+/**
+ * The profile picture in the header: a button that opens it in the viewer (zoom, pan, swipe down or Esc to close). The
+ * backend gives only Instagram's small rendition (100 px, 2026-10-30): its CDN refuses any other size of the signed
+ * URL and Instagram's own profile API wants a login, so the viewer shows that one, not an HD copy.
+ */
+function ProfilePicture(props: { url: string | null; username: string }) {
+  const [open, setOpen] = createSignal(false);
+  return (
+    <Show when={props.url} fallback={<Avatar url={null} name={props.username} size="lg" />}>
+      {(url) => (
+        <>
+          <button
+            type="button"
+            class="ig-head__pic"
+            aria-label={t("instagram.openProfilePicture", { name: props.username })}
+            aria-haspopup="dialog"
+            onClick={() => setOpen(true)}
+          >
+            <Avatar url={url()} name={props.username} size="lg" />
+          </button>
+          <Show when={open()}>
+            <PhotoViewer
+              items={[{ src: url(), kind: "photo", name: `@${props.username}`, id: `pfp:${props.username}` }]}
+              index={0}
+              onIndex={() => {}}
+              onClose={() => setOpen(false)}
+              label={() => t("instagram.profilePicture", { name: props.username })}
+            />
+          </Show>
+        </>
+      )}
+    </Show>
+  );
+}
+
 function Verified() {
   return (
     <span class="ig-verified" role="img" aria-label={t("instagram.verified")}>
@@ -219,9 +254,10 @@ interface Opened {
   username: string;
   /** From the Archive: already in the Gallery. */
   archived?: boolean;
-  /** Open on the tiles (a highlight), with this title. */
+  /** Open on the tiles (a highlight), with this title and cover. */
   tiles?: boolean;
   title?: string;
+  cover?: string | null;
 }
 
 function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
@@ -271,6 +307,21 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
   const [notice, setNotice] = createSignal("");
   const [opening, setOpening] = createSignal<string | null>(null);
   const watchEntry = () => instagramWatched().find((w) => w.username === props.username);
+  // A check that is due now (the first one, seconds after Watch) says "in a moment"; once it has run, the list is asked
+  // again so the line shows the next one ("tomorrow 15:40") instead of a countdown that went stale on screen.
+  const nextCheckLine = (at: number) => {
+    const when = nextCheckText(at, Date.now(), locale());
+    return when ? t("instagram.nextCheck", { when }) : t("instagram.firstCheck");
+  };
+  createEffect(
+    on(() => watchEntry()?.nextCheck, (at) => {
+      if (!at) return;
+      const wait = at * 1000 - Date.now();
+      if (wait > 120_000) return;
+      const timer = setTimeout(() => void refreshInstagramWatched(), Math.max(5_000, wait + 8_000));
+      onCleanup(() => clearTimeout(timer));
+    }),
+  );
 
   // Opening a watched account clears its red dot.
   createEffect(
@@ -347,7 +398,7 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
     if (b && tb === "highlights") void loadHighlights();
   }));
 
-  async function openHighlight(id: string, title: string) {
+  async function openHighlight(id: string, title: string, cover: string | null) {
     setNotice("");
     setOpening(id);
     // Its copy from an earlier visit (also after a restart) opens the tiles at once, and the feed refreshes it.
@@ -356,7 +407,7 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
     const feed = createFeed((c) => instagramApi.highlightItems(id, c), undefined, cacheKey);
     if (feed.loaded() && feed.items().length) {
       setOpening(null);
-      props.open({ feed, start: 0, username: props.username, tiles: true, title });
+      props.open({ feed, start: 0, username: props.username, tiles: true, title, cover });
       void feed.load();
       return;
     }
@@ -364,7 +415,7 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
     setOpening(null);
     if (feed.error()) setNotice(errorText(feed.error()));
     else if (feed.items().length === 0) setNotice(t("instagram.noHighlights"));
-    else props.open({ feed, start: 0, username: props.username, tiles: true, title });
+    else props.open({ feed, start: 0, username: props.username, tiles: true, title, cover });
   }
 
   const tabLabel = (tb: Tab) => t(`instagram.${tb}`);
@@ -392,7 +443,7 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
         {(b) => (
           <>
             <header class="ig-head">
-              <Avatar url={b().profile.picUrl} name={b().profile.username} size="lg" />
+              <ProfilePicture url={b().profile.picUrl} username={b().profile.username} />
               <div class="ig-head__text">
                 <h2 class="ig-head__name">
                   <span>{b().profile.fullName || b().profile.username}</span>
@@ -405,7 +456,14 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
                 <li><strong>{formatCount(b().profile.followerCount)}</strong> <span>{t("instagram.followers")}</span></li>
                 <li><strong>{formatCount(b().profile.followingCount)}</strong> <span>{t("instagram.following")}</span></li>
               </ul>
-              <Show when={b().profile.biography}>{(bio) => <p class="ig-bio">{bio()}</p>}</Show>
+              <Show when={b().profile.biography}>
+                {(bio) => (
+                  <p class="ig-bio">
+                    <span class="ig-bio__label">{t("instagram.bio")}</span>
+                    <span>{bio()}</span>
+                  </p>
+                )}
+              </Show>
               <Show when={b().profile.externalUrl}>
                 {(href) => (
                   <a class="ig-link" href={href()} target="_blank" rel="noopener noreferrer">
@@ -441,7 +499,7 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
                     </label>
                     <p class="ig-muted ig-watch__hint">
                       {intervalHours() === 23 ? t("instagram.watchHintDay") : t("instagram.watchHintHours", { n: intervalHours() })}
-                      <Show when={w().nextCheck}>{(at) => <> {t("instagram.nextCheck", { when: relativeTime(at()) })}.</>}</Show>
+                      <Show when={w().nextCheck}>{(at) => <> {nextCheckLine(at())}</>}</Show>
                       {" "}<span id="ig-interval-note">{t("instagram.watchIntervalNote")}</span>
                     </p>
                     <Show when={w().gone}>
@@ -479,7 +537,7 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
                         <For each={highlights()}>
                           {(h) => (
                             <li>
-                              <button type="button" class="ig-highlight" aria-busy={opening() === h.id} disabled={opening() !== null} onClick={() => void openHighlight(h.id, h.title)}>
+                              <button type="button" class="ig-highlight" aria-busy={opening() === h.id} disabled={opening() !== null} onClick={() => void openHighlight(h.id, h.title, h.coverUrl)}>
                                 <Avatar url={h.coverUrl} name={h.title} size="lg" />
                                 <span class="ig-highlight__title">{h.title}</span>
                                 <Show when={h.mediaCount}>{(n) => <span class="ig-highlight__count">{t("instagram.items", { count: n() })}</span>}</Show>
@@ -803,6 +861,7 @@ export default function InstagramView() {
             tiles={o.tiles}
             username={o.username}
             title={o.title}
+            cover={o.cover}
             archived={o.archived}
             hasMore={o.feed.hasMore()}
             loading={o.feed.loading()}
