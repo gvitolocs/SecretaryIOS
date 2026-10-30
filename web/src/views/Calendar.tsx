@@ -625,7 +625,7 @@ export default function CalendarView() {
                 <li>
                   <button
                     type="button"
-                    class="cal-chip"
+                    class="chip cal-chip"
                     classList={{ "cal-chip--off": off() }}
                     aria-pressed={!off()}
                     title={off() ? t("calendar.showCalendar", { name: c.name }) : t("calendar.hideCalendar", { name: c.name })}
