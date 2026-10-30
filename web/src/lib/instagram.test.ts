@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { IgItem } from "../api/instagram";
-import { formatCount, formatTaken, parseTyped, slideIndexOf, slidesOf } from "./instagram";
+import { monthChips } from "../components/InstagramTiles";
+import { formatCount, formatTaken, nextCheckText, parseTyped, slideIndexOf, slidesOf } from "./instagram";
 
 const img = (id: string): IgItem => ({ id, kind: "image", url: `/u/${id}`, thumbUrl: `/t/${id}` });
 const carousel = (id: string): IgItem => ({
@@ -62,5 +63,31 @@ describe("formatting", () => {
   it("formats a date or nothing", () => {
     expect(formatTaken(null)).toBe("");
     expect(formatTaken(1_700_000_000, "en-GB")).toContain("2023");
+  });
+});
+
+describe("nextCheckText", () => {
+  // Local noon on a fixed day, so "today" and "tomorrow" don't depend on the test machine's zone.
+  const noon = new Date(2026, 9, 30, 12, 0, 0).getTime();
+  const at = (h: number, m = 0, dayOffset = 0) => Math.floor(new Date(2026, 9, 30 + dayOffset, h, m).getTime() / 1000);
+
+  it("says a clock time today or tomorrow, a weekday after that", () => {
+    expect(nextCheckText(at(15, 40), noon, "en-GB")).toBe("today 15:40");
+    expect(nextCheckText(at(9, 5, 1), noon, "en-GB")).toBe("tomorrow 09:05");
+    expect(nextCheckText(at(15, 40, 2), noon, "en-GB")).toMatch(/^Sun 15:40$/);
+  });
+
+  it("is null for a check due now (the first one after Watch) or late", () => {
+    expect(nextCheckText(Math.floor(noon / 1000) + 7, noon, "en-GB")).toBeNull();
+    expect(nextCheckText(Math.floor(noon / 1000) - 600, noon, "en-GB")).toBeNull();
+  });
+});
+
+describe("monthChips", () => {
+  const taken = (id: string, y: number, mo: number, d: number): IgItem => ({ ...img(id), takenAt: Math.floor(new Date(y, mo, d).getTime() / 1000) });
+
+  it("marks the first slide of each month only", () => {
+    const slides = slidesOf([taken("a", 2022, 5, 3), taken("b", 2022, 5, 30), taken("c", 2022, 6, 6), img("d"), taken("e", 2023, 2, 24)]);
+    expect(monthChips(slides, "en-US")).toEqual(["Jun 2022", "", "Jul 2022", "", "Mar 2023"]);
   });
 });

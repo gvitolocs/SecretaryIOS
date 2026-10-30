@@ -218,6 +218,19 @@ describe("Instagram", () => {
     expect(within(screen.getByRole("tabpanel")).getAllByRole("button")).toHaveLength(4); // 3 tiles + Load more
   });
 
+  it("labels the bio, and opens the profile picture in the viewer", async () => {
+    serve({ profile: bundle({ isPrivate: true }) });
+    renderIg("/instagram/natgeo");
+    expect((await screen.findByText("Step into wonder")).closest(".ig-bio")).toHaveTextContent(/^BioStep into wonder$/);
+    const pic = screen.getByRole("button", { name: "Show the profile picture of @natgeo" });
+    expect(pic.querySelector("img")).toHaveAttribute("src", "/v1/instagram/s/9/x/pfp");
+    fireEvent.click(pic);
+    const viewer = await screen.findByRole("dialog", { name: "Profile picture of @natgeo" });
+    expect(viewer.querySelector("img[src='/v1/instagram/s/9/x/pfp']")).not.toBeNull();
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
   it("starts on Stories when there are some and loads them once", async () => {
     const calls = serve({ profile: bundle({ hasStories: true }), stories: { items: [item("s1", "video"), item("s2")], nextCursor: null } });
     renderIg("/instagram/natgeo");
@@ -304,20 +317,8 @@ describe("Instagram", () => {
   });
 
   describe("a highlight's tiles", () => {
-    // The Gallery grid lays out what fits in its scroll box: give it one.
-    beforeEach(() => {
-      vi.spyOn(Element.prototype, "clientWidth", "get").mockImplementation(function (this: Element) {
-        return this.classList.contains("g-scroll") ? 1000 : 0;
-      });
-      vi.spyOn(Element.prototype, "clientHeight", "get").mockImplementation(function (this: Element) {
-        return this.classList.contains("g-scroll") ? 800 : 0;
-      });
-      vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
-    });
-    afterEach(() => vi.unstubAllGlobals());
-
     const ids = ["h1", "h2", "h3", "h4", "h5", "h6"];
-    const tiles = () => document.querySelectorAll<HTMLElement>(".ig-tiles .g-tile");
+    const tiles = () => document.querySelectorAll<HTMLElement>(".ig-tiles .ig-hl__tile");
     async function openHighlight() {
       serve({ profile: bundle(), highlights: bundle({ highlights: true }).highlights, highlightItems: { items: [...ids.map((i) => item(i)), item("v7", "video")], nextCursor: null } });
       renderIg("/instagram/natgeo");
@@ -332,8 +333,11 @@ describe("Instagram", () => {
       await waitFor(() => expect(tiles()).toHaveLength(7));
       expect(grid).toHaveTextContent("Best of");
       expect(grid).toHaveTextContent("@natgeo · 7 items");
-      expect(tiles()[6]!.querySelector(".g-badge--video")).not.toBeNull();
-      expect(tiles()[0]!.querySelector(".g-badge--video")).toBeNull();
+      // The highlight's cover heads the grid; no heading per day.
+      expect(grid.querySelector(".ig-hl__cover img")).toHaveAttribute("src", "/v1/instagram/s/9/x/h");
+      expect(grid.querySelectorAll("h2, h3")).toHaveLength(1);
+      expect(tiles()[6]!.querySelector(".ig-tile__badge")).not.toBeNull();
+      expect(tiles()[0]!.querySelector(".ig-tile__badge")).toBeNull();
       expect(tiles()[0]!.querySelector("img")).toHaveAttribute("loading", "lazy");
       expect(tiles()[0]!.querySelector("img")).toHaveAttribute("src", "/v1/instagram/s/9/x/h1-t");
       expect(viewer()).toBeNull();
@@ -342,9 +346,28 @@ describe("Instagram", () => {
     it("opens the viewer on the tile that was clicked", async () => {
       await openHighlight();
       await waitFor(() => expect(tiles()).toHaveLength(7));
-      fireEvent.click(tiles()[3]!.querySelector(".g-open")!);
+      fireEvent.click(tiles()[3]!);
       expect(await screen.findByRole("dialog", { name: "4 of 7" })).toBeInTheDocument();
       expect(screen.queryByRole("dialog", { name: "Best of: all items" })).toBeNull();
+    });
+
+    it("keeps the tiles under the viewer, so closing it comes back to the same place and tile", async () => {
+      await openHighlight();
+      await waitFor(() => expect(tiles()).toHaveLength(7));
+      const panel = document.querySelector<HTMLElement>(".ig-tiles")!;
+      const scroller = panel.querySelector<HTMLElement>(".ig-hl__scroll")!;
+      scroller.scrollTop = 300;
+      fireEvent.click(tiles()[4]!);
+      await screen.findByRole("dialog", { name: "5 of 7" });
+      expect(document.querySelector(".ig-tiles")).toBe(panel);
+      expect(panel).toHaveAttribute("inert");
+      fireEvent.keyDown(window, { key: "ArrowRight" });
+      await screen.findByRole("dialog", { name: "6 of 7" });
+      fireEvent.keyDown(window, { key: "Escape" });
+      expect(await screen.findByRole("dialog", { name: "Best of: all items" })).toBe(panel);
+      expect(panel).not.toHaveAttribute("inert");
+      expect(scroller.scrollTop).toBe(300);
+      expect(document.activeElement).toBe(tiles()[5]);
     });
 
     it("toggles between the tiles and the viewer with G, and Esc steps back out", async () => {
@@ -369,7 +392,7 @@ describe("Instagram", () => {
     it("goes back to the tiles from the viewer's grid button", async () => {
       await openHighlight();
       await waitFor(() => expect(tiles()).toHaveLength(7));
-      fireEvent.click(tiles()[5]!.querySelector(".g-open")!);
+      fireEvent.click(tiles()[5]!);
       await screen.findByRole("dialog", { name: "6 of 7" });
       fireEvent.click(screen.getByRole("button", { name: "All items as tiles (G)" }));
       expect(await screen.findByRole("dialog", { name: "Best of: all items" })).toBeInTheDocument();
@@ -378,10 +401,13 @@ describe("Instagram", () => {
     it("moves between tiles with the arrow keys", async () => {
       await openHighlight();
       await waitFor(() => expect(tiles()).toHaveLength(7));
-      const first = tiles()[0]!.querySelector<HTMLElement>(".g-open")!;
-      first.focus();
-      fireEvent.keyDown(first, { key: "ArrowRight" });
-      expect(document.activeElement).toBe(tiles()[1]!.querySelector(".g-open"));
+      tiles()[0]!.focus();
+      fireEvent.keyDown(tiles()[0]!, { key: "ArrowRight" });
+      expect(document.activeElement).toBe(tiles()[1]);
+      fireEvent.keyDown(tiles()[1]!, { key: "End" });
+      expect(document.activeElement).toBe(tiles()[6]);
+      fireEvent.keyDown(tiles()[6]!, { key: "ArrowLeft" });
+      expect(document.activeElement).toBe(tiles()[5]);
     });
   });
 
@@ -514,13 +540,26 @@ describe("Instagram", () => {
       serve({ watched: [entry({ nextCheck: 1_800_000_000 + 22 * 3600 })], profile: bundle() });
       renderIg("/instagram/natgeo");
       const hint = await screen.findByText(/Checked about once a day\. Nothing is marked as seen on Instagram\./);
-      expect(hint).toHaveTextContent("Next check in 22 hours.");
+      // A clock time, not a countdown that goes stale on screen.
+      expect(hint).toHaveTextContent(/Next check: (today|tomorrow) \d\d:\d\d( [AP]M)?\./);
       expect(hint).toHaveTextContent("Applies to all watched accounts.");
       const select = screen.getByRole("combobox", { name: "Check" }) as HTMLSelectElement;
       expect(select).toHaveAccessibleDescription("Applies to all watched accounts.");
       expect([...select.options].map((o) => o.textContent)).toEqual(["About once a day", "Every 12 hours", "Every 6 hours"]);
       expect(select.value).toBe("23");
     });
+
+    it("says the first check comes in a moment, then asks again for the next one", async () => {
+      const now = Date.now();
+      const calls = serve({ watched: [entry({ lastCheck: null, nextCheck: Math.floor(now / 1000) + 5 })], profile: bundle() });
+      renderIg("/instagram/natgeo");
+      const hint = await screen.findByText(/Checked about once a day/);
+      expect(hint).toHaveTextContent("First check: in a moment.");
+      expect(hint).not.toHaveTextContent("seconds");
+      const asked = () => calls.filter((c) => c.url === "/v1/instagram/watch").length;
+      const before = asked();
+      await waitFor(() => expect(asked()).toBeGreaterThan(before), { timeout: 15_000 });
+    }, 20_000);
 
     it("says every 12 hours when that is the setting", async () => {
       serve({ watched: [entry()], profile: bundle(), intervalHours: 12 });

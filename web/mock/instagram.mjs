@@ -1,7 +1,7 @@
 // Instagram plugin for the mock server (docs/instagram.md, /v1/instagram). In memory, synthetic
 // pictures (SVG gradients) and one generated test video (ffmpeg, if installed; else video slides 404).
 //
-//   natgeo   stories (image + video), 4 highlights, 12 posts (+6 on "P2"), 20 reels (2 pages), verified
+//   natgeo   stories (image + video), 4 highlights (one of 44 items over two years), 12 posts (+6 on "P2"), 20 reels (2 pages), verified
 //   nasa     no stories, no highlights, 12 posts whose cursor page is "exhausted" (the real backend ignores cursors)
 //   private  a private account with nothing public
 //   Watching: natgeo (2 new stories + 1 new post), nasa (auto-save off) and private (1 new post) are watched; opening an
@@ -109,6 +109,10 @@ const PROFILES = {
 
 const HIGHLIGHT_ITEMS = (id) => {
   const n = Number(id.slice(-1)) || 5;
+  // "Behind the lens": a long one kept over two years (44 items, like a real one of @_ter.restre), oldest first.
+  if (n === 8) {
+    return Array.from({ length: 44 }, (_, i) => ({ ...story(i + 300, i % 5 === 2 ? "video" : "image"), takenAt: NOW - (44 - i) * 17 * DAY }));
+  }
   return Array.from({ length: n % 2 ? 3 : 4 }, (_, i) => story(i + n, i % 3 === 1 ? "video" : "image"));
 };
 
