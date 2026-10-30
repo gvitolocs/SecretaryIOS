@@ -58,6 +58,12 @@ members = [
     "crates/lucina-jev",
     "crates/secretary-image",
 ]
+exclude = [
+    # Standalone crates with their own [workspace] and Cargo.lock (docs/repo-workflow.md).
+    "crates/secretary-instagram",
+    "crates/secretary-pixiv",
+    "tools",
+]
 
 [workspace.package]
 version = "0.1.0"

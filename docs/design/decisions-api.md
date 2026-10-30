@@ -7,11 +7,11 @@ free text goes through intent routing, which started a Harness job and a reminde
 
 Three hops, three deploy lines:
 
-| Hop | Line | What |
+| Hop | Built from | What |
 |---|---|---|
-| secretary-mcp (p1) | `server-live` | MCP tools `lucina_decide`, `lucina_decision_status`, `lucina_decision_withdraw`, `lucina_job_status` |
-| secretary-server (p1) | `server-live` | `/v1/decisions*` forwarded to Lucina with the device credential |
-| lucina-rs (nezopt) | `lucina-rs` | `/api/secretary/decisions*`: the decision itself, the record, the owner's push |
+| secretary-mcp (p1) | `main` | MCP tools `lucina_decide`, `lucina_decision_status`, `lucina_decision_withdraw`, `lucina_job_status` |
+| secretary-server (p1) | `main` | `/v1/decisions*` forwarded to Lucina with the device credential |
+| lucina-rs (nezopt) | `main` | `/api/secretary/decisions*`: the decision itself, the record, the owner's push |
 
 ## lucina-rs: `POST /api/secretary/decisions`
 

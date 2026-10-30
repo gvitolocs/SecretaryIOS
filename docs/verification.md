@@ -26,10 +26,11 @@ The multi-process protocols of Secretary / Lucina are checked three ways:
    fail, because either the model got too weak or the bug was fixed without updating the model.
 4. **No vacuous passes.** Every passing configuration has a `sometimes` property (Stateright) or a `*_witness.cfg`
    (TLC) proving that it reaches the interesting states: a rotation, a resume, a 409, a handover, a refresh.
-5. **Every deploy goes through `deploy-guard`** (protocol 7). Inside `/tmp/lucina-merge.lock`, build from the
-   target branch's tip in a clean tree, run `deploy-guard check --runtime <name>` (it refuses unless the live build
-   is an ancestor of the commit, the commit is on the target branch and the tree is clean), deploy, then run
-   `deploy-guard record --runtime <name>`. Live but uncommitted work is committed to the target branch first.
+5. **Every deploy goes through `deploy-guard`** (protocol 7). Inside `/tmp/lucina-merge.lock`, build from
+   `main`'s tip in a clean tree, run `deploy-guard check --runtime <name>` (it refuses unless the live build is an
+   ancestor of the commit, the commit is on `main` and the tree is clean), deploy, then run
+   `deploy-guard record --runtime <name>`, which also tags the deploy. Live but uncommitted work lands on `main` first.
+   There are no deploy-line branches since 2026-10-30 (`docs/repo-workflow.md`).
 6. Generated TLC output (`*_TTrace_*`, `states/`) is never committed (`formal/.gitignore`). `verify.sh` runs TLC
    with `-noGenerateSpecTE` and a temporary `-metadir`.
 
@@ -442,8 +443,10 @@ last build contains every earlier one.
 
 `deploy-guard` keeps the live commit per runtime in `~/.local/state/deploy-guard/<runtime>.commit` on nezopt (where
 every build and deploy runs): `check` before the push, `record` right after it, `status` to list. Exit codes: 0 ok,
-1 refused, 2 usage or git error, 3 no ledger entry (record the live commit once with `--bootstrap`). Target
-branches: `main` for secretary-server, secretary-mcp and web; `lucina-rs` for lucina-rs; `--target` otherwise.
+1 refused, 2 usage or git error, 3 no ledger entry (record the live commit once with `--bootstrap`). Every
+runtime deploys from `main` (`docs/repo-workflow.md`): any other `--target` is refused, `record` tags the deploy
+`deploy/<runtime>/<stamp>-<sha8>`, and `plan` lists the runtimes `main` changed since their live commit
+(`deploy/targets.tsv`).
 Its tests (`cargo test --manifest-path tools/deploy-guard/Cargo.toml`, in the models section of `verify.sh`)
 check the rule for every input combination and replay the 25 Oct incident on real git repos.
 ### 8. Lucina's Pokémon Red: game control and the planner

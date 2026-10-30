@@ -477,6 +477,10 @@ fn tag_and_alias(repo: &Path, runtime: &str, commit: &str, note: &str) {
         return;
     }
     let line = legacy_line(runtime);
+    // Only lines that exist on origin get an alias (main-next was local-only).
+    if git(repo, &["rev-parse", "-q", "--verify", &format!("refs/remotes/origin/{line}")]).map_or(true, |o| !o.status.success()) {
+        return;
+    }
     let spec = format!("{commit}:refs/heads/{line}");
     match git(repo, &["push", "-q", "origin", &spec]) {
         Ok(o) if o.status.success() => println!("deploy-guard: alias {line} -> {}", short(commit)),
