@@ -1,15 +1,15 @@
-//! `calendar`: the owner's calendars (Google Calendar, the iPhone calendar
-//! and ICS subscriptions, merged by secretary-server) through
-//! `/v1/calendar/*` with the service token.
+//! `calendar`: the owner's calendars (his own calendar in Secretary, plus
+//! Google Calendar, the iPhone calendar and ICS subscriptions, merged by
+//! secretary-server) through `/v1/calendar/*` with the service token.
 //!
 //! - `list` (today, tomorrow, week, or a from/to range) and `free` (the next
 //!   free slots of a given length) only read.
 //! - `create` in the owner's own turn ([`Ctx::owner_turn`]) writes the event
-//!   to Google Calendar at once; the reply offers an Undo for 10 minutes (a
-//!   `delete` of that id in the same chat, which then needs no yes). When
-//!   Google is not connected or the write fails, and in every other turn (an
-//!   MCP client, an agent, Lucina's own initiative), it files a proposal the
-//!   owner confirms in Secretary → Links.
+//!   to his own calendar in Secretary at once (no Google needed); the reply
+//!   offers an Undo for 10 minutes (a `delete` of that id in the same chat,
+//!   which then needs no yes). When the write fails, and in every other turn
+//!   (an MCP client, an agent, Lucina's own initiative), it files a proposal
+//!   the owner confirms in Secretary.
 //! - `move` and `delete` go through the confirmation flow: the call becomes a
 //!   pending action and runs only after the owner's explicit yes. The server
 //!   also demands `confirm: true` for edits and deletes, which this tool sends
@@ -227,14 +227,16 @@ impl Tool for CalendarTool {
         "calendar"
     }
     fn description(&self) -> &'static str {
-        "Giuseppe's calendar (Google Calendar, his iPhone calendar and subscribed ICS calendars, merged). \
+        "Giuseppe's calendar: his own calendar in Secretary (the Calendar tab), merged with his iPhone calendar, \
+         Google Calendar and subscribed ICS calendars. \
          list: events for today, tomorrow, the week, or from/to dates (with event ids). \
          free: the next free slots of `minutes` (default 60) in working hours. \
-         create: a new Google Calendar event (title, start, end?, location?). When Giuseppe asks for it himself \
+         create: a new event in his calendar (title, start, end?, location?). When Giuseppe asks for it himself \
          it is added at once (no yes needed; the reply has an Undo for 10 minutes, which is `delete` of that id); \
-         if Google fails, or the request is not his, it becomes a proposal he confirms in Secretary → Links. \
+         if the write fails, or the request is not his, it becomes a proposal he confirms in Secretary. \
          move: change an event's start/end by id. delete: remove an event by id. \
-         move and delete wait for Giuseppe's explicit yes; only Google events can be moved or deleted."
+         move and delete wait for Giuseppe's explicit yes; only his own (lucina:…) and Google events can be moved \
+         or deleted (iPhone events change on the phone)."
     }
     fn parameters(&self) -> Value {
         schema_for::<Args>()
@@ -369,7 +371,7 @@ impl Tool for CalendarTool {
                     "event": c.first(),
                     "link": event["url"],
                     "undo": {"action": "delete", "id": id, "minutes": UNDO_FOR.as_secs() / 60},
-                    "instruction": format!("Done, it is in his Google Calendar. Reply in the owner's language like: Added to your calendar: {title}, {when} (with the link if there is one). The reply has an Undo button for 10 minutes; if he says undo, call delete with this id."),
+                    "instruction": format!("Done, it is in his calendar (the Calendar tab in Secretary). Reply in the owner's language like: Added to your calendar: {title}, {when} (with the link if there is one). The reply has an Undo button for 10 minutes; if he says undo, call delete with this id."),
                 }))
             }
             Action::Move => {

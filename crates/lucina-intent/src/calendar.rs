@@ -677,12 +677,12 @@ pub fn confirm_question(c: &Create, tz: Tz) -> String {
     let when = when_text(c, tz);
     match c.lang {
         "it" => {
-            format!("Confermi? Aggiungo «{title}» {when} su Google Calendar. Rispondi sì o no.")
+            format!("Confermi? Aggiungo «{title}» {when} al tuo calendario. Rispondi sì o no.")
         }
         "da" => {
-            format!("Skal jeg tilføje \"{title}\" {when} i Google Kalender? Svar ja eller nej.")
+            format!("Skal jeg tilføje \"{title}\" {when} i din kalender? Svar ja eller nej.")
         }
-        _ => format!("Shall I add \"{title}\" {when} to Google Calendar? Reply yes or no."),
+        _ => format!("Shall I add \"{title}\" {when} to your calendar? Reply yes or no."),
     }
 }
 
@@ -904,7 +904,7 @@ mod tests {
             c.event,
             json!({"title": "Dentista", "start": "2026-10-23T09:30:00+02:00", "end": "2026-10-23T10:30:00+02:00"})
         );
-        assert_eq!(confirm_question(&c, TZ), "Confermi? Aggiungo «Dentista» venerdì 23 ottobre alle 09:30 su Google Calendar. Rispondi sì o no.");
+        assert_eq!(confirm_question(&c, TZ), "Confermi? Aggiungo «Dentista» venerdì 23 ottobre alle 09:30 al tuo calendario. Rispondi sì o no.");
         let c = parse_create("add dentist to my calendar on 30/10", now(), TZ)
             .unwrap()
             .unwrap();

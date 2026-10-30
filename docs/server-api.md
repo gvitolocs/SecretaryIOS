@@ -1520,7 +1520,18 @@ their `url`.
 
 ## Calendar
 
-All sources merged: Google Calendar (synced into `calendar.json` every
+**Lucina's own calendar is the owner's calendar** (since 2026-10-30): new
+events from the Calendar tab, from Lucina ("add it to my calendar") and
+accepted proposals are stored by secretary-server in
+`$SECRETARY_DATA_DIR/calendar-events.json` (primary data: atomic 0600
+writes, a corrupt file stops the server; backed up daily to mybook with the
+notes by nezopt's `secretary-notes-backup`). Each event is kept in Google
+Calendar's event shape (`summary`, `start`/`end`, `location`,
+`description`, `hangoutLink`, `extendedProperties.private.addedBy`,
+`created`, `updated`), so the same code validates and expands it, and a
+Google sync can copy it as it is. No Google grant is needed for any of it.
+
+All sources merged: Lucina's own calendar, Google Calendar (synced into `calendar.json` every
 `SECRETARY_CALENDAR_SYNC_SECS`, default 300, with sync tokens; a `410 Gone`
 triggers a full resync from 365 days back; recurring events are expanded by
 `secretary-calendar`, DST-correct, with EXDATEs and per-instance
@@ -1536,23 +1547,36 @@ Event:
 { "id": "google:abc_20261022T070000Z", "source": "google", "sourceId": "abc", "calendar": "Google",
   "title": "Gym", "start": "2026-10-22T07:00:00.000Z", "end": "2026-10-22T08:00:00.000Z", "allDay": false,
   "startMs": 1792652400000, "endMs": 1792656000000, "location": "…", "url": "https://calendar.google.com/…",
-  "recurring": true, "editable": true }
+  "conferenceUrl": "https://meet.google.com/…", "addedBy": "Lucina", "recurring": true, "editable": true }
 ```
 
 All-day events have `start`/`end` as `YYYY-MM-DD` (end exclusive) and
-`allDay: true`. Ids: `google:<event or instance id>`, `ics:<sub>:<hash>`,
-`iphone:<EventKit id>`.
+`allDay: true`. Ids: `lucina:<ev_…>` (calendar "Lucina"),
+`google:<event or instance id>`, `ics:<sub>:<hash>`,
+`iphone:<EventKit id>@<start ms>`. `editable` is true for Lucina's and
+Google events. `conferenceUrl`: Google's `hangoutLink` / video entry point,
+else the first Meet/Zoom/Teams/Webex/Whereby https link in the location,
+notes or url. `addedBy`: who created it (`Lucina` for the service token, the
+device name for the app, the proposer for an accepted proposal; Google's
+creator otherwise). Once Google is connected the iPhone mirrors the same
+Google events; an `iphone:` event whose id contains `:<google id>@google.com`
+at the same start as a `google:` event is dropped, so nothing shows twice.
+
+"Coming up" notifications cover the iPhone's and Lucina's own timed events
+(the next 35 days, refreshed after each write and every sync); their
+`route` is `/calendar?event=<merged id>&at=<start ms>`, which opens the
+Calendar tab on that event.
 
 | Route | |
 |---|---|
-| `GET /v1/calendar/events?from&to&days&sources` | `from`/`to`: `YYYY-MM-DD` (owner's zone, `to` inclusive) or RFC 3339; default today + 7 days; `days` 1–400; `sources=google,ics,iphone`. `{from, to, timeZone, events, sources}` (`sources` has each source's status). Range ≤ 400 days. |
+| `GET /v1/calendar/events?from&to&days&sources` | `from`/`to`: `YYYY-MM-DD` (owner's zone, `to` inclusive) or RFC 3339; default today + 7 days; `days` 1–400; `sources=lucina,google,ics,iphone`. `{from, to, timeZone, events, sources}` (`sources` has each source's status; `lucina: {count}`). Range ≤ 400 days. |
 | `GET /v1/calendar/free?from&to&minutes=60&dayStart=9&dayEnd=19&limit=5` | Gaps between timed events inside working hours: `{slots: [{start, end}]}`. All-day events do not block. |
 | `POST /v1/calendar/sync` | Sync now: `{google: {ok, changed?, error?}, ics: [{id, ok, changed?, error?}]}`. `error: "reconnect_needed"` when Google revoked access. |
-| `POST /v1/calendar/events` | `{title, start, end?, allDay?, location?, description?, timeZone?}` → Google primary calendar. `start` RFC 3339 with offset (default end +1 h) or `YYYY-MM-DD` (all-day, default +1 day). `201 {created, event}`. |
-| `PATCH /v1/calendar/events/{id}` | **`confirm: true` required** (`428 confirmation_required` otherwise) + any of the create fields. Moving `start` without `end` keeps the duration. Google events only (`422 read_only_source` for ICS/iPhone). |
-| `DELETE /v1/calendar/events/{id}?confirm=true` | Same rules. Deleting a recurring instance id cancels that instance only. |
+| `POST /v1/calendar/events` | `{title, start, end?, allDay?, location?, description?, conferenceUrl?, timeZone?, target?}` → Lucina's own calendar (`target: "google"`: the Google primary calendar instead). `start` RFC 3339 with offset (default end +1 h) or `YYYY-MM-DD` (all-day, default +1 day). `201 {created, event}`. |
+| `PATCH /v1/calendar/events/{id}` | **`confirm: true` required** (`428 confirmation_required` otherwise) + any of the create fields. Moving `start` without `end` keeps the duration; `""`/`null` clears location, notes or `conferenceUrl`. Lucina's and Google events (`422 read_only_source` for ICS/iPhone). |
+| `DELETE /v1/calendar/events/{id}?confirm=true` | Same rules. Deleting a recurring instance id cancels that instance only; deleting a Lucina event that is already gone is `200`. |
 | `GET /v1/calendar/proposals` · `POST /v1/calendar/proposals` | Proposals from clients that may not write (the Lucina MCP, agents), and from Lucina when her direct create for the owner failed: body as for create plus `from` and an optional `reason` (≤ 300 characters, why it is not an event yet); validated, kept 7 days, ≤ 50. The owner's own requests to Lucina go straight to `POST /v1/calendar/events`. |
-| `POST /v1/calendar/proposals/{id}/accept` `{confirm: true}` · `DELETE /v1/calendar/proposals/{id}` | The owner accepts (creates the event) or dismisses it **in the app**; the service token gets `403 owner_only`. |
+| `POST /v1/calendar/proposals/{id}/accept` `{confirm: true}` · `DELETE /v1/calendar/proposals/{id}` | The owner accepts (creates the event in Lucina's own calendar, `addedBy` = the proposer) or dismisses it **in the app**; the service token gets `403 owner_only`. |
 
 Errors: `409 google_not_connected`, `409 google_reconnect_needed` (show
 Reconnect in Links), `404 event_not_found`, `400 google_rejected`, `502
