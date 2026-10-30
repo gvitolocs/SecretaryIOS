@@ -381,7 +381,7 @@ describe("Pixiv", () => {
       fireEvent.load(img);
       return { stage, img };
     }
-    const scaleOf = (img: HTMLElement) => Number(/scale\(([\d.e-]+)\)/.exec(img.style.transform)?.[1]);
+    const scaleOf = (img: HTMLElement) => Number(img.dataset.scale);
     const level = (dialog: HTMLElement) => within(dialog).getByRole("button", { name: "Fit to screen" });
 
     it("opens a tall page in Fit (the whole image), zooms from Fit to 400 % and back, and Escape returns to Fit before it closes", async () => {
@@ -390,7 +390,10 @@ describe("Pixiv", () => {
       const { img } = size(dialog, 1400, 760, 1200, 1700);
       const fit = 760 / 1700;
       expect(scaleOf(img)).toBeCloseTo(fit, 6);
-      expect(img.style.width).toBe("1200px");
+      // laid out at its on-screen size (sharp), not stretched with a transform
+      expect(parseFloat(img.style.width)).toBeCloseTo(1200 * fit, 3);
+      expect(parseFloat(img.style.height)).toBeCloseTo(760, 3);
+      expect(img.style.transform).not.toContain("scale(");
       expect(level(dialog)).toHaveTextContent("Fit");
       expect(level(dialog)).toBeDisabled();
       expect(within(dialog).getByRole("button", { name: "Zoom out" })).toBeDisabled();
@@ -470,6 +473,42 @@ describe("Pixiv", () => {
       expect(img.style.transform).toContain(`translate(0px, ${(6000 - 760) / 2}px)`);
       fireEvent.click(button);
       expect(scaleOf(img)).toBeCloseTo(760 / 6000, 6);
+    });
+
+    it("swaps in the original file when the screen needs more pixels, at the same size on screen", async () => {
+      const made: { src: string; onload: (() => void) | null; naturalWidth: number; naturalHeight: number }[] = [];
+      vi.stubGlobal("Image", class { src = ""; onload: (() => void) | null = null; naturalWidth = 0; naturalHeight = 0; constructor() { made.push(this); } });
+      Object.defineProperty(window, "devicePixelRatio", { configurable: true, value: 2 });
+      try {
+        const { dialog } = await openWork();
+        // a wide 1200x600 regular file at Fit in 1400x760 needs 1200 * 2 device pixels: more than it has
+        const { img } = size(dialog, 1400, 760, 1200, 600);
+        expect(scaleOf(img)).toBe(1);
+        const original = await waitFor(() => { const m = made.find((i) => i.src === "/v1/pixiv/s/1/11/o0"); expect(m).toBeTruthy(); return m!; });
+        Object.assign(original, { naturalWidth: 4800, naturalHeight: 2400 });
+        original.onload?.();
+        await waitFor(() => expect(img).toHaveAttribute("src", "/v1/pixiv/s/1/11/o0"));
+        // Fit against the original: 1400 / 4800, i.e. 1400 px wide on screen
+        expect(scaleOf(img)).toBeCloseTo(1400 / 4800, 6);
+        expect(parseFloat(img.style.width)).toBeCloseTo(1400, 3);
+        expect(level(dialog)).toHaveTextContent("Fit");
+      } finally {
+        Object.defineProperty(window, "devicePixelRatio", { configurable: true, value: 1 });
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("keeps the regular file at 1x when it has enough pixels", async () => {
+      const made: { src: string }[] = [];
+      vi.stubGlobal("Image", class { src = ""; constructor() { made.push(this); } });
+      try {
+        const { dialog } = await openWork();
+        size(dialog, 1400, 760, 1200, 1700);
+        await new Promise((r) => setTimeout(r, 0));
+        expect(made.some((i) => i.src.includes("/o0"))).toBe(false);
+      } finally {
+        vi.unstubAllGlobals();
+      }
     });
 
     it("pinches to zoom", async () => {

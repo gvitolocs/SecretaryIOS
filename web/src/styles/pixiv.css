@@ -57,7 +57,7 @@
 .px-notice { margin: 0; padding: var(--lu-space-sm) var(--lu-space-md); border-radius: var(--lu-radius-field); border-left: 3px solid var(--lu-accent); background: var(--lu-accent-soft); color: var(--lu-text); font-size: var(--lu-type-footnote); line-height: 1.4; overflow-wrap: anywhere; min-width: 0; }
 
 /* ---- the reader ---- */
-.px-reader { position: fixed; inset: 0; z-index: 60; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; background: var(--lu-bg); color: var(--lu-text); font-family: var(--lu-font); min-width: 0; }
+.px-reader { position: fixed; inset: 0; z-index: 60; display: grid; grid-template-rows: auto minmax(0, 1fr); background: var(--lu-bg); color: var(--lu-text); font-family: var(--lu-font); min-width: 0; }
 .px-reader__bar { display: flex; align-items: center; gap: var(--lu-space-sm); padding: calc(var(--lu-space-sm) + env(safe-area-inset-top, 0px)) var(--lu-space-md) var(--lu-space-sm); border-bottom: 1px solid var(--lu-separator); min-width: 0; }
 .px-reader__heading { flex: 1; min-width: 0; }
 .px-reader__title { margin: 0; font-size: var(--lu-type-subheadline); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -78,7 +78,7 @@
 .px-stage { position: relative; min-height: 0; min-width: 0; overflow: hidden; background: #000; touch-action: none; user-select: none; -webkit-user-select: none; cursor: zoom-in; display: grid; place-items: center; }
 .px-stage--zoomed { cursor: grab; }
 /* Until the image and stage sizes are known: the whole image, contained. Then Reader + zoom.ts place it (Fit, zoom, pan). */
-.px-stage__img { position: absolute; inset: 0; width: 100%; height: 100%; max-width: none; max-height: none; object-fit: contain; transform-origin: center; will-change: transform; -webkit-user-drag: none; }
+.px-stage__img { position: absolute; inset: 0; width: 100%; height: 100%; max-width: none; max-height: none; object-fit: contain; image-rendering: auto; -webkit-user-drag: none; }
 .px-stage__img--sized { inset: auto; left: 50%; top: 50%; object-fit: fill; }
 .px-zoom__level { min-width: 4.5em; font-variant-numeric: tabular-nums; }
 .px-stage__note { position: absolute; margin: 0; color: #fff; font-size: var(--lu-type-footnote); text-align: center; padding: var(--lu-space-lg); }
@@ -105,10 +105,13 @@
   .px-info { position: static; max-height: none; border-radius: 0; box-shadow: none; border-left: 1px solid var(--lu-separator); }
 }
 
-.px-reader__foot { display: flex; align-items: center; gap: var(--lu-space-md); padding: var(--lu-space-sm) var(--lu-space-md) calc(var(--lu-space-sm) + env(safe-area-inset-bottom, 0px)); border-top: 1px solid var(--lu-separator); min-width: 0; }
-.px-reader__msg { flex: 1; min-width: 0; margin: 0; font-size: var(--lu-type-footnote); color: var(--lu-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.px-zoom { display: flex; align-items: center; gap: var(--lu-space-xs); flex: none; }
-.px-reader__count { margin: 0; flex: none; font-size: var(--lu-type-footnote); font-weight: 600; font-variant-numeric: tabular-nums; }
+.px-zoom { display: flex; align-items: center; gap: 2px; flex: none; padding: 2px; border-radius: var(--lu-radius-field); background: var(--lu-field); }
+/* Phones zoom with a pinch and a double tap: the buttons would crowd the bar. */
+@media (max-width: 699px) { .px-zoom { display: none; } }
+/* Save results and "Updating…": a short note over the bottom of the picture. */
+.px-toast { position: absolute; left: 50%; bottom: calc(var(--lu-space-lg) + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); margin: 0; max-width: min(90%, 520px); padding: 8px 14px; border-radius: var(--lu-radius-pill); background: rgba(20, 20, 24, 0.82); color: #fff; font-size: var(--lu-type-footnote); text-align: center; pointer-events: none; opacity: 0; transition: opacity var(--lu-motion-base) ease; z-index: 2; }
+.px-toast--on { opacity: 1; }
+.px-reader__count { margin: 0 var(--lu-space-xs); color: var(--lu-text-secondary); flex: none; font-size: var(--lu-type-footnote); font-weight: 600; font-variant-numeric: tabular-nums; }
 
 /* Desktop page system: thumbnail grid on the card surface. */
 .pg.pixiv-desk .pixiv-surface { padding: var(--pg-pad, 24px); }

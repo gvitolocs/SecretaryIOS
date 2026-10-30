@@ -55,7 +55,9 @@ export function Reader(props: ReaderProps) {
   const isBookmarked = () => bookmarked() ?? work()?.bookmarked ?? props.preview?.bookmarked ?? false;
   const title = () => work()?.title ?? props.preview?.title ?? "";
   const author = () => work()?.author ?? props.preview?.author ?? "";
-  const src = () => current()?.url || props.preview?.thumbUrl || "";
+  // The original file, once loaded for this page (see the effect below).
+  const [hires, setHires] = createSignal<string | null>(null);
+  const src = () => hires() || current()?.url || props.preview?.thumbUrl || "";
   // The list's small thumbnail stands in while the page loads: it may be enlarged to fill the stage.
   const fit = () => fitScale(natural(), view(), current()?.url ? 1 : Number.POSITIVE_INFINITY);
   const scale = () => (mode() === "fit" ? fit() : mode() === "width" ? widthScale(natural(), view()) : free());
@@ -65,7 +67,33 @@ export function Reader(props: ReaderProps) {
   const failedAdult = createMemo(() => !!loadError() && isAdultOff(loadError()));
 
   // A new work starts at its first page.
-  createEffect(on(() => props.id, () => { setIndex(0); setBookmarked(null); setMessage(""); setNatural(null); resetZoom(); }, { defer: true }));
+  createEffect(on(() => props.id, () => { setIndex(0); setBookmarked(null); setMessage(""); setNatural(null); setHires(null); resetZoom(); }, { defer: true }));
+
+  // pixiv's regular file is 1200 px on its long side. When the page is shown with more device pixels than that
+  // (a Retina screen at Fit, or zoomed in), the original is loaded in the background and swapped in at the same
+  // on-screen size, so the picture stays sharp. One original per page view; a failed load keeps the regular file.
+  let hiresAsked = "";
+  createEffect(() => {
+    const n = natural();
+    const p = current();
+    if (!n || !view() || hires() || !p?.originalUrl || p.originalUrl === p.url) return;
+    const dpr = typeof window !== "undefined" && window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
+    if (scale() * dpr <= 1.1 || hiresAsked === p.originalUrl) return;
+    const url = p.originalUrl;
+    const id = props.id;
+    const page = index();
+    hiresAsked = url;
+    const im = new Image();
+    im.onload = () => {
+      if (props.id !== id || index() !== page || !im.naturalWidth || !im.naturalHeight) return;
+      const old = natural();
+      // Same size on screen: a free zoom is re-expressed against the larger file; Fit and Fit width recompute.
+      if (old && mode() === "free") setFree(clampZoom((free() * old.w) / im.naturalWidth, fitScale({ w: im.naturalWidth, h: im.naturalHeight }, view())));
+      setNatural({ w: im.naturalWidth, h: im.naturalHeight });
+      setHires(url);
+    };
+    im.src = url;
+  });
 
   // The next page (and the previous one) are fetched before they are asked for.
   createEffect(() => {
@@ -87,6 +115,7 @@ export function Reader(props: ReaderProps) {
     if (n === index()) return;
     setIndex(n);
     setNatural(null);
+    setHires(null);
     resetZoom();
   }
 
@@ -294,6 +323,15 @@ export function Reader(props: ReaderProps) {
           <h2 class="px-reader__title">{title()}</h2>
           <p class="px-reader__author">{t("pixiv.by", { author: author() })}</p>
         </div>
+        <p class="px-reader__count" aria-live="polite">{index() + 1} / {total()}</p>
+        <div class="px-zoom" role="group" aria-label={t("pixiv.zoomReset")}>
+          <Show when={tall()}>
+            <button type="button" class="px-iconbtn px-iconbtn--text" aria-pressed={mode() === "width"} onClick={toggleFitWidth}>{t("pixiv.fitWidth")}</button>
+          </Show>
+          <button type="button" class="px-iconbtn px-iconbtn--text" aria-label={t("pixiv.zoomOut")} disabled={atFit()} onClick={() => zoomTo(stepZoom(scale(), false, fit()))}>−</button>
+          <button type="button" class="px-iconbtn px-iconbtn--text px-zoom__level" aria-label={t("pixiv.zoomReset")} disabled={mode() === "fit"} onClick={resetZoom}>{zoomLabel(atFit(), scale(), t("pixiv.zoomFit"))}</button>
+          <button type="button" class="px-iconbtn px-iconbtn--text" aria-label={t("pixiv.zoomIn")} disabled={scale() >= MAX_ZOOM} onClick={() => zoomTo(stepZoom(scale(), true, fit()))}>+</button>
+        </div>
         <div class="px-reader__actions">
           <button type="button" class="px-iconbtn" classList={{ "px-iconbtn--on": isBookmarked() }} aria-pressed={isBookmarked()} aria-label={isBookmarked() ? t("pixiv.unbookmark") : t("pixiv.bookmark")} disabled={!work()} onClick={() => void toggleBookmark()}>
             <BookmarkIcon filled={isBookmarked()} />
@@ -335,12 +373,15 @@ export function Reader(props: ReaderProps) {
               alt={t("pixiv.pageOf", { page: index() + 1, total: total() })}
               draggable={false}
               onLoad={loaded}
+              data-scale={natural() && view() ? String(scale()) : undefined}
+              // Laid out at its on-screen size (not scaled with a transform), so the browser resamples the file at
+              // the right resolution instead of stretching a bitmap.
               style={
                 natural() && view()
                   ? {
-                      width: `${natural()!.w}px`,
-                      height: `${natural()!.h}px`,
-                      transform: `translate(-50%, -50%) translate(${tx()}px, ${ty()}px) scale(${scale()})`,
+                      width: `${natural()!.w * scale()}px`,
+                      height: `${natural()!.h * scale()}px`,
+                      transform: `translate(-50%, -50%) translate(${tx()}px, ${ty()}px)`,
                     }
                   : {}
               }
@@ -352,6 +393,9 @@ export function Reader(props: ReaderProps) {
           <Show when={loadError() && !failedAdult()}>
             <p class="px-stage__note" role="alert">{t("pixiv.failed")}</p>
           </Show>
+          <p class="px-toast" classList={{ "px-toast--on": !!(message() || cached.updating()) }} role="status" aria-live="polite">
+            {message() || (cached.updating() ? t("common.updating") : "")}
+          </p>
           <Show when={total() > 1 && index() > 0}>
             <button type="button" class="px-nav px-nav--prev" aria-label={t("pixiv.previous")} onClick={(e) => { e.stopPropagation(); go(index() - 1); }} onPointerDown={(e) => e.stopPropagation()}>
               <BackIcon />
@@ -403,18 +447,6 @@ export function Reader(props: ReaderProps) {
         </Show>
       </div>
 
-      <footer class="px-reader__foot">
-        <p class="px-reader__msg" role="status" aria-live="polite">{message() || (cached.updating() ? t("common.updating") : "")}</p>
-        <div class="px-zoom" role="group" aria-label={t("pixiv.zoomReset")}>
-          <Show when={tall()}>
-            <button type="button" class="px-iconbtn px-iconbtn--text" aria-pressed={mode() === "width"} onClick={toggleFitWidth}>{t("pixiv.fitWidth")}</button>
-          </Show>
-          <button type="button" class="px-iconbtn px-iconbtn--text" aria-label={t("pixiv.zoomOut")} disabled={atFit()} onClick={() => zoomTo(stepZoom(scale(), false, fit()))}>−</button>
-          <button type="button" class="px-iconbtn px-iconbtn--text px-zoom__level" aria-label={t("pixiv.zoomReset")} disabled={mode() === "fit"} onClick={resetZoom}>{zoomLabel(atFit(), scale(), t("pixiv.zoomFit"))}</button>
-          <button type="button" class="px-iconbtn px-iconbtn--text" aria-label={t("pixiv.zoomIn")} disabled={scale() >= MAX_ZOOM} onClick={() => zoomTo(stepZoom(scale(), true, fit()))}>+</button>
-        </div>
-        <p class="px-reader__count" aria-live="polite">{index() + 1} / {total()}</p>
-      </footer>
     </div>
   );
 }
