@@ -49,6 +49,7 @@ import {
   SparkIcon,
   SpeakerIcon,
 } from "../components/Icons";
+import { InAppLink } from "../components/InAppLink";
 import {
   Page,
   PageHeader,
@@ -65,6 +66,7 @@ import {
   useWide,
 } from "../components/page";
 import { locale, type MessageKey, t } from "../i18n";
+import { eventRoute } from "../lib/calendar";
 import { nav } from "../lib/navigate";
 import "../styles/links.css";
 
@@ -477,7 +479,9 @@ function Upcoming(props: { events: CalendarEvent[] | null }) {
                   <li class={`links-agenda-row links-agenda-row--${e.source}`}>
                     <span class="links-agenda-day">{eventDay(e)}</span>
                     <span class="links-agenda-time">{eventTime(e)}</span>
-                    <span class="links-agenda-title">{e.title}</span>
+                    <InAppLink href={eventRoute(e.id, e.startMs)} class="links-agenda-title">
+                      {e.title}
+                    </InAppLink>
                     <span class="links-agenda-cal">
                       {e.calendar ?? e.source}
                     </span>
@@ -1183,6 +1187,7 @@ export default function LinksView() {
                           {(e) => (
                             <ListRow
                               title={e.title}
+                              href={eventRoute(e.id, e.startMs)}
                               sub={e.calendar ?? e.source}
                               meta={`${eventDay(e)} · ${eventTime(e)}`}
                             />

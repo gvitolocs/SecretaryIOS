@@ -96,6 +96,8 @@ fn event(i: usize, start_ms: i64, end_ms: i64, all_day: bool) -> Event {
         location: None,
         description: None,
         url: None,
+        conference_url: None,
+        added_by: None,
         recurring: false,
         editable: false,
     }

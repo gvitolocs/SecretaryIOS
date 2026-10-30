@@ -184,6 +184,7 @@ Every other page (release b). Screenshots are named after the route in `page-sys
 | Page (route) | Purpose | Header (context · nav · accent) | Grid | Shot |
 | --- | --- | --- | --- | --- |
 | Lucina (`/`) | Talk to Lucina | none: the conversation and her stage are the page | exception, full-bleed | — |
+| Calendar (`/calendar`, `?event=<id>&at=<ms>`) | Lucina's own calendar with the iPhone, Google and subscribed calendars (2026-10-30) | the visible range as the title · Month · Week (3 days on a phone) · Day · List · **New event** (on a phone a round + at the end of the toolbar row); Today, ‹ ›, sync and the calendar chips in a row under the header | one framed EventCalendar (vkurko/calendar, MIT) themed through its `--ec-*` variables from these tokens; the event, the editor and the delete confirmation are Sheets | — |
 | All chats (`/chats/:key?`) | Every conversation across devices and bots | count · — · — | single, split with a conversation | ![](page-system/chats.jpg) |
 | Shopping (`/shopping`) | The shopping list | list · N to buy, list switcher and ⋯ as quiet buttons · — (⊕ stays in the add field) | rail: to buy, catalog · recently used, offers | ![](page-system/shopping.jpg) |
 | Offers near you (`/shopping/map`) | Stores and offers on a map | back link · — · — | split: stores list · map | ![](page-system/shopping-map.jpg) |

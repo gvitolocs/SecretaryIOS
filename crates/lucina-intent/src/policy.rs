@@ -73,6 +73,7 @@ impl Policy {
 pub const TOOL_INTENTS: &[&str] = &[
     "list_reminders",
     "schedule_reminder",
+    "calendar_event",
     "study_focus_reminders",
     "generate_image",
     "graph_task",

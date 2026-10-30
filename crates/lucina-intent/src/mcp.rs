@@ -111,6 +111,7 @@ pub fn allow_kind_of(action: &str) -> Option<&'static str> {
 pub fn consult_hint(action: &str) -> &'static str {
     match action {
         "schedule_reminder" => "Use reminder_create, or ask_lucina with allow=[\"reminders\"].",
+        "calendar_event" => "Use calendar_create (it files a proposal the owner confirms).",
         "notes" => "Use note_save / note_append, or ask_lucina with allow=[\"notes\"].",
         "tasks" => "Use task_add / task_complete, or ask_lucina with allow=[\"tasks\"].",
         a if a.starts_with("grocery.") => "Use shopping_add / shopping_mark_bought, or ask_lucina with allow=[\"shopping\"].",

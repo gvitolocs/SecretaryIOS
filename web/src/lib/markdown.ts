@@ -10,6 +10,7 @@
 // Images become links to the image. Notebook answers cite passages as [source:<chunk id>] and
 // insights as [insight:<id>]; those become `cite` nodes (rendered as numbered chips).
 
+import { calendarLinkRoute } from "./calendar";
 import { linkify, safeHref } from "./linkify";
 
 export type Inline =
@@ -40,6 +41,12 @@ export type Block =
 
 const MAX_DEPTH = 8;
 
+/** A link node; a link to an event (the app's /calendar, a Google Calendar event) opens it in the Calendar tab. */
+function linkNode(href: string, children: Inline[]): Inline {
+  const route = calendarLinkRoute(href);
+  return route ? { t: "link", href: route, route: true, children } : { t: "link", href, children };
+}
+
 /** `[note:<slug>]`, a slug being `[a-z0-9-]{1,64}`. */
 const NOTE_CITE = /^\[note:([a-z0-9-]{1,64})\]/;
 
@@ -62,7 +69,7 @@ function textNodes(text: string): Inline[] {
   // Bare URLs become links (linkify only yields http(s)).
   const out: Inline[] = [];
   for (const seg of linkify(text)) {
-    if (seg.kind === "link") out.push({ t: "link", href: seg.href, children: [{ t: "text", text: seg.text }] });
+    if (seg.kind === "link") out.push(linkNode(seg.href, [{ t: "text", text: seg.text }]));
     else pushText(out, seg.text);
   }
   return out;
@@ -146,7 +153,7 @@ export function parseInline(src: string, depth = 0): Inline[] {
         const href = safeLink(m[1]!);
         if (href) {
           flush();
-          out.push({ t: "link", href, children: [{ t: "text", text: m[1]!.replace(/^mailto:/i, "") }] });
+          out.push(linkNode(href, [{ t: "text", text: m[1]!.replace(/^mailto:/i, "") }]));
           i += m[0].length;
           continue;
         }
@@ -188,7 +195,7 @@ export function parseInline(src: string, depth = 0): Inline[] {
         const href = safeLink(target[0]);
         flush();
         // An unsafe target keeps its text, without a link.
-        if (href) out.push({ t: "link", href, children: children.length ? children : [{ t: "text", text: target[0] }] });
+        if (href) out.push(linkNode(href, children.length ? children : [{ t: "text", text: target[0] }]));
         else out.push(...children);
         i = target[1];
         continue;

@@ -4,6 +4,7 @@ import { Portal } from "solid-js/web";
 import type { AppNotification, Category } from "../api/notifications";
 import { locale, t } from "../i18n";
 import { agentNotificationRoute } from "../lib/agentsRoute";
+import { calendarRoute } from "../lib/calendar";
 import { decisionNotificationRoute } from "../lib/decisionsRoute";
 import { decisionSummary } from "../lib/decisionText";
 import { prefetchPushKey } from "../lib/push";
@@ -211,7 +212,7 @@ export function NotificationPanel(props: { open: boolean; onClose: () => void; o
   function open(n: AppNotification) {
     void markRead([n.id]);
     props.onClose();
-    navigate(agentNotificationRoute(n) ?? decisionNotificationRoute(n) ?? safeRoute(n.route));
+    navigate(agentNotificationRoute(n) ?? decisionNotificationRoute(n) ?? calendarRoute(n) ?? safeRoute(n.route));
   }
 
   return (

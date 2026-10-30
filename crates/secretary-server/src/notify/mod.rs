@@ -132,6 +132,26 @@ fn start_ms(v: &Value) -> Option<i64> {
 }
 
 /// Timed (not all-day) events from a device snapshot.
+/// Where Lucina's own calendar keeps its upcoming events in the notify state
+/// (beside the devices' snapshots).
+pub const OWN_CALENDAR_KEY: &str = "lucina-calendar";
+
+/// The Calendar tab on an event: `/calendar?event=<merged id>&at=<ms>`.
+/// Lucina's own events carry their merged id (`lucina:…`); a phone's carry
+/// the EventKit id, which the calendar shows as `iphone:<id>@<start>`.
+pub fn calendar_route(e: &CalendarEvent) -> String {
+    let id = if e.id.starts_with("lucina:") {
+        e.id.clone()
+    } else {
+        format!("iphone:{}@{}", e.id, e.start)
+    };
+    let mut u = reqwest::Url::parse("http://app/calendar").expect("static url");
+    u.query_pairs_mut()
+        .append_pair("event", &id)
+        .append_pair("at", &e.start.to_string());
+    format!("{}?{}", u.path(), u.query().unwrap_or_default())
+}
+
 pub fn calendar_events(state: &DeviceState, now: i64) -> Vec<CalendarEvent> {
     state
         .events
@@ -450,6 +470,17 @@ impl Notifier {
         })
     }
 
+    /// Lucina's own calendar's upcoming timed events, kept like a phone's.
+    pub fn own_events(&self, events: Vec<CalendarEvent>) -> io::Result<()> {
+        self.state.update(|s| {
+            if events.is_empty() {
+                s.calendar.remove(OWN_CALENDAR_KEY);
+            } else {
+                s.calendar.insert(OWN_CALENDAR_KEY.to_owned(), events);
+            }
+        })
+    }
+
     /// Periodic work: calendar notifications, the digest after quiet hours,
     /// the "Lucina unreachable" notice.
     pub async fn tick(self: &Arc<Self>, now: i64) {
@@ -478,6 +509,7 @@ impl Notifier {
                 };
                 let mut n = NewNotification::new(Category::Calendar, body);
                 n.dedup_key = Some(format!("cal:{}:{}", e.id, e.start));
+                n.route = Some(calendar_route(&e));
                 n.data = Some(json!({"eventId": e.id, "start": e.start}));
                 if let Err(err) = self.publish(n).await {
                     tracing::warn!(error = %err, "could not store a calendar notification");
@@ -745,6 +777,35 @@ mod tests {
             items[0].dedup_key.as_deref(),
             Some(format!("cal:E1:{in5}").as_str())
         );
+        // A tap opens the Calendar tab on the phone's event.
+        assert_eq!(
+            items[0].route,
+            format!("/calendar?event=iphone%3AE1%40{in5}&at={in5}")
+        );
+    }
+
+    #[tokio::test]
+    async fn lucina_calendar_events_notify_and_open_the_calendar() {
+        let dir = tempfile::tempdir().unwrap();
+        let n = notifier(dir.path());
+        let now = model::now_ms();
+        let in5 = now + 5 * 60_000;
+        n.own_events(vec![CalendarEvent {
+            id: "lucina:ev_abc".into(),
+            title: "Call Anna".into(),
+            start: in5,
+        }])
+        .unwrap();
+        n.tick(now).await;
+        let items = n.inbox.page(None, 50, false).items;
+        assert_eq!(items.len(), 1);
+        assert!(items[0].body.starts_with("Call Anna · "));
+        assert_eq!(
+            items[0].route,
+            format!("/calendar?event=lucina%3Aev_abc&at={in5}")
+        );
+        n.own_events(vec![]).unwrap();
+        assert!(n.state.read(|s| !s.calendar.contains_key(OWN_CALENDAR_KEY)));
     }
 
     #[tokio::test]

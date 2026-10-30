@@ -7,6 +7,7 @@
 /** A view of the desktop rail. */
 export type ShellView =
   | "lucina"
+  | "calendar"
   | "code"
   | "computer"
   | "gallery"

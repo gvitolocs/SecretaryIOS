@@ -58,6 +58,28 @@ const MONTHS: &[(&str, u32)] = &[
     ("juni", 6),
     ("juli", 7),
     ("oktober", 10),
+    // Short forms (always after a day number or before one, so "set", "may" stay words).
+    ("gen", 1),
+    ("jan", 1),
+    ("feb", 2),
+    ("mar", 3),
+    ("apr", 4),
+    ("mag", 5),
+    ("giu", 6),
+    ("jun", 6),
+    ("lug", 7),
+    ("jul", 7),
+    ("ago", 8),
+    ("aug", 8),
+    ("set", 9),
+    ("sep", 9),
+    ("sept", 9),
+    ("ott", 10),
+    ("oct", 10),
+    ("okt", 10),
+    ("nov", 11),
+    ("dic", 12),
+    ("dec", 12),
 ];
 
 fn local_date(now: DateTime<Utc>, tz: Tz) -> NaiveDate {
@@ -125,10 +147,26 @@ fn weekday_offset(text: &str, now: DateTime<Utc>, tz: Tz) -> Option<(i64, String
 }
 
 fn day_of(text: &str, now: DateTime<Utc>, tz: Tz) -> Option<(String, Remover)> {
+    day_of_ex(text, now, tz).map(|(ymd, r, _)| (ymd, r))
+}
+
+fn month_number(name: &str) -> u32 {
+    let n = name.to_lowercase();
+    MONTHS
+        .iter()
+        .find(|(m, _)| *m == n)
+        .map(|(_, m)| *m)
+        .unwrap_or(1)
+}
+
+/// [`day_of`], and whether the date is pinned: a written year, or a day word
+/// or weekday (already the next one). A "6 november" without a year is not.
+fn day_of_ex(text: &str, now: DateTime<Utc>, tz: Tz) -> Option<(String, Remover, bool)> {
     if let Some(c) = re!(r"\b(\d{4})-(\d{2})-(\d{2})\b").exec(text) {
         return Some((
             group(&c, 0).to_owned(),
             Remover::Pattern(r"\b\d{4}-\d{2}-\d{2}\b", ""),
+            true,
         ));
     }
     let year = now.with_timezone(&tz).year();
@@ -140,28 +178,67 @@ fn day_of(text: &str, now: DateTime<Utc>, tz: Tz) -> Option<(String, Remover)> {
             y => y.parse().unwrap_or(year),
         };
         let ymd = format!("{y}-{:0>2}-{:0>2}", group(&c, 2), group(&c, 1));
-        return Some((ymd, Remover::Literal(group(&c, 0).to_owned())));
+        return Some((
+            ymd,
+            Remover::Literal(group(&c, 0).to_owned()),
+            !group(&c, 3).is_empty(),
+        ));
     }
-    let names = MONTHS.iter().map(|(n, _)| *n).collect::<Vec<_>>().join("|");
+    // Longest names first, so "sept" wins over "sep".
+    let mut sorted: Vec<&str> = MONTHS.iter().map(|(n, _)| *n).collect();
+    sorted.sort_by_key(|n| std::cmp::Reverse(n.len()));
+    let names = sorted.join("|");
+    // "6 november", "6th of November 2026", "6 nov.", "il 6 novembre".
     let named = Re::new(
-        &format!(r"(?<![\p{{L}}\p{{N}}])(\d{{1,2}})\.?\s+({names})(?![\p{{L}}])"),
+        &format!(
+            r"(?<![\p{{L}}\p{{N}}])(\d{{1,2}})(?:st|nd|rd|th)?\.?\s+(?:of\s+)?({names})(?![\p{{L}}])\.?(?:,?\s+(\d{{4}})(?!\d))?"
+        ),
         "iu",
     );
     if let Some(c) = named.exec(text) {
-        let m = MONTHS
-            .iter()
-            .find(|(n, _)| *n == group(&c, 2).to_lowercase())
-            .map(|(_, m)| *m)
-            .unwrap_or(1);
-        let ymd = format!("{year}-{m:02}-{:0>2}", group(&c, 1));
-        return Some((ymd, Remover::Literal(group(&c, 0).to_owned())));
+        let m = month_number(group(&c, 2));
+        let y = group(&c, 3).parse().unwrap_or(year);
+        let ymd = format!("{y}-{m:02}-{:0>2}", group(&c, 1));
+        return Some((
+            ymd,
+            Remover::Literal(group(&c, 0).to_owned()),
+            !group(&c, 3).is_empty(),
+        ));
+    }
+    // "November 6", "Nov 6th, 2026" (full names, and short ones that are not English words).
+    let firsts = sorted
+        .iter()
+        .filter(|n| !matches!(**n, "may" | "mar" | "set" | "ago" | "gen"))
+        .copied()
+        .collect::<Vec<_>>()
+        .join("|");
+    let month_first = Re::new(
+        &format!(
+            r"(?<![\p{{L}}])({firsts})\.?\s+(\d{{1,2}})(?:st|nd|rd|th)?(?![\p{{L}}\p{{N}}:.])(?:,?\s+(\d{{4}})(?!\d))?"
+        ),
+        "iu",
+    );
+    if let Some(c) = month_first.exec(text) {
+        let m = month_number(group(&c, 1));
+        let y = group(&c, 3).parse().unwrap_or(year);
+        let ymd = format!("{y}-{m:02}-{:0>2}", group(&c, 2));
+        return Some((
+            ymd,
+            Remover::Literal(group(&c, 0).to_owned()),
+            !group(&c, 3).is_empty(),
+        ));
     }
     for (src, offset) in DAY_WORDS {
         if w(src).test(text) {
-            return Some((ymd_plus(now, tz, offset), Remover::Dynamic(words_src(src))));
+            return Some((
+                ymd_plus(now, tz, offset),
+                Remover::Dynamic(words_src(src)),
+                true,
+            ));
         }
     }
-    weekday_offset(text, now, tz).map(|(o, src)| (ymd_plus(now, tz, o), Remover::Dynamic(src)))
+    weekday_offset(text, now, tz)
+        .map(|(o, src)| (ymd_plus(now, tz, o), Remover::Dynamic(src), true))
 }
 
 /// The day a text names (`YYYY-MM-DD`) and the text without it.
@@ -175,7 +252,10 @@ fn time_of(text: &str) -> Option<(u32, u32, Remover)> {
             r"(?<![\p{L}])(?:alle|all'|verso le|dalle)\s*(\d{1,2})(?:[:.](\d{2}))?",
             "iu",
         ),
-        (r"(?<![\p{L}])at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", "iu"),
+        (
+            r"(?<![\p{L}])at\s+(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm)?",
+            "iu",
+        ),
         (r"(?<![\p{L}])kl\.?\s*(\d{1,2})(?:[:.](\d{2}))?", "iu"),
         (r"(?<![\d])(\d{1,2})[:.](\d{2})(?![\d])", "u"),
         (r"(?<![\d])(\d{1,2})\s*(am|pm)(?![\p{L}])", "iu"),
@@ -367,14 +447,107 @@ pub fn parse_create(
     if t.is_empty() || lucina_store::timeutil::utf16_len(t) > 300 || !is_create(t) {
         return None;
     }
+    build_create(t, now, tz)
+}
+
+/// Appointments, meetings, sessions, lessons, exams, visits, meals with
+/// someone: an event, not a reminder.
+const EVENT_WORDS: &str = r"session[ei]?|sessione|meeting|meetings|appointment|appuntamento|interview|exam|lecture|seminar|seminario|workshop|presentation|presentazione|conference|conferenza|lezione|esame|colloquio|visita|riunione|incontro|mentor|mentoring|tutoring|dentist[ae]?|doctor|medico|dottore|cena\s+con|pranzo\s+con|aperitivo\s+con|dinner\s+with|lunch\s+with|coffee\s+with|drinks\s+with|party|festa|concert|concerto|flight|volo|møde|aftale|eksamen|forelæsning|tandlæge|læge|middag\s+med|frokost\s+med";
+/// A report about an event that happened ("the meeting went well").
+const PAST_WORDS: &str = r"went|was|were|had|did|happened|ended|cancelled|canceled|postponed|è\s+andat[oa]|è\s+stat[oa]|ho\s+avuto|abbiamo\s+avuto|era|annullat[oa]|rimandat[oa]|var|blev|gik";
+/// The owner asks for a reminder or a timer, not an event.
+const REMINDER_WORDS: &str = r"ricordami|ricordarmi|ricordati|remind|reminder|reminders|promemoria|avvisami|timer|sveglia|alarm|husk\s+mig|påmind(?:else)?";
+/// A question about events ("when is my meeting on 6 november?") is not a create.
+const EVENT_QUESTION: &str = r"^(?:when|what|which|did|do|does|is|are|have|had|was|were|quando|cosa|che|quale|quali|c['’]è|ci\s+sono|ho\s+avuto|hvad|hvornår|har\s+jeg)\b";
+
+fn event_now() -> DateTime<Utc> {
+    Utc::now()
+}
+
+fn is_event_question(t: &str) -> bool {
+    t.trim_end().ends_with('?') || re!(EVENT_QUESTION, "iu").test(t.trim())
+}
+
+/// "Mentor session 6 november at 12:30", "colloquio con Anna giovedì alle 15":
+/// an event word and a day, no reminder word, not a question.
+pub fn looks_like_event(text: &str) -> bool {
+    let t = text.trim();
+    !t.is_empty()
+        && lucina_store::timeutil::utf16_len(t) <= 300
+        && !w(REMINDER_WORDS).test(t)
+        && !w(PAST_WORDS).test(t)
+        && !is_event_question(t)
+        && w(EVENT_WORDS).test(t)
+        && day_of(&strip_time(t), event_now(), Tz::UTC).is_some()
+}
+
+/// A day with a month or a dd/mm date and a time, without an event word or a
+/// reminder word ("6 november at 12:30", the answer to her question about a
+/// meeting): an event whose title the conversation gives.
+pub fn looks_like_dated_time(text: &str) -> bool {
+    let t = text.trim();
+    if t.is_empty()
+        || lucina_store::timeutil::utf16_len(t) > 200
+        || w(REMINDER_WORDS).test(t)
+        || is_event_question(t)
+        || re!(r"^(?:alle|at)\s+\d", "i").test(t)
+        || time_of(t).is_none()
+    {
+        return false;
+    }
+    let rest = strip_time(t);
+    matches!(
+        day_of_ex(&rest, event_now(), Tz::UTC),
+        Some((_, Remover::Literal(_), _))
+    )
+}
+
+/// The text without its time ("12.30" is a time here, not the 12th of month 30).
+fn strip_time(t: &str) -> String {
+    match time_of(t) {
+        Some((_, _, r)) => r.apply(t),
+        None => t.to_owned(),
+    }
+}
+
+/// [`looks_like_event`] as an event: `Ok(create)`, `Err` when the title or
+/// the day is missing, `None` when it is not an event or lies in the past
+/// (the owner telling about one, not adding it).
+pub fn parse_event(
+    text: &str,
+    now: DateTime<Utc>,
+    tz: Tz,
+) -> Option<Result<Create, (&'static str, &'static str)>> {
+    let t = text.trim();
+    if !looks_like_event(t) {
+        return None;
+    }
+    match build_create(t, now, tz) {
+        Some(Err(("in_past", _))) => None,
+        r => r,
+    }
+}
+
+fn build_create(
+    t: &str,
+    now: DateTime<Utc>,
+    tz: Tz,
+) -> Option<Result<Create, (&'static str, &'static str)>> {
     let lang = guess_lang(t);
-    let day = day_of(t, now, tz);
+    // The time first: "12.30" must not be read as a day and a month.
     let time = time_of(t);
+    let dayless = match &time {
+        Some((_, _, r)) => r.apply(t),
+        None => t.to_owned(),
+    };
+    let day_ex = day_of_ex(&dayless, now, tz);
+    let day = day_ex.as_ref().map(|(ymd, r, _)| (ymd.clone(), r.clone()));
+    let pinned = day_ex.as_ref().is_some_and(|d| d.2);
     let mut removers: Vec<Remover> = Vec::new();
-    if let Some((_, r)) = &day {
+    if let Some((_, _, r)) = &time {
         removers.push(r.clone());
     }
-    if let Some((_, _, r)) = &time {
+    if let Some((_, r)) = &day {
         removers.push(r.clone());
     }
     removers.push(Remover::Dynamic(words_src("oggi|today|i dag")));
@@ -391,8 +564,15 @@ pub fn parse_create(
         .unwrap_or_else(|| ymd_plus(now, tz, 0));
     // An impossible date ("kl. 9.30" read as day 9 of month 30): Node throws
     // `RangeError: Invalid time value` here (a 500); ask instead.
-    if NaiveDate::parse_from_str(&ymd, "%Y-%m-%d").is_err() {
+    let Ok(date) = NaiveDate::parse_from_str(&ymd, "%Y-%m-%d") else {
         return Some(Err(("missing_when", lang)));
+    };
+    // "6 November" without a year: the next one (a date of the last two months
+    // stays: the owner is talking about it, or it is a typo to ask about).
+    if day.is_some() && !pinned && date < local_date(now, tz) - Duration::days(60) {
+        if let Some(next) = date.with_year(date.year() + 1) {
+            ymd = next.format("%Y-%m-%d").to_string();
+        }
     }
     let Some((hh, mm, _)) = time else {
         return Some(Ok(Create {
@@ -427,6 +607,86 @@ pub fn parse_create(
         all_day: false,
         lang,
     }))
+}
+
+/// The planner's `calendar_event` (`title`, `start` as local `YYYY-MM-DDTHH:MM` or `YYYY-MM-DD`,
+/// `end?` the same way, `location?`) as an event; `Err` names what is missing.
+pub fn create_from_plan(
+    plan: &Value,
+    now: DateTime<Utc>,
+    tz: Tz,
+    lang: &'static str,
+) -> Result<Create, &'static str> {
+    let s = |k: &str| plan[k].as_str().map(str::trim).unwrap_or("");
+    let title: String = s("title").chars().take(200).collect();
+    if title.is_empty() {
+        return Err("missing_title");
+    }
+    let local = |v: &str| -> Option<String> {
+        if let Ok(t) = DateTime::parse_from_rfc3339(v) {
+            let l = t.with_timezone(&tz);
+            return local_iso(&l.format("%Y-%m-%d").to_string(), l.hour(), l.minute(), tz);
+        }
+        let t = chrono::NaiveDateTime::parse_from_str(v, "%Y-%m-%dT%H:%M")
+            .or_else(|_| chrono::NaiveDateTime::parse_from_str(v, "%Y-%m-%dT%H:%M:%S"))
+            .or_else(|_| chrono::NaiveDateTime::parse_from_str(v, "%Y-%m-%d %H:%M"))
+            .ok()?;
+        local_iso(&t.date().format("%Y-%m-%d").to_string(), t.hour(), t.minute(), tz)
+    };
+    let mut event = json!({"title": title});
+    let start = s("start");
+    let all_day = NaiveDate::parse_from_str(start, "%Y-%m-%d").is_ok();
+    if all_day {
+        if start < ymd_plus(now, tz, 0).as_str() {
+            return Err("in_past");
+        }
+        event["start"] = json!(start);
+    } else {
+        let start = local(start).ok_or("missing_when")?;
+        let at = DateTime::parse_from_rfc3339(&start)
+            .map_err(|_| "missing_when")?
+            .with_timezone(&Utc);
+        if at <= now {
+            return Err("in_past");
+        }
+        let end = local(s("end"))
+            .filter(|e| DateTime::parse_from_rfc3339(e).is_ok_and(|e| e.with_timezone(&Utc) > at))
+            .or_else(|| {
+                let e = (at + Duration::hours(1)).with_timezone(&tz);
+                local_iso(&e.format("%Y-%m-%d").to_string(), e.hour(), e.minute(), tz)
+            })
+            .ok_or("missing_when")?;
+        event["start"] = json!(start);
+        event["end"] = json!(end);
+    }
+    let location: String = s("location").chars().take(300).collect();
+    if !location.is_empty() {
+        event["location"] = json!(location);
+    }
+    Ok(Create {
+        event,
+        all_day,
+        lang,
+    })
+}
+
+/// One specific question when an event cannot be completed: its name, or its day and time.
+pub fn event_question(lang: &str, title: &str, missing: &str) -> String {
+    let title = title.trim();
+    match (missing, lang, title.is_empty()) {
+        ("missing_title", "it", _) => "Come si chiama l'evento? Dimmi il nome e lo aggiungo al tuo calendario.".into(),
+        ("missing_title", "da", _) => "Hvad hedder begivenheden? Sig navnet, så sætter jeg den i din kalender.".into(),
+        ("missing_title", _, _) => "What should I call the event? Tell me its name and I'll add it to your calendar.".into(),
+        ("in_past", "it", _) => format!("«{title}» risulta nel passato: per quale giorno e ora lo aggiungo al calendario?"),
+        ("in_past", "da", _) => format!("\"{title}\" ligger i fortiden: hvilken dag og hvilket tidspunkt skal jeg sætte den til?"),
+        ("in_past", _, _) => format!("\"{title}\" is in the past: which day and time should I add it to your calendar for?"),
+        (_, "it", false) => format!("Quando è «{title}»? Dimmi giorno e ora e lo aggiungo al tuo calendario."),
+        (_, "da", false) => format!("Hvornår er \"{title}\"? Sig dag og tidspunkt, så sætter jeg den i din kalender."),
+        (_, _, false) => format!("When is \"{title}\"? Tell me the day and time and I'll add it to your calendar."),
+        (_, "it", true) => "Quale evento e per quando? Dimmi nome, giorno e ora e lo aggiungo al tuo calendario.".into(),
+        (_, "da", true) => "Hvilken begivenhed, og hvornår? Sig navn, dag og tidspunkt, så sætter jeg den i din kalender.".into(),
+        _ => "Which event, and when? Tell me its name, day and time and I'll add it to your calendar.".into(),
+    }
 }
 
 fn clean_title(text: &str, removers: &[Remover]) -> String {
@@ -677,12 +937,12 @@ pub fn confirm_question(c: &Create, tz: Tz) -> String {
     let when = when_text(c, tz);
     match c.lang {
         "it" => {
-            format!("Confermi? Aggiungo «{title}» {when} su Google Calendar. Rispondi sì o no.")
+            format!("Confermi? Aggiungo «{title}» {when} al tuo calendario. Rispondi sì o no.")
         }
         "da" => {
-            format!("Skal jeg tilføje \"{title}\" {when} i Google Kalender? Svar ja eller nej.")
+            format!("Skal jeg tilføje \"{title}\" {when} i din kalender? Svar ja eller nej.")
         }
-        _ => format!("Shall I add \"{title}\" {when} to Google Calendar? Reply yes or no."),
+        _ => format!("Shall I add \"{title}\" {when} to your calendar? Reply yes or no."),
     }
 }
 
@@ -734,14 +994,37 @@ pub fn created_text(c: &Create, tz: Tz) -> String {
 }
 
 /// The owner's own request, created at once: "Added to your calendar: <title>, <day date time>",
-/// plus the event's Google Calendar link when there is one.
+/// plus a link to the event: the Calendar tab for his own calendar, Google Calendar for a Google
+/// event.
 pub fn added_text(c: &Create, tz: Tz, link: Option<&str>) -> String {
     let title = c.event["title"].as_str().unwrap_or("");
     let when = when_text(c, tz);
+    let google = link.is_some_and(|l| l.starts_with("https://calendar.google.com/"));
     let (head, open) = match c.lang {
-        "it" => (format!("Aggiunto al calendario: «{title}», {when}."), "Apri in Google Calendar"),
-        "da" => (format!("Tilføjet til din kalender: \"{title}\", {when}."), "Åbn i Google Kalender"),
-        _ => (format!("Added to your calendar: \"{title}\", {when}."), "Open in Google Calendar"),
+        "it" => (
+            format!("Aggiunto al calendario: «{title}», {when}."),
+            if google {
+                "Apri in Google Calendar"
+            } else {
+                "Apri nel calendario"
+            },
+        ),
+        "da" => (
+            format!("Tilføjet til din kalender: \"{title}\", {when}."),
+            if google {
+                "Åbn i Google Kalender"
+            } else {
+                "Åbn i kalenderen"
+            },
+        ),
+        _ => (
+            format!("Added to your calendar: \"{title}\", {when}."),
+            if google {
+                "Open in Google Calendar"
+            } else {
+                "Open in calendar"
+            },
+        ),
     };
     match link.filter(|l| l.starts_with("https://")) {
         Some(l) => format!("{head} [{open}]({l})"),
@@ -904,7 +1187,7 @@ mod tests {
             c.event,
             json!({"title": "Dentista", "start": "2026-10-23T09:30:00+02:00", "end": "2026-10-23T10:30:00+02:00"})
         );
-        assert_eq!(confirm_question(&c, TZ), "Confermi? Aggiungo «Dentista» venerdì 23 ottobre alle 09:30 su Google Calendar. Rispondi sì o no.");
+        assert_eq!(confirm_question(&c, TZ), "Confermi? Aggiungo «Dentista» venerdì 23 ottobre alle 09:30 al tuo calendario. Rispondi sì o no.");
         let c = parse_create("add dentist to my calendar on 30/10", now(), TZ)
             .unwrap()
             .unwrap();
@@ -962,12 +1245,159 @@ mod tests {
         assert_eq!(classify_yes_no("no"), "no");
         assert_eq!(classify_yes_no("domani invece"), "other");
         assert_eq!(day_label("2026-10-22", "da"), "torsdag 22. oktober");
-        // Node throws on this one (its own help example); Rust asks again.
+        // Node threw on this one (its own help example: "9.30" read as a date); the time is
+        // read first now.
+        let c = parse_create("sæt tandlæge i kalenderen i morgen kl. 9.30", now(), TZ)
+            .unwrap()
+            .unwrap();
         assert_eq!(
-            parse_create("sæt tandlæge i kalenderen i morgen kl. 9.30", now(), TZ)
-                .unwrap()
-                .unwrap_err(),
-            ("missing_when", "da")
+            (c.event["title"].as_str(), c.event["start"].as_str()),
+            (Some("Tandlæge"), Some("2026-10-23T09:30:00+02:00"))
         );
+    }
+
+    #[test]
+    fn planner_events() {
+        let cph = chrono_tz::Europe::Copenhagen;
+        let at = Utc.with_ymd_and_hms(2026, 10, 30, 12, 21, 0).unwrap();
+        let c = create_from_plan(
+            &json!({"title": "Mentor session", "start": "2026-11-06T12:30", "location": "Home"}),
+            at,
+            cph,
+            "en",
+        )
+        .unwrap();
+        assert_eq!(
+            c.event,
+            json!({"title": "Mentor session", "start": "2026-11-06T12:30:00+01:00", "end": "2026-11-06T13:30:00+01:00", "location": "Home"})
+        );
+        let c = create_from_plan(
+            &json!({"title": "Exam", "start": "2026-11-06T09:00:00+01:00", "end": "2026-11-06T12:00"}),
+            at,
+            cph,
+            "en",
+        )
+        .unwrap();
+        assert_eq!(c.event["end"], "2026-11-06T12:00:00+01:00");
+        let c = create_from_plan(&json!({"title": "Trip", "start": "2026-11-20"}), at, cph, "it").unwrap();
+        assert!(c.all_day);
+        assert_eq!(c.event, json!({"title": "Trip", "start": "2026-11-20"}));
+        for (plan, missing) in [
+            (json!({"start": "2026-11-06T12:30"}), "missing_title"),
+            (json!({"title": "Mentor session"}), "missing_when"),
+            (json!({"title": "Mentor session", "start": "6 nov"}), "missing_when"),
+            (json!({"title": "Mentor session", "start": "2026-10-01T12:30"}), "in_past"),
+        ] {
+            assert_eq!(create_from_plan(&plan, at, cph, "en").unwrap_err(), missing, "{plan}");
+        }
+        assert_eq!(
+            event_question("en", "Mentor session", "missing_when"),
+            "When is \"Mentor session\"? Tell me the day and time and I'll add it to your calendar."
+        );
+        assert_eq!(
+            event_question("it", "", "missing_title"),
+            "Come si chiama l'evento? Dimmi il nome e lo aggiungo al tuo calendario."
+        );
+    }
+
+    #[test]
+    fn events_without_add_to_calendar() {
+        let cph = chrono_tz::Europe::Copenhagen;
+        // 2026-10-30 12:21 UTC: the message Lucina took for a reminder.
+        let at = Utc.with_ymd_and_hms(2026, 10, 30, 12, 21, 0).unwrap();
+        let ev = |t: &str| parse_event(t, at, cph).map(|r| r.map(|c| c.event));
+        assert_eq!(
+            ev("Mentor session 6 november at 12:30"),
+            Some(Ok(
+                json!({"title": "Mentor session", "start": "2026-11-06T12:30:00+01:00", "end": "2026-11-06T13:30:00+01:00"})
+            ))
+        );
+        for (t, title, start) in [
+            (
+                "6 November at 12:30 mentor session",
+                "Mentor session",
+                "2026-11-06T12:30:00+01:00",
+            ),
+            (
+                "Mentor session on November 6th at 12.30",
+                "Mentor session",
+                "2026-11-06T12:30:00+01:00",
+            ),
+            (
+                "Lezione di Security il 12 Novembre alle 10",
+                "Lezione di Security",
+                "2026-11-12T10:00:00+01:00",
+            ),
+            (
+                "colloquio con Anna 3 dicembre 2026 alle 15:00",
+                "Colloquio con Anna",
+                "2026-12-03T15:00:00+01:00",
+            ),
+            (
+                "esame di reti 20 gen alle 9",
+                "Esame di reti",
+                "2027-01-20T09:00:00+01:00",
+            ),
+            // No year and already past this year: next year's.
+            (
+                "Dentist appointment 2 March 12.30",
+                "Dentist appointment",
+                "2027-03-02T12:30:00+01:00",
+            ),
+            (
+                "cena con Marco venerdì alle 20",
+                "Cena con Marco",
+                "2026-11-06T20:00:00+01:00",
+            ),
+            (
+                "møde med Lars 4. november kl. 10",
+                "Møde med Lars",
+                "2026-11-04T10:00:00+01:00",
+            ),
+        ] {
+            let e = ev(t).unwrap_or_else(|| panic!("{t}")).unwrap();
+            assert_eq!(
+                (e["title"].as_str(), e["start"].as_str()),
+                (Some(title), Some(start)),
+                "{t}"
+            );
+        }
+        // A date without a time: an all-day event.
+        assert_eq!(
+            ev("Seminario 9 novembre"),
+            Some(Ok(json!({"title": "Seminario", "start": "2026-11-09"})))
+        );
+        // Not events: reminders, questions, the past, no day, no event word.
+        for t in [
+            "ricordami domani alle 9 di pagare",
+            "remind me about the mentor session on 6 november at 12:30",
+            "when is my mentor session?",
+            "cosa ho il 6 novembre alle 12:30 riunione?",
+            "the meeting on 28 october at 10 went well",
+            "meeting at 12:30",
+            "pick up the parcel 6 november at 12:30",
+        ] {
+            assert_eq!(ev(t), None, "{t}");
+        }
+        assert!(looks_like_event("Mentor session 6 november at 12:30"));
+        assert!(!looks_like_event("ricordami domani alle 9 di pagare"));
+        // The bare answer to her question about a meeting: an event, its title from the conversation.
+        for t in [
+            "6 november at 12:30",
+            "il 6 novembre alle 12.30",
+            "6/11 at 12:30",
+            "pick up the parcel 6 november at 12:30",
+        ] {
+            assert!(looks_like_dated_time(t), "{t}");
+        }
+        for t in [
+            "alle 21:30 di fare la doccia",
+            "ricordami il 6 novembre alle 12:30",
+            "domani alle 9:30",
+            "6 november",
+            "at 12:30 on 6 november?",
+        ] {
+            assert!(!looks_like_dated_time(t), "{t}");
+        }
     }
 }

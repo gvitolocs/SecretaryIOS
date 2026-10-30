@@ -5,7 +5,7 @@ import { DecisionBanner } from "../components/DecisionBanner";
 import { DecisionsButton } from "../components/DecisionsButton";
 import { AccountDialog } from "../components/AccountDialog";
 import { SecretSheet } from "../components/SecretSheet";
-import { AvatarIcon, ChatIcon, DumbbellIcon, GridIcon, ListIcon, LogoutIcon, UserIcon } from "../components/Icons";
+import { AvatarIcon, CalendarIcon, ChatIcon, DumbbellIcon, GridIcon, ListIcon, LogoutIcon, UserIcon } from "../components/Icons";
 import { LucinaDock } from "../components/LucinaDock";
 import { NotificationBell } from "../components/NotificationBell";
 import { StatusDot } from "../components/StatusDot";
@@ -28,8 +28,8 @@ import "../styles/character-shell.css";
 // The Wardrobe panel is only fetched the first time it opens.
 const Wardrobe = lazy(() => import("../components/Wardrobe"));
 
-// The owner's four sections (2026-10-24), the same as the iPhone tabs: Chat, Shopping,
-// Training + Weight, Plugins. Everything else is a plugin card on /plugins.
+// The owner's sections: Chat, Calendar (2026-10-30), Shopping, Training + Weight, Plugins. All but Calendar are
+// also the iPhone tabs (2026-10-24). Everything else is a plugin card on /plugins.
 const TRAINING_PATHS = ["/training", "/gym", "/weight"];
 const PLUGIN_PATHS = ["/approvals", "/chats", "/plugins", "/notes", "/keep", "/tasks", "/links", "/models", "/memos", "/desk", "/library", "/media", "/drive", "/server-health", "/computer", "/nclient", "/pixiv", "/instagram", "/agents"];
 
@@ -46,6 +46,10 @@ function NavLinks(props: { class: string }) {
       }}>
         <ChatIcon />
         <span>{t("shell.navChat")}</span>
+      </A>
+      <A href="/calendar" class="tab" activeClass="tab--active">
+        <CalendarIcon />
+        <span>{t("shell.navCalendar")}</span>
       </A>
       <A href="/shopping" class="tab" activeClass="tab--active">
         <ListIcon />

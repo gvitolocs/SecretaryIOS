@@ -582,11 +582,11 @@ async fn google_oauth_sync_writes_and_revocation() {
     assert_eq!(r["google"]["ok"], true, "{r}");
     assert_eq!(t.mock.lock().unwrap().refreshes, 1);
 
-    // Writes.
+    // Writes to Google (new events go to Lucina's own calendar unless the target is Google).
     let (s, c) = t
         .post(
             "/v1/calendar/events",
-            json!({"title": "Call Marco", "start": "2026-11-06T15:00:00+01:00"}),
+            json!({"title": "Call Marco", "start": "2026-11-06T15:00:00+01:00", "target": "google"}),
         )
         .await;
     assert_eq!(s, StatusCode::CREATED, "{c}");
@@ -597,6 +597,7 @@ async fn google_oauth_sync_writes_and_revocation() {
         w.2["start"],
         json!({"dateTime": "2026-11-06T15:00:00+01:00", "timeZone": "Europe/Copenhagen"})
     );
+    assert_eq!(w.2["extendedProperties"]["private"]["addedBy"], "test iPhone");
     let (s, e) = t
         .call(
             reqwest::Method::PATCH,
@@ -676,23 +677,27 @@ async fn google_oauth_sync_writes_and_revocation() {
             .0,
         StatusCode::UNAUTHORIZED
     );
-    // The owner's own turn with Lucina: she creates the event directly with the service token
-    // (the same Google write as accepting a proposal), and gets the event link for her reply.
+    // The owner's own turn with Lucina: she creates the event directly with the service token,
+    // in her own calendar (nothing reaches Google).
+    let writes = t.mock.lock().unwrap().writes.len();
     let (s, c) = t
         .call(reqwest::Method::POST, "/v1/calendar/events", Some(json!({"title": "Claude Max 5x si sblocca", "start": "2026-10-30T23:00:00+01:00"})), Some(&svc))
         .await;
     assert_eq!(s, StatusCode::CREATED, "{c}");
-    assert_eq!(c["event"]["id"], "google:new1");
-    assert_eq!(c["event"]["url"], "https://calendar.google.com/event?eid=new1");
-    let w = t.mock.lock().unwrap().writes.last().unwrap().clone();
-    assert_eq!((w.0.as_str(), w.2["summary"].as_str()), ("POST", Some("Claude Max 5x si sblocca")));
+    let own_id = c["event"]["id"].as_str().unwrap().to_owned();
+    assert!(own_id.starts_with("lucina:ev_"), "{c}");
+    assert_eq!(
+        (c["event"]["addedBy"].as_str(), c["event"]["editable"].as_bool()),
+        (Some("Lucina"), Some(true))
+    );
+    assert_eq!(t.mock.lock().unwrap().writes.len(), writes, "nothing reached Google");
     assert_eq!(
         t.get("/v1/calendar/proposals").await.1["proposals"],
         json!([])
     );
     // Undo: the service token deletes it again.
     assert_eq!(
-        t.call(reqwest::Method::DELETE, "/v1/calendar/events/google:new1?confirm=true", None, Some(&svc))
+        t.call(reqwest::Method::DELETE, &format!("/v1/calendar/events/{own_id}?confirm=true"), None, Some(&svc))
             .await
             .0,
         StatusCode::OK
@@ -721,8 +726,13 @@ async fn google_oauth_sync_writes_and_revocation() {
         t.post(&accept, json!({})).await.0,
         StatusCode::PRECONDITION_REQUIRED
     );
+    let writes = t.mock.lock().unwrap().writes.len();
     let (s, r) = t.post(&accept, json!({"confirm": true})).await;
     assert_eq!(s, StatusCode::CREATED, "{r}");
+    // Accepted into Lucina's own calendar, crediting who proposed it.
+    assert!(r["event"]["id"].as_str().unwrap().starts_with("lucina:"), "{r}");
+    assert_eq!(r["event"]["addedBy"], "mcp:claude-code");
+    assert_eq!(t.mock.lock().unwrap().writes.len(), writes, "nothing reached Google");
     assert_eq!(
         t.get("/v1/calendar/proposals").await.1["proposals"],
         json!([])
@@ -753,17 +763,17 @@ async fn google_oauth_sync_writes_and_revocation() {
     let (s, e) = t
         .post(
             "/v1/calendar/events",
-            json!({"title": "x", "start": "2026-11-06T15:00:00+01:00"}),
+            json!({"title": "x", "start": "2026-11-06T15:00:00+01:00", "target": "google"}),
         )
         .await;
     assert_eq!(
         (s, e["error"]["code"].as_str()),
         (StatusCode::CONFLICT, Some("google_reconnect_needed"))
     );
-    // Lucina's direct create for the owner fails the same way, so she files a proposal with the reason.
+    // A Google write by Lucina fails the same way, so she files a proposal with the reason.
     let writes = t.mock.lock().unwrap().writes.len();
     let (s, e) = t
-        .call(reqwest::Method::POST, "/v1/calendar/events", Some(json!({"title": "Dentist", "start": "2026-11-06T15:00:00+01:00"})), Some(&svc))
+        .call(reqwest::Method::POST, "/v1/calendar/events", Some(json!({"title": "Dentist", "start": "2026-11-06T15:00:00+01:00", "target": "google"})), Some(&svc))
         .await;
     assert_eq!(
         (s, e["error"]["code"].as_str()),
@@ -812,12 +822,15 @@ async fn google_oauth_sync_writes_and_revocation() {
         T::card(&t.get("/v1/links").await.1, "google-calendar")["status"],
         "disconnected"
     );
-    assert!(T::titles(
-        &t.get("/v1/calendar/events?from=2026-11-02&to=2026-11-30")
-            .await
-            .1
-    )
-    .is_empty());
+    // Google's events are gone; Lucina's own calendar (the accepted proposal) stays.
+    assert_eq!(
+        T::titles(
+            &t.get("/v1/calendar/events?from=2026-11-02&to=2026-11-30")
+                .await
+                .1
+        ),
+        ["Padel"]
+    );
 }
 
 #[tokio::test]
@@ -1012,11 +1025,142 @@ async fn ics_iphone_custom_links() {
     let (s, e) = t
         .post(
             "/v1/calendar/events",
-            json!({"title": "x", "start": "2026-11-06T15:00:00+01:00"}),
+            json!({"title": "x", "start": "2026-11-06T15:00:00+01:00", "target": "google"}),
         )
         .await;
     assert_eq!(
         (s, e["error"]["code"].as_str()),
         (StatusCode::CONFLICT, Some("google_not_connected"))
     );
+}
+
+#[tokio::test]
+async fn lucina_own_calendar() {
+    let t = T::new().await;
+    // No Google connection is needed: the owner's events live in Lucina's own calendar.
+    let (s, c) = t
+        .post(
+            "/v1/calendar/events",
+            json!({"title": "Dentist", "start": "2026-11-06T09:30:00+01:00", "location": "Aarhus C",
+                   "description": "Bring the card", "conferenceUrl": "https://meet.google.com/abc-defg-hij"}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{c}");
+    let ev = &c["event"];
+    let id = ev["id"].as_str().unwrap().to_owned();
+    assert!(id.starts_with("lucina:ev_"), "{c}");
+    assert_eq!(
+        (ev["source"].as_str(), ev["calendar"].as_str(), ev["editable"].as_bool()),
+        (Some("lucina"), Some("Lucina"), Some(true))
+    );
+    assert_eq!(ev["end"], "2026-11-06T09:30:00.000Z", "one hour by default");
+    assert_eq!(ev["conferenceUrl"], "https://meet.google.com/abc-defg-hij");
+    assert_eq!(ev["addedBy"], "test iPhone");
+    let file = t.data.join("calendar-events.json");
+    assert!(std::fs::read_to_string(&file).unwrap().contains("Dentist"));
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+    let (_, list) = t
+        .get("/v1/calendar/events?from=2026-11-06&to=2026-11-06")
+        .await;
+    assert_eq!(T::titles(&list), ["Dentist"]);
+    assert_eq!(list["sources"]["lucina"]["count"], 1);
+    let (_, only) = t
+        .get("/v1/calendar/events?from=2026-11-06&to=2026-11-06&sources=iphone")
+        .await;
+    assert!(T::titles(&only).is_empty());
+
+    // Edits need confirm; moving the start keeps the duration; "" clears a field.
+    let path = format!("/v1/calendar/events/{id}");
+    let (s, e) = t
+        .call(reqwest::Method::PATCH, &path, Some(json!({"start": "2026-11-06T11:00:00+01:00"})), None)
+        .await;
+    assert_eq!(
+        (s, e["error"]["code"].as_str()),
+        (StatusCode::PRECONDITION_REQUIRED, Some("confirmation_required"))
+    );
+    let (s, u) = t
+        .call(
+            reqwest::Method::PATCH,
+            &path,
+            Some(json!({"confirm": true, "start": "2026-11-06T11:00:00+01:00", "location": "", "title": "Dentist (moved)"})),
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{u}");
+    assert_eq!(
+        (u["event"]["start"].as_str(), u["event"]["end"].as_str()),
+        (Some("2026-11-06T10:00:00.000Z"), Some("2026-11-06T11:00:00.000Z"))
+    );
+    assert_eq!(u["event"]["title"], "Dentist (moved)");
+    assert!(u["event"].get("location").is_none(), "{u}");
+    assert_eq!(u["event"]["description"], "Bring the card");
+    assert_eq!(u["event"]["addedBy"], "test iPhone", "edits keep who added it");
+    // Resize: a new end; the video link can be removed alone.
+    let (s, u) = t
+        .call(
+            reqwest::Method::PATCH,
+            &path,
+            Some(json!({"confirm": true, "start": "2026-11-06T11:00:00+01:00", "end": "2026-11-06T12:30:00+01:00"})),
+            None,
+        )
+        .await;
+    assert_eq!((s, u["event"]["end"].as_str()), (StatusCode::OK, Some("2026-11-06T11:30:00.000Z")));
+    let (s, u) = t
+        .call(reqwest::Method::PATCH, &path, Some(json!({"confirm": true, "conferenceUrl": null})), None)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{u}");
+    assert!(u["event"].get("conferenceUrl").is_none(), "{u}");
+    // All day.
+    let (s, u) = t
+        .call(
+            reqwest::Method::PATCH,
+            &path,
+            Some(json!({"confirm": true, "start": "2026-11-07", "allDay": true})),
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{u}");
+    assert_eq!(
+        (u["event"]["allDay"].as_bool(), u["event"]["start"].as_str(), u["event"]["end"].as_str()),
+        (Some(true), Some("2026-11-07"), Some("2026-11-08"))
+    );
+    // Bad input.
+    for body in [
+        json!({"confirm": true}),
+        json!({"confirm": true, "conferenceUrl": "javascript:alert(1)"}),
+        json!({"confirm": true, "title": ""}),
+    ] {
+        let (s, e) = t.call(reqwest::Method::PATCH, &path, Some(body.clone()), None).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{body} {e}");
+    }
+    let (s, _) = t
+        .call(reqwest::Method::PATCH, "/v1/calendar/events/lucina:ev_missing", Some(json!({"confirm": true, "title": "x"})), None)
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+
+    // Delete needs confirm, then it is gone (and gone again is fine).
+    let (s, _) = t.call(reqwest::Method::DELETE, &path, None, None).await;
+    assert_eq!(s, StatusCode::PRECONDITION_REQUIRED);
+    for _ in 0..2 {
+        let (s, d) = t
+            .call(reqwest::Method::DELETE, &format!("{path}?confirm=true"), None, None)
+            .await;
+        assert_eq!((s, d["deleted"].as_bool()), (StatusCode::OK, Some(true)));
+    }
+    assert!(T::titles(
+        &t.get("/v1/calendar/events?from=2026-11-01&to=2026-11-30")
+            .await
+            .1
+    )
+    .is_empty());
+    assert!(!std::fs::read_to_string(&file).unwrap().contains("Dentist"));
+
+    // Unknown targets are refused.
+    let (s, _) = t
+        .post("/v1/calendar/events", json!({"title": "x", "start": "2026-11-06", "target": "outlook"}))
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
 }

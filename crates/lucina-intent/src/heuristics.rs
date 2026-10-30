@@ -583,6 +583,10 @@ pub fn looks_like_reminder_request(text: &str) -> bool {
     if looks_like_reminder_list(text) {
         return false;
     }
+    // Events go in the calendar ("Mentor session 6 november at 12:30").
+    if crate::calendar::looks_like_event(text) || crate::calendar::looks_like_dated_time(text) {
+        return false;
+    }
     if re!(r"mi ricordi\s+(cosa|quando|perch|come|se|il motivo)", "i").test(text)
         || re!(r"remind me\s+(what|why|when|whether)\b", "i").test(text)
     {
