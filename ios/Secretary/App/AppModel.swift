@@ -80,6 +80,16 @@ final class AppModel {
     var showAllChats = false
     /// "Who called?": caller screening with Jev and the Call Directory labels, a plugin.
     var showCallers = false
+    /// Lucina's own calendar (/v1/calendar), a plugin (`/calendar`).
+    var showCalendar = false
+    /// `/calendar?event=<id>&at=<ms>` (a notification, a chat link): the event the calendar opens on.
+    var openCalendarEvent: CalendarLink?
+    /// The Instagram plugin (/v1/instagram).
+    var showInstagram = false
+    /// The Pixiv plugin (/v1/pixiv): rankings, search, bookmarks and the reader.
+    var showPixiv = false
+    /// The NClient plugin (/v1/nclient): browse and read.
+    var showNClient = false
     /// Notebooks as a sheet (a `notebooks` link); in Settings it is a pushed screen.
     var showNotebooks = false
     /// The quick weight entry sheet on the Training tab (widget "+", Log weight control).
@@ -143,6 +153,14 @@ final class AppModel {
     @ObservationIgnored var isForeground = false
 
     var api: SecretaryAPI { SecretaryAPI(client: client) }
+
+    /// The owner-only plugins (/v1/instagram, /v1/pixiv, /v1/nclient) live in p1's Caddy like the memos, so they
+    /// use the primary URL: the tailnet fallback reaches secretary-server directly (404). Nil while signed out.
+    var pluginClient: APIClient? {
+        guard let key = client.accessKey, !key.isEmpty else { return nil }
+        memoClient.accessKey = key
+        return memoClient
+    }
 
     init(keychain: KeychainStore = .accessKey, defaults: UserDefaults = .standard) {
         Self.isBuilt = true

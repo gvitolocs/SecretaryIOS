@@ -10,6 +10,7 @@ struct SettingsView: View {
     @State private var approvalPrompts = ApprovalsSettingsPrompts()
     @State private var developerTaps = 0
     @AppStorage("secretary.debug.showDeveloper") private var showDeveloper = false
+    @AppStorage(AdultPlugins.key) private var showAdultPlugins = true
     @AppStorage(LucinaVoiceReplies.settingKey) private var voiceReplies = true
     @State private var serverDraft = ""
     @State private var serverError: String?
@@ -141,6 +142,8 @@ struct SettingsView: View {
                     Label("Pixiv", systemImage: "paintpalette")
                 }
                 .accessibilityIdentifier("pixivSettings")
+                Toggle("Show adult plugins", isOn: $showAdultPlugins)
+                    .accessibilityIdentifier("showAdultPlugins")
             }
 
             ApprovalsSettingsSection(prompts: approvalPrompts)
