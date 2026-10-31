@@ -96,6 +96,30 @@ describe('HairRig', () => {
     expect(hair.parent?.name).toBe('Hair:bun');
   });
 
+  it('re-binds to a grafted node that no skin of the model uses (loaded as a plain Object3D)', () => {
+    const m = model();
+    // The outfit file carries the hairstyle's own bone, but none of its skins: GLTFLoader makes it an Object3D.
+    const grafted = new Group();
+    grafted.name = 'ptail_0';
+    grafted.position.set(0, 0.05, -0.15);
+    m.head.add(grafted);
+    const rig = new HairRig(m.root, 'Head');
+    const g = new Group();
+    const head = new Bone();
+    head.name = 'Head';
+    const tail = new Bone();
+    tail.name = 'ptail_0';
+    head.add(tail);
+    g.add(head);
+    const hair = new SkinnedMesh(new BoxGeometry(), mat('Ponytail'));
+    hair.bind(new Skeleton([head, tail]), new Matrix4());
+    g.add(hair);
+    rig.attach(g, { id: 'ponytail', glb: 'p.glb' });
+    expect(hair.skeleton.bones).toEqual([m.head, grafted]);
+    expect(hair.parent?.name).toBe('Hair:ponytail');
+    expect(m.head.children.some((c) => c.name.startsWith('HairRigid:'))).toBe(false);
+  });
+
   it('tints through the shader, and falls back to the colour', () => {
     const m = model();
     const rig = new HairRig(m.root, 'Head');
