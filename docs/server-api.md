@@ -1302,7 +1302,19 @@ list); every list is empty when the file is missing.
   `hideTiara` (bool: hide the tiara while it is on) and `hideMaterials`
   (base-model materials to hide instead of the hair). A part is a separate
   GLB attached to the `head` bone; the base hair is hidden while it is on.
-- Colours: `id`, `hex` (`#rrggbb`), optional `name`.
+  A skinned part is re-bound to the outfit's bones by name, so every bone it
+  uses must be in every outfit GLB. How the installed ponytail is made
+  (`tools/wardrobe-glb`, run on the private assets, never committed):
+  - `glbpart lucina-gym.glb lucina-hair-ponytail.glb Hair,Clothes_HairTie`
+    cuts the Gym outfit's own ponytail out (same bind pose and bone names).
+  - `glbgraft <outfit>.glb lucina-gym.glb <out>.glb ptail_0,ptail_1,ptail_2,ptail_3`
+    adds its four bones under `head` in each other outfit, listed in a
+    joints-only skin `hairstyle-bones` so loaders make them bones.
+  - Each outfit manifest gets the Gym's `ponytail` spring chain, off for the
+    outfit (`physics.outfits.<id>.disable`) and on for the hairstyle
+    (`physics.hairstyles.ponytail`: enable `ponytail`, disable `hair_back*`).
+- Colours: `id`, `hex` (`#rrggbb`), optional `name`. The toon hair takes the
+  colour's hue in its glow, angel ring and outline too.
 - Other fields pass through unchanged.
 
 ### Live changes

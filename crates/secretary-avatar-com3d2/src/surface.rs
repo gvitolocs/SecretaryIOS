@@ -446,7 +446,7 @@ mod garment_surface_tests {
             Vec3::new(0.2, -0.2, 0.1),
             Vec3::new(0., 0.2, 0.1),
         ];
-        let s = Surface::geometry(&p, &vec![Vec3::Z; 6], &[[0, 1, 2], [3, 4, 5]]).unwrap();
+        let s = Surface::geometry(&p, &[Vec3::Z; 6], &[[0, 1, 2], [3, 4, 5]]).unwrap();
         assert!((s.nearest(Vec3::new(0., 0., 0.06)).point.z - 0.05).abs() < 1e-6);
         assert!((s.radial(Vec3::ZERO, Vec3::Z).unwrap().point.z - 0.1).abs() < 1e-6);
         assert!(Surface::geometry(&p, &[], &[[0, 1, 2]]).is_err());
