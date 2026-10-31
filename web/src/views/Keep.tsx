@@ -1,51 +1,35 @@
 import { useLocation, useNavigate } from "@solidjs/router";
-import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, type JSX } from "solid-js";
-import type { KeepNote, LabelInfo } from "../api/keep";
+import { createEffect, createMemo, createSignal, on, onCleanup, onMount, Show, type JSX } from "solid-js";
+import type { KeepNote } from "../api/keep";
 import { AccountDialog } from "../components/AccountDialog";
-import {
-  Card,
-  EmptyState as PageEmptyState,
-  LoadingState,
-  Page,
-  PageGrid,
-  PageHeader,
-  RowList,
-  useWide,
-} from "../components/page";
+import { EmptyState as PageEmptyState, LoadingState, Page, PageGrid, PageHeader, useWide } from "../components/page";
 import { KeepContext, KeepRootContext, type KeepCtx } from "../components/keep/ctx";
 import { Composer } from "../components/keep/Composer";
 import { ConfirmDialog, LabelsDialog } from "../components/keep/Dialogs";
-import { ArchiveIcon, BellIcon, BulbOutlineIcon, LabelIcon, TrashIcon } from "../components/keep/icons";
+import { ArchiveIcon, BellIcon, BulbOutlineIcon, CloseIcon, LabelIcon, SearchIcon, TrashIcon } from "../components/keep/icons";
+import { KeepNavChips, KeepRailNav } from "../components/keep/KeepNav";
 import { Masonry } from "../components/keep/Masonry";
-import { Nav } from "../components/keep/Nav";
 import { NoteCard } from "../components/keep/NoteCard";
 import { NoteDialog } from "../components/keep/NoteDialog";
-import { SearchPage } from "../components/keep/SearchPage";
+import { SearchPage, typeLabel } from "../components/keep/SearchPage";
+import { colorName } from "../components/keep/Pickers";
+import { swatchFill } from "../lib/keepColors";
 import { SelectionBar } from "../components/keep/SelectionBar";
 import { Snackbar } from "../components/keep/Snackbar";
-import { TopBar } from "../components/keep/TopBar";
 import { GridViewIcon, ListViewIcon, RefreshIcon, SettingsIcon } from "../components/keep/icons";
 import { moveItem } from "../components/keep/ChecklistEditor";
 import { t } from "../i18n";
-import { positionBetween, searchActive, searchNotes, splitPinned, viewNotes, emptySearch, type KeepView } from "../lib/keepFilter";
-import { keepHref, noteHref, parseKeepPath, sameView } from "../lib/keepRoute";
+import { positionBetween, searchActive, searchNotes, splitPinned, viewNotes, emptySearch, type KeepView, type SearchState } from "../lib/keepFilter";
+import { keepHref, noteHref, parseKeepPath } from "../lib/keepRoute";
 import { keep, startAutoSync } from "../state/keep";
-import { clearSelection, drawerOpen, listMode, navCollapsed, search, searchOpen, selection, setDrawerOpen, setListMode, setNavCollapsed, setSearch, setSearchOpen } from "../state/keepUi";
-import { effectiveTheme } from "../state/appearance";
+import { clearSelection, listMode, search, searchOpen, selection, setDrawerOpen, setListMode, setSearch, setSearchOpen } from "../state/keepUi";
 import "../styles/keep.css";
 
-// Keep: Google-Keep-style notes at /keep (the owner's own layout, moved here from keep.google.com).
+// Keep: the owner's notes at /keep, moved here from keep.google.com, on the Lucina page layout at every width
+// (owner, 2026-10-31: "completely migrate the layout to be Lucina"): the page header with the search field, the
+// shared chips or rail for the sections, Lucina's navy and accent. Every Keep feature stays.
 // Routes: /keep, /keep/reminders, /keep/archive, /keep/trash, /keep/label/<name>, /keep/note/<id> (a note's dialog).
 // The cache, sync and optimistic writes live in state/keep.ts; everything on this page reads that store.
-
-function KeepEmptyState(props: { icon: () => JSX.Element; text: string }) {
-  return (
-    <div class="kp-empty" role="status">
-      <span class="kp-empty-icon">{props.icon()}</span>
-      <p>{props.text}</p>
-    </div>
-  );
-}
 
 function keepSectionContext(view: KeepView, labelName: (tag: string) => string): string {
   switch (view.kind) {
@@ -62,69 +46,6 @@ function keepSectionContext(view: KeepView, labelName: (tag: string) => string):
   }
 }
 
-function KeepDeskNavRow(props: { href: string; label: string; icon: JSX.Element; active: boolean; onGo: (href: string) => void }) {
-  return (
-    <li class={`pg-row${props.active ? " keep-desk-nav--active" : ""}`}>
-      <span class="keep-desk-nav-icon" aria-hidden="true">
-        {props.icon}
-      </span>
-      <div class="pg-row-main">
-        <p class="pg-row-title">
-          <a
-            href={props.href}
-            class="pg-row-name pg-row-link"
-            aria-current={props.active ? "page" : undefined}
-            onClick={(e) => {
-              if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
-              e.preventDefault();
-              props.onGo(props.href);
-            }}
-          >
-            {props.label}
-          </a>
-        </p>
-      </div>
-    </li>
-  );
-}
-
-function KeepDeskNav(props: { view: KeepView; labels: LabelInfo[]; onGo: (href: string) => void; onEditLabels: () => void }) {
-  const is = (v: KeepView) => sameView(props.view, v);
-  return (
-    <Card list label={t("keep.menu")}>
-      <RowList>
-        <KeepDeskNavRow href="/keep" label={t("keep.notes")} icon={<BulbOutlineIcon />} active={is({ kind: "notes" })} onGo={props.onGo} />
-        <KeepDeskNavRow href="/keep/reminders" label={t("keep.reminders")} icon={<BellIcon />} active={is({ kind: "reminders" })} onGo={props.onGo} />
-        <For each={props.labels}>
-          {(l) => (
-            <KeepDeskNavRow
-              href={keepHref({ kind: "label", tag: l.tag }, l.name)}
-              label={l.name}
-              icon={<LabelIcon />}
-              active={is({ kind: "label", tag: l.tag })}
-              onGo={props.onGo}
-            />
-          )}
-        </For>
-        <li class="pg-row">
-          <span class="keep-desk-nav-icon" aria-hidden="true">
-            <LabelIcon />
-          </span>
-          <div class="pg-row-main">
-            <p class="pg-row-title">
-              <button type="button" class="pg-link" onClick={props.onEditLabels}>
-                {t("keep.editLabels")}
-              </button>
-            </p>
-          </div>
-        </li>
-        <KeepDeskNavRow href="/keep/archive" label={t("keep.archive")} icon={<ArchiveIcon />} active={is({ kind: "archive" })} onGo={props.onGo} />
-        <KeepDeskNavRow href="/keep/trash" label={t("keep.trash")} icon={<TrashIcon />} active={is({ kind: "trash" })} onGo={props.onGo} />
-      </RowList>
-    </Card>
-  );
-}
-
 export default function KeepView() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -135,8 +56,18 @@ export default function KeepView() {
 
   const route = createMemo(() => parseKeepPath(location.pathname, location.search));
   const view = (): KeepView => route().view;
-  const theme = effectiveTheme;
-  const searching = createMemo(() => searchActive(search()));
+  // Lucina's shell is dark whatever the device's theme; Keep follows it (its note colours use the dark palette).
+  const theme = () => "dark" as const;
+  // The field updates at once; the notes follow 150 ms after the last key, so typing never stutters on a long list.
+  const [query, setQuery] = createSignal<SearchState>(search());
+  createEffect(
+    on(search, (s) => {
+      if (!s.q.trim() || s.q === query().q) return setQuery(s);
+      const timer = setTimeout(() => setQuery(s), 150);
+      onCleanup(() => clearTimeout(timer));
+    }),
+  );
+  const searching = createMemo(() => searchActive(query()));
 
   onMount(() => {
     void keep.load();
@@ -211,12 +142,13 @@ export default function KeepView() {
 
   const shown = createMemo<KeepNote[]>(() => {
     const all = keep.all();
-    if (searching()) return searchNotes(all, search(), keep.labelName);
+    if (searching()) return searchNotes(all, query(), keep.labelName);
     return viewNotes(all, view());
   });
   const sections = createMemo(() => {
     const list = shown();
-    if (view().kind === "trash" && !searching()) return { pinned: [] as KeepNote[], others: list };
+    // Search results are one list, best match first: a pinned note shows only when it matches, in its rank.
+    if (searching() || view().kind === "trash") return { pinned: [] as KeepNote[], others: list, reminders: false as const };
     if (view().kind === "reminders" && !searching()) {
       const now = Date.now();
       const upcoming = list.filter((n) => Date.parse(n.reminder!.at) >= now);
@@ -273,10 +205,53 @@ export default function KeepView() {
   const measured = useWide();
   const wide = measured.wide;
 
-  const keepMain = (
+  // The filters picked on the search page (a type, a label, a colour), each removable.
+  const filterChips = () => (
+    <Show when={search().type || search().label || search().color}>
+      <div class="kp-filterchips" role="group" aria-label={t("keep.search")}>
+        <Show when={search().type}>
+          {(type) => (
+            <span class="kp-search-chip" data-chip="type">
+              {typeLabel(type())}
+              <button type="button" aria-label={t("keep.searchClear")} onClick={() => setSearch({ ...search(), type: undefined })}>
+                <CloseIcon />
+              </button>
+            </span>
+          )}
+        </Show>
+        <Show when={search().label}>
+          {(tag) => (
+            <span class="kp-search-chip" data-chip="label">
+              <LabelIcon />
+              {keep.labelName(tag())}
+              <button type="button" aria-label={t("keep.searchClear")} onClick={() => setSearch({ ...search(), label: undefined })}>
+                <CloseIcon />
+              </button>
+            </span>
+          )}
+        </Show>
+        <Show when={search().color}>
+          {(c) => (
+            <span class="kp-search-chip" data-chip="color">
+              <span class="kp-search-dot" style={{ "background-color": swatchFill(c(), theme()) }} />
+              {colorName(c())}
+              <button type="button" aria-label={t("keep.searchClear")} onClick={() => setSearch({ ...search(), color: undefined })}>
+                <CloseIcon />
+              </button>
+            </span>
+          )}
+        </Show>
+      </div>
+    </Show>
+  );
+
+  // Functions, called inside the providers below: JSX built out here would render its cards outside KeepContext and
+  // get the fallback context, whose open() does nothing (a click on a note opened nothing, 2026-10-31).
+  const keepMain = () => (
     <>
+      {filterChips()}
       <Show when={keep.status() === "error" && keep.error()}>
-        <p class={wide() ? "pg-notice" : "kp-sync-error"} role="status">
+        <p class="pg-notice" role="status">
           {t("keep.syncFailed")}
         </p>
       </Show>
@@ -298,17 +273,13 @@ export default function KeepView() {
         <Show
           when={keep.loaded()}
           fallback={
-            <Show when={wide()} fallback={<div class="kp-loading" aria-hidden="true" />}>
-              <LoadingState label={t("common.loading")} />
-            </Show>
+            <LoadingState label={t("common.loading")} />
           }
         >
           <Show
             when={shown().length > 0}
             fallback={
-              <Show when={wide()} fallback={<KeepEmptyState icon={emptyFor().icon} text={emptyFor().text} />}>
-                <PageEmptyState text={emptyFor().text} />
-              </Show>
+              <PageEmptyState text={emptyFor().text} />
             }
           >
             <Show
@@ -329,18 +300,41 @@ export default function KeepView() {
     </>
   );
 
-  const deskHeaderTools = (
-    <>
-      <input
-        class="pg-input keep-desk-search"
-        type="search"
-        autocomplete="off"
-        placeholder={t("keep.search")}
-        aria-label={t("keep.search")}
-        value={search().q}
-        onFocus={() => setSearchOpen(true)}
-        onInput={(e) => setSearch({ ...search(), q: e.currentTarget.value })}
-      />
+  const headerTools = () => (
+    <div class="kp-tools-row">
+      <label class="kp-searchfield">
+        <SearchIcon />
+        <input
+          class="pg-input"
+          type="search"
+          autocomplete="off"
+          placeholder={t("keep.search")}
+          aria-label={t("keep.search")}
+          value={search().q}
+          onFocus={() => setSearchOpen(true)}
+          onInput={(e) => setSearch({ ...search(), q: e.currentTarget.value })}
+          onKeyDown={(e) => {
+            if (e.key !== "Escape") return;
+            setSearch(emptySearch());
+            setSearchOpen(false);
+            e.currentTarget.blur();
+          }}
+        />
+      </label>
+      <Show when={searchOpen() || searching()}>
+        <button
+          type="button"
+          class="pg-icon-btn"
+          aria-label={t("keep.searchClear")}
+          title={t("keep.searchClear")}
+          onClick={() => {
+            setSearch(emptySearch());
+            setSearchOpen(false);
+          }}
+        >
+          <CloseIcon />
+        </button>
+      </Show>
       <button
         type="button"
         class="pg-icon-btn"
@@ -363,100 +357,59 @@ export default function KeepView() {
       <button type="button" class="pg-icon-btn" aria-label={t("keep.settings")} title={t("keep.settings")} onClick={() => setSettingsOpen(true)}>
         <SettingsIcon />
       </button>
-    </>
+    </div>
   );
+
+  const navProps = () => ({
+    view: view(),
+    labels: keep.labels(),
+    labelName: keep.labelName,
+    onGo: go,
+    onEditLabels: () => setLabelsOpen(true),
+  });
 
   return (
     <KeepRootContext.Provider value={rootEl}>
       <KeepContext.Provider value={ctx}>
         <div
-          class="kp"
+          class="kp kp--lucina"
           ref={(el) => {
             setRootEl(el);
             measured.track(el);
           }}
           classList={{ "kp--desk": wide() }}
           data-theme={theme()}
-          data-nav={navCollapsed() ? "collapsed" : "open"}
-          data-drawer={drawerOpen() ? "open" : "closed"}
           data-mode={listMode() ? "list" : "grid"}
           data-selecting={selection().size > 0 ? "yes" : undefined}
           data-searching={searchOpen() ? "yes" : undefined}
         >
-          <Show
-            when={selection().size > 0}
-            fallback={
-              <Show when={!wide()}>
-                <TopBar
-                  search={search()}
-                  searchOpen={searchOpen()}
-                  theme={theme()}
-                  labelName={keep.labelName}
-                  listMode={listMode()}
-                  syncing={keep.status() === "syncing"}
-                  onMenu={() => {
-                    if (typeof matchMedia === "function" && matchMedia("(max-width: 600px)").matches) setDrawerOpen(!drawerOpen());
-                    else setNavCollapsed(!navCollapsed());
-                  }}
-                  onHome={() => go("/keep")}
-                  onSearchFocus={() => setSearchOpen(true)}
-                  onSearch={(p) => setSearch({ ...search(), ...p })}
-                  onSearchExit={() => {
-                    setSearch(emptySearch());
-                    setSearchOpen(false);
-                  }}
-                  onRefresh={() => void keep.sync()}
-                  onToggleList={() => setListMode(!listMode())}
-                  onSettings={() => setSettingsOpen(true)}
-                />
-              </Show>
-            }
-          >
+          <Show when={selection().size > 0}>
             <SelectionBar notes={selectedNotes()} />
           </Show>
-          <Show
-            when={wide()}
-            fallback={
-              <div class="kp-body">
-                <Show when={drawerOpen()}>
-                  <div class="kp-drawer-scrim" onClick={() => setDrawerOpen(false)} />
-                </Show>
-                <Nav
-                  view={view()}
-                  labels={keep.labels()}
-                  collapsed={navCollapsed()}
-                  onGo={go}
-                  onEditLabels={() => {
-                    setDrawerOpen(false);
-                    setLabelsOpen(true);
-                  }}
-                />
-                <main class="kp-main" id="keep-main" aria-label={t("keep.title")}>
-                  {keepMain}
-                </main>
-              </div>
-            }
-          >
-            <Page class="keep-desk">
-              <PageHeader title={t("keep.title")} context={keepSectionContext(view(), keep.labelName)} action={deskHeaderTools} />
-              <PageGrid
-                layout="split"
-                railLabel={t("keep.menu")}
-                rail={
-                  <KeepDeskNav
-                    view={view()}
-                    labels={keep.labels()}
-                    onGo={go}
-                    onEditLabels={() => setLabelsOpen(true)}
-                  />
-                }
-              >
+          <Page class="keep-page">
+            <PageHeader
+              title={t("keep.title")}
+              context={searching() ? t("keep.search") : keepSectionContext(view(), keep.labelName)}
+              action={headerTools()}
+            />
+            <Show
+              when={wide()}
+              fallback={
+                <>
+                  <KeepNavChips {...navProps()} />
+                  <main class="kp-main" id="keep-main" aria-label={t("keep.title")}>
+                    {keepMain()}
+                  </main>
+                </>
+              }
+            >
+              <PageGrid layout="split" railLabel={t("keep.sections")} rail={<KeepRailNav {...navProps()} />}>
                 <main class="kp-main keep-desk-main" id="keep-main" aria-label={t("keep.title")}>
-                  {keepMain}
+                  {keepMain()}
                 </main>
               </PageGrid>
-            </Page>
-          </Show>
+            </Show>
+          </Page>
           <Show when={dialogId()}>{(id) => <NoteDialog id={id()} onClose={closeNote} />}</Show>
           <Show when={labelsOpen()}>
             <LabelsDialog onClose={() => setLabelsOpen(false)} />

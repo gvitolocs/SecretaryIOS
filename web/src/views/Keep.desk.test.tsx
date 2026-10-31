@@ -41,10 +41,17 @@ describe("Keep desktop layout", () => {
     expect(await screen.findByRole("heading", { level: 1, name: "Keep" })).toBeInTheDocument();
     expect(document.querySelector(".kp-top")).toBeNull();
     expect(document.querySelectorAll(".pg-cta")).toHaveLength(0);
-    const nav = screen.getByRole("navigation", { name: "Main menu" });
+    const nav = screen.getByRole("navigation", { name: "Keep sections" });
     const notesLink = within(nav).getByRole("link", { name: "Notes" });
     expect(notesLink).toHaveAttribute("aria-current", "page");
     expect(await screen.findByText("Desk note")).toBeInTheDocument();
+    // The labels stay folded under one row until opened.
+    const labels = within(nav).getByRole("button", { name: "Show labels" });
+    expect(labels).toHaveAttribute("aria-expanded", "false");
+    expect(within(nav).queryByRole("button", { name: "Edit labels" })).toBeNull();
+    labels.click();
+    expect(await within(nav).findByRole("button", { name: "Edit labels" })).toBeInTheDocument();
+    expect(within(nav).getByRole("button", { name: "Hide labels" })).toHaveAttribute("aria-expanded", "true");
   });
 
   it("shows a friendly empty state on archive", async () => {
@@ -52,7 +59,7 @@ describe("Keep desktop layout", () => {
     renderAt("/keep/archive", () => <Route path="/keep/*rest" component={KeepView} />);
     expect(await screen.findByRole("heading", { level: 1, name: "Keep" })).toBeInTheDocument();
     expect(await screen.findByText("Your archived notes appear here")).toBeInTheDocument();
-    const nav = screen.getByRole("navigation", { name: "Main menu" });
+    const nav = screen.getByRole("navigation", { name: "Keep sections" });
     expect(within(nav).getByRole("link", { name: "Archive" })).toHaveAttribute("aria-current", "page");
   });
 });

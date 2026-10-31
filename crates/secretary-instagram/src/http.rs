@@ -1,6 +1,6 @@
 //! `/v1/instagram/*`. p1's Caddy authenticates the owner (forward_auth `/v1/auth/owner`) and adds
 //! `X-Lucina-Gateway: <secret>`; every route but the signed media URLs refuses a request without
-//! it. Media URLs are `/v1/instagram/s/<exp>/<sig>/<token>` (HMAC, about six hours): the apps'
+//! it. Media URLs are `/v1/instagram/s/<exp>/<sig>/<token>` (HMAC, about an hour): the apps'
 //! image and video loaders need no header and never contact Instagram.
 //!
 //! Logs carry the route template and status only: never usernames, cursors, ids or captions.
@@ -450,10 +450,11 @@ async fn serve_file(file: MediaFile, headers: &HeaderMap) -> Response {
         "x-robots-tag",
         HeaderValue::from_static("noindex, nofollow"),
     );
-    // The URL is signed and expires on its own, so the browser may keep the bytes meanwhile.
+    // The URL is signed and expires on its own (within 75 minutes), so the browser may keep the
+    // bytes for about that long; never a shared cache.
     h.insert(
         header::CACHE_CONTROL,
-        HeaderValue::from_static("private, max-age=21600"),
+        HeaderValue::from_static("private, max-age=3600"),
     );
     r
 }

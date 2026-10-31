@@ -282,16 +282,25 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
   const [highlightsLoading, setHighlightsLoading] = createSignal(false);
   const [highlightsError, setHighlightsError] = createSignal<unknown>(null);
   let posts: Feed | undefined;
+  // A tray from an earlier visit shows at once but is asked again once: its covers are signed URLs that expire within
+  // the hour (docs/instagram.md), so an old copy would show blank covers.
+  let trayFresh = false;
   async function loadHighlights() {
-    if (highlightsLoading() || highlights().length || bundle()?.profile.isPrivate) return;
-    setHighlightsLoading(true);
-    setHighlightsError(null);
+    if (highlightsLoading() || bundle()?.profile.isPrivate) return;
+    const shown = highlights().length > 0;
+    if (shown && trayFresh) return;
+    trayFresh = true;
+    if (!shown) {
+      setHighlightsLoading(true);
+      setHighlightsError(null);
+    }
     try {
       const tray = await instagramApi.highlights(props.username);
-      setHighlights(tray);
+      if (tray.length || !shown) setHighlights(tray);
       if (tray.length) void pageCache.put(trayKey, "instagram", tray);
     } catch (e) {
-      setHighlightsError(e);
+      // A failed refresh keeps the copy on screen.
+      if (!shown) setHighlightsError(e);
     } finally {
       setHighlightsLoading(false);
     }
@@ -301,6 +310,7 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
     on(bundle, (b) => {
       if (!b) return;
       if (b.highlights.length) {
+        trayFresh = true;
         setHighlights(b.highlights);
         void pageCache.put(trayKey, "instagram", b.highlights);
       }

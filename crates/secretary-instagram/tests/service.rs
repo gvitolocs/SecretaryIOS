@@ -641,10 +641,9 @@ async fn signed_media_is_fetched_once_cached_and_range_capable() {
     assert_eq!(r.headers["content-type"], "image/jpeg");
     assert_eq!(r.headers["accept-ranges"], "bytes");
     assert_eq!(r.headers["x-content-type-options"], "nosniff");
-    assert!(r.headers["cache-control"]
-        .to_str()
-        .unwrap()
-        .contains("private"));
+    // Never a shared cache, and the browser keeps it no longer than the URL lives.
+    assert_eq!(r.headers["cache-control"], "private, max-age=3600");
+    assert_eq!(r.headers["referrer-policy"], "no-referrer");
 
     // A second URL for the same picture (new oh/oe) hits the cache.
     let signed2 =

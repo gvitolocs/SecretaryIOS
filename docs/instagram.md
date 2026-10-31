@@ -52,7 +52,7 @@ Success: `{"ok":true,"data":…}`. Error: `{"ok":false,"error":"<code>"}`; 429 i
 | `GET /resolve?url=<instagram post/reel url>` | `{items, nextCursor}` |
 | `GET /recent` | `{items:[{username, fullName, isVerified, picUrl, openedAt}]}`, newest first, max 30 |
 | `POST /save {items:[{url, kind, username, takenAt?, caption?}]}` | `{saved:[{index,itemId,duplicate}], failed:[{index,error}]}` |
-| `GET /s/{exp}/{sig}/{token}` | media bytes (signed, ~6 h, GET/HEAD, **no gateway header**), Range supported |
+| `GET /s/{exp}/{sig}/{token}` | media bytes (signed, 60-75 min, GET/HEAD, **no gateway header**), Range supported |
 
 Media item (camelCase): `{id, kind:"image"|"video"|"carousel", url, thumbUrl, takenAt?, caption?,
 likeCount, commentCount, permalink?, children?:[{id, kind, url, thumbUrl}]}`. `url`/`thumbUrl` are our
@@ -162,6 +162,25 @@ thumbnail (`/v1/media/items/{id}/thumb?size=256`, the owner's session).
   with its kind (`users/bundle`, `highlights/items`, ...), `ms` (the queue included) and `attempts`.
   No usernames, cursors, ids or captions.
 - **Shutdown:** SIGTERM finishes requests in flight and exits 0.
+
+## Signed media URLs (2026-10-31)
+
+`/s/*` and `/a/*` skip p1's forward_auth on purpose: `<img>` and `<video>` in the apps (the Mac app loads the web
+from its bundle, so it is cross-origin) send no session. They are capabilities instead: whoever has one can fetch
+that one item, and nothing else, until it expires.
+- **Bound:** `<sig>` is HMAC-SHA256 (key `signing.key`, 0600, never leaves nezopt) over `<exp>/<token>`, where
+  `<token>` is the exact Instagram CDN URL (`/a/`: `a/<exp>/<mediaId>`); another item, a later expiry or a media
+  signature used as an archive one is refused. A valid signature on a foreign host is still refused.
+- **Short:** 60-75 minutes (an hour, rounded up to a quarter hour so image caches see one URL); it was six
+  hours. Responses are `private, max-age=3600`, `no-referrer`, `noindex`.
+- **What it can reach:** only what the anonymous backend shows (public posts, stories and highlights, and every
+  account's profile picture, which Instagram serves publicly); for `/a/`, that saved file from the Gallery.
+  Private accounts' posts and stories never pass through the service.
+- **Not logged:** the service logs the route template only; p1's Caddy access log replaces everything after
+  `/v1/instagram/s/`, `/a/` (and `/v1/media/s/`, `/v1/nclient/s/`) with `REDACTED`.
+- **Rotation:** deleting `signing.key` and restarting the service makes a new key and voids every URL handed out
+  (done 2026-10-31, after a shared link opened without sign-in). Cached pages fetch fresh URLs when reopened; the
+  web asks a cached highlight tray again once per visit for that reason.
 
 ## Empty highlights and upstream failures (2026-10-29)
 

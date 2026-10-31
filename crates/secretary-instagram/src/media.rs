@@ -14,7 +14,18 @@ use subtle::ConstantTimeEq;
 use url::Url;
 
 pub const PREFIX: &str = "/v1/instagram";
-const URL_LIFETIME_SECS: i64 = 6 * 3600;
+/// How long a signed media URL works: about an hour (2026-10-31; it was six). The URLs skip the
+/// session check so `<img>`/`<video>` can load them, so whoever holds one (a shared link, a log
+/// line) can fetch that one item until then.
+pub const URL_LIFETIME_SECS: i64 = 3600;
+/// Expiries are rounded up to this, so a client's image cache sees one URL per item for a while.
+const URL_WINDOW_SECS: i64 = 15 * 60;
+
+/// The expiry for a URL signed now: an hour on, rounded up to the next window (60-75 minutes).
+fn expiry() -> i64 {
+    let exp = chrono::Utc::now().timestamp() + URL_LIFETIME_SECS;
+    exp - exp.rem_euclid(URL_WINDOW_SECS) + URL_WINDOW_SECS
+}
 
 /// The backend's media worker (`…workers.dev/cdn?url=<cdn>&exp=&sig=`).
 fn is_worker_host(host: &str) -> bool {
@@ -134,11 +145,10 @@ impl Signer {
         hex::encode(&mac.finalize().into_bytes()[..16])
     }
 
-    /// The signed path for a CDN URL, valid for about six hours (expiry rounded up to the hour,
-    /// so a client's image cache sees the same URL for the same media).
+    /// The signed path for a CDN URL, valid for 60-75 minutes (expiry rounded up to a quarter
+    /// hour, so a client's image cache sees the same URL for the same media meanwhile).
     pub fn url_for(&self, cdn: &str) -> String {
-        let exp = chrono::Utc::now().timestamp() + URL_LIFETIME_SECS;
-        self.url_with_exp(cdn, exp - exp % 3600 + 3600)
+        self.url_with_exp(cdn, expiry())
     }
 
     pub fn url_with_exp(&self, cdn: &str, exp: i64) -> String {
@@ -170,8 +180,7 @@ impl Signer {
     /// A signed URL for a saved item (`/v1/instagram/a/<exp>/<sig>/<item id>`), served from the
     /// Gallery's file.
     pub fn archive_url(&self, media_id: &str) -> String {
-        let exp = chrono::Utc::now().timestamp() + URL_LIFETIME_SECS;
-        let exp = exp - exp % 3600 + 3600;
+        let exp = expiry();
         format!(
             "{PREFIX}/a/{exp}/{}/{media_id}",
             self.mac(&format!("a/{exp}/{media_id}"))
@@ -301,9 +310,58 @@ mod tests {
     }
 
     #[test]
-    fn urls_are_stable_within_the_hour_window() {
+    fn urls_are_stable_within_a_window() {
         let s = Signer::new(vec![1; 32]);
         assert_eq!(s.url_for(CDN), s.url_for(CDN));
+    }
+
+    /// The part of a signed path after the prefix: `[exp, sig, token]`.
+    fn parts(url: &str, kind: &str) -> Vec<String> {
+        url.strip_prefix(&format!("{PREFIX}/{kind}/"))
+            .unwrap()
+            .split('/')
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn urls_live_about_an_hour_not_six() {
+        let s = Signer::new(vec![1; 32]);
+        let now = chrono::Utc::now().timestamp();
+        for url in [s.url_for(CDN), s.archive_url("itm_1")] {
+            let kind = if url.contains("/a/") { "a" } else { "s" };
+            let exp: i64 = parts(&url, kind)[0].parse().unwrap();
+            assert_eq!(exp % URL_WINDOW_SECS, 0, "{url}");
+            assert!(exp - now >= URL_LIFETIME_SECS, "{url}");
+            assert!(exp - now <= URL_LIFETIME_SECS + URL_WINDOW_SECS, "{url}");
+        }
+    }
+
+    #[test]
+    fn a_signature_is_bound_to_its_item_and_expiry() {
+        let s = Signer::new(vec![1; 32]);
+        let p = parts(&s.url_for(CDN), "s");
+        let exp: i64 = p[0].parse().unwrap();
+        assert!(s.verify(exp, &p[1], &p[2]).is_ok());
+        // Another picture's token under the same signature, or a later expiry, is refused.
+        let other = URL_SAFE_NO_PAD.encode("https://scontent.cdninstagram.com/v/t51/other.jpg");
+        assert_eq!(s.verify(exp, &p[1], &other), Err(SignError::BadSignature));
+        assert_eq!(
+            s.verify(exp + 3600, &p[1], &p[2]),
+            Err(SignError::BadSignature)
+        );
+        let a = parts(&s.archive_url("itm_1"), "a");
+        let aexp: i64 = a[0].parse().unwrap();
+        assert!(s.verify_archive(aexp, &a[1], "itm_1").is_ok());
+        assert_eq!(
+            s.verify_archive(aexp, &a[1], "itm_2"),
+            Err(SignError::BadSignature)
+        );
+        // A media signature is not an archive one.
+        assert_eq!(
+            s.verify_archive(exp, &p[1], &p[2]),
+            Err(SignError::BadSignature)
+        );
     }
 
     #[test]
