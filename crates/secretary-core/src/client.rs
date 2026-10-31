@@ -15,10 +15,11 @@ use serde_json::Value;
 
 use crate::error::{Error, Result};
 use crate::models::{
-    Agenda, AgendaQuery, CancelledReminder, ChatReply, ChatRequest, CreateList, CreateReminder,
-    CreatedReminder, Envelope, Health, Job, ListState, OpsBatch, OpsResult, ReminderList,
-    ReminderQuery, ReminderScope, ShoppingItem, ShoppingList, ShoppingListData, ShoppingListsData,
-    ShoppingOp, TimelinePage, TimelineQuery, UpdateList,
+    Agenda, AgendaQuery, CancelledReminder, ChatReply, ChatRequest, CommandResult, CreateList,
+    CreateReminder, CreatedReminder, DeviceEvents, DeviceState, Envelope, Health, Job, ListState,
+    OpsBatch, OpsResult, ReminderList, ReminderQuery, ReminderScope, ShoppingItem, ShoppingList,
+    ShoppingListData, ShoppingListsData, ShoppingOp, TimelineConversations, TimelinePage,
+    TimelineQuery, UpdateList,
 };
 use crate::validate;
 
@@ -58,8 +59,9 @@ pub enum TimeoutClass {
     Default,
 }
 
-/// One validated request against the contract.
-#[derive(Debug, Clone, PartialEq)]
+/// One validated request against the contract. `Debug` names the body's
+/// size only: a body may carry a secret value ([`Call::secrets_grant`]).
+#[derive(Clone, PartialEq)]
 pub struct Call {
     method: Method,
     segments: Vec<String>,
@@ -68,9 +70,59 @@ pub struct Call {
     class: TimeoutClass,
     /// Unwrap this key of `data` (`{items}` -> array, `{item}` -> item).
     extract: Option<&'static str>,
+    /// `x-lucina-caller`: who asks (`app`, `mcp:claude`), for Lucina's computer log.
+    caller: Option<String>,
+    /// The route may answer bare JSON instead of the `{ok, data}` envelope
+    /// (the AU Find routes); an envelope is still unwrapped.
+    bare: bool,
+}
+
+impl fmt::Debug for Call {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Call")
+            .field("method", &self.method)
+            .field("segments", &self.segments)
+            .field("query", &self.query)
+            .field(
+                "body",
+                &self
+                    .body
+                    .as_ref()
+                    .map(|b| format!("<{} bytes>", b.to_string().len())),
+            )
+            .field("class", &self.class)
+            .field("extract", &self.extract)
+            .field("caller", &self.caller)
+            .field("bare", &self.bare)
+            .finish()
+    }
 }
 
 impl Call {
+    /// `POST /secrets/grant {grant, value?, held?}`: relay an owner grant
+    /// to the broker ("Add secret"). The grant is already signed and checked
+    /// by secretary-server; `value` only for `put_secret`.
+    pub fn secrets_grant(
+        grant: String,
+        value: Option<String>,
+        held: Option<String>,
+    ) -> Result<Self> {
+        if !grant.starts_with("g1.") || grant.len() > 4096 {
+            return Err(Error::Invalid {
+                field: "grant",
+                message: "malformed".into(),
+            });
+        }
+        let mut body = serde_json::json!({ "grant": grant });
+        if let Some(v) = value {
+            body["value"] = Value::String(v);
+        }
+        if let Some(h) = held {
+            body["held"] = Value::String(h);
+        }
+        Ok(Self::new(Method::POST, &["secrets", "grant"]).with_body(body))
+    }
+
     fn new(method: Method, segments: &[&str]) -> Self {
         Self {
             method,
@@ -79,7 +131,19 @@ impl Call {
             body: None,
             class: TimeoutClass::Default,
             extract: None,
+            caller: None,
+            bare: false,
         }
+    }
+
+    /// Names the caller for Lucina (`[a-z0-9:-]{1,40}`; anything else is dropped).
+    pub fn with_caller(mut self, caller: &str) -> Self {
+        let ok = (1..=40).contains(&caller.len())
+            && caller
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b':' || b == b'-');
+        self.caller = ok.then(|| caller.to_owned());
+        self
     }
 
     fn extracting(mut self, key: &'static str) -> Self {
@@ -97,6 +161,349 @@ impl Call {
         Self::new(Method::GET, &["health"])
     }
 
+    /// `GET /hermes`: the Hermes desk settings.
+    pub fn hermes() -> Self {
+        Self::new(Method::GET, &["hermes"])
+    }
+
+    /// `PUT /hermes`.
+    pub fn hermes_update(body: Value) -> Result<Self> {
+        Ok(Self::new(Method::PUT, &["hermes"]).with_body(body))
+    }
+
+    /// `GET /game/state`: Lucina's Pokémon run (map, party, badges, objective, notes).
+    pub fn game_state() -> Self {
+        Self::new(Method::GET, &["game", "state"])
+    }
+
+    /// `GET /game/screenshot`: the current screen as PNG (send with [`LucinaClient::bytes`]).
+    pub fn game_screenshot() -> Self {
+        Self::new(Method::GET, &["game", "screenshot"])
+    }
+
+    /// `GET /computer`: Lucina's computer: task engine, sandboxes, who drives each.
+    pub fn computer_status() -> Self {
+        Self::new(Method::GET, &["computer"])
+    }
+
+    /// `POST /computer/task` as a job (`{task}` → 202 `{jobId}`): a task runs up to 200 s.
+    pub fn computer_task(task: &str) -> Result<Self> {
+        let task = task.trim();
+        if task.is_empty() || task.chars().count() > 16_000 {
+            return Err(Error::Invalid {
+                field: "task",
+                message: "must be 1..16000 chars".into(),
+            });
+        }
+        Ok(Self::new(Method::POST, &["computer", "task"])
+            .with_body(serde_json::json!({"task": task, "async": true})))
+    }
+
+    /// `GET /computer/task/{id}`.
+    pub fn computer_job(id: &str) -> Result<Self> {
+        validate::id("jobId", id)?;
+        Ok(Self::new(Method::GET, &["computer", "task", id]))
+    }
+
+    /// `POST /computer/task/{id}/cancel`.
+    pub fn computer_job_cancel(id: &str) -> Result<Self> {
+        validate::id("jobId", id)?;
+        Ok(Self::new(Method::POST, &["computer", "task", id, "cancel"]))
+    }
+
+    /// `POST /computer/call`: `{sandbox?, op, ...}` (a bash command may run a while).
+    pub fn computer_call(body: Value) -> Self {
+        let mut c = Self::new(Method::POST, &["computer", "call"]).with_body(body);
+        c.class = TimeoutClass::Chat;
+        c
+    }
+
+    /// `GET /computer/screenshot?sandbox=`: PNG (use [`LucinaClient::bytes`]).
+    pub fn computer_screenshot(sandbox: &str) -> Result<Self> {
+        let mut c = Self::new(Method::GET, &["computer", "screenshot"]);
+        c.query
+            .push(("sandbox", computer_sandbox(sandbox)?.to_owned()));
+        Ok(c)
+    }
+
+    /// `GET /computer/control?sandbox=`: who drives, and the recent takeover/input log.
+    pub fn computer_control_state(sandbox: &str) -> Result<Self> {
+        let mut c = Self::new(Method::GET, &["computer", "control"]);
+        c.query
+            .push(("sandbox", computer_sandbox(sandbox)?.to_owned()));
+        Ok(c)
+    }
+
+    /// `POST /computer/control`: `{sandbox, action: take|release|heartbeat, device}`.
+    pub fn computer_control(body: Value) -> Self {
+        Self::new(Method::POST, &["computer", "control"]).with_body(body)
+    }
+
+    /// `POST /computer/input`: the owner's input batch (each event is a driver call).
+    pub fn computer_input(body: Value) -> Self {
+        let mut c = Self::new(Method::POST, &["computer", "input"]).with_body(body);
+        c.class = TimeoutClass::Chat;
+        c
+    }
+
+    /// `GET /computer/lan`: the home-network door to the live view, `{url, publicIp}`
+    /// (`url` null when it is not set up).
+    pub fn computer_lan() -> Self {
+        Self::new(Method::GET, &["computer", "lan"])
+    }
+
+    /// `POST /computer/view`: a live-view ticket and its view id.
+    pub fn computer_view(body: Value) -> Self {
+        Self::new(Method::POST, &["computer", "view"]).with_body(body)
+    }
+
+    /// `POST /computer/desk`: a single-use LucinaDesk ticket (`lucinadesk.v1`).
+    pub fn computer_desk(body: Value) -> Self {
+        Self::new(Method::POST, &["computer", "desk"]).with_body(body)
+    }
+
+    /// `POST /computer/view/<id>/ticket`: the same view again — a renewal, or
+    /// the watch↔control switch of a takeover — without a new view id.
+    pub fn computer_view_ticket(view_id: &str, body: Value) -> Self {
+        Self::new(Method::POST, &["computer", "view", view_id, "ticket"]).with_body(body)
+    }
+
+    /// `POST /ops/records`: one record for Lucina's ops record (`NewRecord`;
+    /// Lucina validates it and denies unknown fields). 201 new, 200 duplicate:
+    /// send it with [`LucinaClient::call_with_status`].
+    pub fn ops_record(body: Value) -> Self {
+        Self::new(Method::POST, &["ops", "records"]).with_body(body)
+    }
+
+    /// `GET /ops/records/{id}`: one record (id = 16 lowercase hex).
+    pub fn ops_record_get(id: &str) -> Result<Self> {
+        if id.len() != 16
+            || !id
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(Error::Invalid {
+                field: "id",
+                message: "must be 16 lowercase hex digits".into(),
+            });
+        }
+        Ok(Self::new(Method::GET, &["ops", "records", id]))
+    }
+
+    /// `GET /ops/search?q=&project=&kind=&since=&until=&limit=`: Lucina's record
+    /// by words, project, kind and dates. Blank parameters are left out.
+    pub fn ops_search(
+        q: Option<&str>,
+        project: Option<&str>,
+        kind: Option<&str>,
+        since: Option<&str>,
+        until: Option<&str>,
+        limit: Option<u32>,
+    ) -> Result<Self> {
+        let mut c = Self::new(Method::GET, &["ops", "search"]);
+        if let Some(q) = present(q) {
+            if q.chars().count() > validate::MAX_OPS_QUERY_CHARS {
+                return Err(Error::Invalid {
+                    field: "q",
+                    message: format!(
+                        "must be at most {} characters",
+                        validate::MAX_OPS_QUERY_CHARS
+                    ),
+                });
+            }
+            c.query.push(("q", q.to_owned()));
+        }
+        for (field, v) in [
+            ("project", project),
+            ("kind", kind),
+            ("since", since),
+            ("until", until),
+        ] {
+            if let Some(v) = present(v) {
+                if v.len() > 64 || v.chars().any(char::is_control) {
+                    return Err(Error::Invalid {
+                        field,
+                        message: "must be at most 64 characters".into(),
+                    });
+                }
+                c.query.push((field, v.to_owned()));
+            }
+        }
+        if let Some(n) = limit {
+            if !(1..=validate::MAX_OPS_SEARCH_LIMIT).contains(&n) {
+                return Err(Error::Invalid {
+                    field: "limit",
+                    message: format!("must be 1..={}", validate::MAX_OPS_SEARCH_LIMIT),
+                });
+            }
+            c.query.push(("limit", n.to_string()));
+        }
+        Ok(c)
+    }
+
+    /// `POST /callers/screen`: Jev's verdict on 1-20 phone numbers (`{numbers, lang?,
+    /// context?, call?}`; Lucina validates the rest and denies unknown fields).
+    pub fn callers_screen(body: Value) -> Result<Self> {
+        let numbers = body
+            .get("numbers")
+            .and_then(Value::as_array)
+            .filter(|a| (1..=20).contains(&a.len()))
+            .filter(|a| {
+                a.iter()
+                    .all(|n| n.as_str().is_some_and(|s| !s.trim().is_empty() && s.chars().count() <= 40))
+            });
+        if !body.is_object() || numbers.is_none() {
+            return Err(Error::Invalid {
+                field: "numbers",
+                message: "must be 1-20 phone numbers of at most 40 characters".into(),
+            });
+        }
+        if body.to_string().len() > 8 * 1024 {
+            return Err(Error::Invalid {
+                field: "body",
+                message: "must be at most 8 KiB".into(),
+            });
+        }
+        Ok(Self::new(Method::POST, &["callers", "screen"]).with_body(body))
+    }
+
+    /// `GET /callers/directory`: Call Directory labels for numbers that called before.
+    pub fn callers_directory() -> Self {
+        Self::new(Method::GET, &["callers", "directory"])
+    }
+
+    /// `GET /callers/directory?block=1&spam=&pickup=`: the labels plus the numbers above
+    /// the owner's auto-reject thresholds (0..1 each; Lucina's defaults when absent).
+    pub fn callers_directory_block(spam: Option<&str>, pickup: Option<&str>) -> Result<Self> {
+        let mut c = Self::callers_directory();
+        c.query.push(("block", "1".to_owned()));
+        for (field, v) in [("spam", spam), ("pickup", pickup)] {
+            if let Some(v) = present(v) {
+                let ok = v.len() <= 8
+                    && v.parse::<f64>()
+                        .is_ok_and(|f| f.is_finite() && (0.0..=1.0).contains(&f));
+                if !ok {
+                    return Err(Error::Invalid {
+                        field,
+                        message: "must be a number 0..1".into(),
+                    });
+                }
+                c.query.push((field, v.to_owned()));
+            }
+        }
+        Ok(c)
+    }
+
+    /// `POST /callers/rejected`: a phone rejected a call (Lucina validates the body).
+    pub fn callers_rejected(body: Value) -> Result<Self> {
+        if !body.is_object() || body.to_string().len() > 4 * 1024 {
+            return Err(Error::Invalid {
+                field: "body",
+                message: "must be a JSON object of at most 4 KiB".into(),
+            });
+        }
+        Ok(Self::new(Method::POST, &["callers", "rejected"]).with_body(body))
+    }
+
+    /// `POST /callers/allow` `{number}`: the owner allows a number (never rejected or blocked again).
+    pub fn callers_allow(body: Value) -> Result<Self> {
+        let ok = body
+            .get("number")
+            .and_then(Value::as_str)
+            .is_some_and(|n| !n.trim().is_empty() && n.chars().count() <= 40)
+            && body.as_object().is_some_and(|o| o.len() == 1);
+        if !ok {
+            return Err(Error::Invalid {
+                field: "number",
+                message: "must be one phone number of at most 40 characters".into(),
+            });
+        }
+        Ok(Self::new(Method::POST, &["callers", "allow"]).with_body(body))
+    }
+
+    /// `GET /au/health`: whether AU Find answers (`{reachable, af_server, error?}`).
+    pub fn au_health() -> Self {
+        Self::new(Method::GET, &["au", "health"]).bare()
+    }
+
+    /// `GET /au/people?q=&lang=`: Aarhus University people through AU Find
+    /// (retries and disambiguation happen on Lucina's side).
+    pub fn au_people(q: Option<&str>, lang: Option<&str>) -> Result<Self> {
+        let mut c = Self::new(Method::GET, &["au", "people"]).bare();
+        c.query.push(("q", au_query(q)?));
+        if let Some(lang) = lang {
+            if !matches!(lang, "da" | "en") {
+                return Err(Error::Invalid {
+                    field: "lang",
+                    message: "must be da or en".into(),
+                });
+            }
+            c.query.push(("lang", lang.to_owned()));
+        }
+        Ok(c)
+    }
+
+    /// `GET /au/buildings?q=`: Aarhus University buildings through AU Find.
+    pub fn au_buildings(q: Option<&str>) -> Result<Self> {
+        let mut c = Self::new(Method::GET, &["au", "buildings"]).bare();
+        c.query.push(("q", au_query(q)?));
+        Ok(c)
+    }
+
+    /// `GET /au/map.png?building=&z=` or `?lat=&lng=&z=`: an 800×600 campus map
+    /// (send with [`LucinaClient::bytes`]). A building or both coordinates;
+    /// `z` 14..=18 is optional.
+    pub fn au_map(
+        building: Option<&str>,
+        lat: Option<&str>,
+        lng: Option<&str>,
+        z: Option<&str>,
+    ) -> Result<Self> {
+        let mut c = Self::new(Method::GET, &["au", "map.png"]);
+        match (building, lat, lng) {
+            (Some(b), None, None) => {
+                if b.is_empty() || b.len() > 6 || !b.bytes().all(|b| b.is_ascii_alphanumeric()) {
+                    return Err(Error::Invalid {
+                        field: "building",
+                        message: "must be 1-6 letters or digits".into(),
+                    });
+                }
+                c.query.push(("building", b.to_owned()));
+            }
+            (None, Some(lat), Some(lng)) => {
+                c.query.push(("lat", au_coord("lat", lat, 54.0, 58.0)?));
+                c.query.push(("lng", au_coord("lng", lng, 8.0, 16.0)?));
+            }
+            _ => {
+                return Err(Error::Invalid {
+                    field: "building",
+                    message: "give a building, or lat and lng (not both)".into(),
+                })
+            }
+        }
+        if let Some(z) = z {
+            c.query
+                .push(("z", validate::bounded_int("z", z, 14, 18)?.to_string()));
+        }
+        Ok(c)
+    }
+
+    fn bare(mut self) -> Self {
+        self.bare = true;
+        self
+    }
+
+    /// `POST /game/control`: start (`true`) or pause the run.
+    pub fn game_control(running: bool) -> Self {
+        let reason = if running {
+            "Started by the owner from the app"
+        } else {
+            "Paused by the owner from the app"
+        };
+        Self::new(Method::POST, &["game", "control"])
+            .with_body(serde_json::json!({"running": running, "reason": reason}))
+    }
+
     /// `POST /chat`.
     pub fn chat(req: &ChatRequest) -> Result<Self> {
         validate::text("message", &req.message, validate::MAX_MESSAGE_CHARS)?;
@@ -106,6 +513,9 @@ impl Call {
         validate::opt_id("clientMessageId", req.client_message_id.as_deref())?;
         if let Some(c) = req.channel.as_deref() {
             validate::chat_channel("channel", c)?;
+        }
+        if let Some(r) = req.reply_to.as_deref() {
+            validate::timeline_ref("replyTo", r)?;
         }
         let body = serde_json::to_value(req).map_err(|e| Error::Decode(e.to_string()))?;
         let mut call = Self::new(Method::POST, &["chat"]).with_body(body);
@@ -117,6 +527,54 @@ impl Call {
     pub fn job(id: &str) -> Result<Self> {
         validate::id("id", id)?;
         Ok(Self::new(Method::GET, &["jobs", id]))
+    }
+
+    /// `POST /decisions`: opaque JSON object, at most 32 KiB.
+    pub fn create_decision(body: Value) -> Result<Self> {
+        if !body.is_object() || body.to_string().len() > 32 * 1024 {
+            return Err(Error::Invalid {
+                field: "body",
+                message: "must be a JSON object up to 32 KB".into(),
+            });
+        }
+        Ok(Self::new(Method::POST, &["decisions"]).with_body(body))
+    }
+
+    /// `GET /decisions/{id}` with a contract decision id.
+    pub fn decision(id: &str) -> Result<Self> {
+        decision_id(id)?;
+        Ok(Self::new(Method::GET, &["decisions", id]))
+    }
+
+    /// `DELETE /decisions/{id}?reason=`: the asker takes back a pending
+    /// decision. The reason is trimmed, optional, at most 500 characters.
+    pub fn withdraw_decision(id: &str, reason: Option<&str>) -> Result<Self> {
+        decision_id(id)?;
+        let mut call = Self::new(Method::DELETE, &["decisions", id]);
+        if let Some(reason) = reason.map(str::trim).filter(|r| !r.is_empty()) {
+            validate::text("reason", reason, 500)?;
+            call.query.push(("reason", reason.to_owned()));
+        }
+        Ok(call)
+    }
+
+    /// `GET /decisions?status=&limit=`.
+    pub fn decisions(status: Option<&str>, limit: Option<&str>) -> Result<Self> {
+        let mut call = Self::new(Method::GET, &["decisions"]);
+        if let Some(status) = status {
+            if !matches!(status, "pending" | "decided" | "expired" | "withdrawn") {
+                return Err(Error::Invalid {
+                    field: "status",
+                    message: "must be pending, decided, expired or withdrawn".into(),
+                });
+            }
+            call.query.push(("status", status.to_owned()));
+        }
+        if let Some(limit) = limit {
+            validate::bounded_int("limit", limit, 1, 100)?;
+            call.query.push(("limit", limit.to_owned()));
+        }
+        Ok(call)
     }
 
     /// `GET /reminders?scope=&includeSent=`.
@@ -244,6 +702,14 @@ impl Call {
     /// `opId`s; every field is checked (ids, lengths, quantities).
     pub fn shopping_ops(id: &str, batch: &OpsBatch) -> Result<Self> {
         validate::id("id", id)?;
+        if let Some(via) = batch.via.as_deref() {
+            if via != "mcp" {
+                return Err(Error::Invalid {
+                    field: "via",
+                    message: "must be \"mcp\" when present".into(),
+                });
+            }
+        }
         if batch.ops.is_empty() || batch.ops.len() > validate::MAX_OPS_PER_BATCH {
             return Err(Error::Invalid {
                 field: "ops",
@@ -252,13 +718,7 @@ impl Call {
         }
         let mut seen = std::collections::HashSet::new();
         for (i, op) in batch.ops.iter().enumerate() {
-            validate_op(op).map_err(|e| match e {
-                Error::Invalid { field, message } => Error::Invalid {
-                    field: "ops",
-                    message: format!("[{i}].{field}: {message}"),
-                },
-                other => other,
-            })?;
+            validate_op(op).map_err(|e| index_error("ops", i, e))?;
             if !seen.insert(op.op_id()) {
                 return Err(Error::Invalid {
                     field: "ops",
@@ -270,9 +730,109 @@ impl Call {
         Ok(Self::new(Method::POST, &["shopping", "lists", id, "ops"]).with_body(body))
     }
 
-    /// `GET /timeline?before=&limit=` (newest first, `{items, nextBefore}`).
+    /// `POST /device/events`: 1..=500 events, whitelisted `type`/`source`,
+    /// `data` an object of at most 8 KiB.
+    pub fn device_events(batch: &DeviceEvents) -> Result<Self> {
+        if batch.events.is_empty() || batch.events.len() > validate::MAX_DEVICE_EVENTS {
+            return Err(Error::Invalid {
+                field: "events",
+                message: format!("must hold 1..={} events", validate::MAX_DEVICE_EVENTS),
+            });
+        }
+        for (i, ev) in batch.events.iter().enumerate() {
+            let check = || -> Result<()> {
+                validate::id("id", &ev.id)?;
+                validate::event_ts("ts", &ev.ts)?;
+                validate::one_of("type", &ev.kind, validate::DEVICE_EVENT_TYPES)?;
+                validate::one_of("source", &ev.source, validate::DEVICE_SOURCES)?;
+                validate::object("data", &ev.data)?;
+                validate::json_size("data", &ev.data, validate::MAX_EVENT_DATA_BYTES)
+            };
+            check().map_err(|e| index_error("events", i, e))?;
+        }
+        let body = serde_json::to_value(batch).map_err(|e| Error::Decode(e.to_string()))?;
+        Ok(Self::new(Method::POST, &["device", "events"]).with_body(body))
+    }
+
+    /// `POST /device/commands/{id}/result {ok, error?, deviceObjectId?}`.
+    pub fn command_result(id: &str, res: &CommandResult) -> Result<Self> {
+        validate::id("id", id)?;
+        if let Some(e) = res.error.as_deref() {
+            validate::text("error", e, validate::MAX_COMMAND_TEXT_CHARS)?;
+        }
+        if let Some(d) = res.device_object_id.as_deref() {
+            validate::text("deviceObjectId", d, validate::MAX_COMMAND_TEXT_CHARS)?;
+        }
+        let body = serde_json::to_value(res).map_err(|e| Error::Decode(e.to_string()))?;
+        Ok(Self::new(Method::POST, &["device", "commands", id, "result"]).with_body(body))
+    }
+
+    /// `POST /device/state`: each list at most 500 objects of at most 8 KiB.
+    pub fn device_state(st: &DeviceState) -> Result<Self> {
+        for (field, items) in [
+            ("alarms", &st.alarms),
+            ("timers", &st.timers),
+            ("reminders", &st.reminders),
+            ("events", &st.events),
+        ] {
+            if items.len() > validate::MAX_STATE_ITEMS {
+                return Err(Error::Invalid {
+                    field,
+                    message: format!("must hold at most {} items", validate::MAX_STATE_ITEMS),
+                });
+            }
+            for (i, it) in items.iter().enumerate() {
+                validate::object("item", it)
+                    .and_then(|()| validate::json_size("item", it, validate::MAX_STATE_ITEM_BYTES))
+                    .map_err(|e| index_error(field, i, e))?;
+            }
+        }
+        if !matches!(st.focus, Value::Null | Value::String(_) | Value::Object(_)) {
+            return Err(Error::Invalid {
+                field: "focus",
+                message: "must be an object, a string or null".into(),
+            });
+        }
+        validate::json_size("focus", &st.focus, validate::MAX_STATE_ITEM_BYTES)?;
+        if let Some(ts) = &st.ts {
+            validate::event_ts("ts", ts)?;
+        }
+        let body = serde_json::to_value(st).map_err(|e| Error::Decode(e.to_string()))?;
+        Ok(Self::new(Method::POST, &["device", "state"]).with_body(body))
+    }
+
+    /// Validated history or incremental timeline query.
     pub fn timeline(q: &TimelineQuery) -> Result<Self> {
+        if q.before.is_some() && q.after.is_some() {
+            return Err(Error::Invalid {
+                field: "after",
+                message: "cannot be combined with before".into(),
+            });
+        }
+        if q.scope.is_some() && q.conversation.is_some() {
+            return Err(Error::Invalid {
+                field: "scope",
+                message: "cannot be combined with conversation".into(),
+            });
+        }
         let mut call = Self::new(Method::GET, &["timeline"]);
+        if let Some(a) = q.after.as_deref() {
+            validate::id("after", a)?;
+            call.query.push(("after", a.to_owned()));
+        }
+        if let Some(c) = q.conversation.as_deref() {
+            validate::conversation(c)?;
+            call.query.push(("conversation", c.to_owned()));
+        }
+        if let Some(scope) = q.scope.as_deref() {
+            if scope != "mine" {
+                return Err(Error::Invalid {
+                    field: "scope",
+                    message: "must be mine".into(),
+                });
+            }
+            call.query.push(("scope", scope.to_owned()));
+        }
         if let Some(b) = q.before.as_deref() {
             validate::id("before", b)?;
             call.query.push(("before", b.to_owned()));
@@ -280,6 +840,42 @@ impl Call {
         if let Some(l) = q.limit.as_deref() {
             let n = validate::bounded_int("limit", l, 1, validate::MAX_TIMELINE_LIMIT)?;
             call.query.push(("limit", n.to_string()));
+        }
+        Ok(call)
+    }
+
+    /// Add trusted identity filters for `scope=mine` only.
+    pub fn timeline_for_device(q: &TimelineQuery, device: &str, channel: &str) -> Result<Self> {
+        let mut call = Self::timeline(q)?;
+        if q.scope.as_deref() == Some("mine") {
+            validate::id("device", device)?;
+            validate::chat_channel("channel", channel)?;
+            call.query.push(("device", device.to_owned()));
+            call.query.push(("channel", channel.to_owned()));
+        }
+        Ok(call)
+    }
+
+    pub fn timeline_conversations() -> Self {
+        Self::new(Method::GET, &["timeline", "conversations"])
+    }
+
+    /// `GET /grocery/deals/map?radiusM=`: Lucina's deals map around home.
+    /// The optional radius is in meters, 500..=15 000.
+    pub fn deals_map(radius_m: Option<u32>) -> Result<Self> {
+        let mut call = Self::new(Method::GET, &["grocery", "deals", "map"]);
+        if let Some(r) = radius_m {
+            if !(validate::DEALS_RADIUS_MIN..=validate::DEALS_RADIUS_MAX).contains(&r) {
+                return Err(Error::Invalid {
+                    field: "radiusM",
+                    message: format!(
+                        "must be an integer {}..={}",
+                        validate::DEALS_RADIUS_MIN,
+                        validate::DEALS_RADIUS_MAX
+                    ),
+                });
+            }
+            call.query.push(("radiusM", r.to_string()));
         }
         Ok(call)
     }
@@ -299,6 +895,76 @@ impl Call {
     /// Path below `/api/secretary/`, for diagnostics (ids included).
     pub fn path(&self) -> String {
         format!("/api/secretary/{}", self.segments.join("/"))
+    }
+}
+
+/// An AU Find search: trimmed, 1..=200 characters, no control characters.
+fn au_query(q: Option<&str>) -> Result<String> {
+    match present(q) {
+        Some(q) if q.chars().count() <= 200 && !q.chars().any(char::is_control) => {
+            Ok(q.to_owned())
+        }
+        _ => Err(Error::Invalid {
+            field: "q",
+            message: "must be 1..200 characters".into(),
+        }),
+    }
+}
+
+/// A decimal coordinate within `min..=max` (Denmark), passed on as given.
+fn au_coord(field: &'static str, s: &str, min: f64, max: f64) -> Result<String> {
+    let ok = s.len() <= 24
+        && s.bytes().all(|b| b.is_ascii_digit() || b == b'.' || b == b'-')
+        && s.parse::<f64>().is_ok_and(|v| (min..=max).contains(&v));
+    if !ok {
+        return Err(Error::Invalid {
+            field,
+            message: format!("must be a number {min}..={max}"),
+        });
+    }
+    Ok(s.to_owned())
+}
+
+/// A query parameter that was given and is not blank, trimmed.
+fn present(s: Option<&str>) -> Option<&str> {
+    s.map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// A contract decision id: `dc-` and 12 lowercase hex digits.
+fn decision_id(id: &str) -> Result<()> {
+    if id.len() != 15
+        || !id.starts_with("dc-")
+        || !id.as_bytes()[3..]
+            .iter()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b))
+    {
+        return Err(Error::Invalid {
+            field: "id",
+            message: "must be dc- followed by 12 lowercase hex digits".into(),
+        });
+    }
+    Ok(())
+}
+
+/// `workspace` | `android` (Lucina also accepts their aliases; the apps use these two).
+fn computer_sandbox(s: &str) -> Result<&str> {
+    match s {
+        "workspace" | "android" => Ok(s),
+        _ => Err(Error::Invalid {
+            field: "sandbox",
+            message: "must be workspace or android".into(),
+        }),
+    }
+}
+
+/// `Invalid{field}` of item `i` of list `list` -> `Invalid{list, "[i].field: ..."}`.
+fn index_error(list: &'static str, i: usize, e: Error) -> Error {
+    match e {
+        Error::Invalid { field, message } => Error::Invalid {
+            field: list,
+            message: format!("[{i}].{field}: {message}"),
+        },
+        other => other,
     }
 }
 
@@ -445,6 +1111,18 @@ impl LucinaClient {
         self.timeouts
     }
 
+    /// `http://host:port` Lucina origin and the `Authorization` value, for the
+    /// computer live-view proxy (it splices a WebSocket and streams viewer
+    /// responses, which the typed calls cannot). `None` over https.
+    pub fn passthrough(&self) -> Option<(String, String)> {
+        if self.base.scheme() != "http" {
+            return None;
+        }
+        let host = self.base.host_str()?;
+        let port = self.base.port_or_known_default()?;
+        Some((format!("{host}:{port}"), format!("Bearer {}", self.token)))
+    }
+
     fn url(&self, call: &Call) -> Url {
         let mut url = self.base.clone();
         {
@@ -485,6 +1163,32 @@ impl LucinaClient {
         Ok(self.send(call, timeout).await?.1)
     }
 
+    /// Send `call` and return the raw body with its content type, for non-JSON answers (the game screenshot).
+    /// A non-2xx answer is decoded as Lucina's JSON error.
+    pub async fn bytes(&self, call: &Call) -> Result<(String, Vec<u8>)> {
+        let resp = self
+            .http
+            .request(call.method.clone(), self.url(call))
+            .bearer_auth(&self.token)
+            .timeout(self.timeouts.default)
+            .send()
+            .await
+            .map_err(Error::from_reqwest)?;
+        let status = resp.status();
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("application/octet-stream")
+            .to_owned();
+        let body = resp.bytes().await.map_err(Error::from_reqwest)?;
+        if !status.is_success() {
+            decode_response::<Value>(status.as_u16(), &body)?;
+            return Err(Error::Decode(format!("unexpected status {status}")));
+        }
+        Ok((content_type, body.to_vec()))
+    }
+
     async fn send<T: DeserializeOwned>(&self, call: &Call, timeout: Duration) -> Result<(u16, T)> {
         let mut req = self
             .http
@@ -492,13 +1196,26 @@ impl LucinaClient {
             .bearer_auth(&self.token)
             .header(reqwest::header::ACCEPT, "application/json")
             .timeout(timeout);
+        if let Some(caller) = &call.caller {
+            req = req.header("x-lucina-caller", caller);
+        }
         if let Some(body) = &call.body {
             req = req.json(body);
         }
         let resp = req.send().await.map_err(Error::from_reqwest)?;
         let status = resp.status();
         let bytes = resp.bytes().await.map_err(Error::from_reqwest)?;
-        let data: Value = decode_response(status.as_u16(), &bytes)?;
+        let data: Value = if call.bare && status.is_success() {
+            match serde_json::from_slice::<Value>(&bytes) {
+                Ok(v) if v.get("ok").is_some_and(Value::is_boolean) => {
+                    decode_response(status.as_u16(), &bytes)?
+                }
+                Ok(v) => v,
+                Err(e) => return Err(Error::Decode(e.to_string())),
+            }
+        } else {
+            decode_response(status.as_u16(), &bytes)?
+        };
         let data = match call.extract {
             None => data,
             Some(key) => match data {
@@ -572,6 +1289,10 @@ impl LucinaClient {
         self.call(&Call::timeline(q)?).await
     }
 
+    pub async fn timeline_conversations(&self) -> Result<TimelineConversations> {
+        self.call(&Call::timeline_conversations()).await
+    }
+
     /// Open `GET /timeline/stream` (Server-Sent Events) and return the live
     /// response once Lucina answered 2xx with `text/event-stream`; read it
     /// with `bytes_stream()`. `last_event_id` (an id) is sent as
@@ -619,6 +1340,12 @@ impl LucinaClient {
 }
 
 /// Envelope handling, separate from I/O so it can be unit-tested.
+/// Lucina's `{ok, data}` envelope (or its error) from an answer read some other way
+/// than [`LucinaClient::call_with_status`], e.g. a streamed passthrough.
+pub fn decode_envelope(status: u16, bytes: &[u8]) -> Result<Value> {
+    decode_response(status, bytes)
+}
+
 fn decode_response<T: DeserializeOwned>(status: u16, bytes: &[u8]) -> Result<T> {
     if (200..300).contains(&status) {
         let env: Envelope<Value> =
@@ -677,11 +1404,226 @@ mod tests {
         let q = TimelineQuery {
             before: Some("tl_9".into()),
             limit: Some("050".into()),
+            ..Default::default()
         };
         assert_eq!(
             c.url(&Call::timeline(&q).unwrap()).as_str(),
             "http://h:1/prefix/api/secretary/timeline?before=tl_9&limit=50"
         );
+        assert_eq!(
+            c.url(&Call::deals_map(Some(2026)).unwrap()).as_str(),
+            "http://h:1/prefix/api/secretary/grocery/deals/map?radiusM=2026"
+        );
+        assert!(
+            !c.url(&Call::deals_map(None).unwrap())
+                .as_str()
+                .contains('?'),
+            "no query without a radius"
+        );
+    }
+
+    #[test]
+    fn withdraw_decision_calls() {
+        let c = client("http://h:1");
+        let w = Call::withdraw_decision("dc-012345abcdef", Some("  settled & done ")).unwrap();
+        assert_eq!(w.method(), &Method::DELETE);
+        assert_eq!(
+            c.url(&w).as_str(),
+            "http://h:1/api/secretary/decisions/dc-012345abcdef?reason=settled+%26+done"
+        );
+        for reason in [None, Some(" ")] {
+            let w = Call::withdraw_decision("dc-012345abcdef", reason).unwrap();
+            assert_eq!(
+                c.url(&w).as_str(),
+                "http://h:1/api/secretary/decisions/dc-012345abcdef"
+            );
+        }
+        assert!(Call::withdraw_decision("dc-012345abcdef", Some(&"x".repeat(500))).is_ok());
+        assert!(Call::withdraw_decision("dc-012345abcdef", Some(&"x".repeat(501))).is_err());
+        assert!(Call::withdraw_decision("dc-012345abcdef", Some(&"é".repeat(500))).is_ok());
+        assert!(Call::withdraw_decision("dc-012345abcdef", Some(&"é".repeat(501))).is_err());
+        assert!(Call::withdraw_decision("dc-012345ABCDEF", None).is_err());
+    }
+
+    #[test]
+    fn ops_calls() {
+        let c = client("http://h:1");
+        let rec = Call::ops_record(json!({"kind": "deploy", "project": "p1", "title": "x"}))
+            .with_caller("mcp:claude");
+        assert_eq!(rec.method(), &Method::POST);
+        assert_eq!(c.url(&rec).as_str(), "http://h:1/api/secretary/ops/records");
+        assert_eq!(rec.body().unwrap()["kind"], "deploy");
+        assert_eq!(rec.caller.as_deref(), Some("mcp:claude"));
+
+        assert_eq!(
+            c.url(&Call::ops_record_get("0123456789abcdef").unwrap())
+                .as_str(),
+            "http://h:1/api/secretary/ops/records/0123456789abcdef"
+        );
+        for bad in [
+            "0123456789ABCDEF",
+            "0123456789abcde",
+            "../../../../x/ab",
+            "",
+        ] {
+            assert!(Call::ops_record_get(bad).is_err(), "{bad}");
+        }
+
+        let s = Call::ops_search(
+            Some("go live"),
+            Some("p1"),
+            Some("deploy"),
+            Some("2026-10-01"),
+            None,
+            Some(5),
+        )
+        .unwrap();
+        assert_eq!(
+            c.url(&s).as_str(),
+            "http://h:1/api/secretary/ops/search?q=go+live&project=p1&kind=deploy&since=2026-10-01&limit=5"
+        );
+        let s = Call::ops_search(Some(" "), None, None, None, None, None).unwrap();
+        assert_eq!(c.url(&s).as_str(), "http://h:1/api/secretary/ops/search");
+        let long = "x".repeat(validate::MAX_OPS_QUERY_CHARS + 1);
+        let at_max = "x".repeat(validate::MAX_OPS_QUERY_CHARS);
+        assert!(Call::ops_search(Some(&at_max), None, None, None, None, Some(50)).is_ok());
+        for (q, limit, field) in [
+            (Some(long.as_str()), None, "q"),
+            (None, Some(0), "limit"),
+            (None, Some(51), "limit"),
+        ] {
+            match Call::ops_search(q, None, None, None, None, limit) {
+                Err(Error::Invalid { field: f, .. }) => assert_eq!(f, field),
+                other => panic!("{other:?}"),
+            }
+        }
+        assert!(Call::ops_search(None, Some(&"p".repeat(65)), None, None, None, None).is_err());
+    }
+
+    #[test]
+    fn callers_block_reject_allow_calls() {
+        let c = client("http://h:1");
+        assert_eq!(
+            c.url(&Call::callers_directory_block(Some("0.6"), Some("0.25")).unwrap()).as_str(),
+            "http://h:1/api/secretary/callers/directory?block=1&spam=0.6&pickup=0.25"
+        );
+        assert_eq!(
+            c.url(&Call::callers_directory_block(None, None).unwrap()).as_str(),
+            "http://h:1/api/secretary/callers/directory?block=1"
+        );
+        for bad in ["1.5", "-0.1", "NaN", "x", "0.600000001"] {
+            assert!(Call::callers_directory_block(Some(bad), None).is_err(), "{bad}");
+        }
+        assert!(Call::callers_rejected(json!({"number": "+4570405220", "line": "l", "source": "android"})).is_ok());
+        assert!(Call::callers_rejected(json!([1])).is_err());
+        assert!(Call::callers_rejected(json!({"line": "x".repeat(5000)})).is_err());
+        assert!(Call::callers_allow(json!({"number": "+4570405205"})).is_ok());
+        for bad in [json!({}), json!({"number": ""}), json!({"number": "1", "x": 1}), json!({"number": 5})] {
+            assert!(Call::callers_allow(bad.clone()).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn callers_calls() {
+        let c = client("http://h:1");
+        let s = Call::callers_screen(json!({"numbers": ["+45 70 40 52 05"], "lang": "da"})).unwrap();
+        assert_eq!(c.url(&s).as_str(), "http://h:1/api/secretary/callers/screen");
+        assert_eq!(
+            c.url(&Call::callers_directory()).as_str(),
+            "http://h:1/api/secretary/callers/directory"
+        );
+        for bad in [
+            json!([]),
+            json!({}),
+            json!({"numbers": []}),
+            json!({"numbers": "+4570405205"}),
+            json!({"numbers": [1]}),
+            json!({"numbers": [" "]}),
+            json!({"numbers": ["1".repeat(41)]}),
+            json!({"numbers": vec!["1"; 21]}),
+            json!({"numbers": ["1"], "context": {"contact": "x".repeat(9000)}}),
+        ] {
+            assert!(Call::callers_screen(bad.clone()).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn au_calls() {
+        let c = client("http://h:1");
+        assert_eq!(
+            c.url(&Call::au_health()).as_str(),
+            "http://h:1/api/secretary/au/health"
+        );
+        let p = Call::au_people(Some(" Jens Hansen "), Some("da")).unwrap();
+        assert!(p.bare);
+        assert_eq!(
+            c.url(&p).as_str(),
+            "http://h:1/api/secretary/au/people?q=Jens+Hansen&lang=da"
+        );
+        assert!(Call::au_people(Some(&"é".repeat(200)), None).is_ok());
+        for (q, lang) in [
+            (None, None),
+            (Some(" "), None),
+            (Some("a\nb"), None),
+            (Some(&*"x".repeat(201)), None),
+            (Some("x"), Some("it")),
+        ] {
+            assert!(Call::au_people(q, lang).is_err(), "{q:?} {lang:?}");
+        }
+        assert_eq!(
+            c.url(&Call::au_buildings(Some("1532")).unwrap()).as_str(),
+            "http://h:1/api/secretary/au/buildings?q=1532"
+        );
+        assert!(Call::au_buildings(None).is_err());
+
+        let m = Call::au_map(Some("1532"), None, None, Some("17")).unwrap();
+        assert!(!m.bare);
+        assert_eq!(
+            c.url(&m).as_str(),
+            "http://h:1/api/secretary/au/map.png?building=1532&z=17"
+        );
+        let m = Call::au_map(None, Some("56.1697"), Some("10.2039"), None).unwrap();
+        assert_eq!(
+            c.url(&m).as_str(),
+            "http://h:1/api/secretary/au/map.png?lat=56.1697&lng=10.2039"
+        );
+        for (b, lat, lng, z) in [
+            (None, None, None, None),
+            (Some("1532"), Some("56"), Some("10"), None),
+            (None, Some("56"), None, None),
+            (Some("../x"), None, None, None),
+            (Some("1234567"), None, None, None),
+            (Some(""), None, None, None),
+            (Some("1532"), None, None, Some("13")),
+            (Some("1532"), None, None, Some("19")),
+            (None, Some("53.9"), Some("10"), None),
+            (None, Some("56"), Some("16.1"), None),
+            (None, Some("NaN"), Some("10"), None),
+            (None, Some("5e1"), Some("10"), None),
+        ] {
+            assert!(Call::au_map(b, lat, lng, z).is_err(), "{b:?} {lat:?} {lng:?} {z:?}");
+        }
+    }
+
+    #[test]
+    fn deals_map_radius_is_500_to_15000() {
+        assert!(Call::deals_map(None).is_ok());
+        assert!(Call::deals_map(Some(validate::DEALS_RADIUS_MIN)).is_ok());
+        assert!(Call::deals_map(Some(validate::DEALS_RADIUS_MAX)).is_ok());
+        for bad in [
+            Some(validate::DEALS_RADIUS_MIN - 1),
+            Some(validate::DEALS_RADIUS_MAX + 1),
+            Some(0),
+            Some(u32::MAX),
+        ] {
+            match Call::deals_map(bad) {
+                Err(Error::Invalid { field, message }) => {
+                    assert_eq!(field, "radiusM");
+                    assert!(message.contains("500..=15000"), "{message}");
+                }
+                other => panic!("{other:?}"),
+            }
+        }
     }
 
     #[test]
@@ -691,7 +1633,10 @@ mod tests {
             message: " ".into(),
             session_id: None,
             client_message_id: None,
-            channel: None
+            channel: None,
+            device: None,
+            device_name: None,
+            reply_to: None,
         })
         .is_err());
         assert!(Call::agenda(&AgendaQuery {
@@ -711,13 +1656,36 @@ mod tests {
                 session_id: None,
                 client_message_id: None,
                 channel: Some(channel.into()),
+                device: None,
+                device_name: None,
+                reply_to: None,
             })
         };
         assert!(chat("ios").is_ok());
         assert!(chat("telegram").is_err());
+        let reply = |id: &str| {
+            Call::chat(&ChatRequest {
+                message: "hi".into(),
+                session_id: None,
+                client_message_id: None,
+                channel: None,
+                device: None,
+                device_name: None,
+                reply_to: Some(id.into()),
+            })
+        };
+        assert_eq!(
+            reply("01K83ZK4Q6X1V9W2D3E4F5G6H7").unwrap().body().unwrap()["replyTo"],
+            "01K83ZK4Q6X1V9W2D3E4F5G6H7"
+        );
+        assert!(reply("tl_2-x").is_ok());
+        for bad in ["", "a/b", "a.b", &"x".repeat(65)] {
+            assert!(reply(bad).is_err(), "{bad}");
+        }
         let tq = |before: Option<&str>, limit: Option<&str>| TimelineQuery {
             before: before.map(str::to_owned),
             limit: limit.map(str::to_owned),
+            ..Default::default()
         };
         assert!(Call::timeline(&tq(Some("a/b"), None)).is_err());
         assert!(Call::timeline(&tq(None, Some("0"))).is_err());
@@ -728,7 +1696,10 @@ mod tests {
                 message: "hi".into(),
                 session_id: None,
                 client_message_id: None,
-                channel: None
+                channel: None,
+                device: None,
+                device_name: None,
+                reply_to: None,
             })
             .unwrap()
             .timeout_class(),
@@ -811,6 +1782,84 @@ mod tests {
     }
 
     #[test]
+    fn shopping_ops_via() {
+        const U1: &str = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
+        let batch = |extra: Value| -> Result<Call> {
+            let mut v = json!({"ops": [{"opId": U1, "type": "add", "name": "latte"}]});
+            v.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            let b: OpsBatch =
+                serde_json::from_value(v).map_err(|e| Error::Decode(e.to_string()))?;
+            Call::shopping_ops("default", &b)
+        };
+        let body = batch(json!({"via": "mcp"}))
+            .unwrap()
+            .body()
+            .unwrap()
+            .clone();
+        assert_eq!(body["via"], "mcp");
+        let body = batch(json!({})).unwrap().body().unwrap().clone();
+        assert!(body.get("via").is_none(), "absent via stays absent: {body}");
+        match batch(json!({"via": "web"})) {
+            Err(Error::Invalid { field, .. }) => assert_eq!(field, "via"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn device_bridge_validation() {
+        let ev = |kind: &str, data: Value| json!({"id": "ev-1", "ts": 1_761_048_000_000_i64, "type": kind, "source": "ios", "data": data});
+        let batch = |events: Value| -> Result<Call> {
+            let b: DeviceEvents = serde_json::from_value(json!({"events": events}))
+                .map_err(|e| Error::Decode(e.to_string()))?;
+            Call::device_events(&b)
+        };
+        assert!(batch(json!([ev("web_visit", json!({"domain": "example.com"}))])).is_ok());
+        assert!(batch(json!([])).is_err());
+        assert!(batch(json!([ev("keylogger", json!({}))])).is_err());
+        assert!(batch(json!([ev("workout", json!([1]))])).is_err());
+        assert!(batch(json!([ev("workout", json!({"x": "y".repeat(8200)}))])).is_err());
+        let too_many: Vec<Value> = (0..501).map(|_| ev("app_open", json!({}))).collect();
+        assert!(batch(Value::Array(too_many)).is_err());
+        let iso =
+            json!([{"id": "a", "ts": "2026-10-21T10:00:00Z", "type": "app_open", "source": "mac"}]);
+        assert!(batch(iso).is_ok(), "data defaults to {{}}");
+        match batch(json!([{"id": "a", "ts": "yesterday", "type": "app_open", "source": "ios"}])) {
+            Err(Error::Invalid { field, message }) => {
+                assert_eq!(field, "events");
+                assert!(message.starts_with("[0].ts:"), "{message}");
+            }
+            other => panic!("{other:?}"),
+        }
+        // the device is set by the server only
+        let b: DeviceEvents =
+            serde_json::from_value(json!({"events": [], "device": {"id": "spoof", "name": "x"}}))
+                .unwrap();
+        assert!(b.device.is_none());
+
+        let res = |v: Value| Call::command_result("cmd-1", &serde_json::from_value(v).unwrap());
+        let call = res(json!({"ok": true, "deviceObjectId": "ABC:123"})).unwrap();
+        assert_eq!(call.path(), "/api/secretary/device/commands/cmd-1/result");
+        assert!(res(json!({"ok": false, "error": "x".repeat(501)})).is_err());
+        assert!(Call::command_result(
+            "../x",
+            &CommandResult {
+                ok: true,
+                error: None,
+                device_object_id: None,
+                device: None
+            }
+        )
+        .is_err());
+
+        let state = |v: Value| Call::device_state(&serde_json::from_value(v).unwrap());
+        assert!(state(json!({"alarms": [{"id": "a1", "time": "07:00"}], "focus": "work"})).is_ok());
+        assert!(state(json!({"alarms": ["07:00"]})).is_err());
+        assert!(state(json!({"focus": 3})).is_err());
+    }
+
+    #[test]
     fn envelope_decoding() {
         let v: Value = decode_response(200, br#"{"ok":true,"data":{"a":1}}"#).unwrap();
         assert_eq!(v, json!({"a": 1}));
@@ -844,5 +1893,16 @@ mod tests {
     fn debug_redacts_token() {
         let c = LucinaClient::new("http://h", "supersecret", Timeouts::default()).unwrap();
         assert!(!format!("{c:?}").contains("supersecret"));
+    }
+
+    #[test]
+    fn decisions_list_takes_every_status_lucina_has() {
+        // The web's Decisions page asks for all four; one refused status failed the whole page.
+        for status in ["pending", "decided", "expired", "withdrawn"] {
+            let call = Call::decisions(Some(status), Some("20")).unwrap();
+            assert!(call.query.contains(&("status", status.to_owned())), "{status}");
+        }
+        assert!(Call::decisions(Some("all"), None).is_err());
+        assert!(Call::decisions(None, Some("101")).is_err());
     }
 }

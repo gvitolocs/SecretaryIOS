@@ -12,7 +12,7 @@ getsecretary.tech {
 	handle_path /lucina/* {
 		root * /srv/lucina-page
 		header {
-			Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' data: blob:; connect-src 'self' blob: data:; media-src 'self' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'"
+			Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' data: blob:; connect-src 'self' blob: data:; media-src 'self' blob:; worker-src 'self' blob:; manifest-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'"
 			Cache-Control "no-cache"
 			X-Content-Type-Options "nosniff"
 			Referrer-Policy "no-referrer"
@@ -29,6 +29,12 @@ getsecretary.tech {
 		format filter {
 			request>headers>Authorization delete
 			request>headers>Cookie delete
+			# Lucina's computer live view: the media socket carries its viewer ticket in the query.
+			request>uri query {
+				delete ticket
+			}
+			# LucinaDesk: the socket's single-use ticket rides as a subprotocol.
+			request>headers>Sec-Websocket-Protocol delete
 			resp_headers>Set-Cookie delete
 		}
 	}

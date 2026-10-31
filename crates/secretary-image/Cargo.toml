@@ -11,6 +11,8 @@ thumbhash = "0.1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Markup text: the outline rasteriser for the embedded font (pure Rust, builds for wasm).
+ab_glyph = "0.2"
 
 [dev-dependencies]
 jpegxl-rs = { version = "0.16", features = ["vendored"] }

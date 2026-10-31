@@ -635,6 +635,7 @@ async fn scope_splits_the_gallery_from_the_drive() {
     for (name, source, shade) in [
         ("phone.png", "phone-ios", 10u8),
         ("film.png", "folder", 20),
+        // A picture shared from a phone is a Gallery photo (Chat & shares); a shared document is not.
         ("shared.png", "ios-share", 30),
     ] {
         let src = tmp.path().join(name);
@@ -646,6 +647,14 @@ async fn scope_splits_the_gallery_from_the_drive() {
         };
         ingest::ingest_file(&lib, &src, None, &client, None).unwrap();
     }
+    let doc = tmp.path().join("shared-notes.txt");
+    std::fs::write(&doc, b"notes").unwrap();
+    let client = lucina_media::meta::ClientMeta {
+        filename: Some("shared-notes.txt".into()),
+        source: Some("ios-share".into()),
+        ..Default::default()
+    };
+    ingest::ingest_file(&lib, &doc, None, &client, None).unwrap();
     let titles = |v: &Value| -> Vec<String> {
         let mut t: Vec<String> = v["items"]
             .as_array()
@@ -658,11 +667,11 @@ async fn scope_splits_the_gallery_from_the_drive() {
     };
     let (s, all) = get_json(&app, "/v1/media/items").await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(titles(&all).len(), 3);
+    assert_eq!(titles(&all).len(), 4);
     let (_, gallery) = get_json(&app, "/v1/media/items?scope=gallery").await;
-    assert_eq!(titles(&gallery), vec!["phone.png"]);
+    assert_eq!(titles(&gallery), vec!["phone.png", "shared.png"]);
     let (_, drive) = get_json(&app, "/v1/media/items?scope=drive").await;
-    assert_eq!(titles(&drive), vec!["film.png", "shared.png"]);
+    assert_eq!(titles(&drive), vec!["film.png", "shared-notes.txt"]);
     // The camera album (phone uploads) is a Gallery album, not a Drive folder.
     let (_, albums) = get_json(&app, "/v1/media/albums?scope=drive").await;
     let keys: Vec<&str> = albums["albums"]
@@ -680,4 +689,53 @@ async fn scope_splits_the_gallery_from_the_drive() {
         .find(|a| a["system_key"] == "camera")
         .expect("camera album");
     assert_eq!(camera["count"], 1);
+}
+
+#[tokio::test]
+async fn films_are_their_own_scope_and_not_in_the_drive() {
+    let (tmp, lib, app) = setup();
+    for (name, source, album, shade) in [
+        ("up.png", "folder", Some("Film"), 40u8),
+        ("jagten.png", "folder", Some("Dansk film"), 50),
+        ("old-backup.png", "folder", Some("Nextcloud"), 60),
+        ("phone.png", "phone-ios", None, 70),
+    ] {
+        let src = tmp.path().join(name);
+        std::fs::write(&src, png(8, 8, shade)).unwrap();
+        let client = lucina_media::meta::ClientMeta {
+            filename: Some(name.into()),
+            source: Some(source.into()),
+            album: album.map(Into::into),
+            ..Default::default()
+        };
+        ingest::ingest_file(&lib, &src, None, &client, None).unwrap();
+    }
+    let titles = |v: &Value| -> Vec<String> {
+        let mut t: Vec<String> = v["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["title"].as_str().unwrap().to_string())
+            .collect();
+        t.sort();
+        t
+    };
+    let (_, films) = get_json(&app, "/v1/media/items?scope=films").await;
+    assert_eq!(titles(&films), vec!["jagten.png", "up.png"]);
+    let (_, drive) = get_json(&app, "/v1/media/items?scope=drive").await;
+    assert_eq!(titles(&drive), vec!["old-backup.png"]);
+    let (_, gallery) = get_json(&app, "/v1/media/items?scope=gallery").await;
+    assert_eq!(titles(&gallery), vec!["phone.png"]);
+    let (_, folders) = get_json(&app, "/v1/media/albums?scope=drive").await;
+    let names: Vec<&str> = folders["albums"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["title"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["Nextcloud"],
+        "the Drive's folders leave the films out"
+    );
 }

@@ -30,9 +30,15 @@ pub struct ClientMeta {
     pub favorite: Option<bool>,
     pub screenshot: Option<bool>,
     pub source: Option<String>,
+    /// The type identifier the device reports for the original (`public.heic`), shown in the compare view.
+    pub uti: Option<String>,
     pub title: Option<String>,
     pub caption: Option<String>,
     pub album: Option<String>,
+    /// The folder the file was in, relative to the import root (`gallery::clean_folder`).
+    pub origin_folder: Option<String>,
+    /// The import root's own name, or a configured folder's label.
+    pub origin_root: Option<String>,
 }
 
 /// Metadata after merging the file's own and the client's.
@@ -159,22 +165,7 @@ fn exif_into(path: &Path, tz: Tz, x: &mut Extracted) {
                 .or_else(|| v.as_u16().map(i64::from))
         })
     };
-    let offset = text(ExifTag::OffsetTimeOriginal).and_then(|o| parse_offset(&o));
-    for tag in [ExifTag::DateTimeOriginal, ExifTag::CreateDate] {
-        if let Some(dt) = exif.get(tag).and_then(|v| v.as_datetime()) {
-            x.taken_at = match (dt.aware(), offset) {
-                (Some(a), _) => Some(a.with_timezone(&Utc)),
-                (None, Some(off)) => off
-                    .from_local_datetime(&dt.into_naive())
-                    .single()
-                    .map(|d| d.with_timezone(&Utc)),
-                (None, None) => local_to_utc(dt.into_naive(), tz),
-            };
-            if x.taken_at.is_some() {
-                break;
-            }
-        }
-    }
+    x.taken_at = exif_taken_at(&exif, tz).map(|(t, _)| t);
     if let Some(g) = exif.gps_info() {
         if let (Some(lat), Some(lon)) = (g.latitude_decimal(), g.longitude_decimal()) {
             if lat.is_finite() && lon.is_finite() && !(lat == 0.0 && lon == 0.0) {
@@ -191,6 +182,146 @@ fn exif_into(path: &Path, tz: Tz, x: &mut Extracted) {
         (Some(make), Some(model)) => Some(format!("{make} {model}")),
         (a, b) => a.or(b),
     };
+}
+
+/// When the picture was taken, from EXIF (UTC), and the offset from UTC it states when it does.
+/// A zone-less time is read in `tz`.
+fn exif_taken_at(exif: &nom_exif::Exif, tz: Tz) -> Option<(DateTime<Utc>, Option<FixedOffset>)> {
+    use nom_exif::ExifTag;
+    let offset = exif
+        .get(ExifTag::OffsetTimeOriginal)
+        .and_then(|v| v.as_str())
+        .and_then(|o| parse_offset(o.trim()));
+    for tag in [ExifTag::DateTimeOriginal, ExifTag::CreateDate] {
+        if let Some(dt) = exif.get(tag).and_then(|v| v.as_datetime()) {
+            let taken = match (dt.aware(), offset) {
+                (Some(a), _) => Some((a.with_timezone(&Utc), Some(*a.offset()))),
+                (None, Some(off)) => off
+                    .from_local_datetime(&dt.into_naive())
+                    .single()
+                    .map(|d| (d.with_timezone(&Utc), Some(off))),
+                (None, None) => local_to_utc(dt.into_naive(), tz).map(|d| (d, None)),
+            };
+            if taken.is_some() {
+                return taken;
+            }
+        }
+    }
+    None
+}
+
+/// `+02:00`, the way the Gallery shows an offset from UTC.
+pub fn format_offset(o: FixedOffset) -> String {
+    let secs = o.local_minus_utc();
+    let sign = if secs < 0 { '-' } else { '+' };
+    let a = secs.abs();
+    format!("{sign}{:02}:{:02}", a / 3600, a % 3600 / 60)
+}
+
+/// The camera data of one file, read on demand from the original (`GET items/{id}/details`).
+/// Fields the file does not have are `null`.
+#[derive(Clone, Debug, Default, Serialize, PartialEq)]
+pub struct ExifDetails {
+    pub make: Option<String>,
+    pub model: Option<String>,
+    pub lens: Option<String>,
+    pub iso: Option<i64>,
+    /// Exposure time in seconds (`0.008` for 1/125).
+    pub exposure_s: Option<f64>,
+    pub f_number: Option<f64>,
+    pub focal_mm: Option<f64>,
+    /// Whether the flash fired.
+    pub flash: Option<bool>,
+    /// The EXIF orientation, 1 to 8.
+    pub orientation: Option<u16>,
+    pub software: Option<String>,
+    /// RFC 3339, UTC.
+    pub taken_at: Option<String>,
+    /// The offset from UTC the camera stated (`+02:00`).
+    pub offset: Option<String>,
+    /// Videos and audio: the length in milliseconds.
+    pub duration_ms: Option<i64>,
+}
+
+impl ExifDetails {
+    fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+fn rfc3339(t: DateTime<Utc>) -> String {
+    t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+/// Read the camera data of a photo (EXIF) or a video or audio file (what nom-exif finds in the
+/// container). `None` when the file has none or cannot be read.
+pub fn read_details(path: &Path, kind: &str, tz: Tz) -> Option<ExifDetails> {
+    let d = match kind {
+        "photo" => exif_details(path, tz)?,
+        "video" | "audio" => track_details(path)?,
+        _ => return None,
+    };
+    (!d.is_empty()).then_some(d)
+}
+
+fn exif_details(path: &Path, tz: Tz) -> Option<ExifDetails> {
+    use nom_exif::ExifTag;
+    let exif = nom_exif::read_exif(path).ok()?;
+    let text = |t: ExifTag| {
+        exif.get(t)
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    let float = |t: ExifTag| {
+        exif.get(t)
+            .and_then(|v| v.try_as_float())
+            .filter(|f| f.is_finite() && *f > 0.0)
+    };
+    let int = |t: ExifTag| exif.get(t).and_then(|v| v.try_as_integer());
+    let taken = exif_taken_at(&exif, tz);
+    Some(ExifDetails {
+        make: text(ExifTag::Make),
+        model: text(ExifTag::Model),
+        lens: text(ExifTag::LensModel),
+        iso: int(ExifTag::ISOSpeedRatings),
+        exposure_s: float(ExifTag::ExposureTime),
+        f_number: float(ExifTag::FNumber),
+        focal_mm: float(ExifTag::FocalLength),
+        flash: int(ExifTag::Flash).map(|f| f & 1 == 1),
+        orientation: int(ExifTag::Orientation)
+            .and_then(|o| u16::try_from(o).ok())
+            .filter(|o| (1..=8).contains(o)),
+        software: text(ExifTag::Software),
+        taken_at: taken.map(|(t, _)| rfc3339(t)),
+        offset: taken.and_then(|(_, o)| o).map(format_offset),
+        duration_ms: None,
+    })
+}
+
+fn track_details(path: &Path) -> Option<ExifDetails> {
+    use nom_exif::TrackInfoTag;
+    let t = nom_exif::read_track(path).ok()?;
+    let text = |tag: TrackInfoTag| {
+        t.get(tag)
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    Some(ExifDetails {
+        make: text(TrackInfoTag::Make),
+        model: text(TrackInfoTag::Model),
+        software: text(TrackInfoTag::Software),
+        taken_at: t
+            .get(TrackInfoTag::CreateDate)
+            .and_then(|v| v.as_datetime())
+            .and_then(|d| d.aware())
+            .map(|d| rfc3339(d.with_timezone(&Utc))),
+        duration_ms: t
+            .get(TrackInfoTag::DurationMs)
+            .and_then(|v| v.try_as_integer()),
+        ..Default::default()
+    })
 }
 
 fn parse_offset(s: &str) -> Option<FixedOffset> {

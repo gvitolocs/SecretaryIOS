@@ -1,0 +1,101 @@
+/* Frosted glass for the bars that sit over scrolling content (owner, 2026-10-28: "the new Android blur"): the phone
+ * tab bar, the composer and Keep's note editor. Colours come from design/tokens.json (--lu-glass*); the blur is the
+ * tab bar's 24 px, saturated 1.4. Dense cards and lists stay solid: they need a readable background.
+ * Popovers, menus, sheets and dialogs are not glass any more: through them the page behind competed with their text
+ * (owner, 2026-10-30, on the notifications panel). They are opaque, over a dimmed scrim (styles/ui.css).
+ * Text contrast: at 60% the tint alone keeps primary text at WCAG AA over a black or white page behind it.
+ *
+ * Imported last (index.tsx). The surfaces below already have their own rules, some in lazily loaded chunks, so the
+ * list is doubled up on :root to win over them without !important. */
+
+:root {
+  --glass-bg: var(--lu-glass);
+  --glass-fallback: var(--lu-glass-fallback);
+  --glass-border: var(--lu-glass-border);
+  --glass-highlight: var(--lu-glass-highlight);
+  --glass-blur: blur(var(--lu-tab-bar-blur)) saturate(1.4);
+  --glass-radius: var(--lu-radius-glass);
+  --glass-shadow: 0 10px 32px rgb(0 0 0 / 0.22);
+}
+
+/* Her character shell is dark whatever the device's theme (character-shell.css), and Keep picks its own light or
+ * dark look: both pin the glass. Same values as tokens.json's glass colours. */
+.shell--character,
+.kp[data-theme="dark"] {
+  --glass-bg: #14162899;
+  --glass-fallback: #16182a;
+  --glass-border: #ffffff1a;
+  --glass-highlight: #ffffff14;
+  --glass-shadow: 0 10px 32px rgb(0 0 0 / 0.22);
+}
+.kp[data-theme="light"] {
+  --glass-bg: #ffffff99;
+  --glass-fallback: #f7f7fa;
+  --glass-border: #3c3c4317;
+  --glass-highlight: #ffffffcc;
+  --glass-shadow: 0 10px 32px rgb(60 64 67 / 0.18);
+}
+
+/* The material: solid first, glass where the browser can blur. */
+.glass,
+:root:root :is(.tabbar, .composer-input, .kp-dialog) {
+  border: 1px solid var(--glass-border);
+  background: var(--glass-fallback);
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    var(--glass-shadow);
+}
+
+@supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  .glass,
+  :root:root :is(.tabbar, .composer-input, .kp-dialog) {
+    background: var(--glass-bg);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+  }
+}
+
+.glass {
+  border-radius: var(--glass-radius);
+}
+
+/* The composer is a glass pill, like the Android search bar. */
+:root:root .composer-input {
+  border-radius: var(--glass-radius);
+}
+
+/* Keep's note editor keeps the note's colour, as a tint on the glass. */
+@supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  :root:root .kp-dialog {
+    background:
+      linear-gradient(color-mix(in srgb, var(--kp-card-bg, transparent) 70%, transparent), color-mix(in srgb, var(--kp-card-bg, transparent) 70%, transparent)),
+      var(--glass-bg);
+  }
+}
+
+/* Over the live desktop or a playing video nothing blurs (it would re-blur every frame): the same look, solid. */
+.glass--still,
+:root:root :is(.computer-pill, .ldesk-pill, .ldesk-toast) {
+  border: 1px solid var(--glass-border);
+  background: var(--glass-fallback);
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    var(--glass-shadow);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/* One blurred layer at a time: glass inside glass is clear. */
+.glass .glass {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .glass,
+  :root:root :is(.tabbar, .composer-input, .kp-dialog) {
+    background: var(--glass-fallback);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}

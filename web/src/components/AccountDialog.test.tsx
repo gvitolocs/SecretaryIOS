@@ -1,8 +1,11 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { session, setSessionForTests } from "../state/session";
-import { stubFetch } from "../test/fetch";
+import { stubFetch, type Call } from "../test/fetch";
 import { AccountDialog } from "./AccountDialog";
+
+/** The password calls (the panel also loads notification settings). */
+const own = (calls: Call[]) => calls.filter((c) => c.url.startsWith("/v1/session"));
 
 function fill(current: string, next: string, confirm: string) {
   fireEvent.input(screen.getByLabelText("Current password"), { target: { value: current } });
@@ -14,6 +17,17 @@ function fill(current: string, next: string, confirm: string) {
 describe("AccountDialog", () => {
   beforeEach(() => setSessionForTests({ status: "authed", deviceName: "Browser" }));
 
+  it("links to the QR scanner and closes", () => {
+    stubFetch(() => ({ body: {} }));
+    const onClose = vi.fn();
+    render(() => <AccountDialog open onClose={onClose} />);
+    const link = screen.getByRole("link", { name: /Scan QR code/ });
+    expect(link).toHaveAttribute("href", "/scan");
+    link.addEventListener("click", (e) => e.preventDefault());
+    fireEvent.click(link);
+    expect(onClose).toHaveBeenCalled();
+  });
+
   it("validates length and confirmation before sending", async () => {
     const calls = stubFetch(() => ({ body: { ok: true } }));
     render(() => <AccountDialog open onClose={vi.fn()} />);
@@ -21,7 +35,7 @@ describe("AccountDialog", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("at least 8 characters");
     fill("dev-password-123", "a-much-longer-pass", "a-much-longer-pasS");
     expect(await screen.findByRole("alert")).toHaveTextContent("don't match");
-    expect(calls).toHaveLength(0);
+    expect(own(calls)).toHaveLength(0);
   });
 
   it("changes the password with the CSRF header", async () => {
@@ -29,14 +43,14 @@ describe("AccountDialog", () => {
     render(() => <AccountDialog open onClose={vi.fn()} />);
     fill("dev-password-123", "correct horse battery", "correct horse battery");
     expect(await screen.findByText("Password changed.")).toBeInTheDocument();
-    expect(calls).toHaveLength(1);
-    expect(calls[0]).toMatchObject({
+    expect(own(calls)).toHaveLength(1);
+    expect(own(calls)[0]).toMatchObject({
       method: "POST",
       url: "/v1/session/password",
       credentials: "same-origin",
       body: { currentPassword: "dev-password-123", newPassword: "correct horse battery" },
     });
-    expect(calls[0]!.headers["x-secretary-csrf"]).toBe("1");
+    expect(own(calls)[0]!.headers["x-secretary-csrf"]).toBe("1");
   });
 
   it("reports a wrong current password without signing out", async () => {

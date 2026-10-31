@@ -1,0 +1,2254 @@
+/* Shopping, in the Bring! home layout: a dense grid of to-buy tiles on top, "Recently used" below,
+   then the catalogue in collapsible sections (store-walk order), search at the top. Imported by
+   views/Shopping.tsx only. Layout and behaviour follow the decompiled Bring! resources
+   (view_bring_item_tile, view_home_collapsible_section, fragment_item_details_bottom_sheet,
+   view_listchooser_user_list); colours and type are Lucina's tokens. No Bring! assets or fonts. */
+
+.bring {
+  /* Tile roles, as in the original: red = to buy, teal = recently used / catalog, slate = custom.
+     Neon skin (styles/tokens.css): the same meanings as glowing gradients. */
+  --b-red: #ff3b6b;
+  --b-red-hi: #ff7a95;
+  --b-red-lo: #d3175a;
+  --b-teal: #14cfc1;
+  --b-teal-hi: #5cf6e4;
+  --b-teal-lo: #0a8f9f;
+  --b-slate: #5d66a0;
+  --b-slate-hi: #8890c8;
+  --b-slate-lo: #434a7c;
+  --b-tile-text: #ffffff;
+  --b-green-700: #5b5bf0; /* primary buttons, links: the app accent */
+  --b-red-600: #ff2e63; /* badges, destructive */
+
+  /* Surfaces follow the app theme. */
+  --b-bg: var(--bg);
+  --b-text: var(--text);
+  --b-text-2: var(--text-muted);
+  --b-sheet: var(--glass-strong);
+  --b-section: var(--surface-3);
+  --b-action: var(--surface-3);
+  --b-action-text: var(--text);
+  --b-field: color-mix(in srgb, var(--surface-solid) 70%, transparent);
+  --b-field-text: var(--text);
+  --b-hint: var(--text-dim);
+  --b-grip: var(--text-dim);
+  --b-popup: var(--surface-solid);
+  --b-current: var(--accent);
+  --b-scrim: var(--scrim);
+  --b-snackbar: var(--glass-strong);
+  --b-snackbar-text: var(--text);
+
+  --b-font: var(--font);
+  --b-margin: 16px; /* home_view_horizontal_margin */
+  --b-gap: 4px; /* 2dp insets on each side */
+  --b-recent: color-mix(in srgb, var(--b-section) 70%, transparent);
+
+  /* Home layout: page gutter, content width, tile grid. */
+  --shop-gutter: 16px;
+  --shop-max: 1180px;
+  --shop-gap: 6px;
+  --shop-tile-min: 104px;
+  --shop-icon: 38px;
+
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: transparent;
+  color: var(--b-text);
+  font-family: var(--b-font);
+  font-size: 16px;
+}
+
+.bring-scroll {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: calc(72px + var(--safe-bottom, 0px));
+  container-type: inline-size;
+  container-name: bring;
+}
+
+.bring-muted {
+  margin: 0;
+  color: var(--b-text-2);
+  font-size: 14px;
+}
+
+.bring-center {
+  padding: 32px var(--b-margin);
+  text-align: center;
+}
+
+.bring-pad {
+  padding: 0 var(--b-margin) 8px;
+}
+
+/* The character shell is always dark (character-shell.css), so the view keeps the dark Lucina
+   palette there even when the device is in light mode. */
+.shell--character .bring {
+  --lu-bg: #000000;
+  --lu-card: #1c1c1e;
+  --lu-card-raised: #2c2c2e;
+  --lu-text: #ffffff;
+  --lu-text-secondary: #ebebf599;
+  --lu-text-tertiary: #ebebf54d;
+  --lu-accent: #7f8fe0;
+  --lu-accent-fill: #4a5bb5;
+  --lu-accent-soft: #7f8fe02e;
+  --lu-on-accent: #ffffff;
+  color-scheme: dark;
+}
+
+/* ---------- Header: list switcher, actions, search (sticky) ---------- */
+
+.shop-head {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  padding: 10px var(--shop-gutter) 10px;
+  background: color-mix(in srgb, var(--b-bg) 55%, transparent);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+  backdrop-filter: blur(20px) saturate(1.4);
+  border-bottom: 1px solid color-mix(in srgb, var(--b-text) 8%, transparent);
+}
+
+.shop-head > * {
+  max-width: var(--shop-max);
+  margin-inline: auto;
+}
+
+.shop-bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
+}
+
+.shop-title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: inherit;
+  font-weight: inherit;
+  letter-spacing: normal;
+}
+
+.shop-list-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 100%;
+  min-height: 44px;
+  margin-left: -6px;
+  padding: 2px 10px 2px 6px;
+  border: 0;
+  border-radius: 14px;
+  background: transparent;
+  color: var(--b-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.shop-list-btn:hover {
+  background: color-mix(in srgb, var(--b-text) 7%, transparent);
+}
+
+.shop-list-btn:focus-visible {
+  outline: 2px solid var(--b-green-700);
+  outline-offset: 1px;
+}
+
+/* The list's picture: its theme emoji on a tile tinted with the theme colour. */
+.shop-list-art {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--b-theme, var(--b-teal)) 32%, var(--b-section));
+  font-size: 24px;
+  line-height: 1;
+}
+
+.shop-list-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 24px;
+  font-weight: 750;
+  letter-spacing: -0.01em;
+}
+
+.shop-badge {
+  min-width: 22px;
+  padding: 4px 8px;
+  font-size: 13px;
+}
+
+.shop-caret {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin: -4px 2px 0;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(45deg);
+  opacity: 0.6;
+}
+
+.shop-bar-end {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
+.shop-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--b-section);
+  color: var(--b-text);
+  font: inherit;
+  font-size: 9px;
+  letter-spacing: 1px;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.shop-icon-btn:hover {
+  background: color-mix(in srgb, var(--b-text) 12%, var(--b-section));
+}
+
+.shop-icon-btn:focus-visible {
+  outline: 2px solid var(--b-green-700);
+  outline-offset: 2px;
+}
+
+/* A map pin, drawn (the deals map). */
+.shop-map-glyph {
+  position: relative;
+  width: 14px;
+  height: 14px;
+  margin-top: -3px;
+  border: 2px solid currentColor;
+  border-radius: 50% 50% 50% 0;
+  transform: rotate(-45deg);
+}
+
+.shop-map-glyph::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.shop-menu {
+  top: 50px;
+  right: 0;
+}
+
+/* Search: field with an add button; quick-spec chips while typing. */
+.shop-search {
+  margin-top: 8px;
+}
+
+.shop-search-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.shop-search-glass {
+  position: absolute;
+  top: 50%;
+  left: 14px;
+  width: 13px;
+  height: 13px;
+  margin-top: -8px;
+  border: 2px solid var(--b-text-2);
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.shop-search-glass::after {
+  content: "";
+  position: absolute;
+  right: -5px;
+  bottom: -4px;
+  width: 6px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--b-text-2);
+  transform: rotate(45deg);
+}
+
+.shop-search-field {
+  flex: 1;
+  min-width: 0;
+  height: 44px;
+  padding: 0 40px 0 38px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: var(--b-field);
+  color: var(--b-field-text);
+  font: inherit;
+  font-size: 16px;
+  appearance: none;
+}
+
+.shop-search-field::-webkit-search-cancel-button {
+  display: none;
+}
+
+.shop-search-field::placeholder {
+  color: var(--b-hint);
+}
+
+.shop-search-field:focus-visible {
+  outline: none;
+  border-color: color-mix(in srgb, var(--b-green-700) 70%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--b-green-700) 22%, transparent);
+}
+
+.shop-search-clear {
+  position: absolute;
+  top: 50%;
+  right: 56px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  margin-top: -16px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--b-text-2);
+  font: inherit;
+  font-size: 20px;
+  cursor: pointer;
+}
+
+.shop-search-add {
+  position: relative;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  background: var(--b-red);
+  cursor: pointer;
+}
+
+.shop-search-add:focus-visible {
+  outline: 2px solid var(--b-text);
+  outline-offset: 2px;
+}
+
+.shop-search-add span::before,
+.shop-search-add span::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 18px;
+  height: 2.5px;
+  margin: -1.25px 0 0 -9px;
+  border-radius: 2px;
+  background: var(--lu-on-accent, #ffffff);
+}
+
+.shop-search-add span::after {
+  transform: rotate(90deg);
+}
+
+.shop-quick {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.shop-quick::-webkit-scrollbar {
+  display: none;
+}
+
+.shop-chip {
+  flex: none;
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid color-mix(in srgb, var(--b-text) 14%, transparent);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--b-text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.shop-chip--on {
+  border-color: transparent;
+  background: var(--b-red);
+  color: var(--lu-on-accent, #ffffff);
+}
+
+.shop-chip:focus-visible {
+  outline: 2px solid var(--b-green-700);
+  outline-offset: 1px;
+}
+
+.bring-back-pill {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  min-height: 32px;
+  padding: 0 12px 0 2px;
+  border: 0;
+  border-radius: 16px;
+  background: var(--b-section);
+  color: var(--b-text);
+  font: inherit;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  /* 44 px hit area around the 32 px pill. */
+  position: relative;
+}
+
+.bring-back-pill::after {
+  content: "";
+  position: absolute;
+  inset: -6px 0;
+}
+
+.bring-chevron-back {
+  display: inline-block;
+  width: 32px;
+  height: 32px;
+  position: relative;
+}
+
+.bring-chevron-back::before {
+  content: "";
+  position: absolute;
+  top: 11px;
+  left: 13px;
+  width: 9px;
+  height: 9px;
+  border-left: 2.5px solid currentColor;
+  border-bottom: 2.5px solid currentColor;
+  border-radius: 1px;
+  transform: rotate(45deg);
+}
+
+.bring-sync {
+  max-width: 13em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--b-text-2);
+  font-size: 12px;
+}
+
+.bring-sync--offline {
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--b-section);
+  color: var(--b-text);
+}
+
+/* Badge (TextAppearance.Badge on badge_background_round). */
+.bring-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  min-width: 24px;
+  padding: 4px 12px;
+  border-radius: 16px;
+  background: var(--b-red-600);
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Popup menus ---------- */
+
+.bring-menu {
+  position: absolute;
+  top: 52px;
+  right: 10px;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  min-width: 220px;
+  max-width: calc(100% - 20px);
+  padding: 6px 0;
+  border-radius: 8px;
+  background: var(--b-popup);
+  color: var(--b-text);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.22);
+}
+
+.bring-section {
+  position: relative;
+}
+
+.bring-menu--section {
+  top: 48px;
+  right: var(--b-margin);
+}
+
+.bring-menu-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 48px;
+  padding: 0 16px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 16px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.bring-menu-row:hover {
+  background: color-mix(in srgb, var(--b-text) 6%, transparent);
+}
+
+.bring-menu-row input {
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  accent-color: var(--b-green-700);
+}
+
+.bring-menu-select {
+  min-height: 36px;
+  border: 1px solid var(--b-action);
+  border-radius: 8px;
+  background: var(--b-field);
+  color: var(--b-field-text);
+  font: inherit;
+  font-size: 14px;
+}
+
+.bring-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 var(--b-margin) 8px;
+  padding: 4px 4px 4px 12px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--b-red-600) 14%, var(--b-bg));
+  font-size: 14px;
+}
+
+.bring-notice > span {
+  flex: 1;
+  min-width: 0;
+}
+
+.bring-notice-close {
+  width: 44px;
+  height: 44px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 20px;
+  cursor: pointer;
+}
+
+/* ---------- Board and grid ---------- */
+
+.bring-board {
+  min-width: 0;
+}
+
+.shop-board {
+  max-width: calc(var(--shop-max) + 2 * var(--shop-gutter));
+  margin-inline: auto;
+  padding: 12px var(--shop-gutter) 0;
+}
+
+/* Tiles: 3 columns on a phone, as Bring!; 4 on a wide phone; then as many ~96 px tiles as fit
+   (11-12 at Mac widths). A container query, so the shell's side rail is accounted for. */
+.shop-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--shop-gap);
+  min-width: 0;
+}
+
+@container bring (min-width: 440px) {
+  .shop-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@container bring (min-width: 600px) {
+  .shop-grid {
+    grid-template-columns: repeat(auto-fill, minmax(var(--shop-tile-min), 1fr));
+  }
+}
+
+.shop-heading,
+.shop-group-title {
+  margin: 0 0 8px;
+  color: var(--b-text-2);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.shop-group-title {
+  margin-top: 14px;
+}
+
+.shop-group-title:first-child {
+  margin-top: 0;
+}
+
+.shop-tobuy {
+  padding-bottom: 8px;
+}
+
+.shop-pad {
+  padding: 8px 0;
+}
+
+.shop-results {
+  padding-bottom: 16px;
+}
+
+/* ---------- Tile (view_bring_item_tile, square) ---------- */
+
+.tile {
+  position: relative;
+  min-width: 0;
+}
+
+.tile-main {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  width: 100%;
+  aspect-ratio: 1 / 1.04;
+  min-height: 92px;
+  padding: 6px 4px;
+  border: 0;
+  border-radius: var(--lu-radius-tile, 12px);
+  background: var(--b-section);
+  color: var(--b-text);
+  font: inherit;
+  text-align: center;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  overflow: hidden;
+  transition:
+    transform 0.16s cubic-bezier(0.2, 0.8, 0.3, 1.2),
+    background-color 0.2s ease,
+    filter 0.2s ease;
+}
+
+.tile-main:active {
+  transform: scale(0.94);
+}
+
+.tile-main:focus-visible {
+  outline: 2px solid var(--b-text);
+  outline-offset: 2px;
+}
+
+@media (hover: hover) {
+  .tile-main:hover {
+    filter: brightness(1.12);
+  }
+}
+
+/* To buy (and catalogue/search tiles already on the list): the accent, standing out. */
+.tile--need .tile-main {
+  background: linear-gradient(160deg, var(--b-red-hi), var(--b-red) 55%, var(--b-red-lo));
+  color: var(--lu-on-accent, #ffffff);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.18),
+    0 6px 16px -10px var(--b-red);
+}
+
+/* Recently used: muted, so the list to buy reads first. */
+.tile--recent .tile-main {
+  background: var(--b-recent);
+  color: var(--b-text-2);
+}
+
+.tile--recent .tile-icon {
+  opacity: 0.8;
+}
+
+.tile--catalog .tile-main {
+  background: var(--b-section);
+}
+
+/* A free-text suggestion: an outlined tile with a plus. */
+.tile--custom .tile-main {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--b-red-hi) 70%, transparent);
+}
+
+.tile-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  height: 40%;
+  max-height: 50px;
+  font-size: var(--shop-icon);
+  line-height: 1;
+}
+
+.tile-initial {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.05em;
+  height: 1.05em;
+  border-radius: 50%;
+  background: color-mix(in srgb, currentColor 18%, transparent);
+  font-size: 0.6em;
+  font-weight: 700;
+}
+
+.tile--custom .tile-initial {
+  background: var(--b-red);
+  color: var(--lu-on-accent, #ffffff);
+}
+
+.tile-name {
+  display: -webkit-box;
+  flex: none;
+  max-width: 100%;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+
+.tile-name--long {
+  font-size: 12px;
+}
+
+.tile-spec {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 13px;
+  opacity: 0.85;
+}
+
+.tile-spec:empty {
+  display: none;
+}
+
+/* "Recently" edit mode: the selection circle top-right (ivRecentlySelectionStatus). */
+.tile-check {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+}
+
+.tile--checked .tile-check {
+  background: #ffffff;
+}
+
+.tile--checked .tile-check::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 6px;
+  width: 5px;
+  height: 10px;
+  border: solid var(--b-red);
+  border-width: 0 2.5px 2.5px 0;
+  transform: rotate(45deg);
+}
+
+.tile--editing:not(.tile--checked) .tile-main {
+  opacity: 0.85;
+}
+
+/* Details button: not part of the original tile, so it only shows for keyboard focus and mouse hover.
+   Touch users long-press, as in the app. */
+.tile-info {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  width: 44px;
+  height: 44px;
+  padding: 4px;
+  border: 0;
+  background: transparent;
+  color: #ffffff;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.tile-info span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: rgb(0 0 0 / 0.22);
+  font: italic 700 12px/1 Georgia, serif;
+}
+
+.tile-info:focus-visible,
+.tile:focus-within .tile-info {
+  opacity: 1;
+}
+
+.tile-info:focus-visible {
+  outline: 3px solid var(--b-text);
+  outline-offset: -3px;
+  border-radius: 10px;
+}
+
+@media (hover: hover) {
+  .tile:hover .tile-info {
+    opacity: 1;
+  }
+}
+
+/* ---------- Empty state (view_home_nothing_to_purchase) ---------- */
+
+.bring-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16px;
+  text-align: center;
+}
+
+.bring-empty-art {
+  font-size: 72px;
+  line-height: 1;
+}
+
+.bring-empty-title {
+  margin: 16px 32px 0;
+  font-size: 22px; /* Title3 */
+  font-weight: 700;
+}
+
+.bring-empty-hint {
+  margin: 8px 32px 0;
+  font-size: 12px; /* Small */
+  max-width: 32em;
+}
+
+/* ---------- Collapsible section header (view_home_collapsible_section) ---------- */
+
+.bring-section-head {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding: 16px var(--b-margin) 8px;
+}
+
+.bring-section-toggle {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  margin: -6px 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--b-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.bring-section-chevron {
+  position: relative;
+  flex: none;
+  width: 12px;
+  height: 12px;
+}
+
+.bring-section-chevron::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 1px;
+  width: 6px;
+  height: 6px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 0.15s ease;
+}
+
+.bring-section-chevron--open::before {
+  top: 0;
+  left: 2px;
+  transform: rotate(45deg);
+}
+
+.bring-section-title {
+  min-width: 0;
+  margin-left: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 18px; /* Title4 */
+  font-weight: 700;
+}
+
+.bring-more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  margin: -7px -7px -7px 0;
+  border: 0;
+  background: transparent;
+  color: var(--b-text);
+  cursor: pointer;
+}
+
+.bring-more span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--b-section);
+  font-size: 9px;
+  letter-spacing: 1px;
+}
+
+/* Home sections: compact headers inside the board's gutter, with a section icon and a to-buy count. */
+.shop-section {
+  margin-top: 6px;
+}
+
+.shop-section-head {
+  padding: 8px 0 6px;
+}
+
+.shop-section-head .bring-section-toggle {
+  gap: 10px;
+  min-height: 40px;
+  margin: -4px 0;
+}
+
+.shop-section-head .bring-section-title {
+  margin-left: 0;
+  font-size: 16px;
+}
+
+.shop-recent .bring-section-title {
+  color: var(--b-text-2);
+}
+
+.shop-section-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.shop-section-icon .item-art {
+  width: 26px;
+  height: 26px;
+}
+
+.shop-count {
+  flex: none;
+  min-width: 20px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--b-red);
+  color: var(--lu-on-accent, #ffffff);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.shop-section > .shop-grid {
+  padding-bottom: 6px;
+}
+
+.shop-cat-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 22px;
+  padding-top: 14px;
+  border-top: 1px solid color-mix(in srgb, var(--b-text) 8%, transparent);
+}
+
+.shop-cat-head .shop-heading {
+  margin: 0;
+}
+
+.shop-link-btn {
+  min-height: 32px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--b-green-700);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.shop-link-btn:focus-visible {
+  outline: 2px solid var(--b-green-700);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+.shop .bring-edit-bar {
+  padding: 0 0 8px;
+}
+
+.shop .bring-section .bring-menu--section {
+  right: 0;
+}
+
+/* Nothing to buy: one compact row instead of a big empty page. */
+.shop-empty {
+  flex-direction: row;
+  gap: 14px;
+  padding: 14px 16px;
+  border-radius: var(--lu-radius-tile, 12px);
+  background: var(--b-recent);
+  text-align: left;
+}
+
+.shop-empty .bring-empty-art {
+  font-size: 40px;
+}
+
+.shop-empty .bring-empty-title {
+  margin: 0;
+  font-size: 17px;
+}
+
+.shop-empty .bring-empty-hint {
+  margin: 4px 0 0;
+  color: var(--b-text-2);
+  font-size: 13px;
+}
+
+/* Store order sheet. */
+.shop-order-hint {
+  padding: 6px 16px 4px;
+  font-size: 13px;
+}
+
+.shop-order-list {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 4px 8px calc(12px + var(--safe-bottom, 0px));
+  overflow-y: auto;
+  list-style: none;
+}
+
+.shop-order-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+.shop-order-row:nth-child(odd) {
+  background: color-mix(in srgb, var(--b-text) 4%, transparent);
+}
+
+.shop-order-n {
+  flex: none;
+  width: 1.6em;
+  color: var(--b-text-2);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.shop-order-icon {
+  display: inline-flex;
+  flex: none;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.shop-order-icon .item-art {
+  width: 26px;
+  height: 26px;
+}
+
+.shop-order-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.shop-order-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--b-section);
+  color: var(--b-text);
+  cursor: pointer;
+}
+
+.shop-order-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.shop-order-btn:focus-visible {
+  outline: 2px solid var(--b-green-700);
+  outline-offset: 1px;
+}
+
+.shop-arrow {
+  width: 9px;
+  height: 9px;
+  border-left: 2px solid currentColor;
+  border-top: 2px solid currentColor;
+}
+
+.shop-arrow--up {
+  margin-top: 4px;
+  transform: rotate(45deg);
+}
+
+.shop-arrow--down {
+  margin-top: -4px;
+  transform: rotate(225deg);
+}
+
+/* Phones: a little less gutter and smaller icons keep three tiles a row readable. */
+@container bring (max-width: 439px) {
+  .shop-head,
+  .shop-board {
+    --shop-gutter: 12px;
+  }
+
+  .shop-list-name {
+    font-size: 22px;
+  }
+}
+
+/* view_home_edit_recently: 40 px bar, Cancel left, Remove right. */
+.bring-edit-bar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  min-height: 40px;
+  padding: 0 var(--b-margin) 8px;
+}
+
+/* ---------- Buttons (Button: 48 min height, 8 radius, Body text) ---------- */
+
+.bring-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 64px;
+  min-height: 48px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.bring-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.bring-btn--small {
+  min-height: 44px;
+  font-size: 14px;
+}
+
+.bring-btn--block {
+  width: 100%;
+}
+
+.bring-btn--primary {
+  background: var(--b-green-700);
+  color: #ffffff;
+}
+
+.bring-btn--secondary {
+  background: var(--b-action);
+  color: var(--b-action-text);
+}
+
+.bring-btn--destructive {
+  background: var(--b-red-600);
+  color: #ffffff;
+}
+
+.bring-text-btn {
+  flex: none;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
+  color: var(--b-text);
+  font: inherit;
+  font-size: 14px; /* Caption */
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.bring-field {
+  width: 100%;
+  min-height: 48px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--b-field);
+  color: var(--b-field-text);
+  font: inherit;
+  font-size: 16px;
+}
+
+.bring-field::placeholder {
+  color: var(--b-hint);
+}
+
+.bring-field:focus-visible {
+  outline: 2px solid var(--b-green-700);
+  outline-offset: 0;
+}
+
+.bring-label {
+  color: var(--b-text-2);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+/* ---------- Bottom sheets: shared ---------- */
+
+.bring-sheet-grip {
+  display: block;
+  width: 42px;
+  height: 5px;
+  border-radius: 8px;
+  background: var(--b-grip);
+  opacity: 0.6;
+}
+
+.bring-sheet-grip {
+  margin: 12px auto 0;
+}
+
+/* ---------- Snackbar (undo) ---------- */
+
+.bring-snackbar-region {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(16px + var(--safe-bottom, 0px));
+  z-index: 9;
+  display: flex;
+  justify-content: center;
+  padding: 0 8px;
+  pointer-events: none;
+}
+
+.bring-snackbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  max-width: 560px;
+  min-width: 0;
+  min-height: 48px;
+  padding: 2px 4px 2px 16px;
+  border-radius: 4px;
+  background: var(--b-snackbar);
+  color: var(--b-snackbar-text);
+  box-shadow: 0 3px 12px rgb(0 0 0 / 0.3);
+  font-size: 14px;
+  pointer-events: auto;
+  animation: bring-rise 0.18s ease-out;
+}
+
+.bring-snackbar-msg {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bring-snackbar-action,
+.bring-snackbar-close {
+  flex: none;
+  min-width: 44px;
+  min-height: 44px;
+  border: 0;
+  background: transparent;
+  color: var(--b-teal); /* color_accent */
+  font: inherit;
+  font-weight: 700;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.bring-snackbar-close {
+  color: rgb(255 255 255 / 0.64);
+  font-size: 20px;
+  text-transform: none;
+}
+
+@keyframes bring-rise {
+  from {
+    transform: translateY(12px);
+    opacity: 0;
+  }
+}
+
+/* ---------- Item details sheet ---------- */
+
+.bring-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgb(0 0 0 / 0.3); /* home_view_bottom_sheet_shadow_alpha */
+}
+
+.bring-sheet {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 640px;
+  max-height: calc(100% - 24px);
+  border-radius: 16px 16px 0 0;
+  background: var(--b-sheet);
+  color: var(--b-text);
+  box-shadow: 0 -4px 18px rgb(0 0 0 / 0.18);
+  animation: bring-rise 0.2s ease-out;
+}
+
+.bring-details-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  padding: 12px 16px 0 16.5px;
+}
+
+.bring-details-icon {
+  flex: none;
+  font-size: 30px;
+  line-height: 1;
+}
+
+.bring-details-name {
+  display: -webkit-box;
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  font-size: 22px; /* Title3 */
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.bring-details-body {
+  flex: 1;
+  min-height: 0;
+  margin-top: 8px;
+  padding-bottom: calc(8px + var(--safe-bottom, 0px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* view_item_details_title: Body.Bold, 32 top / 8 bottom, 16 start. */
+.bring-details-title {
+  margin: 32px 16px 8px;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.bring-details-body > .bring-details-title:first-child {
+  margin-top: 16px;
+}
+
+.bring-details-body > .bring-field {
+  display: block;
+  width: calc(100% - 32px);
+  margin: 8px 16px 0;
+}
+
+/* Specification chips: 36 tall, 8 padding/radius, 8 apart; active = red. */
+.bring-chips {
+  display: flex;
+  flex-wrap: wrap;
+  margin: 8px 16px 0;
+}
+
+.bring-chip {
+  position: relative;
+  min-width: 36px;
+  height: 36px;
+  margin: 4px 8px 4px 0;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--b-action);
+  color: var(--b-text);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.bring-chip::after {
+  content: "";
+  position: absolute;
+  inset: -4px 0;
+}
+
+.bring-chip--on {
+  background: var(--b-red);
+  color: #ffffff;
+}
+
+.bring-qty-row {
+  display: flex;
+  gap: 8px;
+  margin: 8px 16px 0;
+}
+
+.bring-qty {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+  color: var(--b-text-2);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.bring-qty .bring-field {
+  font-weight: 400;
+}
+
+.bring-qty:first-child {
+  flex: 0 0 8em;
+}
+
+/* view_item_details_settings: control tiles, 45% basis, 12 padding, 8 margin, 16 below. */
+.bring-controls {
+  display: flex;
+  flex-wrap: wrap;
+  margin: 0 8px;
+}
+
+.bring-control {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1 1 45%;
+  min-width: 0;
+  margin: 0 8px 16px;
+  padding: 12px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--b-action);
+  color: var(--b-text);
+  font: inherit;
+  font-size: 12px; /* Small */
+  cursor: pointer;
+}
+
+.bring-control[aria-expanded="true"] {
+  outline: 2px solid var(--b-text);
+  outline-offset: -2px;
+}
+
+.bring-control-icon {
+  height: 25px;
+  margin-bottom: 8px;
+  font-size: 22px;
+  line-height: 25px;
+}
+
+.bring-control > span:last-child {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bring-panel {
+  display: flex;
+  flex-direction: column;
+  margin: -8px 16px 8px;
+  border-radius: 8px;
+  background: var(--b-bg);
+  overflow: hidden;
+}
+
+.bring-panel > .bring-field {
+  border-radius: 0;
+}
+
+.bring-option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  padding: 0 14px;
+  border: 0;
+  border-top: 1px solid var(--b-section);
+  background: transparent;
+  color: var(--b-text);
+  font: inherit;
+  font-size: 16px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.bring-option:first-child {
+  border-top: 0;
+}
+
+.bring-option[aria-checked="true"] {
+  font-weight: 700;
+}
+
+.bring-option[aria-checked="true"]::after {
+  content: "✓";
+  margin-left: auto;
+  color: var(--b-green-700);
+}
+
+/* view_item_details_history */
+.bring-history {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin: 0 16px;
+}
+
+.bring-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--b-teal);
+  color: #ffffff;
+  font-weight: 700;
+}
+
+.bring-history-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.bring-history-who {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.bring-history-when {
+  font-size: 14px;
+  opacity: 0.6;
+}
+
+.bring-details-body > .bring-btn--destructive {
+  display: flex;
+  width: calc(100% - 32px);
+  margin: 16px;
+}
+
+/* ---------- List chooser (fragment_bring_list_chooser) ---------- */
+
+.bring-chooser {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--b-bg);
+  color: var(--b-text);
+  animation: bring-slide 0.2s ease-out;
+}
+
+@keyframes bring-slide {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+}
+
+.bring-chooser-bar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 56px;
+  padding: 0 var(--b-margin) 0 4px;
+  background: var(--b-bg);
+}
+
+.bring-back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--b-text);
+  cursor: pointer;
+}
+
+.bring-chooser-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.bring-cards {
+  margin: 0;
+  padding: 12px 0 0; /* bring_margin */
+  list-style: none;
+}
+
+.bring-card-item {
+  margin: 0 var(--b-margin) 8px;
+}
+
+.bring-card {
+  position: relative;
+  display: flex;
+  min-height: 112px;
+  border-radius: 8px;
+  background: var(--b-theme, var(--b-teal));
+  color: #ffffff;
+  overflow: hidden;
+}
+
+.bring-card--current::after {
+  /* selected_user_list_border: 2 px ring. */
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 2px solid var(--b-current);
+  border-radius: 8px;
+  pointer-events: none;
+}
+
+.bring-card-main {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  flex: 1;
+  min-width: 0;
+  padding: 8px 16px 16px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.bring-card-art {
+  position: absolute;
+  right: 56px;
+  bottom: -6px;
+  font-size: 72px;
+  line-height: 1;
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.bring-card-name {
+  position: relative;
+  max-width: 100%;
+  margin-top: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 28px; /* Title2 */
+  font-weight: 700;
+  text-shadow: 0 1px 2px rgb(0 0 0 / 0.2);
+}
+
+.bring-card-current {
+  position: relative;
+  margin-top: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  opacity: 0.9;
+}
+
+.bring-gear {
+  position: relative;
+  flex: none;
+  width: 48px;
+  height: 48px;
+  margin: 8px 8px 0 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  font-size: 24px;
+  cursor: pointer;
+}
+
+.bring-gear:hover,
+.bring-gear[aria-expanded="true"] {
+  background: rgb(255 255 255 / 0.2);
+}
+
+.bring-list-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 16px;
+  border-radius: 8px;
+  background: var(--b-sheet);
+}
+
+.bring-list-settings .bring-muted {
+  font-size: 14px;
+}
+
+.bring-create {
+  margin: 16px var(--b-margin) 24px;
+}
+
+/* view_list_chooser_create_list: action background, 40 px circle, Title3 with a plus. */
+.bring-create-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 72px;
+  padding: 16px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--b-action);
+  color: var(--b-text);
+  font: inherit;
+  font-size: 22px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.bring-create-plus {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--b-bg);
+  font-size: 26px;
+  line-height: 1;
+}
+
+/* List themes stand in for the original's photo backgrounds. */
+.bring-theme--home {
+  --b-theme: #6eb8ae;
+}
+.bring-theme--grocery {
+  --b-theme: #f16a6f;
+}
+.bring-theme--work {
+  --b-theme: #5b7fb5;
+}
+.bring-theme--holiday {
+  --b-theme: #e9a23b;
+}
+.bring-theme--garden {
+  --b-theme: #6aa84f;
+}
+.bring-theme--hardware {
+  --b-theme: #6b7c85;
+}
+.bring-theme--baby {
+  --b-theme: #c47fb8;
+}
+.bring-theme--other {
+  --b-theme: #8a7f72;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bring-sheet,
+  .bring-snackbar,
+  .bring-chooser,
+  .tile-main {
+    transition: none;
+    animation: none;
+  }
+}
+
+
+/* ======================================================================
+   Neon skin. Layout, sizes and gestures above are the Bring! originals and
+   stay as they are; this only restyles surfaces, colours and motion.
+   ====================================================================== */
+
+.bring-back-pill {
+  border: 1px solid var(--border);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+
+.bring-badge {
+  background: linear-gradient(135deg, #ff6b8a, #ff2e63);
+  box-shadow: 0 0 14px rgb(255 46 99 / 0.55);
+  font-family: var(--mono);
+}
+
+.bring-menu {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lg);
+  animation: pop-in var(--dur-2) var(--ease-out) both;
+  transform-origin: 100% 0;
+}
+
+.bring-section-head {
+  font-family: var(--font-display);
+}
+
+.bring-btn {
+  border-radius: 999px;
+  transition:
+    transform var(--dur-1) var(--ease-out),
+    box-shadow var(--dur-2) var(--ease-out),
+    filter var(--dur-2) var(--ease-out);
+}
+
+.bring-btn:not(:disabled):active {
+  transform: scale(0.96);
+}
+
+.bring-btn--primary {
+  background: var(--grad-primary);
+  box-shadow: 0 6px 20px color-mix(in srgb, var(--violet) 40%, transparent), inset 0 1px 0 rgb(255 255 255 / 0.25);
+}
+
+.bring-btn--secondary {
+  border: 1px solid var(--border);
+}
+
+.bring-btn--destructive {
+  background: linear-gradient(135deg, #ff6b8a, #ff2e63);
+  box-shadow: 0 6px 20px rgb(255 46 99 / 0.35);
+}
+
+.bring-field {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.bring-field:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 70%, transparent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+/* Bottom search sheet: glass, holo edge on top. */
+.bring-sheet {
+  border: 1px solid var(--border);
+  border-bottom: 0;
+  border-radius: 24px 24px 0 0;
+  box-shadow: 0 -12px 40px rgb(0 0 0 / 0.35), inset 0 1px 0 var(--hairline);
+  -webkit-backdrop-filter: blur(var(--blur-strong)) saturate(1.6);
+  backdrop-filter: blur(var(--blur-strong)) saturate(1.6);
+}
+
+.bring-sheet {
+  animation: sheet-up var(--dur-3) var(--ease-out) both;
+}
+
+.bring-scrim {
+  background: var(--scrim);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+  animation: scrim-in var(--dur-2) var(--ease-out) both;
+}
+
+.bring-snackbar {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lg), 0 0 24px color-mix(in srgb, var(--cyan) 15%, transparent);
+  -webkit-backdrop-filter: blur(var(--blur-strong));
+  backdrop-filter: blur(var(--blur-strong));
+  animation: rise-in var(--dur-3) var(--ease-spring) both;
+}
+
+.bring-chip,
+.bring-control {
+  border: 1px solid var(--border);
+  transition:
+    background-color var(--dur-2) var(--ease-out),
+    box-shadow var(--dur-2) var(--ease-out),
+    transform var(--dur-1) var(--ease-out);
+}
+
+.bring-chip:active,
+.bring-control:active {
+  transform: scale(0.96);
+}
+
+.bring-chip--on {
+  border-color: transparent;
+  background: linear-gradient(135deg, var(--b-red-hi), var(--b-red));
+  box-shadow: 0 0 16px rgb(255 59 107 / 0.45);
+}
+
+.bring-chooser,
+.bring-chooser-bar {
+  background: var(--b-bg);
+}
+
+.bring-card {
+  border-radius: 16px;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.3), 0 10px 28px -10px color-mix(in srgb, var(--b-theme, var(--b-teal)) 80%, transparent);
+}
+
+.bring-create-btn {
+  border: 1px dashed var(--border-strong);
+  border-radius: 16px;
+}
+
+@keyframes tile-in {
+  from {
+    opacity: 0;
+    transform: scale(0.82);
+  }
+}
+
+@keyframes tile-sheen {
+  0%,
+  70% {
+    background-position: -150% 0;
+  }
+  100% {
+    background-position: 150% 0;
+  }
+}
+
+/* Bundled item illustrations (docs/design/item-icons.md): the image takes the emoji's place and
+   size, so 1.32em is the 58 px icon area in a tile (44 px font). */
+.item-art {
+  display: block;
+  width: 1.32em;
+  height: 1.32em;
+  object-fit: contain;
+  pointer-events: none;
+  -webkit-user-drag: none;
+}
+
+/* An emoji kept for a custom item fills about the same box as the art (the glyph is narrower
+   than its font size), so a row of tiles keeps one icon size. */
+.item-emoji {
+  display: block;
+  font-size: 1.2em;
+  line-height: 1.1;
+}
+
+/* ---------- Desktop: the page system frame (components/page, docs/design/page-system.md) ----------
+   Shown from 880 px wide (useWide). The tiles keep their look; the frame around them (header, cards,
+   search field, buttons, dialogs) uses the pg-* classes and tokens. The phone layout above is untouched. */
+
+.shopping-scroll {
+  padding-bottom: 0;
+}
+
+/* The list switcher and the ⋯ menu sit in the header; the menu opens under them. */
+.shopping-wide .shopping-head-tools {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* The list switcher is a quiet header button: its name takes the button's 13/600, not the phone title size. */
+.shopping-wide .shopping-head-tools .shop-list-name {
+  font: inherit;
+  letter-spacing: normal;
+}
+
+.shopping-wide .shop-menu {
+  top: calc(100% + 8px);
+  right: 0;
+}
+
+.shopping-wide .shop-caret {
+  margin: -4px 0 0 2px;
+}
+
+/* Search / add field at the top of the main column. */
+.shopping-wide .shop-search {
+  margin: 0;
+}
+
+.shopping-wide .shop-search-row .pg-input {
+  flex: 1;
+  min-height: 40px;
+  padding: 0 80px 0 38px;
+}
+
+.shopping-wide .shop-search-row .pg-icon-btn {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  margin-top: -16px;
+}
+
+.shopping-wide .shop-search-clear {
+  right: 40px;
+}
+
+.shopping-wide .shop-quick {
+  margin-top: 12px;
+}
+
+.shopping-wide .shop-chip--on {
+  border-color: color-mix(in srgb, var(--pg-data) 60%, transparent);
+  background: color-mix(in srgb, var(--pg-data) 16%, transparent);
+  color: var(--pg-text);
+}
+
+/* Tiles and catalogue sections sit in cards: the card owns the padding, so the sections drop theirs. */
+.shopping-wide .shop-tobuy {
+  padding-bottom: 0;
+}
+
+.shopping-wide .shop-results {
+  padding-bottom: 0;
+}
+
+.shopping-wide .shop-results > .shop-heading {
+  display: none;
+}
+
+.shopping-wide .shop-section:first-child {
+  margin-top: 0;
+}
+
+.shopping-wide .shopping-recent .shop-section {
+  margin-top: 0;
+}
+
+.shopping-wide .shopping-recent .bring-menu--section {
+  top: 40px;
+  right: 0;
+}
+
+/* Dialogs (item details, store order, lists) are portalled out of the page into the shell: the body
+   re-opens the .bring scope for its tokens and drops the phone sheet's own margins. */
+.bring.shopping-sheet-body {
+  display: block;
+  flex: none;
+  overflow: visible;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.shopping-sheet-body .bring-details-body {
+  margin: 0;
+  padding: 0;
+  overflow: visible;
+}
+
+.shopping-sheet-body .bring-details-title {
+  margin: 24px 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.shopping-sheet-body .bring-details-body > .bring-details-title:first-child {
+  margin-top: 0;
+}
+
+.shopping-sheet-body .bring-details-body > .pg-input {
+  display: block;
+  width: 100%;
+  margin: 8px 0 0;
+}
+
+.shopping-sheet-body :is(.bring-chips, .bring-qty-row, .bring-history) {
+  margin: 8px 0 0;
+}
+
+.shopping-sheet-body .bring-chips {
+  gap: 8px;
+}
+
+.shopping-sheet-body .bring-controls {
+  gap: 8px;
+  margin: 24px 0 0;
+}
+
+.shopping-sheet-body .bring-panel {
+  margin: 8px 0 0;
+  gap: 4px;
+  background: transparent;
+}
+
+.shopping-sheet-body .bring-panel > .pg-btn {
+  justify-content: flex-start;
+}
+
+.shopping-sheet-body .bring-qty .pg-input {
+  font-weight: 400;
+}
+
+.shopping-sheet-body .pg-btn:is([aria-pressed="true"], [aria-checked="true"], [aria-expanded="true"]) {
+  border-color: color-mix(in srgb, var(--pg-data) 60%, transparent);
+  background: color-mix(in srgb, var(--pg-data) 16%, transparent);
+  color: var(--pg-text);
+}
+
+.shopping-sheet-body .shopping-confirm {
+  display: flex;
+  gap: 8px;
+  margin-top: 24px;
+}
+
+.shopping-sheet-body .bring-details-body > .pg-btn {
+  margin-top: 24px;
+}
+
+.shopping-sheet-body .bring-muted.shop-order-hint {
+  margin: 0 0 12px;
+}
+
+.shopping-sheet-body .bring-cards {
+  padding: 0;
+}
+
+.shopping-sheet-body .bring-card-item {
+  margin: 0 0 8px;
+}
+
+.shopping-sheet-body .bring-create {
+  margin: 8px 0 0;
+}
+
+.shopping-sheet-body .bring-list-settings {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 8px 0 0;
+}
+
+.shopping-sheet-body .bring-list-settings .pg-input {
+  align-self: stretch;
+}

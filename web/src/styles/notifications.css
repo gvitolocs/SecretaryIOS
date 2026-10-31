@@ -1,0 +1,645 @@
+/* Notifications: the bell, its panel and the settings section (Nebula / Pearl tokens). */
+
+/* ---------- Bell ---------- */
+
+.notif-bell {
+  position: relative;
+}
+
+.notif-bell--unread {
+  color: var(--text);
+}
+
+.notif-bell--unread .icon {
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--cyan) 55%, transparent));
+}
+
+.notif-badge {
+  position: absolute;
+  top: 4px;
+  right: 2px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--grad-holo);
+  color: #fff;
+  font-family: var(--mono);
+  font-size: 0.625rem;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  text-shadow: 0 1px 1px rgb(0 0 0 / 0.35);
+  box-shadow: 0 0 0 2px var(--bg), 0 0 12px color-mix(in srgb, var(--magenta) 55%, transparent);
+  pointer-events: none;
+  animation: notif-pop var(--dur-3) var(--ease-spring) both;
+}
+
+@keyframes notif-pop {
+  from {
+    transform: scale(0.4);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+/* ---------- Panel ---------- */
+
+.notif-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: var(--scrim);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  animation: scrim-in var(--dur-2) var(--ease-out) both;
+}
+
+.notif-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  max-height: min(86dvh, 100%);
+  padding: 14px var(--pad-right) calc(var(--safe-bottom) + 14px) var(--pad-left);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  background: color-mix(in srgb, var(--surface-solid) 94%, transparent);
+  -webkit-backdrop-filter: blur(var(--blur-strong)) saturate(1.5);
+  backdrop-filter: blur(var(--blur-strong)) saturate(1.5);
+  box-shadow: var(--shadow-lg);
+  animation: sheet-up var(--dur-3) var(--ease-out) both;
+}
+
+/* Holographic hairline, like the other sheets. */
+.notif-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: var(--grad-border);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  pointer-events: none;
+}
+
+/* Tablet and desktop: next to the rail, level with the bell at its foot. */
+@media (min-width: 768px) {
+  .notif-overlay {
+    align-items: flex-end;
+    justify-content: flex-start;
+    padding: 20px 20px calc(var(--safe-bottom) + 20px) calc(var(--rail-w) + max(12px, var(--safe-left)) + 12px);
+    background: color-mix(in srgb, var(--scrim) 45%, transparent);
+  }
+
+  .notif-panel {
+    width: 420px;
+    max-height: min(640px, calc(100dvh - 96px));
+    padding: 16px;
+    border-radius: var(--radius-lg);
+    animation: rise-in var(--dur-3) var(--ease-out) both;
+  }
+}
+
+.notif-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.notif-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 auto 0 0;
+  font-size: var(--fs-lg);
+  font-weight: 700;
+}
+
+.notif-count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 24px;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: var(--fs-2xs);
+  font-weight: 700;
+}
+
+.notif-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.notif-head-actions .icon-btn {
+  font-size: 1.4rem;
+}
+
+.notif-markall {
+  min-height: var(--tap);
+  padding: 0 8px;
+  font-size: var(--fs-xs);
+  font-family: var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.notif-scroll {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin: 0 -6px;
+  padding: 0 6px;
+}
+
+.notif-group {
+  margin: 10px 4px 6px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  letter-spacing: var(--tracking-hud);
+  text-transform: uppercase;
+}
+
+.notif-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.notif-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  text-align: left;
+  transition:
+    background-color var(--dur-2) var(--ease-out),
+    border-color var(--dur-2) var(--ease-out),
+    transform var(--dur-1) var(--ease-out);
+}
+
+.notif-item:hover {
+  background: var(--surface-3);
+  border-color: var(--border-strong);
+}
+
+.notif-item:active {
+  transform: scale(0.99);
+}
+
+.notif-item--unread {
+  background: linear-gradient(120deg, color-mix(in srgb, var(--cyan) 9%, transparent), color-mix(in srgb, var(--violet) 7%, transparent));
+  border-color: color-mix(in srgb, var(--cyan) 30%, var(--border));
+}
+
+.notif-icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface-3);
+  color: var(--accent);
+}
+
+.notif-icon .icon {
+  width: 20px;
+  height: 20px;
+}
+
+.notif-icon--lucina_message {
+  color: var(--magenta);
+  background: color-mix(in srgb, var(--magenta) 12%, transparent);
+}
+
+.notif-icon--reminder {
+  color: var(--amber);
+  background: color-mix(in srgb, var(--amber) 12%, transparent);
+}
+
+.notif-icon--calendar {
+  color: var(--cyan);
+  background: color-mix(in srgb, var(--cyan) 12%, transparent);
+}
+
+.notif-icon--device_confirm {
+  color: var(--violet);
+  background: color-mix(in srgb, var(--violet) 14%, transparent);
+}
+
+.notif-icon--agent {
+  color: var(--violet);
+  background: color-mix(in srgb, var(--violet) 10%, transparent);
+}
+
+.notif-icon--shopping {
+  color: var(--lime);
+  background: color-mix(in srgb, var(--lime) 12%, transparent);
+}
+
+.notif-icon--presence,
+.notif-icon--system {
+  color: var(--text-muted);
+}
+
+.notif-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.notif-title {
+  font-weight: 650;
+  font-size: var(--fs-sm);
+}
+
+.notif-body {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.notif-meta {
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: var(--fs-2xs);
+  letter-spacing: 0.04em;
+}
+
+.notif-dot {
+  width: 9px;
+  height: 9px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--grad-holo);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--cyan) 70%, transparent);
+}
+
+.notif-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 28px 12px 24px;
+  text-align: center;
+}
+
+.notif-empty-icon {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  margin-bottom: 8px;
+  border-radius: 18px;
+  border: 1px solid var(--border-strong);
+  background: var(--grad-holo-soft);
+  color: var(--text);
+}
+
+.notif-empty-icon .icon {
+  width: 26px;
+  height: 26px;
+}
+
+/* "Enable notifications" call to action. */
+.notif-cta {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  align-items: start;
+  gap: 4px 12px;
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--violet) 40%, var(--border));
+  background: var(--grad-holo-soft);
+}
+
+.notif-cta-icon {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+  background: var(--grad-primary);
+  color: #fff;
+}
+
+.notif-cta-icon .icon {
+  width: 18px;
+  height: 18px;
+}
+
+.notif-cta-text {
+  min-width: 0;
+}
+
+.notif-cta-text p {
+  margin: 0;
+}
+
+.notif-cta-title {
+  font-weight: 650;
+  font-size: var(--fs-sm);
+}
+
+.notif-cta .btn {
+  grid-column: 2;
+  justify-self: start;
+  margin-top: 6px;
+}
+
+/* ---------- Settings (account panel) ---------- */
+
+.notif-settings-title {
+  font-size: var(--fs-md);
+  font-weight: 700;
+  color: var(--text);
+}
+
+.notif-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 0 4px;
+  border-top: 1px solid var(--border);
+}
+
+.notif-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: var(--tap);
+  padding: 6px 0;
+  cursor: pointer;
+}
+
+.switch-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.switch-label {
+  font-size: 0.9375rem;
+  font-weight: 550;
+}
+
+.switch {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  flex: none;
+  width: 46px;
+  height: 28px;
+  margin: 0;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-3);
+  cursor: pointer;
+  transition:
+    background-color var(--dur-2) var(--ease-out),
+    border-color var(--dur-2) var(--ease-out),
+    box-shadow var(--dur-2) var(--ease-out);
+}
+
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition:
+    transform var(--dur-2) var(--ease-spring),
+    background-color var(--dur-2) var(--ease-out);
+}
+
+.switch:checked {
+  border-color: transparent;
+  background: var(--grad-primary);
+  box-shadow: 0 0 14px color-mix(in srgb, var(--violet) 40%, transparent);
+}
+
+.switch:checked::after {
+  transform: translateX(18px);
+  background: #fff;
+}
+
+.switch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.switch:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.notif-inline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 6px;
+  color: var(--text);
+  font-size: 0.9375rem;
+  font-weight: 550;
+}
+
+.notif-select {
+  width: auto;
+  min-width: 132px;
+}
+
+.notif-times {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.notif-times .field-label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.notif-devices {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.notif-device {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.notif-device-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.notif-device-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+
+.notif-chip {
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: var(--fs-2xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.notif-remove {
+  flex: none;
+  min-height: var(--tap);
+  padding: 0 4px;
+  color: var(--danger-text);
+  font-size: var(--fs-sm);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notif-badge,
+  .notif-panel,
+  .notif-overlay {
+    animation: none;
+  }
+}
+
+/* Text buttons (no chrome). */
+.notif-markall,
+.notif-remove {
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--accent);
+}
+
+.notif-remove {
+  color: var(--danger-text);
+}
+
+.notif-markall:hover,
+.notif-remove:hover {
+  background: var(--surface-2);
+}
+
+/* Phones: the bell joins the header, so the status pill keeps its dot only
+   (its label stays in the title and the screen reader name), and the
+   narrowest screens keep the logo without the wordmark. */
+@media (max-width: 767px) {
+  .topbar .status {
+    min-width: 36px;
+    padding: 0 12px;
+  }
+
+  .topbar .status-text {
+    display: none;
+  }
+}
+
+@media (max-width: 420px) {
+  .topbar .brand-name {
+    display: none;
+  }
+}
+
+/* The account panel scrolls (notification settings made it long): a plain
+   border instead of the absolutely positioned holographic hairline, which
+   would stay behind at its first position. */
+.account-sheet::before {
+  display: none;
+}
+
+.account-sheet {
+  border: 1px solid color-mix(in srgb, var(--violet) 35%, var(--border));
+}
+
+/* ---------- Page system: the Account settings Cards (desktop) ---------- */
+
+.pg .pg-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.pg .pg-form .pg-field-label:not(:first-child) {
+  margin-top: 8px;
+}
+
+.pg .pg-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pg .pg-choices .pg-btn[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--pg-data) 45%, transparent);
+  background: var(--pg-fill-hover);
+}

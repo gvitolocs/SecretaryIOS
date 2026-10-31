@@ -14,8 +14,10 @@ use crate::error::{Error, Result};
 // Limits mirror Lucina's (docs/secretary-api.md in Lucina), so the app gets
 // a 400 from us instead of a round trip.
 
-/// Max characters of a chat message.
-pub const MAX_MESSAGE_CHARS: usize = 4_000;
+/// Max characters of a chat message: Lucina's 12 000 plus room for the
+/// `[via Lucina MCP, from <caller>] ` prefix Lucina MCP puts in front (Lucina
+/// counts the text after it).
+pub const MAX_MESSAGE_CHARS: usize = 12_100;
 /// Max characters of reminder text / natural-language reminder input.
 pub const MAX_TEXT_CHARS: usize = 500;
 /// Max characters of a shopping `rawName` / `product`.
@@ -68,6 +70,24 @@ pub fn session_id(field: &'static str, s: &str) -> Result<()> {
     Ok(())
 }
 
+/// A timeline item id a chat message replies to (`replyTo`): the same
+/// alphabet and length as [`session_id`], `[A-Za-z0-9_-]{1,64}`.
+pub fn timeline_ref(field: &'static str, s: &str) -> Result<()> {
+    session_id(field, s)
+}
+
+/// Conversation key: lowercase kind, optionally a 1..=64 character token.
+pub fn conversation(s: &str) -> Result<()> {
+    let (kind, token) = s.split_once(':').map_or((s, None), |(k, t)| (k, Some(t)));
+    if kind.is_empty() || !kind.bytes().all(|b| b.is_ascii_lowercase()) {
+        return Err(invalid("conversation", "must have a lowercase kind"));
+    }
+    if let Some(token) = token {
+        session_id("conversation", token)?;
+    }
+    Ok(())
+}
+
 /// Optional id: absent is fine, present must pass [`id`].
 pub fn opt_id(field: &'static str, s: Option<&str>) -> Result<()> {
     s.map_or(Ok(()), |s| id(field, s))
@@ -113,6 +133,15 @@ pub fn flag(field: &'static str, s: &str) -> Result<&'static str> {
 
 /// Max page size of `GET /timeline`.
 pub const MAX_TIMELINE_LIMIT: u32 = 200;
+
+/// Longest `q` and page size of `GET /ops/search` (Lucina's ops record).
+pub const MAX_OPS_QUERY_CHARS: usize = 500;
+pub const MAX_OPS_SEARCH_LIMIT: u32 = 50;
+
+/// Radius range of `GET /grocery/deals/map?radiusM=` (meters),
+/// also enforced by the server route.
+pub const DEALS_RADIUS_MIN: u32 = 500;
+pub const DEALS_RADIUS_MAX: u32 = 15_000;
 
 /// Client surfaces a chat message may come from.
 pub const CHAT_CHANNELS: &[&str] = &["web", "ios"];
@@ -200,6 +229,68 @@ pub fn quantity(field: &'static str, n: &serde_json::Number) -> Result<()> {
             format!("must be a number > 0 and <= {MAX_QUANTITY}"),
         )),
     }
+}
+
+// -- device bridge --------------------------------------------------------
+
+/// Max events in one `POST /device/events` batch.
+pub const MAX_DEVICE_EVENTS: usize = 500;
+/// Max serialized size of one event's `data`.
+pub const MAX_EVENT_DATA_BYTES: usize = 8 * 1024;
+/// Max items in each `device/state` list.
+pub const MAX_STATE_ITEMS: usize = 500;
+/// Max serialized size of one `device/state` item (and of `focus`).
+pub const MAX_STATE_ITEM_BYTES: usize = 8 * 1024;
+/// Max characters of a command `error` / `deviceObjectId`.
+pub const MAX_COMMAND_TEXT_CHARS: usize = 500;
+pub const DEVICE_EVENT_TYPES: &[&str] = &[
+    "web_visit",
+    "location_visit",
+    "health_summary",
+    "workout",
+    "focus_change",
+    "screen_threshold",
+    "calendar_change",
+    "reminder_change",
+    "alarm_fired",
+    "app_open",
+];
+pub const DEVICE_SOURCES: &[&str] = &["ios", "mac", "safari-ext", "chrome-ext"];
+
+/// One of `allowed`.
+pub fn one_of(field: &'static str, s: &str, allowed: &[&str]) -> Result<()> {
+    if allowed.contains(&s) {
+        Ok(())
+    } else {
+        Err(invalid(
+            field,
+            format!("must be one of {}", allowed.join(", ")),
+        ))
+    }
+}
+
+/// Epoch milliseconds (a positive integer) or an RFC 3339 timestamp.
+pub fn event_ts(field: &'static str, ts: &crate::models::Scalar) -> Result<()> {
+    match ts {
+        crate::models::Scalar::Number(n) if n.as_u64().is_some_and(|v| v > 0) => Ok(()),
+        crate::models::Scalar::Text(s) if timestamp(field, s).is_ok() => Ok(()),
+        _ => Err(invalid(
+            field,
+            "must be epoch milliseconds or an RFC 3339 timestamp",
+        )),
+    }
+}
+
+/// `v` serializes to at most `max` bytes of JSON.
+pub fn json_size(field: &'static str, v: &Value, max: usize) -> Result<()> {
+    let len = serde_json::to_vec(v).map_or(usize::MAX, |b| b.len());
+    if len > max {
+        return Err(invalid(
+            field,
+            format!("must be at most {max} bytes of JSON"),
+        ));
+    }
+    Ok(())
 }
 
 /// A JSON object (shopping bodies are passed through, but must be objects).

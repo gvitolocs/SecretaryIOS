@@ -6,7 +6,7 @@
 //! - `POST /v1/media/items/{id}/play` `{client, device?}` → tokenised URLs,
 //!   the playback mode, subtitles and the resume position.
 //! - `GET /v1/media/s/{token}/{id}/file`: the original, with HTTP range.
-//! - `GET /v1/media/s/{token}/{id}/hls/{variant}/index.m3u8` (+ `init.mp4`, `seg_N.m4s`).
+//! - `GET /v1/media/s/{token}/{id}/hls/{variant}/index.m3u8[?start_ms=N]` (+ `init.mp4`, `seg_N.m4s`).
 //! - `GET /v1/media/s/{token}/{id}/poster.jpg`, `thumb.jpg`, `subs/{sid}.vtt`.
 //! - `GET /v1/media/progress?since=ms`, `POST /v1/media/progress {entries}`,
 //!   `PUT /v1/media/progress/{id}`.
@@ -14,8 +14,11 @@
 //! `/play` and `/progress` trust the caller: the server in front (p1's
 //! secretary-server) authenticates them. `/s/...` URLs carry their own token.
 pub mod dir;
+pub mod gate;
 pub mod hls;
+pub mod kernel;
 pub mod ocr;
+pub mod prepare;
 pub mod probe;
 pub mod progress;
 pub mod sidecar;
@@ -67,8 +70,28 @@ pub struct SourceSub {
     pub label: String,
 }
 
+/// A video in the library, for the background preparation.
+#[derive(Debug, Clone)]
+pub struct Video {
+    pub item: SourceItem,
+    /// When the library got it (ms since 1970): newer films are prepared first.
+    pub added_at: u64,
+}
+
 pub trait MediaSource: Send + Sync + 'static {
     fn item(&self, id: &str) -> impl Future<Output = Option<SourceItem>> + Send;
+
+    /// Every video a viewer can open (not hidden, not trashed). The default,
+    /// none, leaves the background preparation with nothing to do.
+    fn videos(&self) -> impl Future<Output = Vec<Video>> + Send {
+        async { Vec::new() }
+    }
+
+    /// Resolves when items may have been added, so the preparation looks
+    /// again before its next timed scan. The default never resolves.
+    fn changed(&self) -> impl Future<Output = ()> + Send {
+        std::future::pending()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -81,8 +104,28 @@ pub struct StreamConfig {
     pub progress_path: PathBuf,
     pub ffmpeg: PathBuf,
     pub ffprobe: PathBuf,
-    /// ffmpeg HLS jobs at once.
+    /// ffmpeg HLS jobs at once for viewers (background preparation has one slot of its own).
     pub max_jobs: usize,
+    /// Prepare films' HLS output in the background, so they start at once.
+    pub prepare: bool,
+    /// Run background jobs in `systemd-run --user --scope` with a CPU quota.
+    pub background_scope: bool,
+    /// The background scope's CPU quota in percent (100 = one core).
+    pub background_cpu_quota: u32,
+    /// VAAPI render node for background H.264 (None: libx264).
+    pub vaapi_device: Option<PathBuf>,
+    /// The GPU VRAM semaphore VAAPI jobs run under (None: no lease).
+    pub gpu_lease: Option<PathBuf>,
+    /// The systemd unit the background scope is bound to, so it stops with the service.
+    pub background_bind_to: Option<String>,
+    /// First local hour background CPU jobs may start (`[start, end)`, wraps past midnight).
+    pub prepare_window_start: u32,
+    /// The hour the background CPU window ends (excluded).
+    pub prepare_window_end: u32,
+    /// Tctl at which no background job starts.
+    pub prepare_max_temp_c: u32,
+    /// One-minute load at which no background job starts.
+    pub prepare_max_load: u32,
     /// tesseract for image subtitles (DVD, Blu-ray); None hides those tracks.
     pub ocr: Option<ocr::OcrConfig>,
 }
@@ -97,6 +140,16 @@ impl StreamConfig {
             ffmpeg: "ffmpeg".into(),
             ffprobe: "ffprobe".into(),
             max_jobs: 2,
+            prepare: true,
+            background_scope: false,
+            background_cpu_quota: 100,
+            vaapi_device: None,
+            gpu_lease: None,
+            background_bind_to: None,
+            prepare_window_start: 1,
+            prepare_window_end: 7,
+            prepare_max_temp_c: 90,
+            prepare_max_load: 16,
             ocr: Some(ocr::OcrConfig {
                 tesseract: "tesseract".into(),
                 // tessdata_fast languages installed for the user (dan, eng, ita...), else tesseract's own.
@@ -158,9 +211,10 @@ struct App<S> {
 }
 
 pub fn router<S: MediaSource>(src: Arc<S>, cfg: StreamConfig) -> Result<Router, String> {
+    let background = hls::BackgroundConfig::from(&cfg);
     let app = Arc::new(App {
         signer: Signer::new(&cfg.secret, cfg.token_ttl),
-        jobs: Arc::new(hls::Jobs::new(cfg.ffmpeg.clone(), cfg.max_jobs)),
+        jobs: Arc::new(hls::Jobs::new(cfg.ffmpeg.clone(), cfg.max_jobs, background)),
         progress: progress::Store::open(cfg.progress_path.clone())?,
         subs: Arc::new(subs::Jobs::new(subs::Converter {
             ffmpeg: cfg.ffmpeg.clone(),
@@ -173,6 +227,12 @@ pub fn router<S: MediaSource>(src: Arc<S>, cfg: StreamConfig) -> Result<Router, 
         src,
         cfg,
     });
+    if app.cfg.prepare {
+        match tokio::runtime::Handle::try_current() {
+            Ok(rt) => drop(rt.spawn(prepare::run(Arc::clone(&app)))),
+            Err(_) => tracing::warn!("no tokio runtime: background preparation is off"),
+        }
+    }
     Ok(Router::new()
         .route("/v1/media/items/{id}/play", post(play::<S>))
         .route("/v1/media/s/{token}/{id}/file", get(file::<S>))
@@ -312,9 +372,10 @@ async fn play<S: MediaSource>(
         let variant = hls::variant_name(&plan);
         // Start ffmpeg now: by the time the player asks, the first segment is there.
         let out = app.hls_dir(&item, &variant)?;
-        if let Err(e) = app.jobs.ensure(item.path.clone(), plan.clone(), out) {
+        let segment = hls::segment_seconds(&plan, info.audio_lead_ms);
+        if let Err(e) = app.jobs.ensure(item.path.clone(), plan.clone(), out, segment) {
             tracing::warn!(%id, "retrying failed hls job: {e}");
-            app.jobs.ensure(item.path.clone(), plan.clone(), app.hls_dir(&item, &variant)?).map_err(internal)?;
+            app.jobs.ensure(item.path.clone(), plan.clone(), app.hls_dir(&item, &variant)?, segment).map_err(internal)?;
         }
         Some(format!("{base}/hls/{variant}/index.m3u8"))
     };
@@ -391,9 +452,17 @@ async fn file<S: MediaSource>(
     serve_file(&item.path, Some(&item.mime), req, IMMUTABLE).await
 }
 
+#[derive(Deserialize)]
+struct PlaylistQuery {
+    /// Where the viewer resumes (ms). Kept as text: anything but an integer is ignored.
+    start_ms: Option<String>,
+}
+
 async fn hls_file<S: MediaSource>(
     State(app): State<Arc<App<S>>>,
     UrlPath((token, id, variant, name)): UrlPath<(String, String, String, String)>,
+    // A query string that does not parse is ignored like a bad start_ms.
+    q: std::result::Result<Query<PlaylistQuery>, axum::extract::rejection::QueryRejection>,
     req: Request,
 ) -> Result<Response> {
     let item = app.authorised(&token, &id).await?;
@@ -401,16 +470,18 @@ async fn hls_file<S: MediaSource>(
     let out = app.hls_dir(&item, &variant)?;
     if name == "index.m3u8" {
         // Starts the job again if the cache was cleared since /play.
-        app.jobs.ensure(item.path.clone(), plan, out.clone()).map_err(internal)?;
+        let segment = hls::segment_seconds(&plan, app.probe(&item).await?.audio_lead_ms);
+        app.jobs.ensure(item.path.clone(), plan, out.clone(), segment).map_err(internal)?;
         app.jobs.wait_ready(&out, Duration::from_secs(60)).await.map_err(internal)?;
         let text = tokio::fs::read_to_string(out.join("index.m3u8")).await.map_err(internal)?;
-        let done = out.join(hls::DONE_MARKER).exists();
+        // ffmpeg writes the end of the list just before it exits, a moment before the marker.
+        let done = out.join(hls::DONE_MARKER).exists() || text.contains("#EXT-X-ENDLIST");
         return Ok((
             [
                 (header::CONTENT_TYPE, "application/vnd.apple.mpegurl"),
                 (header::CACHE_CONTROL, "no-cache"),
             ],
-            hls::rewrite_playlist(&text, done),
+            hls::rewrite_playlist(&text, done, q.ok().and_then(|q| q.0.start_ms).as_deref().and_then(hls::parse_start_ms)),
         )
             .into_response());
     }

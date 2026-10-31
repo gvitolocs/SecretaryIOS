@@ -1,0 +1,428 @@
+/* The Gallery viewer's extras (components/gallery/*): the toolbar icons, the info panel, the toast and the dialogs
+   (delete, album picker, rename). The viewer itself is styles/viewer.css; dialogs sit above it (z-index 2100). */
+
+.gv-icon {
+  width: 22px;
+  height: 22px;
+  flex: none;
+}
+
+.pv-btn--on { color: #ff6b81; }
+.pv-actions .pv-btn--active { background: rgb(255 255 255 / 24%); }
+.pv-btn--danger:hover:not(:disabled) { color: #ff6b6b; }
+
+/* ---- the info panel ---- */
+
+.gv-info {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 16px 18px max(24px, env(safe-area-inset-bottom));
+  font-size: var(--lu-type-body, 15px);
+  line-height: 1.4;
+}
+
+.gv-info-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: -16px -18px 0;
+  padding: 12px 12px 8px 18px;
+  background: #1c1c1e;
+}
+
+.gv-info-title {
+  margin: 0;
+  font-size: var(--lu-type-title-3, 18px);
+  font-weight: 600;
+}
+
+.gv-info-close {
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 18px;
+  background: rgb(255 255 255 / 12%);
+  color: inherit;
+  font-size: 20px;
+  cursor: pointer;
+}
+
+.gv-info-close:hover { background: rgb(255 255 255 / 22%); }
+
+.gv-info button:focus-visible,
+.gv-info a:focus-visible,
+.gv-info textarea:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
+
+.gv-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.gv-section + .gv-section {
+  padding-top: 16px;
+  border-top: 1px solid rgb(255 255 255 / 10%);
+}
+
+.gv-rows {
+  display: grid;
+  grid-template-columns: minmax(84px, max-content) 1fr;
+  gap: 8px 14px;
+  margin: 0;
+}
+
+.gv-rows dt {
+  color: rgb(255 255 255 / 58%);
+  font-size: var(--lu-type-subheadline, 13px);
+}
+
+.gv-rows dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.gv-sub {
+  display: block;
+  color: rgb(255 255 255 / 58%);
+  font-size: var(--lu-type-subheadline, 13px);
+}
+
+.gv-note {
+  margin: 0;
+  color: rgb(255 255 255 / 70%);
+  font-size: var(--lu-type-subheadline, 13px);
+}
+
+.gv-note--warn { color: #ffb86b; }
+
+.gv-map {
+  display: block;
+  height: 150px;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #2c2c2e;
+}
+
+.gv-map .lmap { min-height: 0; }
+
+.gv-link {
+  color: #9bb4ff;
+  font-size: var(--lu-type-subheadline, 13px);
+  text-decoration: none;
+}
+
+.gv-link:hover { text-decoration: underline; }
+
+.gv-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.gv-chip {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 12%);
+  font-size: var(--lu-type-subheadline, 13px);
+}
+
+.gv-caption {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.gv-caption-text {
+  width: 100%;
+  min-height: 72px;
+  box-sizing: border-box;
+  resize: vertical;
+  padding: 10px 12px;
+  border: 1px solid rgb(255 255 255 / 18%);
+  border-radius: 10px;
+  background: rgb(255 255 255 / 6%);
+  color: inherit;
+  font: inherit;
+  font-size: 16px;
+}
+
+.gv-caption-text::placeholder { color: rgb(255 255 255 / 40%); }
+
+.gv-caption-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.gv-small-btn {
+  min-height: 34px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 17px;
+  background: rgb(255 255 255 / 14%);
+  color: inherit;
+  font: inherit;
+  font-size: var(--lu-type-subheadline, 13px);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.gv-small-btn:hover:not(:disabled) { background: rgb(255 255 255 / 24%); }
+.gv-small-btn:disabled { opacity: 0.4; cursor: default; }
+.gv-small-btn--primary { background: #5b7cff; color: #fff; }
+.gv-small-btn--primary:hover:not(:disabled) { background: #7390ff; }
+
+/* ---- the toast over the picture (a failed save, with a way to dismiss it) ---- */
+
+.gv-toast {
+  position: fixed;
+  left: 50%;
+  bottom: max(14px, env(safe-area-inset-bottom));
+  z-index: 2050;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100vw - 24px);
+  padding: 8px 8px 8px 14px;
+  border-radius: 20px;
+  background: rgb(120 20 30 / 92%);
+  color: #fff;
+  font-size: var(--lu-type-subheadline, 14px);
+  transform: translateX(-50%);
+}
+
+/* With the info panel open the picture is narrower (desktop) or shorter (phone): the toast follows it. */
+.gv-toast--panel { left: calc((100% - min(360px, 40vw)) / 2); }
+
+@media (max-width: 700px) {
+  .gv-toast--panel {
+    left: 50%;
+    bottom: calc(min(56dvh, 460px) + max(14px, env(safe-area-inset-bottom)));
+  }
+}
+
+.gv-toast button {
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 14px;
+  background: rgb(255 255 255 / 20%);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+/* ---- dialogs ---- */
+
+.gv-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2100;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgb(0 0 0 / 55%);
+}
+
+.gv-dialog {
+  position: relative;
+  width: min(440px, 100%);
+  max-height: min(640px, calc(100dvh - 32px));
+  overflow-y: auto;
+  padding: 22px 22px 18px;
+  border: 1px solid var(--border-strong, rgb(255 255 255 / 18%));
+  border-radius: 20px;
+  background: var(--lu-card, #1c1c1e);
+  color: var(--lu-text, #fff);
+  box-shadow: 0 18px 50px rgb(0 0 0 / 45%);
+  outline: none;
+}
+
+.gv-dialog-title {
+  margin: 0 0 6px;
+  font-size: var(--lu-type-title-3, 20px);
+  font-weight: 600;
+}
+
+.gv-dialog-sub {
+  margin: 0 0 12px;
+  color: var(--lu-text-secondary, rgb(255 255 255 / 60%));
+  font-size: var(--lu-type-subheadline, 14px);
+}
+
+.gv-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+  color: var(--lu-text, #fff);
+  line-height: 1.45;
+}
+
+.gv-dialog-body p { margin: 0; }
+
+.gv-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.gv-gap { margin-top: 10px; }
+
+.gv-textarea {
+  min-height: 84px;
+  resize: vertical;
+  font-family: inherit;
+}
+
+.gv-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-top: 4px;
+  padding: 12px;
+  border: 1px solid var(--border, rgb(255 255 255 / 14%));
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+.gv-check input {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  margin: 1px 0 0;
+  accent-color: var(--lu-accent, #5b7cff);
+}
+
+.gv-check-label { display: block; font-weight: 600; }
+
+.gv-check-hint {
+  display: block;
+  margin-top: 2px;
+  color: var(--lu-text-secondary, rgb(255 255 255 / 60%));
+  font-size: var(--lu-type-subheadline, 13px);
+}
+
+.gv-error {
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--lu-negative, #ff453a) 40%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--lu-negative, #ff453a) 14%, transparent);
+  color: var(--lu-negative, #ff6b6b);
+  font-size: var(--lu-type-subheadline, 14px);
+}
+
+.gv-muted { color: var(--lu-text-secondary, rgb(255 255 255 / 60%)); }
+
+.gv-albums {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 260px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.gv-album {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--border, rgb(255 255 255 / 14%));
+  border-radius: 12px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.gv-album:hover:not(:disabled) { border-color: var(--lu-accent, #5b7cff); background: var(--lu-accent-soft, rgb(91 124 255 / 14%)); }
+.gv-album:disabled { opacity: 0.5; cursor: default; }
+.gv-album-title { font-weight: 600; overflow-wrap: anywhere; }
+.gv-album-count { flex: none; color: var(--lu-text-secondary, rgb(255 255 255 / 60%)); font-size: var(--lu-type-subheadline, 13px); }
+
+.gv-new-album { margin-top: 6px; }
+
+.gv-new-album-row {
+  display: flex;
+  gap: 8px;
+}
+
+.gv-new-album-row .text-input { flex: 1; min-width: 0; }
+.gv-new-album-row .btn { flex: none; }
+
+@media (max-width: 480px) {
+  .gv-new-album-row { flex-direction: column; }
+  .gv-dialog-actions .btn { flex: 1; }
+}
+
+.gv-rows-label {
+  color: rgb(255 255 255 / 58%);
+  font-size: var(--lu-type-subheadline, 13px);
+}
+
+/* A person in the info panel's People row: the chip is a link to their page. */
+.gv-chip__link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.gv-chip__link:hover,
+.gv-chip__link:focus-visible {
+  text-decoration: underline;
+}
+
+.gv-more { position: relative; flex: none; }
+.gv-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: min(260px, calc(100vw - 16px));
+  max-height: calc(100dvh - max(8px, env(safe-area-inset-top)) - 72px);
+  overflow-y: auto;
+  padding: 4px;
+  border-radius: 12px;
+  background: #28282b;
+  box-shadow: 0 8px 32px #0008;
+  touch-action: pan-y;
+}
+.gv-menu [role="menuitem"] {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+.gv-menu [role="menuitem"]:hover,
+.gv-menu [role="menuitem"]:focus-visible { background: #ffffff24; outline: none; }

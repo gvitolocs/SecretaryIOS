@@ -353,6 +353,8 @@ mod tests {
             width: Some(720),
             height: Some(576),
             subtitles: vec![sub(2, "dvd_subtitle", false, "dan"), sub(3, "subrip", true, "eng"), sub(4, "eia_608", false, "eng")],
+            audio_lead_ms: None,
+            version: crate::probe::PROBE_VERSION,
         };
         let (all, hidden) = tracks(&item, &info, true);
         let ids: Vec<(&str, bool)> = all.iter().map(|t| (t.id.as_str(), t.image)).collect();

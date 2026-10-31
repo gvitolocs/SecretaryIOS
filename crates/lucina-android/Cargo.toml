@@ -1,0 +1,29 @@
+[package]
+name = "lucina-android"
+description = "Rust core of the Lucina OTP Android app (liblucina_android.so): parse, dedup, encrypted state and queue, one HTTPS POST to the relay, JNI for tech.getsecretary.lucinaotp.Native."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+lucina-phone-core = { path = "../lucina-phone-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+jni = { version = "0.21", default-features = false }
+# Same TLS stack as tools/lucina-device: rustls with the graviola provider and webpki roots, no ring/aws-lc.
+ureq = { version = "=3.4.2", default-features = false, features = ["rustls-no-provider", "rustls-webpki-roots"] }
+rustls-graviola = { version = "=0.3.4", default-features = false }
+# Already in the tree through rustls-graviola: AES-256-GCM, HMAC-SHA256 and the system RNG.
+graviola = "=0.3.4"
+rustls = { version = "0.23", default-features = false, features = ["std"] }
+zeroize = "1"
+
+[dev-dependencies]
+tiny_http = "0.12"
+
+# Android: ANDROID_NDK_HOME=/home/nez/Android/Sdk/ndk/28.2.13676358 \
+#   cargo ndk -t arm64-v8a -P 26 -o <dir> build --release -p lucina-android
+# Keep panic = "unwind" (the root release profile): every JNI entry point relies
+# on catch_unwind. `nm -D` must list exactly the seven Java_..._Native_* symbols.
+[lib]
+crate-type = ["cdylib", "rlib"]

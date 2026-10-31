@@ -22,11 +22,16 @@ use tokio::io::AsyncWriteExt;
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
 
+use crate::batch::{self, BatchReq, Outcome};
 use crate::db::{self, now_str, Item, ListQuery};
+use crate::doctype::{self, DocType};
+use crate::drive::{self, DriveInfo};
+use crate::gallery::{self, OriginOut};
 use crate::ingest::{self, ExternalReq, Library};
 use crate::meta::ClientMeta;
 use crate::protocol::{self, ChunkOutcome, UploadState};
 use crate::thumbs::{self, ThumbSize};
+use crate::{deletions, trash};
 
 /// Sent by p1's Caddy (`header_up X-Media-Upstream-Key {file./etc/caddy/media-upstream.key}`).
 pub const UPSTREAM_KEY_HEADER: &str = "x-media-upstream-key";
@@ -48,14 +53,14 @@ impl<E: std::fmt::Display> From<E> for ApiError {
     }
 }
 
-fn bad(msg: impl Into<String>) -> ApiError {
+pub(crate) fn bad(msg: impl Into<String>) -> ApiError {
     ApiError(StatusCode::BAD_REQUEST, msg.into())
 }
 fn not_found() -> ApiError {
     ApiError(StatusCode::NOT_FOUND, "not found".into())
 }
 
-type ApiResult<T> = Result<T, ApiError>;
+pub type ApiResult<T> = Result<T, ApiError>;
 
 /// The public (tailnet) API. `extra` is the player's streaming router (play, `/s/…`, progress);
 /// it sits behind the same guard.
@@ -67,15 +72,23 @@ pub fn router(lib: Library, extra: Option<Router>) -> Router {
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/v1/media/items", get(list_items))
+        .route("/v1/media/items/months", get(list_months))
+        .route("/v1/media/items/batch", post(batch_items))
         .route(
             "/v1/media/items/{id}",
             get(get_item).patch(patch_item).delete(trash_item),
         )
         .route("/v1/media/items/{id}/restore", post(restore_item))
+        .route("/v1/media/items/{id}/details", get(item_details))
         .route("/v1/media/items/{id}/original", get(original))
         .route("/v1/media/items/{id}/thumb", get(thumb))
         .route("/v1/media/items/{id}/poster", get(poster))
         .route("/v1/media/items/{id}/r/{rendition}", get(rendition))
+        .route("/v1/media/items/{id}/text", get(item_text))
+        .route("/v1/media/items/{id}/pdf", get(item_pdf))
+        .route("/v1/media/items/{id}/archive", get(item_archive))
+        .route("/v1/media/drive", get(drive_roots))
+        .route("/v1/media/drive/browse", get(drive_browse))
         // The same renditions behind a play token: p1 passes /v1/media/s/* straight through, so a
         // gallery page costs no device-rate-limit tokens (60 a minute) and needs no header.
         .route(
@@ -94,9 +107,33 @@ pub fn router(lib: Library, extra: Option<Router>) -> Router {
         )
         .route("/v1/media/uploads", post(create_upload))
         .route("/v1/media/uploads/{id}/finish", post(finish_upload))
+        .route("/v1/media/devices", get(list_devices))
+        .route("/v1/media/devices/{device}", put(register_device))
         .route("/v1/media/devices/{device}/assets", get(device_assets))
+        .route(
+            "/v1/media/devices/{device}/deletions",
+            get(device_deletions),
+        )
+        .route(
+            "/v1/media/devices/{device}/deletions/ack",
+            post(ack_deletions),
+        )
+        .route("/v1/media/sources", get(list_sources))
+        .merge(crate::browse::routes())
         .route("/v1/media/events", get(events))
         .merge(uploads)
+        .merge(crate::edits::routes())
+        .merge(crate::dedup_merge::routes())
+        .merge(crate::dedup_review::routes())
+        .merge(crate::stacks::routes())
+        .merge(crate::share_http::owner_routes())
+        .merge(crate::share_http::public_routes())
+        .merge(crate::share_sel::routes())
+        .merge(crate::renditions::routes())
+        .merge(crate::lab_http::routes())
+        .merge(crate::smart::routes())
+        .merge(crate::faces_http::routes())
+        .merge(crate::categories_http::routes())
         .with_state(lib.clone())
         .merge(extra.unwrap_or_default())
         .layer(middleware::from_fn_with_state(lib, upstream_guard))
@@ -119,7 +156,8 @@ pub fn internal_router(lib: Library) -> Router {
 /// health check are exempt (the token is their auth).
 pub async fn upstream_guard(State(lib): State<Library>, req: Request, next: Next) -> Response {
     let path = req.uri().path();
-    if path == "/healthz" || path.starts_with("/v1/media/s/") {
+    // Play tokens and album share links carry their own credential (`share_http::gate`).
+    if path == "/healthz" || path.starts_with("/v1/media/s/") || path.starts_with("/v1/media/a/") {
         return next.run(req).await;
     }
     if let Some(key) = lib.cfg.upstream_key.as_deref() {
@@ -149,9 +187,38 @@ pub struct ItemOut {
     pub thumb_url: Option<String>,
     /// First album title, for the player's grouping.
     pub album: Option<String>,
+    /// The file's place in a Drive folder; `null` for other items.
+    pub drive: Option<DriveInfo>,
+    /// Where it came from: the original name, the folder under the import root, the import.
+    pub origin: OriginOut,
+    /// `trashed_at` plus the retention (RFC 3339) while in the Trash; `null` otherwise, and when
+    /// the Trash is kept forever.
+    pub trash_expires_at: Option<String>,
+    /// The photo has editor changes: `urls.edited` is the derivative, `urls.original` the untouched file.
+    pub edited: bool,
+    /// Text around the search words, when a search matched the file's content.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
 }
 
 pub fn item_out(lib: &Library, it: Item, album: Option<String>) -> ItemOut {
+    item_out_full(lib, it, album, None, None)
+}
+
+/// The document type of an item: its Drive type, or what its name says.
+fn doc_type_of(it: &Item, drive: Option<&DriveInfo>) -> DocType {
+    drive
+        .and_then(|d| DocType::parse(&d.doc_type))
+        .unwrap_or_else(|| doctype::classify(&it.title, &it.kind))
+}
+
+pub fn item_out_full(
+    lib: &Library,
+    it: Item,
+    album: Option<String>,
+    drive: Option<DriveInfo>,
+    snippet: Option<String>,
+) -> ItemOut {
     let (poster_url, thumb_url) = match &lib.signer {
         Some(s) => {
             let (base, _) = s.base(&it.id);
@@ -165,7 +232,11 @@ pub fn item_out(lib: &Library, it: Item, album: Option<String>) -> ItemOut {
         None => (None, None),
     };
     let id = &it.id;
-    let v = it.version;
+    // An edited photo's renditions carry the edit's stamp in their version (`edits.rs`).
+    let edit_stamp = (it.kind == "photo")
+        .then(|| crate::edits::stamp(&lib.cfg, id))
+        .flatten();
+    let v = crate::edits::url_version(it.version, edit_stamp);
     let has_thumb = it.thumb_state == "ready";
     let urls = json!({
         "original": format!("/v1/media/items/{id}/original"),
@@ -174,20 +245,54 @@ pub fn item_out(lib: &Library, it: Item, album: Option<String>) -> ItemOut {
         "poster": (has_thumb && matches!(it.kind.as_str(), "video" | "audio")).then(|| format!("/v1/media/items/{id}/poster?v={v}")),
         // JPEG XL renditions for the Rust viewer: 256 px grid tile, 1440 px progressive preview.
         // Tokenised when the play secret is configured (no device rate limit, no header).
-        "grid": has_thumb.then(|| rendition_url(lib, id, "grid", v)),
-        "preview": has_thumb.then(|| rendition_url(lib, id, "preview", v)),
+        "grid": has_thumb.then(|| rendition_url(lib, id, "grid", &v)),
+        "preview": has_thumb.then(|| rendition_url(lib, id, "preview", &v)),
         "play": matches!(it.kind.as_str(), "video" | "audio").then(|| format!("/v1/media/items/{id}/play")),
     });
+    let mut urls = urls;
+    if edit_stamp.is_some() {
+        urls["edited"] = json!(rendition_url(lib, id, "edited", &v));
+        urls["download_edited"] = json!(format!("/v1/media/items/{id}/edits/download"));
+    }
+    let doc = doc_type_of(&it, drive.as_ref());
+    let name = drive
+        .as_ref()
+        .map_or(it.title.as_str(), |d| d.name.as_str());
+    let office = matches!(
+        doc,
+        DocType::Document | DocType::Spreadsheet | DocType::Presentation
+    );
+    let texty = doc.has_text() || drive.as_ref().is_some_and(|d| d.preview == "text");
+    urls["download"] = json!(format!("/v1/media/items/{id}/original?download=1"));
+    urls["pdf"] = json!(
+        (doc == DocType::Pdf || (office && lib.cfg.soffice.is_some()))
+            .then(|| format!("/v1/media/items/{id}/pdf"))
+    );
+    urls["text"] = json!(texty.then(|| format!("/v1/media/items/{id}/text")));
+    urls["archive"] = json!(
+        (doc == DocType::Archive && crate::archive::format_of(name).is_some())
+            .then(|| format!("/v1/media/items/{id}/archive"))
+    );
+    let origin = gallery::origin_of(&it.origin_cols, &it.title, &it.source, drive.as_ref());
+    let trash_expires_at = it
+        .trashed_at
+        .as_deref()
+        .and_then(|t| trash::trash_expiry(t, lib.cfg.trash_days));
     ItemOut {
         item: it,
         urls,
         poster_url,
         thumb_url,
         album,
+        drive,
+        origin,
+        trash_expires_at,
+        edited: edit_stamp.is_some(),
+        snippet,
     }
 }
 
-fn rendition_url(lib: &Library, id: &str, which: &str, v: i64) -> String {
+pub(crate) fn rendition_url(lib: &Library, id: &str, which: &str, v: &str) -> String {
     match &lib.signer {
         Some(s) => format!("{}/r/{which}?v={v}", s.base(id).0),
         None => format!("/v1/media/items/{id}/r/{which}?v={v}"),
@@ -199,21 +304,43 @@ fn first_album_titles(
     c: &rusqlite::Connection,
     items: &[Item],
 ) -> rusqlite::Result<Vec<Option<String>>> {
-    let mut st = c.prepare_cached(
-        "SELECT a.title FROM album_items ai JOIN albums a ON a.id = ai.album_id WHERE ai.item_id = ?1
+    let mut st = c.prepare_cached(&format!(
+        "SELECT a.title FROM album_items ai JOIN albums a ON a.id = ai.album_id WHERE ai.item_id = ?1 AND {}
          ORDER BY a.system_key IS NOT NULL, ai.added_at LIMIT 1",
-    )?;
+        db::not_share_album("a")
+    ))?;
     items
         .iter()
         .map(|it| st.query_row([&it.id], |r| r.get(0)).optional())
         .collect()
 }
 
-async fn list_items(
+pub(crate) async fn list_items(
     State(lib): State<Library>,
-    Query(q): Query<ListQuery>,
+    Query(mut q): Query<ListQuery>,
 ) -> ApiResult<Json<Value>> {
-    let (page, titles, albums) = lib
+    q.film_folders = lib.cfg.film_folders.clone();
+    q.origin = q.origin.take().filter(|o| !o.is_empty());
+    if q.origin
+        .as_deref()
+        .is_some_and(|o| gallery::Origin::parse(o).is_none())
+    {
+        return Err(bad("origin must be all, device:<id>, chat or lucina"));
+    }
+    if q.bbox
+        .as_deref()
+        .is_some_and(|b| crate::browse::parse_bbox(b).is_none())
+    {
+        return Err(bad("bbox must be west,south,east,north in degrees"));
+    }
+    if q.doc_type
+        .as_deref()
+        .is_some_and(|t| DocType::parse(t).is_none())
+    {
+        return Err(bad("unknown type"));
+    }
+    let words = search_words(q.q.as_deref());
+    let (page, titles, albums, infos) = lib
         .db
         .call(move |c| {
             let page = db::list_items(c, &q)?;
@@ -223,33 +350,86 @@ async fn list_items(
                 .filter(|a| a.count > 0)
                 .map(|a| a.title)
                 .collect();
-            Ok((page, titles, albums))
+            let infos = page
+                .items
+                .iter()
+                .map(|it| drive::info_for(c, &it.id))
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok((page, titles, albums, infos))
         })
         .await?;
+    let out = with_snippets(&lib, page.items.into_iter().zip(infos).collect(), words).await;
     Ok(Json(json!({
         "ok": true,
-        "items": page.items.into_iter().zip(titles).map(|(it, a)| item_out(&lib, it, a)).collect::<Vec<_>>(),
+        "items": out.into_iter().zip(titles).map(|((it, d, sn), a)| item_out_full(&lib, it, a, d, sn)).collect::<Vec<_>>(),
         "next_cursor": page.next_cursor,
         "total": page.total,
         "albums": albums,
     })))
 }
 
-async fn get_item(State(lib): State<Library>, Path(id): Path<String>) -> ApiResult<Json<ItemOut>> {
-    let (it, album) = lib
+async fn get_item(State(lib): State<Library>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
+    let asked = id.clone();
+    let (it, album, info) = lib
         .db
         .call(move |c| {
+            // A copy merged into another photo (`dedup_merge`) answers with that photo.
+            let id = crate::dedup_merge::resolve(c, &id)?;
             let Some(it) = db::get_item(c, &id)? else {
                 return Ok(None);
             };
             let a = first_album_titles(c, std::slice::from_ref(&it))?
                 .pop()
                 .flatten();
-            Ok(Some((it, a)))
+            let info = drive::info_for(c, &id)?;
+            Ok(Some((it, a, info)))
         })
         .await?
         .ok_or_else(not_found)?;
-    Ok(Json(item_out(&lib, it, album)))
+    let merged = it.id != asked;
+    let mut out = serde_json::to_value(item_out_full(&lib, it, album, info, None))?;
+    if merged {
+        out["merged_from"] = json!(asked);
+    }
+    Ok(Json(out))
+}
+
+/// The words of a search, for snippets.
+fn search_words(q: Option<&str>) -> Vec<String> {
+    q.map(|s| {
+        s.split(|ch: char| !ch.is_alphanumeric())
+            .filter(|w| w.chars().count() >= 2)
+            .map(str::to_string)
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// Snippets for the first results of a search that are Drive files with text (read from disk).
+async fn with_snippets(
+    lib: &Library,
+    items: Vec<(Item, Option<DriveInfo>)>,
+    words: Vec<String>,
+) -> Vec<(Item, Option<DriveInfo>, Option<String>)> {
+    if words.is_empty() {
+        return items.into_iter().map(|(i, d)| (i, d, None)).collect();
+    }
+    let l = lib.clone();
+    tokio::task::spawn_blocking(move || {
+        items
+            .into_iter()
+            .enumerate()
+            .map(|(n, (it, d))| {
+                let sn = d
+                    .as_ref()
+                    .filter(|_| n < 50)
+                    .and_then(|info| drive::snippet_for(&l, &it.id, info, &words));
+                (it, d, sn)
+            })
+            .collect()
+    })
+    .await
+    .unwrap_or_default()
 }
 
 #[derive(Deserialize)]
@@ -258,6 +438,14 @@ struct ItemPatch {
     caption: Option<String>,
     favorite: Option<bool>,
     taken_at: Option<String>,
+    /// Clockwise degrees the client draws the picture at: 0, 90, 180 or 270. The renditions are
+    /// not re-rendered; the original is untouched.
+    rotation: Option<i64>,
+}
+
+/// The rotations a client can draw.
+pub fn valid_rotation(r: i64) -> bool {
+    matches!(r, 0 | 90 | 180 | 270)
 }
 
 async fn patch_item(
@@ -265,6 +453,9 @@ async fn patch_item(
     Path(id): Path<String>,
     Json(p): Json<ItemPatch>,
 ) -> ApiResult<Json<ItemOut>> {
+    if p.rotation.is_some_and(|r| !valid_rotation(r)) {
+        return Err(bad("rotation must be 0, 90, 180 or 270"));
+    }
     let taken = match p.taken_at.as_deref() {
         Some(t) => Some(
             crate::meta::parse_loose_datetime(t).ok_or_else(|| bad("taken_at must be RFC 3339"))?,
@@ -280,8 +471,8 @@ async fn patch_item(
             let n = tx.execute(
                 "UPDATE items SET title = COALESCE(?2, title), caption = COALESCE(?3, caption),
                     favorite = COALESCE(?4, favorite), taken_at = COALESCE(?5, taken_at), sort_at = COALESCE(?5, sort_at),
-                    updated_at = ?6 WHERE id = ?1",
-                params![iid, p.title, p.caption, p.favorite.map(|f| f as i64), taken, now_str()],
+                    rotation = COALESCE(?7, rotation), updated_at = ?6 WHERE id = ?1",
+                params![iid, p.title, p.caption, p.favorite.map(|f| f as i64), taken, now_str(), p.rotation],
             )?;
             if n == 0 {
                 return Ok(None);
@@ -345,27 +536,50 @@ async fn restore_item(
     Ok(Json(item_out(&lib, it, None)))
 }
 
-async fn serve_file(
+pub async fn serve_file(
     req_headers: HeaderMap,
     path: PathBuf,
     mime: &str,
     etag: &str,
     cache: &str,
 ) -> ApiResult<Response> {
-    let etag = format!("\"{etag}\"");
-    if req_headers
+    // `W/<tag>` is a weak validator: the same content, not necessarily the same bytes (a PNG
+    // rebuilt from its archive copy, see `archive_jxl::original_etag`).
+    let (tag, weak) = match etag.strip_prefix("W/") {
+        Some(t) => (t, true),
+        None => (etag, false),
+    };
+    let etag = if weak {
+        format!("W/\"{tag}\"")
+    } else {
+        format!("\"{tag}\"")
+    };
+    // If-None-Match uses the weak comparison: `W/"x"` and `"x"` are the same tag.
+    let quoted = format!("\"{tag}\"");
+    let not_modified = req_headers
         .get(header::IF_NONE_MATCH)
         .and_then(|v| v.to_str().ok())
-        == Some(etag.as_str())
-    {
+        .is_some_and(|v| {
+            v.split(',')
+                .map(|t| t.trim().trim_start_matches("W/"))
+                .any(|t| t == quoted)
+        });
+    if not_modified {
         return Ok(Response::builder()
             .status(StatusCode::NOT_MODIFIED)
             .header(header::ETAG, &etag)
             .body(Body::empty())
             .unwrap());
     }
+    // A range can only be tied to one version of the bytes by a strong validator. A weak one never
+    // is, so `If-Range` (whatever it holds, an old strong tag included) turns the request into a
+    // whole-file one rather than splice two encodings.
+    let whole = weak && req_headers.contains_key(header::IF_RANGE);
     let mut req = Request::builder().uri("/");
     for (k, v) in req_headers.iter() {
+        if whole && matches!(k.as_str(), "range" | "if-range") {
+            continue;
+        }
         if matches!(
             k.as_str(),
             "range" | "if-range" | "if-modified-since" | "if-unmodified-since"
@@ -390,41 +604,382 @@ async fn serve_file(
     Ok(res)
 }
 
+#[derive(Deserialize)]
+struct OriginalQuery {
+    download: Option<String>,
+    /// An older version of the item (`renditions` lists them); absent or the current one: the current original.
+    version: Option<i64>,
+}
+
+/// `inline` or `attachment` with the file's name: ASCII for old clients, UTF-8 (RFC 5987) for the rest.
+pub(crate) fn content_disposition(kind: &str, name: &str) -> Option<HeaderValue> {
+    let clean: String = name
+        .chars()
+        .filter(|c| !c.is_control() && *c != '"' && *c != '\\' && *c != '/')
+        .collect();
+    let ascii = clean.replace(|c: char| !c.is_ascii(), "_");
+    let mut encoded = String::new();
+    for b in clean.bytes() {
+        if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+            encoded.push(b as char);
+        } else {
+            encoded.push_str(&format!("%{b:02X}"));
+        }
+    }
+    HeaderValue::from_str(&format!(
+        "{kind}; filename=\"{ascii}\"; filename*=UTF-8''{encoded}"
+    ))
+    .ok()
+}
+
 async fn original(
     State(lib): State<Library>,
     Path(id): Path<String>,
+    Query(oq): Query<OriginalQuery>,
     headers: HeaderMap,
 ) -> ApiResult<Response> {
     let l = lib.clone();
-    let (path, item) = tokio::task::spawn_blocking(move || ingest::original_path(&l, &id))
+    let iid = id.clone();
+    let (path, item) = tokio::task::spawn_blocking(move || ingest::original_path(&l, &iid))
         .await??
         .ok_or_else(not_found)?;
+    let info = lib.db.call(move |c| drive::info_for(c, &id)).await?;
+    // An older version: its own blob, with the type its extension names.
+    let (path, mime, hash) = match oq.version.filter(|v| *v != item.version) {
+        Some(v) => {
+            let (l, iid) = (lib.clone(), item.id.clone());
+            crate::renditions::version_file(l, iid, v)
+                .await?
+                .ok_or_else(not_found)?
+        }
+        None => (path, item.mime.clone(), item.hash.clone()),
+    };
     if !path.is_file() {
         return Err(ApiError(
             StatusCode::SERVICE_UNAVAILABLE,
             "original is not reachable right now".into(),
         ));
     }
+    // A PNG rebuilt from its archive copy has the original's pixels, not its bytes: weak ETag.
+    let etag = crate::archive_jxl::original_etag(&lib.cfg, &path, &hash);
     let mut res = serve_file(
         headers,
         path,
-        &item.mime,
-        &item.hash,
+        &mime,
+        &etag,
         "private, max-age=31536000, immutable",
     )
     .await?;
-    let name: String = item
-        .title
-        .chars()
-        .filter(|c| !c.is_control() && *c != '"' && *c != '\\')
-        .collect();
-    if let Ok(v) = HeaderValue::from_str(&format!(
-        "inline; filename=\"{}\"",
-        name.replace(|c: char| !c.is_ascii(), "_")
-    )) {
+    let kind = if matches!(oq.download.as_deref(), Some("1" | "true")) {
+        "attachment"
+    } else {
+        "inline"
+    };
+    let name = info
+        .as_ref()
+        .map_or(item.title.as_str(), |d| d.name.as_str());
+    if let Some(v) = content_disposition(kind, name) {
         res.headers_mut().insert(header::CONTENT_DISPOSITION, v);
     }
     Ok(res)
+}
+
+pub(crate) fn valid_item_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// An item, its Drive info, its document type, its name and its original's path.
+async fn doc_item(
+    lib: &Library,
+    id: &str,
+) -> ApiResult<(Item, Option<DriveInfo>, DocType, String, PathBuf)> {
+    if !valid_item_id(id) {
+        return Err(not_found());
+    }
+    let l = lib.clone();
+    let iid = id.to_string();
+    let (path, item) = tokio::task::spawn_blocking(move || ingest::original_path(&l, &iid))
+        .await??
+        .ok_or_else(not_found)?;
+    if item.trashed_at.is_some() {
+        return Err(not_found());
+    }
+    let iid = id.to_string();
+    let info = lib.db.call(move |c| drive::info_for(c, &iid)).await?;
+    let doc = doc_type_of(&item, info.as_ref());
+    let name = info
+        .as_ref()
+        .map_or_else(|| item.title.clone(), |d| d.name.clone());
+    if !path.is_file() {
+        return Err(ApiError(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "original is not reachable right now".into(),
+        ));
+    }
+    Ok((item, info, doc, name, path))
+}
+
+#[derive(Deserialize)]
+struct TextQuery {
+    highlight: Option<String>,
+    max_bytes: Option<usize>,
+}
+
+/// The text of a text or code file (as it is, optionally highlighted), or the extracted text of a
+/// PDF or Office file.
+async fn item_text(
+    State(lib): State<Library>,
+    Path(id): Path<String>,
+    Query(q): Query<TextQuery>,
+) -> ApiResult<Response> {
+    let (item, info, doc, name, path) = doc_item(&lib, &id).await?;
+    let max = q
+        .max_bytes
+        .unwrap_or(1 << 20)
+        .clamp(1024, crate::extract::MAX_TEXT_BYTES);
+    let highlight = matches!(q.highlight.as_deref(), Some("1" | "true"));
+    let extracted = matches!(
+        doc,
+        DocType::Pdf | DocType::Document | DocType::Spreadsheet | DocType::Presentation
+    );
+    if extracted {
+        let out = thumbs::dir_for(&lib.cfg, &item.id).join("text.txt");
+        if !out.is_file() {
+            // Not read yet: read it now (one heavy job at a time; a busy worker means "later").
+            let permit = match tokio::time::timeout(
+                Duration::from_secs(30),
+                lib.jobs.clone().acquire_owned(),
+            )
+            .await
+            {
+                Ok(p) => p.map_err(|e| ApiError::from(e.to_string()))?,
+                Err(_) => {
+                    return Ok(
+                        (StatusCode::ACCEPTED, Json(json!({ "state": "pending" }))).into_response()
+                    )
+                }
+            };
+            let (cfg, o, n) = (lib.cfg.clone(), out.clone(), name.clone());
+            let res = tokio::task::spawn_blocking(move || {
+                std::fs::create_dir_all(o.parent().unwrap_or(std::path::Path::new(".")))?;
+                crate::extract::extract_text(&cfg, &path, &n, doc, &o)
+            })
+            .await?;
+            drop(permit);
+            match res {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Err(ApiError(
+                        StatusCode::NOT_FOUND,
+                        "no text in this file".into(),
+                    ))
+                }
+                Err(e) => {
+                    tracing::warn!(item = %item.id, error = %e, "text extraction failed");
+                    return Err(ApiError(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "the text can't be read".into(),
+                    ));
+                }
+            }
+        }
+        let read = tokio::task::spawn_blocking(move || crate::extract::read_text_prefix(&out, max))
+            .await??;
+        let (text, truncated) =
+            read.ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "no text".into()))?;
+        return Ok(Json(json!({
+            "language": null, "source": "extracted", "truncated": truncated,
+            "bytes": text.len(), "text": text,
+        }))
+        .into_response());
+    }
+    let texty = doc.has_text()
+        || info.as_ref().is_some_and(|d| d.preview == "text")
+        || doc == DocType::Other;
+    if !texty {
+        return Err(ApiError(
+            StatusCode::NOT_FOUND,
+            "no text in this file".into(),
+        ));
+    }
+    let language = doctype::language_for(&name);
+    let body = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<Value>> {
+        let Some((text, truncated)) = crate::extract::read_text_prefix(&path, max)? else {
+            return Ok(None);
+        };
+        let lines = if highlight {
+            language.and_then(|l| crate::highlight::highlight(&text, l))
+        } else {
+            None
+        };
+        let mut v = json!({
+            "language": language, "source": "file", "truncated": truncated,
+            "bytes": text.len(), "text": text,
+        });
+        if let Some(lines) = lines {
+            v["lines"] = json!(lines
+                .into_iter()
+                .map(|l| l
+                    .into_iter()
+                    .map(|(c, t)| json!([c, t]))
+                    .collect::<Vec<_>>())
+                .collect::<Vec<_>>());
+        }
+        Ok(Some(v))
+    })
+    .await??;
+    match body {
+        Some(v) => Ok(Json(v).into_response()),
+        None => Err(ApiError(
+            StatusCode::NOT_FOUND,
+            "no text in this file".into(),
+        )),
+    }
+}
+
+/// A PDF to show inline: the original of a PDF, a converted copy of an Office file.
+async fn item_pdf(
+    State(lib): State<Library>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    let (item, _info, doc, name, path) = doc_item(&lib, &id).await?;
+    let etag = format!("{}-pdf", item.hash);
+    let cache = "private, max-age=604800";
+    match doc {
+        DocType::Pdf => serve_file(headers, path, "application/pdf", &etag, cache).await,
+        DocType::Document | DocType::Spreadsheet | DocType::Presentation => {
+            let out = thumbs::dir_for(&lib.cfg, &item.id).join("doc.pdf");
+            if !out.is_file() {
+                if lib.cfg.soffice.is_none() {
+                    return Err(ApiError(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "no converter".into(),
+                    ));
+                }
+                let permit = lib
+                    .jobs
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .map_err(|e| ApiError::from(e.to_string()))?;
+                let (cfg, o) = (lib.cfg.clone(), out.clone());
+                let made = tokio::task::spawn_blocking(move || {
+                    std::fs::create_dir_all(o.parent().unwrap_or(std::path::Path::new(".")))?;
+                    crate::extract::office_pdf(&cfg, &path, &name, &o)
+                })
+                .await?;
+                drop(permit);
+                if !matches!(made, Ok(true)) {
+                    return Err(ApiError(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "the file can't be converted".into(),
+                    ));
+                }
+            }
+            serve_file(headers, out, "application/pdf", &etag, cache).await
+        }
+        _ => Err(not_found()),
+    }
+}
+
+async fn item_archive(State(lib): State<Library>, Path(id): Path<String>) -> ApiResult<Response> {
+    let (_item, _info, doc, name, path) = doc_item(&lib, &id).await?;
+    if doc != DocType::Archive {
+        return Err(not_found());
+    }
+    let res = tokio::task::spawn_blocking(move || crate::archive::list(&path, &name)).await?;
+    match res {
+        Ok(l) => Ok(Json(l).into_response()),
+        Err(crate::archive::ArchiveError::Unsupported) => Err(ApiError(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "this archive format can't be listed".into(),
+        )),
+        Err(crate::archive::ArchiveError::Corrupt(e)) => Err(ApiError(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!("the archive can't be read: {e}"),
+        )),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// The Drive's top level: its folders, the other Drive collections, and which converters exist.
+async fn drive_roots(State(lib): State<Library>) -> ApiResult<Json<Value>> {
+    let folders: Vec<String> = drive::drive_folders(&lib)
+        .into_iter()
+        .map(|(l, _)| l)
+        .collect();
+    let films = lib.cfg.film_folders.clone();
+    let f2 = folders.clone();
+    let (roots, albums) = lib
+        .db
+        .call(move |c| {
+            let roots = drive::roots(c, &f2)?;
+            let albums: Vec<Value> = db::list_albums_in(c, Some("drive"), &films)?
+                .into_iter()
+                .filter(|a| {
+                    !f2.contains(&a.title)
+                        && a.system_key.as_deref().is_none_or(|k| k == "voice-memos")
+                })
+                .map(|a| json!({ "id": a.id, "title": a.title, "count": a.count }))
+                .collect();
+            Ok((roots, albums))
+        })
+        .await?;
+    Ok(Json(json!({
+        "folders": roots,
+        "albums": albums,
+        "converters": {
+            "pdf_thumbs": lib.cfg.pdftoppm.is_some(),
+            "office_pdf": lib.cfg.soffice.is_some(),
+            "pdf_text": true,
+        },
+    })))
+}
+
+async fn drive_browse(
+    State(lib): State<Library>,
+    Query(q): Query<drive::BrowseQuery>,
+) -> ApiResult<Json<Value>> {
+    if !drive::drive_folders(&lib)
+        .iter()
+        .any(|(l, _)| *l == q.folder)
+    {
+        return Err(ApiError(
+            StatusCode::NOT_FOUND,
+            "no such Drive folder".into(),
+        ));
+    }
+    let (folder, path) = (q.folder.clone(), q.path.clone());
+    let b = lib
+        .db
+        .call(move |c| Ok(drive::browse(c, &q)))
+        .await?
+        .map_err(|e| match e {
+            drive::BrowseError::BadPath => bad("unsafe path"),
+            drive::BrowseError::BadQuery => bad("unknown sort, order or type"),
+            drive::BrowseError::Sql(e) => ApiError::from(e),
+        })?;
+    let words = b.words.clone();
+    let files = with_snippets(
+        &lib,
+        b.files.into_iter().map(|(i, d)| (i, Some(d))).collect(),
+        words,
+    )
+    .await;
+    Ok(Json(json!({
+        "folder": folder,
+        "path": path,
+        "breadcrumbs": b.breadcrumbs.iter().map(|(n, p)| json!({ "name": n, "path": p })).collect::<Vec<_>>(),
+        "folders": b.folders,
+        "files": files.into_iter().map(|(it, d, sn)| item_out_full(&lib, it, Some(folder.clone()), d, sn)).collect::<Vec<_>>(),
+        "total": b.total,
+        "next_offset": b.next_offset,
+    })))
 }
 
 #[derive(Deserialize)]
@@ -470,9 +1025,11 @@ async fn rendition(
     Path((id, rendition)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> ApiResult<Response> {
-    let file = match rendition.as_str() {
-        "grid" => "g.jxl",
-        "preview" => "p.jxl",
+    let (file, mime) = match rendition.as_str() {
+        "grid" => ("g.jxl", "image/jxl"),
+        "preview" => ("p.jxl", "image/jxl"),
+        // The photo editor's full-resolution derivative (`edits.rs`).
+        "edited" => (thumbs::EDITED_FILE, "image/jpeg"),
         _ => return Err(not_found()),
     };
     if id.contains('/') || id.contains("..") {
@@ -488,11 +1045,12 @@ async fn rendition(
     if !path.is_file() {
         return Err(not_found());
     }
+    let suffix = crate::edits::etag_suffix(crate::edits::stamp(&lib.cfg, &id));
     serve_file(
         headers,
         path,
-        "image/jxl",
-        &format!("{}-{}-{file}", it.hash, it.version),
+        mime,
+        &format!("{}-{}-{file}{suffix}", it.hash, it.version),
         "private, max-age=31536000, immutable",
     )
     .await
@@ -525,11 +1083,12 @@ async fn thumb_file(
     if !path.is_file() {
         return Err(not_found());
     }
+    let suffix = crate::edits::etag_suffix(crate::edits::stamp(&lib.cfg, &id));
     serve_file(
         headers,
         path,
         "image/jpeg",
-        &format!("{}-{}-{file}", it.hash, it.version),
+        &format!("{}-{}-{file}{suffix}", it.hash, it.version),
         "private, max-age=604800",
     )
     .await
@@ -584,7 +1143,7 @@ async fn summary(State(lib): State<Library>) -> ApiResult<Json<Value>> {
 
 #[derive(Deserialize)]
 struct AlbumsQuery {
-    /// `gallery` or `drive`: only albums with items there, counted there.
+    /// `gallery`, `films` or `drive`: only albums with items there, counted there.
     scope: Option<String>,
 }
 
@@ -594,7 +1153,10 @@ async fn list_albums(
 ) -> ApiResult<Json<Value>> {
     let albums = lib
         .db
-        .call(move |c| db::list_albums_in(c, q.scope.as_deref()))
+        .call({
+            let films = lib.cfg.film_folders.clone();
+            move |c| db::list_albums_in(c, q.scope.as_deref(), &films)
+        })
         .await?;
     Ok(Json(json!({ "albums": albums })))
 }
@@ -670,8 +1232,11 @@ async fn patch_album(
         .db
         .call(move |c| {
             c.execute(
-                "UPDATE albums SET title = COALESCE(?2, title), cover_item = COALESCE(?3, cover_item), updated_at = ?4
-                 WHERE id = ?1",
+                &format!(
+                    "UPDATE albums SET title = COALESCE(?2, title), cover_item = COALESCE(?3, cover_item), updated_at = ?4
+                     WHERE id = ?1 AND {}",
+                    db::not_share_album("albums")
+                ),
                 params![id, p.title.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()), p.cover_item, now_str()],
             )?;
             db::get_album(c, &id)
@@ -847,6 +1412,12 @@ async fn create_upload(
 ) -> ApiResult<Json<UploadOut>> {
     if r.filename.is_empty() || r.filename.len() > 255 || r.filename.contains('/') {
         return Err(bad("bad filename"));
+    }
+    if let Some(d) = r.meta.device.clone() {
+        if !device_id_ok(&d) {
+            return Err(bad("bad device id"));
+        }
+        lib.db.call(move |c| db::touch_device(c, &d)).await?;
     }
     if let Some(h) = &r.hash {
         if !valid_hash(h) {
@@ -1170,6 +1741,56 @@ async fn finish_upload(
 }
 
 /// What the library holds for one phone, so a reinstalled app can skip assets already backed up.
+/// `[A-Za-z0-9._-]{1,64}`: what the apps send (`ios-<uuid>`, `mac-<uuid>`).
+fn device_id_ok(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+}
+
+#[derive(Deserialize)]
+struct DeviceReq {
+    name: String,
+    kind: Option<String>,
+}
+
+const DEVICE_KINDS: &[&str] = &[
+    "iphone", "ipad", "android", "mac", "pc", "backup", "camera", "other",
+];
+
+async fn register_device(
+    State(lib): State<Library>,
+    Path(id): Path<String>,
+    Json(r): Json<DeviceReq>,
+) -> ApiResult<Json<Value>> {
+    let name = r.name.trim().to_string();
+    if !device_id_ok(&id) || name.is_empty() || name.chars().count() > 80 {
+        return Err(bad("bad device id or name"));
+    }
+    let kind = match r.kind.as_deref() {
+        Some(k) if DEVICE_KINDS.contains(&k) => k.to_string(),
+        Some(_) => {
+            return Err(bad(
+                "kind must be one of iphone, ipad, android, mac, pc, backup, camera, other",
+            ))
+        }
+        None => db::guess_device_kind(&id).to_string(),
+    };
+    let i = id.clone();
+    lib.db
+        .call(move |c| db::upsert_device(c, &i, &name, &kind))
+        .await?;
+    let all = lib.db.call(|c| db::list_devices(c)).await?;
+    Ok(Json(json!(all.into_iter().find(|d| d.id == id))))
+}
+
+async fn list_devices(State(lib): State<Library>) -> ApiResult<Json<Value>> {
+    let all = lib.db.call(|c| db::list_devices(c)).await?;
+    Ok(Json(json!({ "devices": all })))
+}
+
 async fn device_assets(
     State(lib): State<Library>,
     Path(device): Path<String>,
@@ -1178,7 +1799,13 @@ async fn device_assets(
         .db
         .call(move |c| {
             let mut st = c.prepare(
-                "SELECT asset_id, hash, id, version, trashed_at IS NOT NULL FROM items WHERE device = ?1 AND asset_id IS NOT NULL",
+                // Assets merged into another photo (`dedup_merge`) are listed with what the device sent.
+                "SELECT asset_id, hash, id, version, trashed_at IS NOT NULL FROM items
+                 WHERE device = ?1 AND asset_id IS NOT NULL
+                   AND NOT EXISTS (SELECT 1 FROM item_aliases a WHERE a.device = items.device AND a.asset_id = items.asset_id)
+                 UNION ALL
+                 SELECT a.asset_id, a.hash, a.item_id, s.version, s.trashed_at IS NOT NULL
+                 FROM item_aliases a JOIN items s ON s.id = a.item_id WHERE a.device = ?1",
             )?;
             let rows = st.query_map([&device], |r| {
                 Ok(json!({"asset_id": r.get::<_, String>(0)?, "hash": r.get::<_, String>(1)?,
@@ -1342,6 +1969,7 @@ async fn start_import(
         let opts = crate::import::ImportOpts {
             source: r.source.unwrap_or_else(|| "import".into()),
             album: r.album,
+            journal: None,
         };
         match crate::import::import_path(&l, &path, &opts) {
             Ok(s) => tracing::info!(?s, "import finished"),
@@ -1359,4 +1987,156 @@ async fn item_path(State(lib): State<Library>, Path(id): Path<String>) -> ApiRes
     Ok(Json(
         json!({ "path": path, "mime": item.mime, "hash": item.hash, "kind": item.kind }),
     ))
+}
+
+// ---- the Gallery ---------------------------------------------------------------------------
+
+/// `GET items/months?origin=&kind=`: how many items each month holds, for the scrubber and the
+/// month headers. Takes the listing's filters.
+async fn list_months(
+    State(lib): State<Library>,
+    Query(mut q): Query<ListQuery>,
+) -> ApiResult<Json<Value>> {
+    q.film_folders = lib.cfg.film_folders.clone();
+    q.origin = q.origin.take().filter(|o| !o.is_empty());
+    if q.origin
+        .as_deref()
+        .is_some_and(|o| gallery::Origin::parse(o).is_none())
+    {
+        return Err(bad("origin must be all, device:<id>, chat or lucina"));
+    }
+    if q.bbox
+        .as_deref()
+        .is_some_and(|b| crate::browse::parse_bbox(b).is_none())
+    {
+        return Err(bad("bbox must be west,south,east,north in degrees"));
+    }
+    let months = lib.db.call(move |c| db::list_months(c, &q)).await?;
+    Ok(Json(json!({
+        "months": months
+            .into_iter()
+            .map(|(month, count)| json!({ "month": month, "count": count }))
+            .collect::<Vec<_>>(),
+    })))
+}
+
+/// `GET sources`: the Gallery's source switcher.
+async fn list_sources(State(lib): State<Library>) -> ApiResult<Json<gallery::Sources>> {
+    Ok(Json(lib.db.call(|c| gallery::list_sources(c)).await?))
+}
+
+/// `GET items/{id}/details`: the item and its camera data, read from the original when asked.
+async fn item_details(
+    State(lib): State<Library>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    if !valid_item_id(&id) {
+        return Err(not_found());
+    }
+    let iid = id.clone();
+    let (it, album, info, people, category) = lib
+        .db
+        .call(move |c| {
+            let Some(it) = db::get_item(c, &iid)? else {
+                return Ok(None);
+            };
+            let a = first_album_titles(c, std::slice::from_ref(&it))?
+                .pop()
+                .flatten();
+            let info = drive::info_for(c, &iid)?;
+            let people = crate::faces_http::people_of_item(c, &iid)?;
+            let category = crate::categories::of_item(c, &iid)?;
+            Ok(Some((it, a, info, people, category)))
+        })
+        .await?
+        .ok_or_else(not_found)?;
+    let (kind, tz) = (it.kind.clone(), lib.cfg.tz);
+    let l = lib.clone();
+    let exif = tokio::task::spawn_blocking(move || {
+        let (path, _) = ingest::original_path(&l, &id).ok()??;
+        path.is_file()
+            .then(|| crate::meta::read_details(&path, &kind, tz))
+            .flatten()
+    })
+    .await?;
+    Ok(Json(json!({
+        "item": item_out_full(&lib, it, album, info, None),
+        "exif": exif,
+        // The people with a face in this photo (`faces.rs`); empty while face recognition is off.
+        "people": people,
+        // The automatic category (`categories.rs`): `{category, confidence, decided_by, auto_category}`, or `null` while undecided.
+        "category": category,
+    })))
+}
+
+/// `POST items/batch`: one operation on up to 500 items.
+async fn batch_items(
+    State(lib): State<Library>,
+    Json(req): Json<BatchReq>,
+) -> ApiResult<Json<Value>> {
+    let plan = batch::plan(req).map_err(bad)?;
+    let op = plan.op;
+    let outcome = lib.db.call(move |c| batch::apply(c, &plan)).await?;
+    let res = match outcome {
+        Outcome::NoAlbum => {
+            return Err(ApiError(StatusCode::NOT_FOUND, "album not found".into()));
+        }
+        Outcome::Applied(r) => r,
+    };
+    if op == batch::BatchOp::Purge {
+        let report = trash::PurgeReport {
+            done: res.done.clone(),
+            failed: Vec::new(),
+            orphans: res.orphans,
+        };
+        let cfg = lib.cfg.clone();
+        tokio::task::spawn_blocking(move || trash::finish_purge(&cfg, &report)).await?;
+    }
+    for id in &res.done {
+        lib.emit(op.event(), id);
+    }
+    Ok(Json(json!({
+        "done": res.done,
+        "failed": res.failed,
+        "queued": res.queued,
+    })))
+}
+
+/// `GET devices/{id}/deletions`: what Lucina asks the device to delete.
+async fn device_deletions(
+    State(lib): State<Library>,
+    Path(device): Path<String>,
+) -> ApiResult<Json<Value>> {
+    if !device_id_ok(&device) {
+        return Err(bad("bad device id"));
+    }
+    let pending = lib.db.call(move |c| deletions::pending(c, &device)).await?;
+    Ok(Json(json!({ "pending": pending })))
+}
+
+#[derive(Deserialize)]
+struct AckReq {
+    asset_ids: Vec<String>,
+}
+
+/// `POST devices/{id}/deletions/ack`: the device deleted these assets.
+async fn ack_deletions(
+    State(lib): State<Library>,
+    Path(device): Path<String>,
+    Json(r): Json<AckReq>,
+) -> ApiResult<Json<Value>> {
+    if !device_id_ok(&device) {
+        return Err(bad("bad device id"));
+    }
+    if r.asset_ids.len() > batch::MAX_BATCH {
+        return Err(bad(format!(
+            "at most {} asset ids per call",
+            batch::MAX_BATCH
+        )));
+    }
+    let acked = lib
+        .db
+        .call(move |c| deletions::ack(c, &device, &r.asset_ids))
+        .await?;
+    Ok(Json(json!({ "acked": acked })))
 }

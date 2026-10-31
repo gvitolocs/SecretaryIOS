@@ -87,7 +87,27 @@ async fn mock_handler(
     };
     m.seen.lock().unwrap().push(seen.clone());
     match (method.as_str(), uri.path()) {
+        ("GET", "/api/secretary/timeline/conversations") => {
+            Json(json!({"ok": true, "data": {
+                "items": [{"key": "device:dev_1", "kind": "device", "title": "iPhone",
+                    "channel": "ios", "device": "dev_1", "deviceName": "iPhone",
+                    "count": 2, "lastId": "tl_3", "lastTs": 1761048003000_i64,
+                    "lastRole": "lucina", "lastText": "Ciao!", "future": true},
+                    {"key": "agent:claude", "kind": "agent", "title": "Claude",
+                    "channel": "other", "caller": "claude", "count": 1,
+                    "lastId": "tl_1", "lastTs": 1, "lastRole": "user", "lastText": "hi"}],
+                "futurePage": 42
+            }}))
+            .into_response()
+        }
         ("GET", "/api/secretary/timeline") => {
+            if seen.query.as_deref() == Some("after=expired") {
+                return (
+                    StatusCode::GONE,
+                    Json(json!({"ok": false, "error": "cursor_expired", "message": "cursor evicted"})),
+                )
+                    .into_response();
+            }
             let before = seen
                 .query
                 .as_deref()
@@ -99,17 +119,17 @@ async fn mock_handler(
                 None => json!({
                     "items": [
                         {"id": "tl_3", "ts": 1_761_048_003_000_i64, "channel": "web", "role": "lucina",
-                         "text": "Ciao!", "replyTo": "tl_2", "meta": {"kind": "reminder"},
-                         "attachments": [{"kind": "image", "name": "a.png"}], "futureField": {"x": 1}},
+                         "text": "Ciao!", "replyTo": "tl_2", "meta": {"kind": "share", "shareId": "share-test-1234", "intent": "ask", "transcript": "ciao", "voiceReply": true},
+                         "attachments": [{"kind": "voice", "waveform": "AAEC", "transcript": "ciao", "durationMs": 4200, "name": "a.m4a", "mime": "audio/mp4", "mediaId": "itm_123", "url": "https://example.com/a.png", "bytes": 123}], "futureField": {"x": 1}},
                         {"id": "tl_2", "ts": 1_761_048_002_000_i64, "channel": "ios", "role": "user",
                          "text": "Ciao", "clientMessageId": "c-2"},
                     ],
-                    "nextBefore": "tl_2",
+                    "nextBefore": "tl_2", "cursor": "arrival_4", "hasMore": true,
                 }),
                 Some("tl_2") => json!({
                     "items": [{"id": 1, "ts": "2026-10-21T12:00:00.000Z", "channel": "whatsapp",
                                "role": "user", "text": "old", "backfilled": true}],
-                    "nextBefore": null,
+                    "nextBefore": null, "cursor": null, "hasMore": false,
                 }),
                 Some(_) => json!({"items": [], "nextBefore": null}),
             };
@@ -289,11 +309,20 @@ async fn timeline_pages_pass_through() {
     let (s, b) = h.json(h.get("/v1/timeline?limit=50")).await;
     assert_eq!(s, 200, "{b}");
     assert_eq!(b["nextBefore"], "tl_2");
+    let page: secretary_core::models::TimelinePage = serde_json::from_value(b.clone()).unwrap();
+    assert_eq!(page.cursor.as_deref(), Some("arrival_4"));
+    assert_eq!(page.has_more, Some(true));
     assert_eq!(b["items"][0]["id"], "tl_3");
     assert_eq!(b["items"][0]["ts"], 1_761_048_003_000_i64);
     assert_eq!(b["items"][0]["replyTo"], "tl_2");
-    assert_eq!(b["items"][0]["meta"], json!({"kind": "reminder"}));
-    assert_eq!(b["items"][0]["attachments"][0]["kind"], "image");
+    assert_eq!(
+        b["items"][0]["meta"],
+        json!({"kind":"share", "shareId":"share-test-1234", "intent":"ask", "transcript":"ciao", "voiceReply":true})
+    );
+    assert_eq!(
+        b["items"][0]["attachments"],
+        json!([{"kind":"voice", "waveform":"AAEC", "transcript":"ciao", "durationMs":4200, "name":"a.m4a", "mime":"audio/mp4", "mediaId":"itm_123", "url":"https://example.com/a.png", "bytes":123}])
+    );
     assert_eq!(
         b["items"][0]["futureField"],
         json!({"x": 1}),
@@ -308,6 +337,8 @@ async fn timeline_pages_pass_through() {
     let (s, b) = h.json(h.get("/v1/timeline?before=tl_2&limit=2")).await;
     assert_eq!(s, 200, "{b}");
     assert_eq!(b["nextBefore"], Value::Null);
+    assert_eq!(b.get("cursor"), Some(&Value::Null));
+    assert_eq!(b["hasMore"], false);
     assert_eq!(b["items"][0]["id"], 1);
     assert_eq!(b["items"][0]["ts"], "2026-10-21T12:00:00.000Z");
     assert_eq!(b["items"][0]["channel"], "whatsapp");
@@ -333,6 +364,20 @@ async fn timeline_query_is_validated_before_lucina() {
         "before=a%2Fb",
         "before=..",
         "before=a%20b",
+        "after=a%2Fb",
+        "after=..",
+        "after=",
+        "before=tl_1&after=tl_2",
+        "scope=all",
+        "scope=",
+        "scope=mine&conversation=lucina",
+        "conversation=Device:abc",
+        "conversation=device:",
+        "conversation=device:a.b",
+        "conversation=device:a:b",
+        "conversation=",
+        "conversation=device:%2F",
+
     ] {
         let (s, b) = h.json(h.get(&format!("/v1/timeline?{q}"))).await;
         assert_eq!(s, 400, "{q}: {b}");
@@ -522,9 +567,13 @@ async fn shutdown_ends_open_streams() {
 // -- auth ----------------------------------------------------------------------
 
 #[tokio::test]
-async fn both_routes_need_auth_and_accept_a_cookie_session() {
+async fn timeline_routes_need_auth_and_accept_a_cookie_session() {
     let h = harness(|_| {}).await;
-    for path in ["/v1/timeline", "/v1/timeline/stream"] {
+    for path in [
+        "/v1/timeline",
+        "/v1/timeline/stream",
+        "/v1/timeline/conversations",
+    ] {
         let r = h.http.get(h.url(path)).send().await.unwrap();
         assert_eq!(r.status(), 401, "{path}");
         assert_eq!(r.headers()["www-authenticate"], "Bearer");
@@ -555,7 +604,11 @@ async fn both_routes_need_auth_and_accept_a_cookie_session() {
         .next()
         .unwrap()
         .to_owned();
-    for path in ["/v1/timeline", "/v1/timeline/stream"] {
+    for path in [
+        "/v1/timeline",
+        "/v1/timeline/stream",
+        "/v1/timeline/conversations",
+    ] {
         let r = h
             .http
             .get(h.url(path))
@@ -622,4 +675,200 @@ async fn chat_channel_from_header_or_body_defaults_to_web() {
         assert_eq!((s, code(&b)), (400, "bad_request"), "{header:?} {body}");
     }
     assert_eq!(h.mock.seen("/api/secretary/chat").len(), before);
+}
+
+// -- POST /v1/chat replyTo ---------------------------------------------------------
+
+#[tokio::test]
+async fn chat_forwards_reply_to_and_rejects_a_bad_one() {
+    let h = harness(|_| {}).await;
+    let chat = |body: Value| {
+        h.http
+            .post(h.url("/v1/chat"))
+            .bearer_auth(&h.token)
+            .json(&body)
+    };
+    let last = || {
+        h.mock
+            .seen("/api/secretary/chat")
+            .last()
+            .unwrap()
+            .body
+            .clone()
+    };
+
+    let (s, b) = h
+        .json(chat(
+            json!({"message": "e questo?", "replyTo": "01K83ZK4Q6X1V9W2D3E4F5G6H7"}),
+        ))
+        .await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(last()["replyTo"], "01K83ZK4Q6X1V9W2D3E4F5G6H7");
+    assert_eq!(last()["message"], "e questo?");
+
+    // Absent: the forwarded body has no replyTo key at all.
+    let (s, _) = h.json(chat(json!({"message": "ciao"}))).await;
+    assert_eq!(s, 200);
+    assert!(last().get("replyTo").is_none(), "{}", last());
+
+    let before = h.mock.seen("/api/secretary/chat").len();
+    for bad in [
+        json!({"message": "ciao", "replyTo": "../x"}),
+        json!({"message": "ciao", "replyTo": ""}),
+        json!({"message": "ciao", "replyTo": "x".repeat(65)}),
+        json!({"message": "ciao", "replyTo": 5}),
+    ] {
+        let (s, b) = h.json(chat(bad.clone())).await;
+        assert_eq!((s, code(&b)), (400, "bad_request"), "{bad}");
+    }
+    assert_eq!(h.mock.seen("/api/secretary/chat").len(), before);
+}
+
+#[tokio::test]
+async fn chat_stamps_authenticated_device() {
+    let h = harness(|_| {}).await;
+    let (_, session) = h.json(h.get("/v1/session")).await;
+    assert!(session["deviceId"].as_str().unwrap().starts_with("dev_"));
+    for stamp in [
+        json!({}),
+        json!({"device": "spoofed", "deviceName": "spoofed"}),
+    ] {
+        let mut body = stamp;
+        body["message"] = json!("ciao");
+        let (s, b) = h
+            .json(
+                h.http
+                    .post(h.url("/v1/chat"))
+                    .bearer_auth(&h.token)
+                    .json(&body),
+            )
+            .await;
+        assert_eq!(s, 200, "{b}");
+        let seen = h.mock.seen("/api/secretary/chat");
+        let forwarded = &seen.last().unwrap().body;
+        assert_eq!(forwarded["device"], session["deviceId"]);
+        assert_eq!(forwarded["deviceName"], "test iPhone");
+    }
+}
+
+#[tokio::test]
+async fn mine_uses_identity_and_header_channel() {
+    let h = harness(|_| {}).await;
+    let (_, session) = h.json(h.get("/v1/session")).await;
+    for (header, channel) in [(None, "web"), (Some(" ios "), "ios")] {
+        let mut req = h.get("/v1/timeline?scope=mine&after=tl_1&device=spoofed&channel=discord");
+        if let Some(header) = header {
+            req = req.header("X-Secretary-Client", header);
+        }
+        let (s, b) = h.json(req).await;
+        assert_eq!(s, 200, "{b}");
+        let seen = h.mock.seen("/api/secretary/timeline");
+        let query = seen.last().unwrap().query.as_deref().unwrap();
+        let params: std::collections::HashMap<_, _> =
+            reqwest::Url::parse(&format!("http://test/?{query}"))
+                .unwrap()
+                .query_pairs()
+                .into_owned()
+                .collect();
+        assert_eq!(params.len(), 4);
+        assert_eq!(params["after"], "tl_1");
+        assert_eq!(params["scope"], "mine");
+        assert_eq!(params["device"], session["deviceId"].as_str().unwrap());
+        assert_eq!(params["channel"], channel);
+    }
+    let (s, b) = h
+        .json(
+            h.get("/v1/timeline?scope=mine")
+                .header("X-Secretary-Client", "android"),
+        )
+        .await;
+    assert_eq!((s, code(&b)), (400, "bad_request"));
+    assert_eq!(h.mock.seen("/api/secretary/timeline").len(), 2);
+    let (s, _) = h
+        .json(h.get("/v1/timeline?device=spoofed&channel=ios"))
+        .await;
+    assert_eq!(s, 200);
+    assert_eq!(
+        h.mock.seen("/api/secretary/timeline").last().unwrap().query,
+        None
+    );
+}
+
+#[tokio::test]
+async fn conversation_filters_and_incremental_cursor_are_forwarded() {
+    let h = harness(|_| {}).await;
+    for key in [
+        "selftest".to_owned(),
+        "lucina".into(),
+        "device:D_1-x".into(),
+        "agent:claude".into(),
+        "legacy:web".into(),
+        format!("device:{}", "x".repeat(64)),
+    ] {
+        let (s, b) = h
+            .json(
+                h.get("/v1/timeline")
+                    .query(&[("conversation", key.as_str()), ("after", "tl_1")]),
+            )
+            .await;
+        assert_eq!(s, 200, "{key}: {b}");
+        let seen = h.mock.seen("/api/secretary/timeline");
+        let query = seen.last().unwrap().query.as_deref().unwrap();
+        let url = reqwest::Url::parse(&format!("http://test/?{query}")).unwrap();
+        assert!(url
+            .query_pairs()
+            .any(|(k, v)| k == "conversation" && v == key));
+        assert!(url.query_pairs().any(|(k, v)| k == "after" && v == "tl_1"));
+    }
+    for q in [
+        format!("conversation=device:{}", "x".repeat(65)),
+        format!("after={}", "x".repeat(129)),
+        format!("before={}", "x".repeat(129)),
+    ] {
+        let (s, b) = h.json(h.get(&format!("/v1/timeline?{q}"))).await;
+        assert_eq!((s, code(&b)), (400, "bad_request"));
+    }
+    assert_eq!(h.mock.seen("/api/secretary/timeline").len(), 6);
+}
+
+#[tokio::test]
+async fn expired_cursor_is_gone() {
+    let h = harness(|_| {}).await;
+    let (s, b) = h.json(h.get("/v1/timeline?after=expired")).await;
+    assert_eq!((s, code(&b)), (410, "cursor_expired"));
+    assert_eq!(b["error"]["message"], "cursor evicted");
+    assert_eq!(h.mock.seen("/api/secretary/timeline").len(), 1);
+}
+
+#[tokio::test]
+async fn conversations_are_typed_and_keep_unknown_fields() {
+    let h = harness(|_| {}).await;
+    let (s, b) = h.json(h.get("/v1/timeline/conversations")).await;
+    assert_eq!(s, 200, "{b}");
+    let data: secretary_core::models::TimelineConversations =
+        serde_json::from_value(b.clone()).unwrap();
+    assert_eq!(data.items[0].device_name.as_deref(), Some("iPhone"));
+    assert_eq!(data.items[0].count, 2);
+    assert_eq!(data.items[1].caller.as_deref(), Some("claude"));
+    assert_eq!(data.items[1].device, None);
+    assert_eq!(serde_json::to_value(data).unwrap(), b);
+    assert_eq!(b["futurePage"], 42);
+    assert_eq!(b["items"][0]["future"], true);
+    let seen = h.mock.seen("/api/secretary/timeline/conversations");
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].auth.as_deref(), Some("Bearer lucina-server-secret"));
+    assert_eq!(seen[0].query, None);
+}
+
+#[tokio::test]
+async fn conversations_share_the_device_rate_limit() {
+    let h = harness(|cfg| cfg.rate_limit_per_minute = 1).await;
+    let (s, _) = h.json(h.get("/v1/timeline")).await;
+    assert_eq!(s, 200);
+    let (s, b) = h.json(h.get("/v1/timeline/conversations")).await;
+    assert_eq!((s, code(&b)), (429, "rate_limited"));
+    assert!(h
+        .mock
+        .seen("/api/secretary/timeline/conversations")
+        .is_empty());
 }

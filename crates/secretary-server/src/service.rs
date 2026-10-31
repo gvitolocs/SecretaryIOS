@@ -1,11 +1,12 @@
 //! The service token: how Lucina (a server, not a device) reads
-//! `/v1/insights/summary`.
+//! `/v1/insights/summary` and changes her outfit (`/v1/avatar*`).
 //!
 //! - One token, `svc_` + base64url(32 random bytes), in the file named by
 //!   `SECRETARY_SERVICE_TOKEN_FILE`; only its SHA-256 is kept in memory and it
 //!   is compared in constant time.
-//! - It is accepted on the insights route only. Device tokens and cookies are
-//!   refused there, and device routes refuse it (their parser only accepts
+//! - It is accepted on the insights route (where device tokens and cookies
+//!   are refused) and on the avatar routes (next to device auth, see
+//!   [`crate::avatar`]). Device routes refuse it (their parser only accepts
 //!   `sec_` tokens).
 
 use std::io::Write;
@@ -119,7 +120,7 @@ pub fn write_new(path: &Path, force: bool) -> anyhow::Result<()> {
     result
 }
 
-fn service_bearer(headers: &HeaderMap) -> Option<&str> {
+pub(crate) fn service_bearer(headers: &HeaderMap) -> Option<&str> {
     headers
         .get(header::AUTHORIZATION)?
         .to_str()

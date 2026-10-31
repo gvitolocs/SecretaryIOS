@@ -1,0 +1,95 @@
+[
+  {
+    "id": "err7kvOmH6lsd549OKknC",
+    "heading": "DULANO Parmaskinke",
+    "description": "70 g. Pr. kg 285,71\n-25%",
+    "pricing": {
+      "price": 20,
+      "pre_price": 26.95,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 70,
+        "to": 70
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-21T22:00:00+0000",
+    "run_till": "2026-10-24T21:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "R7jMsMpV-Y7iEFMKv-5EO",
+    "heading": "Salling Princip udenlandske specialiteter",
+    "description": "65-170 g.\nPr. kg max. 446,15",
+    "pricing": {
+      "price": 29,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 65,
+        "to": 170
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-23T22:00:00+0000",
+    "run_till": "2026-10-30T22:59:59+0000",
+    "dealer_id": "9ba51",
+    "dealer": {
+      "id": "9ba51",
+      "name": "Netto"
+    },
+    "store_id": null
+  },
+  {
+    "id": "14G6WlVQXBUcpFCjfeZA6",
+    "heading": "Nytårstapas",
+    "description": "En indbydende tapasanretning med nøje udvalgte smagsoplevelser. Kød & charcuteri: Udvalget af charcuteri spænder fra krydret chorizo, fintskåret parmaskinke og italiensk salami til mini fuet og søde dadler svøbt i bacon. Fisk & skaldyr: Fra havet byder anretningen på rørt lakserilette, tunmousse og saftige, marinerede vannamei-rejer. Ost: Et udvalg af klassiske og smagfulde oste – cremet brie, Aged havarti og gouda med chili. Tilbehør & specialiteter: Et udvalg med alt fra hummus, frisk basilikumpesto og aioli til klassisk hønsesalat og tapenade, suppleret af marinerede rødløg, oliven med hvidløg, cornichoner og flødeostfyldte peberdew. Frugt & grønt: Friske druer og bær, sød melon og cherrytomater. Brød & sprødt: Til at fuldende serveringen får du friskbagt baguette, sprøde rugbrødssnacks, saltmandler og delikate ostekiks. Anretning til 2 personer",
+    "pricing": {
+      "price": 399,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "pcs",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-09-08T22:00:00+0000",
+    "run_till": "2026-12-31T22:59:59+0000",
+    "dealer_id": "bdf5A",
+    "dealer": {
+      "id": "bdf5A",
+      "name": "føtex"
+    },
+    "store_id": null
+  }
+]

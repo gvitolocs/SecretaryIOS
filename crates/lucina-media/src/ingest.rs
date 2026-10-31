@@ -14,7 +14,7 @@ use crate::config::Config;
 use crate::db::{self, now_str, Db};
 use crate::meta::{self, ClientMeta, Extracted};
 use crate::protocol::{ingest_decision, IngestDecision, Known};
-use crate::{geo, store, thumbs};
+use crate::{dedup_merge, gallery, geo, store, thumbs};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Event {
@@ -31,6 +31,9 @@ pub struct Library {
     pub events: broadcast::Sender<Event>,
     /// Mints the player's tokenised URLs for listings (poster_url, thumb_url).
     pub signer: Option<Arc<secretary_media_stream::Signer>>,
+    /// One heavy Drive job at a time (text extraction, PDF pages, Office conversion), whether the
+    /// background worker or a viewer asked for it.
+    pub jobs: Arc<tokio::sync::Semaphore>,
 }
 
 impl Library {
@@ -56,6 +59,7 @@ impl Library {
             db,
             events,
             signer,
+            jobs: Arc::new(tokio::sync::Semaphore::new(1)),
         })
     }
 
@@ -102,7 +106,7 @@ pub fn ingest_file(
     let known = lib.db.with(|c| known_for(c, &hash, client))?;
     let decision = ingest_decision(&known, &hash);
     if let IngestDecision::Duplicate { item_id } = &decision {
-        std::fs::remove_file(src)?;
+        keep_owned_bytes(lib, src, &hash, &ext, bytes)?;
         let version = lib.db.with(|c| {
             // A file imported earlier (e.g. from Takeout) now arrives from the phone: remember the
             // asset so later edits version this item instead of creating a new one.
@@ -122,18 +126,7 @@ pub fn ingest_file(
         });
     }
 
-    let have_blob = lib.db.with(|c| db::blob(c, &hash))?.is_some();
-    if have_blob {
-        std::fs::remove_file(src)?;
-    } else {
-        let loc = store::place_new(cfg, src, &hash, &ext)?;
-        lib.db.with(|c| {
-            c.execute(
-                "INSERT OR IGNORE INTO blobs (hash, bytes, ext, location, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![hash, bytes, ext, loc, now_str()],
-            )
-        })?;
-    }
+    keep_owned_bytes(lib, src, &hash, &ext, bytes)?;
 
     let place = match (x.lat, x.lon) {
         (Some(lat), Some(lon)) => geo::place_for(lat, lon),
@@ -172,6 +165,8 @@ pub fn ingest_file(
             let v = lib
                 .db
                 .with(|c| new_version(c, &item_id, &hash, bytes, &x, place.as_ref()))?;
+            // A new original replaces the editor's look of the old one.
+            crate::edits::forget(lib, &item_id);
             let dir = thumbs::dir_for(cfg, &item_id);
             for f in ["s.jpg", "l.jpg", "poster.jpg", "preview.jpg"] {
                 let _ = std::fs::remove_file(dir.join(f));
@@ -194,22 +189,66 @@ pub fn ingest_file(
     })
 }
 
+/// The blob row for bytes the library now owns (`src`, consumed), by kernel DK3: an owned copy that
+/// is already there wins and `src` goes; a row that only references a file in place (a Drive file,
+/// a memo) is upgraded to the owned copy, so a phone's original never depends on a file the owner
+/// may move or delete in the Drive.
+fn keep_owned_bytes(
+    lib: &Library,
+    src: &Path,
+    hash: &str,
+    ext: &str,
+    bytes: i64,
+) -> anyhow::Result<()> {
+    use crate::drive_kernel::{blob_decision, BlobAction, BlobLoc};
+    let existing = lib.db.with(|c| db::blob(c, hash))?;
+    match blob_decision(existing.map(|b| BlobLoc::from_location(&b.location)), true) {
+        BlobAction::DropIncoming => std::fs::remove_file(src)?,
+        BlobAction::Place => {
+            let loc = store::place_new(&lib.cfg, src, hash, ext)?;
+            lib.db.with(|c| {
+                c.execute(
+                    "INSERT OR IGNORE INTO blobs (hash, bytes, ext, location, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![hash, bytes, ext, loc, now_str()],
+                )
+            })?;
+        }
+        BlobAction::Upgrade => {
+            let loc = store::place_new(&lib.cfg, src, hash, ext)?;
+            lib.db.with(|c| {
+                c.execute(
+                    "UPDATE blobs SET location = ?2, ext = ?3, path = NULL WHERE hash = ?1 AND location = 'external'",
+                    params![hash, loc, ext],
+                )
+            })?;
+        }
+        // An owned incoming copy never maps to these (DK3).
+        BlobAction::RecordExternal | BlobAction::Keep => std::fs::remove_file(src)?,
+    }
+    Ok(())
+}
+
 fn known_for(c: &Connection, hash: &str, client: &ClientMeta) -> rusqlite::Result<Known> {
-    let by_hash = c
+    let by_hash: Option<String> = c
         .query_row(
             "SELECT id FROM items WHERE hash = ?1 ORDER BY added_at LIMIT 1",
             [hash],
             |r| r.get(0),
         )
         .optional()?;
+    // Bytes of a hidden duplicate belong to the photo it was merged into (`dedup_merge`).
+    let by_hash = by_hash.map(|id| dedup_merge::resolve(c, &id)).transpose()?;
     let by_asset = match (&client.device, &client.asset_id) {
-        (Some(d), Some(a)) => c
-            .query_row(
-                "SELECT id, hash FROM items WHERE device = ?1 AND asset_id = ?2",
-                params![d, a],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?,
+        (Some(d), Some(a)) => match dedup_merge::asset_lookup(c, d, a, hash)? {
+            Some(merged) => Some(merged),
+            None => c
+                .query_row(
+                    "SELECT id, hash FROM items WHERE device = ?1 AND asset_id = ?2",
+                    params![d, a],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?,
+        },
         _ => None,
     };
     Ok(Known { by_hash, by_asset })
@@ -238,6 +277,9 @@ fn insert_new_or_duplicate(
             |r| r.get(0),
         )
         .optional()?;
+    let existing = existing
+        .map(|id| dedup_merge::resolve(c, &id))
+        .transpose()?;
     if let Some(existing) = existing {
         if let (Some(dev), Some(asset)) = (&client.device, &client.asset_id) {
             c.execute(
@@ -286,9 +328,9 @@ fn insert_item(
     tx.execute(
         "INSERT INTO items (id, kind, title, caption, hash, mime, bytes, taken_at, sort_at, width, height, duration_ms,
             video_codec, audio_codec, lat, lon, place_name, admin1, admin2, cc, camera, source, device, asset_id,
-            hidden, favorite, added_at, updated_at)
+            hidden, favorite, added_at, updated_at, origin_name, origin_folder, origin_root)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22,
-            ?23, ?24, ?25, ?26, ?27, ?27)",
+            ?23, ?24, ?25, ?26, ?27, ?27, ?28, ?29, ?30)",
         params![
             id,
             x.kind,
@@ -317,6 +359,12 @@ fn insert_item(
             client.live_motion.unwrap_or(false) as i64,
             client.favorite.unwrap_or(false) as i64,
             now,
+            // Where it came from, for `gallery::origin_of`: never a path outside the import root.
+            client.filename.as_deref().and_then(|f| {
+                gallery::clean_name(f.rsplit(['/', '\\']).next().unwrap_or(f))
+            }),
+            client.origin_folder.as_deref().and_then(gallery::clean_folder),
+            client.origin_root.as_deref().and_then(gallery::clean_name),
         ],
     )?;
     if let (Some(dev), Some(pair)) = (&client.device, &client.live_pair_asset) {
@@ -375,7 +423,10 @@ fn system_albums_for(kind: &str, source: &str, client: &ClientMeta) -> Vec<&'sta
 pub fn find_or_create_album(c: &Connection, title: &str) -> rusqlite::Result<String> {
     if let Some(id) = c
         .query_row(
-            "SELECT id FROM albums WHERE title = ?1 COLLATE NOCASE ORDER BY created_at LIMIT 1",
+            &format!(
+                "SELECT id FROM albums a WHERE title = ?1 COLLATE NOCASE AND {} ORDER BY created_at LIMIT 1",
+                db::not_share_album("a")
+            ),
             [title],
             |r| r.get(0),
         )
@@ -476,6 +527,11 @@ pub fn register_external(
     let mime = meta::mime_for(&path, req.mime.as_deref());
     let ext = meta::ext_for(&path, &mime);
     let bytes = std::fs::metadata(&path)?.len() as i64;
+    // An in-place file's provenance: its name, and its folder under the configured root.
+    let (root, folder) = match gallery::relative_to_roots(&lib.cfg.folders, &path) {
+        Some((label, dir)) => (Some(label), dir),
+        None => (None, None),
+    };
     let client = ClientMeta {
         taken_at: req.created_at.clone(),
         duration_ms: req.duration_ms,
@@ -483,6 +539,12 @@ pub fn register_external(
         title: req.title.clone(),
         caption: req.caption.clone(),
         album: req.album.clone(),
+        filename: path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(str::to_string),
+        origin_folder: folder,
+        origin_root: root,
         ..Default::default()
     };
     let mut x = meta::extract(&path, &mime, &client, lib.cfg.tz, &lib.cfg.ffprobe);
@@ -581,15 +643,29 @@ pub fn unregister_external(
     Ok(id)
 }
 
-/// Where an item's current original is, if the item exists.
+/// Where an item's current original is, if the item exists. A Drive file is its own file (two
+/// identical files share one blob row, which names only one of their paths).
 pub fn original_path(lib: &Library, item_id: &str) -> anyhow::Result<Option<(PathBuf, db::Item)>> {
     let Some(item) = lib.db.with(|c| db::get_item(c, item_id))? else {
         return Ok(None);
     };
+    if let Some(info) = lib.db.with(|c| crate::drive::info_for(c, item_id))? {
+        if let Some(p) = crate::drive::file_path(lib, &info).filter(|p| p.is_file()) {
+            return Ok(Some((p, item)));
+        }
+    }
     let Some(b) = lib.db.with(|c| db::blob(c, &item.hash))? else {
         return Ok(None);
     };
-    Ok(Some((store::path_of(&lib.cfg, &b), item)))
+    let path = store::path_of(&lib.cfg, &b);
+    // An archived original whose file was removed after its JXL proved it: rebuild it (verified,
+    // cached) so every reader gets the same bytes and the same hash as before.
+    if b.location == "store" && !path.is_file() {
+        if let Some(p) = crate::archive_jxl::materialize(&lib.cfg, &lib.db, &b.hash) {
+            return Ok(Some((p, item)));
+        }
+    }
+    Ok(Some((path, item)))
 }
 
 /// Make thumbnails for items that need them, a few at a time, forever.

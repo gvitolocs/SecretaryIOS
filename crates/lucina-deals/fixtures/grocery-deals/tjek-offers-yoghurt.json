@@ -1,0 +1,1304 @@
+[
+  {
+    "id": "gybVxIpcUsKo7mP1T-pOA",
+    "heading": "Cheasy yoghurt",
+    "description": "1 liter.",
+    "pricing": {
+      "price": 12,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "l",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-23T22:00:00+0000",
+    "run_till": "2026-10-30T22:59:59+0000",
+    "dealer_id": "9ba51",
+    "dealer": {
+      "id": "9ba51",
+      "name": "Netto"
+    },
+    "store_id": null
+  },
+  {
+    "id": "KhkA_wqJJ4mljhju-1WPC",
+    "heading": "Cheasy Yoghurt",
+    "description": "Flere varianter. 1 kg.\nPr. stk.",
+    "pricing": {
+      "price": 16,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "kg",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "88ddE",
+    "dealer": {
+      "id": "88ddE",
+      "name": "SPAR"
+    },
+    "store_id": null
+  },
+  {
+    "id": "4Tra_KO1iu1QN1_dV3lKA",
+    "heading": "Cheasy skyr eller PUCK græskinspireret yoghurt",
+    "description": "",
+    "pricing": {
+      "price": 22,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 1000,
+        "to": 1000
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-24T22:00:00+0000",
+    "run_till": "2026-10-31T22:59:59+0000",
+    "dealer_id": "11deC",
+    "dealer": {
+      "id": "11deC",
+      "name": "REMA 1000"
+    },
+    "store_id": null
+  },
+  {
+    "id": "EFts65gCWGZYnOEe9jwHv",
+    "heading": "MILBONA Græsk-inspireret yoghurt",
+    "description": "1000 g / stk. Pr. kg 24,95",
+    "pricing": {
+      "price": 24.95,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 1000,
+        "to": 1000
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-05-02T22:00:00+0000",
+    "run_till": "2026-12-31T22:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "ntWVzy9aeM24xs422ix5I",
+    "heading": "Arla Airy, Cultura eller Yoggi med Top",
+    "description": "Flere varianter. 128-170 g. Max. kg pris 23,44. Max. 4 stk. pr. kunde pr. dag. Herefter er prisen op til 15,95 pr. stk. MAX. 4 STK. SKARP PRIS PR. STK.",
+    "pricing": {
+      "price": 3,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 128,
+        "to": 170
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": 4
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "88ddE",
+    "dealer": {
+      "id": "88ddE",
+      "name": "SPAR"
+    },
+    "store_id": null
+  },
+  {
+    "id": "SBCdSuOCZkuHitoU019sv",
+    "heading": "Løgismose økologisk græsk-inspireret yoghurt",
+    "description": "800 g.\nPr. kg 40,00",
+    "pricing": {
+      "price": 32,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 800,
+        "to": 800
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-23T22:00:00+0000",
+    "run_till": "2026-10-30T22:59:59+0000",
+    "dealer_id": "9ba51",
+    "dealer": {
+      "id": "9ba51",
+      "name": "Netto"
+    },
+    "store_id": null
+  },
+  {
+    "id": "stm0yzNB_-Y8UZQmWwQWv",
+    "heading": "Cheasy skyr el. Puck græsk inspireret yoghurt",
+    "description": "",
+    "pricing": {
+      "price": 20,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 1000,
+        "to": 1000
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "65caN",
+    "dealer": {
+      "id": "65caN",
+      "name": "Løvbjerg"
+    },
+    "store_id": null
+  },
+  {
+    "id": "c_n4OTCR4gxOpQ2FvTf49",
+    "heading": "Alpro Plantebaseret yoghurt",
+    "description": "400-750 g\nMax. 37.50 pr. kg",
+    "pricing": {
+      "price": 15,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 400,
+        "to": 750
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-17T22:00:00+0000",
+    "run_till": "2026-10-24T21:59:59+0000",
+    "dealer_id": "11deC",
+    "dealer": {
+      "id": "11deC",
+      "name": "REMA 1000"
+    },
+    "store_id": null
+  },
+  {
+    "id": "HijlcQO5Poom_6RQNytgx",
+    "heading": "Arla økologisk yoghurt, ymer el. tykmælk",
+    "description": "Flere varianter",
+    "pricing": {
+      "price": 11.99,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 1000,
+        "to": 1000
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "65caN",
+    "dealer": {
+      "id": "65caN",
+      "name": "Løvbjerg"
+    },
+    "store_id": null
+  },
+  {
+    "id": "wM_onBOg2eZWpdLVxxsyl",
+    "heading": "Danone Actimel eller Danonino yoghurt",
+    "description": "Ved køb af flere end 6 stk. pr. variant pr. dag er prisen op til 23.95 pr. stk.\n300-400 g\nMax. 50.00 pr. kg",
+    "pricing": {
+      "price": 15,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 300,
+        "to": 400
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": 6
+      }
+    },
+    "run_from": "2026-10-17T22:00:00+0000",
+    "run_till": "2026-10-24T21:59:59+0000",
+    "dealer_id": "11deC",
+    "dealer": {
+      "id": "11deC",
+      "name": "REMA 1000"
+    },
+    "store_id": null
+  },
+  {
+    "id": "uiBNbrK5oUpS-x1IC38Jh",
+    "heading": "MILBONA Græsk-inspireret yoghurt",
+    "description": "2 % eller 10 % fedt. 1100 g. Pr. kg 22,73",
+    "pricing": {
+      "price": 25,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 1100,
+        "to": 1100
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-17T22:00:00+0000",
+    "run_till": "2026-10-24T21:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "7WYtqyOxziH-RSnfqQwcH",
+    "heading": "MADVÆRKET Yoghurt",
+    "description": "0,1-3,1 % fedt. 1000 g / stk. Pr. kg 11,95",
+    "pricing": {
+      "price": 11.95,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 1000,
+        "to": 1000
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-05-02T22:00:00+0000",
+    "run_till": "2026-12-31T22:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "z27-4cbLBFNot6InnBe3T",
+    "heading": "Cheasy yoghurt",
+    "description": "1 liter. Flere varianter.",
+    "pricing": {
+      "price": 12,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "l",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "bdf5A",
+    "dealer": {
+      "id": "bdf5A",
+      "name": "føtex"
+    },
+    "store_id": null
+  },
+  {
+    "id": "A-FKwgRQSP8P-08Ky-SVE",
+    "heading": "Actimel eller Kinder snack",
+    "description": "12 x 100-280 g. Flere varianter. Pr. kg max. 125,-",
+    "pricing": {
+      "price": 30,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 100,
+        "to": 280
+      },
+      "pieces": {
+        "from": 1,
+        "to": 12,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-09-30T22:00:00+0000",
+    "run_till": "2026-10-31T22:59:59+0000",
+    "dealer_id": "bdf5A",
+    "dealer": {
+      "id": "bdf5A",
+      "name": "føtex"
+    },
+    "store_id": null
+  },
+  {
+    "id": "iy-FBej3_REsr-Sib3jtG",
+    "heading": "To-go marked",
+    "description": "27-250 g/180-250 ml. Flere varianter. Pr. kg max. 185,19 /pr. liter max. 27,78",
+    "pricing": {
+      "price": 5,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "pcs",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "bdf5A",
+    "dealer": {
+      "id": "bdf5A",
+      "name": "føtex"
+    },
+    "store_id": null
+  },
+  {
+    "id": "lleRGJBHvHngK0JOPR0lx",
+    "heading": "MADVÆRKET Yoghurt naturel",
+    "description": "1,5-3,5 % fedt. 1000 g / stk. Pr. kg 9,95\nFast lav pris",
+    "pricing": {
+      "price": 9.95,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 1000,
+        "to": 1000
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-09-29T22:00:00+0000",
+    "run_till": "2026-12-31T22:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "ujc5A7a9Tr-lbKvkKpUg8",
+    "heading": "MILBONA Græsk yoghurt",
+    "description": "10 % fedt. 500 g / stk. Pr. kg 29,90\nFast lav pris",
+    "pricing": {
+      "price": 14.95,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 500,
+        "to": 500
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-09-29T22:00:00+0000",
+    "run_till": "2026-12-31T22:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "k3x16m2GNrZLmp6pfH1gj",
+    "heading": "Puck® - Græsk Inspireret Yoghurt",
+    "description": "NYHED fra PUCK® Smag PUCK® Græsk Inspireret Yoghurt. 1000 g. Pr. kg. max. 25.95 Den cremede konsistens gør yoghurten perfekt til både madlavning og bagning, hvad enten du bruger den til dressinger, dips og marinader eller til desserter.",
+    "pricing": {
+      "price": 25.95,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 1000,
+        "to": 1000
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "bdf5A",
+    "dealer": {
+      "id": "bdf5A",
+      "name": "føtex"
+    },
+    "store_id": null
+  },
+  {
+    "id": "ziIp-4SDTFgE3cr-7FqHo",
+    "heading": "DANONE Danonino",
+    "description": "Jordbær eller banan. 8 x 100 g. Pr. kg 31,25",
+    "pricing": {
+      "price": 25,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 100,
+        "to": 100
+      },
+      "pieces": {
+        "from": 8,
+        "to": 8,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-17T22:00:00+0000",
+    "run_till": "2026-10-24T21:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "QX0dTWBYQws6SARpXaAhU",
+    "heading": "PUCK® Græsk-inspireret yoghurt",
+    "description": "Nyhed fra PUCK®. Giv maden et nyt løft med PUCK® græsk-inspireret yoghurt. Med en frisk og let syrlig smag er den perfekt til madlavning, cremede dressinger og dips. Også perfekt til yoghurt bowls med frugt og bær samt desserter. Find PUCK® græsk-inspireret yoghurt i din lokale REMA 1000 – tilføj den nemt til din indkøbsliste i appen allerede i dag. 1000 g",
+    "pricing": {
+      "price": 22,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 1000,
+        "to": 1000
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-24T22:00:00+0000",
+    "run_till": "2026-10-31T22:59:59+0000",
+    "dealer_id": "11deC",
+    "dealer": {
+      "id": "11deC",
+      "name": "REMA 1000"
+    },
+    "store_id": null
+  },
+  {
+    "id": "1Q_ITg1v7YrylRUWRTQil",
+    "heading": "MILBONA L. Casei drik",
+    "description": "12 x 100 g. Pr. kg 20,83",
+    "pricing": {
+      "price": 25,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 100,
+        "to": 100
+      },
+      "pieces": {
+        "from": 12,
+        "to": 12,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-17T22:00:00+0000",
+    "run_till": "2026-10-24T21:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "vW66SlORIY0KdSmYtin3B",
+    "heading": "Alpro plantgurt",
+    "description": "750 g. Pr. kg 29,33",
+    "pricing": {
+      "price": 22,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 750,
+        "to": 750
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-23T22:00:00+0000",
+    "run_till": "2026-10-30T22:59:59+0000",
+    "dealer_id": "9ba51",
+    "dealer": {
+      "id": "9ba51",
+      "name": "Netto"
+    },
+    "store_id": null
+  },
+  {
+    "id": "bpeiRt7dXKLuYaV_I4K_-",
+    "heading": "MILBONA Yoghurt naturel",
+    "description": "3,5 % fedt. 500 g / stk. Pr. kg 11,90",
+    "pricing": {
+      "price": 5.95,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 500,
+        "to": 500
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-05-02T22:00:00+0000",
+    "run_till": "2026-12-31T22:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "rfIsHBJ3BKdMwqtHK-aQi",
+    "heading": "Arla yoghurt",
+    "description": "Ved køb af flere end 6 stk. pr. variant pr. dag er prisen op til 22.95 pr. stk.\nØkologisk\n1 liter",
+    "pricing": {
+      "price": 15,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "l",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": 6
+      }
+    },
+    "run_from": "2026-10-24T22:00:00+0000",
+    "run_till": "2026-10-31T22:59:59+0000",
+    "dealer_id": "11deC",
+    "dealer": {
+      "id": "11deC",
+      "name": "REMA 1000"
+    },
+    "store_id": null
+  },
+  {
+    "id": "wlZ_U0KSXbXN14u2Paq0_",
+    "heading": "Danonino el. Actimel",
+    "description": "300-400 g",
+    "pricing": {
+      "price": 13.99,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 300,
+        "to": 400
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "65caN",
+    "dealer": {
+      "id": "65caN",
+      "name": "Løvbjerg"
+    },
+    "store_id": null
+  },
+  {
+    "id": "AYUoSSdve9raIfN4-mb2G",
+    "heading": "Yoggi yoghurt*",
+    "description": "1 kg. Kg-pris 12,00. 1 stk.",
+    "pricing": {
+      "price": 12,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "kg",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-21T22:00:00+0000",
+    "run_till": "2026-10-28T22:59:59+0000",
+    "dealer_id": "DWZE1w",
+    "dealer": {
+      "id": "DWZE1w",
+      "name": "365discount"
+    },
+    "store_id": null
+  },
+  {
+    "id": "yHtOGZKlrQIlnon5D4Q53",
+    "heading": "Yoggi yoghurt\n",
+    "description": "Flere varianter. 1 kg. \nKg-pris 12,00. 1 stk.",
+    "pricing": {
+      "price": 12,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "kg",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "c1edq",
+    "dealer": {
+      "id": "c1edq",
+      "name": "Kvickly"
+    },
+    "store_id": null
+  },
+  {
+    "id": "yhtWCSli1TIVP7jEUv5os",
+    "heading": "Arla laktosefri græsk inspireret yoghurt*",
+    "description": "400 g. Kg-pris 37,50. 1 stk.",
+    "pricing": {
+      "price": 15,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 400,
+        "to": 400
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-21T22:00:00+0000",
+    "run_till": "2026-10-28T22:59:59+0000",
+    "dealer_id": "DWZE1w",
+    "dealer": {
+      "id": "DWZE1w",
+      "name": "365discount"
+    },
+    "store_id": null
+  },
+  {
+    "id": "b_N28RFSEfOBhz0QHvUDC",
+    "heading": "MILBONA Tyrkisk-inspireret yoghurt",
+    "description": "10 % fedt. 1000 g / stk. Pr. kg 24,95\nFast lav pris",
+    "pricing": {
+      "price": 24.95,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 1000,
+        "to": 1000
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-09-29T22:00:00+0000",
+    "run_till": "2026-12-31T22:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "Nj5TTaQRse0juL7jwrFpN",
+    "heading": "Cultura drikkeyoghurt eller yoghurt",
+    "description": "500 ml/450 g. Literpris maks. 24,00/ Kg-pris 26,67. 1 stk.",
+    "pricing": {
+      "price": 12,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "ml",
+      "size": {
+        "from": 500,
+        "to": 500
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-21T22:00:00+0000",
+    "run_till": "2026-10-28T22:59:59+0000",
+    "dealer_id": "DWZE1w",
+    "dealer": {
+      "id": "DWZE1w",
+      "name": "365discount"
+    },
+    "store_id": null
+  },
+  {
+    "id": "mX21He6KAmwavKPAPh0Lz",
+    "heading": "MILBONA Drikkeyoghurt",
+    "description": "1 kg. Pr. kg 15,00",
+    "pricing": {
+      "price": 15,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "kg",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-24T22:00:00+0000",
+    "run_till": "2026-10-31T22:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "rZunj89QtO2yTNyy40o_n",
+    "heading": "Danonino eller Actimel",
+    "description": "300-400 g. Kg-pris maks. 40,00. Frit valg. 1 stk.",
+    "pricing": {
+      "price": 12,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 300,
+        "to": 400
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-21T22:00:00+0000",
+    "run_till": "2026-10-28T22:59:59+0000",
+    "dealer_id": "DWZE1w",
+    "dealer": {
+      "id": "DWZE1w",
+      "name": "365discount"
+    },
+    "store_id": null
+  },
+  {
+    "id": "Cd0zUcIm-l1rUcvLXu7V-",
+    "heading": "MADVÆRKET Frugtyoghurt",
+    "description": "0,1-3,1 % fedt. Med pære-banan, jordbær eller vanilje. 1 kg. Pr. kg 11,95",
+    "pricing": {
+      "price": 11.95,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "kg",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-24T22:00:00+0000",
+    "run_till": "2026-10-31T22:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "bWBARcqtr25PBE2QISqWi",
+    "heading": "Arla® ØKO yoghurt Naturel, vanilje, jordbær eller pære & banan",
+    "description": "Økologisk 1 liter. Ved køb af flere end 6 stk. pr. variant pr. dag er prisen op til 22.95 pr. stk.",
+    "pricing": {
+      "price": 15,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "l",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": 6
+      }
+    },
+    "run_from": "2026-10-24T22:00:00+0000",
+    "run_till": "2026-10-31T22:59:59+0000",
+    "dealer_id": "11deC",
+    "dealer": {
+      "id": "11deC",
+      "name": "REMA 1000"
+    },
+    "store_id": null
+  },
+  {
+    "id": "re6BlIWmyUQa_qMg8478B",
+    "heading": "GRØN BALANCE ØLLINGEGAARD ØKOLOGISK YOGHURT",
+    "description": "Flere varianter.",
+    "pricing": {
+      "price": 18,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "kg",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "267e1m",
+    "dealer": {
+      "id": "267e1m",
+      "name": "MENY"
+    },
+    "store_id": null
+  },
+  {
+    "id": "2xoyfZ6E-6oLKkjyXWyu8",
+    "heading": "MILBONA Frugtyoghurt",
+    "description": "1000 g. Pr. kg 20,00",
+    "pricing": {
+      "price": 20,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 1000,
+        "to": 1000
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-24T22:00:00+0000",
+    "run_till": "2026-10-31T22:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "_C8JluSdaPZLuGrFOEfCD",
+    "heading": "Yoghurt m. jordbær. Arla Cultura eller Naturel 2,6% havreknas og tranebær laktosefri",
+    "description": "170 g",
+    "pricing": {
+      "price": 12,
+      "pre_price": 14.95,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 170,
+        "to": 450
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-19T22:00:00+0000",
+    "run_till": "2026-10-26T22:59:59+0000",
+    "dealer_id": "i7NdvM",
+    "dealer": {
+      "id": "i7NdvM",
+      "name": "Wolt Market"
+    },
+    "store_id": null
+  },
+  {
+    "id": "mUWGBWXBRlHhwniF1HJjZ",
+    "heading": "HALLOWEEN Yoghurt",
+    "description": "175 g. Pr. kg 34,29",
+    "pricing": {
+      "price": 6,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 175,
+        "to": 175
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-17T22:00:00+0000",
+    "run_till": "2026-10-24T21:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "j7LmmLGI_Q3MG66tHpL9o",
+    "heading": "Yoghurt m. citron 0,1%, Mango & banan eller Vanilje",
+    "description": "1000 g",
+    "pricing": {
+      "price": 18,
+      "pre_price": 23.95,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 1000,
+        "to": 1000
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-19T22:00:00+0000",
+    "run_till": "2026-10-26T22:59:59+0000",
+    "dealer_id": "i7NdvM",
+    "dealer": {
+      "id": "i7NdvM",
+      "name": "Wolt Market"
+    },
+    "store_id": null
+  },
+  {
+    "id": "_ZZZTSlmkPb0CYC68tqgH",
+    "heading": "20% medlemsrabat på alt fra Thise",
+    "description": "Flere varianter. 250-1000 ml/ 100-1000 g.\nLiterpris maks. 51,04/ Kg-pris maks. 207,60.",
+    "pricing": {
+      "price": 20,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "ml",
+      "size": {
+        "from": 250,
+        "to": 1000
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "c1edq",
+    "dealer": {
+      "id": "c1edq",
+      "name": "Kvickly"
+    },
+    "store_id": null
+  },
+  {
+    "id": "nChHSra79lPT56RlvAaWt",
+    "heading": "RITTER SPORT",
+    "description": "Flere varianter. 100 g. Kg pris 220,00.",
+    "pricing": {
+      "price": 22,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 100,
+        "to": 100
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "267e1m",
+    "dealer": {
+      "id": "267e1m",
+      "name": "MENY"
+    },
+    "store_id": null
+  },
+  {
+    "id": "qDZVqANy3tD8wN4raDQUV",
+    "heading": "Thise økologisk kefir",
+    "description": "Kefir fra Thise Et yoghurt lignende produkt der er fermenteret med gær og 7 mælkesyrekulturer. Let perlende og frisk. coop MEDLEM MEDLEMSRABAT 20% på Thise kefir Pris ikke-medlem 21,95 Medlemspris 17,56 Pris ikke-medlem 23,95 Medlemspris 19,16 1 liter. Literpris max. 19,16. 1. stk.",
+    "pricing": {
+      "price": 21.95,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "l",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "c1edq",
+    "dealer": {
+      "id": "c1edq",
+      "name": "Kvickly"
+    },
+    "store_id": null
+  }
+]

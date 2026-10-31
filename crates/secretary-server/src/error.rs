@@ -17,6 +17,8 @@ pub struct ApiError {
     pub message: String,
     /// Seconds for a `Retry-After` header (429).
     pub retry_after: Option<u64>,
+    /// `attemptsLeft` in the error body (a wrong approval PIN).
+    pub attempts_left: Option<u32>,
 }
 
 impl ApiError {
@@ -26,6 +28,7 @@ impl ApiError {
             code: code.into(),
             message: message.into(),
             retry_after: None,
+            attempts_left: None,
         }
     }
 
@@ -54,7 +57,11 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let body = Json(json!({"error": {"code": self.code, "message": self.message}}));
+        let mut error = json!({"code": self.code, "message": self.message});
+        if let Some(n) = self.attempts_left {
+            error["attemptsLeft"] = json!(n);
+        }
+        let body = Json(json!({ "error": error }));
         let mut resp = (self.status, body).into_response();
         if self.status == StatusCode::UNAUTHORIZED {
             resp.headers_mut()
@@ -74,6 +81,10 @@ pub const LUCINA_503_PASSTHROUGH: &[&str] = &[
     "reminders_disabled",
     "owner_chat_unconfigured",
     "grocery_unavailable",
+    "computer_use_disabled",
+    "sandbox_unavailable",
+    "viewer_unavailable",
+    "recovery_required",
 ];
 
 /// Lucina failures → app-facing errors.
@@ -101,6 +112,15 @@ impl From<secretary_core::Error> for ApiError {
                 StatusCode::BAD_REQUEST,
                 "bad_request",
                 format!("{field}: {message}"),
+            ),
+            E::Api {
+                status: 410,
+                code,
+                message,
+            } if code == "cursor_expired" => Self::new(
+                StatusCode::GONE,
+                code,
+                message.unwrap_or_else(|| "timeline cursor expired".into()),
             ),
             E::Api { status, code, .. }
                 if (status == 404 && code == "not_found")
@@ -168,7 +188,7 @@ fn from_status(status: StatusCode, detail: String) -> ApiError {
         // axum: JSON syntax error (400) vs. wrong shape (422)
         StatusCode::BAD_REQUEST => ApiError::new(status, "invalid_json", detail),
         StatusCode::PAYLOAD_TOO_LARGE => {
-            ApiError::new(status, "payload_too_large", "request body exceeds 256 KiB")
+            ApiError::new(status, "payload_too_large", "request body is too large")
         }
         StatusCode::UNSUPPORTED_MEDIA_TYPE => ApiError::new(
             status,

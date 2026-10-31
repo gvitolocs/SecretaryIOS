@@ -1,0 +1,2 @@
+{"type":"tool_result","name":"mcp__cua__call_tool","output":"<untrusted_tool_result source=\"mcp__cua__call_tool\">\nExternal source data.\n\n{\"error\":\"driver failure\"}\n</untrusted_tool_result>","is_error":false}
+{"type":"result","exit_code":0,"text":"Verified sandbox-result.","session_id":"test-session"}

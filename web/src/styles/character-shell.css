@@ -1,0 +1,89 @@
+/* Character-page composition for the signed-in app. The original authenticated
+   GLB, saved pose, wardrobe, gestures and camera controls remain the stage. */
+.shell--character{--bg:#0b0d10;--bg-elev:#111419;--surface:#171b21e8;--surface-solid:#15191f;--surface-2:#ffffff08;--surface-3:#ffffff16;--glass:#15191ee8;--glass-strong:#10151aee;--text:#f0f0f2;--text-muted:#a9afb9;--text-dim:#818995;--border:#ffffff1b;--border-strong:#ffffff35;--cyan:#5ee3e7;--accent:#5ee3e7;--accent-strong:#9bf3f5;--accent-soft:#5ee3e717;--accent-contrast:#0a2024;--violet:#aa8ed3;--magenta:#d7809f;--hairline:#ffffff0b;--grad-holo:linear-gradient(105deg,#5ee3e7,#a58ac9 65%,#d7809f);--grad-primary:linear-gradient(#5ee3e7,#5ee3e7);--grad-border:linear-gradient(100deg,#a58ac9,#d7809f);--user-bubble:linear-gradient(120deg,#233840,#25303b);--shadow:0 1px 0 #ffffff03 inset;--shadow-lg:0 15px 45px #0004;--glow-accent:0 0 0 1px #5ee3e750;--glow-violet:0 0 0 1px #aa8ed350;background:#0b0d10;color:var(--text);position:relative;isolation:isolate;color-scheme:dark}
+.shell--character:before{content:"";position:absolute;inset:0;z-index:-1;pointer-events:none;background:repeating-linear-gradient(164deg,transparent 0 155px,#ffffff02 156px 220px,transparent 221px 440px),radial-gradient(ellipse at 80% 45%,#26303f40,transparent 60%)}
+.shell--character .brand-name{background:none;color:#c6c8d1;font-weight:800;letter-spacing:.19em}
+.shell--character .brand-mark{box-shadow:none;background:#161e29;padding:2px;border:1px solid #697283}
+.shell--character .brand-mark:before{background:#5ee3e7;animation:none;opacity:.75}
+.shell--character .icon-btn{box-shadow:none;border-color:#ffffff25;background:#15191dc9;color:#c1c7d1}
+.shell--character .icon-btn:not(:disabled):hover{background:#242d34;border-color:var(--cyan);color:#fff}
+.shell--character .status{box-shadow:none;background:#12171b;border-color:#ffffff20;color:#9da7b2}
+.shell--character .tab--active{background:#26383b;border-color:#5ee3e755;color:#e2ffff;box-shadow:none}
+.shell--character .tabbar{background:#161a20f5;border-color:#ffffff25;box-shadow:0 -8px 30px #0004}
+.shell--character .chat-bar{padding-top:20px;padding-bottom:14px;border-bottom:1px solid #ffffff17;max-width:900px}
+.shell--character .chip{border-radius:4px;border-color:#ffffff26;background:#161a20;color:#9ba4b0;box-shadow:none;font-size:11px;font-weight:650}
+.shell--character .chip[aria-pressed=true],.shell--character .chip--active{background:#334148;color:#e1ffff;border-color:#5ee3e77a;box-shadow:none}
+.shell--character .bubble{border-radius:6px;padding:13px 17px;border-color:#ffffff22;background:#171c22c9;box-shadow:none;backdrop-filter:blur(10px)}
+.shell--character .msg--lucina .bubble{border-left:2px solid #8e7aa7;border-bottom-left-radius:2px;box-shadow:none}
+.shell--character .msg--user .bubble{background:#23353ee6;border-color:#5ee3e733;border-bottom-right-radius:2px;box-shadow:none}
+.shell--character .msg-info{font-size:10px;color:#8b929e}
+.shell--character .msg-source{box-shadow:none;background:#1d2c32;color:#8fd1da;border-color:#5ee3e733}
+.shell--character .messages{gap:17px;padding-top:23px;mask-image:linear-gradient(transparent,#000 12px,#000 calc(100% - 8px),transparent)}
+.shell--character .messages>*,.shell--character .composer{max-width:900px}
+.shell--character .composer{padding-top:15px;padding-bottom:20px;background:linear-gradient(transparent,#0b0d10 35%)}
+.shell--character .composer-input{border-radius:4px;background:#141a20;border-color:#ffffff33;box-shadow:none;padding:14px 17px;color:#e6eaf0}
+.shell--character .composer-input:focus-visible{border-radius:4px;box-shadow:0 0 0 2px #5ee3e714;border-color:var(--cyan)}
+.shell--character .send-btn{border-radius:4px;box-shadow:none;background:#5ee3e7;color:#12242a}
+.shell--character .send-btn:disabled{background:#28313a;color:#81929c}
+.shell--character .send-btn:not(:disabled):hover{box-shadow:none;background:#a0f3f5}
+.shell--character .proactive,.shell--character .reply-card,.shell--character .rich-section{box-shadow:none;border-radius:6px}
+.shell--character .stage{background:radial-gradient(ellipse at 50% 50%,#26303c33,transparent 65%),#101216}
+.shell--character .stage-hud{border-radius:3px;background:#15191ddb;border:1px solid #ffffff28;color:#a6b0bd;box-shadow:none;font-size:10px;letter-spacing:.15em}
+.shell--character .stage-hud-name{color:#f1f2f5}
+.shell--character .stage-btn{border-radius:4px;background:#161b21d9;border:1px solid #ffffff3a;color:#d5d9e1;box-shadow:none;backdrop-filter:blur(10px)}
+.shell--character .stage-btn--mic{background:#5ee3e7;color:#13272c;border-color:#8aeef1;box-shadow:none}
+.shell--character .stage-btn--mic:not(:disabled):hover{background:#a0f3f5;color:#13272c;box-shadow:none}
+.shell--character .stage-controls{gap:9px}
+.shell--character .stage-pill{background:#13191fe8;border-radius:4px;border-color:#ffffff30;color:#c6d0de;box-shadow:none}
+.shell--character .stage-portrait img{border-radius:50%}
+@media(min-width:768px){
+ .shell--character{--rail-w:118px}
+ .shell--character .topbar{width:88px;align-self:center;height:calc(100% - 56px);max-height:960px;margin:28px 0 28px 20px;border:2px solid #4c4f54;border-radius:55px;background:linear-gradient(90deg,#292b2ff0,#16191ef0 70%,#23262bee);box-shadow:inset 1px 0 #ffffff0a;gap:9px;padding:18px 5px 16px}
+ .shell--character .brand{gap:7px;margin-bottom:14px}
+ .shell--character .brand-name{font-size:7px;letter-spacing:.12em}
+ .shell--character .tabs-top{gap:10px}
+ .shell--character .tabs-top .tab{position:relative;gap:4px;min-height:65px;padding:4px 2px;border:0;border-radius:0;background:none;color:#929ba9;font-size:9px;letter-spacing:0}
+ .shell--character .tabs-top .tab>.icon{box-sizing:content-box;width:22px;height:22px;padding:10px;border:2px solid #575c64;border-radius:50%;background:#20252d;color:#aeb8c6;transition:border-color .2s,background .2s}
+ .shell--character .tabs-top .tab--active{color:#d2f8fa}
+ .shell--character .tabs-top .tab--active>.icon{background:#243d42;border-color:var(--cyan);color:#8ceef0;box-shadow:0 0 0 3px #5ee3e714}
+ .shell--character .tabs-top .tab--active:before{content:none}
+ .shell--character .topbar-actions{gap:6px}
+ .shell--character .topbar-actions>.icon-btn,.shell--character .topbar-actions .notification-bell{width:34px;min-height:34px;height:34px;border-radius:50%;border:0;background:transparent}
+ .shell--character .topbar-actions>.icon-btn>.icon{width:18px;height:18px}
+ .shell--character .topbar-actions .status{padding:5px;background:none;border:0;font-size:8px}
+ .shell--character .shell-body>.content{padding:8px 14px 0 16px}
+}
+@media(min-width:1024px){
+ .shell--character .shell-body{overflow:hidden}
+ .shell--character .dock--side{position:relative;width:clamp(410px,43vw,800px);padding:0;flex-shrink:0}
+ .shell--character .dock--side .dock-stage{border:0;border-radius:0;box-shadow:none;overflow:hidden}
+ .shell--character .dock--side .dock-stage:before{content:none}
+ .shell--character .dock--side:before{content:"LUCINA";position:absolute;top:24%;left:-20px;right:-30px;font-size:clamp(88px,13vw,240px);font-weight:900;line-height:.9;letter-spacing:-.06em;color:#b8a1d51a;z-index:2;pointer-events:none;overflow:hidden}
+ .shell--character .dock--side:after{content:"";position:absolute;top:0;left:0;width:1px;height:100%;background:linear-gradient(transparent,#ffffff1a 25%,#ffffff1a 75%,transparent);pointer-events:none}
+ .shell--character .dock--side .stage-hud{top:28px;left:25px;padding:9px 12px}
+ .shell--character .dock--side .stage-controls{top:25px;right:24px}
+ .shell--character .dock--side .stage-canvas{position:relative;z-index:1}
+ .shell--character .dock--side .stage-hud,.shell--character .dock--side .stage-controls,.shell--character .dock--side .stage-pill{z-index:3}
+}
+@media(min-width:768px) and (max-height:850px){
+ .shell--character .topbar{height:calc(100% - 28px);margin-top:14px;margin-bottom:14px;padding:10px 5px;gap:5px}
+ .shell--character .brand{margin-bottom:6px;gap:4px}
+ .shell--character .tabs-top{gap:2px}
+ .shell--character .tabs-top .tab{min-height:55px;font-size:8px}
+ .shell--character .tabs-top .tab>.icon{padding:7px;width:20px;height:20px}
+ .shell--character .topbar-actions{gap:0}
+ .shell--character .topbar-actions>.icon-btn{min-height:30px;height:30px}
+}
+@media(max-width:767px){.shell--character .topbar{background:#101419e8;border-color:#ffffff18}.shell--character .brand-name{font-size:10px;letter-spacing:.15em}.shell--character .chat-bar{padding-top:10px;padding-bottom:10px}.shell--character .bubble{max-width:94%;font-size:14px}.shell--character .composer{padding-bottom:10px}.shell--character .dock--strip{padding-top:5px}.shell--character .dock--strip .dock-stage{border-radius:6px;border:1px solid #ffffff22;box-shadow:none}.shell--character .dock--strip .dock-stage:before{content:none}.shell--character .stage-btn{border-radius:4px}.shell--character .tabbar .tab{border-radius:5px}}
+@media(prefers-reduced-motion:reduce){.shell--character .tabs-top .tab>.icon{transition:none}}
+
+/* Secretary's navy, cyan and violet framing; the authenticated real Lucina model stays in place. */
+.shell--character{--bg:#090c1e;--bg-elev:#10152b;--surface:#12192de8;--surface-solid:#11172a;--glass:#11182ce8;--glass-strong:#101528ee;--border:#7286ba2e;--border-strong:#8c9fce55;--cyan:#50dfff;--accent:#50dfff;--violet:#9b7bea;background:#090c1e}
+.shell--character:before{background:radial-gradient(ellipse at 90% 20%,#49327224,transparent 60%),radial-gradient(ellipse at 20% 85%,#123b5925,transparent 60%)}
+.shell--character .bubble{border-radius:20px;background:#11172bd9}
+.shell--character .msg--lucina .bubble{border-bottom-left-radius:5px;border-left-color:#65d7e4}
+.shell--character .msg--user .bubble{border-bottom-right-radius:5px;background:linear-gradient(130deg,#23436b,#45356b)}
+.shell--character .tab--active{background:linear-gradient(140deg,#3ba9bd33,#9263d833);border-color:#72cef966}
+@media(min-width:768px){.shell--character .tabs-top{overflow-y:auto;min-height:0;scrollbar-width:thin}.shell--character .dock--side .dock-stage{border-radius:30px;background:#0a0d23}}
+
+.shell--character .dock--side:before{content:none}.shell--character .stage-btn{border-radius:50%}.shell--character .dock--side .stage-canvas{border-radius:29px;overflow:hidden}

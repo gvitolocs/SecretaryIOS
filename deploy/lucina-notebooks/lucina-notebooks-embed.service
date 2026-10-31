@@ -1,0 +1,16 @@
+[Unit]
+Description=Lucina Notebooks embeddings: EmbeddingGemma 2 on the CPU (llama.cpp, 127.0.0.1:8897)
+After=network.target
+
+[Service]
+ExecStart=/home/nez/opt/llama.cpp-next/build/bin/llama-server -m /home/nez/models/embeddinggemma-2/embeddinggemma-2-Q8_0.gguf --alias embeddinggemma-2 --embeddings --host 127.0.0.1 --port 8897 -ngl 0 -c 8192 -np 2 -b 4096 -ub 4096 -t 4 --no-webui
+Environment=GGML_VK_VISIBLE_DEVICES=
+Environment=LD_LIBRARY_PATH=/home/nez/opt/llama.cpp-next/build/bin
+CPUQuota=300%
+MemoryMax=2G
+Nice=10
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

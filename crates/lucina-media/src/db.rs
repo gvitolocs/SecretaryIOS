@@ -78,6 +78,37 @@ CREATE TABLE IF NOT EXISTS album_items (
     PRIMARY KEY (album_id, item_id)
 );
 CREATE INDEX IF NOT EXISTS album_items_item ON album_items(item_id);
+-- Album share links (`share.rs`): a random token per link; rows stay after a revoke.
+-- The devices photos come from (2026-10-27: one gallery per device, all in the Lucina cloud). Clients
+-- register themselves (`PUT /v1/media/devices/{id}`); an upload from an unknown device adds it.
+CREATE TABLE IF NOT EXISTS devices (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL
+);
+-- Deleting in Lucina never deletes on a device. Only "also delete from device" queues a request here;
+-- the device app asks the system to delete the asset (PhotoKit shows its own confirmation) and acks.
+CREATE TABLE IF NOT EXISTS device_deletions (
+    device TEXT NOT NULL,
+    asset_id TEXT NOT NULL,
+    item_id TEXT NOT NULL,
+    requested_at TEXT NOT NULL,
+    done_at TEXT,
+    PRIMARY KEY (device, asset_id)
+);
+CREATE TABLE IF NOT EXISTS album_shares (
+    token TEXT PRIMARY KEY,
+    album_id TEXT NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    expires_at TEXT,
+    revoked_at TEXT,
+    allow_original INTEGER NOT NULL DEFAULT 0,
+    views INTEGER NOT NULL DEFAULT 0,
+    last_view_at TEXT
+);
+CREATE INDEX IF NOT EXISTS album_shares_album ON album_shares(album_id);
 CREATE TABLE IF NOT EXISTS uploads (
     id TEXT PRIMARY KEY,
     filename TEXT NOT NULL,
@@ -97,6 +128,33 @@ CREATE TABLE IF NOT EXISTS externals (
     PRIMARY KEY (source, ext_id)
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS items_fts USING fts5(item_id UNINDEXED, body, tokenize = 'unicode61 remove_diacritics 2');
+-- The Drive (drive.rs): one row per regular file in a Drive folder, with its place in the folder.
+-- `path` is relative to the folder (`a/b/c.pdf`), `dir` its parent (`a/b`, '' at the top).
+CREATE TABLE IF NOT EXISTS drive_files (
+    id INTEGER PRIMARY KEY,
+    item_id TEXT NOT NULL UNIQUE REFERENCES items(id),
+    folder TEXT NOT NULL,
+    path TEXT NOT NULL,
+    dir TEXT NOT NULL,
+    name TEXT NOT NULL,
+    ext TEXT NOT NULL,
+    doc_type TEXT NOT NULL,
+    bytes INTEGER NOT NULL,
+    mtime TEXT NOT NULL,
+    mtime_ns INTEGER NOT NULL,
+    text_state TEXT NOT NULL DEFAULT 'pending' CHECK (text_state IN ('pending', 'ready', 'none', 'failed')),
+    UNIQUE (folder, path)
+);
+CREATE INDEX IF NOT EXISTS drive_files_dir ON drive_files(folder, dir);
+-- The filesystem (st_dev) each Drive folder's files were indexed from (drive.rs, kernel DK4).
+CREATE TABLE IF NOT EXISTS drive_folders (
+    folder TEXT PRIMARY KEY,
+    dev INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS drive_files_text ON drive_files(text_state);
+-- The text of Drive documents (PDF, Office, text, code), rowid = drive_files.id. Contentless: the
+-- text itself stays in the files (and thumbs/<id>/text.txt for extracted text).
+CREATE VIRTUAL TABLE IF NOT EXISTS drive_fts USING fts5(body, content = '', contentless_delete = 1, tokenize = 'unicode61 remove_diacritics 2');
 "#;
 
 /// System albums every library has. Keys are stable; titles are what the apps show.
@@ -133,6 +191,7 @@ impl Db {
         conn.busy_timeout(std::time::Duration::from_secs(10))?;
         conn.execute_batch(SCHEMA)?;
         migrate(&conn)?;
+        crate::lab::migrate(&conn)?;
         let now = now_str();
         for (key, title) in SYSTEM_ALBUMS {
             conn.execute(
@@ -185,6 +244,34 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     if !has("thumbhash")? {
         conn.execute("ALTER TABLE items ADD COLUMN thumbhash BLOB", [])?;
     }
+    // The Gallery (2026-10-28): a rotation the client draws, and where an item came from
+    // (`gallery::origin_of`): its original file name, the folder under the import root and the root's name.
+    for (col, ddl) in [
+        ("rotation", "rotation INTEGER NOT NULL DEFAULT 0"),
+        ("origin_name", "origin_name TEXT"),
+        ("origin_folder", "origin_folder TEXT"),
+        ("origin_root", "origin_root TEXT"),
+    ] {
+        if !has(col)? {
+            conn.execute(&format!("ALTER TABLE items ADD COLUMN {ddl}"), [])?;
+        }
+    }
+    crate::edits::init_schema(conn)?;
+    crate::browse::migrate(conn)?;
+    crate::renditions::migrate(conn)?;
+    // Duplicates (2026-10-28): links, device-asset aliases and perceptual hashes (`dedup_merge.rs`).
+    crate::dedup_merge::migrate(conn)?;
+    // The JPEG XL archive format: which originals have a verified JXL copy.
+    crate::archive_jxl::migrate(conn)?;
+    // Smart search (2026-10-28): image vectors for search by content (`smart.rs`).
+    crate::smart::migrate(conn)?;
+    // Stacks and the duplicate review's decisions (2026-10-28): `stacks.rs`, `dedup_review.rs`.
+    crate::stacks::migrate(conn)?;
+    crate::dedup_review::migrate(conn)?;
+    // Faces and people (2026-10-28): opt-in face recognition (`faces.rs`).
+    crate::faces::migrate(conn)?;
+    // Automatic photo categories (2026-10-28): `categories.rs`.
+    crate::categories::migrate(conn)?;
     Ok(())
 }
 
@@ -240,11 +327,29 @@ pub struct Item {
     pub thumb_state: String,
     /// ThumbHash (base64, about 24 characters): the placeholder shown before any bytes arrive.
     pub thumbhash: Option<String>,
+    /// The device the item came from (`items.device`).
+    #[serde(default)]
+    pub device: Option<String>,
+    /// That device's name from the registry; filled by [`get_item`] and [`list_items`].
+    #[serde(default)]
+    pub device_name: Option<String>,
+    /// 0, 90, 180 or 270 degrees clockwise: drawn by the client, the renditions are not re-rendered.
+    #[serde(default)]
+    pub rotation: i64,
+    /// The stack this item belongs to (`stacks.rs`); filled by [`get_item`] and [`list_items`].
+    #[serde(default)]
+    pub stack: Option<crate::stacks::StackRef>,
+    /// The stored provenance, for [`crate::gallery::origin_of`] (not part of the item JSON).
+    #[serde(skip)]
+    pub origin_cols: crate::gallery::OriginCols,
 }
 
 pub const ITEM_COLS: &str = "id, kind, title, caption, mime, bytes, hash, taken_at, added_at, width, height, duration_ms, \
     video_codec, audio_codec, lat, lon, place_name, admin1, admin2, cc, camera, source, live_pair, favorite, version, links, \
-    trashed_at, thumb_state, thumbhash";
+    trashed_at, thumb_state, thumbhash, device, rotation, origin_name, origin_folder, origin_root";
+
+/// How many columns [`ITEM_COLS`] has: other columns in a joined query start here.
+pub const ITEM_COL_COUNT: usize = 34;
 
 pub fn item_from_row(r: &Row) -> rusqlite::Result<Item> {
     let lat: Option<f64> = r.get(14)?;
@@ -295,6 +400,15 @@ pub fn item_from_row(r: &Row) -> rusqlite::Result<Item> {
             use base64::Engine;
             base64::engine::general_purpose::STANDARD.encode(h)
         }),
+        device: r.get(29)?,
+        device_name: None,
+        rotation: r.get(30)?,
+        stack: None,
+        origin_cols: crate::gallery::OriginCols {
+            name: r.get(31)?,
+            folder: r.get(32)?,
+            root: r.get(33)?,
+        },
     })
 }
 
@@ -308,13 +422,70 @@ pub fn get_item(c: &Connection, id: &str) -> rusqlite::Result<Option<Item>> {
         .optional()?;
     if let Some(it) = item.as_mut() {
         it.albums = item_albums(c, id)?;
+        fill_device_names(c, std::slice::from_mut(it))?;
+        crate::stacks::fill(c, std::slice::from_mut(it))?;
     }
     Ok(item)
 }
 
+/// Sets `device_name` on items that name a registered device.
+pub fn fill_device_names(c: &Connection, items: &mut [Item]) -> rusqlite::Result<()> {
+    if items.iter().all(|it| it.device.is_none()) {
+        return Ok(());
+    }
+    let mut st = c.prepare_cached("SELECT name FROM devices WHERE id = ?1")?;
+    let mut names: std::collections::HashMap<String, Option<String>> = Default::default();
+    for it in items.iter_mut() {
+        let Some(d) = &it.device else { continue };
+        if !names.contains_key(d) {
+            names.insert(d.clone(), st.query_row([d], |r| r.get(0)).optional()?);
+        }
+        it.device_name = names[d].clone();
+    }
+    Ok(())
+}
+
+/// The videos a viewer can open, newest added first: `(id, added_at)`.
+pub fn video_ids(c: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
+    let mut st = c.prepare(
+        "SELECT id, added_at FROM items WHERE kind = 'video' AND hidden = 0 AND trashed_at IS NULL ORDER BY added_at DESC, id DESC",
+    )?;
+    let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    rows.collect()
+}
+
+/// The videos in the film folders (`scope=films`), newest added first: `(id, added_at)`.
+/// The background preparation only prepares these; phone videos are left alone.
+pub fn film_video_ids(c: &Connection, films: &[String]) -> rusqlite::Result<Vec<(String, String)>> {
+    let mut args = Vec::new();
+    let cond =
+        scope_condition(Some("films"), films, &mut args).expect("films always has a condition");
+    let mut st = c.prepare(&format!(
+        "SELECT i.id, i.added_at FROM items i WHERE i.kind = 'video' AND i.hidden = 0 AND i.trashed_at IS NULL AND {cond} ORDER BY i.added_at DESC, i.id DESC"
+    ))?;
+    let rows = st.query_map(rusqlite::params_from_iter(args), |r| {
+        Ok((r.get(0)?, r.get(1)?))
+    })?;
+    rows.collect()
+}
+
+/// `system_key` prefix of the hidden album behind a photo-selection share (`share_sel.rs`). Such an
+/// album is never listed, never counted, never matched by title and never an album a client may
+/// add to; it only backs the share link.
+pub const SHARE_ALBUM_PREFIX: &str = "share:";
+
+/// SQL that is true for every album except the hidden share albums; `alias` is the albums table's
+/// name in the query.
+pub fn not_share_album(alias: &str) -> String {
+    format!("({alias}.system_key IS NULL OR substr({alias}.system_key, 1, 6) <> 'share:')")
+}
+
 pub fn item_albums(c: &Connection, id: &str) -> rusqlite::Result<Vec<String>> {
-    let mut st =
-        c.prepare_cached("SELECT album_id FROM album_items WHERE item_id = ?1 ORDER BY added_at")?;
+    let mut st = c.prepare_cached(&format!(
+        "SELECT ai.album_id FROM album_items ai JOIN albums a ON a.id = ai.album_id \
+         WHERE ai.item_id = ?1 AND {} ORDER BY ai.added_at",
+        not_share_album("a")
+    ))?;
     let rows = st.query_map([id], |r| r.get(0))?;
     rows.collect()
 }
@@ -365,6 +536,15 @@ pub fn reindex(c: &Connection, id: &str) -> rusqlite::Result<()> {
     }
     body.extend(it.camera.clone());
     body.push(it.kind.clone());
+    // A Drive file is also found by its folders' names and its type ("slides", "pdf").
+    if let Some(d) = crate::drive::info_for(c, id)? {
+        body.push(d.folder.clone());
+        body.push(d.path.replace('/', " "));
+        body.push(d.ext.clone());
+        if let Some(t) = crate::doctype::DocType::parse(&d.doc_type) {
+            body.push(t.search_words().to_string());
+        }
+    }
     if let Some(t) = it
         .taken_at
         .as_deref()
@@ -403,6 +583,23 @@ pub fn add_to_album(c: &Connection, album_id: &str, item_id: &str) -> rusqlite::
     Ok(n > 0)
 }
 
+/// Mark an item as a favourite or not, keeping the Favourites album in step.
+pub fn set_favorite(c: &Connection, item_id: &str, favorite: bool) -> rusqlite::Result<()> {
+    c.execute(
+        "UPDATE items SET favorite = ?2, updated_at = ?3 WHERE id = ?1",
+        params![item_id, favorite as i64, now_str()],
+    )?;
+    if favorite {
+        add_to_album(c, "sys-favorites", item_id)?;
+    } else {
+        c.execute(
+            "DELETE FROM album_items WHERE album_id = 'sys-favorites' AND item_id = ?1",
+            [item_id],
+        )?;
+    }
+    reindex(c, item_id)
+}
+
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct ListQuery {
     pub kind: Option<String>,
@@ -413,13 +610,36 @@ pub struct ListQuery {
     /// `lat,lon,km`
     pub near: Option<String>,
     pub source: Option<String>,
-    /// `gallery`: what the phones backed up (`source` phone-…), the Gallery. `drive`: everything
-    /// else (imported folders such as the films, shared files, voice memos), the Drive.
+    /// One device's photos (`items.device`): the Gallery's device switcher.
+    pub device: Option<String>,
+    /// The Gallery's source switcher (`gallery::Origin`): `all`, `device:<id>`, `chat`, `lucina`.
+    pub origin: Option<String>,
+    /// `gallery`: what came from a device (`FROM_DEVICE`), the Gallery. `films`: the film
+    /// folders (`film_folders`), the Films plugin. `drive`: everything else (old Nextcloud files,
+    /// computer photo backups, audio, other folders, shared files, voice memos), the Drive.
     pub scope: Option<String>,
+    /// Set by the server from its config (not a query parameter): the film folder labels.
+    #[serde(skip)]
+    pub film_folders: Vec<String>,
+    /// A Drive document type (`pdf`, `presentation`, …; `doctype::DocType`).
+    #[serde(rename = "type")]
+    pub doc_type: Option<String>,
     pub favorite: Option<bool>,
     pub trashed: Option<bool>,
+    /// `true`: only the archived (hidden from the main Gallery, not deleted); otherwise the archived are left out.
+    pub archived: Option<bool>,
+    /// `west,south,east,north` in degrees: only items with a position inside it (`west > east` crosses the date line).
+    pub bbox: Option<String>,
     pub cursor: Option<String>,
     pub limit: Option<u32>,
+    /// Only photos with a face of this person (`faces.rs`). Set by the server (`people/{id}/items`,
+    /// smart search's `person=`), not a parameter of `GET items`.
+    #[serde(skip)]
+    pub person: Option<String>,
+    /// Only photos in this automatic category (`categories.rs`; `photo` is what no other category claims).
+    /// Set by the server (`categories/{cat}/items`), not a parameter of `GET items`.
+    #[serde(skip)]
+    pub category: Option<lucina_media_ml::categories::Category>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -502,8 +722,8 @@ fn add(
     wh.push(cond.replace('?', &format!("?{}", args.len())));
 }
 
-pub fn list_items(c: &Connection, q: &ListQuery) -> rusqlite::Result<ItemPage> {
-    let limit = q.limit.unwrap_or(100).clamp(1, 500) as usize;
+/// The WHERE conditions of a listing (on `items i`) and their arguments, without the cursor.
+pub(crate) fn list_filters(q: &ListQuery) -> (Vec<String>, Vec<rusqlite::types::Value>) {
     let mut wh: Vec<String> = Vec::new();
     let mut args: Vec<rusqlite::types::Value> = Vec::new();
     if q.trashed.unwrap_or(false) {
@@ -511,18 +731,75 @@ pub fn list_items(c: &Connection, q: &ListQuery) -> rusqlite::Result<ItemPage> {
     } else {
         wh.push("i.trashed_at IS NULL".into());
         wh.push("i.hidden = 0".into());
+        wh.push(
+            if q.archived == Some(true) {
+                "i.archived = 1"
+            } else {
+                "i.archived = 0"
+            }
+            .into(),
+        );
     }
-    if let Some(k) = &q.kind {
-        add(&mut wh, &mut args, "i.kind = ?", k.clone().into());
+    if let Some((w, s, e, n)) = q.bbox.as_deref().and_then(crate::browse::parse_bbox) {
+        // A map cluster lists its pictures through this box: the sensitive categories stay off the map.
+        wh.push(crate::categories::NOT_SENSITIVE_SQL.into());
+        add(&mut wh, &mut args, "i.lat >= ?", s.into());
+        add(&mut wh, &mut args, "i.lat <= ?", n.into());
+        if w <= e {
+            add(&mut wh, &mut args, "i.lon >= ?", w.into());
+            add(&mut wh, &mut args, "i.lon <= ?", e.into());
+        } else {
+            args.push(w.into());
+            let a = args.len();
+            args.push(e.into());
+            let b = args.len();
+            wh.push(format!("(i.lon >= ?{a} OR i.lon <= ?{b})"));
+        }
+    }
+    let kinds = parse_kinds(q.kind.as_deref());
+    if !kinds.is_empty() {
+        let marks: Vec<String> = kinds
+            .into_iter()
+            .map(|k| {
+                args.push(k.into());
+                format!("?{}", args.len())
+            })
+            .collect();
+        wh.push(format!("i.kind IN ({})", marks.join(", ")));
     }
     if let Some(s) = &q.source {
         add(&mut wh, &mut args, "i.source = ?", s.clone().into());
     }
-    if let Some(cond) = scope_condition(q.scope.as_deref()) {
-        wh.push(cond.into());
+    if let Some(d) = &q.device {
+        add(&mut wh, &mut args, "i.device = ?", d.clone().into());
+    }
+    if let Some(cond) = scope_condition(q.scope.as_deref(), &q.film_folders, &mut args) {
+        wh.push(cond);
+    }
+    if let Some(o) = q.origin.as_deref() {
+        wh.push(crate::gallery::origin_condition(o, &mut args));
     }
     if q.favorite == Some(true) {
         wh.push("i.favorite = 1".into());
+    }
+    if let Some(cat) = q.category {
+        wh.push(crate::categories::filter_sql(cat, &mut args));
+    }
+    if let Some(p) = &q.person {
+        add(
+            &mut wh,
+            &mut args,
+            "i.id IN (SELECT item_id FROM faces WHERE person_id = ?)",
+            p.clone().into(),
+        );
+    }
+    if let Some(t) = &q.doc_type {
+        add(
+            &mut wh,
+            &mut args,
+            "i.id IN (SELECT item_id FROM drive_files WHERE doc_type = ?)",
+            t.clone().into(),
+        );
     }
     if let Some(f) = q.from.as_deref().and_then(|f| normalize_bound(f, false)) {
         add(&mut wh, &mut args, "i.sort_at >= ?", f.into());
@@ -536,19 +813,21 @@ pub fn list_items(c: &Connection, q: &ListQuery) -> rusqlite::Result<ItemPage> {
         let n = args.len();
         wh.push(format!(
             "i.id IN (SELECT ai.item_id FROM album_items ai JOIN albums al ON al.id = ai.album_id \
-             WHERE al.id = ?{n} OR al.title = ?{n} COLLATE NOCASE)"
+             WHERE (al.id = ?{n} OR al.title = ?{n} COLLATE NOCASE) AND {})",
+            not_share_album("al")
         ));
     }
     if let Some(fq) = q.q.as_deref().and_then(fts_query) {
-        add(
-            &mut wh,
-            &mut args,
-            "i.id IN (SELECT item_id FROM items_fts WHERE items_fts MATCH ?)",
-            fq.into(),
-        );
+        // Titles, places, albums… and the content of Drive documents.
+        args.push(fq.into());
+        let n = args.len();
+        wh.push(format!(
+            "(i.id IN (SELECT item_id FROM items_fts WHERE items_fts MATCH ?{n}) \
+             OR i.id IN (SELECT df.item_id FROM drive_files df WHERE df.id IN \
+               (SELECT rowid FROM drive_fts WHERE drive_fts MATCH ?{n})))"
+        ));
     }
-    let near = q.near.as_deref().and_then(parse_near);
-    if let Some((lat, lon, km)) = near {
+    if let Some((lat, lon, km)) = q.near.as_deref().and_then(parse_near) {
         // Bounding box in SQL, exact distance below.
         let dlat = km / 111.0;
         let dlon = km / (111.0 * lat.to_radians().cos().abs().max(0.01));
@@ -557,6 +836,13 @@ pub fn list_items(c: &Connection, q: &ListQuery) -> rusqlite::Result<ItemPage> {
         add(&mut wh, &mut args, "i.lon >= ?", (lon - dlon).into());
         add(&mut wh, &mut args, "i.lon <= ?", (lon + dlon).into());
     }
+    (wh, args)
+}
+
+pub fn list_items(c: &Connection, q: &ListQuery) -> rusqlite::Result<ItemPage> {
+    let limit = q.limit.unwrap_or(100).clamp(1, 500) as usize;
+    let (mut wh, mut args) = list_filters(q);
+    let near = q.near.as_deref().and_then(parse_near);
     let total = if near.is_none() && q.cursor.is_none() {
         let sql = format!("SELECT COUNT(*) FROM items i WHERE {}", wh.join(" AND "));
         Some(c.query_row(&sql, rusqlite::params_from_iter(args.iter()), |r| r.get(0))?)
@@ -595,7 +881,7 @@ pub fn list_items(c: &Connection, q: &ListQuery) -> rusqlite::Result<ItemPage> {
             break;
         }
         let it = item_from_row(r)?;
-        let sort_at: String = r.get(29)?;
+        let sort_at: String = r.get(ITEM_COL_COUNT)?;
         last_key = Some(format!("{sort_at}|{}", it.id));
         if let Some((lat, lon, km)) = near {
             match &it.place {
@@ -613,11 +899,39 @@ pub fn list_items(c: &Connection, q: &ListQuery) -> rusqlite::Result<ItemPage> {
     for it in items.iter_mut() {
         it.albums = item_albums(c, &it.id)?;
     }
+    fill_device_names(c, &mut items)?;
+    crate::stacks::fill(c, &mut items)?;
     Ok(ItemPage {
         items,
         next_cursor: if more { last_key } else { None },
         total,
     })
+}
+
+/// `photo,video` as a list; blanks are dropped. `kind` is one kind or a comma list.
+pub fn parse_kinds(kind: Option<&str>) -> Vec<String> {
+    kind.map(|k| {
+        k.split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// How many items each month holds under the same filters as [`list_items`], newest month first:
+/// `("2026-10", 42)`. Months are those of `sort_at` (UTC), the order the listing pages in.
+pub fn list_months(c: &Connection, q: &ListQuery) -> rusqlite::Result<Vec<(String, i64)>> {
+    let (wh, args) = list_filters(q);
+    let mut st = c.prepare(&format!(
+        "SELECT substr(i.sort_at, 1, 7) AS m, COUNT(*) FROM items i WHERE {} GROUP BY m ORDER BY m DESC",
+        wh.join(" AND ")
+    ))?;
+    let rows = st.query_map(rusqlite::params_from_iter(args.iter()), |r| {
+        Ok((r.get(0)?, r.get(1)?))
+    })?;
+    rows.collect()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -631,31 +945,160 @@ pub struct Album {
     pub updated_at: String,
 }
 
-/// `ListQuery::scope` as SQL on `items i`.
-fn scope_condition(scope: Option<&str>) -> Option<&'static str> {
+/// `ListQuery::scope` as SQL on `items i`; the film labels go into `args` (numbered `?N`).
+/// The three conditions are `drive_kernel::in_scope` (DK2): every item is in exactly one scope; a
+/// phone backup filed in a film album stays in the Gallery.
+pub fn scope_condition(
+    scope: Option<&str>,
+    films: &[String],
+    args: &mut Vec<rusqlite::types::Value>,
+) -> Option<String> {
+    let mut in_films = || {
+        let marks: Vec<String> = if films.is_empty() {
+            // `IN (NULL)` matches nothing: no film folders configured.
+            args.push(rusqlite::types::Value::Null);
+            vec![format!("?{}", args.len())]
+        } else {
+            films
+                .iter()
+                .map(|f| {
+                    args.push(f.clone().into());
+                    format!("?{}", args.len())
+                })
+                .collect()
+        };
+        format!(
+            "i.id IN (SELECT fi.item_id FROM album_items fi JOIN albums fa ON fa.id = fi.album_id \
+             WHERE fa.system_key IS NULL AND fa.title IN ({}))",
+            marks.join(", ")
+        )
+    };
     match scope {
-        Some("gallery") => Some("i.source LIKE 'phone%'"),
-        Some("drive") => Some("(i.source IS NULL OR i.source NOT LIKE 'phone%')"),
+        Some("gallery") => Some(FROM_DEVICE.into()),
+        Some("films") => Some(format!("NOT {FROM_DEVICE} AND {}", in_films())),
+        Some("drive") => Some(format!("NOT {FROM_DEVICE} AND NOT {}", in_films())),
         _ => None,
     }
 }
 
-pub fn list_albums(c: &Connection) -> rusqlite::Result<Vec<Album>> {
-    list_albums_in(c, None)
+/// The kernel's `phone` input (DK2) in SQL, "this belongs in the Gallery": the item came from a
+/// device, a phone backup (`source` phone-…) or anything a registered device uploaded (`device` set:
+/// the iPhone, a Mac, an Android), or it is a photo or video from chat or shares, or one Lucina made
+/// (`gallery::CHAT_SQL`, `gallery::LUCINA_SQL`). The Drive scope is everything else.
+pub const FROM_DEVICE: &str = "(i.source LIKE 'phone%' OR i.device IS NOT NULL OR (i.kind IN ('photo', 'video') AND (i.source LIKE 'ios-chat%' OR i.source LIKE 'ios-share%' OR i.source LIKE 'web-chat%' OR i.source LIKE 'web-share%' OR i.source LIKE 'chat%' OR i.source LIKE 'telegram%' OR i.source LIKE 'discord%' OR i.source LIKE 'lucina%')))";
+
+#[derive(Clone, Debug, Serialize)]
+pub struct DeviceOut {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub created_at: String,
+    pub last_seen_at: String,
+    pub photos: i64,
+    pub videos: i64,
+    pub latest_taken_at: Option<String>,
 }
 
-/// Albums with their counts in one scope (`gallery`, `drive`); the ones with nothing there are left out.
-pub fn list_albums_in(c: &Connection, scope: Option<&str>) -> rusqlite::Result<Vec<Album>> {
-    let extra = scope_condition(scope)
+/// Registers a device or renames it; `last_seen_at` moves on every call.
+pub fn upsert_device(c: &Connection, id: &str, name: &str, kind: &str) -> rusqlite::Result<()> {
+    let now = now_str();
+    c.execute(
+        "INSERT INTO devices (id, name, kind, created_at, last_seen_at) VALUES (?1, ?2, ?3, ?4, ?4) \
+         ON CONFLICT(id) DO UPDATE SET name = excluded.name, kind = excluded.kind, last_seen_at = excluded.last_seen_at",
+        params![id, name, kind, now],
+    )?;
+    Ok(())
+}
+
+/// An upload names its device: a known one is seen now, an unknown one is added with its id as name.
+pub fn touch_device(c: &Connection, id: &str) -> rusqlite::Result<()> {
+    let now = now_str();
+    let kind = guess_device_kind(id);
+    c.execute(
+        "INSERT INTO devices (id, name, kind, created_at, last_seen_at) VALUES (?1, ?1, ?2, ?3, ?3) \
+         ON CONFLICT(id) DO UPDATE SET last_seen_at = excluded.last_seen_at",
+        params![id, kind, now],
+    )?;
+    Ok(())
+}
+
+/// From the id's prefix, for a device that never registered (`ios-…` is the iPhone app's).
+pub fn guess_device_kind(id: &str) -> &'static str {
+    let id = id.to_ascii_lowercase();
+    if id.starts_with("ios-") || id.starts_with("iphone") {
+        "iphone"
+    } else if id.starts_with("ipad") {
+        "ipad"
+    } else if id.starts_with("android") {
+        "android"
+    } else if id.starts_with("mac") {
+        "mac"
+    } else if id.contains("backup") {
+        "backup"
+    } else {
+        "other"
+    }
+}
+
+/// Every device with what the library has from it (visible items only), most recently seen first.
+/// Devices that only appear on items (photos imported before the registry) are listed too.
+pub fn list_devices(c: &Connection) -> rusqlite::Result<Vec<DeviceOut>> {
+    let mut st = c.prepare(
+        "WITH ids AS (SELECT id FROM devices UNION SELECT DISTINCT device FROM items WHERE device IS NOT NULL) \
+         SELECT ids.id, d.name, d.kind, d.created_at, d.last_seen_at, \
+           (SELECT COUNT(*) FROM items i WHERE i.device = ids.id AND i.kind = 'photo' AND i.trashed_at IS NULL AND i.hidden = 0 AND i.archived = 0), \
+           (SELECT COUNT(*) FROM items i WHERE i.device = ids.id AND i.kind = 'video' AND i.trashed_at IS NULL AND i.hidden = 0 AND i.archived = 0), \
+           (SELECT MAX(i.taken_at) FROM items i WHERE i.device = ids.id AND i.trashed_at IS NULL AND i.hidden = 0 AND i.archived = 0) \
+         FROM ids LEFT JOIN devices d ON d.id = ids.id",
+    )?;
+    let rows = st.query_map([], |r| {
+        let id: String = r.get(0)?;
+        let kind = r
+            .get::<_, Option<String>>(2)?
+            .unwrap_or_else(|| guess_device_kind(&id).into());
+        Ok(DeviceOut {
+            name: r.get::<_, Option<String>>(1)?.unwrap_or_else(|| id.clone()),
+            kind,
+            created_at: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+            last_seen_at: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+            photos: r.get(5)?,
+            videos: r.get(6)?,
+            latest_taken_at: r.get(7)?,
+            id,
+        })
+    })?;
+    let mut out: Vec<DeviceOut> = rows.collect::<rusqlite::Result<_>>()?;
+    out.sort_by(|a, b| {
+        b.last_seen_at
+            .cmp(&a.last_seen_at)
+            .then(b.photos.cmp(&a.photos))
+    });
+    Ok(out)
+}
+
+pub fn list_albums(c: &Connection) -> rusqlite::Result<Vec<Album>> {
+    list_albums_in(c, None, &[])
+}
+
+/// Albums with their counts in one scope (`gallery`, `films`, `drive`); the ones with nothing there
+/// are left out.
+pub fn list_albums_in(
+    c: &Connection,
+    scope: Option<&str>,
+    films: &[String],
+) -> rusqlite::Result<Vec<Album>> {
+    let mut args = Vec::new();
+    let extra = scope_condition(scope, films, &mut args)
         .map(|s| format!(" AND {s}"))
         .unwrap_or_default();
     let mut st = c.prepare(&format!(
         "SELECT a.id, a.title, a.system_key, a.cover_item, \
            (SELECT COUNT(*) FROM album_items ai JOIN items i ON i.id = ai.item_id \
              WHERE ai.album_id = a.id AND i.trashed_at IS NULL AND i.hidden = 0{extra}), a.created_at, a.updated_at \
-         FROM albums a ORDER BY a.system_key IS NULL, a.updated_at DESC"
+         FROM albums a WHERE {} ORDER BY a.system_key IS NULL, a.updated_at DESC",
+        not_share_album("a")
     ))?;
-    let rows = st.query_map([], album_from_row)?;
+    let rows = st.query_map(rusqlite::params_from_iter(args), album_from_row)?;
     let albums: Vec<Album> = rows.collect::<rusqlite::Result<_>>()?;
     Ok(if scope.is_some() {
         albums.into_iter().filter(|a| a.count > 0).collect()
@@ -664,7 +1107,123 @@ pub fn list_albums_in(c: &Connection, scope: Option<&str>) -> rusqlite::Result<V
     })
 }
 
+const SHARE_COLS: &str =
+    "token, album_id, created_at, expires_at, revoked_at, allow_original, views, last_view_at";
+
+fn share_from_row(r: &Row) -> rusqlite::Result<crate::share::ShareRow> {
+    Ok(crate::share::ShareRow {
+        token: r.get(0)?,
+        album_id: r.get(1)?,
+        created_at: r.get(2)?,
+        expires_at: r.get(3)?,
+        revoked_at: r.get(4)?,
+        allow_original: r.get::<_, i64>(5)? != 0,
+        views: r.get(6)?,
+        last_view_at: r.get(7)?,
+    })
+}
+
+pub fn insert_share(c: &Connection, s: &crate::share::ShareRow) -> rusqlite::Result<()> {
+    c.execute(
+        "INSERT INTO album_shares (token, album_id, created_at, expires_at, allow_original) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![s.token, s.album_id, s.created_at, s.expires_at, s.allow_original as i64],
+    )?;
+    Ok(())
+}
+
+pub fn get_share(c: &Connection, token: &str) -> rusqlite::Result<Option<crate::share::ShareRow>> {
+    c.query_row(
+        &format!("SELECT {SHARE_COLS} FROM album_shares WHERE token = ?1"),
+        [token],
+        share_from_row,
+    )
+    .optional()
+}
+
+/// The shares of one album, or of every album; newest first.
+pub fn list_shares(
+    c: &Connection,
+    album_id: Option<&str>,
+) -> rusqlite::Result<Vec<crate::share::ShareRow>> {
+    let mut st = c.prepare(&format!(
+        "SELECT {SHARE_COLS} FROM album_shares WHERE ?1 IS NULL OR album_id = ?1 ORDER BY created_at DESC"
+    ))?;
+    let rows = st.query_map([album_id], share_from_row)?;
+    rows.collect()
+}
+
+/// Sets `revoked_at` once; false for an unknown token.
+pub fn revoke_share(c: &Connection, token: &str) -> rusqlite::Result<bool> {
+    let n = c.execute(
+        "UPDATE album_shares SET revoked_at = COALESCE(revoked_at, ?2) WHERE token = ?1",
+        params![token, now_str()],
+    )?;
+    Ok(n > 0)
+}
+
+pub fn count_share_view(c: &Connection, token: &str) -> rusqlite::Result<()> {
+    c.execute(
+        "UPDATE album_shares SET views = views + 1, last_view_at = ?2 WHERE token = ?1",
+        params![token, now_str()],
+    )?;
+    Ok(())
+}
+
+/// Whether the item is in the album now and visible (not trashed, not hidden): a share serves
+/// nothing else.
+pub fn item_visible_in_album(
+    c: &Connection,
+    album_id: &str,
+    item_id: &str,
+) -> rusqlite::Result<bool> {
+    c.prepare_cached(
+        "SELECT 1 FROM album_items ai JOIN items i ON i.id = ai.item_id \
+         WHERE ai.album_id = ?1 AND ai.item_id = ?2 AND i.trashed_at IS NULL AND i.hidden = 0",
+    )?
+    .exists(params![album_id, item_id])
+}
+
+/// The visible items of an album, newest first, from `offset` (a share's page and its item list).
+pub fn album_visible_items(
+    c: &Connection,
+    album_id: &str,
+    offset: usize,
+    limit: usize,
+) -> rusqlite::Result<(Vec<Item>, i64)> {
+    let total: i64 = c.query_row(
+        "SELECT COUNT(*) FROM album_items ai JOIN items i ON i.id = ai.item_id \
+         WHERE ai.album_id = ?1 AND i.trashed_at IS NULL AND i.hidden = 0",
+        [album_id],
+        |r| r.get(0),
+    )?;
+    let cols = ITEM_COLS
+        .split(", ")
+        .map(|c| format!("i.{c}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut st = c.prepare(&format!(
+        "SELECT {cols} FROM album_items ai JOIN items i ON i.id = ai.item_id \
+         WHERE ai.album_id = ?1 AND i.trashed_at IS NULL AND i.hidden = 0 \
+         ORDER BY i.sort_at DESC, i.id DESC LIMIT ?2 OFFSET ?3"
+    ))?;
+    let rows = st.query_map(
+        params![album_id, limit as i64, offset as i64],
+        item_from_row,
+    )?;
+    Ok((rows.collect::<rusqlite::Result<_>>()?, total))
+}
+
+/// An album a client can see and change; the hidden album behind a selection share is not one.
 pub fn get_album(c: &Connection, id: &str) -> rusqlite::Result<Option<Album>> {
+    Ok(get_album_any(c, id)?.filter(|a| {
+        a.system_key
+            .as_deref()
+            .is_none_or(|k| !k.starts_with(SHARE_ALBUM_PREFIX))
+    }))
+}
+
+/// Any album, the hidden share albums included (the share page needs its title and count).
+pub fn get_album_any(c: &Connection, id: &str) -> rusqlite::Result<Option<Album>> {
     c.query_row(
         "SELECT a.id, a.title, a.system_key, a.cover_item, \
            (SELECT COUNT(*) FROM album_items ai JOIN items i ON i.id = ai.item_id \

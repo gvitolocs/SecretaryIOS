@@ -1,0 +1,1138 @@
+/*
+ * Lucina Gym theme, scoped to the Gym section (.gym-theme on GymPage).
+ * Values follow the original iOS app (Lucina_gym/ios/LucinaGym/Components.swift):
+ * Palette background #F5F4EE, forest #214D3D, ink #1F2621, muted #737A70,
+ * lime #D4ED91; cards radius 22 / padding 20 / white with a 4% ink stroke;
+ * primary buttons radius 16; the active card radius 24 on forest.
+ * The original is light-only. Here light is the default and dark-mode users
+ * get forest and lime on near-black so contrast stays readable.
+ * It remaps the app tokens (styles.css) inside the Gym only.
+ */
+
+.gym-theme {
+  /* Neon skin (styles/tokens.css): the original's forest + lime become indigo + neon lime,
+     on the app's glass surfaces. Structure and sizes below are the Lucina Gym originals. */
+  --gym-bg: transparent;
+  --gym-forest: #3b2fc0;
+  --gym-forest-strong: #2c2296;
+  --gym-ink: var(--text);
+  --gym-muted: var(--text-muted);
+  --gym-muted-text: var(--text-muted);
+  --gym-lime: #c6ff5e;
+  --gym-surface: var(--glass);
+  --gym-stroke: var(--border);
+  --gym-on-forest: #ffffff;
+  --gym-bar: var(--gym-lime);
+  --gym-rounded: var(--font);
+
+  --surface: var(--glass);
+  /* Lime carries the accent on the dark glass; dark text sits on lime. */
+  --accent: var(--gym-lime);
+  --accent-strong: #dcff9c;
+  --accent-contrast: #15210a;
+  --accent-soft: rgb(198 255 94 / 0.14);
+
+  background: transparent;
+  color: var(--text);
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) .gym-theme {
+    --gym-forest: #4b38d8;
+    --gym-forest-strong: #3a2ab4;
+    --gym-lime: #c6ff5e;
+    --gym-bar: #5b3fd6;
+    --accent: #5b3fd6;
+    --accent-strong: #4a2fc0;
+    --accent-contrast: #ffffff;
+    --accent-soft: rgb(91 63 214 / 0.12);
+  }
+}
+
+:root[data-theme="light"] .gym-theme {
+  --gym-forest: #4b38d8;
+  --gym-forest-strong: #3a2ab4;
+  --gym-lime: #c6ff5e;
+  --gym-bar: #5b3fd6;
+  --accent: #5b3fd6;
+  --accent-strong: #4a2fc0;
+  --accent-contrast: #ffffff;
+  --accent-soft: rgb(91 63 214 / 0.12);
+}
+
+/* ---------- Page column ----------
+ * The Gym is one centred column (max 820 px) in whatever width the shell
+ * leaves it (the shell may add a side column for the 3D Lucina). The page
+ * fills its slot whatever the parent's alignment is (flex row or column,
+ * grid, centred or not), never sets a fixed width, and cannot be scrolled
+ * sideways: a horizontal scroll offset or a shrink-to-fit slot is what puts
+ * a column past the left edge with an empty band on the right.
+ */
+
+.gym-theme.gym-page {
+  flex: 1 1 auto;
+  align-self: stretch;
+  justify-self: stretch;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.gym-theme .gym-inner {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 820px;
+  margin-inline: auto;
+  padding: 12px max(20px, var(--safe-right)) 40px max(20px, var(--safe-left));
+}
+
+.gym-theme .gym-inner > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+@media (max-width: 420px) {
+  .gym-theme .gym-inner {
+    padding-inline: var(--pad-left) var(--pad-right);
+  }
+}
+
+/* ---------- Type ---------- */
+
+.gym-theme .gym-eyebrow {
+  margin: 0;
+  color: var(--text-muted);
+  font-family: var(--gym-rounded);
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 2px;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+.gym-theme .gym-title {
+  font-family: var(--gym-rounded);
+  font-size: 2rem;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+}
+
+.gym-theme .section-title {
+  font-size: 1.375rem;
+  font-weight: 700;
+}
+
+.gym-theme .gym-big-number {
+  margin: 4px 0 12px;
+  font-family: var(--gym-rounded);
+  font-size: 2.125rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.gym-theme .gym-digits,
+.gym-theme .set-input,
+.gym-theme .rest-text {
+  font-family: var(--gym-rounded);
+  font-variant-numeric: tabular-nums;
+}
+
+.gym-theme .gym-clamp {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+
+/* ---------- Cards, buttons, inputs ---------- */
+
+.gym-theme .card {
+  padding: 20px;
+  background: var(--gym-surface);
+  border: 1px solid var(--gym-stroke);
+  border-radius: 22px;
+  box-shadow: none;
+}
+
+.gym-theme .exercise-card {
+  padding: 18px 14px;
+}
+
+.gym-theme .btn {
+  border-radius: 12px;
+}
+
+.gym-theme .btn--small {
+  border-radius: 10px;
+}
+
+.gym-theme .btn--primary,
+.gym-theme .gym-primary {
+  border-radius: 16px;
+}
+
+.gym-theme .gym-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 52px;
+  font-size: 1.0625rem;
+}
+
+.gym-theme .gym-primary .icon {
+  width: 18px;
+  height: 18px;
+}
+
+.gym-theme .text-input {
+  border-radius: 12px;
+}
+
+.gym-theme .icon--fill {
+  fill: currentColor;
+  stroke: none;
+}
+
+.gym-theme .icon-btn:not(:disabled):hover {
+  background: var(--surface-2);
+}
+
+.gym-theme .confirm-prompt {
+  flex-basis: 100%;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+/* ---------- Sub-navigation ---------- */
+
+.gym-theme .gym-subnav {
+  background: var(--surface-2);
+}
+
+.gym-theme .gym-subnav-tab {
+  font-family: var(--gym-rounded);
+  font-size: 0.875rem;
+}
+
+.gym-theme .gym-subnav-tab--active {
+  background: var(--gym-surface);
+  color: var(--text);
+}
+
+/* ---------- Training: hero, week, active card ---------- */
+
+.gym-hero {
+  padding-top: 10px;
+}
+
+.gym-hero-brand {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.gym-hero-sparkle {
+  display: inline-grid;
+  color: var(--accent);
+}
+
+.gym-hero-sparkle .icon {
+  width: 20px;
+  height: 20px;
+}
+
+.gym-hero-title {
+  margin: 14px 0 0;
+  font-family: var(--gym-rounded);
+  font-size: 2.5rem;
+  font-weight: 600;
+  letter-spacing: -1.5px;
+  line-height: 1.05;
+}
+
+.gym-theme .gym-inner > .gym-week {
+  margin-top: 24px;
+}
+
+.gym-week-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.gym-week-count {
+  margin: 6px 0 0;
+  font-size: 1.0625rem;
+  font-weight: 600;
+}
+
+.gym-week-icon {
+  display: inline-grid;
+  color: var(--accent);
+}
+
+.gym-week-icon .icon {
+  width: 26px;
+  height: 26px;
+}
+
+.gym-theme .weekly-bar {
+  height: 6px;
+}
+
+.gym-theme .gym-inner > .gym-start,
+.gym-theme .gym-inner > .gym-active {
+  margin-top: 24px;
+}
+
+.gym-active {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 22px;
+  border-radius: 24px;
+  background: var(--gym-forest);
+  color: var(--gym-on-forest);
+}
+
+.gym-active-label {
+  margin: 0;
+  color: var(--gym-lime);
+  font-family: var(--gym-rounded);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+.gym-active-title {
+  margin: 0;
+  font-size: 1.75rem;
+  font-weight: 700;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+
+.gym-active-meta {
+  margin: 0;
+  color: rgb(255 255 255 / 0.78);
+  font-size: 0.9375rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.gym-active-continue {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: var(--tap);
+  margin-top: 4px;
+  padding: 14px;
+  border-radius: 12px;
+  background: var(--gym-lime);
+  color: var(--gym-forest);
+  font-size: 1.0625rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.gym-active-continue:hover {
+  background: #e0f4ab;
+}
+
+.gym-active-continue:focus-visible {
+  outline: 3px solid var(--gym-lime);
+  outline-offset: 3px;
+}
+
+.gym-active-continue .icon {
+  width: 20px;
+  height: 20px;
+}
+
+/* ---------- Sections, routines, metrics, footer ---------- */
+
+.gym-theme .gym-inner > .gym-section {
+  margin-top: 24px;
+}
+
+.gym-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 8px 0 12px;
+}
+
+.gym-theme .gym-section-head .section-title {
+  margin: 0;
+}
+
+.gym-theme .gym-add {
+  color: var(--accent);
+}
+
+.gym-theme .gym-add .icon {
+  width: 28px;
+  height: 28px;
+}
+
+.gym-theme .gym-list {
+  gap: 14px;
+}
+
+.routine-card .gym-row-title {
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+.gym-theme .routine-card .gym-row-main .routine-count {
+  margin-top: 10px;
+}
+
+.gym-play {
+  display: inline-grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--accent);
+}
+
+.gym-play:not(:disabled):hover {
+  background: var(--surface-2);
+}
+
+.gym-play:disabled {
+  opacity: 0.45;
+}
+
+.gym-play .icon {
+  width: 18px;
+  height: 18px;
+}
+
+.gym-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+  gap: 12px;
+}
+
+.gym-theme .gym-inner > .gym-metrics {
+  padding: 12px 0;
+}
+
+.gym-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.gym-metric-value {
+  font-family: var(--gym-rounded);
+  font-size: 1.4375rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+
+.gym-footer {
+  margin: 0;
+  padding-bottom: 16px;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+}
+
+/* ---------- Empty cards ---------- */
+
+.gym-empty-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.gym-empty-icon {
+  display: inline-grid;
+  color: var(--accent);
+}
+
+.gym-empty-icon .icon {
+  width: 30px;
+  height: 30px;
+}
+
+.gym-empty-title {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+.gym-empty-detail {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.9375rem;
+}
+
+/* ---------- Journal and progress ---------- */
+
+.gym-theme .history-item {
+  gap: 8px;
+}
+
+.history-item-head,
+.record-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.record-head {
+  justify-content: flex-start;
+}
+
+.history-item-arrow,
+.record-trophy {
+  display: inline-grid;
+  color: var(--accent);
+}
+
+.history-item-arrow .icon,
+.record-trophy .icon {
+  width: 18px;
+  height: 18px;
+}
+
+.gym-theme .history-title {
+  font-size: 1.375rem;
+}
+
+.gym-theme .record-name {
+  font-size: 1.0625rem;
+}
+
+.gym-metrics--record {
+  margin-top: 12px;
+}
+
+.bar-chart {
+  margin: 4px 0 12px;
+}
+
+.bar-chart-bar {
+  fill: var(--gym-bar);
+}
+
+.bar-chart-grid,
+.bar-chart-base {
+  stroke: var(--border);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.bar-chart-grid {
+  stroke-dasharray: 3 4;
+}
+
+.measurement-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+}
+
+.measurement-main,
+.weight-link-main {
+  display: flex;
+  flex: 1 1 140px;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.measurement-kind {
+  font-size: 1.0625rem;
+  font-weight: 600;
+}
+
+.measurement-label {
+  font-family: var(--gym-rounded);
+  font-size: 1.25rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.measurement-form {
+  display: flex;
+  flex-direction: column;
+}
+
+.measurement-form .field-label {
+  margin-top: 12px;
+}
+
+.measurement-value {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.gym-theme .weight-link {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.gym-theme .weight-link > .icon {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  color: var(--accent);
+}
+
+.gym-theme .gym-section > .card + .gym-list,
+.gym-theme .gym-section > .measurement-form {
+  margin-bottom: 14px;
+}
+
+/* ---------- Live workout ---------- */
+
+.gym-theme .rest-banner {
+  padding: 16px;
+  border-radius: 16px;
+  background: rgb(212 237 145 / 0.45);
+  color: var(--gym-ink);
+}
+
+.gym-theme .rest-banner > .icon {
+  flex: none;
+}
+
+.gym-theme .rest-banner .rest-text {
+  flex: 1;
+  font-size: 1.0625rem;
+}
+
+.gym-theme .set-input {
+  background: var(--bg);
+  border-color: transparent;
+  border-radius: 9px;
+}
+
+.gym-theme .set-row--done .set-input {
+  background: rgb(212 237 145 / 0.35);
+}
+
+.gym-theme .set-badge {
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.gym-theme .set-done {
+  border-color: color-mix(in srgb, var(--gym-muted) 45%, transparent);
+}
+
+.gym-theme .set-done[aria-pressed="true"] {
+  background: var(--gym-forest);
+  border-color: var(--gym-forest);
+  color: #ffffff;
+}
+
+.gym-theme .add-set {
+  border: 0;
+  background: var(--bg);
+}
+
+@media (prefers-color-scheme: dark) {
+  .gym-theme .rest-banner {
+    background: rgb(212 237 145 / 0.16);
+    color: var(--gym-lime);
+  }
+
+  .gym-theme .set-row--done .set-input {
+    background: rgb(212 237 145 / 0.16);
+  }
+
+  .gym-theme .set-done[aria-pressed="true"] {
+    background: var(--gym-lime);
+    border-color: var(--gym-lime);
+    color: var(--gym-forest);
+  }
+
+  .gym-active {
+    border: 1px solid rgb(212 237 145 / 0.18);
+  }
+}
+
+/* ---------- Routine builder ---------- */
+
+.routine-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.routine-form > .gym-eyebrow {
+  margin-top: 8px;
+}
+
+.routine-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-radius: 16px;
+  background: var(--gym-surface);
+  border: 1px solid var(--gym-stroke);
+}
+
+.routine-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 4px 6px 4px 14px;
+  cursor: grab;
+}
+
+.routine-item + .routine-item {
+  border-top: 1px solid var(--border);
+}
+
+.routine-item--dragging {
+  opacity: 0.5;
+}
+
+.routine-item-index {
+  flex: none;
+  width: 22px;
+  color: var(--text-muted);
+  font-family: var(--gym-rounded);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.routine-item-name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.routine-item-actions {
+  display: flex;
+  flex: none;
+}
+
+.routine-item-actions .icon-btn {
+  width: 38px;
+  height: 38px;
+}
+
+.routine-item-actions .icon {
+  width: 18px;
+  height: 18px;
+}
+
+.routine-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+/* ---------- Settings ---------- */
+
+.gym-settings-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.gym-theme .gym-settings-card + .gym-settings-card {
+  margin-top: 16px;
+}
+
+.segmented-field {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+.segmented {
+  display: grid;
+  grid-auto-columns: minmax(0, 1fr);
+  grid-auto-flow: column;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+
+.segmented--wrap {
+  grid-auto-flow: row;
+  grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
+}
+
+.segment {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-height: 38px;
+  padding: 0 8px;
+  border-radius: 9px;
+  color: var(--text-muted);
+  font-family: var(--gym-rounded);
+  font-size: 0.875rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.segment--on {
+  background: var(--gym-surface);
+  color: var(--text);
+  box-shadow: 0 1px 2px rgb(31 38 33 / 0.12);
+}
+
+.segment:has(input:focus-visible) {
+  outline: 3px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.stepper {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.stepper-label {
+  flex: 1;
+  font-weight: 600;
+}
+
+.gym-theme .stepper-btn {
+  background: var(--surface-2);
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+.data-actions {
+  display: grid;
+  gap: 8px;
+}
+
+.restore-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--bad) 45%, transparent);
+  border-radius: 16px;
+  background: var(--surface-2);
+}
+
+.restore-confirm p {
+  margin: 0;
+}
+
+.restore-confirm-title {
+  font-weight: 700;
+}
+
+.gym-about-title {
+  margin: 0;
+  font-size: 1.0625rem;
+  font-weight: 600;
+}
+
+.gym-settings-card > p.muted {
+  margin: 0;
+}
+
+
+/* ======================================================================
+   Neon skin: glass cards, the active workout as a holo card, glowing lime
+   highlights. Layout is unchanged.
+   ====================================================================== */
+
+.gym-theme .card {
+  -webkit-backdrop-filter: blur(var(--blur)) saturate(1.3);
+  backdrop-filter: blur(var(--blur)) saturate(1.3);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+}
+
+.gym-theme .gym-subnav {
+  border: 1px solid var(--border);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+
+.gym-theme .gym-subnav-tab {
+  transition:
+    background-color var(--dur-2) var(--ease-out),
+    color var(--dur-2) var(--ease-out),
+    box-shadow var(--dur-2) var(--ease-out);
+}
+
+.gym-theme .gym-subnav-tab--active {
+  background: var(--grad-holo-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cyan) 35%, transparent), 0 0 18px color-mix(in srgb, var(--cyan) 18%, transparent);
+  color: var(--text);
+}
+
+.gym-theme .gym-title,
+.gym-hero-title {
+  background: linear-gradient(100deg, var(--text) 35%, color-mix(in srgb, var(--text) 50%, var(--gym-lime)));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.gym-theme .gym-eyebrow {
+  font-family: var(--mono);
+  color: var(--accent);
+}
+
+.gym-active {
+  background:
+    radial-gradient(120% 80% at 0% 0%, rgb(60 242 255 / 0.25), transparent 60%),
+    var(--grad-primary);
+  box-shadow: 0 14px 44px color-mix(in srgb, var(--violet) 45%, transparent), inset 0 1px 0 rgb(255 255 255 / 0.25);
+}
+
+.gym-active-continue {
+  box-shadow: 0 0 20px rgb(198 255 94 / 0.45);
+  transition:
+    transform var(--dur-1) var(--ease-out),
+    box-shadow var(--dur-2) var(--ease-out);
+}
+
+.gym-active-continue:active {
+  transform: scale(0.97);
+}
+
+.gym-theme .btn--primary,
+.gym-theme .gym-primary {
+  background: var(--grad-primary);
+  border-color: transparent;
+  color: #fff;
+  box-shadow: 0 8px 26px color-mix(in srgb, var(--violet) 40%, transparent), inset 0 1px 0 rgb(255 255 255 / 0.25);
+}
+
+.gym-theme .weekly-bar::-webkit-progress-value {
+  background: linear-gradient(90deg, var(--cyan), var(--gym-lime));
+  box-shadow: 0 0 10px var(--gym-lime);
+}
+
+.gym-theme .weekly-bar::-moz-progress-bar {
+  background: linear-gradient(90deg, var(--cyan), var(--gym-lime));
+}
+
+.gym-play {
+  border: 1px solid var(--border);
+  transition:
+    transform var(--dur-2) var(--ease-spring),
+    box-shadow var(--dur-2) var(--ease-out);
+}
+
+.gym-play:not(:disabled):hover {
+  transform: scale(1.08);
+  box-shadow: 0 0 16px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+/* ---------- Exercise picker (gym/Picker.tsx) ----------
+ * Phone: the shared full-height sheet (styles.css .picker-sheet), unchanged; the
+ * picker's wrappers take no part in the layout. Wide window: a centred dialog whose
+ * frame owns the radius, border and clip; only .picker-body scrolls, with compact
+ * rows and the muscle chips (search covers equipment).
+ */
+
+.gym-picker :is(.picker-tools, .picker-body, .picker-foot) {
+  display: contents;
+}
+
+.gym-picker :is(.picker-tools, .picker-body, .picker-foot) > * {
+  flex: none;
+}
+
+.gym-picker .picker-item-meta,
+.gym-picker .picker-item-kind {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (min-width: 880px) {
+  .gym-picker.picker-sheet {
+    gap: 0;
+    width: min(640px, calc(100vw - 48px));
+    max-width: none;
+    height: auto;
+    max-height: 80vh;
+    padding: 0;
+    overflow: hidden;
+    border: 1px solid var(--border-strong);
+    border-radius: 16px;
+    background: var(--surface-solid);
+  }
+
+  /* The decorative hairline sized itself to the scrolling box and ended mid-list
+     (the routine builder sheet scrolls too): a plain border instead. */
+  .gym-picker.picker-sheet::before,
+  .routine-builder.picker-sheet::before {
+    display: none;
+  }
+
+  .routine-builder.picker-sheet {
+    border: 1px solid var(--border-strong);
+  }
+
+  .gym-picker .picker-head {
+    padding: 16px 16px 12px 24px;
+  }
+
+  .gym-picker .picker-head .section-title {
+    font-size: 17px;
+    font-weight: 600;
+  }
+
+  .gym-picker .picker-tools {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 0 24px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .gym-picker .picker-tools .text-input {
+    min-height: 40px;
+  }
+
+  .gym-picker .chip-group {
+    flex-wrap: wrap;
+    overflow: visible;
+    gap: 8px;
+    padding: 0;
+  }
+
+  .gym-picker .chip {
+    min-height: 28px;
+    padding: 0 12px;
+    font-size: 13px;
+  }
+
+  .gym-picker .picker-chips--equipment {
+    display: none;
+  }
+
+  .gym-picker .picker-body {
+    display: block;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 8px;
+  }
+
+  /* A scroll area can take keyboard focus; it gets no ring of its own, its rows do. */
+  .gym-picker .picker-body:focus {
+    outline: none;
+  }
+
+  .gym-picker .picker-body > .picker-create {
+    padding: 0 16px 16px;
+  }
+
+  .gym-picker .picker-body > .muted {
+    padding: 24px 0;
+  }
+
+  .gym-picker .picker-list {
+    border: 0;
+    border-radius: 0;
+    background: none;
+    overflow: visible;
+  }
+
+  .gym-picker .picker-list li + li {
+    border-top: 0;
+  }
+
+  .gym-picker .picker-item {
+    min-height: 44px;
+    padding: 6px 12px;
+    border-radius: 8px;
+  }
+
+  .gym-picker .picker-item:focus {
+    outline: none;
+  }
+
+  .gym-picker .picker-item:focus-visible {
+    outline: 2px solid var(--lu-accent);
+    outline-offset: -2px;
+  }
+
+  .gym-picker .picker-item:not(:disabled):hover {
+    background: color-mix(in srgb, var(--text) 7%, transparent);
+  }
+
+  .gym-picker .picker-item-main {
+    flex-direction: row;
+    align-items: baseline;
+    gap: 12px;
+  }
+
+  .gym-picker .picker-item-name {
+    flex: none;
+    font-size: 15px;
+  }
+
+  .gym-picker .picker-item-meta {
+    overflow: hidden;
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .gym-picker .picker-item-kind {
+    display: none;
+  }
+
+  .gym-picker .picker-item .badge {
+    flex: none;
+  }
+
+  .gym-picker .picker-foot {
+    display: block;
+    padding: 12px 24px 16px;
+    border-top: 1px solid var(--border);
+  }
+
+  .gym-picker .picker-foot .btn {
+    width: auto;
+    min-height: 36px;
+    padding: 0 14px;
+    font-size: 13px;
+  }
+}
+
+/* The desktop Training page (GymHome on a page at least WIDE_MIN_PX wide) has its own
+   stylesheet: styles/gym-desk.css, loaded by gym/TrainingDesk.tsx. */

@@ -250,6 +250,80 @@ impl View {
     }
 }
 
+#[derive(Deserialize)]
+struct Request {
+    /// The current view, or `new` for a fresh one.
+    view: Option<View>,
+    new: Option<[f32; 4]>,
+    gesture: Option<Gesture>,
+    /// A one-finger drag so far (`ended` on release), for the swipe down to close.
+    drag: Option<DragRequest>,
+    #[serde(default = "default_preview_px")]
+    preview_px: f32,
+    #[serde(default = "default_screen_scale")]
+    screen_scale: f32,
+}
+
+#[derive(Deserialize)]
+struct DragRequest {
+    dx: f32,
+    dy: f32,
+    #[serde(default)]
+    vx: f32,
+    #[serde(default)]
+    vy: f32,
+    #[serde(default)]
+    predicted_dy: f32,
+    #[serde(default)]
+    ended: bool,
+}
+
+fn default_preview_px() -> f32 {
+    1440.0
+}
+fn default_screen_scale() -> f32 {
+    3.0
+}
+
+/// Zoom and pan as JSON, the one protocol of every platform (iOS through `secretary_image_view`,
+/// the web through `secretary-image-wasm`):
+/// `{"new":[image_w,image_h,viewport_w,viewport_h]}` or `{"view":{...},"gesture":{"op":"pinch",
+/// "factor":1.2,"x":..,"y":..}}` → `{"ok":true,"view":{...},"rect":{x,y,w,h},"wants_original":bool}`.
+/// With `"drag":{"dx","dy","vx","vy","predicted_dy","ended"}` (`vx`, `vy` in points per second),
+/// the answer also has `"drag":{"axis":"undecided"|
+/// "pager"|"out"|"pan","out":{offset_x,offset_y,scale,backdrop}}`, plus `"end":"dismiss"|"info"|"back"`
+/// on a released drag-out.
+pub fn handle_json(json: &str) -> serde_json::Value {
+    let req: Request = match serde_json::from_str(json) {
+        Ok(r) => r,
+        Err(e) => return serde_json::json!({"ok": false, "error": e.to_string()}),
+    };
+    let view = match (req.view, req.new) {
+        (Some(v), _) => v,
+        (None, Some([iw, ih, vw, vh])) => View::new(iw, ih, vw, vh),
+        (None, None) => return serde_json::json!({"ok": false, "error": "view or new is required"}),
+    };
+    let view = match req.gesture {
+        Some(g) => view.apply(g),
+        None => view,
+    };
+    let mut answer = serde_json::json!({
+        "ok": true,
+        "view": view,
+        "rect": view.rect(),
+        "wants_original": view.wants_original(req.preview_px, req.screen_scale),
+    });
+    if let Some(d) = req.drag {
+        let axis = view.drag_axis(d.dx, d.dy, d.vx, d.vy);
+        let mut drag = serde_json::json!({"axis": axis, "out": view.drag_out(d.dx, d.dy)});
+        if d.ended && axis == DragAxis::Out {
+            drag["end"] = serde_json::json!(view.drag_end(d.dy, d.predicted_dy, d.vy));
+        }
+        answer["drag"] = drag;
+    }
+    answer
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -383,6 +457,19 @@ mod tests {
     fn fast_short_flick_up_shows_info() {
         let v = View::new(1440.0, 960.0, 390.0, 844.0);
         assert_eq!(v.drag_end(-20.0, -20.0, -800.0), DragEnd::Info, "short fast upward flick shows info");
+    }
+
+    #[test]
+    fn drag_while_opening() {
+        let moving = handle_json(r#"{"new":[1,1,390,844],"drag":{"dx":20,"dy":30,"vx":0,"vy":700}}"#);
+        assert_eq!(moving["ok"], true, "placeholder image accepts a drag while opening");
+        assert_eq!(moving["drag"]["axis"], "out", "opening view routes downward drag out");
+        let ended = handle_json(r#"{"new":[1,1,390,844],"drag":{"dx":20,"dy":30,"ended":true,"predicted_dy":40,"vy":900}}"#);
+        assert_eq!(ended["drag"]["end"], "dismiss", "opening view accepts quick flick with omitted vx");
+        let legacy = handle_json(r#"{"new":[1,1,390,844],"drag":{"dx":30,"dy":30,"ended":true,"predicted_dy":40}}"#);
+        assert_eq!(legacy["ok"], true, "old callers can omit both velocities");
+        assert_eq!(legacy["drag"]["axis"], "out", "omitted velocities count as vertical in the band");
+        assert_eq!(legacy["drag"]["end"], "back", "omitted velocities do not trigger a flick");
     }
 
     #[test]

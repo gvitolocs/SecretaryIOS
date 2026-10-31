@@ -98,6 +98,94 @@ sudo -u secretary /usr/local/bin/secretary-server service-token generate /etc/se
 # give Lucina the same file content over a private channel
 ```
 
+## 3d. Links: Google Calendar and the AI client status
+
+The Links tab connects Google Calendar (and later Gmail and Drive) with
+OAuth, reusing Lucina's existing Google OAuth client.
+
+**Client type.** Lucina's `GMAIL_REDIRECT_URI` / `KEEP_REDIRECT_URI` are
+`http://127.0.0.1:8788/oauth2callback` and `…/keep-oauth2callback`: a fixed
+port and a custom path, the shape of a **Web application** client with
+registered loopback URIs (a Desktop client would not need them registered).
+Confirm it in the console (step 2): a Web client shows an "Authorized
+redirect URIs" list; a Desktop client does not.
+
+**Owner actions in the Google Cloud Console** (console.cloud.google.com,
+signed in as the account that owns Lucina's project):
+
+1. Project picker (top bar) → the project of Lucina's Gmail client (its
+   client id is `GMAIL_CLIENT_ID` in Lucina's `.env.local`).
+2. ☰ → **APIs & Services → Credentials** → under *OAuth 2.0 Client IDs*,
+   click the client whose id matches `GMAIL_CLIENT_ID`.
+   - **Type "Web application"**: under **Authorized redirect URIs** click
+     **+ Add URI**, enter
+     `https://getsecretary.tech/v1/links/google/callback`, **Save**. (Changes
+     can take a few minutes.)
+   - **Type "Desktop"**: it cannot use an https redirect. **+ Create
+     credentials → OAuth client ID → Web application**, name "Secretary",
+     add the same redirect URI, **Create**, and use that client's id and
+     secret for the files below instead (put them in Lucina's env as
+     `GOOGLE_CALENDAR_CLIENT_ID/SECRET` and run the script with
+     `GOOGLE_ENV_PREFIX=GOOGLE_CALENDAR`).
+3. ☰ → **APIs & Services → Library** → search **Google Calendar API** →
+   **Enable**. (Later, for the Gmail and Drive cards: **Gmail API** and
+   **Google Drive API**.)
+4. ☰ → **APIs & Services → OAuth consent screen** (Google Auth Platform →
+   **Data Access**) → **Add or remove scopes** → add
+   `.../auth/calendar.events` and `.../auth/calendar.readonly` → **Update** →
+   **Save**.
+5. Same place → **Audience**: if the app is in **Testing**, make sure the
+   owner's Google account is under **Test users**. In Testing, Google expires
+   refresh tokens after 7 days (Links then shows **Reconnect**); **Publish
+   app** to stop that (sensitive scopes on an unverified app only show the
+   "unverified app" warning to the owner, which is fine for a single user).
+
+**Install the secrets** (on nezopt; prints no values):
+
+```bash
+deploy/install-links-secrets.sh      # GMAIL_* by default; GOOGLE_ENV_PREFIX=KEEP for Keep's client
+```
+
+It writes `/etc/secretary/google-client-id`, `/etc/secretary/google-client-secret`
+and `/etc/secretary/mcp-status.token` (secretary 0600), and
+`/etc/secretary-mcp/status.token` (secretary-mcp 0600, same token), then
+prints the env lines to add:
+
+```
+# /etc/secretary/secretary.env
+SECRETARY_TIMEZONE=Europe/Copenhagen
+SECRETARY_GOOGLE_CLIENT_ID_FILE=/etc/secretary/google-client-id
+SECRETARY_GOOGLE_CLIENT_SECRET_FILE=/etc/secretary/google-client-secret
+SECRETARY_MCP_STATUS_TOKEN_FILE=/etc/secretary/mcp-status.token
+# /etc/secretary-mcp/secretary-mcp.env
+SECRETARY_MCP_STATUS_TOKEN_FILE=/etc/secretary-mcp/status.token
+```
+
+`systemctl restart secretary-server secretary-mcp`, then open
+https://getsecretary.tech/links → Google Calendar → **Connect**. The server
+keeps `links.json`, `links.key` and `calendar.json` in `/var/lib/secretary`
+(0600); back up `links.key` with the rest of the data dir (without it the
+stored tokens and ICS addresses cannot be read and must be added again).
+
+## 3e. Seed notes
+
+Notes live in `$SECRETARY_DATA_DIR/notes/` (docs/server-api.md, "Notes"). Import the seed notes in
+`deploy/seed/notes/` (e.g. the CRAFT-IT4SD briefing `craftit-meeting`, recovered from Lucina's
+timeline) once; existing slugs are kept unless `--replace`. The running server picks them up on its
+next request, no restart needed.
+
+```bash
+# from nezopt
+scp -r deploy/seed/notes p1:/tmp/secretary-seed-notes
+# on p1
+sudo install -d -o secretary -g secretary -m 700 /tmp/secretary-seed
+sudo install -o secretary -g secretary -m 600 /tmp/secretary-seed-notes/*.md /tmp/secretary-seed/
+sudo -u secretary env SECRETARY_DATA_DIR=/var/lib/secretary \
+  /usr/local/bin/secretary-server notes import /tmp/secretary-seed
+sudo -u secretary env SECRETARY_DATA_DIR=/var/lib/secretary /usr/local/bin/secretary-server notes list
+sudo rm -rf /tmp/secretary-seed /tmp/secretary-seed-notes
+```
+
 ## 4. Web app
 
 Copy the SolidJS build output (`web/dist/`) to `/var/lib/secretary/web` (it
@@ -137,6 +225,11 @@ behind Caddy. Exposed directly, it would let clients forge
 | `SECRETARY_DATA_DIR` | `/var/lib/secretary` | devices, sessions, owner account, gym and body data |
 | `SECRETARY_SERVICE_TOKEN_FILE` | unset | `svc_…` token file for Lucina. Unset: `/v1/insights/summary` answers `503 service_token_not_configured` |
 | `SECRETARY_PRIVATE_ASSETS_DIR` | `/var/lib/secretary/private-assets` | files for `GET /v1/assets/{name}` (authenticated only; keep the avatar model here, never in `web/`) |
+| `SECRETARY_TIMEZONE` | `Europe/Copenhagen` | the owner's zone (calendar days, all-day events) |
+| `SECRETARY_GOOGLE_CLIENT_ID_FILE` / `SECRETARY_GOOGLE_CLIENT_SECRET_FILE` | unset | Google OAuth client (both or neither). Unset: the Google cards show "not set up" |
+| `SECRETARY_GOOGLE_REDIRECT_URI` | `https://getsecretary.tech/v1/links/google/callback` | must be registered on the client |
+| `SECRETARY_CALENDAR_SYNC_SECS` | `300` | Google + ICS background sync; `0` off |
+| `SECRETARY_MCP_STATUS_URL` / `SECRETARY_MCP_STATUS_TOKEN_FILE` | `http://127.0.0.1:8810/internal/status` / unset | AI client cards in Links |
 | `SECRETARY_TTS_URL` | `http://100.107.164.33:8880` | Kokoro for `POST /v1/tts` (p1 must reach it over Tailscale) |
 | `SECRETARY_TTS_VOICES` | `if_sara,af_heart,af_bella,bf_emma` | voices clients may request |
 | `SECRETARY_WEB_DIR` | unset | static web app at `/` |

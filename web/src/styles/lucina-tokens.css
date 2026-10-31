@@ -6,6 +6,7 @@
 :root {
   color-scheme: dark;
   --lu-bg: #000000;
+  --lu-chat-bg: #1c2a8c;
   --lu-card: #1c1c1e;
   --lu-card-raised: #2c2c2e;
   --lu-field: #76768029;
@@ -115,6 +116,7 @@
   :root:not([data-theme="dark"]) {
     color-scheme: light;
     --lu-bg: #f2f2f7;
+    --lu-chat-bg: #1c2a8c;
     --lu-card: #ffffff;
     --lu-card-raised: #f2f2f7;
     --lu-field: #7676801f;
@@ -142,6 +144,7 @@
 :root[data-theme="light"] {
   color-scheme: light;
   --lu-bg: #f2f2f7;
+  --lu-chat-bg: #1c2a8c;
   --lu-card: #ffffff;
   --lu-card-raised: #f2f2f7;
   --lu-field: #7676801f;

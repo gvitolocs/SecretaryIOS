@@ -1,0 +1,289 @@
+/*
+ * The shared Lucina look on top of the older web rules (imported last). The colours, fonts
+ * and radii already come from the tokens; this file only removes the old effects (aurora,
+ * grain, glows, holographic bars) and shapes the navigation like the iOS tab bar.
+ */
+
+body {
+  font-size: var(--lu-type-body);
+  line-height: 1.4;
+  letter-spacing: normal;
+}
+
+body::before,
+body::after {
+  display: none;
+}
+
+h1 {
+  font-size: var(--lu-type-large-title);
+  font-weight: var(--lu-type-large-title-weight);
+  letter-spacing: 0.01em;
+}
+
+h2 {
+  font-weight: var(--lu-type-title-2-weight);
+  letter-spacing: normal;
+}
+
+h3 {
+  font-weight: var(--lu-type-headline-weight);
+  letter-spacing: normal;
+}
+
+/* Small capitals labels: the iOS section-header voice (system font, not mono). */
+.hud,
+.eyebrow,
+.stat-label,
+.day-sep,
+.reminder-head {
+  font-family: var(--lu-font);
+  font-weight: 600;
+}
+
+code,
+pre,
+kbd,
+samp {
+  font-family: var(--lu-font-mono);
+}
+
+/* The floating tab bar: a glass capsule, the active tab in the accent on a soft pill. */
+.tabbar {
+  border-radius: var(--lu-radius-pill);
+  border-color: transparent;
+  background: var(--lu-tab-bar-bg);
+  -webkit-backdrop-filter: blur(var(--lu-tab-bar-blur)) saturate(1.8);
+  backdrop-filter: blur(var(--lu-tab-bar-blur)) saturate(1.8);
+}
+
+.tabbar .tab {
+  border-radius: var(--lu-radius-pill);
+}
+
+.tab {
+  color: var(--lu-tab-bar-inactive);
+}
+
+.tab--active {
+  color: var(--lu-tab-bar-active);
+  background: var(--lu-tab-bar-active-background);
+  box-shadow: none;
+}
+
+.tab--active .icon {
+  color: var(--lu-tab-bar-active);
+  transform: none;
+  filter: none;
+}
+
+.tabbar .tab--active::after,
+.tabs-top .tab--active::before {
+  display: none;
+}
+
+@media (min-width: 768px) {
+  .topbar {
+    border-color: transparent;
+    background: var(--lu-card);
+    box-shadow: none;
+  }
+
+  .tabs-top .tab {
+    border-radius: var(--lu-radius-tile);
+  }
+}
+
+/* ---------- Shopping: accent tiles to buy, muted cards for the rest ---------- */
+
+:root .bring {
+  --b-red: var(--lu-accent-fill);
+  --b-red-hi: color-mix(in srgb, var(--lu-accent) 78%, var(--lu-accent-fill));
+  --b-red-lo: color-mix(in srgb, var(--lu-accent-fill) 82%, #000000);
+  --b-teal: var(--lu-accent);
+  --b-teal-hi: var(--lu-accent);
+  --b-teal-lo: var(--lu-accent);
+  --b-slate: var(--lu-card-raised);
+  --b-slate-hi: var(--lu-card-raised);
+  --b-slate-lo: var(--lu-card-raised);
+  --b-green-700: var(--lu-accent);
+  --b-red-600: var(--lu-negative);
+  --b-section: var(--lu-card-raised);
+  --b-recent: var(--lu-card);
+  --b-action: var(--lu-card);
+  --b-field: var(--lu-card);
+  --b-sheet: var(--lu-bg);
+  --b-popup: var(--lu-card-raised);
+  --b-snackbar: var(--lu-card-raised);
+  --b-text-2: var(--lu-text-secondary);
+  --b-hint: var(--lu-text-tertiary);
+  --b-gap: 4px;
+}
+
+:root .bring .tile--need .tile-main {
+  --b-tile-text: var(--lu-on-accent);
+}
+
+:root .bring .bring-chip--on {
+  background: var(--lu-accent-fill);
+  color: var(--lu-on-accent);
+  box-shadow: none;
+}
+
+:root .bring .bring-badge {
+  background: var(--lu-negative);
+  box-shadow: none;
+  font-family: var(--lu-font);
+}
+
+:root .bring .bring-card {
+  box-shadow: none;
+}
+
+/* ---------- Gym: the shared accent instead of indigo + neon lime ---------- */
+
+:root .gym-theme {
+  --gym-forest: var(--lu-accent-fill);
+  --gym-forest-strong: var(--lu-accent-fill);
+  --gym-lime: var(--lu-accent);
+  --gym-bar: var(--lu-accent);
+  --gym-on-forest: var(--lu-on-accent);
+  --gym-surface: var(--lu-card);
+  --gym-stroke: transparent;
+  --surface: var(--lu-card);
+  --accent: var(--lu-accent);
+  --accent-strong: var(--lu-accent);
+  --accent-contrast: var(--lu-bg);
+  --accent-soft: var(--lu-accent-soft);
+}
+
+/* ---------- Plugins: a grid of cards (the iOS Plugins tab) ---------- */
+
+.plugins-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--lu-space-lg);
+  padding: var(--lu-space-lg) var(--pad-right) var(--lu-space-xxl) var(--pad-left);
+}
+
+.plugins-page h1 {
+  margin: 0;
+}
+
+.plugins-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: var(--lu-space-grid-gap);
+}
+
+.plugin-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: var(--lu-space-card-padding);
+  border: 0;
+  border-radius: var(--lu-radius-card);
+  background: var(--lu-card);
+  color: var(--lu-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: transform var(--lu-motion-fast) ease-out;
+}
+
+.plugin-card:active {
+  transform: scale(0.97);
+}
+
+.plugin-card:focus-visible {
+  outline: 2px solid var(--lu-accent);
+  outline-offset: 2px;
+}
+
+.plugins-adult {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 20px;
+  font-size: 14px;
+  color: var(--lu-text-secondary, var(--lu-text));
+}
+
+
+.plugin-icon {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--lu-radius-pill);
+  background: var(--lu-accent-soft);
+  color: var(--lu-accent);
+}
+
+.plugin-title {
+  font-size: var(--lu-type-headline);
+  font-weight: var(--lu-type-headline-weight);
+}
+
+.plugin-detail {
+  min-height: 1lh;
+  color: var(--lu-text-secondary);
+  font-size: var(--lu-type-caption-2);
+}
+
+/* Training + Weight: the two pages stacked. */
+.training-page {
+  display: flex;
+  flex-direction: column;
+}
+
+/* On /weight the weight view scrolls itself (styles.css .weight); on /training it is one block of a longer page
+   that scrolls as a whole, so it takes its full height instead of a clipped scroll box of its own. */
+.training-page > .weight {
+  flex: none;
+  min-height: auto;
+  overflow: visible;
+}
+
+.weight-all-link {
+  align-self: flex-start;
+  color: var(--lu-accent);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+/* A count on a plugin card (Instagram: new stories and posts of watched accounts). */
+.plugin-card { position: relative; }
+.plugin-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  box-sizing: border-box;
+  border-radius: 999px;
+  background: #ff3b30;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 20px;
+  text-align: center;
+}
+
+/* Desktop Plugins: page-system surfaces; phone tiles above stay unchanged. */
+.pg .plugins-desk-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px; }
+.pg .plugins-desk-tile { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 12px; color: var(--pg-text); font: inherit; text-align: left; cursor: pointer; }
+.pg .plugins-desk-tile:hover { background: var(--pg-fill-hover); }
+.pg .plugins-desk-tile:focus-visible { outline: 2px solid var(--pg-data); outline-offset: 4px; }
+.pg .plugins-desk-tile .plugin-icon { background: var(--pg-fill); color: var(--pg-data); border-radius: var(--pg-radius-control); }
+.pg .plugins-desk-tile .plugin-title { font-size: 15px; font-weight: 600; }
+.pg .plugins-desk-tile .plugin-detail { font-size: 13px; color: var(--pg-muted); }
+.pg .plugins-desk-tile .plugin-badge { background: var(--pg-danger); color: var(--pg-text); font-size: 12px; font-weight: 600; }
+.pg .plugins-desk-adult { display: flex; align-items: center; gap: 8px; color: var(--pg-muted); font-size: 13px; }
+
+/* Device visibility and the account's plugin options share one quiet settings row. */
+.plugins-adult-settings { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-top: 20px; }
+.plugins-adult-settings .plugins-adult { margin-top: 0; }
+.pg .plugins-adult-settings { margin-top: 0; }

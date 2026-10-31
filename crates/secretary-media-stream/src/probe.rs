@@ -15,7 +15,18 @@ pub struct Info {
     pub height: Option<u32>,
     /// Embedded subtitle streams (all kinds; `text` ones can become WebVTT).
     pub subtitles: Vec<EmbeddedSub>,
+    /// How much later the first audio packet comes than the first video frame (a DVD rip's audio
+    /// can start seconds in). A copied AC-3 track needs a packet before the first HLS segment is
+    /// cut, or the fMP4 init has an empty sample description (`hls::segment_seconds`).
+    #[serde(default)]
+    pub audio_lead_ms: Option<u64>,
+    /// `PROBE_VERSION` when written; older cache entries are probed again.
+    #[serde(default)]
+    pub version: u32,
 }
+
+/// Bumped when `Info` gains a field older cache entries lack (2: `audio_lead_ms`).
+pub const PROBE_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbeddedSub {
@@ -58,8 +69,10 @@ pub async fn probe(ffprobe: &Path, cache_dir: &Path, path: &Path) -> Result<Info
     let key = file_key(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let cached = cache_dir.join("probe").join(format!("{key}.json"));
     if let Ok(bytes) = tokio::fs::read(&cached).await {
-        if let Ok(info) = serde_json::from_slice(&bytes) {
-            return Ok(info);
+        if let Ok(info) = serde_json::from_slice::<Info>(&bytes) {
+            if info.version >= PROBE_VERSION {
+                return Ok(info);
+            }
         }
     }
     let out = Command::new(ffprobe)
@@ -126,6 +139,12 @@ pub fn parse(json: &Value, path: &Path) -> Info {
         hdr,
         bit_depth,
     };
+    let start = |st: Option<&Value>| st.and_then(|st| st["start_time"].as_str()?.parse::<f64>().ok());
+    let audio_lead_ms = match (start(video), start(audio)) {
+        (Some(v), Some(a)) => Some(((a - v).max(0.0) * 1000.0).round() as u64),
+        (None, Some(a)) => Some((a.max(0.0) * 1000.0).round() as u64),
+        _ => None,
+    };
     let duration_ms = json["format"]["duration"].as_str().and_then(|d| d.parse::<f64>().ok()).map(|d| (d * 1000.0) as u64);
     let subtitles = streams
         .iter()
@@ -150,6 +169,8 @@ pub fn parse(json: &Value, path: &Path) -> Info {
         width: video.and_then(|v| v["width"].as_u64()).map(|w| w as u32),
         height: video.and_then(|v| v["height"].as_u64()).map(|h| h as u32),
         subtitles,
+        audio_lead_ms,
+        version: PROBE_VERSION,
     }
 }
 
@@ -157,6 +178,30 @@ pub fn parse(json: &Value, path: &Path) -> Info {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn audio_lead_is_how_late_the_audio_starts() {
+        let up = json!({
+            "format": {"format_name": "matroska,webm", "duration": "5937.7"},
+            "streams": [
+                {"index": 0, "codec_type": "video", "codec_name": "mpeg2video", "start_time": "0.000000"},
+                {"index": 1, "codec_type": "audio", "codec_name": "ac3", "start_time": "5.800000"}
+            ]
+        });
+        let info = parse(&up, Path::new("/m/Up (2009).mkv"));
+        assert_eq!(info.audio_lead_ms, Some(5800));
+        assert_eq!(info.version, PROBE_VERSION);
+        // Audio before the video: no lead. No start times: unknown.
+        let early = json!({"format": {"format_name": "matroska"}, "streams": [
+            {"codec_type": "video", "codec_name": "h264", "start_time": "1.0"},
+            {"codec_type": "audio", "codec_name": "ac3", "start_time": "0.5"}]});
+        assert_eq!(parse(&early, Path::new("/m/a.mkv")).audio_lead_ms, Some(0));
+        let none = json!({"format": {"format_name": "matroska"}, "streams": [{"codec_type": "audio", "codec_name": "ac3"}]});
+        assert_eq!(parse(&none, Path::new("/m/a.mkv")).audio_lead_ms, None);
+        // A cache entry from before the field reads as version 0: probed again.
+        let old: Info = serde_json::from_value(json!({"probe": {"container": "matroska"}, "duration_ms": 1, "width": null, "height": null, "subtitles": []})).unwrap();
+        assert!(old.version < PROBE_VERSION && old.audio_lead_ms.is_none());
+    }
 
     #[test]
     fn parses_mkv_with_subs_and_cover() {

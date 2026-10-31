@@ -2,9 +2,15 @@ import { A } from "@solidjs/router";
 import { createMemo, For, Show } from "solid-js";
 import type { GymView, Workout } from "../../api/gym";
 import { formatDate } from "../../lib/units";
-import { exerciseById, GymPage, setsText } from "./shared";
+import { JournalDesk } from "./DeskViews";
+import { ArrowUpRightIcon, BookIcon } from "./icons";
+import { EmptyCard, exerciseById, GymPage, JOURNAL_HREF, setsText } from "./shared";
+import { gt } from "./strings";
 
-function HistoryItem(props: { view: GymView; workout: Workout }) {
+// Journal (HistoryView.swift): finished workouts, newest first. On a desktop-wide
+// page it is DeskViews.tsx `JournalDesk`, under the Gym header row.
+
+function JournalItem(props: { view: GymView; workout: Workout }) {
   const label = () => props.view.workout_labels[props.workout.id];
   const names = createMemo(() =>
     props.workout.exercises
@@ -14,12 +20,17 @@ function HistoryItem(props: { view: GymView; workout: Workout }) {
   );
   return (
     <li>
-      <A href={`/gym/history/${props.workout.id}`} class="card history-item">
-        <span class="eyebrow">{formatDate(props.workout.finished_ms ?? props.workout.started_ms)}</span>
+      <A href={`${JOURNAL_HREF}/${props.workout.id}`} class="card history-item">
+        <span class="history-item-head">
+          <span class="gym-eyebrow">{formatDate(props.workout.finished_ms ?? props.workout.started_ms)}</span>
+          <span class="history-item-arrow">
+            <ArrowUpRightIcon />
+          </span>
+        </span>
         <span class="history-title">{props.workout.title}</span>
         <Show when={label()}>
           {(l) => (
-            <span class="small">
+            <span class="muted small">
               {l().duration} · {setsText(l().sets)} · {l().volume}
             </span>
           )}
@@ -30,26 +41,27 @@ function HistoryItem(props: { view: GymView; workout: Workout }) {
   );
 }
 
-export default function HistoryView() {
+export default function JournalView() {
   return (
     <GymPage>
-      {(view) => (
-        <>
-          <h1 class="view-title">History</h1>
+      {(view, wide) => (
+        <Show when={!wide()} fallback={<JournalDesk view={view()} />}>
+          <h1 class="view-title gym-title">{gt("journal")}</h1>
           <Show
             when={view().state.history.length > 0}
             fallback={
-              <div class="empty">
-                <p class="empty-title">No workouts yet.</p>
-                <p class="empty-sub">Finish a workout and it will be saved here.</p>
-              </div>
+              <EmptyCard
+                icon={<BookIcon />}
+                title={gt("storyTitle")}
+                detail={gt("storyDetail")}
+              />
             }
           >
-            <ul class="gym-list" aria-label="Finished workouts">
-              <For each={view().state.history}>{(workout) => <HistoryItem view={view()} workout={workout} />}</For>
+            <ul class="gym-list" aria-label={gt("finishedWorkouts")}>
+              <For each={view().state.history}>{(workout) => <JournalItem view={view()} workout={workout} />}</For>
             </ul>
           </Show>
-        </>
+        </Show>
       )}
     </GymPage>
   );

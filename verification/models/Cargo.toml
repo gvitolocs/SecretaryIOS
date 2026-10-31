@@ -1,0 +1,18 @@
+[package]
+name = "verification-models"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Stateright models of the Secretary / Lucina multi-process protocols (see docs/verification.md)"
+
+[features]
+# Deeper (slower) bounds for the model-checking tests; CI runs the default bounds.
+deep = []
+
+[dependencies]
+stateright = { version = "=0.31.0", default-features = false }
+
+[[bin]]
+name = "verify-models"
+path = "src/bin/verify-models.rs"

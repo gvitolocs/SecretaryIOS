@@ -14,9 +14,20 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@event-calendar/core": "5.17.2",
+    "@fontsource-variable/jetbrains-mono": "5.3.0",
+    "@fontsource-variable/sora": "5.3.0",
+    "@mediapipe/tasks-vision": "1.1.0",
+    "@protomaps/basemaps": "5.7.2",
     "@secretary/lucina-stage": "file:../packages/lucina-stage",
     "@solidjs/router": "1.0.0",
+    "heic2any": "0.0.4",
+    "hls.js": "1.7.3",
+    "jsqr": "1.4.0",
+    "maplibre-gl": "6.14.0",
+    "pmtiles": "4.5.0",
     "solid-js": "1.9.16",
+    "svelte": "5.57.2",
     "three": "0.186.1"
   },
   "devDependencies": {
@@ -24,6 +35,7 @@
     "@testing-library/jest-dom": "7.0.1",
     "@types/node": "22.20.5",
     "@types/three": "0.186.0",
+    "fake-indexeddb": "6.2.6",
     "jsdom": "30.1.2",
     "typescript": "7.0.2",
     "vite": "8.3.2",
