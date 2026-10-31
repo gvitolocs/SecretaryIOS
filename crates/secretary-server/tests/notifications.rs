@@ -506,14 +506,14 @@ async fn subscribe_validates_endpoint_and_keys() {
         ))
         .await;
     assert_eq!((s, code(&b)), (404, "subscription_not_found"));
-    // APNs is off without a paid team.
+    // An APNs token that is not hex is refused.
     let (s, b) = h
         .send(
             h.req(reqwest::Method::POST, "/v1/push/apns")
-                .json(&json!({"token": "ab".repeat(32)})),
+                .json(&json!({"token": "not-a-token"})),
         )
         .await;
-    assert_eq!((s, code(&b)), (503, "apns_disabled"));
+    assert_eq!((s, code(&b)), (400, "bad_request"));
     let (s, b) = h.send(h.req(reqwest::Method::GET, "/v1/push/key")).await;
     assert_eq!(s, 200);
     assert_eq!(
@@ -523,6 +523,55 @@ async fn subscribe_validates_endpoint_and_keys() {
             .len(),
         65
     );
+}
+
+#[tokio::test]
+async fn apns_tokens_are_kept_while_apns_is_off() {
+    let h = harness(false).await;
+    let token = "ab".repeat(32);
+    let (s, b) = h
+        .send(
+            h.req(reqwest::Method::POST, "/v1/push/apns")
+                .json(&json!({"token": token, "lang": "it"})),
+        )
+        .await;
+    assert_eq!(s, 201, "{b}");
+    assert_eq!(b["apnsEnabled"], false);
+    assert_eq!(
+        (b["kind"].as_str(), b["service"].as_str()),
+        (Some("apns"), Some("apns"))
+    );
+    let id = b["id"].clone();
+
+    // A push while off: the web subscription gets it, the token is skipped
+    // without counting a failure (it would be dropped after 10).
+    h.subscribe("w", 4, "en").await;
+    for i in 0..12 {
+        let (s, b) = h
+            .notify(json!({"category": "reminder", "body": format!("r{i}")}))
+            .await;
+        assert_eq!(s, 201, "{b}");
+    }
+    h.wait_delivered(12).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let (s, v) = h
+        .send(h.req(reqwest::Method::GET, "/v1/notifications/settings"))
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["apns"]["enabled"], false);
+    let subs = v["subscriptions"].as_array().unwrap();
+    let apns = subs.iter().find(|x| x["id"] == id).expect("token kept");
+    assert_eq!(apns["failures"], 0);
+    assert_eq!(apns["lastError"], Value::Null);
+
+    // Registering again refreshes the same subscription.
+    let (s, b) = h
+        .send(
+            h.req(reqwest::Method::POST, "/v1/push/apns")
+                .json(&json!({"token": token.to_uppercase()})),
+        )
+        .await;
+    assert_eq!((s, &b["id"]), (201, &id));
 }
 
 #[tokio::test]

@@ -90,6 +90,10 @@ struct H {
 }
 
 async fn start() -> H {
+    start_with(|_| {}).await
+}
+
+async fn start_with(tweak: impl FnOnce(&mut Config)) -> H {
     logs();
     let mock = Arc::new(Mock::default());
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -100,6 +104,7 @@ async fn start() -> H {
     let mut cfg = Config::new(lucina_url, Some("lucina-secret".into()));
     cfg.data_dir = dir.path().join("state");
     cfg.service_token = Some(ServiceToken::from_secret(SVC).unwrap());
+    tweak(&mut cfg);
     let (device, token) = DeviceStore::new(&cfg.data_dir)
         .issue("Giuseppe iPhone")
         .unwrap();
@@ -392,4 +397,110 @@ async fn the_value_never_reaches_the_logs() {
     assert!(text.contains("owner grant minted"), "logging is captured");
     assert!(!text.contains(VALUE), "value in the logs");
     assert!(!text.contains("g1."), "grant in the logs");
+}
+
+/// A generated test key (never a real one).
+fn test_p8() -> String {
+    use p256::pkcs8::{EncodePrivateKey, LineEnding};
+    p256::ecdsa::SigningKey::from_slice(&[7u8; 32])
+        .unwrap()
+        .to_pkcs8_pem(LineEnding::LF)
+        .unwrap()
+        .to_string()
+}
+
+fn apns_body(value: &str) -> Value {
+    json!({"name": "APNS_AUTH_KEY_ab12cd34ef", "value": value, "project": "proj-lucina",
+           "environment": "prod", "confirmed": true})
+}
+
+#[tokio::test]
+async fn an_apns_key_from_add_secret_turns_push_on() {
+    let h = start_with(|cfg| {
+        cfg.notify.push.apns =
+            secretary_server::notify::apns::ApnsConfig::from_lookup(&|k: &str| {
+                (k == "SECRETARY_APNS_TEAM_ID").then(|| "TEAM123456".to_owned())
+            })
+            .unwrap();
+    })
+    .await;
+    let keys = h.dir.path().join("state/apns");
+
+    // Not a key: refused before anything is signed or forwarded.
+    let (s, v) = h
+        .post(Some(&h.token), "/v1/secrets", apns_body(VALUE))
+        .await;
+    assert_eq!(s, 400, "{v}");
+    assert_eq!(v["error"]["message"], "value: not an APNs auth key (.p8)");
+    assert!(!v.to_string().contains(VALUE));
+    assert!(h.grants().is_empty());
+    assert!(!keys.join("AuthKey_AB12CD34EF.p8").exists());
+
+    // Pasted with CRLF: installed (canonical, 0600) and forwarded as typed.
+    let pasted = test_p8().replace('\n', "\r\n");
+    let (s, v) = h
+        .post(Some(&h.token), "/v1/secrets", apns_body(&pasted))
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["apnsInstalled"], true);
+    assert_eq!(v["fingerprint"], "abcd1234");
+    let file = keys.join("AuthKey_AB12CD34EF.p8");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), test_p8());
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(
+        std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let sent = h.grants();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0]["value"], pasted);
+
+    // Push reports APNs on, with no restart.
+    let (s, v) = h.get(Some(&h.token), "/v1/notifications/settings").await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["apns"]["enabled"], true);
+    assert_eq!(v["apns"]["environment"], "sandbox");
+
+    // A held value never reaches this server: forwarded, nothing installed.
+    let (s, v) = h
+        .post(
+            Some(&h.token),
+            "/v1/secrets",
+            json!({"name": "APNS_AUTH_KEY_ZZ12CD34EF", "held": "held-12345678",
+              "project": "proj-lucina", "environment": "prod", "confirmed": true}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert!(v.get("apnsInstalled").is_none());
+    assert!(!keys.join("AuthKey_ZZ12CD34EF.p8").exists());
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let text = String::from_utf8_lossy(&logs().lock().unwrap()).into_owned();
+    assert!(text.contains("APNs key installed from Add secret"));
+    let body_line = test_p8().lines().nth(1).unwrap().to_owned();
+    assert!(!text.contains(&body_line), "key in the logs");
+}
+
+#[tokio::test]
+async fn an_apns_key_needs_the_team_id() {
+    let h = start().await;
+    let (s, v) = h
+        .post(Some(&h.token), "/v1/secrets", apns_body(&test_p8()))
+        .await;
+    assert_eq!(s, 400, "{v}");
+    assert_eq!(
+        v["error"]["message"],
+        "this server has no SECRETARY_APNS_TEAM_ID; APNs keys cannot be installed"
+    );
+    assert!(h.grants().is_empty());
+    // Other names are untouched by the hook.
+    let (s, _) = h
+        .post(
+            Some(&h.token),
+            "/v1/secrets",
+            json!({"name": "MY_APNS_AUTH_KEY_AB12CD34EF", "value": VALUE,
+              "project": "p", "environment": "prod", "confirmed": true}),
+        )
+        .await;
+    assert_eq!(s, 200);
 }

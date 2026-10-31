@@ -23,7 +23,7 @@
 //! | `SECRETARY_VAPID_SUBJECT` | `https://getsecretary.tech` | VAPID contact (`mailto:` or `https:`) |
 //! | `SECRETARY_PUSH_HOSTS` | FCM, Mozilla, Apple, WNS | comma-separated push-service host suffixes allowed as endpoints |
 //! | `SECRETARY_PUSH_ALLOW_HTTP` | `0` | `1`: accept `http://` push endpoints (local mock push services only) |
-//! | `SECRETARY_APNS_KEY_FILE`, `_KEY_ID`, `_TEAM_ID`, `_TOPIC`, `_ENV` | — | APNs for the native app; all three of file/key/team or none (see `notify::apns`) |
+//! | `SECRETARY_APNS_KEY_FILE`, `_KEY_ID`, `_TEAM_ID`, `_TOPIC`, `_ENV` | — | APNs for the native app: `_TEAM_ID` alone = the key is installed with Add secret (`APNS_AUTH_KEY_<KEYID>`, kept in `apns/` in the data dir); all three of file/key/team = a fixed key; none = off (see `notify::apns`) |
 //! | `SECRETARY_TIMEZONE` | `Europe/Copenhagen` | the owner's zone (calendar days, all-day events) |
 //! | `SECRETARY_GOOGLE_MAPS_WEB_KEY_FILE` | — | file with the web Google Maps JS API key; enables the map on the deals map |
 //! | `SECRETARY_GOOGLE_MAPS_IOS_KEY_FILE` | — | file with the iOS Google Maps SDK key; forwarded for the native app |

@@ -1423,7 +1423,7 @@ hours / DND do not hold it; see [Approvals](#approvals)). Without `title`, clien
 | `DELETE /v1/push/subscribe {endpoint}` | `{removed}`. |
 | `DELETE /v1/push/subscriptions/{id}` | `{removed}`; `404 subscription_not_found`. |
 | `POST /v1/push/test {id?}` | A test push to that subscription (default: the caller's); waits: `{results: [{id, ok, delivery: {result: sent\|gone\|failed, status?, error?}}]}`. |
-| `POST /v1/push/apns {token, lang?}` | Native app device token → `201`; `503 apns_disabled` until APNs is configured. |
+| `POST /v1/push/apns {token, lang?}` | Native app device token → `201` subscription view + `apnsEnabled`. The token is kept even while APNs is off; pushes to it start once a key is installed (and do not count as failures until then). |
 
 Settings:
 
@@ -2395,6 +2395,11 @@ Lucina writes the receipt to the timeline (`meta.kind: secret_receipt`): "Saved 
 env / path (fingerprint xxxxxxxx)". In chat, `/secret …` never reaches her model, timeline, Honcho
 or replay cache, and token-shaped text is masked before the turn and offered as a held value.
 
+APNs key: a `value` named `APNS_AUTH_KEY_<KEYID>` (10 letters/digits; the whole `.p8` text) is also
+installed as this server's APNs key before it is forwarded, and push to the native app is on at once.
+400 `bad_request` when it is not a P-256 `.p8` (nothing is forwarded) or the server has no
+`SECRETARY_APNS_TEAM_ID`. The answer (also a forwarding error) carries `apnsInstalled: true`.
+
 ## Models
 
 The owner's private 3D gallery: models Lucina made with Meshy AI (crate
@@ -2468,7 +2473,6 @@ video?, rigged?}`. Clients build the file URLs from the id on their own origin.
 | 503 | `au_unavailable` | server | `/v1/au/*`: Lucina or AU Find is not reachable right now. |
 | 503 | `catalog_unavailable` | server | `catalog.{lang}.json` missing from `SECRETARY_CATALOG_DIR`. |
 | 503 | `service_token_not_configured` | server | `/v1/insights/summary` or `/v1/notify` without `SECRETARY_SERVICE_TOKEN_FILE`. |
-| 503 | `apns_disabled` | server | `POST /v1/push/apns` without APNs configured. |
 | 404 | `subscription_not_found` | server | `DELETE /v1/push/subscriptions/{id}`, `POST /v1/push/test`. |
 | 503 | `reminders_disabled`, `owner_chat_unconfigured`, `grocery_unavailable` | Lucina | Feature off on Lucina's host; show it, don't retry in a loop. |
 | 504 | `lucina_timeout` | server | Lucina did not answer in time (chat 120 s, decision creation 60 s, else 15 s). |

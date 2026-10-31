@@ -15,7 +15,7 @@ private.
  │ reminders, check-ins │  POST /v1/notify │         ▼                    │  aes128gcm) │ home-screen app   │
  │ (LUCINA_APP_NOTIFY) ─┼─────────────────▶│ publish: dedup → switch →    ├────────────▶│ (sw.js)           │
  │ Rust: `notify` tool ─┼─────────────────▶│  presence → quiet/DND →      │             └───────────────────┘
- └──────────────────────┘   service token  │  inbox + push targets        │  APNs (off) ┌───────────────────┐
+ └──────────────────────┘   service token  │  inbox + push targets        │  APNs       ┌───────────────────┐
                                            │ tick: calendar, digest,      ├ ─ ─ ─ ─ ─ ─▶│ native app        │
    phone ── POST /v1/device/state ────────▶│  "Lucina offline"            │             │ (polls the inbox, │
    apps ─── POST /v1/notifications/presence│                              │◀────────────│ local notifs)     │
@@ -65,8 +65,10 @@ Delivery retries 429/5xx/network errors (2 s, 15 s, 60 s, honouring
 
 **APNs adapter** (`notify::apns`): ES256 provider JWT (refreshed every 50 min),
 HTTP/2 to `api(.sandbox).push.apple.com`, collapse ids, dead tokens removed.
-Off unless `SECRETARY_APNS_KEY_FILE`, `_KEY_ID` and `_TEAM_ID` are set; until
-then `POST /v1/push/apns` answers `503 apns_disabled`.
+On with `SECRETARY_APNS_TEAM_ID` and a key installed with Add secret, or with
+`SECRETARY_APNS_KEY_FILE`, `_KEY_ID` and `_TEAM_ID` together. While off,
+`POST /v1/push/apns` still keeps the token (`apnsEnabled: false`) and pushes to
+it are skipped without counting as failures.
 
 ## Website (PWA)
 
@@ -136,11 +138,14 @@ TestFlight; profiles that do not expire after 7 days.
 3. iOS app: add `aps-environment` (`development` for Xcode builds, `production`
    for TestFlight) to `ios/Secretary/Secretary.entitlements`, set
    `SecretaryAPNsEnabled: true` in `ios/project.yml`, `xcodegen generate`, build.
-   The app then registers and sends its token to `POST /v1/push/apns`.
-4. Server (p1): copy the key to `/etc/secretary/AuthKey_<KEYID>.p8`
-   (`secretary:secretary`, 0600) and set `SECRETARY_APNS_KEY_FILE`,
-   `SECRETARY_APNS_KEY_ID`, `SECRETARY_APNS_TEAM_ID`, `SECRETARY_APNS_ENV`
-   (`sandbox` or `production`) in `secretary.env`; restart.
+   The app then registers and sends its token to `POST /v1/push/apns`; the
+   server keeps it even before a key exists.
+4. Server (p1): `secretary.env` has `SECRETARY_APNS_TEAM_ID=2N4DA9L8VH` and
+   `SECRETARY_APNS_ENV=sandbox` (Xcode builds; `production` for TestFlight).
+   The owner adds the key in the app with **Add secret**: name
+   `APNS_AUTH_KEY_<KEYID>`, value = the whole `.p8` file text. The server
+   installs it in its data dir (`apns/AuthKey_<KEYID>.p8`, 0600) and push is on
+   at once: no restart, no file copying, no app relaunch.
 
 Note: the Mac has `~/Downloads/AuthKey_FP8MDH6T64.p8` (key id `FP8MDH6T64`). It
 may belong to another team (e.g. Pokoin): check in the developer portal which
@@ -179,7 +184,8 @@ was not used or read for this work.
 | | `SECRETARY_VAPID_SUBJECT` | default `https://getsecretary.tech` |
 | | `SECRETARY_PUSH_HOSTS` | default FCM, Mozilla, Apple, WNS |
 | | `SECRETARY_PUSH_ALLOW_HTTP` | `0`; `1` only for local mock push services |
-| | `SECRETARY_APNS_KEY_FILE`, `_KEY_ID`, `_TEAM_ID`, `_TOPIC`, `_ENV` | APNs, paid team only |
+| | `SECRETARY_APNS_TEAM_ID`, `_TOPIC`, `_ENV` | APNs, paid team only; the key comes from Add secret |
+| | `SECRETARY_APNS_KEY_FILE`, `_KEY_ID` | optional: a fixed key file instead (all three together) |
 | Lucina (Node) | `LUCINA_APP_NOTIFY` | `true` to post reminders and proactive messages |
 | | `LUCINA_SECRETARY_SERVER_URL` | `https://getsecretary.tech` (Lucina runs on nezopt; the server is on p1) |
 | | `LUCINA_SECRETARY_SERVICE_TOKEN_FILE` | file with the `svc_…` token (0600) |

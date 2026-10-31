@@ -1,6 +1,6 @@
 //! Push delivery: Web Push (VAPID, RFC 8030/8291/8292) for browsers and
 //! home-screen web apps, and the APNs adapter for the native app (off until
-//! configured, see [`super::apns`]).
+//! a key is configured or installed, see [`super::apns`]).
 //!
 //! - **VAPID keys** are generated on first start into `vapid.json` (0600)
 //!   in the data dir: the P-256 private key and the public key browsers get
@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use web_push_native::{Auth, WebPushBuilder};
 
-use super::apns::{Apns, ApnsConfig};
+use super::apns::{ApnsConfig, ApnsSlot};
 use super::model::{now_ms, Category};
 use super::store::JsonFile;
 use crate::devices::save_json_atomic;
@@ -496,7 +496,7 @@ pub struct Pusher {
     pub vapid: Vapid,
     pub subs: JsonFile<Vec<Subscription>>,
     http: reqwest::Client,
-    pub apns: Option<Apns>,
+    pub apns: ApnsSlot,
 }
 
 impl Pusher {
@@ -507,10 +507,7 @@ impl Pusher {
             .redirect(reqwest::redirect::Policy::none())
             .user_agent(concat!("secretary-server/", env!("CARGO_PKG_VERSION")))
             .build()?;
-        let apns = match &cfg.apns {
-            Some(a) => Some(Apns::new(a.clone())?),
-            None => None,
-        };
+        let apns = ApnsSlot::open(dir, cfg.apns.clone())?;
         Ok(Self {
             vapid: Vapid::load_or_create(dir)?,
             subs: JsonFile::open(dir, SUBSCRIPTIONS_FILE),
@@ -578,28 +575,37 @@ impl Pusher {
     }
 
     /// Deliver `payload` to `sub` with retries, then record the result.
+    /// An APNs target while APNs is off is skipped and not recorded, so the
+    /// token is kept for when the key arrives.
     pub async fn deliver(
         &self,
         sub: &Subscription,
         payload: &Payload,
         opts: &PushOpts,
     ) -> Delivery {
+        let apns = match sub.kind {
+            Kind::Apns => match self.apns.get() {
+                Some(a) => Some(a),
+                None => {
+                    tracing::debug!(sub = %sub.id, "apns is not configured; push skipped");
+                    return Delivery::Failed {
+                        error: "apns is not configured".into(),
+                    };
+                }
+            },
+            Kind::Webpush => None,
+        };
         let delays = self.cfg.retry_delays.clone();
         let mut attempt = 0;
         let result = loop {
-            let a = match sub.kind {
-                Kind::Webpush => self.try_webpush(sub, payload, opts).await,
-                Kind::Apns => match &self.apns {
-                    Some(apns) => match apns.send(&sub.endpoint, payload, opts).await {
-                        Ok((status, retry, detail)) => match classify(status, retry, detail) {
-                            Ok(d) => Attempt::Done(d),
-                            Err((e, r)) => Attempt::Retry(e, r),
-                        },
-                        Err(e) => Attempt::Retry(e, None),
+            let a = match &apns {
+                None => self.try_webpush(sub, payload, opts).await,
+                Some(apns) => match apns.send(&sub.endpoint, payload, opts).await {
+                    Ok((status, retry, detail)) => match classify(status, retry, detail) {
+                        Ok(d) => Attempt::Done(d),
+                        Err((e, r)) => Attempt::Retry(e, r),
                     },
-                    None => Attempt::Done(Delivery::Failed {
-                        error: "apns is not configured".into(),
-                    }),
+                    Err(e) => Attempt::Retry(e, None),
                 },
             };
             match a {

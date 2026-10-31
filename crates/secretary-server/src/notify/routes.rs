@@ -8,7 +8,7 @@
 //! - `GET /v1/push/key`
 //! - `POST|DELETE /v1/push/subscribe`, `DELETE /v1/push/subscriptions/{id}`
 //! - `POST /v1/push/test {id?}`
-//! - `POST /v1/push/apns {token}` (503 `apns_disabled` until configured)
+//! - `POST /v1/push/apns {token}` (saved even while APNs is off; `apnsEnabled` says which)
 //!
 //! Service route (the `svc_` token, Lucina): `POST /v1/notify`.
 
@@ -101,6 +101,7 @@ async fn read(State(st): State<AppState>, JsonBody(body): JsonBody<ReadBody>) ->
 fn settings_view(st: &AppState, ident: &Identity) -> Value {
     let n = &st.notify;
     let subs: Vec<_> = n.pusher.list().iter().map(Subscription::view).collect();
+    let apns = n.pusher.apns.get();
     json!({
         "settings": n.settings.get(),
         "categories": Category::ALL.iter().map(|c| json!({"id": c.as_str(), "defaultOn": c.default_on(), "locked": c.always_on()})).collect::<Vec<_>>(),
@@ -108,8 +109,8 @@ fn settings_view(st: &AppState, ident: &Identity) -> Value {
         "currentDevice": {"id": ident.device_id, "name": ident.device_name},
         "webPush": {"enabled": true, "publicKey": n.pusher.vapid.public_key},
         "apns": {
-            "enabled": n.pusher.apns.is_some(),
-            "environment": n.pusher.apns.as_ref().map(|a| if a.cfg.sandbox { "sandbox" } else { "production" }),
+            "enabled": apns.is_some(),
+            "environment": apns.as_ref().map(|a| if a.cfg.sandbox { "sandbox" } else { "production" }),
         },
         "present": n.present(),
     })
@@ -265,13 +266,6 @@ async fn apns_register(
     Extension(ident): Extension<Identity>,
     JsonBody(body): JsonBody<ApnsBody>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    if st.notify.pusher.apns.is_none() {
-        return Err(ApiError::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "apns_disabled",
-            "APNs is not configured on this server (needs a paid Apple developer team)",
-        ));
-    }
     let token = body.token.trim().to_ascii_lowercase();
     if !super::apns::valid_device_token(&token) {
         return Err(bad("token: an APNs device token (hex)"));
@@ -296,7 +290,10 @@ async fn apns_register(
     };
     let n = st.notify.clone();
     let saved = blocking(move || n.pusher.upsert(sub)).await?;
-    Ok((StatusCode::CREATED, Json(json!(saved.view()))))
+    // Kept while APNs is off too: pushes start once a key is installed.
+    let mut view = json!(saved.view());
+    view["apnsEnabled"] = json!(st.notify.pusher.apns.get().is_some());
+    Ok((StatusCode::CREATED, Json(view)))
 }
 
 /// `POST /v1/notify` (service token): Lucina pushes a notification.

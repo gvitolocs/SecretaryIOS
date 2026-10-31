@@ -16,6 +16,9 @@
 //! - The value passes through in memory only: never logged (the access log
 //!   keeps the body length), stored, echoed in an error or put in a grant
 //!   (the grant carries its sha256).
+//! - One exception is stored here: a secret named `APNS_AUTH_KEY_<KEYID>`
+//!   (an APNs `.p8`) is also installed as this server's APNs key before it
+//!   is forwarded, so push turns on at once (see [`crate::notify::apns`]).
 
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -279,6 +282,50 @@ async fn names(
     forward_grant(&st, grant, None, None).await
 }
 
+const APNS_KEY_PREFIX: &str = "APNS_AUTH_KEY_";
+
+/// The key id in a secret named `APNS_AUTH_KEY_<10 letters/digits>` (prefix
+/// in any case).
+pub fn apns_key_id(name: &str) -> Option<&str> {
+    let head = name.get(..APNS_KEY_PREFIX.len())?;
+    let id = &name[APNS_KEY_PREFIX.len()..];
+    (head.eq_ignore_ascii_case(APNS_KEY_PREFIX) && crate::notify::apns::valid_id(id)).then_some(id)
+}
+
+/// Install an APNs key from Add secret (the value never reaches an error or a log).
+async fn install_apns_key(
+    st: &AppState,
+    who: &Identity,
+    key_id: &str,
+    value: &str,
+) -> Result<(), ApiError> {
+    use crate::notify::apns::InstallError;
+    let n = st.notify.clone();
+    let (id, pem) = (key_id.to_owned(), value.to_owned());
+    let r = tokio::task::spawn_blocking(move || n.pusher.apns.install(&id, &pem))
+        .await
+        .map_err(|_| ApiError::internal("APNs key install failed"))?;
+    match r {
+        Ok(()) => {
+            tracing::info!(device = %who.device_id, key_id = %key_id.to_ascii_uppercase(), "APNs key installed from Add secret");
+            Ok(())
+        }
+        Err(InstallError::BadKey | InstallError::BadKeyId) => {
+            Err(bad("value: not an APNs auth key (.p8)"))
+        }
+        Err(InstallError::NoTeam) => Err(bad(
+            "this server has no SECRETARY_APNS_TEAM_ID; APNs keys cannot be installed",
+        )),
+        Err(InstallError::FixedKey) => Err(bad(
+            "this server uses SECRETARY_APNS_KEY_FILE; APNs keys cannot be installed",
+        )),
+        Err(InstallError::Io(e)) => {
+            tracing::error!(error = %e, "could not install the APNs key");
+            Err(ApiError::internal("could not install the APNs key"))
+        }
+    }
+}
+
 /// `POST /v1/secrets {name, value | held, project, environment, path?,
 /// overwrite?, createFolder?, confirmed: true}`.
 async fn put_secret(
@@ -320,8 +367,33 @@ async fn put_secret(
         }
         _ => return Err(bad("give value (a string) or held, not both")),
     };
-    let grant = mint(&st, &who, act)?;
-    forward_grant(&st, grant, value, held).await
+    let apns_installed = match (apns_key_id(&name), value.as_deref()) {
+        (Some(key_id), Some(v)) => {
+            install_apns_key(&st, &who, key_id, v).await?;
+            true
+        }
+        _ => false,
+    };
+    let res = match mint(&st, &who, act) {
+        Ok(grant) => forward_grant(&st, grant, value, held).await,
+        Err(e) => Err(e),
+    };
+    if !apns_installed {
+        return res;
+    }
+    // The key is installed locally whatever Infisical answered.
+    match res {
+        Ok((status, Json(mut v))) => {
+            if let Some(o) = v.as_object_mut() {
+                o.insert("apnsInstalled".into(), json!(true));
+            }
+            Ok((status, Json(v)))
+        }
+        Err(e) => Ok((
+            e.status,
+            Json(json!({"error": {"code": e.code, "message": e.message}, "apnsInstalled": true})),
+        )),
+    }
 }
 
 /// `POST /v1/secrets/projects {name, slug?, confirmed: true}`.
@@ -366,4 +438,26 @@ fn sha_hex(data: &[u8]) -> String {
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apns_key_id;
+
+    #[test]
+    fn apns_key_names() {
+        assert_eq!(apns_key_id("APNS_AUTH_KEY_AB12CD34EF"), Some("AB12CD34EF"));
+        assert_eq!(apns_key_id("APNS_AUTH_KEY_ab12cd34ef"), Some("ab12cd34ef"));
+        assert_eq!(apns_key_id("apns_auth_key_AB12CD34EF"), Some("AB12CD34EF"));
+        for no in [
+            "APNS_AUTH_KEY_SHORT",
+            "MY_APNS_AUTH_KEY_AB12CD34EF",
+            "APNS_AUTH_KEY_AB12CD34EF1",
+            "APNS_AUTH_KEY_AB12CD-4EF",
+            "APNS_AUTH_KEY_",
+            "APNS",
+        ] {
+            assert_eq!(apns_key_id(no), None, "{no}");
+        }
+    }
 }
