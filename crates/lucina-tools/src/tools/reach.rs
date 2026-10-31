@@ -960,6 +960,60 @@ impl Reach {
 
     // ---------------------------------------------------------------- Lucina Agents
 
+    /// The newest `seq` in an agent's timeline (0 for none).
+    pub async fn agent_last_seq(&self, agent: &str) -> u64 {
+        self.agentd("GET", &format!("/agents/{agent}/timeline?limit=500"), None)
+            .await
+            .ok()
+            .and_then(|v| v["rows"].as_array().and_then(|r| r.iter().filter_map(|x| x["seq"].as_u64()).max()))
+            .unwrap_or(0)
+    }
+
+    /// Wait in the background for an agent's run to end, then deliver its last answer (after
+    /// `after_seq`) as the thread's reply.
+    pub fn watch_agent(self: &Arc<Self>, thread: String, agent: String, after_seq: u64) {
+        let me = self.clone();
+        tokio::spawn(async move {
+            let deadline = tokio::time::Instant::now() + me.cfg.grok_timeout.max(Duration::from_secs(900));
+            // Let the run start before the first look.
+            tokio::time::sleep(me.cfg.poll).await;
+            loop {
+                let status = me
+                    .agentd("GET", &format!("/agents/{agent}"), None)
+                    .await
+                    .ok()
+                    .and_then(|v| v["status"].as_str().map(str::to_owned));
+                match status.as_deref() {
+                    Some("running") | Some("initializing") | Some("starting") | None
+                        if tokio::time::Instant::now() < deadline =>
+                    {
+                        tokio::time::sleep(me.cfg.poll).await;
+                    }
+                    _ => break,
+                }
+            }
+            let text = match me
+                .agentd("GET", &format!("/agents/{agent}/timeline?limit=500"), None)
+                .await
+            {
+                Ok(v) => last_answer(&v, after_seq),
+                Err(e) => {
+                    tracing::warn!(error = %e, "reach: agent timeline not read");
+                    None
+                }
+            };
+            match text {
+                Some(t) => {
+                    let short: String = agent.chars().take(8).collect();
+                    me.add_reply(&thread, &format!("agent {short}"), &t).await;
+                }
+                None => {
+                    me.set_status(&thread, "failed", Some(format!("agent {agent} gave no answer")));
+                }
+            }
+        });
+    }
+
     /// One request to lucina-agentd on its socket, as `service:lucina`.
     pub async fn agentd(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Value, String> {
         agentd_request(&self.cfg.agentd_socket, method, path, body).await
@@ -1300,6 +1354,21 @@ struct AgentsArgs {
 
 pub struct LucinaAgentsTool;
 
+/// The agent's final answer: its last assistant message after `after_seq`.
+fn last_answer(v: &Value, after_seq: u64) -> Option<String> {
+    v["rows"]
+        .as_array()?
+        .iter()
+        .filter(|r| r["seq"].as_u64().is_some_and(|s| s > after_seq))
+        .filter_map(|r| {
+            let item = r.get("item").unwrap_or(r);
+            (item["type"] == "assistant_message")
+                .then(|| item["text"].as_str().or(item["content"].as_str()).unwrap_or("").trim().to_owned())
+        })
+        .filter(|t| !t.is_empty())
+        .last()
+}
+
 /// The agent's last few readable lines from a timeline page.
 fn timeline_digest(v: &Value, max: usize) -> Vec<Value> {
     let rows = v["rows"].as_array().cloned().unwrap_or_default();
@@ -1398,6 +1467,7 @@ agents\". Runs use an allowed free model (never Codex, never paid DeepSeek)."
                     )
                     .map_err(ToolError::new)?;
                 let prompt = reach.envelope(&t);
+                let mut after_seq = 0;
                 let result = if a.action == AgentsAction::Run {
                     let cfg = &reach.cfg;
                     allowed_model(&cfg.agents_provider, cfg.agents_model.as_deref())
@@ -1416,6 +1486,7 @@ agents\". Runs use an allowed free model (never Codex, never paid DeepSeek)."
                     reach.agentd("POST", "/agents", Some(&body)).await
                 } else {
                     let id = agent_id()?;
+                    after_seq = reach.agent_last_seq(&id).await;
                     reach
                         .agentd("POST", &format!("/agents/{id}/send"), Some(&json!({"prompt": prompt})))
                         .await
@@ -1429,9 +1500,12 @@ agents\". Runs use an allowed free model (never Codex, never paid DeepSeek)."
                         let agent = v["id"].as_str().or(v["agentId"].as_str()).unwrap_or("").to_owned();
                         let t = reach.set_status(&t.id, "sent", Some(agent.clone())).unwrap_or(t);
                         reach.record(&t, &format!("Lucina → Lucina Agents: {}", t.subject), &t.text);
+                        if !agent.is_empty() {
+                            reach.watch_agent(t.id.clone(), agent.clone(), after_seq);
+                        }
                         Ok(json!({
                             "status": "sent", "thread": t.id, "agent": agent,
-                            "instruction": "Tell the owner it is posted in Lucina Agents (agent id). Read it later with action read.",
+                            "instruction": "Tell the owner it is posted in Lucina Agents (agent id) and that the agent's answer will appear in this chat when the run ends.",
                         }))
                     }
                     Err(e) => {
@@ -1663,6 +1737,20 @@ mod tests {
     #[test]
     fn chunked_bodies() {
         assert_eq!(dechunk("4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n"), "Wikipedia");
+    }
+
+    #[test]
+    fn the_answer_is_the_last_assistant_message_after_the_prompt() {
+        let v = json!({"rows": [
+            {"seq": 1, "item": {"type": "user_message", "text": "first"}},
+            {"seq": 2, "item": {"type": "assistant_message", "text": "old answer"}},
+            {"seq": 3, "item": {"type": "user_message", "text": "[Lucina → Lucina Agents] …"}},
+            {"seq": 4, "item": {"type": "tool_call"}},
+            {"seq": 5, "item": {"type": "assistant_message", "text": "ok"}}
+        ]});
+        assert_eq!(last_answer(&v, 2).as_deref(), Some("ok"));
+        assert_eq!(last_answer(&v, 5), None);
+        assert_eq!(last_answer(&v, 0).as_deref(), Some("ok"));
     }
 
     #[test]
