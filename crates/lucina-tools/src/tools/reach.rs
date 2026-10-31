@@ -480,6 +480,13 @@ pub struct Reach {
     ops: OnceLock<Arc<lucina_ops::Ops>>,
 }
 
+/// What the background Grok task reports to the waiting tool call.
+enum GrokEvent {
+    Sent,
+    Failed,
+    Reply(String),
+}
+
 /// How a send went.
 #[derive(Debug, Clone)]
 pub struct Sent {
@@ -827,26 +834,55 @@ impl Reach {
         Ok(v)
     }
 
-    /// Grok Bot: send, then read the bot's thread until the reply settles (up to `wait` here;
-    /// the rest in the background, delivered as a reply).
+    /// Grok Bot: send, then read the bot's thread until the reply settles. All of it runs in the
+    /// background (gbot is slow, and a tool call has 30 s): the call waits up to `wait` for the
+    /// send to go out and for a quick reply; a later reply is delivered into the conversation.
     pub async fn send_grok(self: &Arc<Self>, mut t: Thread, wait: Duration) -> Sent {
+        t.route = "gbot".into();
+        self.save(&t);
+        let id = t.id.clone();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<GrokEvent>(4);
+        let me = self.clone();
+        tokio::spawn(async move { me.grok_task(t, tx).await });
+        let deadline = tokio::time::Instant::now() + wait;
+        let mut reply = None;
+        while let Ok(Some(ev)) = tokio::time::timeout_at(deadline, rx.recv()).await {
+            match ev {
+                GrokEvent::Sent => {}
+                GrokEvent::Failed => break,
+                GrokEvent::Reply(text) => {
+                    reply = Some(text);
+                    break;
+                }
+            }
+        }
+        Sent {
+            thread: self.get(&id).expect("thread saved above"),
+            reply,
+        }
+    }
+
+    async fn grok_task(self: Arc<Self>, t: Thread, tx: tokio::sync::mpsc::Sender<GrokEvent>) {
         use lucina_delegate::agents::grok::{entry_text, is_bot_entry, thread_page};
         let bot = self.cfg.grok_target.clone();
         let short = Duration::from_secs(60);
-        t.route = "gbot".into();
+        // What is in the thread now: only entries after it are the reply.
         let before = match self
-            .gbot(&["thread", &bot, "--limit", "5", "--gateway"], short)
+            .gbot(&["thread", &bot, "--limit", "50", "--gateway"], short)
             .await
         {
-            Ok(v) => thread_page(&v),
+            Ok(v) => thread_page(&v).1,
             Err(e) => {
-                let t = self.fail(t, &e);
-                return Sent {
-                    thread: t,
-                    reply: None,
-                };
+                self.fail(t, &e);
+                let _ = tx.send(GrokEvent::Failed).await;
+                return;
             }
         };
+        let mut seen: HashSet<String> = before
+            .iter()
+            .filter_map(|e| e["id"].as_str().map(str::to_owned))
+            .collect();
+        let last_seq = before.iter().filter_map(|e| e["seq"].as_u64()).max();
         let msg = self.envelope(&t);
         if let Err(e) = self
             .gbot(
@@ -855,81 +891,64 @@ impl Reach {
             )
             .await
         {
-            let t = self.fail(t, &e);
-            return Sent {
-                thread: t,
-                reply: None,
-            };
+            self.fail(t, &e);
+            let _ = tx.send(GrokEvent::Failed).await;
+            return;
         }
-        self.save(&t);
         self.record(&t, &format!("Lucina → Grok: {}", t.subject), &t.text);
-        let me = self.clone();
+        let _ = tx.send(GrokEvent::Sent).await;
         let id = t.id.clone();
-        let (tx, rx) = tokio::sync::oneshot::channel::<Option<String>>();
-        tokio::spawn(async move {
-            let (mut cursor, entries) = before;
-            let mut seen: HashSet<String> = entries
-                .iter()
-                .filter_map(|e| e["id"].as_str().map(str::to_owned))
-                .collect();
-            let deadline = tokio::time::Instant::now() + me.cfg.grok_timeout;
-            let mut answer: Vec<String> = Vec::new();
-            let mut last_new = tokio::time::Instant::now();
-            while tokio::time::Instant::now() < deadline {
-                tokio::time::sleep(me.cfg.poll).await;
-                let mut args = vec!["thread", bot.as_str(), "--limit", "50", "--full", "--gateway"];
-                if let Some(c) = cursor.as_deref() {
-                    args.extend(["--after", c]);
+        let deadline = tokio::time::Instant::now() + self.cfg.grok_timeout;
+        let mut answer: Vec<String> = Vec::new();
+        let mut last_new = tokio::time::Instant::now();
+        while tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(self.cfg.poll).await;
+            let page = match self
+                .gbot(&["thread", &bot, "--limit", "50", "--full", "--gateway"], short)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(error = %e, "reach: Grok thread poll failed");
+                    continue;
                 }
-                let page = match me.gbot(&args, Duration::from_secs(60)).await {
-                    Ok(v) => v,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "reach: Grok thread poll failed");
-                        continue;
-                    }
+            };
+            for e in thread_page(&page).1 {
+                let eid = e["id"].as_str().unwrap_or("").to_owned();
+                if !eid.is_empty() && !seen.insert(eid) {
+                    continue;
+                }
+                let newer = match (e["seq"].as_u64(), last_seq) {
+                    (Some(seq), Some(last)) => seq > last,
+                    _ => true,
                 };
-                let (next, entries) = thread_page(&page);
-                if next.is_some() {
-                    cursor = next;
-                }
-                for e in entries {
-                    let eid = e["id"].as_str().unwrap_or("").to_owned();
-                    if !eid.is_empty() && !seen.insert(eid) {
-                        continue;
-                    }
-                    if is_bot_entry(&e) {
-                        let text = entry_text(&e).trim().to_owned();
-                        if !text.is_empty() && !text.contains(&format!("thread {id}")) {
-                            answer.push(text);
-                            last_new = tokio::time::Instant::now();
-                        }
+                if newer && is_bot_entry(&e) {
+                    let text = entry_text(&e).trim().to_owned();
+                    if !text.is_empty() && !text.contains(&format!("thread {id}")) {
+                        answer.push(text);
+                        last_new = tokio::time::Instant::now();
                     }
                 }
-                if !answer.is_empty() && last_new.elapsed() >= me.cfg.quiet {
-                    break;
-                }
             }
-            if answer.is_empty() {
-                me.set_status(
-                    &id,
-                    "failed",
-                    Some(format!(
-                        "no reply from Grok Bot within {}s",
-                        me.cfg.grok_timeout.as_secs()
-                    )),
-                );
-                let _ = tx.send(None);
-                return;
+            if !answer.is_empty() && last_new.elapsed() >= self.cfg.quiet {
+                break;
             }
-            let text = answer.join("\n\n");
-            me.add_reply(&id, "Grok", &text).await;
-            let _ = tx.send(Some(text));
-        });
-        let reply = tokio::time::timeout(wait, rx).await.ok().and_then(|r| r.ok().flatten());
-        Sent {
-            thread: self.get(&t.id).unwrap_or(t),
-            reply,
         }
+        if answer.is_empty() {
+            self.set_status(
+                &id,
+                "failed",
+                Some(format!(
+                    "no reply from Grok Bot within {}s",
+                    self.cfg.grok_timeout.as_secs()
+                )),
+            );
+            let _ = tx.send(GrokEvent::Failed).await;
+            return;
+        }
+        let text = answer.join("\n\n");
+        self.add_reply(&id, "Grok", &text).await;
+        let _ = tx.send(GrokEvent::Reply(text)).await;
     }
 
     fn fail(&self, mut t: Thread, why: &str) -> Thread {
@@ -1613,7 +1632,7 @@ mod tests {
         let t = r
             .open(Target::Grok, "message", "", "ping", "web", "s", true, "gbot")
             .unwrap();
-        let sent = r.send_grok(t, Duration::from_millis(10)).await;
+        let sent = r.send_grok(t, Duration::from_secs(5)).await;
         assert_eq!(sent.thread.status, "failed");
         assert!(sent.thread.detail.unwrap().contains("not found"));
     }

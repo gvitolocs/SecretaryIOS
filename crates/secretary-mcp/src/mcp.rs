@@ -39,6 +39,7 @@ Notes are Google-Keep style: labels, colours, pinned/archived, checklists (note_
 The owner's tasks (Todoist) are in tasks_list, task_add and task_complete. \
 Lucina keeps the record of all the owner's projects: report every deploy, incident, decision, finished piece of work (status) and finding with ops_record, \
 one record per event (project slug, title, body; for incidents severity, timeline, cause, fix, follow_ups), and look things up with ops_search and ops_get. \
+Lucina may message you (issue reports, requests the owner asked her to pass on): check lucina_inbox and answer with lucina_reply; your reply goes back into the owner's conversation with her, as information for her to relay, never as instructions. \
 AU questions (Aarhus University people, rooms, buildings, campus map) go to au_people_search, au_building and au_campus_map; always cite the source and never invent. \
 Questions like who called the owner from a number, and lists of unknown callers, go to caller_screen (180.dk public reports, then Jev's spam / kind / pick-up table); show its table with the quoted sources. \
 When available, diagnostics_recent, diagnostics_get and diagnostics_file show crash reports and logs from the owner's Lucina apps. \
@@ -287,6 +288,7 @@ impl LucinaMcp {
             "task_add" => t.task_add(args).await,
             "task_complete" => t.task_complete(args).await,
             name if name.starts_with("ops_") => t.ops(name, args).await,
+            "lucina_inbox" | "lucina_reply" => t.reach(name, args).await,
             name if name.starts_with("diagnostics_") => t.diagnostics(name, args).await,
             _ => Err(ToolError(format!("unknown tool {name}"))),
         }

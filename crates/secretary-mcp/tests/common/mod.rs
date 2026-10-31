@@ -3,6 +3,7 @@
 
 pub mod agents;
 pub mod notebooks;
+pub mod reach;
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -284,6 +285,8 @@ async fn handle(
         (m, ["v1", "agents", rest @ ..]) => agents::route(&mut st, m, rest, &query, &headers, &body),
         // Lucina Notebooks (crate::notebooks), forwarded to Lucina by the real server.
         (m, ["v1", "notebooks", rest @ ..]) => notebooks::route(&mut st, m, rest, &query, &headers, &body),
+        // Lucina's mailbox for Claude (crate::reach), forwarded to Lucina by the real server.
+        (m, ["v1", "lucina", "reach", rest @ ..]) => reach::route(m, rest, &query, &headers),
         // Lucina's computer (crate::computer): a job that finishes on the first poll.
         ("POST", ["v1", "computer", "task"]) if device_ok(&headers) => (
             StatusCode::ACCEPTED,

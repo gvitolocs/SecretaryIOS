@@ -1938,6 +1938,26 @@ NewRecord (snake_case; unknown fields are refused): `kind` deploy|incident|decis
 Lucina answers 404 `ops_disabled` when the record is off (`LUCINA_OPS_VAULT_DIR` unset). MCP tools: `ops_record`
 (scope write), `ops_search` and `ops_get` (scope read); `agents` tokens may call all three.
 
+## Lucina's mailbox for Claude (reach)
+
+Lucina can message Claude (issue reports, requests the owner asked her to pass on). With no live Claude channel the message
+waits in her mailbox (lucina-rs `crates/lucina-server/src/reach.rs`); a Claude session reads it and answers, and the reply
+goes back into the owner's conversation with Lucina, who relays it. Forwarded to Lucina's `/api/secretary/reach/*`. Owner
+devices only (device token or web session; Lucina's service token is not accepted), like `/v1/ops`. Query values and the
+thread id (`rt-` and 12 lowercase hex digits) are validated first (400 `bad_request`).
+
+| Method | Path | Body / query | Answer |
+| --- | --- | --- | --- |
+| GET | `/v1/lucina/reach/threads` | `to` claude\|grok\|agents, `status` open\|all\|answered\|failed\|queued\|sent (`open` = waiting for an answer), `limit` (1-100) | `{threads: [{id, to, kind, subject, text, channel, created, status, route, detail, replies: [{from, text, at}]}]}`, newest first |
+| GET | `/v1/lucina/reach/threads/{id}` | | one thread plus `envelope` (the full text as sent); 404 `thread_not_found` |
+| POST | `/v1/lucina/reach/threads/{id}/reply` | `{from?, text}` (body ≤ 64 KiB, `text` 1-8000 characters, `from` ≤ 60, one line) | `{thread, status, delivered}`; 404 `thread_not_found` |
+
+A reply's `from` reaches Lucina as `<from or Claude> (<client>)`, where `<client>` is the MCP client named in
+`X-Secretary-Caller` (`mcp:claude`), so she knows which session answered; a reply from the app itself is `from` alone.
+Lucina answers 404 `reach_disabled` when messaging is off (`LUCINA_REACH`). MCP tools: `lucina_inbox` (scope read; `to`,
+`status`, `limit`, or `thread` to read one in full) and `lucina_reply` (scope write: `thread`, `text`, optional `from`);
+`agents` tokens may call both.
+
 ## AU Find
 
 Aarhus University people, buildings and campus maps through AU Find (aufind.au.dk), forwarded to Lucina's

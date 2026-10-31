@@ -33,6 +33,7 @@ pub mod notebooks;
 pub mod notes;
 pub mod notify;
 pub mod ops;
+pub mod reach;
 pub mod owner;
 pub mod owner_secrets;
 pub mod proactive;
@@ -320,6 +321,7 @@ pub fn app(state: AppState) -> Router {
         .merge(system_overview::routes())
         .merge(computer::routes())
         .merge(ops::routes())
+        .merge(reach::routes())
         .merge(au::routes())
         .merge(callers::routes())
         .merge(desk::routes())
