@@ -266,6 +266,18 @@ describe("Instagram", () => {
     expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
   });
 
+  it("asks again once for a tray from an earlier visit, whose cover URLs may have expired", async () => {
+    await pageCache.put("instagram:tray:natgeo", "instagram", [{ id: "highlight:1", title: "Best of", coverUrl: "/v1/instagram/s/1/old/h", mediaCount: 2 }]);
+    const calls = serve({ profile: bundle(), highlights: bundle({ highlights: true }).highlights });
+    renderIg("/instagram/natgeo");
+    fireEvent.click(await screen.findByRole("tab", { name: "Highlights" }));
+    await screen.findByRole("button", { name: /Best of/ });
+    await waitFor(() => expect(screen.getByRole("button", { name: /Best of/ }).querySelector("img")).toHaveAttribute("src", "/v1/instagram/s/9/x/h"));
+    fireEvent.click(screen.getByRole("tab", { name: "Posts" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Highlights" }));
+    expect(calls.filter((c) => c.url === "/v1/instagram/highlights/natgeo")).toHaveLength(1);
+  });
+
   it("uses the tray route when the bundle is empty and renders the cover", async () => {
     const calls = serve({ profile: bundle(), highlights: bundle({ highlights: true }).highlights });
     renderIg("/instagram/natgeo");
