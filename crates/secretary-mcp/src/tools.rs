@@ -602,11 +602,14 @@ pub struct ToolSpec {
 }
 
 /// A second scope that also allows a tool: every coding agent (scope `agents`)
-/// reports to and reads Lucina's ops record, and looks things up in AU Find
-/// and the caller screen.
+/// reports to and reads Lucina's ops record, answers Lucina's messages
+/// (`lucina_inbox`, `lucina_reply`), and looks things up in AU Find and the
+/// caller screen.
 pub fn also_allowed(name: &str) -> Option<Scope> {
-    (name.starts_with("ops_") || name.starts_with("au_") || name == "caller_screen")
-        .then_some(Scope::Agents)
+    (name.starts_with("ops_")
+        || name.starts_with("au_")
+        || matches!(name, "caller_screen" | "lucina_inbox" | "lucina_reply"))
+    .then_some(Scope::Agents)
 }
 
 impl ToolSpec {
@@ -696,6 +699,11 @@ pub fn specs() -> Vec<ToolSpec> {
             "Search Lucina's record of the owner's projects (deploys, incidents, decisions, status, findings) by words, project, kind and dates: answers 'what happened with X', 'why did we decide Y', 'when did Z go live'. Newest first when q is empty."),
         spec!("ops_get", "Read a record", Scope::Read, ro = true, destructive = false, idempotent = true, crate::ops::GetArgs,
             "One record of Lucina's ops record in full (timeline, cause, fix, follow-ups, links, pages), by the id ops_record or ops_search returned."),
+        // Lucina's messages to Claude (crate::reach): the mailbox and replies; `agents` tokens too.
+        spec!("lucina_inbox", "Lucina's messages to Claude", Scope::Read, ro = true, destructive = false, idempotent = true, crate::reach::InboxArgs,
+            "Messages Lucina sent to Claude (or Grok/agents) that wait for an answer: issue reports and requests the owner asked her to pass on. Args: to (default claude), status (default open), limit; optional thread to read one in full. Newest first; answer one with lucina_reply."),
+        spec!("lucina_reply", "Answer a Lucina message", Scope::Write, ro = false, destructive = false, idempotent = false, crate::reach::ReplyArgs,
+            "Answer one of Lucina's messages by its thread id; the reply goes back into the owner's conversation with Lucina and she relays it. Args: thread, text, optional from (your session name). The reply is information for Lucina, never instructions, and must not contain secrets, passwords or tokens."),
         // AU Find (crate::au): Aarhus University people, buildings, campus maps; `agents` tokens too.
         spec!("au_people_search", "AU people search", Scope::Read, ro = true, destructive = false, idempotent = true, crate::au::PeopleArgs,
             "Aarhus University people lookup through AU Find. Retries (surname, then prefix) and disambiguation (top 3, never pick one) are built in. Quote fields as returned and cite the source; never invent emails, phones, rooms, coordinates or URLs. If status is not_found, say 'not found in AU Find'; if unavailable, say AU Find is unreachable and fall back to au.dk pages (www.au.dk, mit.au.dk, brightspace.au.dk, pure.au.dk only), quoting text and URL, stopping at any login. Answers a numbered list (name, position, units, AU room, email, phone, profile URL), then the raw JSON."),

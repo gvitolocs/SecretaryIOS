@@ -87,7 +87,7 @@ async fn agent_tools_need_the_agents_scope() {
     assert!(!names.contains(&"note_save".to_owned()) && !names.contains(&"computer_bash".to_owned()));
     assert!(names.contains(&"note_get".to_owned()));
     // Every coding agent reports to Lucina's ops record, write scope or not.
-    for t in ["ops_record", "ops_search", "ops_get"] {
+    for t in ["ops_record", "ops_search", "ops_get", "lucina_inbox", "lucina_reply"] {
         assert!(names.contains(&t.to_owned()), "{t} missing");
     }
     let only_agents = h.issue("agent-x", "agents");
