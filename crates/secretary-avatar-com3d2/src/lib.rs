@@ -13,6 +13,7 @@ pub mod compose;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod compressed;
 pub mod customization;
+pub mod garment_fit;
 pub mod glb_io;
 pub mod gltf;
 pub mod legacy;

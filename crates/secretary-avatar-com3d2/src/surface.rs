@@ -293,6 +293,59 @@ impl Surface {
         let root = Node::build(&triangles, (0..triangles.len()).collect());
         Ok(Self { triangles, root })
     }
+    pub fn geometry(points: &[Vec3], normals: &[Vec3], faces: &[[usize; 3]]) -> Result<Self> {
+        let mut triangles = Vec::new();
+        for t in faces {
+            if t.iter().any(|&v| v >= points.len() || v >= normals.len()) {
+                return Err(invalid("garment surface index"));
+            }
+            triangles.push(Triangle {
+                p: t.map(|v| points[v]),
+                n: t.map(|v| normals[v]),
+                delta: [Vec3::ZERO; 3],
+                skin: std::array::from_fn(|_| vec![(0, 1.)]),
+            });
+        }
+        if triangles.is_empty() {
+            return Err(invalid("empty garment surface"));
+        }
+        let root = Node::build(&triangles, (0..triangles.len()).collect());
+        Ok(Self { triangles, root })
+    }
+    /// Outermost intersection of an authoring ray, rather than a nearest
+    /// underside/crotch surface. Used to keep a whole outer garment outside
+    /// both trouser legs at the same height.
+    pub fn radial(&self, origin: Vec3, direction: Vec3) -> Option<Hit> {
+        let d = direction.normalize_or_zero();
+        let mut best = None;
+        let mut distance = 0.;
+        for (i, t) in self.triangles.iter().enumerate() {
+            let e1 = t.p[1] - t.p[0];
+            let e2 = t.p[2] - t.p[0];
+            let h = d.cross(e2);
+            let det = e1.dot(h);
+            if det.abs() < 1e-8 {
+                continue;
+            }
+            let inv = 1. / det;
+            let s = origin - t.p[0];
+            let u = s.dot(h) * inv;
+            if !(-1e-5..=1.00001).contains(&u) {
+                continue;
+            }
+            let q = s.cross(e1);
+            let v = d.dot(q) * inv;
+            if v < -1e-5 || u + v > 1.00001 {
+                continue;
+            }
+            let r = e2.dot(q) * inv;
+            if r > distance && r < 0.5 {
+                distance = r;
+                best = Some((r * r, i, [1. - u - v, u, v]));
+            }
+        }
+        best.map(|v| self.hit(v))
+    }
     pub fn nearest(&self, p: Vec3) -> Hit {
         let mut best = (f32::INFINITY, 0, [1., 0., 0.]);
         self.root.query(p, &self.triangles, &mut best);
@@ -378,5 +431,24 @@ mod tests {
         assert!((w[2] - 0.3).abs() < 1e-6);
         assert_eq!(closest(-Vec3::X, a, b, c), [1., 0., 0.]);
         assert!(closest(Vec3::ONE, a, a, a).iter().all(|v| v.is_finite()));
+    }
+}
+#[cfg(test)]
+mod garment_surface_tests {
+    use super::*;
+    #[test]
+    fn outermost_radial_layer_is_selected_above_a_nearer_underside() {
+        let p = vec![
+            Vec3::new(-0.2, -0.2, 0.05),
+            Vec3::new(0.2, -0.2, 0.05),
+            Vec3::new(0., 0.2, 0.05),
+            Vec3::new(-0.2, -0.2, 0.1),
+            Vec3::new(0.2, -0.2, 0.1),
+            Vec3::new(0., 0.2, 0.1),
+        ];
+        let s = Surface::geometry(&p, &vec![Vec3::Z; 6], &[[0, 1, 2], [3, 4, 5]]).unwrap();
+        assert!((s.nearest(Vec3::new(0., 0., 0.06)).point.z - 0.05).abs() < 1e-6);
+        assert!((s.radial(Vec3::ZERO, Vec3::Z).unwrap().point.z - 0.1).abs() < 1e-6);
+        assert!(Surface::geometry(&p, &[], &[[0, 1, 2]]).is_err());
     }
 }

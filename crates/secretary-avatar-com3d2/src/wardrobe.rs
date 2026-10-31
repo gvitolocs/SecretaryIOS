@@ -18,7 +18,7 @@ use std::{
     path::{Path, PathBuf},
 };
 const VERSION: u32 = 3;
-const PIPELINE_REVISION: u32 = 27;
+const PIPELINE_REVISION: u32 = 30;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum Source {
@@ -633,7 +633,7 @@ impl Library {
                 let out = self
                     .root
                     .join("parts")
-                    .join(format!("{stem}-fit12-{fit_key:016x}-{source_key:016x}.glb"));
+                    .join(format!("{stem}-fit15-{fit_key:016x}-{source_key:016x}.glb"));
                 if !out.is_file() {
                     let source = if *extract {
                         let filtered = self
@@ -645,18 +645,43 @@ impl Library {
                     } else {
                         PathBuf::from(path)
                     };
-                    legacy::retarget_with_fit(
+                    let reference = if *hair {
+                        None
+                    } else {
+                        let signature = hash(&format!(
+                            "{}:{}",
+                            file_stamp(&self.config.canonical)?,
+                            file_stamp(&self.config.animation)?
+                        ));
+                        let pose = self
+                            .root
+                            .join("parts")
+                            .join(format!("reference-standing-{signature:016x}.glb"));
+                        if !pose.is_file() {
+                            pose_asset::standing(
+                                &self.model,
+                                &self.animation,
+                                Path::new(&self.config.canonical),
+                                &pose,
+                                0.,
+                            )?;
+                        }
+                        Some(pose)
+                    };
+                    legacy::retarget_reference(
                         &source,
                         Path::new(&self.config.canonical),
+                        reference.as_deref(),
                         &out,
                         *hair,
                         fit.as_ref(),
+                        item.id == "original-uniform",
                     )?;
                 }
                 let native_dir = self
                     .root
                     .join("native")
-                    .join(format!("{stem}-fit12-{fit_key:016x}-{source_key:016x}-v7"));
+                    .join(format!("{stem}-fit15-{fit_key:016x}-{source_key:016x}-v7"));
                 let manifest = native_dir.join("manifest.json");
                 let pack = if manifest.is_file() {
                     serde_json::from_slice::<Value>(&fs::read(&manifest)?)
@@ -792,7 +817,7 @@ impl Library {
             .collect::<Result<Vec<_>>>()?
             .join(";");
         let key = hash(&format!(
-            "v{VERSION}-native27:{modified}:{}:{profiles}:{:?}:{:?}",
+            "v{VERSION}-native30:{modified}:{}:{profiles}:{:?}:{:?}",
             ids.join(","),
             self.config.loose_surface_items,
             self.config.loose_component_sizes

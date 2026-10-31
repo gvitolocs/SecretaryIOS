@@ -220,6 +220,20 @@ pub fn retarget_with_fit(
     hair: bool,
     profile: Option<&FitProfile>,
 ) -> Result<Value> {
+    retarget_reference(input, canonical, None, output, hair, profile, false)
+}
+/// Fit in an explicit posed reference and encode the result through the inverse
+/// blended target skin. Blending bind-pose fits then posing again introduces
+/// cross terms at multi-weight knees, gloves and the hem.
+pub fn retarget_reference(
+    input: &Path,
+    canonical: &Path,
+    reference: Option<&Path>,
+    output: &Path,
+    hair: bool,
+    profile: Option<&FitProfile>,
+    preserve_shell: bool,
+) -> Result<Value> {
     if let Some(p) = profile {
         p.validate()?;
         if hair {
@@ -230,7 +244,23 @@ pub fn retarget_with_fit(
     let (base, base_data) = glb_io::read(canonical)?;
     let (parents, _, source_world) = scene_frames(&doc)?;
     let (_, _, mut target_world) = scene_frames(&base)?;
+    let reference = match reference {
+        Some(path) => glb_io::read(path)?.0,
+        None => base.clone(),
+    };
+    if reference["nodes"].as_array().map(Vec::len) != base["nodes"].as_array().map(Vec::len)
+        || reference["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(base["nodes"].as_array().unwrap())
+            .any(|(a, b)| a["name"] != b["name"])
+    {
+        return Err(invalid("reference pose must share canonical node order"));
+    }
+    let (_, _, mut reference_world) = scene_frames(&reference)?;
     let source_nodes = doc["nodes"].as_array().unwrap().clone();
+
     let mut target_nodes = base["nodes"].as_array().unwrap().clone();
     let source_names = source_nodes
         .iter()
@@ -245,12 +275,12 @@ pub fn retarget_with_fit(
     let chest_center = ["Mune_L_sub", "Mune_R_sub"]
         .iter()
         .filter_map(|n| target_names.get(*n))
-        .map(|&i| target_world[i].w_axis.y)
+        .map(|&i| reference_world[i].w_axis.y)
         .sum::<f32>()
         / 2.;
     let waist_center = target_names
         .get("Bip01 Spine")
-        .map(|&i| target_world[i].w_axis.y)
+        .map(|&i| reference_world[i].w_axis.y)
         .unwrap_or(chest_center - 0.28);
     let target_joints = base["skins"]
         .as_array()
@@ -288,7 +318,7 @@ pub fn retarget_with_fit(
             let normalized = semantic(name);
             let reference = source_names.get(&normalized).copied().unwrap_or(i);
             let from = rotation.transform_point3(source_world[reference].w_axis.truncate());
-            let to = target_world[t].w_axis.truncate();
+            let to = reference_world[t].w_axis.truncate();
             matrices[i] = if let Some(next) = next(&normalized)
                 .and_then(|n| source_names.get(&n).copied())
                 .filter(|&j| direct[j].is_some())
@@ -297,7 +327,7 @@ pub fn retarget_with_fit(
                     from,
                     rotation.transform_point3(source_world[next].w_axis.truncate()),
                     to,
-                    target_world[direct[next].unwrap()].w_axis.truncate(),
+                    reference_world[direct[next].unwrap()].w_axis.truncate(),
                 ) * rotation
             } else {
                 Mat4::from_translation(to - from) * rotation
@@ -333,12 +363,16 @@ pub fn retarget_with_fit(
                 continue;
             }
             let target = target_nodes.len();
-            let global = matrices[source] * source_world[source];
+            let ancestor = mapped[source].ok_or_else(|| invalid("cloth ancestor"))?;
+            let deformation = reference_world[ancestor] * target_world[ancestor].inverse();
+            let global = deformation.inverse() * matrices[source] * source_world[source];
+
             let (_, rotation, position) = global.to_scale_rotation_translation();
             target_world.push(Mat4::from_rotation_translation(
                 rotation.normalize(),
                 position,
             ));
+            reference_world.push(deformation * target_world[target]);
             target_nodes.push(json!({"name":name}));
             target_names.insert(name.to_owned(), target);
             mapped[source] = Some(target);
@@ -370,14 +404,14 @@ pub fn retarget_with_fit(
     let surface = if hair {
         None
     } else {
-        Some(Surface::body_at_size(&base, &base_data, 0.5)?)
+        Some(Surface::body_at_size(&reference, &base_data, 0.5)?)
     };
     let endpoints = if hair {
         None
     } else {
         Some((
-            Surface::body_at_size(&base, &base_data, 0.)?,
-            Surface::body_at_size(&base, &base_data, 1.)?,
+            Surface::body_at_size(&reference, &base_data, 0.)?,
+            Surface::body_at_size(&reference, &base_data, 1.)?,
         ))
     };
     let mut converted = Vec::new();
@@ -525,94 +559,104 @@ pub fn retarget_with_fit(
                 }
                 let mut delta = Vec3::ZERO;
                 if let Some(surface) = &surface {
-                    let front = if (0.70..1.42).contains(&point.y)
-                        && point.x.abs() < 0.24
-                        && normal.normalize_or_zero().z < -0.2
-                        && point.z < 0.02
-                    {
-                        surface.front(point)
-                    } else {
-                        None
-                    };
-                    let rear = if (0.70..1.18).contains(&point.y)
-                        && point.x.abs() < 0.24
-                        && normal.normalize_or_zero().z > 0.2
-                        && point.z > -0.02
-                    {
-                        surface.back(point)
-                    } else {
-                        None
-                    };
-                    let front = front.filter(|h| h.distance < 0.12);
-                    let fitted_front = front.is_some();
-                    let rear = rear.filter(|h| h.distance < 0.15);
-                    let fitted_rear = rear.is_some();
-                    let hit = if let Some(hit) = front {
-                        point.z = point.z.min(hit.point.z - 0.012);
-                        hit
-                    } else if let Some(hit) = rear {
-                        point.z = point.z.max(hit.point.z + 0.012);
-                        hit
-                    } else {
-                        let initial = surface.nearest(point);
-                        point = clearance(point, normal, &initial);
-                        surface.nearest(point)
-                    };
-                    let close = hit.distance < 0.15;
-                    if close {
-                        delta = hit.delta;
-                        let native_bust = hit
-                            .skin
-                            .iter()
-                            .filter(|(j, _)| {
-                                target_nodes[*j]["name"]
-                                    .as_str()
-                                    .is_some_and(|n| n.starts_with("Mune_"))
-                            })
-                            .map(|(_, w)| w)
-                            .sum::<f32>();
-                        if bust > 0.05 || native_bust > 0.05 || (fitted_rear && hit.distance < 0.07)
-                        {
-                            let mix = if fitted_front || fitted_rear {
-                                1.
-                            } else {
-                                (native_bust.max(bust) / 0.3).min(1.)
-                            };
-                            for w in skinweights.values_mut() {
-                                *w *= 1. - mix;
-                            }
-                            for (j, w) in hit.skin {
-                                *skinweights.entry(j).or_default() += w * mix;
-                            }
-                            fitted += 1;
+                    if preserve_shell {
+                        let hit = surface.nearest(point);
+                        if bust > 0.05 && hit.distance < 0.15 {
+                            delta = hit.delta;
+                            point -= delta * 0.5;
                         }
-                    }
-                    // Calibrate both slider endpoints against the corresponding body,
-                    // rather than extrapolating a closest point sampled only at 50%.
-                    // A large size can expose a different part of the curved surface.
-                    if fitted_front || fitted_rear {
-                        let (low, high) = endpoints.as_ref().unwrap();
-                        let endpoint = |size: f32, surface: &Surface| {
-                            let mut q = point + delta * (size - 0.5);
-                            if let Some(h) = if fitted_front {
-                                surface.front(q)
-                            } else {
-                                surface.back(q)
-                            } {
-                                q.z = if fitted_front {
-                                    q.z.min(h.point.z - 0.012)
-                                } else {
-                                    q.z.max(h.point.z + 0.012)
-                                };
-                            }
-                            q
-                        };
-                        let a = endpoint(0., low);
-                        let b = endpoint(1., high);
-                        point = a;
-                        delta = b - a;
                     } else {
-                        point -= delta * 0.5;
+                        let front = if (0.70..1.42).contains(&point.y)
+                            && point.x.abs() < 0.24
+                            && normal.normalize_or_zero().z < -0.2
+                            && point.z < 0.02
+                        {
+                            surface.front(point)
+                        } else {
+                            None
+                        };
+                        let rear = if (0.70..1.18).contains(&point.y)
+                            && point.x.abs() < 0.24
+                            && normal.normalize_or_zero().z > 0.2
+                            && point.z > -0.02
+                        {
+                            surface.back(point)
+                        } else {
+                            None
+                        };
+                        let front = front.filter(|h| h.distance < 0.12);
+                        let fitted_front = front.is_some();
+                        let rear = rear.filter(|h| h.distance < 0.15);
+                        let fitted_rear = rear.is_some();
+                        let hit = if let Some(hit) = front {
+                            point.z = point.z.min(hit.point.z - 0.012);
+                            hit
+                        } else if let Some(hit) = rear {
+                            point.z = point.z.max(hit.point.z + 0.012);
+                            hit
+                        } else {
+                            let initial = surface.nearest(point);
+                            point = clearance(point, normal, &initial);
+                            surface.nearest(point)
+                        };
+                        let close = hit.distance < 0.15;
+                        if close {
+                            delta = hit.delta;
+                            let native_bust = hit
+                                .skin
+                                .iter()
+                                .filter(|(j, _)| {
+                                    target_nodes[*j]["name"]
+                                        .as_str()
+                                        .is_some_and(|n| n.starts_with("Mune_"))
+                                })
+                                .map(|(_, w)| w)
+                                .sum::<f32>();
+                            if bust > 0.05
+                                || native_bust > 0.05
+                                || (fitted_rear && hit.distance < 0.07)
+                            {
+                                let mix = if fitted_front || fitted_rear {
+                                    1.
+                                } else {
+                                    (native_bust.max(bust) / 0.3).min(1.)
+                                };
+                                for w in skinweights.values_mut() {
+                                    *w *= 1. - mix;
+                                }
+                                for (j, w) in hit.skin {
+                                    *skinweights.entry(j).or_default() += w * mix;
+                                }
+                                fitted += 1;
+                            }
+                        }
+                        // Calibrate both slider endpoints against the corresponding body,
+                        // rather than extrapolating a closest point sampled only at 50%.
+                        // A large size can expose a different part of the curved surface.
+                        if fitted_front || fitted_rear {
+                            let (low, high) = endpoints.as_ref().unwrap();
+                            let endpoint = |size: f32, surface: &Surface| {
+                                let mut q = point + delta * (size - 0.5);
+                                if let Some(h) = if fitted_front {
+                                    surface.front(q)
+                                } else {
+                                    surface.back(q)
+                                } {
+                                    q.z = if fitted_front {
+                                        q.z.min(h.point.z - 0.012)
+                                    } else {
+                                        q.z.max(h.point.z + 0.012)
+                                    };
+                                }
+                                q
+                            };
+                            let a = endpoint(0., low);
+                            let b = endpoint(1., high);
+                            point = a;
+                            delta = b - a;
+                        } else {
+                            point -= delta * 0.5;
+                        }
                     }
                 }
                 let packed = compact_weights(skinweights);
@@ -625,7 +669,15 @@ pub fn retarget_with_fit(
                         as u16;
                     values[k] = *w;
                 }
+                let deformation = packed.iter().fold(Mat4::ZERO, |m, (j, w)| {
+                    m + (reference_world[*j] * target_world[*j].inverse()) * *w
+                });
+                let encoded = encode_reference(point, normal, delta, deformation)?;
+                point = encoded.0;
+                normal = encoded.1;
+                delta = encoded.2;
                 positions.push(point.to_array().to_vec());
+
                 normals.push(normal.normalize_or_zero().to_array().to_vec());
                 indices.push(ids);
                 weights.push(values);
@@ -693,13 +745,35 @@ pub fn retarget_with_fit(
     doc["scene"] = json!(0);
     doc.as_object_mut().unwrap().remove("animations");
     doc["buffers"][0]["byteLength"] = json!(data.len());
-    doc["extras"]["nativeRetarget"] = json!({"version":1,"source":input.file_name().and_then(|n|n.to_str()),"mappedJoints":direct.iter().filter(|j|j.is_some()).count(),"vertices":total,"surfaceFittedVertices":fitted,"unmappedInfluences":unmapped,"canonicalBodyCopied":false,"fitReviewRequired":true});
+    doc["extras"]["nativeRetarget"] = json!({"version":2,"poseAwareSkinEncoding":true,"source":input.file_name().and_then(|n|n.to_str()),"mappedJoints":direct.iter().filter(|j|j.is_some()).count(),"vertices":total,"surfaceFittedVertices":fitted,"unmappedInfluences":unmapped,"canonicalBodyCopied":false,"fitReviewRequired":true});
+    if preserve_shell {
+        crate::garment_fit::uniform(&mut doc, &mut data, &target_world, &reference_world)?;
+    }
     glb_io::write(output, &doc, &data)?;
     Ok(
         json!({"output":output,"vertices":total,"fitted":fitted,"unmapped":unmapped,"meshes":converted.len()}),
     )
 }
 
+fn encode_reference(
+    point: Vec3,
+    normal: Vec3,
+    delta: Vec3,
+    deformation: Mat4,
+) -> Result<(Vec3, Vec3, Vec3)> {
+    if !deformation.is_finite() || deformation.determinant().abs() < 1e-7 {
+        return Err(invalid("singular blended reference skin"));
+    }
+    let inverse = deformation.inverse();
+    Ok((
+        inverse.transform_point3(point),
+        deformation
+            .transpose()
+            .transform_vector3(normal)
+            .normalize_or_zero(),
+        inverse.transform_vector3(delta),
+    ))
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -767,5 +841,42 @@ mod tests {
             clearance(Vec3::new(0., 0.8, -0.1), -Vec3::Z, &h),
             Vec3::new(0., 0.8, -0.1)
         );
+    }
+}
+#[cfg(test)]
+mod reference_tests {
+    use super::*;
+    use glam::Quat;
+    #[test]
+    fn inverse_blended_skin_preserves_reference_surface_normal_and_morph() {
+        let a =
+            Mat4::from_rotation_translation(Quat::from_rotation_x(1.2), Vec3::new(0.2, 0.3, 0.1));
+        let b = Mat4::from_rotation_translation(
+            Quat::from_rotation_y(-0.8),
+            Vec3::new(-0.2, 0.1, -0.1),
+        );
+        let blend = a * 0.7 + b * 0.3;
+        let desired = Vec3::new(0.15, 0.6, 0.3);
+        let normal = Vec3::new(0.2, 0.3, 0.9).normalize();
+        let delta = Vec3::new(0.03, -0.01, 0.02);
+        let (p, n, d) = encode_reference(desired, normal, delta, blend).unwrap();
+        assert!(blend.transform_point3(p).distance(desired) < 1e-6);
+        assert!(blend.transform_point3(p + d).distance(desired + delta) < 1e-6);
+        assert!(
+            blend
+                .inverse()
+                .transpose()
+                .transform_vector3(n)
+                .normalize()
+                .dot(normal)
+                > 0.99999
+        );
+        let naive = a.inverse().transform_point3(desired) * 0.7
+            + b.inverse().transform_point3(desired) * 0.3;
+        assert!(
+            blend.transform_point3(naive).distance(desired) > 0.05,
+            "fixture must expose the old cross-term distortion"
+        );
+        assert!(encode_reference(desired, normal, delta, Mat4::ZERO).is_err());
     }
 }
