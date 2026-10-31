@@ -61,7 +61,23 @@ trigger settings. It lives in Infisical as `lucina/prod#CLAUDE_ROUTINE_LUCINA_TO
   it in memory for 10 minutes.
 - It is registered with the redactor and never logged.
 - `CLAUDE_ROUTINE_LUCINA_TOKEN` in the environment wins over the broker.
-- Without a token, or if the broker refuses, the mailbox still holds the message and one warning is logged.
+- Without a readable token, Lucina takes the second route below.
+
+**Second route: a GitHub `repository_dispatch`.** The routine's webhook trigger
+(`10731b3e-4ade-4bda-bf5e-c625f22b8d43`) listens for this event on `gvitolocs/SecretaryIOS`. lucina-rs runs this
+host's gh, logged in as `gvitolocs` through `~/.config/gh/hosts.yml`; Lucina never reads or logs the credential:
+
+```sh
+gh api -X POST repos/gvitolocs/SecretaryIOS/dispatches -f event_type=lucina-reach -F client_payload[thread]=rt-…
+```
+
+- The payload is the thread id only, so no message text goes to GitHub.
+- The same debounce and limits apply. A timeout is never resent; only a clean 5xx (`HTTP 5…` from gh) is retried,
+  and only once.
+- GitHub returns no session URL. The run only starts if the Claude GitHub app is installed on the repo.
+
+**Fallback.** If neither route works, the mailbox still holds the message: the thread's `detail` says why, and one
+warning is logged.
 
 The thread id is in the payload, so a self-test thread is answered too. `GET /api/secretary/reach/threads` lists
 self-test threads as well; they are removed after a test.
@@ -114,6 +130,8 @@ Over the Lucina MCP, once secretary-server and secretary-mcp carry them: `lucina
 | `LUCINA_REACH_ROUTINE_TOKEN_REF` | `secret://lucina/prod#CLAUDE_ROUTINE_LUCINA_TOKEN` |
 | `LUCINA_REACH_BROKER`, `LUCINA_REACH_BROKER_TOKEN_FILE` | `/usr/local/bin/infisical-broker`, `~/.config/infisical-mcp/svc-lucina-rs.token` |
 | `LUCINA_REACH_ROUTINE_DEBOUNCE_SECS` | 120 |
+| `LUCINA_REACH_ROUTINE_REPO` | unset (no dispatch route); live: `gvitolocs/SecretaryIOS` |
+| `LUCINA_REACH_ROUTINE_EVENT`, `LUCINA_REACH_GH` | `lucina-reach`, `~/.local/bin/gh` |
 
 ## How gbot signs in to Grok Bot
 

@@ -21,7 +21,10 @@
 //!   or an unknown result, only once after a clean 5xx; one fire drains every open thread, so a
 //!   fire within [`RoutineConfig::debounce`] of the last is skipped. The per-routine token comes
 //!   from Infisical through the broker (`lucina/prod#CLAUDE_ROUTINE_LUCINA_TOKEN`), is cached in
-//!   memory, registered with the redactor and never logged; without it the mailbox alone holds.
+//!   memory, registered with the redactor and never logged. Without a readable token Lucina sends
+//!   a GitHub `repository_dispatch` instead (`gh api … dispatches`, this host's gh login), which
+//!   the routine's webhook trigger listens for; its payload is the thread id only. If neither
+//!   works the mailbox alone holds.
 //! - **Grok**: `gbot send <bot> …` to the owner's primary Grok Bot, then the bot's thread is read
 //!   until the reply settles (in the background; the answer arrives as a reply). The Grok Bot app
 //!   0.78 writes no gateway descriptor for gbot, so gbot signs in with the Cursor session token of
@@ -189,7 +192,7 @@ struct StoreFile {
 #[derive(Debug, Clone)]
 pub struct RoutineConfig {
     /// Its Fire URL: `https://api.anthropic.com/v1/claude_code/routines/trig_…/fire`.
-    pub fire_url: String,
+    pub fire_url: Option<String>,
     /// The token's Infisical reference, read through the broker.
     pub token_ref: String,
     /// The token itself, when the environment already holds it (`CLAUDE_ROUTINE_LUCINA_TOKEN`).
@@ -200,6 +203,27 @@ pub struct RoutineConfig {
     /// A fire within this long of the last one is skipped (the routine drains every open thread).
     pub debounce: Duration,
     pub timeout: Duration,
+    /// The second route, when no token is readable: a GitHub `repository_dispatch`.
+    pub dispatch: Option<Dispatch>,
+}
+
+/// A GitHub `repository_dispatch` the routine's webhook trigger listens for.
+#[derive(Debug, Clone)]
+pub struct Dispatch {
+    pub gh_bin: PathBuf,
+    /// `owner/name`.
+    pub repo: String,
+    pub event_type: String,
+}
+
+/// `owner/name` with GitHub's characters only.
+pub fn valid_repo(r: &str) -> bool {
+    let ok = |p: &str| {
+        !p.is_empty()
+            && !p.starts_with('.')
+            && p.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    };
+    matches!(r.split_once('/'), Some((o, n)) if ok(o) && ok(n))
 }
 
 /// A routine Fire URL on the official host, for a `trig_` routine.
@@ -308,10 +332,35 @@ impl ReachConfig {
         if let Some(v) = env_str("LUCINA_REACH_AGENTS_MODEL") {
             c.agents_model = (v != "default").then_some(v);
         }
-        match env_str("LUCINA_REACH_ROUTINE_URL") {
-            Some(u) if valid_fire_url(&u) => {
+        let fire_url = match env_str("LUCINA_REACH_ROUTINE_URL") {
+            Some(u) if valid_fire_url(&u) => Some(u),
+            Some(_) => {
+                tracing::warn!("reach: LUCINA_REACH_ROUTINE_URL is not a routine Fire URL; ignored");
+                None
+            }
+            None => None,
+        };
+        let dispatch = match env_str("LUCINA_REACH_ROUTINE_REPO") {
+            Some(repo) if valid_repo(&repo) => Some(Dispatch {
+                gh_bin: env_str("LUCINA_REACH_GH")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| home().join(".local/bin/gh")),
+                repo,
+                event_type: env_str("LUCINA_REACH_ROUTINE_EVENT")
+                    .filter(|e| e.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')))
+                    .unwrap_or_else(|| "lucina-reach".into()),
+            }),
+            Some(_) => {
+                tracing::warn!("reach: LUCINA_REACH_ROUTINE_REPO is not owner/name; ignored");
+                None
+            }
+            None => None,
+        };
+        match (fire_url, dispatch) {
+            (None, None) => {}
+            (fire_url, dispatch) => {
                 c.routine = Some(RoutineConfig {
-                    fire_url: u,
+                    fire_url,
                     token_ref: env_str("LUCINA_REACH_ROUTINE_TOKEN_REF").unwrap_or_else(|| {
                         "secret://lucina/prod#CLAUDE_ROUTINE_LUCINA_TOKEN".into()
                     }),
@@ -324,10 +373,9 @@ impl ReachConfig {
                         .unwrap_or_else(|| home().join(".config/infisical-mcp/svc-lucina-rs.token")),
                     debounce: Duration::from_secs(env_num("LUCINA_REACH_ROUTINE_DEBOUNCE_SECS", 120)),
                     timeout: Duration::from_secs(20),
+                    dispatch,
                 });
             }
-            Some(_) => tracing::warn!("reach: LUCINA_REACH_ROUTINE_URL is not a routine Fire URL; no routine"),
-            None => {}
         }
         if let Some(v) = env_str("LUCINA_REACH_AGENTS_CWD") {
             c.agents_cwd = v.into();
@@ -887,7 +935,7 @@ impl Reach {
         match self.fire_routine(&t.id).await {
             Fire::Fired(url) => {
                 t.route = "lucina-mailbox+routine".into();
-                t.session_url = Some(url);
+                t.session_url = (!url.is_empty()).then_some(url);
             }
             Fire::Skipped(why) | Fire::Failed(why) => t.detail = Some(clip(&why, 300)),
         }
@@ -980,23 +1028,35 @@ impl Reach {
         if let Err(why) = self.take_fire_slot(&r, now) {
             return Fire::Skipped(why);
         }
-        let token = match self.routine_token(&r).await {
-            Ok(t) => t,
-            Err(why) => {
-                self.give_back_fire_slot(now);
-                if !self.token_warned.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                    tracing::warn!(reason = %why, "reach: no Claude routine token; the mailbox waits for a session");
-                }
-                return Fire::Failed(format!("no routine token: {why}"));
-            }
+        // 1. The API trigger, when its token is readable.
+        let no_token = match &r.fire_url {
+            Some(url) => match self.routine_token(&r).await {
+                Ok(token) => return self.fire_api(&r, url, &token, id).await,
+                Err(why) => format!("no routine token: {why}"),
+            },
+            None => "no routine Fire URL".to_owned(),
         };
+        // 2. A GitHub repository_dispatch.
+        if let Some(d) = &r.dispatch {
+            return self.fire_dispatch(&r, d, id, now).await;
+        }
+        // 3. The mailbox alone.
+        self.give_back_fire_slot(now);
+        if !self.token_warned.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            tracing::warn!(reason = %no_token, "reach: no Claude routine token; the mailbox waits for a session");
+        }
+        Fire::Failed(no_token)
+    }
+
+    /// `POST /fire` with the routine token.
+    async fn fire_api(&self, r: &RoutineConfig, url: &str, token: &str, id: &str) -> Fire {
         let body = json!({"text": json!({"thread": id}).to_string()});
         for attempt in 1..=2 {
             let sent = tokio::time::timeout(
                 r.timeout,
                 self.http
-                    .post(&r.fire_url)
-                    .bearer_auth(&token)
+                    .post(url)
+                    .bearer_auth(token)
                     .header("anthropic-version", "2023-06-01")
                     .header("anthropic-beta", "experimental-cc-routine-2026-04-01")
                     .json(&body)
@@ -1031,6 +1091,53 @@ impl Reach {
             return Fire::Failed(why);
         }
         Fire::Failed("routine fire failed twice (5xx)".into())
+    }
+
+    /// `gh api -X POST repos/<repo>/dispatches` with the thread id only (no message text goes to
+    /// GitHub). Never resent after a timeout; once after a clean 5xx (GitHub did not take it).
+    async fn fire_dispatch(&self, r: &RoutineConfig, d: &Dispatch, id: &str, slot: DateTime<Utc>) -> Fire {
+        let path = format!("repos/{}/dispatches", d.repo);
+        let event = format!("event_type={}", d.event_type);
+        let thread = format!("client_payload[thread]={id}");
+        for attempt in 1..=2 {
+            let out = tokio::time::timeout(
+                r.timeout,
+                tokio::process::Command::new(&d.gh_bin)
+                    .args(["api", "-X", "POST", &path, "-f", &event, "-F", &thread])
+                    .env("GH_PROMPT_DISABLED", "1")
+                    .env("NO_COLOR", "1")
+                    .stdin(std::process::Stdio::null())
+                    .kill_on_drop(true)
+                    .output(),
+            )
+            .await;
+            let why = match out {
+                Ok(Ok(o)) if o.status.success() => {
+                    tracing::info!(thread = id, repo = %d.repo, "reach: Claude routine started (repository_dispatch)");
+                    return Fire::Fired(String::new());
+                }
+                Ok(Ok(o)) => {
+                    let err = clip(String::from_utf8_lossy(&o.stderr).trim(), 200);
+                    // gh prints "HTTP 502: …" for a server error: GitHub did not take it.
+                    if attempt == 1 && err.contains("HTTP 5") {
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        continue;
+                    }
+                    format!("gh dispatch failed: {err}")
+                }
+                Ok(Err(e)) => {
+                    self.give_back_fire_slot(slot);
+                    format!("gh did not run: {e}")
+                }
+                // The dispatch may have gone out: never resent.
+                Err(_) => "gh dispatch: unknown result (timed out)".into(),
+            };
+            if !self.token_warned.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                tracing::warn!(thread = id, reason = %why, "reach: Claude routine not started; the mailbox waits for a session");
+            }
+            return Fire::Failed(why);
+        }
+        Fire::Failed("gh dispatch failed twice (5xx)".into())
     }
 
     // ---------------------------------------------------------------- Grok
@@ -1979,15 +2086,108 @@ mod tests {
     fn routine_reach(dir: &Path, url: &str, token: Option<&str>) -> Reach {
         let mut cfg = ReachConfig::new(dir);
         cfg.routine = Some(RoutineConfig {
-            fire_url: url.into(),
+            fire_url: Some(url.into()),
             token_ref: "secret://lucina/prod#CLAUDE_ROUTINE_LUCINA_TOKEN".into(),
             token: token.map(str::to_owned),
             broker_bin: dir.join("no-broker"),
             broker_token_file: dir.join("no.token"),
             debounce: Duration::from_secs(120),
             timeout: Duration::from_secs(5),
+            dispatch: None,
         });
         Reach::new(cfg)
+    }
+
+    /// A fake gh that logs its arguments and exits with the codes in `codes` (one per call).
+    fn fake_gh(dir: &Path, codes: &[(i32, &str)]) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let script = dir.join("gh");
+        let mut body = String::from(
+            "#!/bin/sh\nn=$(cat \"$0.n\" 2>/dev/null || echo 0); n=$((n+1)); echo $n > \"$0.n\"\necho \"$@\" >> \"$0.log\"\ncase $n in\n",
+        );
+        for (i, (code, err)) in codes.iter().enumerate() {
+            body.push_str(&format!("{}) echo '{err}' >&2; exit {code};;\n", i + 1));
+        }
+        body.push_str("esac\nexit 0\n");
+        std::fs::write(&script, body).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        script
+    }
+
+    /// No readable token (the broker is missing), so the dispatch route is used.
+    fn dispatch_reach(dir: &Path, gh: PathBuf) -> Reach {
+        let mut r = routine_reach(dir, "https://api.anthropic.com/v1/claude_code/routines/trig_01X/fire", None);
+        r.cfg.routine.as_mut().unwrap().dispatch = Some(Dispatch {
+            gh_bin: gh,
+            repo: "gvitolocs/SecretaryIOS".into(),
+            event_type: "lucina-reach".into(),
+        });
+        r
+    }
+
+    #[test]
+    fn repos() {
+        assert!(valid_repo("gvitolocs/SecretaryIOS"));
+        assert!(!valid_repo("gvitolocs"));
+        assert!(!valid_repo("a/b/c"));
+        assert!(!valid_repo("../x"));
+        assert!(!valid_repo("a/b;rm"));
+    }
+
+    #[tokio::test]
+    async fn without_a_token_the_routine_is_dispatched_with_the_thread_id_only() {
+        let d = tempfile::tempdir().unwrap();
+        let gh = fake_gh(d.path(), &[(0, "")]);
+        let r = dispatch_reach(d.path(), gh.clone());
+        let t = r
+            .open(Target::Claude, "message", "private subject", "private text", "web", "s1", true, "lucina-mailbox")
+            .unwrap();
+        let sent = r.send_claude(t).await;
+        assert_eq!(sent.thread.route, "lucina-mailbox+routine");
+        assert_eq!(sent.thread.session_url, None);
+        let log = std::fs::read_to_string(gh.with_extension("log")).unwrap();
+        assert_eq!(
+            log.trim(),
+            format!(
+                "api -X POST repos/gvitolocs/SecretaryIOS/dispatches -f event_type=lucina-reach -F client_payload[thread]={}",
+                sent.thread.id
+            )
+        );
+        assert!(!log.contains("private"));
+        let t2 = r.open(Target::Claude, "message", "", "again", "web", "s1", true, "lucina-mailbox").unwrap();
+        match r.fire_routine(&t2.id).await {
+            Fire::Skipped(why) => assert!(why.contains("drains"), "{why}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_dispatch_5xx_is_retried_once_other_failures_never() {
+        let d = tempfile::tempdir().unwrap();
+        let gh = fake_gh(d.path(), &[(1, "HTTP 502: Bad Gateway"), (1, "HTTP 503: Service Unavailable")]);
+        let r = dispatch_reach(d.path(), gh.clone());
+        assert!(matches!(r.fire_routine("rt-0123456789ab").await, Fire::Failed(_)));
+        assert_eq!(std::fs::read_to_string(gh.with_extension("log")).unwrap().lines().count(), 2);
+
+        let d2 = tempfile::tempdir().unwrap();
+        let gh2 = fake_gh(d2.path(), &[(1, "HTTP 404: Not Found")]);
+        let r2 = dispatch_reach(d2.path(), gh2.clone());
+        match r2.fire_routine("rt-0123456789ab").await {
+            Fire::Failed(why) => assert!(why.contains("404"), "{why}"),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(std::fs::read_to_string(gh2.with_extension("log")).unwrap().lines().count(), 1);
+    }
+
+    #[tokio::test]
+    async fn no_token_and_no_gh_keeps_the_mailbox_and_spends_no_slot() {
+        let d = tempfile::tempdir().unwrap();
+        let r = dispatch_reach(d.path(), d.path().join("no-gh"));
+        let t = r.open(Target::Claude, "message", "s", "hi", "web", "s", true, "lucina-mailbox").unwrap();
+        let sent = r.send_claude(t).await;
+        assert_eq!((sent.thread.route.as_str(), sent.thread.status.as_str()), ("lucina-mailbox", "queued"));
+        assert!(sent.thread.detail.unwrap().contains("gh did not run"));
+        assert!(r.read().fires.is_empty());
     }
 
     #[tokio::test]
