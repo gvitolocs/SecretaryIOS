@@ -37,4 +37,7 @@ enum PluginScreenshotHooks {
     static var opensFirstHighlight: Bool { value("SecretaryInstagramHighlight") == "first" }
     /// `-SecretaryPixivOpen first`: the first work of the list opens once it is in.
     static var opensFirstPixivWork: Bool { value("SecretaryPixivOpen") == "first" }
+    /// `-SecretaryComputerFullScreen page`: once the stream is live, click Cua's own full-screen button (the path the
+    /// owner taps); `page-twice` clicks it again 20 s later (back out). Watch-only: nothing reaches her desktop.
+    static var computerFullScreen: String? { value("SecretaryComputerFullScreen") }
 }

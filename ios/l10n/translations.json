@@ -1506,5 +1506,7 @@
   "Rankings, search and bookmarks": ["Classifiche, ricerca e segnalibri", "Ranglister, søgning og bogmærker"],
   "Browse and read": ["Sfoglia e leggi", "Gennemse og læs"],
   "Show adult plugins": ["Mostra plugin per adulti", "Vis plugins for voksne"],
-  "Watched accounts": ["Account osservati", "Fulgte konti"]
+  "Watched accounts": ["Account osservati", "Fulgte konti"],
+  "Full screen": ["Schermo intero", "Fuld skærm"],
+  "Exit full screen": ["Esci da schermo intero", "Afslut fuld skærm"]
 }

@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Screenshots of the Calendar, Instagram, Pixiv and NClient screens on the iPhone, against the live server:
+# Screenshots of the Calendar, Instagram, Pixiv, NClient and Computer (full screen) screens on the iPhone, against the live server:
 #   ios/scripts/plugin-shots.sh <Secretary.app> <out dir>
 # Build the app as Release with the SCREENSHOTS condition (it reads -SecretaryOpenRoute and the plugin hooks):
 #   xcodebuild ... -configuration Release 'SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) SCREENSHOTS' build
@@ -53,6 +53,14 @@ fi
 if wanted nclient; then
   launch -SecretaryOpenRoute /nclient
   sleep 10; shot nclient-1-browse
+fi
+if wanted computer; then
+  # Watch-only: Cua's full-screen button is clicked by the page hook 3 s after the stream is live, then again 20 s later.
+  launch -SecretaryOpenRoute /computer
+  sleep 15; shot computer-1-page
+  launch -SecretaryOpenRoute /computer -SecretaryComputerFullScreen page-twice
+  sleep 16; shot computer-2-fullscreen
+  sleep 22; shot computer-3-back
 fi
 if wanted plugins; then
   launch -SecretaryInitialTab plugins
