@@ -63,7 +63,10 @@ function DialogBody(props: { id: string; onClose: () => void }) {
     };
     document.addEventListener("keydown", onKey);
     onCleanup(() => document.removeEventListener("keydown", onKey));
-    scrim?.querySelector<HTMLElement>(readOnly() ? ".kp-close-btn" : n().content || n().items ? ".kp-rich, .kp-item-text" : ".kp-title-input")?.focus({ preventScroll: true });
+    // Focus after the first frame: focusing forces a layout, and the dialog should be on screen before that.
+    const target = readOnly() ? ".kp-close-btn" : n().content || n().items ? ".kp-rich, .kp-item-text" : ".kp-title-input";
+    const frame = requestAnimationFrame(() => scrim?.querySelector<HTMLElement>(target)?.focus({ preventScroll: true }));
+    onCleanup(() => cancelAnimationFrame(frame));
   });
 
   function toggleCheckboxes() {

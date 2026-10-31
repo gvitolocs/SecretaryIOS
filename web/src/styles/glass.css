@@ -1,5 +1,5 @@
 /* Frosted glass for the bars that sit over scrolling content (owner, 2026-10-28: "the new Android blur"): the phone
- * tab bar, the composer and Keep's note editor. Colours come from design/tokens.json (--lu-glass*); the blur is the
+ * tab bar and the composer. Colours come from design/tokens.json (--lu-glass*); the blur is the
  * tab bar's 24 px, saturated 1.4. Dense cards and lists stay solid: they need a readable background.
  * Popovers, menus, sheets and dialogs are not glass any more: through them the page behind competed with their text
  * (owner, 2026-10-30, on the notifications panel). They are opaque, over a dimmed scrim (styles/ui.css).
@@ -38,7 +38,7 @@
 
 /* The material: solid first, glass where the browser can blur. */
 .glass,
-:root:root :is(.tabbar, .composer-input, .kp-dialog) {
+:root:root :is(.tabbar, .composer-input) {
   border: 1px solid var(--glass-border);
   background: var(--glass-fallback);
   box-shadow:
@@ -48,7 +48,7 @@
 
 @supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
   .glass,
-  :root:root :is(.tabbar, .composer-input, .kp-dialog) {
+  :root:root :is(.tabbar, .composer-input) {
     background: var(--glass-bg);
     -webkit-backdrop-filter: var(--glass-blur);
     backdrop-filter: var(--glass-blur);
@@ -62,15 +62,6 @@
 /* The composer is a glass pill, like the Android search bar. */
 :root:root .composer-input {
   border-radius: var(--glass-radius);
-}
-
-/* Keep's note editor keeps the note's colour, as a tint on the glass. */
-@supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
-  :root:root .kp-dialog {
-    background:
-      linear-gradient(color-mix(in srgb, var(--kp-card-bg, transparent) 70%, transparent), color-mix(in srgb, var(--kp-card-bg, transparent) 70%, transparent)),
-      var(--glass-bg);
-  }
 }
 
 /* Over the live desktop or a playing video nothing blurs (it would re-blur every frame): the same look, solid. */
@@ -93,7 +84,7 @@
 
 @media (prefers-reduced-transparency: reduce) {
   .glass,
-  :root:root :is(.tabbar, .composer-input, .kp-dialog) {
+  :root:root :is(.tabbar, .composer-input) {
     background: var(--glass-fallback);
     -webkit-backdrop-filter: none;
     backdrop-filter: none;

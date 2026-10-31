@@ -1,4 +1,4 @@
-import { createMemo, createSignal, For, onCleanup, onMount, Show, type JSX } from "solid-js";
+import { createMemo, createSignal, For, onCleanup, onMount, Show, untrack, type JSX } from "solid-js";
 import { gridMetrics, masonry } from "../../lib/keepLayout";
 
 /**
@@ -123,8 +123,13 @@ export function Masonry<T extends { id: string }>(props: {
                   props.onDrop?.(from, item.id);
                 }}
               >
-                {props.children(item, {
-                  draggable: !!props.canDrag,
+                {/* Rendered once per card: a signal read here (canDrag, the view behind it) must not rebuild every
+                    card, which made opening and closing a note take half a second on 400 notes (2026-10-31). */}
+                {untrack(() =>
+                  props.children(item, {
+                  get draggable() {
+                    return !!props.canDrag;
+                  },
                   onDragStart: (e) => {
                     setDragId(item.id);
                     if (e.dataTransfer) {
@@ -136,7 +141,8 @@ export function Masonry<T extends { id: string }>(props: {
                     setDragId(null);
                     setOverId(null);
                   },
-                })}
+                  }),
+                )}
               </div>
             );
           }}
