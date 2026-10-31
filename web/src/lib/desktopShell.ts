@@ -29,8 +29,8 @@ export interface SecretaryShell {
   hideCode?(): void;
   /** Switch the desktop rail to a view. */
   show?(view: ShellView): void;
-  /** Put a picture (a data: URL) on the Mac's clipboard, when the page's own clipboard is refused. */
-  copyImage?(dataUrl: string): Promise<boolean>;
+  /** Put a picture on the Mac's clipboard (a data: URL, or her picture's address), when the page's own clipboard refuses. */
+  copyImage?(source: string): Promise<boolean>;
   /** Make the Mac forget its device token (the web app signs out too). */
   signOut?(): void | Promise<void>;
   /** "Show adult plugins" changed on this device: the rail shows or hides NClient at once. */

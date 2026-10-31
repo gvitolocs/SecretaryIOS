@@ -184,7 +184,15 @@ function StackBadge() {
 function Tile(props: { item: IgItem; label: string; onOpen: () => void }) {
   const src = () => props.item.thumbUrl ?? (props.item.kind === "image" ? props.item.url : null);
   return (
-    <button type="button" class="ig-tile" data-kind={props.item.kind} aria-label={props.label} onClick={props.onOpen}>
+    <button
+      type="button"
+      class="ig-tile"
+      data-kind={props.item.kind}
+      data-media-src={props.item.kind === "image" ? props.item.url : undefined}
+      data-media-link={props.item.permalink}
+      aria-label={props.label}
+      onClick={props.onOpen}
+    >
       <Show when={src()} fallback={<span class="ig-tile__blank" />}>
         {(url) => <img src={url()} alt="" loading="lazy" referrerpolicy="no-referrer" />}
       </Show>

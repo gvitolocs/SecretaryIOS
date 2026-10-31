@@ -70,7 +70,8 @@
     .sh-sheet,
     .trd-menu-pop,
     .cm-menu,
-    .cm-sheet
+    .cm-sheet,
+    .mm-toast
   ) {
   border: 1px solid var(--ui-raised-border);
   background: var(--ui-raised);

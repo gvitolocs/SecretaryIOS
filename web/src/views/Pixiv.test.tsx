@@ -356,6 +356,22 @@ describe("Pixiv", () => {
       expect(within(dialog).getByText("1 / 3")).toBeInTheDocument();
     });
 
+    it("leaves a right-button drag to the picture's menu: it turns no page", async () => {
+      const { dialog } = await openWork();
+      const stage = dialog.querySelector(".px-stage") as HTMLElement;
+      expect(stage.dataset.mediaLink).toBe("https://www.pixiv.net/artworks/11");
+      const pointer = (type: string, x: number, button: number) =>
+        fireEvent(stage, Object.assign(new Event(type, { bubbles: true }), { pointerId: 1, pointerType: "mouse", button, clientX: x, clientY: 100 }));
+      pointer("pointerdown", 300, 2);
+      pointer("pointermove", 150, 2);
+      pointer("pointerup", 150, 2);
+      expect(within(dialog).getByText("1 / 3")).toBeInTheDocument();
+      pointer("pointerdown", 300, 0);
+      pointer("pointermove", 150, 0);
+      pointer("pointerup", 150, 0);
+      expect(within(dialog).getByText("2 / 3")).toBeInTheDocument();
+    });
+
     it("preloads the next page", async () => {
       const loaded: string[] = [];
       const Real = globalThis.Image;

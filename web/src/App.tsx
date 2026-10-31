@@ -5,6 +5,7 @@ import { t } from "./i18n";
 import { checkSession, session } from "./state/session";
 import Login from "./views/Login";
 import Shell from "./views/Shell";
+import { MediaMenuHost } from "./components/MediaMenu";
 
 /** Router root: gates every route behind the session. */
 export default function App(props: RouteSectionProps) {
@@ -40,6 +41,7 @@ export default function App(props: RouteSectionProps) {
       </Match>
       <Match when={status() === "authed" || (status() === "loading" && chat.messages.length > 0)}>
         <Shell>{props.children}</Shell>
+        <MediaMenuHost />
       </Match>
     </Switch>
   );

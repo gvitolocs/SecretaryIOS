@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GalleryItem } from "../api/gallery";
 import { deferred } from "../test/fetch";
-import { copyPicture, pictureFile, pictureUrl } from "./copyImage";
+import { copyFromUrl, copyPicture, pictureFile, pictureUrl } from "./copyImage";
 
 const photo = (over: Partial<GalleryItem> = {}): GalleryItem =>
   ({
@@ -58,6 +58,16 @@ describe("copyImage", () => {
     window.secretaryShell = { showCode() {}, copyImage } as unknown as NonNullable<Window["secretaryShell"]>;
     expect(await copyPicture(photo({ mime: "image/png" }))).toBe(true);
     expect(copyImage.mock.calls[0]![0]).toMatch(/^data:image\/png;base64,/);
+  });
+
+  it("hands the Mac app the picture's address when the page cannot load it (Pixiv and Instagram pictures from elsewhere)", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("Failed to fetch"); }));
+    vi.stubGlobal("ClipboardItem", FakeClipboardItem);
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { write: vi.fn(async (items: FakeClipboardItem[]) => { await items[0]!.items["image/png"]; }) } });
+    const copyImage = vi.fn(async (_source: string) => true);
+    window.secretaryShell = { showCode() {}, copyImage } as unknown as NonNullable<Window["secretaryShell"]>;
+    expect(await copyFromUrl("/v1/pixiv/img/7.jpg")).toBe(true);
+    expect(copyImage).toHaveBeenCalledWith("http://localhost:3000/v1/pixiv/img/7.jpg");
   });
 
   it("says false when nothing can take the picture", async () => {

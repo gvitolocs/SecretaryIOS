@@ -64,6 +64,11 @@ export function parseStatus(v: unknown): PixivStatus {
     account: { session: a.session === "ok" || a.session === "expired" ? a.session : "none", premium: nullableBool(a.premium), r18: nullableBool(a.r18) } };
 }
 
+/** The work's page on pixiv.net (the media menu's Copy link). */
+export function pixivWorkUrl(id: string): string {
+  return `https://www.pixiv.net/artworks/${encodeURIComponent(id)}`;
+}
+
 export interface PixivItem {
   id: string;
   title: string;

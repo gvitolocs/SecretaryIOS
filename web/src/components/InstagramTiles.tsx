@@ -183,6 +183,8 @@ export default function InstagramTiles(props: {
                         class="ig-tile ig-hl__tile"
                         data-index={i()}
                         data-kind={slide.kind}
+                        data-media-src={slide.kind === "video" ? undefined : slide.url}
+                        data-media-link={slide.item.permalink}
                         aria-label={[slide.kind === "video" ? t("instagram.video") : t("instagram.photo"), when()].filter(Boolean).join(", ")}
                         onClick={() => props.onOpen(i())}
                       >

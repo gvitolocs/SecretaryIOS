@@ -73,7 +73,11 @@ function dataUrl(blob: Blob): Promise<string> {
  */
 export async function copyPicture(item: GalleryItem): Promise<boolean> {
   const url = pictureUrl(item);
-  if (!url) return false;
+  return url ? copyFromUrl(url) : false;
+}
+
+/** Copy image for any picture by URL (the Gallery's, Pixiv's, Instagram's ...): see copyPicture. */
+export async function copyFromUrl(url: string): Promise<boolean> {
   const png = fetchPicture(url).then(toPng);
   const clip = typeof navigator !== "undefined" ? navigator.clipboard : undefined;
   if (clip?.write && typeof ClipboardItem !== "undefined") {
@@ -84,22 +88,32 @@ export async function copyPicture(item: GalleryItem): Promise<boolean> {
       // Denied or unsupported here: try the app's clipboard below.
     }
   }
+  // Secretary Code puts it on the Mac's clipboard itself: the picture as a data URL, or (when the page could not load
+  // it) the picture's address, which the app loads with her session.
   const shell = desktopShell();
   if (!shell?.copyImage) return false;
   try {
     return await shell.copyImage(await dataUrl(await png));
   } catch {
-    return false;
+    try {
+      return await shell.copyImage(new URL(url, location.href).href);
+    } catch {
+      return false;
+    }
   }
 }
 
 /** The item's picture as a File (Share's file, the chat attachment for "Ask Lucina"). */
 export async function pictureFile(item: GalleryItem): Promise<File | null> {
   const url = pictureUrl(item);
-  if (!url) return null;
+  return url ? fileFromUrl(url, item.origin.filename ?? item.title ?? item.id) : null;
+}
+
+/** Any picture by URL as a File named `name` (its extension follows the picture's type). */
+export async function fileFromUrl(url: string, name: string): Promise<File | null> {
   const blob = await fetchPicture(url);
   const type = blob.type || "image/jpeg";
   const ext = type === "image/png" ? "png" : type === "image/webp" ? "webp" : type === "image/gif" ? "gif" : "jpg";
-  const base = (item.origin.filename ?? item.title ?? item.id).replace(/\.[A-Za-z0-9]+$/, "") || item.id;
+  const base = name.replace(/\.[A-Za-z0-9]+$/, "") || "picture";
   return new File([blob], `${base}.${ext}`, { type });
 }

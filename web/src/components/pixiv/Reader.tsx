@@ -1,5 +1,5 @@
 import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
-import { isAdultOff, pixivApi, type PixivIllust, type PixivItem } from "../../api/pixiv";
+import { isAdultOff, pixivApi, pixivWorkUrl, type PixivIllust, type PixivItem } from "../../api/pixiv";
 import { t } from "../../i18n";
 import { showAdult } from "../../lib/adult";
 import { createCached } from "../../lib/swr";
@@ -214,6 +214,8 @@ export function Reader(props: ReaderProps) {
   };
 
   function down(e: PointerEvent) {
+    // Only the main button pans; a right-click is the picture's menu (components/MediaMenu).
+    if (e.pointerType === "mouse" && e.button !== 0) return;
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     try {
       (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
@@ -358,6 +360,7 @@ export function Reader(props: ReaderProps) {
           ref={stage}
           class="px-stage"
           classList={{ "px-stage--zoomed": canPan() }}
+          data-media-link={pixivWorkUrl(props.id)}
           onPointerDown={down}
           onPointerMove={move}
           onPointerUp={up}

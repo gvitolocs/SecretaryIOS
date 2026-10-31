@@ -1,6 +1,6 @@
 import { A, useNavigate, useParams } from "@solidjs/router";
 import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
-import { pixivApi, RANKING_MODES, RANKING_MODES_R18, type PixivContent, type PixivItem, type RankingMode, type SearchOrder, type SearchType } from "../api/pixiv";
+import { pixivApi, pixivWorkUrl, RANKING_MODES, RANKING_MODES_R18, type PixivContent, type PixivItem, type RankingMode, type SearchOrder, type SearchType } from "../api/pixiv";
 import { BackIcon, BookmarkIcon, GearIcon, SearchIcon } from "../components/Icons";
 import { Button, Card as PageCard, EmptyState, ErrorState, Page, PageGrid, PageHeader, SectionNav, useWide, type SectionNavItem } from "../components/page";
 import { Reader } from "../components/pixiv/Reader";
@@ -48,7 +48,7 @@ export function tierLabel(n: number): string {
 
 function Card(props: { item: PixivItem; onOpen: (item: PixivItem) => void }) {
   return (
-    <button type="button" class="px-card" data-work={props.item.id} aria-label={t("pixiv.openWork", { title: props.item.title, author: props.item.author })} onClick={() => props.onOpen(props.item)}>
+    <button type="button" class="px-card" data-work={props.item.id} data-media-link={pixivWorkUrl(props.item.id)} data-media-name={props.item.title || undefined} aria-label={t("pixiv.openWork", { title: props.item.title, author: props.item.author })} onClick={() => props.onOpen(props.item)}>
       <span class="px-card__thumb">
         <Show when={props.item.thumbUrl}>
           <img src={props.item.thumbUrl} alt="" loading="lazy" decoding="async" draggable={false} />
