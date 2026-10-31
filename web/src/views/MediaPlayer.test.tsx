@@ -64,6 +64,14 @@ describe("the player's full screen", () => {
     expect(mediaElement().controls).toBe(true);
   });
 
+  it("routes the video element's own full screen (or its refusal) into the full tab", () => {
+    const { container } = render(() => <Player />);
+    const root = container.querySelector(".media-player") as HTMLElement;
+    fireEvent(mediaElement(), new Event("fullscreenerror", { bubbles: true }));
+    expect(root.classList.contains("media-player--full")).toBe(true);
+    expect(setFocusMode).toHaveBeenLastCalledWith(true);
+  });
+
   it("ignores F while typing in a field", () => {
     const { container } = render(() => (
       <>

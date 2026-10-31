@@ -224,7 +224,25 @@ export function Player() {
   });
   onMount(() => {
     // Our full screen replaces the element's own (macOS full screen of the whole window in Secretary Code).
-    mediaElement().setAttribute("controlslist", "nofullscreen");
+    const v = mediaElement();
+    v.setAttribute("controlslist", "nofullscreen");
+    v.disablePictureInPicture = true;
+    // Where the element's own button still shows (owner, 2026-10-31: "full screen doesn't do anything" in the Mac app,
+    // whose web view ignores element full screen): whatever puts the video itself into full screen ends up in ours.
+    const native = () => {
+      if (document.fullscreenElement !== v) return;
+      void document.exitFullscreen().catch(() => undefined);
+      enterFull();
+    };
+    const blocked = (e: Event) => {
+      if (e.target === v) enterFull();
+    };
+    document.addEventListener("fullscreenchange", native);
+    document.addEventListener("fullscreenerror", blocked);
+    onCleanup(() => {
+      document.removeEventListener("fullscreenchange", native);
+      document.removeEventListener("fullscreenerror", blocked);
+    });
     // The shell leaving focus mode by itself (its Esc, Exit focus, another view) ends ours too.
     onCleanup(onFocusModeChange((on) => !on && full() && leave()));
   });
