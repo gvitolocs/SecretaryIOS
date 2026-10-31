@@ -101,13 +101,13 @@ fn delegation_cards(h: &H) -> Vec<Value> {
 }
 
 #[tokio::test]
-async fn chiedi_a_grok_runs_on_the_json_planner_path_with_a_card() {
+async fn delega_a_grok_runs_on_the_json_planner_path_with_a_card() {
     let w = world(vec![]).await;
     let secret = "Zx8Qw2Er4Ty6Ui8Op0As2Df4Gh6Jk8Lz";
     lucina_secrets::redactor().register("DELEGATION_IT_SECRET", secret);
     let d =
         w.h.chat(&format!(
-            "chiedi a Grok le ultime notizie su Rust (token {secret})"
+            "delega a Grok le ultime notizie su Rust (token {secret})"
         ))
         .await;
     assert_eq!(d["action"], "delegate", "{d}");
@@ -169,7 +169,7 @@ async fn chiedi_a_grok_runs_on_the_json_planner_path_with_a_card() {
 async fn claude_and_chatgpt_run_through_their_cli() {
     let w = world(vec![]).await;
     let d =
-        w.h.chat("chiedi a Claude di analizzare i pro e contro di SQLite per un'app personale")
+        w.h.chat("delega a Claude di analizzare i pro e contro di SQLite per un'app personale")
             .await;
     assert_eq!(d["action"], "delegate");
     let stdin = std::fs::read_to_string(w.h.dir.path().join("claude-stdin.txt")).unwrap();
@@ -249,7 +249,7 @@ async fn the_owner_switches_grok_off_and_on() {
     let d = w.h.chat("non usare Grok").await;
     assert_eq!(d["action"], "delegation_settings");
     assert!(d["reply"].as_str().unwrap().contains("non uso più Grok"));
-    let d = w.h.chat("chiedi a Grok le ultime notizie su Rust").await;
+    let d = w.h.chat("delega a Grok le ultime notizie su Rust").await;
     assert!(
         d["reply"].as_str().unwrap().contains("non usare Grok"),
         "{d}"
@@ -257,7 +257,7 @@ async fn the_owner_switches_grok_off_and_on() {
     assert!(w.xai.received_requests().await.unwrap().is_empty());
     let d = w.h.chat("puoi usare di nuovo Grok").await;
     assert!(d["reply"].as_str().unwrap().contains("di nuovo usare Grok"));
-    w.h.chat("chiedi a Grok le ultime notizie su Rust").await;
+    w.h.chat("delega a Grok le ultime notizie su Rust").await;
     assert_eq!(w.xai.received_requests().await.unwrap().len(), 1);
     // persisted
     let state =

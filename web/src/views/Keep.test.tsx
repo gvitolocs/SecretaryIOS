@@ -457,6 +457,20 @@ describe("Keep: layout controls", () => {
     expect(await screen.findByRole("dialog", { name: "Active recall" })).toBeInTheDocument();
   });
 
+  it("keeps the grid's cards while a note opens and closes (no rebuild of every card)", async () => {
+    server();
+    renderKeep();
+    await screen.findByText("Revision plan", { selector: ".kp-card-title" });
+    const before = card("Groceries");
+    fireEvent.click(card("Active recall"));
+    expect(await screen.findByRole("dialog", { name: "Active recall" })).toBeInTheDocument();
+    expect(card("Groceries")).toBe(before);
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Active recall" })).toBeNull());
+    expect(card("Groceries")).toBe(before);
+    expect(before.isConnected).toBe(true);
+  });
+
   it("opens the shared context menu on a card, and its actions work", async () => {
     server();
     renderKeep();

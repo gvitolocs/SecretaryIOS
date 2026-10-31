@@ -17,7 +17,9 @@
   --ui-raised: #151c33;
   --ui-raised-border: #8c9fce40;
   --ui-scrim: rgb(5 7 20 / 0.62);
-  --ui-scrim-blur: blur(3px);
+  /* No blur: blurring the page behind a sheet re-rasterises everything under it (a 400-note Keep grid took
+     hundreds of ms per frame in Secretary Code, 2026-10-31). The dim alone sets the surface apart. */
+  --ui-scrim-blur: none;
   --ui-shadow-pop: 0 24px 64px rgb(0 0 0 / 0.5), 0 2px 8px rgb(0 0 0 / 0.3);
   --ui-text: #f0f0f2;
   --ui-muted: #a9afb9;

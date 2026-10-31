@@ -59,6 +59,10 @@ struct MainTabs: View {
         .modifier(OpenPlaceHost())
         // A maps link (Apple Maps, Google Maps) tapped in the chat opens on Lucina's map too.
         .environment(\.openURL, OpenURLAction { url in
+            if let link = CalendarLink.parse(url.absoluteString) {
+                app.openCalendar(link)
+                return .handled
+            }
             guard let place = PlaceLinks.place(fromMapsLink: url) else { return .systemAction }
             app.showPlace(place)
             return .handled

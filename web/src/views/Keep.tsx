@@ -20,7 +20,7 @@ import { GridViewIcon, ListViewIcon, RefreshIcon, SettingsIcon } from "../compon
 import { moveItem } from "../components/keep/ChecklistEditor";
 import { t } from "../i18n";
 import { positionBetween, searchActive, searchNotes, splitPinned, viewNotes, emptySearch, type KeepView, type SearchState } from "../lib/keepFilter";
-import { keepHref, noteHref, parseKeepPath } from "../lib/keepRoute";
+import { keepHref, noteHref, parseKeepPath, sameView } from "../lib/keepRoute";
 import { keep, startAutoSync } from "../state/keep";
 import { clearSelection, listMode, search, searchOpen, selection, setDrawerOpen, setListMode, setSearch, setSearchOpen } from "../state/keepUi";
 import "../styles/keep.css";
@@ -55,7 +55,8 @@ export default function KeepView() {
   const [confirmEmpty, setConfirmEmpty] = createSignal(false);
 
   const route = createMemo(() => parseKeepPath(location.pathname, location.search));
-  const view = (): KeepView => route().view;
+  // Same view, same object: opening a note (/keep/note/<id>) must not look like a new view to the grid.
+  const view = createMemo<KeepView>(() => route().view, route().view, { equals: sameView });
   // Lucina's shell is dark whatever the device's theme; Keep follows it (its note colours use the dark palette).
   const theme = () => "dark" as const;
   // The field updates at once; the notes follow 150 ms after the last key, so typing never stutters on a long list.

@@ -435,32 +435,35 @@ enum TimelineMerge {
     /// - an incoming **Lucina** item drops the local reply placeholder for the same
     ///   `clientMessageId` or the same `replyTo`;
     /// - the result is ordered by time (user before Lucina on a tie, then by id).
+    ///
+    /// The rules run in the Rust core (`ChatKernel`, `merge`); this side picks the bodies: the last incoming copy of an
+    /// id (users before Lucina, as the kernel processes them), else the current one, then the kernel's reply-to updates.
     static func merge(_ current: [TimelineItem], _ incoming: [TimelineItem]) -> Result {
-        var byId: [String: TimelineItem] = [:]
-        for item in current { byId[item.id] = item }
-        var replaced: [String: String] = [:]
-        // Users first, so a local reply placeholder is re-pointed at the server's user id
-        // before Lucina's server item (same batch or later) is matched against it.
-        let ordered = incoming.filter { $0.role == .user } + incoming.filter { $0.role == .lucina }
-        for item in ordered {
-            byId[item.id] = item
-            for local in byId.values where local.isLocal && local.role == item.role && local.id != item.id {
-                let sameClient = item.clientMessageId != nil && item.clientMessageId == local.clientMessageId
-                let sameReply = item.role == .lucina && item.replyTo != nil && item.replyTo == local.replyTo
-                // A chat attachment's bubble is the server's share item (`meta.shareId`).
-                let sameShare = item.role == .user && item.meta?.isShare == true && item.meta?.shareId == local.meta?.shareId
-                if sameClient || sameReply || sameShare {
-                    byId[local.id] = nil
-                    replaced[local.id] = item.id
-                    if item.role == .user {
-                        for (id, other) in byId where other.isLocal && other.replyTo == local.id {
-                            byId[id]?.replyTo = item.id
-                        }
-                    }
-                }
-            }
+        var body: [String: TimelineItem] = [:]
+        for item in current { body[item.id] = item }
+        for item in incoming where item.role == .user { body[item.id] = item }
+        for item in incoming where item.role == .lucina { body[item.id] = item }
+        let answer: [String: Any]
+        do {
+            answer = try ChatKernel.call(["op": "merge", "current": current.map(ChatKernel.key),
+                                          "incoming": incoming.map(ChatKernel.key)])
+        } catch {
+            // Only a malformed request can fail; keep every item rather than drop the incoming ones.
+            ChatKernel.logger.fault("merge: \(String(describing: error), privacy: .public)")
+            assertionFailure("chat kernel: \(error)")
+            return Result(items: sorted(Array(body.values)), replaced: [:])
         }
-        return Result(items: sorted(Array(byId.values)), replaced: replaced)
+        for update in answer["reply_to_updates"] as? [[String: Any]] ?? [] {
+            guard let id = update["id"] as? String, let replyTo = update["reply_to"] as? String else { continue }
+            body[id]?.replyTo = replyTo
+        }
+        var replaced: [String: String] = [:]
+        for pair in answer["replaced"] as? [[String: Any]] ?? [] {
+            guard let local = pair["local"] as? String, let server = pair["server"] as? String else { continue }
+            replaced[local] = server
+        }
+        let ids = answer["ids"] as? [String] ?? []
+        return Result(items: ids.compactMap { body[$0] }, replaced: replaced)
     }
 
     static func sorted(_ items: [TimelineItem]) -> [TimelineItem] {

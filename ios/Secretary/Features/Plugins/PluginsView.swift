@@ -13,11 +13,13 @@ struct Plugin: Identifiable {
     var isActive = false
     let open: @MainActor () -> Void
 
-    @MainActor static func all(_ app: AppModel) -> [Plugin] {
+    @MainActor static func all(_ app: AppModel, showAdult: Bool = AdultPlugins.isShown) -> [Plugin] {
         [
             Plugin(id: "gallery", icon: "photo.on.rectangle.angled", title: "Gallery",
                    detail: app.backup.backedUp > 0 ? String(localized: "\(app.backup.backedUp) backed up") : nil,
                    isActive: app.backup.remaining > 0) { app.showGallery = true },
+            Plugin(id: "calendar", icon: "calendar", title: "Calendar",
+                   detail: String(localized: "Lucina's calendar")) { app.showCalendar = true },
             Plugin(id: "drive", icon: "externaldrive", title: "Drive",
                    detail: String(localized: "Archive, files and audio")) { app.openDrive() },
             Plugin(id: "memos", icon: app.memos.recorder.isActive ? "waveform.circle.fill" : "waveform",
@@ -26,6 +28,14 @@ struct Plugin: Identifiable {
                    isActive: app.memos.recorder.isActive) { app.showMemos = true },
             Plugin(id: "films", icon: "film", title: "Films",
                    detail: app.media.current.map(\.title) ?? String(localized: "Film and Dansk film")) { app.showMedia = true },
+            Plugin(id: "instagram", icon: "camera", title: "Instagram",
+                   detail: String(localized: "Profiles, stories and highlights")) { app.showInstagram = true },
+            Plugin(id: "pixiv", icon: "paintpalette", title: "Pixiv",
+                   detail: String(localized: "Rankings, search and bookmarks")) { app.showPixiv = true },
+        ] + (showAdult ? [
+            Plugin(id: "nclient", icon: "book", title: "NClient",
+                   detail: String(localized: "Browse and read")) { app.showNClient = true },
+        ] : []) + [
             Plugin(id: "pokemon", icon: "gamecontroller", title: "Pokémon",
                    detail: String(localized: "Lucina's game")) { app.showPokemon = true },
             Plugin(id: "allChats", icon: "bubble.left.and.bubble.right", title: "All chats",
@@ -64,12 +74,13 @@ struct Plugin: Identifiable {
 
 struct PluginsView: View {
     @Environment(AppModel.self) private var app
+    @AppStorage(AdultPlugins.key) private var showAdult = true
 
     var body: some View {
         @Bindable var app = app
         ScrollView {
             StatGrid {
-                ForEach(Plugin.all(app)) { plugin in
+                ForEach(Plugin.all(app, showAdult: showAdult)) { plugin in
                     PluginCard(plugin: plugin)
                 }
             }
@@ -93,6 +104,10 @@ struct PluginsView: View {
         .navigationDestination(isPresented: $app.showAllChats) { AllChatsView() }
         .navigationDestination(isPresented: $app.showComputer) { LucinaComputerView() }
         .navigationDestination(isPresented: $app.showCallers) { CallersView() }
+        .navigationDestination(isPresented: $app.showCalendar) { CalendarScreen() }
+        .navigationDestination(isPresented: $app.showInstagram) { InstagramScreen() }
+        .navigationDestination(isPresented: $app.showPixiv) { PixivScreen() }
+        .navigationDestination(isPresented: $app.showNClient) { NClientScreen() }
         .sheet(isPresented: $app.showQrSignIn) { QrSignInSheet() }
     }
 }

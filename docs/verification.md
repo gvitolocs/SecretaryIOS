@@ -82,6 +82,7 @@ BFS for each counterexample, because Stateright reports the last violating path 
 | 17 | Node retirement: Rust owns Telegram, Discord and reminders (no Node change) | `retirement.rs` (R1–R5) | `retirement/{Reminders,Delivery,Telegram,Updates,Discord}.tla` | `retirement_kernels.rs` | `lucina-telegram/src/{outcome,lease_decision,lease,lib}.rs`, `lucina-store/src/reminders.rs::process_due`, `lucina-server/src/reminder_delivery.rs` (branch `lucina-rs`; checked at 3c22447), `lucina-telegram/src/{claim,poller}.rs`, `lucina-server/src/delivery_monitor.rs::step` (f26eb90, NR4 fix 5c87ae0; Verus `delivery_monitor.rs`), `lucina-discord/src/lease.rs` (290b946), `deploy/lucina-rs/*`; Node `Lucina/src/gateway-lock.js`, `index.js` (68b38dc), telegraf 4.16.3 |
 | 18 | Lucina Drive: the folder index (every file of the Drive folders indexed in place; scans racing unmounts, deletes and edits; dedupe of a phone copy against a Drive file; the gallery/films/drive split; path guards; the thermal pause) | `drive_index.rs` (DI) | `drive/DriveIndex.tla` | `drive_kernels.rs` DK1–DK5 | `crates/lucina-media/src/{drive,drive_kernel,drive_kernel_shared,extract,ingest,db,http}.rs` (branch `cloud/drive-all-files` from `media-instant`) |
 | 19 | Album share links (`/v1/media/a/{token}`: the only part of the library reachable from the internet without the upstream key) | – (a per-request check, no protocol between processes) | – | `album_share.rs` AS1 | `crates/lucina-media/src/{share,share_kernel_shared,share_http}.rs` |
+| 20 | iOS chat engine: the timeline merge and order, the sync cursor loop, pagination (the Swift views and store call it through `secretary_chat_request`) | – (pure kernel, no protocol between processes) | – | `chat_merge.rs` (M1–M4, C1–C3) | `crates/secretary-chat/src/{merge,sync,page,request}.rs`, `crates/secretary-ffi/src/lib.rs::secretary_chat_request`; the Swift caller `ios/Secretary/Features/Chat/{Timeline,ChatSync,ChatStore}.swift`; differential tests `crates/secretary-chat/tests/{verus_chat_merge,merge_props}.rs` |
 
 Other Verus files in `verification/verus/` include `body_kernel.rs`, `gym_kernel.rs`, `gym_lifecycle.rs` and
 `sync_kernel.rs`. Branch `verus-proofs` adds `avatar_validation.rs`, `notes_kernel.rs`, `secrets_redactor.rs` and the
@@ -1258,6 +1259,36 @@ extraction, PDF pages and Office conversion). Verus on nezopt (2026-10-26, throu
 | `Unmount`, `Mount`, `StrayWrite` | mybook unmounted or back; something writing into `~/mnt/mybook/…` while it is away |
 | `Delete`, `Edit` | the owner deletes or edits a Drive file (an edit is a new mtime: re-hashed at the next visit) |
 | `PhoneUpload` | `ingest::ingest_file` → `keep_owned_bytes` (DK3) under the catalog lock |
+
+### 20. The iOS chat engine kernel
+
+The iPhone app's chat engine merges server pages into the timeline it shows, orders them and walks the sync cursor.
+The rules live in Rust (`crates/secretary-chat`, called through `secretary_chat_request`; the views and the store stay
+Swift and pass small key records, not messages). The kernel is pure and deterministic.
+
+Verus (`chat_merge.rs`, 64 verified): over `u64`-interned ids in byte order, with the spec functions mapped to the
+production functions in the file's header.
+- M1 the merged sequence has distinct ids. M2 it is strictly sorted by `(ts, role, id)` and a strictly sorted sequence is
+  determined by its elements, so the result is a function of the merged set alone: it does not depend on the input order
+  of `current` nor on the order the locals are visited in (Swift iterates a dictionary there; `step` decides the
+  replacements on the whole map). M3 merging the same batch again changes nothing, for a batch of distinct non-local
+  items (a server page). M4 every current and incoming id is in the result or was replaced, a replaced id belongs to a
+  local item of the role of an incoming item, so a non-local item is never lost.
+- C1 in a run that ends without a reset every log id above the starting cursor and at most the final cursor was in an
+  applied page (the server is any one whose pages never move the cursor back; "the next `limit` ids after the cursor" is
+  one, `lemma_server_model`). C2 the stored cursor never moves backwards in such a run. C3 at most 11 fetches (10 cursor
+  pages and the fresh window), 1 without a cursor, and `Apply{reset}` is true exactly for the fresh window.
+
+Found while proving, and kept identical to Swift: the merge is not idempotent when the batch carries a local item that
+a server item of the same batch replaces and a local reply points at that local item (counterexample in the file's
+header and in `idempotence_fails_only_when_the_batch_carries_a_local_item`); "every incoming id is in the result" holds
+only up to an incoming local item a later incoming item replaces.
+
+Differential tests: `tests/verus_chat_merge.rs` runs the proof file's function bodies (plain Rust) against production
+on generated inputs: ids, replacements, `reply_to` updates, and the sync machine step by step, every action, phase and
+fetch count (random scripts, and every script of 6 reports out of 9 from both a missing and a given cursor).
+`tests/merge_props.rs` compares production with a port of the Swift loop whose dictionary order is shuffled on every
+run, and checks M1, M2, M3 and M4 as properties.
 
 ## Bugs found
 

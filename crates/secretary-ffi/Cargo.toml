@@ -13,6 +13,7 @@ secretary-gym = { path = "../secretary-gym" }
 secretary-body = { path = "../secretary-body" }
 secretary-player = { path = "../secretary-player" }
 secretary-image = { path = "../secretary-image" }
+secretary-chat = { path = "../secretary-chat" }
 serde_json.workspace = true
 serde.workspace = true
 

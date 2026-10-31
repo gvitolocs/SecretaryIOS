@@ -995,6 +995,72 @@ Errors (real):
 `clock` (real): `{"ok":true,"replayed":false,"clock":{"rest_remaining":90,"active_duration":"0m 00s","active_elapsed_seconds":0}}`.
 Tick `active_elapsed_seconds` locally between refreshes.
 
+## Chat engine kernel (iOS, `secretary_chat_request`)
+
+Not an HTTP route: the iPhone app's chat engine keeps its rules in `crates/secretary-chat` (proved in
+`verification/verus/chat_merge.rs`) and calls them through one stateless C function of `secretary-ffi`,
+`char *secretary_chat_request(const char *json)` (JSON in, JSON out, free the result with `secretary_string_free`).
+The Swift views and store keep the messages; they pass key records only. Any request it cannot answer (invalid JSON,
+unknown `op`, a missing or mistyped field) gets `{"error": "<reason>"}`.
+
+A **key** is `{"id": "tl_10", "ts_us": 1730000000000000, "role": "user" | "lucina", "client_message_id"?: "c1",
+"reply_to"?: "tl_9", "share_id"?: "s1"}`. `ts_us` is the item time in microseconds. An id that starts with `local-` is
+an optimistic bubble. `share_id` is `meta.shareId` of a share item (`meta.isShare == true`) and of a local item that
+has one, and absent for any other item.
+
+**`merge`**: `TimelineMerge.merge(current, incoming)`.
+
+```json
+{"op": "merge",
+ "current":  [{"id": "local-c1", "ts_us": 100000000, "role": "user", "client_message_id": "c1"},
+              {"id": "local-r1", "ts_us": 101000000, "role": "lucina", "reply_to": "local-c1"}],
+ "incoming": [{"id": "tl_9", "ts_us": 100500000, "role": "user", "client_message_id": "c1"}]}
+```
+
+```json
+{"ids": ["tl_9", "local-r1"],
+ "replaced": [{"local": "local-c1", "server": "tl_9"}],
+ "reply_to_updates": [{"id": "local-r1", "reply_to": "tl_9"}]}
+```
+
+`ids` is the new display order: time, the user before Lucina, then the id in byte order. The body of an id in the result
+is the last incoming copy of it (every user item is processed before every Lucina item, each group in input order),
+else the current one; `reply_to_updates` then set `reply_to` on those bodies. `replaced` (sorted by local id) lists the
+local items a server item replaced (move their job cards to `server`). An incoming user item replaces the local user
+items with the same `client_message_id` or the same `share_id`, an incoming Lucina item the local Lucina items with the
+same `client_message_id` or the same `reply_to`; a local item whose `reply_to` was a replaced local user item now
+replies to the server item. The result does not depend on the order of `current`. A repeated id in `current` keeps the
+last one.
+
+**`sync_next`**: `ChatSync.run` as a state machine. The caller loops: ask, do it, report.
+
+```json
+{"op": "sync_next", "plan": null, "cursor": "c0", "outcome": {"kind": "started"}}
+{"plan": {"phase": "fetching", "...": "opaque"}, "action": {"kind": "fetch", "after": "c0", "limit": 200}}
+```
+
+The first call has `"plan": null` and the stored `cursor` (null when there is none); every later call passes back the
+`plan` of the last response. Outcomes: `{"kind":"started"}` (first call only), `{"kind":"page","cursor":"c1"|null,
+"has_more":true}` (the fetch worked), `{"kind":"applied"}` (the page was applied), `{"kind":"gone410"}` (the server said
+the cursor expired), `{"kind":"failed"}` (any other error, from the fetch or from applying). Actions:
+`{"kind":"fetch","after":"c0"|null,"limit":200}` (ask the server for the items after `after`; `null` means the newest
+window), `{"kind":"apply","reset":false}` (apply the page just fetched; `reset: true` means drop the stored server
+items and cursor first), `{"kind":"done"}`, `{"kind":"abort"}` (throw the error of the `failed` outcome; no further
+fetches). Without a cursor: one `fetch(null, 50)` applied with `reset: false`. With a cursor: up to 10 times
+`fetch(cursor, 200)` applied with `reset: false`, stopping when the page has no more, leaving the loop when the page's
+cursor is missing or unchanged or after the tenth page, and on a 410; leaving the loop means one fresh
+`fetch(null, 50)` applied with `reset: true`. At most 11 fetches per run. A 410 outside the cursor loop is an error.
+
+**`older`**: the pagination rules of `ChatStore.hydrate` and `loadOlder`.
+
+```json
+{"op": "older", "ids": ["tl_5", "local-x", "tl_3"], "stored": null, "page_len": 60, "page_size": 60}
+{"older_cursor": "tl_3", "has_older": true}
+```
+
+`older_cursor` is `stored` when it is not empty, else the smallest id that does not start with `local-`, else `null`.
+`has_older` is `page_len == page_size` or a non-empty `stored`.
+
 ## Device bridge
 
 The owner's phone and Mac tell Lucina what happens on them, and run the
@@ -1937,6 +2003,26 @@ NewRecord (snake_case; unknown fields are refused): `kind` deploy|incident|decis
 (RFC 3339, when it happened), `dedup_key` (≤ 200). Secrets in every field are redacted before anything is stored.
 Lucina answers 404 `ops_disabled` when the record is off (`LUCINA_OPS_VAULT_DIR` unset). MCP tools: `ops_record`
 (scope write), `ops_search` and `ops_get` (scope read); `agents` tokens may call all three.
+
+## Lucina's mailbox for Claude (reach)
+
+Lucina can message Claude (issue reports, requests the owner asked her to pass on). With no live Claude channel the message
+waits in her mailbox (lucina-rs `crates/lucina-server/src/reach.rs`); a Claude session reads it and answers, and the reply
+goes back into the owner's conversation with Lucina, who relays it. Forwarded to Lucina's `/api/secretary/reach/*`. Owner
+devices only (device token or web session; Lucina's service token is not accepted), like `/v1/ops`. Query values and the
+thread id (`rt-` and 12 lowercase hex digits) are validated first (400 `bad_request`).
+
+| Method | Path | Body / query | Answer |
+| --- | --- | --- | --- |
+| GET | `/v1/lucina/reach/threads` | `to` claude\|grok\|agents, `status` open\|all\|answered\|failed\|queued\|sent (`open` = waiting for an answer), `limit` (1-100) | `{threads: [{id, to, kind, subject, text, channel, created, status, route, detail, replies: [{from, text, at}]}]}`, newest first |
+| GET | `/v1/lucina/reach/threads/{id}` | | one thread plus `envelope` (the full text as sent); 404 `thread_not_found` |
+| POST | `/v1/lucina/reach/threads/{id}/reply` | `{from?, text}` (body ≤ 64 KiB, `text` 1-8000 characters, `from` ≤ 60, one line) | `{thread, status, delivered}`; 404 `thread_not_found` |
+
+A reply's `from` reaches Lucina as `<from or Claude> (<client>)`, where `<client>` is the MCP client named in
+`X-Secretary-Caller` (`mcp:claude`), so she knows which session answered; a reply from the app itself is `from` alone.
+Lucina answers 404 `reach_disabled` when messaging is off (`LUCINA_REACH`). MCP tools: `lucina_inbox` (scope read; `to`,
+`status`, `limit`, or `thread` to read one in full) and `lucina_reply` (scope write: `thread`, `text`, optional `from`);
+`agents` tokens may call both.
 
 ## AU Find
 

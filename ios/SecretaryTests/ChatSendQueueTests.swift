@@ -156,7 +156,7 @@ final class ChatSendQueueTests: XCTestCase {
             XCTFail("expected a timeout")
         } catch {
             XCTAssertEqual(APIError.wrap(error).code, "timeout")
-            XCTAssertEqual(ChatStore.describe(APIError.wrap(error)), "No answer in time.")
+            XCTAssertEqual(ChatStore.describe(APIError.wrap(error)), String(localized: "No answer in time."))
         }
         XCTAssertLessThan(Date().timeIntervalSince(started), 5)
     }

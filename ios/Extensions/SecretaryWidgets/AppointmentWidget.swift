@@ -61,7 +61,13 @@ struct AppointmentWidgetView: View {
 
     /// The in-app place map (`/map/place?…`, maps feature); it geocodes an address by itself.
     private var link: URL {
-        guard let event, let place = event.location else { return WidgetRoute.url("chat") }
+        guard let event else { return WidgetRoute.url("calendar") }
+        guard let place = event.location, !place.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            var calendar = URLComponents()
+            calendar.percentEncodedQuery = "event=" + WidgetRoute.segment(event.id)
+                + "&at=" + String(format: "%.0f", event.start.timeIntervalSince1970 * 1000)
+            return WidgetRoute.url("calendar?" + (calendar.percentEncodedQuery ?? ""))
+        }
         var query = URLComponents()
         let iso = ISO8601DateFormatter()
         query.queryItems = [URLQueryItem(name: "title", value: event.title), URLQueryItem(name: "address", value: place),

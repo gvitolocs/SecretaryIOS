@@ -95,8 +95,13 @@ pub fn entry_text(e: &Value) -> String {
 
 /// `{cursor, entries}` from `gbot thread --json` (top level or under `result`).
 pub fn thread_page(v: &Value) -> (Option<String>, Vec<Value>) {
+    // gbot 0.12 puts them under `transcript` (with `target` beside it).
     let root = if v.get("entries").is_some() {
         v
+    } else if v["transcript"].get("entries").is_some() {
+        &v["transcript"]
+    } else if v["result"]["transcript"].get("entries").is_some() {
+        &v["result"]["transcript"]
     } else {
         &v["result"]
     };
@@ -343,6 +348,15 @@ mod tests {
         assert_eq!(bot, vec!["Rust 1.95 shipped.", "Sources: …"]);
         let (c, e) = thread_page(&json!({"result": {"cursor": "x", "entries": []}}));
         assert_eq!((c.as_deref(), e.len()), (Some("x"), 0));
+        // gbot 0.12: `{target, transcript: {entries, nextBeforeSeq}}`.
+        let v = json!({"target": {"id": "b1"}, "transcript": {"entries": [
+            {"kind": "message", "id": "t1u", "role": "user", "seq": 12},
+            {"kind": "send-message", "id": "t1s13", "seq": 13, "message": {"type": "text", "content": "pong"}}
+        ], "nextBeforeSeq": 10}});
+        let (c, e) = thread_page(&v);
+        assert!(c.is_none());
+        let bot: Vec<String> = e.iter().filter(|e| is_bot_entry(e)).map(entry_text).collect();
+        assert_eq!(bot, vec!["pong"]);
     }
 
     #[tokio::test]

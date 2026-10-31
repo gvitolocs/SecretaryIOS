@@ -165,8 +165,31 @@ macro_rules! module {
     };
 }
 
+/// The chat engine's pure kernel (secretary-chat): merge, sync cursor loop, pagination. One JSON request in, one
+/// JSON response out, no handle and no state: see `secretary_chat::request` and `docs/server-api.md`.
+///
+/// # Safety
+/// `json` must be a valid NUL-terminated UTF-8 string for this call, or NULL (answered with an error).
+#[no_mangle]
+pub unsafe extern "C" fn secretary_chat_request(json: *const c_char) -> *mut c_char {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if json.is_null() {
+            return chat_error("Missing command");
+        }
+        match CStr::from_ptr(json).to_str() {
+            Ok(input) => secretary_chat::handle(input),
+            Err(_) => chat_error("Command must be UTF-8"),
+        }
+    }));
+    output(result.unwrap_or_else(|_| chat_error("Rust core rejected an internal failure")))
+}
+
+fn chat_error(error: &str) -> String {
+    serde_json::json!({ "error": error }).to_string()
+}
+
 /// Module names reported by `secretary_version`.
-pub const MODULES: &[&str] = &["gym", "body", "player", "image"];
+pub const MODULES: &[&str] = &["gym", "body", "player", "image", "chat"];
 
 module!(
     secretary_gym::Engine,

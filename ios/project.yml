@@ -369,3 +369,14 @@ schemes:
       config: Debug
       targets:
         - SecretaryTests
+  # UI tests against the Release build (what the owner runs), e.g. scripts/chat-scroll-perf.sh.
+  SecretaryReleaseUI:
+    build:
+      targets:
+        Secretary: all
+        SecretaryUITests: [test]
+    test:
+      config: Release
+      gatherCoverageData: false
+      targets:
+        - SecretaryUITests

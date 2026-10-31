@@ -80,6 +80,20 @@ final class AppModel {
     var showAllChats = false
     /// "Who called?": caller screening with Jev and the Call Directory labels, a plugin.
     var showCallers = false
+    /// Lucina's own calendar (/v1/calendar), a plugin (`/calendar`).
+    var showCalendar = false
+    /// `/calendar?event=<id>&at=<ms>` (a notification, a chat link): the event the calendar opens on.
+    var openCalendarEvent: CalendarLink?
+    /// The Instagram plugin (/v1/instagram).
+    var showInstagram = false
+    /// `/instagram/<username>`: the profile the Instagram screen opens.
+    var openInstagramUser: String?
+    /// The Pixiv plugin (/v1/pixiv): rankings, search, bookmarks and the reader.
+    var showPixiv = false
+    /// `/pixiv/<id>`: the work the Pixiv screen opens.
+    var openPixivWork: String?
+    /// The NClient plugin (/v1/nclient): browse and read.
+    var showNClient = false
     /// Notebooks as a sheet (a `notebooks` link); in Settings it is a pushed screen.
     var showNotebooks = false
     /// The quick weight entry sheet on the Training tab (widget "+", Log weight control).
@@ -143,6 +157,14 @@ final class AppModel {
     @ObservationIgnored var isForeground = false
 
     var api: SecretaryAPI { SecretaryAPI(client: client) }
+
+    /// The owner-only plugins (/v1/instagram, /v1/pixiv, /v1/nclient) live in p1's Caddy like the memos, so they
+    /// use the primary URL: the tailnet fallback reaches secretary-server directly (404). Nil while signed out.
+    var pluginClient: APIClient? {
+        guard let key = client.accessKey, !key.isEmpty else { return nil }
+        memoClient.accessKey = key
+        return memoClient
+    }
 
     init(keychain: KeychainStore = .accessKey, defaults: UserDefaults = .standard) {
         Self.isBuilt = true
@@ -315,6 +337,7 @@ final class AppModel {
             selectedTab = .plugins
             showCallers = true
         }
+        if let route = launch.openRoute { open(route: route) }
 
         let onError: (APIError) -> Void = { [weak self] error in self?.handle(error) }
         let onSuccess: () -> Void = { [weak self] in self?.lucinaNotice = nil }
@@ -665,6 +688,8 @@ struct LaunchOptions {
     var openPokemon = false
     /// `-SecretaryInitialTab callers`: start on "Who called?".
     var openCallers = false
+    /// `-SecretaryOpenRoute calendar` (any `open(route:)` path): start there.
+    var openRoute: String?
     /// `-SecretaryInitialTab approval | approval-plain | approval-done | approval-already`: the approval prompt with fixture data.
     var approvalFixture: String?
 
@@ -682,6 +707,7 @@ struct LaunchOptions {
         openServer = defaults.string(forKey: "SecretaryInitialTab") == "server"
         openPokemon = defaults.string(forKey: "SecretaryInitialTab") == "pokemon"
         openCallers = defaults.string(forKey: "SecretaryInitialTab") == "callers"
+        openRoute = defaults.string(forKey: "SecretaryOpenRoute")
         approvalFixture = defaults.string(forKey: "SecretaryInitialTab").flatMap { $0.hasPrefix("approval") ? $0 : nil }
         #endif
     }

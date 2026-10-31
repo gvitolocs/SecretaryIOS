@@ -232,6 +232,12 @@ enum Cmd {
         #[command(flatten)]
         ask: DecideArgs,
     },
+    /// Lucina's messages to Claude, Grok and Lucina Agents, through the running server:
+    /// `reach inbox [--to claude] [--all]`, `reach show <id>`, `reach reply <id> --from <who> <text>`.
+    Reach {
+        #[command(subcommand)]
+        cmd: ReachCmd,
+    },
     /// Grocery deals near home: list | cheapest <query> | lunch | map | digest | alerts
     /// [--dry-run|--send] [--channel app|telegram|both] [--user ID] [--fixtures DIR]
     /// [--items "A,B"] [--radiusM 500-15000]. Digest and alerts are dry runs unless --send.
@@ -247,6 +253,35 @@ enum Cmd {
         /// File holding the bot token (mode 0600).
         #[arg(long)]
         token_file: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ReachCmd {
+    /// Messages Lucina sent that wait for an answer (newest first).
+    Inbox {
+        /// claude, grok or agents.
+        #[arg(long, default_value = "claude")]
+        to: String,
+        /// Answered ones too.
+        #[arg(long)]
+        all: bool,
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+        /// JSON instead of one line per thread.
+        #[arg(long)]
+        json: bool,
+    },
+    /// One thread in full, with the text as sent.
+    Show { id: String },
+    /// Answer a thread: the reply goes back into the conversation it came from.
+    Reply {
+        id: String,
+        /// Who answers (your session's name).
+        #[arg(long, default_value = "Claude")]
+        from: String,
+        /// The reply (≤ 8000 characters).
+        text: String,
     },
 }
 
@@ -522,6 +557,25 @@ async fn jev_cmd(cmd: JevCmd) -> anyhow::Result<()> {
 /// `lucina-rs decide …`: a client of the running server (`/api/secretary/decisions`), so the
 /// decision goes through the same path as `lucina_decide`: evidence, Jev, the owner's push, the
 /// ops record. The API token comes from the unit's env files and is never printed.
+async fn reach_cmd(cmd: ReachCmd) -> anyhow::Result<()> {
+    use lucina_server::reach::cli;
+    let out = match cmd {
+        ReachCmd::Inbox { to, all, limit, json } => {
+            let v = cli::inbox(&to, all, limit).await?;
+            if !json {
+                let lines = cli::lines(&v);
+                println!("{}", if lines.is_empty() { "(nothing waiting)".into() } else { lines });
+                return Ok(());
+            }
+            v
+        }
+        ReachCmd::Show { id } => cli::show(&id).await?,
+        ReachCmd::Reply { id, from, text } => cli::reply(&id, &from, &text).await?,
+    };
+    println!("{}", serde_json::to_string_pretty(&out)?);
+    Ok(())
+}
+
 async fn decide_cmd(cmd: Option<DecideCmd>, a: DecideArgs) -> anyhow::Result<()> {
     use lucina_server::decide::cli;
     let c = cli::Client::from_env()?;
@@ -905,6 +959,7 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
         } => google_auth(&service, code, read_only).await?,
         Cmd::Drive { cmd } => drive_cmd(cmd).await?,
         Cmd::Decide { cmd, ask } => decide_cmd(cmd, ask).await?,
+        Cmd::Reach { cmd } => reach_cmd(cmd).await?,
         Cmd::Jev { cmd } => jev_cmd(cmd).await?,
         Cmd::Ops {
             cmd,

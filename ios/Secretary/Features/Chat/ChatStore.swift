@@ -55,6 +55,8 @@ final class ChatStore {
     @ObservationIgnored private var sendWaiters: [String: [CheckedContinuation<String, Never>]] = [:]
     private(set) var isLoadingOlder = false
     private(set) var hasOlder = false
+    /// The cached transcript was read (until then an empty list means "not loaded yet", not "no messages").
+    private(set) var hydrated = false
     /// The live stream is connected.
     private(set) var isLive = false
     private(set) var loadError: String?
@@ -224,6 +226,7 @@ final class ChatStore {
 
     private func hydrate() async {
         let epoch = generation
+        defer { if epoch == generation { hydrated = true } }
         do {
             // Migration runs off-main, including decoding the legacy cache once.
             let url = fileURL
@@ -255,9 +258,11 @@ final class ChatStore {
             }
             items = TimelineMerge.merge(restored.filter { isMine($0, deviceId: deviceId, sentClientIDs: sentClientIDs) }, items).items
             sentClientIDs.formUnion(items.compactMap(\.clientMessageId))
-            hasOlder = page.count == Self.pageSize || olderCursor?.isEmpty == false
-            nextBefore = (olderCursor?.isEmpty == false ? olderCursor : nil) ?? page.first(where: { !$0.isLocal })?.id
+            let older = ChatKernel.older(ids: page.map(\.id), stored: olderCursor, pageLength: page.count, pageSize: Self.pageSize)
+            hasOlder = older.hasOlder
+            nextBefore = older.cursor
             reconcileOutbox()
+            ScrollTrace.event("hydrated \(items.count) items from the cache")
         } catch {
             // Offline storage failure must not prevent a server sync.
         }
@@ -282,10 +287,11 @@ final class ChatStore {
     /// Incremental sync; all received items reach the bridge and disk, only mine reach Chat.
     func refresh() async {
         await prepare()
-        guard !syncing else { return }
+        guard !syncing else { ScrollTrace.event("refresh skipped (already syncing)"); return }
+        ScrollTrace.event("refresh started")
         syncing = true
         let epoch = generation
-        defer { syncing = false }
+        defer { syncing = false; ScrollTrace.event("refresh finished") }
         do {
             await flushPersistence()
             let scope = mineScope
@@ -357,6 +363,7 @@ final class ChatStore {
     /// Merges server items in (dedupe by id, reconcile optimistic bubbles).
     func apply(_ incoming: [TimelineItem], persistAfter: Bool = true) {
         guard !incoming.isEmpty else { return }
+        ScrollTrace.event("apply \(incoming.count) incoming")
         onItems?(incoming)
         let visible = incoming.filter { isMine($0, deviceId: deviceId, sentClientIDs: sentClientIDs) }
         if !visible.isEmpty, items.isEmpty { messageSource = "server" }
@@ -417,6 +424,7 @@ final class ChatStore {
             var wait = backoff[min(attempt, backoff.count - 1)]
             do {
                 let bytes = try await api().client.openStream("/v1/timeline/stream", lastEventId: lastEventId)
+                ScrollTrace.event("stream connected")
                 isLive = true
                 attempt = 0
                 // Fill anything missed while disconnected (in case Last-Event-ID isn't honoured).
@@ -756,6 +764,7 @@ final class ChatStore {
         persistedItems = [:]
         derivedActions = [:]
         sentClientIDs = []
+        hydrated = true
         setDeviceId(nil)
         messageSource = "cache"
         if noteRecorder.isActive { noteRecorder.discard() }

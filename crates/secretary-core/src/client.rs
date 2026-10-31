@@ -577,6 +577,70 @@ impl Call {
         Ok(call)
     }
 
+    /// `GET /reach/threads?to=&status=&limit=`: Lucina's messages to Claude, Grok and
+    /// Lucina Agents (the mailbox). `to` is claude|grok|agents, `status` open|all|answered|
+    /// failed|queued|sent, `limit` 1..=100. Blank parameters are left out.
+    pub fn reach_threads(
+        to: Option<&str>,
+        status: Option<&str>,
+        limit: Option<&str>,
+    ) -> Result<Self> {
+        let mut call = Self::new(Method::GET, &["reach", "threads"]);
+        if let Some(to) = present(to) {
+            if !matches!(to, "claude" | "grok" | "agents") {
+                return Err(Error::Invalid {
+                    field: "to",
+                    message: "must be claude, grok or agents".into(),
+                });
+            }
+            call.query.push(("to", to.to_owned()));
+        }
+        if let Some(status) = present(status) {
+            if !matches!(
+                status,
+                "open" | "all" | "answered" | "failed" | "queued" | "sent"
+            ) {
+                return Err(Error::Invalid {
+                    field: "status",
+                    message: "must be open, all, answered, failed, queued or sent".into(),
+                });
+            }
+            call.query.push(("status", status.to_owned()));
+        }
+        if let Some(limit) = present(limit) {
+            validate::bounded_int("limit", limit, 1, 100)?;
+            call.query.push(("limit", limit.to_owned()));
+        }
+        Ok(call)
+    }
+
+    /// `GET /reach/threads/{id}` with a thread id (`rt-` and 12 lowercase hex digits).
+    pub fn reach_thread(id: &str) -> Result<Self> {
+        reach_id(id)?;
+        Ok(Self::new(Method::GET, &["reach", "threads", id]))
+    }
+
+    /// `POST /reach/threads/{id}/reply {from?, text}`: answer one of Lucina's messages; the
+    /// reply goes back into the conversation it came from. `text` is 1..=8000 characters
+    /// (control characters other than newline and tab are refused), `from` at most 120.
+    pub fn reach_reply(id: &str, from: Option<&str>, text: &str) -> Result<Self> {
+        reach_id(id)?;
+        let text = text.trim();
+        validate::text("text", text, 8000)?;
+        let mut body = serde_json::json!({ "text": text });
+        if let Some(from) = present(from) {
+            validate::text("from", from, 120)?;
+            if from.contains(['\n', '\t']) {
+                return Err(Error::Invalid {
+                    field: "from",
+                    message: "must be one line".into(),
+                });
+            }
+            body["from"] = Value::String(from.to_owned());
+        }
+        Ok(Self::new(Method::POST, &["reach", "threads", id, "reply"]).with_body(body))
+    }
+
     /// `GET /reminders?scope=&includeSent=`.
     pub fn reminders(q: &ReminderQuery) -> Result<Self> {
         let mut call = Self::new(Method::GET, &["reminders"]);
@@ -941,6 +1005,22 @@ fn decision_id(id: &str) -> Result<()> {
         return Err(Error::Invalid {
             field: "id",
             message: "must be dc- followed by 12 lowercase hex digits".into(),
+        });
+    }
+    Ok(())
+}
+
+/// A reach thread id: `rt-` and 12 lowercase hex digits.
+fn reach_id(id: &str) -> Result<()> {
+    if id.len() != 15
+        || !id.starts_with("rt-")
+        || !id.as_bytes()[3..]
+            .iter()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b))
+    {
+        return Err(Error::Invalid {
+            field: "id",
+            message: "must be rt- followed by 12 lowercase hex digits".into(),
         });
     }
     Ok(())
@@ -1893,6 +1973,65 @@ mod tests {
     fn debug_redacts_token() {
         let c = LucinaClient::new("http://h", "supersecret", Timeouts::default()).unwrap();
         assert!(!format!("{c:?}").contains("supersecret"));
+    }
+
+    #[test]
+    fn reach_calls_are_validated_and_routed() {
+        let c = Call::reach_threads(Some("claude"), Some("open"), Some("20")).unwrap();
+        assert_eq!(
+            c.segments,
+            vec!["reach".to_owned(), "threads".to_owned()],
+        );
+        assert_eq!(
+            c.query,
+            vec![
+                ("to", "claude".to_owned()),
+                ("status", "open".to_owned()),
+                ("limit", "20".to_owned())
+            ]
+        );
+        assert!(Call::reach_threads(None, None, None).unwrap().query.is_empty());
+        assert!(Call::reach_threads(Some(" "), Some(""), None).unwrap().query.is_empty());
+        for status in ["open", "all", "answered", "failed", "queued", "sent"] {
+            assert!(Call::reach_threads(None, Some(status), None).is_ok(), "{status}");
+        }
+        assert!(Call::reach_threads(Some("owner"), None, None).is_err());
+        assert!(Call::reach_threads(None, Some("pending"), None).is_err());
+        assert!(Call::reach_threads(None, None, Some("0")).is_err());
+        assert!(Call::reach_threads(None, None, Some("101")).is_err());
+        assert!(Call::reach_threads(None, None, Some("5; drop")).is_err());
+
+        let t = Call::reach_thread("rt-0123456789ab").unwrap();
+        assert_eq!(t.method, Method::GET);
+        assert_eq!(t.segments.last().unwrap(), "rt-0123456789ab");
+        for bad in [
+            "rt-0123456789AB",
+            "rt-0123456789a",
+            "dc-0123456789ab",
+            "rt-0123456789abc",
+            "../../ops/search",
+            "",
+        ] {
+            assert!(Call::reach_thread(bad).is_err(), "{bad}");
+            assert!(Call::reach_reply(bad, None, "ok").is_err(), "{bad}");
+        }
+
+        let r = Call::reach_reply("rt-0123456789ab", Some(" coordinator "), "  Fixed.  ").unwrap();
+        assert_eq!(r.method, Method::POST);
+        assert_eq!(r.segments.last().unwrap(), "reply");
+        assert_eq!(
+            r.body.unwrap(),
+            serde_json::json!({"from": "coordinator", "text": "Fixed."})
+        );
+        let r = Call::reach_reply("rt-0123456789ab", None, "Fixed.").unwrap();
+        assert_eq!(r.body.unwrap(), serde_json::json!({"text": "Fixed."}));
+        assert!(Call::reach_reply("rt-0123456789ab", None, "   ").is_err());
+        assert!(Call::reach_reply("rt-0123456789ab", None, &"x".repeat(8000)).is_ok());
+        assert!(Call::reach_reply("rt-0123456789ab", None, &"x".repeat(8001)).is_err());
+        assert!(Call::reach_reply("rt-0123456789ab", None, &"é".repeat(8000)).is_ok());
+        assert!(Call::reach_reply("rt-0123456789ab", None, "a\u{7}b").is_err());
+        assert!(Call::reach_reply("rt-0123456789ab", Some("two\nlines"), "ok").is_err());
+        assert!(Call::reach_reply("rt-0123456789ab", Some(&"f".repeat(121)), "ok").is_err());
     }
 
     #[test]

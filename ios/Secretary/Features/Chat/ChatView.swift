@@ -91,6 +91,9 @@ struct ChatTranscript: View {
     @State private var atBottom = true
     /// The reader is dragging the list or it is still moving from their flick (iOS 18+).
     @State private var readerScrolling = false
+    /// The running scroll to the end and its follow-ups: a newer request replaces it (two changes in one
+    /// update, such as new items with a rich reply, used to start two animations and two sets of follow-ups).
+    @State private var scrollTask: Task<Void, Never>?
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -103,7 +106,8 @@ struct ChatTranscript: View {
                             .onAppear { if !atBottom { loadOlder(proxy) } }
                             .accessibilityLabel("Loading older messages")
                     }
-                    if store.items.isEmpty {
+                    // Not before the cache was read: the first frame would flash "Ask Lucina anything".
+                    if store.items.isEmpty, store.hydrated {
                         emptyState
                     }
                     ForEach(rows) { row in
@@ -143,6 +147,8 @@ struct ChatTranscript: View {
             .defaultScrollAnchor(.bottom)
             .modifier(PinToEnd(atBottom: $atBottom, readerScrolling: $readerScrolling))
             .refreshable { await store.refresh() }
+            .onChange(of: store.items.count) { old, new in ScrollTrace.event("items \(old) → \(new)") }
+            .onChange(of: atBottom) { _, pinned in ScrollTrace.event("atBottom \(pinned)") }
             .onChange(of: store.items.last?.id) { _, _ in
                 if atBottom || store.items.last?.isLocal == true { scrollToEnd(proxy) }
             }
@@ -221,6 +227,7 @@ struct ChatTranscript: View {
     }
 
     private func loadOlder(_ proxy: ScrollViewProxy) {
+        ScrollTrace.event("loadOlder triggered")
         let anchor = store.items.first?.id
         let wasAtBottom = atBottom
         Task {
@@ -265,8 +272,12 @@ struct ChatTranscript: View {
     /// Lazy rows have estimated heights, so one `scrollTo` can land short of the end:
     /// scroll again once the new rows are laid out.
     private func scrollToEnd(_ proxy: ScrollViewProxy, animated: Bool = true, follow: Bool = true) {
-        Task { @MainActor in
+        ScrollTrace.event("scrollToEnd requested (animated \(animated), follow \(follow), atBottom \(atBottom))")
+        scrollTask?.cancel()
+        scrollTask = Task { @MainActor in
             await Task.yield()
+            guard !Task.isCancelled else { return }
+            ScrollTrace.event("scrollToEnd jump")
             if animated {
                 withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(Self.endId, anchor: .bottom) }
             } else {
@@ -276,9 +287,31 @@ struct ChatTranscript: View {
             guard follow else { return }
             for delay in [250, 800] {
                 try? await Task.sleep(for: .milliseconds(delay))
-                guard atBottom, !readerScrolling else { return }
+                guard !Task.isCancelled, atBottom, !readerScrolling else { return }
+                ScrollTrace.event("scrollToEnd follow-up after \(delay) ms")
                 proxy.scrollTo(Self.endId, anchor: .bottom)
             }
+        }
+    }
+}
+
+/// `-SecretaryPerfScroll`: reports the list's offset and content height to ScrollTrace (iOS 18+).
+@available(iOS 18.0, *)
+private struct TraceScrollGeometry: ViewModifier {
+    struct Sample: Equatable {
+        var offset: CGFloat
+        var height: CGFloat
+    }
+
+    func body(content: Content) -> some View {
+        if ScrollTrace.enabled {
+            content.onScrollGeometryChange(for: Sample.self) { geometry in
+                Sample(offset: geometry.contentOffset.y, height: geometry.contentSize.height)
+            } action: { _, sample in
+                ScrollTrace.geometry(offset: sample.offset, height: sample.height)
+            }
+        } else {
+            content
         }
     }
 }
@@ -294,7 +327,9 @@ private struct PinToEnd: ViewModifier {
             content
                 .onScrollPhaseChange { _, phase in
                     readerScrolling = phase == .tracking || phase == .interacting || phase == .decelerating
+                    ScrollTrace.phase("\(phase)", reader: phase == .tracking || phase == .interacting)
                 }
+                .modifier(TraceScrollGeometry())
                 .onScrollGeometryChange(for: CGFloat.self) { geometry in
                     geometry.contentSize.height - geometry.visibleRect.maxY
                 } action: { _, distance in

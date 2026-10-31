@@ -46,7 +46,7 @@ fn gym_request_roundtrip_through_the_c_abi() {
     let version: Value =
         serde_json::from_str(&unsafe { take(secretary_ffi::secretary_version()) }).unwrap();
     assert_eq!(version["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(version["modules"], serde_json::json!(["gym", "body", "player", "image"]));
+    assert_eq!(version["modules"], serde_json::json!(["gym", "body", "player", "image", "chat"]));
 
     unsafe { secretary_ffi::secretary_gym_close(handle) };
 }

@@ -15,6 +15,7 @@ members = [
     "crates/secretary-body",
     "crates/secretary-avatar-com3d2",
     "crates/secretary-ffi",
+    "crates/secretary-chat",
     "crates/lucina-secrets",
     "crates/lucina-approvals",
     "crates/lucina-llm",

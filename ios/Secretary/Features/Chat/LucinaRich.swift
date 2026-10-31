@@ -148,6 +148,7 @@ struct RichMessage: Codable, Equatable, Hashable, Sendable {
 
     /// A plain app path such as `/shopping` or `/notes/<slug>`.
     static func isAppRoute(_ path: String) -> Bool {
+        if path.hasPrefix("/"), CalendarLink.parse(path) != nil { return true }
         let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/_-.%")
         return path.hasPrefix("/") && !path.hasPrefix("//") && !path.contains("..") && path.count <= 121
             && path.unicodeScalars.allSatisfy(allowed.contains)
@@ -553,8 +554,9 @@ extension AppModel {
             openServer(link)
             return
         }
-        let first = path.split(separator: "/").first.map(String.init) ?? ""
+        let first = path.split(separator: "?", maxSplits: 1).first?.split(separator: "/").first.map(String.init) ?? ""
         switch first {
+        case "calendar": openCalendar(NotificationRoute.calendar(path))
         case "shopping": selectedTab = .shopping
         case "gym", "weight": selectedTab = .fitness
         case "lucina", "avatar": selectedTab = .lucina
@@ -588,6 +590,18 @@ extension AppModel {
         case "callers":
             selectedTab = .plugins
             showCallers = true
+        // `/instagram/<username>` and `/pixiv/<id>` open a profile or a work, as on the web.
+        case "instagram":
+            selectedTab = .plugins
+            openInstagramUser = PluginRoute.instagramUser(path)
+            showInstagram = true
+        case "pixiv":
+            selectedTab = .plugins
+            openPixivWork = PluginRoute.pixivWork(path)
+            showPixiv = true
+        case "nclient":
+            selectedTab = .plugins
+            showNClient = AdultPlugins.isShown
         case "notebooks": showNotebooks = true
         case "gallery": openGallery(path)
         case "drive": openDrive(DriveLink.parse(path) ?? .root)

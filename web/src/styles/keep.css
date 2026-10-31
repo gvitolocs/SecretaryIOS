@@ -2428,3 +2428,12 @@
   color: var(--text);
   font-weight: 600;
 }
+
+/* The note editor: opaque, in the note's colour over the raised surface; no glass, no blur behind it (a blur over the
+   whole grid made every open and close janky in Secretary Code, 2026-10-31). */
+.kp--lucina .kp-dialog {
+  background: linear-gradient(var(--kp-card-bg), var(--kp-card-bg)), var(--ui-raised);
+  border-color: var(--ui-raised-border);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}

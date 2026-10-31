@@ -3,6 +3,12 @@ import Foundation
 /// `/v1/pixiv/*` with this device's token (Bearer: no CSRF header needed). Answers are `{ok, data}`.
 struct PixivAPI: Sendable {
     let client: APIClient
+    private let adultShown: @Sendable () -> Bool
+
+    init(client: APIClient, adultShown: @escaping @Sendable () -> Bool = { AdultPlugins.isShown }) {
+        self.client = client
+        self.adultShown = adultShown
+    }
 
     func status() async throws -> PixivStatus {
         try await client.get("/v1/pixiv/status", timeout: 20, unwrap: true)
@@ -302,5 +308,200 @@ enum PixivText {
         if has("connect_expired") { return String(localized: "The sign-in took too long; try again.") }
         if has("busy") || error.status == 409 { return String(localized: "Approve or decline the pending request first.") }
         return String(localized: "Couldn't finish the Pixiv sign-in.")
+    }
+}
+
+// MARK: - Browsing
+
+extension PixivAPI {
+    func ranking(mode: String, page: Int = 1) async throws -> PixivListing {
+        try await browseGet("/ranking", query: PixivBrowseQuery.ranking(mode: mode, page: page, adult: adultShown()))
+    }
+
+    func search(q: String, order: String = "date_d", type: String = "all", mode: String = "safe", page: Int = 1) async throws -> PixivListing {
+        try await browseGet("/search", query: PixivBrowseQuery.search(q: q, order: order, type: type, mode: mode, page: page, adult: adultShown()))
+    }
+
+    func illust(id: String) async throws -> PixivIllust {
+        try await browseGet("/illust/" + PixivBrowseQuery.pathID(id), query: PixivBrowseQuery.adult(adultShown()))
+    }
+
+    func bookmarks(content: PixivSettings.Content = .safe) async throws -> PixivListing {
+        try await browseGet("/bookmarks", query: [URLQueryItem(name: "content", value: content.rawValue)] + PixivBrowseQuery.adult(adultShown()))
+    }
+
+    func addBookmark(id: String) async throws {
+        let _: PixivBookmarkAnswer = try await browseSend("PUT", "/bookmarks/" + PixivBrowseQuery.pathID(id), query: PixivBrowseQuery.adult(adultShown()))
+    }
+
+    func removeBookmark(id: String) async throws {
+        let _: PixivBookmarkAnswer = try await browseSend("DELETE", "/bookmarks/" + PixivBrowseQuery.pathID(id))
+    }
+
+    func save(id: String, pages: [Int]? = nil) async throws -> PixivSaveResult {
+        struct Body: Encodable { let id: String; let pages: [Int]? }
+        let body = try JSONEncoder().encode(Body(id: id, pages: pages?.isEmpty == false ? pages : nil))
+        return try await browseSend("POST", "/save", query: PixivBrowseQuery.adult(adultShown()), body: body, timeout: 180)
+    }
+
+    private func browseGet<T: Decodable>(_ path: String, query: [URLQueryItem]) async throws -> T {
+        let answer: PixivEnvelope<T> = try await client.get("/v1/pixiv" + path, query: query)
+        return answer.value
+    }
+
+    private func browseSend<T: Decodable>(_ method: String, _ path: String, query: [URLQueryItem] = [], body: Data? = nil,
+                                          timeout: TimeInterval = APIClient.defaultTimeout) async throws -> T {
+        let response = try await client.send(method, "/v1/pixiv" + path, query: query, body: body, timeout: timeout)
+        return try client.decode(PixivEnvelope<T>.self, from: response).value
+    }
+}
+
+private struct PixivBookmarkAnswer: Decodable {
+    init(from decoder: Decoder) throws {}
+}
+
+enum PixivBrowseQuery {
+    static func adult(_ shown: Bool) -> [URLQueryItem] { shown ? [URLQueryItem(name: "adult", value: "1")] : [] }
+
+    static func ranking(mode: String, page: Int, adult shown: Bool) -> [URLQueryItem] {
+        [URLQueryItem(name: "mode", value: mode), URLQueryItem(name: "page", value: String(page))] + adult(shown)
+    }
+
+    static func search(q: String, order: String, type: String, mode: String, page: Int, adult shown: Bool) -> [URLQueryItem] {
+        [URLQueryItem(name: "q", value: q), URLQueryItem(name: "order", value: order), URLQueryItem(name: "type", value: type),
+         URLQueryItem(name: "mode", value: mode), URLQueryItem(name: "page", value: String(page))] + adult(shown)
+    }
+
+    static func pathID(_ id: String) -> String {
+        id.addingPercentEncoding(withAllowedCharacters: CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))) ?? ""
+    }
+
+    static func publicURL(_ id: String) -> URL { URL(string: "https://www.pixiv.net/artworks/" + pathID(id))! }
+}
+
+/// Lossy fields keep a malformed optional value from discarding an otherwise usable work.
+fileprivate enum PixivBrowseValue: Decodable {
+    case object([String: PixivBrowseValue]), array([PixivBrowseValue]), string(String), number(Double), bool(Bool), null
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if c.decodeNil() { self = .null }
+        else if let v = try? c.decode(Bool.self) { self = .bool(v) }
+        else if let v = try? c.decode(String.self) { self = .string(v) }
+        else if let v = try? c.decode(Double.self) { self = .number(v) }
+        else if let v = try? c.decode([String: Self].self) { self = .object(v) }
+        else if let v = try? c.decode([Self].self) { self = .array(v) }
+        else { self = .null }
+    }
+
+    subscript(_ key: String) -> Self { if case let .object(o) = self { return o[key] ?? .null }; return .null }
+    var text: String { if case let .string(v) = self { return v }; return "" }
+    var id: String {
+        if case let .number(v) = self, v.isFinite, let n = Int64(exactly: v) { return String(n) }
+        return text
+    }
+    var integer: Int? { if case let .number(v) = self, v.isFinite { return Int(exactly: v.rounded(.towardZero)) }; return nil }
+    var flag: Bool { if case let .bool(v) = self { return v }; return false }
+    var values: [Self] { if case let .array(v) = self { return v }; return [] }
+}
+
+struct PixivItem: Decodable, Identifiable, Equatable, Sendable {
+    var id: String
+    var title: String
+    var author: String
+    var authorId: String
+    var tags: [String]
+    var thumbUrl: String
+    var pages: Int
+    var r18: Bool
+    var bookmarked: Bool
+    var popularTier: Int?
+    var addedAt: Int?
+
+    init(from decoder: Decoder) throws { self.init(try PixivBrowseValue(from: decoder)) }
+    fileprivate init(_ o: PixivBrowseValue) {
+        id = o["id"].id; title = o["title"].text; author = o["author"].text; authorId = o["authorId"].id
+        tags = o["tags"].values.compactMap { if case let .string(s) = $0 { return s }; return nil }
+        thumbUrl = o["thumbUrl"].text; pages = max(1, o["pages"].integer ?? 1)
+        r18 = o["r18"].flag; bookmarked = o["bookmarked"].flag
+        popularTier = o["popularTier"].integer.flatMap { $0 > 0 ? $0 : nil }; addedAt = o["addedAt"].integer
+    }
+}
+
+struct PixivListing: Decodable, Sendable {
+    struct Sort: Equatable, Sendable { var requested: String; var used: String }
+    var items: [PixivItem]
+    var page: Int
+    var hasMore: Bool
+    var total: Int?
+    var numPages: Int?
+    var notice: String?
+    var sort: Sort?
+
+    init(from decoder: Decoder) throws {
+        let o = try PixivBrowseValue(from: decoder)
+        items = o["items"].values.map(PixivItem.init).filter { !$0.id.isEmpty }
+        page = o["page"].integer ?? 1; hasMore = o["hasMore"].flag
+        total = o["total"].integer; numPages = o["numPages"].integer
+        notice = o["notice"].text.isEmpty ? nil : o["notice"].text
+        sort = o["sort"]["used"].text.isEmpty ? nil : Sort(requested: o["sort"]["requested"].text, used: o["sort"]["used"].text)
+    }
+}
+
+struct PixivTag: Equatable, Sendable { var tag: String; var en: String }
+struct PixivPage: Identifiable, Equatable, Sendable {
+    var index: Int
+    var thumbUrl: String
+    var url: String
+    var originalUrl: String
+    var id: Int { index }
+}
+
+struct PixivIllust: Decodable, Sendable {
+    enum Kind: String, Sendable { case illust, manga, ugoira }
+    struct Stats: Equatable, Sendable { var views: Int; var likes: Int; var bookmarks: Int; var comments: Int }
+    var id: String
+    var title: String
+    var author: String
+    var authorId: String
+    var created: String
+    var kind: Kind
+    var ugoira: Bool
+    var r18: Bool
+    var description: String
+    var stats: Stats
+    var pageCount: Int
+    var coverUrl: String
+    var tags: [PixivTag]
+    var pages: [PixivPage]
+    var bookmarked: Bool
+
+    init(from decoder: Decoder) throws {
+        let o = try PixivBrowseValue(from: decoder)
+        id = o["id"].id; title = o["title"].text; author = o["author"].text; authorId = o["authorId"].id
+        created = o["created"].text; kind = Kind(rawValue: o["kind"].text) ?? .illust
+        ugoira = o["ugoira"].flag; r18 = o["r18"].flag; description = o["description"].text
+        let s = o["stats"]
+        stats = Stats(views: s["views"].integer ?? 0, likes: s["likes"].integer ?? 0,
+                      bookmarks: s["bookmarks"].integer ?? 0, comments: s["comments"].integer ?? 0)
+        pageCount = max(1, o["pageCount"].integer ?? 1); coverUrl = o["coverUrl"].text
+        tags = o["tags"].values.map { PixivTag(tag: $0["tag"].text, en: $0["en"].text) }.filter { !$0.tag.isEmpty }
+        pages = o["pages"].values.enumerated().map { i, p in
+            PixivPage(index: p["index"].integer ?? i, thumbUrl: p["thumbUrl"].text, url: p["url"].text, originalUrl: p["originalUrl"].text)
+        }
+        bookmarked = o["bookmarked"].flag
+    }
+}
+
+struct PixivSaveResult: Decodable, Sendable {
+    struct Saved: Equatable, Sendable { var page: Int; var itemId: String; var duplicate: Bool }
+    struct Failed: Equatable, Sendable { var page: Int; var error: String }
+    var saved: [Saved]
+    var failed: [Failed]
+
+    init(from decoder: Decoder) throws {
+        let o = try PixivBrowseValue(from: decoder)
+        saved = o["saved"].values.map { Saved(page: $0["page"].integer ?? 0, itemId: $0["itemId"].id, duplicate: $0["duplicate"].flag) }
+        failed = o["failed"].values.map { Failed(page: $0["page"].integer ?? 0, error: $0["error"].text) }
     }
 }

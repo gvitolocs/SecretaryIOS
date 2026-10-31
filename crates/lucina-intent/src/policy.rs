@@ -85,6 +85,7 @@ pub const TOOL_INTENTS: &[&str] = &[
     "poko_news_scout_retry",
     "social_post",
     "cursor_task",
+    "agent_message",
     "lucina_log_inspect",
     "discord_admin",
 ];
