@@ -184,7 +184,7 @@ final class EndpointFallbackTests: XCTestCase {
         let down = await client.probe(primary)
         let up = await client.probe(secondary)
         XCTAssertFalse(down.ok)
-        XCTAssertEqual(down.error, "Can't find public.example.test \u{2014} check DNS/VPN.")
+        XCTAssertEqual(down.error, String(localized: "Can't find \("public.example.test") \u{2014} check DNS/VPN."))
         XCTAssertTrue(up.ok)
         XCTAssertNotNil(up.latencyMs)
     }
