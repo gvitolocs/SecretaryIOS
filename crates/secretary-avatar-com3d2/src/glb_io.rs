@@ -60,8 +60,28 @@ pub fn read(path: &Path) -> Result<(Value, Vec<u8>)> {
     }
     Ok((doc, data))
 }
+/// glTF members that are optional objects or arrays: absent, never `null`. serde_json's `IndexMut`
+/// inserts `null` for a missing key (`p["targets"].as_array_mut()`), and three.js's loader throws on a
+/// `null` morph target list.
+fn without_null_members(doc: &Value) -> Value {
+    fn clean(v: &mut Value) {
+        if let Some(o) = v.as_object_mut() {
+            o.retain(|_, m| !m.is_null());
+        }
+    }
+    let mut doc = doc.clone();
+    for list in ["meshes", "materials", "nodes", "skins"] {
+        for item in doc.get_mut(list).and_then(Value::as_array_mut).into_iter().flatten() {
+            clean(item);
+            for p in item.get_mut("primitives").and_then(Value::as_array_mut).into_iter().flatten() {
+                clean(p);
+            }
+        }
+    }
+    doc
+}
 pub fn write(path: &Path, doc: &Value, data: &[u8]) -> Result<()> {
-    let mut json = serde_json::to_vec(doc).map_err(|e| invalid(e.to_string()))?;
+    let mut json = serde_json::to_vec(&without_null_members(doc)).map_err(|e| invalid(e.to_string()))?;
     while !json.len().is_multiple_of(4) {
         json.push(32);
     }
@@ -85,4 +105,32 @@ pub fn write(path: &Path, doc: &Value, data: &[u8]) -> Result<()> {
     bytes.extend(data);
     fs::write(path, bytes)?;
     Ok(())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn null_members_are_written_absent() {
+        let doc = json!({
+            "meshes": [{"name": "head", "extras": null, "primitives": [{"attributes": {"POSITION": 0}, "targets": null}]}],
+            "materials": [{"name": "m", "extensions": null}],
+            "nodes": [{"name": "n", "extras": null, "mesh": 0}],
+            "buffers": [{"byteLength": 4}]
+        });
+        let dir = std::env::temp_dir().join(format!("glb-null-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.glb");
+        write(&path, &doc, &[0, 0, 0, 0]).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let n = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let back: Value = serde_json::from_slice(&bytes[20..20 + n]).unwrap();
+        assert!(back["meshes"][0]["primitives"][0].get("targets").is_none());
+        assert!(back["meshes"][0].get("extras").is_none());
+        assert!(back["materials"][0].get("extensions").is_none());
+        assert!(back["nodes"][0].get("extras").is_none());
+        assert_eq!(back["nodes"][0]["mesh"], 0);
+        assert_eq!(back["meshes"][0]["primitives"][0]["attributes"]["POSITION"], 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

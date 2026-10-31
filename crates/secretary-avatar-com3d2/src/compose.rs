@@ -272,7 +272,9 @@ pub fn attach(base: &Path, part: &Path, out: &Path) -> Result<Value> {
                             if p["material"].is_number() {
                                 offset(&mut p["material"], offsets["materials"])?;
                             }
-                            if let Some(targets) = p["targets"].as_array_mut() {
+                            // get_mut: IndexMut would insert "targets": null into a primitive without
+                            // morphs, which glTF loaders reject (three.js reads its length).
+                            if let Some(targets) = p.get_mut("targets").and_then(Value::as_array_mut) {
                                 for target in targets {
                                     for a in target
                                         .as_object_mut()

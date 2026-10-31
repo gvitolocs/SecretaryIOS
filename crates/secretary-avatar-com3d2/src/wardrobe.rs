@@ -18,7 +18,7 @@ use std::{
     path::{Path, PathBuf},
 };
 const VERSION: u32 = 3;
-const PIPELINE_REVISION: u32 = 30;
+const PIPELINE_REVISION: u32 = 31;
 /// Categories never offered for selection: swimwear, and underwear on its own (the coverage
 /// guard below still uses plain inner wear).
 const HIDDEN_CATEGORIES: &[&str] = &["mizugi", "bra", "panz"];
@@ -869,7 +869,7 @@ impl Library {
             .collect::<Result<Vec<_>>>()?
             .join(";");
         let key = hash(&format!(
-            "v{VERSION}-native30:{modified}:{}:{profiles}:{:?}:{:?}",
+            "v{VERSION}-native31:{modified}:{}:{profiles}:{:?}:{:?}",
             ids.join(","),
             self.config.loose_surface_items,
             self.config.loose_component_sizes
