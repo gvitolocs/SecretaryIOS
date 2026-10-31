@@ -339,7 +339,7 @@ mod tests {
     fn a_share_item_replaces_the_local_bubble_by_share_id() {
         let local = share(user("local-share-s1", 100), "s1");
         let server = share(user("tl_20", 101), "s1");
-        let r = merge(&[local.clone()], &[server]);
+        let r = merge(std::slice::from_ref(&local), &[server]);
         assert_eq!(ids(&r), ["tl_20"]);
         assert_eq!(replaced(&r), [("local-share-s1", "tl_20")]);
         // A server item without share_id (not a share) never matches by it.
@@ -455,7 +455,7 @@ mod tests {
         let u = client(user("local-c1", 100), "c1");
         let s2 = reply(lucina("tl_11", 101), "tl_10");
         let incoming = [s, u, s2];
-        let first = merge(&[r0.clone()], &incoming);
+        let first = merge(std::slice::from_ref(&r0), &incoming);
         assert_eq!(ids(&first), ["local-c1", "tl_10", "local-r", "tl_11"]);
         // The item bodies are the same as in the first pass except `local-r`, whose reply_to is now tl_10, so the
         // second pass replaces it by tl_11.
