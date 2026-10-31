@@ -44,10 +44,11 @@ class MainActivity : Activity() {
         header.addView(ui.largeTitle("Secretary").apply { layoutParams = ui.lp(top = 12f, bottom = 12f) })
         val nav = LinearLayout(this)
         header.addView(nav)
-        for ((i, name) in arrayOf("Lucina", "My desk", "Calls").withIndex()) {
+        for ((i, name) in arrayOf("Lucina", "My desk", "Calls", "Callers").withIndex()) {
             val button = ui.secondaryButton(name) {
                 when (name) {
                     "Calls" -> startActivity(Intent(this, CallsActivity::class.java))
+                    "Callers" -> startActivity(Intent(this, CallerScreenActivity::class.java))
                     "My desk" -> web.loadUrl(Calls.SITE + "/desk")
                     else -> web.loadUrl(Calls.SITE + "/")
                 }

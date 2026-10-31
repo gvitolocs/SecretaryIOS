@@ -9,6 +9,12 @@
 //! | `transcribe(filesDir: String, cookie: String, json: String, audio: ByteArray): String` | Envelope around [`crate::net::transcribe`]. |
 //! | `shareUpload(filesDir: String, cookie: String, manifestPath: String): String` | Unwrapped [`crate::share::upload`] job result. |
 //! | `ui(op: String, json: String): String` | Envelope around [`crate::ui::run`]. |
+//! | `dialer(filesDir: String, op: String, json: String): String` | Envelope around [`crate::dialer::run`]: `label`, `callLog`, `missed`, `voicemail`. |
+//! | `callerFlush(filesDir: String, cookie: String): String` | Envelope `{waiting}`: sends the queued rejection and allow reports. Blocks on the network. |
+//! | `callerState(filesDir: String): String` | Envelope: `{settings, last, lastLine}` ([`crate::caller::Store::state`]). |
+//! | `callerSettings(filesDir: String, json: String): String` | Envelope: patch `{label?, silence?, reject?}`, then the new state. |
+//! | `localVerdict(filesDir: String, number: String, json: String, lang: String): String` | Envelope around [`crate::caller::Screen`], no network. `json` is `{contact?}`. |
+//! | `screenCall(filesDir: String, cookie: String, number: String, json: String, lang: String): String` | The same, from the server (about 1.2 s at most), else the rules. Blocks on the network. |
 //!
 //! For envelope-returning calls, the envelope is `{"ok": true, "data": …}` or `{"ok": false, "error": "…"}`.
 //! Every entry point catches panics, so Rust never unwinds into the JVM.
@@ -25,6 +31,7 @@ use jni::{
 use serde_json::{json, Value};
 
 use crate::{
+    caller, dialer,
     journal::{Journal, Op},
     net::{self, Https},
     phone, ui, Result,
@@ -173,6 +180,126 @@ pub extern "system" fn Java_tech_getsecretary_secretary_Native_ui<'l>(
         let op = string(env, &op, "Invalid operation.")?;
         let v = json_arg(env, &data)?;
         ui::run(&op, &v)
+    })
+}
+
+/// `Native.dialer`: the phone app's own screens (never the emergency path).
+#[no_mangle]
+pub extern "system" fn Java_tech_getsecretary_secretary_Native_dialer<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    files_dir: JString<'l>,
+    op: JString<'l>,
+    data: JString<'l>,
+) -> jstring {
+    guarded(&mut env, |env| {
+        let store = caller::Store::open(&string(env, &files_dir, "Storage unavailable.")?)?;
+        let op = string(env, &op, "Invalid operation.")?;
+        let v = json_arg(env, &data)?;
+        dialer::run(&store, &op, &v, crate::now_ms())
+    })
+}
+
+/// `Native.callerFlush`: send the queued reports (rejections, allowed numbers) to Lucina.
+#[no_mangle]
+pub extern "system" fn Java_tech_getsecretary_secretary_Native_callerFlush<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    files_dir: JString<'l>,
+    cookie: JString<'l>,
+) -> jstring {
+    guarded(&mut env, |env| {
+        let store = caller::Store::open(&string(env, &files_dir, "Storage unavailable.")?)?;
+        let cookie = string(env, &cookie, "").unwrap_or_default();
+        if cookie.trim().is_empty() {
+            return Ok(json!({ "waiting": store.outbox_len() }));
+        }
+        let left = store.flush(&Https::with_timeout(&cookie, crate::reject::OUTBOX_TIMEOUT));
+        Ok(json!({ "waiting": left }))
+    })
+}
+
+/// `Native.callerState`: settings and the last screened call.
+#[no_mangle]
+pub extern "system" fn Java_tech_getsecretary_secretary_Native_callerState<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    files_dir: JString<'l>,
+) -> jstring {
+    guarded(&mut env, |env| {
+        let store = caller::Store::open(&string(env, &files_dir, "Storage unavailable.")?)?;
+        Ok(store.state(crate::now_ms()))
+    })
+}
+
+/// `Native.callerSettings`: change the owner's switches.
+#[no_mangle]
+pub extern "system" fn Java_tech_getsecretary_secretary_Native_callerSettings<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    files_dir: JString<'l>,
+    data: JString<'l>,
+) -> jstring {
+    guarded(&mut env, |env| {
+        let store = caller::Store::open(&string(env, &files_dir, "Storage unavailable.")?)?;
+        let v = json_arg(env, &data)?;
+        store.patch_settings(&v)?;
+        Ok(store.state(crate::now_ms()))
+    })
+}
+
+/// `Native.localVerdict`: the instant verdict for a ringing number.
+#[no_mangle]
+pub extern "system" fn Java_tech_getsecretary_secretary_Native_localVerdict<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    files_dir: JString<'l>,
+    number: JString<'l>,
+    data: JString<'l>,
+    lang: JString<'l>,
+) -> jstring {
+    guarded(&mut env, |env| {
+        let store = caller::Store::open(&string(env, &files_dir, "Storage unavailable.")?)?;
+        let number = string(env, &number, "Invalid number.")?;
+        let input = caller::Input::from_json(&json_arg(env, &data)?);
+        let lang = string(env, &lang, "").unwrap_or_default();
+        Ok(serde_json::to_value(caller::local(
+            &store,
+            &number,
+            &input,
+            &lang,
+            crate::now_ms(),
+        ))
+        .unwrap_or(Value::Null))
+    })
+}
+
+/// `Native.screenCall`: Jev's verdict from the server, else the rules.
+#[no_mangle]
+pub extern "system" fn Java_tech_getsecretary_secretary_Native_screenCall<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    files_dir: JString<'l>,
+    cookie: JString<'l>,
+    number: JString<'l>,
+    data: JString<'l>,
+    lang: JString<'l>,
+) -> jstring {
+    guarded(&mut env, |env| {
+        let store = caller::Store::open(&string(env, &files_dir, "Storage unavailable.")?)?;
+        let cookie = string(env, &cookie, "").unwrap_or_default();
+        let number = string(env, &number, "Invalid number.")?;
+        let input = caller::Input::from_json(&json_arg(env, &data)?);
+        let lang = string(env, &lang, "").unwrap_or_default();
+        Ok(serde_json::to_value(caller::screen(
+            &store,
+            &Https::with_timeout(&cookie, caller::SCREEN_TIMEOUT),
+            &number,
+            &input,
+            &lang,
+            crate::now_ms(),
+        ))
+        .unwrap_or(Value::Null))
     })
 }
 

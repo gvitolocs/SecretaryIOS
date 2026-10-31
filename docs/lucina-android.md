@@ -211,6 +211,103 @@ log a code, a token or a message body. `"result"` values are the snake_case stri
   token moved into the encrypted `state.bin`, and the pref was deleted.
 - **Not yet verified:** a real carrier SMS, and a notification-sourced code.
 
+## Caller screening (Secretary · Lucina 0.7.1, versionCode 10)
+
+Unknown callers are screened with Jev (`POST /v1/callers/screen`, contract in `crates/lucina-phone-core/src/caller.rs` and the server's
+`/v1/callers/*`). Rust does the work in `crates/lucina-android-calls/src/caller.rs`; Kotlin only hosts the Android pieces.
+
+| Kotlin | Job |
+|---|---|
+| `CallerScreenService` (`CallScreeningService`, `BIND_SCREENING_SERVICE`, held through `ROLE_CALL_SCREENING`) | Incoming calls only. Answers ALLOW at once, then shows the heads-up notification. |
+| `CallerScreenActivity` (MainActivity's "Callers" button) | Role status and request, the three switches, permissions and the last screened call. |
+
+- **Flow:** `Native.localVerdict` (no network: the shared core's fallback rules, from facts about the number only) posts the first notification;
+  `Native.screenCall` asks the server (`call: {source: "android"}`, 1.2 s in total, the WebView cookie read on the
+  main thread like the share job) and replaces it. Any error, an answer for another number or an out-of-range probability falls back to
+  the rules (`source: "rules"`, marked "quick guess" in the text). Hidden numbers get no notification and no request.
+- **Facts only:** the phone sends the number, the language and `call.source`. It makes no assumption about who might call (no shift, delivery or
+  customer guesses): the labels come from the number, his contacts, his earlier calls and the server's public caller-ID reports.
+- **Auto-reject (the owner's choice, on by default):** the decision is the shared core's `reject_decision`, run in Rust
+  (`caller.rs::rejection`); Kotlin has no policy. Default limits: spam >= 0.60 or pick-up <= 0.25, and while an order is active only
+  spam >= 0.97 (editable in the Callers screen; Rust refuses anything outside 0..1). Guards, read on the phone at ring time
+  (`CallFacts.kt`): contact (READ_CONTACTS), a call in the call log that is outgoing or incoming with duration > 0 (READ_CALL_LOG), the local
+  allow list, `TelephonyManager.isEmergencyNumber` plus the core's emergency and short-number floor. **If a check cannot run (permission
+  missing, a query throws), nothing is rejected.** The fallback rules never reject (no report facts, `Keep::NoEvidence`).
+- **Waiting:** if the rule is on and no guard already puts the call through (`dialer` op `plan`), the answer waits for the server, at most
+  1.5 s, then allows. Otherwise the call is allowed at once. The response for a rejection is `setDisallowCall(true).setRejectCall(true).setSkipCallLog(false).setSkipNotification(true)`
+  (`ScreenPlan.kt`, host-tested); only one path answers (the first ask; a second ask for the same number gets the same answer).
+- **After a rejection:** the log entry (`caller-rejected.json`), a queued `POST /v1/callers/rejected` (outbox with retries, flushed after the
+  rejection and whenever the Callers screen opens), and a quiet note (low importance) with the core's `reject_line`. Its main button is
+  **Allow & call back** (his tap: allow list, queued `POST /v1/callers/allow`, then `TelecomManager.placeCall`); **Allow** only allows.
+  The Callers screen lists recent rejections with the same buttons.
+- **Order signal:** Lucina Maps 0.3.5 sends `orderAtMs` on each navigation link (`OrderSignalReceiver`, permission `ORDER_SIGNAL`). It is kept in
+  `caller-order.json` and used only to raise the bar for 45 minutes; it is in no request to the server or Jev.
+- **Settings from 0.6:** the old silence/reject switches and threshold are dropped; a 0.6 settings file keeps only the label choice.
+- **Contacts:** `READ_CONTACTS` is optional (asked in the screen). With it, a caller who is a contact is looked up on the phone only and
+  gets no notification and no request; without it every caller is screened.
+- **Privacy:** nothing is logged. The last screened call (display number, label) is kept in `caller-last.json` for the screen, 0600.
+- **JNI additions:** `callerState`, `callerSettings`, `callerFlush`, `localVerdict`, `screenCall` (12 exports in all, checked by `build.sh`).
+- **Role:** `adb shell cmd role add-role-holder android.app.role.CALL_SCREENING tech.getsecretary.secretary` or the screen's button.
+
+## Phone app (Secretary · Lucina 0.7.1, versionCode 10)
+
+Secretary can be the phone app (`ROLE_DIALER`); Samsung Phone stays installed. **Only the owner makes it the default**:
+the app asks (`RoleManager.createRequestRoleIntent`), Android shows its own dialog, and he taps. Nothing grants the role over adb unless he says so.
+
+| Piece | Where | Notes |
+|---|---|---|
+| Role eligibility | manifest | `DIAL` activities (plain, `tel:`), `VIEW tel:`, `CALL_BUTTON`, `LucinaCallService` (`BIND_INCALL_SERVICE`, `IN_CALL_SERVICE_UI`). |
+| Dialing | `DialPlan.kt` (pure Kotlin), `Phone.kt` | Every call is `TelecomManager.placeCall`. Host-tested (`android/secretary/test/run.sh`). |
+| In-call | `LucinaCallService`, `InCallActivity`, `CallActionReceiver` | Rust `callView` decides rows, buttons, audio routes and the proximity lock; `CallPlan.fallback` does the same without Rust. |
+| Log, contacts, voicemail | `CallLogActivity`, `ContactsActivity`, `PhoneEventsReceiver` | Rust `dialer` formats the log, the missed-call and voicemail texts. |
+| Jev label on the call | `caller.rs` cache, `dialer` op `label` | `screen()` remembers each verdict by number (300 numbers, 30 days). |
+
+- **Emergency calls:** `DialPlan.plan` asks `TelephonyManager.isEmergencyNumber` (then `PhoneNumberUtils`; 112 and 911 always count) *first*. An
+  emergency number goes straight to `TelecomManager.placeCall(tel:<n>)`: no CALL_PHONE request of ours, no confirmation, no Rust, no network, no
+  Jev, no journal entry. If Telecom refuses it (not the phone app and no CALL_PHONE), the number is opened ready in the system dialer.
+  `InCallActivity` and the notification fall back to `CallPlan.fallback` when the native library fails, and every call-control tap is guarded.
+  Check without dialing: `content call --uri content://tech.getsecretary.secretary.calls --method emergency --arg 112`.
+- **Incoming:** Telecom adds the call after the screening service answered. `IN_CALL_SERVICE_RINGING` is false, so the system rings and
+  the notification channels are silent. Screen off or locked: full-screen intent. Screen in use (another app in the foreground): heads-up with
+  **Answer** and **Decline**, which act only on his tap. Nothing answers or rejects by itself; the only automatic rejection is the owner's auto-reject rule (Caller screening).
+- **One label, one lookup:** the call screen reads the cached verdict (or the instant rules guess) and refreshes when the screening service
+  gets Jev's answer. As the phone app the screening service posts no second heads-up. If Telecom asks it twice for one number within 15 s,
+  the second ask waits for the first and gives the same answer.
+- **Call waiting:** a second ringing call shows Answer (Telecom holds the first), "End current call & answer" and Decline; held calls get Resume.
+- **Audio:** mute, and one button per offered output (earpiece or wired headset, Bluetooth, speaker) from `CallAudioState`; the proximity
+  wake lock is held only for a connected or dialing call at the earpiece.
+- **Missed calls and voicemail:** `SHOW_MISSED_CALLS_NOTIFICATION` and `SHOW_VOICEMAIL_NOTIFICATION` are handled; opening Recent calls clears them.
+  Long-press 1 on the dialpad, or the Voicemail row, calls `voicemail:` through Telecom.
+- **Back to Samsung Phone:** the Phone screen's "Use Samsung Phone again" asks Telecom (`ACTION_CHANGE_DEFAULT_DIALER`, the previous
+  default remembered) and falls back to Settings > Default apps. adb: `adb shell cmd role add-role-holder android.app.role.DIALER com.samsung.android.dialer`
+  (or `adb shell telecom set-default-dialer com.samsung.android.dialer`).
+- **Read-only device check:** `android/secretary/test/device-check.sh` (role holders, qualifying components, the Samsung package, the
+  emergency dry run). It dials nothing.
+
+### Device test checklist (owner present; nothing is placed, answered or rejected by an agent)
+
+0. Phone not in use for work, USB or wireless adb. `adb install -r secretary-0.7.1.apk`. Run `test/device-check.sh`: version 0.7.1, DIAL activities listed,
+   InCallService and CallScreeningService listed, missed/voicemail receivers listed, `112 -> EMERGENCY`, `placed:false`.
+1. Open Secretary > Calls > "Make Secretary your phone app". Android shows its dialog: **he taps "Set as default"**. Then
+   `adb shell cmd role get-role-holders android.app.role.DIALER` shows `tech.getsecretary.secretary`.
+2. Outgoing: he dials a number he chooses (a contact or his other phone). The call screen shows the name or number, "Dialing" then
+   "Connected"; mute, speaker/earpiece and Bluetooth (if paired) change the audio; hold/resume; the keypad sends tones; End ends it. The
+   screen turns off when the phone is at his ear (earpiece route) and on again when he takes it away. The call appears in Recent calls.
+3. Incoming (screen off, locked): the full-screen call screen appears, the system ringtone plays once (no second sound), the Jev label
+   shows within about a second, Answer works only when tapped. Decline works only when tapped; it then shows in Recent calls.
+4. Incoming with another app in the foreground (the one he works with) and the phone unlocked: a heads-up with Answer and Decline appears over it and the app is not
+   interrupted. Tapping Answer answers and leaves that app in front; the ongoing-call notification has Hang up and opens the call screen.
+5. Call waiting: during a call, a second call rings. The screen offers Answer, "End current call & answer", Decline. Answer holds the first;
+   Resume swaps back; End ends one at a time.
+6. Missed call: let one ring out (his other phone). A "Missed call" notification appears with the Jev label for an unknown number;
+   opening Recent calls clears it. Tapping a row asks nothing and calls back.
+7. Voicemail: long-press 1 calls the carrier voicemail (he hangs up). Voicemail notification if the carrier sends one.
+8. Emergency, **without dialing**: type 112 in the dialpad and look at the route only: `... --method emergency --arg 112` reports
+   `EMERGENCY` and `TelecomManager.placeCall(tel:112) at once`. **Never press Call on 112.** (Samsung's own dialer can be used to check that the SIM treats 112 as an emergency number; also without pressing Call.)
+9. Switch back: "Use Samsung Phone again" (or Settings > Default apps > Phone app) and he confirms. `get-role-holders` shows
+   `com.samsung.android.dialer`; an incoming call now rings in Samsung Phone; Secretary still screens it (the call-screening role is separate).
+   If the screen does not appear: `adb shell cmd role add-role-holder android.app.role.DIALER com.samsung.android.dialer`.
+
 ## Attachments in the chat WebView
 
 Secretary Android 0.4.0 (versionCode 5) lets the chat page attach photos, videos and files. A small

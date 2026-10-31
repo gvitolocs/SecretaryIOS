@@ -45,17 +45,29 @@ pub struct CallIn {
     pub handle: Option<String>,
     /// `Call.Details.can(CAPABILITY_HOLD)`.
     pub can_hold: bool,
+    /// The contact's name, when the number is in his contacts.
+    pub name: Option<String>,
+    /// The Jev label for an incoming call (from [`crate::caller`]'s cache), if any.
+    pub jev: Option<String>,
+    /// Jev's spam probability for [`jev`](Self::jev), to colour the line.
+    pub jev_spam: f64,
 }
 
 /// One row of the in-call screen.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CallRow {
-    /// Who is calling or being called.
+    /// Who is calling or being called: the contact's name, else the number.
     pub peer: String,
+    /// The number, when `peer` is a name.
+    pub number: Option<String>,
     /// "Incoming", "Connected", …
     pub label: &'static str,
-    /// Buttons, in order: `answer`, `decline`, `end`, `resume`, `hold`.
+    /// Buttons, in order: `answer`, `end_answer`, `decline`, `end`, `resume`, `hold`.
     pub actions: Vec<&'static str>,
+    /// Jev's label line (kind, pick-up hint), for an incoming call.
+    pub jev: Option<String>,
+    /// Jev thinks the call is unwanted: show the line in the warning colour.
+    pub warn: bool,
 }
 
 /// The ongoing call notification.
@@ -68,8 +80,53 @@ pub struct CallNotice {
     pub title: &'static str,
     /// The peer.
     pub text: String,
-    /// Ringing calls open the in-call screen full-screen.
+    /// Ringing and dialing calls open the in-call screen full-screen.
     pub full_screen: bool,
+    /// Jev's label for the notification's sub text.
+    pub sub: Option<String>,
+    /// Notification buttons, in order: `answer`, `decline` for a ringing call,
+    /// else `hangup`. They act only when the owner taps them.
+    pub actions: Vec<&'static str>,
+}
+
+/// `CallAudioState` as the `InCallService` reports it.
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AudioIn {
+    /// `CallAudioState.isMuted()`.
+    pub muted: bool,
+    /// `CallAudioState.getRoute()`.
+    pub route: i32,
+    /// `CallAudioState.getSupportedRouteMask()`; 0 = not reported yet.
+    pub mask: i32,
+}
+
+/// `CallAudioState` route bits.
+pub mod route_bit {
+    pub const EARPIECE: i32 = 1;
+    pub const BLUETOOTH: i32 = 2;
+    pub const WIRED_HEADSET: i32 = 4;
+    pub const SPEAKER: i32 = 8;
+}
+
+/// One audio output the owner can pick.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RouteButton {
+    /// A single `CallAudioState` route bit.
+    pub route: i32,
+    pub name: &'static str,
+    /// It is the current route.
+    pub on: bool,
+}
+
+/// The call controls under the rows.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Controls {
+    pub muted: bool,
+    /// The outputs the phone offers (earpiece or wired headset, Bluetooth, speaker).
+    pub routes: Vec<RouteButton>,
+    /// A call is connected at the ear: the screen turns off near the face.
+    pub proximity: bool,
 }
 
 /// The in-call screen and notification for the current calls.
@@ -79,6 +136,8 @@ pub struct CallView {
     pub calls: Vec<CallRow>,
     /// `None` when there are no calls: cancel the notification.
     pub notification: Option<CallNotice>,
+    /// Mute, audio routes and the proximity lock.
+    pub controls: Controls,
 }
 
 /// How a call is shown, from `Call.getState()`.
@@ -108,13 +167,53 @@ pub fn peer(handle: Option<&str>) -> String {
     }
 }
 
-/// The in-call screen and notification for `calls`.
+/// The in-call screen and notification for `calls`, with the audio state
+/// not reported yet.
 pub fn call_view(calls: &[CallIn]) -> CallView {
+    call_view_with(calls, &AudioIn::default())
+}
+
+/// The audio outputs offered by `mask` (earpiece and speaker when the phone
+/// has not reported yet), the current one marked.
+pub fn routes(audio: &AudioIn) -> Vec<RouteButton> {
+    let mask = if audio.mask == 0 {
+        route_bit::EARPIECE | route_bit::SPEAKER
+    } else {
+        audio.mask
+    };
+    [
+        (route_bit::EARPIECE, "Earpiece"),
+        (route_bit::WIRED_HEADSET, "Headset"),
+        (route_bit::BLUETOOTH, "Bluetooth"),
+        (route_bit::SPEAKER, "Speaker"),
+    ]
+    .into_iter()
+    .filter(|(bit, _)| mask & bit != 0)
+    .map(|(route, name)| RouteButton {
+        route,
+        name,
+        on: audio.route == route,
+    })
+    .collect()
+}
+
+/// The in-call screen, notification and controls for `calls`.
+pub fn call_view_with(calls: &[CallIn], audio: &AudioIn) -> CallView {
+    let live_other = |i: usize| {
+        calls.iter().enumerate().any(|(j, c)| {
+            j != i && matches!(c.state, state::ACTIVE | state::HOLDING | state::DIALING)
+        })
+    };
     let rows = calls
         .iter()
-        .map(|c| {
+        .enumerate()
+        .map(|(i, c)| {
             let actions = if c.state == state::RINGING {
-                vec!["answer", "decline"]
+                if live_other(i) {
+                    vec!["answer", "end_answer", "decline"]
+                } else {
+                    vec!["answer", "decline"]
+                }
             } else if c.state == state::HOLDING {
                 vec!["end", "resume"]
             } else if c.can_hold {
@@ -122,10 +221,34 @@ pub fn call_view(calls: &[CallIn]) -> CallView {
             } else {
                 vec!["end"]
             };
+            let number = peer(c.handle.as_deref());
+            let name = c
+                .name
+                .as_deref()
+                .map(|n| {
+                    n.chars()
+                        .filter(|c| !c.is_control())
+                        .take(120)
+                        .collect::<String>()
+                })
+                .filter(|n| !n.trim().is_empty());
+            let jev = c
+                .jev
+                .as_deref()
+                .map(|j| {
+                    j.chars()
+                        .filter(|c| c != &'\r')
+                        .take(400)
+                        .collect::<String>()
+                })
+                .filter(|j| !j.trim().is_empty());
             CallRow {
-                peer: peer(c.handle.as_deref()),
+                number: name.as_ref().map(|_| number.clone()),
+                peer: name.unwrap_or(number),
                 label: state_label(c.state),
                 actions,
+                warn: jev.is_some() && c.jev_spam >= 0.7,
+                jev,
             }
         })
         .collect::<Vec<_>>();
@@ -143,10 +266,28 @@ pub fn call_view(calls: &[CallIn]) -> CallView {
                 "Phone call"
             },
             text: rows[index].peer.clone(),
-            full_screen: ringing,
+            full_screen: ringing || calls[index].state == state::DIALING,
+            sub: rows[index]
+                .jev
+                .as_ref()
+                .map(|j| j.lines().next().unwrap_or("").to_owned()),
+            actions: if ringing {
+                vec!["answer", "decline"]
+            } else {
+                vec!["hangup"]
+            },
         }
     });
+    let ringing = calls.iter().any(|c| c.state == state::RINGING);
+    let at_ear = calls
+        .iter()
+        .any(|c| matches!(c.state, state::ACTIVE | state::DIALING | 0 | 9));
     CallView {
+        controls: Controls {
+            muted: audio.muted,
+            routes: routes(audio),
+            proximity: at_ear && !ringing && audio.route == route_bit::EARPIECE,
+        },
         calls: rows,
         notification,
     }
@@ -308,7 +449,9 @@ pub fn run(op: &str, v: &Value) -> Result<Value> {
         "callView" => {
             let calls: Vec<CallIn> =
                 serde_json::from_value(v["calls"].clone()).map_err(|_| "Invalid call list.")?;
-            serde_json::to_value(call_view(&calls)).map_err(|_| "Invalid call list.".into())
+            let audio: AudioIn = serde_json::from_value(v["audio"].clone()).unwrap_or_default();
+            serde_json::to_value(call_view_with(&calls, &audio))
+                .map_err(|_| "Invalid call list.".into())
         }
         "dtmf" => Ok(dtmf(v["digits"].as_str().unwrap_or(""))),
         "route" => Ok(json!({ "action": route(v["url"].as_str().unwrap_or("")).as_str() })),
@@ -328,17 +471,19 @@ mod tests {
                 state: state::HOLDING,
                 handle: Some("+4511111111".into()),
                 can_hold: true,
+                ..Default::default()
             },
             CallIn {
                 state: state::RINGING,
                 handle: None,
                 can_hold: false,
+                ..Default::default()
             },
         ];
         let v = call_view(&calls);
         assert_eq!(v.calls[0].actions, ["end", "resume"]);
         assert_eq!(v.calls[0].label, "On hold");
-        assert_eq!(v.calls[1].actions, ["answer", "decline"]);
+        assert_eq!(v.calls[1].actions, ["answer", "end_answer", "decline"]);
         assert_eq!(v.calls[1].peer, "Private number");
         let n = v.notification.unwrap();
         assert_eq!(
@@ -354,6 +499,7 @@ mod tests {
             state: state::ACTIVE,
             handle: Some("+4522".into()),
             can_hold: true,
+            ..Default::default()
         }]);
         assert_eq!(v.calls[0].actions, ["end", "hold"]);
         assert_eq!(v.notification.as_ref().unwrap().title, "Phone call");
@@ -376,6 +522,131 @@ mod tests {
         .unwrap();
         assert_eq!(json["notification"]["fullScreen"], true);
         assert_eq!(json["calls"][0]["label"], "Incoming");
+    }
+
+    fn call(st: i32, handle: &str) -> CallIn {
+        CallIn {
+            state: st,
+            handle: Some(handle.into()),
+            can_hold: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn names_and_jev_labels_reach_the_rows_and_the_notification() {
+        let mut c = call(state::RINGING, "+4570405205");
+        c.jev = Some("Likely scam (0.93)\nScam · probably not worth picking up".into());
+        c.jev_spam = 0.93;
+        let v = call_view(&[c]);
+        assert_eq!(v.calls[0].peer, "+4570405205");
+        assert_eq!(v.calls[0].number, None);
+        assert!(v.calls[0].warn);
+        let n = v.notification.unwrap();
+        assert_eq!(n.sub.as_deref(), Some("Likely scam (0.93)"));
+        assert_eq!(n.actions, ["answer", "decline"]);
+        // A contact shows by name, the number stays available; a calm label is not a warning.
+        let mut c = call(state::ACTIVE, "+4522334455");
+        c.name = Some("Mamma".into());
+        c.jev = Some("Unknown caller".into());
+        c.jev_spam = 0.1;
+        let v = call_view(&[c]);
+        assert_eq!(v.calls[0].peer, "Mamma");
+        assert_eq!(v.calls[0].number.as_deref(), Some("+4522334455"));
+        assert!(!v.calls[0].warn);
+        assert_eq!(v.notification.unwrap().actions, ["hangup"]);
+        // Blank names and labels are ignored.
+        let mut c = call(state::ACTIVE, "+4522334455");
+        c.name = Some("  ".into());
+        c.jev = Some(" ".into());
+        let v = call_view(&[c]);
+        assert_eq!(
+            (v.calls[0].peer.as_str(), v.calls[0].jev.is_none()),
+            ("+4522334455", true)
+        );
+    }
+
+    #[test]
+    fn call_waiting_offers_end_and_answer() {
+        let v = call_view(&[
+            call(state::ACTIVE, "+4511111111"),
+            call(state::RINGING, "+4522222222"),
+        ]);
+        assert_eq!(v.calls[0].actions, ["end", "hold"]);
+        assert_eq!(v.calls[1].actions, ["answer", "end_answer", "decline"]);
+        // The notification is about the ringing call; nothing answers by itself.
+        let n = v.notification.unwrap();
+        assert_eq!((n.index, n.actions.clone()), (1, vec!["answer", "decline"]));
+        // A single ringing call has no "end and answer".
+        let v = call_view(&[call(state::RINGING, "+4522222222")]);
+        assert_eq!(v.calls[0].actions, ["answer", "decline"]);
+        // A dialing call opens the screen full-screen too.
+        let v = call_view(&[call(state::DIALING, "112")]);
+        assert!(v.notification.unwrap().full_screen);
+    }
+
+    #[test]
+    fn audio_routes_mute_and_the_proximity_lock() {
+        let earpiece = AudioIn {
+            muted: true,
+            route: route_bit::EARPIECE,
+            mask: route_bit::EARPIECE | route_bit::BLUETOOTH | route_bit::SPEAKER,
+        };
+        let v = call_view_with(&[call(state::ACTIVE, "+4511111111")], &earpiece);
+        assert!(v.controls.muted && v.controls.proximity);
+        let names: Vec<_> = v.controls.routes.iter().map(|r| (r.name, r.on)).collect();
+        assert_eq!(
+            names,
+            [("Earpiece", true), ("Bluetooth", false), ("Speaker", false)]
+        );
+        // Speaker, Bluetooth and a headset need no proximity lock; ringing and holding neither.
+        for route in [
+            route_bit::SPEAKER,
+            route_bit::BLUETOOTH,
+            route_bit::WIRED_HEADSET,
+        ] {
+            let a = AudioIn { route, ..earpiece };
+            assert!(
+                !call_view_with(&[call(state::ACTIVE, "+45")], &a)
+                    .controls
+                    .proximity
+            );
+        }
+        assert!(
+            !call_view_with(&[call(state::RINGING, "+45")], &earpiece)
+                .controls
+                .proximity
+        );
+        assert!(
+            !call_view_with(&[call(state::HOLDING, "+45")], &earpiece)
+                .controls
+                .proximity
+        );
+        assert!(
+            call_view_with(&[call(state::DIALING, "112")], &earpiece)
+                .controls
+                .proximity
+        );
+        assert!(!call_view_with(&[], &earpiece).controls.proximity);
+        // Nothing reported yet: earpiece and speaker.
+        let v = call_view(&[call(state::ACTIVE, "+45")]);
+        assert_eq!(v.controls.routes.len(), 2);
+        // A wired headset replaces the earpiece in the list.
+        let wired = AudioIn {
+            muted: false,
+            route: route_bit::WIRED_HEADSET,
+            mask: route_bit::WIRED_HEADSET | route_bit::SPEAKER,
+        };
+        let v = call_view_with(&[call(state::ACTIVE, "+45")], &wired);
+        assert_eq!(v.controls.routes[0].name, "Headset");
+        assert!(v.controls.routes[0].on);
+        let json = run(
+            "callView",
+            &json!({"calls": [{"state": 4, "handle": "+45", "canHold": true}], "audio": {"muted": true, "route": 1, "mask": 9}}),
+        )
+        .unwrap();
+        assert_eq!(json["controls"]["muted"], true);
+        assert_eq!(json["controls"]["proximity"], true);
     }
 
     #[test]
