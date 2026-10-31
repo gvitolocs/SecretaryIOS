@@ -149,3 +149,32 @@ native/WASM release builds passed. Code checkpoint:
 The private root also contains `review-uniform-20261028.png` as a current view of
 the restored Uniform. Production remains unchanged; the wider garment-fitting
 and full-engine work is explicitly unfinished.
+
+## Status 2026-10-31 (Claude, session com3d2-finish)
+
+The crate is on `main` (ported from `codex/lucina-gravity`, WIP e2d1c0ac included). The owner asked for both
+directions: (A) her current body stays the production default, with reviewed COM3D2 outfits re-fitted onto it,
+and (B) this COM3D2 body as an opt-in beta.
+
+- **B in production, off by default.** The Wardrobe's "COM3D2 body (beta)" switch (per device) opens this fitting
+  room at `/v1/com3d2/`: p1 Caddy (session check, CSRF header on writes, gateway key) → `lucina-com3d2` on
+  nezopt's tailnet address (`deploy/lucina-com3d2.service`, `COM3D2_*` serve options in `preview.rs`).
+- **Safe for work.** Swimwear and bare underwear are never offered; adult items are filtered by name
+  (`ADULT_NAME_PARTS`): 1416 → 1083 items. A look that leaves chest or hips bare gets plain inner wear, so the bare
+  body (including "Base body") is never shown. NTE stays deferred.
+- **Looks.** 13 complete COM3D2 sets were added as presets (`com-*` in `library-config.json`). The same composed
+  models feed A: `~/scratch/lucina-wardrobe` (`build.py` recipe `com3d2`, `vroid.py` `com3d2_map`) re-targets
+  body and garments onto G's skeleton with G's real head, like the VRoid outfits.
+
+Issues found on the COM3D2 body and what happened to them:
+
+| Issue | State |
+| --- | --- |
+| Primitives without morphs were written with `"targets": null` (serde_json `IndexMut`); three.js threw, so those looks (Noir maid and others) never loaded | Fixed: `compose.rs` uses `get_mut`; `glb_io::write` drops null members; cache revision 31 |
+| Adult items and the bare body reachable from the catalog | Fixed (filter + coverage guard) |
+| Loopback-only server, fixed host/origin, one request at a time | Fixed for deployment (serve options, gateway key, downloads on their own thread). Composition of a new look still blocks other requests while it runs |
+| Secretary outfits re-fitted onto this body: shoes and socks vanish (COM3D2's raised feet poke through flat shoes), body shows through (Chef, Crimson, Maid), Gym joggers split, no body masking under re-fits | Open. These re-fits stay review-only; on this body use COM3D2's own sets, which fit with the game's masks |
+| Claire maid skirt (`dress216_*skrt*`): "native material slot bounds" | Open (engine): preset dropped |
+| Composed views are 17–30 MB each, uncompressed | Open: slow away from home |
+| Inferred hems on re-fitted dresses (Spring, White dress) stand out stiffly | Open, review-only looks |
+| Face customisation controls on Lucina's head | Unavailable by design (no authored mapping) |

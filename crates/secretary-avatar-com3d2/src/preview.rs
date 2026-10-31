@@ -222,6 +222,9 @@ pub fn serve(root: &Path, bundle: &Path, options: &ServeOptions) -> Result<()> {
             ("Cache-Control", "no-store"),
             ("X-Content-Type-Options", "nosniff"),
             ("Referrer-Policy", "no-referrer"),
+            // Only the Secretary app itself may frame the fitting room.
+            ("Content-Security-Policy", "frame-ancestors 'self'"),
+            ("X-Frame-Options", "SAMEORIGIN"),
         ] {
             response.add_header(
                 tiny_http::Header::from_bytes(k, v).map_err(|_| invalid("response header"))?,
