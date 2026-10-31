@@ -258,8 +258,9 @@ final class ChatStore {
             }
             items = TimelineMerge.merge(restored.filter { isMine($0, deviceId: deviceId, sentClientIDs: sentClientIDs) }, items).items
             sentClientIDs.formUnion(items.compactMap(\.clientMessageId))
-            hasOlder = page.count == Self.pageSize || olderCursor?.isEmpty == false
-            nextBefore = (olderCursor?.isEmpty == false ? olderCursor : nil) ?? page.first(where: { !$0.isLocal })?.id
+            let older = ChatKernel.older(ids: page.map(\.id), stored: olderCursor, pageLength: page.count, pageSize: Self.pageSize)
+            hasOlder = older.hasOlder
+            nextBefore = older.cursor
             reconcileOutbox()
             ScrollTrace.event("hydrated \(items.count) items from the cache")
         } catch {
