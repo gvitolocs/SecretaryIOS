@@ -54,6 +54,10 @@
 .media-player__error { color: var(--lu-negative, #ff453a); }
 .media-player__controls { display: flex; justify-content: center; gap: 12px; padding: 10px 12px 18px; }
 .media-video::cue { background: rgba(0,0,0,.45); font-weight: 600; }
+/* One full screen control: the player's own (the header's Full screen, F, double-click). The element's native button
+   goes too, also where controlslist="nofullscreen" is not honoured (owner, 2026-10-31: "there are two full screen
+   buttons now"); views/Media.tsx routes anything that still makes the video itself full screen into the player's. */
+.media-video::-webkit-media-controls-fullscreen-button { display: none !important; }
 
 /* Full screen = full tab (views/Media.tsx Player): the picture edge to edge over everything in the page, the controls
    floating over it, gone (with the cursor) two seconds after the last move. */

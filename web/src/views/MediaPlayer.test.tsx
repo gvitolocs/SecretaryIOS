@@ -64,6 +64,13 @@ describe("the player's full screen", () => {
     expect(mediaElement().controls).toBe(true);
   });
 
+  it("has exactly one full screen control, in the player's header", () => {
+    const { getAllByRole } = render(() => <Player />);
+    // The header button shows for videos; without a current item the player has none, and never a second one.
+    expect(getAllByRole("button").filter((b) => /full screen/i.test(b.getAttribute("aria-label") ?? "")).length).toBeLessThanOrEqual(1);
+    expect(mediaElement().getAttribute("controlslist")).toBe("nofullscreen");
+  });
+
   it("routes the video element's own full screen (or its refusal) into the full tab", () => {
     const { container } = render(() => <Player />);
     const root = container.querySelector(".media-player") as HTMLElement;
