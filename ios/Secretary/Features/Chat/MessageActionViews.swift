@@ -283,7 +283,11 @@ struct MessageActionsModifier: ViewModifier {
                         .transition(.opacity)
                 }
             }
-            .simultaneousGesture(swipe(canReply: canReply, canRead: canRead), including: actions.selecting ? .subviews : .all)
+            .bubbleSwipe(enabled: !actions.selecting, legacy: swipe(canReply: canReply, canRead: canRead)) { translation in
+                swipeChanged(translation, canReply: canReply, canRead: canRead)
+            } ended: { translation, cancelled in
+                swipeEnded(translation, cancelled: cancelled, canReply: canReply, canRead: canRead)
+            }
             .onChange(of: dragging) { _, down in
                 // The system cancelled the touch (the scroll view took it): back to rest without acting.
                 guard !down, track != .undecided else { return }
@@ -321,29 +325,34 @@ struct MessageActionsModifier: ViewModifier {
         return MessageActionTitle.text(action)
     }
 
+    /// iOS 17: a SwiftUI drag next to the scroll view's pan (iOS 18+ uses HorizontalPan instead).
     private func swipe(canReply: Bool, canRead: Bool) -> some Gesture {
         DragGesture(minimumDistance: BubbleSwipe.activation, coordinateSpace: .global)
             .updating($dragging) { _, state, _ in state = true }
-            .onChanged { value in
-                let next = BubbleSwipe.track(track, translation: value.translation)
-                if next != track { track = next }
-                let ready = BubbleSwipe.action(next, canReply: canReply, canReadAloud: canRead) != .none
-                if ready != armed {
-                    armed = ready
-                    if ready { UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
-                }
-            }
-            .onEnded { value in
-                let final = BubbleSwipe.track(track, translation: value.translation)
-                let action = BubbleSwipe.action(final, canReply: canReply, canReadAloud: canRead)
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { track = .undecided }
-                armed = false
-                switch action {
-                case .reply: actions.perform(.reply, on: item, store: store, app: app)
-                case .readAloud: actions.perform(.readAloud, on: item, store: store, app: app)
-                case .none: break
-                }
-            }
+            .onChanged { value in swipeChanged(value.translation, canReply: canReply, canRead: canRead) }
+            .onEnded { value in swipeEnded(value.translation, cancelled: false, canReply: canReply, canRead: canRead) }
+    }
+
+    private func swipeChanged(_ translation: CGSize, canReply: Bool, canRead: Bool) {
+        let next = BubbleSwipe.track(track, translation: translation)
+        if next != track { track = next }
+        let ready = BubbleSwipe.action(next, canReply: canReply, canReadAloud: canRead) != .none
+        if ready != armed {
+            armed = ready
+            if ready { UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
+        }
+    }
+
+    private func swipeEnded(_ translation: CGSize, cancelled: Bool, canReply: Bool, canRead: Bool) {
+        let final = BubbleSwipe.track(track, translation: translation)
+        let action = cancelled ? .none : BubbleSwipe.action(final, canReply: canReply, canReadAloud: canRead)
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { track = .undecided }
+        armed = false
+        switch action {
+        case .reply: actions.perform(.reply, on: item, store: store, app: app)
+        case .readAloud: actions.perform(.readAloud, on: item, store: store, app: app)
+        case .none: break
+        }
     }
 
     private func swipeIcon(_ symbol: String, progress: Double) -> some View {
@@ -568,6 +577,68 @@ struct ChatPrepareHUD: View {
             .transition(.opacity)
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("shareHUD")
+        }
+    }
+}
+
+/// One finger, mostly horizontal when it starts moving: a bubble's swipe. A vertical drag never begins it, so
+/// the transcript's scroll view keeps every vertical drag. (On iOS 18+ a SwiftUI DragGesture on a row, even a
+/// simultaneous one, held the scroll view's pan back: a drag that started on a bubble did not scroll.)
+@available(iOS 18.0, *)
+struct HorizontalPan: UIGestureRecognizerRepresentable {
+    var enabled: Bool
+    var changed: (CGSize) -> Void
+    var ended: (CGSize, _ cancelled: Bool) -> Void
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var enabled = true
+
+        func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
+            guard enabled, let pan = gesture as? UIPanGestureRecognizer else { return false }
+            let v = pan.velocity(in: pan.view)
+            let t = pan.translation(in: pan.view)
+            return v == .zero ? abs(t.x) > abs(t.y) : abs(v.x) > abs(v.y)
+        }
+
+        func gestureRecognizer(_ gesture: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
+    }
+
+    func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator { Coordinator() }
+
+    func makeUIGestureRecognizer(context: Context) -> UIPanGestureRecognizer {
+        let pan = UIPanGestureRecognizer()
+        pan.maximumNumberOfTouches = 1
+        pan.delegate = context.coordinator
+        context.coordinator.enabled = enabled
+        return pan
+    }
+
+    func updateUIGestureRecognizer(_ recognizer: UIPanGestureRecognizer, context: Context) {
+        context.coordinator.enabled = enabled
+    }
+
+    func handleUIGestureRecognizerAction(_ recognizer: UIPanGestureRecognizer, context: Context) {
+        let p = recognizer.translation(in: recognizer.view)
+        let t = CGSize(width: p.x, height: p.y)
+        switch recognizer.state {
+        case .began, .changed: changed(t)
+        case .ended: ended(t, false)
+        case .cancelled, .failed: ended(t, true)
+        default: break
+        }
+    }
+}
+
+extension View {
+    /// The bubble swipes: HorizontalPan on iOS 18+, the SwiftUI drag before.
+    @ViewBuilder
+    func bubbleSwipe(enabled: Bool, legacy: some Gesture, changed: @escaping (CGSize) -> Void,
+                     ended: @escaping (CGSize, Bool) -> Void) -> some View {
+        if #available(iOS 18.0, *) {
+            gesture(HorizontalPan(enabled: enabled, changed: changed, ended: ended))
+        } else {
+            simultaneousGesture(legacy, including: enabled ? .all : .subviews)
         }
     }
 }

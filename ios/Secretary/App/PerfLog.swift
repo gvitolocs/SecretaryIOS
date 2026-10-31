@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import os
+import UIKit
 
 // Launch and tab-switch timing, in every build (Release is what the iPhone measures):
 // - os_signpost intervals in Points of Interest (`tech.getsecretary.app`): "Launch" from the
@@ -105,6 +106,7 @@ enum PerfLog {
         guard wasInBackground else { return }
         wasInBackground = false
         foregroundAt = Date()
+        ScrollTrace.begin("warm")
         let cpu = cpuMs()
         DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
             MainActor.assumeIsolated {
@@ -131,6 +133,7 @@ enum PerfLog {
         guard appInitAt == nil else { return }
         let now = Date()
         appInitAt = now
+        ScrollTrace.begin("cold")
         launchInterval = signposter.beginInterval("Launch")
         if let processStart {
             logger.notice("perf launch: process start → app init \(format(ms(since: processStart, to: now)), privacy: .public) ms")
@@ -254,6 +257,135 @@ enum PerfLog {
         if let lucinaReadyMs { lines.append("lucina: stage ready \(format(lucinaReadyMs)) ms after first open") }
         for (key, value) in counts.sorted(by: { $0.key < $1.key }) { lines.append("count \(key): \(value)") }
         return lines
+    }
+}
+
+/// `-SecretaryPerfScroll`: a timeline of what the chat list does after a launch or a return to the
+/// foreground (data changes, the app's own scrolls, the reader's scroll phases and offsets), and when a
+/// reader's drag first moved it. Written to `Documents/perf-scroll.txt` 12 s after each start.
+@MainActor
+enum ScrollTrace {
+    nonisolated static let enabled = ProcessInfo.processInfo.arguments.contains("-SecretaryPerfScroll")
+    private static var lines: [String] = []
+    private static var epoch: Date?
+    private static var label = "cold"
+    private static var readerActive = false
+    private static var readerStart: CGFloat?
+    private static var lastOffset: CGFloat?
+    private static var lastHeight: CGFloat?
+    /// Start → the first reader drag that moved the list more than 30 pt, in ms.
+    private(set) static var firstReaderScrollMs: Double?
+    private static var readerTouches = 0
+
+    /// A cold launch (App init) or a return to the foreground.
+    static func begin(_ kind: String) {
+        guard enabled else { return }
+        epoch = kind == "cold" ? (PerfLog.processStart ?? Date()) : Date()
+        label = kind
+        lines = []
+        firstReaderScrollMs = nil
+        readerTouches = 0
+        let started = epoch
+        // Where each touch lands (windows come and go: sheets, the keyboard, alerts).
+        for seconds in [0.3, 1.0, 2.0, 4.0] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { MainActor.assumeIsolated { TouchProbe.install() } }
+        }
+        let delay = max(0, 12 - Date().timeIntervalSince(started ?? Date()))
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            MainActor.assumeIsolated { if epoch == started { write() } }
+        }
+    }
+
+    private static var now: String {
+        guard let epoch else { return "?" }
+        return String(format: "%7.1f", Date().timeIntervalSince(epoch) * 1000)
+    }
+
+    static func event(_ text: @autoclosure () -> String) {
+        guard enabled, epoch != nil, lines.count < 4000 else { return }
+        lines.append("\(now) \(text())")
+    }
+
+    static func phase(_ name: String, reader: Bool) {
+        guard enabled else { return }
+        if reader, !readerActive { readerStart = lastOffset; readerTouches += 1 }
+        readerActive = reader
+        event("phase \(name)")
+    }
+
+    static func geometry(offset: CGFloat, height: CGFloat) {
+        guard enabled else { return }
+        defer { lastOffset = offset; lastHeight = height }
+        if let lastHeight, abs(lastHeight - height) > 0.5 {
+            event(String(format: "content height %.0f → %.0f (offset %.0f)", lastHeight, height, offset))
+        }
+        guard readerActive else { return }
+        if let start = readerStart, abs(offset - start) > 30, firstReaderScrollMs == nil, let epoch {
+            firstReaderScrollMs = (Date().timeIntervalSince(epoch) * 10_000).rounded() / 10
+            event(String(format: "READER MOVED THE LIST %.0f pt (touch %d)", offset - start, readerTouches))
+        }
+        if let last = lastOffset, abs(last - offset) > 40 {
+            event(String(format: "offset %.0f → %.0f during a reader scroll", last, offset))
+        }
+    }
+
+    /// Logs every touch that begins, with the view it hits (it never takes part in the touch).
+    final class TouchProbe: NSObject, UIGestureRecognizerDelegate {
+        static let shared = TouchProbe()
+        private var probed = Set<ObjectIdentifier>()
+
+        static func install() {
+            let windows = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.flatMap(\.windows)
+            ScrollTrace.event("windows: " + windows.map { "\(type(of: $0)) level \($0.windowLevel.rawValue) hidden \($0.isHidden) key \($0.isKeyWindow)" }.joined(separator: "; "))
+            for window in windows where !shared.probed.contains(ObjectIdentifier(window)) {
+                shared.probed.insert(ObjectIdentifier(window))
+                let probe = UILongPressGestureRecognizer(target: shared, action: #selector(touched(_:)))
+                probe.minimumPressDuration = 0
+                probe.cancelsTouchesInView = false
+                probe.delaysTouchesBegan = false
+                probe.delaysTouchesEnded = false
+                probe.delegate = shared
+                window.addGestureRecognizer(probe)
+            }
+        }
+
+        @objc private func touched(_ recognizer: UILongPressGestureRecognizer) {
+            guard recognizer.state == .began, let window = recognizer.view as? UIWindow else { return }
+            let point = recognizer.location(in: window)
+            var chain: [String] = []
+            var view = window.hitTest(point, with: nil)
+            while let current = view, chain.count < 6 {
+                chain.append(String(describing: type(of: current)))
+                view = current.superview
+            }
+            MainActor.assumeIsolated {
+                ScrollTrace.event(String(format: "touch at %.0f,%.0f in %@ hits ", point.x, point.y, String(describing: type(of: window))) + chain.joined(separator: " < "))
+            }
+        }
+
+        func gestureRecognizer(_ g: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
+    }
+
+    static var url: URL {
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        return documents.appendingPathComponent("perf-scroll.txt")
+    }
+
+    private static func write() {
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        var text = "== scroll trace \(label) \(stamp)\n"
+        let first = firstReaderScrollMs.map { String(format: "%.1f ms", $0) } ?? "never"
+        text += "first reader scroll that moved the list: \(first) after \(label == "cold" ? "process start" : "becoming active") (\(readerTouches) touches)\n"
+        text += PerfLog.summary().prefix(6).joined(separator: "\n") + "\n"
+        text += lines.joined(separator: "\n") + "\n== done\n"
+        PerfLog.logger.notice("perf scroll (\(label, privacy: .public)): first reader scroll \(first, privacy: .public)")
+        let url = url
+        if !FileManager.default.fileExists(atPath: url.path) { FileManager.default.createFile(atPath: url.path, contents: nil) }
+        guard let handle = try? FileHandle(forWritingTo: url) else { return }
+        defer { try? handle.close() }
+        _ = try? handle.seekToEnd()
+        try? handle.write(contentsOf: Data(text.utf8))
     }
 }
 
