@@ -483,55 +483,11 @@ mod tests {
         let r = merge(&current, &incoming);
         let elapsed = t.elapsed();
         assert_eq!(r.ids.len(), 350);
-        // Only a sanity bound for debug builds; `cargo test --release -- --ignored --nocapture merge_speed` prints
-        // the release number.
+        // Only a sanity bound for debug builds; `cargo run --release -p secretary-chat --example merge_speed` prints the
+        // release number.
         assert!(
             elapsed < std::time::Duration::from_millis(100),
             "{elapsed:?}"
-        );
-    }
-
-    #[test]
-    #[ignore = "a timing, run with --release --ignored --nocapture"]
-    fn merge_speed() {
-        // 250 current items (a few local), 200 incoming, half of them already in current.
-        let mut current: Vec<Key> = (0..250).map(|i| user(&format!("tl_{i:04}"), i)).collect();
-        for i in 0..5 {
-            current.push(client(
-                user(&format!("local-{i}"), 300 + i),
-                &format!("c{i}"),
-            ));
-        }
-        let incoming: Vec<Key> = (150..350)
-            .map(|i| {
-                let k = if i % 3 == 0 {
-                    lucina(&format!("tl_{i:04}"), i)
-                } else {
-                    user(&format!("tl_{i:04}"), i)
-                };
-                if i >= 345 {
-                    client(k, &format!("c{}", i - 345))
-                } else {
-                    k
-                }
-            })
-            .collect();
-        let runs = 2000;
-        let t = std::time::Instant::now();
-        let mut n = 0;
-        for _ in 0..runs {
-            n += merge(
-                std::hint::black_box(&current),
-                std::hint::black_box(&incoming),
-            )
-            .ids
-            .len();
-        }
-        let per = t.elapsed() / runs;
-        println!(
-            "merge of {} current and {} incoming keys: {per:?} ({n} ids)",
-            current.len(),
-            incoming.len()
         );
     }
 }
