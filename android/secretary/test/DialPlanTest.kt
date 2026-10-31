@@ -50,9 +50,14 @@ fun main() {
     same(DialPlan.plan("(+45) 66-77-87-02", ::isEmergency), DialPlan.Plan(Kind.CALL, "+4566778702"), "brackets")
     same(DialPlan.plan("66778702", ::isEmergency).kind, Kind.CALL, "national number")
     same(DialPlan.plan("12345", ::isEmergency).kind, Kind.CALL, "five digits are a plain number here, Telecom decides")
-    for (bad in listOf("", "  ", "*21*123#", "*#06#", "+45;reboot", "++4512345678", "4512,12", "1".repeat(16), "+", "tel:+4512345678", "abc")) {
+    for (bad in listOf("", "  ", "*21*123#", "*#06#", "+45;reboot", "++4512345678", "4512,ab", ",123", "+4512345678,", "+4512345678," + "1".repeat(40), "1".repeat(16), "+", "tel:+4512345678", "abc")) {
         same(DialPlan.plan(bad, ::isEmergency).kind, Kind.INVALID, "invalid '$bad'")
     }
+    // Masked numbers from delivery apps (Wolt's DIAL tel:<masked>) may carry an extension.
+    same(DialPlan.plan("+4512345678,1234", ::isEmergency), DialPlan.Plan(Kind.CALL, "+4512345678,1234"), "pause + extension")
+    same(DialPlan.plan("+45 12 34 56 78;1234#", ::isEmergency), DialPlan.Plan(Kind.CALL, "+4512345678;1234#"), "wait + extension")
+    same(DialPlan.plan("+4512345678p1234", ::isEmergency), DialPlan.Plan(Kind.CALL, "+4512345678,1234"), "p is a pause")
+    same(DialPlan.plan("112,1", ::isEmergency), DialPlan.Plan(Kind.EMERGENCY, "112"), "an emergency number drops post-dial digits")
     val r = Recorder()
     same(DialPlan.dial("*21#", ::isEmergency, r), Outcome.Invalid, "ussd is not dialed")
     check(r.placed.isEmpty(), "nothing placed for an invalid string")

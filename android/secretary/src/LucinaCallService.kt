@@ -41,6 +41,12 @@ class LucinaCallService : InCallService() {
         override fun onDetailsChanged(call: Call, details: Call.Details) {
             changed()
         }
+
+        // A `;` wait in an outgoing number he dialed (an extension after a masked number): send the rest,
+        // as the Samsung dialer does after its prompt. Only ever on a call he placed himself.
+        override fun onPostDialWait(call: Call, remainingPostDialSequence: String) {
+            safely(Unit) { call.postDialContinue(true) }
+        }
     }
 
     override fun onCreate() {
