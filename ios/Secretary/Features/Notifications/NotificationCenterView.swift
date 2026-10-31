@@ -94,6 +94,7 @@ struct NotificationCenterView: View {
                     if NotificationRoute.opensDealsMap(n.route) { app.showDealsMap = true }
                     if let memo = NotificationRoute.memo(n.route) { app.openMemo(memo.isEmpty ? nil : memo) }
                     if let server = NotificationRoute.server(n.route) { app.openServer(server) }
+                    if let calendar = NotificationRoute.calendar(n.route) { app.openCalendar(calendar) }
                     dismiss()
                     if let decision = n.decisionId ?? NotificationRoute.decision(n.route) { app.openDecision(decision) }
                 }

@@ -325,13 +325,13 @@ struct CalendarAlert: Equatable, Sendable {
 /// Web routes → app tabs.
 enum NotificationRoute {
     static func isSafe(_ route: String) -> Bool {
-        let limit = route.hasPrefix("/map/place?") ? 4096 : 200
+        let limit = route.hasPrefix("/map/place?") || route.hasPrefix("/calendar?") ? 4096 : 200
         return route.hasPrefix("/") && !route.hasPrefix("//") && !route.contains("\\") && route.count <= limit
     }
 
     static func tab(for route: String) -> AppModel.Tab {
         guard isSafe(route) else { return .chat }
-        if server(route) != nil { return .plugins }
+        if server(route) != nil || calendar(route) != nil { return .plugins }
         let first = route.split(separator: "/").first.map(String.init) ?? ""
         switch first {
         case "shopping": return .shopping
@@ -340,6 +340,10 @@ enum NotificationRoute {
         case "plugins", "notes", "tasks", "memos", "media", "films", "gallery", "drive": return .plugins
         default: return .chat
         }
+    }
+
+    static func calendar(_ route: String) -> CalendarLink? {
+        CalendarLink.parse(route)
     }
 
     /// `/decisions` or `/decisions/<id>`: the Decisions sheet. Returns the id ("" for the list).

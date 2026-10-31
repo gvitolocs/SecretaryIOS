@@ -1,0 +1,218 @@
+{
+  "NClient": [
+    "NClient",
+    "NClient"
+  ],
+  "This gallery is not available.": [
+    "Questa galleria non è disponibile.",
+    "Dette galleri er ikke tilgængeligt."
+  ],
+  "Search galleries": [
+    "Cerca gallerie",
+    "Søg i gallerier"
+  ],
+  "Sort": [
+    "Ordina",
+    "Sortér"
+  ],
+  "Search": [
+    "Cerca",
+    "Søg"
+  ],
+  "Tag filters": [
+    "Filtri per tag",
+    "Tagfiltre"
+  ],
+  "Random": [
+    "Casuale",
+    "Tilfældig"
+  ],
+  "Favourites": [
+    "Preferiti",
+    "Favoritter"
+  ],
+  "No galleries": [
+    "Nessuna galleria",
+    "Ingen gallerier"
+  ],
+  "NClient is unavailable": [
+    "NClient non è disponibile",
+    "NClient er ikke tilgængelig"
+  ],
+  "Remove filter: %@": [
+    "Rimuovi filtro: %@",
+    "Fjern filter: %@"
+  ],
+  "Try again": [
+    "Riprova",
+    "Prøv igen"
+  ],
+  "Open": [
+    "Apri",
+    "Åbn"
+  ],
+  "Unfavourite": [
+    "Rimuovi dai preferiti",
+    "Fjern fra favoritter"
+  ],
+  "Favourite": [
+    "Aggiungi ai preferiti",
+    "Føj til favoritter"
+  ],
+  "Copy link": [
+    "Copia link",
+    "Kopiér link"
+  ],
+  "Read": [
+    "Leggi",
+    "Læs"
+  ],
+  "Recent": [
+    "Recenti",
+    "Nyeste"
+  ],
+  "Popular": [
+    "Popolari",
+    "Populære"
+  ],
+  "Popular this week": [
+    "Popolari questa settimana",
+    "Populære denne uge"
+  ],
+  "Popular today": [
+    "Popolari oggi",
+    "Populære i dag"
+  ],
+  "Popular this month": [
+    "Popolari questo mese",
+    "Populære denne måned"
+  ],
+  "%lld pages": [
+    "%lld pagine",
+    "%lld sider"
+  ],
+  "Done": [
+    "Fine",
+    "Færdig"
+  ],
+  "Find tags": [
+    "Cerca tag",
+    "Find tags"
+  ],
+  "Include": [
+    "Includi",
+    "Medtag"
+  ],
+  "Exclude": [
+    "Escludi",
+    "Udelad"
+  ],
+  "%lld favourites": [
+    "%lld preferiti",
+    "%lld favoritter"
+  ],
+  "Resume": [
+    "Riprendi",
+    "Fortsæt"
+  ],
+  "Read from start": [
+    "Leggi dall'inizio",
+    "Læs fra starten"
+  ],
+  "Pages": [
+    "Pagine",
+    "Sider"
+  ],
+  "Page %lld": [
+    "Pagina %lld",
+    "Side %lld"
+  ],
+  "More pages": [
+    "Altre pagine",
+    "Flere sider"
+  ],
+  "Related galleries": [
+    "Gallerie correlate",
+    "Relaterede gallerier"
+  ],
+  "Couldn't load gallery": [
+    "Impossibile caricare la galleria",
+    "Kunne ikke indlæse galleriet"
+  ],
+  "Waiting to save": [
+    "In attesa di salvare",
+    "Venter på at gemme"
+  ],
+  "Saving %lld of %lld": [
+    "Salvataggio di %lld su %lld",
+    "Gemmer %lld af %lld"
+  ],
+  "Cancel saving": [
+    "Annulla salvataggio",
+    "Annuller lagring"
+  ],
+  "Save to Gallery": [
+    "Salva nella Galleria",
+    "Gem i Galleri"
+  ],
+  "Saved: %lld, duplicates: %lld, failed: %lld": [
+    "Salvate: %lld, duplicati: %lld, non riuscite: %lld",
+    "Gemt: %lld, dubletter: %lld, mislykkede: %lld"
+  ],
+  "Gallery is not reachable right now.": [
+    "La Galleria non è raggiungibile al momento.",
+    "Galleri kan ikke kontaktes lige nu."
+  ],
+  "Saved to Gallery": [
+    "Salvato nella Galleria",
+    "Gemt i Galleri"
+  ],
+  "Saving cancelled": [
+    "Salvataggio annullato",
+    "Lagring annulleret"
+  ],
+  "Saving failed": [
+    "Salvataggio non riuscito",
+    "Lagring mislykkedes"
+  ],
+  "Close": [
+    "Chiudi",
+    "Luk"
+  ],
+  "%lld / %lld": [
+    "%lld / %lld",
+    "%lld / %lld"
+  ],
+  "Previous": [
+    "Precedente",
+    "Forrige"
+  ],
+  "Next": [
+    "Successiva",
+    "Næste"
+  ],
+  "Copy image": [
+    "Copia immagine",
+    "Kopiér billede"
+  ],
+  "Page": [
+    "Pagina",
+    "Side"
+  ],
+  "Share image": [
+    "Condividi immagine",
+    "Del billede"
+  ],
+  "Couldn't load page": [
+    "Impossibile caricare la pagina",
+    "Kunne ikke indlæse siden"
+  ],
+  "Share": [
+    "Condividi",
+    "Del"
+  ],
+  "Couldn't load image": [
+    "Impossibile caricare l'immagine",
+    "Kunne ikke indlæse billedet"
+  ]
+}
