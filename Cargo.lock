@@ -5619,6 +5619,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "secretary-chat"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "secretary-core"
 version = "0.1.0"
 dependencies = [
@@ -5636,6 +5645,7 @@ version = "0.1.0"
 dependencies = [
  "image",
  "secretary-body",
+ "secretary-chat",
  "secretary-gym",
  "secretary-image",
  "secretary-player",
