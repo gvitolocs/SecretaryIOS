@@ -124,11 +124,12 @@ describe("Keep: the grid", () => {
     expect(groceries.getByText("+ 1 checked item")).toBeInTheDocument();
     // Rich text on the card: bold, safely.
     expect(within(card("Revision plan")).getByText("blocks").tagName).toBe("STRONG");
-    // The nav: Notes, Reminders, labels (alphabetical, display case), Edit labels, Archive, Trash.
-    const nav = within(screen.getByRole("navigation", { name: "Main menu" }));
-    await waitFor(() => expect(nav.getByRole("link", { name: "GodLevel" })).toBeInTheDocument());
-    expect(nav.getAllByRole("link").map((a) => a.textContent)).toEqual(["Notes", "Reminders", "Chill", "GodLevel", "Archive", "Trash"]);
+    // The sections as chips; the labels (alphabetical, display case) and Edit labels fold into the Labels chip's menu.
+    const nav = within(screen.getByRole("navigation", { name: "Keep sections" }));
+    expect(nav.getAllByRole("link").map((a) => a.textContent)).toEqual(["Notes", "Reminders", "Archive", "Trash"]);
     expect(nav.getByRole("link", { name: "Notes" })).toHaveAttribute("aria-current", "page");
+    fireEvent.click(nav.getByRole("button", { name: /^Labels/ }));
+    await waitFor(() => expect(screen.getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["Chill", "GodLevel", "Edit labels"]));
   });
 
   it("asks for the cache's changes and for the label registry", async () => {
@@ -151,7 +152,8 @@ describe("Keep: the grid", () => {
     renderKeep("/keep/label/GodLevel");
     await screen.findByText("Revision plan", { selector: ".kp-card-title" });
     expect(titles()).toEqual(["Revision plan", "Active recall"]);
-    expect(await screen.findByRole("link", { name: "GodLevel" })).toHaveAttribute("aria-current", "page");
+    const nav = within(screen.getByRole("navigation", { name: "Keep sections" }));
+    expect(await nav.findByRole("button", { name: /^GodLevel/ })).toHaveAttribute("aria-pressed", "true");
   });
 
   it("tells an empty view so", async () => {
@@ -162,6 +164,21 @@ describe("Keep: the grid", () => {
 });
 
 describe("Keep: search", () => {
+  it("finds \"rust\" at word starts only, best match first, and shows a pinned note only when it matches", async () => {
+    server([
+      note({ id: "n_trust", title: "Trust the plan", content: "Small steps every day.", pinned: true, position: 900, rev: 1 }),
+      note({ id: "n_frus", title: "Week review", content: "Frustrated by the slow build.", pinned: true, position: 800, rev: 1 }),
+      note({ id: "n_mention", title: "Weekend", content: "Try the rust-analyzer setup.", position: 700, rev: 1 }),
+      note({ id: "n_rust", title: "Rust: ownership and borrowing", content: "Every value has one owner.", position: 100, rev: 1 }),
+    ]);
+    renderKeep();
+    await screen.findByText("Trust the plan", { selector: ".kp-card-title" });
+    fireEvent.input(screen.getByRole("searchbox", { name: "Search" }), { target: { value: "rust" } });
+    await waitFor(() => expect(titles()).toEqual(["Rust: ownership and borrowing", "Weekend"]));
+    expect(screen.queryByText("Pinned")).toBeNull();
+  });
+
+
   it("opens the filter page on focus, and filters live as you type", async () => {
     server();
     renderKeep();
@@ -179,7 +196,7 @@ describe("Keep: search", () => {
     fireEvent.input(box, { target: { value: "lemons" } }); // an item text, checked
     await waitFor(() => expect(titles()).toEqual(["Groceries"]));
     fireEvent.input(box, { target: { value: "zzz" } });
-    expect(await screen.findByText("No matching notes found.")).toBeInTheDocument();
+    expect(await screen.findByText("No notes match.")).toBeInTheDocument();
   });
 
   it("filters by a type chip and a label chip", async () => {
@@ -298,7 +315,7 @@ describe("Keep: actions on a card", () => {
 });
 
 describe("Keep: selecting", () => {
-  it("replaces the top bar with the selection bar, and Escape clears it", async () => {
+  it("shows the selection bar over the page, and Escape clears it", async () => {
     server();
     renderKeep();
     await screen.findByText("Revision plan", { selector: ".kp-card-title" });
@@ -306,7 +323,6 @@ describe("Keep: selecting", () => {
     fireEvent.click(within(card("Groceries")).getByRole("button", { name: "Select note" }));
     const bar = screen.getByRole("toolbar", { name: "2 selected" });
     expect(bar).toBeInTheDocument();
-    expect(screen.queryByRole("searchbox")).toBeNull();
     for (const name of ["Pin note", "Remind me", "Background options", "Archive", "More", "Clear selection"]) {
       expect(within(bar).getByRole("button", { name })).toBeInTheDocument();
     }
@@ -433,15 +449,24 @@ describe("Keep: layout controls", () => {
     fireEvent.click(screen.getByRole("button", { name: "Grid view" }));
   });
 
-  it("collapses the nav to icons", async () => {
+  it("opens a note when its card is clicked (the cards get Keep's context, not the fallback)", async () => {
     server();
-    const { container } = renderKeep();
+    renderKeep();
     await screen.findByText("Revision plan", { selector: ".kp-card-title" });
-    const kp = container.querySelector(".kp") as HTMLElement;
-    fireEvent.click(screen.getByRole("button", { name: "Main menu" }));
-    expect(kp.dataset.nav).toBe("collapsed");
-    fireEvent.click(screen.getByRole("button", { name: "Main menu" }));
-    expect(kp.dataset.nav).toBe("open");
+    fireEvent.click(card("Active recall"));
+    expect(await screen.findByRole("dialog", { name: "Active recall" })).toBeInTheDocument();
+  });
+
+  it("opens the shared context menu on a card, and its actions work", async () => {
+    server();
+    renderKeep();
+    await screen.findByText("Revision plan", { selector: ".kp-card-title" });
+    fireEvent.contextMenu(card("Active recall"), { clientX: 40, clientY: 40 });
+    const menu = await screen.findByRole("menu", { name: "Note actions" });
+    expect(within(menu).getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["Open note", "Pin note", "Archive", "Make a copy", "Select note", "Delete note"]);
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Pin note" }));
+    await waitFor(() => expect(within(screen.getByRole("region", { name: "Pinned" })).getByText("Active recall")).toBeInTheDocument());
+    expect(screen.queryByRole("dialog", { name: "Active recall" })).toBeNull();
   });
 });
 

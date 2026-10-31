@@ -1,4 +1,4 @@
-import { createMemo, For, Show } from "solid-js";
+import { createMemo, createSignal, For, onCleanup, Show } from "solid-js";
 import { attachmentUrl, isAudio, isImage, type ChecklistItem, type KeepNote } from "../../api/keep";
 import { t } from "../../i18n";
 import { cardBackground, cardBorder } from "../../lib/keepColors";
@@ -7,8 +7,9 @@ import { reminderLabel } from "../../lib/keepTime";
 import { keep } from "../../state/keep";
 import { archive, copyNote, deleteForever, restore, setColor, setPinned, trash, unarchive } from "../../state/keepActions";
 import { selection, toggleSelected } from "../../state/keepUi";
+import { ContextMenu, menuMode, type MenuAction, type MenuRequest } from "../ContextMenu";
 import { useKeep } from "./ctx";
-import { AudioIcon, CheckBoxIcon, CheckboxOutlineIcon, CheckCircleIcon, ClockIcon, DeleteForeverIcon, LinkIcon, PinFilledIcon, PinOutlineIcon, RestoreIcon } from "./icons";
+import { ArchiveIcon, AudioIcon, CheckBoxIcon, CheckboxOutlineIcon, CheckCircleIcon, ClockIcon, CopyIcon, DeleteForeverIcon, EditIcon, LinkIcon, PinFilledIcon, PinOutlineIcon, RestoreIcon, TrashIcon, UnarchiveIcon } from "./icons";
 import { KeepText } from "./KeepText";
 import { NoteToolbar } from "./NoteToolbar";
 
@@ -103,7 +104,38 @@ export function NoteCard(props: { note: KeepNote; draggable?: boolean; onDragSta
   const audios = createMemo(() => n().attachments.filter(isAudio));
   const hasChips = () => !!n().reminder || n().annotations.length > 0 || n().tags.length > 0 || n().collaborators.length > 0 || audios().length > 0;
 
+  // The shared context menu (components/ContextMenu): a right-click or the menu key on a desktop, a long press on a
+  // phone. The press that opened it must not also open the note.
+  const [menu, setMenu] = createSignal<MenuRequest | null>(null);
+  let press: ReturnType<typeof setTimeout> | undefined;
+  let pressAt: { x: number; y: number } | null = null;
+  let pressed = false;
+  onCleanup(() => clearTimeout(press));
+  const openMenu = (x: number, y: number, pointerType?: string) => setMenu({ x, y, mode: menuMode(pointerType), title: n().title || undefined });
+  const actions = (): MenuAction[] => {
+    const id = n().id;
+    if (inTrash())
+      return [
+        { id: "restore", label: t("keep.restore"), icon: <RestoreIcon />, run: () => restore([id]) },
+        { id: "delete-forever", label: t("keep.deleteForever"), icon: <DeleteForeverIcon />, danger: true, separator: true, run: () => deleteForever([id]) },
+      ];
+    return [
+      { id: "open", label: t("keep.openNote"), icon: <EditIcon />, run: () => ctx.open(id) },
+      { id: "pin", label: n().pinned ? t("keep.unpin") : t("keep.pin"), icon: n().pinned ? <PinFilledIcon /> : <PinOutlineIcon />, run: () => setPinned([id], !n().pinned) },
+      {
+        id: "archive",
+        label: n().archived ? t("keep.unarchiveAct") : t("keep.archiveAct"),
+        icon: n().archived ? <UnarchiveIcon /> : <ArchiveIcon />,
+        run: () => (n().archived ? unarchive([id]) : archive([id])),
+      },
+      { id: "copy", label: t("keep.makeCopy"), icon: <CopyIcon />, run: () => void copyNote(id) },
+      { id: "select", label: t("keep.select"), icon: <CheckCircleIcon />, run: () => toggleSelected(id) },
+      { id: "delete", label: t("keep.deleteNote"), icon: <TrashIcon />, danger: true, separator: true, run: () => trash([id]) },
+    ];
+  };
+
   return (
+    <>
     <article
       class="kp-card"
       classList={{ "kp-card--selected": selected(), "kp-card--pinned": n().pinned, "kp-card--trash": inTrash(), "kp-card--tmp": n().id.startsWith("tmp_") }}
@@ -115,10 +147,46 @@ export function NoteCard(props: { note: KeepNote; draggable?: boolean; onDragSta
       onDragStart={(e) => props.onDragStart?.(e)}
       onDragEnd={() => props.onDragEnd?.()}
       style={{ "--kp-card-bg": bg(), "--kp-card-border": border() }}
-      onClick={() => (anySelected() ? toggleSelected(n().id) : ctx.open(n().id))}
+      onClick={() => {
+        if (pressed) {
+          pressed = false;
+          return;
+        }
+        if (anySelected()) toggleSelected(n().id);
+        else ctx.open(n().id);
+      }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        clearTimeout(press);
+        openMenu(e.clientX, e.clientY, pressAt ? "touch" : "mouse");
+      }}
+      onPointerDown={(e) => {
+        if (e.pointerType !== "touch") return;
+        pressAt = { x: e.clientX, y: e.clientY };
+        clearTimeout(press);
+        press = setTimeout(() => {
+          pressed = true;
+          if (pressAt) openMenu(pressAt.x, pressAt.y, "touch");
+        }, 500);
+      }}
+      onPointerMove={(e) => {
+        if (pressAt && Math.hypot(e.clientX - pressAt.x, e.clientY - pressAt.y) > 10) clearTimeout(press);
+      }}
+      onPointerUp={() => {
+        clearTimeout(press);
+        pressAt = null;
+      }}
+      onPointerCancel={() => {
+        clearTimeout(press);
+        pressAt = null;
+      }}
       onKeyDown={(e) => {
         if (e.target !== e.currentTarget) return;
-        if (e.key === "Enter") ctx.open(n().id);
+        if (e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) {
+          e.preventDefault();
+          const r = e.currentTarget.getBoundingClientRect();
+          openMenu(r.left + 16, r.top + 16, "keyboard");
+        } else if (e.key === "Enter") ctx.open(n().id);
         else if (e.key === " ") {
           e.preventDefault();
           toggleSelected(n().id);
@@ -270,5 +338,8 @@ export function NoteCard(props: { note: KeepNote; draggable?: boolean; onDragSta
         </Show>
       </div>
     </article>
+    {/* Beside the card, not in it: the menu's clicks must not reach the card's own click (open the note). */}
+    <ContextMenu request={menu()} actions={actions()} label={t("keep.noteActions")} onClose={() => setMenu(null)} />
+    </>
   );
 }

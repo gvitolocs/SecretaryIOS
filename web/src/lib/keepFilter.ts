@@ -62,11 +62,39 @@ export function searchText(n: KeepNote, labelName: (tag: string) => string): str
   return fold(parts.join("\n"));
 }
 
-export function matchesQuery(n: KeepNote, q: string, labelName: (tag: string) => string): boolean {
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * How `word` (folded) occurs in `hay` (folded): 2 as a whole word, 1 at the start of a word, 0 not at a word start.
+ * Only word starts count, so "rust" finds "Rust" and "rust-lang" but not "trust" or "frustrated" (owner, 2026-10-31).
+ */
+export function wordMatch(hay: string, word: string): 0 | 1 | 2 {
+  const start = new RegExp(`(?:^|[^\\p{L}\\p{N}])${escapeRe(word)}`, "u");
+  if (!start.test(hay)) return 0;
+  return new RegExp(`(?:^|[^\\p{L}\\p{N}])${escapeRe(word)}(?=$|[^\\p{L}\\p{N}])`, "u").test(hay) ? 2 : 1;
+}
+
+/**
+ * How well a note matches the query: 0 when some word is missing, else higher for title and label hits and for whole
+ * words. Every word must start a word somewhere in the note (title, text, items, labels, links, file names).
+ */
+export function queryScore(n: KeepNote, q: string, labelName: (tag: string) => string): number {
   const words = fold(q).split(/\s+/).filter(Boolean);
-  if (!words.length) return true;
+  if (!words.length) return 1;
+  const title = fold(n.title);
+  const labels = fold(n.tags.map(labelName).join("\n"));
   const hay = searchText(n, labelName);
-  return words.every((w) => hay.includes(w));
+  let score = 0;
+  for (const w of words) {
+    const inAll = wordMatch(hay, w);
+    if (!inAll) return 0;
+    score += inAll + 6 * wordMatch(title, w) + 3 * wordMatch(labels, w);
+  }
+  return score;
+}
+
+export function matchesQuery(n: KeepNote, q: string, labelName: (tag: string) => string): boolean {
+  return queryScore(n, q, labelName) > 0;
 }
 
 /** The notes a view shows, ordered: Notes, Archive and labels by position; Reminders by time; Trash by deletion. */
@@ -96,18 +124,22 @@ export function viewNotes(all: Iterable<KeepNote>, view: KeepView): KeepNote[] {
   return list.sort(byPosition);
 }
 
-/** Search across Notes, Archive and labels (never the trash), the way Keep does. */
+/**
+ * Search across Notes, Archive and labels (never the trash). With words, the best matches come first (title and
+ * label hits, whole words), pinned or not; filters alone keep the grid order.
+ */
 export function searchNotes(all: Iterable<KeepNote>, s: SearchState, labelName: (tag: string) => string): KeepNote[] {
-  const out: KeepNote[] = [];
+  const out: { n: KeepNote; score: number }[] = [];
+  const q = s.q.trim();
   for (const n of all) {
     if (inTrash(n)) continue;
     if (s.type && !matchesType(n, s.type)) continue;
     if (s.label && !n.tags.includes(s.label)) continue;
     if (s.color && n.color !== s.color) continue;
-    if (s.q.trim() && !matchesQuery(n, s.q, labelName)) continue;
-    out.push(n);
+    const score = q ? queryScore(n, q, labelName) : 1;
+    if (score > 0) out.push({ n, score });
   }
-  return out.sort(byPosition);
+  return out.sort((a, b) => b.score - a.score || byPosition(a.n, b.n)).map((x) => x.n);
 }
 
 /** "Pinned" and "Others" sections; the Others heading shows only when something is pinned. */

@@ -2174,26 +2174,103 @@
   }
 }
 
-/* ---------- Desktop page system (views/Keep.tsx) ---------- */
+/* ---------- Lucina layout (views/Keep.tsx, components/keep/KeepNav.tsx) ---------- */
 
-/* Desktop (page system): Keep sits on the page's own background like every page. */
-.kp.kp--desk {
+/* Keep on the Lucina page layout at every width (owner, 2026-10-31: "completely migrate the layout to be Lucina"):
+   the page's navy shows through, Lucina's accent replaces Keep's yellow bulb, brown selection and Google blue, and
+   cards are the page system's. The note colours stay the owner's choice. */
+.kp.kp--lucina {
+  --kp-bg: transparent;
+  --kp-text: var(--text);
+  --kp-text-2: var(--text-muted);
+  --kp-border: var(--border-strong);
+  --kp-top-border: var(--border);
+  --kp-nav-active: color-mix(in srgb, var(--ui-accent) 16%, transparent);
+  --kp-hover: #ffffff0f;
+  --kp-icon: var(--text-muted);
+  --kp-icon-strong: var(--text);
+  --kp-pop-bg: var(--ui-raised);
+  --kp-shadow: none;
+  --kp-shadow-hover: 0 0 0 1px #ffffff2e;
+  --kp-chip-border: #ffffff1f;
+  --kp-chip-bg: #ffffff0f;
+  --kp-scrim: var(--ui-scrim);
+  --kp-accent: var(--ui-accent);
+  --kp-selbar: var(--ui-raised);
+  --kp-radius: 12px;
   background: transparent;
 }
 
-.kp--desk .kp-top {
-  display: none;
+/* The page scrolls as one, like every Lucina page; the notes are not a scroller of their own. .kp itself stays put:
+   the note dialog and the popovers are placed inside it and must cover the window, not the scrolled page. */
+.kp--lucina > .keep-page {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
-.kp--desk .keep-desk-main {
+.kp--lucina .kp-main {
+  overflow: visible;
+  padding: 0;
+}
+
+.kp--lucina .keep-page .pg-inner {
+  padding-bottom: 96px;
+}
+
+/* Header: the search field grows, the icon buttons stay; on a phone the tools take their own line. */
+.kp-tools-row {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 4px;
   min-width: 0;
 }
 
-.keep-desk-search {
-  width: min(280px, 36vw);
+.kp-searchfield {
+  position: relative;
+  display: flex;
+  flex: 1 1 280px;
+  align-items: center;
+  min-width: 0;
+  margin-right: 4px;
 }
 
-.keep-desk-nav-icon {
+.kp--desk .kp-searchfield {
+  flex: 0 1 320px;
+}
+
+.kp-searchfield > svg {
+  position: absolute;
+  left: 10px;
+  width: 18px;
+  height: 18px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.kp-searchfield .pg-input {
+  width: 100%;
+  padding-left: 36px;
+}
+
+.kp--lucina:not(.kp--desk) .pg-head-actions {
+  flex: 1 1 100%;
+}
+
+/* Sections on a phone: the shared chips, scrolling sideways. */
+.kp-navchips {
+  margin: 0 0 16px;
+}
+
+.kp-navchips a.chip {
+  text-decoration: none;
+}
+
+/* Sections on a desktop: one rail card; the labels fold under one row. */
+.kp-railrow-icon {
   display: grid;
   flex: none;
   place-items: center;
@@ -2202,11 +2279,152 @@
   color: var(--pg-muted);
 }
 
-.keep-desk-nav-icon :is(svg, .icon) {
+.kp-railrow-icon :is(svg, .icon) {
   width: 20px;
   height: 20px;
 }
 
-.pg .keep-desk-nav--active {
-  background: var(--pg-fill-hover);
+.pg .kp-railrow--active {
+  background: color-mix(in srgb, var(--ui-accent) 12%, transparent);
+}
+
+.pg .kp-railrow--active .kp-railrow-icon {
+  color: var(--ui-accent);
+}
+
+.kp-railrow-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.kp-railrow-count {
+  color: var(--pg-muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.kp-railrow-caret {
+  color: var(--pg-muted);
+  font-size: 11px;
+}
+
+.kp-raillabels {
+  border-top: 1px solid var(--pg-hair);
+}
+
+.kp-raillabels ul {
+  display: grid;
+  gap: 2px;
+  max-height: 320px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 6px 12px 10px 52px;
+  list-style: none;
+}
+
+.kp-raillabel {
+  display: block;
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--pg-muted);
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.kp-raillabel:hover {
+  background: var(--pg-fill);
+  color: var(--pg-text);
+}
+
+.kp-raillabel[aria-current="page"] {
+  background: color-mix(in srgb, var(--ui-accent) 14%, transparent);
+  color: var(--pg-text);
+  font-weight: 600;
+}
+
+.kp-raillabel--edit {
+  color: var(--ui-accent);
+}
+
+/* Cards and the composer: the page system's card surface, 16 px radius, no Google shadow. */
+.kp--lucina :is(.kp-card, .kp-composer) {
+  border-radius: 16px;
+}
+
+.kp--lucina .kp-card[data-color="default"],
+.kp--lucina .kp-composer {
+  border-color: var(--pg-border, var(--border));
+  background: var(--pg-surface, var(--glass));
+}
+
+.kp--lucina .kp-card:hover,
+.kp--lucina .kp-card:focus-visible {
+  box-shadow: var(--kp-shadow-hover);
+}
+
+.kp--lucina .kp-card--selected {
+  box-shadow: 0 0 0 2px var(--ui-accent);
+}
+
+/* "Pinned" / "Others": the page's group heading, not Keep's small capitals. */
+.kp--lucina .kp-section-head {
+  padding-left: 4px;
+  color: var(--pg-muted, var(--text-muted));
+  font: 600 12px/16px var(--font);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+/* The selection bar sits at the top of the page, on the raised surface. */
+.kp--lucina .kp-selbar {
+  position: sticky;
+  top: 0;
+  border-bottom: 1px solid var(--ui-raised-border);
+}
+
+/* Left-aligned under the page header and the rail, like every Lucina page (Keep centred its grid in the window). */
+.kp--lucina :is(.kp-masonry, .kp-section-head, .kp-masonry--flow) {
+  margin-left: 0;
+  margin-right: auto;
+}
+
+@media (min-width: 601px) {
+  .kp--lucina .kp-composer-wrap {
+    margin: 0 auto 24px 0;
+  }
+}
+
+/* Filters picked on the search page: the shared chip in its "on" state, with a remove button. */
+.kp-filterchips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 16px;
+}
+
+.kp--lucina .kp-search-chip {
+  height: 32px;
+  padding: 0 6px 0 12px;
+  border: 1px solid color-mix(in srgb, var(--ui-accent) 55%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ui-accent) 16%, transparent);
+  color: var(--text);
+  font-weight: 600;
 }

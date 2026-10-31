@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { note } from "../test/keepFixtures";
-import { byPosition, emptySearch, matchesType, positionBetween, searchActive, searchNotes, sortLabels, splitPinned, viewNotes } from "./keepFilter";
+import { byPosition, emptySearch, matchesType, positionBetween, searchActive, searchNotes, sortLabels, splitPinned, viewNotes, wordMatch } from "./keepFilter";
 
 const labelName = (tag: string) => ({ godlevel: "GodLevel", "fisica 2": "Fisica 2", chill: "Chill" })[tag] ?? tag;
 
@@ -88,6 +88,53 @@ describe("search", () => {
     expect(searchActive({ q: "  " })).toBe(false);
     expect(searchActive({ q: "", color: "red" })).toBe(true);
     expect(matchesType(notes[2]!, "images")).toBe(true);
+  });
+});
+
+describe("search matches word starts and ranks the best notes first (owner, 2026-10-31: \"rust\")", () => {
+  const labels = (tag: string) => ({ lang: "Languages", sys: "Systems" })[tag] ?? tag;
+  const rust = [
+    note({ id: "trust", title: "Trust the plan", content: "Small steps every day.", pinned: true, position: 90 }),
+    note({ id: "frustrated", title: "Week review", content: "Frustrated by the slow build again.", pinned: true, position: 80 }),
+    note({ id: "frustrati", title: "Appunti", content: "Eravamo frustrati dal ritardo.", pinned: true, position: 70 }),
+    note({ id: "book", title: "Rust: ownership and borrowing", content: "Every value has one owner.", position: 1 }),
+    note({ id: "mention", title: "Weekend", content: "Try the rust-analyzer setup on the laptop.", position: 50 }),
+    note({ id: "label", title: "Cargo cheatsheet", content: "cargo build --release", tags: ["lang"], position: 40 }),
+    note({ id: "ruß", title: "Kaffee", content: "Café, crème brûlée", position: 30 }),
+  ];
+  const find = (q: string) => ids(searchNotes(rust, { ...emptySearch(), q }, labels));
+
+  it("never matches inside a word", () => {
+    expect(find("rust")).not.toContain("trust");
+    expect(find("rust")).not.toContain("frustrated");
+    expect(find("rust")).not.toContain("frustrati");
+  });
+
+  it("puts the note titled Rust first, then the ones that mention it", () => {
+    expect(find("rust")).toEqual(["book", "mention"]);
+    expect(find("RUST")).toEqual(["book", "mention"]);
+  });
+
+  it("matches the start of a word while typing", () => {
+    expect(find("own")).toEqual(["book"]);
+    expect(find("rus own")).toEqual(["book"]);
+  });
+
+  it("searches label names, after title hits", () => {
+    expect(find("languages")).toEqual(["label"]);
+    expect(find("cargo")).toEqual(["label"]);
+  });
+
+  it("ignores case and accents", () => {
+    expect(find("creme brulee")).toEqual(["ruß"]);
+    expect(find("CAFE")).toEqual(["ruß"]);
+  });
+
+  it("knows whole words from word starts", () => {
+    expect(wordMatch("rust: ownership", "rust")).toBe(2);
+    expect(wordMatch("rust-analyzer", "rust")).toBe(2);
+    expect(wordMatch("rustacean", "rust")).toBe(1);
+    expect(wordMatch("trust", "rust")).toBe(0);
   });
 });
 
