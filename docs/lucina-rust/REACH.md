@@ -28,6 +28,30 @@ A reply goes back into that conversation in three ways:
 - the session's recent turns;
 - an app notification.
 
+## Claude, first: an agent in Lucina Agents
+
+Since 2026-10-31 the Claude CLI on nezopt is signed in again, with the owner's Max account. A message to Claude
+therefore starts a Claude agent in Lucina Agents first, through agentd as `service:lucina`:
+- provider `claude`, `claude-opus-5-5` at effort `medium`;
+- permission mode `bypassPermissions` (there is no passwordless sudo on nezopt);
+- an issue runs in a fresh topic worktree (`wt add claude-<thread> origin/main` in SecretaryIOS); a question runs in
+  `~/scratch/lucina-claude/<thread>`.
+
+The agent receives the redacted thread, the owner's quoted words and the rules:
+- answer questions;
+- for fixes, work only in the topic worktree with tests, diffgate and a commit, then stop;
+- never merge, push main or deploy: the coordinator decides;
+- no Codex, never paid DeepSeek, no secrets, no sudo.
+
+It answers with `lucina-rs reach reply <id> --from claude-agent "…"`.
+
+Lucina watches the run:
+- after 45 minutes (`LUCINA_REACH_CLAUDE_TIMEOUT_SECS`) the agent is stopped and the thread fails;
+- if the agent ends without replying, its last message becomes the reply.
+
+There is one agent per thread, and the reach rate limits apply. If agentd cannot start the agent, the routine below is
+tried, then the mailbox alone. `LUCINA_REACH_CLAUDE_AGENT=off` turns this route off.
+
 ## The Claude routine (no polling)
 
 When a message to Claude lands in the mailbox, lucina-rs fires the owner's Claude Code cloud routine "Lucina → Claude
@@ -130,6 +154,9 @@ Over the Lucina MCP, once secretary-server and secretary-mcp carry them: `lucina
 | `LUCINA_REACH_ROUTINE_TOKEN_REF` | `secret://lucina/prod#CLAUDE_ROUTINE_LUCINA_TOKEN` |
 | `LUCINA_REACH_BROKER`, `LUCINA_REACH_BROKER_TOKEN_FILE` | `/usr/local/bin/infisical-broker`, `~/.config/infisical-mcp/svc-lucina-rs.token` |
 | `LUCINA_REACH_ROUTINE_DEBOUNCE_SECS` | 120 |
+| `LUCINA_REACH_CLAUDE_AGENT` | on (`off`: no Claude agent, the routine and the mailbox only) |
+| `LUCINA_REACH_CLAUDE_MODEL`, `LUCINA_REACH_CLAUDE_EFFORT` | `claude-opus-5-5`, `medium` |
+| `LUCINA_REACH_CLAUDE_REPO`, `LUCINA_REACH_CLAUDE_TIMEOUT_SECS` | `~/Projects/Lucina/SecretaryIOS`, 2700 |
 | `LUCINA_REACH_ROUTINE_REPO` | unset (no dispatch route); live: `gvitolocs/SecretaryIOS` |
 | `LUCINA_REACH_ROUTINE_EVENT`, `LUCINA_REACH_GH` | `lucina-reach`, `~/.local/bin/gh` |
 
