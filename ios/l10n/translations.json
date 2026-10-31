@@ -1505,5 +1505,6 @@
   "Profiles, stories and highlights": ["Profili, storie e in evidenza", "Profiler, historier og højdepunkter"],
   "Rankings, search and bookmarks": ["Classifiche, ricerca e segnalibri", "Ranglister, søgning og bogmærker"],
   "Browse and read": ["Sfoglia e leggi", "Gennemse og læs"],
-  "Show adult plugins": ["Mostra plugin per adulti", "Vis plugins for voksne"]
+  "Show adult plugins": ["Mostra plugin per adulti", "Vis plugins for voksne"],
+  "Watched accounts": ["Account osservati", "Fulgte konti"]
 }

@@ -170,8 +170,10 @@ private struct NClientTile: View {
     let loader: NClientImageLoader
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            NClientImage(url: url, loader: loader)
-                .frame(height: 210).clipped().clipShape(RoundedRectangle(cornerRadius: 12))
+            // The cover is an overlay of a fixed box: a wide cover must not widen its grid column.
+            Color.clear.frame(maxWidth: .infinity).frame(height: 210)
+                .overlay { NClientImage(url: url, loader: loader) }
+                .clipShape(RoundedRectangle(cornerRadius: 12))
                 .overlay(alignment: .topTrailing) {
                     if item.favorite { Image(systemName: "heart.fill").foregroundStyle(.pink).padding(8).accessibilityLabel(Text("Favourite")) }
                 }

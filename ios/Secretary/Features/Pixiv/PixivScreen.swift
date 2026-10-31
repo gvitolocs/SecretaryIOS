@@ -12,6 +12,8 @@ private struct PixivBrowseContent: View {
     @State private var store: PixivBrowseStore
     @State private var selectedID: String?
     @AppStorage(AdultPlugins.key) private var adultShown = true
+    /// `-SecretaryPixivOpen first` opened its work already (screenshots).
+    @State private var openedFirst = false
 
     init(app: AppModel) {
         self.app = app
@@ -75,6 +77,17 @@ private struct PixivBrowseContent: View {
             }
         }
         .modifier(PixivBrowseFeedback(store: store))
+        // `/pixiv/<id>` (a link or Lucina's route) opens that work over the list.
+        .onChange(of: app.openPixivWork, initial: true) { _, id in
+            guard let id else { return }
+            app.openPixivWork = nil
+            selectedID = id
+        }
+        .onChange(of: store.feed.items.first?.id) { _, id in
+            guard let id, PluginScreenshotHooks.opensFirstPixivWork, !openedFirst else { return }
+            openedFirst = true
+            selectedID = id
+        }
     }
 
     private var filters: some View {
@@ -166,10 +179,11 @@ private struct PixivBrowseTile: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Button(action: open) {
-                SignedImage(url: client?.absolute(item.thumbUrl))
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 220)
-                    .clipped()
+                // The picture is an overlay of a fixed box: a wide work must not widen its grid column.
+                Color.clear.frame(maxWidth: .infinity).frame(height: 220)
+                    .overlay { SignedImage(url: client?.absolute(item.thumbUrl)) }
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .contentShape(Rectangle())
                     .overlay(alignment: .bottomLeading) {
                         HStack(spacing: 5) {
                             if item.pages > 1 { Text("\(item.pages)") }

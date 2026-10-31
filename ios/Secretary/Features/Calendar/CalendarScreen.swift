@@ -3,7 +3,12 @@ import UIKit
 
 struct CalendarScreen: View {
     @Environment(AppModel.self) private var app
-    var body: some View { CalendarContent(app: app) }
+    var body: some View {
+        CalendarContent(app: app)
+        #if DEBUG || SCREENSHOTS
+            .task { await CalendarSelfTest.runIfRequested(app) }
+        #endif
+    }
 }
 
 private enum CalendarSheet: Identifiable {
@@ -23,6 +28,7 @@ private struct CalendarContent: View {
     @AppStorage("secretary.calendar.view") private var view = "month"
     @State private var store: CalendarStore
     @State private var selectedDay = Calendar.current.startOfDay(for: Date())
+    @State private var showProposals = false
     @State private var agendaStart = Calendar.current.startOfDay(for: Date())
     @State private var agendaEnd = Calendar.current.date(byAdding: .day, value: 30, to: Date())!
     @State private var sheet: CalendarSheet?
@@ -164,8 +170,23 @@ private struct CalendarContent: View {
         }
     }
     @ViewBuilder private var proposals: some View {
+        // Folded by default: Lucina may suggest many, and the calendar comes first.
         if !store.proposals.isEmpty {
-            Text("Suggested events").font(.headline)
+            Button { withAnimation { showProposals.toggle() } } label: {
+                HStack {
+                    Image(systemName: "sparkles").foregroundStyle(Theme.accent)
+                    Text("Suggested events").font(.headline)
+                    Text(verbatim: String(store.proposals.count)).font(.caption.bold()).padding(.horizontal, 7).padding(.vertical, 2)
+                        .background(Theme.accentSoft, in: Capsule())
+                    Spacer()
+                    Image(systemName: showProposals ? "chevron.up" : "chevron.down").foregroundStyle(Theme.textSecondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("calendar-proposals-toggle")
+        }
+        if showProposals {
             ForEach(store.proposals) { proposal in
                 Card {
                     VStack(alignment: .leading, spacing: 8) {
@@ -272,6 +293,8 @@ private struct CalendarContent: View {
         guard let link = app.openCalendarEvent else { return }
         defer { if app.openCalendarEvent == link { app.openCalendarEvent = nil } }
         notice = nil
+        // A new link replaces whatever sheet is up (an older event's detail).
+        sheet = nil
         let date = link.at ?? link.eventId.flatMap { id in store.events.first(where: { $0.id == id }).map { CalendarMath.bounds($0).0 } } ?? Date()
         selectedDay = date; agendaStart = Calendar.current.startOfDay(for: date)
         agendaEnd = Calendar.current.date(byAdding: .day, value: 30, to: agendaStart)!

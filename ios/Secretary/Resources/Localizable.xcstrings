@@ -11339,7 +11339,22 @@
         }
       }
     },
-    "Search" : {},
+    "Search" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cerca"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Søg"
+          }
+        }
+      }
+    },
     "Search notes" : {
       "localizations" : {
         "da" : {
@@ -24650,6 +24665,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Side med zoom"
+          }
+        }
+      }
+    },
+    "Watched accounts" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Account osservati"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fulgte konti"
           }
         }
       }

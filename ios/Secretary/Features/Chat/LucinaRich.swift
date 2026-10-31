@@ -590,6 +590,18 @@ extension AppModel {
         case "callers":
             selectedTab = .plugins
             showCallers = true
+        // `/instagram/<username>` and `/pixiv/<id>` open a profile or a work, as on the web.
+        case "instagram":
+            selectedTab = .plugins
+            openInstagramUser = PluginRoute.instagramUser(path)
+            showInstagram = true
+        case "pixiv":
+            selectedTab = .plugins
+            openPixivWork = PluginRoute.pixivWork(path)
+            showPixiv = true
+        case "nclient":
+            selectedTab = .plugins
+            showNClient = AdultPlugins.isShown
         case "notebooks": showNotebooks = true
         case "gallery": openGallery(path)
         case "drive": openDrive(DriveLink.parse(path) ?? .root)

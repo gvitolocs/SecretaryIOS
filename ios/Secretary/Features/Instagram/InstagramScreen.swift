@@ -30,7 +30,7 @@ struct InstagramScreen: View {
                         if store.loading.contains("resolve") || store.loading.contains("home") { ProgressView() }
                         IgErrors(store: store, keys: ["home", "resolve", "watch", "badges", "settings"]) { await store.loadHome() }
                         HStack {
-                            Text("Watched").font(LucinaTokens.Fonts.headline)
+                            Text("Watched accounts").font(LucinaTokens.Fonts.headline)
                             if store.badges.total > 0 {
                                 Text(verbatim: String(store.badges.total)).padding(6).background(Theme.accent, in: Capsule())
                                     .accessibilityIdentifier("instagram-watched-badge")
@@ -66,6 +66,7 @@ struct InstagramScreen: View {
             if store == nil {
                 store = InstagramStore(api: { app.pluginClient.map { InstagramAPI(client: $0) } }, onSessionEnded: { app.handle($0) })
             }
+            openRequestedProfile()
             await store?.loadHome()
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(120))
@@ -76,6 +77,14 @@ struct InstagramScreen: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { Task { await store?.refreshWatching() } }
         }
+        .onChange(of: app.openInstagramUser) { _, _ in openRequestedProfile() }
+    }
+
+    /// `/instagram/<username>` (a link or Lucina's route): push that profile once the store exists.
+    private func openRequestedProfile() {
+        guard store != nil, let requested = app.openInstagramUser else { return }
+        app.openInstagramUser = nil
+        username = requested
     }
 
     private func submit(_ store: InstagramStore) {
@@ -125,9 +134,11 @@ struct InstagramScreen: View {
 private struct InstagramProfileView: View {
     let store: InstagramStore
     let username: String
-    @State private var tab: IgTab = .posts
+    @State private var tab: IgTab = PluginScreenshotHooks.instagramTab ?? .posts
     @State private var viewer: IgViewerRequest?
     @State private var picture = false
+    /// The highlight opened by `-SecretaryInstagramHighlight first` (screenshots).
+    @State private var autoHighlight: IgHighlight?
 
     var body: some View {
         ScrollView {
@@ -244,6 +255,13 @@ private struct InstagramProfileView: View {
                 Button("Try again") { Task { await store.load(.highlights, username: username, refresh: true) } }
             }
         }
+        .navigationDestination(isPresented: Binding(get: { autoHighlight != nil }, set: { if !$0 { autoHighlight = nil } })) {
+            if let autoHighlight { InstagramHighlightView(store: store, username: username, highlight: autoHighlight) }
+        }
+        .onChange(of: store.bundle?.highlights.first?.id, initial: true) { _, id in
+            guard id != nil, PluginScreenshotHooks.opensFirstHighlight, autoHighlight == nil else { return }
+            autoHighlight = store.bundle?.highlights.first
+        }
     }
 }
 
@@ -265,6 +283,7 @@ private struct InstagramHighlightView: View {
                 InstagramTileGrid(store: store, items: store.pages[highlight.id]?.items ?? [], username: username) { index in
                     viewer = IgViewerRequest(items: store.pages[highlight.id]?.items ?? [], start: index, username: username, highlight: highlight)
                 }
+                .padding(.horizontal, LucinaTokens.Space.gutter)
                 IgErrors(store: store, keys: [highlight.id]) { await load(refresh: true) }
                 if store.loading.contains(highlight.id) { ProgressView().frame(maxWidth: .infinity) }
                 if store.pages[highlight.id]?.items.isEmpty == true { ContentUnavailableView("No items yet", systemImage: "photo") }
@@ -290,16 +309,20 @@ private struct InstagramTileGrid: View {
     let open: (Int) -> Void
     var body: some View {
         let chips = InstagramText.monthChips(items)
-        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 2), count: 3), spacing: 2) {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 3), count: 3), spacing: 3) {
             ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                 Button { open(index) } label: {
+                    // As on the web (InstagramTiles): the month chip bottom-left, the play badge top-right.
                     Color.clear.aspectRatio(1, contentMode: .fit)
                         .overlay { IgPicture(store: store, path: item.thumbUrl ?? item.url) }
-                        .clipped()
-                        .overlay(alignment: .topLeading) {
-                            if let chip = chips[index] { Text(verbatim: chip).font(.caption2.bold()).padding(4).background(.black.opacity(0.65), in: Capsule()).padding(4) }
+                        .clipShape(RoundedRectangle(cornerRadius: 3))
+                        .overlay(alignment: .bottomLeading) {
+                            if let chip = chips[index] {
+                                Text(verbatim: chip).font(.caption2.bold()).foregroundStyle(.white)
+                                    .padding(.horizontal, 7).padding(.vertical, 3).background(.black.opacity(0.65), in: Capsule()).padding(6)
+                            }
                         }
-                        .overlay(alignment: .bottomTrailing) {
+                        .overlay(alignment: .topTrailing) {
                             if item.kind == "video" || item.kind == "carousel" {
                                 Image(systemName: item.kind == "video" ? "play.fill" : "square.on.square.fill")
                                     .font(.caption).padding(6).background(.black.opacity(0.5), in: Circle()).padding(4)
