@@ -14,6 +14,14 @@
 //!   (`LUCINA_REACH_CLAUDE_CHANNEL`) and answers, else to Lucina's **mailbox**: Claude sessions
 //!   read it (`lucina-rs reach inbox`, `GET /api/secretary/reach/threads`) and answer with
 //!   `lucina-rs reach reply <id> …` (`POST /api/secretary/reach/threads/<id>/reply`).
+//!   When a message lands in the mailbox, Lucina also fires the owner's Claude Code routine
+//!   ("Lucina → Claude (reach inbox)", `LUCINA_REACH_ROUTINE_URL`) through its API trigger with
+//!   `{"thread": "rt-…"}`; the routine answers through the Lucina MCP (`lucina_inbox`,
+//!   `lucina_reply`). The fire has no idempotency key, so it is never retried after a timeout
+//!   or an unknown result, only once after a clean 5xx; one fire drains every open thread, so a
+//!   fire within [`RoutineConfig::debounce`] of the last is skipped. The per-routine token comes
+//!   from Infisical through the broker (`lucina/prod#CLAUDE_ROUTINE_LUCINA_TOKEN`), is cached in
+//!   memory, registered with the redactor and never logged; without it the mailbox alone holds.
 //! - **Grok**: `gbot send <bot> …` to the owner's primary Grok Bot, then the bot's thread is read
 //!   until the reply settles (in the background; the answer arrives as a reply). The Grok Bot app
 //!   0.78 writes no gateway descriptor for gbot, so gbot signs in with the Cursor session token of
@@ -132,6 +140,9 @@ pub struct Thread {
     /// A self-test conversation: no ops record, no push.
     #[serde(default)]
     pub test: bool,
+    /// The Claude Code routine run this message started.
+    #[serde(default)]
+    pub session_url: Option<String>,
 }
 
 impl Thread {
@@ -148,6 +159,7 @@ impl Thread {
             "status": self.status,
             "route": self.route,
             "detail": self.detail,
+            "session_url": self.session_url,
             "replies": self.replies.iter().map(|r| json!({
                 "from": r.from, "text": r.text, "at": r.at.to_rfc3339()
             })).collect::<Vec<_>>(),
@@ -168,6 +180,33 @@ struct StoreFile {
     /// When each message went out, per target (the rate limit).
     #[serde(default)]
     sent: Vec<(Target, DateTime<Utc>)>,
+    /// When the Claude routine was fired (debounce and rate limit).
+    #[serde(default)]
+    fires: Vec<DateTime<Utc>>,
+}
+
+/// The owner's Claude Code routine that answers the mailbox (`LUCINA_REACH_ROUTINE_*`).
+#[derive(Debug, Clone)]
+pub struct RoutineConfig {
+    /// Its Fire URL: `https://api.anthropic.com/v1/claude_code/routines/trig_…/fire`.
+    pub fire_url: String,
+    /// The token's Infisical reference, read through the broker.
+    pub token_ref: String,
+    /// The token itself, when the environment already holds it (`CLAUDE_ROUTINE_LUCINA_TOKEN`).
+    pub token: Option<String>,
+    pub broker_bin: PathBuf,
+    /// The broker caller token of this unit (`svc-lucina-rs`).
+    pub broker_token_file: PathBuf,
+    /// A fire within this long of the last one is skipped (the routine drains every open thread).
+    pub debounce: Duration,
+    pub timeout: Duration,
+}
+
+/// A routine Fire URL on the official host, for a `trig_` routine.
+pub fn valid_fire_url(u: &str) -> bool {
+    u.strip_prefix("https://api.anthropic.com/v1/claude_code/routines/trig_")
+        .and_then(|r| r.strip_suffix("/fire"))
+        .is_some_and(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric()))
 }
 
 /// Settings (`LUCINA_REACH_*`).
@@ -193,6 +232,8 @@ pub struct ReachConfig {
     pub grok_timeout: Duration,
     pub poll: Duration,
     pub quiet: Duration,
+    /// `None`: no routine, the mailbox waits for a session to look.
+    pub routine: Option<RoutineConfig>,
 }
 
 fn home() -> PathBuf {
@@ -236,6 +277,7 @@ impl ReachConfig {
             grok_timeout: Duration::from_secs(600),
             poll: Duration::from_secs(5),
             quiet: Duration::from_secs(20),
+            routine: None,
         }
     }
 
@@ -265,6 +307,27 @@ impl ReachConfig {
         }
         if let Some(v) = env_str("LUCINA_REACH_AGENTS_MODEL") {
             c.agents_model = (v != "default").then_some(v);
+        }
+        match env_str("LUCINA_REACH_ROUTINE_URL") {
+            Some(u) if valid_fire_url(&u) => {
+                c.routine = Some(RoutineConfig {
+                    fire_url: u,
+                    token_ref: env_str("LUCINA_REACH_ROUTINE_TOKEN_REF").unwrap_or_else(|| {
+                        "secret://lucina/prod#CLAUDE_ROUTINE_LUCINA_TOKEN".into()
+                    }),
+                    token: env_str("CLAUDE_ROUTINE_LUCINA_TOKEN"),
+                    broker_bin: env_str("LUCINA_REACH_BROKER")
+                        .map(PathBuf::from)
+                        .unwrap_or_else(|| PathBuf::from("/usr/local/bin/infisical-broker")),
+                    broker_token_file: env_str("LUCINA_REACH_BROKER_TOKEN_FILE")
+                        .map(PathBuf::from)
+                        .unwrap_or_else(|| home().join(".config/infisical-mcp/svc-lucina-rs.token")),
+                    debounce: Duration::from_secs(env_num("LUCINA_REACH_ROUTINE_DEBOUNCE_SECS", 120)),
+                    timeout: Duration::from_secs(20),
+                });
+            }
+            Some(_) => tracing::warn!("reach: LUCINA_REACH_ROUTINE_URL is not a routine Fire URL; no routine"),
+            None => {}
         }
         if let Some(v) = env_str("LUCINA_REACH_AGENTS_CWD") {
             c.agents_cwd = v.into();
@@ -478,7 +541,26 @@ pub struct Reach {
     lock: Mutex<()>,
     sink: OnceLock<Arc<dyn ReachSink>>,
     ops: OnceLock<Arc<lucina_ops::Ops>>,
+    http: reqwest::Client,
+    /// The routine token from the broker and when it was read.
+    routine_token: Mutex<Option<(String, std::time::Instant)>>,
+    /// The "no routine token" warning was logged.
+    token_warned: std::sync::atomic::AtomicBool,
 }
+
+/// How firing the Claude routine went.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Fire {
+    /// A run started: its claude.ai session URL.
+    Fired(String),
+    /// Not fired (no routine, debounced, rate limit).
+    Skipped(String),
+    /// Fired and refused, or no token: the mailbox still holds the message.
+    Failed(String),
+}
+
+/// How long a token read from the broker is kept in memory.
+const TOKEN_TTL: Duration = Duration::from_secs(600);
 
 /// What the background Grok task reports to the waiting tool call.
 enum GrokEvent {
@@ -502,6 +584,12 @@ impl Reach {
             lock: Mutex::new(()),
             sink: OnceLock::new(),
             ops: OnceLock::new(),
+            http: reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(5))
+                .build()
+                .unwrap_or_default(),
+            routine_token: Mutex::new(None),
+            token_warned: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -548,6 +636,7 @@ impl Reach {
         }
         let day_ago = Utc::now() - chrono::Duration::days(1);
         f.sent.retain(|(_, at)| *at > day_ago);
+        f.fires.retain(|at| *at > day_ago);
         if let Err(e) = self.write(&f) {
             tracing::warn!(error = %e, "reach: thread store not written");
         }
@@ -661,8 +750,10 @@ impl Reach {
             "project": "lucina",
             "title": clip(title, 200),
             "body": format!(
-                "Thread `{}` to {} ({}, route {}), from the {} conversation.\n\n{}",
-                t.id, t.to.label(), t.kind, t.route, t.channel, clip(body, 4000)
+                "Thread `{}` to {} ({}, route {}), from the {} conversation.{}\n\n{}",
+                t.id, t.to.label(), t.kind, t.route, t.channel,
+                t.session_url.as_deref().map(|u| format!(" Claude routine run: {u}")).unwrap_or_default(),
+                clip(body, 4000)
             ),
             "host": "nezopt",
             "dedup_key": format!("reach:{}:{}", t.id, t.replies.len()),
@@ -743,6 +834,7 @@ impl Reach {
             detail: None,
             replies: Vec::new(),
             test,
+            session_url: None,
         };
         self.save(&t);
         Ok(t)
@@ -792,11 +884,153 @@ impl Reach {
         t.route = "lucina-mailbox".into();
         t.status = "queued".into();
         self.save(&t);
+        match self.fire_routine(&t.id).await {
+            Fire::Fired(url) => {
+                t.route = "lucina-mailbox+routine".into();
+                t.session_url = Some(url);
+            }
+            Fire::Skipped(why) | Fire::Failed(why) => t.detail = Some(clip(&why, 300)),
+        }
+        self.save(&t);
         self.record(&t, &format!("Lucina → Claude: {}", t.subject), &t.text);
         Sent {
             thread: t,
             reply: None,
         }
+    }
+
+    // ---------------------------------------------------------------- the Claude routine
+
+    /// The routine token: the environment's, else the broker's (cached), registered with the
+    /// redactor. `Err` says why there is none (never the value).
+    async fn routine_token(&self, r: &RoutineConfig) -> Result<String, String> {
+        if let Some(t) = &r.token {
+            return Ok(t.clone());
+        }
+        if let Some((t, at)) = self.routine_token.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
+            if at.elapsed() < TOKEN_TTL {
+                return Ok(t.clone());
+            }
+        }
+        let out = tokio::time::timeout(
+            Duration::from_secs(15),
+            tokio::process::Command::new(&r.broker_bin)
+                .arg("exec")
+                .arg("--token-file")
+                .arg(&r.broker_token_file)
+                .arg("--env")
+                .arg(format!("ROUTINE_TOKEN={}", r.token_ref))
+                .args(["--", "printenv", "ROUTINE_TOKEN"])
+                .stdin(std::process::Stdio::null())
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await
+        .map_err(|_| "the broker timed out".to_owned())?
+        .map_err(|e| format!("the broker did not run: {e}"))?;
+        let token = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+        if !out.status.success() || token.is_empty() || token.contains(char::is_whitespace) {
+            return Err(format!(
+                "the broker gave no token for {} ({})",
+                r.token_ref,
+                clip(String::from_utf8_lossy(&out.stderr).trim(), 160)
+            ));
+        }
+        lucina_secrets::redactor().register("CLAUDE_ROUTINE_LUCINA_TOKEN", &token);
+        *self.routine_token.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some((token.clone(), std::time::Instant::now()));
+        Ok(token)
+    }
+
+    /// Take a fire slot (debounce, then the per-hour and per-day limits), or say why not.
+    fn take_fire_slot(&self, r: &RoutineConfig, now: DateTime<Utc>) -> Result<(), String> {
+        let (hour, day) = (self.cfg.per_hour, self.cfg.per_day);
+        self.update(|f| {
+            if let Some(last) = f.fires.iter().max() {
+                let ago = (now - *last).num_seconds();
+                if ago >= 0 && (ago as u64) < r.debounce.as_secs() {
+                    return Err(format!(
+                        "the Claude routine was fired {ago}s ago and drains every open thread"
+                    ));
+                }
+            }
+            let hour_ago = now - chrono::Duration::hours(1);
+            if f.fires.iter().filter(|at| **at > hour_ago).count() >= hour {
+                return Err(format!("rate limit: {hour} routine fires in the last hour"));
+            }
+            if f.fires.len() >= day {
+                return Err(format!("rate limit: {day} routine fires today"));
+            }
+            f.fires.push(now);
+            Ok(())
+        })
+    }
+
+    fn give_back_fire_slot(&self, at: DateTime<Utc>) {
+        self.update(|f| f.fires.retain(|x| *x != at));
+    }
+
+    /// Fire the Claude routine for thread `id`. Never retried after a timeout or an unknown
+    /// result (no idempotency key); once after a clean 5xx.
+    pub async fn fire_routine(&self, id: &str) -> Fire {
+        let Some(r) = self.cfg.routine.clone() else {
+            return Fire::Skipped("no Claude routine configured".into());
+        };
+        let now = Utc::now();
+        if let Err(why) = self.take_fire_slot(&r, now) {
+            return Fire::Skipped(why);
+        }
+        let token = match self.routine_token(&r).await {
+            Ok(t) => t,
+            Err(why) => {
+                self.give_back_fire_slot(now);
+                if !self.token_warned.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    tracing::warn!(reason = %why, "reach: no Claude routine token; the mailbox waits for a session");
+                }
+                return Fire::Failed(format!("no routine token: {why}"));
+            }
+        };
+        let body = json!({"text": json!({"thread": id}).to_string()});
+        for attempt in 1..=2 {
+            let sent = tokio::time::timeout(
+                r.timeout,
+                self.http
+                    .post(&r.fire_url)
+                    .bearer_auth(&token)
+                    .header("anthropic-version", "2023-06-01")
+                    .header("anthropic-beta", "experimental-cc-routine-2026-04-01")
+                    .json(&body)
+                    .send(),
+            )
+            .await;
+            let resp = match sent {
+                Ok(Ok(resp)) => resp,
+                // A timeout or a broken connection: the run may exist. Never resent.
+                Ok(Err(e)) => return Fire::Failed(format!("routine fire: unknown result ({})", e.without_url())),
+                Err(_) => return Fire::Failed("routine fire: unknown result (timed out)".into()),
+            };
+            let status = resp.status().as_u16();
+            let v: Value = resp.json().await.unwrap_or(Value::Null);
+            if status == 200 {
+                let url = v["claude_code_session_url"].as_str().unwrap_or("").to_owned();
+                tracing::info!(thread = id, session = %url, "reach: Claude routine fired");
+                return Fire::Fired(url);
+            }
+            if (500..600).contains(&status) && attempt == 1 {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                continue;
+            }
+            if status == 401 {
+                *self.routine_token.lock().unwrap_or_else(|p| p.into_inner()) = None;
+            }
+            let why = format!(
+                "routine fire refused: HTTP {status} {}",
+                v["error"]["type"].as_str().unwrap_or("")
+            );
+            tracing::warn!(thread = id, %why, "reach: Claude routine not fired");
+            return Fire::Failed(why);
+        }
+        Fire::Failed("routine fire failed twice (5xx)".into())
     }
 
     // ---------------------------------------------------------------- Grok
@@ -1732,6 +1966,109 @@ mod tests {
         assert_eq!(app_version(&st).as_deref(), Some("0.78.1"));
         std::fs::write(&st, r#"{"appVersion":"0.78.1; rm -rf"}"#).unwrap();
         assert_eq!(app_version(&st), None);
+    }
+
+    #[test]
+    fn fire_urls() {
+        assert!(valid_fire_url("https://api.anthropic.com/v1/claude_code/routines/trig_01Wm68jfqca7NVdmyVG4Fm8j/fire"));
+        assert!(!valid_fire_url("http://api.anthropic.com/v1/claude_code/routines/trig_01W/fire"));
+        assert!(!valid_fire_url("https://evil.example/v1/claude_code/routines/trig_01W/fire"));
+        assert!(!valid_fire_url("https://api.anthropic.com/v1/claude_code/routines/trig_01W/../x/fire"));
+    }
+
+    fn routine_reach(dir: &Path, url: &str, token: Option<&str>) -> Reach {
+        let mut cfg = ReachConfig::new(dir);
+        cfg.routine = Some(RoutineConfig {
+            fire_url: url.into(),
+            token_ref: "secret://lucina/prod#CLAUDE_ROUTINE_LUCINA_TOKEN".into(),
+            token: token.map(str::to_owned),
+            broker_bin: dir.join("no-broker"),
+            broker_token_file: dir.join("no.token"),
+            debounce: Duration::from_secs(120),
+            timeout: Duration::from_secs(5),
+        });
+        Reach::new(cfg)
+    }
+
+    #[tokio::test]
+    async fn routine_fires_once_and_records_the_session() {
+        use wiremock::matchers::{body_json, header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let srv = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/fire"))
+            .and(header("authorization", "Bearer sk-ant-oat01-test"))
+            .and(header("anthropic-beta", "experimental-cc-routine-2026-04-01"))
+            .and(header("anthropic-version", "2023-06-01"))
+            .and(body_json(json!({"text": "{\"thread\":\"rt-0123456789ab\"}"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "type": "routine_fire",
+                "claude_code_session_id": "session_01X",
+                "claude_code_session_url": "https://claude.ai/code/session_01X"
+            })))
+            .expect(1)
+            .mount(&srv)
+            .await;
+        let d = tempfile::tempdir().unwrap();
+        let r = routine_reach(d.path(), &format!("{}/fire", srv.uri()), Some("sk-ant-oat01-test"));
+        let t = r
+            .open(Target::Claude, "message", "s", "hello", "web", "s1", true, "lucina-mailbox")
+            .unwrap();
+        let mut t2 = t.clone();
+        t2.id = "rt-0123456789ab".into();
+        r.save(&t2);
+        let sent = r.send_claude(t2).await;
+        assert_eq!(sent.thread.route, "lucina-mailbox+routine");
+        assert_eq!(sent.thread.session_url.as_deref(), Some("https://claude.ai/code/session_01X"));
+        assert_eq!(r.get("rt-0123456789ab").unwrap().session_url.as_deref(), Some("https://claude.ai/code/session_01X"));
+        // A second message within the debounce window does not fire again.
+        match r.fire_routine("rt-0123456789ab").await {
+            Fire::Skipped(why) => assert!(why.contains("drains"), "{why}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn routine_retries_once_on_5xx_only() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let srv = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(503).set_body_json(json!({"type":"error","error":{"type":"overloaded_error","message":"x"}})))
+            .expect(2)
+            .mount(&srv)
+            .await;
+        let d = tempfile::tempdir().unwrap();
+        let r = routine_reach(d.path(), &format!("{}/fire", srv.uri()), Some("tok"));
+        assert!(matches!(r.fire_routine("rt-0123456789ab").await, Fire::Failed(_)));
+
+        let srv2 = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(429).set_body_json(json!({"type":"error","error":{"type":"rate_limit_error","message":"x"}})))
+            .expect(1)
+            .mount(&srv2)
+            .await;
+        let d2 = tempfile::tempdir().unwrap();
+        let r2 = routine_reach(d2.path(), &format!("{}/fire", srv2.uri()), Some("tok"));
+        match r2.fire_routine("rt-0123456789ab").await {
+            Fire::Failed(why) => assert!(why.contains("429") && why.contains("rate_limit_error"), "{why}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn no_token_keeps_the_mailbox_and_no_slot_is_spent() {
+        let d = tempfile::tempdir().unwrap();
+        let r = routine_reach(d.path(), "https://api.anthropic.com/v1/claude_code/routines/trig_01X/fire", None);
+        match r.fire_routine("rt-0123456789ab").await {
+            Fire::Failed(why) => assert!(why.contains("no routine token"), "{why}"),
+            other => panic!("{other:?}"),
+        }
+        assert!(r.read().fires.is_empty());
+        let t = r.open(Target::Claude, "message", "s", "hi", "web", "s", true, "lucina-mailbox").unwrap();
+        let sent = r.send_claude(t).await;
+        assert_eq!((sent.thread.route.as_str(), sent.thread.status.as_str()), ("lucina-mailbox", "queued"));
+        assert!(sent.thread.detail.unwrap().contains("no routine token"));
     }
 
     #[test]

@@ -28,6 +28,44 @@ A reply goes back into that conversation in three ways:
 - the session's recent turns;
 - an app notification.
 
+## The Claude routine (no polling)
+
+When a message to Claude lands in the mailbox, lucina-rs fires the owner's Claude Code cloud routine "Lucina → Claude
+(reach inbox)" (`trig_01Wm68jfqca7NVdmyVG4Fm8j`). The routine:
+- clones this repo;
+- has the Lucina connector, limited to `lucina_inbox` and `lucina_reply`;
+- answers every open Claude thread, opening only draft PRs for fixes and never merging or deploying.
+
+Its reply reaches Lucina as from `claude-routine (mcp:claude)`.
+
+The fire request:
+- `POST <LUCINA_REACH_ROUTINE_URL>` (`https://api.anthropic.com/v1/claude_code/routines/trig_…/fire`);
+- headers `Authorization: Bearer <token>`, `anthropic-version: 2023-06-01` and
+  `anthropic-beta: experimental-cc-routine-2026-04-01`;
+- body `{"text": "{\"thread\":\"rt-…\"}"}`.
+
+A 200 returns `claude_code_session_url`. It is saved on the thread (`session_url`) and in the ops record.
+
+**Retries.** The endpoint has no idempotency key, so a timeout or an unknown result is never resent. Only a clean
+5xx is retried, and only once.
+
+**Debounce.** A fire within 120 s of the last one is skipped (`LUCINA_REACH_ROUTINE_DEBOUNCE_SECS`), because one run
+drains every open thread.
+
+**Limits.** Fires count against the reach limits (`LUCINA_REACH_PER_HOUR`, `LUCINA_REACH_PER_DAY`). The routine
+itself allows 30 fires an hour.
+
+**The token.** It is per routine, starts with `sk-ant-oat01-`, and is shown once when created in the routine's API
+trigger settings. It lives in Infisical as `lucina/prod#CLAUDE_ROUTINE_LUCINA_TOKEN`.
+- lucina-rs reads it through the broker as its own caller (`svc-lucina-rs`, bound to the lucina-rs unit), and keeps
+  it in memory for 10 minutes.
+- It is registered with the redactor and never logged.
+- `CLAUDE_ROUTINE_LUCINA_TOKEN` in the environment wins over the broker.
+- Without a token, or if the broker refuses, the mailbox still holds the message and one warning is logged.
+
+The thread id is in the payload, so a self-test thread is answered too. `GET /api/secretary/reach/threads` lists
+self-test threads as well; they are removed after a test.
+
 ## Answering as Claude
 
 Messages to Claude wait in the mailbox until a session answers. Check it and reply.
@@ -72,6 +110,10 @@ Over the Lucina MCP, once secretary-server and secretary-mcp carry them: `lucina
 | `LUCINA_AGENTD_SOCKET` | `$XDG_RUNTIME_DIR/lucina-agentd/agentd.sock` |
 | `LUCINA_REACH_AGENTS_PROVIDER`, `LUCINA_REACH_AGENTS_MODEL`, `LUCINA_REACH_AGENTS_CWD` | `opencode`, `opencode/deepseek-v4.1-flash-free`, `~/scratch/lucina-agents` |
 | `LUCINA_REACH_GROK_TIMEOUT_SECS` | 600 |
+| `LUCINA_REACH_ROUTINE_URL` | unset (no routine); live: the routine's Fire URL, drop-in `80-reach.conf` |
+| `LUCINA_REACH_ROUTINE_TOKEN_REF` | `secret://lucina/prod#CLAUDE_ROUTINE_LUCINA_TOKEN` |
+| `LUCINA_REACH_BROKER`, `LUCINA_REACH_BROKER_TOKEN_FILE` | `/usr/local/bin/infisical-broker`, `~/.config/infisical-mcp/svc-lucina-rs.token` |
+| `LUCINA_REACH_ROUTINE_DEBOUNCE_SECS` | 120 |
 
 ## How gbot signs in to Grok Bot
 

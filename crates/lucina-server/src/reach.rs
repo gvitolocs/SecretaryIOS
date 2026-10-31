@@ -147,7 +147,6 @@ pub async fn route(
             let mut v = json!({"threads": r
                 .list(to, status.as_deref(), limit)
                 .iter()
-                .filter(|t| !t.test)
                 .map(Thread::view)
                 .collect::<Vec<_>>()});
             lucina_secrets::redactor().redact_json(&mut v);
@@ -276,6 +275,7 @@ mod tests {
             detail: None,
             replies: Vec::new(),
             test: false,
+            session_url: None,
         };
         let r = Reply {
             from: "coordinator".into(),
