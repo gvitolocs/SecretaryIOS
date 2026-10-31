@@ -48,12 +48,21 @@ fn run(request: Request) -> Result<Value, String> {
         Request::Merge { current, incoming } => {
             serde_json::to_value(merge::merge(&current, &incoming)).map_err(|e| e.to_string())
         }
-        Request::SyncNext { plan, cursor, outcome } => {
+        Request::SyncNext {
+            plan,
+            cursor,
+            outcome,
+        } => {
             let mut plan = plan.unwrap_or_else(|| SyncPlan::new(cursor));
             let action = plan.next(outcome);
             Ok(json!({ "plan": plan, "action": action }))
         }
-        Request::Older { ids, stored, page_len, page_size } => Ok(json!({
+        Request::Older {
+            ids,
+            stored,
+            page_len,
+            page_size,
+        } => Ok(json!({
             "older_cursor": page::older_cursor(ids.iter().map(String::as_str), stored.as_deref()),
             "has_older": page::has_older(page_len, page_size, stored.as_deref()),
         })),
@@ -62,7 +71,9 @@ fn run(request: Request) -> Result<Value, String> {
 
 /// Answers one JSON request with one JSON response. Never panics on bad input.
 pub fn handle(json: &str) -> String {
-    let result = serde_json::from_str::<Request>(json).map_err(|e| e.to_string()).and_then(run);
+    let result = serde_json::from_str::<Request>(json)
+        .map_err(|e| e.to_string())
+        .and_then(run);
     match result {
         Ok(value) => value.to_string(),
         Err(error) => json!({ "error": error }).to_string(),

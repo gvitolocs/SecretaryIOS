@@ -72,9 +72,14 @@ pub enum Outcome {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Action {
     /// Ask the server for the items after `after` (`None`: the newest window), at most `limit`.
-    Fetch { after: Option<String>, limit: u32 },
+    Fetch {
+        after: Option<String>,
+        limit: u32,
+    },
     /// Apply the page just fetched; `reset` means drop the store's old server items and cursor first.
-    Apply { reset: bool },
+    Apply {
+        reset: bool,
+    },
     Done,
     /// Stop and throw the error of the `Failed` outcome (no further fetches).
     Abort,
@@ -137,14 +142,20 @@ impl SyncPlan {
         self.phase = Phase::Fetching;
         self.pages += 1;
         self.fetches += 1;
-        Action::Fetch { after: self.cursor.clone(), limit: PAGE_LIMIT }
+        Action::Fetch {
+            after: self.cursor.clone(),
+            limit: PAGE_LIMIT,
+        }
     }
 
     fn fetch_fresh(&mut self) -> Action {
         self.phase = Phase::Fetching;
         self.fresh = true;
         self.fetches += 1;
-        Action::Fetch { after: None, limit: FIRST_LIMIT }
+        Action::Fetch {
+            after: None,
+            limit: FIRST_LIMIT,
+        }
     }
 
     /// Leave the loop: a fresh window replaces what is on disk.
@@ -163,7 +174,10 @@ impl SyncPlan {
                 } else {
                     self.phase = Phase::Fetching;
                     self.fetches += 1;
-                    Action::Fetch { after: None, limit: FIRST_LIMIT }
+                    Action::Fetch {
+                        after: None,
+                        limit: FIRST_LIMIT,
+                    }
                 }
             }
             (Phase::Fetching, Outcome::Page { cursor, has_more }) => {
@@ -206,10 +220,16 @@ mod tests {
     use super::*;
 
     fn page(cursor: &str, more: bool) -> Outcome {
-        Outcome::Page { cursor: Some(cursor.into()), has_more: more }
+        Outcome::Page {
+            cursor: Some(cursor.into()),
+            has_more: more,
+        }
     }
     fn fetch(after: Option<&str>, limit: u32) -> Action {
-        Action::Fetch { after: after.map(String::from), limit }
+        Action::Fetch {
+            after: after.map(String::from),
+            limit,
+        }
     }
 
     /// Drives a plan against a scripted server: `serve(after)` answers a fetch.
@@ -270,7 +290,10 @@ mod tests {
                 return page(&format!("c{calls}"), true);
             }
             assert_eq!((after, limit), (None, 50));
-            Outcome::Page { cursor: Some("fresh".into()), has_more: false }
+            Outcome::Page {
+                cursor: Some("fresh".into()),
+                has_more: false,
+            }
         });
         assert_eq!(calls, 11);
         let mut want = vec![false; 10];
@@ -278,7 +301,10 @@ mod tests {
         assert_eq!(resets, want);
         assert_eq!(actions.last(), Some(&Action::Done));
         // The tenth page's cursor was followed, not asked: the fresh window comes right after.
-        let fetches: Vec<_> = actions.iter().filter(|a| matches!(a, Action::Fetch { .. })).collect();
+        let fetches: Vec<_> = actions
+            .iter()
+            .filter(|a| matches!(a, Action::Fetch { .. }))
+            .collect();
         assert_eq!(fetches[9], &fetch(Some("c9"), 200));
         assert_eq!(fetches[10], &fetch(None, 50));
     }
@@ -287,12 +313,20 @@ mod tests {
     fn expired_cursor_goes_to_a_fresh_window() {
         let (actions, resets) = run(Some("old"), |after, _| match after {
             Some(_) => Outcome::Gone410,
-            None => Outcome::Page { cursor: Some("fresh".into()), has_more: false },
+            None => Outcome::Page {
+                cursor: Some("fresh".into()),
+                has_more: false,
+            },
         });
         assert_eq!(resets, [true]);
         assert_eq!(
             actions,
-            [fetch(Some("old"), 200), fetch(None, 50), Action::Apply { reset: true }, Action::Done]
+            [
+                fetch(Some("old"), 200),
+                fetch(None, 50),
+                Action::Apply { reset: true },
+                Action::Done
+            ]
         );
     }
 
@@ -300,9 +334,19 @@ mod tests {
     fn without_cursor_fetches_one_small_page() {
         let (actions, resets) = run(None, |after, limit| {
             assert_eq!((after, limit), (None, 50));
-            Outcome::Page { cursor: Some("first".into()), has_more: true }
+            Outcome::Page {
+                cursor: Some("first".into()),
+                has_more: true,
+            }
         });
-        assert_eq!(actions, [fetch(None, 50), Action::Apply { reset: false }, Action::Done]);
+        assert_eq!(
+            actions,
+            [
+                fetch(None, 50),
+                Action::Apply { reset: false },
+                Action::Done
+            ]
+        );
         assert_eq!(resets, [false]);
     }
 
@@ -312,18 +356,30 @@ mod tests {
     fn a_stuck_cursor_leaves_the_loop() {
         for stuck in [Some("c0"), None] {
             let (actions, resets) = run(Some("c0"), |after, _| match after {
-                Some(_) => Outcome::Page { cursor: stuck.map(String::from), has_more: true },
+                Some(_) => Outcome::Page {
+                    cursor: stuck.map(String::from),
+                    has_more: true,
+                },
                 None => page("fresh", false),
             });
             assert_eq!(resets, [false, true], "{stuck:?}");
-            assert_eq!(actions.iter().filter(|a| matches!(a, Action::Fetch { .. })).count(), 2);
+            assert_eq!(
+                actions
+                    .iter()
+                    .filter(|a| matches!(a, Action::Fetch { .. }))
+                    .count(),
+                2
+            );
         }
     }
 
     #[test]
     fn a_page_without_more_ends_the_run_whatever_its_cursor() {
         for c in [None, Some("c0"), Some("c9")] {
-            let (actions, resets) = run(Some("c0"), |_, _| Outcome::Page { cursor: c.map(String::from), has_more: false });
+            let (actions, resets) = run(Some("c0"), |_, _| Outcome::Page {
+                cursor: c.map(String::from),
+                has_more: false,
+            });
             assert_eq!(actions.len(), 3);
             assert_eq!(resets, [false]);
         }
@@ -354,10 +410,17 @@ mod tests {
         assert_eq!(plan.next(Outcome::Applied), Action::Abort, "stays aborted");
 
         let (actions, _) = run(None, |_, _| Outcome::Gone410);
-        assert_eq!(actions, [fetch(None, 50), Action::Abort], "410 is an error outside the cursor loop");
+        assert_eq!(
+            actions,
+            [fetch(None, 50), Action::Abort],
+            "410 is an error outside the cursor loop"
+        );
 
         let (actions, resets) = run(Some("old"), |_, _| Outcome::Gone410);
-        assert_eq!(actions, [fetch(Some("old"), 200), fetch(None, 50), Action::Abort]);
+        assert_eq!(
+            actions,
+            [fetch(Some("old"), 200), fetch(None, 50), Action::Abort]
+        );
         assert!(resets.is_empty(), "410 on the fresh window aborts");
     }
 

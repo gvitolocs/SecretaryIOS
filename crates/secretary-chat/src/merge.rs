@@ -87,7 +87,10 @@ struct Entry<'a> {
 
 impl Entry<'_> {
     fn new(key: &Key) -> Entry<'_> {
-        Entry { key, reply_to: key.reply_to.as_deref() }
+        Entry {
+            key,
+            reply_to: key.reply_to.as_deref(),
+        }
     }
 }
 
@@ -98,7 +101,8 @@ fn hit(x: &Key, l: &Entry<'_>) -> bool {
         return false;
     }
     let same_client = x.client_message_id.is_some() && x.client_message_id == lk.client_message_id;
-    let same_reply = x.role == Role::Lucina && x.reply_to.is_some() && x.reply_to.as_deref() == l.reply_to;
+    let same_reply =
+        x.role == Role::Lucina && x.reply_to.is_some() && x.reply_to.as_deref() == l.reply_to;
     let same_share = x.role == Role::User && x.share_id.is_some() && x.share_id == lk.share_id;
     same_client || same_reply || same_share
 }
@@ -128,7 +132,11 @@ pub fn merge(current: &[Key], incoming: &[Key]) -> MergeResult {
             locals.insert(&x.id);
         }
         // Decide the whole set first (the map as it stands with `x` in), then apply it.
-        let hits: Vec<&str> = locals.iter().copied().filter(|id| hit(x, &by_id[id])).collect();
+        let hits: Vec<&str> = locals
+            .iter()
+            .copied()
+            .filter(|id| hit(x, &by_id[id]))
+            .collect();
         for l in hits {
             by_id.remove(l);
             locals.remove(l);
@@ -150,12 +158,20 @@ pub fn merge(current: &[Key], incoming: &[Key]) -> MergeResult {
         ids: entries.iter().map(|e| e.key.id.clone()).collect(),
         replaced: replaced
             .into_iter()
-            .map(|(l, s)| Replaced { local: l.to_string(), server: s.to_string() })
+            .map(|(l, s)| Replaced {
+                local: l.to_string(),
+                server: s.to_string(),
+            })
             .collect(),
         reply_to_updates: by_id
             .values()
             .filter(|e| e.reply_to != e.key.reply_to.as_deref())
-            .filter_map(|e| e.reply_to.map(|r| ReplyUpdate { id: e.key.id.clone(), reply_to: r.to_string() }))
+            .filter_map(|e| {
+                e.reply_to.map(|r| ReplyUpdate {
+                    id: e.key.id.clone(),
+                    reply_to: r.to_string(),
+                })
+            })
             .collect(),
     }
 }
@@ -196,7 +212,10 @@ mod tests {
         r.ids.iter().map(String::as_str).collect()
     }
     fn replaced(r: &MergeResult) -> Vec<(&str, &str)> {
-        r.replaced.iter().map(|p| (p.local.as_str(), p.server.as_str())).collect()
+        r.replaced
+            .iter()
+            .map(|p| (p.local.as_str(), p.server.as_str()))
+            .collect()
     }
 
     // Ported from ios/SecretaryTests/TimelineTests.swift (TimelineMergeTests).
@@ -216,7 +235,11 @@ mod tests {
         let r = merge(&[], &[lucina("z-lucina", 5), user("a-user", 5)]);
         assert_eq!(ids(&r), ["a-user", "z-lucina"]);
         let r = merge(&[], &[lucina("a-lucina", 5), user("z-user", 5)]);
-        assert_eq!(ids(&r), ["z-user", "a-lucina"], "the role decides before the id");
+        assert_eq!(
+            ids(&r),
+            ["z-user", "a-lucina"],
+            "the role decides before the id"
+        );
     }
 
     #[test]
@@ -246,7 +269,10 @@ mod tests {
         server_user.ts_us += 500_000;
         let r = merge(&[u, rep], &[server_reply, server_user]);
         assert_eq!(ids(&r), ["tl_10", "tl_11"]);
-        assert_eq!(replaced(&r), [("local-c1", "tl_10"), ("local-reply-c1", "tl_11")]);
+        assert_eq!(
+            replaced(&r),
+            [("local-c1", "tl_10"), ("local-reply-c1", "tl_11")]
+        );
     }
 
     #[test]
@@ -270,7 +296,13 @@ mod tests {
         let r = merge(&[u, rep], &[client(user("tl_10", 100), "c1")]);
         assert_eq!(ids(&r), ["tl_10", "local-reply-c1"]);
         assert_eq!(replaced(&r), [("local-c1", "tl_10")]);
-        assert_eq!(r.reply_to_updates, [ReplyUpdate { id: "local-reply-c1".into(), reply_to: "tl_10".into() }]);
+        assert_eq!(
+            r.reply_to_updates,
+            [ReplyUpdate {
+                id: "local-reply-c1".into(),
+                reply_to: "tl_10".into()
+            }]
+        );
     }
 
     #[test]
@@ -281,10 +313,16 @@ mod tests {
         let rep = reply(lucina("local-reply-c1", 101), "local-c1");
         let server_user = client(user("tl_10", 100), "c1");
         let server_reply = reply(lucina("tl_11", 101), "tl_10");
-        for incoming in [[server_user.clone(), server_reply.clone()], [server_reply, server_user]] {
+        for incoming in [
+            [server_user.clone(), server_reply.clone()],
+            [server_reply, server_user],
+        ] {
             let r = merge(&[u.clone(), rep.clone()], &incoming);
             assert_eq!(ids(&r), ["tl_10", "tl_11"]);
-            assert_eq!(replaced(&r), [("local-c1", "tl_10"), ("local-reply-c1", "tl_11")]);
+            assert_eq!(
+                replaced(&r),
+                [("local-c1", "tl_10"), ("local-reply-c1", "tl_11")]
+            );
             assert!(r.reply_to_updates.is_empty(), "the updated item is gone");
         }
     }
@@ -352,8 +390,14 @@ mod tests {
         assert_eq!(
             r.reply_to_updates,
             [
-                ReplyUpdate { id: "local-ra".into(), reply_to: "tl_1".into() },
-                ReplyUpdate { id: "local-rb".into(), reply_to: "tl_1".into() },
+                ReplyUpdate {
+                    id: "local-ra".into(),
+                    reply_to: "tl_1".into()
+                },
+                ReplyUpdate {
+                    id: "local-rb".into(),
+                    reply_to: "tl_1".into()
+                },
             ]
         );
     }
@@ -425,7 +469,10 @@ mod tests {
             .collect();
         let second = merge(&current, &incoming);
         assert_eq!(ids(&second), ["local-c1", "tl_10", "tl_11"]);
-        assert_eq!(replaced(&second), [("local-c1", "tl_10"), ("local-r", "tl_11")]);
+        assert_eq!(
+            replaced(&second),
+            [("local-c1", "tl_10"), ("local-r", "tl_11")]
+        );
     }
 
     #[test]
@@ -438,7 +485,10 @@ mod tests {
         assert_eq!(r.ids.len(), 350);
         // Only a sanity bound for debug builds; `cargo test --release -- --ignored --nocapture merge_speed` prints
         // the release number.
-        assert!(elapsed < std::time::Duration::from_millis(100), "{elapsed:?}");
+        assert!(
+            elapsed < std::time::Duration::from_millis(100),
+            "{elapsed:?}"
+        );
     }
 
     #[test]
@@ -447,21 +497,41 @@ mod tests {
         // 250 current items (a few local), 200 incoming, half of them already in current.
         let mut current: Vec<Key> = (0..250).map(|i| user(&format!("tl_{i:04}"), i)).collect();
         for i in 0..5 {
-            current.push(client(user(&format!("local-{i}"), 300 + i), &format!("c{i}")));
+            current.push(client(
+                user(&format!("local-{i}"), 300 + i),
+                &format!("c{i}"),
+            ));
         }
         let incoming: Vec<Key> = (150..350)
             .map(|i| {
-                let k = if i % 3 == 0 { lucina(&format!("tl_{i:04}"), i) } else { user(&format!("tl_{i:04}"), i) };
-                if i >= 345 { client(k, &format!("c{}", i - 345)) } else { k }
+                let k = if i % 3 == 0 {
+                    lucina(&format!("tl_{i:04}"), i)
+                } else {
+                    user(&format!("tl_{i:04}"), i)
+                };
+                if i >= 345 {
+                    client(k, &format!("c{}", i - 345))
+                } else {
+                    k
+                }
             })
             .collect();
         let runs = 2000;
         let t = std::time::Instant::now();
         let mut n = 0;
         for _ in 0..runs {
-            n += merge(std::hint::black_box(&current), std::hint::black_box(&incoming)).ids.len();
+            n += merge(
+                std::hint::black_box(&current),
+                std::hint::black_box(&incoming),
+            )
+            .ids
+            .len();
         }
         let per = t.elapsed() / runs;
-        println!("merge of {} current and {} incoming keys: {per:?} ({n} ids)", current.len(), incoming.len());
+        println!(
+            "merge of {} current and {} incoming keys: {per:?} ({n} ids)",
+            current.len(),
+            incoming.len()
+        );
     }
 }

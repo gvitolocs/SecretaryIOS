@@ -26,7 +26,8 @@ mod proved_merge {
     use super::Item;
 
     pub fn key_lt(a: Item, b: Item) -> bool {
-        a.ts < b.ts || (a.ts == b.ts && ((!a.lucina && b.lucina) || (a.lucina == b.lucina && a.id < b.id)))
+        a.ts < b.ts
+            || (a.ts == b.ts && ((!a.lucina && b.lucina) || (a.lucina == b.lucina && a.id < b.id)))
     }
 
     pub fn hit(x: Item, e: Item) -> bool {
@@ -171,7 +172,16 @@ mod proved_sync {
     }
 
     pub fn new_plan(cursor: u64) -> Plan {
-        Plan { phase: Phase::Begin, had_cursor: cursor != 0, fresh: false, cursor, pages: 0, fetches: 0, pc: 0, more: false }
+        Plan {
+            phase: Phase::Begin,
+            had_cursor: cursor != 0,
+            fresh: false,
+            cursor,
+            pages: 0,
+            fetches: 0,
+            pc: 0,
+            more: false,
+        }
     }
 
     pub fn next(p: Plan, o: Outcome) -> (Plan, Action) {
@@ -195,9 +205,21 @@ mod proved_sync {
                         q.fetches = p.fetches + 1;
                         if p.had_cursor {
                             q.pages = p.pages + 1;
-                            (q, Action::Fetch { after: p.cursor, limit: 200 })
+                            (
+                                q,
+                                Action::Fetch {
+                                    after: p.cursor,
+                                    limit: 200,
+                                },
+                            )
                         } else {
-                            (q, Action::Fetch { after: 0, limit: 50 })
+                            (
+                                q,
+                                Action::Fetch {
+                                    after: 0,
+                                    limit: 50,
+                                },
+                            )
                         }
                     }
                     _ => {
@@ -227,7 +249,13 @@ mod proved_sync {
                             q.phase = Phase::Fetching;
                             q.fresh = true;
                             q.fetches = p.fetches + 1;
-                            (q, Action::Fetch { after: 0, limit: 50 })
+                            (
+                                q,
+                                Action::Fetch {
+                                    after: 0,
+                                    limit: 50,
+                                },
+                            )
                         } else {
                             q.phase = Phase::Aborted;
                             (q, Action::Abort)
@@ -249,19 +277,37 @@ mod proved_sync {
                             q.phase = Phase::Fetching;
                             q.fresh = true;
                             q.fetches = p.fetches + 1;
-                            (q, Action::Fetch { after: 0, limit: 50 })
+                            (
+                                q,
+                                Action::Fetch {
+                                    after: 0,
+                                    limit: 50,
+                                },
+                            )
                         } else if p.pages >= 10 {
                             q.cursor = p.pc;
                             q.phase = Phase::Fetching;
                             q.fresh = true;
                             q.fetches = p.fetches + 1;
-                            (q, Action::Fetch { after: 0, limit: 50 })
+                            (
+                                q,
+                                Action::Fetch {
+                                    after: 0,
+                                    limit: 50,
+                                },
+                            )
                         } else {
                             q.cursor = p.pc;
                             q.phase = Phase::Fetching;
                             q.pages = p.pages + 1;
                             q.fetches = p.fetches + 1;
-                            (q, Action::Fetch { after: p.pc, limit: 200 })
+                            (
+                                q,
+                                Action::Fetch {
+                                    after: p.pc,
+                                    limit: 200,
+                                },
+                            )
                         }
                     }
                     _ => {
@@ -282,7 +328,10 @@ fn intern(all: impl Iterator<Item = String>) -> BTreeMap<String, u64> {
     let mut set: Vec<String> = all.collect();
     set.sort();
     set.dedup();
-    set.into_iter().enumerate().map(|(i, s)| (s, i as u64 + 1)).collect()
+    set.into_iter()
+        .enumerate()
+        .map(|(i, s)| (s, i as u64 + 1))
+        .collect()
 }
 
 fn to_item(k: &Key, table: &BTreeMap<String, u64>) -> Item {
@@ -299,7 +348,13 @@ fn to_item(k: &Key, table: &BTreeMap<String, u64>) -> Item {
 }
 
 const SERVER_IDS: [&str; 6] = ["tl_01", "tl_02", "tl_03", "tl_04", "tl_05", "tl_06"];
-const LOCAL_IDS: [&str; 5] = ["local-a", "local-b", "local-c", "local-reply-a", "local-reply-b"];
+const LOCAL_IDS: [&str; 5] = [
+    "local-a",
+    "local-b",
+    "local-c",
+    "local-reply-a",
+    "local-reply-b",
+];
 const CLIENTS: [&str; 3] = ["c1", "c2", "c3"];
 const SHARES: [&str; 2] = ["s1", "s2"];
 
@@ -348,7 +403,9 @@ const ALL_IDS: [&str; 11] = [
 fn arb_unique(max: usize) -> impl Strategy<Value = Vec<Key>> {
     proptest::collection::vec(arb_key(&ALL_IDS), 0..=max).prop_map(|v| {
         let mut seen = std::collections::HashSet::new();
-        v.into_iter().filter(|k| seen.insert(k.id.clone())).collect()
+        v.into_iter()
+            .filter(|k| seen.insert(k.id.clone()))
+            .collect()
     })
 }
 
@@ -455,7 +512,13 @@ fn outcomes(p: Pick, serial: u64) -> (Outcome, proved_sync::Outcome) {
                 1 => 1,
                 _ => serial + 10,
             };
-            (Outcome::Page { cursor: name(n), has_more: more }, proved_sync::Outcome::Page { cursor: n, more })
+            (
+                Outcome::Page {
+                    cursor: name(n),
+                    has_more: more,
+                },
+                proved_sync::Outcome::Page { cursor: n, more },
+            )
         }
         Pick::Applied => (Outcome::Applied, proved_sync::Outcome::Applied),
         Pick::Gone => (Outcome::Gone410, proved_sync::Outcome::Gone),
@@ -465,9 +528,17 @@ fn outcomes(p: Pick, serial: u64) -> (Outcome, proved_sync::Outcome) {
 
 fn same_action(a: &Action, b: proved_sync::Action) -> bool {
     match (a, b) {
-        (Action::Fetch { after, limit }, proved_sync::Action::Fetch { after: a2, limit: l2 }) => pc(after) == a2 && *limit == l2,
+        (
+            Action::Fetch { after, limit },
+            proved_sync::Action::Fetch {
+                after: a2,
+                limit: l2,
+            },
+        ) => pc(after) == a2 && *limit == l2,
         (Action::Apply { reset }, proved_sync::Action::Apply { reset: r2 }) => *reset == r2,
-        (Action::Done, proved_sync::Action::Done) | (Action::Abort, proved_sync::Action::Abort) => true,
+        (Action::Done, proved_sync::Action::Done) | (Action::Abort, proved_sync::Action::Abort) => {
+            true
+        }
         _ => false,
     }
 }

@@ -11,10 +11,18 @@ fn assemble(current: &[Key], incoming: &[Key], r: &MergeResult) -> Vec<Key> {
     for k in current {
         bodies.insert(&k.id, k);
     }
-    for k in incoming.iter().filter(|k| k.role == Role::User).chain(incoming.iter().filter(|k| k.role == Role::Lucina)) {
+    for k in incoming
+        .iter()
+        .filter(|k| k.role == Role::User)
+        .chain(incoming.iter().filter(|k| k.role == Role::Lucina))
+    {
         bodies.insert(&k.id, k);
     }
-    let updates: HashMap<&str, &str> = r.reply_to_updates.iter().map(|u| (u.id.as_str(), u.reply_to.as_str())).collect();
+    let updates: HashMap<&str, &str> = r
+        .reply_to_updates
+        .iter()
+        .map(|u| (u.id.as_str(), u.reply_to.as_str()))
+        .collect();
     r.ids
         .iter()
         .map(|id| {
@@ -28,7 +36,11 @@ fn assemble(current: &[Key], incoming: &[Key], r: &MergeResult) -> Vec<Key> {
 }
 
 /// `TimelineMerge.merge` as written in Swift, visiting the dictionary's values in the order `seed` gives.
-fn swift_merge(current: &[Key], incoming: &[Key], seed: u64) -> (Vec<Key>, BTreeMap<String, String>) {
+fn swift_merge(
+    current: &[Key],
+    incoming: &[Key],
+    seed: u64,
+) -> (Vec<Key>, BTreeMap<String, String>) {
     fn shuffle<T>(v: &mut [T], seed: u64) {
         let mut s = seed | 1;
         for i in (1..v.len()).rev() {
@@ -43,8 +55,11 @@ fn swift_merge(current: &[Key], incoming: &[Key], seed: u64) -> (Vec<Key>, BTree
         by_id.insert(k.id.clone(), k.clone());
     }
     let mut replaced = BTreeMap::new();
-    let ordered: Vec<&Key> =
-        incoming.iter().filter(|k| k.role == Role::User).chain(incoming.iter().filter(|k| k.role == Role::Lucina)).collect();
+    let ordered: Vec<&Key> = incoming
+        .iter()
+        .filter(|k| k.role == Role::User)
+        .chain(incoming.iter().filter(|k| k.role == Role::Lucina))
+        .collect();
     let mut round = 0u64;
     for item in ordered {
         by_id.insert(item.id.clone(), item.clone());
@@ -56,19 +71,26 @@ fn swift_merge(current: &[Key], incoming: &[Key], seed: u64) -> (Vec<Key>, BTree
             if !(local.is_local() && local.role == item.role && local.id != item.id) {
                 continue;
             }
-            let same_client = item.client_message_id.is_some() && item.client_message_id == local.client_message_id;
-            let same_reply = item.role == Role::Lucina && item.reply_to.is_some() && item.reply_to == local.reply_to;
-            let same_share = item.role == Role::User && item.share_id.is_some() && item.share_id == local.share_id;
+            let same_client = item.client_message_id.is_some()
+                && item.client_message_id == local.client_message_id;
+            let same_reply = item.role == Role::Lucina
+                && item.reply_to.is_some()
+                && item.reply_to == local.reply_to;
+            let same_share = item.role == Role::User
+                && item.share_id.is_some()
+                && item.share_id == local.share_id;
             if same_client || same_reply || same_share {
                 by_id.remove(&local.id);
                 replaced.insert(local.id.clone(), item.id.clone());
                 if item.role == Role::User {
                     // `for (id, other) in byId where other.isLocal && other.replyTo == local.id`
-                    let mut snap: Vec<(String, Key)> = by_id.iter().map(|(a, b)| (a.clone(), b.clone())).collect();
+                    let mut snap: Vec<(String, Key)> =
+                        by_id.iter().map(|(a, b)| (a.clone(), b.clone())).collect();
                     round += 1;
                     shuffle(&mut snap, seed.wrapping_add(round));
                     for (id, other) in snap {
-                        if other.is_local() && other.reply_to.as_deref() == Some(local.id.as_str()) {
+                        if other.is_local() && other.reply_to.as_deref() == Some(local.id.as_str())
+                        {
                             by_id.get_mut(&id).unwrap().reply_to = Some(item.id.clone());
                         }
                     }
@@ -81,7 +103,9 @@ fn swift_merge(current: &[Key], incoming: &[Key], seed: u64) -> (Vec<Key>, BTree
     (items, replaced)
 }
 
-const IDS: [&str; 10] = ["tl_1", "tl_2", "tl_3", "tl_4", "tl_5", "local-a", "local-b", "local-c", "local-ra", "local-rb"];
+const IDS: [&str; 10] = [
+    "tl_1", "tl_2", "tl_3", "tl_4", "tl_5", "local-a", "local-b", "local-c", "local-ra", "local-rb",
+];
 const SERVER: [&str; 5] = ["tl_1", "tl_2", "tl_3", "tl_4", "tl_5"];
 const CLIENTS: [&str; 3] = ["c1", "c2", "c3"];
 const SHARES: [&str; 2] = ["s1", "s2"];
@@ -114,7 +138,9 @@ fn arb_key(pool: &'static [&'static str]) -> impl Strategy<Value = Key> {
 
 fn unique(v: Vec<Key>) -> Vec<Key> {
     let mut seen = BTreeSet::new();
-    v.into_iter().filter(|k| seen.insert(k.id.clone())).collect()
+    v.into_iter()
+        .filter(|k| seen.insert(k.id.clone()))
+        .collect()
 }
 
 fn arb_current() -> impl Strategy<Value = Vec<Key>> {

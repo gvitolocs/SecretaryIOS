@@ -11,7 +11,11 @@ where
 {
     match stored {
         Some(s) if !s.is_empty() => Some(s.to_string()),
-        _ => ids.into_iter().filter(|id| !id.starts_with(LOCAL_PREFIX)).min().map(str::to_string),
+        _ => ids
+            .into_iter()
+            .filter(|id| !id.starts_with(LOCAL_PREFIX))
+            .min()
+            .map(str::to_string),
     }
 }
 
@@ -26,14 +30,23 @@ mod tests {
 
     #[test]
     fn the_stored_cursor_wins_when_not_empty() {
-        assert_eq!(older_cursor(["tl_5", "tl_3"], Some("tl_1")).as_deref(), Some("tl_1"));
+        assert_eq!(
+            older_cursor(["tl_5", "tl_3"], Some("tl_1")).as_deref(),
+            Some("tl_1")
+        );
     }
 
     #[test]
     fn an_empty_or_missing_stored_cursor_falls_back_to_the_smallest_server_id() {
         for stored in [None, Some("")] {
-            assert_eq!(older_cursor(["tl_5", "local-x", "tl_3", "a"], stored).as_deref(), Some("a"));
-            assert_eq!(older_cursor(["tl_5", "local-a", "tl_3"], stored).as_deref(), Some("tl_3"));
+            assert_eq!(
+                older_cursor(["tl_5", "local-x", "tl_3", "a"], stored).as_deref(),
+                Some("a")
+            );
+            assert_eq!(
+                older_cursor(["tl_5", "local-a", "tl_3"], stored).as_deref(),
+                Some("tl_3")
+            );
         }
     }
 
