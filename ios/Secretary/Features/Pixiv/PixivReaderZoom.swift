@@ -36,7 +36,7 @@ struct PixivReaderZoom: View {
                 }
             } else { Spacer(); ProgressView(); Spacer() }
         }
-        .background(Theme.bg)
+        .background(Theme.page)
         .task { await load() }
     }
 

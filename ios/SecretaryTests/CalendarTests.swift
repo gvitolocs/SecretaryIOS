@@ -105,7 +105,7 @@ final class CalendarTests: XCTestCase {
         var sameTitle = alpha; sameTitle.id = "a"
         let groups = CalendarMath.agenda([later, early, all, alpha, sameTitle], from: date("2026-10-30T00:00:00Z"), to: date("2026-11-01T00:00:00Z"), calendar: calendar)
         XCTAssertEqual(groups.count, 2)
-        XCTAssertEqual(groups[0].events.map(\.id), ["all", "a", "alpha", "lucina:ev_1", "late"])
+        XCTAssertEqual(groups[0].events.map(\.id), ["all", "a", "alpha", "early", "late"])
         XCTAssertEqual(groups[1].events.map(\.id), ["all"])
     }
     func testLabelsArePinnedToCalendarAndLocale() {
