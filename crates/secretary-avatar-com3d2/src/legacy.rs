@@ -242,6 +242,56 @@ struct Fitting {
     bust: f32,
     /// The native foot a shoe point rides on, and how fully.
     shoe: Option<(usize, f32)>,
+    /// Where the point sat on the old body (bind pose), its normal there, and its piece of cloth.
+    rest: Vec3,
+    rest_normal: Vec3,
+    piece: usize,
+}
+/// How close over a point another piece of cloth must lie in the old outfit for the point to count
+/// as hidden under it.
+const UNDER: f32 = 0.025;
+/// Per vertex (in `pending` order): another piece of cloth lies over it within `UNDER` along its
+/// normal, on the old body, where the layer order is still right.
+#[allow(clippy::type_complexity)]
+fn hidden_layers(
+    pending: &[(usize, Value, Vec<Fitting>, Vec<[usize; 3]>)],
+    enabled: bool,
+) -> Result<Vec<bool>> {
+    let count = pending.iter().map(|p| p.2.len()).sum::<usize>();
+    if !enabled {
+        return Ok(vec![false; count]);
+    }
+    let mut points = Vec::with_capacity(count);
+    let mut normals = Vec::with_capacity(count);
+    let mut faces = Vec::new();
+    let mut tags = Vec::new();
+    for (_, _, vertices, triangles) in pending {
+        let base = points.len();
+        for t in triangles {
+            if t.iter().all(|&v| v < vertices.len()) {
+                faces.push(t.map(|v| base + v));
+                tags.push(vertices[t[0]].piece);
+            }
+        }
+        points.extend(vertices.iter().map(|f| f.rest));
+        normals.extend(vertices.iter().map(|f| f.rest_normal));
+    }
+    if faces.is_empty() {
+        return Ok(vec![false; count]);
+    }
+    let cloth = Surface::tagged(&points, &normals, &faces, &tags)?;
+    let pieces = pending.iter().flat_map(|p| p.2.iter().map(|f| f.piece));
+    Ok(points
+        .iter()
+        .zip(&normals)
+        .zip(pieces)
+        .map(|((&p, &n), own)| {
+            n != Vec3::ZERO
+                && cloth
+                    .ray_where(p + n * 0.001, n, UNDER, |tag| tag != own)
+                    .is_some()
+        })
+        .collect())
 }
 /// Outward push per point that keeps stacked layers apart: each point moves as far as the deepest
 /// point of the stack it sits in (along that point's body normal, within `RADIUS` sideways and
@@ -539,6 +589,7 @@ pub fn retarget_reference(
         .collect::<Vec<_>>();
     let mut converted = Vec::new();
     let mut pending = Vec::new();
+    let mut pieces_seen = 0;
     let mut fitted = 0;
     let mut unmapped = 0;
     let mut total = 0;
@@ -618,6 +669,7 @@ pub fn retarget_reference(
             for v in 0..ps.len() {
                 let mut point = Vec3::ZERO;
                 let mut rest = Vec3::ZERO;
+                let mut rest_normal = Vec3::ZERO;
                 let mut normal = Vec3::ZERO;
                 let mut skinweights = HashMap::<usize, f32>::new();
                 let mut bust = 0.;
@@ -647,6 +699,11 @@ pub fn retarget_reference(
                     let matrix = matrices[source] * bind;
                     point += matrix.transform_point3(Vec3::from_slice(&ps[v])) * w;
                     rest += bind.transform_point3(Vec3::from_slice(&ps[v])) * w;
+                    rest_normal += bind
+                        .inverse()
+                        .transpose()
+                        .transform_vector3(Vec3::from_slice(&ns[v]))
+                        * w;
                     normal += matrix
                         .inverse()
                         .transpose()
@@ -684,16 +741,25 @@ pub fn retarget_reference(
                         .clamp(0., 1.);
                     point = p.point(point, normal, chest_center, waist_center, anchor);
                 }
-                mapped_vertices.push((point, rest, normal, skinweights, bust, legs / sum));
+                mapped_vertices.push((
+                    point,
+                    rest,
+                    normal,
+                    skinweights,
+                    bust,
+                    legs / sum,
+                    rest_normal.normalize_or_zero(),
+                ));
             }
             // Heights (1 cm bands, front and back apart) where a connected piece of cloth crosses
             // the gap between the old legs: a skirt, apron or loincloth there. Trouser legs, boots
             // and leg drapes never cross it, even behind a loincloth.
             let rests = mapped_vertices.iter().map(|v| v.1).collect::<Vec<_>>();
-            let piece = match primitive["indices"].as_u64() {
-                Some(i) => pieces(&rests, &accessor::read(&doc, &data, i as usize)?),
-                None => vec![0; rests.len()],
+            let triangles = match primitive["indices"].as_u64() {
+                Some(i) => accessor::read(&doc, &data, i as usize)?,
+                None => (0..rests.len()).map(|v| vec![v as f32]).collect(),
             };
+            let piece = pieces(&rests, &triangles);
             let spans = mapped_vertices
                 .iter()
                 .zip(&piece)
@@ -705,7 +771,7 @@ pub fn retarget_reference(
                 (-1..=1).any(|d| spans.contains(&(c, band + d, rest.z > 0.)))
             };
             let mut vertices = Vec::with_capacity(mapped_vertices.len());
-            for ((mut point, rest, normal, mut skinweights, bust, legs), &c) in
+            for ((mut point, rest, normal, mut skinweights, bust, legs, rest_normal), &c) in
                 mapped_vertices.into_iter().zip(&piece)
             {
                 if let (Some(pelvis), true, false) = (pelvis, legs > 0., hair || preserve_shell) {
@@ -745,9 +811,19 @@ pub fn retarget_reference(
                     skin: skinweights,
                     bust,
                     shoe,
+                    rest,
+                    rest_normal,
+                    piece: pieces_seen + c,
                 });
             }
-            pending.push((converted.len(), primitive.clone(), vertices));
+            pieces_seen += vertices.len();
+            let triangles = triangles
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .map(|t| [t[0][0] as usize, t[1][0] as usize, t[2][0] as usize])
+                .collect::<Vec<_>>();
+            pending.push((converted.len(), primitive.clone(), vertices, triangles));
         }
         out_mesh["weights"] = json!([0]);
         out_mesh["extras"]["targetNames"] = json!(["munel"]);
@@ -886,8 +962,11 @@ pub fn retarget_reference(
             placed[i] = (low, high - low);
         }
     }
+    let under = hidden_layers(&pending, !(hair || preserve_shell))?;
+    let mut culled = 0;
     let mut next = 0;
-    for (mesh, primitive, vertices) in pending {
+    for (mesh, primitive, vertices, triangles) in pending {
+        let first = next;
         let mut positions = Vec::new();
         let mut normals = Vec::new();
         let mut indices = Vec::new();
@@ -941,6 +1020,29 @@ pub fn retarget_reference(
         );
         let a = accessor::floats(&mut doc, &mut data, &size_delta, 3)?;
         p["targets"] = json!([{"POSITION":a}]);
+        // Inner cloth the old outfit covered closely with another piece goes: the fuller native
+        // body pushed it through the outer layer in places.
+        let kept = triangles
+            .iter()
+            .filter(|t| !t.iter().all(|&v| under[first + v]))
+            .collect::<Vec<_>>();
+        if kept.len() < triangles.len() && !kept.is_empty() {
+            culled += triangles.len() - kept.len();
+            while !data.len().is_multiple_of(4) {
+                data.push(0);
+            }
+            let start = data.len();
+            data.extend(kept.iter().flat_map(|t| t.iter().flat_map(|&v| (v as u32).to_le_bytes())));
+            let view = doc["bufferViews"].as_array().unwrap().len();
+            doc["bufferViews"].as_array_mut().unwrap().push(
+                json!({"buffer":0,"byteOffset":start,"byteLength":data.len() - start}),
+            );
+            let index = doc["accessors"].as_array().unwrap().len();
+            doc["accessors"].as_array_mut().unwrap().push(
+                json!({"bufferView":view,"componentType":5125,"count":kept.len() * 3,"type":"SCALAR"}),
+            );
+            p["indices"] = json!(index);
+        }
         converted[mesh]["primitives"].as_array_mut().unwrap().push(p);
     }
     if converted.is_empty() {
@@ -974,13 +1076,13 @@ pub fn retarget_reference(
     doc["scene"] = json!(0);
     doc.as_object_mut().unwrap().remove("animations");
     doc["buffers"][0]["byteLength"] = json!(data.len());
-    doc["extras"]["nativeRetarget"] = json!({"version":2,"poseAwareSkinEncoding":true,"source":input.file_name().and_then(|n|n.to_str()),"mappedJoints":direct.iter().filter(|j|j.is_some()).count(),"vertices":total,"surfaceFittedVertices":fitted,"unmappedInfluences":unmapped,"canonicalBodyCopied":false,"fitReviewRequired":true});
+    doc["extras"]["nativeRetarget"] = json!({"version":2,"poseAwareSkinEncoding":true,"source":input.file_name().and_then(|n|n.to_str()),"mappedJoints":direct.iter().filter(|j|j.is_some()).count(),"vertices":total,"surfaceFittedVertices":fitted,"culledInnerTriangles":culled,"unmappedInfluences":unmapped,"canonicalBodyCopied":false,"fitReviewRequired":true});
     if preserve_shell {
         crate::garment_fit::uniform(&mut doc, &mut data, &target_world, &reference_world)?;
     }
     glb_io::write(output, &doc, &data)?;
     Ok(
-        json!({"output":output,"vertices":total,"fitted":fitted,"unmapped":unmapped,"meshes":converted.len()}),
+        json!({"output":output,"vertices":total,"fitted":fitted,"culled":culled,"unmapped":unmapped,"meshes":converted.len()}),
     )
 }
 

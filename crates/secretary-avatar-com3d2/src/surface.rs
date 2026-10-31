@@ -156,7 +156,15 @@ impl Node {
             ids: Vec::new(),
         }
     }
-    fn ray(&self, o: Vec3, d: Vec3, triangles: &[Triangle], best: &mut f32, found: &mut bool) {
+    fn ray(
+        &self,
+        o: Vec3,
+        d: Vec3,
+        triangles: &[Triangle],
+        keep: &impl Fn(usize) -> bool,
+        best: &mut f32,
+        found: &mut bool,
+    ) {
         // Slab test against the box, then Möller–Trumbore against each triangle.
         let mut near = 0f32;
         let mut far = *best;
@@ -175,12 +183,15 @@ impl Node {
             }
         }
         if let Some((a, b)) = &self.children {
-            a.ray(o, d, triangles, best, found);
-            b.ray(o, d, triangles, best, found);
+            a.ray(o, d, triangles, keep, best, found);
+            b.ray(o, d, triangles, keep, best, found);
             return;
         }
         for &id in &self.ids {
             let t = &triangles[id];
+            if !t.skin[0].first().is_none_or(|s| keep(s.0)) {
+                continue;
+            }
             let e1 = t.p[1] - t.p[0];
             let e2 = t.p[2] - t.p[0];
             let h = d.cross(e2);
@@ -439,11 +450,33 @@ impl Surface {
     }
     /// Distance to the first triangle a ray from `origin` along `direction` meets within `max`.
     pub fn ray(&self, origin: Vec3, direction: Vec3, max: f32) -> Option<f32> {
+        self.ray_where(origin, direction, max, |_| true)
+    }
+    /// As `ray`, over the triangles whose tag (see `tagged`) `keep` accepts.
+    pub fn ray_where(
+        &self,
+        origin: Vec3,
+        direction: Vec3,
+        max: f32,
+        keep: impl Fn(usize) -> bool,
+    ) -> Option<f32> {
         let d = direction.normalize_or_zero();
         let mut best = max;
         let mut found = false;
-        self.root.ray(origin, d, &self.triangles, &mut best, &mut found);
+        self.root
+            .ray(origin, d, &self.triangles, &keep, &mut best, &mut found);
         found.then_some(best)
+    }
+    /// A plain geometry surface whose triangles carry a tag each (in place of skin weights).
+    pub fn tagged(points: &[Vec3], normals: &[Vec3], faces: &[[usize; 3]], tags: &[usize]) -> Result<Self> {
+        let mut s = Self::geometry(points, normals, faces)?;
+        if tags.len() != s.triangles.len() {
+            return Err(invalid("garment surface tags"));
+        }
+        for (t, &tag) in s.triangles.iter_mut().zip(tags) {
+            t.skin = std::array::from_fn(|_| vec![(tag, 1.)]);
+        }
+        Ok(s)
     }
     /// Mean corner and lowest corner height of the triangles whose strongest joint `keep` accepts.
     pub fn region(&self, keep: impl Fn(usize) -> bool) -> Option<(Vec3, f32)> {

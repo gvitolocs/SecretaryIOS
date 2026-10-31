@@ -18,7 +18,7 @@ use std::{
     path::{Path, PathBuf},
 };
 const VERSION: u32 = 3;
-const PIPELINE_REVISION: u32 = 42;
+const PIPELINE_REVISION: u32 = 43;
 /// Categories never offered for selection: swimwear, and underwear on its own (the coverage
 /// guard below still uses plain inner wear).
 const HIDDEN_CATEGORIES: &[&str] = &["mizugi", "bra", "panz"];
@@ -696,7 +696,7 @@ impl Library {
                 let out = self
                     .root
                     .join("parts")
-                    .join(format!("{stem}-fit16-{fit_key:016x}-{source_key:016x}.glb"));
+                    .join(format!("{stem}-fit17-{fit_key:016x}-{source_key:016x}.glb"));
                 if !out.is_file() {
                     let source = if *extract {
                         let filtered = self
@@ -744,7 +744,7 @@ impl Library {
                 let native_dir = self
                     .root
                     .join("native")
-                    .join(format!("{stem}-fit16-{fit_key:016x}-{source_key:016x}-v7"));
+                    .join(format!("{stem}-fit17-{fit_key:016x}-{source_key:016x}-v7"));
                 let manifest = native_dir.join("manifest.json");
                 let pack = if manifest.is_file() {
                     serde_json::from_slice::<Value>(&fs::read(&manifest)?)
@@ -877,7 +877,7 @@ impl Library {
             .collect::<Result<Vec<_>>>()?
             .join(";");
         let key = hash(&format!(
-            "v{VERSION}-native42:{modified}:{}:{profiles}:{:?}:{:?}",
+            "v{VERSION}-native43:{modified}:{}:{profiles}:{:?}:{:?}",
             ids.join(","),
             self.config.loose_surface_items,
             self.config.loose_component_sizes
