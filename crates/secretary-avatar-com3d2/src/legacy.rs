@@ -192,23 +192,97 @@ fn compact_weights(mut values: HashMap<usize, f32>) -> Vec<(usize, f32)> {
     }
     out
 }
-fn clearance(point: Vec3, normal: Vec3, hit: &crate::surface::Hit) -> Vec3 {
-    // Push only penetrating, similarly oriented torso cloth out along the body
-    // normal. Preserve tangent coordinates instead of collapsing onto a nearest
-    // point, and leave loose cloth, open necklines and accessories in place.
-    if !(0.95..1.42).contains(&point.y)
-        || point.x.abs() > 0.24
-        || hit.distance > 0.08
-        || normal.normalize_or_zero().dot(hit.normal) < 0.25
-    {
-        return point;
+/// How far cloth stays outside the native skin.
+const CLEARANCE: f32 = 0.005;
+/// How far a shoe sole sits below the lowest native toe.
+const SOLE: f32 = 0.012;
+/// Smoothstep from `a` (0) to `b` (1); `a > b` runs downhill.
+fn smooth(a: f32, b: f32, x: f32) -> f32 {
+    let t = ((x - a) / (b - a)).clamp(0., 1.);
+    t * t * (3. - 2. * t)
+}
+/// Connected piece of each vertex, numbered by its smallest vertex: triangles join their corners,
+/// and vertices at the same place (split along a UV seam) are one.
+fn pieces(points: &[Vec3], indices: &[Vec<f32>]) -> Vec<usize> {
+    let count = points.len();
+    let mut parent = (0..count).collect::<Vec<_>>();
+    fn root(parent: &mut [usize], mut v: usize) -> usize {
+        while parent[v] != v {
+            parent[v] = parent[parent[v]];
+            v = parent[v];
+        }
+        v
     }
-    let depth = (point - hit.point).dot(hit.normal);
-    if depth < 0.006 {
-        point + hit.normal * (0.006 - depth)
-    } else {
-        point
+    let join = |parent: &mut Vec<usize>, a: usize, b: usize| {
+        let (a, b) = (root(parent, a), root(parent, b));
+        parent[a.max(b)] = a.min(b);
+    };
+    for t in indices.chunks(3) {
+        let ids = t.iter().map(|i| i[0] as usize).filter(|&i| i < count).collect::<Vec<_>>();
+        for w in ids.windows(2) {
+            join(&mut parent, w[0], w[1]);
+        }
     }
+    let mut seen = HashMap::new();
+    for (v, p) in points.iter().enumerate() {
+        let key = (*p * 1e4).round().as_ivec3();
+        if let Some(&first) = seen.get(&key) {
+            join(&mut parent, first, v);
+        } else {
+            seen.insert(key, v);
+        }
+    }
+    (0..count).map(|v| root(&mut parent, v)).collect()
+}
+/// A garment vertex mapped onto the native skeleton, before the body fit.
+struct Fitting {
+    point: Vec3,
+    normal: Vec3,
+    skin: HashMap<usize, f32>,
+    bust: f32,
+    /// The native foot a shoe point rides on, and how fully.
+    shoe: Option<(usize, f32)>,
+}
+/// Outward push per point that keeps stacked layers apart: each point moves as far as the deepest
+/// point of the stack it sits in (along that point's body normal, within `RADIUS` sideways and
+/// `DEPTH` along it), fading with the sideways distance. Snapping every penetrating point onto
+/// the skin instead collapsed shirt, vest and apron onto one depth, where they z-fought.
+fn layered_push(points: &[Vec3], normals: &[Vec3], need: &[f32]) -> Vec<f32> {
+    const RADIUS: f32 = 0.02;
+    const DEPTH: f32 = 0.04;
+    let cell = |p: Vec3| (p / DEPTH).floor().as_ivec3();
+    let mut grid = HashMap::<glam::IVec3, Vec<usize>>::new();
+    for (j, &r) in need.iter().enumerate() {
+        if r > 0. {
+            grid.entry(cell(points[j])).or_default().push(j);
+        }
+    }
+    points
+        .iter()
+        .enumerate()
+        .map(|(i, &p)| {
+            let c = cell(p);
+            let mut best = need[i];
+            for dx in -1..=1 {
+                for dy in -1..=1 {
+                    for dz in -1..=1 {
+                        for &j in grid.get(&(c + glam::IVec3::new(dx, dy, dz))).into_iter().flatten() {
+                            let d = p - points[j];
+                            let along = d.dot(normals[j]);
+                            if along.abs() > DEPTH || normals[i].dot(normals[j]) < 0.5 {
+                                continue;
+                            }
+                            let side = (d - normals[j] * along).length();
+                            if side < RADIUS {
+                                best = best.max(need[j] * (1. - side / RADIUS));
+                            }
+                        }
+                    }
+                }
+            }
+            best
+        })
+        .collect()
 }
 pub fn retarget(input: &Path, canonical: &Path, output: &Path, hair: bool) -> Result<Value> {
     retarget_with_fit(input, canonical, output, hair, None)
@@ -401,20 +475,70 @@ pub fn retarget_reference(
             .push(json!(child));
     }
 
-    let surface = if hair {
+    // Body surfaces at the three bust sizes, each also without the left and/or right arm: a torso
+    // point must not be pushed out of the hands clasped in front of it, only a sleeve may.
+    let arm = |side: &str, j: usize| {
+        target_nodes[j]["name"].as_str().is_some_and(|n| {
+            n.contains(&format!(" {side} "))
+                && ["UpperArm", "Forearm", "Hand", "Finger"]
+                    .iter()
+                    .any(|p| n.contains(p))
+        })
+    };
+    let surfaces = if hair {
         None
     } else {
-        Some(Surface::body_at_size(&reference, &base_data, 0.5)?)
+        let mut out = Vec::new();
+        for size in [0., 0.5, 1.] {
+            // The uniform keeps its reviewed bind-pose fit; everything else fits the posed body.
+            let full = if preserve_shell {
+                Surface::body_at_size(&reference, &base_data, size)?
+            } else {
+                Surface::posed_at_size(&reference, &base_data, size)?
+            };
+            let pick = |left: bool, right: bool| {
+                full.without(|j| (!left && arm("L", j)) || (!right && arm("R", j)))
+                    .ok_or_else(|| invalid("native body surface without arms is empty"))
+            };
+            out.push([pick(false, false)?, pick(true, false)?, pick(false, true)?, full]);
+        }
+        Some(out)
     };
-    let endpoints = if hair {
-        None
-    } else {
-        Some((
-            Surface::body_at_size(&reference, &base_data, 0.)?,
-            Surface::body_at_size(&reference, &base_data, 1.)?,
-        ))
+    let surface_for = |size: usize, skin: &HashMap<usize, f32>| {
+        let side = |s: &str| skin.iter().any(|(j, w)| *w > 0.05 && arm(s, *j));
+        let all = surfaces.as_ref().unwrap();
+        &all[size][match (side("L"), side("R")) {
+            (false, false) => 0,
+            (true, false) => 1,
+            (false, true) => 2,
+            (true, true) => 3,
+        }]
     };
+    // Loose skirt cloth keeps the old body's pelvis frame: mapped through each thigh, a hem that
+    // hung between the old, wider-set legs bent into wedges and points.
+    let pelvis = target_names
+        .get("Bip01 Pelvis")
+        .copied()
+        .and_then(|t| direct.iter().position(|d| *d == Some(t)));
+    let leg = |j: usize| {
+        target_nodes[j]["name"]
+            .as_str()
+            .is_some_and(|n| n.contains("Thigh") || n.contains("Calf"))
+    };
+    // Shoes ride on the native foot as one piece. Mapped bone by bone, ankle straps weighted to
+    // the old calf landed under the floor and the toe box sat off the raised native foot.
+    let lower = |j: usize| {
+        target_nodes[j]["name"]
+            .as_str()
+            .is_some_and(|n| n.contains("Foot") || n.contains("Toe") || n.contains("Calf"))
+    };
+    let feet = ["leftFoot", "rightFoot"]
+        .iter()
+        .filter_map(|n| source_names.get(*n).copied())
+        .filter_map(|i| direct[i].map(|t| (i, t, source_world[i].w_axis.x)))
+        .collect::<Vec<_>>();
     let mut converted = Vec::new();
+    let mut pending = Vec::new();
     let mut fitted = 0;
     let mut unmapped = 0;
     let mut total = 0;
@@ -490,16 +614,14 @@ pub fn retarget_reference(
             {
                 return Err(invalid("legacy attribute count"));
             }
-            let mut positions = Vec::new();
-            let mut normals = Vec::new();
-            let mut indices = Vec::new();
-            let mut weights = Vec::new();
-            let mut size_delta = Vec::new();
+            let mut mapped_vertices = Vec::with_capacity(ps.len());
             for v in 0..ps.len() {
                 let mut point = Vec3::ZERO;
+                let mut rest = Vec3::ZERO;
                 let mut normal = Vec3::ZERO;
                 let mut skinweights = HashMap::<usize, f32>::new();
                 let mut bust = 0.;
+                let mut legs = 0.;
                 let mut sum = 0.;
                 for k in 0..4 {
                     let w = ws[v][k];
@@ -520,10 +642,11 @@ pub fn retarget_reference(
                         .get(j)
                         .filter(|m| m.len() == 16)
                         .ok_or_else(|| invalid("legacy inverse matrix"))?;
-                    let matrix = matrices[source]
-                        * source_world[source]
+                    let bind = source_world[source]
                         * Mat4::from_cols_array(inv.as_slice().try_into().unwrap());
+                    let matrix = matrices[source] * bind;
                     point += matrix.transform_point3(Vec3::from_slice(&ps[v])) * w;
+                    rest += bind.transform_point3(Vec3::from_slice(&ps[v])) * w;
                     normal += matrix
                         .inverse()
                         .transpose()
@@ -536,6 +659,9 @@ pub fn retarget_reference(
                     {
                         bust += w;
                     }
+                    if leg(target) {
+                        legs += w;
+                    }
                     sum += w;
                 }
                 if sum < 0.999 {
@@ -544,6 +670,7 @@ pub fn retarget_reference(
                     )));
                 }
                 point /= sum;
+                rest /= sum;
                 if let Some(p) = profile {
                     let anchor = skinweights
                         .iter()
@@ -557,162 +684,264 @@ pub fn retarget_reference(
                         .clamp(0., 1.);
                     point = p.point(point, normal, chest_center, waist_center, anchor);
                 }
-                let mut delta = Vec3::ZERO;
-                if let Some(surface) = &surface {
-                    if preserve_shell {
-                        let hit = surface.nearest(point);
-                        if bust > 0.05 && hit.distance < 0.15 {
-                            delta = hit.delta;
-                            point -= delta * 0.5;
-                        }
-                    } else {
-                        let front = if (0.70..1.42).contains(&point.y)
-                            && point.x.abs() < 0.24
-                            && normal.normalize_or_zero().z < -0.2
-                            && point.z < 0.02
-                        {
-                            surface.front(point)
-                        } else {
-                            None
-                        };
-                        let rear = if (0.70..1.18).contains(&point.y)
-                            && point.x.abs() < 0.24
-                            && normal.normalize_or_zero().z > 0.2
-                            && point.z > -0.02
-                        {
-                            surface.back(point)
-                        } else {
-                            None
-                        };
-                        let front = front.filter(|h| h.distance < 0.12);
-                        let fitted_front = front.is_some();
-                        let rear = rear.filter(|h| h.distance < 0.15);
-                        let fitted_rear = rear.is_some();
-                        let hit = if let Some(hit) = front {
-                            point.z = point.z.min(hit.point.z - 0.012);
-                            hit
-                        } else if let Some(hit) = rear {
-                            point.z = point.z.max(hit.point.z + 0.012);
-                            hit
-                        } else {
-                            let initial = surface.nearest(point);
-                            point = clearance(point, normal, &initial);
-                            surface.nearest(point)
-                        };
-                        let close = hit.distance < 0.15;
-                        if close {
-                            delta = hit.delta;
-                            let native_bust = hit
-                                .skin
-                                .iter()
-                                .filter(|(j, _)| {
-                                    target_nodes[*j]["name"]
-                                        .as_str()
-                                        .is_some_and(|n| n.starts_with("Mune_"))
-                                })
-                                .map(|(_, w)| w)
-                                .sum::<f32>();
-                            if bust > 0.05
-                                || native_bust > 0.05
-                                || (fitted_rear && hit.distance < 0.07)
-                            {
-                                let mix = if fitted_front || fitted_rear {
-                                    1.
-                                } else {
-                                    (native_bust.max(bust) / 0.3).min(1.)
-                                };
-                                for w in skinweights.values_mut() {
-                                    *w *= 1. - mix;
-                                }
-                                for (j, w) in hit.skin {
-                                    *skinweights.entry(j).or_default() += w * mix;
-                                }
-                                fitted += 1;
-                            }
-                        }
-                        // Calibrate both slider endpoints against the corresponding body,
-                        // rather than extrapolating a closest point sampled only at 50%.
-                        // A large size can expose a different part of the curved surface.
-                        if fitted_front || fitted_rear {
-                            let (low, high) = endpoints.as_ref().unwrap();
-                            let endpoint = |size: f32, surface: &Surface| {
-                                let mut q = point + delta * (size - 0.5);
-                                if let Some(h) = if fitted_front {
-                                    surface.front(q)
-                                } else {
-                                    surface.back(q)
-                                } {
-                                    q.z = if fitted_front {
-                                        q.z.min(h.point.z - 0.012)
-                                    } else {
-                                        q.z.max(h.point.z + 0.012)
-                                    };
-                                }
-                                q
-                            };
-                            let a = endpoint(0., low);
-                            let b = endpoint(1., high);
-                            point = a;
-                            delta = b - a;
-                        } else {
-                            point -= delta * 0.5;
-                        }
+                mapped_vertices.push((point, rest, normal, skinweights, bust, legs / sum));
+            }
+            // Heights (1 cm bands, front and back apart) where a connected piece of cloth crosses
+            // the gap between the old legs: a skirt, apron or loincloth there. Trouser legs, boots
+            // and leg drapes never cross it, even behind a loincloth.
+            let rests = mapped_vertices.iter().map(|v| v.1).collect::<Vec<_>>();
+            let piece = match primitive["indices"].as_u64() {
+                Some(i) => pieces(&rests, &accessor::read(&doc, &data, i as usize)?),
+                None => vec![0; rests.len()],
+            };
+            let spans = mapped_vertices
+                .iter()
+                .zip(&piece)
+                .filter(|(v, _)| v.1.x.abs() < 0.015)
+                .map(|(v, &c)| (c, (v.1.y * 100.).floor() as i32, v.1.z > 0.))
+                .collect::<HashSet<_>>();
+            let crosses = |c: usize, rest: Vec3| {
+                let band = (rest.y * 100.).floor() as i32;
+                (-1..=1).any(|d| spans.contains(&(c, band + d, rest.z > 0.)))
+            };
+            let mut vertices = Vec::with_capacity(mapped_vertices.len());
+            for ((mut point, rest, normal, mut skinweights, bust, legs), &c) in
+                mapped_vertices.into_iter().zip(&piece)
+            {
+                if let (Some(pelvis), true, false) = (pelvis, legs > 0., hair || preserve_shell) {
+                    if crosses(c, rest) {
+                        let away = surface_for(1, &skinweights).nearest(point).distance;
+                        let loose = smooth(0.025, 0.06, away) * legs;
+                        point = point.lerp(matrices[pelvis].transform_point3(rest), loose);
                     }
                 }
-                let packed = compact_weights(skinweights);
-                let mut ids = [0u16; 4];
-                let mut values = vec![0.; 4];
-                for (k, (j, w)) in packed.iter().enumerate() {
-                    ids[k] = *joint_index
-                        .get(j)
-                        .ok_or_else(|| invalid("native joint index"))?
-                        as u16;
-                    values[k] = *w;
+                let mut shoe = None;
+                let nearest_foot = feet
+                    .iter()
+                    .min_by(|a, b| (a.2 - rest.x).abs().total_cmp(&(b.2 - rest.x).abs()));
+                if let (false, Some(&(foot, target, x))) = (hair || preserve_shell, nearest_foot) {
+                    let sum = skinweights.values().sum::<f32>();
+                    let low = skinweights
+                        .iter()
+                        .filter(|(j, _)| lower(**j))
+                        .map(|(_, w)| w)
+                        .sum::<f32>()
+                        / sum;
+                    let on = smooth(0.17, 0.12, rest.y)
+                        * smooth(0.3, 0.5, low)
+                        * smooth(0.1, 0.07, (rest.x - x).abs());
+                    if on > 0. {
+                        point = point.lerp(matrices[foot].transform_point3(rest), on);
+                        for w in skinweights.values_mut() {
+                            *w *= 1. - on;
+                        }
+                        *skinweights.entry(target).or_default() += on * sum;
+                        shoe = Some((target, on));
+                    }
                 }
-                let deformation = packed.iter().fold(Mat4::ZERO, |m, (j, w)| {
-                    m + (reference_world[*j] * target_world[*j].inverse()) * *w
+                vertices.push(Fitting {
+                    point,
+                    normal,
+                    skin: skinweights,
+                    bust,
+                    shoe,
                 });
-                let encoded = encode_reference(point, normal, delta, deformation)?;
-                point = encoded.0;
-                normal = encoded.1;
-                delta = encoded.2;
-                positions.push(point.to_array().to_vec());
-
-                normals.push(normal.normalize_or_zero().to_array().to_vec());
-                indices.push(ids);
-                weights.push(values);
-                size_delta.push(delta.to_array().to_vec());
-                total += 1;
             }
-            let mut p = primitive.clone();
-            p.as_object_mut().unwrap().remove("targets");
-            let attr = p["attributes"]
-                .as_object_mut()
-                .ok_or_else(|| invalid("legacy attributes"))?;
-            attr.remove("TANGENT");
-            attr.insert(
-                "POSITION".into(),
-                json!(accessor::floats(&mut doc, &mut data, &positions, 3)?),
-            );
-            attr.insert(
-                "NORMAL".into(),
-                json!(accessor::floats(&mut doc, &mut data, &normals, 3)?),
-            );
-            attr.insert(
-                "JOINTS_0".into(),
-                json!(accessor::shorts(&mut doc, &mut data, &indices)),
-            );
-            attr.insert(
-                "WEIGHTS_0".into(),
-                json!(accessor::floats(&mut doc, &mut data, &weights, 4)?),
-            );
-            let a = accessor::floats(&mut doc, &mut data, &size_delta, 3)?;
-            p["targets"] = json!([{"POSITION":a}]);
-            out_mesh["primitives"].as_array_mut().unwrap().push(p);
+            pending.push((converted.len(), primitive.clone(), vertices));
         }
         out_mesh["weights"] = json!([0]);
         out_mesh["extras"]["targetNames"] = json!(["munel"]);
         converted.push(out_mesh);
+    }
+
+    // Each shoe centred on the native foot (toes included) and its sole set on the floor under
+    // the toes: the old foot is longer and flatter than the raised native one.
+    if let Some(all) = surfaces.as_ref() {
+        for &(_, target, _) in &feet {
+            let side = target_nodes[target]["name"].as_str().unwrap_or("").replace("Foot", "");
+            let Some((body, floor)) = all[1][3].region(|j| {
+                target_nodes[j]["name"]
+                    .as_str()
+                    .is_some_and(|n| n.starts_with(&side) && (n.contains("Foot") || n.contains("Toe")))
+            }) else {
+                continue;
+            };
+            let solid = pending
+                .iter()
+                .flat_map(|p| p.2.iter())
+                .filter(|f| f.shoe.is_some_and(|(t, on)| t == target && on > 0.99))
+                .map(|f| f.point)
+                .collect::<Vec<_>>();
+            if solid.is_empty() {
+                continue;
+            }
+            let center = solid.iter().sum::<Vec3>() / solid.len() as f32;
+            let sole = solid.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
+            let shift = Vec3::new(body.x - center.x, floor - SOLE - sole, body.z - center.z)
+                .clamp(Vec3::splat(-0.05), Vec3::splat(0.05));
+            for f in pending.iter_mut().flat_map(|p| p.2.iter_mut()) {
+                if let Some((t, on)) = f.shoe {
+                    if t == target {
+                        f.point += shift * on;
+                    }
+                }
+            }
+        }
+    }
+    // Size endpoints and clearance over the whole garment at once, so stacked layers move together.
+    let all: Vec<&Fitting> = pending.iter().flat_map(|p| p.2.iter()).collect();
+    let mut placed = vec![(Vec3::ZERO, Vec3::ZERO); all.len()];
+    let mut skins_out = Vec::with_capacity(all.len());
+    if hair {
+        for (i, f) in all.iter().enumerate() {
+            placed[i] = (f.point, Vec3::ZERO);
+            skins_out.push(f.skin.clone());
+        }
+    } else if preserve_shell {
+        for (i, f) in all.iter().enumerate() {
+            // The uniform keeps its reviewed fit: the whole body, arms included.
+            let hit = surfaces.as_ref().unwrap()[1][3].nearest(f.point);
+            placed[i] = if f.bust > 0.05 && hit.distance < 0.15 {
+                (f.point - hit.delta * 0.5, hit.delta)
+            } else {
+                (f.point, Vec3::ZERO)
+            };
+            skins_out.push(f.skin.clone());
+        }
+    } else {
+        let mut ends = [Vec::new(), Vec::new()];
+        let mut needs = [Vec::new(), Vec::new()];
+        let mut outward = [Vec::new(), Vec::new()];
+        for f in &all {
+            let mid = surface_for(1, &f.skin).nearest(f.point);
+            let grow = if mid.distance < 0.15 { mid.delta } else { Vec3::ZERO };
+            for (e, (size, offset)) in [(0, -0.5), (2, 0.5)].into_iter().enumerate() {
+                let base = f.point + grow * offset;
+                let body = surface_for(size, &f.skin);
+                let hit = body.nearest(base);
+                let depth = (base - hit.point).dot(hit.normal);
+                let facing = f.normal.normalize_or_zero();
+                let near = if hit.distance < 0.15
+                    && (depth > -0.03 || facing.dot(hit.normal) > 0.3)
+                {
+                    (CLEARANCE - depth).max(0.)
+                } else {
+                    0.
+                };
+                // Inside the larger native bust the nearest skin is often its side or underside,
+                // which a push along its normal does not clear: cloth facing front or back also
+                // clears the front or back envelope, whichever takes more.
+                let envelope = if hit.distance >= 0.15 {
+                    None
+                } else if facing.z < -0.1 {
+                    body.front(base)
+                        .map(|h| ((base.z - (h.point.z - CLEARANCE)).clamp(0., 0.2), -Vec3::Z))
+                } else if facing.z > 0.1 {
+                    body.back(base)
+                        .map(|h| (((h.point.z + CLEARANCE) - base.z).clamp(0., 0.2), Vec3::Z))
+                } else {
+                    None
+                };
+                let (need, out) = match envelope {
+                    Some((n, o)) if n > near => (n, o),
+                    _ => (near, hit.normal),
+                };
+                needs[e].push(need);
+                ends[e].push(base);
+                outward[e].push(out);
+            }
+            // Bust cloth takes the skin's own weights, so it moves exactly as the breast physics
+            // moves the skin under it; a partial share left the sides of the bust behind and the
+            // skin showed through. Fades out away from the body.
+            let native_bust = mid
+                .skin
+                .iter()
+                .filter(|(j, _)| {
+                    target_nodes[*j]["name"]
+                        .as_str()
+                        .is_some_and(|n| n.starts_with("Mune_"))
+                })
+                .map(|(_, w)| w)
+                .sum::<f32>();
+            let mix = smooth(0.005, 0.05, native_bust.max(f.bust)) * smooth(0.15, 0.08, mid.distance);
+            let mut skin = f.skin.clone();
+            if mix > 0. {
+                for w in skin.values_mut() {
+                    *w *= 1. - mix;
+                }
+                for (j, w) in mid.skin {
+                    *skin.entry(j).or_default() += w * mix;
+                }
+                fitted += 1;
+            }
+            skins_out.push(skin);
+        }
+        let pushes = [0, 1].map(|e| layered_push(&ends[e], &outward[e], &needs[e]));
+        for i in 0..all.len() {
+            let low = ends[0][i] + outward[0][i] * pushes[0][i];
+            let high = ends[1][i] + outward[1][i] * pushes[1][i];
+            if pushes[0][i] > 0. || pushes[1][i] > 0. {
+                fitted += 1;
+            }
+            placed[i] = (low, high - low);
+        }
+    }
+    let mut next = 0;
+    for (mesh, primitive, vertices) in pending {
+        let mut positions = Vec::new();
+        let mut normals = Vec::new();
+        let mut indices = Vec::new();
+        let mut weights = Vec::new();
+        let mut size_delta = Vec::new();
+        for f in &vertices {
+            let (point, delta) = placed[next];
+            let packed = compact_weights(skins_out[next].clone());
+            next += 1;
+            let mut ids = [0u16; 4];
+            let mut values = vec![0.; 4];
+            for (k, (j, w)) in packed.iter().enumerate() {
+                ids[k] = *joint_index
+                    .get(j)
+                    .ok_or_else(|| invalid("native joint index"))?
+                    as u16;
+                values[k] = *w;
+            }
+            let deformation = packed.iter().fold(Mat4::ZERO, |m, (j, w)| {
+                m + (reference_world[*j] * target_world[*j].inverse()) * *w
+            });
+            let (point, normal, delta) = encode_reference(point, f.normal, delta, deformation)?;
+            positions.push(point.to_array().to_vec());
+            normals.push(normal.normalize_or_zero().to_array().to_vec());
+            indices.push(ids);
+            weights.push(values);
+            size_delta.push(delta.to_array().to_vec());
+            total += 1;
+        }
+        let mut p = primitive;
+        p.as_object_mut().unwrap().remove("targets");
+        let attr = p["attributes"]
+            .as_object_mut()
+            .ok_or_else(|| invalid("legacy attributes"))?;
+        attr.remove("TANGENT");
+        attr.insert(
+            "POSITION".into(),
+            json!(accessor::floats(&mut doc, &mut data, &positions, 3)?),
+        );
+        attr.insert(
+            "NORMAL".into(),
+            json!(accessor::floats(&mut doc, &mut data, &normals, 3)?),
+        );
+        attr.insert(
+            "JOINTS_0".into(),
+            json!(accessor::shorts(&mut doc, &mut data, &indices)),
+        );
+        attr.insert(
+            "WEIGHTS_0".into(),
+            json!(accessor::floats(&mut doc, &mut data, &weights, 4)?),
+        );
+        let a = accessor::floats(&mut doc, &mut data, &size_delta, 3)?;
+        p["targets"] = json!([{"POSITION":a}]);
+        converted[mesh]["primitives"].as_array_mut().unwrap().push(p);
     }
     if converted.is_empty() {
         return Err(invalid("legacy item has no garment or hair geometry"));
@@ -824,23 +1053,43 @@ mod tests {
         );
     }
     #[test]
-    fn penetrating_cloth_moves_outward_without_collapsing_tangent_coordinates() {
-        let h = crate::surface::Hit {
-            point: Vec3::new(0., 1.2, -0.12),
-            normal: -Vec3::Z,
-            delta: Vec3::ZERO,
-            skin: vec![],
-            distance: 0.03,
-        };
-        let p = Vec3::new(0.02, 1.21, -0.1);
-        let q = clearance(p, -Vec3::Z, &h);
-        assert!((q.x - p.x).abs() < 1e-6 && (q.y - p.y).abs() < 1e-6);
-        assert!((q.z + 0.126).abs() < 1e-6);
-        assert_eq!(clearance(p, Vec3::Z, &h), p);
-        assert_eq!(
-            clearance(Vec3::new(0., 0.8, -0.1), -Vec3::Z, &h),
-            Vec3::new(0., 0.8, -0.1)
-        );
+    fn pieces_join_triangles_and_seam_copies_but_not_separate_cloth() {
+        // Triangle 0-1-2; vertex 3 is a UV-seam copy of vertex 2 in triangle 3-4-5; 6-7-8 apart.
+        let points = [
+            Vec3::ZERO,
+            Vec3::X,
+            Vec3::Y,
+            Vec3::Y,
+            Vec3::new(1., 1., 0.),
+            Vec3::new(0., 2., 0.),
+            Vec3::new(5., 0., 0.),
+            Vec3::new(6., 0., 0.),
+            Vec3::new(5., 1., 0.),
+        ];
+        let indices = [0, 1, 2, 3, 4, 5, 6, 7, 8].map(|i| vec![i as f32]);
+        assert_eq!(pieces(&points, &indices), [0, 0, 0, 0, 0, 0, 6, 6, 6]);
+    }
+    #[test]
+    fn stacked_layers_move_out_together_and_keep_their_spacing() {
+        // An inner layer 1 cm inside the skin, an outer one 0.5 cm outside it over the same spot,
+        // a point 1.5 cm to the side, one 5 cm out and one on the far side (normal reversed).
+        let points = [
+            Vec3::new(0., 1., -0.01),
+            Vec3::new(0., 1., 0.005),
+            Vec3::new(0.015, 1., 0.005),
+            Vec3::new(0., 1., 0.05),
+            Vec3::new(0., 1., -0.012),
+        ];
+        let normals = [Vec3::Z, Vec3::Z, Vec3::Z, Vec3::Z, -Vec3::Z];
+        let need = [0.015, 0., 0., 0., 0.];
+        let push = layered_push(&points, &normals, &need);
+        assert!((push[0] - 0.015).abs() < 1e-6);
+        // The outer layer moves as far as the inner one, so they stay 1.5 cm apart.
+        assert!((push[1] - 0.015).abs() < 1e-6);
+        assert!(push[2] > 0. && push[2] < 0.005);
+        assert_eq!(push[3], 0.);
+        assert_eq!(push[4], 0.);
+        assert!((smooth(0.15, 0.08, 0.08) - 1.).abs() < 1e-6 && smooth(0.15, 0.08, 0.2) == 0.);
     }
 }
 #[cfg(test)]

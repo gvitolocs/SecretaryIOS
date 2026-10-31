@@ -210,6 +210,136 @@ pub fn body(input: &Path, menu: &Menu, output: &Path) -> Result<Value> {
     Ok(json!({"removedTriangles":removed,"keptTriangles":kept,"output":output}))
 }
 
+
+/// Which body vertices a garment surface covers: the garment lies straight out along the skin
+/// normal, from `BEHIND` under the skin (where the skin pokes through) to `AHEAD` over it. An
+/// opening (neckline, cuff, cut-out) has no cloth along the normal, so the skin there stays.
+/// `skip` marks vertices that are never covered.
+pub fn covered(points: &[glam::Vec3], normals: &[glam::Vec3], skip: &[bool], garment: &crate::surface::Surface) -> Vec<bool> {
+    const BEHIND: f32 = 0.02;
+    const AHEAD: f32 = 0.06;
+    points
+        .iter()
+        .zip(normals)
+        .zip(skip)
+        .map(|((&p, &n), &skip)| {
+            !skip && n != glam::Vec3::ZERO && garment.ray(p - n * BEHIND, n, BEHIND + AHEAD).is_some()
+        })
+        .collect()
+}
+
+/// Hides the body triangles that the meshes named in `garments` cover (every vertex covered), for
+/// imported outfits that come with no native body rules, as the game's own items hide the body
+/// under them: the native body is fuller than the one they were made for. Runs at bind. Returns
+/// the number of triangles hidden.
+pub fn under_garments(path: &Path, garments: &std::collections::BTreeSet<String>) -> Result<usize> {
+    use glam::{Mat4, Vec3};
+    let (mut doc, mut data) = glb_io::read(path)?;
+    let (_, _, world) = scene_frames(&doc)?;
+    let nodes = doc["nodes"].as_array().unwrap().clone();
+    let mut points = Vec::new();
+    let mut normals = Vec::new();
+    let mut faces = Vec::new();
+    for n in &nodes {
+        let (Some(mesh), Some(skin)) = (n["mesh"].as_u64(), n["skin"].as_u64()) else { continue };
+        if !doc["meshes"][mesh as usize]["name"].as_str().is_some_and(|m| garments.contains(m)) {
+            continue;
+        }
+        let s = &doc["skins"][skin as usize];
+        let ib = crate::accessor::read(&doc, &data, s["inverseBindMatrices"].as_u64().unwrap() as usize)?;
+        let transforms: Vec<Mat4> = s["joints"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .map(|(i, j)| world[j.as_u64().unwrap() as usize] * Mat4::from_cols_array(ib[i].as_slice().try_into().unwrap()))
+            .collect();
+        for p in doc["meshes"][mesh as usize]["primitives"].as_array().unwrap() {
+            let a = &p["attributes"];
+            let (Some(pi), Some(ni), Some(ii)) = (a["POSITION"].as_u64(), a["NORMAL"].as_u64(), p["indices"].as_u64()) else { continue };
+            let pos = crate::accessor::read(&doc, &data, pi as usize)?;
+            let nor = crate::accessor::read(&doc, &data, ni as usize)?;
+            let js = crate::accessor::read(&doc, &data, a["JOINTS_0"].as_u64().unwrap() as usize)?;
+            let ws = crate::accessor::read(&doc, &data, a["WEIGHTS_0"].as_u64().unwrap() as usize)?;
+            let base = points.len();
+            for v in 0..pos.len() {
+                let mut m = Mat4::ZERO;
+                for k in 0..4 {
+                    m += transforms[js[v][k] as usize] * ws[v][k];
+                }
+                points.push(m.transform_point3(Vec3::from_slice(&pos[v])));
+                normals.push(m.transform_vector3(Vec3::from_slice(&nor[v])).normalize_or_zero());
+            }
+            let idx = crate::accessor::read(&doc, &data, ii as usize)?;
+            for t in idx.as_chunks::<3>().0 {
+                faces.push([base + t[0][0] as usize, base + t[1][0] as usize, base + t[2][0] as usize]);
+            }
+        }
+    }
+    if faces.is_empty() {
+        return Ok(0);
+    }
+    let garment = crate::surface::Surface::geometry(&points, &normals, &faces)?;
+    let names: Vec<String> = nodes.iter().map(|n| n["name"].as_str().unwrap_or("").to_owned()).collect();
+    let mut hidden = 0;
+    for (i, n) in nodes.iter().enumerate() {
+        let (Some(mesh), Some(skin)) = (n["mesh"].as_u64(), n["skin"].as_u64()) else { continue };
+        let joints: Vec<usize> = doc["skins"][skin as usize]["joints"].as_array().unwrap().iter().map(|j| j.as_u64().unwrap() as usize).collect();
+        let primitives = doc["meshes"][mesh as usize]["primitives"].as_array().unwrap().clone();
+        for (pi, p) in primitives.iter().enumerate() {
+            let skin_material = doc["materials"][p["material"].as_u64().unwrap_or(0) as usize]["name"].as_str().is_some_and(|m| m.starts_with("skin_"));
+            if !skin_material {
+                continue;
+            }
+            let a = &p["attributes"];
+            let pos = crate::accessor::read(&doc, &data, a["POSITION"].as_u64().unwrap() as usize)?;
+            let nor = crate::accessor::read(&doc, &data, a["NORMAL"].as_u64().unwrap() as usize)?;
+            let js = crate::accessor::read(&doc, &data, a["JOINTS_0"].as_u64().unwrap() as usize)?;
+            let ws = crate::accessor::read(&doc, &data, a["WEIGHTS_0"].as_u64().unwrap() as usize)?;
+            let normal = world[i].inverse().transpose();
+            let body_points: Vec<Vec3> = pos.iter().map(|q| world[i].transform_point3(Vec3::from_slice(q))).collect();
+            let body_normals: Vec<Vec3> = nor.iter().map(|q| normal.transform_vector3(Vec3::from_slice(q)).normalize_or_zero()).collect();
+            let skip: Vec<bool> = (0..pos.len())
+                .map(|v| {
+                    let k = (0..4).max_by(|&a, &b| ws[v][a].total_cmp(&ws[v][b])).unwrap();
+                    let name = &names[joints[js[v][k] as usize]];
+                    // Hands stay: cuffs end at the wrist.
+                    name.contains("Hand") || name.contains("Finger")
+                })
+                .collect();
+            let cover = covered(&body_points, &body_normals, &skip, &garment);
+            let idx = crate::accessor::read(&doc, &data, p["indices"].as_u64().unwrap() as usize)?;
+            let mut kept = Vec::new();
+            for t in idx.as_chunks::<3>().0 {
+                let tri = [t[0][0] as usize, t[1][0] as usize, t[2][0] as usize];
+                if tri.iter().all(|&v| cover[v]) {
+                    hidden += 1;
+                } else {
+                    kept.extend(tri.iter().flat_map(|&v| (v as u32).to_le_bytes()));
+                }
+            }
+            if kept.is_empty() {
+                kept.extend([0u8; 12]);
+            }
+            while !data.len().is_multiple_of(4) {
+                data.push(0);
+            }
+            let start = data.len();
+            data.extend(&kept);
+            let view = doc["bufferViews"].as_array().unwrap().len();
+            doc["bufferViews"].as_array_mut().unwrap().push(json!({"buffer": 0, "byteOffset": start, "byteLength": kept.len()}));
+            let accessor = doc["accessors"].as_array().unwrap().len();
+            doc["accessors"].as_array_mut().unwrap().push(json!({"bufferView": view, "componentType": 5125, "count": kept.len() / 4, "type": "SCALAR"}));
+            doc["meshes"][mesh as usize]["primitives"][pi]["indices"] = json!(accessor);
+        }
+    }
+    if hidden > 0 {
+        doc["buffers"][0]["byteLength"] = json!(data.len());
+        glb_io::write(path, &doc, &data)?;
+    }
+    Ok(hidden)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,6 +360,30 @@ mod tests {
         assert_eq!(
             visibility(&doc, &menu).unwrap(),
             vec![false, true, true, false]
+        );
+    }
+    #[test]
+    fn body_points_under_a_close_garment_are_covered_but_not_far_or_skipped_ones() {
+        use glam::Vec3;
+        // A garment square 1 cm in front of the body plane z = 0 (normals +z), over x, y in [-0.1, 0.1].
+        let pts = [Vec3::new(-0.1, -0.1, 0.01), Vec3::new(0.1, -0.1, 0.01), Vec3::new(0.1, 0.1, 0.01), Vec3::new(-0.1, 0.1, 0.01)];
+        let garment = crate::surface::Surface::geometry(&pts, &[Vec3::Z; 4], &[[0, 1, 2], [0, 2, 3]]).unwrap();
+        let body = [
+            Vec3::new(0., 0., 0.),
+            Vec3::new(0.05, 0.05, 0.),
+            Vec3::new(0.5, 0., 0.),
+            Vec3::new(0., 0., 0.),
+            Vec3::new(0., 0., 0.02),
+            Vec3::new(0., 0., -0.08),
+            Vec3::new(0., 0., 0.),
+        ];
+        let normals = [Vec3::Z, Vec3::Z, Vec3::Z, Vec3::Z, Vec3::Z, Vec3::Z, Vec3::X];
+        let skip = [false, false, false, true, false, false, false];
+        // Covered; covered; beside the garment (an opening); skipped; skin poking 1 cm through the
+        // garment; 9 cm under it; facing sideways, so the cloth is not over it.
+        assert_eq!(
+            covered(&body, &normals, &skip, &garment),
+            [true, true, false, false, true, false, false]
         );
     }
 }

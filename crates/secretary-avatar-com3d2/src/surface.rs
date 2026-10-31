@@ -156,6 +156,52 @@ impl Node {
             ids: Vec::new(),
         }
     }
+    fn ray(&self, o: Vec3, d: Vec3, triangles: &[Triangle], best: &mut f32, found: &mut bool) {
+        // Slab test against the box, then Möller–Trumbore against each triangle.
+        let mut near = 0f32;
+        let mut far = *best;
+        for a in 0..3 {
+            if d[a].abs() < 1e-12 {
+                if o[a] < self.lo[a] || o[a] > self.hi[a] {
+                    return;
+                }
+                continue;
+            }
+            let (t0, t1) = ((self.lo[a] - o[a]) / d[a], (self.hi[a] - o[a]) / d[a]);
+            near = near.max(t0.min(t1));
+            far = far.min(t0.max(t1));
+            if near > far {
+                return;
+            }
+        }
+        if let Some((a, b)) = &self.children {
+            a.ray(o, d, triangles, best, found);
+            b.ray(o, d, triangles, best, found);
+            return;
+        }
+        for &id in &self.ids {
+            let t = &triangles[id];
+            let e1 = t.p[1] - t.p[0];
+            let e2 = t.p[2] - t.p[0];
+            let h = d.cross(e2);
+            let det = e1.dot(h);
+            if det.abs() < 1e-10 {
+                continue;
+            }
+            let s = o - t.p[0];
+            let u = s.dot(h) / det;
+            let q = s.cross(e1);
+            let v = d.dot(q) / det;
+            if u < 0. || v < 0. || u + v > 1. {
+                continue;
+            }
+            let r = e2.dot(q) / det;
+            if r >= 0. && r <= *best {
+                *best = r;
+                *found = true;
+            }
+        }
+    }
     fn distance(&self, p: Vec3) -> f32 {
         (p - p.clamp(self.lo, self.hi)).length_squared()
     }
@@ -188,7 +234,17 @@ impl Surface {
     pub fn body(doc: &Value, data: &[u8]) -> Result<Self> {
         Self::body_at_size(doc, data, 0.)
     }
+    /// The body in its bind pose (node transforms only).
     pub fn body_at_size(doc: &Value, data: &[u8], size: f32) -> Result<Self> {
+        Self::build_body(doc, data, size, false)
+    }
+    /// The body skinned into the pose the document's nodes hold (a posed reference). The bind-pose
+    /// surface has the legs spread wide and the arms out, so a garment fitted in the standing pose
+    /// was compared with limbs that were not there.
+    pub fn posed_at_size(doc: &Value, data: &[u8], size: f32) -> Result<Self> {
+        Self::build_body(doc, data, size, true)
+    }
+    fn build_body(doc: &Value, data: &[u8], size: f32, posed: bool) -> Result<Self> {
         let (_, _, world) = scene_frames(doc)?;
         let mut triangles = Vec::new();
         for (i, node) in doc["nodes"].as_array().unwrap().iter().enumerate() {
@@ -234,7 +290,46 @@ impl Surface {
                         .as_u64()
                         .ok_or_else(|| invalid("surface indices"))? as usize,
                 )?;
-                let normal = world[i].inverse().transpose();
+                // Posed: each vertex follows its blended joints into the document's pose.
+                let joints = if posed {
+                    let ib = accessor::read(
+                        doc,
+                        data,
+                        doc["skins"][s as usize]["inverseBindMatrices"]
+                            .as_u64()
+                            .ok_or_else(|| invalid("surface inverse binds"))?
+                            as usize,
+                    )?;
+                    skin.iter()
+                        .zip(&ib)
+                        .map(|(j, m)| {
+                            let n = j.as_u64().ok_or_else(|| invalid("surface skin joint"))?;
+                            let m: [f32; 16] =
+                                m.as_slice().try_into().map_err(|_| invalid("surface inverse bind"))?;
+                            Ok(world
+                                .get(n as usize)
+                                .ok_or_else(|| invalid("surface skin joint"))?
+                                .mul_mat4(&glam::Mat4::from_cols_array(&m)))
+                        })
+                        .collect::<Result<Vec<_>>>()?
+                } else {
+                    Vec::new()
+                };
+                let place = |v: usize| -> Result<glam::Mat4> {
+                    if !posed {
+                        return Ok(world[i]);
+                    }
+                    let mut m = glam::Mat4::ZERO;
+                    for k in 0..4 {
+                        if ws[v][k] > 0. {
+                            m += *joints
+                                .get(js[v][k] as usize)
+                                .ok_or_else(|| invalid("surface skin joint"))?
+                                * ws[v][k];
+                        }
+                    }
+                    Ok(m)
+                };
                 for tri in indices.as_chunks::<3>().0 {
                     let ids = [tri[0][0] as usize, tri[1][0] as usize, tri[2][0] as usize];
                     if ids.iter().any(|&v| {
@@ -246,7 +341,11 @@ impl Surface {
                     }) {
                         return Err(invalid("surface vertex bounds"));
                     }
-                    let point = ids.map(|v| world[i].transform_point3(Vec3::from_slice(&ps[v])));
+                    let [ma, mb, mc] = [place(ids[0])?, place(ids[1])?, place(ids[2])?];
+                    let m = [ma, mb, mc];
+                    let point = std::array::from_fn::<Vec3, 3, _>(|c| {
+                        m[c].transform_point3(Vec3::from_slice(&ps[ids[c]]))
+                    });
                     if (point[1] - point[0])
                         .cross(point[2] - point[0])
                         .length_squared()
@@ -254,12 +353,15 @@ impl Surface {
                     {
                         continue;
                     }
-                    let norms = ids.map(|v| {
-                        normal
-                            .transform_vector3(Vec3::from_slice(&ns[v]))
+                    let norms = std::array::from_fn::<Vec3, 3, _>(|c| {
+                        m[c].inverse()
+                            .transpose()
+                            .transform_vector3(Vec3::from_slice(&ns[ids[c]]))
                             .normalize_or_zero()
                     });
-                    let delta = ids.map(|v| world[i].transform_vector3(Vec3::from_slice(&ds[v])));
+                    let delta = std::array::from_fn::<Vec3, 3, _>(|c| {
+                        m[c].transform_vector3(Vec3::from_slice(&ds[ids[c]]))
+                    });
                     let weights = ids.map(|v| {
                         (0..4)
                             .filter(|&k| ws[v][k] > 0.)
@@ -311,6 +413,54 @@ impl Surface {
         }
         let root = Node::build(&triangles, (0..triangles.len()).collect());
         Ok(Self { triangles, root })
+    }
+    /// The same surface without the triangles whose strongest joint `drop` rejects; `None` if
+    /// nothing is left.
+    pub fn without(&self, drop: impl Fn(usize) -> bool) -> Option<Self> {
+        let triangles = self
+            .triangles
+            .iter()
+            .filter(|t| {
+                let strongest = t
+                    .skin
+                    .iter()
+                    .flatten()
+                    .max_by(|a, b| a.1.total_cmp(&b.1))
+                    .map(|s| s.0);
+                !strongest.is_some_and(&drop)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if triangles.is_empty() {
+            return None;
+        }
+        let root = Node::build(&triangles, (0..triangles.len()).collect());
+        Some(Self { triangles, root })
+    }
+    /// Distance to the first triangle a ray from `origin` along `direction` meets within `max`.
+    pub fn ray(&self, origin: Vec3, direction: Vec3, max: f32) -> Option<f32> {
+        let d = direction.normalize_or_zero();
+        let mut best = max;
+        let mut found = false;
+        self.root.ray(origin, d, &self.triangles, &mut best, &mut found);
+        found.then_some(best)
+    }
+    /// Mean corner and lowest corner height of the triangles whose strongest joint `keep` accepts.
+    pub fn region(&self, keep: impl Fn(usize) -> bool) -> Option<(Vec3, f32)> {
+        let mut sum = Vec3::ZERO;
+        let mut low = f32::INFINITY;
+        let mut n = 0;
+        for t in &self.triangles {
+            let strongest = t.skin.iter().flatten().max_by(|a, b| a.1.total_cmp(&b.1));
+            if strongest.is_some_and(|s| keep(s.0)) {
+                for p in t.p {
+                    sum += p;
+                    low = low.min(p.y);
+                    n += 1;
+                }
+            }
+        }
+        (n > 0).then(|| (sum / n as f32, low))
     }
     /// Outermost intersection of an authoring ray, rather than a nearest
     /// underside/crotch surface. Used to keep a whole outer garment outside

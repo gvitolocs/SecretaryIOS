@@ -18,7 +18,7 @@ use std::{
     path::{Path, PathBuf},
 };
 const VERSION: u32 = 3;
-const PIPELINE_REVISION: u32 = 38;
+const PIPELINE_REVISION: u32 = 42;
 /// Categories never offered for selection: swimwear, and underwear on its own (the coverage
 /// guard below still uses plain inner wear).
 const HIDDEN_CATEGORIES: &[&str] = &["mizugi", "bra", "panz"];
@@ -696,7 +696,7 @@ impl Library {
                 let out = self
                     .root
                     .join("parts")
-                    .join(format!("{stem}-fit15-{fit_key:016x}-{source_key:016x}.glb"));
+                    .join(format!("{stem}-fit16-{fit_key:016x}-{source_key:016x}.glb"));
                 if !out.is_file() {
                     let source = if *extract {
                         let filtered = self
@@ -744,7 +744,7 @@ impl Library {
                 let native_dir = self
                     .root
                     .join("native")
-                    .join(format!("{stem}-fit15-{fit_key:016x}-{source_key:016x}-v7"));
+                    .join(format!("{stem}-fit16-{fit_key:016x}-{source_key:016x}-v7"));
                 let manifest = native_dir.join("manifest.json");
                 let pack = if manifest.is_file() {
                     serde_json::from_slice::<Value>(&fs::read(&manifest)?)
@@ -877,7 +877,7 @@ impl Library {
             .collect::<Result<Vec<_>>>()?
             .join(";");
         let key = hash(&format!(
-            "v{VERSION}-native38:{modified}:{}:{profiles}:{:?}:{:?}",
+            "v{VERSION}-native42:{modified}:{}:{profiles}:{:?}:{:?}",
             ids.join(","),
             self.config.loose_surface_items,
             self.config.loose_component_sizes
@@ -951,11 +951,18 @@ impl Library {
             }
         }
         let mut attached = 0;
+        // Meshes of imported (Secretary) clothes: they bring no native body rules, so the body
+        // under them is hidden by coverage below.
+        let mut imported = std::collections::BTreeSet::new();
         for (item, p) in selected.iter().zip(&prepared) {
             if hidden.contains(&item.category) {
                 continue;
             }
             for file in &p.files {
+                if matches!(item.source, Source::Legacy { clothes: true, hair: false, .. }) {
+                    let (doc, _) = crate::glb_io::read(file)?;
+                    imported.extend(doc["meshes"].as_array().into_iter().flatten().filter_map(|m| m["name"].as_str().map(str::to_owned)));
+                }
                 let accessory = self.config.loose_surface_items.contains(&item.id);
                 let temporary = work.with_extension("hanging.glb");
                 let mut wearable = file.clone();
@@ -987,6 +994,7 @@ impl Library {
         crate::customization::annotate_garment_bindings(&work)?;
         // At bind, before the standing pose: the body surface query reads unskinned positions.
         let hip_follow = crate::native_cloth::follow_body_at_hips(&work)?;
+        let covered = if imported.is_empty() { 0 } else { masking::under_garments(&work, &imported)? };
         pose_asset::standing(&self.model, &self.animation, &work, &work, 0.)?;
         crate::secondary_rig::posed_ribbons(&work)?;
         crate::native_cloth::add_back_cage(&work)?;
@@ -996,7 +1004,7 @@ impl Library {
         let slimmed = crate::slim::slim(&output)?;
         let _ = fs::remove_file(&work);
         Ok(
-            json!({"url":format!("./cache/{filename}"),"items":ids,"attachedParts":attached,"hipFollowPoints":hip_follow,"slim":slimmed,"maskedSlots":hidden,"cached":false,"body":"native COM3D2 with real Lucina head","hairClothCollisionParity":false}),
+            json!({"url":format!("./cache/{filename}"),"items":ids,"attachedParts":attached,"hipFollowPoints":hip_follow,"coveredBodyTriangles":covered,"slim":slimmed,"maskedSlots":hidden,"cached":false,"body":"native COM3D2 with real Lucina head","hairClothCollisionParity":false}),
         )
     }
 }
