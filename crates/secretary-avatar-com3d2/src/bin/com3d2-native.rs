@@ -30,7 +30,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some("attach") if args.len()==5 => {println!("{}",secretary_avatar_com3d2::compose::attach(Path::new(&args[2]),Path::new(&args[3]),Path::new(&args[4]))?);}
         Some("body-bindings") if args.len()==5 => {let model=secretary_avatar_com3d2::model::Model::read(&fs::read(&args[2])?)?;let bindings=secretary_avatar_com3d2::bindings::export(&model,Path::new(&args[3]))?;fs::write(&args[4],serde_json::to_vec_pretty(&bindings)?)?;}
         Some("mask-body") if args.len()==5 => {let menu=secretary_avatar_com3d2::menu::Menu::read(&fs::read(&args[3])?)?;println!("{}",secretary_avatar_com3d2::masking::body(Path::new(&args[2]),&menu,Path::new(&args[4]))?);}
-        Some("serve") if args.len()==4 => {secretary_avatar_com3d2::preview::serve(Path::new(&args[2]),Path::new(&args[3]))?;}
+        Some("serve") if args.len()==4 => {secretary_avatar_com3d2::preview::serve(Path::new(&args[2]),Path::new(&args[3]),&secretary_avatar_com3d2::preview::ServeOptions::from_env()?)?;}
         Some("audit-models") if args.len()==3 => {
             let mut archive=Archive::open(Path::new(&args[2]))?;
             let paths=archive.entries.iter().filter(|e|e.path.ends_with(".model")).map(|e|e.path.clone()).collect::<Vec<_>>();

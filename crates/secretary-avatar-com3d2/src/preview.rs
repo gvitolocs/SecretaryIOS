@@ -26,7 +26,64 @@ fn json_response(request: tiny_http::Request, status: u16, value: Value) {
     }
     let _ = request.respond(r);
 }
-fn body(request: &mut tiny_http::Request) -> Result<Vec<u8>> {
+/// Where the server listens and whom it answers. The defaults are the loopback review server; the
+/// Secretary deployment sets them from the environment:
+/// - `COM3D2_LISTEN`: address (default `127.0.0.1:28983`);
+/// - `COM3D2_HOSTS` / `COM3D2_ORIGINS`: comma-separated `Host` and `Origin` values accepted;
+/// - `COM3D2_GATEWAY_KEY_FILE`: every request must carry this key in `X-Com3d2-Gateway-Key`
+///   (the p1 gateway adds it after the session check; the key never reaches a browser).
+pub struct ServeOptions {
+    pub listen: String,
+    pub hosts: Vec<String>,
+    pub origins: Vec<String>,
+    pub gateway_key: Option<String>,
+}
+impl Default for ServeOptions {
+    fn default() -> Self {
+        Self {
+            listen: "127.0.0.1:28983".into(),
+            hosts: vec!["127.0.0.1:28983".into(), "localhost:28983".into()],
+            origins: vec!["http://127.0.0.1:28983".into(), "http://localhost:28983".into()],
+            gateway_key: None,
+        }
+    }
+}
+impl ServeOptions {
+    pub fn from_env() -> Result<Self> {
+        let list = |v: String| v.split(',').map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()).collect();
+        let mut o = Self::default();
+        if let Ok(v) = std::env::var("COM3D2_LISTEN") {
+            o.listen = v;
+        }
+        if let Ok(v) = std::env::var("COM3D2_HOSTS") {
+            o.hosts = list(v);
+        }
+        if let Ok(v) = std::env::var("COM3D2_ORIGINS") {
+            o.origins = list(v);
+        }
+        if let Ok(path) = std::env::var("COM3D2_GATEWAY_KEY_FILE") {
+            let key = std::fs::read_to_string(&path)?.trim().to_owned();
+            if key.len() < 32 {
+                return Err(invalid("gateway key shorter than 32 characters"));
+            }
+            o.gateway_key = Some(key);
+        }
+        Ok(o)
+    }
+    /// The request's `Host` is served and, when a gateway key is set, the key matches.
+    fn admits(&self, host: &str, key: Option<&str>) -> bool {
+        self.hosts.iter().any(|h| h == host)
+            && self.gateway_key.as_deref().is_none_or(|k| key.is_some_and(|g| same(g.as_bytes(), k.as_bytes())))
+    }
+}
+/// Constant-time equality.
+fn same(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |d, (x, y)| d | (x ^ y)) == 0
+}
+fn header<'a>(request: &'a tiny_http::Request, name: &'static str) -> Option<&'a str> {
+    request.headers().iter().find(|h| h.field.equiv(name)).map(|h| h.value.as_str())
+}
+fn body(request: &mut tiny_http::Request, options: &ServeOptions) -> Result<Vec<u8>> {
     let content = request
         .headers()
         .iter()
@@ -36,12 +93,8 @@ fn body(request: &mut tiny_http::Request) -> Result<Vec<u8>> {
     if !content.starts_with("application/json") {
         return Err(invalid("JSON content type required"));
     }
-    let origin = request
-        .headers()
-        .iter()
-        .find(|h| h.field.equiv("Origin"))
-        .map(|h| h.value.as_str());
-    if origin.is_some_and(|o| !matches!(o, "http://127.0.0.1:28983" | "http://localhost:28983")) {
+    let origin = header(request, "Origin");
+    if origin.is_some_and(|o| !options.origins.iter().any(|a| a == o)) {
         return Err(invalid("cross-origin request refused"));
     }
     if request
@@ -58,22 +111,16 @@ fn body(request: &mut tiny_http::Request) -> Result<Vec<u8>> {
     }
     Ok(data)
 }
-pub fn serve(root: &Path, bundle: &Path) -> Result<()> {
+pub fn serve(root: &Path, bundle: &Path, options: &ServeOptions) -> Result<()> {
     let root = root.canonicalize()?;
     let mut library = if root.join("library-config.json").is_file() {
         Some(Library::open(&root)?)
     } else {
         None
     };
-    let server = tiny_http::Server::http("127.0.0.1:28983").map_err(|e| invalid(e.to_string()))?;
+    let server = tiny_http::Server::http(&options.listen).map_err(|e| invalid(e.to_string()))?;
     for mut request in server.incoming_requests() {
-        let host = request
-            .headers()
-            .iter()
-            .find(|h| h.field.equiv("Host"))
-            .map(|h| h.value.as_str())
-            .unwrap_or("");
-        if !["127.0.0.1:28983", "localhost:28983"].contains(&host) {
+        if !options.admits(header(&request, "Host").unwrap_or(""), header(&request, "X-Com3d2-Gateway-Key")) {
             let _ = request.respond(tiny_http::Response::empty(403));
             continue;
         }
@@ -96,7 +143,7 @@ pub fn serve(root: &Path, bundle: &Path) -> Result<()> {
                 struct Selection {
                     items: Vec<String>,
                 }
-                let result = body(&mut request)
+                let result = body(&mut request, options)
                     .and_then(|b| {
                         serde_json::from_slice::<Selection>(&b).map_err(|e| invalid(e.to_string()))
                     })
@@ -108,7 +155,7 @@ pub fn serve(root: &Path, bundle: &Path) -> Result<()> {
                 continue;
             }
             if request.method() == &tiny_http::Method::Post && path == "/settings" {
-                let result = body(&mut request)
+                let result = body(&mut request, options)
                     .and_then(|b| {
                         serde_json::from_slice::<Settings>(&b).map_err(|e| invalid(e.to_string()))
                     })
@@ -180,13 +227,29 @@ pub fn serve(root: &Path, bundle: &Path) -> Result<()> {
                 tiny_http::Header::from_bytes(k, v).map_err(|_| invalid("response header"))?,
             );
         }
-        let _ = request.respond(response);
+        // Models are tens of MB: a slow download must not hold up the next request.
+        std::thread::spawn(move || {
+            let _ = request.respond(response);
+        });
     }
     Ok(())
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn gateway_mode_needs_the_served_host_and_the_exact_key() {
+        let local = ServeOptions::default();
+        assert!(local.admits("127.0.0.1:28983", None));
+        assert!(!local.admits("getsecretary.tech", None));
+        let key = "k".repeat(40);
+        let gw = ServeOptions { hosts: vec!["com3d2.internal".into()], gateway_key: Some(key.clone()), ..ServeOptions::default() };
+        assert!(gw.admits("com3d2.internal", Some(&key)));
+        assert!(!gw.admits("com3d2.internal", None));
+        assert!(!gw.admits("com3d2.internal", Some(&"k".repeat(39))));
+        assert!(!gw.admits("com3d2.internal", Some(&format!("{}x", "k".repeat(39)))));
+        assert!(!gw.admits("127.0.0.1:28983", Some(&key)));
+    }
     #[test]
     fn cached_asset_routes_cannot_escape_or_expose_source_files() {
         assert_eq!(

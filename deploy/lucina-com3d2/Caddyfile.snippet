@@ -1,0 +1,25 @@
+	# COM3D2 fitting room (2026-10-31, deploy/lucina-com3d2.service): the frame behind the Wardrobe's
+	# "COM3D2 body (beta)" switch. Same gate as /v1/share: device auth through forward_auth, CSRF for
+	# cookie writes, then nezopt's tailnet address with the gateway key and the Host it serves.
+	# The page uses relative URLs, so it needs the trailing slash.
+	redir /v1/com3d2 /v1/com3d2/ 308
+	@com3d2 path /v1/com3d2/*
+	handle @com3d2 {
+		# route: keep this order (the CSRF answer before auth and the proxy).
+		route {
+			@com3d2_csrf {
+				not method GET HEAD
+				not header Authorization *
+				not header X-Secretary-CSRF 1
+			}
+			respond @com3d2_csrf `{"ok":false,"error":"csrf"}` 403
+			forward_auth 127.0.0.1:8800 {
+				uri /v1/avatar
+			}
+			uri strip_prefix /v1/com3d2
+			reverse_proxy 100.107.164.33:8885 {
+				header_up Host com3d2.internal
+				header_up X-Com3d2-Gateway-Key {file./etc/caddy/com3d2-gateway.key}
+			}
+		}
+	}

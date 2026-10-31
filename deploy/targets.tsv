@@ -9,6 +9,7 @@ lucina-proactive	nezopt	Cargo.toml Cargo.lock crates/lucina-llm crates/lucina-me
 lucina-media	nezopt	Cargo.toml Cargo.lock deploy/lucina-media.service crates/lucina-jev crates/lucina-media crates/lucina-media-ml crates/secretary-image crates/secretary-media-stream crates/secretary-player
 secretary-nclient	nezopt	Cargo.toml Cargo.lock deploy/secretary-nclient crates/nclient-core crates/secretary-nclient
 secretary-maps	nezopt	Cargo.toml Cargo.lock deploy/secretary-maps deploy/secretary-maps.service crates/secretary-maps
+lucina-com3d2	nezopt	Cargo.toml Cargo.lock deploy/lucina-com3d2 deploy/lucina-com3d2.service crates/secretary-avatar-com3d2
 secretary-instagram	nezopt	deploy/secretary-instagram crates/secretary-instagram
 secretary-pixiv	nezopt	deploy/secretary-pixiv crates/secretary-pixiv
 lucina-otp-relay	p1	Cargo.toml Cargo.lock deploy/lucina-otp crates/lucina-otp-relay crates/lucina-phone-core

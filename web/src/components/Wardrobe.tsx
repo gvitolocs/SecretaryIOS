@@ -118,8 +118,34 @@ function HairArt(props: { hair: Hairstyle; size?: "sm" }) {
   return <Art item={props.hair} cat={props.hair.id === NATURAL_HAIR ? "natural" : "hair"} glyph={HairIcon} size={props.size} />;
 }
 
+/**
+ * The COM3D2 fitting room (beta, crates/secretary-avatar-com3d2 on nezopt behind the p1 gateway):
+ * Lucina on the COM3D2 body with part-by-part outfits, body sliders and Rust physics. A per-device
+ * switch, off by default; her look in the app does not change.
+ */
+export const COM3D2_URL = "/v1/com3d2/";
+export const COM3D2_KEY = "secretary.wardrobe.com3d2";
+
+function readCom3d2(): boolean {
+  try {
+    return localStorage.getItem(COM3D2_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
 export default function Wardrobe() {
   const [kind, setKind] = createSignal<Kind>("outfit");
+  const [com3d2, setCom3d2State] = createSignal(readCom3d2());
+  const setCom3d2 = (on: boolean) => {
+    setCom3d2State(on);
+    try {
+      if (on) localStorage.setItem(COM3D2_KEY, "1");
+      else localStorage.removeItem(COM3D2_KEY);
+    } catch {
+      // Storage blocked: the switch still works until the page reloads.
+    }
+  };
   const [cat, setCat] = createSignal<Category | "all">("all");
   let panel: HTMLElement | undefined;
   let closeBtn: HTMLButtonElement | undefined;
@@ -196,7 +222,14 @@ export default function Wardrobe() {
     <Show when={wardrobeOpen()}>
       <div class="wardrobe">
         <div class="wardrobe-scrim" onClick={closeWardrobe} aria-hidden="true" />
-        <section ref={panel} class="wardrobe-panel" role="dialog" aria-modal="true" aria-labelledby="wardrobe-title">
+        <section
+          ref={panel}
+          class="wardrobe-panel"
+          classList={{ "wardrobe-panel--wide": com3d2() }}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="wardrobe-title"
+        >
           <span class="wardrobe-grab" aria-hidden="true" />
           <header class="wardrobe-head">
             <div>
@@ -272,6 +305,34 @@ export default function Wardrobe() {
               </button>
             </div>
 
+            {/* The COM3D2 body (beta): the fitting room replaces the tabs below while it is on. */}
+            <div class="wardrobe-switch">
+              <div class="wardrobe-switch-text">
+                <span class="wardrobe-switch-label" id="wardrobe-com3d2-label">
+                  {t("wardrobe.com3d2")}
+                </span>
+                <span class="muted small" id="wardrobe-com3d2-hint">
+                  {com3d2() ? t("wardrobe.com3d2On") : t("wardrobe.com3d2Off")}
+                </span>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                class="wswitch"
+                classList={{ "wswitch--on": com3d2() }}
+                aria-checked={com3d2() ? "true" : "false"}
+                aria-labelledby="wardrobe-com3d2-label"
+                aria-describedby="wardrobe-com3d2-hint"
+                onClick={() => setCom3d2(!com3d2())}
+              >
+                <span class="wswitch-knob" />
+              </button>
+            </div>
+
+            <Show
+              when={!com3d2()}
+              fallback={<iframe class="wardrobe-com3d2" src={COM3D2_URL} title={t("wardrobe.com3d2Frame")} />}
+            >
             {/* Round tabs: an icon over a short label (Outfit, Hair, Colour). */}
             <div class="wardrobe-cats" role="tablist" aria-label={t("wardrobe.title")} onKeyDown={tabKeys}>
               <For each={KINDS}>
@@ -521,6 +582,7 @@ export default function Wardrobe() {
                   )}
                 </For>
               </section>
+            </Show>
             </Show>
 
             <Show when={avatarError()}>

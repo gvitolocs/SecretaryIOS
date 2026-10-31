@@ -19,6 +19,28 @@ use std::{
 };
 const VERSION: u32 = 3;
 const PIPELINE_REVISION: u32 = 30;
+/// Categories never offered for selection: swimwear, and underwear on its own (the coverage
+/// guard below still uses plain inner wear).
+const HIDDEN_CATEGORIES: &[&str] = &["mizugi", "bra", "panz"];
+/// Name fragments of adult or fetish items in the game data (skirt flips, slipping towels and
+/// swimsuits, bondage, toys, blindfolds, pet collars, "love nurse"), never offered.
+const ADULT_NAME_PARTS: &[&str] = &[
+    "めくれ", "ずらし", "タオル", "ボンデージ", "サキュバス", "バイブ", "Ｃｈｕ-Ｂ", "ＳＭ", "SM用", "目隠し",
+    "アイマスク", "首輪", "ラブ・ナース", "注射器", "水着", "バニー", "カルテ",
+];
+/// Whether an item may be offered: not a hidden category, not an adult item.
+fn safe_item(name: &str, category: &str) -> bool {
+    !HIDDEN_CATEGORIES.contains(&category) && !ADULT_NAME_PARTS.iter().any(|p| name.contains(p))
+}
+/// What a look covers: (chest, hips). A complete imported outfit covers both.
+fn coverage<'a>(categories: impl IntoIterator<Item = &'a str>) -> (bool, bool) {
+    let (mut top, mut bottom) = (false, false);
+    for c in categories {
+        top |= matches!(c, "wear" | "onepiece" | "original" | "bra");
+        bottom |= matches!(c, "skirt" | "onepiece" | "original" | "panz");
+    }
+    (top, bottom)
+}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum Source {
@@ -523,6 +545,35 @@ impl Library {
         !self.config.deferred_origins.contains(&item.origin)
             && !self.config.deferred_items.contains(&item.id)
     }
+    /// Offered in the catalog and accepted from a request: active and safe for work.
+    fn selectable(&self, item: &Item) -> bool {
+        self.active(item) && safe_item(&item.name, &item.category)
+    }
+    /// The plain inner item of `category` ("bra" or "panz") the coverage guard adds.
+    fn inner(&self, category: &str, name: &str) -> Option<String> {
+        self.config
+            .items
+            .iter()
+            .find(|i| i.category == category && i.name == name && self.active(i))
+            .map(|i| i.id.clone())
+    }
+    /// Plain inner wear for whatever `ids` leave uncovered, so the bare body is never shown.
+    fn cover(&self, ids: &mut Vec<String>) {
+        let cats = ids
+            .iter()
+            .filter_map(|id| self.config.items.iter().find(|i| &i.id == id))
+            .map(|i| i.category.as_str());
+        let (top, bottom) = coverage(cats);
+        for (covered, category, name) in [
+            (top, "bra", "シンプルインナーブラ"),
+            (bottom, "panz", "シンプルインナースパッツ"),
+        ] {
+            if !covered {
+                ids.extend(self.inner(category, name));
+            }
+        }
+        ids.sort();
+    }
     pub fn catalog(&self) -> Value {
         let reports = |name: &str| -> HashMap<String, Value> {
             fs::read(self.root.join(name))
@@ -536,7 +587,7 @@ impl Library {
         };
         let assets = reports("asset-import-report.json");
         let looks = reports("preset-import-report.json");
-        json!({"version":VERSION,"items":self.config.items.iter().filter(|i|self.active(i)).map(|i|json!({"id":i.id,"name":i.name,"category":i.category,"origin":i.origin,"fitReviewRequired":true,"ready":assets.get(&i.id).map(|r|r["ready"].clone()),"error":assets.get(&i.id).map(|r|r["error"].clone())})).collect::<Vec<_>>(),"presets":self.config.presets.iter().filter(|p|p.items.iter().all(|id|self.config.items.iter().find(|i|&i.id==id).is_some_and(|i|self.active(i)))).map(|p|json!({"id":p.id,"name":p.name,"items":p.items,"ready":looks.get(&p.id).map(|r|r["ready"].clone()),"error":looks.get(&p.id).map(|r|r["error"].clone())})).collect::<Vec<_>>(),"skinColor":crate::skin_color::DEFAULT_SKIN,"allAssetLogic":"Rust","excluded":"head/body replacements, male donor characters and non-wardrobe game records"})
+        json!({"version":VERSION,"items":self.config.items.iter().filter(|i|self.selectable(i)).map(|i|json!({"id":i.id,"name":i.name,"category":i.category,"origin":i.origin,"fitReviewRequired":true,"ready":assets.get(&i.id).map(|r|r["ready"].clone()),"error":assets.get(&i.id).map(|r|r["error"].clone())})).collect::<Vec<_>>(),"presets":self.config.presets.iter().filter(|p|p.items.iter().all(|id|self.config.items.iter().find(|i|&i.id==id).is_some_and(|i|self.selectable(i)))).map(|p|json!({"id":p.id,"name":p.name,"items":p.items,"ready":looks.get(&p.id).map(|r|r["ready"].clone()),"error":looks.get(&p.id).map(|r|r["error"].clone())})).collect::<Vec<_>>(),"skinColor":crate::skin_color::DEFAULT_SKIN,"allAssetLogic":"Rust","excluded":"head/body replacements, male donor characters and non-wardrobe game records"})
     }
     pub fn settings(&self) -> Result<Settings> {
         let path = self.root.join("avatar-settings.json");
@@ -575,7 +626,7 @@ impl Library {
                 .config
                 .items
                 .iter()
-                .any(|i| &i.id == id && self.active(i))
+                .any(|i| &i.id == id && self.selectable(i))
             {
                 return Err(invalid("unknown saved wardrobe item"));
             }
@@ -800,11 +851,12 @@ impl Library {
                 .config
                 .items
                 .iter()
-                .any(|i| &i.id == id && self.active(i))
+                .any(|i| &i.id == id && self.selectable(i))
             {
                 return Err(invalid(format!("unknown wardrobe item: {id}")));
             }
         }
+        self.cover(&mut ids);
         let modified = fs::metadata(&self.config.canonical)?
             .modified()?
             .duration_since(std::time::UNIX_EPOCH)
@@ -933,5 +985,47 @@ impl Library {
         Ok(
             json!({"url":format!("./cache/{filename}"),"items":ids,"attachedParts":attached,"maskedSlots":hidden,"cached":false,"body":"native COM3D2 with real Lucina head","hairClothCollisionParity":false}),
         )
+    }
+}
+#[cfg(test)]
+mod safety_tests {
+    use super::*;
+    #[test]
+    fn adult_items_swimwear_and_bare_underwear_are_never_offered() {
+        for (name, category) in [
+            ("スカートめくれ", "skirt"),
+            ("バスタオルずらし_z1", "mizugi"),
+            ("セクシーサキュバスボンデージ・青", "mizugi"),
+            ("茶色いバイブ", "handitem"),
+            ("Ｃｈｕ-Ｂ Ｌｉｐ Ｂｌａｃｋ", "handitem"),
+            ("SM用アイマスク・紫　アイマスク", "megane"),
+            ("犬用の首輪・紫　首輪", "acckubiwa"),
+            ("ラブ・ナースキャップ", "headset"),
+            ("ネーブルバニースーツ・黄", "mizugi"),
+            ("シンプルインナーブラ", "bra"),
+            ("シンプルインナースパッツ", "panz"),
+            ("コート＆ワンピース・白黒", "onepiece"),
+        ] {
+            let expected = name == "コート＆ワンピース・白黒";
+            assert_eq!(safe_item(name, category), expected, "{name}");
+        }
+        for (name, category) in [
+            ("クレールメイドウェア", "wear"),
+            ("ティーカップ", "handitem"),
+            ("ネコミミ・白　帽子", "acchat"),
+            ("ロングポニーテール　ポニーテール", "hairt"),
+        ] {
+            assert!(safe_item(name, category), "{name}");
+        }
+    }
+    #[test]
+    fn coverage_needs_a_top_and_a_bottom_or_a_whole_outfit() {
+        assert_eq!(coverage([]), (false, false));
+        assert_eq!(coverage(["shoes", "acchat"]), (false, false));
+        assert_eq!(coverage(["wear"]), (true, false));
+        assert_eq!(coverage(["skirt", "stkg"]), (false, true));
+        assert_eq!(coverage(["wear", "skirt"]), (true, true));
+        assert_eq!(coverage(["onepiece"]), (true, true));
+        assert_eq!(coverage(["original"]), (true, true));
     }
 }
