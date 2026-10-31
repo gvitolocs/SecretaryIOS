@@ -32,5 +32,6 @@ pub mod notes;
 pub mod outfit;
 pub mod policy;
 pub mod presence;
+pub mod reach;
 pub mod tasks;
 pub mod tier0;

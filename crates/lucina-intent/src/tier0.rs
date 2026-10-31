@@ -30,6 +30,7 @@ pub const INTENTS: &[&str] = &[
     "social_post",
     "cursor_task",
     "computer_task",
+    "agent_message",
     "lucina_log_inspect",
     "grocery.purchase",
     "grocery.consume",
@@ -133,7 +134,8 @@ pub fn default_reply_mode(intent: &str) -> &'static str {
         | "study_focus_reminders"
         | "social_post"
         | "calendar_event"
-        | "spreadsheet_update" => "direct",
+        | "spreadsheet_update"
+        | "agent_message" => "direct",
         _ => "full_plan",
     }
 }
@@ -257,6 +259,11 @@ pub fn classify_tier0(text: &str, memory: &str, s: &Settings) -> Option<Classifi
     // can take it. Each message is its own intent; `memory` is not consulted.
     if crate::computer_route::wants_computer(text) {
         return Some(C::t0("computer_task", 0.97, false, true, "direct"));
+    }
+    // A message for Claude, Grok or Lucina Agents ("tell Claude that…", "use Lucina agents"):
+    // its own route (`crate::reach`), ahead of every rule a link or a plugin word could trigger.
+    if crate::reach::is_request(text) {
+        return Some(C::t0("agent_message", 0.97, true, true, "direct"));
     }
     if !looks_like_reminder_request(text) && explicit_recall(text) {
         return Some(C::t0("explicit_memory_recall", 0.9, true, false, "chat"));

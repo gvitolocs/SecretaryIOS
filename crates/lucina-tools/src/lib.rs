@@ -254,6 +254,8 @@ pub struct ToolEnv {
     pub approvals: Option<Arc<lucina_approvals::Approvals>>,
     /// The ops record (`ops`): deploys, incidents, decisions of every project.
     pub ops: Option<Arc<lucina_ops::Ops>>,
+    /// Messages to Claude, Grok and Lucina Agents (`LUCINA_REACH`); `None`: off.
+    pub reach: Option<Arc<tools::reach::Reach>>,
     /// af-server (AU Find) base URL (`LUCINA_AU_URL`); `None`: `LUCINA_AU=off`.
     pub au_url: Option<String>,
     /// Numbers the phones reported and the answers `caller_screen` gave; `None`: no store.
@@ -311,6 +313,7 @@ impl ToolEnv {
             plugins: tools::plugins::Plugins::default(),
             approvals: None,
             ops: None,
+            reach: None,
             au_url: None,
             callers: None,
             callers_public_url: None,
@@ -519,6 +522,11 @@ pub const OWNER_ONLY_TOOLS: &[&str] = &[
     "pixiv_search",
     "pixiv_ranking",
     "save_to_gallery",
+    // Messages to Claude, Grok and Lucina Agents (`tools::reach::REACH_TOOLS`).
+    "message_claude",
+    "message_grok",
+    "lucina_agents",
+    "reach_threads",
 ];
 
 /// Every tool a Lucina MCP turn never gets: the owner-only tools and the
@@ -540,6 +548,10 @@ pub const NO_MCP_TOOLS: &[&str] = &[
     "ask_grok",
     "ask_chatgpt",
     "delegate",
+    "message_claude",
+    "message_grok",
+    "lucina_agents",
+    "reach_threads",
     // Root commands (owner approval): never for a guarded MCP caller.
     "root_exec",
 ];
@@ -712,10 +724,14 @@ mod tests {
             .unwrap_err()
             .contains("no money movement"));
         let all = Registry::builtin(&ToolSelection::All);
-        assert_eq!(all.names().len(), 36);
+        assert_eq!(all.names().len(), 40);
         assert_eq!(all.without(OWNER_ONLY_TOOLS).names().len(), 24);
         let mcp = all.without(NO_MCP_TOOLS);
         assert_eq!(mcp.names().len(), 20);
+        for n in tools::reach::REACH_TOOLS {
+            assert!(OWNER_ONLY_TOOLS.contains(n) && NO_MCP_TOOLS.contains(n), "{n}");
+            assert!(all.get(n).is_some() && mcp.get(n).is_none(), "{n}");
+        }
         assert!(mcp.get("au_people_search").is_some());
         for n in tools::plugins::NAMES {
             assert!(OWNER_ONLY_TOOLS.contains(n) && all.get(n).is_some(), "{n}");

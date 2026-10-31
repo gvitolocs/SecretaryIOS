@@ -36,9 +36,14 @@ title so a later 'save it' can find it. Stories that are not there are normal: s
 available, say that plainly and stop. Keep the answer short, in the language of the message, and tell him the plugin \
 page in the app (the button under your reply) shows everything.";
 
-/// Whole words of `text`, lower-cased.
+/// Whole words of `text`, lower-cased, without its links (a pasted
+/// `…/v1/instagram/s/…` share link is not a request for the plugins).
 fn words(text: &str) -> Vec<String> {
-    text.to_lowercase()
+    text.split_whitespace()
+        .filter(|w| !w.contains("://") && !w.starts_with("www."))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
         .split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.' || c == '@'))
         .map(|w| w.trim_matches('.').to_owned())
         .filter(|w| !w.is_empty())
@@ -219,6 +224,7 @@ mod tests {
             "aggiungi il latte alla lista",
             "watch the match tonight",
             "email me the latest post from the team",
+            "I could open this link without being authenticated https://getsecretary.tech/v1/instagram/s/1793473200/89d1/x",
         ] {
             assert!(!is_plugin_request(no, false), "{no}");
         }

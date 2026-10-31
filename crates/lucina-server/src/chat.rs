@@ -46,6 +46,7 @@ pub mod memo_turn;
 pub mod meshy_turn;
 mod ops_turn;
 pub mod plugin_turn;
+mod reach_turn;
 pub mod reply;
 mod share_turn;
 mod youtube_turn;
@@ -1606,6 +1607,19 @@ async fn json_turn(
             return Finish::reply(reply, "reply");
         }
         return share_turn::run(t, memory).await;
+    }
+
+    // A message for Claude, Grok or Lucina Agents ("tell Claude that…", "use Lucina agents"): before
+    // her computer, the plugins and delegation, so a link or a plugin word in it cannot take it.
+    if let Some(f) = reach_turn::try_turn(
+        t,
+        memory,
+        &prepared.recent_context,
+        &prepared.classification.intent,
+    )
+    .await
+    {
+        return f;
     }
 
     // Her own computer ("explore Outlook in your sandbox", "check my inbox"): before every other shortcut,

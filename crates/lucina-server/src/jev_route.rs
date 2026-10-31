@@ -64,6 +64,7 @@ pub const INTENT_OPTIONS: &[(&str, &str)] = &[
     ("poko_news_scout_retry", "Fix or retry the Poko news channel post or the Bot Hospital scout."),
     ("social_post", "Publish something to the Pokoin Telegram news channel."),
     ("cursor_task", "Give a coding task to a coding agent (Cursor, Codex, Claude Code) on a project."),
+    ("agent_message", "The owner asks Lucina to pass a message, question or issue report on to another assistant: Claude (the Claude Code coordinator of his projects), Grok Bot, or Lucina Agents (tell Claude that…, report this to Claude, ask Grok…, post it in Lucina agents, use Lucina agents)."),
     ("discord_admin", "Administer the Discord server: channels, roles, members."),
     ("grocery.purchase", "The user reports groceries they bought."),
     ("grocery.consume", "The user reports eating or using up part of a grocery item."),
@@ -149,7 +150,10 @@ pub fn override_min() -> f64 {
 /// groceries, the log inspector, study focus).
 pub fn checks_tier0(c: &lucina_intent::tier0::Classification) -> bool {
     !c.intent.starts_with("grocery.")
-        && !matches!(c.intent.as_str(), "computer_task" | "lucina_log_inspect" | "study_focus_reminders")
+        && !matches!(
+            c.intent.as_str(),
+            "computer_task" | "agent_message" | "lucina_log_inspect" | "study_focus_reminders"
+        )
         && lucina_jev::shared().available()
 }
 
@@ -188,6 +192,7 @@ pub fn doubts(tier0: &lucina_intent::tier0::Classification, jev_intent: &str, co
 /// Tier-0 intents that start work in the world (jobs, posts, reminders, writes).
 pub const SIDE_EFFECT_INTENTS: &[&str] = &[
     "cursor_task",
+    "agent_message",
     "computer_task",
     "schedule_reminder",
     "calendar_event",
@@ -251,7 +256,10 @@ pub fn deterministic_rule(c: &lucina_intent::tier0::Classification) -> bool {
 /// [`deterministic_rule`] by the rule's intent name (the drift report's replay).
 pub fn deterministic_intent(intent: &str) -> bool {
     intent.starts_with("grocery.")
-        || matches!(intent, "computer_task" | "lucina_log_inspect" | "study_focus_reminders")
+        || matches!(
+            intent,
+            "computer_task" | "agent_message" | "lucina_log_inspect" | "study_focus_reminders"
+        )
 }
 
 /// Does JEV-first route this turn? `Err` names why not (for the drift log).

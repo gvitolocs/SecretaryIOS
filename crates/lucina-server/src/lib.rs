@@ -46,6 +46,7 @@ pub mod places;
 pub mod planner;
 pub mod prompter;
 pub mod prompts;
+pub mod reach;
 pub mod reminder_delivery;
 pub mod rich;
 pub mod secrets;
@@ -233,6 +234,8 @@ impl AppState {
         let ops = ops::open(&cfg.ops, cfg.time_zone, cfg.memory_mode, &cfg.honcho);
         let mut env = ToolEnv::new(&cfg.data_dir, cfg.time_zone);
         env.ops = ops.clone();
+        // Messages to Claude, Grok and Lucina Agents (crate::reach); the sink is set below.
+        env.reach = reach::build(&cfg.data_dir, ops.clone());
         env.reminders = Some(reminders.clone());
         env.reminder_writer = Some(writer.clone());
         env.reminders_enabled = cfg.reminders_enabled;
@@ -389,6 +392,9 @@ impl AppState {
         if delegator.is_none() {
             registry = registry.without(lucina_tools::tools::delegate::DELEGATION_TOOLS);
         }
+        if env.reach.is_none() {
+            registry = registry.without(lucina_tools::tools::reach::REACH_TOOLS);
+        }
         if env.drive.is_some() && cfg.tools.allows("drive") {
             registry
                 .register(Arc::new(lucina_tools::tools::drive::DriveTool))
@@ -521,6 +527,14 @@ impl AppState {
             })),
             cfg,
         };
+        if let Some(r) = &inner.tool_env.reach {
+            r.set_sink(Arc::new(reach::ServerSink {
+                timeline: inner.timeline.clone(),
+                selftest_timeline: inner.selftest_timeline.clone(),
+                recent: inner.recent.clone(),
+                secretary: inner.secretary.clone(),
+            }));
+        }
         Ok(Self(Arc::new(inner)))
     }
 

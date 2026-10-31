@@ -469,6 +469,10 @@ async fn route(
     if resource == Some("callers") && parts.len() == 2 {
         return crate::callers::route(st, method, uri, &parts[1..], body).await;
     }
+    // Lucina's messages to Claude, Grok and Lucina Agents (crate::reach): the mailbox and replies.
+    if resource == Some("reach") && parts.len() <= 4 {
+        return crate::reach::route(st, method, uri, &parts[1..], body).await;
+    }
     // The ops record (crate::ops): records, search, Map/ pages.
     if resource == Some("ops") && parts.len() <= 3 {
         return crate::ops::route(st, method, uri, headers, &parts[1..], body).await;
