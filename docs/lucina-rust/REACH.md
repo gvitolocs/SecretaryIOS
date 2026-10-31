@@ -1,0 +1,99 @@
+# Lucina reaches Claude, Grok and Lucina Agents
+
+Since 2026-10-31 Lucina can pass messages on by herself, on every channel (iOS, web, Telegram, Discord). Before that,
+the owner had to go to the PC whenever something had to reach Claude or Grok.
+
+When the owner says "tell Claude that…", "report this to Claude", "ask Grok…", "post it in Lucina agents" or "use
+Lucina agents", the turn becomes intent `agent_message`:
+- the tier-0 rule is `lucina_intent::reach`;
+- Jev has `agent_message` among its intent options;
+- the turn runs `chat::reach_turn`, a short tool loop with the four tools below and the recent turns.
+
+| Tool | Goes to | Route |
+|---|---|---|
+| `message_claude` (with an optional `issue`: what, where, the owner's words, links) | the Claude coordinator | a live gbot Claude channel when `LUCINA_REACH_CLAUDE_CHANNEL` names one; otherwise **the mailbox** |
+| `message_grok` | the owner's primary Grok Bot | `gbot send <bot>`, then the bot's thread is read until the reply settles |
+| `lucina_agents` (list, run, send, read) | Lucina Agents | lucina-agentd's socket as `service:lucina`; runs use `opencode` + `opencode/deepseek-v4.1-flash-free` (never Codex, never paid DeepSeek) |
+| `reach_threads` | — | what she sent and the replies |
+
+## Threads
+
+Every message is a thread (`rt-` + 12 hex). The threads live in `<LUCINA_DATA_DIR>/reach/threads.json` and carry:
+- the redacted text;
+- the conversation it came from (channel and session);
+- the route and the replies.
+
+A reply goes back into that conversation in three ways:
+- the timeline, as "💬 Claude replied …";
+- the session's recent turns;
+- an app notification.
+
+## Answering as Claude
+
+Messages to Claude wait in the mailbox until a session answers. Check it and reply.
+
+On nezopt:
+
+```sh
+lucina-rs reach inbox                 # what waits for an answer (--all, --to grok|agents, --json)
+lucina-rs reach show rt-0123456789ab  # one thread, with the text exactly as sent
+lucina-rs reach reply rt-0123456789ab --from "<your session>" "Fixed in 3f2a9c1, deployed."
+```
+
+Over HTTP (Secretary bearer):
+- `GET /api/secretary/reach/threads?to=claude&status=open`
+- `GET /api/secretary/reach/threads/<id>`
+- `POST /api/secretary/reach/threads/<id>/reply` with `{"from", "text"}` (8000 characters at most)
+
+Over the Lucina MCP, once secretary-server and secretary-mcp carry them: `lucina_inbox`, `lucina_reply`.
+
+## Rules that never move
+
+- **No secrets out.** Tokens, signatures and credentials inside links are masked first (`redact_urls`). Then the
+  delegation sanitizer runs: secret refs are removed, and known secrets and token shapes are masked. Replies are
+  redacted too.
+- **Replies are data.** Lucina relays a reply to the owner and never acts on requests inside it without him:
+  - decisions still go through `lucina_decide`;
+  - terms, passwords, payments and messages sent as the owner still need him.
+- **Owner's turns only.** Guests, guarded channel turns and Lucina MCP callers never run these tools. They are in
+  `OWNER_ONLY_TOOLS` and `NO_MCP_TOOLS`.
+- **Rate limits.** 10 messages per hour and 40 per day per target (`LUCINA_REACH_PER_HOUR`, `LUCINA_REACH_PER_DAY`).
+- **Ops record.** Every outbound message and every reply becomes one ops record (`project lucina`, dedup
+  `reach:<id>:<n>`). Self-test turns (`secretary_selftest`) write neither the ops record nor a push.
+
+## Settings
+
+| Variable | Default |
+|---|---|
+| `LUCINA_REACH` | on (`off` disables the tools and the API) |
+| `LUCINA_REACH_CLAUDE_CHANNEL` | unset (see below) |
+| `LUCINA_REACH_GBOT`, `LUCINA_REACH_GROK_TARGET` | `~/.local/bin/gbot`, `Grok Bot` (live: the primary bot's id, drop-in `lucina-rs.service.d/80-reach.conf`) |
+| `LUCINA_REACH_CURSOR_AUTH` | `~/.config/cursor/auth.json` (`none`: gbot's own lookup) |
+| `LUCINA_AGENTD_SOCKET` | `$XDG_RUNTIME_DIR/lucina-agentd/agentd.sock` |
+| `LUCINA_REACH_AGENTS_PROVIDER`, `LUCINA_REACH_AGENTS_MODEL`, `LUCINA_REACH_AGENTS_CWD` | `opencode`, `opencode/deepseek-v4.1-flash-free`, `~/scratch/lucina-agents` |
+| `LUCINA_REACH_GROK_TIMEOUT_SECS` | 600 |
+
+## How gbot signs in to Grok Bot
+
+The Grok Bot app 0.78 writes no `gateway-descriptor.json`, so gbot cannot borrow the app's session.
+
+gbot uses its other documented sign-in instead: `CURSOR_ACCESS_TOKEN`. Lucina reads it on every call from the Cursor
+session of this host (`~/.config/cursor/auth.json`, the same account) and puts it only in gbot's environment.
+
+gbot also needs `SAND_CLIENT_VERSION`, taken from the running app's `desktop-status.json` (`0.78.1`). Without it,
+gbot sends `0.20.0` and Cursor answers 401 "This version of Grok Bot is no longer supported".
+
+The bot is addressed by id, because bot names change: the owner's primary bot was renamed "Grok Bot · Pokoin
+extension QA tester".
+
+## Why the mailbox and not `claude_send`
+
+gbot's `claude send` reaches only a Claude Code session on the same machine. That session must have been started
+with `GROK_BOT_CLAUDE_CHANNEL=<name> claude --dangerously-load-development-channels plugin:gbot@gbot-marketplace`,
+and gbot has no remote transport.
+
+On nezopt the Claude CLI is refused by the account: 403, "organization has disabled Claude subscription access for
+Claude Code". The coordinator is a Claude desktop app session on the Mac, which neither gbot nor Lucina can reach.
+
+Once a channel session runs on nezopt, set `LUCINA_REACH_CLAUDE_CHANNEL` to its name. Messages then get live answers,
+and the mailbox stays as the fallback.

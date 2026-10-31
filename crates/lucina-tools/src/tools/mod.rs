@@ -18,6 +18,7 @@ pub mod ops;
 pub mod places;
 pub mod plugins;
 pub mod presence;
+pub mod reach;
 pub mod reminders;
 pub mod root_exec;
 pub mod secrets;
@@ -70,6 +71,10 @@ pub fn builtin() -> Vec<Arc<dyn Tool>> {
         Arc::new(plugins::PixivSearchTool),
         Arc::new(plugins::PixivRankingTool),
         Arc::new(plugins::SaveToGalleryTool),
+        Arc::new(reach::MessageClaudeTool),
+        Arc::new(reach::MessageGrokTool),
+        Arc::new(reach::LucinaAgentsTool),
+        Arc::new(reach::ReachThreadsTool),
     ]
 }
 

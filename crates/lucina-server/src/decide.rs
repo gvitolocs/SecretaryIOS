@@ -1725,6 +1725,11 @@ pub mod cli {
             Ok(v.get("data").cloned().unwrap_or(v))
         }
 
+        /// `GET <bind>/api/secretary/<path>` (`reach/threads`).
+        pub async fn get_path(&self, path: &str) -> anyhow::Result<Value> {
+            self.send(self.http.get(format!("{}/{path}", self.api))).await
+        }
+
         /// `POST <bind>/api/secretary/<path>` (the drift report's `jev/route`).
         pub async fn post(&self, path: &str, body: &Value) -> anyhow::Result<Value> {
             self.send(self.http.post(format!("{}/{path}", self.api)).json(body)).await

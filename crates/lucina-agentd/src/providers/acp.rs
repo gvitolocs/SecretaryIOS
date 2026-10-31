@@ -133,6 +133,18 @@ impl AcpProvider {
         }
     }
 
+    /// True when the model is passed on the command line (`--model {model}`), so it is
+    /// already applied at launch and must not be set again over ACP.
+    fn model_in_args(&self) -> bool {
+        self.args.iter().any(|a| a == "{model}")
+    }
+
+    /// The model to set over ACP after `session/new`: the requested one, unless there is
+    /// none or it was already passed on the command line.
+    fn model_to_set_over_acp<'a>(&self, model: Option<&'a str>) -> Option<&'a str> {
+        model.filter(|_| !self.model_in_args())
+    }
+
     /// The launch arguments, with `--x {model}` dropped when there's no model.
     fn launch_args(&self, model: Option<&str>) -> Vec<String> {
         let mut out = Vec::new();
@@ -208,13 +220,13 @@ impl AcpProvider {
             })),
         });
         session.clone().spawn_reader(incoming);
-        let (session_id, modes, config_options) = match resume {
+        let (session_id, modes, config_options, models) = match resume {
             Some(sid) if can_load => {
                 let resp = rpc
                     .request("session/load", json!({"sessionId": sid, "cwd": config.cwd, "mcpServers": crate::mcp::acp_servers(config.agent_id.is_some())}), RPC_TIMEOUT)
                     .await
                     .map_err(|e| fail("session/load", e))?;
-                (sid.to_string(), resp["modes"].clone(), resp["configOptions"].clone())
+                (sid.to_string(), resp["modes"].clone(), resp["configOptions"].clone(), resp["models"].clone())
             }
             _ => {
                 let resp = rpc.request("session/new", json!({"cwd": config.cwd, "mcpServers": crate::mcp::acp_servers(config.agent_id.is_some())}), RPC_TIMEOUT).await;
@@ -229,7 +241,7 @@ impl AcpProvider {
                 if let Some(m) = resp["models"]["currentModelId"].as_str() {
                     session.lock().model = Some(m.to_string());
                 }
-                (sid, resp["modes"].clone(), resp["configOptions"].clone())
+                (sid, resp["modes"].clone(), resp["configOptions"].clone(), resp["models"].clone())
             }
         };
         if session_id.is_empty() {
@@ -243,7 +255,37 @@ impl AcpProvider {
                 st.mode = modes["currentModeId"].as_str().map(str::to_string);
             }
         }
-        let options = config_options.as_array().cloned().unwrap_or_default();
+        let mut options = config_options.as_array().cloned().unwrap_or_default();
+        // A requested model that isn't already on the launch command line must be set
+        // through ACP. Never fall back silently to the agent's own default model.
+        if let Some(want) = self.model_to_set_over_acp(model.as_deref()) {
+            let no_model = |why: String| ProviderError::new(format!("{id}: cannot use requested model \"{want}\": {why}"));
+            match plan_model(&options, &models, want).map_err(no_model)? {
+                ModelPlan::Keep(current) => session.lock().model = Some(current),
+                ModelPlan::Config(value) => {
+                    let resp = rpc
+                        .request("session/set_config_option", json!({"sessionId": session_id, "configId": "model", "value": value}), RPC_TIMEOUT)
+                        .await
+                        .map_err(|e| no_model(e.to_string()))?;
+                    // The reply carries the full, updated option list; otherwise patch our copy.
+                    match resp["configOptions"].as_array() {
+                        Some(updated) => options = updated.clone(),
+                        None => {
+                            for o in options.iter_mut().filter(|o| o["id"] == "model") {
+                                o["currentValue"] = json!(value);
+                            }
+                        }
+                    }
+                    session.lock().model = Some(value);
+                }
+                ModelPlan::SetModel(model_id) => {
+                    rpc.request("session/set_model", json!({"sessionId": session_id, "modelId": model_id}), RPC_TIMEOUT)
+                        .await
+                        .map_err(|e| no_model(e.to_string()))?;
+                    session.lock().model = Some(model_id);
+                }
+            }
+        }
         let has = |id: &str| options.iter().any(|o| o["id"] == id);
         if has(NEVER_FAST.0) {
             rpc.request("session/set_config_option", json!({"sessionId": session_id, "configId": NEVER_FAST.0, "value": NEVER_FAST.1}), RPC_TIMEOUT)
@@ -310,6 +352,69 @@ impl Provider for AcpProvider {
     async fn resume_session(&self, handle: &PersistenceHandle, config: SessionConfig, events: EventSink) -> Result<Arc<dyn Session>, ProviderError> {
         self.start(config, events, Some(&handle.session_id)).await
     }
+}
+
+/// How to put a requested model into effect on a fresh ACP session.
+#[derive(Debug, PartialEq)]
+enum ModelPlan {
+    /// The session already runs it (carries the model id).
+    Keep(String),
+    /// `session/set_config_option` with `configId: "model"` and this value.
+    Config(String),
+    /// Legacy `session/set_model` with this model id.
+    SetModel(String),
+}
+
+/// The values a select config option offers; options may be flat or grouped.
+fn option_values(opt: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    for o in opt["options"].as_array().into_iter().flatten() {
+        if let Some(v) = o["value"].as_str() {
+            out.push(v.to_string());
+        }
+        for g in o["options"].as_array().into_iter().flatten() {
+            if let Some(v) = g["value"].as_str() {
+                out.push(v.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Match `want` against the offered ids: exactly, or as the part after the provider
+/// prefix (`deepseek-v4.1-flash-free` matches `opencode/deepseek-v4.1-flash-free`) when
+/// that is unambiguous.
+fn match_model(offered: &[String], want: &str) -> Result<String, String> {
+    if let Some(v) = offered.iter().find(|v| v.as_str() == want) {
+        return Ok(v.clone());
+    }
+    let suffix = format!("/{want}");
+    let hits: Vec<&String> = offered.iter().filter(|v| v.ends_with(&suffix)).collect();
+    match hits.as_slice() {
+        [one] => Ok((*one).clone()),
+        [] => {
+            let shown: Vec<&str> = offered.iter().take(8).map(String::as_str).collect();
+            let more = if offered.len() > shown.len() { ", ..." } else { "" };
+            Err(format!("the agent does not offer it (offered: {}{more})", shown.join(", ")))
+        }
+        many => Err(format!("ambiguous, matches {}", many.iter().map(|v| v.as_str()).collect::<Vec<_>>().join(", "))),
+    }
+}
+
+/// Decide how to apply `want` from a session's `configOptions` and legacy `models` block.
+fn plan_model(options: &[Value], models: &Value, want: &str) -> Result<ModelPlan, String> {
+    if let Some(opt) = options.iter().find(|o| o["id"] == "model") {
+        let offered = option_values(opt);
+        // An option that lists no values: pass the request through and let the agent judge.
+        let value = if offered.is_empty() { want.to_string() } else { match_model(&offered, want)? };
+        return Ok(if opt["currentValue"].as_str() == Some(value.as_str()) { ModelPlan::Keep(value) } else { ModelPlan::Config(value) });
+    }
+    if let Some(list) = models["availableModels"].as_array() {
+        let offered: Vec<String> = list.iter().filter_map(|m| m["modelId"].as_str().map(str::to_string)).collect();
+        let value = match_model(&offered, want)?;
+        return Ok(if models["currentModelId"].as_str() == Some(value.as_str()) { ModelPlan::Keep(value) } else { ModelPlan::SetModel(value) });
+    }
+    Err("the agent exposes no model selection".into())
 }
 
 struct OpenTool {
@@ -775,6 +880,64 @@ mod tests {
         assert_eq!(p.client_meta, Some(json!({"parameterizedModelPicker": true})));
         assert_eq!(p.launch_args(None), ["acp"]);
         assert_eq!(p.launch_args(Some("composer-2.5")), ["--model", "composer-2.5", "acp"]);
+    }
+
+    fn opencode_options(current: &str) -> Vec<Value> {
+        vec![
+            json!({"id":"model","category":"model","type":"select","currentValue":current,"options":[
+                {"value":"opencode/big-pickle","name":"Big Pickle"},
+                {"value":"opencode/deepseek-v4.1-flash-free","name":"DeepSeek"},
+                {"value":"openrouter/x/deepseek-v4.1-flash-free","name":"Other"}]}),
+            json!({"id":"mode","type":"select","currentValue":"build","options":[]}),
+        ]
+    }
+
+    #[test]
+    fn model_applied_via_config_option() {
+        let opts = opencode_options("opencode/big-pickle");
+        // The full id is set as given.
+        assert_eq!(plan_model(&opts, &Value::Null, "opencode/deepseek-v4.1-flash-free"), Ok(ModelPlan::Config("opencode/deepseek-v4.1-flash-free".into())));
+        // Already current: nothing to send.
+        assert_eq!(plan_model(&opts, &Value::Null, "opencode/big-pickle"), Ok(ModelPlan::Keep("opencode/big-pickle".into())));
+        // A bare id resolves to the one provider-prefixed value that ends with it.
+        let opts2 = vec![json!({"id":"model","currentValue":"a/m","options":[{"value":"a/m"},{"value":"opencode/deepseek-v4.1-flash-free"}]})];
+        assert_eq!(plan_model(&opts2, &Value::Null, "deepseek-v4.1-flash-free"), Ok(ModelPlan::Config("opencode/deepseek-v4.1-flash-free".into())));
+        // Grouped option lists are read too.
+        let grouped = vec![json!({"id":"model","currentValue":"a","options":[{"group":"g","name":"G","options":[{"value":"a"},{"value":"b"}]}]})];
+        assert_eq!(plan_model(&grouped, &Value::Null, "b"), Ok(ModelPlan::Config("b".into())));
+        // Legacy `models` block uses session/set_model.
+        let legacy = json!({"currentModelId":"m1","availableModels":[{"modelId":"m1"},{"modelId":"m2"}]});
+        assert_eq!(plan_model(&[], &legacy, "m2"), Ok(ModelPlan::SetModel("m2".into())));
+        assert_eq!(plan_model(&[], &legacy, "m1"), Ok(ModelPlan::Keep("m1".into())));
+    }
+
+    #[test]
+    fn model_not_offered_is_an_error() {
+        let opts = opencode_options("opencode/big-pickle");
+        let e = plan_model(&opts, &Value::Null, "gpt-nope").unwrap_err();
+        assert!(e.contains("does not offer it") && e.contains("opencode/big-pickle"), "{e}");
+        // Ambiguous bare id: refuse rather than guess.
+        let amb = vec![json!({"id":"model","currentValue":"a/m","options":[{"value":"a/m"},{"value":"b/z/m"},{"value":"c/m"}]})];
+        assert!(plan_model(&amb, &Value::Null, "m").unwrap_err().contains("ambiguous"));
+        // No model option and no models block at all.
+        assert!(plan_model(&[json!({"id":"mode"})], &Value::Null, "x").unwrap_err().contains("no model selection"));
+        let legacy = json!({"currentModelId":"m1","availableModels":[{"modelId":"m1"}]});
+        assert!(plan_model(&[], &legacy, "m9").is_err());
+    }
+
+    #[test]
+    fn model_in_args_skips_acp_set() {
+        // Cursor takes `--model {model}` at launch; OpenCode and Copilot do not.
+        let defs = builtin();
+        let by = |id: &str| AcpProvider::new(defs.iter().find(|d| d.id == id).unwrap().clone(), PathBuf::from("/x"), None, None);
+        assert!(by("cursor").model_in_args());
+        assert!(!by("opencode").model_in_args());
+        assert!(!by("copilot").model_in_args());
+        assert_eq!(by("cursor").model_to_set_over_acp(Some("composer-2.5")), None);
+        assert_eq!(by("opencode").model_to_set_over_acp(Some("opencode/x")), Some("opencode/x"));
+        // No model requested: nothing is set, whatever the provider.
+        assert_eq!(by("opencode").model_to_set_over_acp(None), None);
+        assert_eq!(by("copilot").model_to_set_over_acp(None), None);
     }
 
     #[test]
