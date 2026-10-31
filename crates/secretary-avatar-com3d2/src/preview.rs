@@ -113,8 +113,12 @@ fn body(request: &mut tiny_http::Request, options: &ServeOptions) -> Result<Vec<
 }
 pub fn serve(root: &Path, bundle: &Path, options: &ServeOptions) -> Result<()> {
     let root = root.canonicalize()?;
-    let mut library = if root.join("library-config.json").is_file() {
-        Some(Library::open(&root)?)
+    let configured = root.join("library-config.json").is_file();
+    // Two handles on the same library: `library` answers the catalog and settings on this thread,
+    // `composer` composes on worker threads, one at a time.
+    let mut library = if configured { Some(Library::open(&root)?) } else { None };
+    let composer = if configured {
+        Some(std::sync::Arc::new(std::sync::Mutex::new(Library::open(&root)?)))
     } else {
         None
     };
@@ -143,15 +147,24 @@ pub fn serve(root: &Path, bundle: &Path, options: &ServeOptions) -> Result<()> {
                 struct Selection {
                     items: Vec<String>,
                 }
-                let result = body(&mut request, options)
-                    .and_then(|b| {
-                        serde_json::from_slice::<Selection>(&b).map_err(|e| invalid(e.to_string()))
-                    })
-                    .and_then(|s| library.compose(&s.items));
-                match result {
-                    Ok(value) => json_response(request, 200, value),
-                    Err(e) => json_response(request, 422, json!({"error":e.to_string()})),
-                }
+                let selection = body(&mut request, options).and_then(|b| {
+                    serde_json::from_slice::<Selection>(&b).map_err(|e| invalid(e.to_string()))
+                });
+                // A new look takes seconds to minutes: compose on its own thread so pages, models,
+                // the catalog and settings keep answering. Composes queue on the composer's lock,
+                // and an identical request waiting behind one finds it in the disk cache.
+                let composer = composer.clone();
+                std::thread::spawn(move || {
+                    let result = selection.and_then(|s| {
+                        let composer = composer.as_ref().ok_or_else(|| invalid("no wardrobe library"))?;
+                        let mut library = composer.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                        library.compose(&s.items)
+                    });
+                    match result {
+                        Ok(value) => json_response(request, 200, value),
+                        Err(e) => json_response(request, 422, json!({"error":e.to_string()})),
+                    }
+                });
                 continue;
             }
             if request.method() == &tiny_http::Method::Post && path == "/settings" {
@@ -217,9 +230,11 @@ pub fn serve(root: &Path, bundle: &Path, options: &ServeOptions) -> Result<()> {
             })
             .boxed()
         };
+        // A composed view is named by the hash of everything that went into it: it never changes.
+        let cache_control = if cache_file(&path).is_some() { "private, max-age=31536000, immutable" } else { "no-store" };
         for (k, v) in [
             ("Content-Type", mime),
-            ("Cache-Control", "no-store"),
+            ("Cache-Control", cache_control),
             ("X-Content-Type-Options", "nosniff"),
             ("Referrer-Policy", "no-referrer"),
             // Only the Secretary app itself may frame the fitting room.

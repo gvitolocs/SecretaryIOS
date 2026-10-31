@@ -18,7 +18,7 @@ use std::{
     path::{Path, PathBuf},
 };
 const VERSION: u32 = 3;
-const PIPELINE_REVISION: u32 = 31;
+const PIPELINE_REVISION: u32 = 38;
 /// Categories never offered for selection: swimwear, and underwear on its own (the coverage
 /// guard below still uses plain inner wear).
 const HIDDEN_CATEGORIES: &[&str] = &["mizugi", "bra", "panz"];
@@ -28,6 +28,18 @@ const ADULT_NAME_PARTS: &[&str] = &[
     "めくれ", "ずらし", "タオル", "ボンデージ", "サキュバス", "バイブ", "Ｃｈｕ-Ｂ", "ＳＭ", "SM用", "目隠し",
     "アイマスク", "首輪", "ラブ・ナース", "注射器", "水着", "バニー", "カルテ",
 ];
+/// A menu's material change (`マテリアル変更 <slot> <index> <mate>`) on the model's slot `index`.
+/// Game data has changes past the last slot (Claire maid's skirt sets slot 4 of 4, a typo for 3,
+/// which already holds that material); the game ignores them, so do we. Returns whether it applied.
+fn replace_material<T>(materials: &mut [T], index: usize, material: T) -> bool {
+    match materials.get_mut(index) {
+        Some(slot) => {
+            *slot = material;
+            true
+        }
+        None => false,
+    }
+}
 /// Whether an item may be offered: not a hidden category, not an adult item.
 fn safe_item(name: &str, category: &str) -> bool {
     !HIDDEN_CATEGORIES.contains(&category) && !ADULT_NAME_PARTS.iter().any(|p| name.contains(p))
@@ -801,11 +813,7 @@ impl Library {
                                     .map_err(|_| invalid("native material slot"))?;
                                 let path = self.resources.resolve(&c[3], path)?;
                                 let material = mate::read(&self.resources.read_resource(&path)?)?;
-                                *model
-                                    .materials
-                                    .get_mut(slot)
-                                    .ok_or_else(|| invalid("native material slot bounds"))? =
-                                    material;
+                                replace_material(&mut model.materials, slot, material);
                             }
                         }
                         let staging = out.with_extension("staging.glb");
@@ -869,7 +877,7 @@ impl Library {
             .collect::<Result<Vec<_>>>()?
             .join(";");
         let key = hash(&format!(
-            "v{VERSION}-native31:{modified}:{}:{profiles}:{:?}:{:?}",
+            "v{VERSION}-native38:{modified}:{}:{profiles}:{:?}:{:?}",
             ids.join(","),
             self.config.loose_surface_items,
             self.config.loose_component_sizes
@@ -977,13 +985,18 @@ impl Library {
         }
         crate::secondary_bindings::annotate(&work, &work)?;
         crate::customization::annotate_garment_bindings(&work)?;
+        // At bind, before the standing pose: the body surface query reads unskinned positions.
+        let hip_follow = crate::native_cloth::follow_body_at_hips(&work)?;
         pose_asset::standing(&self.model, &self.animation, &work, &work, 0.)?;
         crate::secondary_rig::posed_ribbons(&work)?;
         crate::native_cloth::add_back_cage(&work)?;
+        crate::native_cloth::add_hip_cage(&work)?;
         crate::secondary_bindings::annotate(&work, &output)?;
+        // Last: smaller download (sparse morphs, merged and capped textures); browser-only after this.
+        let slimmed = crate::slim::slim(&output)?;
         let _ = fs::remove_file(&work);
         Ok(
-            json!({"url":format!("./cache/{filename}"),"items":ids,"attachedParts":attached,"maskedSlots":hidden,"cached":false,"body":"native COM3D2 with real Lucina head","hairClothCollisionParity":false}),
+            json!({"url":format!("./cache/{filename}"),"items":ids,"attachedParts":attached,"hipFollowPoints":hip_follow,"slim":slimmed,"maskedSlots":hidden,"cached":false,"body":"native COM3D2 with real Lucina head","hairClothCollisionParity":false}),
         )
     }
 }
@@ -1017,6 +1030,13 @@ mod safety_tests {
         ] {
             assert!(safe_item(name, category), "{name}");
         }
+    }
+    #[test]
+    fn material_changes_past_the_last_slot_are_ignored_like_the_game() {
+        let mut slots = vec!["skrt2", "skrt1", "skrt3", "skrt4"];
+        assert!(replace_material(&mut slots, 0, "new2"));
+        assert!(!replace_material(&mut slots, 4, "skrt4"));
+        assert_eq!(slots, ["new2", "skrt1", "skrt3", "skrt4"]);
     }
     #[test]
     fn coverage_needs_a_top_and_a_bottom_or_a_whole_outfit() {

@@ -40,6 +40,8 @@ pub mod secondary_rig;
 pub mod skin_assets;
 pub mod skin_color;
 pub mod skin_preview;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod slim;
 pub mod surface;
 pub mod texture;
 #[cfg(not(target_arch = "wasm32"))]
