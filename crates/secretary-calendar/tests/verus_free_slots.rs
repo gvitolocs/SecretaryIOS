@@ -98,6 +98,11 @@ fn event(i: usize, start_ms: i64, end_ms: i64, all_day: bool) -> Event {
         url: None,
         conference_url: None,
         added_by: None,
+        alarms: vec![],
+        alarms_default: false,
+        free: false,
+        travel_min: None,
+        leave_alert: false,
         recurring: false,
         editable: false,
     }

@@ -1960,8 +1960,8 @@ triggers a full resync from 365 days back; recurring events are expanded by
 `secretary-calendar`, DST-correct, with EXDATEs and per-instance
 exceptions), ICS subscriptions, and the iPhone's EventKit events from the
 latest `POST /v1/device/state` snapshot (`events: [{id, title, start, end,
-allDay?, location?, calendar?, notes?}]`, start/end RFC 3339, epoch ms or
-`YYYY-MM-DD`). Auth: device Bearer, cookie (+CSRF on writes), or **Lucina's
+allDay?, location?, calendar?, notes?, alarms?, free?}]`, start/end RFC 3339, epoch ms or
+`YYYY-MM-DD`; `alarms`: minutes before the start). Auth: device Bearer, cookie (+CSRF on writes), or **Lucina's
 service token** (`svc_…`).
 
 Event:
@@ -1970,8 +1970,25 @@ Event:
 { "id": "google:abc_20261022T070000Z", "source": "google", "sourceId": "abc", "calendar": "Google",
   "title": "Gym", "start": "2026-10-22T07:00:00.000Z", "end": "2026-10-22T08:00:00.000Z", "allDay": false,
   "startMs": 1792652400000, "endMs": 1792656000000, "location": "…", "url": "https://calendar.google.com/…",
-  "conferenceUrl": "https://meet.google.com/…", "addedBy": "Lucina", "recurring": true, "editable": true }
+  "conferenceUrl": "https://meet.google.com/…", "addedBy": "Lucina",
+  "alarms": [60, 1440], "alarmsDefault": false, "free": false, "travelMin": 20, "leaveAlert": true,
+  "recurring": true, "editable": true }
 ```
+
+Event settings (the event sheet's Settings, like Apple Calendar's):
+- `alarms`: alerts in minutes before the start, ascending (at most 5, 0–40320). From Google's
+  `reminders.overrides`, an ICS `VALARM` with a relative `TRIGGER` (absolute and end-related ones are not
+  shown) or the iPhone's EventKit alarms. `alarmsDefault: true`: the calendar's defaults apply (Google
+  `reminders.useDefault`, filled in from `events.list`'s `defaultReminders` once a sync has seen them; a
+  Lucina event without its own alerts gets the owner's `calendarLeadMinutes` "Coming up").
+- `free`: shown as free (Google `transparency: "transparent"`, ICS `TRANSP:TRANSPARENT`, EventKit
+  availability free).
+- `travelMin`: travel time before the start (`extendedProperties.private.travelMin`, ICS
+  `X-APPLE-TRAVEL-DURATION`); `leaveAlert`: a "time to leave" alert at start − `travelMin`
+  (`extendedProperties.private.leaveAlert`). The clients work the travel time out with `/v1/maps/routes`
+  (or MapKit) and send it with the alert.
+- Lucina's own events notify at their own alerts and at the leave time (title "Time to leave");
+  Google's alerts are Google's (and the iPhone's) to ring.
 
 All-day events have `start`/`end` as `YYYY-MM-DD` (end exclusive) and
 `allDay: true`. Ids: `lucina:<ev_…>` (calendar "Lucina"),
@@ -1986,7 +2003,8 @@ Google events; an `iphone:` event whose id contains `:<google id>@google.com`
 at the same start as a `google:` event is dropped, so nothing shows twice.
 
 "Coming up" notifications cover the iPhone's and Lucina's own timed events
-(the next 35 days, refreshed after each write and every sync); their
+(the next 35 days, refreshed after each write and every sync; Lucina's at their
+own alerts when they have them); their
 `route` is `/calendar?event=<merged id>&at=<start ms>`, which opens the
 Calendar tab on that event.
 
@@ -1996,7 +2014,8 @@ Calendar tab on that event.
 | `GET /v1/calendar/free?from&to&minutes=60&dayStart=9&dayEnd=19&limit=5` | Gaps between timed events inside working hours: `{slots: [{start, end}]}`. All-day events do not block. |
 | `POST /v1/calendar/sync` | Sync now: `{google: {ok, changed?, error?}, ics: [{id, ok, changed?, error?}]}`. `error: "reconnect_needed"` when Google revoked access. |
 | `POST /v1/calendar/events` | `{title, start, end?, allDay?, location?, description?, conferenceUrl?, timeZone?, target?}` → Lucina's own calendar (`target: "google"`: the Google primary calendar instead). `start` RFC 3339 with offset (default end +1 h) or `YYYY-MM-DD` (all-day, default +1 day). `201 {created, event}`. |
-| `PATCH /v1/calendar/events/{id}` | **`confirm: true` required** (`428 confirmation_required` otherwise) + any of the create fields. Moving `start` without `end` keeps the duration; `""`/`null` clears location, notes or `conferenceUrl`. Lucina's and Google events (`422 read_only_source` for ICS/iPhone). |
+| `PATCH /v1/calendar/events/{id}` | **`confirm: true` required** (`428 confirmation_required` otherwise) + any of the create fields. Moving `start` without `end` keeps the duration; `""`/`null` clears location, notes or `conferenceUrl`. Settings: `alarms` (list of minutes; `null`: the calendar's defaults), `free`, `travelMin` (`0`/`null` clears), `leaveAlert`. Lucina's and Google events (`422 read_only_source` for ICS/iPhone). |
+| `POST /v1/calendar/events/{id}/move` | `{target: "lucina"\|"google", confirm: true}`: creates the event in the other calendar (text, times, settings, private properties; a video link goes into Google's notes) and removes it from its own. `{moved, from, event}` (the new id). `422 recurring_event` for repeating events, `400` when it is already there. |
 | `DELETE /v1/calendar/events/{id}?confirm=true` | Same rules. Deleting a recurring instance id cancels that instance only; deleting a Lucina event that is already gone is `200`. |
 | `GET /v1/calendar/proposals` · `POST /v1/calendar/proposals` | Proposals from clients that may not write (the Lucina MCP, agents), and from Lucina when her direct create for the owner failed: body as for create plus `from` and an optional `reason` (≤ 300 characters, why it is not an event yet); validated, kept 7 days, ≤ 50. The owner's own requests to Lucina go straight to `POST /v1/calendar/events`. |
 | `POST /v1/calendar/proposals/{id}/accept` `{confirm: true}` · `DELETE /v1/calendar/proposals/{id}` | The owner accepts (creates the event in Lucina's own calendar, `addedBy` = the proposer) or dismisses it **in the app**; the service token gets `403 owner_only`. |

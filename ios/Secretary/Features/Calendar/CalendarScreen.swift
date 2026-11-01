@@ -132,7 +132,7 @@ private struct CalendarContent: View {
             NavigationStack {
                 switch item {
                 case .detail(let event):
-                    CalendarDetail(app: app, store: store, event: event, edit: { sheet = .edit(event) })
+                    CalendarDetail(app: app, store: store, event: event, edit: { sheet = .edit($0) })
                 case .edit(let event): CalendarEditor(store: store, day: selectedDay, event: event)
                 case .new(let day): CalendarEditor(store: store, day: day)
                 }

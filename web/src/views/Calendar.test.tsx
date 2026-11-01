@@ -161,6 +161,59 @@ describe("Calendar", () => {
     expect(ec.api.gotoDate).not.toHaveBeenCalled();
   });
 
+  it("has Apple Calendar's detail: call, live notes, the day around it and settings changed in place", async () => {
+    const kitchen = event({
+      title: "Founders' Entry – Kitchen",
+      location: "Boiler, Kitchen, Universitetsbyen 76, 8000 Aarhus C",
+      description: "Teams: https://teams.microsoft.com/l/meetup-join/abc\nQuestions: 52 20 01 44 or anna@au.dk",
+      alarms: [60],
+    });
+    const seminar = event({ id: "lucina:ev_sem", sourceId: "ev_sem", title: "5220-014 Seminar", startMs: START - 2 * 3_600_000, endMs: START + 1.5 * 3_600_000, location: undefined, description: undefined });
+    calls = stubFetch((c) => {
+      const u = new URL(c.url, "http://test.local");
+      if (u.pathname === "/v1/calendar/events" && c.method === "GET") {
+        return { body: { from: "", to: "", timeZone: "Europe/Copenhagen", events: [kitchen, seminar], sources: { google: { status: "connected" } } } };
+      }
+      if (u.pathname === "/v1/calendar/events/lucina%3Aev_1" && c.method === "PATCH") return { body: { updated: true, event: { ...kitchen, ...(c.body as object) } } };
+      if (u.pathname === "/v1/calendar/events/lucina%3Aev_1/move") return { body: { moved: true, from: kitchen.id, event: { ...kitchen, id: "google:g1", source: "google", calendar: "Google" } } };
+      if (u.pathname === "/v1/calendar/proposals") return { body: { proposals: [] } };
+      return { status: 404, body: {} };
+    });
+    open(`/calendar?event=${encodeURIComponent("lucina:ev_1")}&at=${START}`);
+    const sheet = await screen.findByRole("dialog", { name: "Founders' Entry – Kitchen" });
+
+    // The number in the notes gets a phone row; the seminar's room number does not.
+    const call = within(sheet).getByRole("link", { name: "Call 52 20 01 44" });
+    expect(call).toHaveAttribute("href", "tel:+4552200144");
+    expect(within(sheet).getAllByRole("link", { name: /^Call / })).toHaveLength(1);
+    expect(within(sheet).getByRole("link", { name: "Join video call" })).toHaveAttribute("href", "https://teams.microsoft.com/l/meetup-join/abc");
+    expect(within(sheet).getByRole("link", { name: "anna@au.dk" })).toHaveAttribute("href", "mailto:anna@au.dk");
+    expect(within(sheet).getByRole("link", { name: "Open Boiler, Kitchen, Universitetsbyen 76, 8000 Aarhus C on the map" }).getAttribute("href")).toMatch(/^\/map\/place\?/);
+    expect(within(sheet).getByRole("link", { name: "Google Maps" }).getAttribute("href")).toContain("Universitetsbyen%2076");
+    // The day strip shows the overlapping seminar next to it.
+    const strip = within(sheet).getByRole("region", { name: "The day around it" });
+    expect(within(strip).getByRole("button", { name: /5220-014 Seminar/ })).toBeEnabled();
+
+    // An alert changed in place: PATCH with the new list and confirm.
+    const [first] = within(sheet).getAllByRole("combobox", { name: /^Alert/ });
+    fireEvent.change(first!, { target: { value: "1440" } });
+    await waitFor(() => expect(sent("PATCH", "/v1/calendar/events/lucina%3Aev_1")).toHaveLength(1));
+    expect(sent("PATCH", "/v1/calendar/events/lucina%3Aev_1")[0]!.body).toEqual({ alarms: [1440], confirm: true });
+
+    // The rows wait for the save before the next change.
+    await waitFor(() => expect(within(sheet).getByRole("combobox", { name: /^Show as/ })).toBeEnabled());
+    fireEvent.change(within(sheet).getByRole("combobox", { name: /^Show as/ }), { target: { value: "free" } });
+    await waitFor(() => expect(sent("PATCH", "/v1/calendar/events/lucina%3Aev_1")).toHaveLength(2));
+    expect(sent("PATCH", "/v1/calendar/events/lucina%3Aev_1")[1]!.body).toEqual({ free: true, confirm: true });
+
+    // Moving it to Google.
+    await waitFor(() => expect(within(sheet).getByRole("combobox", { name: /^Calendar/ })).toBeEnabled());
+    fireEvent.change(within(sheet).getByRole("combobox", { name: /^Calendar/ }), { target: { value: "google" } });
+    await waitFor(() => expect(sent("POST", "/v1/calendar/events/lucina%3Aev_1/move")).toHaveLength(1));
+    expect(sent("POST", "/v1/calendar/events/lucina%3Aev_1/move")[0]!.body).toEqual({ target: "google", confirm: true });
+    expect(await screen.findByText("Moved “Founders' Entry – Kitchen” to Google.")).toBeInTheDocument();
+  });
+
   it("finds an iPhone event from a notification's EventKit id and says when it is gone", async () => {
     serve();
     open(`/calendar?event=${encodeURIComponent("iphone:CAL:EK1@1793343600000")}&at=${START - 6 * 3_600_000}`);

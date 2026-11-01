@@ -8,10 +8,12 @@ import {
   dismissProposal,
   listEvents,
   listProposals,
+  moveEvent,
   syncCalendars,
   updateEvent,
   type CalEvent,
   type CalProposal,
+  type EventDraft,
 } from "../api/calendar";
 import { toApiError } from "../api/client";
 import EventCalendar, { type EcApi } from "../components/calendar/EventCalendar";
@@ -130,6 +132,7 @@ export default function CalendarView() {
   const [toast, setToast] = createSignal<Toast | null>(null);
   const [pulse, setPulse] = createSignal<string | null>(null);
   const [syncing, setSyncing] = createSignal(false);
+  const [googleConnected, setGoogleConnected] = createSignal(false);
 
   let api: EcApi | undefined;
   const cache = new Map<string, CalEvent[]>();
@@ -185,6 +188,13 @@ export default function CalendarView() {
         setEvents(list);
         setStatus("ready");
         setLoadError("");
+        if (page.sources) setGoogleConnected(page.sources.google?.status === "connected");
+        // The open sheet follows the reloaded event (a setting changed elsewhere, a sync).
+        const s = selected();
+        if (s?.kind === "event") {
+          const fresh = list.find((x) => x.id === s.ev.id);
+          if (fresh) setSelected({ kind: "event", ev: fresh });
+        }
       });
       resolveLink(list, r);
     } catch (e) {
@@ -376,6 +386,41 @@ export default function CalendarView() {
     } catch (e) {
       info.revert();
       showToast(t("calendar.failed", { reason: toApiError(e).message }));
+    }
+  }
+
+  /** A setting changed in the event sheet (alerts, show as, travel time): saved at once, the sheet shows the result. */
+  async function changeSetting(ev: CalEvent, patch: Partial<EventDraft>) {
+    try {
+      const res = await updateEvent(ev.id, patch);
+      const next = res.event ? { ...res.event, id: ev.id, alarms: res.event.alarms ?? [] } : null;
+      if (next) {
+        batch(() => {
+          setEvents((list) => list.map((x) => (x.id === ev.id ? { ...x, ...next } : x)));
+          const s = selected();
+          if (s?.kind === "event" && s.ev.id === ev.id) setSelected({ kind: "event", ev: { ...s.ev, ...next } });
+        });
+      }
+      cache.clear();
+      void load();
+    } catch (e) {
+      throw new Error(toApiError(e).message);
+    }
+  }
+
+  async function moveToCalendar(ev: CalEvent, target: "lucina" | "google") {
+    try {
+      const res = await moveEvent(ev.id, target);
+      const name = target === "lucina" ? "Lucina" : "Google";
+      batch(() => {
+        setEvents((list) => [...list.filter((x) => x.id !== ev.id), ...(res.event ? [res.event] : [])]);
+        setSelected(res.event ? { kind: "event", ev: res.event } : null);
+      });
+      showToast(t("calendar.movedTo", { title: ev.title, name }));
+      if (res.event) highlight(res.event.id);
+      refreshAll();
+    } catch (e) {
+      throw new Error(toApiError(e).message);
     }
   }
 
@@ -703,7 +748,21 @@ export default function CalendarView() {
           </Show>
         }
       >
-        <Show when={selectedEvent()}>{(ev) => <EventDetail event={ev()} />}</Show>
+        <Show when={selectedEvent()}>
+          {(ev) => (
+            <EventDetail
+              event={ev()}
+              dayEvents={events()}
+              googleConnected={googleConnected()}
+              onChange={(patch) => changeSetting(ev(), patch)}
+              onMove={(target) => moveToCalendar(ev(), target)}
+              onShowEvent={(other) => {
+                setSelected({ kind: "event", ev: other });
+                highlight(other.id);
+              }}
+            />
+          )}
+        </Show>
       </Sheet>
 
       <Sheet

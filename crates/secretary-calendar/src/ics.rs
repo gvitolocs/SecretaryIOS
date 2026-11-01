@@ -1,5 +1,6 @@
-//! RFC 5545 (iCalendar) text → [`Item`]s. VEVENTs only; nested components
-//! (VALARM) and other components (VTODO, VTIMEZONE) are skipped. Time zones
+//! RFC 5545 (iCalendar) text → [`Item`]s. VEVENTs only; of their nested
+//! components only a VALARM's relative `TRIGGER` is read (other components,
+//! VTODO and VTIMEZONE, are skipped). Time zones
 //! come from `TZID` (IANA, vendor-prefixed or common Windows names), else
 //! `X-WR-TIMEZONE`, else the caller's default; VTIMEZONE bodies are not
 //! interpreted.
@@ -186,6 +187,8 @@ pub fn parse(text: &str, default_tz: &str) -> Feed {
     let mut cur: Option<Item> = None;
     // Depth of components nested in the current VEVENT (VALARM …).
     let mut nested = 0usize;
+    // The nested component is a VALARM directly inside the VEVENT.
+    let mut in_alarm = false;
     // Inside a non-VEVENT component (VTODO, VTIMEZONE, …).
     let mut other = 0usize;
     for line in unfold(text) {
@@ -197,6 +200,7 @@ pub fn parse(text: &str, default_tz: &str) -> Feed {
                 let comp = p.value.trim().to_ascii_uppercase();
                 if cur.is_some() {
                     nested += 1;
+                    in_alarm = nested == 1 && comp == "VALARM";
                 } else if comp == "VEVENT" && other == 0 {
                     cur = Some(Item::default());
                 } else if comp != "VCALENDAR" {
@@ -209,8 +213,11 @@ pub fn parse(text: &str, default_tz: &str) -> Feed {
                 if cur.is_some() {
                     if nested > 0 {
                         nested -= 1;
+                        in_alarm = false;
                     } else if comp == "VEVENT" {
-                        if let Some(item) = cur.take() {
+                        if let Some(mut item) = cur.take() {
+                            item.alarms =
+                                crate::model::normalize_alarms(std::mem::take(&mut item.alarms));
                             if item.start.is_some() && feed.items.len() < MAX_EVENTS {
                                 feed.items.push(item);
                             }
@@ -238,6 +245,21 @@ pub fn parse(text: &str, default_tz: &str) -> Feed {
             continue;
         };
         if nested > 0 {
+            // `TRIGGER:-PT15M` (relative to the start); absolute and
+            // end-related triggers are not shown.
+            if in_alarm && nested == 1 && p.name == "TRIGGER" {
+                let absolute = p
+                    .param("VALUE")
+                    .is_some_and(|v| v.eq_ignore_ascii_case("DATE-TIME"));
+                let from_end = p
+                    .param("RELATED")
+                    .is_some_and(|v| v.eq_ignore_ascii_case("END"));
+                if let Some(secs) =
+                    duration_secs(&p.value).filter(|s| *s <= 0 && !absolute && !from_end)
+                {
+                    item.alarms.push(-secs / 60);
+                }
+            }
             continue;
         }
         let tzid = p.param("TZID");
@@ -278,6 +300,14 @@ pub fn parse(text: &str, default_tz: &str) -> Feed {
                 }
             }
             "RECURRENCE-ID" => item.original = moment(&p.value, tzid, vtype, &cal_tz),
+            "TRANSP" => item.free = p.value.trim().eq_ignore_ascii_case("TRANSPARENT"),
+            // Apple Calendar's travel time.
+            "X-APPLE-TRAVEL-DURATION" => {
+                item.travel_min = duration_secs(&p.value)
+                    .map(|s| s / 60)
+                    .and_then(|m| u32::try_from(m).ok())
+                    .filter(|m| (1..=crate::model::MAX_TRAVEL_MIN).contains(m));
+            }
             "STATUS" => item.cancelled = p.value.trim().eq_ignore_ascii_case("CANCELLED"),
             _ => {}
         }
@@ -319,6 +349,8 @@ mod tests {
         assert!(o.original.is_some());
         assert!(matches!(f.items[2].start, Some(Moment::Date(_))));
         assert_eq!(f.items[3].duration_secs, Some(1800));
+        assert_eq!(s.alarms, vec![15]);
+        assert!(f.items[3].alarms.is_empty());
         assert!(matches!(f.items[3].start, Some(Moment::Utc(_))));
     }
 
@@ -345,6 +377,23 @@ mod tests {
         assert!(
             matches!(&f.items[0].start, Some(Moment::Local { tz, .. }) if tz == "Europe/Copenhagen")
         );
+    }
+
+    #[test]
+    fn alarms_show_as_and_travel_time() {
+        let f = parse(
+            "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:a\nDTSTART:20261102T130000Z\nTRANSP:TRANSPARENT\n\
+             X-APPLE-TRAVEL-DURATION;VALUE=DURATION:PT20M\n\
+             BEGIN:VALARM\nTRIGGER:-P1D\nEND:VALARM\nBEGIN:VALARM\nTRIGGER;RELATED=START:-PT1H\nEND:VALARM\n\
+             BEGIN:VALARM\nTRIGGER;VALUE=DATE-TIME:20261102T120000Z\nEND:VALARM\n\
+             BEGIN:VALARM\nTRIGGER;RELATED=END:-PT5M\nEND:VALARM\nBEGIN:VALARM\nTRIGGER:PT0S\nEND:VALARM\n\
+             END:VEVENT\nEND:VCALENDAR\n",
+            "UTC",
+        );
+        let i = &f.items[0];
+        assert_eq!(i.alarms, vec![0, 60, 1440]);
+        assert!(i.free);
+        assert_eq!(i.travel_min, Some(20));
     }
 
     #[test]

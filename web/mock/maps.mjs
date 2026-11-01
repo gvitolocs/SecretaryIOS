@@ -14,6 +14,7 @@ const HOME = { lat: 56.19633, lng: 10.2011, label: "Home" };
 const PLACES = [
   { name: "Folkehuset Møllestien", address: "Møllestien 37, 8000 Aarhus C", lat: 56.1611, lng: 10.2006 },
   { name: "Skejbygårdsvej 3", address: "Skejbygårdsvej 3, 8240 Risskov", lat: 56.19633, lng: 10.2011 },
+  { name: "Universitetsbyen 76", address: "Universitetsbyen 76, 8000 Aarhus C", lat: 56.1704, lng: 10.1988 },
 ];
 
 const TYPES = { ".pbf": "application/x-protobuf", ".json": "application/json", ".png": "image/png" };
