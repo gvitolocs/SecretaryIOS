@@ -247,6 +247,23 @@ pub struct TurnInput<'a> {
 }
 
 impl Planner {
+    fn request(
+        system: String,
+        user: String,
+        temperature: f32,
+        purpose: &'static str,
+    ) -> ChatRequest {
+        ChatRequest {
+            messages: vec![
+                Message::system(with_turn_system(system, purpose)),
+                Message::user(user),
+            ],
+            temperature: Some(temperature),
+            purpose,
+            ..ChatRequest::default()
+        }
+    }
+
     async fn complete(
         &self,
         system: String,
@@ -256,15 +273,29 @@ impl Planner {
     ) -> Result<String, LlmError> {
         let r = self
             .model
-            .complete(ChatRequest {
-                messages: vec![
-                    Message::system(with_turn_system(system, purpose)),
-                    Message::user(user),
-                ],
-                temperature: Some(temperature),
-                purpose,
-                ..ChatRequest::default()
-            })
+            .complete(Self::request(system, user, temperature, purpose))
+            .await?;
+        Ok(r.message.text().to_owned())
+    }
+
+    /// [`complete`](Self::complete) for text the owner reads or hears as it is: in a streamed voice turn
+    /// (`crate::voice`) the model's deltas go to the turn's sink as they arrive.
+    async fn complete_reply(
+        &self,
+        system: String,
+        user: String,
+        temperature: f32,
+        purpose: &'static str,
+    ) -> Result<String, LlmError> {
+        if !crate::voice::streaming() {
+            return self.complete(system, user, temperature, purpose).await;
+        }
+        let r = self
+            .model
+            .complete_streaming(
+                Self::request(system, user, temperature, purpose),
+                &mut |d| crate::voice::delta(d),
+            )
             .await?;
         Ok(r.message.text().to_owned())
     }
@@ -287,11 +318,12 @@ impl Planner {
         );
         let user = Prompts::user_block(t.user_label, t.memory, t.user_text);
         let mut text = self
-            .complete(system.clone(), user.clone(), 0.6, purpose)
+            .complete_reply(system.clone(), user.clone(), 0.6, purpose)
             .await?;
         if lucina_llm::has_tool_markup(&text) {
             // The model wrote tool-call markup as its answer (this path has no tools): ask once more for plain
-            // text, then admit the failure rather than show the markup to the owner.
+            // text, then admit the failure rather than show the markup to the owner. The retry is not
+            // streamed: in a voice turn its text goes out in the `reply` event, as a replacement.
             tracing::warn!(purpose, "reply contained tool-call markup; re-asking once");
             text = self
                 .complete(

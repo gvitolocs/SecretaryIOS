@@ -286,11 +286,35 @@ separate Hermes Poko runtime on `:8789`.
 
 ### 4.2 `/api/secretary/*` (contract: Lucina `docs/secretary-api.md`; worktree adds 329 lines)
 
-Live: `GET /health`; `POST /chat`; `GET /jobs/:id`; `GET /reminders?scope=upcoming|today|all&includeSent=0|1`;
+Live: `GET /health`; `POST /chat` (with `Accept: text/event-stream` and/or `"voice": true`: LucinaVoice, see "Streaming chat" below); `GET /jobs/:id`; `GET /reminders?scope=upcoming|today|all&includeSent=0|1`;
 `POST /reminders` (`{text,dueAt}` or `{naturalText}`; 201/200); `DELETE /reminders/:id`;
 `GET /agenda?date=&refresh=`; `GET /shopping`; `POST /shopping`; `PATCH /shopping/:itemId`;
 `GET /timeline?before=&limit=`; `GET /timeline/stream` (SSE, `Last-Event-ID`/`?lastEventId=`, replay ≤500,
 `retry: 5000`, `: ping` every 20 s, ≤8 streams).
+**Streaming chat (LucinaVoice, `src/voice.rs`; contract: `docs/lucinavoice-protocol.md` section 1).**
+`POST /chat` takes an optional `"voice": true` (any other body is unchanged; nothing new is rejected). It adds
+the spoken-style rule (`voice::SPOKEN_RULE`: one to three short sentences, no markdown, lists, emoji or URLs,
+numbers/dates/times as said) to the turn's fixed system text (`planner::TURN_SYSTEM`), so the JSON planner and
+every `generate_reply` see it; the intent classifier does not. It works with or without the stream. With
+`Accept: text/event-stream` the route answers `200 text/event-stream` at once (`Cache-Control: no-store`,
+`X-Accel-Buffering: no`; after the HTTP checks: bearer, JSON body size) and runs the turn in its own task:
+
+| event | data | when |
+|---|---|---|
+| `: connected` | comment | first bytes |
+| `delta` | `{"text":"…"}` | reply text as the model writes it; only from `generate_reply` and its callers (the casual-chat shortcut, skill replies, fallbacks); zero or more; never tool-call markup |
+| `reply` | `{"text":"…","sensitive":bool,"replaces":bool}` | exactly once, when the turn's reply text is settled: in `chat::run_turn_scoped` right after the `Finish`, before rich-reply, Honcho, memory, timeline (same for the tools planner). Turns that never reach a `Finish` (`/secret` command, OTP, project offers, a replayed `clientMessageId`) settle from the result (`sensitive` = the body's `sensitive`). `replaces` = the text, trimmed, is not the concatenation of the deltas (so also true when there were none) |
+| `done` | `{"ok":true,"data":{…}}` | the exact body the plain call returns (redacted like it) |
+| `error` | `{"code","message"}` | the turn failed (HTTP-level errors of the chat route, e.g. `bad_request`; 500s are `internal_error`); no `done` |
+| `: ping` | comment | every 15 s while the turn runs |
+
+The deltas come from `ChatModel::complete_streaming` (default: `complete`, the whole text as one delta;
+`DeepSeek` streams; `RedactingModel` holds each fragment back to the last whitespace so a secret split across
+deltas is whole when redacted). A tool-call-markup retry in `generate_reply` is not streamed: its text (or the
+fixed failure line) goes out in `reply` with `replaces: true`. A client that disconnects does not cancel the
+turn: it finishes and writes the timeline as usual. The `reply` text is the answer before the rich composer;
+`done.data.reply` can differ when the composer rewrites it.
+
 Worktree: `GET|POST /shopping/lists`; `GET|PATCH|DELETE /shopping/lists/:id` (`:id` = uuid or `default`);
 `POST /shopping/lists/:id/ops` (`{ops, expectedRevision, channel}` → `{revision, applied, duplicates, rejected,
 list, items}`); `POST /device/events`; `GET|POST /device/state`; `GET /device/commands`;

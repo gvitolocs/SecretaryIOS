@@ -56,6 +56,7 @@ pub mod shopping_mcp_gate;
 pub mod surface;
 pub mod telegram;
 pub mod video;
+pub mod voice;
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicUsize;

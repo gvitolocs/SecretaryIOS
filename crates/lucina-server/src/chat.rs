@@ -7,6 +7,9 @@
 //! planner → MCP guard → reminders / jobs / reply → recent turns, Honcho
 //! (`readwrite` only), the Lucina item.
 //!
+//! LucinaVoice (`crate::voice`): `"voice": true` makes the turn spoken-style; inside `voice::scope` the turn
+//! also streams its reply (`generate_reply` deltas) and reports it once settled, before the post-processing.
+//!
 //! `LUCINA_PLANNER=tools` is the native tool loop (Rust tools, confirmation
 //! flow); it is not part of the Node parity surface.
 
@@ -61,7 +64,22 @@ pub const SECRETARY_EXTRA_SYSTEM: &str = "This conversation comes from the Secre
 /// Validate the body, classify the turn's memory surface (once), dedupe
 /// `clientMessageId` retries, run the turn. `bearer`: the request passed the
 /// Secretary bearer check.
+///
+/// LucinaVoice (`crate::voice`): `"voice": true` marks the turn as spoken aloud (a spoken-style rule joins
+/// its system text); when the caller runs this inside [`crate::voice::scope`], the turn also reports its
+/// reply text as it is written (`generate_reply` deltas) and once settled (`run_turn_scoped`).
 pub async fn handle_chat(
+    st: AppState,
+    bearer: BearerVerified,
+    body: Value,
+) -> Result<Value, ApiError> {
+    let spoken = body["voice"].as_bool().unwrap_or(false);
+    crate::voice::SPOKEN
+        .scope(spoken, handle_chat_turn(st, bearer, body))
+        .await
+}
+
+async fn handle_chat_turn(
     st: AppState,
     bearer: BearerVerified,
     body: Value,
@@ -928,6 +946,14 @@ async fn run_turn_scoped(
             } else {
                 game_system
             };
+            // `"voice": true`: every model call of the turn (the plan, the replies) is told it is spoken.
+            let game_system = if crate::voice::spoken() {
+                format!("{game_system}\n{}", crate::voice::SPOKEN_RULE)
+                    .trim()
+                    .to_owned()
+            } else {
+                game_system
+            };
             let finish = crate::planner::TURN_REPLY
                 .scope(
                     reply_block,
@@ -938,6 +964,11 @@ async fn run_turn_scoped(
             (finish, Some(prepared))
         }
     };
+
+    // LucinaVoice: the reply text is settled here, before rich-reply, Honcho, memory and the timeline.
+    if !finish.reply.trim().is_empty() {
+        crate::voice::settle(finish.reply.trim(), false);
+    }
 
     // Finish: recent turns, Honcho, the Lucina item.
     let (rich_msg, reply, remembered) = if t.origin.is_some() {
@@ -2960,9 +2991,14 @@ async fn tools_turn(
     let reply_meta = existing.as_ref().map(|s| s.reply_meta.clone());
     let secrets_text = existing.as_ref().map(|s| s.owner_text.clone());
     let voice_system = if existing.is_some() {
-        crate::share::guidance::VOICE_SYSTEM
+        crate::share::guidance::VOICE_SYSTEM.to_owned()
     } else {
-        ""
+        String::new()
+    };
+    let voice_system = if crate::voice::spoken() {
+        format!("{voice_system} {}", crate::voice::SPOKEN_RULE)
+    } else {
+        voice_system
     };
     let turn = TimelineTurn::new(st.timeline_for(&session), &channel, cmid.clone())
         .with_meta(Some(device_meta))
@@ -3202,6 +3238,8 @@ async fn tools_turn(
     } else {
         finish.reply.trim().to_owned()
     };
+    // LucinaVoice: settled before rich-reply (see run_turn_scoped).
+    crate::voice::settle(&reply, false);
     let (rich_msg, reply, remembered) = rich_reply(
         &st,
         &reply,

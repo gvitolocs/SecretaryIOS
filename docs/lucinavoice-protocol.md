@@ -22,6 +22,11 @@ exactly as today.
   - `event: error` / `data: {"code":"…","message":"…"}`, on failure. No `done` follows.
   - `: ping` comment lines every 15 s while the turn runs.
 
+Implemented in `crates/lucina-server/src/voice.rs` (details and edge cases: "Streaming chat" in
+`docs/lucina-rust/INVENTORY.md`). `done` carries the plain call's whole body, `{"ok":true,"data":{…}}`.
+`replaces` is also true when the turn had no deltas (the reply came from the JSON plan, a fixed text or a skill):
+the client has nothing spoken yet and speaks `text`.
+
 ## 2. secretary-server: `GET /v1/voice/ws` (WebSocket, device auth via `Authorization: Bearer` on the upgrade)
 
 One connection per device, kept open. The server sends a WS ping every 20 s. One turn at a time.
