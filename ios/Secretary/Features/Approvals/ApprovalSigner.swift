@@ -13,6 +13,29 @@ enum ApprovalAuthMode: Equatable, Sendable {
     case reuseUnlock(interactive: Bool)
 }
 
+/// The LocalAuthentication settings for an `ApprovalAuthMode` (pure, so the tests see them).
+struct ApprovalContextConfig: Equatable, Sendable {
+    /// `LAContext.touchIDAuthenticationAllowableReuseDuration`: 0, or the 300 s maximum.
+    var reuseDuration: TimeInterval
+    /// `LAContext.interactionNotAllowed`: only in the background.
+    var interactionNotAllowed: Bool
+
+    static func forMode(_ mode: ApprovalAuthMode) -> ApprovalContextConfig {
+        switch mode {
+        case .prompt:
+            return ApprovalContextConfig(reuseDuration: 0, interactionNotAllowed: false)
+        case let .reuseUnlock(interactive):
+            return ApprovalContextConfig(reuseDuration: LATouchIDAuthenticationMaximumAllowableReuseDuration,
+                                         interactionNotAllowed: !interactive)
+        }
+    }
+
+    func apply(to context: LAContext) {
+        context.touchIDAuthenticationAllowableReuseDuration = reuseDuration
+        context.interactionNotAllowed = interactionNotAllowed
+    }
+}
+
 /// The Face ID (or passcode) proof of a sensitive approval. A protocol so the tests need no Secure Enclave.
 protocol ApprovalSigning: Sendable {
     /// The id the server gave this iPhone's registered key, when it has one.
@@ -162,16 +185,10 @@ final class SecureEnclaveApprovalSigner: ApprovalSigning, @unchecked Sendable {
         let context = LAContext()
         context.localizedReason = reason
         context.localizedCancelTitle = String(localized: "Cancel")
-        var interactive = true
-        switch mode {
-        case .prompt:
-            context.touchIDAuthenticationAllowableReuseDuration = 0
-        case let .reuseUnlock(canAsk):
-            context.touchIDAuthenticationAllowableReuseDuration = LATouchIDAuthenticationMaximumAllowableReuseDuration
-            interactive = canAsk
-            // In the background: never try to show Face ID or the passcode.
-            if !canAsk { context.interactionNotAllowed = true }
-        }
+        // In the background (non-interactive): never try to show Face ID or the passcode.
+        let config = ApprovalContextConfig.forMode(mode)
+        config.apply(to: context)
+        let interactive = !config.interactionNotAllowed
         let signature: Data
         do {
             // Face ID first; the passcode when Face ID fails, is locked out or is not set up.

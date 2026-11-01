@@ -78,6 +78,10 @@ private func itemJSON(id: String, sensitive: Bool, status: String? = nil, extra:
     """
 }
 
+/// The fixtures' payload hash, and a moment while they are still pending (they expire 2026-10-28T10:05:00Z).
+private let fixtureHash = "sha256:" + String(repeating: "ab", count: 32)
+private let fixtureNow = Date(timeIntervalSince1970: 1793181660) // 2026-10-28T10:01:00Z
+
 private func settingsJSON(hasPin: Bool, serverKey: Bool = false) -> String {
     """
     {"mainDeviceId":null,"thisDeviceId":"dev_1","hasPin":\(hasPin),
@@ -471,7 +475,7 @@ final class ApprovalsTests: XCTestCase {
         let item = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_s", sensitive: true))
         _ = await store.answer(item, .approve(.cardApproveButton))
         XCTAssertEqual(signer.modes, [.reuseUnlock(interactive: true)], "the card's Approve counts a recent Face ID unlock")
-        store.setStrictFaceID(true)
+        await store.setStrictFaceID(true)
         XCTAssertEqual(defaults.object(forKey: ApprovalsStore.strictFaceIDKey) as? Bool, true)
         _ = await store.answer(item, .approve(.cardApproveButton))
         XCTAssertEqual(signer.modes.last, .prompt)
@@ -484,10 +488,10 @@ final class ApprovalsTests: XCTestCase {
 
     func testTheActivitysApproveRoute() {
         typealias S = ApprovalsStore
-        XCTAssertEqual(S.activityApproveRoute(sensitive: false, strict: false), .decide(nil))
-        XCTAssertEqual(S.activityApproveRoute(sensitive: false, strict: true), .decide(nil))
-        XCTAssertEqual(S.activityApproveRoute(sensitive: true, strict: false), .decide(.reuseUnlock(interactive: false)))
-        XCTAssertEqual(S.activityApproveRoute(sensitive: true, strict: true), .openCard)
+        XCTAssertEqual(S.activityApproveRoute(sensitive: false, strict: false, fullyShown: true), .decide(nil))
+        XCTAssertEqual(S.activityApproveRoute(sensitive: false, strict: true, fullyShown: true), .decide(nil))
+        XCTAssertEqual(S.activityApproveRoute(sensitive: true, strict: false, fullyShown: true), .decide(.reuseUnlock(interactive: false)))
+        XCTAssertEqual(S.activityApproveRoute(sensitive: true, strict: true, fullyShown: true), .openCard)
         // After the background signature: no Face ID unlock to reuse (nil), no key → the card; an answer → done.
         XCTAssertTrue(S.needsCard(after: nil))
         XCTAssertTrue(S.needsCard(after: .needsSetup))
@@ -508,8 +512,8 @@ final class ApprovalsTests: XCTestCase {
         await store.apply([secret, plain])
 
         // A recent Face ID unlock: signed in the background, without a prompt.
-        let needsCard = await store.approveFromActivity(id: "apr_secret", trigger: .activityApproveButton)
-        XCTAssertFalse(needsCard)
+        let needsCard = await store.approveFromActivity(id: "apr_secret", shownHash: fixtureHash, trigger: .activityApproveButton, now: fixtureNow)
+        XCTAssertEqual(needsCard, .done)
         XCTAssertEqual(signer.modes, [.reuseUnlock(interactive: false)])
         XCTAssertEqual(decodeBody(try XCTUnwrap(decideRequests().last))["decision"] as? String, "approve")
         XCTAssertEqual(settled["apr_secret"], .approved)
@@ -518,21 +522,21 @@ final class ApprovalsTests: XCTestCase {
         await store.apply([secret, plain])
         signer.error = ApprovalSignError.needsInteraction
         let sent = decideRequests().count
-        let handOver = await store.approveFromActivity(id: "apr_secret", trigger: .activityApproveButton)
-        XCTAssertTrue(handOver)
+        let handOver = await store.approveFromActivity(id: "apr_secret", shownHash: fixtureHash, trigger: .activityApproveButton, now: fixtureNow)
+        XCTAssertEqual(handOver, .openCard(startApprove: true))
         XCTAssertEqual(decideRequests().count, sent)
         XCTAssertTrue(notifier.failures.isEmpty)
 
         // Strict mode: the card, nothing signed in the background.
-        store.setStrictFaceID(true)
+        await store.setStrictFaceID(true)
         let signs = signer.modes.count
-        let strict = await store.approveFromActivity(id: "apr_secret", trigger: .activityApproveButton)
-        XCTAssertTrue(strict)
+        let strict = await store.approveFromActivity(id: "apr_secret", shownHash: fixtureHash, trigger: .activityApproveButton, now: fixtureNow)
+        XCTAssertEqual(strict, .openCard(startApprove: true))
         XCTAssertEqual(signer.modes.count, signs)
 
         // A plain request is answered at once, strict or not.
-        let plainCard = await store.approveFromActivity(id: "apr_plain", trigger: .activityApproveButton)
-        XCTAssertFalse(plainCard)
+        let plainCard = await store.approveFromActivity(id: "apr_plain", shownHash: fixtureHash, trigger: .activityApproveButton, now: fixtureNow)
+        XCTAssertEqual(plainCard, .done)
         XCTAssertEqual(settled["apr_plain"], .approved)
     }
 
@@ -587,8 +591,10 @@ final class ApprovalsTests: XCTestCase {
         let secret = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_secret", sensitive: true))
         let plain = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_plain", sensitive: false))
         var started: [String] = []
+        // Live Activities allowed, and the clock before the fixtures' expiry (the device run had no starts: they were
+        // past 2026-10-28T10:05).
         let activities = ApprovalActivities(defaults: defaults, requestActivity: { attributes, _ in started.append(attributes.approvalId) },
-                                            liveActivities: { [] })
+                                            liveActivities: { [] }, activitiesEnabled: { true }, now: { fixtureNow })
 
         // In front: the list, the prompt and the local Live Activity start.
         store.onPendingLearned = { activities.sync(pending: $0, foreground: true) }
@@ -670,14 +676,14 @@ final class ApprovalsTests: XCTestCase {
                 ? .init(body: itemJSON(id: "apr_done", sensitive: true, status: "approved"))
                 : .init(body: "{}")
         }
-        let needsCard = await store.approveFromActivity(id: "apr_done", trigger: .activityApproveButton)
-        XCTAssertFalse(needsCard)
+        let needsCard = await store.approveFromActivity(id: "apr_done", shownHash: fixtureHash, trigger: .activityApproveButton, now: fixtureNow)
+        XCTAssertEqual(needsCard, .done)
         assertNothingApproved("already answered on another device")
         // A trigger from elsewhere is refused outright, even for a pending request.
         let secret = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_secret", sensitive: true))
         await store.apply([secret])
-        let refused = await store.approveFromActivity(id: "apr_secret", trigger: .notificationApproveAction)
-        XCTAssertFalse(refused)
+        let refused = await store.approveFromActivity(id: "apr_secret", shownHash: fixtureHash, trigger: .notificationApproveAction, now: fixtureNow)
+        XCTAssertEqual(refused, .done)
         assertNothingApproved("a notification trigger on the activity path")
     }
 
@@ -694,12 +700,138 @@ final class ApprovalsTests: XCTestCase {
 
     func testStrictModeNeverSignsInTheBackground() async throws {
         StubURLProtocol.handler = { _ in .init(body: #"{"status":"ok"}"#) }
-        store.setStrictFaceID(true)
+        await store.setStrictFaceID(true)
         let secret = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_secret", sensitive: true))
         await store.apply([secret])
-        let needsCard = await store.approveFromActivity(id: "apr_secret", trigger: .activityApproveButton)
-        XCTAssertTrue(needsCard, "the card asks for Face ID")
+        let needsCard = await store.approveFromActivity(id: "apr_secret", shownHash: fixtureHash, trigger: .activityApproveButton, now: fixtureNow)
+        XCTAssertEqual(needsCard, .openCard(startApprove: true), "the card asks for Face ID")
         assertNothingApproved("strict mode, background")
+    }
+
+    // MARK: Review fixes
+
+    func testOneTapOnlyForAPlanTheActivityShowsWhole() {
+        typealias A = ApprovalActivityAttributes
+        let three = "systemctl daemon-reload\nsystemctl restart cloudflared\nsystemctl is-active cloudflared"
+        let four = three + "\nuptime"
+        let long = "echo " + String(repeating: "x", count: 195)
+        XCTAssertTrue(A.fullyShown(three))
+        XCTAssertFalse(A.fullyShown(four), "the fourth line is not on the Lock Screen")
+        XCTAssertFalse(A.fullyShown(long), "a 200-character line is clipped")
+        XCTAssertFalse(A.fullyShown("short\n" + String(repeating: "y", count: 61)), "longer than the Lock Screen shows whole")
+        XCTAssertTrue(A.fullyShown(""))
+        let route = { (details: String) in
+            ApprovalsStore.activityApproveRoute(sensitive: true, strict: false, fullyShown: A.fullyShown(details))
+        }
+        XCTAssertEqual(route(three), .decide(.reuseUnlock(interactive: false)))
+        XCTAssertEqual(route(four), .openCard)
+        XCTAssertEqual(route(long), .openCard)
+        XCTAssertEqual(ApprovalsStore.activityApproveRoute(sensitive: false, strict: false, fullyShown: false), .decide(nil),
+                       "a plain request is not signed")
+    }
+
+    func testTheActivitysApproveIsBoundToWhatItShowedAndToTheTime() async throws {
+        StubURLProtocol.handler = { _ in .init(body: #"{"status":"ok"}"#) }
+        let secret = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_secret", sensitive: true))
+        await store.apply([secret])
+        // The request changed since the activity showed it: the card, without its approve step.
+        let changed = await store.approveFromActivity(id: "apr_secret", shownHash: "sha256:" + String(repeating: "cd", count: 32),
+                                                      trigger: .activityApproveButton, now: fixtureNow)
+        XCTAssertEqual(changed, .openCard(startApprove: false))
+        // Its time is up.
+        let late = await store.approveFromActivity(id: "apr_secret", shownHash: fixtureHash, trigger: .activityApproveButton,
+                                                   now: fixtureNow.addingTimeInterval(600))
+        XCTAssertEqual(late, .openCard(startApprove: false))
+        assertNothingApproved("changed or expired")
+    }
+
+    func testASecondTapWhileTheFirstIsOnItsWayDoesNothing() async throws {
+        StubURLProtocol.handler = { request in
+            request.url?.path.hasSuffix("/decide") == true ? .init(body: #"{"status":"ok"}"#) : .init(body: "{}")
+        }
+        let secret = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_secret", sensitive: true))
+        await store.apply([secret])
+        async let first = store.approveFromActivity(id: "apr_secret", shownHash: fixtureHash, trigger: .activityApproveButton, now: fixtureNow)
+        async let second = store.approveFromActivity(id: "apr_secret", shownHash: fixtureHash, trigger: .activityApproveButton, now: fixtureNow)
+        _ = await (first, second)
+        XCTAssertEqual(decideRequests().count, 1, "one answer")
+        XCTAssertEqual(signer.signed.count, 1, "one signature")
+    }
+
+    func testTheCardsAnswerIsBoundToTheRequestOnScreen() async throws {
+        StubURLProtocol.handler = { _ in .init(body: #"{"status":"ok"}"#) }
+        let secret = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_secret", sensitive: true))
+        await store.apply([secret])
+        await store.decide(.approve(.cardApproveButton), shownHash: "sha256:" + String(repeating: "cd", count: 32))
+        XCTAssertTrue(decideRequests().isEmpty)
+        XCTAssertTrue(signer.signed.isEmpty)
+        guard case .failed? = store.outcome else { return XCTFail("the owner is told the request changed") }
+        await store.decide(.approve(.cardApproveButton), shownHash: fixtureHash)
+        XCTAssertEqual(decideRequests().count, 1)
+    }
+
+    func testTheErrorPlaceholderCannotBeAnswered() async throws {
+        StubURLProtocol.handler = { _ in .init(status: 500, body: #"{"error":{"code":"internal","message":"boom"}}"#) }
+        await store.open(id: "apr_missing")
+        XCTAssertEqual(store.sheetItem?.id, "apr_missing")
+        XCTAssertEqual(store.sheetItem?.canAnswer, false)
+        await store.decide(.approve(.cardApproveButton))
+        await store.decide(.deny)
+        XCTAssertTrue(decideRequests().isEmpty)
+        XCTAssertTrue(signer.signed.isEmpty)
+    }
+
+    func testTurningStrictModeOffAsksTheDeviceOwner() async {
+        var asked = 0
+        var answer = false
+        store.deviceOwnerCheck = { _ in asked += 1; return answer }
+        await store.setStrictFaceID(true)
+        XCTAssertTrue(store.strictFaceID)
+        XCTAssertEqual(asked, 0, "turning it on needs nothing")
+        await store.setStrictFaceID(false)
+        XCTAssertTrue(store.strictFaceID, "cancelled: stays on")
+        XCTAssertEqual(defaults.object(forKey: ApprovalsStore.strictFaceIDKey) as? Bool, true)
+        answer = true
+        await store.setStrictFaceID(false)
+        XCTAssertFalse(store.strictFaceID)
+        XCTAssertEqual(asked, 2)
+    }
+
+    func testTheSignersContextPerMode() {
+        XCTAssertEqual(ApprovalContextConfig.forMode(.prompt), ApprovalContextConfig(reuseDuration: 0, interactionNotAllowed: false))
+        XCTAssertEqual(ApprovalContextConfig.forMode(.reuseUnlock(interactive: true)),
+                       ApprovalContextConfig(reuseDuration: 300, interactionNotAllowed: false))
+        XCTAssertEqual(ApprovalContextConfig.forMode(.reuseUnlock(interactive: false)),
+                       ApprovalContextConfig(reuseDuration: 300, interactionNotAllowed: true))
+        XCTAssertEqual(LATouchIDAuthenticationMaximumAllowableReuseDuration, 300)
+    }
+
+    func testOnlyTheNotificationsApproveActionIsATrigger() {
+        XCTAssertEqual(AppDelegate.approvalTrigger(forAction: ApprovalNotifier.approveAction), .notificationApproveAction)
+        XCTAssertNil(AppDelegate.approvalTrigger(forAction: ApprovalNotifier.denyAction))
+        XCTAssertNil(AppDelegate.approvalTrigger(forAction: UNNotificationDefaultActionIdentifier), "a tap opens the card")
+        XCTAssertNil(AppDelegate.approvalTrigger(forAction: UNNotificationDismissActionIdentifier))
+    }
+
+    func testHowTheCardOpensAfterTheActivitysApprove() {
+        typealias A = ApprovalActivities
+        XCTAssertEqual(A.cardOpening(startRequested: true, appActive: true, continued: false), .withApproveStep)
+        XCTAssertEqual(A.cardOpening(startRequested: true, appActive: false, continued: true), .withApproveStep)
+        XCTAssertEqual(A.cardOpening(startRequested: true, appActive: false, continued: false), .withoutApproveStep,
+                       "declined: the card only, nothing in the background")
+        XCTAssertEqual(A.cardOpening(startRequested: false, appActive: true, continued: false), .withoutApproveStep)
+    }
+
+    func testALocalActivityHonoursThePreviewsSetting() throws {
+        let secret = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_secret", sensitive: true))
+        let shown = ApprovalActivities.localAttributes(for: secret, previews: true, now: fixtureNow)
+        XCTAssertEqual(shown.summary, "Install the unit")
+        XCTAssertEqual(shown.commands, "systemctl daemon-reload")
+        let hidden = ApprovalActivities.localAttributes(for: secret, previews: false, now: fixtureNow)
+        XCTAssertEqual(hidden.summary, "Open Secretary to see what it is.")
+        XCTAssertEqual(hidden.commands, "")
+        XCTAssertEqual(hidden.commandCount, 0)
+        XCTAssertEqual(hidden.payloadHash, fixtureHash)
     }
 
     // MARK: Polling

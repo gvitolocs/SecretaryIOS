@@ -138,6 +138,14 @@ struct ApprovalItem: Decodable, Equatable, Identifiable, Sendable {
         ApprovalProof.signingString(id: id, payloadHash: payloadHash, decision: decision)
     }
 
+    /// What the card shows when a request could not be loaded: nothing to answer (no payload hash).
+    static func placeholder(id: String) -> ApprovalItem {
+        ApprovalItem(id: id, summary: "", payloadHash: "")
+    }
+
+    /// Approve and Deny need the request's payload hash (the error placeholder has none).
+    var canAnswer: Bool { !payloadHash.isEmpty }
+
     func isExpired(at now: Date) -> Bool {
         guard let expiresAt else { return false }
         return expiresAt <= now

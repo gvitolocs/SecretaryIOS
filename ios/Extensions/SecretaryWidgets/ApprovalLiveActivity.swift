@@ -148,10 +148,13 @@ private struct ApprovalActivityBody: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: compact ? LucinaTokens.Space.xs : LucinaTokens.Space.sm) {
+            // What is asked stays hidden while the iPhone is locked (WidgetKit redacts it); who asks, the time left and
+            // the buttons stay.
             Text(attributes.summary)
                 .font(compact ? LucinaTokens.Fonts.subheadline.weight(.semibold) : LucinaTokens.Fonts.headline)
                 .foregroundStyle(LucinaTokens.Colors.text)
                 .lineLimit(2)
+                .privacySensitive()
             if phase == .pending {
                 commands
                 buttons
@@ -174,14 +177,16 @@ private struct ApprovalActivityBody: View {
         let lines = attributes.commands.split(separator: "\n", omittingEmptySubsequences: true)
         if !lines.isEmpty {
             VStack(alignment: .leading, spacing: 1) {
-                ForEach(Array(lines.prefix(compact ? 2 : ApprovalActivityAttributes.shownLines).enumerated()), id: \.offset) { _, line in
+                // The same lines in the Dynamic Island and on the Lock Screen, wrapped, never cut in the middle: a one-tap
+                // approve is only for a plan whose every line is here whole (`ApprovalActivityAttributes.fullyShown`).
+                ForEach(Array(lines.prefix(ApprovalActivityAttributes.shownLines).enumerated()), id: \.offset) { _, line in
                     Text(String(line))
                         .font(.system(.caption2, design: .monospaced))
                         .foregroundStyle(LucinaTokens.Colors.textSecondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                let shown = min(lines.count, compact ? 2 : ApprovalActivityAttributes.shownLines)
+                let shown = min(lines.count, ApprovalActivityAttributes.shownLines)
                 if attributes.commandCount > shown {
                     Text("+\(attributes.commandCount - shown) more")
                         .font(LucinaTokens.Fonts.caption2)
@@ -199,7 +204,7 @@ private struct ApprovalActivityBody: View {
                     Label("Deny", systemImage: "xmark").frame(maxWidth: .infinity, minHeight: compact ? 28 : 36)
                 }
                 .tint(LucinaTokens.Colors.negative)
-                Button(intent: ApproveApprovalActivityIntent(approvalId: attributes.approvalId)) {
+                Button(intent: ApproveApprovalActivityIntent(approvalId: attributes.approvalId, payloadHash: attributes.payloadHash)) {
                     Label("Approve", systemImage: attributes.sensitive ? "faceid" : "checkmark")
                         .frame(maxWidth: .infinity, minHeight: compact ? 28 : 36)
                 }

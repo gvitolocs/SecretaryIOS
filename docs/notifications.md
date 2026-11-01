@@ -132,24 +132,32 @@ owner's iPhone (push-to-start, also with the app closed); the time-sensitive
 notification stays as it is. The lock screen shows who asks, the reason, the
 first 3 command lines (monospace, "+N more"), the time left, **Deny** and
 **Approve** side by side, and a **Details** link that opens the approval card.
-The Dynamic Island shows the same, compact.
+The Dynamic Island shows the same, compact. While the iPhone is locked the
+reason and the commands are redacted (who asks, the time left and the buttons
+stay); with notification previews off, an activity the app starts itself says
+only "Open Secretary to see what it is."
 
 - **Deny** works without unlocking (like the widget).
-- **Approve** of a plain request needs the iPhone unlocked (Face ID or the
-  passcode), then answers from the lock screen.
-- **Approve** of a sensitive request (root plans): when the iPhone was
-  unlocked with Face ID in the last 5 minutes, the app signs with its Face ID
-  key in the background, without a second prompt (the unlock's biometric
-  authentication is reused; the key and the server's signature check are
-  unchanged). Otherwise (unlocked with the passcode, too long ago, no key) the
-  app comes to the front on that card and starts the approve step there: the
-  Face ID prompt (or the PIN pad) over the exact commands. Cancelling leaves
-  the card open. The card's own Approve also reuses a recent Face ID unlock.
-- Settings → Approvals → **Require Face ID for root approvals** (this iPhone,
-  off by default) turns the reuse off: Face ID is asked for every approval,
-  and the activity's sensitive Approve goes to the card. The trade-off of
-  leaving it off: anyone holding the iPhone within 5 minutes of a Face ID
-  unlock could approve with one tap.
+- **Approve** needs this iPhone unlocked (an unlocked Watch or Mac does not
+  count). A plain request is then answered from the lock screen.
+- **Approve** of a sensitive request (root plans): one tap is enough only when
+  the activity showed the whole plan (at most 3 commands, none clipped or
+  longer than 60 characters) and the iPhone was unlocked with Face ID in the
+  last 5 minutes. The app then signs with its Face ID key in the background,
+  without a second prompt (the unlock's biometric authentication is reused; the
+  key and the server's signature check are unchanged). Otherwise (a longer
+  plan, unlocked with the passcode, too long ago, no key) the app comes to the
+  front on that card and starts the approve step there: the Face ID prompt (or
+  the PIN pad) over the exact commands. Cancelling leaves the card open. A
+  request that changed since the activity showed it, or expired, only opens
+  the card. The card's own Approve also reuses a recent Face ID unlock and signs
+  the request that was on screen when tapped.
+- Settings → Approvals → **Require Face ID or passcode for root approvals**
+  (this iPhone, off by default) turns the reuse off: Face ID is asked for every
+  approval, and the activity's sensitive Approve goes to the card. Turning it
+  off again asks for Face ID or the passcode. The trade-off of leaving it off:
+  anyone holding the iPhone within 5 minutes of a Face ID unlock could approve
+  a short, fully shown plan with one tap.
 
 When the request is answered anywhere, withdrawn or expires, the server ends
 the activity (an `end` push to its update token); the app also ends any

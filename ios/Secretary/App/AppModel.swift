@@ -377,6 +377,7 @@ final class AppModel {
         }
         approvals.onSettled = { id, outcome in ApprovalActivities.shared.settled(id, outcome) }
         let approvalStore = approvals
+        ApprovalActivities.shared.previews = { notifications.rules.settings.previews }
         ApprovalActivities.shared.start(client: client, status: { id in await approvalStore.status(of: id) })
         agents.onTransportError = onError
         server.onTransportError = onError

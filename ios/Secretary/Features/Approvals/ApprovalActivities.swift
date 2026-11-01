@@ -40,11 +40,22 @@ final class ApprovalActivities {
     /// The activities on this iPhone (tests: none).
     private let liveActivities: () -> [Activity<ApprovalActivityAttributes>]
 
+    /// Whether this iPhone allows Live Activities (tests: yes).
+    private let activitiesEnabled: () -> Bool
+    private let now: () -> Date
+    /// The notifier's previews setting: off, a local activity says only "Open Secretary to see what it is."
+    var previews: () -> Bool
+
     init(defaults: UserDefaults = .standard, requestActivity: ((ApprovalActivityAttributes, Date) -> Void)? = nil,
-         liveActivities: @escaping () -> [Activity<ApprovalActivityAttributes>] = { Activity<ApprovalActivityAttributes>.activities }) {
+         liveActivities: @escaping () -> [Activity<ApprovalActivityAttributes>] = { Activity<ApprovalActivityAttributes>.activities },
+         activitiesEnabled: @escaping () -> Bool = { ActivityAuthorizationInfo().areActivitiesEnabled },
+         now: @escaping () -> Date = Date.init, previews: @escaping () -> Bool = { true }) {
         self.defaults = defaults
         self.requestActivity = requestActivity
         self.liveActivities = liveActivities
+        self.activitiesEnabled = activitiesEnabled
+        self.now = now
+        self.previews = previews
     }
 
     /// Installs the buttons' handlers. Called from `SecretaryApp.init`, before any scene: a button may be all this
@@ -55,34 +66,52 @@ final class ApprovalActivities {
                                                                approvalId: id, sensitive: sensitive)
         }
         // Approve: a plain request is answered; a sensitive one is signed in the background after a recent Face ID
-        // unlock. When that can't be done (strict mode, a passcode unlock, too long ago), the card takes over.
-        ApprovalActivityCommands.approve = { id, trigger, intent in
-            guard await AppModel.shared.approvals.approveFromActivity(id: id, trigger: trigger) else { return }
-            await continueOnCard(id, trigger: trigger, intent: intent)
+        // unlock, when the activity showed the whole plan. Otherwise the card takes over.
+        ApprovalActivityCommands.approve = { id, payloadHash, trigger, intent in
+            let outcome = await AppModel.shared.approvals.approveFromActivity(id: id, shownHash: payloadHash, trigger: trigger)
+            guard case let .openCard(startApprove) = outcome else { return }
+            await continueOnCard(id, trigger: startApprove ? trigger : nil, intent: intent)
         }
     }
 
-    /// Brings the app to the front on `id`'s card with its approve step started (Face ID or the PIN over the commands).
-    /// iOS asks the owner to continue in Secretary; declined (or not possible), the card is there the next time the
-    /// app opens, without its approve step: nothing is ever approved with the app in the background from here.
-    private static func continueOnCard(_ id: String, trigger: ApprovalTrigger, intent: any AppIntent) async {
+    /// How the card opens after the activity's Approve.
+    enum CardOpening: Equatable {
+        /// With its approve step started (Face ID or the PIN over the commands).
+        case withApproveStep
+        /// Only shown: the owner reads it and taps Approve there.
+        case withoutApproveStep
+    }
+
+    /// The approve step starts only when it was asked for and the app is in front: already (`appActive`), or because
+    /// the owner accepted to continue in Secretary (`continued`). Declined or impossible: the card only.
+    nonisolated static func cardOpening(startRequested: Bool, appActive: Bool, continued: Bool) -> CardOpening {
+        startRequested && (appActive || continued) ? .withApproveStep : .withoutApproveStep
+    }
+
+    /// Brings the app to the front on `id`'s card, with its approve step started when `trigger` is set. iOS asks the
+    /// owner to continue in Secretary; declined (or not possible), the card is there the next time the app opens,
+    /// without its approve step: nothing is ever approved with the app in the background from here.
+    private static func continueOnCard(_ id: String, trigger: ApprovalTrigger?, intent: any AppIntent) async {
         let store = AppModel.shared.approvals
+        func open(_ opening: CardOpening) async {
+            await store.open(id: id, startApprove: opening == .withApproveStep ? trigger : nil, now: Date())
+        }
         if UIApplication.shared.applicationState == .active {
-            await store.open(id: id, startApprove: trigger)
+            await open(cardOpening(startRequested: trigger != nil, appActive: true, continued: false))
             return
         }
         if let foreground = intent as? any ForegroundContinuableIntent {
             do {
                 try await foreground.requestToContinueInForeground {
                     // Now in front: the window starts here.
-                    await store.open(id: id, startApprove: trigger, now: Date())
+                    await open(cardOpening(startRequested: trigger != nil, appActive: false, continued: true))
                 }
                 return
             } catch {
                 ApprovalActivities.shared.log.info("approval card not brought to the front: \(error.localizedDescription, privacy: .public)")
             }
         }
-        await store.open(id: id)
+        await open(cardOpening(startRequested: trigger != nil, appActive: false, continued: false))
     }
 
     /// Watches the tokens and the activities (from AppModel, once it is built). `status` looks a request up on the
@@ -178,10 +207,10 @@ final class ApprovalActivities {
         for id in ApprovalActivityAttributes.toEnd(activityIds: showing, pending: Set(items.map(\.id))) {
             Task { await endVanished(id) }
         }
-        guard foreground, requestActivity != nil || ActivityAuthorizationInfo().areActivitiesEnabled else { return }
+        guard foreground, activitiesEnabled() else { return }
         let covered = shown.union(live.map(\.attributes.approvalId))
-        let now = Date()
-        for item in items where !covered.contains(item.id) && !item.isExpired(at: now) && (item.status ?? .pending) == .pending {
+        let date = now()
+        for item in items where !covered.contains(item.id) && !item.isExpired(at: date) && (item.status ?? .pending) == .pending {
             startLocal(item)
         }
     }
@@ -204,15 +233,23 @@ final class ApprovalActivities {
         await end(id, status: result, dismissal: .immediate)
     }
 
-    private func startLocal(_ item: ApprovalItem) {
-        shown.insert(item.id)
-        let (commands, count) = ApprovalActivityAttributes.commandLines(item.details)
-        let expires = item.expiresAt ?? Date().addingTimeInterval(300)
-        let attributes = ApprovalActivityAttributes(
-            approvalId: item.id, requester: item.requester.displayName,
-            summary: item.summary.isEmpty ? item.action : item.summary,
+    /// What a locally started activity shows: with previews off (the notifier's setting) only the generic line and no
+    /// commands. (A push-started one is redacted while the iPhone is locked instead: the server can't know the setting.)
+    nonisolated static func localAttributes(for item: ApprovalItem, previews: Bool, now: Date) -> ApprovalActivityAttributes {
+        let (commands, count) = previews ? ApprovalActivityAttributes.commandLines(item.details) : ("", 0)
+        let summary = previews ? (item.summary.isEmpty ? item.action : item.summary)
+                               : String(localized: "Open Secretary to see what it is.")
+        let expires = item.expiresAt ?? now.addingTimeInterval(300)
+        return ApprovalActivityAttributes(
+            approvalId: item.id, requester: item.requester.displayName, summary: summary,
             commands: commands, commandCount: count, sensitive: item.sensitive, payloadHash: item.payloadHash,
             expiresAtUnix: expires.timeIntervalSince1970)
+    }
+
+    private func startLocal(_ item: ApprovalItem) {
+        shown.insert(item.id)
+        let attributes = Self.localAttributes(for: item, previews: previews(), now: now())
+        let expires = attributes.expiresAt
         if let requestActivity {
             requestActivity(attributes, expires)
             return

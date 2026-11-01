@@ -1,18 +1,82 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
-    "Require Face ID for root approvals" : {
+    "Open Secretary to see what it is." : {
       "localizations" : {
         "it" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Richiedi Face ID per le approvazioni root"
+            "value" : "Apri Secretary per vedere di cosa si tratta."
           }
         },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Kræv Face ID til root-godkendelser"
+            "value" : "Åbn Secretary for at se, hvad det er."
+          }
+        }
+      }
+    },
+    "Turn off Face ID for every root approval" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Disattiva Face ID per ogni approvazione root"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Slå Face ID fra for hver root-godkendelse"
+          }
+        }
+      }
+    },
+    "This request changed. Read it again before you answer." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Questa richiesta è cambiata. Rileggila prima di rispondere."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Anmodningen er ændret. Læs den igen, før du svarer."
+          }
+        }
+      }
+    },
+    "Payload hash" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hash del contenuto"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Indholdshash"
+          }
+        }
+      }
+    },
+    "Require Face ID or passcode for root approvals" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Richiedi Face ID o codice per le approvazioni root"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kræv Face ID eller kode til root-godkendelser"
           }
         }
       }

@@ -87,8 +87,9 @@ struct ApprovalsSettingsSection: View {
         }
 
         Section {
-            Toggle(isOn: Binding(get: { store.strictFaceID }, set: { store.setStrictFaceID($0) })) {
-                Label("Require Face ID for root approvals", systemImage: "faceid")
+            // On at once; off only after Face ID or the passcode (the toggle stays on if that is cancelled).
+            Toggle(isOn: Binding(get: { store.strictFaceID }, set: { on in Task { await store.setStrictFaceID(on) } })) {
+                Label("Require Face ID or passcode for root approvals", systemImage: "faceid")
             }
             .accessibilityIdentifier("approvalsStrictFaceID")
         } footer: {

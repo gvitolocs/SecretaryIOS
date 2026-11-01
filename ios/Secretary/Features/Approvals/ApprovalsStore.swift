@@ -1,4 +1,5 @@
 import Foundation
+import LocalAuthentication
 import Observation
 import os
 
@@ -71,7 +72,7 @@ final class ApprovalsStore {
     static let backoffInterval: Duration = .seconds(30)
     static let errorInterval: Duration = .seconds(10)
     static let notifiedKey = "secretary.approvals.notified"
-    /// "Require Face ID for root approvals", this iPhone only. Off (the default): a Face ID unlock in the last
+    /// "Require Face ID or passcode for root approvals", this iPhone only. Off (the default): a Face ID unlock in the last
     /// 5 minutes signs a sensitive approve in one tap.
     static let strictFaceIDKey = "secretary.approvals.strictFaceID"
     static let notifiedLimit = 100
@@ -90,7 +91,7 @@ final class ApprovalsStore {
     /// `StartApprove.window`. Cleared when the sheet closes, when the request leaves the list, when the app goes to the
     /// background and on sign-out. Only `open(id:startApprove:)` sets it.
     private(set) var startApprove: StartApprove?
-    /// "Require Face ID for root approvals" (Settings → Approvals).
+    /// "Require Face ID or passcode for root approvals" (Settings → Approvals).
     private(set) var strictFaceID: Bool
 
     // Settings → Approvals
@@ -107,6 +108,12 @@ final class ApprovalsStore {
     @ObservationIgnored private let deviceLabel: () -> String
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let log = Logger(subsystem: "tech.getsecretary.app", category: "Approvals")
+    /// Live Activity approves on their way, by request.
+    @ObservationIgnored private var activityAnswering: Set<String> = []
+    /// Bumped each time the app goes to the background: a card's approve step that waited across it stops.
+    @ObservationIgnored private(set) var backgroundGeneration = 0
+    /// Face ID or the passcode, to turn strict mode off (tests answer it).
+    @ObservationIgnored var deviceOwnerCheck: (String) async -> Bool = ApprovalsStore.evaluateDeviceOwner
     @ObservationIgnored var onTransportError: ((APIError) -> Void)?
     /// The pending list changed (the app hands it to the approvals widget).
     @ObservationIgnored var onPendingChanged: (([ApprovalItem]) -> Void)?
@@ -134,9 +141,20 @@ final class ApprovalsStore {
         strictFaceID = defaults.bool(forKey: Self.strictFaceIDKey)
     }
 
-    func setStrictFaceID(_ on: Bool) {
+    /// Turning strict mode on needs nothing; turning it off needs Face ID or the passcode now. Returns the new value.
+    @discardableResult
+    func setStrictFaceID(_ on: Bool) async -> Bool {
+        if !on, strictFaceID {
+            guard await deviceOwnerCheck(String(localized: "Turn off Face ID for every root approval")) else { return strictFaceID }
+        }
         strictFaceID = on
         defaults.set(on, forKey: Self.strictFaceIDKey)
+        return on
+    }
+
+    nonisolated static func evaluateDeviceOwner(_ reason: String) async -> Bool {
+        let context = LAContext()
+        return (try? await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)) == true
     }
 
     /// How a sensitive approve on the card asks: Face ID every time in strict mode, else a recent Face ID unlock counts.
@@ -301,7 +319,7 @@ final class ApprovalsStore {
             }
             if let outcome, outcome.isFinal { onSettled?(id, outcome) }
         } catch {
-            sheetItem = ApprovalItem(id: id, summary: "")
+            sheetItem = ApprovalItem.placeholder(id: id)
             outcome = ApprovalOutcome.from(error)
         }
     }
@@ -316,6 +334,7 @@ final class ApprovalsStore {
     /// The app went to the background: nothing started from a tap carries on.
     func sceneBackgrounded() {
         startApprove = nil
+        backgroundGeneration += 1
     }
 
     /// How a request stands on the server now (nil: unknown, offline).
@@ -327,8 +346,15 @@ final class ApprovalsStore {
     // MARK: - Answering
 
     /// The prompt's Approve / Deny. `pin` is the owner's 6 digits from the PIN pad (a sensitive approve only).
-    func decide(_ choice: ApprovalAnswer, pin: String? = nil) async {
-        guard let item = sheetItem, working == nil, outcome?.isFinal != true else { return }
+    /// `shownHash`: the payload hash of the request on screen when the owner tapped; a request that changed since is
+    /// not answered (the card shows the new one).
+    func decide(_ choice: ApprovalAnswer, pin: String? = nil, shownHash: String? = nil) async {
+        guard let item = sheetItem, item.canAnswer, working == nil, outcome?.isFinal != true else { return }
+        if let shownHash, shownHash != item.payloadHash {
+            log.error("answer refused id=\(item.id, privacy: .public): changed since shown")
+            outcome = .failed(String(localized: "This request changed. Read it again before you answer."))
+            return
+        }
         working = choice.decision
         outcome = nil
         let result = await answer(item, choice, pin: pin)
@@ -511,10 +537,11 @@ final class ApprovalsStore {
     }
 
     /// Plain requests are answered at once. A sensitive one is signed in the background with a recent Face ID
-    /// unlock, unless the owner asked for Face ID every time (strict): then the card asks.
-    nonisolated static func activityApproveRoute(sensitive: Bool, strict: Bool) -> ActivityApproveRoute {
+    /// unlock only when the activity showed the whole plan (`fullyShown`) and the owner did not ask for Face ID every
+    /// time (strict); otherwise the card asks, over the exact commands.
+    nonisolated static func activityApproveRoute(sensitive: Bool, strict: Bool, fullyShown: Bool) -> ActivityApproveRoute {
         guard sensitive else { return .decide(nil) }
-        return strict ? .openCard : .decide(.reuseUnlock(interactive: false))
+        return strict || !fullyShown ? .openCard : .decide(.reuseUnlock(interactive: false))
     }
 
     /// After the background attempt: the card takes over when no signature could be made without showing Face ID
@@ -526,29 +553,48 @@ final class ApprovalsStore {
         }
     }
 
-    /// The Live Activity's Approve (iOS ran it after the iPhone was unlocked; the app may be in the background). True:
-    /// the approve step has to happen on the card, in front. Only for the activity's own tap, and only for a request
-    /// that is pending now (listed, or fetched now and still pending).
-    func approveFromActivity(id: String, trigger: ApprovalTrigger) async -> Bool {
+    /// What the app does after the Live Activity's Approve.
+    enum ActivityApproveOutcome: Equatable {
+        /// Answered, refused, or nothing to do.
+        case done
+        /// The card, in front: with its approve step started (Face ID over the commands), or only shown (the request
+        /// changed since the activity showed it, or its time is up).
+        case openCard(startApprove: Bool)
+    }
+
+    /// The Live Activity's Approve (iOS ran it after this iPhone was unlocked; the app may be in the background).
+    /// Only for the activity's own tap, only for a request that is pending now (listed, or fetched now and still
+    /// pending), only for the request the activity showed (`shownHash`), and once at a time per request.
+    func approveFromActivity(id: String, shownHash: String, trigger: ApprovalTrigger,
+                             now: Date = Date()) async -> ActivityApproveOutcome {
         guard trigger == .activityApproveButton else {
             log.error("approve refused id=\(id, privacy: .public): not from the activity's Approve")
-            return false
+            return .done
         }
+        // A second tap while the first answer is on its way does nothing.
+        guard !activityAnswering.contains(id), !(working != nil && sheetItem?.id == id) else { return .done }
+        activityAnswering.insert(id)
+        defer { activityAnswering.remove(id) }
         var known = pending.first { $0.id == id }
         if known == nil, let api = api() { known = try? await api.get(id) }
-        guard let item = known else { return true }
+        guard let item = known else { return .openCard(startApprove: true) }
         guard item.status == nil || item.status == .pending else {
             await forgetAnswered(item)
-            return false
+            return .done
         }
-        switch Self.activityApproveRoute(sensitive: item.sensitive, strict: strictFaceID) {
+        guard item.payloadHash == shownHash, !item.isExpired(at: now) else {
+            log.error("approve refused id=\(id, privacy: .public): changed since shown, or expired")
+            return .openCard(startApprove: false)
+        }
+        let shownWhole = previews() && ApprovalActivityAttributes.fullyShown(item.details)
+        switch Self.activityApproveRoute(sensitive: item.sensitive, strict: strictFaceID, fullyShown: shownWhole) {
         case .openCard:
-            return true
+            return .openCard(startApprove: true)
         case let .decide(mode):
             let result = await answer(item, .approve(trigger), mode: mode)
-            if Self.needsCard(after: result) { return true }
+            if Self.needsCard(after: result) { return .openCard(startApprove: true) }
             if let result { await finishButtonAnswer(item, result) }
-            return false
+            return .done
         }
     }
 

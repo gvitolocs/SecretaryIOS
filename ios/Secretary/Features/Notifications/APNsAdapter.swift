@@ -155,6 +155,12 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         return [.banner, .list, .sound]
     }
 
+    /// The trigger of a notification answer: only the notification's own Approve action approves; a tap, Deny or any
+    /// other action carries none.
+    static func approvalTrigger(forAction actionIdentifier: String) -> ApprovalTrigger? {
+        actionIdentifier == ApprovalNotifier.approveAction ? .notificationApproveAction : nil
+    }
+
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
         let info = response.notification.request.content.userInfo
         // An approval: Approve / Deny from the notification, or its tap opens the prompt.
@@ -163,7 +169,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             let sensitive = info[ApprovalNotifier.sensitiveKey] as? Bool ?? info["sensitive"] as? Bool ?? true
             let action = response.actionIdentifier
             // The owner tapped the notification's Approve: the only place this trigger is made.
-            let trigger: ApprovalTrigger? = action == ApprovalNotifier.approveAction ? .notificationApproveAction : nil
+            let trigger = Self.approvalTrigger(forAction: action)
             await AppModel.shared.approvals.handleNotification(actionIdentifier: action, approvalId: approvalId,
                                                                sensitive: sensitive, trigger: trigger)
             return

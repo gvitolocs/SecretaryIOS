@@ -74,16 +74,22 @@ private struct RequestView: View {
     /// this card; cancelling leaves the card open). With the PIN pad showing, the pad is that step. Only with the app
     /// in front within the start's window, and only on the card the tap opened.
     private func startApproveStep(_ start: StartApprove) async {
-        guard item.sensitive, start.id == item.id else { return }
+        guard item.sensitive, start.id == item.id, item.canAnswer else { return }
+        // What is on screen now is what Face ID will sign (the request is not answered if it changes meanwhile).
+        let shownHash = item.payloadHash
+        // Going to the background at any point stops it.
+        let generation = store.backgroundGeneration
         if store.settings == nil { await store.loadSettings() }
         guard !needsSetup, !showsPad, store.working == nil else { return }
         // The app is still coming to the front: Face ID only asks once it is active.
-        while UIApplication.shared.applicationState != .active, Date() < start.deadline {
+        while UIApplication.shared.applicationState != .active, Date() < start.deadline,
+              store.backgroundGeneration == generation, UIApplication.shared.applicationState != .background {
             try? await Task.sleep(for: .milliseconds(100))
         }
-        guard UIApplication.shared.applicationState == .active, Date() < start.deadline,
-              !item.isExpired(at: Date()), store.sheetItem?.id == start.id, store.outcome?.isFinal != true else { return }
-        await store.decide(.approve(start.trigger))
+        guard store.backgroundGeneration == generation, UIApplication.shared.applicationState == .active,
+              Date() < start.deadline, !item.isExpired(at: Date()), store.sheetItem?.id == start.id,
+              store.outcome?.isFinal != true else { return }
+        await store.decide(.approve(start.trigger), shownHash: shownHash)
     }
 
     private var requester: some View {
@@ -166,10 +172,20 @@ private struct RequestView: View {
     @ViewBuilder private var buttons: some View {
         let working = store.working
         let expired = item.isExpired(at: Date())
-        if showsPad {
+        // Each answer is bound to the request on screen when tapped.
+        let shownHash = item.payloadHash
+        if !item.canAnswer {
+            // The request could not be loaded: nothing to answer.
+            VStack(spacing: 10) {
+                message
+                Button("Close", action: close)
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier("approvalClose")
+            }
+        } else if showsPad {
             VStack(spacing: 12) {
                 PinPad(title: "Enter your PIN", message: store.outcome?.pinMessage, busy: working != nil || expired) { pin in
-                    Task { await store.decide(.approve(.cardApproveButton), pin: pin) }
+                    Task { await store.decide(.approve(.cardApproveButton), pin: pin, shownHash: shownHash) }
                 }
                 HStack {
                     if hasKey {
@@ -193,7 +209,7 @@ private struct RequestView: View {
             VStack(spacing: 10) {
                 message
                 Button {
-                    Task { await store.decide(.approve(.cardApproveButton)) }
+                    Task { await store.decide(.approve(.cardApproveButton), shownHash: shownHash) }
                 } label: {
                     HStack(spacing: 8) {
                         if working == .approve {
