@@ -1,0 +1,7 @@
+{"package": "linux", "versions": [
+  {"area": "main", "suites": ["sid"], "version": "6.17.6-1"},
+  {"area": "main", "suites": ["trixie"], "version": "6.12.110-1"},
+  {"area": "main", "suites": ["trixie-proposed-updates"], "version": "6.12.109-1"},
+  {"area": "main", "suites": ["trixie"], "version": "6.12.107-1"},
+  {"area": "main", "suites": ["bookworm"], "version": "6.1.150-1"}
+]}

@@ -1,0 +1,9 @@
+[Unit]
+Description=Lucina upstream watch: hourly reconcile of the owner's answers
+
+[Timer]
+OnCalendar=*:17
+Persistent=true
+
+[Install]
+WantedBy=timers.target

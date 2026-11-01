@@ -1,0 +1,18 @@
+[package]
+name = "lucina-upstream"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Weekly upstream watch: the registry of projects Lucina ported, what they released since our pin, JEV's verdict, porting briefs"
+
+[dependencies]
+anyhow = "1"
+chrono = { workspace = true }
+lucina-jev = { path = "../lucina-jev" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+toml = "=1.1.6"
+
+[dev-dependencies]
+tempfile = "3"
