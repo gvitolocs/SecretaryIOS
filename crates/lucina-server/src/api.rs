@@ -628,6 +628,42 @@ async fn route(
                            "replyMode": routed.reply_mode, "tier0": routed.tier0()},
             })))
         }
+        // Upstream watch (lucina-upstream, docs/upstream-watch.md): Jev's verdict on what an upstream
+        // released since our pin, asked by `lucina-rs upstream check`. Diagnostics-like: reads only (no
+        // turn, no timeline, no memory); not forwarded by secretary-server.
+        (Some("jev"), Some("upstream")) => {
+            only(&["POST"])?;
+            let body = read_json(body, MAX_BODY_BYTES).await?;
+            let field = |k: &str| {
+                body.get(k)
+                    .cloned()
+                    .ok_or_else(|| ApiError::bad_request(format!("{k} is required")))
+            };
+            let up: lucina_upstream::registry::Upstream =
+                serde_json::from_value(field("upstream")?)
+                    .map_err(|e| ApiError::bad_request(format!("upstream: {e}")))?;
+            let cs: lucina_upstream::fetch::ChangeSet =
+                serde_json::from_value(field("changes")?)
+                    .map_err(|e| ApiError::bad_request(format!("changes: {e}")))?;
+            let summary: lucina_upstream::summary::Summary =
+                serde_json::from_value(field("summary")?)
+                    .map_err(|e| ApiError::bad_request(format!("summary: {e}")))?;
+            let state = lucina_upstream::judge::state(&up, &cs, &summary);
+            let started = std::time::Instant::now();
+            let d = lucina_jev::shared()
+                .decide("upstream", state, &lucina_upstream::judge::questions())
+                .await;
+            let (verdict, jev) = match &d {
+                Ok(d) => match lucina_upstream::judge::verdict(d) {
+                    Some(v) => (Some(v), "ok"),
+                    None => (None, "malformed"),
+                },
+                Err(e) => (None, e.code()),
+            };
+            Ok(ok(
+                json!({"verdict": verdict, "jev": jev, "elapsedMs": started.elapsed().as_millis() as u64}),
+            ))
+        }
         // Yes/no questions (crate::jev_yesno): Jev's gate on a text and the answer it would give from
         // the owner's live data. Reads only (no turn, no timeline); not forwarded by secretary-server.
         (Some("jev"), Some("yesno")) => {

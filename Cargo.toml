@@ -59,6 +59,7 @@ members = [
     "crates/lucina-media",
     "crates/lucina-media-ml",
     "crates/lucina-jev",
+    "crates/lucina-upstream",
     "crates/secretary-image",
     "crates/lucina-vocab",
 ]

@@ -55,6 +55,7 @@ pub mod share;
 pub mod shopping_mcp_gate;
 pub mod surface;
 pub mod telegram;
+pub mod upstream;
 pub mod video;
 pub mod voice;
 pub mod voice_learn;

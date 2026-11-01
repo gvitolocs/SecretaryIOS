@@ -3809,6 +3809,7 @@ dependencies = [
  "lucina-store",
  "lucina-telegram",
  "lucina-tools",
+ "lucina-upstream",
  "lucina-vault-ingest",
  "lucina-vocab",
  "pdf-extract 0.10.0",
@@ -3916,6 +3917,20 @@ dependencies = [
  "tracing",
  "uuid",
  "wiremock",
+]
+
+[[package]]
+name = "lucina-upstream"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "lucina-jev",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "toml 1.1.6+spec-1.1.0",
 ]
 
 [[package]]

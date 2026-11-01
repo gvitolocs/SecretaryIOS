@@ -1,0 +1,10 @@
+[Unit]
+Description=Lucina weekly upstream watch, Monday 07:30 Copenhagen
+
+[Timer]
+OnCalendar=Mon 07:30 Europe/Copenhagen
+Persistent=true
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target

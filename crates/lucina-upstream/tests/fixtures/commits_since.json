@@ -1,0 +1,4 @@
+[
+  {"sha": "5555555eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "commit": {"message": "fix(server): retry a host", "committer": {"date": "2026-11-01T10:59:33Z"}}, "parents": [{"sha": "4444444ddddddddddddddddddddddddddddddddd"}]},
+  {"sha": "4444444ddddddddddddddddddddddddddddddddd", "commit": {"message": "feat: schedules in the app", "committer": {"date": "2026-10-28T09:00:00Z"}}, "parents": [{"sha": "0ld0000000000000000000000000000000000000"}]}
+]
