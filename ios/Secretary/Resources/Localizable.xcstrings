@@ -1,6 +1,22 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Face ID didn't confirm it. Nothing was sent. Tap Approve to try again." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Face ID non l'ha confermato. Non è stato inviato nulla. Tocca Approva per riprovare."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Face ID bekræftede det ikke. Intet blev sendt. Tryk på Godkend for at prøve igen."
+          }
+        }
+      }
+    },
     "Open Secretary to approve" : {
       "localizations" : {
         "it" : {
@@ -33,22 +49,6 @@
         }
       }
     },
-    "Turn off Face ID for every root approval" : {
-      "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Disattiva Face ID per ogni approvazione root"
-          }
-        },
-        "da" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Slå Face ID fra for hver root-godkendelse"
-          }
-        }
-      }
-    },
     "This request changed. Read it again before you answer." : {
       "localizations" : {
         "it" : {
@@ -77,38 +77,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Indholdshash"
-          }
-        }
-      }
-    },
-    "Require Face ID or passcode for root approvals" : {
-      "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Richiedi Face ID o codice per le approvazioni root"
-          }
-        },
-        "da" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Kræv Face ID eller kode til root-godkendelser"
-          }
-        }
-      }
-    },
-    "Off: right after you unlock with Face ID, Approve works in one tap. Anyone holding your unlocked iPhone could approve. On: Face ID is asked for every approval." : {
-      "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Disattivato: subito dopo lo sblocco con Face ID, Approva funziona con un tocco. Chiunque abbia in mano il tuo iPhone sbloccato potrebbe approvare. Attivato: Face ID viene chiesto per ogni approvazione."
-          }
-        },
-        "da" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Fra: lige efter du låser op med Face ID, virker Godkend med ét tryk. Alle, der holder din ulåste iPhone, kan godkende. Til: Face ID bliver spurgt ved hver godkendelse."
           }
         }
       }

@@ -140,39 +140,28 @@ only "Open Secretary to see what it is."
 - **Deny** works without unlocking (like the widget).
 - **Approve** needs this iPhone unlocked (an unlocked Watch or Mac does not
   count). A plain request is then answered from the lock screen.
-- **Approve** of a sensitive request (root plans): one tap is enough only when
-  the activity showed the whole plan (at most 3 commands, none clipped or
-  longer than 60 characters) and the iPhone was unlocked with Face ID in the
-  last 5 minutes. The app then signs with its Face ID key in the background,
-  without a second prompt (the unlock's biometric authentication is reused; the
-  key and the server's signature check are unchanged). Otherwise (a longer
-  plan, unlocked with the passcode, too long ago, no key) the app comes to the
-  front on that card and starts the approve step there: the Face ID prompt (or
-  the PIN pad) over the exact commands (iOS 26+: the intent's
-  `.foreground(.dynamic)` mode); if the app can't come to the front, an "Open
-  Secretary to approve" notification leads to the card instead, so a tap never
-  ends in nothing. Cancelling leaves the card open. A
-  request that changed since the activity showed it, or expired, only opens
-  the card. The card's own Approve also reuses a recent Face ID unlock and signs
-  the request that was on screen when tapped.
-- Settings → Approvals → **Require Face ID or passcode for root approvals**
-  (this iPhone, off by default) turns the reuse off: Face ID is asked for every
-  approval, and the activity's sensitive Approve goes to the card. Turning it
-  off again asks for Face ID or the passcode. The trade-off of leaving it off:
-  anyone holding the iPhone within 5 minutes of a Face ID unlock could approve
-  a short, fully shown plan with one tap.
+- **Approve** of a sensitive request (root plans) is never signed in the
+  background: the app comes to the front on that card (iOS 26+: the intent's
+  `.foreground(.dynamic)` mode) and asks Face ID at once (or the PIN pad) over
+  the exact commands. If the app can't come to the front, an "Open Secretary to
+  approve" notification leads to the card instead, so a tap never ends in
+  nothing. Cancelling leaves the card open. A request that changed since the
+  activity showed it, or expired, only opens the card. The card signs the
+  request that was on screen when tapped.
+- Every root approval is a real Face ID (or passcode) prompt. An earlier build
+  reused the Face ID unlock of the iPhone instead; the Secure Enclave key
+  refuses such a context (CryptoTokenKit -5), so that is gone, and so is the
+  "Require Face ID or passcode for root approvals" setting.
 
-**The notification** follows the same rule. A root plan whose push body
-carries every command uncut (category `APPROVAL_SENSITIVE_INLINE`; the
-expanded notification, where the buttons are, shows the whole body) has
-Approve (Face ID on this iPhone) and Deny (nothing): Approve is signed in place
-with the Face ID unlock, bound to the push's `payloadHash`. A plan that does
-not fit (over 2400 bytes, or cut in the inbox), or previews off, keeps
-`APPROVAL_SENSITIVE`, whose "Review and approve" opens the card; so does every
-root plan with strict mode on. When the in-place Approve can't be signed
-(unlocked with the passcode or too long ago, the request changed or expired,
-already being answered), nothing is signed and an "Open Secretary to approve"
-notification takes the owner to the card.
+**The notification** follows the same rule. Deny answers in place, without
+unlocking. A root plan whose push body carries every command uncut (category
+`APPROVAL_SENSITIVE_INLINE`; the expanded notification, where the buttons are,
+shows the whole body) has **Approve** (Face ID icon): it unlocks, brings the
+app to the front on the card and asks Face ID at once, provided the request is
+still pending, unexpired and has the push's `payloadHash`; otherwise the card
+opens without asking. A plan that does not fit (over 2400 bytes, or cut in the
+inbox), or previews off, keeps `APPROVAL_SENSITIVE`, whose "Review and
+approve" opens the card for the owner to read and tap Approve there.
 
 When the request is answered anywhere, withdrawn or expires, the server ends
 the activity (an `end` push to its update token); the app also ends any

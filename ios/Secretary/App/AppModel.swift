@@ -376,8 +376,6 @@ final class AppModel {
             ApprovalActivities.shared.sync(pending: items, foreground: self?.isForeground ?? false)
         }
         approvals.onSettled = { id, outcome in ApprovalActivities.shared.settled(id, outcome) }
-        // The root-plan notification's Approve follows "Require Face ID or passcode for root approvals".
-        approvals.onStrictChanged = { strict in ApprovalNotifier.registerCategories(strict: strict) }
         let approvalStore = approvals
         ApprovalActivities.shared.previews = { notifications.rules.settings.previews }
         ApprovalActivities.shared.start(client: client, status: { id in await approvalStore.status(of: id) })

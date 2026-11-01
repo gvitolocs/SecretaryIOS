@@ -10,10 +10,9 @@ import Foundation
 //
 // The buttons are LiveActivityIntents, which iOS runs in the app's process through the handlers the app installs at
 // launch (`ApprovalActivityCommands`). Deny needs no unlock (like the widget). Approve needs the iPhone unlocked; a
-// plain request is then answered at once. A sensitive one (root plans) is signed with the Face ID key in the
-// background when the activity showed the whole plan and the iPhone was unlocked with Face ID in the last 5 minutes (unless "Require Face ID or passcode for root
-// approvals" is on); otherwise the app comes to the front on the request's card and starts the approve step there
-// (Face ID or the PIN over the exact commands).
+// plain request is then answered at once. A sensitive one (root plans) is never signed in the background: the app
+// comes to the front on the request's card and starts the approve step there (Face ID, or the PIN, over the exact
+// commands).
 
 struct ApprovalActivityAttributes: ActivityAttributes {
     struct ContentState: Codable, Hashable {
@@ -36,8 +35,6 @@ struct ApprovalActivityAttributes: ActivityAttributes {
 
     /// Command lines the activity shows.
     static let shownLines = 3
-    /// The longest command line the Lock Screen shows whole (two lines of monospaced caption on an iPhone).
-    static let fullyShownLineChars = 60
 
     private static func lines(_ details: String) -> [String] {
         details.split(separator: "\n", omittingEmptySubsequences: false)
@@ -50,15 +47,6 @@ struct ApprovalActivityAttributes: ActivityAttributes {
         let lines = lines(details)
         let head = lines.prefix(shownLines).map { $0.count > 120 ? String($0.prefix(119)) + "…" : $0 }
         return (head.joined(separator: "\n"), lines.count)
-    }
-
-    /// The activity shows every command of `details` whole: at most `shownLines`, none clipped, none longer than
-    /// `fullyShownLineChars`. Only then may one tap on the Lock Screen approve a sensitive request.
-    static func fullyShown(_ details: String) -> Bool {
-        let all = lines(details)
-        let (commands, count) = commandLines(details)
-        return count <= shownLines && commands == all.joined(separator: "\n")
-            && all.allSatisfy { $0.count <= fullyShownLineChars }
     }
 
     /// The approval ids among `activityIds` (the approvals the activities show) that are no longer pending.
@@ -125,13 +113,13 @@ struct DenyApprovalActivityIntent: LiveActivityIntent {
 }
 
 /// Approve from the Lock Screen: iOS asks to unlock this iPhone first (an unlocked Watch or Mac does not count).
-/// The app decides how (plain, sensitive, strict mode, whether the activity showed the whole plan).
+/// A plain request is answered; a sensitive one goes to the card in front (Face ID there).
 struct ApproveApprovalActivityIntent: LiveActivityIntent {
     static let title: LocalizedStringResource = "Approve an approval"
     static let isDiscoverable = false
     static let authenticationPolicy: IntentAuthenticationPolicy = .requiresLocalDeviceAuthentication
-    /// Runs in the background, and may bring the app to the front when the approve step has to happen on the card
-    /// (`continueInForeground`). iOS 26 replaced `ForegroundContinuableIntent` with this; it does nothing there.
+    /// Runs in the background, and brings the app to the front when the approve step has to happen on the card (every
+    /// sensitive request; `continueInForeground`). iOS 26 replaced `ForegroundContinuableIntent` with this; it does nothing there.
     @available(iOS 26.0, *)
     static var supportedModes: IntentModes { [.background, .foreground(.dynamic)] }
 

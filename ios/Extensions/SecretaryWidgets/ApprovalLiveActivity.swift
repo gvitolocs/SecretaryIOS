@@ -177,8 +177,8 @@ private struct ApprovalActivityBody: View {
         let lines = attributes.commands.split(separator: "\n", omittingEmptySubsequences: true)
         if !lines.isEmpty {
             VStack(alignment: .leading, spacing: 1) {
-                // The same lines in the Dynamic Island and on the Lock Screen, wrapped, never cut in the middle: a one-tap
-                // approve is only for a plan whose every line is here whole (`ApprovalActivityAttributes.fullyShown`).
+                // The same lines in the Dynamic Island and on the Lock Screen, wrapped, never cut in the middle (the card
+                // shows them all before Face ID).
                 ForEach(Array(lines.prefix(ApprovalActivityAttributes.shownLines).enumerated()), id: \.offset) { _, line in
                     Text(String(line))
                         .font(.system(.caption2, design: .monospaced))

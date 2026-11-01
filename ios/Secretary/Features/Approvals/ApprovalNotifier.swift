@@ -28,21 +28,20 @@ enum ApprovalNotificationAction: Equatable {
     /// What the app does with it.
     enum Route: Equatable {
         case decide(ApprovalDecision)
-        /// Approve a sensitive request in place, signed with a recent Face ID unlock (`.reuseUnlock(interactive: false)`).
-        case decideSigned
+        /// The card, with its approve step started: Face ID at once, over the commands.
+        case openSheetAndApprove
         case openSheet
     }
 
-    /// Deny, and a plain approve, are answered from the notification. A sensitive approve is answered in place too
-    /// when the notification showed the whole plan (`inline`: category `APPROVAL_SENSITIVE_INLINE`) and the owner did
-    /// not ask for Face ID every time (`strict`); otherwise (or a tap) it opens the card, where the owner reads it and
-    /// Face ID is asked when he taps Approve.
-    func route(sensitive: Bool, inline: Bool, strict: Bool) -> Route {
+    /// Deny, and a plain approve, are answered from the notification. A sensitive approve opens the card (the app comes
+    /// to the front): with its approve step started when the notification showed the whole plan (`inline`: category
+    /// `APPROVAL_SENSITIVE_INLINE`), else for the owner to read it and tap Approve there. A tap opens the card.
+    func route(sensitive: Bool, inline: Bool) -> Route {
         switch self {
         case .deny: return .decide(.deny)
         case .approve:
             guard sensitive else { return .decide(.approve) }
-            return inline && !strict ? .decideSigned : .openSheet
+            return inline ? .openSheetAndApprove : .openSheet
         case .open: return .openSheet
         }
     }
@@ -54,9 +53,8 @@ enum ApprovalNotificationAction: Equatable {
 /// Category `APPROVAL` has Approve (the iPhone must be unlocked) and Deny (no unlock), both answered without
 /// opening the app. `APPROVAL_SENSITIVE`'s Approve opens the card instead: a sensitive approve needs Face ID or the
 /// passcode, asked on the card. `APPROVAL_SENSITIVE_INLINE` is a sensitive request whose body carries the whole plan:
-/// its Approve answers in place, signed with the Face ID unlock that showed it (with "Require Face ID or passcode for
-/// root approvals" on, it opens the card like `APPROVAL_SENSITIVE`). Older servers send `APPROVAL` for every request;
-/// the store opens the card for a sensitive one.
+/// its Approve opens the card with Face ID asked at once. Older servers send `APPROVAL` for every request; the store
+/// opens the card for a sensitive one.
 @MainActor
 final class ApprovalNotifier: ApprovalNotifying {
     nonisolated static let category = "APPROVAL"
@@ -105,21 +103,23 @@ final class ApprovalNotifier: ApprovalNotifying {
         return (head + "\n…", true)
     }
 
-    /// Registers the categories (the app sets no others). `strict` ("Require Face ID or passcode for root
-    /// approvals"): the inline category's Approve opens the card too. Registered at launch and on every change.
-    nonisolated static func registerCategories(strict: Bool, on center: UNUserNotificationCenter = .current()) {
+    /// Registers the categories (the app sets no others).
+    nonisolated static func registerCategories(on center: UNUserNotificationCenter = .current()) {
         let approve = UNNotificationAction(identifier: approveAction, title: String(localized: "Approve"), options: [.authenticationRequired],
                                            icon: UNNotificationActionIcon(systemImageName: "checkmark"))
         let approveInApp = UNNotificationAction(identifier: approveAction, title: String(localized: "Review and approve"),
                                                 options: [.authenticationRequired, .foreground],
                                                 icon: UNNotificationActionIcon(systemImageName: "lock"))
+        // The whole plan was in the body: Approve brings the card with Face ID at once.
+        let approveWithFaceID = UNNotificationAction(identifier: approveAction, title: String(localized: "Approve"),
+                                                     options: [.authenticationRequired, .foreground],
+                                                     icon: UNNotificationActionIcon(systemImageName: "faceid"))
         let deny = UNNotificationAction(identifier: denyAction, title: String(localized: "Deny"), options: [.destructive],
                                         icon: UNNotificationActionIcon(systemImageName: "xmark"))
         let mine: Set<UNNotificationCategory> = [
             UNNotificationCategory(identifier: category, actions: [approve, deny], intentIdentifiers: [], options: []),
             UNNotificationCategory(identifier: sensitiveCategory, actions: [approveInApp, deny], intentIdentifiers: [], options: []),
-            // The whole plan is in the body: Approve in place (Face ID unlock), or the card in strict mode.
-            UNNotificationCategory(identifier: sensitiveInlineCategory, actions: [strict ? approveInApp : approve, deny],
+            UNNotificationCategory(identifier: sensitiveInlineCategory, actions: [approveWithFaceID, deny],
                                    intentIdentifiers: [], options: []),
             DecisionNotifier.pushCategoryDefinition(),
         ]
@@ -147,7 +147,7 @@ final class ApprovalNotifier: ApprovalNotifying {
             return c
         }
         // A sensitive request: the summary, then its commands (the expanded notification, where the buttons are, shows
-        // them all). Approve answers in place only when every command is in the body.
+        // them all). Approve starts Face ID on the card at once only when every command is in the body.
         let details = item.details.trimmingCharacters(in: .whitespacesAndNewlines)
         let (shown, cut) = clipBytes(details)
         c.body = details.isEmpty ? item.summary : item.summary + "\n" + shown

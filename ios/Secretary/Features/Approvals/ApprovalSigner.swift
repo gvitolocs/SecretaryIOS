@@ -7,36 +7,13 @@ import os
 /// Where a signature's failure is logged (its error domain and code; never the message or the key).
 private let signLog = Logger(subsystem: "tech.getsecretary.app", category: "Approvals")
 
-/// How a signature asks for the owner.
-enum ApprovalAuthMode: Equatable, Sendable {
-    /// Face ID (or the passcode) now, every time.
-    case prompt
-    /// A Face ID unlock of the iPhone in the last 5 minutes counts (no prompt); otherwise Face ID is asked, or with
-    /// `interactive: false` (the app in the background) nothing is shown and the signature fails with
-    /// `ApprovalSignError.needsInteraction`.
-    case reuseUnlock(interactive: Bool)
-}
-
-/// The LocalAuthentication settings for an `ApprovalAuthMode` (pure, so the tests see them).
-struct ApprovalContextConfig: Equatable, Sendable {
-    /// `LAContext.touchIDAuthenticationAllowableReuseDuration`: 0, or the 300 s maximum.
-    var reuseDuration: TimeInterval
-    /// `LAContext.interactionNotAllowed`: only in the background.
-    var interactionNotAllowed: Bool
-
-    static func forMode(_ mode: ApprovalAuthMode) -> ApprovalContextConfig {
-        switch mode {
-        case .prompt:
-            return ApprovalContextConfig(reuseDuration: 0, interactionNotAllowed: false)
-        case let .reuseUnlock(interactive):
-            return ApprovalContextConfig(reuseDuration: LATouchIDAuthenticationMaximumAllowableReuseDuration,
-                                         interactionNotAllowed: !interactive)
-        }
-    }
-
-    func apply(to context: LAContext) {
-        context.touchIDAuthenticationAllowableReuseDuration = reuseDuration
-        context.interactionNotAllowed = interactionNotAllowed
+/// How every signature's LocalAuthentication context is set: Face ID (or the passcode) asked now, on screen. A Face
+/// ID unlock of the iPhone is never reused (`touchIDAuthenticationAllowableReuseDuration` 0): the Secure Enclave key
+/// (`.privateKeyUsage, .userPresence`) refuses such a context (CryptoTokenKit -5, seen on an iPhone 16e, iOS 27.2).
+enum ApprovalSigningContext {
+    static func configure(_ context: LAContext) {
+        context.touchIDAuthenticationAllowableReuseDuration = 0
+        context.interactionNotAllowed = false
     }
 }
 
@@ -51,15 +28,8 @@ protocol ApprovalSigning: Sendable {
     /// Saves the prepared key once the server registered it under `keyId`.
     func commitKey(keyId: String) throws
     func removeKey() throws
-    /// Signs `message` (ASCII bytes) after Face ID or the passcode, as `mode` says. `reason` is what the sheet says.
-    func sign(_ message: String, reason: String, mode: ApprovalAuthMode) async throws -> ApprovalProof
-}
-
-extension ApprovalSigning {
-    /// Face ID or the passcode now.
-    func sign(_ message: String, reason: String) async throws -> ApprovalProof {
-        try await sign(message, reason: reason, mode: .prompt)
-    }
+    /// Signs `message` (ASCII bytes) after Face ID or the passcode, asked now on the card. `reason` is what the sheet says.
+    func sign(_ message: String, reason: String) async throws -> ApprovalProof
 }
 
 enum ApprovalSignError: Error, Equatable {
@@ -70,17 +40,19 @@ enum ApprovalSignError: Error, Equatable {
     /// Face ID is not enrolled or locked out, or there is no passcode: what to do about it.
     case needsDeviceSecurity
     case unavailable
-    /// Signing needed Face ID or the passcode on screen, and the app may not show it (in the background).
-    case needsInteraction
+    /// Face ID or the key refused the signature for another reason (its error domain and code): nothing was sent; the
+    /// card says so, and Approve there tries again.
+    case notSigned(domain: String, code: Int)
     case failed(String)
 
     var userMessage: String {
         switch self {
         case .noKey: return String(localized: "Face ID or passcode isn't set up for approvals on this iPhone.")
-        case .cancelled, .needsInteraction: return ""
+        case .cancelled: return ""
         case .needsDeviceSecurity:
             return String(localized: "Set up Face ID in Settings → Face ID & Passcode, or approve with your passcode.")
         case .unavailable: return String(localized: "This iPhone can't keep an approval key.")
+        case .notSigned: return String(localized: "Face ID didn't confirm it. Nothing was sent. Tap Approve to try again.")
         case let .failed(message): return message
         }
     }
@@ -89,10 +61,15 @@ enum ApprovalSignError: Error, Equatable {
     static func from(_ error: LAError) -> ApprovalSignError {
         switch error.code {
         case .userCancel, .appCancel, .systemCancel: return .cancelled
-        case .notInteractive: return .needsInteraction
         case .biometryNotEnrolled, .biometryLockout, .passcodeNotSet, .biometryNotAvailable: return .needsDeviceSecurity
-        default: return .failed(error.localizedDescription)
+        default: return .notSigned(domain: LAError.errorDomain, code: error.code.rawValue)
         }
+    }
+
+    /// What a Secure Enclave / Keychain failure means: errSecUserCanceled (-128) is a cancel, anything else was not
+    /// signed.
+    static func from(keyError error: NSError) -> ApprovalSignError {
+        error.code == -128 ? .cancelled : .notSigned(domain: error.domain, code: error.code)
     }
 }
 
@@ -171,28 +148,24 @@ final class SecureEnclaveApprovalSigner: ApprovalSigning, @unchecked Sendable {
         try store.delete()
     }
 
-    func sign(_ message: String, reason: String, mode: ApprovalAuthMode) async throws -> ApprovalProof {
+    func sign(_ message: String, reason: String) async throws -> ApprovalProof {
         guard let stored = stored(), let blob = Data(base64Encoded: stored.data) else { throw ApprovalSignError.noKey }
-        let signature = try await Self.sign(message, reason: reason, keyData: blob, mode: mode)
+        let signature = try await Self.sign(message, reason: reason, keyData: blob)
         return ApprovalProof(keyId: stored.keyId, signature: signature)
     }
 
     func signWithPreparedKey(_ message: String, reason: String) async throws -> String {
         guard let key = lock.withLock({ prepared }) else { throw ApprovalSignError.noKey }
-        return try await Self.sign(message, reason: reason, keyData: key.dataRepresentation, mode: .prompt)
+        return try await Self.sign(message, reason: reason, keyData: key.dataRepresentation)
     }
 
     /// Face ID, or the passcode, then the Secure Enclave signature (base64 DER) over `message`. Asked once, here,
-    /// when the owner tapped Approve. `.reuseUnlock`: a Face ID unlock of the iPhone in the last 5 minutes satisfies
-    /// the policy without a prompt (the key, its access control and the server's check are the same).
-    private static func sign(_ message: String, reason: String, keyData blob: Data, mode: ApprovalAuthMode) async throws -> String {
+    /// when the owner tapped Approve on the card (the app in front).
+    private static func sign(_ message: String, reason: String, keyData blob: Data) async throws -> String {
         let context = LAContext()
         context.localizedReason = reason
         context.localizedCancelTitle = String(localized: "Cancel")
-        // In the background (non-interactive): never try to show Face ID or the passcode.
-        let config = ApprovalContextConfig.forMode(mode)
-        config.apply(to: context)
-        let interactive = !config.interactionNotAllowed
+        ApprovalSigningContext.configure(context)
         let signature: Data
         do {
             // Face ID first; the passcode when Face ID fails, is locked out or is not set up.
@@ -203,19 +176,12 @@ final class SecureEnclaveApprovalSigner: ApprovalSigning, @unchecked Sendable {
                 return try key.signature(for: Data(message.utf8)).derRepresentation
             }.value
         } catch let error as LAError {
-            signLog.info("sign error \(LAError.errorDomain, privacy: .public) \(error.code.rawValue, privacy: .public) mode=\(String(describing: mode), privacy: .public)")
+            signLog.info("sign error \(LAError.errorDomain, privacy: .public) \(error.code.rawValue, privacy: .public)")
             throw ApprovalSignError.from(error)
         } catch {
-            // The Keychain reports a cancelled prompt as errSecUserCanceled (-128).
-            let code = (error as NSError).code
-            signLog.info("sign error \((error as NSError).domain, privacy: .public) \(code, privacy: .public) mode=\(String(describing: mode), privacy: .public)")
-            if code == -128 { throw ApprovalSignError.cancelled }
-            // errSecInteractionNotAllowed: the key wanted Face ID or the passcode on screen.
-            if code == Int(errSecInteractionNotAllowed) || (!interactive && code == Int(errSecAuthFailed)) {
-                throw ApprovalSignError.needsInteraction
-            }
-            if code == Int(errSecAuthFailed) { throw ApprovalSignError.cancelled }
-            throw ApprovalSignError.failed("\(error.localizedDescription) (\(code))")
+            let e = error as NSError
+            signLog.info("sign error \(e.domain, privacy: .public) \(e.code, privacy: .public)")
+            throw ApprovalSignError.from(keyError: e)
         }
         return signature.base64EncodedString()
     }

@@ -1,5 +1,4 @@
 import Foundation
-import LocalAuthentication
 import Observation
 import os
 
@@ -72,9 +71,6 @@ final class ApprovalsStore {
     static let backoffInterval: Duration = .seconds(30)
     static let errorInterval: Duration = .seconds(10)
     static let notifiedKey = "secretary.approvals.notified"
-    /// "Require Face ID or passcode for root approvals", this iPhone only. Off (the default): a Face ID unlock in the last
-    /// 5 minutes signs a sensitive approve in one tap.
-    nonisolated static let strictFaceIDKey = "secretary.approvals.strictFaceID"
     static let notifiedLimit = 100
 
     private(set) var pending: [ApprovalItem] = []
@@ -91,8 +87,6 @@ final class ApprovalsStore {
     /// `StartApprove.window`. Cleared when the sheet closes, when the request leaves the list, when the app goes to the
     /// background and on sign-out. Only `open(id:startApprove:)` sets it.
     private(set) var startApprove: StartApprove?
-    /// "Require Face ID or passcode for root approvals" (Settings → Approvals).
-    private(set) var strictFaceID: Bool
 
     // Settings → Approvals
     private(set) var settings: ApprovalSettings?
@@ -108,14 +102,10 @@ final class ApprovalsStore {
     @ObservationIgnored private let deviceLabel: () -> String
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let log = Logger(subsystem: "tech.getsecretary.app", category: "Approvals")
-    /// In-place approves (the Live Activity's, the notification's) on their way, by request.
+    /// Live Activity approves on their way, by request.
     @ObservationIgnored private var answeringInPlace: Set<String> = []
     /// Bumped each time the app goes to the background: a card's approve step that waited across it stops.
     @ObservationIgnored private(set) var backgroundGeneration = 0
-    /// Strict mode changed (the app registers the notification categories again).
-    @ObservationIgnored var onStrictChanged: ((Bool) -> Void)?
-    /// Face ID or the passcode, to turn strict mode off (tests answer it).
-    @ObservationIgnored var deviceOwnerCheck: (String) async -> Bool = ApprovalsStore.evaluateDeviceOwner
     @ObservationIgnored var onTransportError: ((APIError) -> Void)?
     /// The pending list changed (the app hands it to the approvals widget).
     @ObservationIgnored var onPendingChanged: (([ApprovalItem]) -> Void)?
@@ -140,28 +130,7 @@ final class ApprovalsStore {
         self.previews = previews
         self.deviceLabel = deviceLabel
         self.defaults = defaults
-        strictFaceID = defaults.bool(forKey: Self.strictFaceIDKey)
     }
-
-    /// Turning strict mode on needs nothing; turning it off needs Face ID or the passcode now. Returns the new value.
-    @discardableResult
-    func setStrictFaceID(_ on: Bool) async -> Bool {
-        if !on, strictFaceID {
-            guard await deviceOwnerCheck(String(localized: "Turn off Face ID for every root approval")) else { return strictFaceID }
-        }
-        strictFaceID = on
-        defaults.set(on, forKey: Self.strictFaceIDKey)
-        onStrictChanged?(on)
-        return on
-    }
-
-    nonisolated static func evaluateDeviceOwner(_ reason: String) async -> Bool {
-        let context = LAContext()
-        return (try? await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)) == true
-    }
-
-    /// How a sensitive approve on the card asks: Face ID every time in strict mode, else a recent Face ID unlock counts.
-    var cardAuthMode: ApprovalAuthMode { strictFaceID ? .prompt : .reuseUnlock(interactive: true) }
 
     // MARK: - Polling
 
@@ -379,11 +348,10 @@ final class ApprovalsStore {
     /// This iPhone knows the owner set a PIN (from Settings → Approvals, loaded when a sensitive prompt opens).
     var hasPin: Bool { settings?.hasPin ?? false }
 
-    /// Sends the answer. A sensitive approve carries the owner's `pin`, or is signed first (Face ID or the passcode, as
-    /// `mode` says; default: `cardAuthMode`); a deny never needs either. Nil: Face ID was cancelled, or it had to be
-    /// shown and `mode` does not allow it. `.pinRequired`: the PIN pad takes over.
-    func answer(_ item: ApprovalItem, _ choice: ApprovalAnswer, pin: String? = nil,
-                mode: ApprovalAuthMode? = nil) async -> ApprovalOutcome? {
+    /// Sends the answer. A sensitive approve carries the owner's `pin`, or is signed first: Face ID (or the passcode)
+    /// asked now, on the card in front (the only caller that approves a sensitive request); a deny never needs either.
+    /// Nil: Face ID was cancelled. `.pinRequired`: the PIN pad takes over.
+    func answer(_ item: ApprovalItem, _ choice: ApprovalAnswer, pin: String? = nil) async -> ApprovalOutcome? {
         let decision = choice.decision
         if case let .approve(trigger) = choice {
             log.info("approve id=\(item.id, privacy: .public) trigger=\(trigger.rawValue, privacy: .public)")
@@ -398,17 +366,13 @@ final class ApprovalsStore {
                 return hasPin ? .pinRequired : .needsSetup
             } else {
                 do {
-                    proof = try await signer.sign(item.signingString(for: .approve), reason: item.summary.isEmpty ? item.action : item.summary,
-                                                  mode: mode ?? cardAuthMode)
-                    log.info("sign ok id=\(item.id, privacy: .public) mode=\(String(describing: mode ?? self.cardAuthMode), privacy: .public)")
+                    proof = try await signer.sign(item.signingString(for: .approve), reason: item.summary.isEmpty ? item.action : item.summary)
+                    log.info("sign ok id=\(item.id, privacy: .public)")
                 } catch ApprovalSignError.cancelled {
-                    log.info("sign needs card id=\(item.id, privacy: .public): cancelled")
-                    return nil
-                } catch ApprovalSignError.needsInteraction {
-                    log.info("sign needs card id=\(item.id, privacy: .public): needsInteraction")
+                    log.info("sign cancelled id=\(item.id, privacy: .public)")
                     return nil
                 } catch ApprovalSignError.noKey {
-                    log.info("sign needs card id=\(item.id, privacy: .public): noKey")
+                    log.info("sign no key id=\(item.id, privacy: .public)")
                     return hasPin ? .pinRequired : .needsSetup
                 } catch let error as ApprovalSignError {
                     log.error("sign failed id=\(item.id, privacy: .public): \(String(describing: error), privacy: .public)")
@@ -474,23 +438,19 @@ final class ApprovalsStore {
         }
     }
 
-    /// A notification button or tap (AppDelegate). A button answers without opening the app, except a sensitive
-    /// approve, which opens the card (the passcode is asked there, on Approve). An approve needs `trigger`
+    /// A notification button or tap (AppDelegate). Deny, and a plain Approve, answer without opening the app. A
+    /// sensitive Approve opens the app on the card: with its approve step started (Face ID at once, over the commands)
+    /// when the notification showed the whole plan (`inline`: `APPROVAL_SENSITIVE_INLINE`) and still shows the request
+    /// on the server (`shownHash`, not expired); else the card only. An approve needs `trigger`
     /// `.notificationApproveAction` (the owner tapped the notification's Approve); without it nothing is approved.
-    ///
-    /// `inline`: the notification was `APPROVAL_SENSITIVE_INLINE` (its body showed the whole plan); `shownHash`: the
-    /// payload hash it carried. Then a sensitive Approve is answered in place, signed with a recent Face ID unlock;
-    /// when that can't be done (or the request changed, expired, or is already being answered) nothing is signed and
-    /// a follow-up notification asks the owner to open Secretary (the action runs in the background: it can't open
-    /// the card itself).
     func handleNotification(actionIdentifier: String, approvalId: String, sensitive: Bool, inline: Bool = false,
                             shownHash: String? = nil, trigger: ApprovalTrigger? = nil, now: Date = Date()) async {
         guard let action = ApprovalNotificationAction(identifier: actionIdentifier) else { return }
-        switch action.route(sensitive: sensitive, inline: inline, strict: strictFaceID) {
+        switch action.route(sensitive: sensitive, inline: inline) {
         case .openSheet:
             await open(id: approvalId)
-        case .decideSigned:
-            await approveInPlace(approvalId, shownHash: shownHash, trigger: trigger, now: now)
+        case .openSheetAndApprove:
+            await openCardToApprove(approvalId, shownHash: shownHash, trigger: trigger, now: now)
         case let .decide(decision):
             var known = pending.first { $0.id == approvalId }
             if known == nil, let api = api() { known = try? await api.get(approvalId) }
@@ -513,9 +473,12 @@ final class ApprovalsStore {
                     log.error("approve refused id=\(item.id, privacy: .public): not from the notification's Approve")
                     return
                 }
-                // The request became sensitive since the notification was made: ask on the card.
+                // The request became sensitive since the notification was made: ask on the card (this action doesn't
+                // bring the app to the front, so the follow-up leads there).
                 if item.sensitive {
+                    log.info("approve id=\(approvalId, privacy: .public): now sensitive, card and open-to-approve")
                     await open(id: approvalId)
+                    await notifier.postOpenToApprove(for: item)
                     return
                 }
                 choice = .approve(trigger)
@@ -539,35 +502,26 @@ final class ApprovalsStore {
         await notifier.postOpenToApprove(for: item)
     }
 
-    /// The notification's in-place Approve of a sensitive request (see `handleNotification`).
-    private func approveInPlace(_ id: String, shownHash: String?, trigger: ApprovalTrigger?, now: Date) async {
+    /// The notification's Approve of a root plan it showed whole (the app is coming to the front): the card, with its
+    /// approve step started only for the owner's own tap on the request he saw, while it is pending.
+    private func openCardToApprove(_ id: String, shownHash: String?, trigger: ApprovalTrigger?, now: Date) async {
         guard let trigger, trigger == .notificationApproveAction else {
             log.error("approve refused id=\(id, privacy: .public): not from the notification's Approve")
+            await open(id: id)
             return
         }
-        // A second tap (or the activity's Approve) while an answer is on its way does nothing.
-        guard !answeringInPlace.contains(id), !(working != nil && sheetItem?.id == id) else { return }
-        answeringInPlace.insert(id)
-        defer { answeringInPlace.remove(id) }
         var known = pending.first { $0.id == id }
         if known == nil, let api = api() { known = try? await api.get(id) }
-        guard let item = known else {
-            await notifier.postOpenToApprove(for: ApprovalItem(id: id, summary: "", sensitive: true))
-            return
-        }
-        guard item.status == nil || item.status == .pending, !item.isExpired(at: now),
-              let shownHash, shownHash == item.payloadHash, item.canAnswer else {
-            log.error("approve refused id=\(id, privacy: .public): not pending, expired, or changed since shown")
-            await notifier.postOpenToApprove(for: item)
-            return
-        }
-        let result = await answer(item, .approve(trigger), mode: .reuseUnlock(interactive: false))
-        guard !Self.needsCard(after: result) else {
-            // Unlocked with the passcode or too long ago, no key, cancelled: Face ID has to be asked on the card.
-            await notifier.postOpenToApprove(for: item)
-            return
-        }
-        if let result { await finishButtonAnswer(item, result) }
+        let shown = known.map { ($0.status == nil || $0.status == .pending) && !$0.isExpired(at: now) && shownHash == $0.payloadHash }
+        let step = Self.cardApproveStep(trigger: trigger, shownAndPending: shown ?? false)
+        log.info("notification approve id=\(id, privacy: .public) approveStep=\(step, privacy: .public)")
+        await open(id: id, startApprove: step ? trigger : nil, now: now)
+    }
+
+    /// The card's approve step starts for the notification's own Approve on the request it showed (same payload hash,
+    /// pending, not expired); any doubt opens the card without it.
+    nonisolated static func cardApproveStep(trigger: ApprovalTrigger?, shownAndPending: Bool) -> Bool {
+        trigger == .notificationApproveAction && shownAndPending
     }
 
     /// A button for a request that is no longer pending: take it off the lock screen, end its activity.
@@ -593,29 +547,16 @@ final class ApprovalsStore {
         }
     }
 
-    /// What the Live Activity's Approve does with a request, before anything is signed.
+    /// What the Live Activity's Approve does with a request.
     enum ActivityApproveRoute: Equatable {
-        /// Answer from the Lock Screen: no signature (`nil`, a plain request), or one with this mode.
-        case decide(ApprovalAuthMode?)
-        /// Open the card in front and start its approve step.
+        /// A plain request: answered from the Lock Screen (no signature).
+        case decide
+        /// A sensitive one: never signed in the background; the card in front, with its approve step (Face ID).
         case openCard
     }
 
-    /// Plain requests are answered at once. A sensitive one is signed in the background with a recent Face ID
-    /// unlock only when the activity showed the whole plan (`fullyShown`) and the owner did not ask for Face ID every
-    /// time (strict); otherwise the card asks, over the exact commands.
-    nonisolated static func activityApproveRoute(sensitive: Bool, strict: Bool, fullyShown: Bool) -> ActivityApproveRoute {
-        guard sensitive else { return .decide(nil) }
-        return strict || !fullyShown ? .openCard : .decide(.reuseUnlock(interactive: false))
-    }
-
-    /// After the background attempt: the card takes over when no signature could be made without showing Face ID
-    /// (unlocked with the passcode or too long ago, cancelled, no key: `nil`, `.needsSetup`, `.pinRequired`).
-    nonisolated static func needsCard(after result: ApprovalOutcome?) -> Bool {
-        switch result {
-        case nil, .needsSetup?, .pinRequired?: return true
-        default: return false
-        }
+    nonisolated static func activityApproveRoute(sensitive: Bool) -> ActivityApproveRoute {
+        sensitive ? .openCard : .decide
     }
 
     /// What the app does after the Live Activity's Approve.
@@ -629,7 +570,8 @@ final class ApprovalsStore {
 
     /// The Live Activity's Approve (iOS ran it after this iPhone was unlocked; the app may be in the background).
     /// Only for the activity's own tap, only for a request that is pending now (listed, or fetched now and still
-    /// pending), only for the request the activity showed (`shownHash`), and once at a time per request.
+    /// pending), only for the request the activity showed (`shownHash`), and once at a time per request. A plain
+    /// request is answered; a sensitive one goes to the card (Face ID there), never signed in the background.
     func approveFromActivity(id: String, shownHash: String, trigger: ApprovalTrigger,
                              now: Date = Date()) async -> ActivityApproveOutcome {
         guard trigger == .activityApproveButton else {
@@ -642,7 +584,8 @@ final class ApprovalsStore {
         defer { answeringInPlace.remove(id) }
         var known = pending.first { $0.id == id }
         if known == nil, let api = api() { known = try? await api.get(id) }
-        guard let item = known else { return .openCard(startApprove: true) }
+        // Not found: the card shows what the server says; nothing starts on a request the app can't see.
+        guard let item = known else { return .openCard(startApprove: false) }
         guard item.status == nil || item.status == .pending else {
             await forgetAnswered(item)
             return .done
@@ -651,26 +594,15 @@ final class ApprovalsStore {
             log.error("approve refused id=\(id, privacy: .public): changed since shown, or expired")
             return .openCard(startApprove: false)
         }
-        let shownWhole = previews() && ApprovalActivityAttributes.fullyShown(item.details)
-        let route = Self.activityApproveRoute(sensitive: item.sensitive, strict: strictFaceID, fullyShown: shownWhole)
-        log.info("""
-            activity approve route id=\(id, privacy: .public) route=\(String(describing: route), privacy: .public) \
-            sensitive=\(item.sensitive, privacy: .public) strict=\(self.strictFaceID, privacy: .public) \
-            shownWhole=\(shownWhole, privacy: .public)
-            """)
+        let route = Self.activityApproveRoute(sensitive: item.sensitive)
+        log.info("activity approve route id=\(id, privacy: .public) route=\(String(describing: route), privacy: .public)")
         switch route {
         case .openCard:
             return .openCard(startApprove: true)
-        case let .decide(mode):
-            let result = await answer(item, .approve(trigger), mode: mode)
-            if Self.needsCard(after: result) {
-                log.info("activity approve needs card id=\(id, privacy: .public) outcome=\(String(describing: result), privacy: .public)")
-                return .openCard(startApprove: true)
-            }
-            if let result {
-                log.info("activity approve answered id=\(id, privacy: .public) outcome=\(String(describing: result), privacy: .public)")
-                await finishButtonAnswer(item, result)
-            }
+        case .decide:
+            guard let result = await answer(item, .approve(trigger)) else { return .done }
+            log.info("activity approve answered id=\(id, privacy: .public) outcome=\(String(describing: result), privacy: .public)")
+            await finishButtonAnswer(item, result)
             return .done
         }
     }

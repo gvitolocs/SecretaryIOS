@@ -66,8 +66,7 @@ final class ApprovalActivities {
             await AppModel.shared.approvals.handleNotification(actionIdentifier: ApprovalNotifier.denyAction,
                                                                approvalId: id, sensitive: sensitive)
         }
-        // Approve: a plain request is answered; a sensitive one is signed in the background after a recent Face ID
-        // unlock, when the activity showed the whole plan. Otherwise the card takes over, in front.
+        // Approve: a plain request is answered; a sensitive one goes to the card, in front, with Face ID asked there.
         ApprovalActivityCommands.approve = { id, payloadHash, trigger, intent in
             let outcome = await AppModel.shared.approvals.approveFromActivity(id: id, shownHash: payloadHash, trigger: trigger)
             guard case let .openCard(startApprove) = outcome else { return }
