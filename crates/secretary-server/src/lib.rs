@@ -52,6 +52,7 @@ pub mod todoist;
 pub mod tts;
 pub mod upstream;
 pub mod voice;
+pub mod voice_filler;
 pub mod voice_pipe;
 pub mod voice_split;
 pub mod voice_telemetry;
@@ -158,6 +159,8 @@ pub struct Inner {
     pub tts: tts::Tts,
     /// `POST /v1/voice`: rate limit and one turn at a time per device.
     pub voice: voice::Voice,
+    /// Cached filler phrases spoken on a slow turn's `ack` (protocol section 6).
+    pub fillers: voice_filler::Fillers,
     /// LucinaVoice device telemetry and turn spans (`voice/` in the data dir).
     pub voice_log: voice_telemetry::Store,
     /// Open `/v1/timeline/stream` responses.
@@ -239,6 +242,7 @@ impl AppState {
             maps: cfg.maps.clone(),
             tts: tts::Tts::new(&cfg.tts_url, cfg.tts_voices.clone(), cfg.tts_timeout)?,
             voice: voice::Voice::new(cfg.voice_stt_url.clone())?,
+            fillers: voice_filler::Fillers::new(),
             voice_log: voice_telemetry::Store::new(&cfg.data_dir, cfg.timezone),
             streams: timeline::StreamSlots::new(timeline::PER_DEVICE, timeline::TOTAL),
             shutdown: tokio::sync::watch::Sender::new(false),
@@ -479,6 +483,7 @@ pub async fn serve(cfg: Config) -> anyhow::Result<()> {
     notify::spawn_workers(&state);
     approvals::spawn_sweeper(&state);
     voice_telemetry::spawn_flusher(&state);
+    voice_filler::spawn_prewarm(&state);
     if !cfg.calendar_sync_every.is_zero() {
         calendar::spawn_sync_loop(state.clone(), cfg.calendar_sync_every);
     }

@@ -23,6 +23,14 @@
 //! - **TTS worker.** Segments are synthesized strictly in order, but up to
 //!   [`IN_FLIGHT`] at a time: the next one is requested while the current one
 //!   streams, and its PCM waits in memory until its turn.
+//! - **Route and ack** (protocol section 6). A `route` event is recorded
+//!   ([`RouteInfo`], and its ms in [`Shared::route_ms`]). An `ack` event, when
+//!   nothing has been queued or sent for the turn yet and none came before,
+//!   queues a filler segment first: the cached phrase PCM
+//!   ([`crate::voice_filler`]), or, with the cache empty, the ack text
+//!   synthesized like a sentence (and a cache rebuild starts). The answer's
+//!   segments queue behind it in the same ordered stream, so they cannot
+//!   overlap it. The filler is not part of the text returned as spoken.
 //! - **After `reply`** the connection to Lucina is read to its end by a
 //!   background task, so Lucina finishes the turn (memory, rich reply) after
 //!   the audio is done. Dropping [`speak_turn`] before it returns (a cancel,
@@ -36,6 +44,7 @@ use axum::body::Bytes;
 use futures_util::StreamExt;
 use secretary_core::models::ChatRequest;
 use secretary_core::ChatEvent;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, Semaphore};
 use tokio::task::JoinHandle;
 
@@ -107,6 +116,36 @@ impl PipeError {
     }
 }
 
+/// How Lucina routed a voice turn (`route` event). No transcript text.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct RouteInfo {
+    pub intent: String,
+    pub confidence: Option<f64>,
+    pub jev_ms: Option<u64>,
+    pub fast: bool,
+    pub source: String,
+}
+
+impl RouteInfo {
+    /// Cleaned for the logs and the API: strings cut and without control
+    /// characters or `<` `>`, confidence in 0..=1.
+    fn clean(self) -> Self {
+        let s = |t: String, n: usize| -> String {
+            t.chars()
+                .filter(|c| !c.is_control() && !matches!(c, '<' | '>'))
+                .take(n)
+                .collect()
+        };
+        Self {
+            intent: s(self.intent, 64),
+            confidence: self.confidence.map(|c| c.clamp(0.0, 1.0)),
+            jev_ms: self.jev_ms.map(|m| m.min(10_000_000)),
+            fast: self.fast,
+            source: s(self.source, 32),
+        }
+    }
+}
+
 /// Timings of one turn, in ms since its start (`t0`), and the voice used.
 /// Each mark is set once, by whoever sees the moment first.
 #[derive(Debug)]
@@ -116,6 +155,11 @@ pub struct Shared {
     tts_first: AtomicU64,
     first_audio: AtomicU64,
     stt: AtomicU64,
+    /// The `route` event arrived.
+    route_ms: AtomicU64,
+    /// The filler (or synthesized ack) audio was handed to the client.
+    ack_ms: AtomicU64,
+    route: OnceLock<RouteInfo>,
     /// PCM bytes handed to the client.
     down_bytes: AtomicU64,
     /// The Kokoro voice, set when the first segment is known.
@@ -132,6 +176,9 @@ impl Shared {
             tts_first: AtomicU64::new(UNSET),
             first_audio: AtomicU64::new(UNSET),
             stt: AtomicU64::new(UNSET),
+            route_ms: AtomicU64::new(UNSET),
+            ack_ms: AtomicU64::new(UNSET),
+            route: OnceLock::new(),
             down_bytes: AtomicU64::new(0),
             voice: OnceLock::new(),
         }
@@ -173,6 +220,21 @@ impl Shared {
 
     pub fn stt(&self) -> Option<u64> {
         Self::get(&self.stt)
+    }
+
+    /// Ms from end of speech to Lucina's `route` event, if it sent one.
+    pub fn route_ms(&self) -> Option<u64> {
+        Self::get(&self.route_ms)
+    }
+
+    /// Ms from end of speech to the filler audio, if one was played.
+    pub fn ack_ms(&self) -> Option<u64> {
+        Self::get(&self.ack_ms)
+    }
+
+    /// What the `route` event said, if there was one.
+    pub fn route(&self) -> Option<&RouteInfo> {
+        self.route.get()
     }
 
     /// PCM bytes handed to the client so far.
@@ -235,18 +297,39 @@ impl Framer {
 /// One piece of text for Kokoro.
 struct Seg {
     text: String,
-    /// The fixed phrase that replaces a sensitive reply.
+    /// The fixed phrase that replaces a sensitive reply (or the filler): never muted.
     safe: bool,
+    /// Already-made PCM (a cached filler): Kokoro is not asked.
+    pcm: Option<Bytes>,
+    /// The ack filler, cached or synthesized.
+    ack: bool,
 }
 
 /// The audio of one segment, as Kokoro streams it.
 struct SegAudio {
     rx: mpsc::UnboundedReceiver<Result<Bytes, ApiError>>,
     safe: bool,
+    ack: bool,
 }
 
 fn tts_error(e: &ApiError) -> PipeError {
     PipeError::Tts(e.clone())
+}
+
+/// The text of an ack that has to be synthesized: Lucina's own when it is a
+/// short phrase, else the first filler phrase of the turn's language.
+fn ack_text(text: &str, italian: bool) -> String {
+    let t = text.trim();
+    if t.is_empty() || t.chars().count() > 60 {
+        (if italian {
+            crate::voice_filler::PHRASES_IT[0]
+        } else {
+            crate::voice_filler::PHRASES_EN[0]
+        })
+        .to_owned()
+    } else {
+        t.to_owned()
+    }
 }
 
 /// Hands segments to the TTS worker, within the [`tts::MAX_CHARS`] budget.
@@ -268,7 +351,23 @@ impl Emitter {
         }
         self.chars += n;
         self.spoken.push(text.clone());
-        let _ = self.seg_tx.send(Seg { text, safe });
+        let _ = self.seg_tx.send(Seg {
+            text,
+            safe,
+            pcm: None,
+            ack: false,
+        });
+    }
+
+    /// The ack filler, first in line: not part of `spoken` and outside the
+    /// character budget.
+    fn emit_ack(&self, text: String, pcm: Option<Bytes>) {
+        let _ = self.seg_tx.send(Seg {
+            text,
+            safe: true,
+            pcm,
+            ack: true,
+        });
     }
 }
 
@@ -305,11 +404,33 @@ async fn tts_worker(
                         .unwrap_or_else(|_| tts::ITALIAN_VOICE.to_owned())
                     })
                     .clone();
+                let (tx, rx) = mpsc::unbounded_channel();
+                if let Some(pcm) = seg.pcm {
+                    // Cached audio: ready now, no Kokoro call, no permit.
+                    let _ = tx.send(Ok(pcm));
+                    if order_tx
+                        .send(SegAudio {
+                            rx,
+                            safe: seg.safe,
+                            ack: seg.ack,
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
+                    continue;
+                }
                 let Ok(permit) = permits.clone().acquire_owned().await else {
                     return;
                 };
-                let (tx, rx) = mpsc::unbounded_channel();
-                if order_tx.send(SegAudio { rx, safe: seg.safe }).is_err() {
+                if order_tx
+                    .send(SegAudio {
+                        rx,
+                        safe: seg.safe,
+                        ack: seg.ack,
+                    })
+                    .is_err()
+                {
                     return;
                 }
                 let (st, shared) = (st.clone(), shared.clone());
@@ -364,6 +485,9 @@ async fn tts_worker(
             }
             let chunk = item.map_err(|e| tts_error(&e))?;
             for frame in framer.push(&chunk) {
+                if seg.ack {
+                    shared.mark(&shared.ack_ms);
+                }
                 shared
                     .down_bytes
                     .fetch_add(frame.len() as u64, Ordering::SeqCst);
@@ -438,6 +562,7 @@ async fn speak_inner(
         capped: false,
     };
     let mut deltas = false;
+    let mut acked = false;
 
     // The reply, once settled: (text, sensitive, replaces).
     let mut reply: Option<(String, bool, bool)> = None;
@@ -456,6 +581,55 @@ async fn speak_inner(
         };
         match ev {
             None => break,
+            Some(ChatEvent::Route {
+                intent,
+                confidence,
+                jev_ms,
+                fast,
+                source,
+            }) => {
+                shared.mark(&shared.route_ms);
+                let info = RouteInfo {
+                    intent,
+                    confidence,
+                    jev_ms,
+                    fast,
+                    source,
+                }
+                .clean();
+                tracing::info!(
+                    device = %ident.device_id,
+                    intent = %info.intent,
+                    confidence = ?info.confidence,
+                    jev_ms = ?info.jev_ms,
+                    fast = info.fast,
+                    source = %info.source,
+                    "voice route"
+                );
+                let _ = shared.route.set(info);
+            }
+            Some(ChatEvent::Ack { text }) => {
+                // Only before anything of the answer is queued or sent, once,
+                // and never for a turn Lucina answered fast.
+                let fast = shared.route().is_some_and(|r| r.fast);
+                if !acked && !fast && say.spoken.is_empty() && shared.down_bytes() == 0 {
+                    acked = true;
+                    let voice = crate::voice_filler::voice_for(italian);
+                    // The voice of the whole turn, filler included.
+                    shared.voice.get_or_init(|| voice.to_owned());
+                    if let Some(f) = st.fillers.pick(italian) {
+                        say.emit_ack(f.phrase.to_owned(), Some(f.pcm));
+                    } else {
+                        // Nothing cached (Kokoro was down): say the ack text
+                        // like a sentence, and build the cache for next time.
+                        say.emit_ack(ack_text(&text, italian), None);
+                        let st = st.clone();
+                        tokio::spawn(async move {
+                            st.fillers.prewarm(&st.tts).await;
+                        });
+                    }
+                }
+            }
             Some(ChatEvent::Delta(t)) => {
                 shared.mark(&shared.lucina_first);
                 deltas = true;

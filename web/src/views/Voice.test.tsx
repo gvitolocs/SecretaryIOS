@@ -116,6 +116,39 @@ describe("Voice device page", () => {
     expect(within(failed).queryByText(/Device heard it/)).toBeNull();
   });
 
+  it("shows the intent, a fast badge and the filler mark when Lucina routed the turn", async () => {
+    api({
+      status: status({
+        turns: [
+          turn({ intent: "temporal_query", confidence: 0.97, jev_ms: 180, fast: true, source: "jev", spans: { stt: 100, route: 280, lucina_first: 300, tts_first: 450, first_audio: 460, total: 900 } }),
+          turn({ intent: "web_crawl", confidence: 0.91, jev_ms: 212, fast: false, source: "jev", spans: { stt: 100, route: 320, ack: 330, first_audio: 335, lucina_first: 2400, tts_first: 2800, total: 4000 } }),
+          turn({}),
+        ],
+      }),
+    });
+    show();
+    const list = await screen.findByRole("list", { name: "Last turns, newest first" });
+    const rows = [...list.querySelectorAll<HTMLElement>(".vd-turn")];
+    expect(rows).toHaveLength(3);
+
+    const [quick, slow, plain] = rows as [HTMLElement, HTMLElement, HTMLElement];
+    expect(within(quick).getByText("temporal_query")).toHaveAttribute("title", "temporal_query: confidence 0.97, Jev 180 ms, source jev");
+    expect(within(quick).getByText("Fast")).toBeInTheDocument();
+    expect(quick.querySelector(".vd-ack-mark")).toBeNull();
+
+    expect(within(slow).getByText("web_crawl")).toBeInTheDocument();
+    expect(within(slow).queryByText("Fast")).toBeNull();
+    const mark = slow.querySelector<HTMLElement>(".vd-ack-mark")!;
+    expect(mark).not.toBeNull();
+    // Same scale as the bars: the longest turn here is 4,000 ms.
+    expect(parseFloat(mark.style.left)).toBeCloseTo(100 * (330 / 4000), 3);
+    expect(within(slow).getByText("Filler after 330 ms", { selector: "span.vd-ack" })).toBeInTheDocument();
+
+    // A turn from a Lucina without the fast path looks as before.
+    expect(plain.querySelector(".vd-intent, .vd-ack-mark, .vd-ack")).toBeNull();
+    expect(within(plain).queryByText("Fast")).toBeNull();
+  });
+
   it("says so when a turn has no timings, and when there are no turns", async () => {
     api({ status: status({ turns: [turn({ ok: false, spans: {} })] }) });
     show();

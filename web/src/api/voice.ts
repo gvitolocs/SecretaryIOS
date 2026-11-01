@@ -73,6 +73,10 @@ export interface VoiceSpans {
   tts_first?: number | null;
   first_audio?: number | null;
   total?: number | null;
+  /** Lucina's `route` event (the voice fast path); absent without it. */
+  route?: number | null;
+  /** The filler phrase went out; absent when none was played. */
+  ack?: number | null;
 }
 
 export interface VoiceTurn {
@@ -85,6 +89,13 @@ export interface VoiceTurn {
   device_first_audio_ms?: number | null;
   up_bytes?: number;
   down_bytes?: number;
+  /** How Lucina routed the turn (protocol section 6); absent for a Lucina without the fast path. */
+  intent?: string;
+  confidence?: number | null;
+  jev_ms?: number | null;
+  /** Answered without the planner LLM. */
+  fast?: boolean;
+  source?: string;
 }
 
 export interface VoiceStatus {

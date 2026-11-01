@@ -20,7 +20,9 @@
 //! speech length and the audio bytes of the turn. The device later reports its
 //! own `turn` event; the two are matched by time (within 30 s, nearest first,
 //! in either order) into one record with `device_first_audio_ms`. An
-//! unmatched device turn stands alone.
+//! unmatched device turn stands alone. When Lucina sent `route` / `ack`
+//! (protocol section 6), the spans gain `route` and `ack` and the record gains
+//! `intent`, `confidence`, `jev_ms`, `fast` and `source` (never text).
 //!
 //! **Storage**, under `SECRETARY_DATA_DIR/voice/<device id>/` (0700/0600):
 //! - `events.jsonl`: one JSON object per line, `{"at", "k", "t"?, ...}`:
@@ -69,7 +71,7 @@ use serde_json::{json, Map, Value};
 
 use crate::auth::{Identity, Via};
 use crate::error::{ApiError, QueryArgs};
-use crate::voice_pipe::Shared;
+use crate::voice_pipe::{RouteInfo, Shared};
 use crate::AppState;
 
 /// Largest `hello` / `telemetry` frame taken in.
@@ -114,6 +116,8 @@ const SPANS: Spec = &[
     ("tts_first", Ty::N(0.0, 1e7)),
     ("first_audio", Ty::N(0.0, 1e7)),
     ("total", Ty::N(0.0, 1e7)),
+    ("route", Ty::N(0.0, 1e7)),
+    ("ack", Ty::N(0.0, 1e7)),
 ];
 const POWER: Spec = &[
     ("est_mw", Ty::N(0.0, 1e6)),
@@ -283,6 +287,12 @@ pub struct Spans {
     pub tts_first: Option<u64>,
     pub first_audio: Option<u64>,
     pub total: Option<u64>,
+    /// The `route` event from Lucina (voice fast path); absent without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<u64>,
+    /// The filler audio went out; absent when none was played.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ack: Option<u64>,
 }
 
 impl Spans {
@@ -294,6 +304,8 @@ impl Spans {
             tts_first: g("tts_first"),
             first_audio: g("first_audio"),
             total: g("total"),
+            route: g("route"),
+            ack: g("ack"),
         }
     }
 }
@@ -309,6 +321,10 @@ pub struct TurnRecord {
     pub spans: Spans,
     pub up_bytes: u64,
     pub down_bytes: u64,
+    /// How Lucina routed the turn (intent, confidence, `jev_ms`, `fast`,
+    /// `source`); absent for a Lucina without the voice fast path. No text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<RouteInfo>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -355,6 +371,9 @@ impl Turn {
         }
         if let Some(ms) = d.and_then(|d| d.first_audio_ms) {
             v["device_first_audio_ms"] = json!(ms);
+        }
+        if let Some(r) = s.and_then(|s| s.route.as_ref()) {
+            put_route(&mut v, r);
         }
         v
     }
@@ -917,6 +936,9 @@ impl Store {
         if let Some(e) = &rec.err {
             line["err"] = json!(e);
         }
+        if let Some(r) = &rec.route {
+            put_route(&mut line, r);
+        }
         self.append(d, id, &line);
         d.add_server_turn(rec);
         self.maybe_flush(d, id, false);
@@ -1031,6 +1053,15 @@ impl Store {
     }
 }
 
+/// The route's fields, flat, on a turn object.
+fn put_route(v: &mut Value, r: &RouteInfo) {
+    v["intent"] = json!(r.intent);
+    v["confidence"] = json!(r.confidence);
+    v["jev_ms"] = json!(r.jev_ms);
+    v["fast"] = json!(r.fast);
+    v["source"] = json!(r.source);
+}
+
 /// What the caller knows of a finished turn; the rest is in [`Shared`].
 pub struct TurnInfo {
     /// The error code, or `None` for a good turn.
@@ -1059,9 +1090,12 @@ pub fn finish_turn(st: &AppState, ident: &Identity, shared: &Shared, info: TurnI
                 tts_first: shared.tts_first(),
                 first_audio: shared.first_audio(),
                 total: Some(total),
+                route: shared.route_ms(),
+                ack: shared.ack_ms(),
             },
             up_bytes: info.up_bytes,
             down_bytes: shared.down_bytes(),
+            route: shared.route().cloned(),
         },
     );
 }
@@ -1284,9 +1318,12 @@ mod tests {
                 tts_first: Some(1700),
                 first_audio: Some(1720),
                 total: Some(4000),
+                route: None,
+                ack: None,
             },
             up_bytes: 48_000,
             down_bytes: 96_000,
+            route: None,
         }
     }
 

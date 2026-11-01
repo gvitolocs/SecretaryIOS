@@ -33,6 +33,9 @@
 //!    ([`crate::voice_pipe`]) → `audio {rate}` before the first binary frame,
 //!    then frames of at most 8 KiB → `reply {text}` (what was spoken) → `done
 //!    {ms}`.
+//!    When Lucina sends `route` / `ack` (protocol section 6), a cached filler
+//!    phrase goes out first, `done.ms` gains `route` and `ack`, and the
+//!    turn's record gets the route ([`crate::voice_pipe`]).
 //! 4. A turn that ends without complete audio sends `error` instead of `done`:
 //!    `no_speech` (under 0.3 s of audio, no speech in `vad` mode, or an empty
 //!    transcript), `stt_unavailable`, `lucina_unavailable`, `tts_failed`. The
@@ -553,18 +556,27 @@ async fn turn_steps(
                 lucina_first_ms = ?shared.lucina_first(),
                 tts_first_ms = ?shared.tts_first(),
                 first_audio_ms = ?shared.first_audio(),
+                route_ms = ?shared.route_ms(),
+                ack_ms = ?shared.ack_ms(),
                 total_ms = total,
                 "voice turn"
             );
             send(json!({"type": "reply", "text": spoken})).await;
-            send(json!({"type": "done", "ms": {
+            let mut ms = json!({
                 "stt": stt_ms,
                 "lucina_first": ms_json(shared.lucina_first()),
                 "tts_first": ms_json(shared.tts_first()),
                 "first_audio": ms_json(shared.first_audio()),
                 "total": total,
-            }}))
-            .await;
+            });
+            // Only when Lucina sent `route` / `ack` (protocol section 6).
+            if let Some(v) = shared.route_ms() {
+                ms["route"] = json!(v);
+            }
+            if let Some(v) = shared.ack_ms() {
+                ms["ack"] = json!(v);
+            }
+            send(json!({"type": "done", "ms": ms})).await;
         }
         Err(voice_pipe::PipeError::Closed) => info.err = Some("closed".into()),
         Err(e) => {

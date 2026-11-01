@@ -79,6 +79,17 @@
   color: var(--vd-crit);
 }
 
+.vd-badge[data-kind="fast"] {
+  background: color-mix(in srgb, var(--vd-audio) 18%, transparent);
+  color: var(--vd-audio);
+}
+
+.vd-intent {
+  font-size: 13px;
+  color: var(--pg-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
 .vd-signal[data-level="excellent"],
 .vd-signal[data-level="good"] {
   color: var(--vd-ok);
@@ -180,6 +191,21 @@
 .vd-turn-ago {
   flex: 1 1 auto;
   font-size: 13px;
+}
+
+.vd-bar-wrap {
+  position: relative;
+}
+
+/* Where the filler phrase went out, from the end of speech (same scale as the bar). */
+.vd-ack-mark {
+  position: absolute;
+  top: -3px;
+  width: 2px;
+  height: 20px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--pg-text, currentColor);
 }
 
 .vd-bar {

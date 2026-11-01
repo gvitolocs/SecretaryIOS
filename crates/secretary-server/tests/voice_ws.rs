@@ -37,6 +37,11 @@ const SLOW: &str = "Tell me a very slow story today";
 const BROKEN: &str = "Please break the chat for me today";
 const PIPELINE: &str = "Dimmi due frasi per favore";
 const EMPTY_REPLY: &str = "Please say nothing to me today";
+// Jev fast path (protocol section 6): route and ack events.
+const ACK_SLOW: &str = "Cerca sul web le notizie di oggi per me";
+const ACK_LATE: &str = "Cerca nel web le novita di oggi per me";
+const ACK_TWICE: &str = "Cerca online le ultime notizie per me";
+const FAST_TIME: &str = "Che ore sono adesso per favore";
 
 fn pcm_of(len: usize) -> Vec<u8> {
     let s = (len as i16).to_le_bytes();
@@ -55,6 +60,8 @@ struct Mock {
     speech: Mutex<Vec<(String, Instant)>>,
     /// How long Kokoro takes before answering.
     kokoro_delay: Mutex<Duration>,
+    /// Kokoro answers 500.
+    kokoro_fails: Mutex<bool>,
     /// The SLOW script's SSE body was dropped (the chat connection closed).
     slow_dropped: Mutex<bool>,
 }
@@ -177,6 +184,10 @@ async fn lucina(
     let d = |t: &str| json!({"text": t});
     let reply = |t: &str, sensitive: bool, replaces: bool| json!({"text": t, "sensitive": sensitive, "replaces": replaces});
     let done = || json!({"reply": "x", "action": "reply"});
+    let route = |intent: &str, fast: bool| {
+        json!({"intent": intent, "confidence": 0.93, "jev_ms": 212, "fast": fast,
+               "source": "jev"})
+    };
     match msg.as_str() {
         TWO => sse(
             vec![
@@ -248,6 +259,54 @@ async fn lucina(
             None,
             "",
         ),
+        ACK_SLOW => sse(
+            vec![
+                (0, "route", route("web_crawl", false)),
+                (0, "ack", json!({"text": "Un attimo…"})),
+                (250, "delta", d("Ecco le notizie. ")),
+                (0, "reply", reply("Ecco le notizie.", false, false)),
+                (0, "done", done()),
+            ],
+            None,
+            "",
+        ),
+        ACK_LATE => sse(
+            vec![
+                (0, "route", route("web_crawl", false)),
+                (0, "delta", d("Prima frase detta. ")),
+                (0, "ack", json!({"text": "Un attimo…"})),
+                (0, "delta", d("Seconda frase.")),
+                (
+                    0,
+                    "reply",
+                    reply("Prima frase detta. Seconda frase.", false, false),
+                ),
+                (0, "done", done()),
+            ],
+            None,
+            "",
+        ),
+        ACK_TWICE => sse(
+            vec![
+                (0, "route", route("computer_task", false)),
+                (0, "ack", json!({"text": "Un attimo…"})),
+                (100, "ack", json!({"text": "Ancora un attimo…"})),
+                (150, "delta", d("Fatto qui. ")),
+                (0, "reply", reply("Fatto qui.", false, false)),
+                (0, "done", done()),
+            ],
+            None,
+            "",
+        ),
+        FAST_TIME => sse(
+            vec![
+                (0, "route", route("temporal_query", true)),
+                (0, "reply", reply("Sono le dieci e dieci.", false, true)),
+                (0, "done", done()),
+            ],
+            None,
+            "",
+        ),
         PIPELINE => sse(
             vec![
                 (0, "delta", d("Prima frase pipeline. ")),
@@ -274,6 +333,9 @@ async fn lucina(
 async fn kokoro(State(m): State<Arc<Mock>>, body: Bytes) -> axum::response::Response {
     let v: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
     let input = v["input"].as_str().unwrap_or("").to_owned();
+    if *m.kokoro_fails.lock().unwrap() {
+        return (AxumStatus::INTERNAL_SERVER_ERROR, "boom").into_response();
+    }
     m.speech
         .lock()
         .unwrap()
@@ -308,6 +370,7 @@ struct H {
     /// The speaker's device id.
     dev_id: String,
     data_dir: std::path::PathBuf,
+    st: AppState,
     mock: Arc<Mock>,
     _dir: tempfile::TempDir,
 }
@@ -323,13 +386,15 @@ async fn harness() -> H {
     cfg.tts_url = format!("http://{tts}/");
     cfg.voice_stt_url = Some(format!("http://{stt}/v1/memos/stt"));
     let (dev, token) = DeviceStore::new(&cfg.data_dir).issue("Speaker").unwrap();
-    let addr = spawn(app(AppState::new(&cfg).unwrap())).await;
+    let st = AppState::new(&cfg).unwrap();
+    let addr = spawn(app(st.clone())).await;
     H {
         addr,
         http: Client::new(),
         token,
         dev_id: dev.id,
         data_dir: cfg.data_dir.clone(),
+        st,
         mock,
         _dir: dir,
     }
@@ -511,6 +576,8 @@ async fn a_push_to_talk_turn_streams_two_sentences_in_order() {
     assert!(ms["lucina_first"].as_u64() <= ms["tts_first"].as_u64());
     assert!(ms["tts_first"].as_u64() <= ms["first_audio"].as_u64());
     assert!(ms["first_audio"].as_u64() <= ms["total"].as_u64());
+    // A Lucina without route/ack: no such keys, as before.
+    assert!(ms.get("route").is_none() && ms.get("ack").is_none(), "{ms}");
 
     // Speech-to-text: the device's own bearer, raw PCM, trimmed of its
     // trailing silence (there was none: all of the tone).
@@ -1093,6 +1160,8 @@ async fn hello_telemetry_and_a_turn_show_up_in_the_status_api() {
     assert_eq!(t["up_bytes"], 32_000);
     assert_eq!(t["down_bytes"], 12);
     assert_eq!(t["device_first_audio_ms"], 1300);
+    assert!(t.get("intent").is_none() && t.get("fast").is_none(), "{t}");
+    assert!(t["spans"].get("route").is_none() && t["spans"].get("ack").is_none());
     let done_ms = &json_of(&out, "done")["ms"];
     for k in ["stt", "lucina_first", "tts_first", "first_audio"] {
         assert_eq!(t["spans"][k], done_ms[k], "{k}");
@@ -1360,7 +1429,10 @@ async fn device_tokens_see_only_themselves_and_the_owner_session_sees_all() {
     assert_eq!(code, 403);
     // Its own id with no data yet is a 404, not someone else's data.
     let (code, v) = h
-        .get(Some(&fresh), &format!("/v1/voice/devices/{fresh_id}/status"))
+        .get(
+            Some(&fresh),
+            &format!("/v1/voice/devices/{fresh_id}/status"),
+        )
         .await;
     assert_eq!(
         (code, v["error"]["code"].as_str()),
@@ -1430,4 +1502,257 @@ async fn post_voice_turns_are_recorded_too() {
         .await;
     assert_eq!(v["turns"][0]["ok"], false);
     assert_eq!(v["turns"][0]["err"], "no_speech");
+}
+
+// -- Jev fast path: route and ack (protocol section 6) ---------------------------
+
+/// The cache holds both languages' phrases (`Un attimo…`, `Vediamo…`, `One moment…`, `Let me see…`).
+async fn fillers_ready(h: &H) {
+    for _ in 0..100 {
+        if h.st.fillers.count(true) == 2 && h.st.fillers.count(false) == 2 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!(
+        "filler cache not ready: it {} en {}",
+        h.st.fillers.count(true),
+        h.st.fillers.count(false)
+    );
+}
+
+/// The first sample value of the audio (the mock encodes the input length in it).
+fn first_len(pcm: &[u8]) -> i16 {
+    i16::from_le_bytes([pcm[0], pcm[1]])
+}
+
+#[tokio::test]
+async fn the_filler_cache_is_built_at_startup() {
+    let h = harness().await;
+    assert_eq!(h.st.fillers.count(true) + h.st.fillers.count(false), 0);
+    secretary_server::voice_filler::spawn_prewarm(&h.st);
+    fillers_ready(&h).await;
+    let mut spoken = h.mock.spoken();
+    spoken.sort();
+    assert_eq!(
+        spoken,
+        ["Let me see…", "One moment…", "Un attimo…", "Vediamo…"]
+    );
+    // A few hundred KB at most (the mock makes 6 bytes each).
+    assert!(h.st.fillers.bytes() <= 1024 * 1024);
+}
+
+#[tokio::test]
+async fn an_ack_plays_the_filler_first_then_the_answer_in_order() {
+    let h = harness().await;
+    secretary_server::voice_filler::spawn_prewarm(&h.st);
+    fillers_ready(&h).await;
+    h.mock.speech.lock().unwrap().clear();
+    h.mock.say(ACK_SLOW);
+    let mut ws = h.connect().await;
+    let out = say_ptt(&mut ws, 900).await;
+
+    assert_eq!(
+        types(&out),
+        ["transcript", "audio", "pcm", "reply", "done"],
+        "one audio header, then filler and answer as one stream: {out:?}"
+    );
+    let pcm = audio(&out);
+    let answer = pcm_of("Ecco le notizie.".len());
+    assert_eq!(pcm.len(), 6 + answer.len(), "filler + answer");
+    assert!(
+        matches!(first_len(&pcm), 10 | 8),
+        "an Italian filler comes first: {}",
+        first_len(&pcm)
+    );
+    assert_eq!(pcm[6..], answer[..], "the answer follows, whole");
+    // The filler came from memory: Kokoro only heard the answer.
+    assert_eq!(h.mock.spoken(), ["Ecco le notizie."]);
+    // The filler is not part of the spoken reply.
+    assert_eq!(json_of(&out, "reply")["text"], "Ecco le notizie.");
+
+    let ms = &json_of(&out, "done")["ms"];
+    let n = |k: &str| ms[k].as_u64().unwrap_or_else(|| panic!("{k}: {ms}"));
+    assert!(n("route") <= n("ack"), "{ms}");
+    assert!(n("ack") <= n("first_audio"), "{ms}");
+    assert!(
+        n("first_audio") < n("tts_first"),
+        "the filler plays before the answer is synthesized: {ms}"
+    );
+    assert!(n("tts_first") <= n("total"));
+
+    // The route reaches the status API and the stored events, with no text.
+    let path = format!("/v1/voice/devices/{}/status", h.dev_id);
+    let v = h
+        .wait_for(&h.token, &path, |v| v["turns"][0]["intent"] == "web_crawl")
+        .await;
+    let t = &v["turns"][0];
+    assert_eq!(t["fast"], false);
+    assert_eq!(t["source"], "jev");
+    assert_eq!(t["jev_ms"], 212);
+    assert!((t["confidence"].as_f64().unwrap() - 0.93).abs() < 1e-9);
+    assert_eq!(t["spans"]["route"], ms["route"]);
+    assert_eq!(t["spans"]["ack"], ms["ack"]);
+    let (_, ev) = h
+        .get(
+            Some(&h.token),
+            &format!("/v1/voice/devices/{}/events?kind=server_turn", h.dev_id),
+        )
+        .await;
+    let e = &ev["events"][0];
+    assert_eq!(e["intent"], "web_crawl");
+    assert_eq!(e["fast"], false);
+    let dir = h.data_dir.join("voice").join(&h.dev_id);
+    for f in ["status.json", "events.jsonl"] {
+        let text = std::fs::read_to_string(dir.join(f)).unwrap_or_default();
+        assert!(!text.contains("Cerca sul web"), "{f}");
+    }
+}
+
+#[tokio::test]
+async fn the_filler_follows_the_turns_language() {
+    let h = harness().await;
+    secretary_server::voice_filler::spawn_prewarm(&h.st);
+    fillers_ready(&h).await;
+    h.mock.say(ACK_SLOW);
+    let mut ws = h.connect().await;
+    send(
+        &mut ws,
+        json!({"type": "start", "mode": "ptt", "lang": "en"}),
+    )
+    .await;
+    assert_eq!(recv_json(&mut ws).await, json!({"type": "listening"}));
+    stream_audio(&mut ws, &tone(900)).await;
+    send(&mut ws, json!({"type": "end"})).await;
+    let out = turn_output(&mut ws).await;
+    // "One moment…" and "Let me see…" are both 11 characters.
+    assert_eq!(first_len(&audio(&out)), 11, "{out:?}");
+}
+
+#[tokio::test]
+async fn a_second_ack_is_ignored() {
+    let h = harness().await;
+    secretary_server::voice_filler::spawn_prewarm(&h.st);
+    fillers_ready(&h).await;
+    h.mock.say(ACK_TWICE);
+    let mut ws = h.connect().await;
+    let out = say_ptt(&mut ws, 900).await;
+    let pcm = audio(&out);
+    assert_eq!(
+        pcm.len(),
+        6 + pcm_of("Fatto qui.".len()).len(),
+        "one filler"
+    );
+    assert_eq!(
+        h.mock.spoken().last().map(String::as_str),
+        Some("Fatto qui.")
+    );
+}
+
+#[tokio::test]
+async fn an_ack_after_audio_has_started_is_ignored() {
+    let h = harness().await;
+    secretary_server::voice_filler::spawn_prewarm(&h.st);
+    fillers_ready(&h).await;
+    h.mock.speech.lock().unwrap().clear();
+    h.mock.say(ACK_LATE);
+    let mut ws = h.connect().await;
+    let out = say_ptt(&mut ws, 900).await;
+    assert_eq!(
+        audio(&out),
+        [
+            pcm_of("Prima frase detta.".len()),
+            pcm_of("Seconda frase.".len())
+        ]
+        .concat(),
+        "the answer only: {out:?}"
+    );
+    assert_eq!(h.mock.spoken(), ["Prima frase detta.", "Seconda frase."]);
+    let ms = &json_of(&out, "done")["ms"];
+    assert!(ms["route"].is_u64() && ms.get("ack").is_none(), "{ms}");
+}
+
+#[tokio::test]
+async fn a_fast_route_gets_no_filler_and_its_route_is_recorded() {
+    let h = harness().await;
+    secretary_server::voice_filler::spawn_prewarm(&h.st);
+    fillers_ready(&h).await;
+    h.mock.speech.lock().unwrap().clear();
+    h.mock.say(FAST_TIME);
+    let mut ws = h.connect().await;
+    let out = say_ptt(&mut ws, 900).await;
+    assert_eq!(audio(&out), pcm_of("Sono le dieci e dieci.".len()));
+    assert_eq!(h.mock.spoken(), ["Sono le dieci e dieci."]);
+    let ms = &json_of(&out, "done")["ms"];
+    assert!(ms["route"].is_u64() && ms.get("ack").is_none(), "{ms}");
+    let path = format!("/v1/voice/devices/{}/status", h.dev_id);
+    let v = h
+        .wait_for(&h.token, &path, |v| {
+            v["turns"][0]["intent"] == "temporal_query"
+        })
+        .await;
+    assert_eq!(v["turns"][0]["fast"], true);
+    assert!(v["turns"][0]["spans"].get("ack").is_none());
+}
+
+#[tokio::test]
+async fn the_cache_is_rebuilt_lazily_after_a_kokoro_failure() {
+    let h = harness().await;
+    // Kokoro is down at startup: nothing cached.
+    *h.mock.kokoro_fails.lock().unwrap() = true;
+    assert_eq!(h.st.fillers.prewarm(&h.st.tts).await, 0);
+    *h.mock.kokoro_fails.lock().unwrap() = false;
+
+    // The first ack finds the cache empty: the ack text is spoken like a
+    // sentence, first, and a rebuild starts.
+    h.mock.say(ACK_SLOW);
+    let mut ws = h.connect().await;
+    let out = say_ptt(&mut ws, 900).await;
+    assert_eq!(
+        audio(&out),
+        [
+            pcm_of("Un attimo…".chars().count()),
+            pcm_of("Ecco le notizie.".len())
+        ]
+        .concat(),
+        "{out:?}"
+    );
+    assert_eq!(json_of(&out, "reply")["text"], "Ecco le notizie.");
+    assert!(json_of(&out, "done")["ms"]["ack"].is_u64());
+    fillers_ready(&h).await;
+
+    // The next one plays from memory: Kokoro hears only the answer.
+    h.mock.speech.lock().unwrap().clear();
+    let out = say_ptt(&mut ws, 900).await;
+    let pcm = audio(&out);
+    assert!(matches!(first_len(&pcm), 10 | 8), "{}", first_len(&pcm));
+    assert_eq!(pcm.len(), 6 + pcm_of("Ecco le notizie.".len()).len());
+    assert_eq!(h.mock.spoken(), ["Ecco le notizie."]);
+}
+
+#[tokio::test]
+async fn post_voice_plays_the_filler_first_too() {
+    let h = harness().await;
+    secretary_server::voice_filler::spawn_prewarm(&h.st);
+    fillers_ready(&h).await;
+    h.mock.say(ACK_SLOW);
+    let r = h
+        .http
+        .post(format!("http://{}/v1/voice", h.addr))
+        .bearer_auth(&h.token)
+        .header("content-type", "audio/x-s16le;rate=16000")
+        .body(tone(800))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.headers()["x-tts-voice"], "if_sara");
+    let all = r.bytes().await.unwrap();
+    assert!(matches!(first_len(&all), 10 | 8));
+    assert_eq!(all[6..], pcm_of("Ecco le notizie.".len())[..]);
+    let path = format!("/v1/voice/devices/{}/status", h.dev_id);
+    let v = h
+        .wait_for(&h.token, &path, |v| v["turns"][0]["intent"] == "web_crawl")
+        .await;
+    assert!(v["turns"][0]["spans"]["ack"].is_u64());
 }

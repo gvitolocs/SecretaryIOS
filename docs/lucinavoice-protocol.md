@@ -49,7 +49,9 @@ Server → client:
 - `{"type":"reply","text":"…"}`: the text that was spoken (for logs), sent after the last audio frame and before
   `done`. For a sensitive reply it is the fixed phrase.
 - `{"type":"done","ms":{"stt":…,"lucina_first":…,"tts_first":…,"first_audio":…,"total":…}}`: all measured from
-  end-of-speech (the `end` frame or the VAD endpoint).
+  end-of-speech (the `end` frame or the VAD endpoint). With the Jev fast path (section 6) `ms` also carries `route`
+  and, when a filler phrase was played, `ack`; both are absent otherwise. When a filler is played, `first_audio` is
+  the filler's and can be earlier than `tts_first`.
 - `{"type":"error","code":"…","message":"…"}`: the turn ended without (complete) audio. `no_speech`, `stt_unavailable`,
   `lucina_unavailable`, `tts_failed`, `busy`, `rate_limited`, `bad_request`. The socket stays open after an error.
 
@@ -116,7 +118,10 @@ audio bytes received and sent for the turn. In `events.jsonl` it is an event of 
 
 - `GET /v1/voice/devices`: `[{id, name, online, last_seen, fw, rssi?, est_mw?}]`. `online`: a voice socket is open now.
 - `GET /v1/voice/devices/{id}/status`:
-  `{id, name, online, connected_since?, last_seen, specs, boot?, live:{…last stats…}, network:{today_up_bytes, today_down_bytes, total_up_bytes, total_down_bytes}, power:{est_mw, measured, energy_mwh_today}, turns:[last 20, newest first: {at, ok, err?, transcript_chars, speech_ms, spans:{stt, lucina_first, tts_first, first_audio, total}, device_first_audio_ms?, up_bytes, down_bytes}]}`.
+  `{id, name, online, connected_since?, last_seen, specs, boot?, live:{…last stats…}, network:{today_up_bytes, today_down_bytes, total_up_bytes, total_down_bytes}, power:{est_mw, measured, energy_mwh_today}, turns:[last 20, newest first: {at, ok, err?, transcript_chars, speech_ms, spans:{stt, lucina_first, tts_first, first_audio, total, route?, ack?}, device_first_audio_ms?, up_bytes, down_bytes, intent?, confidence?, jev_ms?, fast?, source?}]}`.
+  `spans.route`/`spans.ack` and the route fields (`intent`, `confidence`, `jev_ms`, `fast`, `source`: Lucina's `route`
+  event, section 6) are present only for turns where Lucina sent them; they never carry transcript text. The
+  `server_turn` events in `events.jsonl` carry the same fields.
   The turns combine the server's spans with the device's `turn` event; a device turn the server never saw stands alone
   (`transcript_chars` 0, spans from the device's `server_ms`). `power.measured` is true when the last stats carry
   `rail_mv`.
@@ -163,12 +168,30 @@ sentence 0.4–0.9 s. The rest is the planner LLM, which runs after Jev has alre
 - **Log line:** one `event="voice_route"` line per voice turn with intent, confidence, jev_ms, fast and source.
 
 ### secretary-server
-- **Filler audio:** at startup, and again on a TTS-voice change, synthesize a few filler phrases ("Un attimo…",
-  "Vediamo…", "One moment…") with Kokoro and keep the PCM in memory. That is a few hundred KB at most; it is
-  rebuilt lazily if Kokoro was down.
-- **On `ack`:** if no audio has been sent for the turn yet, send the cached filler PCM at once, preceded by the
-  `audio` header if it is the first audio, then continue with the real answer. If the cache is empty, synthesize the
-  ack text like a sentence.
+- **Filler audio:** at startup (a background task, `voice_filler::spawn_prewarm`; it never delays the listener),
+  synthesize the filler phrases with Kokoro `pcm` and keep the PCM in memory, keyed by voice: Italian (`if_sara`)
+  "Un attimo…", "Vediamo…" and English (`af_heart`) "One moment…", "Let me see…". Bounded: at most 256 KB per phrase
+  and 1 MiB in all (about 100 KB in practice). A phrase missing from the cache (Kokoro was down) is rebuilt lazily:
+  the next `ack` that finds the turn's language empty starts a rebuild in the background. The cache is keyed by voice
+  name, so a different voice for a language is simply built the same way.
+- **On `ack`:** if nothing of the answer has been queued or sent for the turn yet, and no earlier `ack` played, and
+  the route was not `fast`, send the cached filler PCM at once, preceded by the `audio` header if it is the first
+  audio, then continue with the real answer. The phrase is the next one for the turn's language (the same rule as
+  the voice: the `lang` the client gave, else the transcript's), rotating. The filler is the first segment of the
+  turn's ordered audio queue, so the answer's segments play after it without overlap, and the socket's `audio`
+  header goes out once. If the cache is empty, the ack text (Lucina's, or "Un attimo…"/"One moment…" if it is empty
+  or over 60 characters) is synthesized like a sentence and goes first. An `ack` that arrives after a sentence was
+  queued, a second `ack`, or one on a fast route is ignored. The filler is not part of the `reply` text and not
+  part of the 1200-character budget. `POST /v1/voice` does the same: its body starts with the filler.
 - **Timings:** the `route` fields go into the turn's `done.ms` (`route` = ms from end of speech to the route event,
-  `ack` = ms to the filler audio) and into the telemetry turn record (`intent`, `confidence`, `jev_ms`, `fast`,
-  `source`). They never include transcript text.
+  `ack` = ms to the filler audio, measured when its first frame is handed to the socket) and into the telemetry turn
+  record (`intent`, `confidence`, `jev_ms`, `fast`, `source`, cleaned: strings cut and without control characters or
+  `<` `>`, confidence in 0..1). They never include transcript text. A Lucina that sends neither event behaves exactly
+  as before: no filler, no extra keys.
+- **Log line:** one `voice route` info line per turn that had a `route` event (device id, intent, confidence,
+  jev_ms, fast, source), and `route_ms`/`ack_ms` on the `voice turn` line.
+- **Device page:** the Voice view shows each turn's intent (hover: confidence, Jev ms, source), a "Fast" badge, and a
+  tick on the timing bar where the filler went out.
+- **Firmware:** the device's `turn` event keeps `server_ms` as received, so `route` and `ack` pass through the
+  existing ingest (they are in the clean-list of span keys); firmware that copies only the five old keys just does
+  not report them.

@@ -1405,7 +1405,7 @@ Server → client:
 | `{"type":"audio","rate":24000}` | Once per turn, before the first binary audio frame. |
 | binary | s16le mono 24 kHz PCM, at most 8 KiB per frame, even lengths. |
 | `{"type":"reply","text":"…"}` | What was spoken (for logs). A sensitive reply shows the fixed phrase only. |
-| `{"type":"done","ms":{"stt","lucina_first","tts_first","first_audio","total"}}` | Milliseconds since the end of speech (the `end` frame or the endpoint). `stt`: transcript ready; `lucina_first`: first delta (or the reply) from Lucina; `tts_first`: first PCM byte from Kokoro; `first_audio`: first audio frame handed to the socket; `total`: everything sent. |
+| `{"type":"done","ms":{"stt","lucina_first","tts_first","first_audio","total"}}` | Milliseconds since the end of speech (the `end` frame or the endpoint). `stt`: transcript ready; `lucina_first`: first delta (or the reply) from Lucina; `tts_first`: first PCM byte from Kokoro; `first_audio`: first audio frame handed to the socket; `total`: everything sent. With the Jev fast path (protocol section 6) it also has `route` (Lucina's `route` event) and, when a cached filler phrase was played on Lucina's `ack`, `ack` (the filler's audio, which then is also `first_audio`); both are absent otherwise. |
 | `{"type":"error","code","message"}` | The turn ended without (complete) audio, or the message was refused. The socket stays open. |
 
 Error codes: `no_speech` (under 0.3 s of audio after trimming, no speech in
@@ -1494,6 +1494,9 @@ is open now.
 
 `turns` is newest first (20 at most); `err` is present on a failed turn;
 `spans` are moments since the end of speech (cumulative), `null` when not reached.
+A turn Lucina routed (protocol section 6) also has `intent`, `confidence`,
+`jev_ms`, `fast` and `source` (no transcript text), and `spans.route` /
+`spans.ack` when those events came.
 
 #### `GET /v1/voice/devices/{id}/events` (authenticated)
 

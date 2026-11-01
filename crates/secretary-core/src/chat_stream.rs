@@ -5,6 +5,8 @@
 //!
 //! | event | data | |
 //! |---|---|---|
+//! | `route` | `{"intent","confidence","jev_ms","fast","source"}` | voice turns: how Lucina routed the turn, before any reply text (optional) |
+//! | `ack` | `{"text"}` | voice turns: the turn takes a slow path; say a filler (optional, at most once) |
 //! | `delta` | `{"text"}` | a fragment of the reply as the model writes it |
 //! | `reply` | `{"text","sensitive","replaces"}` | the settled reply, sent once |
 //! | `done` | the JSON the plain call returns | last event of a good turn |
@@ -23,6 +25,20 @@ use crate::error::{Error, Result};
 /// One event of a streamed chat turn.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ChatEvent {
+    /// Voice turns only: how the turn was routed (`route` event). Sent before
+    /// any reply text; a Lucina without the feature never sends it.
+    Route {
+        intent: String,
+        confidence: Option<f64>,
+        jev_ms: Option<u64>,
+        /// Answered without the planner LLM.
+        fast: bool,
+        /// `jev`, `tier0` or `fallback`.
+        source: String,
+    },
+    /// Voice turns only: the turn will take a slow path (`ack` event), so the
+    /// client may fill the wait with a short spoken phrase. At most once.
+    Ack { text: String },
     /// A fragment of the reply text.
     Delta(String),
     /// The settled reply. `replaces`: `text` is not the concatenation of the
@@ -109,6 +125,25 @@ fn decode_block(block: &SseBlock) -> Result<Option<ChatEvent>> {
         serde_json::from_str(&block.data).map_err(|e| Error::Decode(format!("sse data: {e}")))
     };
     match block.event.as_str() {
+        "route" => {
+            let v = json()?;
+            Ok(Some(ChatEvent::Route {
+                intent: v["intent"].as_str().unwrap_or("").to_owned(),
+                confidence: v["confidence"].as_f64().filter(|c| c.is_finite()),
+                jev_ms: v["jev_ms"]
+                    .as_f64()
+                    .filter(|m| m.is_finite())
+                    .map(|m| m.max(0.0) as u64),
+                fast: v["fast"].as_bool() == Some(true),
+                source: v["source"].as_str().unwrap_or("").to_owned(),
+            }))
+        }
+        "ack" => {
+            let v = json()?;
+            Ok(Some(ChatEvent::Ack {
+                text: v["text"].as_str().unwrap_or("").to_owned(),
+            }))
+        }
         "delta" => {
             let v = json()?;
             Ok(v["text"]
@@ -264,7 +299,7 @@ mod tests {
     }
 
     #[test]
-    fn decodes_the_four_events() {
+    fn decodes_the_events() {
         let b = |event: &str, data: &str| SseBlock {
             event: event.into(),
             data: data.into(),
@@ -303,6 +338,37 @@ mod tests {
             Err(Error::Api { status: 502, code, message: Some(m) }) if code == "llm_failed" && m == "boom"
         ));
         assert_eq!(decode_block(&b("other", "x")).unwrap(), None);
+        // route and ack are first-class; missing fields default
+        assert_eq!(
+            decode_block(&b(
+                "route",
+                r#"{"intent":"temporal_query","confidence":0.93,"jev_ms":212,"fast":true,"source":"jev"}"#
+            ))
+            .unwrap(),
+            Some(ChatEvent::Route {
+                intent: "temporal_query".into(),
+                confidence: Some(0.93),
+                jev_ms: Some(212),
+                fast: true,
+                source: "jev".into()
+            })
+        );
+        assert_eq!(
+            decode_block(&b("route", "{}")).unwrap(),
+            Some(ChatEvent::Route {
+                intent: String::new(),
+                confidence: None,
+                jev_ms: None,
+                fast: false,
+                source: String::new()
+            })
+        );
+        assert_eq!(
+            decode_block(&b("ack", r#"{"text":"Un attimo…"}"#)).unwrap(),
+            Some(ChatEvent::Ack {
+                text: "Un attimo…".into()
+            })
+        );
         assert!(decode_block(&b("delta", "not json")).is_err());
     }
 
