@@ -8,11 +8,12 @@ import Foundation
 // (crates/secretary-server/src/notify/live.rs: the attribute names below are its wire format); the app also starts
 // one in the foreground and ends stale ones (ApprovalActivities).
 //
-// The buttons are LiveActivityIntents, which iOS runs in the app's process through the handlers the app installs at
-// launch (`ApprovalActivityCommands`). Deny needs no unlock (like the widget). Approve needs the iPhone unlocked; a
-// plain request is then answered at once. A sensitive one (root plans) is never signed in the background: the app
-// comes to the front on the request's card and starts the approve step there (Face ID, or the PIN, over the exact
-// commands).
+// The card has ONE intent button: Deny, a LiveActivityIntent that iOS runs in the app's process through the handler
+// the app installs at launch (`ApprovalActivityCommands`); it needs no unlock (like the widget). On iOS 27 the
+// renderer resolves every tap on a card with two intent buttons to one of them (the device logged
+// ApproveApprovalActivityIntent for taps on Deny), so Approve is a link (`ApprovalLink`): it opens the app on the
+// request's card, which starts its approve step there (Face ID, or the PIN, over the exact commands) when the request
+// is still the one the card showed. A link never answers anything by itself.
 
 struct ApprovalActivityAttributes: ActivityAttributes {
     struct ContentState: Codable, Hashable {
@@ -62,24 +63,53 @@ extension ApprovalActivityAttributes.ContentState {
 }
 
 /// The owner's explicit tap that an approve comes from. Every approve carries one; only these call sites create it:
-/// `ApproveApprovalActivityIntent.perform` (`.activityApproveButton`), the notification's Approve action in
-/// `AppDelegate.userNotificationCenter(_:didReceive:)` (`.notificationApproveAction`), and the card's Approve button
-/// or PIN submit (`.cardApproveButton`). Polls, pushes, background refreshes and activity observers have none.
+/// the Live Activity's Approve link in `AppModel.openWidgetRoute` (`.activityApproveLink`: only ever starts the card's
+/// approve step), the notification's Approve action in `AppDelegate.userNotificationCenter(_:didReceive:)`
+/// (`.notificationApproveAction`), and the card's Approve button or PIN submit (`.cardApproveButton`). Polls, pushes,
+/// background refreshes and activity observers have none.
 enum ApprovalTrigger: String, Equatable, Sendable {
-    case activityApproveButton
+    case activityApproveLink
     case notificationApproveAction
     case cardApproveButton
 }
 
-/// What the app does for the activity's buttons. Set by the app at launch; nil in the widget extension (it never
-/// runs these intents: LiveActivityIntents and `openAppWhenRun` intents run in the app).
+/// The activity's links into the app: `approvals/<id>` (Details) and `approvals/<id>?approve=1&hash=<payloadHash>`
+/// (Approve: the card with its approve step, for the request the activity showed).
+enum ApprovalLink: Equatable {
+    case details(id: String)
+    case approve(id: String, payloadHash: String)
+
+    static func route(id: String, approve payloadHash: String? = nil) -> String {
+        let path = "approvals/\(WidgetRoute.segment(id))"
+        guard let payloadHash else { return path }
+        return "\(path)?approve=1&hash=\(WidgetRoute.segment(payloadHash))"
+    }
+
+    static func url(id: String, approve payloadHash: String? = nil) -> URL {
+        WidgetRoute.url(route(id: id, approve: payloadHash))
+    }
+
+    /// A route from `WidgetRoute.route(from:)` (still percent-encoded); nil for any other route. Approve needs
+    /// `approve=1` and a hash; anything less is Details.
+    static func parse(_ route: String) -> ApprovalLink? {
+        guard route.hasPrefix("approvals/") else { return nil }
+        let rest = route.dropFirst("approvals/".count)
+        let parts = rest.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
+        // One segment (an id's own `/` comes encoded).
+        guard let segment = parts.first, !segment.contains("/"),
+              let id = String(segment).removingPercentEncoding, !id.isEmpty else { return nil }
+        guard parts.count == 2, let items = URLComponents(string: "x:?\(parts[1])")?.queryItems else { return .details(id: id) }
+        let value = { (name: String) in items.first { $0.name == name }?.value }
+        guard value("approve") == "1", let hash = value("hash"), !hash.isEmpty else { return .details(id: id) }
+        return .approve(id: id, payloadHash: hash)
+    }
+}
+
+/// What the app does for the activity's Deny. Set by the app at launch; nil in the widget extension (it never runs
+/// this intent: LiveActivityIntents run in the app).
 enum ApprovalActivityCommands {
     /// Deny `approvalId` (`sensitive` as the activity knows it).
     @MainActor static var deny: ((_ approvalId: String, _ sensitive: Bool) async -> Void)?
-    /// Approve: answered in the background when it can be, else on the card in front (`intent` asks iOS for that).
-    /// `payloadHash`: the hash of the request the activity showed (the tap is bound to it).
-    @MainActor static var approve: ((_ approvalId: String, _ payloadHash: String, _ trigger: ApprovalTrigger,
-                                     _ intent: any AppIntent) async -> Void)?
 }
 
 enum ApprovalActivityError: Error, CustomLocalizedStringResourceConvertible {
@@ -108,36 +138,6 @@ struct DenyApprovalActivityIntent: LiveActivityIntent {
     func perform() async throws -> some IntentResult {
         guard let deny = ApprovalActivityCommands.deny else { throw ApprovalActivityError.notInApp }
         await deny(approvalId, sensitive)
-        return .result()
-    }
-}
-
-/// Approve from the Lock Screen: iOS asks to unlock this iPhone first (an unlocked Watch or Mac does not count).
-/// A plain request is answered; a sensitive one goes to the card in front (Face ID there).
-struct ApproveApprovalActivityIntent: LiveActivityIntent {
-    static let title: LocalizedStringResource = "Approve an approval"
-    static let isDiscoverable = false
-    static let authenticationPolicy: IntentAuthenticationPolicy = .requiresLocalDeviceAuthentication
-    /// Runs in the background, and brings the app to the front when the approve step has to happen on the card (every
-    /// sensitive request; `continueInForeground`). iOS 26 replaced `ForegroundContinuableIntent` with this; it does nothing there.
-    @available(iOS 26.0, *)
-    static var supportedModes: IntentModes { [.background, .foreground(.dynamic)] }
-
-    @Parameter(title: "Approval") var approvalId: String
-    @Parameter(title: "Payload hash") var payloadHash: String
-
-    init() {}
-
-    init(approvalId: String, payloadHash: String) {
-        self.approvalId = approvalId
-        self.payloadHash = payloadHash
-    }
-
-    @MainActor
-    func perform() async throws -> some IntentResult {
-        guard let approve = ApprovalActivityCommands.approve else { throw ApprovalActivityError.notInApp }
-        // The owner tapped Approve on the activity: the only place this trigger is made.
-        await approve(approvalId, payloadHash, .activityApproveButton, self)
         return .result()
     }
 }

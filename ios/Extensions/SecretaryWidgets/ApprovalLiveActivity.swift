@@ -6,6 +6,9 @@ import WidgetKit
 /// An approval request on the Lock Screen and in the Dynamic Island: who asks, the reason, the first commands, the
 /// time left, and Deny / Approve side by side (no long-press), plus Details for the app's card. Once answered,
 /// withdrawn or expired it shows the outcome without buttons. Wording and look follow the approvals widget.
+///
+/// Deny is the card's only intent button: on iOS 27 the renderer maps every tap on a card with two of them to one
+/// action (taps on Deny ran Approve's intent). Approve is a link to the card in the app, which asks Face ID there.
 struct ApprovalLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: ApprovalActivityAttributes.self) { context in
@@ -50,7 +53,12 @@ struct ApprovalLiveActivity: Widget {
     }
 
     static func detailsURL(_ attributes: ApprovalActivityAttributes) -> URL {
-        WidgetRoute.url("approvals/\(WidgetRoute.segment(attributes.approvalId))")
+        ApprovalLink.url(id: attributes.approvalId)
+    }
+
+    /// The card with its approve step, bound to the request shown here.
+    static func approveURL(_ attributes: ApprovalActivityAttributes) -> URL {
+        ApprovalLink.url(id: attributes.approvalId, approve: attributes.payloadHash)
     }
 }
 
@@ -200,18 +208,21 @@ private struct ApprovalActivityBody: View {
     private var buttons: some View {
         VStack(spacing: LucinaTokens.Space.xs) {
             HStack(spacing: LucinaTokens.Space.sm) {
+                // The card's one intent button (see ApprovalLiveActivity).
                 Button(intent: DenyApprovalActivityIntent(approvalId: attributes.approvalId, sensitive: attributes.sensitive)) {
                     Label("Deny", systemImage: "xmark").frame(maxWidth: .infinity, minHeight: compact ? 28 : 36)
                 }
+                .buttonStyle(.borderedProminent)
                 .tint(LucinaTokens.Colors.negative)
-                Button(intent: ApproveApprovalActivityIntent(approvalId: attributes.approvalId, payloadHash: attributes.payloadHash)) {
+                // A link, drawn like the prominent button beside it: the app's card asks Face ID.
+                Link(destination: ApprovalLiveActivity.approveURL(attributes)) {
                     Label("Approve", systemImage: attributes.sensitive ? "faceid" : "checkmark")
+                        .foregroundStyle(.white)
                         .frame(maxWidth: .infinity, minHeight: compact ? 28 : 36)
+                        .background(LucinaTokens.Colors.accent, in: Capsule())
                 }
-                .tint(LucinaTokens.Colors.accent)
             }
             .font(LucinaTokens.Fonts.subheadline.weight(.semibold))
-            .buttonStyle(.borderedProminent)
             .labelStyle(.titleAndIcon)
             if !compact {
                 Link(destination: ApprovalLiveActivity.detailsURL(attributes)) {

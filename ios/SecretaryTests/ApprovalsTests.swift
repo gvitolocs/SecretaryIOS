@@ -473,43 +473,14 @@ final class ApprovalsTests: XCTestCase {
     func testTheActivitysSensitiveApproveStartsTheApproveStepOnTheCard() async throws {
         let secret = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_secret", sensitive: true))
         await store.apply([secret])
-        await store.open(id: "apr_secret", startApprove: .activityApproveButton)
+        await store.open(id: "apr_secret", startApprove: .activityApproveLink)
         XCTAssertEqual(store.sheetItem?.id, "apr_secret")
         XCTAssertTrue(signer.signed.isEmpty, "nothing is signed until the card runs its approve action")
-        XCTAssertEqual(store.takeStartApprove("apr_secret")?.trigger, .activityApproveButton)
+        XCTAssertEqual(store.takeStartApprove("apr_secret")?.trigger, .activityApproveLink)
         XCTAssertNil(store.takeStartApprove("apr_secret"), "once")
         // A plain open (a notification tap) does not start it.
         await store.open(id: "apr_secret")
         XCTAssertNil(store.takeStartApprove("apr_secret"))
-    }
-
-    func testTheActivitysApproveRoute() {
-        XCTAssertEqual(ApprovalsStore.activityApproveRoute(sensitive: false), .decide)
-        XCTAssertEqual(ApprovalsStore.activityApproveRoute(sensitive: true), .openCard, "never signed in the background")
-    }
-
-    func testTheActivitysSensitiveApproveAlwaysGoesToTheCard() async throws {
-        StubURLProtocol.handler = { request in
-            request.url?.path.hasSuffix("/decide") == true ? .init(body: #"{"status":"ok"}"#) : .init(body: "{}")
-        }
-        var settled: [String: ApprovalOutcome] = [:]
-        store.onSettled = { id, outcome in settled[id] = outcome }
-        let secret = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_secret", sensitive: true))
-        let plain = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_plain", sensitive: false))
-        await store.apply([secret, plain])
-
-        // A root plan: nothing signed in the background, the card with its approve step (Face ID there).
-        let card = await store.approveFromActivity(id: "apr_secret", shownHash: fixtureHash, trigger: .activityApproveButton, now: fixtureNow)
-        XCTAssertEqual(card, .openCard(startApprove: true))
-        XCTAssertTrue(signer.signed.isEmpty, "the signer is never called in the background")
-        XCTAssertTrue(decideRequests().isEmpty)
-
-        // A plain request is answered at once, without a signature.
-        let plainCard = await store.approveFromActivity(id: "apr_plain", shownHash: fixtureHash, trigger: .activityApproveButton, now: fixtureNow)
-        XCTAssertEqual(plainCard, .done)
-        XCTAssertEqual(settled["apr_plain"], .approved)
-        XCTAssertEqual(decideRequests().count, 1)
-        XCTAssertTrue(signer.signed.isEmpty)
     }
 
     /// The push-to-start attributes exactly as the server sends them (crates/secretary-server/src/notify/live.rs,
@@ -603,14 +574,14 @@ final class ApprovalsTests: XCTestCase {
         let secret = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_secret", sensitive: true))
         await store.apply([secret])
         let tap = Date(timeIntervalSince1970: 1_800_000_000)
-        await store.open(id: "apr_secret", startApprove: .activityApproveButton, now: tap)
+        await store.open(id: "apr_secret", startApprove: .activityApproveLink, now: tap)
         XCTAssertNil(store.takeStartApprove("apr_secret", now: tap.addingTimeInterval(11)), "too late")
         XCTAssertNil(store.takeStartApprove("apr_secret", now: tap.addingTimeInterval(1)), "and gone")
         XCTAssertTrue(decideRequests().isEmpty)
         XCTAssertTrue(signer.signed.isEmpty)
         // Within the window it is handed over once, with the activity's trigger.
-        await store.open(id: "apr_secret", startApprove: .activityApproveButton, now: tap)
-        XCTAssertEqual(store.takeStartApprove("apr_secret", now: tap.addingTimeInterval(9))?.trigger, .activityApproveButton)
+        await store.open(id: "apr_secret", startApprove: .activityApproveLink, now: tap)
+        XCTAssertEqual(store.takeStartApprove("apr_secret", now: tap.addingTimeInterval(9))?.trigger, .activityApproveLink)
     }
 
     func testAStaleStartApproveNeverReachesAnotherCard() async throws {
@@ -618,45 +589,28 @@ final class ApprovalsTests: XCTestCase {
         let b = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_b", sensitive: true))
         await store.apply([a, b])
         let tap = Date()
-        await store.open(id: "apr_a", startApprove: .activityApproveButton, now: tap)
+        await store.open(id: "apr_a", startApprove: .activityApproveLink, now: tap)
         // B's card shows instead: it does not take A's start-approve, and A's is gone with it.
         XCTAssertNil(store.takeStartApprove("apr_b", now: tap))
         XCTAssertNil(store.takeStartApprove("apr_a", now: tap))
         assertNothingApproved("B's card after A's tap")
 
         // Cleared when the sheet closes, when the request leaves the list, and in the background.
-        await store.open(id: "apr_a", startApprove: .activityApproveButton)
+        await store.open(id: "apr_a", startApprove: .activityApproveLink)
         await store.dismissSheet()
         XCTAssertNil(store.startApprove, "sheet closed")
-        await store.open(id: "apr_a", startApprove: .activityApproveButton)
+        await store.open(id: "apr_a", startApprove: .activityApproveLink)
         await store.apply([b])
         XCTAssertNil(store.startApprove, "answered elsewhere")
         await store.apply([a, b])
-        await store.open(id: "apr_a", startApprove: .activityApproveButton)
+        await store.open(id: "apr_a", startApprove: .activityApproveLink)
         store.sceneBackgrounded()
         XCTAssertNil(store.startApprove, "app in the background")
-        await store.open(id: "apr_a", startApprove: .activityApproveButton)
+        await store.open(id: "apr_a", startApprove: .activityApproveLink)
         store.reset()
         XCTAssertNil(store.startApprove, "signed out")
         XCTAssertTrue(decideRequests().isEmpty)
         XCTAssertTrue(signer.signed.isEmpty)
-    }
-
-    func testTheActivitysApproveLeavesARequestThatIsNoLongerPending() async throws {
-        StubURLProtocol.handler = { request in
-            request.url?.path == "/v1/approvals/apr_done"
-                ? .init(body: itemJSON(id: "apr_done", sensitive: true, status: "approved"))
-                : .init(body: "{}")
-        }
-        let needsCard = await store.approveFromActivity(id: "apr_done", shownHash: fixtureHash, trigger: .activityApproveButton, now: fixtureNow)
-        XCTAssertEqual(needsCard, .done)
-        assertNothingApproved("already answered on another device")
-        // A trigger from elsewhere is refused outright, even for a pending request.
-        let secret = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_secret", sensitive: true))
-        await store.apply([secret])
-        let refused = await store.approveFromActivity(id: "apr_secret", shownHash: fixtureHash, trigger: .notificationApproveAction, now: fixtureNow)
-        XCTAssertEqual(refused, .done)
-        assertNothingApproved("a notification trigger on the activity path")
     }
 
     func testTheNotificationsApproveNeedsItsTrigger() async throws {
@@ -671,33 +625,6 @@ final class ApprovalsTests: XCTestCase {
     }
 
     // MARK: Review fixes
-
-    func testTheActivitysApproveIsBoundToWhatItShowedAndToTheTime() async throws {
-        StubURLProtocol.handler = { _ in .init(body: #"{"status":"ok"}"#) }
-        let secret = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_secret", sensitive: true))
-        await store.apply([secret])
-        // The request changed since the activity showed it: the card, without its approve step.
-        let changed = await store.approveFromActivity(id: "apr_secret", shownHash: "sha256:" + String(repeating: "cd", count: 32),
-                                                      trigger: .activityApproveButton, now: fixtureNow)
-        XCTAssertEqual(changed, .openCard(startApprove: false))
-        // Its time is up.
-        let late = await store.approveFromActivity(id: "apr_secret", shownHash: fixtureHash, trigger: .activityApproveButton,
-                                                   now: fixtureNow.addingTimeInterval(600))
-        XCTAssertEqual(late, .openCard(startApprove: false))
-        assertNothingApproved("changed or expired")
-    }
-
-    func testASecondTapWhileTheFirstIsOnItsWayDoesNothing() async throws {
-        StubURLProtocol.handler = { request in
-            request.url?.path.hasSuffix("/decide") == true ? .init(body: #"{"status":"ok"}"#) : .init(body: "{}")
-        }
-        let plain = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_plain", sensitive: false))
-        await store.apply([plain])
-        async let first = store.approveFromActivity(id: "apr_plain", shownHash: fixtureHash, trigger: .activityApproveButton, now: fixtureNow)
-        async let second = store.approveFromActivity(id: "apr_plain", shownHash: fixtureHash, trigger: .activityApproveButton, now: fixtureNow)
-        _ = await (first, second)
-        XCTAssertEqual(decideRequests().count, 1, "one answer")
-    }
 
     func testTheCardsAnswerIsBoundToTheRequestOnScreen() async throws {
         StubURLProtocol.handler = { _ in .init(body: #"{"status":"ok"}"#) }
@@ -754,36 +681,81 @@ final class ApprovalsTests: XCTestCase {
         XCTAssertNil(AppDelegate.approvalTrigger(forAction: UNNotificationDismissActionIdentifier))
     }
 
-    func testHowTheCardOpensAfterTheActivitysApprove() {
-        typealias A = ApprovalActivities
-        XCTAssertEqual(A.cardOpening(startRequested: true, appActive: true, continued: false), .withApproveStep)
-        XCTAssertEqual(A.cardOpening(startRequested: true, appActive: false, continued: true), .withApproveStep)
-        XCTAssertEqual(A.cardOpening(startRequested: true, appActive: false, continued: false), .withoutApproveStep,
-                       "declined: the card only, nothing in the background")
-        XCTAssertEqual(A.cardOpening(startRequested: false, appActive: true, continued: false), .withoutApproveStep)
+    // MARK: The activity's Approve link
+
+    func testTheActivitysLinksRoundTrip() throws {
+        let id = "apr_a/b c"
+        let details = ApprovalLink.url(id: id)
+        let approve = ApprovalLink.url(id: id, approve: fixtureHash)
+        XCTAssertEqual(details.absoluteString, "secretary://open/approvals/apr_a%2Fb%20c")
+        XCTAssertEqual(approve.absoluteString,
+                       "secretary://open/approvals/apr_a%2Fb%20c?approve=1&hash=sha256%3A" + String(repeating: "ab", count: 32))
+        XCTAssertEqual(ApprovalLink.parse(try XCTUnwrap(WidgetRoute.route(from: details))), .details(id: id))
+        XCTAssertEqual(ApprovalLink.parse(try XCTUnwrap(WidgetRoute.route(from: approve))), .approve(id: id, payloadHash: fixtureHash))
+        // Anything less than approve=1 with a hash is Details.
+        XCTAssertEqual(ApprovalLink.parse("approvals/apr_1?approve=1"), .details(id: "apr_1"))
+        XCTAssertEqual(ApprovalLink.parse("approvals/apr_1?approve=1&hash="), .details(id: "apr_1"))
+        XCTAssertEqual(ApprovalLink.parse("approvals/apr_1?approve=0&hash=x"), .details(id: "apr_1"))
+        XCTAssertEqual(ApprovalLink.parse("approvals/apr_1?hash=x"), .details(id: "apr_1"))
+        XCTAssertNil(ApprovalLink.parse("approvals/"))
+        XCTAssertNil(ApprovalLink.parse("approvals"))
+        XCTAssertNil(ApprovalLink.parse("approvals/a/b"))
+        XCTAssertNil(ApprovalLink.parse("chat"))
     }
 
-    func testTheActivitysApproveIsNeverLeftWithNothingToSee() {
-        typealias A = ApprovalActivities
-        XCTAssertEqual(A.handOff(appActive: true, canContinue: false, continueSucceeded: false), .openInFront)
-        XCTAssertEqual(A.handOff(appActive: false, canContinue: true, continueSucceeded: true), .openInFront, "brought to the front")
-        XCTAssertEqual(A.handOff(appActive: false, canContinue: true, continueSucceeded: false), .openAndNotify,
-                       "continuing failed: open-to-approve")
-        XCTAssertEqual(A.handOff(appActive: false, canContinue: false, continueSucceeded: false), .openAndNotify,
-                       "no way to the front: open-to-approve")
-        XCTAssertEqual(A.handOff(appActive: false, canContinue: false, continueSucceeded: true), .openAndNotify)
-        // Brought to the front: the approve step starts there; left behind: the card only.
-        XCTAssertEqual(A.cardOpening(startRequested: true, appActive: false, continued: true), .withApproveStep)
-        XCTAssertEqual(A.cardOpening(startRequested: true, appActive: false, continued: false), .withoutApproveStep)
-    }
-
-    func testOpenToApproveNamesTheRequest() async throws {
+    func testTheApproveLinkStartsTheStepOnlyForTheRequestItShowed() async throws {
         let secret = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_secret", sensitive: true))
         await store.apply([secret])
-        await store.postOpenToApprove(id: "apr_secret")
-        await store.postOpenToApprove(id: "apr_unknown")
-        XCTAssertEqual(notifier.followUps, ["apr_secret", "apr_unknown"])
-        assertNothingApproved("a follow-up only")
+        await store.dismissSheet()
+        await store.openFromActivityLink(id: "apr_secret", shownHash: fixtureHash, now: fixtureNow)
+        XCTAssertEqual(store.sheetItem?.id, "apr_secret")
+        XCTAssertEqual(store.takeStartApprove("apr_secret", now: fixtureNow)?.trigger, .activityApproveLink,
+                       "pending, the same plan: the card asks Face ID")
+        XCTAssertTrue(signer.signed.isEmpty, "the link itself signs nothing")
+        XCTAssertTrue(decideRequests().isEmpty, "and answers nothing")
+        // Changed since the activity showed it, or past its time: the card only.
+        for (hash, now, why) in [
+            ("sha256:" + String(repeating: "cd", count: 32), fixtureNow, "a different plan"),
+            (fixtureHash, fixtureNow.addingTimeInterval(600), "expired"),
+        ] {
+            await store.dismissSheet()
+            await store.openFromActivityLink(id: "apr_secret", shownHash: hash, now: now)
+            XCTAssertEqual(store.sheetItem?.id, "apr_secret", why)
+            XCTAssertNil(store.startApprove, why)
+        }
+        assertNothingApproved("changed or expired")
+    }
+
+    func testTheApproveLinkOnADecidedRequestOnlyShowsIt() async throws {
+        StubURLProtocol.handler = { request in
+            request.url?.path == "/v1/approvals/apr_done"
+                ? .init(body: itemJSON(id: "apr_done", sensitive: true, status: "approved"))
+                : .init(body: "{}")
+        }
+        await store.openFromActivityLink(id: "apr_done", shownHash: fixtureHash, now: fixtureNow)
+        XCTAssertEqual(store.sheetItem?.id, "apr_done")
+        guard case .alreadyDecided(.approved, _)? = store.outcome else { return XCTFail("the card says it was approved") }
+        assertNothingApproved("already answered on another device")
+    }
+
+    func testTheApproveLinkOnAPlainRequestOpensTheCardOnly() async throws {
+        let plain = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_plain", sensitive: false))
+        await store.apply([plain])
+        await store.openFromActivityLink(id: "apr_plain", shownHash: fixtureHash, now: fixtureNow)
+        XCTAssertEqual(store.sheetItem?.id, "apr_plain")
+        // The card's approve step only runs for a sensitive request (ApprovalSheetView.startApproveStep): the owner taps
+        // Approve on the card. Nothing is answered from the link.
+        XCTAssertTrue(decideRequests().isEmpty)
+        XCTAssertTrue(signer.signed.isEmpty)
+    }
+
+    func testTheActivitysDenyIsUnchanged() async throws {
+        var denied: [(String, Bool)] = []
+        ApprovalActivityCommands.deny = { id, sensitive in denied.append((id, sensitive)) }
+        defer { ApprovalActivityCommands.deny = nil }
+        _ = try await DenyApprovalActivityIntent(approvalId: "apr_secret", sensitive: true).perform()
+        XCTAssertEqual(denied.map(\.0), ["apr_secret"])
+        XCTAssertEqual(denied.map(\.1), [true])
     }
 
     // MARK: One alert per request
@@ -932,7 +904,9 @@ final class ApprovalsTests: XCTestCase {
         XCTAssertTrue(signer.signed.isEmpty)
         XCTAssertTrue(decideRequests().isEmpty)
         XCTAssertFalse(ApprovalsStore.cardApproveStep(trigger: nil, shownAndPending: true))
-        XCTAssertFalse(ApprovalsStore.cardApproveStep(trigger: .activityApproveButton, shownAndPending: true))
+        XCTAssertTrue(ApprovalsStore.cardApproveStep(trigger: .activityApproveLink, shownAndPending: true))
+        XCTAssertFalse(ApprovalsStore.cardApproveStep(trigger: .activityApproveLink, shownAndPending: false))
+        XCTAssertFalse(ApprovalsStore.cardApproveStep(trigger: .cardApproveButton, shownAndPending: true))
         XCTAssertTrue(ApprovalsStore.cardApproveStep(trigger: .notificationApproveAction, shownAndPending: true))
         XCTAssertFalse(ApprovalsStore.cardApproveStep(trigger: .notificationApproveAction, shownAndPending: false))
     }

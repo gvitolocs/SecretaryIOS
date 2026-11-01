@@ -70,9 +70,10 @@ private struct RequestView: View {
         }
     }
 
-    /// Opened by the Live Activity's Approve: the approve step starts at once, as if Approve was tapped (Face ID over
-    /// this card; cancelling leaves the card open). With the PIN pad showing, the pad is that step. Only with the app
-    /// in front within the start's window, and only on the card the tap opened.
+    /// Opened by the Live Activity's Approve link or the notification's Approve: the approve step starts at once, as if
+    /// Approve was tapped (Face ID over this card; cancelling leaves the card open). With the PIN pad showing, the pad
+    /// is that step. Only with the app in front within the start's window, and only on the card the tap opened. A plain
+    /// request starts nothing: the owner taps Approve on the card (a link alone never answers).
     private func startApproveStep(_ start: StartApprove) async {
         guard item.sensitive, start.id == item.id, item.canAnswer else { return }
         // What is on screen now is what Face ID will sign (the request is not answered if it changes meanwhile).

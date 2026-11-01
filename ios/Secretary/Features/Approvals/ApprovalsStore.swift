@@ -16,7 +16,7 @@ enum ApprovalAnswer: Equatable, Sendable {
     }
 }
 
-/// The Live Activity's Approve asked the card to start its approve step: for this request only, and only for
+/// The Live Activity's Approve link (or the notification's Approve) asked the card to start its approve step: for this request only, and only for
 /// `window` seconds after the tap.
 struct StartApprove: Equatable, Sendable {
     static let window: TimeInterval = 10
@@ -83,7 +83,7 @@ final class ApprovalsStore {
     private(set) var working: ApprovalDecision?
     /// The PIN pad is showing instead of the Approve / Deny buttons.
     private(set) var pinEntry = false
-    /// The card opened from the Live Activity's Approve: it starts the approve step as it appears, within
+    /// The card opened from the Live Activity's Approve link or the notification's Approve: it starts the approve step as it appears, within
     /// `StartApprove.window`. Cleared when the sheet closes, when the request leaves the list, when the app goes to the
     /// background and on sign-out. Only `open(id:startApprove:)` sets it.
     private(set) var startApprove: StartApprove?
@@ -102,8 +102,6 @@ final class ApprovalsStore {
     @ObservationIgnored private let deviceLabel: () -> String
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let log = Logger(subsystem: "tech.getsecretary.app", category: "Approvals")
-    /// Live Activity approves on their way, by request.
-    @ObservationIgnored private var answeringInPlace: Set<String> = []
     /// Bumped each time the app goes to the background: a card's approve step that waited across it stops.
     @ObservationIgnored private(set) var backgroundGeneration = 0
     @ObservationIgnored var onTransportError: ((APIError) -> Void)?
@@ -264,7 +262,7 @@ final class ApprovalsStore {
     }
 
     /// Opens the prompt on one request (a tapped notification), fetching it when it is not listed yet. `startApprove`
-    /// (the Live Activity's Approve, with the app in front): the card starts its approve step as it appears (Face ID
+    /// (the Live Activity's Approve link, the notification's Approve; the app in front): the card starts its approve step as it appears (Face ID
     /// over the card), within `StartApprove.window` of `now`.
     func open(id: String, startApprove trigger: ApprovalTrigger? = nil, now: Date = Date()) async {
         dismissed.remove(id)
@@ -495,18 +493,20 @@ final class ApprovalsStore {
         }
     }
 
-    /// "Open Secretary to approve" for `id` (the activity's Approve could not bring the card to the front).
-    func postOpenToApprove(id: String) async {
-        let item = pending.first { $0.id == id } ?? sheetItem.flatMap { $0.id == id ? $0 : nil }
-            ?? ApprovalItem(id: id, summary: "", sensitive: true)
-        await notifier.postOpenToApprove(for: item)
+    /// The Live Activity's Approve link (`approvals/<id>?approve=1&hash=…`; the app is coming to the front): the card,
+    /// with its approve step (Face ID over the commands, on the card) only when the request is pending, not expired
+    /// and still the one the activity showed (`shownHash`); otherwise the card only. Nothing is answered here: a link
+    /// can come from anywhere, the owner's Face ID on the card is the approve.
+    func openFromActivityLink(id: String, shownHash: String, now: Date = Date()) async {
+        await openCardToApprove(id, shownHash: shownHash, trigger: .activityApproveLink, now: now)
     }
 
-    /// The notification's Approve of a root plan it showed whole (the app is coming to the front): the card, with its
-    /// approve step started only for the owner's own tap on the request he saw, while it is pending.
+    /// The notification's Approve of a root plan it showed whole, or the activity's Approve link (the app is coming to
+    /// the front): the card, with its approve step started only for the owner's own tap on the request he saw, while it
+    /// is pending.
     private func openCardToApprove(_ id: String, shownHash: String?, trigger: ApprovalTrigger?, now: Date) async {
-        guard let trigger, trigger == .notificationApproveAction else {
-            log.error("approve refused id=\(id, privacy: .public): not from the notification's Approve")
+        guard let trigger, trigger == .notificationApproveAction || trigger == .activityApproveLink else {
+            log.error("approve refused id=\(id, privacy: .public): not from the notification's Approve or the activity's link")
             await open(id: id)
             return
         }
@@ -514,14 +514,14 @@ final class ApprovalsStore {
         if known == nil, let api = api() { known = try? await api.get(id) }
         let shown = known.map { ($0.status == nil || $0.status == .pending) && !$0.isExpired(at: now) && shownHash == $0.payloadHash }
         let step = Self.cardApproveStep(trigger: trigger, shownAndPending: shown ?? false)
-        log.info("notification approve id=\(id, privacy: .public) approveStep=\(step, privacy: .public)")
+        log.info("\(trigger == .activityApproveLink ? "activity link" : "notification", privacy: .public) approve id=\(id, privacy: .public) approveStep=\(step, privacy: .public)")
         await open(id: id, startApprove: step ? trigger : nil, now: now)
     }
 
-    /// The card's approve step starts for the notification's own Approve on the request it showed (same payload hash,
-    /// pending, not expired); any doubt opens the card without it.
+    /// The card's approve step starts for the notification's own Approve, or the activity's Approve link, on the request
+    /// it showed (same payload hash, pending, not expired); any doubt opens the card without it.
     nonisolated static func cardApproveStep(trigger: ApprovalTrigger?, shownAndPending: Bool) -> Bool {
-        trigger == .notificationApproveAction && shownAndPending
+        (trigger == .notificationApproveAction || trigger == .activityApproveLink) && shownAndPending
     }
 
     /// A button for a request that is no longer pending: take it off the lock screen, end its activity.
@@ -544,66 +544,6 @@ final class ApprovalsStore {
             onSettled?(item.id, result)
         } else {
             await notifier.postFailure(for: item)
-        }
-    }
-
-    /// What the Live Activity's Approve does with a request.
-    enum ActivityApproveRoute: Equatable {
-        /// A plain request: answered from the Lock Screen (no signature).
-        case decide
-        /// A sensitive one: never signed in the background; the card in front, with its approve step (Face ID).
-        case openCard
-    }
-
-    nonisolated static func activityApproveRoute(sensitive: Bool) -> ActivityApproveRoute {
-        sensitive ? .openCard : .decide
-    }
-
-    /// What the app does after the Live Activity's Approve.
-    enum ActivityApproveOutcome: Equatable {
-        /// Answered, refused, or nothing to do.
-        case done
-        /// The card, in front: with its approve step started (Face ID over the commands), or only shown (the request
-        /// changed since the activity showed it, or its time is up).
-        case openCard(startApprove: Bool)
-    }
-
-    /// The Live Activity's Approve (iOS ran it after this iPhone was unlocked; the app may be in the background).
-    /// Only for the activity's own tap, only for a request that is pending now (listed, or fetched now and still
-    /// pending), only for the request the activity showed (`shownHash`), and once at a time per request. A plain
-    /// request is answered; a sensitive one goes to the card (Face ID there), never signed in the background.
-    func approveFromActivity(id: String, shownHash: String, trigger: ApprovalTrigger,
-                             now: Date = Date()) async -> ActivityApproveOutcome {
-        guard trigger == .activityApproveButton else {
-            log.error("approve refused id=\(id, privacy: .public): not from the activity's Approve")
-            return .done
-        }
-        // A second tap while the first answer is on its way does nothing.
-        guard !answeringInPlace.contains(id), !(working != nil && sheetItem?.id == id) else { return .done }
-        answeringInPlace.insert(id)
-        defer { answeringInPlace.remove(id) }
-        var known = pending.first { $0.id == id }
-        if known == nil, let api = api() { known = try? await api.get(id) }
-        // Not found: the card shows what the server says; nothing starts on a request the app can't see.
-        guard let item = known else { return .openCard(startApprove: false) }
-        guard item.status == nil || item.status == .pending else {
-            await forgetAnswered(item)
-            return .done
-        }
-        guard item.payloadHash == shownHash, !item.isExpired(at: now) else {
-            log.error("approve refused id=\(id, privacy: .public): changed since shown, or expired")
-            return .openCard(startApprove: false)
-        }
-        let route = Self.activityApproveRoute(sensitive: item.sensitive)
-        log.info("activity approve route id=\(id, privacy: .public) route=\(String(describing: route), privacy: .public)")
-        switch route {
-        case .openCard:
-            return .openCard(startApprove: true)
-        case .decide:
-            guard let result = await answer(item, .approve(trigger)) else { return .done }
-            log.info("activity approve answered id=\(id, privacy: .public) outcome=\(String(describing: result), privacy: .public)")
-            await finishButtonAnswer(item, result)
-            return .done
         }
     }
 

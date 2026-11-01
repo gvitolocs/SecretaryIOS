@@ -137,17 +137,22 @@ reason and the commands are redacted (who asks, the time left and the buttons
 stay); with notification previews off, an activity the app starts itself says
 only "Open Secretary to see what it is."
 
-- **Deny** works without unlocking (like the widget).
-- **Approve** needs this iPhone unlocked (an unlocked Watch or Mac does not
-  count). A plain request is then answered from the lock screen.
-- **Approve** of a sensitive request (root plans) is never signed in the
-  background: the app comes to the front on that card (iOS 26+: the intent's
-  `.foreground(.dynamic)` mode) and asks Face ID at once (or the PIN pad) over
-  the exact commands. If the app can't come to the front, an "Open Secretary to
-  approve" notification leads to the card instead, so a tap never ends in
-  nothing. Cancelling leaves the card open. A request that changed since the
-  activity showed it, or expired, only opens the card. The card signs the
+- **Deny** works without unlocking (like the widget). It is the card's only
+  intent button (`DenyApprovalActivityIntent`).
+- **Approve** is a link, not an intent button:
+  `secretary://open/approvals/<id>?approve=1&hash=<payloadHash>`. It opens the
+  app on the request's card. For a sensitive request (root plans) the card asks
+  Face ID at once (or shows the PIN pad) over the exact commands, but only if the
+  request is still pending, hasn't expired and still has the `payloadHash` the
+  activity showed. Otherwise the card opens without asking. A plain request opens
+  on its card, and the owner taps Approve there. The link never answers or
+  signs anything by itself, so a link opened from anywhere can do no more than
+  open the card. Cancelling Face ID leaves the card open. The card signs the
   request that was on screen when tapped.
+- Why one intent button: on iOS 27.2 (iPhone 16e) every tap on a card with two
+  `Button(intent:)`s reached the app as the same action. Taps on Deny ran
+  `ApproveApprovalActivityIntent`, so Deny approved behind Face ID. That intent,
+  and its continue-in-foreground path, are gone.
 - Every root approval is a real Face ID (or passcode) prompt. An earlier build
   reused the Face ID unlock of the iPhone instead; the Secure Enclave key
   refuses such a context (CryptoTokenKit -5), so that is gone, and so is the
