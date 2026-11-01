@@ -480,8 +480,7 @@ impl Manager {
     async fn launch_job(&self, job: &Job) {
         let cfg = &self.pipeline().config;
         let dir = cfg.job_dir(&job.job_id);
-        let repo_name = Path::new(&job.repo).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        let lock = pipeline::lock_path(&repo_name);
+        let lock = cfg.lock.clone();
         let written = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(dir.join("job.json"), serde_json::to_vec_pretty(&job.spec).unwrap_or_default()));
         let _ = std::fs::write(dir.join("log"), format!("[{}] {} job {} started; waiting for {}\n", chrono::Utc::now().format("%H:%M:%S"), if job.kind == JobKind::Merge { "merge" } else { "deploy" }, job.job_id, lock.display()));
         let runner = match written {

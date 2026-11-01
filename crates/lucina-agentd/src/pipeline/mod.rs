@@ -214,6 +214,8 @@ pub struct Config {
     pub target_root: PathBuf,
     /// `$WT_ROOT` (`~/Projects/.worktrees`).
     pub work_root: PathBuf,
+    /// The merge lock every job holds ([`MERGE_LOCK`]; `LUCINA_AGENTD_MERGE_LOCK` for tests).
+    pub lock: PathBuf,
 }
 
 impl Config {
@@ -233,6 +235,7 @@ impl Config {
             systemd,
             target_root: std::env::var_os("LUCINA_AGENTD_TARGET_ROOT").map(PathBuf::from).unwrap_or_else(|| home.join(".cache/cargo-target")),
             work_root: std::env::var_os("WT_ROOT").map(PathBuf::from).unwrap_or_else(|| projects.join(".worktrees")),
+            lock: std::env::var_os("LUCINA_AGENTD_MERGE_LOCK").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(MERGE_LOCK)),
         }
     }
 
@@ -243,10 +246,8 @@ impl Config {
 
 /// The merge lock. One for every Lucina repo: it is the lock deploy-guard checks and the one
 /// sessions already took by hand for all of them (lucinaos and LucinaAndroidOS included), so a
-/// job and a hand merge or deploy never overlap. The argument is the repo, for a future split.
-pub fn lock_path(_repo_name: &str) -> PathBuf {
-    PathBuf::from("/tmp/lucina-merge.lock")
-}
+/// job and a hand merge or deploy never overlap.
+pub const MERGE_LOCK: &str = "/tmp/lucina-merge.lock";
 
 pub fn new_id(prefix: &str) -> String {
     format!("{prefix}_{}", &uuid::Uuid::new_v4().simple().to_string()[..12])
@@ -431,7 +432,5 @@ mod tests {
         p.update_job("job_1", |j| j.state = JobState::Succeeded).unwrap();
         assert_eq!(p.active_jobs().len(), 1);
         assert_eq!(p.jobs(10)[0].job_id, "job_2");
-        assert_eq!(lock_path("SecretaryIOS"), PathBuf::from("/tmp/lucina-merge.lock"));
-        assert_eq!(lock_path("lucinaos"), PathBuf::from("/tmp/lucina-merge.lock"));
     }
 }

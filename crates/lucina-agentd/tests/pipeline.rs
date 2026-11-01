@@ -32,6 +32,8 @@ fn manager(root: &Path) -> Manager {
             systemd: false,
             target_root: root.join("targets"),
             work_root: root.join("wt"),
+            // Not the real lock: the gate running these tests may hold it.
+            lock: root.join("merge.lock"),
         },
         ..Options::default()
     };
