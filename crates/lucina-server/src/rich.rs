@@ -26,6 +26,9 @@ const DANISH_WORDS: [&str; 10] = [
     "jeg", "ikke", "og", "skal", "kan", "har", "det", "til", "hvad", "tak",
 ];
 
+/// What the composer reads of a draft. A longer one goes out whole, as plain text.
+const COMPOSER_DRAFT_CHARS: usize = 6000;
+
 /// `it`, `en` or `da`.
 pub fn guess_language(reply: &str, user: &str) -> &'static str {
     let lower = reply.to_lowercase();
@@ -139,7 +142,7 @@ fn composer_user_prompt(draft: &str, user_text: &str, lang: &str, preset: &[Valu
         ),
         format!(
             "Lucina's draft reply ({lang}):\n{}",
-            draft.chars().take(6000).collect::<String>()
+            draft.chars().take(COMPOSER_DRAFT_CHARS).collect::<String>()
         ),
     ];
     if !preset.is_empty() {
@@ -212,6 +215,11 @@ pub async fn compose_with_model(
                         if !dropped.is_empty() {
                             tracing::warn!(dropped = ?dropped, "rich compose dropped parts");
                         }
+                        // The format's limits would cut the text: better none of its widgets.
+                        if rich::loses_text(&parsed, &message) {
+                            tracing::warn!("rich compose over the format's limits");
+                            return None;
+                        }
                         return Some(message);
                     }
                     Err(errors) => errors.join("; "),
@@ -240,7 +248,7 @@ pub struct Draft<'a> {
     pub use_model: bool,
 }
 
-/// Turn a finished reply into a v1 message. `None` only for an empty draft.
+/// Turn a finished reply into a v1 message. `None`: send it as plain text (empty, or v1 would cut it).
 pub async fn compose(
     model: &Arc<dyn ChatModel>,
     d: Draft<'_>,
@@ -257,6 +265,11 @@ pub async fn compose(
         body
     };
     let lang = guess_language(&body, d.user_text);
+    // Code, and anything the composer could not read to the end, stays whole: v1 clips a card at
+    // 600 characters, and the clipped text is what the timeline and the recent turns would keep.
+    if body.contains("```") || body.chars().count() > COMPOSER_DRAFT_CHARS {
+        return None;
+    }
     let mut preset = Vec::new();
     if is_pending_confirmation(d.action, d.action_result) {
         preset.extend(confirm_actions(lang));
@@ -283,7 +296,16 @@ pub async fn compose(
     if d.use_model && !rich::is_conversational(&body) {
         message = compose_with_model(model, &body, d.user_text, lang, &preset, timeout).await;
     }
-    let mut message = message.unwrap_or_else(|| rich::from_plain_text(&body, lang, 3, Vec::new()));
+    let mut message = match message {
+        Some(m) => m,
+        None => {
+            let m = rich::from_plain_text(&body, lang, 3, Vec::new());
+            if rich::loses_draft(&body, &m) {
+                return None;
+            }
+            m
+        }
+    };
     if message.lang.is_none() {
         message.lang = Some(lang.to_owned());
     }
@@ -427,6 +449,49 @@ mod tests {
         assert!(r
             .plain_text(true)
             .ends_with("↪︎ rispondi: «sì» · «no» · «Modifica …»"));
+    }
+
+    fn draft(text: &str) -> Draft<'_> {
+        Draft {
+            text,
+            user_text: "domanda",
+            action: "reply",
+            action_result: "",
+            use_model: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn code_and_very_long_drafts_stay_whole_without_a_model_call() {
+        let code = format!("Ecco:\n```rust\n{}\n```", "let x = 1;\n".repeat(200));
+        let long = "Una frase qualsiasi che si ripete. ".repeat(300);
+        for text in [code.as_str(), long.as_str()] {
+            let s = ScriptedModel::new();
+            let m = model(s);
+            assert!(compose(&m, draft(text), Duration::from_secs(5)).await.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_composed_card_over_the_limit_is_not_clipped() {
+        let text = "Una frase qualsiasi che si ripete. ".repeat(60);
+        let body = "x".repeat(900);
+        let s = ScriptedModel::new();
+        s.push_text(&format!(
+            r#"{{"bubbles": ["Ecco"], "blocks": [{{"type": "card", "title": "T", "body": "{body}"}}]}}"#
+        ));
+        let r = compose(&model(s), draft(&text), Duration::from_secs(5)).await;
+        assert!(r.is_none(), "{r:?}");
+    }
+
+    #[tokio::test]
+    async fn a_composed_message_within_the_limits_is_kept() {
+        let text = "Una frase qualsiasi che si ripete. ".repeat(40);
+        let s = ScriptedModel::new();
+        s.push_text(r#"{"bubbles": ["Ecco"], "blocks": [{"type": "card", "title": "T", "body": "corto"}]}"#);
+        let r = compose(&model(s), draft(&text), Duration::from_secs(5)).await.unwrap();
+        assert_eq!(r.bubbles, ["Ecco"]);
+        assert_eq!(r.blocks.len(), 1);
     }
 
     #[test]

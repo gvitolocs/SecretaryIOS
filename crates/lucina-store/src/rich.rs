@@ -1478,6 +1478,30 @@ pub fn from_plain_text(
     }
 }
 
+fn text_chars(v: &Value) -> usize {
+    match v {
+        Value::String(s) => s.chars().count(),
+        Value::Array(a) => a.iter().map(text_chars).sum(),
+        Value::Object(o) => o.values().map(text_chars).sum(),
+        _ => 0,
+    }
+}
+
+/// Normalizing `raw` into `m` cut text: [`clip`] ends it with "…", the item limits drop the rest.
+pub fn loses_text(raw: &Value, m: &RichMessage) -> bool {
+    let ellipses = |v: &Value| v.to_string().matches('…').count();
+    let text = |v: &Value| text_chars(&v["bubbles"]) + text_chars(&v["blocks"]);
+    let out = m.to_value();
+    ellipses(&out) > ellipses(raw) || text(&out) + 20 < text(raw)
+}
+
+/// Splitting `draft` into `m` cut it (markdown marks may go, so a tenth of the length is allowed).
+pub fn loses_draft(draft: &str, m: &RichMessage) -> bool {
+    let text = m.plain_text(false);
+    text.matches('…').count() > draft.matches('…').count()
+        || text.chars().count() * 10 < draft.chars().count() * 9
+}
+
 /// Already chat-shaped: short, only paragraphs, at most two chunks.
 pub fn is_conversational(text: &str) -> bool {
     let t = text.trim();

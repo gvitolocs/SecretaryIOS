@@ -889,6 +889,7 @@ async fn run_turn_scoped(
 ) -> Result<Value, ApiError> {
     // What was said, for the timeline and the recent turns (a confirmed request below runs as the held text).
     let heard = message.clone();
+    let is_mcp = mcp_turn.is_some();
     let voice_eligible = crate::voice::spoken()
         && existing.is_none()
         && origin.is_none()
@@ -1163,6 +1164,7 @@ async fn run_turn_scoped(
                 && finish.action != crate::jev_yesno::ACTION,
             &finish.calendar_events,
             finish.agenda.as_ref(),
+            is_mcp,
         )
         .await
     };
@@ -1356,8 +1358,10 @@ async fn rich_reply(
     use_model: bool,
     calendar_events: &[Value],
     agenda: Option<&crate::agenda::Agenda>,
+    mcp: bool,
 ) -> (Option<lucina_store::rich::RichMessage>, String, String) {
-    if !st.cfg.rich_replies {
+    // An MCP client is an agent reading text: no bubbles, no buttons, nothing cut.
+    if !st.cfg.rich_replies || mcp {
         return (None, reply.to_owned(), reply.to_owned());
     }
     // An agenda: one sentence and the event cards, no model rewrite, no wall of text.
@@ -2853,7 +2857,7 @@ fn spawn_job(st: AppState, job: Job, plan: Value, message: String, memory: Strin
                     (None, result.clone())
                 } else {
                     let (rich_msg, text, _) =
-                        rich_reply(&st, &result, &message, &action, "", false, &[], None).await;
+                        rich_reply(&st, &result, &message, &action, "", false, &[], None, false).await;
                     (rich_msg, text)
                 };
                 let item = record(text, rich_msg.as_ref());
@@ -3467,6 +3471,7 @@ async fn tools_turn(
             && finish.action != crate::jev_yesno::ACTION,
         &finish.calendar_events,
         finish.agenda.as_ref(),
+        mcp,
     )
     .await;
     st.recent
