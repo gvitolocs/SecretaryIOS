@@ -18,7 +18,10 @@ export function useWide() {
     observer?.disconnect();
     observer = new ResizeObserver((entries) => {
       const entry = entries[0];
-      setWide(entry ? width(entry) >= WIDE_MIN_PX : false);
+      const w = entry ? width(entry) : 0;
+      // 0 is a page a Suspense boundary took off the screen, not a narrow one. Switching layout would rebuild it, and
+      // what it loads again would suspend it again, for ever.
+      if (w > 0) setWide(w >= WIDE_MIN_PX);
     });
     observer.observe(el);
   }

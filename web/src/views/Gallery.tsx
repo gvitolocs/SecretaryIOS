@@ -2,7 +2,7 @@ import { Button, Card, EmptyState, ErrorState, LoadingState, Page, PageGrid, use
 import { GalleryDetail, GalleryHeader } from "../components/gallery/GalleryHeader";
 import { Dynamic } from "solid-js/web";
 import { A, useNavigate, useSearchParams } from "@solidjs/router";
-import { createEffect, createMemo, createResource, createSignal, on, onCleanup, Show } from "solid-js";
+import { createEffect, createMemo, createResource, createSignal, on, onCleanup, Show, Suspense } from "solid-js";
 import {
   batch,
   createStack,
@@ -770,7 +770,9 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
           </p>
         </Show>
         <Show when={!shelf() && !filtered()}>
-          <MemoriesStrip origin={origin()} onMutated={() => feed.reload()} />
+          <Suspense>
+            <MemoriesStrip origin={origin()} onMutated={() => feed.reload()} />
+          </Suspense>
         </Show>
       </div>
 
@@ -857,24 +859,27 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
       </Show>
 
       <Show when={viewer() !== null && items()[viewer()!]}>
-        <GalleryViewer
-          items={items()}
-          index={viewer()!}
-          onIndex={setViewer}
-          onClose={() => setViewer(null)}
-          onChanged={feed.replace}
-          onRemoved={removedInViewer}
-          onStackChanged={stackChanged}
-          trash={trash()}
-          archive={archive()}
-          onSimilar={smartAllowed() && !refused() && smartReady(smartStatus()) ? showSimilar : undefined}
-          onPerson={(id) => {
-            setViewer(null);
-            navigate(personPath(id));
-          }}
-          onPeopleChanged={personId() ? () => void refetchPerson() : undefined}
-          contextActions={viewerActions}
-        />
+        {/* What the viewer loads must not suspend the page behind it: that takes the grid off the screen, and its scroll position with it. */}
+        <Suspense>
+          <GalleryViewer
+            items={items()}
+            index={viewer()!}
+            onIndex={setViewer}
+            onClose={() => setViewer(null)}
+            onChanged={feed.replace}
+            onRemoved={removedInViewer}
+            onStackChanged={stackChanged}
+            trash={trash()}
+            archive={archive()}
+            onSimilar={smartAllowed() && !refused() && smartReady(smartStatus()) ? showSimilar : undefined}
+            onPerson={(id) => {
+              setViewer(null);
+              navigate(personPath(id));
+            }}
+            onPeopleChanged={personId() ? () => void refetchPerson() : undefined}
+            contextActions={viewerActions}
+          />
+        </Suspense>
       </Show>
       <Show when={deleting()}>
         {(list) => <DeleteDialog items={list()} purge={trash()} onDone={deleted} onCancel={() => setDeleting(null)} />}

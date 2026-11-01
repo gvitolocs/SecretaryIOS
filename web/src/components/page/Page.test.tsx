@@ -166,6 +166,32 @@ describe("page system", () => {
   describe("useWide", () => {
     afterEach(() => vi.unstubAllGlobals());
 
+    it("keeps its layout while the page is off the screen (it measures 0 then)", () => {
+      let report: (width: number) => void = () => {};
+      vi.stubGlobal(
+        "ResizeObserver",
+        class {
+          constructor(cb: ResizeObserverCallback) {
+            report = (width) => cb([{ contentRect: { width } } as ResizeObserverEntry], this as unknown as ResizeObserver);
+          }
+          observe() {}
+          disconnect() {}
+        },
+      );
+      let wide = () => false;
+      render(() => {
+        const w = useWide();
+        wide = w.wide;
+        return <section ref={w.track} />;
+      });
+      report(1200);
+      expect(wide()).toBe(true);
+      report(0);
+      expect(wide()).toBe(true);
+      report(500);
+      expect(wide()).toBe(false);
+    });
+
     it("measures a capped page by the slot it sits in", async () => {
       // The page's own column is 480 px (a phone max-width); its slot is 1200 px.
       // Like a real ResizeObserver, this one reports after the element is attached.
