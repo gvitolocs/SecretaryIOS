@@ -58,6 +58,9 @@ pub struct MergeArgs {
     /// A diffgate waiver, rule=reason (repeatable; said in the report)
     #[arg(long)]
     pub allow: Vec<String>,
+    /// Run the tests of touched crates too, where the repo's merge gates only compile
+    #[arg(long)]
+    pub full: bool,
     /// Queue it and return the job id
     #[arg(long)]
     pub no_wait: bool,
@@ -98,6 +101,8 @@ pub enum JobCommand {
     Wait { id: String },
     /// Cancel a queued or running job
     Cancel { id: String },
+    /// Run a queued job before the others of its repo
+    Next { id: String },
 }
 
 #[derive(Subcommand, Debug)]
@@ -297,7 +302,7 @@ pub async fn merge(client: &Client, a: &MergeArgs) -> Result<Output, CmdError> {
         Some(w) => std::fs::canonicalize(w).map(|p| p.display().to_string()).unwrap_or_else(|_| w.clone()),
         None => std::env::current_dir().map(|p| p.display().to_string()).map_err(|e| CmdError::new("INVALID_OPTIONS", e.to_string()))?,
     };
-    let body = json!({"workspace": ws, "keep": a.keep, "allow": a.allow, "requestedBy": session()});
+    let body = json!({"workspace": ws, "keep": a.keep, "allow": a.allow, "full": a.full, "requestedBy": session()});
     let job = client.post("/pipeline/merge", &body).await.map_err(api)?;
     queued(client, job, a.no_wait).await
 }
@@ -338,7 +343,14 @@ pub async fn job(client: &Client, cmd: &JobCommand) -> Result<Output, CmdError> 
             Ok(Output { text: v["text"].as_str().unwrap_or_default().trim_end().to_string(), json: Some(v) })
         }
         JobCommand::Wait { id } => job_output(follow(client, id).await?),
-        JobCommand::Cancel { id } => job_output(client.post(&format!("/pipeline/jobs/{id}/cancel"), &json!({})).await.map_err(api)?),
+        JobCommand::Cancel { id } => {
+            let j = client.post(&format!("/pipeline/jobs/{id}/cancel"), &json!({})).await.map_err(api)?;
+            Ok(Output { text: format!("{id} {}", s(&j["state"])), json: Some(j) })
+        }
+        JobCommand::Next { id } => {
+            let j = client.post(&format!("/pipeline/jobs/{id}/next"), &json!({})).await.map_err(api)?;
+            Ok(Output { text: format!("{id} runs next in its repo"), json: Some(j) })
+        }
     }
 }
 
@@ -405,7 +417,7 @@ pub async fn board(client: &Client) -> Result<Output, CmdError> {
                 format!("{}{}", w["ahead"].as_u64().map(|a| format!("+{a}")).unwrap_or_default(), if w["dirty"] == true { " dirty" } else { "" }),
                 w["idleDays"].as_i64().map(|d| format!("{d}d")).unwrap_or_default(),
                 if w["procs"].as_u64().unwrap_or(0) > 0 { format!("{}p {}M", w["procs"], w["rssMb"]) } else { String::new() },
-                s(&w["task"]["session"]),
+                s(&w["session"]),
                 s(&w["workspaceId"]),
             ]
         })

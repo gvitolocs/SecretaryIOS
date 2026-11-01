@@ -10,6 +10,7 @@
 //! | GET | `/pipeline/jobs/{id}` | `?waitMs=` (long-poll until done, up to 120 s) | job |
 //! | GET | `/pipeline/jobs/{id}/log` | `?offset=` | `{offset, text, state}` |
 //! | POST | `/pipeline/jobs/{id}/cancel` | | job |
+//! | POST | `/pipeline/jobs/{id}/next` | | job (ahead of its repo's queue) |
 //! | GET | `/pipeline/board` | | `{workspaces, unmanaged, queue, recentJobs, leases, deploys}` |
 //! | GET | `/devices` | | `{devices: [{device, about, lease}]}` |
 //! | POST | `/devices/{id}/lease` | `{holder, purpose, minutes, workspaceId}` | lease (409 when someone else holds it) |
@@ -43,6 +44,7 @@ pub fn routes() -> Router<Manager> {
         .route("/pipeline/jobs/{id}", get(job))
         .route("/pipeline/jobs/{id}/log", get(log))
         .route("/pipeline/jobs/{id}/cancel", post(cancel))
+        .route("/pipeline/jobs/{id}/next", post(next))
         .route("/pipeline/board", get(board))
         .route("/devices", get(devices))
         .route("/devices/{id}/lease", post(lease))
@@ -57,6 +59,16 @@ fn allow(m: &Manager, peer: &Peer, headers: &HeaderMap, agents_too: bool, what: 
     }
 }
 
+/// The session that took a task shows as an agent from now on. An agentd agent already is one.
+async fn link_session(m: &Manager, peer: &Peer, headers: &HeaderMap, task: &crate::pipeline::Task) {
+    if origin(peer, headers, &m.provider_pids()) != Origin::Local {
+        return;
+    }
+    if let Some(session) = &task.session {
+        m.session_link(session, &task.workspace_id).await;
+    }
+}
+
 async fn tasks(State(m): State<Manager>) -> ApiResult {
     to_json(json!({"tasks": m.pipeline().tasks()}))
 }
@@ -64,12 +76,14 @@ async fn tasks(State(m): State<Manager>) -> ApiResult {
 async fn start(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Json(req): Json<StartTask>) -> ApiResult {
     allow(&m, &peer, &headers, true, "start a task")?;
     let (task, w) = m.start_task(req).await?;
+    link_session(&m, &peer, &headers, &task).await;
     to_json(json!({"task": task, "workspace": view(&m, &w)}))
 }
 
 async fn adopt(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Json(req): Json<AdoptTask>) -> ApiResult {
     allow(&m, &peer, &headers, false, "adopt a worktree")?;
     let (task, w) = m.adopt_task(req).await?;
+    link_session(&m, &peer, &headers, &task).await;
     to_json(json!({"task": task, "workspace": view(&m, &w)}))
 }
 
@@ -112,6 +126,11 @@ async fn log(State(m): State<Manager>, Path(id): Path<String>, Query(q): Query<J
 async fn cancel(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Path(id): Path<String>) -> ApiResult {
     allow(&m, &peer, &headers, true, "cancel a job")?;
     to_json(m.cancel_job(&id).await?)
+}
+
+async fn next(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Path(id): Path<String>) -> ApiResult {
+    allow(&m, &peer, &headers, false, "move a job up the queue")?;
+    to_json(m.prioritize_job(&id)?)
 }
 
 async fn board(State(m): State<Manager>) -> ApiResult {

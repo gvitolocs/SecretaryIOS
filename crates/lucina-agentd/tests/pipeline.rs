@@ -156,6 +156,66 @@ async fn a_moved_checkout_keeps_its_workspaces_and_tasks() {
     assert_eq!(m.workspaces().project(&w.project_id).unwrap().name(), "Renamed");
 }
 
+/// A repo with an origin, whose merge gates are `gate`, and a worktree of `topic` with one commit.
+fn repo_with_gate(root: &Path, name: &str, gate: &str) -> PathBuf {
+    let origin = root.join(format!("{name}.git"));
+    let repo = root.join(name);
+    Command::new("git").args(["init", "-q", "--bare", "-b", "main"]).arg(&origin).status().unwrap();
+    Command::new("git").args(["clone", "-q"]).arg(&origin).arg(&repo).status().unwrap();
+    git(&repo, &["config", "user.email", "t@t"]);
+    git(&repo, &["config", "user.name", "t"]);
+    git(&repo, &["checkout", "-q", "-b", "main"]);
+    std::fs::create_dir_all(repo.join(".lucina")).unwrap();
+    std::fs::write(repo.join(".lucina/pipeline.toml"), format!("[merge]\ndiffgate = false\ncargo = \"off\"\n[[gate]]\nname = \"g\"\nrun = \"{gate}\"\n")).unwrap();
+    commit(&repo, "a.txt", "1\n", "a");
+    git(&repo, &["push", "-q", "origin", "main"]);
+    git(&repo, &["fetch", "-q", "origin"]);
+    repo
+}
+
+fn topic(root: &Path, repo: &Path, name: &str, branch: &str) -> PathBuf {
+    let wt = root.join("wt").join(name).join(branch);
+    git(repo, &["worktree", "add", "-q", "-b", branch, &wt.display().to_string(), "origin/main"]);
+    commit(&wt, &format!("{branch}.txt"), "x\n", branch);
+    wt
+}
+
+#[tokio::test]
+async fn a_long_gate_holds_up_only_its_own_repo() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let m = manager(&root);
+    let slow = repo_with_gate(&root, "Slow", "sleep 8");
+    let fast = repo_with_gate(&root, "Fast", "true");
+    let queue = |wt: PathBuf| {
+        let m = m.clone();
+        async move {
+            m.adopt_task(AdoptTask { path: wt.display().to_string(), ..AdoptTask::default() }).await.unwrap();
+            m.queue_merge(MergeRequest { workspace: wt.display().to_string(), ..MergeRequest::default() }).await.unwrap()
+        }
+    };
+    let long = queue(topic(&root, &slow, "Slow", "one")).await;
+    let waits = queue(topic(&root, &slow, "Slow", "two")).await;
+    let urgent = queue(topic(&root, &slow, "Slow", "three")).await;
+    let other = queue(topic(&root, &fast, "Fast", "four")).await;
+    m.pipeline_tick().await;
+    m.prioritize_job(&urgent.job_id).unwrap();
+    // The other repo's job finishes while the slow repo's first is still at its gate.
+    let done = run_until_done(&m, &other.job_id).await;
+    assert_eq!(done.state, JobState::Succeeded, "{:?}", done.outcome);
+    assert_eq!(m.job(&long.job_id).unwrap().state, JobState::Running);
+    assert_eq!(m.job(&waits.job_id).unwrap().state, JobState::Queued, "one at a time per repo");
+    // `job next` goes ahead of the older queued job of its repo.
+    let u = run_until_done(&m, &long.job_id).await;
+    assert_eq!(u.state, JobState::Succeeded, "{:?}", u.outcome);
+    m.pipeline_tick().await;
+    assert_eq!(m.job(&urgent.job_id).unwrap().state, JobState::Running);
+    assert_eq!(m.job(&waits.job_id).unwrap().state, JobState::Queued);
+    assert!(matches!(m.prioritize_job(&long.job_id), Err(ManagerError::Invalid(_))), "only a queued job");
+    let _ = m.cancel_job(&urgent.job_id).await;
+    let _ = m.cancel_job(&waits.job_id).await;
+}
+
 #[tokio::test]
 async fn leases_are_exclusive_until_they_expire_or_are_released() {
     let tmp = tempfile::tempdir().unwrap();

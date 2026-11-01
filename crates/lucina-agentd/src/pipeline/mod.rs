@@ -3,7 +3,8 @@
 //!
 //! - A **task** is a workspace someone registered with `lagent task start` (or adopted from a
 //!   hand-made worktree): who owns it, which session works in it, its branch.
-//! - A **job** is one merge or deploy. Jobs wait in one FIFO queue and run one at a time.
+//! - A **job** is one merge or deploy. Each repo has its own FIFO queue and lock: one job at a
+//!   time per repo, so one repo's long gate never holds up another's.
 //!   Each runs as its own process (`lagent pipeline-exec <dir>`, under the repo's merge lock,
 //!   as a transient systemd unit when there is one), so restarting agentd, or deploying it,
 //!   doesn't stop a job. agentd writes `job.json`; the executor ([`exec`]) appends to `log`
@@ -53,6 +54,23 @@ pub struct Task {
     /// The stale question sent to Lucina's decide API (`dc-…`), so it is asked once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stale_decision: Option<String>,
+}
+
+/// A Claude session working in Lucina workspaces, and the agent that shows it
+/// (`manager/sessions.rs`). A live session's workspaces are never swept.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeSession {
+    pub session_id: String,
+    pub agent_id: String,
+    pub host: String,
+    /// The workspaces it works in, the latest last.
+    #[serde(default)]
+    pub workspaces: Vec<String>,
+    pub last_seen_ms: u64,
+    /// It ended, or went silent. The next beat clears this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_at_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,6 +130,9 @@ pub struct Spec {
     /// Deploy even when `deploy-guard plan` sees nothing new.
     #[serde(default)]
     pub force: bool,
+    /// Merge: run the tests of touched crates even under `cargo = "check"`.
+    #[serde(default)]
+    pub full: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -167,6 +188,9 @@ pub struct Job {
     /// Keep the workspace after the merge (it continues from the merged commit).
     #[serde(default)]
     pub keep: bool,
+    /// `lagent job next`: ahead of the other queued jobs of its repo.
+    #[serde(default)]
+    pub priority: bool,
     pub spec: Spec,
     pub created_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -217,7 +241,7 @@ pub struct Config {
     pub target_root: PathBuf,
     /// `$WT_ROOT` (`~/Projects/.worktrees`).
     pub work_root: PathBuf,
-    /// The merge lock every job holds ([`MERGE_LOCK`]; `LUCINA_AGENTD_MERGE_LOCK` for tests).
+    /// SecretaryIOS's merge lock, which deploys also hold ([`MERGE_LOCK`]; `LUCINA_AGENTD_MERGE_LOCK` for tests).
     pub lock: PathBuf,
 }
 
@@ -242,14 +266,23 @@ impl Config {
         }
     }
 
+    /// The lock a job holds. Each repo has its own, so a long LucinaOS gate never holds up
+    /// SecretaryIOS; deploys and SecretaryIOS keep the one deploy-guard checks.
+    pub fn lock_for(&self, repo: &str, kind: JobKind) -> PathBuf {
+        let name = Path::new(repo).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        if kind == JobKind::Deploy || name == "SecretaryIOS" {
+            return self.lock.clone();
+        }
+        let stem = self.lock.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        self.lock.with_file_name(format!("{stem}-{name}.lock"))
+    }
+
     pub fn job_dir(&self, id: &str) -> PathBuf {
         self.dir.join("jobs").join(id)
     }
 }
 
-/// The merge lock. One for every Lucina repo: it is the lock deploy-guard checks and the one
-/// sessions already took by hand for all of them (lucinaos and LucinaAndroidOS included), so a
-/// job and a hand merge or deploy never overlap.
+/// The lock deploy-guard checks: SecretaryIOS merges and every deploy hold it.
 pub const MERGE_LOCK: &str = "/tmp/lucina-merge.lock";
 
 pub fn new_id(prefix: &str) -> String {
@@ -277,7 +310,8 @@ impl Pipeline {
                      record TEXT NOT NULL
                  );
                  CREATE INDEX IF NOT EXISTS pipeline_jobs_state ON pipeline_jobs (state, seq);
-                 CREATE TABLE IF NOT EXISTS device_leases (device TEXT PRIMARY KEY, record TEXT NOT NULL);",
+                 CREATE TABLE IF NOT EXISTS device_leases (device TEXT PRIMARY KEY, record TEXT NOT NULL);
+                 CREATE TABLE IF NOT EXISTS claude_sessions (id TEXT PRIMARY KEY, record TEXT NOT NULL);",
             )
         })?;
         std::fs::create_dir_all(config.dir.join("jobs"))?;
@@ -381,6 +415,23 @@ impl Pipeline {
         self.store.with_db(|db| db.execute("DELETE FROM device_leases WHERE device = ?1", params![device]))?;
         Ok(())
     }
+
+    pub fn claude_session(&self, id: &str) -> Option<ClaudeSession> {
+        self.get("claude_sessions", "id", id).ok().flatten()
+    }
+
+    pub fn claude_sessions(&self) -> Vec<ClaudeSession> {
+        self.all("SELECT record FROM claude_sessions").unwrap_or_default()
+    }
+
+    pub fn save_claude_session(&self, s: &ClaudeSession) -> Result<(), StoreError> {
+        self.put("claude_sessions", &s.session_id, serde_json::to_string(s)?)
+    }
+
+    pub fn drop_claude_session(&self, id: &str) -> Result<(), StoreError> {
+        self.store.with_db(|db| db.execute("DELETE FROM claude_sessions WHERE id = ?1", params![id]))?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -408,6 +459,7 @@ mod tests {
             note: None,
             allow: vec![],
             force: false,
+            full: false,
         };
         for (i, id) in ["job_1", "job_2"].iter().enumerate() {
             let j = Job {
@@ -421,6 +473,7 @@ mod tests {
                 branch: None,
                 requested_by: None,
                 keep: false,
+                priority: false,
                 spec: Spec { job_id: id.to_string(), ..spec.clone() },
                 created_at: format!("t{i}"),
                 started_at: None,
@@ -437,6 +490,10 @@ mod tests {
         assert_eq!(p.jobs(10)[0].job_id, "job_2");
         // One lock for every repo: the one deploy-guard checks and hand merges take.
         assert_eq!(MERGE_LOCK, "/tmp/lucina-merge.lock");
-        assert_eq!(Config::from_env(dir.path()).lock, PathBuf::from(MERGE_LOCK));
+        let c = Config::from_env(dir.path());
+        assert_eq!(c.lock, PathBuf::from(MERGE_LOCK));
+        assert_eq!(c.lock_for("/p/Lucina/SecretaryIOS", JobKind::Merge), PathBuf::from(MERGE_LOCK));
+        assert_eq!(c.lock_for("/p/Lucina/LucinaOS", JobKind::Merge), PathBuf::from("/tmp/lucina-merge-LucinaOS.lock"));
+        assert_eq!(c.lock_for("/p/Lucina/LucinaOS", JobKind::Deploy), PathBuf::from(MERGE_LOCK));
     }
 }

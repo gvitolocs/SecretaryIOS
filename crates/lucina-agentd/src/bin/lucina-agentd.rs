@@ -88,6 +88,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     manager.spawn_sweeper();
     manager.spawn_pipeline();
     manager.spawn_command_sweeper();
+    manager.spawn_session_sweeper();
     manager.spawn_terminal_ticker();
     manager.terminals().configure(|c| {
         c.socket = Some(socket.clone());

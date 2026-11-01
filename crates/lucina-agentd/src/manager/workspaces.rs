@@ -124,6 +124,8 @@ impl Manager {
     /// archive it.
     pub async fn archive_workspace(&self, id: &str, trigger: Trigger, reason: Option<String>) -> Result<WorkspaceRecord, ManagerError> {
         let w = self.inner.workspaces.get(id).filter(|w| w.archived_at.is_none()).ok_or_else(|| crate::workspaces::WsError::NotFound(format!("Workspace not found: {id}")))?;
+        // A Claude session outlives the workspace it worked in: it only loses the link.
+        self.unlink_sessions(&w.workspace_id);
         for agent in self.agents_in(&w) {
             let (effects, session) = {
                 let mut agents = self.lock();
@@ -155,12 +157,14 @@ impl Manager {
 
     /// Remove the worktrees whose branch is merged. Returns `(workspace, reason)`.
     pub async fn sweep(&self) -> Vec<(String, String)> {
-        let busy: HashSet<String> = self
+        let mut busy: HashSet<String> = self
             .lock()
             .values()
             .filter(|a| matches!(a.k.status, AgentStatus::Running | AgentStatus::Initializing) || !a.pending.is_empty())
             .filter_map(|a| a.record.workspace_id.clone())
             .collect();
+        // A live Claude session may be between turns, with its next step already in mind.
+        busy.extend(self.live_session_workspaces());
         let mut done = Vec::new();
         for (id, reason) in self.inner.workspaces.merged_candidates(&busy).await {
             match self.archive_workspace(&id, Trigger::Merged, Some(reason.clone())).await {

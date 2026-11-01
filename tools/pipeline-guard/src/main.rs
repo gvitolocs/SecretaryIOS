@@ -21,6 +21,8 @@ use std::io::{Read, Write};
 use regex::Regex;
 use serde_json::{json, Value};
 
+mod session;
+
 /// Names that put a command or cwd in scope.
 const SCOPE: &str = r"(?i)(Projects/Lucina\b|SecretaryIOS|\.worktrees/(SecretaryIOS|lucinaos|LucinaAndroidOS|lucina)|\blucinaos\b|LucinaAndroidOS|lucina-rs\b)";
 
@@ -227,6 +229,9 @@ fn main() {
     let mut input = String::new();
     if std::io::stdin().read_to_string(&mut input).is_err() {
         return;
+    }
+    if std::env::args().nth(1).as_deref() == Some("session-hook") {
+        std::process::exit(session::run(&input));
     }
     let Ok(v) = serde_json::from_str::<Value>(&input) else { return };
     let command = v["tool_input"]["command"].as_str().unwrap_or_default();

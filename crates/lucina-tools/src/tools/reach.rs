@@ -862,7 +862,22 @@ impl Reach {
 
     /// The text the other side reads: who writes, the thread, how to answer, then the message.
     pub fn envelope(&self, t: &Thread) -> String {
-        let how = match t.to {
+        self.envelope_how(t, None)
+    }
+
+    /// For a Claude session: it reads the message through its hook and answers on the thread,
+    /// because no run ends that its answer could be read from.
+    pub fn session_envelope(&self, t: &Thread) -> String {
+        let how = format!(
+            "Reply with the lucina_reply tool (thread {id}), or `lucina-rs reach reply {id} --from <your session> \"<text>\"` \
+             on nezopt. Your reply goes back into that conversation.",
+            id = t.id
+        );
+        self.envelope_how(t, Some(how))
+    }
+
+    fn envelope_how(&self, t: &Thread, how: Option<String>) -> String {
+        let how = how.unwrap_or_else(|| match t.to {
             Target::Claude => format!(
                 "Reply with `lucina-rs reach reply {id} --from <your session> \"<text>\"` on nezopt \
                  (or POST /api/secretary/reach/threads/{id}/reply). Your reply goes back into that conversation.",
@@ -870,7 +885,7 @@ impl Reach {
             ),
             Target::Grok => "Just answer here; Lucina reads your reply from this thread.".into(),
             Target::Agents => "Your final answer is read back from this run's timeline.".into(),
-        };
+        });
         let kind = if t.kind == "issue" { "issue report" } else { "message" };
         format!(
             "[Lucina → {to}] thread {id} · {kind}\n\
@@ -1885,6 +1900,11 @@ struct AgentsArgs {
 
 pub struct LucinaAgentsTool;
 
+/// A Claude chat that agentd only shows (`lucina_agents::external::SESSION_PROVIDER`).
+fn is_claude_session(agent: &Value) -> bool {
+    agent["provider"] == "claude-session"
+}
+
 /// The agent's final answer: its last assistant message after `after_seq`.
 fn last_answer(v: &Value, after_seq: u64) -> Option<String> {
     v["rows"]
@@ -1929,7 +1949,8 @@ impl Tool for LucinaAgentsTool {
     fn description(&self) -> &'static str {
         "Lucina Agents (the owner's agent runs on nezopt): list the agents, start a run with a task, send a message \
 to an agent, or read what an agent did. Use it when the owner says \"use Lucina agents\" or \"post it in Lucina \
-agents\". Runs use an allowed free model (never Codex, never paid DeepSeek)."
+agents\". Runs use an allowed free model (never Codex, never paid DeepSeek). Agents with kind \"Claude session\" are the \
+owner's Claude chats working on a branch: `send` leaves one a message, and its answer comes back on the thread."
     }
     fn parameters(&self) -> Value {
         schema_for::<AgentsArgs>()
@@ -1960,17 +1981,23 @@ agents\". Runs use an allowed free model (never Codex, never paid DeepSeek)."
         match a.action {
             AgentsAction::List => {
                 let v = reach.agentd("GET", "/agents", None).await.map_err(ToolError::new)?;
-                let agents: Vec<Value> = v["agents"]
-                    .as_array()
-                    .cloned()
-                    .unwrap_or_default()
+                let mut all = v["agents"].as_array().cloned().unwrap_or_default();
+                // What is alive first: closed runs pile up.
+                all.sort_by_key(|g| g["status"] == "closed");
+                let agents: Vec<Value> = all
                     .iter()
                     .take(30)
                     .map(|g| {
-                        json!({
+                        let mut one = json!({
                             "id": g["id"], "title": g["title"], "provider": g["provider"],
                             "model": g["model"], "status": g["status"], "updated": g["updatedAt"],
-                        })
+                        });
+                        if is_claude_session(g) {
+                            one["kind"] = json!("Claude session");
+                            one["branch"] = g["labels"]["branch"].clone();
+                            one["host"] = g["host"].clone();
+                        }
+                        one
                     })
                     .collect();
                 Ok(json!({"agents": agents}))
@@ -1997,7 +2024,15 @@ agents\". Runs use an allowed free model (never Codex, never paid DeepSeek)."
                         "agentd",
                     )
                     .map_err(ToolError::new)?;
-                let prompt = reach.envelope(&t);
+                // A Claude session is no run: nothing ends that its answer could be read from.
+                let session = match a.action {
+                    AgentsAction::Send => {
+                        let id = agent_id()?;
+                        reach.agentd("GET", &format!("/agents/{id}"), None).await.is_ok_and(|v| is_claude_session(&v))
+                    }
+                    _ => false,
+                };
+                let prompt = if session { reach.session_envelope(&t) } else { reach.envelope(&t) };
                 let mut after_seq = 0;
                 let result = if a.action == AgentsAction::Run {
                     let cfg = &reach.cfg;
@@ -2031,6 +2066,12 @@ agents\". Runs use an allowed free model (never Codex, never paid DeepSeek)."
                         let agent = v["id"].as_str().or(v["agentId"].as_str()).unwrap_or("").to_owned();
                         let t = reach.set_status(&t.id, "sent", Some(agent.clone())).unwrap_or(t);
                         reach.record(&t, &format!("Lucina → Lucina Agents: {}", t.subject), &t.text);
+                        if session {
+                            return Ok(json!({
+                                "status": "sent", "thread": t.id, "agent": agent,
+                                "instruction": "Tell the owner the message is with that Claude session: it reads it at its next step, or wakes up for it, and its answer will appear in this chat.",
+                            }));
+                        }
                         if !agent.is_empty() {
                             reach.watch_agent(t.id.clone(), agent.clone(), after_seq);
                         }
@@ -2514,6 +2555,12 @@ mod tests {
         assert_eq!(last_answer(&v, 2).as_deref(), Some("ok"));
         assert_eq!(last_answer(&v, 5), None);
         assert_eq!(last_answer(&v, 0).as_deref(), Some("ok"));
+    }
+
+    #[test]
+    fn a_claude_session_answers_on_the_thread() {
+        assert!(is_claude_session(&json!({"provider": "claude-session"})));
+        assert!(!is_claude_session(&json!({"provider": "opencode"})));
     }
 
     #[test]

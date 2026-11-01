@@ -41,6 +41,7 @@ mod provider_subagents;
 mod rewind;
 mod schedules;
 mod search;
+mod sessions;
 mod workspaces;
 
 pub use gate::{GateConfig, GateRequest, CONFIG_FILE};
@@ -339,6 +340,9 @@ pub struct CreateRequest {
     /// from the body.
     #[serde(skip)]
     pub owner_device_id: Option<String>,
+    /// A Claude session's agent (`manager/sessions.rs`); never from the API.
+    #[serde(skip)]
+    pub claude_session: bool,
     /// A fork's chat history, sent ahead of the first prompt (set by `fork`, never from
     /// the body).
     #[serde(skip)]
@@ -470,6 +474,7 @@ impl Manager {
         let store = Arc::new(store);
         let commands = Arc::new(Commands::new(store.clone(), bus.clone()));
         providers.insert(ext::PROVIDER.to_string(), Arc::new(ExternalProvider::new(commands.clone())));
+        providers.insert(ext::SESSION_PROVIDER.to_string(), Arc::new(ExternalProvider::claude_sessions(commands.clone())));
         let term_bus = bus.clone();
         let terminals = crate::terminals::Hub::new(
             options.terminals.clone(),
@@ -532,13 +537,14 @@ impl Manager {
                 archived: record.archived_at.is_some(),
                 deleted: false,
                 pending_permissions: 0,
-                internal: record.internal,
+                // A Claude session pausing is nothing to push: it has its own window.
+                internal: record.internal || ext::is_session(&record.provider),
                 requires_attention: record.requires_attention,
                 attention_reason: record.attention_reason,
             };
             let t = lifecycle::step(&k, Event::RestartRepair)?;
             let mut rows = manager.inner.store.load_rows(&record.id)?;
-            if t.effects.contains(&Effect::RecordInterrupted) {
+            if t.effects.contains(&Effect::RecordInterrupted) && !ext::is_session(&record.provider) {
                 let row = TimelineRow {
                     seq: rows.last().map(|r| r.seq + 1).unwrap_or(1),
                     timestamp: now_iso(),
@@ -597,7 +603,8 @@ impl Manager {
     }
 
     pub fn providers(&self) -> Vec<ProviderInfo> {
-        let mut v: Vec<ProviderInfo> = self.inner.providers.values().map(|p| p.info()).collect();
+        // Nobody can start a Claude session from here.
+        let mut v: Vec<ProviderInfo> = self.inner.providers.values().map(|p| p.info()).filter(|i| !ext::is_session(&i.id)).collect();
         v.sort_by(|a, b| a.id.cmp(&b.id));
         v
     }
@@ -1011,7 +1018,7 @@ impl Manager {
             return self.snapshot(&snap.id);
         }
         let (provider_id, model) = split_provider(&req.provider, req.model.clone());
-        if req.external || provider_id == ext::PROVIDER {
+        if !req.claude_session && (req.external || provider_id == ext::PROVIDER || ext::is_session(&provider_id)) {
             Self::check_external(&mut req, &provider_id)?;
         }
         let provider = self
@@ -1041,7 +1048,7 @@ impl Manager {
             let mode = req.mode_id.clone().or_else(|| info.default_mode_id.clone());
             self.guard_start(&req.cwd, &provider_id, mode.as_deref(), req.allow_main_checkout).await?;
         }
-        let workspace_id = match req.external {
+        let workspace_id = match req.external && !req.claude_session {
             // Its cwd is a path on another host.
             true => None,
             false => workspace.map(|w| w.workspace_id).or_else(|| self.inner.workspaces.find_by_cwd(&req.cwd).map(|w| w.workspace_id)),
@@ -1113,8 +1120,8 @@ impl Manager {
         {
             let mut agents = self.lock();
             let mut agent = Agent {
+                k: AgentState::new(ext::is_session(&record.provider)),
                 record,
-                k: AgentState::new(false),
                 session: None,
                 pending: Vec::new(),
                 active_turn: None,
@@ -1271,7 +1278,9 @@ impl Manager {
         }
         if let Some((owner, running)) = self.external_of(id)? {
             let prompt = prompt.to_string();
+            // A Claude session is only ever told something: it reads it at its next tool call or prompt.
             let bodies = match (running, behavior) {
+                _ if self.is_claude_session(id) => vec![CommandBody::Send { prompt }],
                 (true, ActiveTurnBehavior::Steer) => vec![CommandBody::Steer { prompt }],
                 (true, ActiveTurnBehavior::Interrupt) => vec![CommandBody::Stop {}, CommandBody::Send { prompt }],
                 (false, _) => vec![CommandBody::Send { prompt }],
@@ -1339,6 +1348,7 @@ impl Manager {
     }
 
     async fn stop_turn(&self, id: &str) -> Result<bool, ManagerError> {
+        self.refuse_for_session(id, "stopped")?;
         if let Some((owner, running)) = self.external_of(id)? {
             if running {
                 self.inner.commands.enqueue(id, &owner, CommandBody::Stop {})?;
@@ -1396,6 +1406,7 @@ impl Manager {
     }
 
     pub async fn archive(&self, id: &str) -> Result<String, ManagerError> {
+        self.refuse_for_live_session(id, "archived")?;
         let (effects, session, children, archived_at) = {
             let mut agents = self.lock();
             let agent = agents.get_mut(id).ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
@@ -1443,6 +1454,8 @@ impl Manager {
     }
 
     pub async fn delete(&self, id: &str) -> Result<(), ManagerError> {
+        self.refuse_for_live_session(id, "deleted")?;
+        self.forget_session_of(id);
         let (effects, session) = {
             let mut agents = self.lock();
             let agent = agents.get_mut(id).ok_or_else(|| ManagerError::NotFound(id.to_string()))?;

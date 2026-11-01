@@ -38,10 +38,10 @@ a coordinator that sequences merges (a merge queue), a FIFO queue for shared res
 
 ## 2. The merge queue
 
-`lagent merge [<workspace id | path | branch>] [--keep] [--allow rule=reason] [--no-wait]`
+`lagent merge [<workspace id | path | branch>] [--keep] [--full] [--allow rule=reason] [--no-wait]`
 
 - Refuses a dirty workspace (commit first). Queues the workspace's HEAD as a **job**; the same HEAD queued twice is
-  the same job. One FIFO queue, one job at a time, across repos.
+  the same job. One FIFO queue per repo, one job at a time in each.
 - agentd writes `job.json` under `~/.local/share/lucina-agentd/pipeline/jobs/<id>/` and starts
   `flock <repo lock> lagent pipeline-exec <dir>` as a transient systemd user unit (`lagent-job-<id>`), so a job
   survives agentd restarts, including agentd's own deploy. The lock is `/tmp/lucina-merge.lock` for every repo:
@@ -141,21 +141,91 @@ Designed:
   checkout shows: no sweep during a rebase, merge, cherry-pick, revert or bisect, on a detached HEAD, with
   uncommitted changes, with a process whose cwd is inside, or within 30 minutes of git last touching it
   (`LUCINA_AGENTD_SWEEP_IDLE_SECS`). The branch itself must be merged, not HEAD.
-- **One lock**: every repo's jobs hold `/tmp/lucina-merge.lock`. A long hand deploy inside it stalls the queue, so
-  runtimes should get recipes.
+- **One queue and one lock per repo** (it was one for all until a 24-minute kernel merge held up an urgent iPhone fix):
+  SecretaryIOS merges and all deploys hold `/tmp/lucina-merge.lock` (deploy-guard checks it), others
+  `/tmp/lucina-merge-<repo>.lock`. A hand deploy inside SecretaryIOS's lock still stalls that repo's queue. `lagent job next
+  <id>` moves a queued job up its repo's queue.
+- **Fast gates, cheapest first**: diffgate, `cargo check`, then whatever else the repo declares. A merge took 1.5 to 8.5
+  minutes in `cargo test` (24 once), so `cargo = "check"` trusts the session's own test run; the gate catches what the
+  rebase broke at compile time, not behaviour. `lagent merge --full` tests, `cargo = "touched"` restores it per repo.
 - **Local trunks** fast-forward where they are checked out; uncommitted files that don't overlap stay, and an overlap is
   `TRUNK_CHECKOUT_BLOCKED` naming the files. `lagent board` lists main checkouts with uncommitted files or running
   processes. git can't say who wrote a file; the processes named there are the lead.
-- **Flaky tests**: a failed `cargo test` gate runs once more; a pass is reported as flaky, not hidden.
+- **Flaky tests**: a failed `cargo test` gate (`--full`, or `cargo = "touched"`) runs once more; a pass is reported as flaky, not hidden.
 - **Resources**: `lagent top` and the board's RUNNING column show processes and memory per workspace.
 - **Moves**: `lagent project move <prj> --path <new> [--name <n>]` after a checkout moved on disk (move it, and
   `<worktrees>/<old>` to `<worktrees>/<new>`, then `git worktree repair`). Workspaces follow; one whose new directory
   doesn't exist keeps its path and is reported. Running agents keep their cwd, so leave a symlink at the old path.
 - **Sessions**: `lagent task adopt <path>` also takes a task back after a session lost its link. A session that calls
-  `ssh nezopt lagent …` shows as `nez@nez_opt`; the Mac wrapper or `LAGENT_SESSION=…` names it.
+  `ssh nezopt lagent …` first shows as `nez@nez_opt`, until its hook reports the workspace (section 6).
 
-Not built yet: Claude desktop sessions as entries in the Agents list (agentd only knows agents it runs and devices that
-register), Lucina messaging them, and the daily stale question.
+Not built yet: the daily stale question.
+
+## 6. Claude sessions
+
+Most work runs in Claude desktop chats on the Mac, which agentd doesn't start, so the Agents page looked empty while a
+dozen sessions were working (owner, 2026-11-01). A Claude session that works in a workspace now shows as an agent:
+provider `claude-session`, `external: true`, `host` `mac` or `nezopt`, the session id and branch in its `labels`. It is
+in `lagent ls`, `/v1/agents`, Lucina's `lucina_agents` list, and the board's SESSION column. `lagent session ls` lists
+them with all their branches. Sessions in no workspace leave no trace.
+
+- **Reporting**: `pipeline-guard session-hook` (`tools/pipeline-guard/src/session.rs`) runs on SessionStart,
+  UserPromptSubmit, PostToolUse, Stop and SessionEnd, and calls `lagent session beat` (over SSH from the Mac, one
+  ControlMaster connection, with PostToolUse throttled to one beat per 15 s). Failures are silent, logged in
+  `~/.local/state/lagent-session/hook.log`, and never stop the session. An agent agentd runs itself
+  (`LUCINA_AGENT_ID`) skips the hook.
+- **Which workspace**: the session's tasks (`lagent task start|adopt` with its id); its cwd in a worktree; a file it
+  edited or a commit it made there; a `lagent task` answer over a bare `ssh nezopt` (and the task, which named
+  `user@host`, becomes the session's). Reading a worktree doesn't link it: the coordinator reads everybody's.
+- **Status**: prompt and tool beats mean `running`, Stop means `idle`, SessionEnd means `closed`. Between turns the
+  Stop hook keeps polling (every 30 s, after 2 h every 2 min, gives up after 24 h). Silence for 30 min
+  (`LUCINA_AGENTD_SESSION_TTL_SECS`) ends the session; the next beat brings the same agent back, unarchiving it if
+  need be. An ended session is archived after a day. After an agentd restart it shows `closed` until its next beat.
+  An interrupted turn fires no Stop, so it shows `running` until the next beat or the silence limit. A session pausing
+  pushes nothing, unlike a finished run.
+- **Timeline**: the user's prompts, the messages delivered, and each turn's last message. No tool calls.
+- **Not supervised**: `lagent stop` (and `POST /agents/{id}/stop`) is refused with 403 saying so; `archive` and `delete`
+  are refused until the session ended; rewind is refused like every external agent's. `lagent ls --supervised` leaves
+  sessions out, which is what the `lucina-agentd` deploy recipe counts: agentd's restart doesn't touch them.
+- **Sweep**: a live session's workspaces count as busy, whatever its status, until it ends. A merge still archives
+  them (the session asked for it, or someone did by hand): the session just loses the link.
+- **Who reports**: `/sessions*` answers `lagent` on the host only (Origin::Local), and secretary-server doesn't forward
+  it. A session's commands sit in the queue under owner `session:<id>`, which no device id can equal.
+
+### Lucina reaching a session
+
+**Decision (2026-11-01): the existing command queue, read by the hook; the answer comes back on a reach thread.**
+`lucina_agents send` (or the app's send box, or `lagent send`) posts `/agents/{id}/send`, which queues a `send` command.
+
+1. A working session gets it as context on its next tool result or prompt (`additionalContext`). A subagent's hook
+   only reports, because the message would land in the subagent.
+2. An idle session is woken: the Stop hook is `asyncRewake`, and exit code 2 starts a turn with the message.
+3. The hook acknowledges after delivering, so a lost answer means a second delivery, never none. Unread messages
+   expire after 24 h and wait through agentd restarts.
+4. Lucina's message is a reach thread: its envelope tells the session to answer with `lucina_reply` (or `lucina-rs reach
+   reply`), which returns it to the owner's conversation like any reply. Lucina doesn't watch for a run's end, since
+   nothing ends, and an unanswered thread stays open in `lucina_inbox --to agents`.
+
+Why not the mailbox (`lucina_inbox`) alone: a session would have to poll it, and it addresses "Claude", not one
+session. Why not Claude Code's own session messaging: its socket and token are private to the desktop app.
+
+Limits: `claude -p` runs don't wait for messages at their end; a session whose app quit its process hears at its next
+prompt, if that comes within 24 h.
+
+### Installing the hook
+
+`cargo build --release --manifest-path tools/pipeline-guard/Cargo.toml` on the Mac and on nezopt, copy to
+`~/.local/bin/pipeline-guard`, and in `~/.claude/settings.json` on both (Mac path shown; `/home/nez` on nezopt):
+
+```json
+{"hooks": {
+  "SessionStart": [{"hooks": [{"type": "command", "command": "/Users/giuseppe/.local/bin/pipeline-guard session-hook", "timeout": 15}]}],
+  "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "/Users/giuseppe/.local/bin/pipeline-guard session-hook", "timeout": 15}]}],
+  "PostToolUse": [{"hooks": [{"type": "command", "command": "/Users/giuseppe/.local/bin/pipeline-guard session-hook", "timeout": 15}]}],
+  "Stop": [{"hooks": [{"type": "command", "command": "/Users/giuseppe/.local/bin/pipeline-guard session-hook", "asyncRewake": true, "timeout": 90000}]}],
+  "SessionEnd": [{"hooks": [{"type": "command", "command": "/Users/giuseppe/.local/bin/pipeline-guard session-hook", "timeout": 15}]}]
+}}
+```
 
 ## Files
 
@@ -165,7 +235,8 @@ register), Lucina messaging them, and the daily stale question.
 | `.lucina/pipeline.toml` and gate selection | `crates/lucina-agentd/src/pipeline/repo.rs` |
 | The executor (`lagent pipeline-exec`) | `crates/lucina-agentd/src/pipeline/exec.rs` |
 | Queue worker, tasks, after-merge, leases, board | `crates/lucina-agentd/src/manager/pipeline.rs` |
-| HTTP routes | `crates/lucina-agentd/src/api/pipeline.rs` |
+| HTTP routes | `crates/lucina-agentd/src/api/pipeline.rs`, `api/sessions.rs` |
+| Claude sessions: rules, manager, CLI, test, hook | `crates/lucina-agents/src/external.rs`, `crates/lucina-agentd/src/manager/sessions.rs`, `cli/session.rs`, `tests/sessions.rs`, `tools/pipeline-guard/src/session.rs` |
 | CLI | `crates/lucina-agentd/src/cli/pipe.rs` |
 | End-to-end test (adopt → queue → executor → archive; leases) | `crates/lucina-agentd/tests/pipeline.rs` |
 | Hook | `tools/pipeline-guard` |

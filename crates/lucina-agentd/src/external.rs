@@ -7,11 +7,14 @@
 //! provider (a prompt, a steer, a stop, a permission answer) becomes a command queued
 //! in SQLite for the owner device, sent on the stream as `agent_command`, and kept
 //! until the device acknowledges it or it expires after 24 h.
+//!
+//! Claude sessions (provider `claude-session`, `manager/sessions.rs`) are external agents too:
+//! a hook reports what they do and picks up their messages. Only a message can go to one.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use lucina_agents::external::{AgentCommand, CommandBody, COMMAND_TTL_MS, PROVIDER};
+use lucina_agents::external::{AgentCommand, CommandBody, COMMAND_TTL_MS, PROVIDER, SESSION_PROVIDER};
 use lucina_agents::types::{Capabilities, PersistenceHandle, RuntimeInfo};
 use lucina_agents::PermissionResponse;
 
@@ -113,21 +116,27 @@ impl Commands {
     }
 }
 
-/// The `secretary-code` provider. The manager registers it itself.
+/// The `secretary-code` and `claude-session` providers. The manager registers them itself.
 pub struct ExternalProvider {
     commands: Arc<Commands>,
+    id: &'static str,
+    label: &'static str,
 }
 
 impl ExternalProvider {
     pub fn new(commands: Arc<Commands>) -> Self {
-        ExternalProvider { commands }
+        ExternalProvider { commands, id: PROVIDER, label: "Secretary Code" }
+    }
+
+    pub fn claude_sessions(commands: Arc<Commands>) -> Self {
+        ExternalProvider { commands, id: SESSION_PROVIDER, label: "Claude session" }
     }
 
     fn session(&self, config: &SessionConfig) -> Result<Arc<dyn Session>, ProviderError> {
         let (Some(agent_id), Some(owner)) = (config.agent_id.clone(), config.owner_device_id.clone()) else {
             return Err(ProviderError::new("an external agent needs its id and owner device"));
         };
-        Ok(Arc::new(ExternalSession { agent_id, owner, commands: self.commands.clone() }))
+        Ok(Arc::new(ExternalSession { agent_id, owner, commands: self.commands.clone(), provider: self.id }))
     }
 }
 
@@ -135,8 +144,8 @@ impl ExternalProvider {
 impl Provider for ExternalProvider {
     fn info(&self) -> ProviderInfo {
         ProviderInfo {
-            id: PROVIDER.into(),
-            label: "Secretary Code".into(),
+            id: self.id.into(),
+            label: self.label.into(),
             default_mode_id: None,
             modes: Vec::new(),
             models: Vec::new(),
@@ -160,6 +169,7 @@ struct ExternalSession {
     agent_id: String,
     owner: String,
     commands: Arc<Commands>,
+    provider: &'static str,
 }
 
 impl ExternalSession {
@@ -196,11 +206,11 @@ impl Session for ExternalSession {
     async fn close(&self) {}
 
     fn runtime_info(&self) -> RuntimeInfo {
-        RuntimeInfo { provider: PROVIDER.into(), session_id: Some(self.agent_id.clone()), model: None, thinking_option_id: None, mode_id: None, extra: None }
+        RuntimeInfo { provider: self.provider.into(), session_id: Some(self.agent_id.clone()), model: None, thinking_option_id: None, mode_id: None, extra: None }
     }
 
     fn persistence(&self) -> PersistenceHandle {
-        PersistenceHandle { provider: PROVIDER.into(), session_id: self.agent_id.clone(), native_handle: None, metadata: None }
+        PersistenceHandle { provider: self.provider.into(), session_id: self.agent_id.clone(), native_handle: None, metadata: None }
     }
 
     fn current_mode(&self) -> Option<String> {

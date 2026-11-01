@@ -605,6 +605,19 @@ is upload work and performs the uploads itself, also while the app is closed.
 - **HEIC without the phone's preview.** The extension sends only the original. ffmpeg 8 decodes an iPhone HEIC's tiles
   but does not join them, so `heif.rs` decodes each tile stream and stitches them (cropped, EXIF-oriented, 2048 px)
   into `preview.jpg`.
+- **When it stops** (2026-11-01: PhotoKit refused a job for one screenshot, `PHPhotosErrorDomain -1`, and the run's
+  `.failure` blocked every newer photo while iOS backed off 5, 10, 30, then 60 minutes):
+  - A refused asset no longer stops a run: it is retried for 3 runs, then left to the app's backup. A failed retry or
+    acknowledge doesn't stop new jobs either. `.failure` is what makes iOS back off, so it is kept for real breakage.
+  - The extension awaits its debug events before returning (`bg.task` `photo_upload_ext`, `photo_upload.*`, `secretary-mcp
+    debug-events`). The app can't read the extension's container.
+  - The app turns the extension off and on once per build, which clears iOS's backoff from an earlier build.
+  - `bgupload::watchdog` tells the owner (at most twice a day) when phone photos stay without a `bg_uploads` row for
+    30 min. Every new photo gets one when the extension works, also one the app sent first.
+  - `ios-install` refuses a build without the appex or its `BackgroundUploadURLBase`.
+  - Reading the phone without USB: `devicectl device copy from --domain-type appDataContainer --domain-identifier
+    tech.getsecretary.app.photoupload` for `Library/Application Support/photo-upload-state.json`, and `devicectl device
+    sysdiagnose` for the unified log (assetsd says "Delaying due to failed attempts").
 
 ## Internal API for other services on nezopt
 

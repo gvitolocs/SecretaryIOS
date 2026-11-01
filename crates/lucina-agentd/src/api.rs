@@ -82,6 +82,7 @@ mod devices;
 mod orch;
 mod pipeline;
 mod rewind;
+mod sessions;
 mod workspaces;
 
 pub struct ApiError(StatusCode, String, String);
@@ -157,6 +158,7 @@ pub fn router(manager: Manager) -> Router {
         .route("/permissions/{id}", get(permission).post(answer_permission))
         .route("/stream", get(stream))
         .merge(workspaces::routes())
+        .merge(sessions::routes())
         .merge(terminals::routes())
         .merge(orch::routes())
         .merge(rewind::routes())

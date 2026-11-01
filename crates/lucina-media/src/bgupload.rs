@@ -786,6 +786,106 @@ pub fn sweep(lib: &Library) -> anyhow::Result<usize> {
     Ok(stale.len())
 }
 
+/// New phone photos the extension has had this long to send (a run takes a minute or two).
+const WATCH_GRACE_MINUTES: i64 = 30;
+const WATCH_WINDOW_HOURS: i64 = 6;
+
+/// Phone photos added recently that no background upload ever delivered. When the extension works
+/// every new photo gets a `bg_uploads` row, also one the app sent first (the server dedupes it).
+/// Backlog is left out: only photos that reached the library within 2 h of being taken.
+pub fn missed_photos(
+    lib: &Library,
+    now: chrono::DateTime<chrono::Utc>,
+) -> anyhow::Result<Vec<String>> {
+    let stamp =
+        |t: chrono::DateTime<chrono::Utc>| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let until = stamp(now - chrono::Duration::minutes(WATCH_GRACE_MINUTES));
+    let since = stamp(now - chrono::Duration::hours(WATCH_WINDOW_HOURS));
+    Ok(lib.db.with(|c| {
+        let mut st = c.prepare(
+            "SELECT i.title FROM items i
+             WHERE i.source = 'phone-ios' AND i.hidden = 0 AND i.taken_at IS NOT NULL
+               AND i.added_at >= ?1 AND i.added_at < ?2
+               AND julianday(i.added_at) - julianday(i.taken_at) < 2.0 / 24
+               AND NOT EXISTS (SELECT 1 FROM bg_uploads b WHERE b.item_id = i.id)
+             ORDER BY i.added_at DESC",
+        )?;
+        let rows = st.query_map(params![since, until], |r| r.get(0))?;
+        rows.collect()
+    })?)
+}
+
+/// Tell the owner when background uploads have stopped working, whatever the cause (a build without
+/// the extension, PhotoKit refusing jobs, iOS backing off, a dead route): at most twice a day.
+pub async fn watchdog(lib: Library, notify: crate::lab_run::NotifyConfig) {
+    let mut told: Option<std::time::Instant> = None;
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(15 * 60)).await;
+        let l = lib.clone();
+        let missed =
+            tokio::task::spawn_blocking(move || missed_photos(&l, chrono::Utc::now())).await;
+        let missed = match missed {
+            Ok(Ok(m)) if !m.is_empty() => m,
+            Ok(Ok(_)) => continue,
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, "background upload watchdog failed");
+                continue;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "background upload watchdog failed");
+                continue;
+            }
+        };
+        tracing::warn!(count = missed.len(), newest = %missed[0], "phone photos without a background upload");
+        if told.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(12 * 3600)) {
+            continue;
+        }
+        match tell_owner(&notify, &missed).await {
+            Ok(()) => told = Some(std::time::Instant::now()),
+            Err(e) => {
+                tracing::warn!(error = %e, "could not tell the owner about background uploads")
+            }
+        }
+    }
+}
+
+async fn tell_owner(
+    notify: &crate::lab_run::NotifyConfig,
+    missed: &[String],
+) -> anyhow::Result<()> {
+    let (Some(base), Some(file)) = (&notify.secretary_url, &notify.service_token_file) else {
+        return Ok(());
+    };
+    let token = std::fs::read_to_string(file)?;
+    let body = format!(
+        "{} recent photos (newest {}) reached the gallery without iOS's background upload. New photos may wait until Secretary is opened.",
+        missed.len(),
+        missed[0]
+    );
+    let day = chrono::Utc::now().format("%Y-%m-%d");
+    let response = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()?
+        .post(format!("{base}/v1/notify"))
+        .bearer_auth(token.trim())
+        .json(&json!({
+            "category": "lucina_message",
+            "title": "Background photo upload has stopped",
+            "body": body,
+            "route": "/gallery",
+            "channel": "photo-backup",
+            "dedupKey": format!("photo-backup:{day}"),
+        }))
+        .send()
+        .await?;
+    anyhow::ensure!(
+        response.status().is_success(),
+        "notify HTTP {}",
+        response.status()
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
