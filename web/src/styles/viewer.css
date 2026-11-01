@@ -147,6 +147,15 @@
 .pv-prev { left: 16px; }
 .pv-next { right: 16px; }
 
+/* PhotoViewer `overlay`: over the picture, with the controls; pointers pass through its empty parts. */
+.pv-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  transition: opacity 200ms ease;
+}
+
+.pv:not(.pv--chrome) .pv-overlay,
 .pv:not(.pv--chrome) .pv-top,
 .pv:not(.pv--chrome) .pv-prev,
 .pv:not(.pv--chrome) .pv-next {

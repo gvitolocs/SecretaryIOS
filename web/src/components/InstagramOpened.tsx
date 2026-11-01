@@ -18,6 +18,8 @@ export default function InstagramOpened(props: {
   /** The highlight's cover, for the tiles' header. */
   cover?: string | null;
   archived?: boolean;
+  /** Stories and highlights: the viewer opens full screen, with its info as an overlay. */
+  story?: boolean;
   hasMore?: boolean;
   loading?: boolean;
   onClose: () => void;
@@ -57,6 +59,7 @@ export default function InstagramOpened(props: {
           start={index()}
           username={props.username}
           archived={props.archived}
+          story={props.story}
           onIndex={setIndex}
           onGrid={props.slides.length > 1 || fromTiles() ? showTiles : undefined}
           onClose={() => (fromTiles() ? setMode("tiles") : props.onClose())}

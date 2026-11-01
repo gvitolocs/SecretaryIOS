@@ -338,4 +338,41 @@ describe("PhotoViewer", () => {
       expect(screen.queryByRole("button", { name: "Full screen" })).toBeNull();
     });
   });
+
+  it("story mode: a tap on the sides pages at once, the middle toggles the overlay, which hides by itself", async () => {
+    const [index, setIndex] = createSignal(1);
+    render(() => (
+      <PhotoViewer items={items} index={index()} onIndex={setIndex} onClose={() => {}} tapZones chromeAutoHideMs={3000} overlay={<p class="story-info">who</p>} />
+    ));
+    await placed();
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.querySelector(".pv-overlay")).toHaveTextContent("who");
+    // Right third: next, without waiting for a double tap.
+    pointer("pointerDown", W * 0.9, H / 2);
+    pointer("pointerUp", W * 0.9, H / 2);
+    await waitFor(() => expect(index()).toBe(2));
+    // Left third: back.
+    pointer("pointerDown", W * 0.1, H / 2);
+    pointer("pointerUp", W * 0.1, H / 2);
+    await waitFor(() => expect(index()).toBe(1));
+    // The middle toggles the controls and the overlay.
+    expect(dialog).toHaveClass("pv--chrome");
+    pointer("pointerDown", W / 2, H / 2);
+    pointer("pointerUp", W / 2, H / 2);
+    await waitFor(() => expect(dialog).not.toHaveClass("pv--chrome"));
+    pointer("pointerDown", W / 2, H / 2);
+    pointer("pointerUp", W / 2, H / 2);
+    await waitFor(() => expect(dialog).toHaveClass("pv--chrome"));
+    await waitFor(() => expect(dialog).not.toHaveClass("pv--chrome"), { timeout: 4000 });
+  }, 10_000);
+
+  it("keeps its usual taps without story mode: no paging from the sides, no auto-hide", async () => {
+    const { index } = open({ start: 1 });
+    await placed();
+    pointer("pointerDown", W * 0.9, H / 2);
+    pointer("pointerUp", W * 0.9, H / 2);
+    await new Promise((r) => setTimeout(r, 400));
+    expect(index()).toBe(1);
+    expect(screen.getByRole("dialog").querySelector(".pv-overlay")).toBeNull();
+  });
 });

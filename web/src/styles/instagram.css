@@ -166,3 +166,39 @@
 .ig-lock .icon { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .ig-lock { display: inline-grid; place-items: center; flex: none; color: var(--lu-text-secondary); }
 .ig-private-empty { justify-self: stretch; }
+
+/* Stories and highlights full screen (components/InstagramViewer.tsx `story`, 2026-11-01): the picture edge to edge,
+   the info over it only with the controls. The video has no controls of its own, so a tap reaches the viewer. */
+.ig-story-viewer .pv-video { pointer-events: none; }
+.ig-story-viewer .pv-top { top: calc(env(safe-area-inset-top) + 10px); }
+.ig-story { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: space-between; }
+.ig-story__bars { display: flex; gap: 3px; padding: calc(env(safe-area-inset-top) + 6px) 10px 0; }
+.ig-story__bar { flex: 1 1 0; min-width: 2px; height: 3px; border-radius: 2px; background: #ffffff47; }
+.ig-story__bar--seen { background: #ffffffb3; }
+.ig-story__bar--on { background: #fff; }
+.ig-story__info { display: grid; gap: 6px; max-height: 40%; overflow: hidden; padding: 56px 18px calc(env(safe-area-inset-bottom) + 22px); background: linear-gradient(to top, #000000c7, #0000); color: #fff; font-family: var(--lu-font); }
+.ig-story__info .ig-pv-caption { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+
+/* Paste (2026-11-01): before Open in the search bar; a clipboard suggestion under it. */
+.ig-find { flex-wrap: wrap; }
+.ig-paste { flex: none; }
+:root:root .chip.ig-suggest { flex-basis: auto; cursor: pointer; }
+
+/* Watched accounts as tiles (2026-11-01): one card per account, a grid that fits the column. */
+.ig-wtiles { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: var(--lu-space-sm); }
+.ig-wtile { display: grid; justify-items: center; align-content: start; gap: 4px; width: 100%; height: 100%; padding: 16px 10px 12px; border: 0; border-radius: var(--lu-radius-tile); background: var(--lu-card); color: inherit; text-align: center; cursor: pointer; box-sizing: border-box; }
+.ig-wtile:hover { background: var(--lu-card-raised); }
+.ig-wtile:focus-visible { outline: 2px solid var(--lu-accent); outline-offset: 2px; }
+.ig-wtile__pic { position: relative; margin-bottom: 6px; }
+.ig-wtile .ig-avatar { width: 68px; height: 68px; }
+.ig-wtile__dot { position: absolute; top: -2px; right: -6px; box-shadow: 0 0 0 2px var(--lu-card); }
+.ig-wtile__name { display: flex; align-items: center; justify-content: center; gap: 5px; max-width: 100%; min-width: 0; font-size: var(--lu-type-subheadline); font-weight: 600; }
+.ig-wtile__name > span:first-child { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.ig-wtile__user { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 4px 6px; max-width: 100%; color: var(--lu-text-secondary); font-size: var(--lu-type-footnote); overflow-wrap: anywhere; }
+.ig-wtile__when { color: var(--lu-text-tertiary, var(--lu-text-secondary)); font-size: var(--lu-type-caption-2); }
+/* The story top bar on a phone: the date is in the overlay, Save is its icon, the count stays on one line. */
+.ig-story-viewer .pv-count { white-space: nowrap; }
+.ig-story-viewer .ig-pv-date { display: none; }
+@media (max-width: 600px) {
+  .ig-story-viewer .ig-pv-save span, .ig-story-viewer .pv-full { display: none; }
+}

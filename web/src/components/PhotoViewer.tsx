@@ -84,6 +84,17 @@ export interface PhotoViewerProps {
   onKeyDown?: (e: KeyboardEvent) => boolean | void;
   /** A right-click (or Ctrl-click) on the picture: the page's own menu for the item at `index`. */
   onContextMenu?: (index: number, at: { x: number; y: number }) => void;
+  /**
+   * Drawn over the picture, shown and hidden with the controls (Instagram's stories: who, when, caption, progress).
+   * Its box lets pointers through; give `pointer-events: auto` to what is clickable inside.
+   */
+  overlay?: JSX.Element;
+  /** The controls (and `overlay`) hide this long after they were shown or the pointer last moved. */
+  chromeAutoHideMs?: number;
+  /** A tap on the left or right 30 % goes to the previous or next item at once; the middle toggles the controls. */
+  tapZones?: boolean;
+  /** Extra class on the viewer's root. */
+  class?: string;
 }
 
 /** Points between pages, as on the phone. */
@@ -369,6 +380,15 @@ export function PhotoViewer(props: PhotoViewerProps) {
 
   const tap = (p: Pointer) => {
     const now = performance.now();
+    if (props.tapZones) {
+      const w = size().w || 1;
+      if (p.x < w * 0.3 || p.x > w * 0.7) {
+        window.clearTimeout(tapTimer);
+        lastTap = null;
+        move(p.x < w * 0.3 ? -1 : 1, true);
+        return;
+      }
+    }
     if (lastTap && now - lastTap.t < DOUBLE_TAP_MS && Math.hypot(p.x - lastTap.x, p.y - lastTap.y) < 30) {
       window.clearTimeout(tapTimer);
       lastTap = null;
@@ -672,13 +692,26 @@ export function PhotoViewer(props: PhotoViewerProps) {
 
   const toolbar = children(() => props.toolbar);
   const sidePanel = children(() => props.panel);
+  const overlay = children(() => props.overlay);
+
+  // Controls that hide by themselves (stories): shown on open and on a tap, gone again after a while.
+  let hideTimer: number | undefined;
+  const armHide = () => {
+    window.clearTimeout(hideTimer);
+    if (props.chromeAutoHideMs && chrome()) hideTimer = window.setTimeout(() => setChrome(false), props.chromeAutoHideMs);
+  };
+  createEffect(on(chrome, armHide));
+  onCleanup(() => window.clearTimeout(hideTimer));
 
   return (
     <Portal>
       <div
         ref={panel}
-        class="pv"
+        class={props.class ? `pv ${props.class}` : "pv"}
         classList={{ "pv--chrome": chrome(), "pv--animating": animating(), "pv--closing": closing(), "pv--zoomed": zoomed(), "pv--panel": !!sidePanel() }}
+        onPointerMove={(e) => {
+          if (e.pointerType === "mouse" && props.chromeAutoHideMs && chrome()) armHide();
+        }}
         role="dialog"
         aria-modal="true"
         aria-label={label()}
@@ -742,6 +775,9 @@ export function PhotoViewer(props: PhotoViewerProps) {
             }}
           </For>
         </div>
+        <Show when={overlay()}>
+          <div class="pv-overlay">{overlay()}</div>
+        </Show>
         <div class="pv-top">
           <button type="button" class="pv-btn pv-close" aria-label={t("common.close")} onClick={() => props.onClose()}>←</button>
           <span class="pv-title">

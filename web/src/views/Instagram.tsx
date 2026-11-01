@@ -1,7 +1,7 @@
 import { A, useNavigate, useParams } from "@solidjs/router";
 import { createEffect, createResource, createSignal, For, on, onCleanup, onMount, Show, type Accessor } from "solid-js";
 import { ApiError } from "../api/client";
-import { instagramApi, type IgHighlight, type IgItem, type IgPage } from "../api/instagram";
+import { instagramApi, type IgHighlight, type IgItem, type IgPage, type IgWatch } from "../api/instagram";
 import {
   instagramWatched,
   instagramWatchSettings,
@@ -11,7 +11,7 @@ import {
   setInstagramBadges,
   setInstagramWatchSettings,
 } from "../state/instagramBadge";
-import { BackIcon, BellIcon, CheckIcon, ExternalIcon, LockIcon, SearchIcon } from "../components/Icons";
+import { BackIcon, BellIcon, CheckIcon, ExternalIcon, LockIcon, PasteIcon, SearchIcon } from "../components/Icons";
 import {
   Card,
   EmptyState,
@@ -27,6 +27,7 @@ import {
 import InstagramOpened from "../components/InstagramOpened";
 import { PhotoViewer } from "../components/PhotoViewer";
 import { locale, t } from "../i18n";
+import { relativeTime } from "../lib/relativeTime";
 import { formatCount, nextCheckText, parseTyped, slideIndexOf, slidesOf } from "../lib/instagram";
 import { mergeFirstPage, pageCache } from "../lib/pageCache";
 import { rememberScroll } from "../lib/pageScroll";
@@ -272,6 +273,80 @@ function PrivateEmpty() {
   return <EmptyState class="ig-private-empty" title={t("instagram.privateAccount")} text={t("instagram.privateEmpty")} />;
 }
 
+/**
+ * The clipboard's text, or null when this page may not read it. Secretary Code's shell may offer its own reader;
+ * elsewhere the Clipboard API (Safari shows its Paste callout first; Chromium may ask once).
+ */
+export async function readClipboardText(): Promise<string | null> {
+  const shell = (window as { secretaryShell?: { readClipboardText?: () => Promise<string> } }).secretaryShell;
+  if (typeof shell?.readClipboardText === "function") {
+    try {
+      return String((await shell.readClipboardText()) ?? "");
+    } catch {
+      // fall through to the Clipboard API
+    }
+  }
+  try {
+    const text = await navigator.clipboard?.readText?.();
+    return typeof text === "string" ? text : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether the clipboard can be read without a prompt (to offer what it holds when the field gets focus). */
+async function clipboardReadable(): Promise<boolean> {
+  const shell = (window as { secretaryShell?: { readClipboardText?: unknown } }).secretaryShell;
+  if (typeof shell?.readClipboardText === "function") return true;
+  try {
+    const state = await navigator.permissions?.query?.({ name: "clipboard-read" as PermissionName });
+    return state?.state === "granted";
+  } catch {
+    return false;
+  }
+}
+
+/** Watched accounts as tiles: picture, name, @name, Private, the new count and when it was last checked. */
+function WatchedTiles(props: { items: IgWatch[]; onOpen: (username: string) => void }) {
+  return (
+    <ul class="ig-wtiles">
+      <For each={props.items}>
+        {(w) => {
+          const fresh = () => w.newStories + w.newPosts;
+          return (
+            <li>
+              <button
+                type="button"
+                class="ig-wtile"
+                aria-label={[fresh() > 0 ? t("instagram.chipLabel", { name: w.username, count: fresh() }) : `@${w.username}`, w.private ? t("instagram.privateAccount") : ""].filter(Boolean).join(", ")}
+                onClick={() => props.onOpen(w.username)}
+              >
+                <span class="ig-wtile__pic">
+                  <Avatar url={w.picUrl ?? null} name={w.username} size="lg" />
+                  <Show when={fresh() > 0}>
+                    <span class="ig-dot ig-wtile__dot" aria-hidden="true">{fresh()}</span>
+                  </Show>
+                </span>
+                <span class="ig-wtile__name">
+                  <span>{w.fullName || w.username}</span>
+                  <Show when={w.isVerified}><Verified /></Show>
+                </span>
+                <span class="ig-wtile__user">
+                  <span>@{w.username}</span>
+                  <Show when={w.private}><PrivateMark chip /></Show>
+                </span>
+                <span class="ig-wtile__when">
+                  {w.lastCheck ? t("instagram.checkedAgo", { when: relativeTime(w.lastCheck) }) : t("instagram.notChecked")}
+                </span>
+              </button>
+            </li>
+          );
+        }}
+      </For>
+    </ul>
+  );
+}
+
 function Verified() {
   return (
     <span class="ig-verified" role="img" aria-label={t("instagram.verified")}>
@@ -290,6 +365,8 @@ interface Opened {
   tiles?: boolean;
   title?: string;
   cover?: string | null;
+  /** Stories and highlights: the full-screen viewer. */
+  story?: boolean;
 }
 
 function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
@@ -449,7 +526,7 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
     const feed = createFeed((c) => instagramApi.highlightItems(id, c), undefined, cacheKey);
     if (feed.loaded() && feed.items().length) {
       setOpening(null);
-      props.open({ feed, start: 0, username: props.username, tiles: true, title, cover });
+      props.open({ feed, start: 0, username: props.username, tiles: true, title, cover, story: true });
       void feed.load();
       return;
     }
@@ -457,7 +534,7 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
     setOpening(null);
     if (feed.error()) setNotice(errorText(feed.error()));
     else if (feed.items().length === 0) setNotice(t("instagram.noHighlights"));
-    else props.open({ feed, start: 0, username: props.username, tiles: true, title, cover });
+    else props.open({ feed, start: 0, username: props.username, tiles: true, title, cover, story: true });
   }
 
   const tabLabel = (tb: Tab) => t(`instagram.${tb}`);
@@ -613,7 +690,7 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
                                   <Tile
                                     item={item}
                                     label={`${tabLabel(tb)} ${i() + 1}${item.caption ? `: ${item.caption.slice(0, 60)}` : ""}`}
-                                    onOpen={() => props.open({ feed: f(), start: slideIndexOf(f().items(), i()), username: props.username, archived: tb === "archive" })}
+                                    onOpen={() => props.open({ feed: f(), start: slideIndexOf(f().items(), i()), username: props.username, archived: tb === "archive", story: tb === "stories" })}
                                   />
                                 )}
                               </For>
@@ -665,11 +742,18 @@ export default function InstagramView() {
   onMount(() => void refreshInstagramWatched());
   const [recent] = createResource(() => (params.username ? null : true), () => instagramApi.recent().catch(() => []));
 
-  async function openTyped(e?: Event) {
+  async function openTyped(e?: Event, raw = text(), profileFirst = false) {
     e?.preventDefault();
     setProblem("");
-    const typed = parseTyped(text());
+    setSuggestion(null);
+    const typed = parseTyped(raw);
     if (!typed) return setProblem(t("instagram.invalid"));
+    // A pasted post or reel link that names its account opens the account (Paste: "open the profile").
+    if (profileFirst && typed.kind === "post" && typed.username) {
+      setText("");
+      navigate(`/instagram/${encodeURIComponent(typed.username)}`);
+      return;
+    }
     if (typed.kind === "user") {
       setText("");
       navigate(`/instagram/${encodeURIComponent(typed.username)}`);
@@ -691,6 +775,31 @@ export default function InstagramView() {
     }
   }
 
+  // Paste (owner, 2026-11-01): the clipboard's username or link opens at once; ⌘V into the empty field does the same.
+  const [suggestion, setSuggestion] = createSignal<string | null>(null);
+  async function paste() {
+    setProblem("");
+    const raw = await readClipboardText();
+    if (raw === null) return setProblem(t("instagram.pasteBlocked"));
+    if (!parseTyped(raw)) return setProblem(t("instagram.pasteNothing"));
+    void openTyped(undefined, raw, true);
+  }
+  function onPasteIntoField(e: ClipboardEvent & { currentTarget: HTMLInputElement }) {
+    const field = e.currentTarget;
+    const whole = field.value === "" || (field.selectionStart === 0 && field.selectionEnd === field.value.length);
+    const raw = e.clipboardData?.getData("text") ?? "";
+    if (!whole || !parseTyped(raw)) return;
+    e.preventDefault();
+    void openTyped(undefined, raw, true);
+  }
+  async function offerClipboard() {
+    if (text() || !(await clipboardReadable())) return;
+    const raw = await readClipboardText();
+    const typed = raw ? parseTyped(raw) : null;
+    const name = typed?.kind === "user" ? typed.username : typed?.username ?? null;
+    if (name && name !== params.username) setSuggestion(name);
+  }
+
   const findForm = () => (
     <form class="ig-find" onSubmit={openTyped} role="search">
       <label class="media-search">
@@ -704,9 +813,17 @@ export default function InstagramView() {
           autocapitalize="none"
           autocomplete="off"
           spellcheck={false}
-          onInput={(e) => setText(e.currentTarget.value)}
+          onInput={(e) => {
+            setText(e.currentTarget.value);
+            setSuggestion(null);
+          }}
+          onPaste={onPasteIntoField}
+          onFocus={() => void offerClipboard()}
         />
       </label>
+      <button type="button" class="ig-btn ig-paste" aria-label={t("instagram.pasteLabel")} title={t("instagram.pasteLabel")} disabled={busy()} onClick={() => void paste()}>
+        <PasteIcon /> <span>{t("instagram.paste")}</span>
+      </button>
       <Show
         when={wide()}
         fallback={
@@ -719,30 +836,21 @@ export default function InstagramView() {
           {t("instagram.open")}
         </PrimaryAction>
       </Show>
+      <Show when={suggestion()}>
+        {(name) => (
+          <button type="button" class="chip ig-suggest" onClick={() => void openTyped(undefined, name(), true)}>
+            {t("instagram.pasteSuggest", { name: name() })}
+          </button>
+        )}
+      </Show>
     </form>
   );
 
-  const watchedRail = () => (
+  const openProfile = (username: string) => navigate(`/instagram/${encodeURIComponent(username)}`);
+  const watchedTiles = () => (
     <Show when={instagramWatched().length > 0}>
-      <Card list title={t("instagram.watchList")}>
-        <RowList label={t("instagram.watchList")}>
-          <For each={instagramWatched()}>
-            {(w) => {
-              const fresh = () => w.newStories + w.newPosts;
-              return (
-                <ListRow
-                  leading={<Avatar url={w.picUrl ?? null} name={w.username} />}
-                  title={
-                    <button type="button" class="pg-row-name" onClick={() => navigate(`/instagram/${encodeURIComponent(w.username)}`)}>
-                      @{w.username}
-                    </button>
-                  }
-                  badge={fresh() > 0 ? fresh() : undefined}
-                />
-              );
-            }}
-          </For>
-        </RowList>
+      <Card title={t("instagram.watchList")}>
+        <WatchedTiles items={instagramWatched()} onOpen={openProfile} />
       </Card>
     </Show>
   );
@@ -766,7 +874,12 @@ export default function InstagramView() {
                     {r.fullName || r.username}
                   </button>
                 }
-                sub={`@${r.username}`}
+                sub={
+                  <>
+                    @{r.username}
+                    <Show when={r.isPrivate}> <PrivateMark /></Show>
+                  </>
+                }
                 badge={r.isVerified ? <Verified /> : undefined}
               />
             )}
@@ -803,32 +916,7 @@ export default function InstagramView() {
                       <h2 id="ig-watched-title" class="media-section">
                         {t("instagram.watchList")}
                       </h2>
-                      <ul class="ig-chips">
-                        <For each={instagramWatched()}>
-                          {(w) => {
-                            const fresh = () => w.newStories + w.newPosts;
-                            return (
-                              <li>
-                                <button
-                                  type="button"
-                                  class="ig-chip"
-                                  aria-label={[fresh() > 0 ? t("instagram.chipLabel", { name: w.username, count: fresh() }) : `@${w.username}`, w.private ? t("instagram.privateAccount") : ""].filter(Boolean).join(", ")}
-                                  onClick={() => navigate(`/instagram/${encodeURIComponent(w.username)}`)}
-                                >
-                                  <Avatar url={w.picUrl ?? null} name={w.username} />
-                                  <span class="ig-chip__name">@{w.username}</span>
-                                  <Show when={w.private}><PrivateMark /></Show>
-                                  <Show when={fresh() > 0}>
-                                    <span class="ig-dot" aria-hidden="true">
-                                      {fresh()}
-                                    </span>
-                                  </Show>
-                                </button>
-                              </li>
-                            );
-                          }}
-                        </For>
-                      </ul>
+                      <WatchedTiles items={instagramWatched()} onOpen={(u) => navigate(`/instagram/${encodeURIComponent(u)}`)} />
                     </section>
                   </Show>
                   <section class="ig-recent" aria-labelledby="ig-recent-title">
@@ -885,7 +973,8 @@ export default function InstagramView() {
             keyed
             when={params.username}
             fallback={
-              <PageGrid layout="rail" railLabel={t("instagram.watchList")} rail={watchedRail()}>
+              <PageGrid layout="full">
+                {watchedTiles()}
                 {recentMain()}
               </PageGrid>
             }
@@ -914,6 +1003,7 @@ export default function InstagramView() {
             title={o.title}
             cover={o.cover}
             archived={o.archived}
+            story={o.story}
             hasMore={o.feed.hasMore()}
             loading={o.feed.loading()}
             onClose={() => setOpened(null)}

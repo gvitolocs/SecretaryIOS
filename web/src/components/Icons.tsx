@@ -748,3 +748,12 @@ export function LockIcon() {
     </svg>
   );
 }
+
+export function PasteIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="6" y="4.5" width="12" height="16" rx="2" />
+      <path d="M9.5 4.5V3.8c0-.7.6-1.3 1.3-1.3h2.4c.7 0 1.3.6 1.3 1.3v.7M9.5 10h5M9.5 13.5h5M9.5 17h3" />
+    </svg>
+  );
+}
