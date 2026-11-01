@@ -207,6 +207,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             // Local notifications say `approvalSensitive`, older server pushes only `sensitive`; unknown = sensitive.
             let sensitive = info[ApprovalNotifier.sensitiveKey] as? Bool ?? info["sensitive"] as? Bool ?? true
             let action = response.actionIdentifier
+            ApprovalActivityCommands.log.info("notification action=\(action, privacy: .public) id=\(approvalId, privacy: .public)")
             // The owner tapped the notification's Approve: the only place this trigger is made.
             let trigger = Self.approvalTrigger(forAction: action)
             // A root plan whose notification showed every command, and the hash of what it showed.

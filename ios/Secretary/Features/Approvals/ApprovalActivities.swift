@@ -62,15 +62,111 @@ final class ApprovalActivities {
         self.previews = previews
     }
 
-    /// Installs Deny's handler. Called from `SecretaryApp.init`, before any scene: a tap may be all this launch is
-    /// for (iOS runs LiveActivityIntents in the app's process). Approve is a link (`ApprovalLink`, AppModel.openWidgetRoute).
+    /// Installs the buttons' handlers. Called from `SecretaryApp.init`, before any scene: a tap may be all this launch
+    /// is for (iOS runs LiveActivityIntents in the app's process). An older card's Approve link goes through
+    /// `AppModel.openWidgetRoute` (`ApprovalLink`).
     static func install() {
         ApprovalActivityCommands.deny = { id, sensitive in
             DebugEvents.record("card.tap", ["action": "deny", "id": id, "sensitive": sensitive])
-            shared.log.info("deny tapped id=\(id, privacy: .public)")
             await AppModel.shared.approvals.handleNotification(actionIdentifier: ApprovalNotifier.denyAction,
                                                                approvalId: id, sensitive: sensitive)
         }
+        // Approve: in the background with the unlock key when one-tap is ready; else the card, in front, Face ID there.
+        ApprovalActivityCommands.approve = { id, payloadHash, trigger, intent in
+            DebugEvents.record("card.tap", ["action": "approve", "id": id])
+            let outcome = await AppModel.shared.approvals.approveFromActivity(id: id, shownHash: payloadHash, trigger: trigger)
+            guard case let .openCard(startApprove) = outcome else { return }
+            await continueOnCard(id, trigger: startApprove ? trigger : nil, intent: intent)
+        }
+    }
+
+    /// How the card opens after the activity's Approve.
+    enum CardOpening: Equatable {
+        /// With its approve step started (Face ID or the PIN over the commands).
+        case withApproveStep
+        /// Only shown: the owner reads it and taps Approve there.
+        case withoutApproveStep
+    }
+
+    /// The approve step starts only when it was asked for and the app is in front: already (`appActive`), or because
+    /// iOS brought it there (`continued`). Declined or impossible: the card only.
+    nonisolated static func cardOpening(startRequested: Bool, appActive: Bool, continued: Bool) -> CardOpening {
+        startRequested && (appActive || continued) ? .withApproveStep : .withoutApproveStep
+    }
+
+    /// Where the card ends up after the activity's Approve.
+    enum CardHandOff: Equatable {
+        /// The app is in front: the card shows (with its approve step when asked).
+        case openInFront
+        /// The app stayed in the background: the card waits, and "Open Secretary to approve" tells the owner.
+        case openAndNotify
+    }
+
+    /// In front already, or brought there (`canContinue` and `continueSucceeded`); otherwise the follow-up
+    /// notification, so a tap is never left with nothing to see.
+    nonisolated static func handOff(appActive: Bool, canContinue: Bool, continueSucceeded: Bool) -> CardHandOff {
+        appActive || (canContinue && continueSucceeded) ? .openInFront : .openAndNotify
+    }
+
+    /// Brings the app to the front on `id`'s card, with its approve step started when `trigger` is set (Face ID over
+    /// the exact commands). iOS 26+: `continueInForeground` (the intent's `.foreground(.dynamic)` mode); earlier:
+    /// `requestToContinueInForeground`. When the app can't come to the front, the card is there the next time it
+    /// opens, without its approve step, and "Open Secretary to approve" says so.
+    private static func continueOnCard(_ id: String, trigger: ApprovalTrigger?, intent: any AppIntent) async {
+        let store = AppModel.shared.approvals
+        let log = shared.log
+        let startRequested = trigger != nil
+        func open(_ opening: CardOpening) async {
+            log.info("tap outcome id=\(id, privacy: .public): opened card approveStep=\(opening == .withApproveStep, privacy: .public)")
+            await store.open(id: id, startApprove: opening == .withApproveStep ? trigger : nil, now: Date())
+        }
+        func finish(appActive: Bool, canContinue: Bool, continued: Bool) async {
+            switch handOff(appActive: appActive, canContinue: canContinue, continueSucceeded: continued) {
+            case .openInFront:
+                await open(cardOpening(startRequested: startRequested, appActive: appActive, continued: continued))
+            case .openAndNotify:
+                await open(.withoutApproveStep)
+                log.info("card left in the background id=\(id, privacy: .public): open-to-approve posted")
+                await store.postOpenToApprove(id: id)
+            }
+        }
+        if UIApplication.shared.applicationState == .active {
+            await finish(appActive: true, canContinue: false, continued: false)
+            return
+        }
+        if #available(iOS 26.0, *) {
+            log.info("continue in foreground requested id=\(id, privacy: .public)")
+            do {
+                try await intent.continueInForeground(nil, alwaysConfirm: false)
+                // Coming to the front (active, or still becoming active: the approve step waits for it).
+                let inFront = UIApplication.shared.applicationState != .background
+                log.info("continue in foreground succeeded id=\(id, privacy: .public) inFront=\(inFront, privacy: .public)")
+                await finish(appActive: false, canContinue: true, continued: inFront)
+            } catch {
+                let e = error as NSError
+                log.error("continue in foreground failed id=\(id, privacy: .public): \(e.domain, privacy: .public) \(e.code, privacy: .public)")
+                await finish(appActive: false, canContinue: true, continued: false)
+            }
+            return
+        }
+        if let foreground = intent as? any ForegroundContinuableIntent {
+            log.info("continue in foreground requested id=\(id, privacy: .public) (iOS < 26)")
+            do {
+                try await foreground.requestToContinueInForeground {
+                    // Now in front: the window starts here.
+                    log.info("continue in foreground succeeded id=\(id, privacy: .public)")
+                    await finish(appActive: false, canContinue: true, continued: true)
+                }
+                return
+            } catch {
+                let e = error as NSError
+                log.error("continue in foreground failed id=\(id, privacy: .public): \(e.domain, privacy: .public) \(e.code, privacy: .public)")
+                await finish(appActive: false, canContinue: true, continued: false)
+                return
+            }
+        }
+        log.error("continue in foreground unavailable id=\(id, privacy: .public)")
+        await finish(appActive: false, canContinue: false, continued: false)
     }
 
     /// Watches the tokens and the activities (from AppModel, once it is built). `status` looks a request up on the
@@ -295,3 +391,7 @@ final class ApprovalActivities {
         updateTokens[id] = nil
     }
 }
+
+/// The Live Activity's Approve may have to bring the app to the front (the card). Declared here, in the app only:
+/// app extensions cannot continue in the foreground.
+extension ApproveApprovalActivityIntent: ForegroundContinuableIntent {}

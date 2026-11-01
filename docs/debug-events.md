@@ -65,13 +65,14 @@ reports (crashes with stacks and attachments) did not fit a free-form step log, 
 | `activity.start`, `activity.update`, `activity.end` | `id`, `state` / `status`, `ok`, `error`, `count` | ApprovalActivities |
 | `activity.push_token` | `kind` (start, update), `id`, `registered`, `error` | ApprovalActivities (never the token) |
 | `card.intent` | `intent` (deny_approval_activity, deny_approval, check_shopping_item, complete_task, open_secretary, start_memo_recording, ask_lucina, …), `phase` (start, end), `duration_ms`, ids | every widget, Live Activity and Shortcuts intent `perform()` |
-| `card.tap` | `action`, `id`, `sensitive` | the Live Activity's Deny handler |
+| `card.tap` | `action` (deny, approve), `id`, `sensitive` | the Live Activity's Deny and Approve handlers |
 | `ui.tap` | `element`, `screen` (approval_sheet, settings_approvals, settings_about), `id`, `on`, `trigger`, `pad`, `ignored` | the approval card (Approve, Deny, PIN pad, Use PIN / Face ID, Close), Settings switches |
-| `auth.prompt`, `auth.result` | `signer` (face_id, unlock), `policy`, `stage` (sign), `ok`, `cancelled`, `error` (`com.apple.LocalAuthentication:-2` is a cancel) | ApprovalSigner |
+| `auth.prompt`, `auth.result` | `signer` (face_id, unlock), `policy`, `stage` (sign), `id` and `trigger` (unlock-key signatures), `ok`, `cancelled`, `error` (`com.apple.LocalAuthentication:-2` is a cancel) | ApprovalSigner |
 | `approval.decide` | `id`, `decision`, `sensitive`, `via` (face_id, approval_pin, plain, unlock_key), `outcome`, `error` | ApprovalsStore (card and one-tap) |
 | `approval.one_tap` | `id`, `step` (refused_no_trigger, not_pending, expired, changed_since_shown, not_ready, fetch_failed:…) | the notification's one-tap Approve |
 | `approval.card` | `id`, `step` | the card refused an answer |
-| `face_id_key.enroll`, `unlock_key.enroll`, `approval_pin.change` | `step` (requested, start, registered/enrolled, cancelled, failed, skipped_…), `error` | ApprovalsStore |
+| `approval.activity_approve` | `id`, `outcome` (decided_unlock_key, decided_plain, opened_card, refused), `reason` (approved, expired, not_pending, changed_since_shown, already_in_flight, unlock_key_approve_failed, one_tap_not_ready, signed_out, an outcome name, …) | the Live Activity's Approve (`approveFromActivity`) |
+| `face_id_key.enroll`, `unlock_key.enroll`, `approval_pin.change` | `step` (requested, start, face_id_ok, face_id_cancelled, registered, retry_after_cancel:<request>:<n>, enrolled, cancelled, failed, skipped_…), `error` | ApprovalsStore |
 | `share.open`, `share.send`, `share.sent`, `share.close` | counts, `action`, `background`, `ok`, `error` | share extension |
 | `apns.register` | `ok`, `error` | AppDelegate |
 

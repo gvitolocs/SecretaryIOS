@@ -24956,6 +24956,22 @@
           }
         }
       }
+    },
+    "Set up one-tap Approve" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Configura Approva con un tocco"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Konfigurer Godkend med ét tryk"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"

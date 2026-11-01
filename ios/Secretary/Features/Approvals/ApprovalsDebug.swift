@@ -29,6 +29,18 @@ enum ApprovalsDebug {
         DebugEvents.record("approval.one_tap", ["id": id, "step": step])
     }
 
+    /// What came of the Live Activity's Approve: `decided_unlock_key`, `decided_plain`, `opened_card` or `refused`, and why.
+    static func activityApprove(_ id: String, outcome: String, reason: String) {
+        DebugEvents.record("approval.activity_approve", ["id": id, "outcome": outcome, "reason": reason])
+    }
+
+    /// The unlock key's signature for a one-tap Approve (notification or Live Activity).
+    static func unlockSign(_ id: String, trigger: ApprovalTrigger, error: Error?) {
+        var fields: [String: Any] = ["signer": "unlock", "id": id, "trigger": trigger.rawValue, "ok": error == nil]
+        if let error { fields["error"] = error }
+        DebugEvents.record("auth.result", fields)
+    }
+
     /// A step of the Face ID key setup or the unlock-key enrollment.
     static func enroll(_ type: String, _ step: String, error: Error? = nil) {
         var fields: [String: Any] = ["step": step]
