@@ -153,6 +153,11 @@ impl Ctx<'_> {
                     .find_map(|t| meeting_url(t))
             }),
             added_by: item.added_by.clone(),
+            alarms: item.alarms.clone(),
+            alarms_default: item.alarms_default,
+            free: item.free,
+            travel_min: item.travel_min,
+            leave_alert: item.leave_alert,
             recurring,
             editable: matches!(self.src.source, Source::Google | Source::Lucina),
         })
@@ -579,6 +584,11 @@ mod tests {
             url: None,
             conference_url: None,
             added_by: None,
+            alarms: vec![],
+            alarms_default: false,
+            free: false,
+            travel_min: None,
+            leave_alert: false,
             recurring: false,
             editable: false,
         }

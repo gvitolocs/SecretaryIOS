@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, NaiveDate, Utc};
 use serde_json::Value;
 
-use crate::model::{Item, Moment};
+use crate::model::{normalize_alarms, Item, Moment, MAX_TRAVEL_MIN};
 
 /// A Google `EventDateTime` (`{date}` or `{dateTime, timeZone?}`).
 pub fn moment(v: &Value, calendar_tz: &str) -> Option<Moment> {
@@ -58,9 +58,48 @@ fn conference_url(ev: &Value) -> Option<String> {
         .find_map(|p| text(p, "uri").filter(|u| https(u)))
 }
 
+/// A private extended property (Google stores them as strings).
+fn private_prop<'a>(ev: &'a Value, key: &str) -> Option<&'a str> {
+    ev.pointer("/extendedProperties/private")?
+        .get(key)?
+        .as_str()
+        .map(str::trim)
+}
+
+/// `reminders`: the override minutes, and whether the calendar's defaults
+/// apply (also when the event has no `reminders`, as Lucina's older events).
+fn reminders(ev: &Value) -> (Vec<i64>, bool) {
+    let Some(r) = ev.get("reminders") else {
+        return (Vec::new(), true);
+    };
+    let default = r
+        .get("useDefault")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let overrides = r
+        .get("overrides")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|o| o.get("minutes").and_then(Value::as_i64))
+        .collect();
+    (normalize_alarms(overrides), default)
+}
+
+/// Google's `defaultReminders` (of an `events.list` response) as minutes.
+pub fn default_reminders(list: &Value) -> Option<Vec<i64>> {
+    let arr = list.get("defaultReminders")?.as_array()?;
+    Some(normalize_alarms(
+        arr.iter()
+            .filter_map(|o| o.get("minutes").and_then(Value::as_i64))
+            .collect(),
+    ))
+}
+
 /// One Google event → an item (`None` without an id).
 pub fn to_item(ev: &Value, calendar_tz: &str) -> Option<Item> {
     let uid = text(ev, "id")?;
+    let (alarms, alarms_default) = reminders(ev);
     let mut item = Item {
         attendees: ev
             .get("attendees")
@@ -91,6 +130,13 @@ pub fn to_item(ev: &Value, calendar_tz: &str) -> Option<Item> {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(|s| s.chars().take(120).collect()),
+        alarms,
+        alarms_default,
+        free: ev.get("transparency").and_then(Value::as_str) == Some("transparent"),
+        travel_min: private_prop(ev, "travelMin")
+            .and_then(|m| m.parse::<u32>().ok())
+            .filter(|m| (1..=MAX_TRAVEL_MIN).contains(m)),
+        leave_alert: matches!(private_prop(ev, "leaveAlert"), Some("1" | "true")),
         ..Item::default()
     };
     for line in ev
@@ -257,6 +303,45 @@ mod tests {
         )
         .unwrap();
         assert!(none.attendees.is_empty());
+    }
+
+    #[test]
+    fn maps_alerts_show_as_and_travel() {
+        let tz = "Europe/Copenhagen";
+        let e = json!({"id": "a", "summary": "x", "start": {"date": "2026-11-02"},
+            "reminders": {"useDefault": false, "overrides": [
+                {"method": "popup", "minutes": 1440}, {"method": "email", "minutes": 60},
+                {"method": "popup", "minutes": 60}, {"method": "popup", "minutes": -5}]},
+            "transparency": "transparent",
+            "extendedProperties": {"private": {"travelMin": "25", "leaveAlert": "1"}}});
+        let i = to_item(&e, tz).unwrap();
+        assert_eq!(i.alarms, vec![60, 1440]);
+        assert!(!i.alarms_default);
+        assert!(i.free);
+        assert_eq!(i.travel_min, Some(25));
+        assert!(i.leave_alert);
+
+        let plain = to_item(
+            &json!({"id": "b", "start": {"date": "2026-11-02"},
+            "reminders": {"useDefault": true}, "transparency": "opaque",
+            "extendedProperties": {"private": {"travelMin": "99999"}}}),
+            tz,
+        )
+        .unwrap();
+        assert!(plain.alarms.is_empty() && plain.alarms_default && !plain.free);
+        assert_eq!(plain.travel_min, None);
+        // Lucina's older events have no `reminders`: the defaults apply.
+        assert!(
+            to_item(&json!({"id": "c", "start": {"date": "2026-11-02"}}), tz)
+                .unwrap()
+                .alarms_default
+        );
+        assert_eq!(
+            default_reminders(
+                &json!({"defaultReminders": [{"method": "popup", "minutes": 30}, {"method": "email", "minutes": 10}]})
+            ),
+            Some(vec![10, 30])
+        );
     }
 
     #[test]

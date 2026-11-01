@@ -154,6 +154,10 @@ pub struct GoogleCache {
     pub sync_token: Option<String>,
     #[serde(default)]
     pub calendar_tz: Option<String>,
+    /// The primary calendar's default alerts (minutes before), from
+    /// `events.list`'s `defaultReminders`.
+    #[serde(default)]
+    pub default_reminders: Option<Vec<i64>>,
     #[serde(default)]
     pub items: BTreeMap<String, Item>,
 }

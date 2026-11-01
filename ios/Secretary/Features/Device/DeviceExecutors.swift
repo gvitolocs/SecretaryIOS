@@ -275,7 +275,10 @@ final class DeviceExecutors: DeviceCommandExecuting {
             // recorded in, and lucina-memo links it to the event it overlaps (docs/memos.md, step 1b).
             let predicate = eventStore.predicateForEvents(withStart: Date().addingTimeInterval(-3 * 86_400), end: Date().addingTimeInterval(7 * 86_400), calendars: nil)
             state.events = eventStore.events(matching: predicate).sorted { $0.startDate < $1.startDate }.prefix(300).map { event in
-                .object([
+                // Alerts as minutes before the start (relative ones only), and "show as free".
+                let alarms = (event.alarms ?? []).filter { $0.absoluteDate == nil && $0.relativeOffset <= 0 }
+                    .map { JSONValue.number(Double(Int((-$0.relativeOffset / 60).rounded()))) }
+                return .object([
                     "id": .string(event.eventIdentifier ?? ""),
                     "title": .string(event.title ?? ""),
                     "start": .string(iso.string(from: event.startDate)),
@@ -283,6 +286,8 @@ final class DeviceExecutors: DeviceCommandExecuting {
                     "allDay": .bool(event.isAllDay),
                     "calendar": .string(event.calendar?.title ?? ""),
                     "location": .string(event.location ?? ""),
+                    "alarms": .array(Array(alarms.prefix(5))),
+                    "free": .bool(event.availability == .free),
                 ])
             }
         }

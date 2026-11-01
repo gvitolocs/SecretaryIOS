@@ -104,6 +104,13 @@ pub struct CalendarEvent {
     pub title: String,
     /// Epoch ms.
     pub start: i64,
+    /// The event's own alerts (epoch ms). `None`: the owner's
+    /// `calendarLeadMinutes`; empty: no alert.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alerts: Option<Vec<i64>>,
+    /// A "time to leave" alert (epoch ms).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leave_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
