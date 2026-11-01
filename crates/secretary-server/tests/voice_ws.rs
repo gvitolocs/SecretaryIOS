@@ -305,6 +305,9 @@ struct H {
     addr: String,
     http: Client,
     token: String,
+    /// The speaker's device id.
+    dev_id: String,
+    data_dir: std::path::PathBuf,
     mock: Arc<Mock>,
     _dir: tempfile::TempDir,
 }
@@ -319,12 +322,14 @@ async fn harness() -> H {
     cfg.data_dir = dir.path().join("state");
     cfg.tts_url = format!("http://{tts}/");
     cfg.voice_stt_url = Some(format!("http://{stt}/v1/memos/stt"));
-    let (_, token) = DeviceStore::new(&cfg.data_dir).issue("Speaker").unwrap();
+    let (dev, token) = DeviceStore::new(&cfg.data_dir).issue("Speaker").unwrap();
     let addr = spawn(app(AppState::new(&cfg).unwrap())).await;
     H {
         addr,
         http: Client::new(),
         token,
+        dev_id: dev.id,
+        data_dir: cfg.data_dir.clone(),
         mock,
         _dir: dir,
     }
@@ -991,4 +996,431 @@ async fn a_cookie_caller_must_come_from_this_site() {
     assert_eq!(calls[0].cookie.as_deref(), Some(cookie.as_str()));
     assert_eq!(calls[0].csrf.as_deref(), Some("1"));
     assert!(calls[0].auth.is_none());
+}
+
+// -- telemetry (protocol sections 4 and 5) -----------------------------------------
+
+impl H {
+    /// A second device token (never sends a `hello`: an owner's app).
+    fn issue(&self, name: &str) -> (String, String) {
+        let (d, t) = DeviceStore::new(&self.data_dir).issue(name).unwrap();
+        (d.id, t)
+    }
+
+    async fn get(&self, token: Option<&str>, path: &str) -> (u16, Value) {
+        let mut r = self.http.get(format!("http://{}{path}", self.addr));
+        if let Some(t) = token {
+            r = r.bearer_auth(t);
+        }
+        let r = r.send().await.unwrap();
+        let status = r.status().as_u16();
+        (status, r.json().await.unwrap_or(Value::Null))
+    }
+
+    /// Poll `path` until `ok` accepts the answer (telemetry is handled asynchronously).
+    async fn wait_for(&self, token: &str, path: &str, ok: impl Fn(&Value) -> bool) -> Value {
+        for _ in 0..150 {
+            let (code, v) = self.get(Some(token), path).await;
+            if code == 200 && ok(&v) {
+                return v;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("{path} never matched");
+    }
+}
+
+fn hello_frame() -> Value {
+    json!({"type": "hello", "now": 4000, "specs": {
+        "chip": "esp32", "rev": "v3.1", "cores": 2, "cpu_mhz": 240, "flash_bytes": 4194304,
+        "psram_bytes": 0, "fw": "0.4.1", "commit": "abc1234", "mac": "da:b8",
+        "heap_total": 300000, "ina": "ina219", "temp_sensor": false},
+        "boot": {"reset": "poweron", "seq": 3}})
+}
+
+fn stats_event(up: u64, down: u64) -> Value {
+    json!({"t": 60_000, "k": "stats", "uptime_ms": 60_000, "heap_free": 120000,
+        "heap_min_free": 90000, "rssi": -58, "up_bytes": up, "down_bytes": down,
+        "tx_air_ms": 900, "cpu_mhz": 240,
+        "power": {"est_mw": 395, "rail_mv": 4980, "rail_ma": 79, "energy_mwh": 6.5}})
+}
+
+#[tokio::test]
+async fn hello_telemetry_and_a_turn_show_up_in_the_status_api() {
+    let h = harness().await;
+    h.mock.say(TWO);
+    let mut ws = h.connect().await;
+    send(&mut ws, hello_frame()).await;
+    let out = say_ptt(&mut ws, 1000).await;
+    assert_eq!(json_of(&out, "done")["type"], "done");
+    // The device reports the turn and its stats; nothing is answered.
+    send(
+        &mut ws,
+        json!({"type": "telemetry", "now": 61_000, "dropped": 0, "events": [
+            {"t": 60_500, "k": "turn", "ok": true, "mode": "link", "speech_ms": 1000,
+             "first_audio_ms": 1300, "total_ms": 3000, "up_bytes": 33000, "down_bytes": 400,
+             "server_ms": json_of(&out, "done")["ms"].clone()},
+            stats_event(4000, 9000),
+            {"t": 1000, "k": "wifi", "up": true, "rssi": -57}]}),
+    )
+    .await;
+    let path = format!("/v1/voice/devices/{}/status", h.dev_id);
+    let v = h
+        .wait_for(&h.token, &path, |v| {
+            v["live"]["up_bytes"] == 4000 && v["turns"][0]["device_first_audio_ms"] == 1300
+        })
+        .await;
+    assert_eq!(v["id"], h.dev_id.as_str());
+    assert_eq!(v["name"], "Speaker");
+    assert_eq!(v["online"], true);
+    assert!(v["connected_since"].is_string());
+    assert_eq!(v["specs"]["fw"], "0.4.1");
+    assert_eq!(v["specs"]["ina"], "ina219");
+    assert_eq!(v["boot"]["reset"], "poweron");
+    assert_eq!(v["live"]["rssi"], -58);
+    assert_eq!(v["power"]["measured"], true);
+    assert_eq!(v["power"]["est_mw"], 395);
+    // The device booted 60 s before: its totals count in full.
+    assert_eq!(v["network"]["today_up_bytes"], 4000);
+    assert_eq!(v["network"]["total_down_bytes"], 9000);
+    // One merged turn: the server's spans and bytes, the device's own measure.
+    let turns = v["turns"].as_array().unwrap();
+    assert_eq!(turns.len(), 1, "{turns:?}");
+    let t = &turns[0];
+    assert_eq!(t["ok"], true);
+    assert_eq!(t["transcript_chars"], TWO.chars().count());
+    assert_eq!(t["speech_ms"], 1000);
+    assert_eq!(t["up_bytes"], 32_000);
+    assert_eq!(t["down_bytes"], 12);
+    assert_eq!(t["device_first_audio_ms"], 1300);
+    let done_ms = &json_of(&out, "done")["ms"];
+    for k in ["stt", "lucina_first", "tts_first", "first_audio"] {
+        assert_eq!(t["spans"][k], done_ms[k], "{k}");
+    }
+    assert!(t["spans"]["total"].as_u64() >= done_ms["total"].as_u64());
+    // The transcript text is nowhere in the stored data.
+    let dir = h.data_dir.join("voice").join(&h.dev_id);
+    for f in ["status.json", "events.jsonl"] {
+        let text = std::fs::read_to_string(dir.join(f)).unwrap_or_default();
+        assert!(!text.contains("Ciao Lucina"), "{f}");
+    }
+
+    // The list, and the events (newest first, the server's turn included).
+    let (code, list) = h.get(Some(&h.token), "/v1/voice/devices").await;
+    assert_eq!(code, 200);
+    assert_eq!(list[0]["id"], h.dev_id.as_str());
+    assert_eq!(list[0]["online"], true);
+    assert_eq!(list[0]["fw"], "0.4.1");
+    assert_eq!(list[0]["est_mw"], 395);
+    assert_eq!(list[0]["rssi"], -58);
+    let (_, ev) = h
+        .get(
+            Some(&h.token),
+            &format!("/v1/voice/devices/{}/events?limit=50", h.dev_id),
+        )
+        .await;
+    let kinds: Vec<&str> = ev["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["k"].as_str().unwrap())
+        .collect();
+    for k in ["server_turn", "turn", "stats", "wifi"] {
+        assert!(kinds.contains(&k), "{k} in {kinds:?}");
+    }
+
+    // Closing the socket takes the device offline.
+    drop(ws);
+    h.wait_for(&h.token, &path, |v| {
+        v["online"] == false && v.get("connected_since").is_none()
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn bad_telemetry_is_ignored_and_the_socket_and_turns_keep_working() {
+    let h = harness().await;
+    h.mock.say(TWO);
+    let mut ws = h.connect().await;
+    send(&mut ws, hello_frame()).await;
+    // Oversized (over 16 KiB, under the socket's 64 KiB), not JSON, wrong shapes.
+    send(
+        &mut ws,
+        json!({"type": "telemetry", "now": 1, "events": [], "pad": "p".repeat(20_000)}),
+    )
+    .await;
+    ws.send(Message::text("{\"type\":\"telemetry\","))
+        .await
+        .unwrap();
+    send(&mut ws, json!({"type": "telemetry", "events": "nope"})).await;
+    send(&mut ws, json!({"type": "telemetry", "now": "x", "events": [1, null, "a", {"k": 5}, {"k": "stats", "up_bytes": "lots"}]})).await;
+    send(
+        &mut ws,
+        json!({"type": "hello", "specs": "nope", "boot": 5}),
+    )
+    .await;
+    send(
+        &mut ws,
+        json!({"type": "telemetry", "now": 100, "events": [
+        {"t": 100, "k": "error", "what": "<script>alert(1)</script>", "detail": "x".repeat(900)},
+        {"t": 100, "k": "nope"}]}),
+    )
+    .await;
+    // A turn still works, with no error frames in between.
+    let out = say_ptt(&mut ws, 600).await;
+    assert_eq!(
+        types(&out),
+        ["transcript", "audio", "pcm", "reply", "done"],
+        "{out:?}"
+    );
+
+    let path = format!("/v1/voice/devices/{}/events?kind=error", h.dev_id);
+    let v = h
+        .wait_for(&h.token, &path, |v| {
+            v["events"].as_array().is_some_and(|a| !a.is_empty())
+        })
+        .await;
+    let e = &v["events"][0];
+    assert_eq!(e["what"], "scriptalert(1)/script");
+    assert_eq!(e["detail"].as_str().unwrap().len(), 160);
+    assert_eq!(v["events"].as_array().unwrap().len(), 1);
+    let (_, st) = h
+        .get(
+            Some(&h.token),
+            &format!("/v1/voice/devices/{}/status", h.dev_id),
+        )
+        .await;
+    assert_eq!(st["specs"]["chip"], "esp32");
+    assert_eq!(st["network"]["total_up_bytes"], 0);
+}
+
+#[tokio::test]
+async fn events_filter_page_and_validate() {
+    let h = harness().await;
+    let mut ws = h.connect().await;
+    send(&mut ws, hello_frame()).await;
+    for i in 0..6u64 {
+        let k = if i % 2 == 0 { "wifi" } else { "link" };
+        send(&mut ws, json!({"type": "telemetry", "now": 1000, "events": [{"t": 1000, "k": k, "up": true, "ms": i}]})).await;
+        tokio::time::sleep(Duration::from_millis(15)).await;
+    }
+    let base = format!("/v1/voice/devices/{}/events", h.dev_id);
+    let v = h
+        .wait_for(&h.token, &format!("{base}?limit=100"), |v| {
+            v["events"].as_array().is_some_and(|a| a.len() == 6)
+        })
+        .await;
+    assert!(v.get("next").is_none());
+    let (_, p1) = h.get(Some(&h.token), &format!("{base}?limit=4")).await;
+    assert_eq!(p1["events"].as_array().unwrap().len(), 4);
+    assert_eq!(p1["events"][0]["ms"], 5);
+    let next = p1["next"].as_str().unwrap().to_owned();
+    assert_eq!(next, p1["events"][3]["at"].as_str().unwrap());
+    // `before` is exclusive; `+` in an offset must be encoded by the client.
+    let (_, p2) = h
+        .get(Some(&h.token), &format!("{base}?limit=4&before={next}"))
+        .await;
+    assert!(p2["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|e| e["at"].as_str().unwrap() < next.as_str()));
+    let (_, w) = h.get(Some(&h.token), &format!("{base}?kind=wifi")).await;
+    assert_eq!(w["events"].as_array().unwrap().len(), 3);
+    assert!(w["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|e| e["k"] == "wifi"));
+    let (_, s) = h
+        .get(Some(&h.token), &format!("{base}?since={next}&limit=100"))
+        .await;
+    assert!(s["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|e| e["at"].as_str().unwrap() >= next.as_str()));
+    // Bad parameters.
+    for q in [
+        "since=yesterday",
+        "before=1",
+        "kind=Wi-Fi",
+        "kind=",
+        "limit=abc",
+    ] {
+        let (code, v) = h.get(Some(&h.token), &format!("{base}?{q}")).await;
+        assert_eq!(code, 400, "{q}");
+        assert_eq!(v["error"]["code"], "bad_request", "{q}");
+    }
+}
+
+#[tokio::test]
+async fn speakers_see_only_themselves_and_owners_see_all() {
+    let h = harness().await;
+    // Speaker A (the harness's device) and speaker B say hello.
+    let mut a = h.connect().await;
+    send(&mut a, hello_frame()).await;
+    let (b_id, b_token) = h.issue("Kitchen");
+    let mut b = h.try_connect(Some(&b_token)).await.unwrap();
+    send(&mut b, hello_frame()).await;
+    // An owner's phone, and a browser session.
+    let (_, phone) = h.issue("Phone");
+    let login = h
+        .http
+        .post(format!("http://{}/v1/session", h.addr))
+        .json(&json!({"token": h.token}))
+        .send()
+        .await
+        .unwrap();
+    let cookie = login.headers()["set-cookie"]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+
+    let a_path = format!("/v1/voice/devices/{}/status", h.dev_id);
+    let b_path = format!("/v1/voice/devices/{b_id}/status");
+    h.wait_for(&phone, &a_path, |v| v["specs"]["chip"] == "esp32")
+        .await;
+    h.wait_for(&phone, &b_path, |v| v["specs"]["chip"] == "esp32")
+        .await;
+
+    // The phone sees both, and a name per device.
+    let (code, list) = h.get(Some(&phone), "/v1/voice/devices").await;
+    assert_eq!(code, 200);
+    let names: Vec<&str> = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names.len(), 2, "{names:?}");
+    assert!(names.contains(&"Speaker") && names.contains(&"Kitchen"));
+    assert_eq!(h.get(Some(&phone), &a_path).await.0, 200);
+    assert_eq!(h.get(Some(&phone), &b_path).await.0, 200);
+    // The phone has no voice data of its own, and unknown ids are 404.
+    let (code, v) = h
+        .get(Some(&phone), "/v1/voice/devices/dev_nobody/status")
+        .await;
+    assert_eq!(
+        (code, v["error"]["code"].as_str()),
+        (404, Some("device_not_found"))
+    );
+    assert_eq!(
+        h.get(Some(&phone), "/v1/voice/devices/dev_nobody/events")
+            .await
+            .0,
+        404
+    );
+    assert_eq!(
+        h.get(Some(&phone), "/v1/voice/devices/..%2Fetc/status")
+            .await
+            .0,
+        404
+    );
+
+    // Speaker A: itself only.
+    let (code, list) = h.get(Some(&h.token), "/v1/voice/devices").await;
+    assert_eq!(code, 200);
+    assert_eq!(list.as_array().unwrap().len(), 1);
+    assert_eq!(list[0]["id"], h.dev_id.as_str());
+    assert_eq!(h.get(Some(&h.token), &a_path).await.0, 200);
+    let (code, v) = h.get(Some(&h.token), &b_path).await;
+    assert_eq!(
+        (code, v["error"]["code"].as_str()),
+        (403, Some("owner_only"))
+    );
+    assert_eq!(
+        h.get(Some(&h.token), &format!("/v1/voice/devices/{b_id}/events"))
+            .await
+            .0,
+        403
+    );
+    // Even an unknown id is a 403 for a speaker (no probing).
+    assert_eq!(
+        h.get(Some(&h.token), "/v1/voice/devices/dev_nobody/status")
+            .await
+            .0,
+        403
+    );
+
+    // A browser session sees all, even when it belongs to a speaker's token.
+    let r = h
+        .http
+        .get(format!("http://{}/v1/voice/devices", h.addr))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(
+        r.json::<Value>().await.unwrap().as_array().unwrap().len(),
+        2
+    );
+
+    // No credentials: 401 on all three.
+    for p in [
+        "/v1/voice/devices",
+        a_path.as_str(),
+        &format!("/v1/voice/devices/{}/events", h.dev_id),
+    ] {
+        assert_eq!(h.get(None, p).await.0, 401, "{p}");
+    }
+    drop((a, b));
+}
+
+#[tokio::test]
+async fn post_voice_turns_are_recorded_too() {
+    let h = harness().await;
+    h.mock.say(PIPELINE);
+    let audio = tone(800);
+    let r = h
+        .http
+        .post(format!("http://{}/v1/voice", h.addr))
+        .bearer_auth(&h.token)
+        .header("content-type", "audio/x-s16le;rate=16000")
+        .body(audio.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let body = r.bytes().await.unwrap();
+    let path = format!("/v1/voice/devices/{}/status", h.dev_id);
+    let v = h
+        .wait_for(&h.token, &path, |v| {
+            v["turns"][0]["down_bytes"].as_u64() == Some(body.len() as u64)
+        })
+        .await;
+    let t = &v["turns"][0];
+    assert_eq!(t["ok"], true);
+    assert_eq!(t["transcript_chars"], PIPELINE.chars().count());
+    assert_eq!(t["up_bytes"], audio.len());
+    assert_eq!(t["speech_ms"], 800);
+    assert!(
+        t["spans"]["stt"].is_u64()
+            && t["spans"]["tts_first"].is_u64()
+            && t["spans"]["total"].is_u64()
+    );
+    assert_eq!(v["online"], false);
+    // A failed one (nothing said) is recorded as such.
+    h.mock.say("  ");
+    let r = h
+        .http
+        .post(format!("http://{}/v1/voice", h.addr))
+        .bearer_auth(&h.token)
+        .header("content-type", "audio/x-s16le;rate=16000")
+        .body(audio)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 422);
+    let v = h
+        .wait_for(&h.token, &path, |v| {
+            v["turns"].as_array().is_some_and(|t| t.len() == 2)
+        })
+        .await;
+    assert_eq!(v["turns"][0]["ok"], false);
+    assert_eq!(v["turns"][0]["err"], "no_speech");
 }

@@ -1392,8 +1392,8 @@ Client → server:
 | text `{"type":"cancel"}` | Drop the turn at any stage; speech-to-text, chat and speech are aborted at once and the device is free. |
 
 With no turn running, binary frames, `end` and `cancel` are ignored (they may be late). The device's
-`hello` and `telemetry` text frames (protocol section 4) are accepted at any time and dropped: the
-telemetry store and API (section 5) are not built yet.
+`hello` and `telemetry` text frames (protocol section 4) are accepted at any time, stored and never
+answered (see [LucinaVoice device telemetry](#lucinavoice-device-telemetry)).
 
 Server → client:
 
@@ -1445,6 +1445,68 @@ Pipeline per turn:
 
 The timings are also logged at `info` (`voice turn`: device id and the
 milliseconds; never the transcript, audio or credentials).
+
+### LucinaVoice device telemetry
+
+The speaker also sends text frames on the socket (protocol sections 4 and 5;
+`voice_telemetry.rs`), never answered:
+
+- `{"type":"hello","now":ms,"specs":{chip,rev,cores,cpu_mhz,flash_bytes,psram_bytes,fw,commit,mac,heap_total,ina,temp_sensor},"boot":{reset,seq}}`
+  first on every connection;
+- `{"type":"telemetry","now":ms,"dropped":n,"events":[{"t":ms,"k":"boot|wifi|link|turn|stats|error",…}]}`.
+
+Untrusted input: frames over 16 KiB and invalid JSON are ignored, at most 32
+events are taken, an event over 1 KiB or of an unknown kind is dropped, only the
+known keys of each kind are kept, numbers are clamped, strings are cut and lose
+control characters and `<` `>`. The turn and the socket are never affected.
+
+Stored under `SECRETARY_DATA_DIR/voice/<device id>/` (directory 0700, files
+0600): `events.jsonl` (the device's events with a wall-time `at`, and the
+server's own `server_turn` records; at 2 MiB it moves to `events.jsonl.1`,
+two files are kept) and `status.json` (specs, last stats, counters, the last 20
+turns; atomic, at most every 5 s per device, and at disconnect). Every turn of
+the socket and of `POST /v1/voice` is recorded (transcript length, never the
+text; spans in ms since the end of speech; audio bytes in and out) and merged
+with the device's own `turn` event (within 30 s). "Today" counters follow
+`SECRETARY_TIMEZONE`.
+
+#### `GET /v1/voice/devices` (authenticated)
+
+`[{id, name, online, last_seen, fw, rssi?, est_mw?}]`; `online` means a voice socket
+is open now.
+
+#### `GET /v1/voice/devices/{id}/status` (authenticated)
+
+```json
+{
+  "id": "dev_…", "name": "Speaker", "online": true,
+  "connected_since": "2026-11-01T10:00:00.000Z", "last_seen": "2026-11-01T10:05:00.000Z",
+  "specs": {"chip": "esp32", "fw": "0.4.1", "...": "..."},
+  "boot": {"reset": "poweron", "seq": 3},
+  "live": {"at": "…", "uptime_ms": 60000, "rssi": -58, "up_bytes": 4000, "power": {"est_mw": 395}},
+  "network": {"today_up_bytes": 4000, "today_down_bytes": 9000, "total_up_bytes": 4000, "total_down_bytes": 9000},
+  "power": {"est_mw": 395, "measured": true, "energy_mwh_today": 6.5},
+  "turns": [{"at": "…", "ok": true, "transcript_chars": 28, "speech_ms": 1000,
+             "spans": {"stt": 150, "lucina_first": 900, "tts_first": 1700, "first_audio": 1720, "total": 4000},
+             "device_first_audio_ms": 1300, "up_bytes": 32000, "down_bytes": 12}]
+}
+```
+
+`turns` is newest first (20 at most); `err` is present on a failed turn;
+`spans` are moments since the end of speech (cumulative), `null` when not reached.
+
+#### `GET /v1/voice/devices/{id}/events` (authenticated)
+
+Query: `since` (RFC 3339, inclusive), `before` (RFC 3339, exclusive), `kind`
+(`boot|wifi|link|turn|stats|error|server_turn`), `limit` (1–500, default 100).
+Answer `{events: [{at, k, t?, …}], next?}`, newest first; `next` (the `at` of the
+oldest event returned) is present when more remain and is what `before` takes
+for the next page.
+
+Access: a **speaker** (a device that has sent a `hello`) reads only its own id
+(`403 owner_only` for another); any other device token and every cookie session
+read all. `404 device_not_found` for an id with no voice data, `400 bad_request`
+for a malformed parameter, `401` without credentials.
 
 ## Avatar wardrobe
 

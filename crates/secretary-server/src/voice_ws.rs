@@ -17,7 +17,8 @@
 //! runs is answered with `busy` and changes nothing.
 //!
 //! The device's `hello` and `telemetry` text frames (protocol section 4) are
-//! accepted and ignored: nothing is stored yet (section 5).
+//! stored and never answered ([`crate::voice_telemetry`]); so is the server's
+//! own record of every turn. Both are read through `GET /v1/voice/devices*`.
 //!
 //! **Turn.**
 //! 1. `start` → `listening`; the local speech-to-text is warmed in the
@@ -63,6 +64,7 @@ use crate::error::ApiError;
 use crate::tts;
 use crate::voice::{self, Audio, Turn, MAX_BODY};
 use crate::voice_pipe::{self, Shared, Spec};
+use crate::voice_telemetry::{self, ConnGuard, TurnInfo};
 use crate::voice_vad::Vad;
 use crate::AppState;
 
@@ -117,6 +119,14 @@ pub async fn upgrade(
     ws.max_message_size(MAX_MESSAGE)
         .max_frame_size(MAX_MESSAGE)
         .on_upgrade(move |socket| connection(st, ident, creds, socket))
+}
+
+/// Text that starts like a `hello` or `telemetry` frame, valid JSON or not.
+fn looks_like_telemetry(text: &str) -> bool {
+    let t = text.trim_start();
+    ["telemetry", "hello"]
+        .iter()
+        .any(|k| t.starts_with(&format!("{{\"type\":\"{k}\"")))
 }
 
 /// `Origin: https://host[:port]` is `Host: host[:port]`.
@@ -216,6 +226,7 @@ async fn connection(st: AppState, ident: Identity, creds: HeaderMap, socket: Web
         let _ = sink.close().await;
     });
     let device = ident.device_id.clone();
+    let _online = ConnGuard::open(&st, &ident);
     let mut shutdown = st.shutdown.subscribe();
     let mut conn = Conn {
         st,
@@ -285,8 +296,21 @@ impl Conn {
     fn on_message(&mut self, msg: Message) -> bool {
         match msg {
             Message::Text(t) => {
+                self.st.voice_log.touch(&self.ident.device_id);
                 match serde_json::from_str::<Command>(t.as_str()) {
+                    // Device telemetry (protocol section 4): stored, never answered.
+                    Ok(cmd) if matches!(cmd.kind.as_str(), "hello" | "telemetry") => {
+                        self.st.voice_log.ingest(
+                            &self.ident.device_id,
+                            &self.ident.device_name,
+                            &cmd.kind,
+                            t.as_str(),
+                        );
+                    }
                     Ok(cmd) => self.on_command(cmd),
+                    // A broken telemetry frame is dropped without a word: an error
+                    // frame in the middle of a turn would only confuse the device.
+                    Err(_) if looks_like_telemetry(t.as_str()) => {}
                     Err(_) => self.send_error("bad_request", "not a JSON message of the protocol"),
                 }
                 true
@@ -296,7 +320,10 @@ impl Conn {
                 true
             }
             Message::Close(_) => false,
-            Message::Ping(_) | Message::Pong(_) => true,
+            Message::Ping(_) | Message::Pong(_) => {
+                self.st.voice_log.touch(&self.ident.device_id);
+                true
+            }
         }
     }
 
@@ -315,8 +342,6 @@ impl Conn {
                 // Collecting or Processing: drop it (aborts the task).
                 self.phase = Phase::Idle;
             }
-            // Device telemetry (protocol section 4): accepted, not stored.
-            "hello" | "telemetry" => {}
             _ => self.send_error("bad_request", "unknown message type"),
         }
     }
@@ -398,9 +423,11 @@ impl Conn {
             turn,
         } = c;
         let mut pcm = buf.pcm;
+        let up_bytes = pcm.len() as u64;
         pcm.truncate(vad.trim_len(pcm.len()) & !1);
         if pcm.len() < MIN_BYTES || (mode == Mode::Vad && !vad.heard_speech()) {
             self.send_error("no_speech", "no speech was heard");
+            voice_telemetry::record_no_speech(&self.st, &self.ident, up_bytes);
             return; // `turn` is dropped: the device is free again
         }
         let task = tokio::spawn(run_turn(
@@ -411,6 +438,7 @@ impl Conn {
             Bytes::from(pcm),
             lang,
             t0,
+            up_bytes,
         ));
         self.phase = Phase::Processing {
             task: AbortOnDrop(task),
@@ -423,7 +451,9 @@ fn ms_json(v: Option<u64>) -> Value {
     v.map_or(Value::Null, |v| json!(v))
 }
 
-/// One turn after the recording: speech-to-text, chat, speech.
+/// One turn after the recording: speech-to-text, chat, speech. The server's
+/// record of it goes to the telemetry store unless the socket went away.
+#[allow(clippy::too_many_arguments)]
 async fn run_turn(
     st: AppState,
     ident: Identity,
@@ -432,35 +462,68 @@ async fn run_turn(
     pcm: Bytes,
     lang: Option<String>,
     t0: Instant,
+    up_bytes: u64,
+) {
+    let shared = std::sync::Arc::new(Shared::new(t0));
+    let mut info = TurnInfo {
+        err: None,
+        transcript_chars: 0,
+        speech_ms: pcm.len() as u64 / 32,
+        up_bytes,
+    };
+    turn_steps(&st, &ident, &creds, &tx, pcm, lang, &shared, &mut info).await;
+    if info.err.as_deref() != Some("closed") {
+        voice_telemetry::finish_turn(&st, &ident, &shared, info);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn turn_steps(
+    st: &AppState,
+    ident: &Identity,
+    creds: &HeaderMap,
+    tx: &mpsc::Sender<Message>,
+    pcm: Bytes,
+    lang: Option<String>,
+    shared: &std::sync::Arc<Shared>,
+    info: &mut TurnInfo,
 ) {
     let send = |v: Value| {
         let tx = tx.clone();
         async move { tx.send(text(&v)).await.is_ok() }
     };
-    let shared = std::sync::Arc::new(Shared::new(t0));
     let device = ident.device_id.clone();
 
-    let heard = match voice::transcribe(&st, &creds, &Audio::Pcm(pcm), lang.as_deref()).await {
+    let heard = match voice::transcribe(st, creds, &Audio::Pcm(pcm), lang.as_deref()).await {
         Ok(h) => h,
         Err(e) => {
             tracing::warn!(device = %device, code = %e.code, "voice turn: speech-to-text failed");
+            info.err = Some("stt_unavailable".into());
             send(error_msg("stt_unavailable", &e.message)).await;
             return;
         }
     };
     let stt_ms = shared.elapsed_ms();
+    shared.set_stt(stt_ms);
     if heard.is_empty() {
+        info.err = Some("no_speech".into());
         send(error_msg("no_speech", "no speech was heard")).await;
         return;
     }
+    info.transcript_chars = heard.chars().count() as u64;
     if !send(json!({"type": "transcript", "text": heard})).await {
+        info.err = Some("closed".into());
         return;
     }
 
     let (out_tx, mut out_rx) = mpsc::channel::<Bytes>(16);
     let pipe = voice_pipe::speak_turn(
         st.clone(),
-        Spec { heard, lang, ident },
+        Spec {
+            heard,
+            lang,
+            ident: ident.clone(),
+        },
         shared.clone(),
         out_tx,
     );
@@ -503,9 +566,10 @@ async fn run_turn(
             }}))
             .await;
         }
-        Err(voice_pipe::PipeError::Closed) => {}
+        Err(voice_pipe::PipeError::Closed) => info.err = Some("closed".into()),
         Err(e) => {
             tracing::warn!(device = %device, code = e.code(), "voice turn failed");
+            info.err = Some(e.code().into());
             send(error_msg(e.code(), &e.message())).await;
         }
     }

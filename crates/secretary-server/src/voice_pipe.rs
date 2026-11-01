@@ -115,6 +115,9 @@ pub struct Shared {
     lucina_first: AtomicU64,
     tts_first: AtomicU64,
     first_audio: AtomicU64,
+    stt: AtomicU64,
+    /// PCM bytes handed to the client.
+    down_bytes: AtomicU64,
     /// The Kokoro voice, set when the first segment is known.
     pub voice: OnceLock<String>,
 }
@@ -128,6 +131,8 @@ impl Shared {
             lucina_first: AtomicU64::new(UNSET),
             tts_first: AtomicU64::new(UNSET),
             first_audio: AtomicU64::new(UNSET),
+            stt: AtomicU64::new(UNSET),
+            down_bytes: AtomicU64::new(0),
             voice: OnceLock::new(),
         }
     }
@@ -157,6 +162,22 @@ impl Shared {
     /// The first audio frame handed to the client (set by the consumer).
     pub fn first_audio(&self) -> Option<u64> {
         Self::get(&self.first_audio)
+    }
+
+    /// The transcript is ready (ms since `t0`).
+    pub fn set_stt(&self, ms: u64) {
+        let _ = self
+            .stt
+            .compare_exchange(UNSET, ms, Ordering::SeqCst, Ordering::SeqCst);
+    }
+
+    pub fn stt(&self) -> Option<u64> {
+        Self::get(&self.stt)
+    }
+
+    /// PCM bytes handed to the client so far.
+    pub fn down_bytes(&self) -> u64 {
+        self.down_bytes.load(Ordering::SeqCst)
     }
 
     pub fn mark_first_audio(&self) {
@@ -343,6 +364,9 @@ async fn tts_worker(
             }
             let chunk = item.map_err(|e| tts_error(&e))?;
             for frame in framer.push(&chunk) {
+                shared
+                    .down_bytes
+                    .fetch_add(frame.len() as u64, Ordering::SeqCst);
                 out.send(frame).await.map_err(|_| PipeError::Closed)?;
             }
         }

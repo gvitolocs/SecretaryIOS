@@ -98,13 +98,34 @@ When an INA219 or INA226 answers at I2C address 0x40 (SDA GPIO21, SCL GPIO18, 0.
 ## 5. Device telemetry API (secretary-server, device or owner auth)
 
 The server stores what the device sends, plus its own per-turn spans, in `SECRETARY_DATA_DIR/voice/<device id>/`
-(`events.jsonl`, rotated at 2 MiB, keeping 2 files; `status.json`).
+(`events.jsonl`, rotated at 2 MiB, keeping 2 files; `status.json`, written atomically at most every 5 s). Code:
+`voice_telemetry.rs`.
 
-- `GET /v1/voice/devices`: `[{id, name, online, last_seen, fw, rssi?, est_mw?}]`.
+Ingest (on `/v1/voice/ws`, never answered): a `hello` or `telemetry` frame over 16 KiB, or not JSON, is ignored; a batch
+keeps its first 32 events; an event over 1 KiB or of an unknown kind is dropped; only the keys listed in section 4 are
+kept, numbers are clamped, strings are cut (64 to 160 characters) and lose control characters and `<` `>`. The socket
+and the turn in progress are never affected. An event's wall time is `received_at - (now - t)`, the difference clamped
+to 0..7 days. Bytes and energy counters come from the `stats` events' totals since boot: the server adds the difference
+to the previous sample (a smaller value is a reboot and counts in full; the first sample ever counts in full only if
+the device booted in the last 10 minutes). "Today" is the date in the server's `SECRETARY_TIMEZONE`.
+
+Every turn of the socket and of `POST /v1/voice` leaves a server record (the transcript's length, never its text); the
+device's later `turn` event is merged into it when it lies within 30 s (either order). Server spans are the `done.ms`
+moments: milliseconds since the end of speech, cumulative, not durations. The record's `up_bytes`/`down_bytes` are the
+audio bytes received and sent for the turn. In `events.jsonl` it is an event of kind `server_turn`.
+
+- `GET /v1/voice/devices`: `[{id, name, online, last_seen, fw, rssi?, est_mw?}]`. `online`: a voice socket is open now.
 - `GET /v1/voice/devices/{id}/status`:
-  `{id, name, online, connected_since?, last_seen, specs, live:{…last stats…}, network:{today_up_bytes, today_down_bytes, total_up_bytes, total_down_bytes}, power:{est_mw, measured, energy_mwh_today}, turns:[last 20 {at, ok, err?, transcript_chars, speech_ms, spans:{stt, lucina_first, tts_first, first_audio, total}, device_first_audio_ms?, up_bytes, down_bytes}]}`.
-  The last turns combine the server's spans with the device's `turn` event.
-- `GET /v1/voice/devices/{id}/events?since=<rfc3339>&kind=<k>&limit=<≤500>`: newest first,
-  `{events:[{at, k, …}], next?}`.
+  `{id, name, online, connected_since?, last_seen, specs, boot?, live:{…last stats…}, network:{today_up_bytes, today_down_bytes, total_up_bytes, total_down_bytes}, power:{est_mw, measured, energy_mwh_today}, turns:[last 20, newest first: {at, ok, err?, transcript_chars, speech_ms, spans:{stt, lucina_first, tts_first, first_audio, total}, device_first_audio_ms?, up_bytes, down_bytes}]}`.
+  The turns combine the server's spans with the device's `turn` event; a device turn the server never saw stands alone
+  (`transcript_chars` 0, spans from the device's `server_ms`). `power.measured` is true when the last stats carry
+  `rail_mv`.
+- `GET /v1/voice/devices/{id}/events?since=<rfc3339>&before=<rfc3339>&kind=<k>&limit=<1..500, default 100>`: newest first,
+  `{events:[{at, k, t?, …}], next?}`. `since` is inclusive, `before` exclusive; `kind` is a device kind or `server_turn`.
+  `next` is present when more remain: the `at` of the oldest event returned, to pass as `before` for the next page.
+  `at` is UTC with milliseconds (`2026-11-01T10:00:09.000Z`). A malformed `since`, `before`, `kind` or `limit` is `400
+  bad_request`.
 
-Both device routes accept the device's own token (a device sees only itself) or the owner's session.
+Who may read: a **speaker** (a device that has sent a `hello`) sees only itself: its own id, `403 owner_only` for any
+other id. Every other device token (the owner's apps) and every browser session (cookie) sees all devices. An id with
+no voice data is `404 device_not_found` (for a speaker asking for another id, always 403). No credentials: `401`.

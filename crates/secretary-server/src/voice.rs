@@ -89,6 +89,7 @@ use crate::auth::Identity;
 use crate::error::ApiError;
 use crate::tts;
 use crate::voice_pipe::{self, Shared, Spec};
+use crate::voice_telemetry::{self, TurnInfo};
 use crate::AppState;
 
 /// Longest recording accepted.
@@ -500,6 +501,7 @@ async fn voice(
     if body.is_empty() {
         return Err(no_speech());
     }
+    let up_bytes = body.len() as u64;
     let (audio, seconds) = match kind {
         Input::Wav => {
             let seconds = wav_seconds(&body).ok_or_else(|| invalid_audio("not a PCM WAV file"))?;
@@ -515,25 +517,52 @@ async fn voice(
         return Err(no_speech());
     }
 
-    let heard = transcribe(&st, &caller, &audio, lang.as_deref()).await?;
+    // End of speech is now: the spans below count from here.
+    let shared = Arc::new(Shared::new(Instant::now()));
+    let mut info = TurnInfo {
+        err: None,
+        transcript_chars: 0,
+        speech_ms: (seconds * 1000.0) as u64,
+        up_bytes,
+    };
+    let heard = match transcribe(&st, &caller, &audio, lang.as_deref()).await {
+        Ok(h) => h,
+        Err(e) => {
+            info.err = Some("stt_unavailable".into());
+            voice_telemetry::finish_turn(&st, &ident, &shared, info);
+            return Err(e);
+        }
+    };
+    shared.set_stt(shared.elapsed_ms());
     if heard.is_empty() {
+        info.err = Some("no_speech".into());
+        voice_telemetry::finish_turn(&st, &ident, &shared, info);
         return Err(no_speech());
     }
+    info.transcript_chars = heard.chars().count() as u64;
 
     // The spoken reply, produced by a task that outlives this handler and
     // feeds the response body.
-    let shared = Arc::new(Shared::new(Instant::now()));
     let (out_tx, mut out_rx) = mpsc::channel::<Bytes>(16);
     let spec = Spec {
         heard: heard.clone(),
         lang,
-        ident,
+        ident: ident.clone(),
     };
     let task = tokio::spawn({
         let (st, shared) = (st.clone(), shared.clone());
         async move {
             let _turn = turn; // the device is busy until its audio is made
-            voice_pipe::speak_turn(st, spec, shared, out_tx).await
+            let r = voice_pipe::speak_turn(st.clone(), spec, shared.clone(), out_tx).await;
+            match &r {
+                Err(voice_pipe::PipeError::Closed) => {} // the client went away
+                Err(e) => info.err = Some(e.code().into()),
+                Ok(_) => {}
+            }
+            if !matches!(r, Err(voice_pipe::PipeError::Closed)) {
+                voice_telemetry::finish_turn(&st, &ident, &shared, info);
+            }
+            r
         }
     });
     let mut task = AbortOnDrop(task);
@@ -603,6 +632,7 @@ pub fn routes() -> Router<AppState> {
             post(voice).layer(DefaultBodyLimit::max(MAX_BODY)),
         )
         .route("/v1/voice/ws", get(crate::voice_ws::upgrade))
+        .merge(crate::voice_telemetry::routes())
 }
 
 #[cfg(test)]
