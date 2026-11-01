@@ -317,9 +317,12 @@ impl Exec {
                         ..Outcome::default()
                     }
                 }
-                Err(Moved) => {
+                Err(Stop::Moved) => {
                     self.say(&format!("{} moved while the gates ran; starting over", self.spec.trunk));
                     continue;
+                }
+                Err(Stop::Blocked(why)) => {
+                    return Outcome { ok: false, code: "TRUNK_CHECKOUT_BLOCKED".into(), message: why, method: Some(method.into()), gates: results, ..Outcome::default() };
                 }
             }
         }
@@ -327,15 +330,17 @@ impl Exec {
     }
 
     /// Fast-forward the trunk from `base` to `candidate`.
-    fn advance(&mut self, dir: &Path, base: &str, candidate: &str) -> Result<(), Moved> {
+    fn advance(&mut self, dir: &Path, base: &str, candidate: &str) -> Result<(), Stop> {
         let trunk = self.spec.trunk.clone();
         match self.spec.remote.clone() {
             Some(remote) => match self.git_logged(dir, &["push", "-q", &remote, &format!("{candidate}:refs/heads/{trunk}")]) {
                 Ok(_) => Ok(()),
-                Err(_) => Err(Moved),
+                Err(_) => Err(Stop::Moved),
             },
             None => {
-                // A local trunk: move it where it is checked out (only if clean), else the ref.
+                // A local trunk: where it is checked out, a fast-forward merge there (git keeps
+                // uncommitted changes that don't touch the merged files, and refuses otherwise);
+                // else the ref, if it is still at `base`.
                 let repo = self.repo();
                 let list = self.git(&repo, &["worktree", "list", "--porcelain"]).unwrap_or_default();
                 let mut path = None;
@@ -347,18 +352,22 @@ impl Exec {
                         path = current.clone();
                     }
                 }
-                let r = match path {
+                match path {
                     Some(p) => {
                         let p = PathBuf::from(p);
-                        if !self.git(&p, &["status", "--porcelain"]).unwrap_or_else(|_| "?".into()).is_empty() {
-                            self.say(&format!("{trunk} is checked out with uncommitted changes in {}; not moving it", p.display()));
-                            return Err(Moved);
+                        if self.git(&p, &["rev-parse", "HEAD"]).ok().as_deref() != Some(base) {
+                            return Err(Stop::Moved);
                         }
-                        self.git_logged(&p, &["merge", "-q", "--ff-only", candidate])
+                        self.git_logged(&p, &["merge", "-q", "--ff-only", candidate]).map(|_| ()).map_err(|e| {
+                            Stop::Blocked(format!(
+                                "{trunk} is checked out in {} with uncommitted changes to files this merge changes; commit or stash them there, then lagent merge again ({})",
+                                p.display(),
+                                e.lines().next().unwrap_or_default()
+                            ))
+                        })
                     }
-                    None => self.git_logged(&repo, &["update-ref", &format!("refs/heads/{trunk}"), candidate, base]),
-                };
-                r.map(|_| ()).map_err(|_| Moved)
+                    None => self.git_logged(&repo, &["update-ref", &format!("refs/heads/{trunk}"), candidate, base]).map(|_| ()).map_err(|_| Stop::Moved),
+                }
             }
         }
     }
@@ -415,8 +424,12 @@ impl Exec {
     }
 }
 
-/// The trunk moved (or refused the push): start over.
-struct Moved;
+/// Why the trunk didn't move: it moved meanwhile (start over), or the checkout it is in
+/// can't take the fast-forward.
+enum Stop {
+    Moved,
+    Blocked(String),
+}
 
 #[cfg(test)]
 mod tests {
@@ -553,9 +566,18 @@ mod tests {
         let head = commit(&root.join("topic"), "b.txt", "b\n", "add b");
         let mut s = spec(root, &repo, "topic", &head);
         s.remote = None;
-        let out = exec(root, s);
+        // Uncommitted work in the main checkout that the merge doesn't touch stays.
+        std::fs::write(repo.join("notes.txt"), "mine\n").unwrap();
+        let out = exec(root, s.clone());
         assert!(out.ok, "{out:?}");
         assert_eq!(git(&repo, &["rev-parse", "main"]), head);
         assert!(repo.join("b.txt").exists(), "the main checkout fast-forwarded");
+        assert_eq!(std::fs::read_to_string(repo.join("notes.txt")).unwrap(), "mine\n");
+        // Uncommitted changes to a file the merge changes: blocked, said why, main unchanged.
+        let head2 = commit(&root.join("topic"), "c.txt", "topic\n", "add c");
+        std::fs::write(repo.join("c.txt"), "local edit\n").unwrap();
+        let out = exec(root, Spec { head: Some(head2), ..s });
+        assert_eq!(out.code, "TRUNK_CHECKOUT_BLOCKED", "{out:?}");
+        assert_eq!(git(&repo, &["rev-parse", "main"]), head);
     }
 }
