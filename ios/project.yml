@@ -289,6 +289,7 @@ targets:
       - path: Extensions/SecretaryWidgets
         excludes: ["Info.plist", "*.entitlements"]
       - path: Secretary/Shared/MemoRecordingActivity.swift
+      - path: Secretary/Shared/ApprovalActivity.swift
       - path: Secretary/Shared/LucinaTokens.swift
       # Home Screen / Lock Screen widgets: sections, store, fetcher, routes, and the API client they use.
       - path: Secretary/Shared/Widgets

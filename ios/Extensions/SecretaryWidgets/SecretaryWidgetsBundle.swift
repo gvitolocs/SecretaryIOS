@@ -2,7 +2,7 @@ import SwiftUI
 import WidgetKit
 
 /// Everything the extension offers: Home Screen, Lock Screen and StandBy widgets, the Control
-/// Center controls, and the voice-memo recording Live Activity.
+/// Center controls, and the Live Activities (the voice-memo recording, an approval request).
 @main
 struct SecretaryWidgets: WidgetBundle {
     var body: some Widget {
@@ -23,5 +23,6 @@ struct SecretaryWidgets: WidgetBundle {
         MemoRecordControl()
         LogWeightControl()
         MemoRecordingLiveActivity()
+        ApprovalLiveActivity()
     }
 }
