@@ -7,7 +7,7 @@ use std::time::Duration;
 use clap::{Args, Subcommand};
 use serde_json::{json, Value};
 
-use super::{s, table, CmdError, Output};
+use super::{table, CmdError, Output};
 use crate::client::{Client, ClientError};
 
 #[derive(Subcommand, Debug)]
@@ -127,6 +127,15 @@ pub enum DeviceCommand {
         #[arg(long)]
         reason: Option<String>,
     },
+}
+
+/// A cell: the string, number or bool, blank for null (`cli::s` prints `null`).
+fn s(v: &Value) -> String {
+    if v.is_null() {
+        String::new()
+    } else {
+        super::s(v)
+    }
 }
 
 /// The calling session: `$LAGENT_SESSION`, then the Claude Code session ids, else user@host.

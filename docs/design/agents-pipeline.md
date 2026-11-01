@@ -84,7 +84,9 @@ Devices: `iphone`, `stick` (Samsung laptop USB stick), `kindle`, `poco`. A lease
 409 with who holds it and until when), renewed by leasing again, at most 240 minutes; forcing someone else's lease
 needs a reason and is logged.
 
-Designed (with the "Enforce iPhone installs only from main" session, which owns `ios-install` and its hook):
+Designed, and being built by the "Enforce iPhone installs only from main" session (workspace `lagent-devices`:
+`crates/lucina-agentd/src/devices.rs`, `/devices/{d}/install|grants|history`, on top of these leases), which owns
+`ios-install` and its hook:
 - `ios-install` keeps its device flock, its main-tip check (deploy-guard on nezopt) and its test-build rule (the
   owner's go through `lucina_decide`), and takes its exclusive lease from agentd (`lagent device lease iphone`)
   instead of its local `lease.json`, so the board shows who holds the phone.
