@@ -10,7 +10,11 @@ Jev (crate `lucina_jev`) picks an intent for each turn. Two switches in
 | `LUCINA_JEV_FIRST_MIN` | JEV-first trusts Jev from this confidence up (default 0.75). |
 | `LUCINA_JEV_FIRST_INTENT_MIN` | Per-intent overrides, `cursor_task=0.95,chat=0.7`. |
 | `LUCINA_VOICE_FAST_MIN` | A spoken turn takes a fast intent from this confidence up (default 0.85). |
-| `LUCINA_VOICE_JEV_CAP_MS` | How long a spoken turn waits for Jev's route (default 400). |
+| `LUCINA_VOICE_JEV_CAP_MS` | How long a spoken turn waits for Jev's route, and each later layer's call (default 400). |
+| `LUCINA_VOICE_LAYERS` | `false`/`off` turns the `slots`, `confirm` and `vocab` layers off (the `intent` layer stays). |
+| `LUCINA_VOICE_CONFIRM_MIN` | P(yes) of the `confirm` question from which a risky spoken action is held for a "sei sicuro?" (default 0.6). |
+| `LUCINA_VOICE_SLOTS_MIN` | How sure the `slots` layer must be to change a quick command (default 0.7). |
+| `LUCINA_VOICE_VOCAB_MIN` | How sure the `vocab` layer must be to apply its pick (default 0.8). |
 
 ## JEV-first
 
@@ -70,6 +74,38 @@ INFO lucina_voice::route: voice route event="voice_route" intent=temporal_query 
 ```
 
 `jev="failed"` carries `reason` (`unavailable`, `timeout`, `error`); `jev_ms` is 0 when Jev was not called.
+
+## Layered Jev decisions of a spoken turn (docs/lucinavoice-protocol.md section 9)
+
+Code: `chat/voice_fast.rs` (intent, slots, confirm), `voice_learn.rs` (vocab), `voice.rs` (`Trace`, `Layer`).
+Every layer has its own fixed facts-only state, the 400 ms cap, a record `{layer, verdict, confidence, ms, used}`
+and a fail-open rule. A spoken turn makes at most three Jev calls (`voice::MAX_JEV_CALLS`, taken from the turn's
+`Trace`; a fourth is refused and the layer fails open with verdict `budget`).
+
+| Layer | When | State (facts only) | Question | Verdict / what `used` means | Fail open |
+|---|---|---|---|---|---|
+| `vocab` | the request has `voiceMeta.ambiguous` (STT spans close to several vocabulary entries), before the turn | `{channel, sentence, spans:[{heard, candidates}]}` | one choice per span (at most 3 in one call, 300 ms): `none` first, then `c1…` | `c<n>` or `none`; used = a pick of at least 0.8 replaced the span in the sentence | the sentence stays as the STT wrote it |
+| `intent` | every routed spoken turn | `{channel, local_time, weekday, time_zone, message}` | the intent questions | the intent; used = the route took it (fast, or at least `LUCINA_JEV_INTENT_MIN`) | tier 0, then the planner |
+| `slots` | a fast `schedule_reminder` whose parse is unsure (no hour said, text over 10 words, nothing stripped), or a fast shopping add/remove whose product phrase has separators | `{channel, message, parsed:{…}}` | reminder: is the parse exactly what was asked (yes/no); shopping: `one` / `several` products | `ok` / `no`, `one` / `several`; used = the reminder went to the normal path, or the list was split into one grocery write per product | the quick command runs as parsed |
+| `confirm` | a slow route whose intent is risky: `agent_message` (message), `social_post` (post), `computer_task`/`web_crawl` with a buy/order/pay word (purchase), a delete verb on an action intent (delete) | `{channel, message, intent, risk}` | must Lucina ask "are you sure?" first (yes/no) | `ask` / `act`, or `yes` / `no` / `dropped` on the turn that answers a held request; used = the turn asked | the action runs as before |
+
+The confirm flow: the turn replies with a templated question ("Sei sicuro? Sto per … Dimmi sì per confermare."),
+action `voice_confirm`, `route.fast = true` (no filler), and stores the request in `st.pending` (tool
+`voice_confirm`, ten minutes, per session). The next spoken turn settles it with the existing strict
+`classify_reply`: a yes runs the held request (the timeline shows the owner's "sì"; the turn processes the held
+text, without asking again), a no answers "Va bene, non lo faccio.", anything else drops it and is read as itself.
+
+Where the layers show: the `route` event's `layers` (those decided before the route, which is all of them), the
+`done` body's `voice` (`{route, layers, jevCalls}`; left out when there are no layers, e.g. no Jev client), the
+`voice_route` log line (`jev_calls`, `layers`) and the timeline items' `meta.voice.route`.
+
+One intent call per turn: the route's call also answers `context::classify` (`voice::shared_intent`), so a slow
+spoken turn no longer asks Jev twice. The verdict has no recent turns in its state, so a spoken follow-up
+("e per la seconda parte?") is classified without them; tier 0 and the planner still see the recent turns.
+
+Measured live (journal of lucina-rs, 2026-11-01, 5 fast turns): the `intent` call takes 150-323 ms
+(`jev_ms`). The other layers ask one question instead of four, so the same service round trip is expected
+(150-250 ms); they only fire on the cases above.
 
 ## `POST /api/secretary/jev/route`
 

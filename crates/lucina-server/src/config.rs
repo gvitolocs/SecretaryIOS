@@ -77,6 +77,20 @@ pub struct Config {
     /// Test seam: the Jev client for voice routing. `None` (always, in production): the process-wide
     /// client (`lucina_jev::shared`).
     pub voice_jev: Option<lucina_jev::Config>,
+    /// `LUCINA_VOICE_LAYERS` (default on; `false`/`off` turns the `slots`, `confirm` and `vocab` Jev layers of a
+    /// spoken turn off, leaving the `intent` layer): docs/lucinavoice-protocol.md section 9.
+    pub voice_layers: bool,
+    /// `LUCINA_VOICE_CONFIRM_MIN` (0.6): P(yes) of the `confirm` layer's question from which a risky spoken
+    /// action is held for a spoken "sei sicuro?".
+    pub voice_confirm_min: f64,
+    /// `LUCINA_VOICE_SLOTS_MIN` (0.7): how sure the `slots` layer must be to change a quick command (split a
+    /// shopping list, hand an unsure reminder to the planner).
+    pub voice_slots_min: f64,
+    /// `LUCINA_VOICE_VOCAB_MIN` (0.8): how sure the `vocab` layer must be to apply its pick.
+    pub voice_vocab_min: f64,
+    /// `LUCINA_VOICE_LEARN_FILE` (else `lucina_vocab::default_path()`): the Voice Learn vocabulary, the file
+    /// the memo STT paths read too.
+    pub vocab_path: std::path::PathBuf,
     /// `LUCINA_MAPS_GEOCODE_URL` (+ `LUCINA_MAPS_UPSTREAM_KEY_FILE`): fill the
     /// coordinates of place blocks from the map server; unset = off.
     pub maps_geocode: Option<crate::geocode::GeocodeConfig>,
@@ -323,8 +337,11 @@ impl Config {
     /// Everything relative to `data_dir`, as if no variable was set.
     pub fn for_data_dir(data_dir: &Path) -> Self {
         let dir = data_dir.to_string_lossy().into_owned();
-        Self::from_lookup(move |k| (k == "LUCINA_DATA_DIR").then(|| dir.clone()))
-            .expect("defaults are valid")
+        let mut cfg = Self::from_lookup(move |k| (k == "LUCINA_DATA_DIR").then(|| dir.clone()))
+            .expect("defaults are valid");
+        // Hermetic: a test config never reads or writes the owner's real vocabulary.
+        cfg.vocab_path = data_dir.join("voice-learn.json");
+        cfg
     }
 
     pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> anyhow::Result<Self> {
@@ -460,6 +477,25 @@ impl Config {
                 .unwrap_or(0.85),
             voice_jev_cap: Duration::from_millis(num("LUCINA_VOICE_JEV_CAP_MS", 400).max(1)),
             voice_jev: None,
+            voice_layers: !get("LUCINA_VOICE_LAYERS").is_some_and(|v| {
+                matches!(v.trim().to_ascii_lowercase().as_str(), "off" | "false" | "0" | "no")
+            }),
+            voice_confirm_min: get("LUCINA_VOICE_CONFIRM_MIN")
+                .and_then(|v| v.trim().parse::<f64>().ok())
+                .filter(|v| (0.0..=1.0).contains(v))
+                .unwrap_or(0.6),
+            voice_slots_min: get("LUCINA_VOICE_SLOTS_MIN")
+                .and_then(|v| v.trim().parse::<f64>().ok())
+                .filter(|v| (0.0..=1.0).contains(v))
+                .unwrap_or(0.7),
+            voice_vocab_min: get("LUCINA_VOICE_VOCAB_MIN")
+                .and_then(|v| v.trim().parse::<f64>().ok())
+                .filter(|v| (0.0..=1.0).contains(v))
+                .unwrap_or(0.8),
+            vocab_path: get("LUCINA_VOICE_LEARN_FILE")
+                .filter(|p| !p.trim().is_empty())
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(lucina_vocab::default_path),
             maps_geocode: crate::geocode::GeocodeConfig::from_lookup(&get),
             notes_enabled: flag("LUCINA_NOTES", false),
             calendar_enabled: flag("LUCINA_CALENDAR", false),

@@ -121,9 +121,15 @@ pub async fn classify_intent(jev: &Jev, t: &TurnInput<'_>) -> Option<(Value, f64
         "message": t.user_text,
     });
     let d = jev.decide("intent", state, &intent_questions()).await.ok()?;
+    intent_json(&d)
+}
+
+/// The intent decision as the DeepSeek classifier's JSON plus Jev's confidence in it (the reply mode follows
+/// from the intent: a tool intent answered as "chat" would skip its tool; only a conversational intent may
+/// still need one). A spoken turn's own Jev call (`chat::voice_fast`) answers the same questions and is
+/// shared with the classifier through this.
+pub fn intent_json(d: &lucina_jev::Decision) -> Option<(Value, f64)> {
     let (intent, confidence) = d.choice("intent")?;
-    // The reply mode follows from the intent (a tool intent answered as "chat"
-    // would skip its tool); only a conversational intent may still need one.
     let mode = lucina_intent::tier0::default_reply_mode(intent);
     let v = json!({
         "intent": intent,

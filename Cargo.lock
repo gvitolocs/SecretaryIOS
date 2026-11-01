@@ -3810,6 +3810,7 @@ dependencies = [
  "lucina-telegram",
  "lucina-tools",
  "lucina-vault-ingest",
+ "lucina-vocab",
  "pdf-extract 0.10.0",
  "regex",
  "reqwest 0.12.28",

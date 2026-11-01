@@ -79,12 +79,124 @@ pub struct RouteInfo {
     pub fast: bool,
     /// `jev` (Jev's verdict decided), `tier0` (Jev gave none; a tier-0 rule did) or `fallback`.
     pub source: &'static str,
+    /// The Jev layers decided before the route (protocol section 9); empty: the key is left out.
+    pub layers: Vec<Layer>,
 }
 
 impl RouteInfo {
     pub fn json(&self) -> Value {
-        json!({"intent": self.intent, "confidence": self.confidence, "jev_ms": self.jev_ms,
-            "fast": self.fast, "source": self.source})
+        let mut v = json!({"intent": self.intent, "confidence": self.confidence, "jev_ms": self.jev_ms,
+            "fast": self.fast, "source": self.source});
+        if !self.layers.is_empty() {
+            v["layers"] = Value::Array(self.layers.iter().map(Layer::json).collect());
+        }
+        v
+    }
+
+    /// The route as the timeline's `meta.voice.route` (camelCase keys, layers included).
+    fn meta_json(&self) -> Value {
+        let mut v = json!({"intent": self.intent, "confidence": self.confidence, "jevMs": self.jev_ms,
+            "fast": self.fast, "source": self.source});
+        if !self.layers.is_empty() {
+            v["layers"] = Value::Array(self.layers.iter().map(Layer::json).collect());
+        }
+        v
+    }
+}
+
+/// One Jev decision of a spoken turn (protocol section 9): `{layer, verdict, confidence, ms, used}`.
+/// `verdict` is a short word (an intent, `ok`/`no`, `ask`/`act`, a candidate's index): never text of the turn.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Layer {
+    /// `intent`, `slots`, `confirm` or `vocab`.
+    pub layer: &'static str,
+    pub verdict: String,
+    pub confidence: f64,
+    pub ms: u64,
+    /// The verdict changed what the turn did.
+    pub used: bool,
+}
+
+impl Layer {
+    pub fn json(&self) -> Value {
+        json!({"layer": self.layer, "verdict": self.verdict, "confidence": self.confidence,
+            "ms": self.ms, "used": self.used})
+    }
+}
+
+/// The most Jev calls one spoken turn may make, whatever the layers want (the keyproxy's caps come on top).
+pub const MAX_JEV_CALLS: u8 = 3;
+
+/// What a spoken turn decided with Jev, and how many calls it has used. One per `voice: true` turn
+/// (`chat::handle_chat`); the layers are filled in order as they are decided.
+#[derive(Default)]
+pub struct Trace {
+    calls: std::sync::atomic::AtomicU8,
+    inner: Mutex<TraceInner>,
+}
+
+#[derive(Default)]
+struct TraceInner {
+    layers: Vec<Layer>,
+    route: Option<RouteInfo>,
+}
+
+impl Trace {
+    /// Reserves one of the turn's [`MAX_JEV_CALLS`]; false when they are used up (the layer then fails open).
+    pub fn take_call(&self) -> bool {
+        use std::sync::atomic::Ordering::SeqCst;
+        self.calls
+            .try_update(SeqCst, SeqCst, |n| (n < MAX_JEV_CALLS).then_some(n + 1))
+            .is_ok()
+    }
+
+    pub fn calls(&self) -> u8 {
+        self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn inner(&self) -> std::sync::MutexGuard<'_, TraceInner> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn push(&self, layer: Layer) {
+        self.inner().layers.push(layer);
+    }
+
+    pub fn layers(&self) -> Vec<Layer> {
+        self.inner().layers.clone()
+    }
+
+    pub fn set_route(&self, route: RouteInfo) {
+        self.inner().route = Some(route);
+    }
+
+    /// Anything to report? (A turn no layer touched, or with no Jev client, leaves the plain body alone.)
+    pub fn is_empty(&self) -> bool {
+        self.inner().layers.is_empty()
+    }
+
+    /// The `done` body's `voice` object: `{route, layers, jevCalls}`.
+    pub fn json(&self) -> Value {
+        let i = self.inner();
+        json!({
+            "route": i.route.as_ref().map(RouteInfo::meta_json),
+            "layers": i.layers.iter().map(Layer::json).collect::<Vec<_>>(),
+            "jevCalls": self.calls(),
+        })
+    }
+
+    /// The timeline's `meta.voice`: the request's `base` (`turnId`, `ms`) plus the route with every layer.
+    pub fn meta(&self, base: Option<&Value>) -> Value {
+        let mut v = base.cloned().filter(Value::is_object).unwrap_or_else(|| json!({}));
+        let i = self.inner();
+        if let Some(r) = &i.route {
+            let mut route = r.meta_json();
+            route["layers"] = Value::Array(i.layers.iter().map(Layer::json).collect());
+            v["route"] = route;
+        } else if !i.layers.is_empty() {
+            v["route"] = json!({"layers": i.layers.iter().map(Layer::json).collect::<Vec<_>>()});
+        }
+        v
     }
 }
 
@@ -220,6 +332,57 @@ tokio::task_local! {
     static SINK: Arc<VoiceSink>;
     /// `"voice": true`: the turn is spoken aloud (set by `chat::handle_chat`, streamed or not).
     pub static SPOKEN: bool;
+    /// The spoken turn's Jev decisions and call count (absent on turns that are not spoken).
+    static TRACE: Arc<Trace>;
+    /// The spoken turn's one intent verdict, shared with the context building (`context::classify`).
+    static INTENT: tokio::sync::watch::Receiver<Option<SharedIntent>>;
+}
+
+/// Jev's intent verdict in the classifier's JSON shape plus its confidence; `None`: Jev gave none.
+pub type SharedIntent = Option<(Value, f64)>;
+
+/// The channel a spoken turn's intent verdict travels on: the turn's Jev call sends once.
+pub fn intent_channel() -> (
+    tokio::sync::watch::Sender<Option<SharedIntent>>,
+    tokio::sync::watch::Receiver<Option<SharedIntent>>,
+) {
+    tokio::sync::watch::channel(None)
+}
+
+/// Runs `fut` with `rx` as the turn's shared intent verdict (none: the classifier asks Jev itself).
+pub async fn with_intent<F: std::future::Future>(
+    rx: Option<tokio::sync::watch::Receiver<Option<SharedIntent>>>,
+    fut: F,
+) -> F::Output {
+    match rx {
+        Some(rx) => INTENT.scope(rx, fut).await,
+        None => fut.await,
+    }
+}
+
+/// The spoken turn's intent verdict, waiting for the turn's own Jev call (capped by the caller): `Some(None)`
+/// when it gave none, `None` when this turn has no such call (the classifier then makes its own).
+pub async fn shared_intent() -> Option<SharedIntent> {
+    let mut rx = INTENT.try_with(Clone::clone).ok()?;
+    let verdict = rx.wait_for(Option::is_some).await.map(|v| v.clone());
+    match verdict {
+        Ok(v) => v,
+        // The call's task is gone without a word (a panic): no verdict.
+        Err(_) => Some(None),
+    }
+}
+
+/// Runs `fut` with `trace` as the spoken turn's trace (none: no change).
+pub async fn with_trace<F: std::future::Future>(trace: Option<Arc<Trace>>, fut: F) -> F::Output {
+    match trace {
+        Some(t) => TRACE.scope(t, fut).await,
+        None => fut.await,
+    }
+}
+
+/// The current spoken turn's trace.
+pub fn trace() -> Option<Arc<Trace>> {
+    TRACE.try_with(Arc::clone).ok()
 }
 
 /// Runs `fut` with `sink` as the turn's sink (none: no change).
@@ -516,6 +679,7 @@ mod tests {
             jev_ms: 210,
             fast,
             source: "jev",
+            layers: Vec::new(),
         }
     }
 
@@ -632,5 +796,43 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn the_route_event_carries_its_layers_when_there_are_any() {
+        let mut i = info(false);
+        i.layers = vec![Layer {
+            layer: "intent",
+            verdict: "temporal_query".into(),
+            confidence: 0.95,
+            ms: 210,
+            used: true,
+        }];
+        let v = i.json();
+        assert_eq!(v["layers"][0]["layer"], "intent");
+        assert_eq!(v["layers"][0]["used"], true);
+        assert!(info(false).json().get("layers").is_none());
+    }
+
+    #[test]
+    fn a_trace_reports_layers_and_the_timeline_meta_adds_them_to_the_request_base() {
+        let t = Trace::default();
+        assert!(t.is_empty());
+        t.push(Layer {
+            layer: "vocab",
+            verdict: "c1".into(),
+            confidence: 0.9,
+            ms: 120,
+            used: true,
+        });
+        let mut r = info(true);
+        r.layers = t.layers();
+        t.set_route(r);
+        let meta = t.meta(Some(&json!({"turnId": "t1", "ms": {"stt": 80}})));
+        assert_eq!(meta["turnId"], "t1");
+        assert_eq!(meta["ms"]["stt"], 80);
+        assert_eq!(meta["route"]["intent"], "temporal_query");
+        assert_eq!(meta["route"]["layers"][0]["layer"], "vocab");
+        assert_eq!(t.json()["jevCalls"], 0);
     }
 }

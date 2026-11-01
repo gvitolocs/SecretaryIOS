@@ -453,6 +453,10 @@ async fn route(
     if resource == Some("agentd") {
         return Ok(crate::agentd::forward(method, uri, headers, body).await);
     }
+    // Voice Learn (crate::voice_learn): the owner's vocabulary for every speech-to-text path.
+    if resource == Some("voice-learn") && parts.len() <= 2 {
+        return crate::voice_learn::route(st, method, uri, &parts[1..], body).await;
+    }
     // Lucina Notebooks (crate::notebooks): the lucina-notebooks router.
     if resource == Some("notebooks") {
         return Ok(crate::notebooks::route(st, method, uri, headers, body).await);
