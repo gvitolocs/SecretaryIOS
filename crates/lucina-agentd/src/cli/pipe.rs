@@ -236,12 +236,34 @@ fn job_output(j: Value) -> Result<Output, CmdError> {
     Ok(Output { text, json: Some(j) })
 }
 
+/// How long `follow` waits for agentd to come back (a deploy of agentd restarts it; the job
+/// keeps running in its own unit).
+const RECONNECT_FOR: Duration = Duration::from_secs(120);
+
 /// Print the job's log as it grows until the job ends; returns the finished job.
 async fn follow(client: &Client, id: &str) -> Result<Value, CmdError> {
     let mut offset = 0u64;
     let mut out = std::io::stderr();
+    let mut down_since: Option<std::time::Instant> = None;
     loop {
-        let v = client.get(&format!("/pipeline/jobs/{id}/log?offset={offset}")).await.map_err(api)?;
+        let v = match client.get(&format!("/pipeline/jobs/{id}/log?offset={offset}")).await {
+            Ok(v) => {
+                down_since = None;
+                v
+            }
+            Err(ClientError::Api { code, message, .. }) => return Err(CmdError { code, message, details: None }),
+            Err(e) => {
+                let since = *down_since.get_or_insert_with(std::time::Instant::now);
+                if since.elapsed() > RECONNECT_FOR {
+                    return Err(api(e));
+                }
+                if since.elapsed() < Duration::from_secs(2) {
+                    let _ = writeln!(out, "(agentd is restarting; still following {id})");
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                continue;
+            }
+        };
         let text = v["text"].as_str().unwrap_or_default();
         if !text.is_empty() {
             let _ = write!(out, "{text}");
