@@ -85,7 +85,6 @@ async fn main(spawner: Spawner) -> ! {
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
-    info!("LucinaVoice {} starting", env!("CARGO_PKG_VERSION"));
 
     // Entropy for TLS: the hardware RNG, seeded from the ADC noise source.
     let _trng_source = mk_static!(
@@ -112,6 +111,8 @@ async fn main(spawner: Spawner) -> ! {
     let (uart_rx, _uart_tx) = uart.split();
     core::mem::drop(_uart_tx);
     spawner.spawn(console::console_task(uart_rx).expect("console task"));
+    // Logged after the UART is set up: reconfiguring it cuts a line in flight.
+    info!("LucinaVoice {} starting", env!("CARGO_PKG_VERSION"));
 
     // Speaker: I2S0 out, 24 kHz stereo 16-bit.
     let i2s0 = I2s::new(
