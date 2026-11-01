@@ -152,7 +152,7 @@ pub fn command_lines(details: &str) -> (String, usize) {
     (head.join("\n"), lines.len())
 }
 
-/// The push-to-start body for `r` at `now_s` (seconds). No `alert`: the approval notification already rings.
+/// The push-to-start body for `r` at `now_s` (seconds). Its `alert` has no sound: the approval notification already rings.
 pub fn start_body(r: &ActivityRequest, now_s: i64) -> Value {
     let (commands, count) = command_lines(&r.details);
     let expires_s = r.expires_ms.div_euclid(1000);
@@ -171,6 +171,12 @@ pub fn start_body(r: &ActivityRequest, now_s: i64) -> Value {
                 "sensitive": r.sensitive,
                 "payloadHash": r.payload_hash,
                 "expiresAtUnix": expires_s,
+            },
+            // iOS drops a push-to-start without an alert. No sound: the approval
+            // notification itself already buzzes.
+            "alert": {
+                "title": format!("{} needs your OK", clip(&r.requester, REQUESTER_CHARS)),
+                "body": clip(&r.summary, SUMMARY_CHARS),
             },
             "stale-date": expires_s,
             "relevance-score": 100,
@@ -334,12 +340,13 @@ mod tests {
                     "payloadHash": format!("sha256:{}", "ab".repeat(32)),
                     "expiresAtUnix": 1_761_048_300,
                 },
+                "alert": {"title": "Lucina needs your OK", "body": "Restart the tunnel on nezopt"},
                 "stale-date": 1_761_048_300,
                 "relevance-score": 100,
                 "input-push-token": 1,
             }})
         );
-        assert!(b["aps"].get("alert").is_none());
+        assert!(b["aps"]["alert"].get("sound").is_none());
     }
 
     #[test]
