@@ -2,8 +2,13 @@
 //!
 //! Fonts are loaded from paths at runtime; none are embedded. Missing bold/italic faces fall back to the
 //! regular face (bold is synthesised by double-striking one pixel to the right).
+//!
+//! fontdue reads every outline of a face when it parses it, the slow part of loading a family: the
+//! regular face is parsed at once, the bold / italic ones the first time a glyph of theirs is needed
+//! ([`Fonts::parse_all`] does it ahead). A face whose file does not parse then counts as missing.
 use crate::{Error, Result};
 use ink_epub::SpanStyle;
+use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -45,8 +50,24 @@ pub struct Glyph {
 
 type Key = (u8, u16, char);
 
+/// A bold / italic face: its file, parsed when first used (`None` there: it does not parse).
+struct LazyFace {
+    bytes: Vec<u8>,
+    font: OnceCell<Option<fontdue::Font>>,
+}
+
+impl LazyFace {
+    fn get(&self) -> Option<&fontdue::Font> {
+        self.font
+            .get_or_init(|| parse(&self.bytes[..]).ok())
+            .as_ref()
+    }
+}
+
 pub struct Fonts {
-    faces: [Option<fontdue::Font>; 4],
+    regular: fontdue::Font,
+    /// Bold, italic, bold italic (indices 1..=3 of [`Face`]).
+    others: [Option<LazyFace>; 3],
     advances: HashMap<Key, f32>,
     glyphs: HashMap<Key, Glyph>,
     /// Display name (file name of the regular face).
@@ -59,7 +80,7 @@ impl std::fmt::Debug for Fonts {
     }
 }
 
-fn parse(bytes: Vec<u8>) -> Result<fontdue::Font> {
+fn parse(bytes: &[u8]) -> Result<fontdue::Font> {
     fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default())
         .map_err(|e| Error::Font(e.to_string()))
 }
@@ -67,7 +88,8 @@ fn parse(bytes: Vec<u8>) -> Result<fontdue::Font> {
 impl Fonts {
     pub fn from_bytes(regular: Vec<u8>, name: impl Into<String>) -> Result<Self> {
         Ok(Self {
-            faces: [Some(parse(regular)?), None, None, None],
+            regular: parse(&regular)?,
+            others: [None, None, None],
             advances: HashMap::new(),
             glyphs: HashMap::new(),
             name: name.into(),
@@ -82,28 +104,51 @@ impl Fonts {
             .unwrap_or_default();
         Self::from_bytes(bytes, name)
     }
-    /// Add a bold/italic face.
+    /// Add a bold/italic face (parsed when first used).
     pub fn with_face(mut self, face: Face, path: &Path) -> Result<Self> {
         self.set_face(face, path)?;
         Ok(self)
     }
-    /// Add a bold/italic face in place; on an error the fonts stay as they were (so a caller can
-    /// skip a bad face without parsing it twice).
+    /// Add a bold/italic face in place (parsed when first used); a file that cannot be read is an
+    /// error and leaves the fonts as they were. `Face::Regular` is replaced at once.
     pub fn set_face(&mut self, face: Face, path: &Path) -> Result<()> {
         let bytes =
             std::fs::read(path).map_err(|e| Error::Font(format!("{}: {e}", path.display())))?;
-        self.faces[face as usize] = Some(parse(bytes)?);
+        match face {
+            Face::Regular => self.regular = parse(&bytes)?,
+            f => {
+                self.others[f as usize - 1] = Some(LazyFace {
+                    bytes,
+                    font: OnceCell::new(),
+                })
+            }
+        }
         self.advances.clear();
         self.glyphs.clear();
         Ok(())
     }
+    /// Whether `face` has a file of its own that parses (parsing it if it was not yet).
     pub fn has_face(&self, face: Face) -> bool {
-        self.faces[face as usize].is_some()
+        self.face(face as usize).is_some()
+    }
+    /// Parse every face now (a family loaded ahead, off the drawing thread).
+    pub fn parse_all(&self) {
+        for i in 1..4 {
+            self.face(i);
+        }
+    }
+
+    /// Face `idx` of [`Face`], parsed; `None` when it has no file or it does not parse.
+    fn face(&self, idx: usize) -> Option<&fontdue::Font> {
+        match idx {
+            0 => Some(&self.regular),
+            i => self.others[i - 1].as_ref()?.get(),
+        }
     }
 
     /// The loaded face to use and whether bold must be synthesised.
     fn resolve(&self, face: Face) -> (usize, bool) {
-        let have = |f: Face| self.faces[f as usize].is_some();
+        let have = |f: Face| self.face(f as usize).is_some();
         match face {
             Face::Regular => (0, false),
             Face::Bold if have(Face::Bold) => (1, false),
@@ -118,12 +163,8 @@ impl Fonts {
     }
 
     fn font(&self, idx: usize) -> &fontdue::Font {
-        // Index 0 always exists; resolve() only returns loaded indices.
-        self.faces[idx].as_ref().unwrap_or_else(|| {
-            self.faces[0]
-                .as_ref()
-                .expect("regular face is always loaded")
-        })
+        // resolve() only returns faces that parsed.
+        self.face(idx).unwrap_or(&self.regular)
     }
 
     /// Whether glyphs of `face` are drawn twice (synthetic bold).

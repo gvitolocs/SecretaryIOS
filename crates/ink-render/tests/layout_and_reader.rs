@@ -600,12 +600,16 @@ fn chapters_paginate_alone_as_in_the_whole_book() {
 }
 
 #[test]
-fn a_bad_face_leaves_the_fonts_as_they_were() {
+fn a_bad_face_falls_back_to_the_regular_one() {
     let mut f = fonts();
     let bad = std::env::temp_dir().join(format!("ink-bad-face-{}.ttf", std::process::id()));
     std::fs::write(&bad, b"not a font").unwrap();
-    assert!(f.set_face(ink_render::Face::Italic, &bad).is_err());
+    // A file that does not parse counts as missing: the regular face draws it.
+    f.set_face(ink_render::Face::Italic, &bad).unwrap();
     assert!(!f.has_face(ink_render::Face::Italic));
+    let gone = std::env::temp_dir().join("ink-no-such-face.ttf");
+    assert!(f.set_face(ink_render::Face::Bold, &gone).is_err());
+    assert!(!f.has_face(ink_render::Face::Bold));
     assert!(f.measure(ink_render::Face::Italic, 30, "still drawn") > 0.0);
     f.set_face(ink_render::Face::Italic, std::path::Path::new(FONT))
         .unwrap();
