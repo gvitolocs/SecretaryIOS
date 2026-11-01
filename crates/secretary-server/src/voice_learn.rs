@@ -37,7 +37,7 @@
 //! the Gemini fallback path and fails open: no Lucina, an error, or a slow
 //! answer ([`FETCH_TIMEOUT`]) means no line.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
@@ -258,11 +258,35 @@ pub fn vocabulary_line(list: &Value) -> Option<String> {
     (line.chars().count() > base).then_some(line)
 }
 
-/// The Gemini vocabulary line, fetched from Lucina at most once per [`TTL`].
+/// The vocabulary as the Gemini fallback uses it: the prompt line and the entries for
+/// post-correction ([`lucina_vocab::Vocab::correct`]).
+#[derive(Debug, Clone, Default)]
+pub struct Loaded {
+    /// `Vocabulary: …`, `None` for no entries.
+    pub line: Option<String>,
+    pub vocab: lucina_vocab::Vocab,
+}
+
+impl Loaded {
+    /// From Lucina's list answer. Entries that do not parse are skipped.
+    pub fn from_list(list: &Value) -> Self {
+        let entries = entries(list)
+            .iter()
+            .filter_map(|e| serde_json::from_value::<lucina_vocab::Entry>(e.clone()).ok())
+            .filter(|e| !e.word.trim().is_empty())
+            .collect();
+        Self {
+            line: vocabulary_line(list),
+            vocab: lucina_vocab::Vocab { entries },
+        }
+    }
+}
+
+/// Lucina's vocabulary for the Gemini fallback, fetched at most once per [`TTL`].
 #[derive(Default)]
 pub struct VocabCache {
-    /// (when it was fetched, the line; `None` after a failure or an empty list)
-    slot: Mutex<Option<(Instant, Option<String>)>>,
+    /// (when it was fetched, what came; `None` after a failure)
+    slot: Mutex<Option<(Instant, Option<Arc<Loaded>>)>>,
 }
 
 impl VocabCache {
@@ -270,30 +294,29 @@ impl VocabCache {
         Self::default()
     }
 
-    /// The cached line, if still fresh.
-    fn fresh(&self) -> Option<Option<String>> {
+    /// The cached answer, if still fresh.
+    fn fresh(&self) -> Option<Option<Arc<Loaded>>> {
         let slot = self.slot.lock().unwrap_or_else(|p| p.into_inner());
-        let (at, line) = slot.as_ref()?;
-        let ttl = if line.is_some() { TTL } else { FAIL_TTL };
-        (at.elapsed() < ttl).then(|| line.clone())
+        let (at, got) = slot.as_ref()?;
+        let ttl = if got.as_ref().is_some_and(|l| l.line.is_some()) { TTL } else { FAIL_TTL };
+        (at.elapsed() < ttl).then(|| got.clone())
     }
 
-    fn store(&self, line: Option<String>) {
-        *self.slot.lock().unwrap_or_else(|p| p.into_inner()) = Some((Instant::now(), line));
+    fn store(&self, got: Option<Arc<Loaded>>) {
+        *self.slot.lock().unwrap_or_else(|p| p.into_inner()) = Some((Instant::now(), got));
     }
 
-    /// The "Vocabulary:" line for Gemini, or `None` (no vocabulary, Lucina not
-    /// configured or down, or too slow). Never an error.
-    pub async fn line(&self, st: &AppState) -> Option<String> {
-        if let Some(line) = self.fresh() {
-            return line;
+    /// The vocabulary, or `None` (Lucina not configured or down, or too slow). Never an error.
+    pub async fn load(&self, st: &AppState) -> Option<Arc<Loaded>> {
+        if let Some(got) = self.fresh() {
+            return got;
         }
-        let line = match st.lucina() {
+        let got = match st.lucina() {
             Ok(lucina) => {
                 let call = Call::voice_learn_list();
                 let fetch = lucina.call::<Value>(&call);
                 match tokio::time::timeout(FETCH_TIMEOUT, fetch).await {
-                    Ok(Ok(list)) => vocabulary_line(&list),
+                    Ok(Ok(list)) => Some(Arc::new(Loaded::from_list(&list))),
                     Ok(Err(e)) => {
                         tracing::debug!(error = %e, "voice learn: vocabulary fetch failed");
                         None
@@ -306,8 +329,8 @@ impl VocabCache {
             }
             Err(_) => None,
         };
-        self.store(line.clone());
-        line
+        self.store(got.clone());
+        got
     }
 }
 
@@ -344,17 +367,48 @@ mod tests {
     }
 
     #[test]
-    fn the_cache_remembers_a_line_and_a_failure_for_different_times() {
+    fn the_cache_remembers_a_vocabulary_and_a_failure_for_different_times() {
         let c = VocabCache::new();
         assert!(c.fresh().is_none());
-        c.store(Some("Vocabulary: x".into()));
-        assert_eq!(c.fresh(), Some(Some("Vocabulary: x".into())));
+        let loaded = Arc::new(Loaded::from_list(&json!([{"word": "Mikkel"}])));
+        assert_eq!(loaded.line.as_deref(), Some("Vocabulary: Mikkel"));
+        c.store(Some(loaded));
+        assert!(c.fresh().unwrap().is_some());
         // an old success is stale after TTL; an old failure after FAIL_TTL
-        *c.slot.lock().unwrap() = Some((Instant::now() - TTL - Duration::from_secs(1), Some("x".into())));
+        let old = |by: Duration, got: Option<Arc<Loaded>>| {
+            *c.slot.lock().unwrap() = Some((Instant::now() - by, got));
+        };
+        old(TTL + Duration::from_secs(1), Some(Arc::new(Loaded::from_list(&json!([{"word": "x"}])))));
         assert!(c.fresh().is_none());
-        *c.slot.lock().unwrap() = Some((Instant::now() - FAIL_TTL - Duration::from_secs(1), None));
+        old(FAIL_TTL + Duration::from_secs(1), None);
         assert!(c.fresh().is_none());
-        *c.slot.lock().unwrap() = Some((Instant::now() - Duration::from_secs(5), None));
-        assert_eq!(c.fresh(), Some(None));
+        old(Duration::from_secs(5), None);
+        assert_eq!(c.fresh().map(|g| g.is_none()), Some(true));
+    }
+
+    #[test]
+    fn entries_parse_like_the_vocab_crate_reads_them_and_bad_ones_are_skipped() {
+        let l = Loaded::from_list(&json!({"entries": [
+            {"id": "vl_1", "word": "Skibigårdsvej", "soundsLike": ["skibi gård vej"], "meaning": "home", "lang": "da", "source": "app", "createdAt": "x", "updatedAt": "y"},
+            {"id": "vl_2"}, {"word": "  "}, 7
+        ]}));
+        assert_eq!(l.vocab.entries.len(), 1);
+        assert_eq!(l.vocab.entries[0].sounds_like, ["skibi gård vej"]);
+        let c = l.vocab.correct("Skibi gaardsvej");
+        assert_eq!(c.text, "Skibigårdsvej", "{c:?}");
+    }
+
+    #[test]
+    fn in_process_corrections_become_the_same_facts_as_the_engines() {
+        let l = Loaded::from_list(&json!([{"word": "Mikkel"}, {"word": "Michel"}, {"word": "Skibigårdsvej", "soundsLike": ["skibi gård vej"]}]));
+        let c = l.vocab.correct("Ciao Mikel, vai a Skibi gaardsvej");
+        let facts = crate::voice::SttFacts::from_corrected(&c);
+        assert_eq!(c.text, "Ciao Mikel, vai a Skibigårdsvej");
+        assert_eq!(facts.corrections.len(), 1);
+        assert_eq!(facts.corrections[0].to, "Skibigårdsvej");
+        assert_eq!(
+            facts.ambiguous_json(),
+            [json!({"heard": "Mikel", "candidates": ["Mikkel", "Michel"]})]
+        );
     }
 }

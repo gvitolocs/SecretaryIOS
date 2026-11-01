@@ -377,6 +377,41 @@ impl SttFacts {
         }
     }
 
+    /// The facts of an in-process correction ([`lucina_vocab::Vocab::correct`]), cleaned and
+    /// bounded like the engine's JSON answer.
+    pub fn from_corrected(c: &lucina_vocab::Corrected) -> Self {
+        let corrections = c
+            .corrections
+            .iter()
+            .map(|(from, to)| Correction {
+                from: clean_word(&serde_json::json!(from)),
+                to: clean_word(&serde_json::json!(to)),
+            })
+            .filter(|c| !c.from.is_empty() && !c.to.is_empty())
+            .take(MAX_CORRECTIONS)
+            .collect();
+        let ambiguous = c
+            .ambiguous
+            .iter()
+            .filter_map(|a| {
+                let heard = clean_word(&serde_json::json!(a.heard));
+                let candidates: Vec<String> = a
+                    .candidates
+                    .iter()
+                    .map(|c| clean_word(&serde_json::json!(c)))
+                    .filter(|c| !c.is_empty())
+                    .take(MAX_CANDIDATES)
+                    .collect();
+                (!heard.is_empty() && !candidates.is_empty()).then_some(Ambiguity { heard, candidates })
+            })
+            .take(MAX_AMBIGUOUS)
+            .collect();
+        Self {
+            corrections,
+            ambiguous,
+        }
+    }
+
     /// `{heard, candidates}` spans as JSON, for `voiceMeta`.
     pub fn ambiguous_json(&self) -> Vec<serde_json::Value> {
         self.ambiguous
@@ -403,7 +438,8 @@ pub struct Heard {
 
 /// Speech to text: the local engine first (`caller`'s credentials, `lang`
 /// passed through), Gemini when that fails (with a "Vocabulary:" line from
-/// Voice Learn, [`crate::voice_learn`]). The text is trimmed; empty means
+/// Voice Learn, [`crate::voice_learn`], and its text post-corrected with the same
+/// vocabulary, so both paths answer text, corrections and ambiguous spans). The text is trimmed; empty means
 /// nobody spoke. The error is the HTTP one (`503 transcription_unavailable`
 /// when Gemini is not set up either).
 pub async fn transcribe(
@@ -430,8 +466,8 @@ pub async fn transcribe(
                 }
             };
             // Only when Gemini can be asked at all: no point fetching the list otherwise.
-            let vocabulary = if crate::calls::gemini_configured() {
-                st.voice_vocab.line(st).await
+            let vocab = if crate::calls::gemini_configured() {
+                st.voice_vocab.load(st).await
             } else {
                 None
             };
@@ -442,13 +478,24 @@ pub async fn transcribe(
                     diarization: false,
                     timeout: TRANSCRIBE_TIMEOUT,
                 },
-                vocabulary.as_deref(),
+                vocab.as_ref().and_then(|v| v.line.as_deref()),
             )
             .await?
             .text;
-            Heard {
-                text,
-                facts: SttFacts::default(),
+            // The local engine corrects with the vocabulary itself; Gemini's text gets the same
+            // post-correction here, so both paths answer {text, corrections, ambiguous}.
+            match vocab.filter(|v| !v.vocab.entries.is_empty() && !text.trim().is_empty()) {
+                Some(v) => {
+                    let fixed = v.vocab.correct(&text);
+                    Heard {
+                        facts: SttFacts::from_corrected(&fixed),
+                        text: fixed.text,
+                    }
+                }
+                None => Heard {
+                    text,
+                    facts: SttFacts::default(),
+                },
             }
         }
     };

@@ -5859,6 +5859,7 @@ dependencies = [
  "ink-obsidian",
  "ink-sync",
  "lucina-agentd",
+ "lucina-vocab",
  "mime",
  "p256",
  "proptest",

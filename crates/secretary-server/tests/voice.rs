@@ -35,6 +35,8 @@ const SECRET: i16 = 4;
 const EMPTY_REPLY: i16 = 5;
 const LONG_REPLY: i16 = 6;
 const ITALIAN_SECRET: i16 = 7;
+const SKIBI: i16 = 8;
+const MIKEL: i16 = 9;
 
 fn transcript(script: i16) -> &'static str {
     match script {
@@ -45,6 +47,8 @@ fn transcript(script: i16) -> &'static str {
         EMPTY_REPLY => "Please say nothing to me today",
         LONG_REPLY => "Tell me a very long story",
         ITALIAN_SECRET => "Leggimi il codice di verifica che è arrivato",
+        SKIBI => "Skibi gaardsvej",
+        MIKEL => "Ciao Mikel",
         _ => "unknown",
     }
 }
@@ -156,6 +160,8 @@ struct Mock {
     learn_gets: Mutex<u32>,
     /// Lucina's Voice Learn list answers 500.
     learn_fails: Mutex<bool>,
+    /// The list also holds Mikkel and Michel (two words close to "Mikel").
+    learn_twins: Mutex<bool>,
 }
 
 /// What the mock local speech-to-text does.
@@ -244,11 +250,15 @@ async fn lucina(
         if *m.learn_fails.lock().unwrap() {
             return (AxumStatus::INTERNAL_SERVER_ERROR, "boom").into_response();
         }
-        return Json(json!({"ok": true, "data": {"entries": [
-            {"id": "vl_1", "word": "Lucina", "updatedAt": "2026-11-01T10:00:00Z"},
-            {"id": "vl_2", "word": "Skibigårdsvej", "soundsLike": ["skibi gård vej"], "updatedAt": "2026-11-01T11:00:00Z"}
-        ]}}))
-        .into_response();
+        let mut entries = vec![
+            json!({"id": "vl_1", "word": "Lucina", "updatedAt": "2026-11-01T10:00:00Z"}),
+            json!({"id": "vl_2", "word": "Skibigårdsvej", "soundsLike": ["skibi gård vej"], "updatedAt": "2026-11-01T11:00:00Z"}),
+        ];
+        if *m.learn_twins.lock().unwrap() {
+            entries.push(json!({"id": "vl_3", "word": "Mikkel", "updatedAt": "2026-11-01T09:00:00Z"}));
+            entries.push(json!({"id": "vl_4", "word": "Michel", "updatedAt": "2026-11-01T08:00:00Z"}));
+        }
+        return Json(json!({"ok": true, "data": {"entries": entries}})).into_response();
     }
     if uri.path() != "/api/secretary/chat" {
         return (AxumStatus::NOT_FOUND, "no").into_response();
@@ -555,14 +565,47 @@ async fn the_gemini_fallback_gets_a_vocabulary_line_cached_for_a_minute() {
 }
 
 #[tokio::test]
+async fn the_gemini_transcript_is_post_corrected_with_the_vocabulary() {
+    let h = harness().await;
+    let r = h.say("", SKIBI).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    // Gemini wrote "Skibi gaardsvej"; Lucina and the device hear the entry's spelling.
+    assert_eq!(header(&r, "x-lucina-transcript"), "Skibigårdsvej");
+    let _ = r.bytes().await.unwrap();
+    assert_eq!(h.gemini.calls(SKIBI, h.nonce).len(), 1);
+    let chats = h.mock.chats.lock().unwrap().clone();
+    assert_eq!(chats[0]["message"], "Skibigårdsvej");
+    // Nothing doubtful: no ambiguous spans in voiceMeta (and the corrections stay here).
+    assert!(chats[0]["voiceMeta"].get("ambiguous").is_none());
+    assert!(chats[0]["voiceMeta"].get("corrections").is_none());
+}
+
+#[tokio::test]
+async fn ambiguous_spans_of_the_gemini_transcript_go_to_lucina_like_the_local_ones() {
+    let h = harness().await;
+    *h.mock.learn_twins.lock().unwrap() = true;
+    let r = h.say("", MIKEL).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(header(&r, "x-lucina-transcript"), "Ciao Mikel", "left as Gemini wrote it");
+    let _ = r.bytes().await.unwrap();
+    let chats = h.mock.chats.lock().unwrap().clone();
+    assert_eq!(chats[0]["message"], "Ciao Mikel");
+    assert_eq!(
+        chats[0]["voiceMeta"]["ambiguous"],
+        json!([{"heard": "Mikel", "candidates": ["Mikkel", "Michel"]}])
+    );
+}
+
+#[tokio::test]
 async fn the_gemini_fallback_fails_open_when_the_vocabulary_is_unavailable() {
     let h = harness().await;
     *h.mock.learn_fails.lock().unwrap() = true;
-    let r = h.say("", HELLO).await;
+    let r = h.say("", SKIBI).await;
     assert_eq!(r.status(), StatusCode::OK);
-    assert_eq!(header(&r, "x-lucina-transcript"), transcript(HELLO));
+    // No vocabulary: no prompt line and the transcript is exactly what Gemini wrote.
+    assert_eq!(header(&r, "x-lucina-transcript"), transcript(SKIBI));
     let _ = r.bytes().await.unwrap();
-    let calls = h.gemini.calls(HELLO, h.nonce);
+    let calls = h.gemini.calls(SKIBI, h.nonce);
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].body["contents"][0]["parts"].as_array().unwrap().len(), 1);
     assert_eq!(*h.mock.learn_gets.lock().unwrap(), 1);

@@ -1515,7 +1515,12 @@ per device. Nothing is stored, here or at Lucina.
 request gets a second part after the audio, `Vocabulary: Skibigårdsvej (sounds like skibi gård
 vej); Lucina` (newest entries first, at most 700 characters), built from the list above. The
 list is fetched with the server's Lucina token, cached for 60 seconds (15 after a failure), and
-fails open: no list, no line, and the turn goes on.
+fails open: no list, no line, and the turn goes on. Gemini's text then gets the same
+post-correction as the local engine's (`lucina-vocab`'s `Vocab::correct` over those cached
+entries): a close mishearing is replaced by the entry's word ("Skibi gaardsvej" →
+"Skibigårdsvej"), and the spans that are close to several entries are left alone and go to
+Lucina in `voiceMeta.ambiguous`, so both paths answer the same `{text, corrections, ambiguous}`
+(also for `/v1/voice/learn/sample`).
 
 ### LucinaVoice device telemetry
 

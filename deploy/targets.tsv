@@ -13,7 +13,7 @@ lucina-com3d2	nezopt	Cargo.toml Cargo.lock deploy/lucina-com3d2 deploy/lucina-co
 secretary-instagram	nezopt	deploy/secretary-instagram crates/secretary-instagram
 secretary-pixiv	nezopt	deploy/secretary-pixiv crates/secretary-pixiv
 lucina-otp-relay	p1	Cargo.toml Cargo.lock deploy/lucina-otp crates/lucina-otp-relay crates/lucina-phone-core
-secretary-server	p1	Cargo.toml Cargo.lock deploy/secretary-server.service crates/ink-library crates/ink-obsidian crates/ink-sync crates/secretary-body crates/secretary-calendar crates/secretary-core crates/secretary-gym crates/secretary-server crates/secretary-tasks
+secretary-server	p1	Cargo.toml Cargo.lock deploy/secretary-server.service crates/ink-library crates/ink-obsidian crates/ink-sync crates/lucina-vocab crates/secretary-body crates/secretary-calendar crates/secretary-core crates/secretary-gym crates/secretary-server crates/secretary-tasks
 secretary-mcp	p1	Cargo.toml Cargo.lock deploy/secretary-mcp.service crates/lucina-agents crates/secretary-core crates/secretary-mcp
 web	p1	web packages/lucina-stage assets/icons
 ios	iphone	ios design crates/secretary-body crates/secretary-core crates/secretary-ffi crates/secretary-gym crates/secretary-image crates/secretary-player

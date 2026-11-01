@@ -62,9 +62,10 @@ pub struct ChatRequest {
     /// answers (`[A-Za-z0-9_-]{1,64}`, see [`crate::validate::timeline_ref`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_to: Option<String>,
-    /// LucinaVoice turns only (secretary-server sets it): the speech-to-text facts of
-    /// the turn for the thread's `meta.voice`: `{turnId, sttMs, corrections?, ambiguous?}`.
-    /// Never audio. A Lucina that does not know the field ignores it.
+    /// LucinaVoice turns only (secretary-server sets it): what the turn tells Lucina besides
+    /// the words, `{turnId, ms: {stt}, ambiguous?: [{heard, candidates}]}`. `turnId` and `ms`
+    /// reach the thread item's `meta.voice`; `ambiguous` feeds Lucina's `vocab` layer. Never
+    /// audio. A Lucina that does not know the field ignores it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voice_meta: Option<Value>,
 }
