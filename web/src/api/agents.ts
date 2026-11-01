@@ -338,6 +338,64 @@ export interface Service {
   path: string;
 }
 
+/** One worktree on the board. `state` is agentd's: open, merge_queued, merging, merged, stale. */
+export interface BoardWorkspace {
+  workspaceId: string;
+  project?: string | null;
+  branch?: string | null;
+  name?: string | null;
+  cwd: string;
+  state: string;
+  ahead?: number | null;
+  behind?: number | null;
+  dirty?: boolean;
+  idleDays?: number | null;
+  /** `lagent top`: what runs inside the worktree right now. */
+  procs?: number;
+  rssMb?: number;
+  commands?: Record<string, number>;
+  task?: { title?: string; session?: string; owner?: string } | null;
+}
+
+export interface BoardJob {
+  jobId: string;
+  kind: "merge" | "deploy";
+  state: "queued" | "running" | "succeeded" | "failed" | "cancelled";
+  repo?: string;
+  branch?: string | null;
+  runtime?: string | null;
+  createdAt: string;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  requestedBy?: string | null;
+  outcome?: { code?: string; message?: string; ok?: boolean } | null;
+}
+
+export interface BoardDevice {
+  device: string;
+  about?: string;
+  lease?: { holder?: string; purpose?: string; until?: string; expiresAt?: string } | null;
+}
+
+export interface BoardDeploy {
+  runtime: string;
+  commit: string;
+  recorded: string;
+  by?: string;
+  note?: string;
+}
+
+/** `GET /v1/agents/pipeline/board`, what `lagent board` prints. */
+export interface PipelineBoard {
+  workspaces?: BoardWorkspace[];
+  queue?: BoardJob[];
+  recentJobs?: BoardJob[];
+  leases?: BoardDevice[];
+  deploys?: BoardDeploy[];
+  mainCheckouts?: { path: string; dirtyFiles?: number; procs?: number }[];
+  unmanaged?: { path: string }[];
+}
+
 /** One body of the shared stream (`GET /v1/agents/stream`). */
 export type BusEvent =
   | { type: "agent_state"; agent: AgentSnapshot }
@@ -426,6 +484,7 @@ export const agentsApi = {
 
   search: (q: string, limit = 20) => request<{ query: string; results: SearchResult[] }>("GET", `${B}/search${qs({ q, limit })}`).then((r) => r.results ?? []),
   schedules: () => request<{ schedules: Schedule[] }>("GET", `${B}/schedules`).then((r) => r.schedules ?? []),
+  pipelineBoard: () => request<PipelineBoard>("GET", `${B}/pipeline/board`),
   scheduleAction: (id: string, action: "pause" | "resume" | "run-once") => request<Schedule>("POST", `${B}/schedules/${enc(id)}/${action}`),
   usage: () => request<UsageReport>("GET", `${B}/usage`),
 

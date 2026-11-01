@@ -2,6 +2,8 @@
 // scripts. One shared SSE (`GET /v1/agents/stream`) keeps them live. It resumes with Last-Event-ID (the browser
 // does it by itself while the connection retries; after a hard failure a new EventSource gets ?lastEventId=),
 // and on `stream.reset` everything is fetched again. `agent_command` frames (for external agents) are ignored.
+// A stream that stays away is checked against the REST routes, which say what the page shows: nothing for a short
+// drop (an agentd restart), a real error when the backend is down, or polling when only the stream is broken.
 
 import { createSignal } from "solid-js";
 import { createStore, produce, reconcile } from "solid-js/store";
@@ -47,6 +49,11 @@ const [loaded, setLoaded] = createSignal(false);
 const [loadError, setLoadError] = createSignal<string | null>(null);
 const [connected, setConnected] = createSignal(false);
 export { loaded as agentsLoaded, loadError as agentsError, connected as agentsConnected };
+
+/** "live": connected, or away for less than `quietMs`. The others last until the stream is back. */
+export type StreamHealth = "live" | "reconnecting" | "polling" | "down";
+const [health, setHealth] = createSignal<StreamHealth>("live");
+export { health as agentsHealth };
 
 /** Phase 5/6 routes: undefined = not probed yet, false = answered 404/405/501. */
 export type FeatureName = "search" | "prompts" | "schedules" | "usage" | "terminals" | "detach";
@@ -264,6 +271,26 @@ let generation = 0;
 let source: EventSource | null = null;
 let lastId = "";
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
+let lostTimer: ReturnType<typeof setTimeout> | undefined;
+let pollTimer: ReturnType<typeof setTimeout> | undefined;
+let retryMs = 0;
+let attemptAt = 0;
+let hiddenAt = 0;
+
+/** Exported so tests can shorten them. */
+export const streamTiming = {
+  /** A restart is back within this, so the page says nothing until then. */
+  quietMs: 5000,
+  /** How often the REST routes are read while the stream is away. */
+  pollMs: 15000,
+  /** The first retry after the server refused a connection, doubled up to `retryMaxMs`. */
+  retryMs: 3000,
+  retryMaxMs: 15000,
+  /** A connection attempt that has not answered in this long is started over. */
+  stuckMs: 30000,
+  /** A page hidden this long (a Mac asleep) may hold a dead connection, so it opens a new one. */
+  wakeMs: 60000,
+};
 
 function parse(data: string): BusEvent | null {
   try {
@@ -279,7 +306,9 @@ function openStream(): void {
   const url = lastId ? `${AGENTS_STREAM_URL}?lastEventId=${encodeURIComponent(lastId)}` : AGENTS_STREAM_URL;
   const es = new EventSource(url, { withCredentials: true });
   source = es;
-  es.onopen = () => setConnected(true);
+  attemptAt = Date.now();
+  if (!connected()) markLost();
+  es.onopen = markLive;
   es.addEventListener("message", (m) => {
     const ev = m as MessageEvent<string>;
     if (ev.lastEventId) lastId = ev.lastEventId;
@@ -299,16 +328,70 @@ function openStream(): void {
   });
   es.onerror = () => {
     setConnected(false);
+    markLost();
+    attemptAt = Date.now();
     // CONNECTING: the browser retries by itself and sends Last-Event-ID. CLOSED: we start over.
     if (es.readyState === 2) {
       es.close();
       if (source === es) source = null;
       clearTimeout(retryTimer);
+      retryMs = retryMs ? Math.min(retryMs * 2, streamTiming.retryMaxMs) : streamTiming.retryMs;
       retryTimer = setTimeout(() => {
         if (users > 0 && !source) openStream();
-      }, 3000);
+      }, retryMs);
     }
   };
+}
+
+function markLive(): void {
+  const wasAway = health() !== "live";
+  clearTimeout(lostTimer);
+  clearTimeout(pollTimer);
+  lostTimer = pollTimer = undefined;
+  retryMs = 0;
+  setConnected(true);
+  setHealth("live");
+  // The replay covers what the stream missed; this clears the error the page was showing.
+  if (wasAway || loadError()) void refreshAll();
+}
+
+function markLost(): void {
+  if (health() === "live" && lostTimer === undefined) lostTimer = setTimeout(() => void checkBackend(), streamTiming.quietMs);
+}
+
+/** The stream has been away for a while: the REST routes tell a broken stream from a backend that is down. */
+async function checkBackend(): Promise<void> {
+  const gen = generation;
+  lostTimer = undefined;
+  if (users === 0 || connected()) return;
+  if (health() === "live") setHealth("reconnecting");
+  await refreshAll();
+  if (gen !== generation || users === 0 || connected()) return;
+  setHealth(loadError() ? "down" : "polling");
+  if (source && source.readyState !== 1 && Date.now() - attemptAt > streamTiming.stuckMs) restartStream();
+  clearTimeout(pollTimer);
+  pollTimer = setTimeout(() => void checkBackend(), streamTiming.pollMs);
+}
+
+function restartStream(): void {
+  source?.close();
+  source = null;
+  clearTimeout(retryTimer);
+  retryMs = 0;
+  setConnected(false);
+  openStream();
+}
+
+/** Back from a hidden page or from offline: don't wait for the next retry, or for a connection that may be dead. */
+function onWake(): void {
+  if (users === 0) return;
+  if (document.visibilityState === "hidden") {
+    hiddenAt = Date.now();
+    return;
+  }
+  const slept = hiddenAt > 0 && Date.now() - hiddenAt > streamTiming.wakeMs;
+  hiddenAt = 0;
+  if (!connected() || slept) restartStream();
 }
 
 /** Keep the stream open while a view needs it (reference counted). Returns the cleanup. */
@@ -317,6 +400,8 @@ export function startAgents(): () => void {
   if (users === 1) {
     void refreshAll();
     openStream();
+    document.addEventListener("visibilitychange", onWake);
+    window.addEventListener("online", onWake);
   }
   let done = false;
   const mine = generation;
@@ -330,9 +415,17 @@ export function startAgents(): () => void {
 
 function stopStream(): void {
   clearTimeout(retryTimer);
+  clearTimeout(lostTimer);
+  clearTimeout(pollTimer);
+  lostTimer = pollTimer = undefined;
+  retryMs = 0;
+  hiddenAt = 0;
+  document.removeEventListener("visibilitychange", onWake);
+  window.removeEventListener("online", onWake);
   source?.close();
   source = null;
   setConnected(false);
+  setHealth("live");
 }
 
 /** Tests: forget everything. */
@@ -355,6 +448,20 @@ export function agentList(archived: boolean): AgentListItem[] {
   return Object.values(state.items)
     .filter((a) => !!a.archivedAt === archived && !a.labels?.["lucina.internal"])
     .sort((a, b) => BUCKET_ORDER[a.bucket] - BUCKET_ORDER[b.bucket] || b.updatedAt.localeCompare(a.updatedAt));
+}
+
+/** What the page says about the connection, or null while there is nothing to say. */
+export function agentsBanner(): { text: string; alert: boolean } | null {
+  switch (health()) {
+    case "reconnecting":
+      return { text: t("agents.reconnecting"), alert: false };
+    case "polling":
+      return { text: t("agents.livePaused"), alert: false };
+    case "down":
+      return { text: t("agents.backendDown"), alert: true };
+    default:
+      return null;
+  }
 }
 
 export function pendingPermissions(): PermissionView[] {

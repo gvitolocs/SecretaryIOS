@@ -4,20 +4,21 @@ import { agentsApi } from "../api/agents";
 import { AgentDetail } from "../components/agents/AgentDetail";
 import { AgentList } from "../components/agents/AgentList";
 import { MapPage } from "../components/agents/MapPage";
+import { PipelinePage } from "../components/agents/PipelinePage";
 import { NewRun, PermissionsPage, SchedulesPage, UsagePage } from "../components/agents/Pages";
 import { BackIcon } from "../components/Icons";
 import { Card, EmptyState, Page, PageGrid, PageHeader, PrimaryAction, SectionNav, useWide } from "../components/page";
 import { t } from "../i18n";
 import { parseAgentsPath, type AgentsRoute } from "../lib/agentsRoute";
-import { agentFeatures, agentList, agentsConnected, agentsLoaded, detect, pendingPermissions, startAgents } from "../state/agents";
+import { agentFeatures, agentList, agentsBanner, agentsLoaded, detect, pendingPermissions, startAgents } from "../state/agents";
 import "../styles/agents.css";
 
 // Lucina Agents at /agents (a Plugins card; owner devices): the coding agents on nezopt (Claude, Codex, OpenCode,
 // Cursor, …) through /v1/agents. Routes: /agents (list), /agents/new, /agents/<id>[/changes|/files|/terminal|/scripts],
-// /agents/permissions[/<id>], /agents/schedules, /agents/usage, /agents/map[/<componentId>] (the Homelab service map). Wide screens show the list beside the page; a
+// /agents/permissions[/<id>], /agents/schedules, /agents/usage, /agents/pipeline, /agents/map[/<componentId>] (the Homelab service map). Wide screens show the list beside the page; a
 // phone shows one of them (list -> detail). The stream, caches and actions live in state/agents.ts.
 
-type AgentsSection = "runs" | "permissions" | "schedules" | "usage" | "map";
+type AgentsSection = "runs" | "permissions" | "schedules" | "usage" | "pipeline" | "map";
 
 function sectionOf(route: AgentsRoute): AgentsSection {
   switch (route.page) {
@@ -27,6 +28,8 @@ function sectionOf(route: AgentsRoute): AgentsSection {
       return "schedules";
     case "usage":
       return "usage";
+    case "pipeline":
+      return "pipeline";
     case "map":
       return "map";
     default:
@@ -46,6 +49,7 @@ function AgentsSectionNav(props: { section: AgentsSection; pending: number }) {
           ? [{ href: "/agents/schedules", label: t("agents.schedules"), current: props.section === "schedules" }]
           : []),
         { href: "/agents/usage", label: t("agents.usage"), current: props.section === "usage" },
+        { href: "/agents/pipeline", label: t("agents.pipeline"), current: props.section === "pipeline" },
         { href: "/agents/map", label: t("agents.map"), current: props.section === "map" },
       ]}
     />
@@ -61,7 +65,8 @@ function headerContext(): JSX.Element | undefined {
     if (running) parts.push(t("agents.headerRunning", { n: running }));
     if (needs) parts.push(t("agents.headerNeeds", { n: needs }));
   }
-  if (agentsLoaded() && !agentsConnected()) parts.push(t("agents.reconnecting"));
+  const banner = agentsBanner();
+  if (banner) parts.push(banner.text);
   return parts.length ? parts.join(" · ") : undefined;
 }
 
@@ -113,6 +118,11 @@ function SectionBody(props: { route: AgentsRoute; permissionId?: string; mapId?:
           <UsagePage />
         </Card>
       </Match>
+      <Match when={r().page === "pipeline"}>
+        <Card class="ag-desk-page">
+          <PipelinePage />
+        </Card>
+      </Match>
       <Match when={r().page === "map"}>
         <Card class="ag-desk-page ag-desk-map">
           <MapPage componentId={props.mapId} />
@@ -158,10 +168,12 @@ export default function AgentsView() {
           </A>
           <div class="ag-side__title">
             <h1 id="agents-title">{t("agents.title")}</h1>
-            <Show when={agentsLoaded() && !agentsConnected()}>
-              <span class="ag-muted" role="status">
-                {t("agents.reconnecting")}
-              </span>
+            <Show when={agentsBanner()}>
+              {(banner) => (
+                <span class="ag-muted" role={banner().alert ? "alert" : "status"}>
+                  {banner().text}
+                </span>
+              )}
             </Show>
           </div>
           <nav class="ag-nav" aria-label={t("agents.sections")}>
@@ -183,6 +195,9 @@ export default function AgentsView() {
             </Show>
             <A href="/agents/usage" class="ag-btn" aria-current={route().page === "usage" ? "page" : undefined}>
               {t("agents.usage")}
+            </A>
+            <A href="/agents/pipeline" class="ag-btn" aria-current={route().page === "pipeline" ? "page" : undefined}>
+              {t("agents.pipeline")}
             </A>
             <A href="/agents/map" class="ag-btn" aria-current={route().page === "map" ? "page" : undefined}>
               {t("agents.map")}
@@ -211,6 +226,11 @@ export default function AgentsView() {
           <Match when={route().page === "usage"}>
             <PageFrame>
               <UsagePage />
+            </PageFrame>
+          </Match>
+          <Match when={route().page === "pipeline"}>
+            <PageFrame>
+              <PipelinePage />
             </PageFrame>
           </Match>
           <Match when={route().page === "map"}>

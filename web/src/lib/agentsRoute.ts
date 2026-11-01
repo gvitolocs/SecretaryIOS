@@ -1,4 +1,4 @@
-// Agents' URLs: /agents (the list), /agents/new, /agents/permissions[/<id>], /agents/schedules, /agents/usage,
+// Agents' URLs: /agents (the list), /agents/new, /agents/permissions[/<id>], /agents/schedules, /agents/usage, /agents/pipeline,
 // /agents/map[/<componentId>] (the Homelab service map; a catalog flip push opens a component),
 // and /agents/<agentId>[/changes|/files|/terminal|/scripts]. A push for an external permission opens
 // /agents/permissions/<id>; one for an agent opens /agents/<agentId> (see lucina-agentd's notify routes).
@@ -12,6 +12,7 @@ export type AgentsRoute =
   | { page: "permissions"; id?: string }
   | { page: "schedules" }
   | { page: "usage" }
+  | { page: "pipeline" }
   | { page: "map"; id?: string }
   | { page: "agent"; id: string; tab: AgentTab };
 
@@ -30,6 +31,7 @@ export function parseAgentsPath(pathname: string): AgentsRoute {
   if (a === "new") return { page: "new" };
   if (a === "schedules") return { page: "schedules" };
   if (a === "usage") return { page: "usage" };
+  if (a === "pipeline") return { page: "pipeline" };
   if (a === "map") return b ? { page: "map", id: b } : { page: "map" };
   if (a === "permissions") return b ? { page: "permissions", id: b } : { page: "permissions" };
   const tab = AGENT_TABS.find((t) => t === b) ?? "chat";

@@ -452,8 +452,12 @@ async fn terminals_scripts_and_services_through_the_server() {
     let stream = h.req(Method::GET, &format!("/v1/agents/terminals/{tid}/stream"), Some(&h.phone)).send().await.unwrap();
     assert!(stream.headers()["content-type"].to_str().unwrap().starts_with("text/event-stream"));
     let mut body = stream.bytes_stream();
-    let first = tokio::time::timeout(Duration::from_secs(5), body.next()).await.unwrap().unwrap().unwrap();
-    assert!(String::from_utf8_lossy(&first).contains("event: snapshot"));
+    let mut first = String::new();
+    while !first.contains("event: snapshot") {
+        let c = tokio::time::timeout(Duration::from_secs(5), body.next()).await.unwrap().unwrap().unwrap();
+        first.push_str(&String::from_utf8_lossy(&c));
+    }
+    assert!(first.starts_with(": connected\n\n"), "{first}");
     let (s, _) = h.call(Method::POST, &format!("/v1/agents/terminals/{tid}/input"), &h.phone, Some(json!({"keys": ["echo through-p1", "Enter"]}))).await;
     assert_eq!(s, 200);
     let mut seen = String::new();

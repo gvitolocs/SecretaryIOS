@@ -1,7 +1,7 @@
 import { Route } from "@solidjs/router";
 import { fireEvent, screen, waitFor, within } from "@solidjs/testing-library";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { agentsState, resetAgentsState } from "../state/agents";
+import { agentsState, resetAgentsState, streamTiming } from "../state/agents";
 import { installEventSource, type MockEventSource } from "../test/eventsource";
 import { item, permission, row, serveAgents, snapshot, workspace, type Fake } from "../test/agentsFixtures";
 import { renderAt } from "../test/router";
@@ -152,6 +152,164 @@ describe("the shared stream", () => {
     const es = ES.latest();
     view.unmount();
     expect(es.closed).toBe(true);
+  });
+});
+
+describe("what the page says about the connection", () => {
+  const timing = { ...streamTiming };
+  const REST_DOWN = { status: 503, body: { error: { code: "agentd_unavailable", message: "lucina-agentd is not running" } } };
+  const agentsRest = (url: string) => /\/v1\/agents\/(items|permissions|workspaces)/.test(url);
+
+  afterEach(() => void Object.assign(streamTiming, timing));
+
+  it("says nothing while the stream is still connecting", async () => {
+    serveAgents({ items: [AGENTS[2]!], absent: ["/search", "/schedules"] });
+    renderAgents();
+    await screen.findByText("Old chore");
+    expect(screen.queryByText("Reconnecting…")).not.toBeInTheDocument();
+    stream();
+    expect(screen.queryByText("Reconnecting…")).not.toBeInTheDocument();
+  });
+
+  it("says nothing about a short drop, like an agentd restart", async () => {
+    streamTiming.quietMs = 60;
+    serveAgents({ items: [AGENTS[2]!], absent: ["/search", "/schedules"] });
+    renderAgents();
+    await screen.findByText("Old chore");
+    const { es } = stream();
+    es.drop();
+    expect(screen.queryByRole("status", { name: /Reconnecting/ })).not.toBeInTheDocument();
+    es.open();
+    await new Promise((r) => setTimeout(r, 120));
+    expect(screen.queryByText("Reconnecting…")).not.toBeInTheDocument();
+    expect(screen.queryByText("Live updates are paused. Refreshing every 15 seconds.")).not.toBeInTheDocument();
+  });
+
+  it("shows the real error when the backend is down, and clears it by itself", async () => {
+    Object.assign(streamTiming, { quietMs: 10, pollMs: 20, retryMs: 20 });
+    let down = false;
+    serveAgents({ items: [AGENTS[2]!], absent: ["/search", "/schedules"], extra: (call) => (down && agentsRest(call.url) ? REST_DOWN : undefined) });
+    renderAgents();
+    await screen.findByText("Old chore");
+    const { es } = stream();
+    down = true;
+    es.fail();
+    expect(await screen.findByText("Lucina Agents isn't answering. Trying again…")).toHaveAttribute("role", "alert");
+    expect(await screen.findByText("lucina-agentd is not running")).toBeInTheDocument();
+    // What was on the list stays there, and "no agents yet" never appears.
+    expect(screen.getByText("Old chore")).toBeInTheDocument();
+    expect(screen.queryByText("No agents yet. Start a new run.")).not.toBeInTheDocument();
+    // The daemon is back: the next retry connects and the page is clean again.
+    down = false;
+    await waitFor(() => expect(ES.instances.length).toBeGreaterThan(1));
+    ES.latest().open();
+    await waitFor(() => expect(screen.queryByText("Lucina Agents isn't answering. Trying again…")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText("lucina-agentd is not running")).not.toBeInTheDocument());
+  });
+
+  it("polls instead of saying reconnecting while requests work and only the stream doesn't", async () => {
+    Object.assign(streamTiming, { quietMs: 10, pollMs: 20 });
+    const calls = serveAgents({ items: [AGENTS[2]!], absent: ["/search", "/schedules"] });
+    renderAgents();
+    await screen.findByText("Old chore");
+    const { es } = stream();
+    es.drop();
+    expect(await screen.findByText("Live updates are paused. Refreshing every 15 seconds.")).toHaveAttribute("role", "status");
+    expect(screen.queryByText("Reconnecting…")).not.toBeInTheDocument();
+    const before = calls.filter((c) => c.url === "/v1/agents/items").length;
+    await waitFor(() => expect(calls.filter((c) => c.url === "/v1/agents/items").length).toBeGreaterThan(before));
+    es.open();
+    await waitFor(() => expect(screen.queryByText("Live updates are paused. Refreshing every 15 seconds.")).not.toBeInTheDocument());
+  });
+
+  it("starts over a connection attempt that never answers", async () => {
+    Object.assign(streamTiming, { quietMs: 10, pollMs: 20, stuckMs: 30 });
+    serveAgents({ items: [AGENTS[2]!], absent: ["/search", "/schedules"] });
+    renderAgents();
+    await screen.findByText("Old chore");
+    const first = ES.latest();
+    await waitFor(() => expect(ES.instances.length).toBeGreaterThan(1));
+    expect(first.closed).toBe(true);
+  });
+
+  it("opens a new stream right away when the page comes back after a long time hidden", async () => {
+    streamTiming.wakeMs = 0;
+    serveAgents({ items: [AGENTS[2]!], absent: ["/search", "/schedules"] });
+    renderAgents();
+    await screen.findByText("Old chore");
+    const { es } = stream();
+    const visibility = Object.getOwnPropertyDescriptor(document, "visibilityState");
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    document.dispatchEvent(new Event("visibilitychange"));
+    await new Promise((r) => setTimeout(r, 5));
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" });
+    document.dispatchEvent(new Event("visibilitychange"));
+    if (visibility) Object.defineProperty(document, "visibilityState", visibility);
+    else delete (document as unknown as { visibilityState?: string }).visibilityState;
+    expect(es.closed).toBe(true);
+    expect(ES.instances).toHaveLength(2);
+  });
+});
+
+describe("pipeline", () => {
+  const BOARD = {
+    workspaces: [
+      { workspaceId: "wks_1", project: "SecretaryIOS", branch: "old-idea", cwd: "/w/old-idea", state: "stale", ahead: 3, dirty: false, idleDays: 9, procs: 0, rssMb: 0, commands: {}, task: { title: "old-idea" } },
+      { workspaceId: "wks_2", project: "LucinaAndroidOS", branch: "net-dhcp", cwd: "/w/net-dhcp", state: "merging", ahead: 2, dirty: false, idleDays: 0, procs: 5, rssMb: 33, commands: { bash: 3, docker: 1 }, task: { title: "DHCP on the stick", session: "local_ff6cd29a-3fc2-4afe" } },
+      { workspaceId: "wks_3", project: "SecretaryIOS", branch: "pipeline-page", cwd: "/w/pipeline-page", state: "open", ahead: 1, dirty: true, idleDays: 0, procs: 0, rssMb: 0, commands: {}, task: null },
+    ],
+    queue: [
+      { jobId: "job_1", kind: "merge", state: "running", repo: "/p/LucinaAndroidOS", branch: "net-dhcp", createdAt: "2026-11-01T15:00:00Z", startedAt: "2026-11-01T15:00:01Z", requestedBy: "nez@nez_opt" },
+      { jobId: "job_2", kind: "deploy", state: "queued", repo: "/p/SecretaryIOS", runtime: "secretary-server", createdAt: "2026-11-01T15:01:00Z" },
+    ],
+    recentJobs: [
+      { jobId: "job_0", kind: "merge", state: "failed", repo: "/p/SecretaryIOS", branch: "broken", createdAt: "2026-11-01T14:00:00Z", finishedAt: "2026-11-01T14:01:00Z", outcome: { code: "GATE_FAILED", ok: false } },
+    ],
+    leases: [
+      { device: "iphone", lease: { holder: "nez@nez_opt", purpose: "owner test", expiresAt: "2026-11-01T16:00:00Z" } },
+      { device: "stick", lease: null },
+    ],
+    deploys: [{ runtime: "web", commit: "f74841ed19b627ec", recorded: "2026-11-01T14:53:07Z", note: "the calendar" }],
+    mainCheckouts: [],
+    unmanaged: [{ path: "/w/hand-made" }],
+  };
+
+  it("shows workspaces by state, running jobs, load, leases and deploys", async () => {
+    const calls = serveAgents({ absent: ["/search", "/schedules"], extra: (c) => (c.url === "/v1/agents/pipeline/board" ? { body: BOARD } : undefined) });
+    renderAgents("/agents/pipeline");
+    const jobs = await screen.findByRole("list", { name: "Merges and deploys" });
+    expect(within(jobs).getByText("Merge: net-dhcp")).toBeInTheDocument();
+    expect(within(jobs).getByText("Deploy: secretary-server")).toBeInTheDocument();
+    expect(within(jobs).getByText("Queued")).toBeInTheDocument();
+    // Moving work first, stale last.
+    const heads = screen.getAllByRole("heading", { level: 4 }).map((h) => h.textContent);
+    expect(heads).toEqual(["Merging (1)", "Open (1)", "Stale (1)"]);
+    const merging = screen.getByRole("list", { name: "Merging" });
+    expect(within(merging).getByText("DHCP on the stick")).toBeInTheDocument();
+    expect(within(merging).getByText(/LucinaAndroidOS · net-dhcp · \+2/)).toBeInTheDocument();
+    expect(within(merging).getByText(/local_ff6cd29a…/)).toHaveTextContent("5 processes · 33 MB · bash×3 docker×1");
+    const open = screen.getByRole("list", { name: "Open" });
+    expect(within(open).getByText(/\+1 · uncommitted changes/)).toBeInTheDocument();
+    expect(within(open).getByText("no session")).toBeInTheDocument();
+    expect(within(screen.getByRole("list", { name: "Stale" })).getByText(/idle 9 d/)).toBeInTheDocument();
+    expect(within(screen.getByRole("list", { name: "Recent jobs" })).getByText(/GATE_FAILED/)).toBeInTheDocument();
+    expect(within(screen.getByRole("list", { name: "Devices in use" })).getByText("iphone")).toBeInTheDocument();
+    expect(within(screen.getByRole("list", { name: "Devices in use" })).queryByText("stick")).not.toBeInTheDocument();
+    expect(screen.getByText("web f74841ed")).toBeInTheDocument();
+    expect(screen.getByText("1 worktrees are not registered")).toBeInTheDocument();
+    expect(calls.filter((c) => c.method !== "GET")).toEqual([]);
+  });
+
+  it("says when the server has no pipeline route", async () => {
+    serveAgents({ absent: ["/search", "/schedules", "/pipeline"] });
+    renderAgents("/agents/pipeline");
+    expect(await screen.findByText("Not available on this server yet.")).toBeInTheDocument();
+  });
+
+  it("shows why the board can't be read", async () => {
+    serveAgents({ absent: ["/search", "/schedules"], extra: (c) => (c.url === "/v1/agents/pipeline/board" ? { status: 503, body: { error: { code: "agentd_unavailable", message: "lucina-agentd is not running" } } } : undefined) });
+    renderAgents("/agents/pipeline");
+    expect(await screen.findByText("Couldn't read the pipeline: lucina-agentd is not running")).toHaveAttribute("role", "alert");
   });
 });
 
