@@ -73,7 +73,8 @@ impl Exec {
     fn open(dir: &Path, spec: Spec) -> Result<Self, String> {
         let log = OpenOptions::new().create(true).append(true).open(dir.join("log")).map_err(|e| format!("log: {e}"))?;
         let home = std::env::var("HOME").unwrap_or_default();
-        let path = format!("{home}/.cargo/bin:{home}/.local/bin:{home}/bin:{}", std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into()));
+        // The same tools as a login shell: tests call mkfs.fat and friends, which live in sbin.
+        let path = format!("{home}/.cargo/bin:{home}/.local/bin:{home}/bin:{}:/usr/sbin:/sbin", std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into()));
         Ok(Exec { spec, log, path })
     }
 
@@ -586,6 +587,14 @@ mod tests {
         assert!(out.gates[0].flaky);
         assert!(out.message.contains("flaky, passed on retry: t"), "{}", out.message);
         assert_eq!(git(&origin, &["rev-parse", "main"]).len(), 40);
+    }
+
+    #[test]
+    fn gates_find_sbin_tools() {
+        let root = tempfile::tempdir().unwrap();
+        let x = Exec::open(root.path(), spec(root.path(), root.path(), "b", "abc")).unwrap();
+        assert!(x.path.split(':').any(|d| d == "/usr/sbin"), "{}", x.path);
+        assert!(x.path.split(':').any(|d| d == "/sbin"), "{}", x.path);
     }
 
     #[test]

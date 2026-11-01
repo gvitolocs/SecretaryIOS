@@ -20,7 +20,7 @@ KillMode=mixed
 # The drop-in runs it through infisical-broker exec; journal lines keep this name.
 SyslogIdentifier=lucina-agentd
 Environment=RUST_LOG=info
-Environment=PATH=%h/.local/bin:%h/.opencode/bin:%h/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=%h/.local/bin:%h/.opencode/bin:%h/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 
 [Install]
 WantedBy=default.target
