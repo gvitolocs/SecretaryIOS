@@ -452,11 +452,29 @@ struct BackupSettingsView: View {
                     }
                 }
             }
+            if backup.settings.enabled {
+                Section {
+                    LabeledContent("While Secretary is closed", value: backgroundText)
+                } footer: {
+                    Text("iOS uploads new photos by itself, without opening Secretary.")
+                }
+            }
         }
         .lucinaList()
         .navigationTitle("Photo backup")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+    }
+
+    private var backgroundText: String {
+        switch backup.backgroundUploads {
+        case .on: String(localized: "On")
+        case .off: String(localized: "Off")
+        case .unavailable: String(localized: "Needs iOS 27")
+        case .needsFullAccess: String(localized: "Needs access to all photos")
+        case .chargingOnly: String(localized: "Off while “Only while charging” is on")
+        case .failed(let message): message
+        }
     }
 }
 
