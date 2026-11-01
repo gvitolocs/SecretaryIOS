@@ -116,7 +116,7 @@ falls back to `origin/main`. `LUCINA_WEB_REF` still overrides it.
 
 With a recipe in `.lucina/pipeline.toml`: `lagent deploy <runtime> --note "<what>"` does all of the below in
 `~/Projects/.worktrees/SecretaryIOS/.deploy`. Without one, by hand, from a clean detached checkout of main's tip
-(`git worktree add --detach` is fine here: a deploy tree is not a task; give the command `LAGENT_BYPASS=deploy-tree`):
+(`git worktree add --detach <dir> origin/main`: a detached deploy tree is not a task, and the hook lets it through):
 
 ```sh
 cd <worktree at origin/main>          # detached at origin/main
