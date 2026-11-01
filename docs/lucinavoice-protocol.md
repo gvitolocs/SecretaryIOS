@@ -57,3 +57,46 @@ The device connects at boot once Wi-Fi is up and it is paired, and reconnects wi
 answers pings and pings the server every 30 s. Press: an earcon right away, `start`, then streaming mic frames
 (about 32 ms each). Release: `end` and a short "ack" blip. It plays audio frames as they arrive. The LED pulses while
 waiting.
+
+## 4. Telemetry over the link (device → server text frames)
+
+The device never logs audio content, Wi-Fi passwords or tokens. Times are the device's uptime in ms (`t`); each frame
+carries `now` (the uptime when it was sent), so the server places events in wall time as
+`received_at − (now − t)`. The device sends telemetry only on the open link: after `hello`, piggybacked after a turn,
+and otherwise every 5 minutes (the radio is on anyway with power save off, so no extra wake-ups). Events wait in a
+RAM ring buffer (64 events, oldest dropped and counted) while the link is down.
+
+- `{"type":"hello","now":…,"specs":{…},"boot":{"reset":"<reason>","seq":<boot counter>}}`: the first frame on every
+  connection.
+  - `specs`: `chip` ("esp32"), `rev` ("v3.1"), `cores`, `cpu_mhz`, `flash_bytes`, `psram_bytes` (0), `fw`
+    (version), `commit` (git short sha or "unknown"), `mac` (last two bytes, "da:b8"), `heap_total`,
+    `ina` ("ina219" | "ina226" | null), `temp_sensor` (false on the classic ESP32).
+- `{"type":"telemetry","now":…,"dropped":<n>,"events":[…]}`: up to 32 events, each `{"t":…,"k":"<kind>",…}`. Kinds:
+  - `boot` `{reset, seq}`;
+  - `wifi` `{up, rssi?, reason?}`;
+  - `link` `{up, ms?, err?}` (`ms`: connect plus upgrade time);
+  - `turn` `{ok, err?, mode:"link"|"http", speech_ms, first_audio_ms?, total_ms, up_bytes, down_bytes, server_ms?:{…}}`,
+    where `first_audio_ms` is measured on the device from end of speech, and `server_ms` is the `done.ms` object as
+    received;
+  - `stats` `{uptime_ms, heap_free, heap_min_free, rssi?, up_bytes, down_bytes, tx_air_ms, cpu_mhz, temp_c?,
+    power:{est_mw, rail_mv?, rail_ma?, energy_mwh}}`: totals since boot;
+  - `error` `{what, detail?}`.
+
+Power estimate: `est_mw` comes from a duty-cycle model of the ESP32-WROOM-32 at 3.3 V: CPU at 240 MHz with the radio
+listening about 100 mA, Wi-Fi TX bursts about +140 mA for the estimated airtime, the I2S amp and mic while active.
+When an INA219 or INA226 answers at I2C address 0x40 (SDA GPIO21, SCL GPIO18, 0.1 Ω shunt on the 5 V input),
+`rail_mv`/`rail_ma` are measured and `est_mw` is their product.
+
+## 5. Device telemetry API (secretary-server, device or owner auth)
+
+The server stores what the device sends, plus its own per-turn spans, in `SECRETARY_DATA_DIR/voice/<device id>/`
+(`events.jsonl`, rotated at 2 MiB, keeping 2 files; `status.json`).
+
+- `GET /v1/voice/devices`: `[{id, name, online, last_seen, fw, rssi?, est_mw?}]`.
+- `GET /v1/voice/devices/{id}/status`:
+  `{id, name, online, connected_since?, last_seen, specs, live:{…last stats…}, network:{today_up_bytes, today_down_bytes, total_up_bytes, total_down_bytes}, power:{est_mw, measured, energy_mwh_today}, turns:[last 20 {at, ok, err?, transcript_chars, speech_ms, spans:{stt, lucina_first, tts_first, first_audio, total}, device_first_audio_ms?, up_bytes, down_bytes}]}`.
+  The last turns combine the server's spans with the device's `turn` event.
+- `GET /v1/voice/devices/{id}/events?since=<rfc3339>&kind=<k>&limit=<≤500>`: newest first,
+  `{events:[{at, k, …}], next?}`.
+
+Both device routes accept the device's own token (a device sees only itself) or the owner's session.
