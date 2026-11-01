@@ -302,6 +302,24 @@ impl LlmError {
 #[async_trait::async_trait]
 pub trait ChatModel: Send + Sync {
     async fn complete(&self, request: ChatRequest) -> Result<ChatResponse, LlmError>;
+
+    /// Like [`complete`](Self::complete), but `on_delta` gets the reply text as the model writes it, for a
+    /// listener that speaks the first sentence before the rest exists (the voice stream of
+    /// `POST /api/secretary/chat`). The default has nothing to stream: it completes, then hands the whole
+    /// text over as one delta, so scripted and wrapped models keep working. The returned response is the
+    /// same as `complete` would give.
+    async fn complete_streaming(
+        &self,
+        request: ChatRequest,
+        on_delta: &mut (dyn for<'s> FnMut(&'s str) + Send),
+    ) -> Result<ChatResponse, LlmError> {
+        let response = self.complete(request).await?;
+        let text = response.message.text();
+        if !text.is_empty() {
+            on_delta(text);
+        }
+        Ok(response)
+    }
 }
 
 // ---------------------------------------------------------------- client
@@ -718,6 +736,14 @@ impl DeepSeek {
 impl ChatModel for DeepSeek {
     async fn complete(&self, request: ChatRequest) -> Result<ChatResponse, LlmError> {
         self.chat(request).await
+    }
+
+    async fn complete_streaming(
+        &self,
+        request: ChatRequest,
+        on_delta: &mut (dyn for<'s> FnMut(&'s str) + Send),
+    ) -> Result<ChatResponse, LlmError> {
+        self.stream(request, |d| on_delta(d)).await
     }
 }
 

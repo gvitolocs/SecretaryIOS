@@ -2027,6 +2027,7 @@ async function route(req, res) {
   if (await (await import("./agents.mjs")).handleAgents(req, res, { path, method, url, send, fail, readJson })) return;
   if (await (await import("./systemHealth.mjs")).handleSystemHealth(req, res, { path, method, send })) return;
   if (await (await import("./systemOverview.mjs")).handleSystemOverview(req, res, { path, method, send })) return;
+  if (await (await import("./voice.mjs")).handleVoice(req, res, { path, method, url, send, fail })) return;
 
   if (mockServerDown && (path.startsWith("/v1/gym/") || path.startsWith("/v1/body/"))) {
     res.writeHead(502, { "Cache-Control": "no-store" });

@@ -430,9 +430,10 @@ async fn a_chunked_pcm_turn_returns_the_spoken_reply() {
     assert_eq!(r.headers()["content-type"], "audio/x-s16le;rate=24000");
     assert_eq!(r.headers()["x-tts-voice"], "if_sara");
     assert_eq!(header(&r, "x-lucina-transcript"), transcript(HELLO));
-    assert_eq!(header(&r, "x-lucina-reply"), "Sto bene, grazie! E tu?");
-    // One Kokoro request for the one sentence-sized text; its PCM, unchanged.
-    assert_eq!(r.bytes().await.unwrap().as_ref(), KOKORO_PCM);
+    // The reply is not known when the headers go out: no X-Lucina-Reply.
+    assert!(!r.headers().contains_key("x-lucina-reply"));
+    // One Kokoro request per sentence, in order; their PCM, back to back.
+    assert_eq!(r.bytes().await.unwrap().as_ref(), KOKORO_PCM.repeat(2));
 
     // Gemini: the PCM was wrapped into a WAV, plain transcript, the key.
     let calls = h.gemini.calls(HELLO, h.nonce);
@@ -460,18 +461,22 @@ async fn a_chunked_pcm_turn_returns_the_spoken_reply() {
     assert_eq!(chat["channel"], "web");
     assert_eq!(chat["device"], h.device_id.as_str());
     assert_eq!(chat["deviceName"], "Speaker");
+    // A streaming, spoken-style turn.
+    assert_eq!(chat["voice"], true);
     let id = chat["clientMessageId"].as_str().unwrap();
     assert!(
         id.starts_with("voice-") && id.split('-').count() == 3,
         "{id}"
     );
 
-    // Kokoro: raw PCM, Italian voice, the reply text.
+    // Kokoro: raw PCM, Italian voice, one sentence per request.
     let speech = h.mock.speech.lock().unwrap().clone();
-    assert_eq!(speech.len(), 1);
-    assert_eq!(speech[0]["response_format"], "pcm");
-    assert_eq!(speech[0]["voice"], "if_sara");
-    assert_eq!(speech[0]["input"], "Sto bene, grazie! E tu?");
+    assert_eq!(speech.len(), 2);
+    assert!(speech
+        .iter()
+        .all(|s| s["response_format"] == "pcm" && s["voice"] == "if_sara"));
+    assert_eq!(speech[0]["input"], "Sto bene, grazie!");
+    assert_eq!(speech[1]["input"], "E tu?");
 }
 
 #[tokio::test]
@@ -485,8 +490,7 @@ async fn a_wav_body_is_accepted_and_sent_as_is() {
         .unwrap();
     assert_eq!(r.status(), StatusCode::OK);
     assert_eq!(header(&r, "x-lucina-transcript"), transcript(ENGLISH));
-    // Markdown marks are not read aloud (nor shown), and the voice is English.
-    assert_eq!(header(&r, "x-lucina-reply"), "It is noon, sir.");
+    // Markdown marks are not read aloud, and the voice is English.
     assert_eq!(r.headers()["x-tts-voice"], "af_heart");
     assert_eq!(r.bytes().await.unwrap().as_ref(), KOKORO_PCM);
     let calls = h.gemini.calls(ENGLISH, h.nonce);
@@ -565,19 +569,13 @@ async fn a_sensitive_reply_is_replaced_by_a_fixed_phrase() {
     let r = h.say("", SECRET).await;
     assert_eq!(r.status(), StatusCode::OK);
     assert_eq!(r.headers()["x-tts-voice"], "af_heart");
-    let reply = header(&r, "x-lucina-reply");
-    assert_eq!(reply, "I'll answer that in the app.");
-    assert!(!r.headers()["x-lucina-reply"]
-        .to_str()
-        .unwrap()
-        .contains("482913"));
     assert_eq!(r.bytes().await.unwrap().as_ref(), KOKORO_PCM);
     // Italian transcript, and `lang=it` for an English one.
     let r = h.say("", ITALIAN_SECRET).await;
-    assert_eq!(header(&r, "x-lucina-reply"), "Ti rispondo nell'app.");
     assert_eq!(r.headers()["x-tts-voice"], "if_sara");
+    let _ = r.bytes().await.unwrap();
     let r = h.say("?lang=it", SECRET).await;
-    assert_eq!(header(&r, "x-lucina-reply"), "Ti rispondo nell'app.");
+    let _ = r.bytes().await.unwrap();
 
     let spoken: Vec<String> = h
         .mock
@@ -603,26 +601,33 @@ async fn an_empty_reply_gets_a_short_fallback() {
     let h = harness().await;
     let r = h.say("", EMPTY_REPLY).await;
     assert_eq!(r.status(), StatusCode::OK);
-    assert_eq!(
-        header(&r, "x-lucina-reply"),
-        "Sorry, I don't have an answer."
-    );
+    let _ = r.bytes().await.unwrap();
     let r = h.say("?lang=it", EMPTY_REPLY).await;
-    assert_eq!(header(&r, "x-lucina-reply"), "Scusa, non ho una risposta.");
+    let _ = r.bytes().await.unwrap();
+    let spoken: Vec<String> = h
+        .mock
+        .speech
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|s| s["input"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        spoken,
+        [
+            "Sorry, I don't have an answer.",
+            "Scusa, non ho una risposta."
+        ]
+    );
 }
 
 #[tokio::test]
-async fn long_replies_are_cut_for_speech_and_headers() {
+async fn long_replies_are_cut_for_speech() {
     let h = harness().await;
     let r = h.say("", LONG_REPLY).await;
     assert_eq!(r.status(), StatusCode::OK);
-    // The header is at most 1000 bytes of UTF-8 before encoding.
-    let reply = header(&r, "x-lucina-reply");
-    assert!(reply.len() <= 1000 && reply.len() > 900, "{}", reply.len());
-    assert!(reply.starts_with("È una lunga storia"));
-    // Kokoro gets chunks of at most 300 characters, 1200 in all, so a
-    // multi-chunk reply is several upstream requests, made as the stream is
-    // read and streamed back to back.
+    // Kokoro gets one sentence per request, 1200 characters in all at most,
+    // made as the stream is read and streamed back to back.
     let body = r.bytes().await.unwrap();
     let speech = h.mock.speech.lock().unwrap().clone();
     assert!(speech.len() >= 4, "{}", speech.len());
@@ -630,8 +635,10 @@ async fn long_replies_are_cut_for_speech_and_headers() {
         .iter()
         .map(|s| s["input"].as_str().unwrap().chars().count())
         .sum();
-    assert!(total <= 1200, "{total}");
-    assert!(speech.iter().all(|s| s["response_format"] == "pcm"));
+    assert!(total <= 1200 && total > 1100, "{total}");
+    assert!(speech
+        .iter()
+        .all(|s| s["response_format"] == "pcm" && s["input"].as_str().unwrap().ends_with('.')));
     assert_eq!(body.as_ref(), KOKORO_PCM.repeat(speech.len()));
 }
 
@@ -762,7 +769,7 @@ async fn local_stt_is_used_first_with_the_callers_bearer() {
         .unwrap();
     assert_eq!(r.status(), StatusCode::OK);
     assert_eq!(header(&r, "x-lucina-transcript"), transcript(HELLO));
-    assert_eq!(r.bytes().await.unwrap().as_ref(), KOKORO_PCM);
+    assert_eq!(r.bytes().await.unwrap().as_ref(), KOKORO_PCM.repeat(2));
 
     let calls = h.mock.stt_calls.lock().unwrap().clone();
     assert_eq!(calls.len(), 1);

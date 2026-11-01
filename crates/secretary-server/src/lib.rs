@@ -52,6 +52,11 @@ pub mod todoist;
 pub mod tts;
 pub mod upstream;
 pub mod voice;
+pub mod voice_pipe;
+pub mod voice_split;
+pub mod voice_telemetry;
+pub mod voice_vad;
+pub mod voice_ws;
 pub mod web;
 
 use std::net::SocketAddr;
@@ -153,6 +158,8 @@ pub struct Inner {
     pub tts: tts::Tts,
     /// `POST /v1/voice`: rate limit and one turn at a time per device.
     pub voice: voice::Voice,
+    /// LucinaVoice device telemetry and turn spans (`voice/` in the data dir).
+    pub voice_log: voice_telemetry::Store,
     /// Open `/v1/timeline/stream` responses.
     pub streams: timeline::StreamSlots,
     /// Flipped to `true` on shutdown; open streams end when it is.
@@ -232,6 +239,7 @@ impl AppState {
             maps: cfg.maps.clone(),
             tts: tts::Tts::new(&cfg.tts_url, cfg.tts_voices.clone(), cfg.tts_timeout)?,
             voice: voice::Voice::new(cfg.voice_stt_url.clone())?,
+            voice_log: voice_telemetry::Store::new(&cfg.data_dir, cfg.timezone),
             streams: timeline::StreamSlots::new(timeline::PER_DEVICE, timeline::TOTAL),
             shutdown: tokio::sync::watch::Sender::new(false),
             notify: Arc::new(notify::Notifier::open(&cfg.data_dir, cfg.notify.clone())?),
@@ -470,6 +478,7 @@ pub async fn serve(cfg: Config) -> anyhow::Result<()> {
     );
     notify::spawn_workers(&state);
     approvals::spawn_sweeper(&state);
+    voice_telemetry::spawn_flusher(&state);
     if !cfg.calendar_sync_every.is_zero() {
         calendar::spawn_sync_loop(state.clone(), cfg.calendar_sync_every);
     }

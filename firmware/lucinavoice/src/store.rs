@@ -29,6 +29,11 @@ impl Store {
         Some(Self { flash, offset })
     }
 
+    /// Flash size in bytes.
+    pub fn capacity(&self) -> usize {
+        self.flash.capacity()
+    }
+
     /// The saved settings, or empty ones.
     pub fn load(&mut self) -> Settings {
         let mut raw = [0u8; MAX_LEN];

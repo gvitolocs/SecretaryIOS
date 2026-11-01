@@ -63,6 +63,37 @@ impl ChatModel for RedactingModel {
         scrub_message(&mut response.message, false);
         Ok(response)
     }
+
+    /// Streamed text is redacted a word at a time: a fragment is held back to the last whitespace, so a
+    /// value split across two deltas is whole when it is checked. The assembled response is redacted as
+    /// a whole, as in `complete`.
+    async fn complete_streaming(
+        &self,
+        mut request: ChatRequest,
+        on_delta: &mut (dyn for<'s> FnMut(&'s str) + Send),
+    ) -> Result<ChatResponse, LlmError> {
+        for m in &mut request.messages {
+            scrub_message(m, true);
+        }
+        let mut held = String::new();
+        let mut response = {
+            let mut forward = |d: &str| {
+                held.push_str(d);
+                if let Some((i, c)) = held.char_indices().rev().find(|(_, c)| c.is_whitespace()) {
+                    let mut ready: String = held.drain(..i + c.len_utf8()).collect();
+                    redactor().redact_string(&mut ready);
+                    on_delta(&ready);
+                }
+            };
+            self.0.complete_streaming(request, &mut forward).await?
+        };
+        if !held.is_empty() {
+            redactor().redact_string(&mut held);
+            on_delta(&held);
+        }
+        scrub_message(&mut response.message, false);
+        Ok(response)
+    }
 }
 
 fn file_value(path: &Path) -> Option<String> {
@@ -288,4 +319,55 @@ pub async fn secrets_turn(
             Err(e) => (format!("Infisical: {e}"), "secrets_status"),
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lucina_llm::ScriptedModel;
+
+    /// Streams `parts` as deltas, then answers with their concatenation.
+    struct Streamer(Vec<&'static str>);
+
+    #[async_trait::async_trait]
+    impl ChatModel for Streamer {
+        async fn complete(&self, _: ChatRequest) -> Result<ChatResponse, LlmError> {
+            let m = ScriptedModel::new();
+            m.push_text(&self.0.concat());
+            m.complete(ChatRequest::default()).await
+        }
+
+        async fn complete_streaming(
+            &self,
+            request: ChatRequest,
+            on_delta: &mut (dyn for<'s> FnMut(&'s str) + Send),
+        ) -> Result<ChatResponse, LlmError> {
+            for p in &self.0 {
+                on_delta(p);
+            }
+            self.complete(request).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_value_split_across_streamed_deltas_never_reaches_the_listener() {
+        let value = "sk-proj-SplitAcrossDeltas0123456789AbCd";
+        assert!(redactor().register("SPLIT_TEST_KEY", value) > 0);
+        let model = RedactingModel(Arc::new(Streamer(vec![
+            "La chiave è sk-proj-Split",
+            "AcrossDeltas01234",
+            "56789AbCd e basta. Fine",
+        ])));
+        let mut seen = Vec::new();
+        let r = model
+            .complete_streaming(ChatRequest::default(), &mut |d| seen.push(d.to_owned()))
+            .await
+            .unwrap();
+        let said = seen.concat();
+        assert!(!said.contains(value), "{said}");
+        assert!(!said.contains("SplitAcross"), "{said}");
+        assert!(said.starts_with("La chiave è "), "{said}");
+        assert!(said.ends_with("Fine"), "the held tail is flushed: {said}");
+        assert!(!r.message.text().contains(value));
+    }
 }

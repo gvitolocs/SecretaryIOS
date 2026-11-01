@@ -13,6 +13,7 @@ use reqwest::{Method, Url};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+use crate::chat_stream::ChatStream;
 use crate::error::{Error, Result};
 use crate::models::{
     Agenda, AgendaQuery, CancelledReminder, ChatReply, ChatRequest, CommandResult, CreateList,
@@ -1329,6 +1330,46 @@ impl LucinaClient {
 
     pub async fn chat(&self, req: &ChatRequest) -> Result<ChatReply> {
         self.call(&Call::chat(req)?).await
+    }
+
+    /// `POST /chat` as a stream of events (`Accept: text/event-stream`). With
+    /// `voice`, the body carries `"voice": true` and Lucina writes a short,
+    /// speakable answer. A Lucina without streaming answers with its plain
+    /// JSON; the stream then holds one `Reply` and the `Done`.
+    ///
+    /// One deadline of [`Timeouts::chat`] covers the whole turn; the connection
+    /// also fails when Lucina is silent (not even its `: ping`) for
+    /// [`Timeouts::stream_idle`]. Errors before the first event (a non-2xx
+    /// answer, unreachable, timeout) are returned here; later ones by
+    /// [`ChatStream::next`].
+    pub async fn chat_stream(&self, req: &ChatRequest, voice: bool) -> Result<ChatStream> {
+        let call = Call::chat(req)?;
+        let mut body = call.body.clone().unwrap_or(Value::Null);
+        if voice {
+            body["voice"] = Value::Bool(true);
+        }
+        let resp = self
+            .stream_http
+            .post(self.url(&call))
+            .bearer_auth(&self.token)
+            .header(reqwest::header::ACCEPT, "text/event-stream")
+            .header(reqwest::header::CACHE_CONTROL, "no-cache")
+            .timeout(self.timeouts.chat)
+            .json(&body)
+            .send()
+            .await
+            .map_err(Error::from_reqwest)?;
+        let status = resp.status().as_u16();
+        let is_sse = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.trim_start().starts_with("text/event-stream"));
+        if is_sse && (200..300).contains(&status) {
+            return Ok(ChatStream::sse(resp));
+        }
+        let bytes = resp.bytes().await.map_err(Error::from_reqwest)?;
+        Ok(ChatStream::json(decode_response::<Value>(status, &bytes)?))
     }
 
     pub async fn job(&self, id: &str) -> Result<Job> {

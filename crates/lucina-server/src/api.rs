@@ -544,6 +544,15 @@ async fn route(
         (Some("chat"), None) => {
             only(&["POST"])?;
             let body = read_json(body, MAX_BODY_BYTES).await?;
+            // LucinaVoice: the same turn as an event stream (crate::voice), for a device that speaks as it goes.
+            if crate::voice::wants_stream(headers) {
+                return Ok(crate::voice::respond(
+                    st.clone(),
+                    bearer,
+                    body,
+                    crate::voice::PING_EVERY,
+                ));
+            }
             let mut out = crate::chat::handle_chat(st.clone(), bearer, body).await?;
             // The reply sink (app, web and Lucina MCP all read it here).
             lucina_secrets::redactor().redact_json(&mut out);

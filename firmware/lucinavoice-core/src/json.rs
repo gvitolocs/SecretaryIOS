@@ -20,6 +20,29 @@ pub fn u64_field(body: &str, key: &str) -> Option<u64> {
     rest[..end].parse().ok()
 }
 
+/// The raw text of the first `"key": {…}` object value (braces balanced; strings
+/// inside it must not contain braces, true for the timing objects it reads).
+pub fn object_field<'a>(body: &'a str, key: &str) -> Option<&'a str> {
+    let rest = value_after(body, key)?;
+    if !rest.starts_with('{') {
+        return None;
+    }
+    let mut depth = 0usize;
+    for (i, c) in rest.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&rest[..=i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 fn value_after<'a>(body: &'a str, key: &str) -> Option<&'a str> {
     let mut from = 0;
     while let Some(i) = body[from..].find(key) {
@@ -65,6 +88,17 @@ mod tests {
     fn a_key_inside_a_value_is_skipped() {
         let body = r#"{"note":"status","status":"pending"}"#;
         assert_eq!(str_field(body, "status"), Some("pending"));
+    }
+
+    #[test]
+    fn reads_object_fields() {
+        let done = r#"{"type":"done","ms":{"stt":120,"lucina_first":900,"x":{"y":1}},"z":2}"#;
+        assert_eq!(
+            object_field(done, "ms"),
+            Some(r#"{"stt":120,"lucina_first":900,"x":{"y":1}}"#)
+        );
+        assert_eq!(object_field(done, "type"), None);
+        assert_eq!(object_field(r#"{"ms":{"a":1"#, "ms"), None);
     }
 
     #[test]

@@ -171,6 +171,58 @@ async fn streams_content_and_tool_calls() {
 }
 
 #[tokio::test]
+async fn complete_streaming_forwards_deltas_from_the_stream() {
+    let server = MockServer::start().await;
+    let sse = [
+        r#"data: {"model":"deepseek-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"Ci"}}]}"#,
+        r#"data: {"choices":[{"index":0,"delta":{"content":"ao."},"finish_reason":"stop"}]}"#,
+        "data: [DONE]",
+        "",
+    ]
+    .join("\n\n");
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"stream": true})))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(sse),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let ds = client(&server, KeySource::Inline("k".into()));
+    let mut seen: Vec<String> = Vec::new();
+    let r = ds
+        .complete_streaming(req(), &mut |d| seen.push(d.to_owned()))
+        .await
+        .unwrap();
+    assert_eq!(seen, ["Ci", "ao."]);
+    assert_eq!(r.message.text(), "Ciao.");
+}
+
+#[tokio::test]
+async fn the_default_complete_streaming_hands_over_the_whole_text_once() {
+    let model = lucina_llm::ScriptedModel::new();
+    model.push_text("Una frase intera.");
+    let mut seen: Vec<String> = Vec::new();
+    let r = model
+        .complete_streaming(req(), &mut |d| seen.push(d.to_owned()))
+        .await
+        .unwrap();
+    assert_eq!(seen, ["Una frase intera."]);
+    assert_eq!(r.message.text(), "Una frase intera.");
+    // No text (a tool-call turn): no delta.
+    model.push_calls(&[("calculator", json!({"expression": "1+1"}))]);
+    let mut none: Vec<String> = Vec::new();
+    let r = model
+        .complete_streaming(req(), &mut |d| none.push(d.to_owned()))
+        .await
+        .unwrap();
+    assert!(none.is_empty());
+    assert_eq!(r.tool_calls().len(), 1);
+}
+
+#[tokio::test]
 async fn thinking_off_is_sent_and_reasoning_is_kept() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
