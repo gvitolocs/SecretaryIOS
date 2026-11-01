@@ -215,7 +215,7 @@ final class PhotoBackup {
     private func libraryChanged() {
         libraryChange?.cancel()
         libraryChange = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(3))
+            try? await Task.sleep(for: .seconds(1))
             guard !Task.isCancelled else { return }
             self?.kick()
         }
@@ -243,6 +243,8 @@ final class PhotoBackup {
 
     /// Between two assets: 3 requests each at most, so a backup uses about 36 of the 60 a minute.
     static let pace: Duration = .seconds(4)
+    /// Assets a pass sends without the pace first (about 15 requests): the photos just taken.
+    static let burst = 5
     @ObservationIgnored private var retryTask: Task<Void, Never>?
 
     private func retry(after delay: Duration) {
@@ -333,8 +335,8 @@ final class PhotoBackup {
                 remaining = work.count - done
                 lastError = nil
                 // Every /v1/media request spends one of the device's 60 a minute (p1's login check):
-                // leave most of them to the app itself.
-                try await Task.sleep(for: Self.pace)
+                // leave most of them to the app itself. The first few go at once (new shots).
+                if done >= Self.burst { try await Task.sleep(for: Self.pace) }
             } catch is CancellationError {
                 break
             } catch let APIError.rateLimited(_, retryAfter, _) {
