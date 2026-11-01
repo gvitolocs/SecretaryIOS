@@ -294,6 +294,14 @@ pub fn deterministic_rule(c: &lucina_intent::tier0::Classification) -> bool {
     deterministic_intent(&c.intent)
 }
 
+/// A turn Jev was not sure of, or could not answer, with JEV-first on: only a deterministic route
+/// still runs. No other regex rule and no model call picks an intent, so the turn is plain chat.
+pub fn rule_when_jev_unsure(
+    rule: Option<lucina_intent::tier0::Classification>,
+) -> Option<lucina_intent::tier0::Classification> {
+    rule.filter(deterministic_rule)
+}
+
 /// [`deterministic_rule`] by the rule's intent name (the drift report's replay).
 pub fn deterministic_intent(intent: &str) -> bool {
     intent.starts_with("grocery.")
@@ -462,6 +470,20 @@ mod tests {
         assert_eq!(jev_first(Some(("unknown", 0.28)), Some(&rule("cursor_task"))), Err("jev_unknown"));
         assert_eq!(jev_first(Some(("computer_task", 0.49)), Some(&rule("schedule_reminder"))), Err("below_threshold"));
         assert_eq!(jev_first(Some(("chat", 0.8)), Some(&rule("schedule_reminder"))), Ok(()));
+    }
+
+    #[test]
+    fn only_deterministic_rules_survive_an_unsure_jev() {
+        let s = lucina_intent::heuristics::Settings::default();
+        let rule = |intent: &str| lucina_intent::tier0::from_model_json(
+            &json!({"intent": intent, "confidence": 1.0, "needs_tools": true}), "x", "", &s);
+        for intent in ["computer_task", "grocery.shopping_list.add"] {
+            assert_eq!(rule_when_jev_unsure(Some(rule(intent))).map(|c| c.intent).as_deref(), Some(intent));
+        }
+        for intent in ["social_post", "cursor_task", "schedule_reminder", "list_reminders", "chat"] {
+            assert!(rule_when_jev_unsure(Some(rule(intent))).is_none(), "{intent}");
+        }
+        assert!(rule_when_jev_unsure(None).is_none());
     }
 
     #[test]

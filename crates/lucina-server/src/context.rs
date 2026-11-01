@@ -178,6 +178,10 @@ pub async fn classify(
                     tier0 = ?rule.as_ref().map(|r| r.intent.as_str()), "jev_first fallback");
             }
         }
+        // Jev only (owner, 2026-11-01). At the planner's confidence the chat stays chat.
+        return crate::jev_route::rule_when_jev_unsure(rule).unwrap_or_else(|| {
+            chat(s.confidence_min.max(crate::planner::INTENT_CONFIDENCE_MIN))
+        });
     }
     if let Some(c) = rule {
         // A tier-0 regex rule gets Jev's second opinion; only a sure

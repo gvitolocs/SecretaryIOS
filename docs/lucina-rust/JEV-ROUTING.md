@@ -20,9 +20,14 @@ Jev (crate `lucina_jev`) picks an intent for each turn. Two switches in
 
 When `LUCINA_JEV_FIRST` is on, a turn Jev answers at or above its threshold is routed as that
 intent. A deterministic route still wins (`computer_task`, `grocery.*`, `lucina_log_inspect`,
-`study_focus_reminders`): those parse their own arguments. `unknown` and a missing Jev answer
-fall through. A side-effect intent that no rule agreed with does not run directly (an MCP turn
-becomes chat; otherwise the planner).
+`study_focus_reminders`): those parse their own arguments. A side-effect intent that no rule agreed
+with does not run directly (an MCP turn becomes chat; otherwise the planner).
+
+Jev is the only classifier (owner, 2026-11-01). A turn below the threshold, `unknown`, or with no Jev
+answer runs a deterministic route if it has one and is plain chat otherwise: no other tier-0 rule and
+no DeepSeek intent call picks an intent. `should_use_full_plan` can still send a clearly actionable
+chat turn to the planner. With `LUCINA_JEV_FIRST` off, the older path (tier-0 rules, then DeepSeek)
+still applies; that is the way back.
 
 Every such decision is one journal line on `lucina-rs.service` (the unit runs under the broker,
 so filter `-u lucina-rs`, not by process name):
