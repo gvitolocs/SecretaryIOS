@@ -108,8 +108,10 @@ fn is_vowel(c: char) -> bool {
 ///
 /// Steps: fold diacritics (å→a, ø→o, æ→ae, ...); fold graphemes (ph→f, w→v,
 /// y→i, z→s, ch/ck/q/c→k, c before e/i→s, sch→sk, th→t, sh→s, gj/dj→j,
-/// x→ks); a `j` after a vowel becomes `i` (Danish "vej" is "vai"); silent `h`
-/// is dropped; doubled letters collapse (so Danish "aa" = å = "a").
+/// x→ks); a `j` after a vowel becomes `i` (Danish "vej" is "vai"); doubled
+/// letters collapse (so Danish "aa" = å = "a"). A lone `h` stays in the key but
+/// is cheap to drop or add in [`distance`] (silent h: "Horus" ~ "orus", yet
+/// "Orhus" is not "Horus").
 pub fn key(s: &str) -> Vec<char> {
     let f: Vec<char> = fold(s).chars().collect();
     let at = |i: usize| f.get(i).copied();
@@ -134,7 +136,6 @@ pub fn key(s: &str) -> Vec<char> {
             ('w', _, _) => ("v", 1),
             ('y', _, _) => ("i", 1),
             ('z', _, _) => ("s", 1),
-            ('h', _, _) => ("", 1),
             ('j', _, _) if out.last().is_some_and(|&p| is_vowel(p)) => ("i", 1),
             _ => {
                 out.push(c);
@@ -168,8 +169,13 @@ fn sub_cost(a: char, b: char) -> f32 {
     }
 }
 
+/// The cheapest indel: the lower bound used to skip pairs whose lengths differ too much.
+pub const MIN_INDEL: f32 = 0.3;
+
 fn indel_cost(c: char) -> f32 {
-    if is_vowel(c) {
+    if c == 'h' {
+        MIN_INDEL
+    } else if is_vowel(c) {
         0.8
     } else {
         1.0
@@ -178,8 +184,8 @@ fn indel_cost(c: char) -> f32 {
 
 /// Weighted Damerau (optimal string alignment) distance between two keys.
 /// Vowel for vowel and voiced/unvoiced pairs (b/p, d/t, g/k, m/n, v/f) are cheap
-/// substitutions, a dropped or added vowel is cheaper than a consonant, a
-/// transposition costs 1.
+/// substitutions, a dropped or added vowel is cheaper than a consonant, a dropped
+/// or added `h` is cheapest, a transposition costs 1.
 pub fn distance(a: &[char], b: &[char]) -> f32 {
     let (n, m) = (a.len(), b.len());
     let mut d = vec![vec![0f32; m + 1]; n + 1];
@@ -231,8 +237,8 @@ mod tests {
         assert_eq!(k("Skibigårdsvej"), "skibigardsvei");
         assert_eq!(k("skibi gaardsvej"), "skibigardsvei");
         assert_eq!(k("Skibigaardsvej"), "skibigardsvei");
-        assert_eq!(k("Horus"), "orus");
-        assert_eq!(k("horus"), k("Orus"));
+        assert_eq!(k("Horus"), "horus");
+        assert_eq!(k("horus"), k("HORUS"));
         assert_eq!(k("Phone"), k("fone"));
         assert_eq!(k("Wolt"), k("volt"));
         assert_eq!(k("Schermo"), "skermo");
@@ -247,5 +253,8 @@ mod tests {
         assert!(ratio(&a, &key("skibigardsvai")) < 0.05);
         assert!(ratio(&a, &key("skibsvaerft")) > 0.4);
         assert_eq!(distance(&key("abcd"), &key("abdc")), 1.0);
+        // A silent h is cheap, an h in the wrong place is not free.
+        assert!(ratio(&key("orus"), &key("horus")) < 0.07);
+        assert!(ratio(&key("orhus"), &key("horus")) > 0.1);
     }
 }

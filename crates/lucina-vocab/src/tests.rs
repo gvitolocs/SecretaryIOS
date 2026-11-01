@@ -79,11 +79,15 @@ fn horus_and_its_mishearings() {
         fixed(&v, "Orus è il mio progetto"),
         "Horus è il mio progetto"
     );
-    // One vowel off in a four-letter key is only borderline: ask, don't replace.
-    let r = v.correct("Horas è il mio progetto");
-    assert_eq!(r.text, "Horas è il mio progetto");
-    assert_eq!(r.ambiguous.len(), 1);
-    assert_eq!(r.ambiguous[0].candidates, ["Horus"]);
+    // One vowel off in a five-letter key is still a replacement.
+    assert_eq!(
+        fixed(&v, "Horas è il mio progetto"),
+        "Horus è il mio progetto"
+    );
+    assert_eq!(
+        fixed(&v, "ag horis corer pa serveren"),
+        "ag Horus corer pa serveren"
+    );
     // Already right: untouched, nothing reported.
     let r = v.correct("Horus è il mio progetto");
     assert_eq!(r.text, "Horus è il mio progetto");
@@ -456,4 +460,23 @@ fn path_follows_the_lookup() {
         path_from_lookup(|_| None),
         PathBuf::from("voice-learn.json")
     );
+}
+
+#[test]
+fn real_words_next_to_an_entry_are_asked_about_not_replaced() {
+    // No "orus" alias here: a taught mishearing is matched on its own terms.
+    let mut v = owner();
+    v.entries[1].sounds_like.clear();
+    // Aarhus heard as "Orhus" (h in the wrong place) and a real name, Horace: both are one
+    // step too far for Horus, so they are reported and left alone.
+    let r = v.correct("What time is it in Orhus right now?");
+    assert_eq!(r.text, "What time is it in Orhus right now?");
+    assert_eq!(r.ambiguous.len(), 1, "{r:?}");
+    assert_eq!(r.ambiguous[0].candidates, ["Horus"]);
+    let r = v.correct("tell me when Horace finishes the build");
+    assert_eq!(r.text, "tell me when Horace finishes the build");
+    assert_eq!(r.ambiguous.len(), 1, "{r:?}");
+    assert_eq!(r.ambiguous[0].heard, "Horace");
+    // Aarhus itself is a known common word.
+    assert!(v.correct("Vado ad Aarhus").ambiguous.is_empty());
 }

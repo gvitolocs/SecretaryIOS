@@ -9,7 +9,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use crate::phonetic::{fold, key, ratio};
+use crate::phonetic::{fold, key, ratio, MIN_INDEL};
 use crate::{stop, Ambiguity, Corrected, Replacement, Vocab};
 
 const MAX_SPAN: usize = 4;
@@ -30,7 +30,7 @@ fn limits(n: usize) -> (f32, f32) {
     match n {
         0..=3 => (0.0, 0.0),
         4..=5 => (0.10, 0.20),
-        6..=8 => (0.22, 0.30),
+        6..=8 => (0.20, 0.30),
         _ => (0.28, 0.38),
     }
 }
@@ -171,8 +171,8 @@ impl<'a> Matcher<'a> {
                     }
                     let n = heard.len().max(t.key.len());
                     let (accept, border) = limits(n);
-                    // An indel costs at least 0.8, so a length gap bounds the distance.
-                    let gap = heard.len().abs_diff(t.key.len()) as f32 * 0.8;
+                    // An indel costs at least MIN_INDEL, so a length gap bounds the distance.
+                    let gap = heard.len().abs_diff(t.key.len()) as f32 * MIN_INDEL;
                     if gap / n as f32 > border + EPS {
                         continue;
                     }

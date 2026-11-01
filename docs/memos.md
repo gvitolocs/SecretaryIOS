@@ -88,10 +88,15 @@ file changes nothing. Every transcription path here uses it ([`src/vocab.rs`](..
 - **Bias:** the words go into Whisper's initial prompt, newest first, after the caller's own prompt ("Lucina" for
   `/v1/memos/stt`, the app's terms for the prompter, a video's title for a video report). whisper.cpp keeps the end
   of an over-long prompt, so the vocabulary goes last; the whole prompt stays under about 500 characters.
+  `whisper-cli` is run with `-mc 0` (no text context), which makes whisper.cpp drop `--prompt` as well (measured
+  2026-11-01: a vocabulary prompt changed nothing, and neither did the title prompt of video reports). With a prompt
+  the worker therefore passes `--carry-initial-prompt` and an `-mc` just big enough for the prompt (at most 224).
   `soundsLike` is not in the prompt (it would steer Whisper toward the mishearing); it is used by the correction.
 - **Post-correction:** after Whisper, a word or span of up to four words that is close to an entry's word or
   `soundsLike` becomes the canonical word. Phonetic key (diacritics, å/ø/æ, aa, ph/f, w/v, y/i, ch/k, silent h,
-  doubled letters, a Danish "vej" = "vai") plus a weighted Damerau distance, a threshold that grows with the length, never
+  doubled letters, a Danish "vej" = "vai"; a lone h is kept but cheap to drop) plus a weighted Damerau distance, a
+  threshold that grows with the length (a five-letter word tolerates one vowel, a real name one step further, such as
+  "Horace" for "Horus", is only reported), never
   on words of three letters or fewer, never on common Italian/English/Danish words or on another entry's exact word.
   A match that is only borderline, or equally close to two entries, is not replaced: it is returned in `ambiguous`
   (the caller may ask Jev "which did they mean").

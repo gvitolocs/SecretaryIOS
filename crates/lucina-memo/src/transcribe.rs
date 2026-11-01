@@ -348,6 +348,9 @@ fn model_name(p: &Path) -> String {
         .to_owned()
 }
 
+/// Half of Whisper's text context: the most prompt (and context) tokens it takes.
+const MAX_PROMPT_CONTEXT: usize = 224;
+
 #[derive(Debug, thiserror::Error)]
 enum RunError {
     #[error("no gpu-lease")]
@@ -375,12 +378,17 @@ async fn run_whisper(
     }
     cmd.arg("-m").arg(model);
     cmd.arg("-l").arg(cfg.language.as_deref().unwrap_or("auto"));
+    // `-mc 0` turns the text context off so a decoded line never feeds the next (no repetition
+    // loops) - and whisper.cpp then drops `--prompt` too. With a prompt, `--carry-initial-prompt`
+    // puts it in front of every window and `-mc` leaves room for it and little else
+    // (upper bound: one token per byte, at most half the 448-token context).
+    let context = prompt.map_or(0, |p| (p.len() + 2).min(MAX_PROMPT_CONTEXT));
     cmd.args([
         "-t",
         &cfg.threads.to_string(),
         if words { "-ojf" } else { "-oj" },
         "-mc",
-        "0",
+        &context.to_string(),
         "-sns",
     ]);
     if gpu {
@@ -397,7 +405,7 @@ async fn run_whisper(
         cmd.arg("--vad").arg("-vm").arg(vad);
     }
     if let Some(p) = prompt {
-        cmd.arg("--prompt").arg(p);
+        cmd.arg("--carry-initial-prompt").arg("--prompt").arg(p);
     }
     cmd.arg("-of").arg(prefix).arg("-f").arg(wav);
     cmd.stdin(Stdio::null())
@@ -716,13 +724,15 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let seen = dir.path().join("prompt.txt");
+        let args = dir.path().join("args.txt");
         let cli = dir.path().join("whisper-cli");
         std::fs::write(
             &cli,
             format!(
-                "#!/bin/sh\nwhile [ $# -gt 0 ]; do case \"$1\" in -of) of=\"$2\"; shift;; --prompt) printf '%s' \"$2\" > {}; shift;; esac; shift; done\n\
+                "#!/bin/sh\nprintf '%s ' \"$@\" > {args}\nwhile [ $# -gt 0 ]; do case \"$1\" in -of) of=\"$2\"; shift;; --prompt) printf '%s' \"$2\" > {}; shift;; esac; shift; done\n\
                  cat > \"$of.json\" <<'EOF'\n{{\"result\":{{\"language\":\"it\"}},\"transcription\":[{{\"offsets\":{{\"from\":0,\"to\":4000}},\"text\":\" Torno a skibi gaardsvej con orus.\"}}]}}\nEOF\n",
-                seen.display()
+                seen.display(),
+                args = args.display()
             ),
         )
         .unwrap();
@@ -747,6 +757,11 @@ mod tests {
         assert_eq!(t.text(), "Torno a skibi gaardsvej con orus.");
         assert!(t.corrections.is_empty());
         assert!(!seen.exists(), "no --prompt without words");
+        let a = std::fs::read_to_string(&args).unwrap();
+        assert!(
+            a.contains(" -mc 0 ") && !a.contains("--carry-initial-prompt"),
+            "{a}"
+        );
 
         let mut v = lucina_vocab::Vocab::default();
         for (id, w, at) in [("1", "Skibigårdsvej", "1"), ("2", "Horus", "2")] {
@@ -769,6 +784,12 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&seen).unwrap(),
             "Video su Aarhus, Horus, Skibigårdsvej"
+        );
+        // `-mc 0` would make whisper.cpp drop the prompt: it is carried instead.
+        let a = std::fs::read_to_string(&args).unwrap();
+        assert!(
+            a.contains("--carry-initial-prompt") && !a.contains(" -mc 0 "),
+            "{a}"
         );
         assert_eq!(t.text(), "Torno a Skibigårdsvej con Horus.");
         assert_eq!(

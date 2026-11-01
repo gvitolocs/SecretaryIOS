@@ -17,7 +17,8 @@
 //! cargo run -p lucina-memo --example vocab_bench --release
 //! ```
 //! Environment: `KOKORO_URL` (default `http://127.0.0.1:8880`), `WHISPER_BIN_DIR`
-//! (default `$HOME/Projects/AI/whisper.cpp/build/bin`), `BENCH_PORT` (default 28798).
+//! (default `$HOME/Projects/AI/whisper.cpp/build/bin`), `BENCH_PORT` (default 28798),
+//! `BENCH_CLIPS_DIR` (keep and reuse the generated clips).
 //! The GPU comes from `gpu-lease`, as in the service; nothing is left running.
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -72,8 +73,8 @@ fn clips() -> Vec<Clip> {
 fn vocab() -> Vocab {
     let mut v = Vocab::default();
     for (i, (w, sounds, meaning)) in [
-        (SK, vec![], "the owner's home street"),
-        (HO, vec!["orus"], "the owner's project"),
+        (SK, Vec::<&str>::new(), "the owner's home street"),
+        (HO, vec![], "the owner's project"),
     ]
     .into_iter()
     .enumerate()
@@ -183,14 +184,22 @@ async fn main() -> anyhow::Result<()> {
     let whisper = WhisperConfig::from_lookup(env);
     let engine = Engine::new(EngineConfig::from_lookup(env, &whisper));
 
-    // 1. Clips: Kokoro -> 16 kHz mono WAV.
+    // 1. Clips: Kokoro -> 16 kHz mono WAV. `BENCH_CLIPS_DIR` keeps them between runs.
+    let cache = std::env::var("BENCH_CLIPS_DIR").ok().map(PathBuf::from);
+    if let Some(c) = &cache {
+        std::fs::create_dir_all(c)?;
+    }
     let clips = clips();
     let mut wavs: BTreeMap<&str, (PathBuf, f64)> = BTreeMap::new();
     for c in &clips {
-        let raw = dir.join(format!("{}.kokoro.wav", c.id));
-        let wav = dir.join(format!("{}.wav", c.id));
-        kokoro(&kokoro_url, c, &raw).await?;
-        let dur = transcribe::decode(&whisper, &raw, &wav).await?;
+        let wav = cache.as_ref().unwrap_or(&dir).join(format!("{}.wav", c.id));
+        let dur = if wav.exists() {
+            transcribe::duration(&whisper, &wav).await?
+        } else {
+            let raw = dir.join(format!("{}.kokoro.wav", c.id));
+            kokoro(&kokoro_url, c, &raw).await?;
+            transcribe::decode(&whisper, &raw, &wav).await?
+        };
         eprintln!("clip {} {dur:.1}s", c.id);
         wavs.insert(c.id, (wav, dur));
     }
@@ -256,7 +265,7 @@ async fn main() -> anyhow::Result<()> {
     engine.shutdown().await;
 
     // 4. Report.
-    println!("\nVoice Learn accuracy bench — vocabulary: {SK}, {HO} (alias \"orus\")");
+    println!("\nVoice Learn accuracy bench — vocabulary: {SK}, {HO}");
     println!("Kokoro voices: if_sara (it), af_heart (en). *s8 is Danish words read by the English voice (no Danish Kokoro voice).\n");
     for (path, long) in [("engine", false), ("worker", false), ("worker", true)] {
         let label = match (path, long) {
@@ -310,8 +319,8 @@ async fn main() -> anyhow::Result<()> {
                 .sum()
         };
         println!("{label}: {} clips, {total} vocabulary words", set.len());
-        println!("| none | correction only | prompt only | prompt+correction | false corrections | false words (none/prompt/full) |");
-        println!("|---|---|---|---|---|---|");
+        println!("| none | correction only | prompt only | prompt+correction | false corrections | false words (none/prompt/full) | reported ambiguous |");
+        println!("|---|---|---|---|---|---|---|");
         let pct = |n: usize| {
             format!(
                 "{n}/{total} ({:.0}%)",
@@ -319,7 +328,7 @@ async fn main() -> anyhow::Result<()> {
             )
         };
         println!(
-            "| {} | {} | {} | {} | {} | {}/{}/{} |\n",
+            "| {} | {} | {} | {} | {} | {}/{}/{} | {} |\n",
             pct(hits(&none)),
             pct(hits(&corr_only)),
             pct(hits(&prompt)),
@@ -328,6 +337,10 @@ async fn main() -> anyhow::Result<()> {
             false_ins(&none),
             false_ins(&prompt),
             false_ins(&full),
+            // Spans the pipeline left alone and returned for a "did they mean" check.
+            set.iter()
+                .map(|c| real.correct(&prompt(c)).ambiguous.len())
+                .sum::<usize>(),
         );
     }
     println!("Per clip (heard without the vocabulary -> with prompt+correction):");

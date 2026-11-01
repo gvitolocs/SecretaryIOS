@@ -349,15 +349,15 @@ async fn a_borderline_match_is_reported_not_applied() {
     let h = harness_full("exec sleep 600", true, Some(VOCAB)).await;
     *h.whisper.reply.lock().unwrap() = (
         200,
-        r#"{"text":" Come sta Horas? ","language":"italian"}"#.into(),
+        r#"{"text":" Come sta Horace? ","language":"italian"}"#.into(),
     );
     let (s, v) = h.raw("?lang=it", 16_000).await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    assert_eq!(v["text"], "Come sta Horas?");
+    assert_eq!(v["text"], "Come sta Horace?");
     assert_eq!(v["corrections"], serde_json::json!([]));
     assert_eq!(
         v["ambiguous"],
-        serde_json::json!([{"heard": "Horas", "candidates": ["Horus"]}])
+        serde_json::json!([{"heard": "Horace", "candidates": ["Horus"]}])
     );
     h.app.prompter.engine.shutdown().await;
 }
