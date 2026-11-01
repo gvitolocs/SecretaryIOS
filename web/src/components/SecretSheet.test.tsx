@@ -151,6 +151,46 @@ describe("Add secret", () => {
     expect(save.body).toMatchObject({ path: "/Pokobot/bots", createFolder: true, overwrite: false });
   });
 
+  it("an agent's request card opens prefilled with the cursor in the value", async () => {
+    const calls = server();
+    render(() => <SecretSheet />);
+    // The card's payload names the project by alias (agents know slugs, not Infisical ids).
+    openSecretSheet({ mode: "save", name: "GBGO_WIFI_PSK", project: "poko", environment: "prod", path: "/Pokobot" });
+    expect(await screen.findByText("EXISTING_KEY")).toBeInTheDocument();
+    expect(screen.getByText("/Pokobot")).toBeInTheDocument();
+    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("GBGO_WIFI_PSK");
+    const value = document.getElementById("secret-value") as HTMLTextAreaElement;
+    expect(document.activeElement).toBe(value);
+    fireEvent.input(value, { target: { value: VALUE } });
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    expect(screen.getByText("Save GBGO_WIFI_PSK to Pokobot / prod / /Pokobot?")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText(/Saved GBGO_WIFI_PSK/);
+    expect(calls.find((c) => c.url === "/v1/secrets")!.body).toMatchObject({
+      name: "GBGO_WIFI_PSK", project: "p-poko", environment: "prod", path: "/Pokobot", value: VALUE,
+    });
+  });
+
+  it("a request for a project that doesn't exist never lands in another project", async () => {
+    const calls = server();
+    localStorage.setItem("secretary.secret.last.v1", JSON.stringify({ project: "p-poko", environment: "prod", path: "/" }));
+    render(() => <SecretSheet />);
+    // `target` is for older sheets: with `project` set, it never picks a project.
+    openSecretSheet({ mode: "save", name: "GBGO_WIFI_SSID", project: "lucinaos", environment: "prod", path: "/", target: "poko/prod" });
+    expect(await screen.findByText(/lucinaos isn't one of your Infisical projects yet/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Review" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Create project" }));
+    expect((screen.getByLabelText("Project name") as HTMLInputElement).value).toBe("lucinaos");
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create project" }));
+    await waitFor(() => expect(calls.some((c) => c.url === "/v1/secrets/projects")).toBe(true));
+    expect(calls.find((c) => c.url === "/v1/secrets/projects")!.body).toEqual({ name: "lucinaos", confirmed: true });
+    // Back on the form with the new project picked, the name kept.
+    expect(await screen.findByText(/Project Poko Shorts created/)).toBeInTheDocument();
+    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("GBGO_WIFI_SSID");
+    expect(screen.queryByText(/isn't one of your Infisical projects yet/)).toBeNull();
+  });
+
   it("a held value from Lucina's card is sent by id, and a new project needs a confirmation", async () => {
     const calls = server();
     render(() => <SecretSheet />);

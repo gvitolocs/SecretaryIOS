@@ -566,6 +566,12 @@ async fn route(
             lucina_secrets::redactor().redact_json(&mut v);
             Ok(ok(v))
         }
+        (Some("secrets"), Some("request")) => {
+            // An agent asks the owner for a secret by name (a card in his chat; never a value).
+            only(&["POST"])?;
+            let body = read_json(body, 16 * 1024).await?;
+            Ok(ok(crate::owner_secrets::request(st, &body).await?))
+        }
         (Some("timeline"), None) => {
             only(&["GET"])?;
             timeline_list(st, uri)

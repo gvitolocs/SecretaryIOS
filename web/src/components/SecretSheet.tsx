@@ -10,7 +10,7 @@ import { createEffect, createMemo, createResource, createSignal, For, Match, on,
 import { toApiError, type ApiError } from "../api/client";
 import { secretsApi, type SecretProject, type SecretReceipt } from "../api/secrets";
 import { t } from "../i18n";
-import { joinFolder, NAME_RE, normalizeFolder, parentFolder, projectKeys, resolveTarget } from "../lib/secrets";
+import { findProject, joinFolder, NAME_RE, normalizeFolder, parentFolder, projectKeys, resolveTarget } from "../lib/secrets";
 import { closeSecretSheet, lastPlace, rememberPlace, secretSheet, type SecretSheetInput } from "../state/secretSheet";
 
 type Step = "form" | "confirm" | "saving" | "done" | "project" | "projectConfirm" | "projectSaving" | "projectDone";
@@ -42,7 +42,12 @@ function SheetBody(props: { input: SecretSheetInput }) {
   const [error, setError] = createSignal<string | null>(null);
   const [receipt, setReceipt] = createSignal<SecretReceipt | null>(null);
   const [created, setCreated] = createSignal<{ name: string; envs: string } | null>(null);
+  /** The card named a project the catalog doesn't have (an agent's request): nothing is picked for it. */
+  const [missingProject, setMissingProject] = createSignal<string | null>(null);
   let first: HTMLInputElement | undefined;
+  let valueField: HTMLTextAreaElement | undefined;
+  /** A card that names the secret (an agent's request): the cursor waits in the value, ready to paste. */
+  const focusTarget = () => (props.input.name && !props.input.held ? valueField ?? first : first);
 
   const [projects, { refetch: reloadProjects }] = createResource(() => secretsApi.catalog());
   const project = createMemo(() => projects()?.find((p) => p.id === projectId()) ?? null);
@@ -70,10 +75,17 @@ function SheetBody(props: { input: SecretSheetInput }) {
     on(projects, (list) => {
       if (!list || projectId()) return;
       const input = props.input;
-      const byTarget = input.target ? resolveTarget(input.target, list) : null;
+      // A card that names the project matches it exactly; its `target` is only for older sheets.
+      const byTarget = input.target && !input.project ? resolveTarget(input.target, list) : null;
       const last = lastPlace();
       const pick = (id?: string | null) => (id ? list.find((p) => p.id === id) : undefined);
-      const p = byTarget?.project ?? pick(input.project) ?? pick(last?.project) ?? list[0];
+      const named = input.project ? findProject(input.project, list) : undefined;
+      if (input.project && !named) {
+        // Never save a requested secret somewhere else: the owner creates the project or picks one.
+        setMissingProject(input.project);
+        return;
+      }
+      const p = byTarget?.project ?? named ?? pick(last?.project) ?? list[0];
       if (!p) return;
       choose(p, byTarget?.environment ?? input.environment ?? (last?.project === p.id ? last.environment : undefined));
       const start = byTarget?.path ?? (input.path ? normalizeFolder(input.path) : null) ?? (last?.project === p.id ? last.path : null);
@@ -82,6 +94,7 @@ function SheetBody(props: { input: SecretSheetInput }) {
   );
 
   function choose(p: SecretProject, preferEnv?: string) {
+    setMissingProject(null);
     setProjectId(p.id);
     const envs = p.environments.map((e) => e.slug);
     setEnv(preferEnv && envs.includes(preferEnv) ? preferEnv : envs.includes("prod") ? "prod" : envs[0] ?? null);
@@ -150,7 +163,13 @@ function SheetBody(props: { input: SecretSheetInput }) {
       const r = await secretsApi.createProject(n);
       await reloadProjects();
       const p = projects()?.find((x) => x.id === r.project.id) ?? r.project;
-      choose(p);
+      choose(p, props.input.environment);
+      const start = props.input.path ? normalizeFolder(props.input.path) : null;
+      if (start && start !== "/" && start.lastIndexOf("/") === 0) {
+        // A new project has no folders: the save creates the requested one.
+        setPath(start);
+        setNewFolder(start.slice(start.lastIndexOf("/") + 1));
+      }
       setCreated({ name: p.name, envs: p.environments.map((e) => e.slug).join(", ") });
       setStep(startProject ? "projectDone" : "form");
     } catch (e) {
@@ -173,7 +192,7 @@ function SheetBody(props: { input: SecretSheetInput }) {
   }
   onMount(() => {
     document.addEventListener("keydown", onKey);
-    queueMicrotask(() => first?.focus());
+    queueMicrotask(() => focusTarget()?.focus());
   });
   onCleanup(() => {
     document.removeEventListener("keydown", onKey);
@@ -225,6 +244,7 @@ function SheetBody(props: { input: SecretSheetInput }) {
                 fallback={
                   <div class="secret-value-row">
                     <textarea
+                      ref={valueField}
                       id="secret-value"
                       class="text-input secret-mono secret-value"
                       classList={{ "secret-value--hidden": !showValue() }}
@@ -267,6 +287,23 @@ function SheetBody(props: { input: SecretSheetInput }) {
                   </button>
                 </Match>
                 <Match when={projects()}>
+                  <Show when={missingProject()}>
+                    {(m) => (
+                      <p class="secret-warn" role="status">
+                        ⚠️ {t("secrets.projectMissing", { name: m() })}{" "}
+                        <button
+                          type="button"
+                          class="btn btn--small"
+                          onClick={() => {
+                            setProjectName(m());
+                            setStep("project");
+                          }}
+                        >
+                          {t("secrets.createProject")}
+                        </button>
+                      </p>
+                    )}
+                  </Show>
                   <input
                     class="text-input"
                     type="search"

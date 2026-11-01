@@ -158,6 +158,52 @@ pub struct DecisionWithdrawArgs {
     /// Why it no longer needs an answer, shown to the owner; at most 500 characters.
     pub reason: Option<String>,
 }
+/// Ask the owner for a secret by name. There is no value field, on purpose: the owner pastes the
+/// value in the app and it goes straight to Infisical.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SecretRequestArgs {
+    /// Secret name (the Infisical key): letters, digits, _ . @ -, 1-256 characters, e.g. GBGO_WIFI_PSK.
+    pub name: String,
+    /// Infisical project slug or name: letters, digits, _ . @ -, e.g. lucinaos.
+    pub project: String,
+    /// Environment slug, e.g. prod or dev.
+    pub environment: String,
+    /// Folder in the environment; default "/".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Why you need it and what will read it, 1-500 characters, shown to the owner. Never put the value or any token here.
+    pub reason: String,
+    /// Your session or task name, up to 120 characters, shown to the owner.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// True when the project may not exist yet: the card then also offers "Create project".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_project: Option<bool>,
+}
+impl SecretRequestArgs {
+    fn validate(&self) -> Result<(), ToolError> {
+        let slug = |field: &str, v: &str, max: usize| {
+            let ok = (1..=max).contains(&v.len())
+                && v.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'@' | b'-'));
+            if ok {
+                Ok(())
+            } else {
+                Err(bad(format!("`{field}` must be 1-{max} letters, digits, _ . @ or -")))
+            }
+        };
+        slug("name", &self.name, 256)?;
+        slug("project", &self.project, 128)?;
+        slug("environment", &self.environment, 128)?;
+        check_text("reason", &self.reason, 500)?;
+        if let Some(f) = &self.from {
+            if f.chars().count() > 120 {
+                return Err(bad("`from` must be at most 120 characters"));
+            }
+        }
+        Ok(())
+    }
+}
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct JobStatusArgs {
@@ -656,6 +702,8 @@ pub fn specs() -> Vec<ToolSpec> {
             "Check a structured go-ahead from lucina_decide, optionally polling for up to 100 seconds. Pending means do not act yet; decided and expired answers include the full decision record."),
         spec!("lucina_decision_withdraw", "Withdraw a Lucina decision", Scope::Chat, ro = false, destructive = false, idempotent = true, DecisionWithdrawArgs,
             "Take back a decision you asked with lucina_decide that is still pending (asked by mistake, settled elsewhere). The owner's buttons then answer that it was withdrawn."),
+        spec!("secret_request", "Ask the owner for a secret", Scope::Chat, ro = false, destructive = false, idempotent = true, SecretRequestArgs,
+            "Ask the owner for a secret you need (an API key, a Wi-Fi passphrase…) BY NAME. This tool never takes a value and never returns one. Lucina posts a card in his chat (web app, Mac app) and pushes it to his phone; his tap opens \"Add secret\" with the name, project, environment and folder filled in, he pastes the value and it goes straight to Infisical (an owner grant to the broker), never through you, the timeline or a log. Read it afterwards the usual way, with your own broker caller (infisical-broker exec, or the infisical MCP) once the owner has given that caller access. A receipt \"Saved `NAME` in …\" appears in lucina_timeline when he saved it. Never ask the owner to paste a secret into a chat or into ask_lucina; never put a value in reason. The same request repeated within 10 minutes answers with the first card."),
         spec!("lucina_job_status", "Lucina job status", Scope::Chat, ro = true, destructive = false, idempotent = true, JobStatusArgs,
             "Follow a background job started by Lucina: status, action, result or error, and created, started and finished times. For go-aheads use lucina_decide; ask_lucina is answers-only for agents."),
         spec!("lucina_timeline", "Lucina timeline", Scope::Read, ro = true, destructive = false, idempotent = true, TimelineArgs,
@@ -1163,6 +1211,25 @@ impl Tools<'_> {
             )
             .await?;
         Ok(format::decision(&response))
+    }
+
+    pub async fn secret_request(&self, args: &JsonObject) -> ToolResult {
+        let a: SecretRequestArgs = parse(args)?;
+        a.validate()?;
+        let mut body = serde_json::to_value(&a).map_err(|e| bad(e.to_string()))?;
+        body["asking_client"] = json!(self.caller.name);
+        let response = self
+            .app
+            .backend
+            .send_device(
+                reqwest::Method::POST,
+                "/v1/secrets/request",
+                Some(&body),
+                std::time::Duration::from_secs(30),
+                reqwest::header::HeaderMap::new(),
+            )
+            .await?;
+        Ok(format::secret_request(&response))
     }
 
     pub async fn job_status(&self, args: &JsonObject) -> ToolResult {
