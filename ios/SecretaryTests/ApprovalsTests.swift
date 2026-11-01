@@ -50,6 +50,13 @@ final class FakeUnlockSigner: UnlockApprovalSigning, @unchecked Sendable {
     }
 }
 
+/// A counter the stub's handler (any thread) can bump.
+final class RequestCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    func next() -> Int { lock.withLock { value += 1; return value } }
+}
+
 /// Records what would go to `UNUserNotificationCenter`, delivered removals included.
 final class ApprovalFakeCenter: NotificationScheduling, @unchecked Sendable {
     var added: [UNNotificationRequest] = []
@@ -876,7 +883,8 @@ final class ApprovalsTests: XCTestCase {
         XCTAssertEqual(unlock.keyId, "ulk_new")
         XCTAssertTrue(store.oneTapReady)
         XCTAssertEqual(changes, [true])
-        // Once per launch.
+        // Enrolled: nothing more to ask.
+        store.sceneBackgrounded()
         await store.ensureUnlockKey()
         XCTAssertEqual(signer.signed.count, 1)
 
@@ -888,6 +896,128 @@ final class ApprovalsTests: XCTestCase {
         XCTAssertEqual(signer.signed.count, 1)
         XCTAssertFalse(other.oneTapOn)
         XCTAssertNil(pendingKey.keyId)
+    }
+
+    /// The settings with an active Face ID key; the unlock key's POST answered by `register` (by attempt, from 1).
+    private func serveEnrollment(register: @escaping (Int) -> StubURLProtocol.Reply) {
+        let posts = RequestCounter()
+        StubURLProtocol.handler = { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("GET", "/v1/approvals/settings"): return .init(body: settingsJSON(hasPin: false, serverKey: true))
+            case ("POST", "/v1/approvals/unlock-key"): return register(posts.next())
+            default: return .init(body: "{}")
+            }
+        }
+    }
+
+    private func unlockKeyPosts() -> [URLRequest] {
+        StubURLProtocol.requests.filter { $0.httpMethod == "POST" && $0.url?.path == "/v1/approvals/unlock-key" }
+    }
+
+    func testACancelledRegisterAfterTheFaceIDProofIsSentAgainWithoutAnotherFaceID() async throws {
+        let unlock = FakeUnlockSigner(keyId: nil)
+        let store = oneTapStore(unlock)
+        store.unlockRetryWait = .milliseconds(100)
+        // The Face ID sheet made the scene inactive: the first POST is cancelled under it.
+        serveEnrollment { attempt in
+            attempt == 1 ? .init(error: URLError(.cancelled)) : .init(body: #"{"keyId":"ulk_new"}"#)
+        }
+        store.sceneActiveChanged(false)
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(20))
+            store.sceneActiveChanged(true)
+        }
+        await store.ensureUnlockKey()
+        XCTAssertEqual(signer.signed.count, 1, "one Face ID for the same prepared key")
+        XCTAssertEqual(unlockKeyPosts().count, 2)
+        XCTAssertEqual(Set(unlockKeyPosts().map { decodeBody($0)["publicKey"] as? String }).count, 1, "the same key both times")
+        XCTAssertEqual(unlock.keyId, "ulk_new")
+        XCTAssertTrue(store.oneTapReady)
+        XCTAssertNil(store.unlockEnrollFailure)
+
+        // Cancelled every time: 3 retries, then it gives up (and says so).
+        let other = FakeUnlockSigner(keyId: nil)
+        let stubborn = oneTapStore(other)
+        stubborn.unlockRetryWait = .milliseconds(10)
+        StubURLProtocol.requests = []
+        serveEnrollment { _ in .init(error: URLError(.cancelled)) }
+        await stubborn.ensureUnlockKey()
+        XCTAssertEqual(unlockKeyPosts().count, 4)
+        XCTAssertEqual(signer.signed.count, 2)
+        XCTAssertNil(other.keyId)
+        XCTAssertNotNil(stubborn.unlockEnrollFailure)
+    }
+
+    func testCancellingFaceIDForTheAutomaticSetupEndsItForThisLaunch() async throws {
+        let unlock = FakeUnlockSigner(keyId: nil)
+        let store = oneTapStore(unlock)
+        serveEnrollment { _ in .init(body: #"{"keyId":"ulk_new"}"#) }
+        signer.error = ApprovalSignError.cancelled
+        await store.ensureUnlockKey()
+        XCTAssertEqual(signer.signed.count, 1)
+        XCTAssertNil(store.unlockEnrollFailure, "a cancel is no failure to show")
+        signer.error = nil
+        store.sceneBackgrounded()
+        await store.ensureUnlockKey()
+        XCTAssertEqual(signer.signed.count, 1, "no second prompt in this launch")
+        XCTAssertTrue(unlockKeyPosts().isEmpty)
+        XCTAssertNil(unlock.keyId)
+    }
+
+    func testAFailedAutomaticSetupIsTriedAgainOnTheNextForeground() async throws {
+        let unlock = FakeUnlockSigner(keyId: nil)
+        let store = oneTapStore(unlock)
+        serveEnrollment { _ in .init(status: 500, body: #"{"error":{"code":"internal","message":"boom"}}"#) }
+        await store.ensureUnlockKey()
+        XCTAssertEqual(signer.signed.count, 1)
+        XCTAssertNil(unlock.keyId)
+        XCTAssertNotNil(store.unlockEnrollFailure, "Settings shows why")
+        // The scene's own return from the Face ID sheet: not again (it would prompt again and again).
+        await store.ensureUnlockKey()
+        XCTAssertEqual(signer.signed.count, 1)
+        // Back from the background: again.
+        serveEnrollment { _ in .init(body: #"{"keyId":"ulk_new"}"#) }
+        store.sceneBackgrounded()
+        await store.ensureUnlockKey()
+        XCTAssertEqual(signer.signed.count, 2)
+        XCTAssertEqual(unlock.keyId, "ulk_new")
+        XCTAssertNil(store.unlockEnrollFailure)
+    }
+
+    func testTheSetUpButtonEnrollsTheUnlockKey() async throws {
+        let unlock = FakeUnlockSigner(keyId: nil)
+        let store = oneTapStore(unlock)
+        // The automatic setup was cancelled: the button still asks.
+        serveEnrollment { _ in .init(body: #"{"keyId":"ulk_new"}"#) }
+        signer.error = ApprovalSignError.cancelled
+        await store.ensureUnlockKey()
+        signer.error = nil
+        var changes: [Bool] = []
+        store.onOneTapChanged = { changes.append($0) }
+        store.setUpOneTap()
+        await eventually { unlock.keyId != nil }
+        XCTAssertEqual(signer.signed.map(\.reason), ["Allow one-tap Approve", "Allow one-tap Approve"])
+        XCTAssertEqual(unlock.keyId, "ulk_new")
+        XCTAssertTrue(store.oneTapReady)
+        XCTAssertEqual(changes, [true])
+        // Ready: the button does nothing more.
+        store.setUpOneTap()
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(signer.signed.count, 2)
+    }
+
+    func testEndingTheViewsTaskDoesNotCancelTheEnrollment() async throws {
+        let unlock = FakeUnlockSigner(keyId: nil)
+        let store = oneTapStore(unlock)
+        serveEnrollment { _ in .init(body: #"{"keyId":"ulk_new"}"#) }
+        // RootView's `.task(id: foreground)` ends when the Face ID sheet makes the scene inactive.
+        let view = Task { @MainActor in await store.ensureUnlockKey() }
+        view.cancel()
+        await view.value
+        XCTAssertEqual(signer.signed.count, 1)
+        XCTAssertEqual(unlockKeyPosts().count, 1)
+        XCTAssertEqual(unlock.keyId, "ulk_new")
+        XCTAssertTrue(store.oneTapReady)
     }
 
     func testTurningOneTapOffDeletesTheKeyOnTheServerAndHere() async throws {

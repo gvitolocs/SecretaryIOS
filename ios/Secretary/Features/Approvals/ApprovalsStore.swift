@@ -109,8 +109,20 @@ final class ApprovalsStore {
     @ObservationIgnored let unlockSigner: UnlockApprovalSigning
     /// `oneTapReady` changed (the app registers the notification categories again).
     @ObservationIgnored var onOneTapChanged: ((Bool) -> Void)?
-    /// The automatic enrollment (`ensureUnlockKey`) was tried in this launch: one Face ID prompt at most.
-    @ObservationIgnored private var unlockEnrollTried = false
+    /// Why the last enrollment didn't happen, for Settings (nil: it did, or the owner cancelled Face ID).
+    private(set) var unlockEnrollFailure: String?
+    /// The enrollment on its way, in the store's own task: a view's task that ends (the Face ID sheet makes the scene
+    /// inactive) must not cancel it. One at a time.
+    @ObservationIgnored private var enrollTask: Task<UnlockEnrollResult, Never>?
+    /// The owner cancelled the automatic enrollment's Face ID: no more automatic prompts in this launch.
+    @ObservationIgnored private var unlockEnrollDeclined = false
+    /// `backgroundGeneration` of the automatic enrollment that failed: it is tried again only after a return from the
+    /// background (not on the scene's own return from the Face ID sheet, which would prompt again and again).
+    @ObservationIgnored private var unlockEnrollFailedGeneration: Int?
+    /// The scene is active (the app tells): a register cancelled under the Face ID sheet waits for it to retry.
+    @ObservationIgnored private(set) var sceneActive = true
+    /// Longest wait for the scene to be active again before a cancelled register is retried.
+    @ObservationIgnored var unlockRetryWait: Duration = .seconds(1)
     /// One-tap approves on their way, by request (iOS may run the action twice).
     @ObservationIgnored private var approvingInPlace: Set<String> = []
     @ObservationIgnored let notifier: ApprovalNotifying
@@ -324,6 +336,11 @@ final class ApprovalsStore {
     func sceneBackgrounded() {
         startApprove = nil
         backgroundGeneration += 1
+    }
+
+    /// The scene became active or stopped being active (the Face ID sheet, the app switcher, the background).
+    func sceneActiveChanged(_ active: Bool) {
+        sceneActive = active
     }
 
     /// How a request stands on the server now (nil: unknown, offline).
@@ -836,6 +853,8 @@ final class ApprovalsStore {
             if unlockKeyId == nil, !(await enrollUnlockKey()) {
                 oneTapOn = false
                 defaults.set(false, forKey: Self.oneTapKey)
+                // The switch is off again: its failure goes under the section (the Set up button is gone).
+                if let failure = unlockEnrollFailure { settingsMessage = failure }
             }
         } else {
             await removeUnlockKey()
@@ -844,50 +863,122 @@ final class ApprovalsStore {
     }
 
     /// The app is in front: with the switch on (the default) and no unlock key yet, but this iPhone's Face ID key
-    /// active on the server, enroll it. Once per launch, never over a card or an answer on its way.
+    /// active on the server, enroll it. Never over a card or an answer on its way. A Face ID the owner cancelled ends it
+    /// for this launch; any other failure is tried again the next time the app comes back from the background.
     func ensureUnlockKey() async {
-        guard oneTapOn, unlockKeyId == nil, signer.keyId != nil, !unlockEnrollTried, !isFixture,
+        guard oneTapOn, unlockKeyId == nil, signer.keyId != nil, !unlockEnrollDeclined, enrollTask == nil, !isFixture,
               sheetItem == nil, working == nil else { return }
-        unlockEnrollTried = true
-        await enrollUnlockKey()
+        if let failed = unlockEnrollFailedGeneration, failed == backgroundGeneration { return }
+        let generation = backgroundGeneration
+        switch await enroll() {
+        case .enrolled: unlockEnrollFailedGeneration = nil
+        case .cancelled: unlockEnrollDeclined = true
+        case .failed: unlockEnrollFailedGeneration = generation
+        }
+    }
+
+    /// Settings → Approvals → "Set up one-tap Approve": the enrollment now, whatever the automatic setup did before.
+    func setUpOneTap() {
+        guard oneTapOn, unlockKeyId == nil, enrollTask == nil else { return }
+        Task { await enrollUnlockKey() }
     }
 
     /// Makes the unlock key, has the Face ID key prove it (`secretary-unlock-key-v1\n{thisDeviceId}\n{publicKeyB64}`, one
     /// Face ID prompt: "Allow one-tap Approve") and enrolls it. Returns true when the key is enrolled and saved.
     @discardableResult
     func enrollUnlockKey() async -> Bool {
-        guard let api = api(), signer.keyId != nil, !settingsBusy else { return false }
+        await enroll() == .enrolled
+    }
+
+    enum UnlockEnrollResult: Equatable {
+        case enrolled
+        /// The owner (or the system) cancelled Face ID.
+        case cancelled
+        case failed
+    }
+
+    /// The enrollment in its own task (one at a time; a second caller waits for the same one). Cancelling the caller
+    /// doesn't cancel it.
+    private func enroll() async -> UnlockEnrollResult {
+        if let enrollTask { return await enrollTask.value }
+        let task = Task { await self.runEnrollment() }
+        enrollTask = task
+        let result = await task.value
+        if enrollTask == task { enrollTask = nil }
+        return result
+    }
+
+    private func runEnrollment() async -> UnlockEnrollResult {
+        guard let api = api(), signer.keyId != nil, !settingsBusy else { return .failed }
         settingsBusy = true
         defer { settingsBusy = false }
         do {
-            let latest = try await api.settings()
+            let latest = try await survivingCancel("settings") { try await api.settings() }
             settings = latest
             guard let deviceId = latest.thisDeviceId, !deviceId.isEmpty, latest.serverHasKeyForThisDevice else {
                 // No Face ID key on the server yet (not set up, or waiting for another device's OK): nothing to ask.
                 log.info("unlock key not enrolled: no active Face ID key")
-                return false
+                unlockEnrollFailure = nil
+                return .failed
             }
             let publicKey = try unlockSigner.prepareKey().base64EncodedString()
             let proof = try await signer.sign(ApprovalsAPI.unlockKeyString(deviceId: deviceId, publicKey: publicKey),
                                               reason: String(localized: "Allow one-tap Approve"))
-            let keyId = try await api.registerUnlockKey(publicKey: publicKey, signature: proof.signature)
+            let keyId = try await survivingCancel("register") {
+                try await api.registerUnlockKey(publicKey: publicKey, signature: proof.signature)
+            }
             try unlockSigner.commitKey(keyId: keyId)
             let wasReady = oneTapReady
             unlockKeyId = keyId
+            unlockEnrollFailure = nil
             log.info("unlock key enrolled")
             if oneTapReady != wasReady { onOneTapChanged?(oneTapReady) }
-            return true
+            return .enrolled
         } catch ApprovalSignError.cancelled {
-            return false
+            log.info("unlock key not enrolled: Face ID cancelled")
+            unlockEnrollFailure = nil
+            return .cancelled
         } catch let error as ApprovalSignError {
-            settingsMessage = error.userMessage
-            return false
+            log.error("unlock key not enrolled: \(String(describing: error), privacy: .public)")
+            unlockEnrollFailure = error.userMessage
+            return .failed
         } catch {
             let e = APIError.wrap(error)
             if e.endsSession { onTransportError?(e) }
             log.error("unlock key not enrolled: \(e.status, privacy: .public) \(e.code, privacy: .public)")
-            settingsMessage = e.userMessage
-            return false
+            unlockEnrollFailure = e.userMessage
+            return .failed
+        }
+    }
+
+    /// One of the enrollment's requests (the register after a good signature: the same key and proof, no second Face ID).
+    /// The Face ID sheet makes the scene inactive and the requests in flight may be cancelled with it (or by the
+    /// endpoint race when the app is active again): a cancel that isn't this task's own waits for the scene to be
+    /// active (at most `unlockRetryWait`) and sends it again, up to 3 more times.
+    private func survivingCancel<T>(_ what: StaticString, _ request: () async throws -> T) async throws -> T {
+        var retries = 0
+        while true {
+            do {
+                return try await request()
+            } catch let error where Self.isCancel(error) && !Task.isCancelled && retries < 3 {
+                retries += 1
+                log.info("unlock key not enrolled yet: \(String(describing: what), privacy: .public) cancelled, retrying after cancel (\(retries, privacy: .public))")
+                await waitForActiveScene()
+            }
+        }
+    }
+
+    nonisolated static func isCancel(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        if let url = error as? URLError, url.code == .cancelled { return true }
+        return false
+    }
+
+    private func waitForActiveScene() async {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: unlockRetryWait)
+        while !sceneActive, clock.now < deadline, !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(50))
         }
     }
 
@@ -930,7 +1021,9 @@ final class ApprovalsStore {
         defaults.removeObject(forKey: Self.notifiedKey)
         try? signer.removeKey()
         forgetUnlockKey()
-        unlockEnrollTried = false
+        unlockEnrollDeclined = false
+        unlockEnrollFailedGeneration = nil
+        unlockEnrollFailure = nil
         let notifier = notifier
         Task { await notifier.remove(ids: ids) }
     }
