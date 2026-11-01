@@ -48,6 +48,7 @@ struct StartMemoRecordingIntent: LiveActivityIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult {
+        let trace = DebugEvents.intent("start_memo_recording"); defer { trace.end() }
         guard let start = MemoRecordingCommands.start else {
             throw MemoRecordingCommandError.notInApp
         }
@@ -70,6 +71,7 @@ struct PauseMemoRecordingIntent: LiveActivityIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult {
+        let trace = DebugEvents.intent("pause_memo_recording"); defer { trace.end() }
         MemoRecordingCommands.handle?(.pause)
         return .result()
     }
@@ -80,6 +82,7 @@ struct ResumeMemoRecordingIntent: LiveActivityIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult {
+        let trace = DebugEvents.intent("resume_memo_recording"); defer { trace.end() }
         MemoRecordingCommands.handle?(.resume)
         return .result()
     }
@@ -90,6 +93,7 @@ struct StopMemoRecordingIntent: LiveActivityIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult {
+        let trace = DebugEvents.intent("stop_memo_recording"); defer { trace.end() }
         MemoRecordingCommands.handle?(.stop)
         return .result()
     }

@@ -71,8 +71,21 @@ struct ApprovalsSettingsSection: View {
             .disabled(store.settingsBusy || store.availability == .unsupported || (!store.oneTapOn && !faceIDOn))
             .accessibilityIdentifier("approvalsOneTap")
             if store.oneTapOn, !store.oneTapReady, faceIDOn, store.settingsLoaded {
-                Label("One-tap Approve isn't set up on this iPhone yet. Turn it off and on again.", systemImage: "exclamationmark.shield")
-                    .font(.footnote).foregroundStyle(.secondary)
+                Button {
+                    store.setUpOneTap()
+                } label: {
+                    HStack {
+                        Label("Set up one-tap Approve", systemImage: "hand.tap")
+                        Spacer()
+                        if store.settingsBusy { ProgressView() }
+                    }
+                }
+                .disabled(store.settingsBusy || store.availability == .unsupported)
+                .accessibilityIdentifier("approvalsSetUpOneTap")
+                if let failure = store.unlockEnrollFailure {
+                    Label(failure, systemImage: "exclamationmark.triangle.fill")
+                        .font(.footnote).foregroundStyle(Theme.negative)
+                }
             }
 
             Label(store.hasPin ? "PIN: set" : "PIN: not set", systemImage: "number.square")

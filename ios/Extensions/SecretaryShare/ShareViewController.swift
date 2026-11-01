@@ -59,10 +59,16 @@ final class ShareSheetModel: ObservableObject {
             keepOpenWarning = !ShareRequestBuilder.hasAppGroup && size > ShareRequestBuilder.foregroundWarningBytes
             loaded = !payload.files.isEmpty || !payload.urls.isEmpty || !payload.texts.isEmpty
             if !loaded { throw ShareFailure.empty }
-        } catch { self.error = error.localizedDescription }
+            DebugEvents.record("share.open", ["files": payload.files.count, "links": payload.urls.count, "snippets": payload.texts.count])
+        } catch {
+            DebugEvents.record("share.open", ["ok": false, "error": error])
+            self.error = error.localizedDescription
+        }
     }
 
     func close() {
+        DebugEvents.record("share.close", ["sent": sent])
+        DebugEvents.flushSoon()
         if let staging { try? FileManager.default.removeItem(at: staging) }
         context?.completeRequest(returningItems: nil)
     }
@@ -72,6 +78,7 @@ final class ShareSheetModel: ObservableObject {
     func send(_ intent: String) {
         guard !sending, loaded, hasContent else { return }
         sending = true
+        DebugEvents.record("share.send", ["action": intent, "files": attachments.count, "background": ShareRequestBuilder.hasAppGroup])
         var payload = payload
         payload.files = attachments.map(\.shareFile)
         let meta = PendingAttachment.meta(for: attachments)
@@ -97,10 +104,14 @@ final class ShareSheetModel: ObservableObject {
                     }
                 }
                 LucinaDonations.donate()
+                DebugEvents.record("share.sent", ["action": intent])
                 sent = true
                 try? await Task.sleep(for: .milliseconds(600))
                 close()
-            } catch { self.error = error.localizedDescription; sending = false; progress = nil }
+            } catch {
+                DebugEvents.record("share.sent", ["action": intent, "ok": false, "error": error])
+                self.error = error.localizedDescription; sending = false; progress = nil
+            }
         }
     }
 }

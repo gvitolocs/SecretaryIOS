@@ -182,6 +182,7 @@ struct DenyApprovalIntent: AppIntent {
     }
 
     func perform() async throws -> some IntentResult {
+        let trace = DebugEvents.intent("deny_approval", ["id": approvalId]); defer { trace.end() }
         let before = WidgetStore.read(ApprovalsSection.self)
         WidgetStore.update(ApprovalsSection.self) { section in
             section.items.removeAll { $0.id == approvalId }

@@ -9,6 +9,7 @@ struct SettingsView: View {
     @State private var showQrSignIn = false
     @State private var approvalPrompts = ApprovalsSettingsPrompts()
     @State private var developerTaps = 0
+    @State private var sendDebugEvents = DebugEvents.uploadsEnabled
     @AppStorage("secretary.debug.showDeveloper") private var showDeveloper = false
     @AppStorage(AdultPlugins.key) private var showAdultPlugins = true
     @AppStorage(LucinaVoiceReplies.settingKey) private var voiceReplies = true
@@ -213,6 +214,25 @@ struct SettingsView: View {
                     }
                 Text("Secretary is the owner's personal assistant. Lucina keeps the long-term memory; gym and weight data stay on your own server.")
                     .font(.footnote).foregroundStyle(.secondary)
+                // docs/debug-events.md: taps, notifications, Face ID results and failed requests, never their text.
+                LabeledContent("Build", value: DebugEvents.build)
+                Toggle("Send debug events", isOn: Binding(get: { sendDebugEvents }, set: { on in
+                    DebugEvents.record("ui.tap", ["element": "send_debug_events", "screen": "settings_about", "on": on])
+                    sendDebugEvents = on
+                    DebugEvents.uploadsEnabled = on
+                    if on { DebugEvents.flushSoon() }
+                }))
+                .accessibilityIdentifier("sendDebugEvents")
+                TimelineView(.periodic(from: .now, by: 30)) { _ in
+                    Group {
+                        if let last = DebugEvents.lastUpload {
+                            Text("Debug events last sent \(last.formatted(.relative(presentation: .named)))")
+                        } else {
+                            Text("Debug events not sent yet")
+                        }
+                    }
+                    .font(.footnote).foregroundStyle(.secondary)
+                }
             }
 
             if ServerConfig.isDebugBuild && showDeveloper {

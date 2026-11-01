@@ -50,6 +50,13 @@ final class FakeUnlockSigner: UnlockApprovalSigning, @unchecked Sendable {
     }
 }
 
+/// A counter the stub's handler (any thread) can bump.
+final class RequestCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    func next() -> Int { lock.withLock { value += 1; return value } }
+}
+
 /// Records what would go to `UNUserNotificationCenter`, delivered removals included.
 final class ApprovalFakeCenter: NotificationScheduling, @unchecked Sendable {
     var added: [UNNotificationRequest] = []
@@ -876,7 +883,8 @@ final class ApprovalsTests: XCTestCase {
         XCTAssertEqual(unlock.keyId, "ulk_new")
         XCTAssertTrue(store.oneTapReady)
         XCTAssertEqual(changes, [true])
-        // Once per launch.
+        // Enrolled: nothing more to ask.
+        store.sceneBackgrounded()
         await store.ensureUnlockKey()
         XCTAssertEqual(signer.signed.count, 1)
 
@@ -888,6 +896,128 @@ final class ApprovalsTests: XCTestCase {
         XCTAssertEqual(signer.signed.count, 1)
         XCTAssertFalse(other.oneTapOn)
         XCTAssertNil(pendingKey.keyId)
+    }
+
+    /// The settings with an active Face ID key; the unlock key's POST answered by `register` (by attempt, from 1).
+    private func serveEnrollment(register: @escaping (Int) -> StubURLProtocol.Reply) {
+        let posts = RequestCounter()
+        StubURLProtocol.handler = { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("GET", "/v1/approvals/settings"): return .init(body: settingsJSON(hasPin: false, serverKey: true))
+            case ("POST", "/v1/approvals/unlock-key"): return register(posts.next())
+            default: return .init(body: "{}")
+            }
+        }
+    }
+
+    private func unlockKeyPosts() -> [URLRequest] {
+        StubURLProtocol.requests.filter { $0.httpMethod == "POST" && $0.url?.path == "/v1/approvals/unlock-key" }
+    }
+
+    func testACancelledRegisterAfterTheFaceIDProofIsSentAgainWithoutAnotherFaceID() async throws {
+        let unlock = FakeUnlockSigner(keyId: nil)
+        let store = oneTapStore(unlock)
+        store.unlockRetryWait = .milliseconds(100)
+        // The Face ID sheet made the scene inactive: the first POST is cancelled under it.
+        serveEnrollment { attempt in
+            attempt == 1 ? .init(error: URLError(.cancelled)) : .init(body: #"{"keyId":"ulk_new"}"#)
+        }
+        store.sceneActiveChanged(false)
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(20))
+            store.sceneActiveChanged(true)
+        }
+        await store.ensureUnlockKey()
+        XCTAssertEqual(signer.signed.count, 1, "one Face ID for the same prepared key")
+        XCTAssertEqual(unlockKeyPosts().count, 2)
+        XCTAssertEqual(Set(unlockKeyPosts().map { decodeBody($0)["publicKey"] as? String }).count, 1, "the same key both times")
+        XCTAssertEqual(unlock.keyId, "ulk_new")
+        XCTAssertTrue(store.oneTapReady)
+        XCTAssertNil(store.unlockEnrollFailure)
+
+        // Cancelled every time: 3 retries, then it gives up (and says so).
+        let other = FakeUnlockSigner(keyId: nil)
+        let stubborn = oneTapStore(other)
+        stubborn.unlockRetryWait = .milliseconds(10)
+        StubURLProtocol.requests = []
+        serveEnrollment { _ in .init(error: URLError(.cancelled)) }
+        await stubborn.ensureUnlockKey()
+        XCTAssertEqual(unlockKeyPosts().count, 4)
+        XCTAssertEqual(signer.signed.count, 2)
+        XCTAssertNil(other.keyId)
+        XCTAssertNotNil(stubborn.unlockEnrollFailure)
+    }
+
+    func testCancellingFaceIDForTheAutomaticSetupEndsItForThisLaunch() async throws {
+        let unlock = FakeUnlockSigner(keyId: nil)
+        let store = oneTapStore(unlock)
+        serveEnrollment { _ in .init(body: #"{"keyId":"ulk_new"}"#) }
+        signer.error = ApprovalSignError.cancelled
+        await store.ensureUnlockKey()
+        XCTAssertEqual(signer.signed.count, 1)
+        XCTAssertNil(store.unlockEnrollFailure, "a cancel is no failure to show")
+        signer.error = nil
+        store.sceneBackgrounded()
+        await store.ensureUnlockKey()
+        XCTAssertEqual(signer.signed.count, 1, "no second prompt in this launch")
+        XCTAssertTrue(unlockKeyPosts().isEmpty)
+        XCTAssertNil(unlock.keyId)
+    }
+
+    func testAFailedAutomaticSetupIsTriedAgainOnTheNextForeground() async throws {
+        let unlock = FakeUnlockSigner(keyId: nil)
+        let store = oneTapStore(unlock)
+        serveEnrollment { _ in .init(status: 500, body: #"{"error":{"code":"internal","message":"boom"}}"#) }
+        await store.ensureUnlockKey()
+        XCTAssertEqual(signer.signed.count, 1)
+        XCTAssertNil(unlock.keyId)
+        XCTAssertNotNil(store.unlockEnrollFailure, "Settings shows why")
+        // The scene's own return from the Face ID sheet: not again (it would prompt again and again).
+        await store.ensureUnlockKey()
+        XCTAssertEqual(signer.signed.count, 1)
+        // Back from the background: again.
+        serveEnrollment { _ in .init(body: #"{"keyId":"ulk_new"}"#) }
+        store.sceneBackgrounded()
+        await store.ensureUnlockKey()
+        XCTAssertEqual(signer.signed.count, 2)
+        XCTAssertEqual(unlock.keyId, "ulk_new")
+        XCTAssertNil(store.unlockEnrollFailure)
+    }
+
+    func testTheSetUpButtonEnrollsTheUnlockKey() async throws {
+        let unlock = FakeUnlockSigner(keyId: nil)
+        let store = oneTapStore(unlock)
+        // The automatic setup was cancelled: the button still asks.
+        serveEnrollment { _ in .init(body: #"{"keyId":"ulk_new"}"#) }
+        signer.error = ApprovalSignError.cancelled
+        await store.ensureUnlockKey()
+        signer.error = nil
+        var changes: [Bool] = []
+        store.onOneTapChanged = { changes.append($0) }
+        store.setUpOneTap()
+        await eventually { unlock.keyId != nil }
+        XCTAssertEqual(signer.signed.map(\.reason), ["Allow one-tap Approve", "Allow one-tap Approve"])
+        XCTAssertEqual(unlock.keyId, "ulk_new")
+        XCTAssertTrue(store.oneTapReady)
+        XCTAssertEqual(changes, [true])
+        // Ready: the button does nothing more.
+        store.setUpOneTap()
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(signer.signed.count, 2)
+    }
+
+    func testEndingTheViewsTaskDoesNotCancelTheEnrollment() async throws {
+        let unlock = FakeUnlockSigner(keyId: nil)
+        let store = oneTapStore(unlock)
+        serveEnrollment { _ in .init(body: #"{"keyId":"ulk_new"}"#) }
+        // RootView's `.task(id: foreground)` ends when the Face ID sheet makes the scene inactive.
+        let view = Task { @MainActor in await store.ensureUnlockKey() }
+        view.cancel()
+        await view.value
+        XCTAssertEqual(signer.signed.count, 1)
+        XCTAssertEqual(unlockKeyPosts().count, 1)
+        XCTAssertEqual(unlock.keyId, "ulk_new")
+        XCTAssertTrue(store.oneTapReady)
     }
 
     func testTurningOneTapOffDeletesTheKeyOnTheServerAndHere() async throws {
@@ -999,6 +1129,133 @@ final class ApprovalsTests: XCTestCase {
         _ = try await DenyApprovalActivityIntent(approvalId: "apr_secret", sensitive: true).perform()
         XCTAssertEqual(denied.map(\.0), ["apr_secret"])
         XCTAssertEqual(denied.map(\.1), [true])
+    }
+
+    // MARK: The activity's Approve (the unlock key)
+
+    /// The owner tapped the card's Approve (iOS ran it after Face ID or the passcode).
+    private func activityApprove(_ store: ApprovalsStore, _ id: String = "apr_secret", hash: String = fixtureHash,
+                                 trigger: ApprovalTrigger = .activityApproveButton,
+                                 now: Date = fixtureNow) async -> ApprovalsStore.ActivityApproveOutcome {
+        await store.approveFromActivity(id: id, shownHash: hash, trigger: trigger, now: now)
+    }
+
+    func testTheActivitysApproveWithOneTapReadyAnswersInPlaceWithTheUnlockKey() async throws {
+        let unlock = FakeUnlockSigner()
+        let store = oneTapStore(unlock)
+        var settled: [String: ApprovalOutcome] = [:]
+        store.onSettled = { id, outcome in settled[id] = outcome }
+        serve()
+        let outcome = await activityApprove(store)
+        XCTAssertEqual(outcome, .done, "nothing opens")
+        XCTAssertEqual(unlock.signed, ["secretary-approval-v1\napr_secret\n\(fixtureHash)\napprove"])
+        XCTAssertTrue(signer.signed.isEmpty, "never the Face ID key from the Lock Screen")
+        XCTAssertEqual(decideRequests().count, 1)
+        let body = decodeBody(try XCTUnwrap(decideRequests().first))
+        XCTAssertEqual(body["proof"] as? [String: String], ["keyId": "ulk_1", "signature": "dW5sb2Nr"])
+        XCTAssertEqual(settled["apr_secret"], .approved, "the card ends Approved")
+        XCTAssertNil(store.sheetItem)
+        XCTAssertTrue(notifier.followUps.isEmpty)
+        XCTAssertTrue(notifier.failures.isEmpty)
+
+        // Tapped again once approved by this iPhone: no prompt, no card, nothing sent.
+        serve(status: "approved")
+        let again = await activityApprove(store)
+        XCTAssertEqual(again, .done)
+        XCTAssertEqual(unlock.signed.count, 1)
+        XCTAssertEqual(decideRequests().count, 1)
+        XCTAssertNil(store.sheetItem)
+        XCTAssertTrue(notifier.followUps.isEmpty)
+    }
+
+    func testTheActivitysApproveTappedTwiceDecidesOnce() async throws {
+        let unlock = FakeUnlockSigner()
+        let store = oneTapStore(unlock)
+        serve()
+        let first = Task { @MainActor in await store.approveFromActivity(id: "apr_secret", shownHash: fixtureHash, trigger: .activityApproveButton, now: fixtureNow) }
+        let second = Task { @MainActor in await store.approveFromActivity(id: "apr_secret", shownHash: fixtureHash, trigger: .activityApproveButton, now: fixtureNow) }
+        let outcomes = [await first.value, await second.value]
+        XCTAssertEqual(outcomes, [.done, .done])
+        XCTAssertEqual(unlock.signed.count, 1)
+        XCTAssertEqual(decideRequests().count, 1)
+    }
+
+    func testTheActivitysApproveWithoutTheUnlockKeyContinuesOnTheCard() async throws {
+        serve()
+        let noKey = FakeUnlockSigner(keyId: nil)
+        let noKeyOutcome = await activityApprove(oneTapStore(noKey))
+        XCTAssertEqual(noKeyOutcome, .openCard(startApprove: true), "the card in front, Face ID there")
+        defaults.set(false, forKey: ApprovalsStore.oneTapKey)
+        let off = FakeUnlockSigner()
+        let offOutcome = await activityApprove(oneTapStore(off))
+        XCTAssertEqual(offOutcome, .openCard(startApprove: true), "one-tap switched off: the same")
+        XCTAssertTrue(noKey.signed.isEmpty)
+        XCTAssertTrue(off.signed.isEmpty)
+        XCTAssertTrue(signer.signed.isEmpty, "nothing signed in the background")
+        XCTAssertTrue(decideRequests().isEmpty)
+    }
+
+    func testTheActivitysApproveRefusesAChangedExpiredOrDecidedRequest() async throws {
+        let unlock = FakeUnlockSigner()
+        let store = oneTapStore(unlock)
+        var settled: [String: ApprovalOutcome] = [:]
+        store.onSettled = { id, outcome in settled[id] = outcome }
+        serve()
+        let changed = await activityApprove(store, hash: "sha256:" + String(repeating: "cd", count: 32))
+        XCTAssertEqual(changed, .openCard(startApprove: false), "the new request on the card, no approve step")
+        let expired = await activityApprove(store, now: fixtureNow.addingTimeInterval(600))
+        XCTAssertEqual(expired, .done)
+        XCTAssertEqual(settled["apr_secret"], .expired)
+        serve(status: "denied")
+        let decided = await activityApprove(store)
+        XCTAssertEqual(decided, .done)
+        XCTAssertEqual(settled["apr_secret"], .alreadyDecided(.denied, by: "iPad"))
+        // Only the card's own tap approves.
+        serve()
+        let link = await activityApprove(store, trigger: .activityApproveLink)
+        XCTAssertEqual(link, .done)
+        XCTAssertTrue(unlock.signed.isEmpty)
+        XCTAssertTrue(signer.signed.isEmpty)
+        XCTAssertTrue(decideRequests().isEmpty)
+    }
+
+    func testTheActivitysApproveFallsBackToTheCardWhenTheUnlockKeyFails() async throws {
+        let unlock = FakeUnlockSigner()
+        unlock.error = ApprovalSignError.notSigned(domain: "CryptoTokenKit", code: -5)
+        let store = oneTapStore(unlock)
+        serve()
+        let notSigned = await activityApprove(store)
+        XCTAssertEqual(notSigned, .openCard(startApprove: true))
+        XCTAssertTrue(decideRequests().isEmpty)
+        // The server refuses the key: the card with Face ID, and the key is dropped.
+        unlock.error = nil
+        StubURLProtocol.handler = { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("GET", "/v1/approvals/apr_secret"): return .init(body: itemJSON(id: "apr_secret", sensitive: true))
+            case ("POST", "/v1/approvals/apr_secret/decide"):
+                return .init(status: 403, body: #"{"error":{"code":"biometric_required","message":"no"}}"#)
+            default: return .init(body: "{}")
+            }
+        }
+        let refused = await activityApprove(store)
+        XCTAssertEqual(refused, .openCard(startApprove: true))
+        XCTAssertNil(unlock.keyId)
+        XCTAssertFalse(store.oneTapReady)
+        XCTAssertTrue(signer.signed.isEmpty)
+        XCTAssertTrue(notifier.failures.isEmpty, "the card, not the failure notification")
+    }
+
+    func testTheActivitysApproveIntentCarriesTheCardsTapAndHash() async throws {
+        var approved: [(String, String, ApprovalTrigger)] = []
+        ApprovalActivityCommands.approve = { id, hash, trigger, _ in approved.append((id, hash, trigger)) }
+        defer { ApprovalActivityCommands.approve = nil }
+        _ = try await ApproveApprovalActivityIntent(approvalId: "apr_secret", payloadHash: fixtureHash).perform()
+        XCTAssertEqual(approved.map(\.0), ["apr_secret"])
+        XCTAssertEqual(approved.map(\.1), [fixtureHash])
+        XCTAssertEqual(approved.map(\.2), [.activityApproveButton])
+        XCTAssertEqual(ApprovalActivities.cardOpening(startRequested: true, appActive: false, continued: true), .withApproveStep)
+        XCTAssertEqual(ApprovalActivities.cardOpening(startRequested: true, appActive: false, continued: false), .withoutApproveStep)
+        XCTAssertEqual(ApprovalActivities.handOff(appActive: false, canContinue: true, continueSucceeded: false), .openAndNotify)
     }
 
     // MARK: One alert per request

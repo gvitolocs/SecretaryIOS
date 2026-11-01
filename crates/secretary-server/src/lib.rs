@@ -18,6 +18,7 @@ pub mod cli;
 pub mod computer;
 pub mod desk;
 pub mod config;
+pub mod debug_events;
 pub mod device;
 pub mod devices;
 pub mod engines;
@@ -183,6 +184,8 @@ pub struct Inner {
     pub grant_signer: owner_secrets::GrantSigner,
     /// Owner approvals: requests, grants, audit (`/v1/approvals*`).
     pub approvals: Arc<approvals::Approvals>,
+    /// Debug event log of the owner's apps (`debug-events.jsonl`).
+    pub debug_events: Arc<debug_events::Store>,
 }
 
 #[derive(Clone)]
@@ -257,6 +260,7 @@ impl AppState {
                 &cfg.data_dir,
                 cfg.approvals.clone(),
             )?),
+            debug_events: Arc::new(debug_events::Store::new(&cfg.data_dir)),
         })))
     }
 
@@ -358,6 +362,11 @@ pub fn app(state: AppState) -> Router {
 
     let approvals = approvals::routes(state.clone());
 
+    let debug_events = debug_events::routes().route_layer(middleware::from_fn_with_state(
+        state.clone(),
+        auth::require_device_or_service,
+    ));
+
     let device_events = device::events_routes().route_layer(middleware::from_fn_with_state(
         state.clone(),
         auth::require_device_events,
@@ -370,6 +379,7 @@ pub fn app(state: AppState) -> Router {
         .merge(tasks::routes(state.clone()))
         .merge(calendar)
         .merge(device_events)
+        .merge(debug_events)
         .merge(auth::session_routes())
         .merge(auth::owner_routes())
         .merge(qr_login::public_routes())
