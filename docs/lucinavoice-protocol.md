@@ -219,3 +219,76 @@ normal path as before.
 - **Firmware:** the device's `turn` event keeps `server_ms` as received, so `route` and `ack` pass through the
   existing ingest (they are in the clean-list of span keys); firmware that copies only the five old keys just does
   not report them.
+
+## 7. The "Lucina Voice" chat (one shared thread)
+
+- **Thread:** voice turns get their own timeline channel `voice` and conversation key `voice`, titled "Lucina Voice".
+  It is ONE shared thread for all LucinaVoice devices; each item's `meta.device` and `meta.deviceName` say which
+  speaker heard it.
+  - `voice` joins `lucina-store` `CHANNELS`, `secretary-core` `Channel` and `CHAT_CHANNELS`. The conversation key
+    rule maps `voice` → `voice`, and the title is "Lucina Voice".
+  - secretary-server sends `channel: "voice"` (with `sessionId: "lucinavoice"`) for every `/v1/voice` and
+    `/v1/voice/ws` turn.
+- **What is stored:** text only, no audio. The user item is the transcript and the Lucina item is the spoken reply
+  text. Both carry `meta.voice = {turnId, ms: {…done.ms…}, route: {intent, fast, …}}`, which is enough for the app to
+  show per-turn timing; it holds no transcript beyond `text`.
+- **Memory:** voice items go into Lucina's memory exactly like other channels (timeline ingestion, Honcho, recent-turn
+  context), so a voice conversation is remembered in the main chat and vice versa. The voice channel is treated like
+  the app channels (owner device), not like an external platform: no surface restrictions beyond what the owner's app
+  has.
+- **App:** the chat list shows "Lucina Voice" next to the main chat and the agent chats. A message shows the
+  transcript and the reply, with an expandable timing line (the same spans as the device page). The thread is
+  read-only in the app except for the transcript correction of §8.
+
+## 8. Voice Learn (one shared vocabulary for every speech-to-text path)
+
+- **Storage:** Lucina (lucina-rs) owns the vocabulary in its store (data dir on nezopt). Each entry is
+  `{id, word, soundsLike?: [..], meaning?, lang?: "it"|"en"|"da", createdAt, updatedAt, source: "app"|"correction"}`,
+  with at most 500 entries and 100 characters per field. No audio is stored server-side; an optional phone recording
+  is used only once, to suggest `soundsLike` through STT, and is then discarded.
+- **API:**
+  - lucina-rs: `GET|POST /api/secretary/voice-learn`, `PATCH|DELETE /api/secretary/voice-learn/{id}`.
+  - secretary-server proxies them as `/v1/voice/learn[/{id}]`, owner session or the owner's devices; a LucinaVoice
+    speaker token gets read-only `GET`.
+  - `POST /v1/voice/learn/suggest {transcript, corrected}` returns candidate entries from a transcript edit (the
+    "add to Voice Learn" offer).
+- **Every STT path uses it:**
+  - lucina-memo `/v1/memos/stt` (voice turns), the memo/voice-note worker (chat voice notes from iOS, Mac and web),
+    the prompter, and secretary-server's Gemini fallback.
+  - **Biasing:** the words (plus `soundsLike`) go into the Whisper prompt (`transcribe_prompted` / the whisper-server
+    `prompt` field), at most about 200 tokens, most recently used first. For Gemini, they become a short "Vocabulary:"
+    line in its prompt.
+  - **Post-correction:** after STT, close mishearings of an entry are replaced by its canonical `word`. Matching is by
+    a normalized phonetic and edit-distance check against `word` and `soundsLike`, with a conservative threshold and
+    whole-word only.
+  - **Ambiguity:** when more than one entry is close, or the match is borderline, one Jev choice question ("which of
+    these did the speaker mean: … / none") decides, within a 300 ms budget, failing open to no correction.
+  - **Reporting:** applied corrections are reported back (`corrections: [{from, to}]`).
+- **Meaning:** entries with `meaning` reach Lucina as context on every turn whose text contains the word, e.g.
+  "Skibigårdsvej = the owner's home street". They are also written once to her memory (Honcho conclusions /
+  lucina-memory) when an entry is created or updated, and removed or updated on delete or edit.
+- **Learn from corrections:** editing a transcript in the Lucina Voice chat offers "add to Voice Learn" with the
+  suggested entry.
+- **Accuracy check:** a reproducible bench with Kokoro-generated clips of the entries (it/da/en voices, including a
+  voice-note style clip through the memo path), measured without and with the vocabulary. It reports the word hit rate.
+
+## 9. Layered Jev decisions (voice turns)
+
+Every layer has a fixed facts-only state, a budget of at most 400 ms, runs concurrently with other work where it
+can, and fails open. A voice turn makes at most 3 Jev calls, and the jev-keyproxy caps apply. Each layer's
+`{layer, verdict, confidence, ms, used}` goes into the turn's `route.layers` (SSE `route` event, `done.ms`, the
+timeline `meta.voice`, the telemetry turn record), so the device page and the chat show which layers fired.
+
+- **Kept:**
+  - `intent`: quick command, tool or chat, and which intent (§6).
+  - `slots`: a confirm for quick-command slots, only when the deterministic parser is unsure.
+  - `confirm`: whether a risky voice action (purchase, message to someone else, delete) must be confirmed by voice
+    first.
+  - `vocab`: the "did they mean X" choice of §8, only on ambiguity.
+- **Not kept:**
+  - End-of-turn: push-to-talk release is the endpoint, and in vad mode an energy VAD is free while a Jev call costs
+    about 200 ms per check.
+  - Barge-in: the device mic is off during playback; a button press is the barge-in.
+  - Language: Whisper already detects it.
+  - Reply length: the `voice: true` rule already sets it.
+  - Filler decision: derived from the intent, with no extra call.
