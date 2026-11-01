@@ -16,13 +16,29 @@ export type RichBlock =
   | { type: "steps"; title?: string; items: string[] }
   | { type: "quote"; text: string; cite?: string }
   | { type: "link_preview"; url: string; title: string }
+  | { type: "image"; src: string; alt: string; caption?: string; width?: number; height?: number }
   | ({ type: "place" } & PlaceInfo);
 
 export type RichAction =
   | { id: string; label: string; emoji?: string; kind: "reply"; payload: { text: string; prefill?: boolean } }
   | { id: string; label: string; emoji?: string; kind: "route"; payload: { path: string } }
   | { id: string; label: string; emoji?: string; kind: "confirm"; payload: { answer: "yes" | "no" | "edit"; text?: string } }
-  | { id: string; label: string; emoji?: string; kind: "dismiss"; payload: Record<string, never> };
+  | { id: string; label: string; emoji?: string; kind: "dismiss"; payload: Record<string, never> }
+  | { id: string; label: string; emoji?: string; kind: "secret"; payload: SecretActionPayload };
+
+/** Opens the "Add secret" sheet. Names only: a value never travels in a message. */
+export interface SecretActionPayload {
+  mode: "save" | "project";
+  name?: string;
+  project?: string;
+  environment?: string;
+  path?: string;
+  /** `/secret` target text (`poko`, `poko/prod/Pokobot`). */
+  target?: string;
+  /** A value Lucina holds in memory for the owner (the sheet sends the id). */
+  held?: string;
+  projectName?: string;
+}
 
 export interface RichMessage {
   format: "v1";
@@ -41,6 +57,18 @@ export const MAX_TABLE_COLUMNS = 4;
 export const MAX_TABLE_ROWS = 6;
 /** Place blocks per message (they count against MAX_BLOCKS too). */
 export const MAX_PLACES = 3;
+/** Image blocks per message (they count against MAX_BLOCKS too). */
+export const MAX_IMAGES = 2;
+
+/** An image `src`: a path of this server's API (`/v1/…`) or https on getsecretary.tech; never `..` or `//`. */
+const IMAGE_PATH = /^\/v1\/[A-Za-z0-9/_\-.%?=&~]{1,296}$/;
+
+export function validImageSrc(src: string): boolean {
+  if (!src || src.length > 300 || src.includes("..")) return false;
+  if (IMAGE_PATH.test(src)) return !src.includes("//");
+  const host = /^https:\/\/getsecretary\.tech(\/[A-Za-z0-9/_\-.%?=&~]*)?$/.exec(src);
+  return !!host && !(host[1] ?? "").includes("//");
+}
 
 type Raw = Record<string, unknown>;
 
@@ -206,6 +234,18 @@ function parseBlock(v: unknown): RichBlock | null {
       const place = parsePlace(b);
       return place ? { type: "place", ...place } : null;
     }
+    case "image": {
+      const src = typeof b.src === "string" ? b.src.trim() : "";
+      if (!validImageSrc(src)) return null;
+      const caption = line(b.caption, 200);
+      const image: RichBlock & { type: "image" } = { type: "image", src, alt: line(b.alt, 200) || caption };
+      if (caption) image.caption = caption;
+      for (const key of ["width", "height"] as const) {
+        const n = b[key];
+        if (Number.isInteger(n) && (n as number) > 0 && (n as number) <= 4096) image[key] = n as number;
+      }
+      return image;
+    }
     default:
       return null;
   }
@@ -245,6 +285,18 @@ function parseAction(v: unknown, index: number): RichAction | null {
     }
     case "dismiss":
       return { ...base, kind: "dismiss", payload: {} };
+    case "secret": {
+      if (p.mode !== "save" && p.mode !== "project") return null;
+      const payload: SecretActionPayload = { mode: p.mode };
+      const NAME = /^[A-Za-z0-9_.@/-]{1,256}$/;
+      for (const k of ["name", "project", "environment", "path", "target", "held"] as const) {
+        const v = p[k];
+        if (typeof v === "string" && NAME.test(v)) payload[k] = v;
+      }
+      const projectName = line(p.projectName, 64);
+      if (projectName) payload.projectName = projectName;
+      return { ...base, kind: "secret", payload };
+    }
     default:
       return null;
   }
@@ -260,9 +312,13 @@ export function parseRich(raw: unknown): RichMessage | null {
     .slice(0, MAX_BUBBLES);
   if (!bubbles.length) return null;
   let places = 0;
+  let images = 0;
   const blocks = arr(m.blocks)
     .map(parseBlock)
-    .filter((b): b is RichBlock => !!b && (b.type !== "place" || ++places <= MAX_PLACES))
+    .filter(
+      (b): b is RichBlock =>
+        !!b && (b.type !== "place" || ++places <= MAX_PLACES) && (b.type !== "image" || ++images <= MAX_IMAGES),
+    )
     .slice(0, MAX_BLOCKS);
   const actions: RichAction[] = [];
   const ids = new Set<string>();

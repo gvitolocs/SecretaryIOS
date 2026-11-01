@@ -1,0 +1,45 @@
+[package]
+name = "lucina-agentd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Lucina Agents daemon (Paseo rebuilt in Rust): agent supervisor, providers, timelines, the unix-socket API, and the lagent CLI"
+
+[[bin]]
+name = "lucina-agentd"
+path = "src/bin/lucina-agentd.rs"
+
+[[bin]]
+name = "lagent"
+path = "src/bin/lagent.rs"
+
+[dependencies]
+lucina-agents = { path = "../lucina-agents" }
+lucina-approvals = { path = "../lucina-approvals" }
+async-trait = { workspace = true }
+axum = "0.8"
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+regex = "1"
+reqwest = { workspace = true, features = ["stream"] }
+base64 = "0.22"
+portable-pty = "0.9"
+vt100 = "0.15"
+sha2 = "0.10"
+futures-util = "0.3"
+tempfile = "3"
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { version = "0.1", features = ["sync"] }
+toml = "=1.1.6"
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { workspace = true }
+
+[dev-dependencies]
+lucina-approvals = { path = "../lucina-approvals", features = ["testing"] }
+tempfile = "3"

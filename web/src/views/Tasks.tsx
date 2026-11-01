@@ -21,6 +21,21 @@ import {
   UpcomingIcon,
   CalendarIcon,
 } from "../components/Icons";
+import {
+  Card,
+  EmptyState as PageEmptyState,
+  ErrorState,
+  ListRow,
+  LoadingState,
+  Page,
+  PageGrid,
+  PageHeader,
+  PrimaryAction,
+  RowList,
+  SectionNav,
+  Sheet,
+  useWide,
+} from "../components/page";
 import { locale, t } from "../i18n";
 import {
   actionError,
@@ -335,6 +350,7 @@ function ParsedChips(props: { parsed: Parsed | null; today: string }) {
 }
 
 function QuickAdd(props: {
+  desk?: boolean;
   today: string;
   projectId?: string;
   sectionId?: string;
@@ -384,7 +400,7 @@ function QuickAdd(props: {
 
   return (
     <form
-      class="quick-add"
+      class={props.desk ? "tasks-desk-add" : "quick-add"}
       onSubmit={(e) => void submit(e)}
       onKeyDown={(e) => {
         if (e.key === "Escape") {
@@ -395,7 +411,7 @@ function QuickAdd(props: {
     >
       <input
         ref={input}
-        class="qa-input"
+        class={props.desk ? "pg-input" : "qa-input"}
         type="text"
         placeholder={t("tasks.taskName")}
         aria-label={t("tasks.taskName")}
@@ -406,7 +422,7 @@ function QuickAdd(props: {
         enterkeyhint="done"
       />
       <input
-        class="qa-desc"
+        class={props.desk ? "pg-input" : "qa-desc"}
         type="text"
         placeholder={t("tasks.description")}
         aria-label={t("tasks.description")}
@@ -418,10 +434,10 @@ function QuickAdd(props: {
       <ParsedChips parsed={parsed()} today={props.today} />
       <p class="qa-hint">{t("tasks.quickAddHint")}</p>
       <div class="qa-actions">
-        <button type="button" class="btn btn--small" onClick={() => props.onDone()}>
+        <button type="button" class={props.desk ? "pg-btn" : "btn btn--small"} onClick={() => props.onDone()}>
           {t("tasks.cancel")}
         </button>
-        <button type="submit" class="btn btn--small btn--primary" disabled={!text().trim() || pending()}>
+        <button type="submit" class={props.desk ? "pg-btn" : "btn btn--small btn--primary"} disabled={!text().trim() || pending()}>
           {t("tasks.addTask")}
         </button>
       </div>
@@ -429,27 +445,44 @@ function QuickAdd(props: {
   );
 }
 
-function InlineAdd(props: { today: string; projectId?: string; sectionId?: string; defaultDue?: string }) {
+function InlineAdd(props: { desk?: boolean; today: string; projectId?: string; sectionId?: string; defaultDue?: string }) {
   const [open, setOpen] = createSignal(false);
+  const form = () => (
+    <QuickAdd
+      desk={props.desk}
+      today={props.today}
+      projectId={props.projectId}
+      sectionId={props.sectionId}
+      defaultDue={props.defaultDue}
+      onDone={() => setOpen(false)}
+    />
+  );
   return (
     <Show
-      when={open()}
+      when={props.desk}
       fallback={
-        <button type="button" class="add-task-row" onClick={() => setOpen(true)}>
-          <span class="add-task-plus">
-            <PlusIcon />
-          </span>
-          {t("tasks.addTask")}
-        </button>
+        <Show
+          when={open()}
+          fallback={
+            <button type="button" class="add-task-row" onClick={() => setOpen(true)}>
+              <span class="add-task-plus">
+                <PlusIcon />
+              </span>
+              {t("tasks.addTask")}
+            </button>
+          }
+        >
+          <QuickAdd today={props.today} projectId={props.projectId} sectionId={props.sectionId} defaultDue={props.defaultDue} onDone={() => setOpen(false)} />
+        </Show>
       }
     >
-      <QuickAdd
-        today={props.today}
-        projectId={props.projectId}
-        sectionId={props.sectionId}
-        defaultDue={props.defaultDue}
-        onDone={() => setOpen(false)}
-      />
+      <button type="button" class="pg-btn pg-btn--ghost" onClick={() => setOpen(true)}>
+        <PlusIcon />
+        {t("tasks.addTask")}
+      </button>
+      <Sheet open={open()} title={t("tasks.quickAddTitle")} onClose={() => setOpen(false)}>
+        {form()}
+      </Sheet>
     </Show>
   );
 }
@@ -469,11 +502,128 @@ async function toggle(task: TaskView) {
     return;
   }
   const r = await run({ type: "complete", task_id: task.id });
-  if (r) showToast({ text: t("tasks.completedToast"), undo: { type: "uncomplete", task_id: task.id } });
+  if (r)
+    showToast({
+      text: t("tasks.completedToast"),
+      undo: { type: "uncomplete", task_id: task.id },
+    });
 }
 
-function TaskRow(props: { task: TaskView; h: RowHandlers; depth?: number }) {
+function TaskMetadata(props: { task: TaskView; today: string }) {
   const task = () => props.task;
+  return (
+    <>
+      <DueChip task={task()} today={props.today} />
+      <Show when={task().subtasks > 0}>
+        <span class="task-sub">
+          <SubtaskIcon />
+          {t("tasks.subtaskCount", {
+            done: task().subtasks_done,
+            total: task().subtasks,
+          })}
+        </span>
+      </Show>
+      <For each={task().labels}>
+        {(l) => (
+          <span class="task-label">
+            <TagIcon />
+            {l}
+          </span>
+        )}
+      </For>
+      <Show when={task().deadline}>
+        {(d) => (
+          <span class="task-deadline">
+            {t("tasks.deadline", {
+              date: dayMonth(d(), props.today),
+            })}
+          </span>
+        )}
+      </Show>
+      <Show when={task().parent_content}>
+        {(p) => (
+          <span class="task-parent">
+            <SubtaskIcon />
+            {p()}
+          </span>
+        )}
+      </Show>
+      <Show when={task().pending}>
+        <span class="task-pending" title={t("tasks.waitingTodoist")}>
+          <RefreshIcon />
+        </span>
+      </Show>
+    </>
+  );
+}
+
+function TaskRow(props: { task: TaskView; h: RowHandlers; depth?: number; desk?: boolean }) {
+  const task = () => props.task;
+  if (props.desk) {
+    return (
+      <>
+        <ListRow
+          class={`${task().checked ? "tasks-desk-row--done" : ""} ${task().pending ? "tasks-desk-row--pending" : ""} ${(props.depth ?? 0) > 0 ? "tasks-desk-row--child" : ""}`}
+          leading={<Checkbox task={task()} onToggle={() => void toggle(task())} />}
+          title={
+            <button type="button" class="pg-link tasks-desk-open" aria-label={`${t("tasks.openTask")}: ${task().content}`} onClick={() => props.h.open(task())}>
+              {task().content}
+            </button>
+          }
+          sub={
+            <>
+              <Show when={task().description}>
+                <span>{task().description.split("\n")[0]}</span>
+              </Show>
+              <TaskMetadata task={task()} today={props.h.today()} />
+            </>
+          }
+          meta={
+            <span class="tasks-desk-meta">
+              <Show when={props.h.showProject}>
+                <span>
+                  {task().project_name}
+                  <Show when={task().section_name}>{(name) => <> / {name()}</>}</Show>
+                </span>
+              </Show>
+              <Show when={task().priority < 4}>
+                <span>{t("tasks.priorityN", { n: task().priority })}</span>
+              </Show>
+            </span>
+          }
+          trailing={
+            <>
+              <button
+                type="button"
+                class="pg-icon-btn"
+                aria-label={t("tasks.edit")}
+                title={t("tasks.edit")}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  props.h.open(task());
+                }}
+              >
+                <EditIcon />
+              </button>
+              <button
+                type="button"
+                class="pg-icon-btn"
+                aria-label={t("tasks.dueDate")}
+                title={t("tasks.dueDate")}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  props.h.schedule(task());
+                }}
+              >
+                <CalendarIcon />
+              </button>
+            </>
+          }
+        />
+        <For each={task().children}>{(child) => <TaskRow task={child} h={props.h} desk depth={(props.depth ?? 0) + 1} />}</For>
+      </>
+    );
+  }
   return (
     <li class="task-item" classList={{ "task-item--child": (props.depth ?? 0) > 0 }}>
       <div
@@ -493,39 +643,7 @@ function TaskRow(props: { task: TaskView; h: RowHandlers; depth?: number }) {
           <Show when={task().description}>
             <span class="task-desc">{task().description.split("\n")[0]}</span>
           </Show>
-          <div class="task-meta">
-            <DueChip task={task()} today={props.h.today()} />
-            <Show when={task().subtasks > 0}>
-              <span class="task-sub">
-                <SubtaskIcon />
-                {t("tasks.subtaskCount", { done: task().subtasks_done, total: task().subtasks })}
-              </span>
-            </Show>
-            <For each={task().labels}>
-              {(l) => (
-                <span class="task-label">
-                  <TagIcon />
-                  {l}
-                </span>
-              )}
-            </For>
-            <Show when={task().deadline}>
-              {(d) => <span class="task-deadline">{t("tasks.deadline", { date: dayMonth(d(), props.h.today()) })}</span>}
-            </Show>
-            <Show when={task().parent_content}>
-              {(p) => (
-                <span class="task-parent">
-                  <SubtaskIcon />
-                  {p()}
-                </span>
-              )}
-            </Show>
-            <Show when={task().pending}>
-              <span class="task-pending" title={t("tasks.waitingTodoist")}>
-                <RefreshIcon />
-              </span>
-            </Show>
-          </div>
+          <div class="task-meta"><TaskMetadata task={task()} today={props.h.today()} /></div>
         </div>
         <Show when={props.h.showProject}>
           <span class="task-project" data-color={projectColor(task().project_color)}>
@@ -908,7 +1026,7 @@ function Sidebar(props: { data: TasksView | null; section: string; id?: string; 
   );
 }
 
-function SyncLine(props: { data: TasksView | null }) {
+function SyncLine(props: { data: TasksView | null; desk?: boolean }) {
   const [err, setErr] = createSignal<string | null>(null);
   const s = () => props.data?.sync;
   return (
@@ -927,7 +1045,9 @@ function SyncLine(props: { data: TasksView | null }) {
                     : sync().status === "error"
                       ? t("tasks.syncError", { error: sync().error ?? "" })
                       : sync().last_sync_ms
-                        ? t("tasks.syncOk", { time: relativeTime(sync().last_sync_ms as number) })
+                        ? t("tasks.syncOk", {
+                            time: relativeTime(sync().last_sync_ms as number),
+                          })
                         : t("tasks.syncNever")}
               <Show when={sync().pending > 0 && sync().status !== "disconnected"}>
                 {" · "}
@@ -939,7 +1059,7 @@ function SyncLine(props: { data: TasksView | null }) {
               fallback={
                 <button
                   type="button"
-                  class="btn btn--small tasks-sync-btn"
+                  class={props.desk ? "pg-btn" : "btn btn--small tasks-sync-btn"}
                   classList={{ "is-spinning": syncing() }}
                   disabled={syncing()}
                   onClick={async () => setErr(await syncNow())}
@@ -949,7 +1069,7 @@ function SyncLine(props: { data: TasksView | null }) {
                 </button>
               }
             >
-              <A href="/links" class="btn btn--small btn--primary">
+              <A href="/links" class={props.desk ? "pg-btn" : "btn btn--small btn--primary"}>
                 {t("tasks.connectInLinks")}
               </A>
             </Show>
@@ -963,120 +1083,228 @@ function SyncLine(props: { data: TasksView | null }) {
 
 // ---------------------------------------------------------------- pages
 
-function FiltersLabels(props: { data: TasksView }) {
+function FiltersLabels(props: { data: TasksView; desk?: boolean }) {
   return (
-    <div class="fl-page">
-      <section class="fl-section">
-        <h2 class="tasks-group-title">{t("tasks.filters")}</h2>
-        <Show when={props.data.filters.length > 0} fallback={<p class="muted small">{t("tasks.noFilters")}</p>}>
-          <ul class="fl-list">
-            <For each={props.data.filters}>
-              {(f) => (
-                <li>
-                  <A href={`/tasks/filter/${encodeURIComponent(f.id)}`} class="fl-item">
-                    <span class="fl-icon" data-color={projectColor(f.color)}>
-                      <FiltersIcon />
-                    </span>
-                    <span class="fl-name">{f.name}</span>
-                    <span class="fl-query">{f.query}</span>
-                    <span class="tasks-nav-count">{f.count || ""}</span>
-                  </A>
-                </li>
-              )}
-            </For>
-          </ul>
-        </Show>
-      </section>
-      <section class="fl-section">
-        <h2 class="tasks-group-title">{t("tasks.labels")}</h2>
-        <Show when={props.data.labels.length > 0} fallback={<p class="muted small">{t("tasks.noLabels")}</p>}>
-          <ul class="fl-list">
-            <For each={props.data.labels}>
-              {(l) => (
-                <li>
-                  <A href={`/tasks/label/${encodeURIComponent(l.name)}`} class="fl-item">
-                    <span class="fl-icon" data-color={projectColor(l.color)}>
-                      <TagIcon />
-                    </span>
-                    <span class="fl-name">{l.name}</span>
-                    <span class="tasks-nav-count">{l.count || ""}</span>
-                  </A>
-                </li>
-              )}
-            </For>
-          </ul>
-        </Show>
-      </section>
-    </div>
+    <Show
+      when={props.desk}
+      fallback={
+        <div class="fl-page">
+          <section class="fl-section">
+            <h2 class="tasks-group-title">{t("tasks.filters")}</h2>
+            <Show when={props.data.filters.length > 0} fallback={<p class="muted small">{t("tasks.noFilters")}</p>}>
+              <ul class="fl-list">
+                <For each={props.data.filters}>
+                  {(f) => (
+                    <li>
+                      <A href={`/tasks/filter/${encodeURIComponent(f.id)}`} class="fl-item">
+                        <span class="fl-icon" data-color={projectColor(f.color)}>
+                          <FiltersIcon />
+                        </span>
+                        <span class="fl-name">{f.name}</span>
+                        <span class="fl-query">{f.query}</span>
+                        <span class="tasks-nav-count">{f.count || ""}</span>
+                      </A>
+                    </li>
+                  )}
+                </For>
+              </ul>
+            </Show>
+          </section>
+          <section class="fl-section">
+            <h2 class="tasks-group-title">{t("tasks.labels")}</h2>
+            <Show when={props.data.labels.length > 0} fallback={<p class="muted small">{t("tasks.noLabels")}</p>}>
+              <ul class="fl-list">
+                <For each={props.data.labels}>
+                  {(l) => (
+                    <li>
+                      <A href={`/tasks/label/${encodeURIComponent(l.name)}`} class="fl-item">
+                        <span class="fl-icon" data-color={projectColor(l.color)}>
+                          <TagIcon />
+                        </span>
+                        <span class="fl-name">{l.name}</span>
+                        <span class="tasks-nav-count">{l.count || ""}</span>
+                      </A>
+                    </li>
+                  )}
+                </For>
+              </ul>
+            </Show>
+          </section>
+        </div>
+      }
+    >
+      <For each={["filters", "labels"] as const}>
+        {(kind) => (
+          <Card list title={t(`tasks.${kind}`)}>
+            <Show when={props.data[kind].length} fallback={<PageEmptyState text={t(kind === "filters" ? "tasks.noFilters" : "tasks.noLabels")} />}>
+              <RowList>
+                <For each={props.data[kind]}>
+                  {(item) => (
+                    <ListRow
+                      title={item.name}
+                      href={`/tasks/${kind === "filters" ? "filter" : "label"}/${encodeURIComponent(kind === "filters" ? item.id : item.name)}`}
+                      sub={item.query}
+                      meta={item.count || ""}
+                      leading={kind === "filters" ? <FiltersIcon /> : <TagIcon />}
+                    />
+                  )}
+                </For>
+              </RowList>
+            </Show>
+          </Card>
+        )}
+      </For>
+    </Show>
   );
 }
 
-function GroupBlock(props: {
-  g: Group;
-  data: TasksView;
-  h: RowHandlers;
-  hidden: Set<string>;
-  onReschedule: () => void;
-}) {
+function GroupBlock(props: { g: Group; data: TasksView; h: RowHandlers; hidden: Set<string>; onReschedule: () => void; desk?: boolean }) {
   const tasks = createMemo(() => props.g.tasks.filter((x) => !props.hidden.has(x.id) && !props.data.undo.includes(x.id)));
   const kind = () => props.data.list.kind;
   const addable = () => props.g.kind !== "overdue" && props.g.kind !== "completed" && kind() !== "search" && kind() !== "filter" && kind() !== "label";
   const title = () =>
-    props.g.kind === "overdue" ? t("tasks.overdue") : props.g.kind === "date" || props.g.kind === "completed" ? dateHeader(props.g, props.data.today) : props.g.title;
+    props.g.kind === "overdue"
+      ? t("tasks.overdue")
+      : props.g.kind === "date" || props.g.kind === "completed"
+        ? dateHeader(props.g, props.data.today)
+        : props.g.title;
   const defaultDue = () => (props.g.kind === "date" && props.g.date ? (props.g.rel_days === 0 ? "today" : props.g.date) : undefined);
-  return (
-    <section class={`tasks-group tasks-group--${props.g.kind}`} aria-label={title() || undefined}>
-      <Show when={title()}>
-        <header class="tasks-group-head">
-          <h2 class="tasks-group-title">
-            {title()}
-            <Show when={props.g.kind !== "date" || tasks().length > 0}>
-              <span class="tasks-group-count">{tasks().length || ""}</span>
-            </Show>
-          </h2>
-          <Show when={props.g.kind === "overdue"}>
-            <button type="button" class="link-btn tasks-reschedule" onClick={() => props.onReschedule()}>
-              {t("tasks.reschedule")}
-            </button>
+
+  const head = () => (
+    <Show when={title()}>
+      <header class={props.desk ? "pg-card-head tasks-desk-group-head" : "tasks-group-head"}>
+        <h2 class={props.desk ? "pg-card-title" : "tasks-group-title"}>
+          {title()}
+          <Show when={props.g.kind !== "date" || tasks().length > 0}>
+            <span class="tasks-group-count">{tasks().length || ""}</span>
           </Show>
-        </header>
-      </Show>
-      <ul class="task-list">
-        <For each={tasks()}>{(task) => <TaskRow task={task} h={props.h} />}</For>
-      </ul>
-      <Show when={addable()}>
-        <InlineAdd
-          today={props.data.today}
-          defaultDue={defaultDue()}
-          projectId={kind() === "project" || kind() === "inbox" ? props.data.list.id : undefined}
-          sectionId={props.g.kind === "section" ? props.g.key : undefined}
-        />
-      </Show>
-    </section>
+        </h2>
+        <Show when={props.g.kind === "overdue"}>
+          <button type="button" class={props.desk ? "pg-btn pg-btn--ghost" : "link-btn tasks-reschedule"} onClick={() => props.onReschedule()}>
+            {t("tasks.reschedule")}
+          </button>
+        </Show>
+      </header>
+    </Show>
+  );
+
+  const rows = () => (
+    <Show
+      when={props.desk}
+      fallback={
+        <ul class="task-list">
+          <For each={tasks()}>{(task) => <TaskRow task={task} h={props.h} desk={false} />}</For>
+        </ul>
+      }
+    >
+      <RowList label={title() || undefined}>
+        <For each={tasks()}>{(task) => <TaskRow task={task} h={props.h} desk={true} />}</For>
+      </RowList>
+    </Show>
+  );
+
+  const add = () => (
+    <Show when={addable()}>
+      <InlineAdd
+        desk={props.desk}
+        today={props.data.today}
+        defaultDue={defaultDue()}
+        projectId={kind() === "project" || kind() === "inbox" ? props.data.list.id : undefined}
+        sectionId={props.g.kind === "section" ? props.g.key : undefined}
+      />
+    </Show>
+  );
+
+  return (
+    <Show
+      when={props.desk}
+      fallback={
+        <section class={`tasks-group tasks-group--${props.g.kind}`} aria-label={title() || undefined}>
+          {head()}
+          {rows()}
+          {add()}
+        </section>
+      }
+    >
+      <Card list label={title() || undefined}>
+        {head()}
+        {rows()}
+        {add()}
+      </Card>
+    </Show>
   );
 }
 
-function Empty(props: { kind: string; q?: string }) {
+function Empty(props: { kind: string; q?: string; desk?: boolean }) {
+  const text = () =>
+    props.kind === "today"
+      ? t("tasks.emptyToday")
+      : props.kind === "inbox"
+        ? t("tasks.emptyInbox")
+        : props.kind === "completed"
+          ? t("tasks.completedEmpty")
+          : props.kind === "search" && props.q
+            ? t("tasks.noResults", { q: props.q })
+            : t("tasks.emptyList");
   return (
-    <div class="tasks-empty">
-      <span class="tasks-empty-art" aria-hidden="true">
-        <CheckCircleIcon />
-      </span>
-      <p class="empty-title">
-        {props.kind === "today"
-          ? t("tasks.emptyToday")
-          : props.kind === "inbox"
-            ? t("tasks.emptyInbox")
-            : props.kind === "completed"
-              ? t("tasks.completedEmpty")
-              : props.kind === "search" && props.q
-                ? t("tasks.noResults", { q: props.q })
-                : t("tasks.emptyList")}
-      </p>
-      <Show when={props.kind === "today"}>
-        <p class="muted small">{t("tasks.emptyTodaySub")}</p>
-      </Show>
-    </div>
+    <Show
+      when={props.desk}
+      fallback={
+        <div class="tasks-empty">
+          <span class="tasks-empty-art" aria-hidden="true">
+            <CheckCircleIcon />
+          </span>
+          <p class="empty-title">{text()}</p>
+          <Show when={props.kind === "today"}>
+            <p class="muted small">{t("tasks.emptyTodaySub")}</p>
+          </Show>
+        </div>
+      }
+    >
+      <PageEmptyState title={props.kind === "today" ? text() : undefined} text={props.kind === "today" ? t("tasks.emptyTodaySub") : text()} />
+    </Show>
+  );
+}
+
+function TasksSectionNav(props: { section: string }) {
+  const filtersCurrent = () => props.section === "filters" || props.section === "label" || props.section === "filter";
+  return (
+    <SectionNav
+      label={t("tasks.title")}
+      items={[
+        {
+          href: "/tasks/inbox",
+          label: t("tasks.inbox"),
+          current: props.section === "inbox",
+        },
+        {
+          href: "/tasks",
+          label: t("tasks.today"),
+          current: props.section === "today",
+        },
+        {
+          href: "/tasks/upcoming",
+          label: t("tasks.upcoming"),
+          current: props.section === "upcoming",
+        },
+        {
+          href: "/tasks/filters",
+          label: t("tasks.filtersLabels"),
+          current: filtersCurrent(),
+        },
+        {
+          href: "/tasks/completed",
+          label: t("tasks.completed"),
+          current: props.section === "completed",
+        },
+        {
+          href: "/tasks/search",
+          label: t("tasks.search"),
+          current: props.section === "search",
+          icon: <SearchIcon />,
+        },
+      ]}
+    />
   );
 }
 
@@ -1140,7 +1368,13 @@ export default function TasksView() {
         return;
       }
       if (Date.now() - gPressed < 1200) {
-        const to: Record<string, string> = { t: "/tasks", i: "/tasks/inbox", u: "/tasks/upcoming", f: "/tasks/filters", c: "/tasks/completed" };
+        const to: Record<string, string> = {
+          t: "/tasks",
+          i: "/tasks/inbox",
+          u: "/tasks/upcoming",
+          f: "/tasks/filters",
+          c: "/tasks/completed",
+        };
         const dest = to[e.key.toLowerCase()];
         gPressed = 0;
         if (dest) {
@@ -1179,7 +1413,10 @@ export default function TasksView() {
     const d = data();
     if (!d) return 0;
     const n = (x: TaskView): number => 1 + (x.children ?? []).reduce((a, c) => a + n(c), 0);
-    return d.list.groups.flatMap((g) => g.tasks).filter((x) => !hidden().has(x.id) && !d.undo.includes(x.id)).reduce((a, x) => a + n(x), 0);
+    return d.list.groups
+      .flatMap((g) => g.tasks)
+      .filter((x) => !hidden().has(x.id) && !d.undo.includes(x.id))
+      .reduce((a, x) => a + n(x), 0);
   });
   const findTask = (id: string): TaskView | null => {
     const d = data();
@@ -1245,185 +1482,332 @@ export default function TasksView() {
   const subtitleDate = () => {
     const d = data();
     if (!d || section() !== "today") return null;
-    return parseDay(d.today).toLocaleDateString(locale(), { weekday: "long", day: "numeric", month: "long" });
+    return parseDay(d.today).toLocaleDateString(locale(), {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+    });
   };
 
-  return (
-    <div class="tasks" classList={{ "tasks--menu": menuOpen() }}>
-      <div class="tasks-inner">
-        <div class="tasks-scrim" onClick={() => setMenuOpen(false)} aria-hidden="true" />
-        <Sidebar
-          data={data()}
-          section={section()}
-          id={params.id ? decodeURIComponent(params.id) : undefined}
-          onQuickAdd={() => {
-            setMenuOpen(false);
-            setQuickOpen(true);
-          }}
-          onNavigate={() => setMenuOpen(false)}
-        />
-        <main class="tasks-main" aria-labelledby="tasks-title">
-          <header class="tasks-head">
-            <button type="button" class="icon-btn tasks-menu-btn" aria-label={t("tasks.menu")} onClick={() => setMenuOpen(!menuOpen())}>
-              <MenuIcon />
+  const measured = useWide();
+  const wide = measured.wide;
+
+  const taskContext = createMemo(() => {
+    const parts: string[] = [title()];
+    const date = subtitleDate();
+    if (date) parts.push(date);
+    if (showList() && data()) parts.push(t("tasks.taskCount", { count: listCount() }));
+    if (data() && loadError()) parts.push(t("tasks.staleCopy", { message: loadError() ?? "" }));
+    return parts.join(" · ");
+  });
+
+  const taskNotices = () => (
+    <>
+      <Show when={outbox().length > 0}>
+        <div class={wide() ? "pg-notice" : "notice tasks-offline"} role="status">
+          {t("tasks.offlineQueued", { count: outbox().length })}
+        </div>
+      </Show>
+      <Show when={actionError()}>
+        {(m) => (
+          <div class={wide() ? "pg-notice" : "notice"} role="alert">
+            <span>{m()}</span>
+            <button type="button" class={wide() ? "pg-icon-btn" : "banner-close"} onClick={() => setActionError(null)} aria-label={t("tasks.dismiss")}>
+              ×
             </button>
-            <div class="tasks-head-text">
-              <h1 class="view-title" id="tasks-title">
-                {title()}
-              </h1>
-              <p class="tasks-sub">
-                <Show when={subtitleDate()}>{(s) => <span class="tasks-sub-date">{s()}</span>}</Show>
-                <Show when={showList() && data()}>
-                  <span class="tasks-sub-count">
-                    <CheckCircleIcon />
-                    {t("tasks.taskCount", { count: listCount() })}
+          </div>
+        )}
+      </Show>
+      <Show when={(data()?.conflicts.length ?? 0) > 0}>
+        <section class={wide() ? "pg-notice" : "tasks-conflicts"} aria-label={t("tasks.conflictsTitle")}>
+          <h2 class="tasks-conflicts-title">{t("tasks.conflictsTitle")}</h2>
+          <ul>
+            <For each={data()?.conflicts ?? []}>
+              {(c) => (
+                <li class="tasks-conflict">
+                  <span>
+                    <strong>{c.content}</strong> — {c.message}
                   </span>
-                </Show>
-              </p>
-            </div>
-            <Show when={data()}>{(d) => <GoalRing done={d().goal.completed_today} goal={d().goal.daily_goal} />}</Show>
-          </header>
+                  <button type="button" class={wide() ? "pg-btn pg-btn--ghost" : "link-btn"} onClick={() => void run({ type: "dismiss_conflict", conflict_id: c.id })}>
+                    {t("tasks.dismiss")}
+                  </button>
+                </li>
+              )}
+            </For>
+          </ul>
+        </section>
+      </Show>
+      <Show when={data()?.list.warning && section() !== "filters"}>
+        <p class={wide() ? "pg-notice" : "tasks-warning"}>{t("tasks.filterWarning", { detail: data()?.list.warning ?? "" })}</p>
+      </Show>
+    </>
+  );
 
-          <Show when={section() === "search"}>
-            <div class="tasks-search">
-              <SearchIcon />
-              <input
-                ref={searchInput}
-                type="search"
-                class="text-input"
-                placeholder={t("tasks.searchPlaceholder")}
-                aria-label={t("tasks.searchPlaceholder")}
-                value={q()}
-                onInput={(e) => onSearch(e.currentTarget.value)}
-                autofocus
-              />
-            </div>
-          </Show>
+  const searchField = () => (
+    <>
+      <Show when={section() === "search"}>
+        <div class="tasks-search">
+          <SearchIcon />
+          <input
+            ref={searchInput}
+            type="search"
+            class={wide() ? "pg-input" : "text-input"}
+            placeholder={t("tasks.searchPlaceholder")}
+            aria-label={t("tasks.searchPlaceholder")}
+            value={q()}
+            onInput={(e) => onSearch(e.currentTarget.value)}
+            autofocus
+          />
+        </div>
+      </Show>
+    </>
+  );
 
-          <Show when={outbox().length > 0}>
-            <div class="notice tasks-offline" role="status">
-              {t("tasks.offlineQueued", { count: outbox().length })}
-            </div>
-          </Show>
-          <Show when={actionError()}>
+  const taskScroll = () => (
+    <div class="tasks-scroll">
+      <Show when={wide()}>{searchField()}</Show>
+      <Show
+        when={data()}
+        fallback={
+          <Show
+            when={loadError()}
+            fallback={
+              <Show
+                when={wide()}
+                fallback={
+                  <p class="muted center" role="status">
+                    {t("tasks.loading")}
+                  </p>
+                }
+              >
+                <LoadingState label={t("tasks.loading")} />
+              </Show>
+            }
+          >
             {(m) => (
-              <div class="notice" role="alert">
-                <span>{m()}</span>
-                <button type="button" class="banner-close" onClick={() => setActionError(null)} aria-label={t("tasks.dismiss")}>
-                  ×
-                </button>
-              </div>
+              <Show
+                when={wide()}
+                fallback={
+                  <div class="empty" role="alert">
+                    <p class="empty-title">{m()}</p>
+                    <button class="btn" type="button" onClick={() => void load(query())}>
+                      {t("common.tryAgain")}
+                    </button>
+                  </div>
+                }
+              >
+                <ErrorState message={m()} retryLabel={t("common.tryAgain")} onRetry={() => void load(query())} />
+              </Show>
             )}
           </Show>
-          <Show when={(data()?.conflicts.length ?? 0) > 0}>
-            <section class="tasks-conflicts" aria-label={t("tasks.conflictsTitle")}>
-              <h2 class="tasks-conflicts-title">{t("tasks.conflictsTitle")}</h2>
-              <ul>
-                <For each={data()?.conflicts ?? []}>
-                  {(c) => (
-                    <li class="tasks-conflict">
-                      <span>
-                        <strong>{c.content}</strong> — {c.message}
-                      </span>
-                      <button type="button" class="link-btn" onClick={() => void run({ type: "dismiss_conflict", conflict_id: c.id })}>
-                        {t("tasks.dismiss")}
-                      </button>
-                    </li>
-                  )}
-                </For>
-              </ul>
-            </section>
-          </Show>
-          <Show when={data()?.list.warning && section() !== "filters"}>
-            <p class="tasks-warning">{t("tasks.filterWarning", { detail: data()?.list.warning ?? "" })}</p>
-          </Show>
-
-          <div class="tasks-scroll">
-            <Show
-              when={data()}
-              fallback={
-                <Show when={loadError()} fallback={<p class="muted center" role="status">{t("tasks.loading")}</p>}>
-                  {(m) => (
-                    <div class="empty" role="alert">
-                      <p class="empty-title">{m()}</p>
-                      <button class="btn" type="button" onClick={() => void load(query())}>
-                        {t("common.tryAgain")}
-                      </button>
-                    </div>
-                  )}
-                </Show>
-              }
-            >
-              {(d) => (
-                <Show when={showList()} fallback={<FiltersLabels data={d()} />}>
-                  <Show when={waitingAdds().length > 0}>
-                    <ul class="task-list task-list--waiting">
-                      <For each={waitingAdds()}>
-                        {(text) => (
-                          <li class="task-item">
-                            <div class="task-row task-row--pending" title={t("tasks.waiting")}>
-                              <span class="task-check task-check--p4" aria-hidden="true" />
-                              <span class="task-body">
-                                <span class="task-content">{text}</span>
-                                <span class="task-desc">{t("tasks.waiting")}</span>
-                              </span>
-                            </div>
-                          </li>
-                        )}
-                      </For>
-                    </ul>
-                  </Show>
-                  <For each={d().list.groups}>
-                    {(g) => <GroupBlock g={g} data={d()} h={handlers} hidden={hidden()} onReschedule={() => setRescheduling(true)} />}
-                  </For>
-                  <Show when={listCount() === 0 && d().list.kind !== "upcoming" && !(d().list.kind === "search" && !q())}>
-                    <Empty kind={String(d().list.kind)} q={q()} />
-                  </Show>
-                  <p class="tasks-shortcuts muted small">{t("tasks.shortcuts")}</p>
-                </Show>
-              )}
+        }
+      >
+        {(d) => (
+          <Show when={showList()} fallback={<FiltersLabels data={d()} desk={wide()} />}>
+            <Show when={waitingAdds().length > 0}>
+              <Show
+                when={wide()}
+                fallback={
+                  <ul class="task-list task-list--waiting">
+                    <For each={waitingAdds()}>
+                      {(text) => (
+                        <li class="task-item">
+                          <div class="task-row task-row--pending" title={t("tasks.waiting")}>
+                            <span class="task-check task-check--p4" aria-hidden="true" />
+                            <span class="task-body">
+                              <span class="task-content">{text}</span>
+                              <span class="task-desc">{t("tasks.waiting")}</span>
+                            </span>
+                          </div>
+                        </li>
+                      )}
+                    </For>
+                  </ul>
+                }
+              >
+                <Card list label={t("tasks.waiting")}>
+                  <RowList>
+                    <For each={waitingAdds()}>{(text) => <ListRow title={text} sub={t("tasks.waiting")} />}</For>
+                  </RowList>
+                </Card>
+              </Show>
             </Show>
-          </div>
-        </main>
-      </div>
+            <For each={d().list.groups}>
+              {(g) => <GroupBlock g={g} data={d()} h={handlers} hidden={hidden()} onReschedule={() => setRescheduling(true)} desk={wide()} />}
+            </For>
+            <Show when={listCount() === 0 && d().list.kind !== "upcoming" && !(d().list.kind === "search" && !q())}>
+              <Empty kind={String(d().list.kind)} q={q()} desk={wide()} />
+            </Show>
+            <p class="tasks-shortcuts muted small">{t("tasks.shortcuts")}</p>
+          </Show>
+        )}
+      </Show>
+    </div>
+  );
 
-      <button type="button" class="tasks-fab" aria-label={t("tasks.addTask")} onClick={() => setQuickOpen(true)}>
-        <PlusIcon />
-      </button>
+  return (
+    <div
+      class="tasks"
+      classList={{
+        "tasks--menu": menuOpen() && !wide(),
+        "tasks--desk": wide(),
+      }}
+      ref={measured.track}
+    >
+      <Show when={!wide()}>
+        <div class="tasks-inner">
+          <div class="tasks-scrim" onClick={() => setMenuOpen(false)} aria-hidden="true" />
+          <Sidebar
+            data={data()}
+            section={section()}
+            id={params.id ? decodeURIComponent(params.id) : undefined}
+            onQuickAdd={() => {
+              setMenuOpen(false);
+              setQuickOpen(true);
+            }}
+            onNavigate={() => setMenuOpen(false)}
+          />
+          <main class="tasks-main" aria-labelledby="tasks-title">
+            <header class="tasks-head">
+              <button type="button" class="icon-btn tasks-menu-btn" aria-label={t("tasks.menu")} onClick={() => setMenuOpen(!menuOpen())}>
+                <MenuIcon />
+              </button>
+              <div class="tasks-head-text">
+                <h1 class="view-title" id="tasks-title">
+                  {title()}
+                </h1>
+                <p class="tasks-sub">
+                  <Show when={subtitleDate()}>{(s) => <span class="tasks-sub-date">{s()}</span>}</Show>
+                  <Show when={showList() && data()}>
+                    <span class="tasks-sub-count">
+                      <CheckCircleIcon />
+                      {t("tasks.taskCount", { count: listCount() })}
+                    </span>
+                  </Show>
+                </p>
+              </div>
+              <Show when={data()}>{(d) => <GoalRing done={d().goal.completed_today} goal={d().goal.daily_goal} />}</Show>
+            </header>
+            {searchField()}
+            {taskNotices()}
+            {taskScroll()}
+          </main>
+        </div>
+      </Show>
+      <Show when={wide()}>
+        <Page class="tasks-desk">
+          <PageHeader
+            title={t("tasks.title")}
+            context={taskContext()}
+            nav={<TasksSectionNav section={section()} />}
+            action={
+              <PrimaryAction icon={<PlusIcon />} onClick={() => setQuickOpen(true)}>
+                {t("tasks.addTask")}
+              </PrimaryAction>
+            }
+          />
+          {taskNotices()}
+          <PageGrid
+            layout="rail"
+            rail={
+              <Show when={data()}>
+                {(d) => (
+                  <>
+                    <Card title={t("tasks.myProjects")} list>
+                      <RowList>
+                        <For each={d().projects.filter((p) => !p.inbox)}>
+                          {(p) => (
+                            <ListRow
+                              class={p.parent_id ? "tasks-desk-row--sub" : ""}
+                              title={
+                                <a
+                                  class="pg-row-link"
+                                  href={`/tasks/project/${encodeURIComponent(p.id)}`}
+                                  aria-current={section() === "project" && params.id === p.id ? "page" : undefined}
+                                >
+                                  {p.name}
+                                </a>
+                              }
+                              leading={<HashIcon />}
+                              meta={p.count || ""}
+                            />
+                          )}
+                        </For>
+                      </RowList>
+                    </Card>
+                    <Card label={t("tasks.title")}>
+                      <p
+                        class="pg-context"
+                        title={t("tasks.goalTitle", {
+                          goal: d().goal.daily_goal,
+                        })}
+                      >
+                        {t("tasks.goal", {
+                          done: d().goal.completed_today,
+                          goal: d().goal.daily_goal,
+                        })}
+                      </p>
+                      <SyncLine data={d()} desk />
+                    </Card>
+                  </>
+                )}
+              </Show>
+            }
+          >
+            {taskScroll()}
+          </PageGrid>
+        </Page>
+      </Show>
+
+      <Show when={!wide()}>
+        <button type="button" class="tasks-fab" aria-label={t("tasks.addTask")} onClick={() => setQuickOpen(true)}>
+          <PlusIcon />
+        </button>
+      </Show>
 
       <Show when={quickOpen() && data()}>
-        <div class="tasks-backdrop" onClick={() => setQuickOpen(false)}>
-          <div class="qa-modal" role="dialog" aria-modal="true" aria-label={t("tasks.quickAddTitle")} onClick={(e) => e.stopPropagation()}>
+        <Show
+          when={wide()}
+          fallback={
+            <div class="tasks-backdrop" onClick={() => setQuickOpen(false)}>
+              <div class="qa-modal" role="dialog" aria-modal="true" aria-label={t("tasks.quickAddTitle")} onClick={(e) => e.stopPropagation()}>
+                <QuickAdd
+                  today={data()?.today ?? ""}
+                  projectId={section() === "project" ? data()?.list.id : undefined}
+                  defaultDue={section() === "today" ? "today" : undefined}
+                  onDone={() => setQuickOpen(false)}
+                />
+              </div>
+            </div>
+          }
+        >
+          <Sheet open={quickOpen()} title={t("tasks.quickAddTitle")} onClose={() => setQuickOpen(false)}>
             <QuickAdd
+              desk
               today={data()?.today ?? ""}
               projectId={section() === "project" ? data()?.list.id : undefined}
               defaultDue={section() === "today" ? "today" : undefined}
               onDone={() => setQuickOpen(false)}
             />
-          </div>
-        </div>
+          </Sheet>
+        </Show>
       </Show>
 
       <Show when={scheduling() && data()}>
-        <DatePicker
-          today={data()?.today ?? ""}
-          allowClear
-          onPick={(d) => void pickDate(scheduling() as TaskView, d)}
-          onClose={() => setScheduling(null)}
-        />
+        <DatePicker today={data()?.today ?? ""} allowClear onPick={(d) => void pickDate(scheduling() as TaskView, d)} onClose={() => setScheduling(null)} />
       </Show>
 
       <Show when={rescheduling() && data()}>
-        <DatePicker today={data()?.today ?? ""} title={t("tasks.rescheduleTitle")} onPick={(d) => void rescheduleOverdue(d)} onClose={() => setRescheduling(false)} />
+        <DatePicker
+          today={data()?.today ?? ""}
+          title={t("tasks.rescheduleTitle")}
+          onPick={(d) => void rescheduleOverdue(d)}
+          onClose={() => setRescheduling(false)}
+        />
       </Show>
 
       <Show when={detailTask() && data()}>
-        <TaskDetail
-          task={detailTask() as TaskView}
-          data={data() as TasksView}
-          onClose={() => setDetail(null)}
-          onSchedule={() => setScheduling(detailTask())}
-        />
+        <TaskDetail task={detailTask() as TaskView} data={data() as TasksView} onClose={() => setDetail(null)} onSchedule={() => setScheduling(detailTask())} />
       </Show>
 
       <Show when={toast()}>

@@ -1,5 +1,4 @@
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
-import { Portal } from "solid-js/web";
 import { getMediaItem, playMedia, type MediaItem } from "../api/media";
 import type { Attachment } from "../api/timeline";
 import { t } from "../i18n";
@@ -11,6 +10,7 @@ import { hasPoint, placeFromMapsLink, type PlaceInfo } from "../lib/mapKit";
 import { linkHost } from "../lib/share";
 import { thumbHashToImage } from "../lib/thumbhash";
 import { trayIcon } from "./AttachmentTray";
+import { PhotoViewer, type ViewerItem } from "./PhotoViewer";
 import { PlaceCard } from "./PlaceCard";
 import "../styles/share.css";
 
@@ -324,70 +324,28 @@ function LocationCard(props: { item: Attachment }) {
   );
 }
 
+/** The chat's images in the gallery's photo viewer (PhotoViewer). */
 function Lightbox(props: { items: Attachment[]; index: number; onIndex: (index: number) => void; onClose: () => void }) {
-  let panel: HTMLDivElement | undefined;
-  let startX = 0;
   const current = () => props.items[props.index];
   const info = useMediaItem(() => current() ?? { kind: "image" }, () => !current()?.previewUrl);
-  const url = () => {
-    const item = current();
-    if (!item) return null;
+  const previewOf = (item: Attachment, isCurrent: boolean) => {
     if (item.previewUrl) return item.previewUrl;
     if (!item.mediaId) return safeHref(item.url ?? "");
-    const loaded = info();
+    const loaded = isCurrent ? info() : undefined;
     return choosePreviewUrl(item.mediaId, loaded?.id === item.mediaId ? loaded.urls?.preview : undefined);
   };
-  const move = (delta: number) => {
-    const next = (props.index + delta + props.items.length) % props.items.length;
-    props.onIndex(next);
-  };
-  onMount(() => {
-    const previous = document.activeElement as HTMLElement | null;
-    panel?.focus();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        props.onClose();
-      } else if (e.key === "ArrowRight") {
-        e.preventDefault();
-        move(1);
-      } else if (e.key === "ArrowLeft") {
-        e.preventDefault();
-        move(-1);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    onCleanup(() => {
-      window.removeEventListener("keydown", onKey);
-      previous?.focus();
-    });
-  });
+  const items = createMemo<ViewerItem[]>(() =>
+    props.items.map((item, i) => ({ src: previewOf(item, i === props.index), name: labelFor(item), mime: item.mime })),
+  );
   return (
-    <Portal>
-      <div
-        ref={panel}
-        class="lightbox"
-        role="dialog"
-        aria-modal="true"
-        aria-label={t("share.lightbox", { index: props.index + 1, count: props.items.length })}
-        tabindex="-1"
-        onPointerDown={(e) => { startX = e.clientX; }}
-        onPointerUp={(e) => {
-          const delta = e.clientX - startX;
-          if (Math.abs(delta) > 40) move(delta < 0 ? 1 : -1);
-        }}
-      >
-        <button type="button" class="lightbox-close" aria-label={t("common.close")} onClick={props.onClose}>×</button>
-        <Show when={props.items.length > 1}>
-          <button type="button" class="lightbox-prev" aria-label={t("share.previous")} onClick={() => move(-1)}>‹</button>
-          <button type="button" class="lightbox-next" aria-label={t("share.next")} onClick={() => move(1)}>›</button>
-        </Show>
-        <Show when={url()}>
-          {(src) => <img class="lightbox-img" src={src()} alt={labelFor(current()!)} />}
-        </Show>
-        <span class="lightbox-count">{props.index + 1} / {props.items.length}</span>
-      </div>
-    </Portal>
+    <PhotoViewer
+      items={items()}
+      index={props.index}
+      onIndex={props.onIndex}
+      onClose={props.onClose}
+      wrap
+      label={(index, count) => t("share.lightbox", { index, count })}
+    />
   );
 }
 

@@ -643,6 +643,41 @@ fn apply(s: &mut State, command: Command, now: u64) -> Result<()> {
                 exercises,
             });
         }
+        Command::UpdateRoutine {
+            routine_id,
+            name: n,
+            exercise_ids,
+        } => {
+            if n.is_none() && exercise_ids.is_none() {
+                return Err("Nothing to change".into());
+            }
+            let new_name = n.as_deref().map(name).transpose()?;
+            let routine = s
+                .routines
+                .iter_mut()
+                .find(|r| r.id == routine_id)
+                .ok_or("Routine not found")?;
+            if let Some(new_name) = new_name {
+                routine.name = new_name;
+            }
+            if let Some(ids) = exercise_ids {
+                let old = std::mem::take(&mut routine.exercises);
+                routine.exercises = ids
+                    .into_iter()
+                    .map(|exercise_id| {
+                        old.iter()
+                            .find(|e| e.exercise_id == exercise_id)
+                            .cloned()
+                            .unwrap_or(RoutineExercise {
+                                exercise_id,
+                                sets: 3,
+                                reps: 8,
+                                weight_grams: 0,
+                            })
+                    })
+                    .collect();
+            }
+        }
         Command::DeleteRoutine { routine_id } => {
             let pos = s
                 .routines

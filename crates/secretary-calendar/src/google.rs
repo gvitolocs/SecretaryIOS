@@ -44,10 +44,32 @@ fn text(v: &Value, key: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// `hangoutLink`, else the first video entry point of `conferenceData`
+/// (https only).
+fn conference_url(ev: &Value) -> Option<String> {
+    let https = |s: &str| s.starts_with("https://") && s.len() <= 500;
+    if let Some(u) = text(ev, "hangoutLink").filter(|u| https(u)) {
+        return Some(u);
+    }
+    ev.pointer("/conferenceData/entryPoints")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter(|p| p.get("entryPointType").and_then(Value::as_str) == Some("video"))
+        .find_map(|p| text(p, "uri").filter(|u| https(u)))
+}
+
 /// One Google event → an item (`None` without an id).
 pub fn to_item(ev: &Value, calendar_tz: &str) -> Option<Item> {
     let uid = text(ev, "id")?;
     let mut item = Item {
+        attendees: ev
+            .get("attendees")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|a| text(a, "displayName").or_else(|| text(a, "email")))
+            .take(30)
+            .collect(),
         uid,
         cancelled: ev.get("status").and_then(Value::as_str) == Some("cancelled"),
         title: text(ev, "summary").unwrap_or_default(),
@@ -60,6 +82,15 @@ pub fn to_item(ev: &Value, calendar_tz: &str) -> Option<Item> {
         original: ev
             .get("originalStartTime")
             .and_then(|s| moment(s, calendar_tz)),
+        conference_url: conference_url(ev),
+        added_by: ev
+            .pointer("/extendedProperties/private/addedBy")
+            .and_then(Value::as_str)
+            .or_else(|| ev.pointer("/creator/displayName").and_then(Value::as_str))
+            .or_else(|| ev.pointer("/creator/email").and_then(Value::as_str))
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.chars().take(120).collect()),
         ..Item::default()
     };
     for line in ev
@@ -206,5 +237,54 @@ mod tests {
         );
         let d = Moment::Date(chrono::NaiveDate::from_ymd_opt(2026, 10, 22).unwrap());
         assert_eq!(instance_id("abc", &d, chrono_tz::UTC), "abc_20261022");
+    }
+
+    #[test]
+    fn attendees() {
+        let ev = json!({
+            "id": "m1", "status": "confirmed", "summary": "Sync",
+            "start": {"dateTime": "2026-10-27T09:00:00+01:00"}, "end": {"dateTime": "2026-10-27T10:00:00+01:00"},
+            "attendees": [{"displayName": "Anna Rossi", "email": "anna@x.it"}, {"email": "bo@y.dk"}, {}]
+        });
+        let item = to_item(&ev, "Europe/Copenhagen").unwrap();
+        assert_eq!(
+            item.attendees,
+            vec!["Anna Rossi".to_owned(), "bo@y.dk".to_owned()]
+        );
+        let none = to_item(
+            &json!({"id": "m2", "summary": "Gym", "start": {"date": "2026-10-27"}}),
+            "UTC",
+        )
+        .unwrap();
+        assert!(none.attendees.is_empty());
+    }
+
+    #[test]
+    fn maps_video_link_and_who_added_it() {
+        let tz = "Europe/Copenhagen";
+        let base = json!({"id": "a", "summary": "x", "start": {"date": "2026-11-01"}});
+        let mut e = base.clone();
+        e["hangoutLink"] = json!("https://meet.google.com/abc-defg-hij");
+        e["creator"] = json!({"email": "owner@example.com"});
+        let i = to_item(&e, tz).unwrap();
+        assert_eq!(i.conference_url.as_deref(), Some("https://meet.google.com/abc-defg-hij"));
+        assert_eq!(i.added_by.as_deref(), Some("owner@example.com"));
+
+        let mut e = base.clone();
+        e["conferenceData"] = json!({"entryPoints": [
+            {"entryPointType": "phone", "uri": "tel:+45"},
+            {"entryPointType": "video", "uri": "https://zoom.us/j/1"}
+        ]});
+        e["creator"] = json!({"email": "owner@example.com", "displayName": "Giuseppe"});
+        e["extendedProperties"] = json!({"private": {"addedBy": "Lucina"}});
+        let i = to_item(&e, tz).unwrap();
+        assert_eq!(i.conference_url.as_deref(), Some("https://zoom.us/j/1"));
+        assert_eq!(i.added_by.as_deref(), Some("Lucina"));
+
+        let mut e = base;
+        e["hangoutLink"] = json!("javascript:alert(1)");
+        let i = to_item(&e, tz).unwrap();
+        assert_eq!(i.conference_url, None);
+        assert_eq!(i.added_by, None);
     }
 }

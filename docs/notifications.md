@@ -15,7 +15,7 @@ private.
  │ reminders, check-ins │  POST /v1/notify │         ▼                    │  aes128gcm) │ home-screen app   │
  │ (LUCINA_APP_NOTIFY) ─┼─────────────────▶│ publish: dedup → switch →    ├────────────▶│ (sw.js)           │
  │ Rust: `notify` tool ─┼─────────────────▶│  presence → quiet/DND →      │             └───────────────────┘
- └──────────────────────┘   service token  │  inbox + push targets        │  APNs (off) ┌───────────────────┐
+ └──────────────────────┘   service token  │  inbox + push targets        │  APNs       ┌───────────────────┐
                                            │ tick: calendar, digest,      ├ ─ ─ ─ ─ ─ ─▶│ native app        │
    phone ── POST /v1/device/state ────────▶│  "Lucina offline"            │             │ (polls the inbox, │
    apps ─── POST /v1/notifications/presence│                              │◀────────────│ local notifs)     │
@@ -29,6 +29,7 @@ private.
 | Lucina's timeline (any channel) | `lucina_message` | The server keeps one SSE stream open to Lucina (`notify::ingest`) with its own token; every `role: lucina` item becomes a notification unless the owner has the app in front. |
 | Delivered reminder | `reminder` | Timeline items with `meta.kind: "reminder"`, and Lucina's `POST /v1/notify` when `LUCINA_APP_NOTIFY=true` (deduplicated: same timeline id, or `reminder:<id>`). |
 | Device command that needs a tap | `device_confirm` | Timeline items with `meta.kind: "device_command"` and `meta.command.requiresConfirmation` (else the iOS rule: deletes and calendar changes). |
+| Coding agent finished, needs permission, or the Infisical broker asks | `agent` | lucina-agentd's `POST /v1/notify` (`data: {kind, agentId or permissionId, reason, requestId, actions}`); while an app is in front it stays in the inbox without a push (Paseo's rule). |
 | Lucina changed a list | `shopping` | Timeline items with `meta.kind: "shopping"`, or `POST /v1/notify`. |
 | Calendar | `calendar` | The phone's `POST /v1/device/state` carries the next week of events; the server's tick notifies `calendarLeadMinutes` before each timed event. |
 | Proactive check-in / nudge | `lucina_message` | `POST /v1/notify` from Lucina (`LUCINA_APP_NOTIFY`), per-day dedup key. |
@@ -64,8 +65,10 @@ Delivery retries 429/5xx/network errors (2 s, 15 s, 60 s, honouring
 
 **APNs adapter** (`notify::apns`): ES256 provider JWT (refreshed every 50 min),
 HTTP/2 to `api(.sandbox).push.apple.com`, collapse ids, dead tokens removed.
-Off unless `SECRETARY_APNS_KEY_FILE`, `_KEY_ID` and `_TEAM_ID` are set; until
-then `POST /v1/push/apns` answers `503 apns_disabled`.
+On with `SECRETARY_APNS_TEAM_ID` and a key installed with Add secret, or with
+`SECRETARY_APNS_KEY_FILE`, `_KEY_ID` and `_TEAM_ID` together. While off,
+`POST /v1/push/apns` still keeps the token (`apnsEnabled: false`) and pushes to
+it are skipped without counting as failures.
 
 ## Website (PWA)
 
@@ -122,6 +125,31 @@ iOS settings for it live under Settings → Notifications → Secretary (the web
 - **Settings → Notifications** mirrors the web settings (same server document)
   and adds this iPhone's switch and the iOS permission.
 
+### Live Activity for approvals
+
+With APNs on, a new approval request also starts a **Live Activity** on the
+owner's iPhone (push-to-start, also with the app closed); the time-sensitive
+notification stays as it is. The lock screen shows who asks, the reason, the
+first 3 command lines (monospace, "+N more"), the time left, **Deny** and
+**Approve** side by side, and a **Details** link that opens the approval card.
+The Dynamic Island shows the same, compact.
+
+- **Deny** works without unlocking (like the widget).
+- **Approve** of a plain request needs the iPhone unlocked (Face ID or the
+  passcode), then answers from the lock screen.
+- **Approve** of a sensitive request (root plans) opens the app on that card
+  and starts the approve step at once: the Face ID prompt (or the PIN pad)
+  appears over the card that shows the exact commands. Cancelling leaves the
+  card open. The Face ID signature or the PIN is still required.
+
+When the request is answered anywhere, withdrawn or expires, the server ends
+the activity (an `end` push to its update token); the app also ends any
+activity whose request is no longer pending whenever it refreshes the list.
+With the app in front, a new request gets a local activity if none came by
+push. Tokens: `POST /v1/push/liveactivity`, kept in
+`live-activity-tokens.json` (0600); pushes go out as
+`apns-push-type: liveactivity` to `<topic>.push-type.liveactivity`.
+
 ### APNs with a paid account
 
 What it unlocks: instant push to the native app for every category, with the
@@ -135,11 +163,14 @@ TestFlight; profiles that do not expire after 7 days.
 3. iOS app: add `aps-environment` (`development` for Xcode builds, `production`
    for TestFlight) to `ios/Secretary/Secretary.entitlements`, set
    `SecretaryAPNsEnabled: true` in `ios/project.yml`, `xcodegen generate`, build.
-   The app then registers and sends its token to `POST /v1/push/apns`.
-4. Server (p1): copy the key to `/etc/secretary/AuthKey_<KEYID>.p8`
-   (`secretary:secretary`, 0600) and set `SECRETARY_APNS_KEY_FILE`,
-   `SECRETARY_APNS_KEY_ID`, `SECRETARY_APNS_TEAM_ID`, `SECRETARY_APNS_ENV`
-   (`sandbox` or `production`) in `secretary.env`; restart.
+   The app then registers and sends its token to `POST /v1/push/apns`; the
+   server keeps it even before a key exists.
+4. Server (p1): `secretary.env` has `SECRETARY_APNS_TEAM_ID=2N4DA9L8VH` and
+   `SECRETARY_APNS_ENV=sandbox` (Xcode builds; `production` for TestFlight).
+   The owner adds the key in the app with **Add secret**: name
+   `APNS_AUTH_KEY_<KEYID>`, value = the whole `.p8` file text. The server
+   installs it in its data dir (`apns/AuthKey_<KEYID>.p8`, 0600) and push is on
+   at once: no restart, no file copying, no app relaunch.
 
 Note: the Mac has `~/Downloads/AuthKey_FP8MDH6T64.p8` (key id `FP8MDH6T64`). It
 may belong to another team (e.g. Pokoin): check in the developer portal which
@@ -178,7 +209,8 @@ was not used or read for this work.
 | | `SECRETARY_VAPID_SUBJECT` | default `https://getsecretary.tech` |
 | | `SECRETARY_PUSH_HOSTS` | default FCM, Mozilla, Apple, WNS |
 | | `SECRETARY_PUSH_ALLOW_HTTP` | `0`; `1` only for local mock push services |
-| | `SECRETARY_APNS_KEY_FILE`, `_KEY_ID`, `_TEAM_ID`, `_TOPIC`, `_ENV` | APNs, paid team only |
+| | `SECRETARY_APNS_TEAM_ID`, `_TOPIC`, `_ENV` | APNs, paid team only; the key comes from Add secret |
+| | `SECRETARY_APNS_KEY_FILE`, `_KEY_ID` | optional: a fixed key file instead (all three together) |
 | Lucina (Node) | `LUCINA_APP_NOTIFY` | `true` to post reminders and proactive messages |
 | | `LUCINA_SECRETARY_SERVER_URL` | `https://getsecretary.tech` (Lucina runs on nezopt; the server is on p1) |
 | | `LUCINA_SECRETARY_SERVICE_TOKEN_FILE` | file with the `svc_…` token (0600) |

@@ -1,0 +1,13 @@
+[package]
+name = "wardrobe-glb"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "Cuts hairstyle parts out of Lucina outfit GLBs and grafts their bones into other outfits (private assets, never in git)"
+
+# Standalone on purpose: not a member of the repo workspace.
+[workspace]
+
+[dependencies]
+serde_json = { version = "1", features = ["float_roundtrip"] }

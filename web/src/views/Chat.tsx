@@ -1,3 +1,4 @@
+import { InAppLink } from "../components/InAppLink";
 import { useLocation, useNavigate } from "@solidjs/router";
 import { createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
 import { outreachFromSearch, sendOutreachFeedback } from "../api/proactive";
@@ -22,7 +23,25 @@ import {
   SpeakerIcon,
 } from "../components/Icons";
 import { ShareComposer } from "../components/ShareComposer";
+import { secretsApi, type SecretProject } from "../api/secrets";
+import {
+  commandArgIndex,
+  detectSecrets,
+  isSecretCommand,
+  maskSecrets,
+  parseSecretCommand,
+  SECRET_COMMAND,
+  SECRET_USAGE,
+  suggestName,
+  targetCompletions,
+  valueHint,
+  type Detected,
+} from "../lib/secrets";
+import { openSecretSheet } from "../state/secretSheet";
 import { AttachmentTray } from "../components/AttachmentTray";
+import { ToolSteps } from "../components/ToolSteps";
+import { chatRows, isToolRun, type ToolRun } from "../lib/toolSteps";
+import "../styles/tool-steps.css";
 import { Attachments } from "../components/ChatAttachments";
 import {
   filesFromClipboard,
@@ -34,11 +53,15 @@ import {
   type DraftAttachment,
   type ShareLocation,
 } from "../lib/attachments";
+import { takeHandOff } from "../lib/chatHandoff";
 import { LinkifiedText } from "../components/LinkifiedText";
+import { tidyDecisionText } from "../lib/decisionText";
 import { Markdown } from "../components/Markdown";
 import { PlaceCard } from "../components/PlaceCard";
 import { RichReply } from "../components/RichReply";
 import Model3dViewer from "../components/Model3dViewer";
+import { markFirstMessage } from "../lib/chatPerf";
+import { firstMessageSource, replyTarget, setReplyTarget } from "../state/chat";
 import { t, type MessageKey } from "../i18n";
 import { safeHref } from "../lib/linkify";
 import type { PlaceInfo } from "../lib/mapKit";
@@ -188,12 +211,13 @@ export function FeedbackButtons(props: { outreachId: string; actions?: Proactive
 }
 
 /** A message Lucina sent on her own: priority, content buttons, feedback, why. */
-function ProactiveCard(props: { text: string; meta: ProactiveMeta; place?: PlaceInfo }) {
+function ProactiveCard(props: { text: string; meta: ProactiveMeta; place?: PlaceInfo; readOnly?: boolean }) {
   const navigate = useOptionalNavigate();
   const [showWhy, setShowWhy] = createSignal(false);
   const links = () => props.meta.actions.filter((a) => !a.feedback && a.route).slice(0, 2);
 
   function open(a: ProactiveAction, e: MouseEvent) {
+    if (props.readOnly) return;
     void sendOutreachFeedback(props.meta.outreachId, "opened").catch(() => undefined);
     if (navigate && a.route) {
       e.preventDefault();
@@ -230,7 +254,7 @@ function ProactiveCard(props: { text: string; meta: ProactiveMeta; place?: Place
           </For>
         </div>
       </Show>
-      <FeedbackButtons outreachId={props.meta.outreachId} actions={props.meta.actions} />
+      <Show when={!props.readOnly}><FeedbackButtons outreachId={props.meta.outreachId} actions={props.meta.actions} /></Show>
       <Show when={props.meta.why}>
         {(why) => (
           <div class="proactive-why">
@@ -260,6 +284,10 @@ const LOAD_OLDER_PX = 200;
 const AUTO_SCROLL_MS = 900;
 /** Within this distance of the bottom, new items keep the list pinned to the end. */
 const STICK_PX = 80;
+/** A scroll this soon after the reader's own input (wheel, touch, keys, scrollbar drag) is theirs. */
+const READER_INPUT_MS = 700;
+/** How long reader input waits for its first scroll event (a busy page can paint that late). */
+const READER_PENDING_MS = 3_000;
 
 function resultText(value: unknown): string | null {
   if (typeof value === "string") return value;
@@ -356,7 +384,9 @@ export function SourceBadge(props: { message: ChatMessage }) {
   const source = () => mcpSource(props.message.role, props.message.text, props.message.meta);
   const label = () => source()?.label ?? channelLabel(props.message.channel);
   const context = () => (source() ? "" : contextCaption(props.message.channel, props.message.meta));
+  // "Other" tells the owner nothing: no badge then (the reminder card already says what it is).
   return (
+    <Show when={source() || props.message.channel !== "other"}>
     <span class="src-badge" data-channel={source() ? "mcp" : props.message.channel}>
       <Show when={source()} fallback={<ChannelGlyph channel={props.message.channel} />}>
         <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -374,12 +404,31 @@ export function SourceBadge(props: { message: ChatMessage }) {
         )}
       </Show>
     </span>
+    </Show>
+  );
+}
+
+/** "Jev · 93% · 412 ms": a reply Jev decided (meta.jev), with its certainty and latency. */
+export function JevBadge(props: { jev: NonNullable<ChatMessage["meta"]>["jev"] }) {
+  const parts = () => {
+    const j = props.jev;
+    if (!j) return [];
+    const out = ["Jev"];
+    if (typeof j.p === "number" && (j.answer === "yes" || j.answer === "no")) out.push(`${Math.round(j.p * 100)}%`);
+    if (typeof j.ms === "number") out.push(`${j.ms} ms`);
+    return out;
+  };
+  return (
+    <span class="jev-badge" title={t("chat.jevBadge")} data-answer={props.jev?.answer}>
+      <span class="sr-only">{t("chat.jevBadge")}: </span>
+      {parts().join(" · ")}
+    </span>
   );
 }
 
 export { Attachments };
 
-function MessageItem(props: { message: ChatMessage; focused?: boolean; inferredChoice?: string }) {
+export function MessageItem(props: { message: ChatMessage; focused?: boolean; inferredChoice?: string; readOnly?: boolean }) {
   const [showTime, setShowTime] = createSignal(false);
   const isUser = () => props.message.role === "user";
   const isReminder = () => props.message.meta?.kind === "reminder";
@@ -422,9 +471,9 @@ function MessageItem(props: { message: ChatMessage; focused?: boolean; inferredC
       data-outreach={proactive()?.outreachId}
     >
       <span class="sr-only">{isReminder() ? t("chat.reminderSr") : isUser() ? t("chat.you") : t("chat.lucina")}</span>
-      <Show when={proactive()}>{(p) => <ProactiveCard text={props.message.text} meta={p()} place={props.message.meta?.place} />}</Show>
+      <Show when={proactive()}>{(p) => <ProactiveCard readOnly={props.readOnly} text={props.message.text} meta={p()} place={props.message.meta?.place} />}</Show>
       <Show when={rich()}>
-        {(r) => <RichReply message={props.message} rich={r()} onBubbleClick={toggleTime} inferredChoice={props.inferredChoice} />}
+        {(r) => <RichReply readOnly={props.readOnly} message={props.message} rich={r()} onBubbleClick={toggleTime} inferredChoice={props.inferredChoice} />}
       </Show>
       <Show when={rich() && props.message.attachments?.length ? props.message.attachments : null}>
         {(a) => (
@@ -453,7 +502,7 @@ function MessageItem(props: { message: ChatMessage; focused?: boolean; inferredC
           </Show>
           <Show when={text()}>
             {/* Her plain replies are markdown too (safe renderer from Notes): no more literal "**". */}
-            <Show when={isUser()} fallback={<Markdown text={props.message.text} class="md--chat" />}>
+            <Show when={isUser()} fallback={<Markdown text={tidyDecisionText(props.message.text)} class="md--chat" />}>
               <Show when={captionUnder()} fallback={<LinkifiedText text={text()} />}>
                 <div class="bubble-caption"><LinkifiedText text={text()} /></div>
               </Show>
@@ -476,10 +525,19 @@ function MessageItem(props: { message: ChatMessage; focused?: boolean; inferredC
           </Show>
         </div>
       </Show>
+      {/* The note Lucina saved or read (meta.kind "note"): one tap into Keep. */}
+      <Show when={props.message.meta?.kind === "note" && props.message.meta.slug}>
+        {(slug) => (
+          <InAppLink href={`/keep/note/${slug()}`} class="msg-note-link">
+            {t("chat.openNote")}
+          </InAppLink>
+        )}
+      </Show>
       <For each={props.message.meta?.blocks ?? []}>{(b) => <Model3dViewer block={b} />}</For>
       <Show when={props.message.job}>{(job) => <JobCard job={job()} />}</Show>
       <div class="msg-info">
         <SourceBadge message={props.message} />
+        <Show when={!isUser() && props.message.meta?.jev}>{(j) => <JevBadge jev={j()} />}</Show>
         <Show when={props.message.backfilled}>
           <span class="msg-imported">{t("chat.imported")}</span>
         </Show>
@@ -524,6 +582,11 @@ function LiveIndicator() {
 }
 
 export default function ChatView() {
+  createEffect(() => {
+    if (chat.messages.length) queueMicrotask(() => {
+      if (document.querySelector(".msg")) markFirstMessage(firstMessageSource);
+    });
+  });
   const [draft, setDraft] = createSignal("");
   const [filter, setFilter] = createSignal<SourceFilter>("all");
   const [drafts, setDrafts] = createSignal<DraftAttachment[]>([]);
@@ -561,6 +624,10 @@ export default function ChatView() {
     // Filter by the derived source while preserving the stored channel.
     return f === "all" ? chat.messages : chat.messages.filter((m) => matchesFilter(m, f));
   });
+  // A turn's tool calls fold into one line between the messages.
+  const toolRuns = new Map<string, ToolRun>();
+  const rows = createMemo(() => chatRows(visible(), toolRuns));
+  const position = createMemo(() => new Map(visible().map((m, i) => [m.key, i])));
   const filterLabel = () => {
     const key = SOURCE_FILTERS.find((f) => f.id === filter())?.label;
     return key ? t(key) : "";
@@ -623,6 +690,23 @@ export default function ChatView() {
   }
   /** While our own scroll-to-end runs, scroll events are not the reader's. */
   let autoScrollUntil = 0;
+  /**
+   * When the reader last moved the list (wheel, touch, keys, scrollbar drag). Only their scrolls unpin it: the
+   * browser also lowers scrollTop when content above shrinks or the view grows (Secretary Code re-places its warm
+   * view on every rail switch), and taking that for a scroll up left the chat stuck above the newest messages.
+   */
+  let readerInputAt = 0;
+  /** Reader input with no scroll event yet: the next one is theirs even when a slow frame delays it. */
+  let inputPending = false;
+  let touching = false;
+  let lastScrollTop = 0;
+  let content: HTMLDivElement | undefined;
+  let draggingList = false;
+  const readerScroll = () => {
+    readerInputAt = Date.now();
+    inputPending = true;
+    autoScrollUntil = 0;
+  };
 
   function autosize() {
     if (!input) return;
@@ -631,7 +715,7 @@ export default function ChatView() {
   }
 
   function scrollToEnd(smooth: boolean) {
-    if (!list) return;
+    if (!list || !atBottom) return;
     const reduce = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
     autoScrollUntil = Date.now() + (smooth && !reduce ? AUTO_SCROLL_MS : 100);
     if (typeof list.scrollTo === "function") {
@@ -646,18 +730,90 @@ export default function ChatView() {
     if (!list || !hasMore() || olderState() === "loading") return;
     const height = list.scrollHeight;
     const top = list.scrollTop;
+    atBottom = false;
     const added = await loadOlder();
-    if (added > 0 && list) list.scrollTop = top + (list.scrollHeight - height);
+    if (added > 0 && list) {
+      autoScrollUntil = Date.now() + 100;
+      list.scrollTop = top + (list.scrollHeight - height);
+      lastScrollTop = list.scrollTop;
+    }
   }
 
   function onScroll() {
-    if (!list || Date.now() < autoScrollUntil) return;
-    atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < STICK_PX;
-    if (list.scrollTop < LOAD_OLDER_PX && hasMore()) void older();
+    if (!list) return;
+    const top = list.scrollTop;
+    const movedUp = top < lastScrollTop;
+    lastScrollTop = top;
+    if (Date.now() < autoScrollUntil) return;
+    const distance = list.scrollHeight - top - list.clientHeight;
+    const pending = inputPending && Date.now() - readerInputAt < READER_PENDING_MS;
+    inputPending = false;
+    if (touching || pending || Date.now() - readerInputAt < READER_INPUT_MS) {
+      readerInputAt = Date.now();
+      // A drop that lands exactly on the end is the browser clamping, not a scroll up.
+      atBottom = distance <= 1 || (!movedUp && distance < STICK_PX);
+    } else if (atBottom) {
+      // Layout moved the list, not the reader: stay on the newest message.
+      if (distance > 1) scrollToEnd(false);
+      return;
+    } else if (distance <= 1) {
+      atBottom = true;
+    }
+    // Older pages load only once the reader has scrolled away from the end, never on mount.
+    if (!atBottom && top < LOAD_OLDER_PX && hasMore()) void older();
+  }
+
+  /**
+   * Pin to the end once the DOM has settled. A hidden page (Secretary Code's view while another rail item is
+   * shown, a background tab) runs no animation frames, so it pins at once instead of when it is shown again.
+   */
+  function pinSoon(smooth: boolean) {
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") scrollToEnd(false);
+    else requestAnimationFrame(() => scrollToEnd(smooth));
   }
 
   onMount(() => {
     scrollToEnd(false);
+    const frame = requestAnimationFrame(() => scrollToEnd(false));
+    // Growing content (photos, previews, fonts, a revealing reply) and a resized view keep a pinned list at the end.
+    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(() => {
+      if (atBottom) scrollToEnd(false);
+    }) : null;
+    if (content) observer?.observe(content);
+    if (list) observer?.observe(list);
+    const latest = () => {
+      atBottom = true;
+      readerInputAt = 0;
+      inputPending = false;
+      scrollToEnd(true);
+    };
+    const release = () => { draggingList = false; };
+    const shown = () => {
+      if (document.visibilityState === "visible" && atBottom) scrollToEnd(false);
+    };
+    // Pictures another page handed over ("Ask Lucina about this photo"): attached, the text box ready.
+    const handedOver = () => {
+      const given = takeHandOff();
+      if (!given) return;
+      void addFiles(given.files);
+      if (given.text) setDraft(given.text);
+      input?.focus();
+    };
+    handedOver();
+    window.addEventListener("secretary:chat-handoff", handedOver);
+    window.addEventListener("secretary:chat-latest", latest);
+    window.addEventListener("pointerup", release);
+    window.addEventListener("pointercancel", release);
+    document.addEventListener("visibilitychange", shown);
+    onCleanup(() => {
+      cancelAnimationFrame(frame);
+      observer?.disconnect();
+      window.removeEventListener("secretary:chat-handoff", handedOver);
+      window.removeEventListener("secretary:chat-latest", latest);
+      window.removeEventListener("pointerup", release);
+      window.removeEventListener("pointercancel", release);
+      document.removeEventListener("visibilitychange", shown);
+    });
     onCleanup(connectTimeline());
   });
 
@@ -670,7 +826,7 @@ export default function ChatView() {
       () => [visible()[visible().length - 1]?.key, sending()] as const,
       (_now, prev) => {
         const firstFill = !prev?.[0];
-        if (atBottom) requestAnimationFrame(() => scrollToEnd(!firstFill));
+        if (atBottom) pinSoon(!firstFill);
       },
       { defer: true },
     ),
@@ -681,7 +837,7 @@ export default function ChatView() {
     on(
       revealTick,
       () => {
-        if (atBottom) requestAnimationFrame(() => scrollToEnd(true));
+        if (atBottom) pinSoon(true);
       },
       { defer: true },
     ),
@@ -725,7 +881,7 @@ export default function ChatView() {
       filter,
       () => {
         atBottom = true;
-        requestAnimationFrame(() => scrollToEnd(false));
+        pinSoon(false);
       },
       { defer: true },
     ),
@@ -801,9 +957,69 @@ export default function ChatView() {
     );
   }
 
+  // "Add secret": `/secret …` opens the sheet instead of sending, and a
+  // token-shaped draft asks first (before the optimistic bubble and the cache).
+  const [guard, setGuard] = createSignal<{ text: string; spans: Detected[] } | null>(null);
+  const [hintProjects, setHintProjects] = createSignal<SecretProject[] | null>(null);
+  let hintLoading = false;
+  const commandPrefix = createMemo(() => {
+    const d = draft().trimStart().toLowerCase();
+    return d.startsWith("/") && !/\s/.test(d) && SECRET_COMMAND.startsWith(d) && d !== SECRET_COMMAND;
+  });
+  const commandArg = createMemo(() => commandArgIndex(draft()));
+  const targetHints = createMemo(() => {
+    if (commandArg() !== 3) return [];
+    const list = hintProjects();
+    if (!list) {
+      if (!hintLoading) {
+        hintLoading = true;
+        secretsApi.catalog().then(setHintProjects, () => setHintProjects([]));
+      }
+      return [];
+    }
+    const prefix = draft().trimStart().slice(7).trim().split(/\s+/)[2] ?? "";
+    return targetCompletions(prefix, list);
+  });
+
+  function completeTarget(hint: string) {
+    const words = draft().trimStart().slice(7).trim().split(/\s+/);
+    setDraft(`${SECRET_COMMAND} ${words[0] ?? ""} ${words[1] ?? ""} ${hint}`);
+    input?.focus();
+  }
+
+  function guardSave() {
+    const g = guard();
+    if (!g) return;
+    const first = g.spans[0]!;
+    const value = g.text.slice(first.start, first.end);
+    setDraft(maskSecrets(g.text, g.spans));
+    setGuard(null);
+    openSecretSheet({ value, name: suggestName(value) || undefined });
+  }
+
+  function guardMask() {
+    const g = guard();
+    if (!g) return;
+    setDraft(maskSecrets(g.text, g.spans));
+    setGuard(null);
+    void submit();
+  }
+
   async function submit() {
     if (!canSend()) return;
     const text = draft();
+    if (isSecretCommand(text) && !drafts().length && !attachLocation()) {
+      const c = parseSecretCommand(text);
+      setDraft("");
+      queueMicrotask(autosize);
+      openSecretSheet({ name: c.name, value: c.extra ? undefined : c.value, target: c.target });
+      return;
+    }
+    const spans = detectSecrets(text);
+    if (spans.length) {
+      setGuard({ text, spans });
+      return;
+    }
     const files = drafts();
     const sharedLocation = attachLocation();
     setDraft("");
@@ -858,95 +1074,113 @@ export default function ChatView() {
         class="messages"
         ref={list}
         onScroll={onScroll}
+        onWheel={readerScroll}
+        onTouchStart={() => { touching = true; readerScroll(); }}
+        onTouchMove={readerScroll}
+        onTouchEnd={() => { touching = false; readerScroll(); }}
+        onTouchCancel={() => { touching = false; readerScroll(); }}
+        onPointerDown={() => { draggingList = true; }}
+        onPointerMove={() => { if (draggingList) readerScroll(); }}
+        onKeyDown={(e) => {
+          if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(e.key) &&
+              !(e.target as Element).closest("input, textarea, [contenteditable=true]")) readerScroll();
+        }}
+        tabindex="0"
         role="log"
         aria-live="off"
         aria-label={t("chat.conversation")}
       >
-        <div class="timeline-top">
-          <Switch>
-            <Match when={olderState() === "loading"}>
-              <span class="timeline-hint" role="status">
-                {t("chat.loadingEarlier")}
-              </span>
-            </Match>
-            <Match when={olderState() === "error"}>
-              <button type="button" class="btn btn--small" onClick={() => void older()}>
-                {t("chat.earlierFailed")}
-              </button>
-            </Match>
-            <Match when={hasMore()}>
-              <button type="button" class="btn btn--small" onClick={() => void older()}>
-                {t("chat.loadEarlier")}
-              </button>
-            </Match>
-            <Match when={chat.loaded && chat.messages.length > 0}>
-              <span class="timeline-hint">{t("chat.start")}</span>
-            </Match>
-          </Switch>
-        </div>
-        <Show when={loadState() === "error"}>
-          <div class="timeline-error" role="alert">
-            <span>{t("chat.loadFailed")}</span>
-            <button type="button" class="btn btn--small" onClick={() => void loadLatest()}>
-              {t("common.tryAgain")}
-            </button>
+        <div class="messages-content" ref={content}>
+          <div class="timeline-top">
+            <Switch>
+              <Match when={olderState() === "loading"}>
+                <span class="timeline-hint" role="status">
+                  {t("chat.loadingEarlier")}
+                </span>
+              </Match>
+              <Match when={olderState() === "error"}>
+                <button type="button" class="btn btn--small" onClick={() => void older()}>
+                  {t("chat.earlierFailed")}
+                </button>
+              </Match>
+              <Match when={hasMore()}>
+                <button type="button" class="btn btn--small" onClick={() => void older()}>
+                  {t("chat.loadEarlier")}
+                </button>
+              </Match>
+              <Match when={chat.loaded && chat.messages.length > 0}>
+                <span class="timeline-hint">{t("chat.start")}</span>
+              </Match>
+            </Switch>
           </div>
-        </Show>
-        <Show when={!chat.loaded && chat.messages.length === 0 && loadState() !== "error"}>
-          <p class="timeline-hint" role="status">
-            {t("chat.loading")}
-          </p>
-        </Show>
-        <Show when={chat.loaded && chat.messages.length === 0 && !sending()}>
-          <div class="empty">
-            <p class="empty-title">{t("chat.emptyTitle")}</p>
-            <p class="empty-sub">{t("chat.emptySub")}</p>
-          </div>
-        </Show>
-        <Show when={chat.loaded && focusOutreach() && !focused() ? focusOutreach() : null}>
-          {(id) => (
-            <div class="proactive-missing" role="status">
-              <p>{t("chat.outreachMissing")}</p>
-              <FeedbackButtons outreachId={id()} />
-              <button type="button" class="btn btn--small" onClick={dismissFocus}>
-                {t("chat.close")}
+          <Show when={loadState() === "error"}>
+            <div class="timeline-error" role="alert">
+              <span>{t("chat.loadFailed")}</span>
+              <button type="button" class="btn btn--small" onClick={() => void loadLatest()}>
+                {t("common.tryAgain")}
               </button>
             </div>
-          )}
-        </Show>
-        <Show when={chat.messages.length > 0 && visible().length === 0}>
-          <p class="timeline-hint">{t("chat.noFiltered", { source: filterLabel() })}</p>
-        </Show>
-        <For each={visible()}>
-          {(m, i) => (
-            <>
-              <Show when={dayBreak(i())}>
-                {(label) => (
-                  <div class="day-sep" role="separator" aria-label={label()}>
-                    <span>{label()}</span>
-                  </div>
+          </Show>
+          <Show when={!chat.loaded && chat.messages.length === 0 && loadState() !== "error"}>
+            <p class="timeline-hint" role="status">
+              {t("chat.loading")}
+            </p>
+          </Show>
+          <Show when={chat.loaded && chat.messages.length === 0 && !sending()}>
+            <div class="empty">
+              <p class="empty-title">{t("chat.emptyTitle")}</p>
+              <p class="empty-sub">{t("chat.emptySub")}</p>
+            </div>
+          </Show>
+          <Show when={chat.loaded && focusOutreach() && !focused() ? focusOutreach() : null}>
+            {(id) => (
+              <div class="proactive-missing" role="status">
+                <p>{t("chat.outreachMissing")}</p>
+                <FeedbackButtons outreachId={id()} />
+                <button type="button" class="btn btn--small" onClick={dismissFocus}>
+                  {t("chat.close")}
+                </button>
+              </div>
+            )}
+          </Show>
+          <Show when={chat.messages.length > 0 && visible().length === 0}>
+            <p class="timeline-hint">{t("chat.noFiltered", { source: filterLabel() })}</p>
+          </Show>
+          <For each={rows()}>
+            {(row) => (
+              <>
+                <Show when={dayBreak(position().get(isToolRun(row) ? row.first : row.key) ?? -1)}>
+                  {(label) => (
+                    <div class="day-sep" role="separator" aria-label={label()}>
+                      <span>{label()}</span>
+                    </div>
+                  )}
+                </Show>
+                {isToolRun(row) ? (
+                  <ToolSteps steps={row.steps} />
+                ) : (
+                  <MessageItem
+                    message={row}
+                    focused={!!focusOutreach() && focused()?.key === row.key}
+                    inferredChoice={inferredChoices().get(row.key)}
+                  />
                 )}
-              </Show>
-              <MessageItem
-                message={m}
-                focused={!!focusOutreach() && focused()?.key === m.key}
-                inferredChoice={inferredChoices().get(m.key)}
-              />
-            </>
-          )}
-        </For>
-        <Show when={sending()}>
-          <div class="msg msg--lucina">
-            <div class="bubble bubble--thinking">
-              <span class="typing" aria-hidden="true">
-                <span />
-                <span />
-                <span />
-              </span>
-              {t("chat.thinking")}
+              </>
+            )}
+          </For>
+          <Show when={sending()}>
+            <div class="msg msg--lucina">
+              <div class="bubble bubble--thinking">
+                <span class="typing" aria-hidden="true">
+                  <span />
+                  <span />
+                  <span />
+                </span>
+                {t("chat.thinking")}
+              </div>
             </div>
-          </div>
-        </Show>
+          </Show>
+        </div>
       </div>
       <div class="sr-only" aria-live="polite" aria-atomic="true">
         {sending() ? t("chat.thinkingSr") : lastReply() ? t("chat.replySr", { text: lastReply() }) : ""}
@@ -958,6 +1192,49 @@ export default function ChatView() {
           void submit();
         }}
       >
+        <Show when={guard()}>
+          {(g) => (
+            <div class="secret-guard" role="alert">
+              <p>
+                <strong>🔐 {t("secrets.guardTitle", { hint: valueHint(g().text.slice(g().spans[0]!.start, g().spans[0]!.end)) })}</strong>
+                <span class="muted small"> {t("secrets.guardSub")}</span>
+              </p>
+              <div class="secret-guard-actions">
+                <button type="button" class="btn btn--small btn--primary" onClick={guardSave}>
+                  {t("secrets.guardSave")}
+                </button>
+                <button type="button" class="btn btn--small" onClick={guardMask}>
+                  {t("secrets.guardMask")}
+                </button>
+                <button type="button" class="btn btn--small" onClick={() => { setGuard(null); input?.focus(); }}>
+                  {t("secrets.guardEdit")}
+                </button>
+              </div>
+            </div>
+          )}
+        </Show>
+        <Show when={commandPrefix() || commandArg() > 0}>
+          <div class="command-hints" role="listbox" aria-label={t("secrets.attach")}>
+            <Show when={commandPrefix()}>
+              <button type="button" role="option" class="command-hint" onClick={() => { setDraft(`${SECRET_COMMAND} `); input?.focus(); }}>
+                <code>{SECRET_USAGE}</code> <span class="muted small">{t("secrets.commandHint")}</span>
+              </button>
+            </Show>
+            <Show when={commandArg() > 0 && commandArg() < 3}>
+              <span class="command-hint"><code>{SECRET_USAGE}</code> <span class="muted small">{t("secrets.commandHint")}</span></span>
+            </Show>
+            <Show when={commandArg() > 3}>
+              <span class="command-hint muted small">{t("secrets.commandExtra")}</span>
+            </Show>
+            <For each={targetHints()}>
+              {(h) => (
+                <button type="button" role="option" class="chip" onClick={() => completeTarget(h)}>
+                  {h}
+                </button>
+              )}
+            </For>
+          </div>
+        </Show>
         <Show when={drafts().length || attachLocation() || attachError()}>
           <div class="composer-tray">
             <AttachmentTray items={drafts()} onRemove={removeDraft} />
@@ -1006,9 +1283,13 @@ export default function ChatView() {
               <button type="button" role="menuitem" onClick={shareCurrentLocation}>
                 <span aria-hidden="true">📍</span> {t("share.attachLocation")}
               </button>
+              <button type="button" role="menuitem" onClick={() => { setAttachOpen(false); openSecretSheet(); }}>
+                <span aria-hidden="true">🔐</span> {t("secrets.attach")}
+              </button>
             </div>
           </Show>
         </div>
+        <Show when={replyTarget()}>{target => <div class="reply-target"><span>{t("chats.replying", { text: target().text })}</span><button type="button" onClick={() => setReplyTarget(null)} aria-label={t("chat.close")}>×</button></div>}</Show>
         <ShareComposer />
         <label class="sr-only" for="composer-input">
           {t("chat.composer")}
@@ -1022,6 +1303,7 @@ export default function ChatView() {
           value={draft()}
           onInput={(e) => {
             setDraft(e.currentTarget.value);
+            setGuard(null);
             autosize();
           }}
           onPaste={onPaste}

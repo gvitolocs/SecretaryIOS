@@ -33,6 +33,13 @@ pub struct ServiceToken {
     pub last_used_at: Option<u64>,
     #[serde(default)]
     pub revoked: bool,
+    /// Delegation depth of whoever holds it ([`Caller::depth`]); 0 is omitted.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub depth: u8,
+}
+
+fn is_zero(d: &u8) -> bool {
+    *d == 0
 }
 
 pub struct TokenStore {
@@ -48,6 +55,18 @@ impl TokenStore {
 
     /// Issue a new token; returns the record and the plaintext (shown once).
     pub fn issue(&self, name: &str, scopes: Scopes) -> io::Result<(ServiceToken, String)> {
+        self.issue_at(name, scopes, 0)
+    }
+
+    /// [`Self::issue`] for a holder at delegation depth `depth` (0 or 1): an
+    /// agent run gets a depth-1 token, which cannot start further agents.
+    pub fn issue_at(&self, name: &str, scopes: Scopes, depth: u8) -> io::Result<(ServiceToken, String)> {
+        if depth > crate::agents::MAX_DEPTH {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("depth must be 0-{}", crate::agents::MAX_DEPTH),
+            ));
+        }
         if !valid_caller_name(name) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -57,7 +76,7 @@ impl TokenStore {
         if scopes.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "at least one scope is needed (read, chat, write)",
+                "at least one scope is needed (read, chat, write, computer, agents, notebooks)",
             ));
         }
         let secret = format!("{TOKEN_PREFIX}{}", random_secret()?);
@@ -69,6 +88,7 @@ impl TokenStore {
             created_at: unix_now(),
             last_used_at: None,
             revoked: false,
+            depth,
         };
         let out = rec.clone();
         self.file.update(move |v| {
@@ -80,6 +100,21 @@ impl TokenStore {
 
     pub fn list(&self) -> io::Result<Vec<ServiceToken>> {
         self.file.read(Clone::clone)
+    }
+
+    /// Add `add` to an active token's scopes (by id, or every active token with
+    /// that name). Returns the updated records.
+    pub fn add_scopes(&self, id_or_name: &str, add: &Scopes) -> io::Result<Vec<ServiceToken>> {
+        self.file.update(|v| {
+            let mut hit = Vec::new();
+            for t in v.iter_mut() {
+                if !t.revoked && (t.id == id_or_name || t.name == id_or_name) {
+                    t.scopes = Scopes::of(t.scopes.iter().chain(add.iter()));
+                    hit.push(t.clone());
+                }
+            }
+            (!hit.is_empty(), hit)
+        })
     }
 
     /// Revoke by id, or by name (every active token with that name).
@@ -131,6 +166,7 @@ impl TokenStore {
             kind: CallerKind::ServiceToken,
             scopes: t.scopes,
             id: t.id,
+            depth: t.depth,
         }))
     }
 }
@@ -160,5 +196,11 @@ mod tests {
         assert!(store.revoke(&rec.id).unwrap().is_empty());
         assert!(store.issue("Bad Name", Scopes::all()).is_err());
         assert!(store.issue("grok", Scopes::default()).is_err());
+        let (_, s1) = store.issue_at("hermes-run", Scopes::parse_list("read,agents").unwrap(), 1).unwrap();
+        assert_eq!(store.authenticate(&s1).unwrap().unwrap().depth, 1);
+        assert!(store.issue_at("deep", Scopes::all(), 2).is_err());
+        // depth 0 is not written, so older readers see the same records
+        let raw = std::fs::read_to_string(dir.path().join("tokens.json")).unwrap();
+        assert_eq!(raw.matches("\"depth\"").count(), 1);
     }
 }

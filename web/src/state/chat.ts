@@ -1,17 +1,18 @@
-// The Chat timeline: one server-backed conversation across every channel.
+// The Chat tab: this device's main conversation with Lucina.
 //
-// The server timeline is the source of truth. This module merges its pages
-// (GET /v1/timeline), live items (SSE) and this tab's optimistic sends into one
-// ordered list, deduped by server item id. A small sessionStorage cache of the
-// last messages only speeds up the first paint.
+// The server timeline is the source of truth; this device's part of it ("mine": its own
+// device conversation, items from before devices were recorded, and Lucina's own
+// messages) is kept in IndexedDB (lib/chatdb). The first paint comes from there, then
+// `GET /v1/timeline?scope=mine&after=<cursor>` fetches only what arrived since
+// (lib/chatSync). Live items (SSE) are all stored, and only "mine" are shown here; every
+// other conversation is in the All chats plugin (views/Chats). This tab's optimistic
+// sends are merged in and deduped by server item id.
 
 import { createSignal } from "solid-js";
 import { createStore, reconcile, unwrap } from "solid-js/store";
 import { toApiError, type ApiError } from "../api/client";
 import { api, CHAT_MAX_CHARS } from "../api/secretary";
 import {
-  CHANNELS,
-  parsePage,
   TimelineStream,
   type Attachment,
   type Channel,
@@ -38,7 +39,11 @@ import {
 } from "../lib/chatShare";
 import { chatSessionId, uuid } from "../lib/ids";
 import { parseRich, speechText, stripMarkdown, type RichMessage } from "../lib/rich";
+import { isSecretCommand } from "../lib/secrets";
 import { readJSON, removeKey, writeJSON } from "../lib/storage";
+import { clearChatDB, getState, setState, isMine, putItems, readItems } from "../lib/chatdb";
+import { olderScope, syncScope } from "../lib/chatSync";
+import { markSynced } from "../lib/chatPerf";
 import { markLucinaOnline } from "./lucina";
 
 export interface JobState {
@@ -118,30 +123,17 @@ export function isTerminalJob(status: string): boolean {
 }
 
 function hydrate(): ChatMessage[] {
+  // The sessionStorage caches are gone (IndexedDB holds the chat); clean up old copies.
+  removeKey("session", CACHE_KEY);
   removeKey("session", LEGACY_KEY);
-  const data = readJSON("session", CACHE_KEY);
-  if (!Array.isArray(data)) return [];
-  const out: ChatMessage[] = [];
-  const seen = new Set<string>();
-  for (const m of data) {
-    if (!m || typeof m !== "object") continue;
-    const msg = m as ChatMessage;
-    if (typeof msg.key !== "string" || typeof msg.text !== "string" || seen.has(msg.key)) continue;
-    if (msg.role !== "user" && msg.role !== "lucina") continue;
-    if (typeof msg.createdAt !== "number" || !Number.isFinite(msg.createdAt)) continue;
-    if (!(CHANNELS as readonly string[]).includes(msg.channel)) continue;
-    seen.add(msg.key);
-    delete msg.reveal;
-    if (msg.rich !== undefined) {
-      const rich = parseRich(msg.rich);
-      if (rich) msg.rich = rich;
-      else delete msg.rich;
-    }
-    // A reload interrupted this send; let the user retry it.
-    out.push(msg.status === "sending" ? { ...msg, status: "error", error: t("chat.errReloaded") } : msg);
-  }
-  return out.sort(byTime);
+  return [];
 }
+let deviceId: string | undefined;
+export function setChatDevice(id?: string): void { deviceId = id; void setState("deviceId", id ?? null); }
+export function chatDevice(): string | undefined { return deviceId; }
+export let firstMessageSource: "cache" | "server" = "server";
+const [replyTarget, setReplyTarget] = createSignal<{ id: string; text: string } | null>(null);
+export { replyTarget, setReplyTarget };
 
 interface ChatStore {
   messages: ChatMessage[];
@@ -218,36 +210,20 @@ export function hasMore(): boolean {
 
 /** Bumped whenever the conversation is cleared, so late responses are dropped. */
 let generation = 0;
+const sentClientMessageIds = new Set<string>();
 
 function byTime(a: ChatMessage, b: ChatMessage): number {
   return a.createdAt - b.createdAt;
 }
 
 function persist(): void {
-  // Files and blob previews cannot survive a reload: drop attachment sends the
-  // server never accepted (a retry could not resend the files) and strip the
-  // tab-only state from the accepted ones. Sensitive replies are never cached.
-  const cache = chat.messages
-    .filter((m) => !m.sensitive)
-    .slice(-CACHE_LIMIT)
-    .filter((m) => !m.share || m.status === "sent")
-    .map((m) => {
-    if (!m.share && !m.attachments?.some((a) => a.previewUrl)) return m;
-    return {
-      ...m,
-      ...(m.share ? { share: undefined } : {}),
-      ...(m.attachments
-        ? {
-            attachments: m.attachments.map((a) => {
-              const rest = { ...a };
-              delete rest.previewUrl;
-              return rest;
-            }),
-          }
-        : {}),
-    };
-  });
-  writeJSON("session", CACHE_KEY, cache);
+  const items: TimelineItem[] = chat.messages.map(m => unwrap(m)).filter(m => m.itemId && !m.sensitive && !m.key.startsWith("s:")).map(m => ({
+    id: m.itemId!, ts: m.createdAt, channel: m.channel, role: m.role, text: m.text,
+    clientMessageId: m.clientMessageId, replyTo: m.replyTo, backfilled: m.backfilled,
+    meta: { ...m.meta, ...(m.rich ? { rich: m.rich } : {}) },
+    attachments: m.attachments?.map(({ previewUrl: _preview, ...a }) => a),
+  }));
+  if (items.length) void putItems(items);
 }
 
 function find(key: string): ChatMessage | undefined {
@@ -284,7 +260,7 @@ function serverFields(it: TimelineItem): Partial<ChatMessage> {
   return fields;
 }
 
-function fromItem(it: TimelineItem): ChatMessage {
+export function fromItem(it: TimelineItem): ChatMessage {
   return { key: `s:${it.id}`, ...serverFields(it) } as ChatMessage;
 }
 
@@ -351,28 +327,43 @@ function idOrNull(v: unknown): string | null {
 
 // ---- Loading -----------------------------------------------------------------
 
+/** Read local history before session/network work finishes on a returning visit. */
+export async function hydrateCachedChat(): Promise<void> {
+  const gen = generation;
+  const savedDevice = await getState<string>("deviceId");
+  if (gen !== generation) return;
+  deviceId ??= savedDevice;
+  const cached = await readItems("mine", deviceId);
+  if (gen !== generation || chat.messages.length || !cached.length) return;
+  firstMessageSource = "cache";
+  commit(list => { mergeItems(list, [...cached].reverse(), "end"); });
+  setChat({ nextBefore: cached[cached.length - 1]!.id, loaded: true });
+}
+
 /** Fetch the newest page and merge it (first load, remount, resync after a stream gap). */
 export async function loadLatest(): Promise<void> {
   if (loadState() === "loading") return;
   const gen = generation;
   setLoadState("loading");
   try {
-    const page = parsePage(await api.getTimeline(null));
-    if (gen !== generation) return;
     const first = !chat.loaded;
-    let reset = false;
-    commit((list) => {
-      const known = new Set(list.map((m) => m.itemId).filter((id): id is string => !!id));
-      const overlap = page.items.some((it) => known.has(it.id));
-      if (known.size > 0 && !overlap && page.nextBefore !== null) {
-        // Too much happened while away: what we hold no longer joins up with
-        // the newest page. Keep only unconfirmed local messages.
-        reset = true;
-        for (let i = list.length - 1; i >= 0; i--) if (list[i]!.itemId) list.splice(i, 1);
-      }
+    const cached = await readItems("mine", deviceId);
+    if (gen !== generation) return;
+    if (!chat.messages.length && cached.length) {
+      firstMessageSource = "cache";
+      commit(list => { mergeItems(list, [...cached].reverse(), "end"); });
+      setChat({ nextBefore: cached[cached.length - 1]!.id, loaded: true });
+      // Let Solid paint cached messages before starting the request.
+      await new Promise<void>(resolve => setTimeout(resolve, 0));
+    }
+    const page = await syncScope("mine", deviceId, () => gen === generation);
+    if (gen !== generation) return;
+    commit(list => {
+      if (page.reset) for (let i = list.length - 1; i >= 0; i--) if (list[i]!.itemId) list.splice(i, 1);
       mergeItems(list, [...page.items].reverse(), "end");
     });
-    if (first || reset) setChat({ nextBefore: page.nextBefore, loaded: true });
+    if (first || page.reset) setChat({ nextBefore: page.nextBefore, loaded: true });
+    markSynced();
     setLoadState("ready");
   } catch (e) {
     if (gen !== generation) return;
@@ -388,7 +379,9 @@ export async function loadOlder(): Promise<number> {
   const gen = generation;
   setOlderState("loading");
   try {
-    const page = parsePage(await api.getTimeline(before));
+    const oldest = chat.messages.find(m => m.itemId)?.itemId ?? before;
+    const cached = await readItems("mine", deviceId, oldest);
+    const page = cached.length ? { items: cached, nextBefore: cached[cached.length - 1]!.id } : await olderScope("mine", before);
     if (gen !== generation) return 0;
     let added = 0;
     commit((list) => {
@@ -415,6 +408,9 @@ export function onTimelineItem(cb: (item: TimelineItem) => void): () => void {
 
 /** Merge one live item (from the stream). */
 export function receiveItem(item: TimelineItem): void {
+  void putItems([item]);
+  for (const cb of itemListeners) cb(item);
+  if (!isMine(item, deviceId) && !(item.clientMessageId && sentClientMessageIds.has(item.clientMessageId))) return;
   commit((list) => {
     const added = mergeItems(list, [item], "end");
     // A rich reply that arrives live is "said" bubble by bubble.
@@ -425,7 +421,6 @@ export function receiveItem(item: TimelineItem): void {
     // Lucina answered an attachment: no more "reading…" state.
     if (item.role === "lucina") finishShareForReply(list, item.replyTo);
   });
-  for (const cb of itemListeners) cb(item);
 }
 
 function finishShareForReply(list: ChatMessage[], replyTo: string | undefined): void {
@@ -442,9 +437,13 @@ function finishShareForReply(list: ChatMessage[], replyTo: string | undefined): 
 
 // ---- Live stream ----------------------------------------------------------------
 
+const connectedListeners = new Set<() => void>();
+export function onTimelineConnected(cb: () => void): () => void {
+  connectedListeners.add(cb); return () => { connectedListeners.delete(cb); };
+}
 const stream = new TimelineStream({
   onItem: receiveItem,
-  onStatus: setStreamStatus,
+  onStatus: status => { setStreamStatus(status); if (status === "live") { void loadLatest(); for (const cb of connectedListeners) cb(); } },
   onResync: () => void loadLatest(),
 });
 
@@ -458,10 +457,8 @@ function onOnline(): void {
 
 function onVisible(): void {
   if (document.visibilityState !== "visible") return;
-  if (streamStatus() !== "live") {
-    stream.nudge();
-    void loadLatest();
-  }
+  stream.nudge();
+  void loadLatest();
 }
 
 function teardownStream(): void {
@@ -516,11 +513,12 @@ async function deliver(key: string): Promise<void> {
   const msg = find(key);
   if (!msg || !msg.clientMessageId) return;
   const cmid = msg.clientMessageId;
+  sentClientMessageIds.add(cmid);
   const text = msg.text;
   const gen = generation;
   setSending(true);
   try {
-    const res = await api.sendChat({ message: text, sessionId: chatSessionId(), clientMessageId: cmid });
+    const res = await api.sendChat({ message: text, sessionId: chatSessionId(), clientMessageId: cmid, ...(msg.replyTo ? { replyTo: msg.replyTo } : {}) });
     markLucinaOnline();
     if (gen !== generation || !find(key)) return; // Cleared (e.g. logout) while in flight.
     const rawJob = res?.job && res.job.id !== undefined && res.job.id !== null ? res.job : null;
@@ -617,6 +615,9 @@ export function cleanMessage(text: string): string {
 /** Adds an optimistic user bubble and sends it. Returns false if nothing was sent. */
 export async function sendMessage(text: string): Promise<boolean> {
   const message = cleanMessage(text);
+  // `/secret NAME VALUE` opens the Add secret sheet (views/Chat.tsx); it is
+  // never a chat message, so it never gets a bubble, the cache or the server.
+  if (isSecretCommand(message)) return false;
   if (message.length > CHAT_MAX_CHARS) return false;
   if (!message || sending()) return false;
   const cmid = uuid();
@@ -630,7 +631,9 @@ export async function sendMessage(text: string): Promise<boolean> {
     channel: "web",
     clientMessageId: cmid,
     status: "sending",
+    replyTo: replyTarget()?.id,
   };
+  setReplyTarget(null);
   commit((list) => {
     list.push(msg);
   });
@@ -898,15 +901,20 @@ function reset(messages: ChatMessage[]): void {
   setLoadState("idle");
   setOlderState("idle");
   setStreamStatus("connecting");
+  firstMessageSource = "server";
 }
 
 /** Forget the conversation (logout). */
 export function clearChat(): void {
   reset([]);
+  deviceId = undefined;
+  setReplyTarget(null);
+  sentClientMessageIds.clear();
+  void clearChatDB();
   removeKey("session", CACHE_KEY);
 }
 
-/** Test helper: reload state from the sessionStorage cache. */
+/** Test helper: reset tab state and clean legacy storage keys. */
 export function reloadChatFromStorage(): void {
   reset(hydrate());
 }

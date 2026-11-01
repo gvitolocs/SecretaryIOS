@@ -1,0 +1,436 @@
+[
+  {
+    "id": "0LEx0bwpuub9IHGUmVz3K",
+    "heading": "CHEASY Skyr",
+    "description": "0,2 % fedt. 1 kg. Pr. kg 20,00 Maks. 3 stk. pr. kunde pr. dag. Med Lidl Plus³ 24,00-30,95",
+    "pricing": {
+      "price": 20,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "kg",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": 3
+      }
+    },
+    "run_from": "2026-10-21T22:00:00+0000",
+    "run_till": "2026-10-24T21:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "4Tra_KO1iu1QN1_dV3lKA",
+    "heading": "Cheasy skyr eller PUCK græskinspireret yoghurt",
+    "description": "",
+    "pricing": {
+      "price": 22,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 1000,
+        "to": 1000
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-24T22:00:00+0000",
+    "run_till": "2026-10-31T22:59:59+0000",
+    "dealer_id": "11deC",
+    "dealer": {
+      "id": "11deC",
+      "name": "REMA 1000"
+    },
+    "store_id": null
+  },
+  {
+    "id": "wkLCr78xX1Htbl1T7kGUf",
+    "heading": "MADVÆRKET Skyr naturel eller vanilje",
+    "description": "1000 g / stk. Pr. kg 19,95",
+    "pricing": {
+      "price": 19.95,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 1000,
+        "to": 1000
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-05-02T22:00:00+0000",
+    "run_till": "2026-12-31T22:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "IEfmJHiE116-Ne6J1abrs",
+    "heading": "Karolines Køkken risalamande, Cheasy eller Arla Airy skyr",
+    "description": "128-180 g Ved køb af flere end 6 stk. pr. variant pr. dag er prisen op til 10.95 pr. stk. Max. 39.06 pr. kg",
+    "pricing": {
+      "price": 5,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 128,
+        "to": 180
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": 6
+      }
+    },
+    "run_from": "2026-10-17T22:00:00+0000",
+    "run_till": "2026-10-24T21:59:59+0000",
+    "dealer_id": "11deC",
+    "dealer": {
+      "id": "11deC",
+      "name": "REMA 1000"
+    },
+    "store_id": null
+  },
+  {
+    "id": "8spZ5FSdYWUMAmSL7Yshu",
+    "heading": "Cheasy skyr",
+    "description": "1 kg.",
+    "pricing": {
+      "price": 24,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "kg",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-23T22:00:00+0000",
+    "run_till": "2026-10-30T22:59:59+0000",
+    "dealer_id": "9ba51",
+    "dealer": {
+      "id": "9ba51",
+      "name": "Netto"
+    },
+    "store_id": null
+  },
+  {
+    "id": "stm0yzNB_-Y8UZQmWwQWv",
+    "heading": "Cheasy skyr el. Puck græsk inspireret yoghurt",
+    "description": "",
+    "pricing": {
+      "price": 20,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 1000,
+        "to": 1000
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "65caN",
+    "dealer": {
+      "id": "65caN",
+      "name": "Løvbjerg"
+    },
+    "store_id": null
+  },
+  {
+    "id": "sdnSMEbecyspxczCWV8Wi",
+    "heading": "MILBONA Skyr naturel",
+    "description": "1 kg. Pr. kg 20,00",
+    "pricing": {
+      "price": 20,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "kg",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-17T22:00:00+0000",
+    "run_till": "2026-10-24T21:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "XauOt6aA6Pe35LFMB1mqw",
+    "heading": "Cheasy skyr*",
+    "description": "Flere varianter. 1 kg. Kg-pris 22,00. \n1 stk.",
+    "pricing": {
+      "price": 22,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "kg",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-21T22:00:00+0000",
+    "run_till": "2026-10-28T22:59:59+0000",
+    "dealer_id": "DWZE1w",
+    "dealer": {
+      "id": "DWZE1w",
+      "name": "365discount"
+    },
+    "store_id": null
+  },
+  {
+    "id": "7_NYmvNIyjnNnZ5WIhsLS",
+    "heading": "Cheasy Skyr",
+    "description": "Flere varianter. 1 kg.\nSKARP PRIS\nPR. STK.",
+    "pricing": {
+      "price": 25,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "kg",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "88ddE",
+    "dealer": {
+      "id": "88ddE",
+      "name": "SPAR"
+    },
+    "store_id": null
+  },
+  {
+    "id": "JbPTHm-OfAFS47BUX_9hT",
+    "heading": "Stay Strong skyr",
+    "description": "500 g. Kg-pris 32,00. Frit valg. 1 stk. Begrænset parti.",
+    "pricing": {
+      "price": 16,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 500,
+        "to": 500
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "c1edq",
+    "dealer": {
+      "id": "c1edq",
+      "name": "Kvickly"
+    },
+    "store_id": null
+  },
+  {
+    "id": "Kh_Op2i6JbFFdGp_bzm36",
+    "heading": "Dessert skyr eller luftig skyr",
+    "description": "125-170 g. Kg-pris maks. 72,00. Frit valg. 1 stk.",
+    "pricing": {
+      "price": 9,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 125,
+        "to": 170
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-21T22:00:00+0000",
+    "run_till": "2026-10-28T22:59:59+0000",
+    "dealer_id": "DWZE1w",
+    "dealer": {
+      "id": "DWZE1w",
+      "name": "365discount"
+    },
+    "store_id": null
+  },
+  {
+    "id": "VIjb0sXKszcaeV761sREr",
+    "heading": "MADVÆRKET Skyr naturel",
+    "description": "1000 g / stk. Pr. kg 19,95 Fast lav pris",
+    "pricing": {
+      "price": 19.95,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 1000,
+        "to": 1000
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-09-12T22:00:00+0000",
+    "run_till": "2026-12-31T22:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "ntWVzy9aeM24xs422ix5I",
+    "heading": "Arla Airy, Cultura eller Yoggi med Top",
+    "description": "Flere varianter. 128-170 g. Max. kg pris 23,44. Max. 4 stk. pr. kunde pr. dag. Herefter er prisen op til 15,95 pr. stk. MAX. 4 STK. SKARP PRIS PR. STK.",
+    "pricing": {
+      "price": 3,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 128,
+        "to": 170
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": 4
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "88ddE",
+    "dealer": {
+      "id": "88ddE",
+      "name": "SPAR"
+    },
+    "store_id": null
+  },
+  {
+    "id": "_ZZZTSlmkPb0CYC68tqgH",
+    "heading": "20% medlemsrabat på alt fra Thise",
+    "description": "Flere varianter. 250-1000 ml/ 100-1000 g.\nLiterpris maks. 51,04/ Kg-pris maks. 207,60.",
+    "pricing": {
+      "price": 20,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "ml",
+      "size": {
+        "from": 250,
+        "to": 1000
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "c1edq",
+    "dealer": {
+      "id": "c1edq",
+      "name": "Kvickly"
+    },
+    "store_id": null
+  }
+]

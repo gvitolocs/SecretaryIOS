@@ -11,6 +11,8 @@ pub enum Source {
     Google,
     Ics,
     Iphone,
+    /// Lucina's own calendar, stored by secretary-server.
+    Lucina,
 }
 
 impl Source {
@@ -19,6 +21,7 @@ impl Source {
             Source::Google => "google",
             Source::Ics => "ics",
             Source::Iphone => "iphone",
+            Source::Lucina => "lucina",
         }
     }
 }
@@ -104,6 +107,8 @@ impl Moment {
 /// `original`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Item {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attendees: Vec<String>,
     /// Provider id: Google event id, ICS UID, iPhone EventKit id.
     pub uid: String,
     /// For overrides: the master's uid.
@@ -136,14 +141,22 @@ pub struct Item {
     /// Sub-calendar label (an EventKit calendar name, …).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calendar: Option<String>,
+    /// The video call link (Google Meet, or one found in the text).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conference_url: Option<String>,
+    /// Who added it ("Lucina", a device name, the Google creator).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added_by: Option<String>,
 }
 
 /// An expanded event as the clients see it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Event {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attendees: Vec<String>,
     /// Unique across sources: `google:<event or instance id>`,
-    /// `ics:<subscription>:<hash>`, `iphone:<id>`.
+    /// `ics:<subscription>:<hash>`, `iphone:<id>`, `lucina:<id>`.
     pub id: String,
     pub source: Source,
     /// The provider's id of the event (or of its recurring master).
@@ -166,8 +179,12 @@ pub struct Event {
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conference_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added_by: Option<String>,
     pub recurring: bool,
-    /// Whether the server can change it (Google only).
+    /// Whether the server can change it (Lucina's own and Google events).
     pub editable: bool,
 }
 

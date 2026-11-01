@@ -506,14 +506,14 @@ async fn subscribe_validates_endpoint_and_keys() {
         ))
         .await;
     assert_eq!((s, code(&b)), (404, "subscription_not_found"));
-    // APNs is off without a paid team.
+    // An APNs token that is not hex is refused.
     let (s, b) = h
         .send(
             h.req(reqwest::Method::POST, "/v1/push/apns")
-                .json(&json!({"token": "ab".repeat(32)})),
+                .json(&json!({"token": "not-a-token"})),
         )
         .await;
-    assert_eq!((s, code(&b)), (503, "apns_disabled"));
+    assert_eq!((s, code(&b)), (400, "bad_request"));
     let (s, b) = h.send(h.req(reqwest::Method::GET, "/v1/push/key")).await;
     assert_eq!(s, 200);
     assert_eq!(
@@ -523,6 +523,104 @@ async fn subscribe_validates_endpoint_and_keys() {
             .len(),
         65
     );
+}
+
+#[tokio::test]
+async fn apns_tokens_are_kept_while_apns_is_off() {
+    let h = harness(false).await;
+    let token = "ab".repeat(32);
+    let (s, b) = h
+        .send(
+            h.req(reqwest::Method::POST, "/v1/push/apns")
+                .json(&json!({"token": token, "lang": "it"})),
+        )
+        .await;
+    assert_eq!(s, 201, "{b}");
+    assert_eq!(b["apnsEnabled"], false);
+    assert_eq!(
+        (b["kind"].as_str(), b["service"].as_str()),
+        (Some("apns"), Some("apns"))
+    );
+    let id = b["id"].clone();
+
+    // A push while off: the web subscription gets it, the token is skipped
+    // without counting a failure (it would be dropped after 10).
+    h.subscribe("w", 4, "en").await;
+    for i in 0..12 {
+        let (s, b) = h
+            .notify(json!({"category": "reminder", "body": format!("r{i}")}))
+            .await;
+        assert_eq!(s, 201, "{b}");
+    }
+    h.wait_delivered(12).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let (s, v) = h
+        .send(h.req(reqwest::Method::GET, "/v1/notifications/settings"))
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["apns"]["enabled"], false);
+    let subs = v["subscriptions"].as_array().unwrap();
+    let apns = subs.iter().find(|x| x["id"] == id).expect("token kept");
+    assert_eq!(apns["failures"], 0);
+    assert_eq!(apns["lastError"], Value::Null);
+
+    // Registering again refreshes the same subscription.
+    let (s, b) = h
+        .send(
+            h.req(reqwest::Method::POST, "/v1/push/apns")
+                .json(&json!({"token": token.to_uppercase()})),
+        )
+        .await;
+    assert_eq!((s, &b["id"]), (201, &id));
+}
+
+#[tokio::test]
+async fn live_activity_tokens_are_validated_and_kept() {
+    let h = harness(false).await;
+    let post = |body: Value| {
+        h.req(reqwest::Method::POST, "/v1/push/liveactivity")
+            .json(&body)
+    };
+    let start = "ab".repeat(40);
+    let update = "cd".repeat(40);
+    let id = "apr_AbCdEfGhIjKlMnOpQrStUv";
+    for bad in [
+        json!({"kind": "start", "token": "not-a-token"}),
+        json!({"kind": "update", "token": update}),
+        json!({"kind": "update", "token": update, "approvalId": "n_123"}),
+        json!({"kind": "later", "token": start}),
+    ] {
+        let (s, b) = h.send(post(bad.clone())).await;
+        assert_eq!((s, code(&b)), (400, "bad_request"), "{bad}");
+    }
+    let (s, b) = h
+        .send(post(
+            json!({"kind": "start", "token": start.to_uppercase()}),
+        ))
+        .await;
+    assert_eq!((s, &b), (201, &json!({"ok": true})));
+    let (s, _) = h
+        .send(post(
+            json!({"kind": "update", "token": update, "approvalId": id}),
+        ))
+        .await;
+    assert_eq!(s, 201);
+    // Again: refreshed, not duplicated.
+    let (s, _) = h.send(post(json!({"kind": "start", "token": start}))).await;
+    assert_eq!(s, 201);
+    let tokens = h.state.notify.live.list();
+    assert_eq!(tokens.len(), 2, "{tokens:?}");
+    assert_eq!(tokens[0].kind, notify::live::LiveKind::Update);
+    assert_eq!(tokens[0].approval_id.as_deref(), Some(id));
+    assert_eq!(tokens[1].token, start);
+    let r = h
+        .http
+        .post(format!("{}/v1/push/liveactivity", h.base))
+        .json(&json!({"kind": "start", "token": start}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 401);
 }
 
 #[tokio::test]
@@ -574,6 +672,8 @@ async fn inbox_settings_and_auth() {
     assert_eq!((s, b["status"].as_str()), (200, Some("disabled")));
 
     for i in 0..3 {
+        // Inbox ids sort by milliseconds, then a random suffix: avoid timestamp ties.
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
         let (s, _) = h
             .notify(json!({"category": "lucina_message", "title": "Lucina", "body": format!("m{i}"), "channel": "telegram"}))
             .await;
@@ -636,7 +736,7 @@ async fn inbox_settings_and_auth() {
     assert_eq!(v["settings"]["categories"]["presence"], false);
     assert_eq!(v["webPush"]["enabled"], true);
     assert_eq!(v["apns"]["enabled"], false);
-    assert_eq!(v["categories"].as_array().unwrap().len(), 7);
+    assert_eq!(v["categories"].as_array().unwrap().len(), 9, "7 + agent + approval");
     assert!(v["currentDevice"]["id"]
         .as_str()
         .unwrap()

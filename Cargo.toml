@@ -13,13 +13,59 @@ members = [
     "crates/secretary-server",
     "crates/secretary-gym",
     "crates/secretary-body",
+    "crates/secretary-avatar-com3d2",
     "crates/secretary-ffi",
+    "crates/secretary-chat",
+    "crates/lucina-secrets",
+    "crates/lucina-approvals",
+    "crates/lucina-llm",
+    "crates/lucina-jev",
+    "crates/lucina-prompter",
+    "crates/lucina-store",
+    "crates/lucina-memory",
+    "crates/lucina-ops",
+    "crates/lucina-vault-ingest",
+    "crates/lucina-grocery",
+    "crates/lucina-deals",
+    "crates/lucina-delegate",
+    "crates/lucina-computer-use",
+    "crates/lucina-agents",
+    "crates/lucina-agentd",
+    "crates/lucina-notebooks",
+    "crates/lucina-tools",
+    "crates/lucina-discord",
+    "crates/lucina-intent",
+    "crates/lucina-server",
+    "crates/lucina-telegram",
+    "crates/lucina-meshy",
     "crates/secretary-mcp",
     "crates/secretary-calendar",
+    "crates/lucina-proactive",
+    "crates/lucina-phone-core",
+    "crates/lucina-otp-relay",
+    "crates/lucina-android",
+    "crates/lucina-android-calls",
+    "crates/lucina-memo",
+    "crates/nclient-core",
+    "crates/secretary-nclient",
+    "crates/lucina-diagnostics",
     "crates/secretary-tasks",
     "crates/secretary-player",
     "crates/secretary-player-wasm",
+    "crates/secretary-maps",
+    "crates/secretary-image-wasm",
     "verification/models",
+    "crates/secretary-media-stream",
+    "crates/lucina-media",
+    "crates/lucina-media-ml",
+    "crates/lucina-jev",
+    "crates/secretary-image",
+]
+exclude = [
+    # Standalone crates with their own [workspace] and Cargo.lock (docs/repo-workflow.md).
+    "crates/secretary-instagram",
+    "crates/secretary-pixiv",
+    "tools",
 ]
 
 [workspace.package]
@@ -28,17 +74,21 @@ edition = "2021"
 license = "MIT"
 
 [workspace.dependencies]
+fs4 = "0.13"
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 thiserror = "2"
+tracing = "0.1"
 time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 csv = "1"
 sha2 = "0.10"
+async-trait = "0.1"
+futures-util = "0.3"
 
 [profile.release]
 opt-level = 3

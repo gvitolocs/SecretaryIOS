@@ -1,0 +1,32 @@
+[package]
+name = "lucina-notebooks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Lucina Notebooks: sources, linked Keep notes, source-grounded chat with citations, transformations and podcasts (a Rust port of Open Notebook)"
+
+[dependencies]
+lucina-llm = { path = "../lucina-llm" }
+anyhow = "1"
+async-trait = { workspace = true }
+axum = { version = "0.8", features = ["multipart"] }
+chrono = { workspace = true }
+futures-util = { workspace = true }
+pdf-extract = "0.10"
+regex = "1"
+reqwest = { workspace = true, features = ["stream"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = "0.1"
+tokio-util = { version = "0.7", features = ["io"] }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

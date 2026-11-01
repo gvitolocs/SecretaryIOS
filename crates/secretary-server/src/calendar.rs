@@ -4,12 +4,17 @@
 //! `/v1/calendar/*` routes. Expansion and merging are
 //! `secretary-calendar`'s.
 //!
-//! Writes go to Google only (the iPhone calendar is written by the app's
-//! EventKit bridge, ICS feeds are read-only). Edits and deletes need
+//! Lucina's own calendar (`calendar-events.json`, ids `lucina:…`) is where
+//! new events go: the Calendar tab, Lucina's "add it to my calendar" and
+//! accepted proposals all write there, with no Google grant needed. Google
+//! events can still be written (`target: "google"` on create; `google:` ids
+//! on edit/delete); the iPhone calendar is written by the app's EventKit
+//! bridge and ICS feeds are read-only. Edits and deletes need
 //! `confirm: true` (`?confirm=true` for DELETE): the app asks the owner
-//! first, Lucina asks through her confirmation flow. Clients that may not
-//! write (the Lucina MCP) file a proposal instead, which the owner accepts
-//! in the app.
+//! first. Creates from the owner's own turns with Lucina go straight to
+//! `POST /v1/calendar/events`; clients that may not write (the Lucina MCP,
+//! agents) file a proposal instead, which the owner accepts in the app, and
+//! so does Lucina when her direct create failed (with a `reason`).
 
 use std::time::Duration;
 
@@ -41,6 +46,11 @@ const MAX_PAGES: usize = 200;
 const MAX_PROPOSALS: usize = 50;
 const PROPOSAL_TTL_MS: i64 = 7 * 24 * 3600 * 1000;
 const PRIMARY: &str = "/calendar/v3/calendars/primary/events";
+/// The label of Lucina's own calendar.
+pub const OWN_LABEL: &str = "Lucina";
+const MAX_OWN_EVENTS: usize = 20_000;
+/// How far ahead Lucina's own events feed "Coming up" notifications.
+const OWN_REMINDER_DAYS: i64 = 35;
 
 pub fn gerror(e: GError) -> ApiError {
     match e {
@@ -336,6 +346,8 @@ pub fn spawn_sync_loop(st: AppState, every: Duration) {
             }
             let r = sync_all(&st).await;
             tracing::debug!(result = %r, "calendar sync");
+            // Time moves on: the next weeks of Lucina's own events.
+            refresh_own_reminders(&st).await;
             wait = every;
         }
     });
@@ -398,6 +410,15 @@ pub async fn ingest_device_events(st: &AppState, device: &str, events: &[Value])
                     .filter(|x| !x.is_empty())
             };
             Some(Item {
+                attendees: e
+                    .get("attendees")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .take(30)
+                    .map(str::to_owned)
+                    .collect(),
                 uid: id.chars().take(200).collect(),
                 title,
                 start: Some(start),
@@ -427,8 +448,22 @@ pub async fn events_between(
 ) -> Vec<Event> {
     let d = hub.data.lock().await;
     let google_items: Vec<Item> = d.cache.google.items.values().cloned().collect();
+    let own_items: Vec<Item> = d
+        .own
+        .events
+        .values()
+        .filter_map(|v| gcal::to_item(v, hub.tz.name()))
+        .collect();
     let want = |s: Source| only.is_none_or(|o| o.contains(&s));
     let mut sources: Vec<SourceItems<'_>> = Vec::new();
+    if want(Source::Lucina) {
+        sources.push(SourceItems {
+            source: Source::Lucina,
+            key: "",
+            label: Some(OWN_LABEL),
+            items: &own_items,
+        });
+    }
     if want(Source::Google) && d.links.google.is_some() {
         sources.push(SourceItems {
             source: Source::Google,
@@ -457,7 +492,9 @@ pub async fn events_between(
             items: &d.cache.iphone.items,
         });
     }
-    secretary_calendar::window(&sources, Window { from, to }, hub.tz)
+    let mut events = secretary_calendar::window(&sources, Window { from, to }, hub.tz);
+    secretary_calendar::view::drop_mirrored(&mut events);
+    events
 }
 
 /// The events of one local date (for `/v1/agenda`).
@@ -540,6 +577,7 @@ async fn sources_status(hub: &Hub) -> Value {
         })),
         "ics": d.links.ics.iter().map(|s| json!({"id": s.id, "label": s.label, "lastSyncAt": s.last_sync_at, "error": s.last_error})).collect::<Vec<_>>(),
         "iphone": {"device": d.cache.iphone.device, "reportedAt": d.cache.iphone.reported_at},
+        "lucina": {"count": d.own.events.len()},
     })
 }
 
@@ -557,7 +595,8 @@ async fn list_events(
                     "google" => Ok(Source::Google),
                     "ics" => Ok(Source::Ics),
                     "iphone" => Ok(Source::Iphone),
-                    _ => Err(bad("sources: google, ics, iphone")),
+                    "lucina" => Ok(Source::Lucina),
+                    _ => Err(bad("sources: lucina, google, ics, iphone")),
                 })
                 .collect::<Result<_, _>>()?,
         ),
@@ -711,8 +750,9 @@ fn as_object(v: Value) -> Result<Map<String, Value>, ApiError> {
     }
 }
 
-/// The created/updated Google event as an [`Event`].
-fn event_of(v: &Value, tz: Tz) -> Option<Event> {
+/// A created/updated event (Google's shape, from Google or Lucina's own
+/// store) as an [`Event`].
+fn event_of(v: &Value, tz: Tz, source: Source) -> Option<Event> {
     let item = gcal::to_item(v, tz.name())?;
     let start = item.start.as_ref()?.instant(tz);
     let w = Window {
@@ -725,9 +765,13 @@ fn event_of(v: &Value, tz: Tz) -> Option<Event> {
     }];
     secretary_calendar::window(
         &[SourceItems {
-            source: Source::Google,
+            source,
             key: "",
-            label: Some("Google"),
+            label: Some(if source == Source::Lucina {
+                OWN_LABEL
+            } else {
+                "Google"
+            }),
             items: &items,
         }],
         w,
@@ -744,22 +788,242 @@ async fn after_write(hub: &Hub) {
     }
 }
 
-async fn create_on_google(hub: &Hub, body: Map<String, Value>) -> Result<Value, ApiError> {
-    let gbody = google_body(&body, hub.tz, false)?;
+/// Who is writing: Lucina (the service token) or the owner's device.
+fn added_by(ident: &Identity) -> String {
+    if ident.device_id == SERVICE_DEVICE_ID {
+        return OWN_LABEL.to_owned();
+    }
+    let name: String = ident.device_name.trim().chars().take(64).collect();
+    if name.is_empty() {
+        "Secretary".to_owned()
+    } else {
+        name
+    }
+}
+
+fn set_added_by(ev: &mut Map<String, Value>, who: &str) {
+    ev.insert(
+        "extendedProperties".into(),
+        json!({"private": {"addedBy": who}}),
+    );
+}
+
+/// `conferenceUrl` of a request: `Some("")` clears it.
+fn conference_field(v: &Map<String, Value>) -> Result<Option<String>, ApiError> {
+    match v.get("conferenceUrl") {
+        None => Ok(None),
+        Some(Value::Null) => Ok(Some(String::new())),
+        Some(Value::String(u)) => {
+            let u = u.trim();
+            if u.is_empty() {
+                Ok(Some(String::new()))
+            } else if u.starts_with("https://")
+                && u.len() <= 500
+                && !u.contains(char::is_whitespace)
+            {
+                Ok(Some(u.to_owned()))
+            } else {
+                Err(bad("conferenceUrl: an https link, at most 500 characters"))
+            }
+        }
+        _ => Err(bad("conferenceUrl: an https link, at most 500 characters")),
+    }
+}
+
+fn event_not_found() -> ApiError {
+    ApiError::new(StatusCode::NOT_FOUND, "event_not_found", "no such event")
+}
+
+/// Lucina's own timed events of the next weeks feed "Coming up"
+/// notifications, like the phone's.
+pub async fn refresh_own_reminders(st: &AppState) {
+    let now = Utc::now();
+    let events = events_between(
+        &st.links,
+        now - chrono::Duration::hours(1),
+        now + chrono::Duration::days(OWN_REMINDER_DAYS),
+        Some(&[Source::Lucina]),
+    )
+    .await;
+    let upcoming = events
+        .into_iter()
+        .filter(|e| !e.all_day)
+        .take(200)
+        .map(|e| crate::notify::store::CalendarEvent {
+            id: e.id,
+            title: e.title.chars().take(120).collect(),
+            start: e.start_ms,
+        })
+        .collect();
+    if let Err(e) = st.notify.own_events(upcoming) {
+        tracing::warn!(error = %e, "could not keep Lucina's calendar events for notifications");
+    }
+}
+
+/// A new event in Lucina's own calendar.
+async fn create_own(
+    st: &AppState,
+    body: Map<String, Value>,
+    who: &str,
+) -> Result<Value, ApiError> {
+    let hub = &st.links;
+    let mut ev = google_body(&body, hub.tz, false)?;
+    if let Some(u) = conference_field(&body)?.filter(|u| !u.is_empty()) {
+        ev.insert("hangoutLink".into(), json!(u));
+    }
+    set_added_by(&mut ev, who);
+    let id = random_id("ev_");
+    let now = now_iso();
+    ev.insert("id".into(), json!(id));
+    ev.insert("created".into(), json!(now));
+    ev.insert("updated".into(), json!(now));
+    let v = Value::Object(ev);
+    {
+        let mut d = hub.data.lock().await;
+        if d.own.events.len() >= MAX_OWN_EVENTS {
+            return Err(bad(format!("at most {MAX_OWN_EVENTS} events")));
+        }
+        d.own.events.insert(id.clone(), v.clone());
+        if let Err(e) = hub.save_own(&d) {
+            d.own.events.remove(&id);
+            return Err(e);
+        }
+    }
+    refresh_own_reminders(st).await;
+    Ok(json!({"created": true, "event": event_of(&v, hub.tz, Source::Lucina)}))
+}
+
+async fn create_on_google(
+    hub: &Hub,
+    body: Map<String, Value>,
+    who: &str,
+) -> Result<Value, ApiError> {
+    let mut gbody = google_body(&body, hub.tz, false)?;
+    set_added_by(&mut gbody, who);
     let created = hub
         .google_api(Method::POST, PRIMARY, &[], Some(&Value::Object(gbody)))
         .await
         .map_err(gerror)?;
     after_write(hub).await;
-    Ok(json!({"created": true, "event": event_of(&created, hub.tz)}))
+    Ok(json!({"created": true, "event": event_of(&created, hub.tz, Source::Google)}))
 }
 
 async fn create(
     State(st): State<AppState>,
+    Extension(ident): Extension<Identity>,
     JsonBody(body): JsonBody<Value>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let r = create_on_google(&st.links, as_object(body)?).await?;
+    let mut body = as_object(body)?;
+    let who = added_by(&ident);
+    let target = body.remove("target");
+    let r = match target.as_ref().map(|t| t.as_str()) {
+        None | Some(Some("lucina")) => create_own(&st, body, &who).await?,
+        Some(Some("google")) => create_on_google(&st.links, body, &who).await?,
+        Some(_) => return Err(bad("target: lucina or google")),
+    };
     Ok((StatusCode::CREATED, Json(r)))
+}
+
+/// Which calendar an event id belongs to.
+enum Target<'a> {
+    Own(&'a str),
+    Google(&'a str),
+}
+
+fn target(id: &str) -> Result<Target<'_>, ApiError> {
+    match id.split_once(':') {
+        Some(("lucina", o)) if !o.is_empty() && o.len() <= 200 => Ok(Target::Own(o)),
+        _ => google_id(id).map(Target::Google),
+    }
+}
+
+/// Moving the start keeps the duration (`cur`: the stored event) unless
+/// `end` is given.
+fn keep_duration(body: &mut Map<String, Value>, cur: &Value, tz: Tz) {
+    if !body.contains_key("start") || body.contains_key("end") {
+        return;
+    }
+    let tz_name = tz.name();
+    let (Some(a), Some(b)) = (
+        cur.get("start").and_then(|s| gcal::moment(s, tz_name)),
+        cur.get("end").and_then(|s| gcal::moment(s, tz_name)),
+    ) else {
+        return;
+    };
+    let new_start = body
+        .get("start")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    if let (Moment::Date(da), Moment::Date(db)) = (&a, &b) {
+        if let Ok(ns) = NaiveDate::parse_from_str(&new_start, "%Y-%m-%d") {
+            body.insert(
+                "end".into(),
+                json!((ns + (*db - *da)).format("%Y-%m-%d").to_string()),
+            );
+        }
+    } else if let Ok(ns) = DateTime::parse_from_rfc3339(&new_start) {
+        let len = b.instant(tz) - a.instant(tz);
+        body.insert("end".into(), json!((ns + len).to_rfc3339()));
+    }
+}
+
+/// `patch` (a partial [`google_body`]) and the conference link applied to a
+/// stored event: an empty location/description removes it.
+fn apply_patch(cur: &Value, patch: Map<String, Value>, conference: Option<String>) -> Value {
+    let mut ev = cur.as_object().cloned().unwrap_or_default();
+    for (k, v) in patch {
+        if v == json!("") {
+            ev.remove(&k);
+        } else {
+            ev.insert(k, v);
+        }
+    }
+    match conference {
+        Some(u) if !u.is_empty() => {
+            ev.insert("hangoutLink".into(), json!(u));
+        }
+        Some(_) => {
+            ev.remove("hangoutLink");
+        }
+        None => {}
+    }
+    ev.insert("updated".into(), json!(now_iso()));
+    Value::Object(ev)
+}
+
+async fn update_own(
+    st: &AppState,
+    oid: &str,
+    mut body: Map<String, Value>,
+) -> Result<Json<Value>, ApiError> {
+    let hub = &st.links;
+    let conference = conference_field(&body)?;
+    body.remove("conferenceUrl");
+    let saved = {
+        let mut d = hub.data.lock().await;
+        let cur = d.own.events.get(oid).cloned().ok_or_else(event_not_found)?;
+        keep_duration(&mut body, &cur, hub.tz);
+        let patch = if body.is_empty() {
+            Map::new()
+        } else {
+            google_body(&body, hub.tz, true)?
+        };
+        if patch.is_empty() && conference.is_none() {
+            return Err(bad("nothing to change"));
+        }
+        let next = apply_patch(&cur, patch, conference);
+        d.own.events.insert(oid.to_owned(), next.clone());
+        if let Err(e) = hub.save_own(&d) {
+            d.own.events.insert(oid.to_owned(), cur);
+            return Err(e);
+        }
+        next
+    };
+    refresh_own_reminders(st).await;
+    Ok(Json(
+        json!({"updated": true, "event": event_of(&saved, hub.tz, Source::Lucina)}),
+    ))
 }
 
 fn google_id(id: &str) -> Result<&str, ApiError> {
@@ -768,7 +1032,7 @@ fn google_id(id: &str) -> Result<&str, ApiError> {
         Some(("ics" | "iphone", _)) => Err(ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
             "read_only_source",
-            "only Google Calendar events can be changed here (ICS feeds are read-only; iPhone events change on the phone)",
+            "only Lucina's and Google Calendar events can be changed here (ICS feeds are read-only; iPhone events change on the phone)",
         )),
         _ => Err(ApiError::new(StatusCode::NOT_FOUND, "event_not_found", "no such event")),
     }
@@ -792,37 +1056,19 @@ async fn update(
     JsonBody(body): JsonBody<Value>,
 ) -> Result<Json<Value>, ApiError> {
     let hub = &st.links;
-    let gid = google_id(&id)?;
+    let t = target(&id)?;
     let mut body = as_object(body)?;
     need_confirm(body.remove("confirm").and_then(|v| v.as_bool()) == Some(true))?;
-    // Moving the start keeps the duration unless `end` is given.
+    let gid = match t {
+        Target::Own(oid) => return update_own(&st, oid, body).await,
+        Target::Google(gid) => gid,
+    };
     if body.contains_key("start") && !body.contains_key("end") {
         let cur = hub
             .google_api(Method::GET, &format!("{PRIMARY}/{}", seg(gid)), &[], None)
             .await
             .map_err(gerror)?;
-        let tz_name = hub.tz.name();
-        if let (Some(a), Some(b)) = (
-            cur.get("start").and_then(|s| gcal::moment(s, tz_name)),
-            cur.get("end").and_then(|s| gcal::moment(s, tz_name)),
-        ) {
-            let new_start = body
-                .get("start")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned();
-            if let (Moment::Date(da), Moment::Date(db)) = (&a, &b) {
-                if let Ok(ns) = NaiveDate::parse_from_str(&new_start, "%Y-%m-%d") {
-                    body.insert(
-                        "end".into(),
-                        json!((ns + (*db - *da)).format("%Y-%m-%d").to_string()),
-                    );
-                }
-            } else if let Ok(ns) = DateTime::parse_from_rfc3339(&new_start) {
-                let len = b.instant(hub.tz) - a.instant(hub.tz);
-                body.insert("end".into(), json!((ns + len).to_rfc3339()));
-            }
-        }
+        keep_duration(&mut body, &cur, hub.tz);
     }
     let gbody = google_body(&body, hub.tz, true)?;
     let updated = hub
@@ -836,7 +1082,7 @@ async fn update(
         .map_err(gerror)?;
     after_write(hub).await;
     Ok(Json(
-        json!({"updated": true, "event": event_of(&updated, hub.tz)}),
+        json!({"updated": true, "event": event_of(&updated, hub.tz, Source::Google)}),
     ))
 }
 
@@ -851,8 +1097,25 @@ async fn remove(
     QueryArgs(q): QueryArgs<ConfirmQuery>,
 ) -> Result<Json<Value>, ApiError> {
     let hub = &st.links;
-    let gid = google_id(&id)?;
+    let t = target(&id)?;
     need_confirm(matches!(q.confirm.as_deref(), Some("true" | "1")))?;
+    let gid = match t {
+        Target::Own(oid) => {
+            {
+                let mut d = hub.data.lock().await;
+                // Already gone counts as deleted, like Google's 410.
+                if let Some(old) = d.own.events.remove(oid) {
+                    if let Err(e) = hub.save_own(&d) {
+                        d.own.events.insert(oid.to_owned(), old);
+                        return Err(e);
+                    }
+                }
+            }
+            refresh_own_reminders(&st).await;
+            return Ok(Json(json!({"deleted": true, "id": id})));
+        }
+        Target::Google(gid) => gid,
+    };
     match hub
         .google_api(
             Method::DELETE,
@@ -899,6 +1162,13 @@ async fn propose(
         Some(f) => text_field("from", &f, 64)?,
         None => ident.device_name.clone(),
     };
+    let reason = match body
+        .remove("reason")
+        .and_then(|v| v.as_str().map(str::to_owned))
+    {
+        Some(r) => Some(text_field("reason", &r, 300)?),
+        None => None,
+    };
     // Validate now so the owner only sees proposals that would work.
     google_body(&body, hub.tz, false)?;
     let keep: Map<String, Value> = body
@@ -921,6 +1191,7 @@ async fn propose(
         id: random_id("prop_"),
         event: Value::Object(keep),
         from,
+        reason,
         created_at: now_iso(),
         expires_at_ms: now + PROPOSAL_TTL_MS,
     };
@@ -960,7 +1231,7 @@ async fn accept(
             "no such proposal",
         )
     })?;
-    let r = create_on_google(hub, as_object(p.event)?).await?;
+    let r = create_own(&st, as_object(p.event)?, &p.from).await?;
     let mut d = hub.data.lock().await;
     d.cache.proposals.retain(|x| x.id != id);
     hub.save_cache(&d);

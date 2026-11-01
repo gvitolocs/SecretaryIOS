@@ -26,10 +26,11 @@ The multi-process protocols of Secretary / Lucina are checked three ways:
    fail, because either the model got too weak or the bug was fixed without updating the model.
 4. **No vacuous passes.** Every passing configuration has a `sometimes` property (Stateright) or a `*_witness.cfg`
    (TLC) proving that it reaches the interesting states: a rotation, a resume, a 409, a handover, a refresh.
-5. **Every deploy goes through `deploy-guard`** (protocol 7). Inside `/tmp/lucina-merge.lock`, build from the
-   target branch's tip in a clean tree, run `deploy-guard check --runtime <name>` (it refuses unless the live build
-   is an ancestor of the commit, the commit is on the target branch and the tree is clean), deploy, then run
-   `deploy-guard record --runtime <name>`. Live but uncommitted work is committed to the target branch first.
+5. **Every deploy goes through `deploy-guard`** (protocol 7). Inside `/tmp/lucina-merge.lock`, build from
+   `main`'s tip in a clean tree, run `deploy-guard check --runtime <name>` (it refuses unless the live build is an
+   ancestor of the commit, the commit is on `main` and the tree is clean), deploy, then run
+   `deploy-guard record --runtime <name>`, which also tags the deploy. Live but uncommitted work lands on `main` first.
+   There are no deploy-line branches since 2026-10-30 (`docs/repo-workflow.md`).
 6. Generated TLC output (`*_TTrace_*`, `states/`) is never committed (`formal/.gitignore`). `verify.sh` runs TLC
    with `-noGenerateSpecTE` and a temporary `-metadir`.
 
@@ -70,13 +71,18 @@ BFS for each counterexample, because Stateright reports the last violating path 
 | 6 | Lucina Ink device sync (outbox, `POST /v1/library/sync`) | `ink_sync.rs` (I1–I7) | `inksync/InkSync.tla` | `library_merge.rs` | `crates/ink-sync` (`outbox.rs`, `client.rs`, `state.rs`, `transport.rs`); `crates/secretary-server/src/library.rs::sync`; `crates/ink-library/src/import.rs::merge` |
 | 7 | Multi-session merge and deploy (`/tmp/lucina-merge.lock`, the shared main checkout, deploys of secretary-server, the web app, lucina-rs) | `deploy.rs` (D1–D5) | `deploy/Deploy.tla` | `deploy_guard.rs` | `tools/deploy-guard`; the merge/deploy steps in each session's runbook (`deploy/README.md`, `deploy/lucina-rs/`) |
 | 8 | Lucina's Pokémon Red: game control (one emulator, macros, pause/play from chat, iPhone, web, viewer) and the planner | `game.rs` (Pk) | `game/GameControl.tla` | `game_planner.rs` (P1–P4) | Lucina repo `rust/lucina-pokemon/src/{main,macros,world,plan}.rs` (branch `lucina-game-link`); `/control` callers: `src/game-bridge.js`, lucina-rs `lucina_intent::game` and `api.rs::game`, secretary-server `/v1/game/*` |
-| 9 | Lucina media library: iPhone photo backup (resumable upload, dedupe, p1 rate limit) | `media_backup.rs` (M) | `media/MediaBackup.tla` | `media_upload.rs` | `crates/lucina-media/src/{protocol,http,ingest}.rs`, `ios/Secretary/Features/Gallery/PhotoBackup.swift` (branch `media-library`, merged in `ios-app`); p1 Caddy `@media_upload` (forward_auth, 60/min per device) |
-| 10 | Voice memos: recorder + Live Activity, upload queue, pipeline, GPU lease, vault, notifications | `memos.rs` (V) | `memos/Memos.tla` | `memo_kernel.rs` (K1–K7) | `crates/lucina-memo` (`kernel.rs`, `worker.rs`, `store.rs`, `notify.rs`; branch `lucina-rs`), `tests/upload_model.rs` (upload protocol, Stateright); iOS `Features/Memos/*` (`MemoRecorder`, `MemoUploadQueue.recoverOrphans`, `MemoOnDeviceTranscriber`; branch `ios-app`) |
+| 9 | Lucina media library: iPhone photo backup (resumable upload, dedupe, p1 rate limit) | `media_backup.rs` (M) | `media/MediaBackup.tla` | `media_upload.rs` | `crates/lucina-media/src/{protocol,http,ingest}.rs`, `ios/Secretary/Features/Gallery/PhotoBackup.swift`; p1 Caddy `@media_upload` (forward_auth, 60/min per device) |
+| 10 | Voice memos: recorder + Live Activity, upload queue, pipeline, GPU lease, speaker labels, vault, notifications | `memos.rs` (V) | `memos/Memos.tla` | `memo_kernel.rs` (K1–K7, K11) | `crates/lucina-memo` (`kernel.rs`, `worker.rs`, `store.rs`, `notify.rs`; branch `lucina-rs`), `tests/upload_model.rs` (upload protocol, Stateright); iOS `Features/Memos/*` (`MemoRecorder`, `MemoUploadQueue.recoverOrphans`, `MemoOnDeviceTranscriber`; branch `ios-app`) |
 | 11 | Media player resume positions across devices (iPhone, web, Mac) and the server | `player.rs` (`ResumeSync`) | `player/ResumeSync.tla` | `player_kernels.rs` MP1–MP5 | `crates/secretary-player/src/{progress,prefs}.rs` (every device: iOS through `secretary-ffi`, web through `crates/secretary-player-wasm`); server `crates/secretary-media-stream/src/{progress,token}.rs` (branch `media-player`, mounted by `lucina-media`) |
 | 12 | Share to Lucina (`POST /v1/share`: clients, voice notes, gateway, receive, recovery, processing, chat bubble) | `share.rs` (SH) | `share/Share.tla` | `share_kernels.rs` SK1, SK4; `share_reconcile.rs` SK2, SK3 | `lucina-server/src/share/{mod.rs,router.rs}`, `lucina-store/src/timeline.rs::normalize` (branch `lucina-rs`); voice notes: `share/{mod.rs,router.rs,extract.rs}`, `chat.rs` (`ShareTurn`, `tools_turn`), `timeline.rs::valid_waveform` (branch `voice-notes`, 438d748); p1 Caddy `@share` (forward_auth + `X-Share-Gateway`); iOS `ios/Extensions/ShareShared/*`, `Features/Share/ShareUploads.swift`, `Features/Chat/{ChatShares,Timeline}.swift` (`ios-app`); Android `android/secretary/src/Share{Activity,JobService}.kt`, `crates/lucina-android-calls/src/share.rs` (`lucina-rs`); web `web/src/state/chat.ts` |
 | 13 | Lucina OTP forwarding (phone SMS/notification → Rust core queue → HTTPS → p1 relay → Lucina `/otp` → owner) | `otp.rs` (OTP1–OTP10) | `otp/OtpForwarding.tla` | `otp_extract.rs` X1–X5; `otp_expiry.rs`; `otp_redact.rs`; `otp_owner.rs` | `lucina-android/src/{bridge,store,net}.rs`, `android/lucina-otp/src/*.kt`, `lucina-otp-relay/src/{store,http}.rs`, `lucina-server/src/otp.rs`, `lucina-phone-core/src/{otp,proto,reply}.rs` (branch `lucina-rs`, fixes merged at dd7ec9e); Node `Lucina/src/private-otp.js` + `tools/lucina-device` `otp-chat` |
 | 14 | Grocery deal watch (digest, alerts, Node → Rust cutover) | `deals.rs` (G0–G5) | `deals/DealWatch.tla` | `deals_kernel.rs` | `lucina-deals/src/{watch,schedule,notify,engine,sources,matcher,validity}.rs`, `lucina-server/src/deals.rs` (branch `lucina-rs`, pinned in `verification/verus/diff/deals-revision`); Node `Lucina/src/grocery/deals/watch.js` (`68b38dc~1`); `crates/secretary-server/src/notify/{mod,store,routes}.rs` |
-| 15 | Node retirement: Rust owns Telegram, Discord and reminders (no Node change) | `retirement.rs` (R1–R5) | `retirement/{Reminders,Delivery,Telegram,Updates,Discord}.tla` | `retirement_kernels.rs` | `lucina-telegram/src/{outcome,lease_decision,lease,lib}.rs`, `lucina-store/src/reminders.rs::process_due`, `lucina-server/src/reminder_delivery.rs` (branch `lucina-rs`; checked at 3c22447), `lucina-telegram/src/{claim,poller}.rs`, `lucina-server/src/delivery_monitor.rs::step` (f26eb90, NR4 fix 5c87ae0; Verus `delivery_monitor.rs`), `lucina-discord/src/lease.rs` (290b946), `deploy/lucina-rs/*`; Node `Lucina/src/gateway-lock.js`, `index.js` (68b38dc), telegraf 4.16.3 |
+| 15 | In-app maps (place blocks, the map server: tiles, assets, geocoder, routes) | – | – | `map_kernels.rs` (MK1–MK7) | `crates/secretary-maps/src/{kernel,lib,geocode,routes,provider,cache}.rs` (reference `normalize_place`; lucina-rs and the web app mirror it), `deploy/secretary-maps.service`; differential test `crates/secretary-maps/tests/kernel_model.rs` |
+| 16 | Meetings: Mac recorder upload (create, resumable tracks, complete), meetings pipeline (Whisper per track, diarization, voice profiles, roles/kinds, brief, archive, note, memory, notification, voice question) | `meetings.rs` (MT) | `meetings/Meetings.tla` | `meeting_kernel.rs` (MT1–MT8) | `crates/lucina-memo/src/meetings/{kernel,store,api,worker,publish,timeline}.rs`, `src/diarize/profiles.rs` (branch `meetings-local`); differential test `tests/verus_meeting_kernel.rs`; Mac uploader `SecretaryCode/packages/desktop/src/main/secretary/recorder/uploader.ts` |
+| 17 | Node retirement: Rust owns Telegram, Discord and reminders (no Node change) | `retirement.rs` (R1–R5) | `retirement/{Reminders,Delivery,Telegram,Updates,Discord}.tla` | `retirement_kernels.rs` | `lucina-telegram/src/{outcome,lease_decision,lease,lib}.rs`, `lucina-store/src/reminders.rs::process_due`, `lucina-server/src/reminder_delivery.rs` (branch `lucina-rs`; checked at 3c22447), `lucina-telegram/src/{claim,poller}.rs`, `lucina-server/src/delivery_monitor.rs::step` (f26eb90, NR4 fix 5c87ae0; Verus `delivery_monitor.rs`), `lucina-discord/src/lease.rs` (290b946), `deploy/lucina-rs/*`; Node `Lucina/src/gateway-lock.js`, `index.js` (68b38dc), telegraf 4.16.3 |
+| 18 | Lucina Drive: the folder index (every file of the Drive folders indexed in place; scans racing unmounts, deletes and edits; dedupe of a phone copy against a Drive file; the gallery/films/drive split; path guards; the thermal pause) | `drive_index.rs` (DI) | `drive/DriveIndex.tla` | `drive_kernels.rs` DK1–DK5 | `crates/lucina-media/src/{drive,drive_kernel,drive_kernel_shared,extract,ingest,db,http}.rs` (branch `cloud/drive-all-files` from `media-instant`) |
+| 19 | Album share links (`/v1/media/a/{token}`: the only part of the library reachable from the internet without the upstream key) | – (a per-request check, no protocol between processes) | – | `album_share.rs` AS1 | `crates/lucina-media/src/{share,share_kernel_shared,share_http}.rs` |
+| 20 | iOS chat engine: the timeline merge and order, the sync cursor loop, pagination (the Swift views and store call it through `secretary_chat_request`) | – (pure kernel, no protocol between processes) | – | `chat_merge.rs` (M1–M4, C1–C3) | `crates/secretary-chat/src/{merge,sync,page,request}.rs`, `crates/secretary-ffi/src/lib.rs::secretary_chat_request`; the Swift caller `ios/Secretary/Features/Chat/{Timeline,ChatSync,ChatStore}.swift`; differential tests `crates/secretary-chat/tests/{verus_chat_merge,merge_props}.rs` |
 
 Other Verus files in `verification/verus/` include `body_kernel.rs`, `gym_kernel.rs`, `gym_lifecycle.rs` and
 `sync_kernel.rs`. Branch `verus-proofs` adds `avatar_validation.rs`, `notes_kernel.rs`, `secrets_redactor.rs` and the
@@ -138,9 +144,15 @@ files named in the table. `verify.sh` runs every top-level `verification/verus/*
 | M before fixes (500 on a lost upload, retry on 429) | 4 088 275 | 25 | `stored_once`, `no_dead_end_finish`, `no_request_storm` **violated** |
 | M current (410 + pause on 429; ingest decides once) | 3 019 895 | 25 | `stored_once` **violated** (M3) |
 | M + fix M3 (ingest decides again under the lock) | 2 000 522 | 25 | all hold |
-| V voice memos, current code (before 2026-10-25) | 26 253 | 43 | `no_duplicate_notes`, `telegram_at_most_once`, `whisper_never_downgraded`, `no_lost_audio`, `finished_…` **violated** |
-| V + fixes (kernel K1/K6/K7, iPhone recovery) | 24 930 | 37 | all hold |
-| V fixed, gpu-lease without dead-holder pruning | 21 906 | 36 | `finished_with_one_note_pdf_notification` **violated** |
+| V voice memos, current code (before 2026-10-25) | 27 999 | 47 | `no_duplicate_notes`, `telegram_at_most_once`, `whisper_never_downgraded`, `no_lost_audio`, `finished_…` **violated** |
+| V + fixes (kernel K1/K6/K7/K11, iPhone recovery) | 26 874 | 40 | all hold |
+| V fixed, gpu-lease without dead-holder pruning | 23 490 | 39 | `finished_with_one_note_pdf_notification` **violated** |
+| V fixed, a new transcript keeps the old diarization attempt | 25 842 | 38 | `done_labels_follow_transcript` **violated** |
+| MT meetings, current code (kernel MT1–MT8) | 18 605 | 36 | all hold |
+| MT ablation: append at any offset | 18 971 | 36 | `stored_is_prefix` **violated** |
+| MT ablation: create without the idempotency key | 18 605 | 36 | `one_meeting_per_recording` **violated** |
+| MT ablation: complete without checking the tracks | 66 979 | 36 | `queued_only_when_whole`, `done_has_every_output` **violated** |
+| MT ablation: side effect before its marker | 29 405 | 36 | `telegram_at_most_once`, `memory_at_most_once`, `voice_asked_at_most_once` **violated** |
 | R before fixes R1, R2 (`updated_at` only) | 86 766 | 22 | `no_position_lost`, `devices_converge` **violated** |
 | R + fix R1 only (device clock stamps) | 157 777 | 24 | `devices_converge` **violated** |
 | R + fixes R1, R2 | 514 139 | 26 | all hold |
@@ -180,7 +192,11 @@ files named in the table. `verify.sh` runs every top-level `verification/verus/*
 | G3 Node and Rust both running (rule witness) | 1 969 101 | 29 | the four **violated** |
 | G4 current, no server dedup | 1 215 167 | 29 | the four **violated** |
 | G5 fixes, no server dedup | 1 188 512 | 33 | `no_repeat`, `one_digest_per_day`, `silent_when_unchanged` **violated** |
-| R1–R5 (protocol 15, 21 cases) | 26 – 4 186 | ≤ 20 | see §15 |
+| DI current (DK3 upgrade, DK4 with the filesystem check) | 9 090 | 22 | all hold (+ prune, stray, walk-error, upgrade witnesses); `--deep` 22 284, depth 28 |
+| DI ablation: DK4 without the filesystem check | 10 296 | 22 | `unmount_never_trashes` **violated** (a stray file in the empty mountpoint) |
+| DI ablation: trash whatever the walk did not see | 15 768 | 22 | `unmount_never_trashes` **violated** (an unmount mid-scan) |
+| DI before DK3 (a phone copy of Drive bytes was dropped) | 9 090 | 22 | `phone_original_kept` **violated** |
+| R1–R5 (protocol 17, 21 cases) | 26 – 4 186 | ≤ 20 | see §17 |
 
 TLC, default cfgs: from 20 to 82 317 distinct states per cfg (`Timeline_fixed`: 82 317, `Cutover_fixed`: 13 605,
 `ShoppingOps_fixed`: 2 686, `PendingActions_fixed`: 2 457, `OAuth_fixed`: 2 214). `Timeline_fixed_deep.cfg`
@@ -189,15 +205,22 @@ property `EventuallyAllApplied` under weak fairness); `InkSync_highlights_deep` 
 bounds): 501 634, the same space as I2 (about 5 min); `InkSync_status_deep` (the I1 bounds, with liveness):
 1 715 162 (about 20 min; TLC's state differs from Stateright's in ghost variables, hence the different count).
 `GameControl_fixed`: 11 208; `GameControl_current_driver` (one driver in the current code): 116 344.
-`MediaBackup_current`: 3 019 895 and `MediaBackup_fixed`: 2 000 522, the same spaces as the Stateright M cases;
+`MediaBackup_fixed` (the current code): 2 000 522, the same space as the Stateright `M current` case;
 `MediaBackup_fixed_deep` (`--deep`, the deep M bounds): 8 518 209, the same space as the deep Stateright case (about 80 s).
-1 715 162 (about 20 min; TLC's state differs from Stateright's in ghost variables, hence the different count). `Memos_fixed`: 24 930, the same space as Stateright's M + fixes.
+1 715 162 (about 20 min; TLC's state differs from Stateright's in ghost variables, hence the different count). `Memos_fixed`: 26 874, the same space as Stateright's M + fixes.
 `OtpForwarding`: 950 738, `OtpForwarding_owner`: 1 877 816, `OtpForwarding_restart`: 1 017 387 (the failed
 `seen.json` write included); four `OtpForwarding_*_witness.cfg` and five `_bug` cfgs fail as required.
 
 `formal/deals/`: `DealWatch_fixed` 1 149 598, `DealWatch_cutover_fixed` 958 309 and `DealWatch_current_nofaults` 138 980
 distinct states (the same counts as Stateright G1 + fixes, G2 + fixes and G0), each under 10 s; the `MUST FAIL` cfgs stop
 at their first violation.
+
+`formal/drive/`: `DriveIndex_fixed` (MUST PASS), `DriveIndex_fixed_deep` (`--deep`), three `MUST FAIL` bug cfgs
+(`nofs_bug`, `noguard_bug`, `dedupe_bug`, the Stateright ablations) and four witnesses (pruned, stray, walk error,
+upgrade). First `verify-gate` run on nezopt (2026-10-26): `DriveIndex_fixed` 9 090 distinct states (the same as
+Stateright DI current); `dedupe_bug` 62 (`PhoneOriginalKept` violated), `nofs_bug` 885 and `noguard_bug` 521
+(`UnmountNeverTrashes` violated); witnesses pruned 924, stray 570, upgraded 15, walk error 251; each under 2 s.
+`DriveIndex_fixed_deep` not run.
 
 ## Invariants, models and mapping
 
@@ -421,8 +444,10 @@ last build contains every earlier one.
 
 `deploy-guard` keeps the live commit per runtime in `~/.local/state/deploy-guard/<runtime>.commit` on nezopt (where
 every build and deploy runs): `check` before the push, `record` right after it, `status` to list. Exit codes: 0 ok,
-1 refused, 2 usage or git error, 3 no ledger entry (record the live commit once with `--bootstrap`). Target
-branches: `main` for secretary-server, secretary-mcp and web; `lucina-rs` for lucina-rs; `--target` otherwise.
+1 refused, 2 usage or git error, 3 no ledger entry (record the live commit once with `--bootstrap`). Every
+runtime deploys from `main` (`docs/repo-workflow.md`): any other `--target` is refused, `record` tags the deploy
+`deploy/<runtime>/<stamp>-<sha8>`, and `plan` lists the runtimes `main` changed since their live commit
+(`deploy/targets.tsv`).
 Its tests (`cargo test --manifest-path tools/deploy-guard/Cargo.toml`, in the models section of `verify.sh`)
 check the rule for every input combination and replay the 25 Oct incident on real git repos.
 ### 8. Lucina's Pokémon Red: game control and the planner
@@ -554,6 +579,9 @@ Invariants (Stateright name / TLA+ name):
 - `live_activity_matches_recorder` / `LiveActivityMatchesRecorder`: while the app runs, the Live Activity shows
   exactly the recorder's state (recording, paused, none).
 - `done_has_every_output` / `DoneHasEveryOutput`: `done` only with transcript, summary, PDF, note and notification.
+- `done_labels_follow_transcript` / `DoneLabelsFollowTranscript`: a finished memo's speaker labels (step 1a) were made
+  for its current transcript (a Whisper upgrade or reprocess clears the attempt, K11); `Memos_diarize_reset_bug.cfg`
+  and the Stateright ablation show the stale labels without the reset.
 - `finished_with_one_note_pdf_notification` (eventually, Stateright): every recording ends done with one note (in
   its event's folder), the PDF, its notification, and the GPU lease released. Witness `note_moved_to_the_owner_s_event`. Witnesses: `gpu_busy_then_free` / `Memos_fixed_witness.cfg`,
   `device_transcript_replaced` / `Memos_fixed_upgrade_witness.cfg`.
@@ -567,7 +595,7 @@ changes around a failed publish left a second note (`Memos_events_old_note_bug.c
 written without re-checking the owner loses a choice made while the calendar was read (`Memos_events_recheck_bug.cfg`).
 Fixed: `obsidian::move_note` keeps every old path; the worker's update closure re-checks `may_auto_link`.
 
-Verus (`memo_kernel.rs`, 30 verified): K1 `transcript_choice` (never downgrades Whisper; Whisper wins whenever it
+Verus (`memo_kernel.rs`, 34 verified): K1 `transcript_choice` (never downgrades Whisper; Whisper wins whenever it
 ran; the iPhone transcript is used only, and then always, when the GPU is busy and no Whisper transcript exists),
 K2 `upgrade_replaces` (iff Whisper heard at least half as much; no overflow), K3 `route_on_device` (only with a
 model for the language and up to the threshold), K4 `status_allowed` (`uploading` left only for `queued` and never
@@ -576,7 +604,9 @@ re-entered; `done`/`failed` entered only from a pipeline step; everything else c
 at most one send), K7 `note_base` with `lemma_one_note` (a memo keeps its first note name over any sequence of
 titles), K8 `overlap_ms`/`eligible`/`better`/`pick_event` (the exact clamped overlap, symmetric and never longer
 than either interval; the pick is eligible, no eligible event is better, it beats every earlier eligible one, None
-iff none is eligible; `lemma_better_order`: a strict order), K9 `may_auto_link`, K10 `title_from_event`. Mutations checked: the old step 1 fails K1; sending before recording the marker fails K6. Differential
+iff none is eligible; `lemma_better_order`: a strict order), K9 `may_auto_link`, K10 `title_from_event`. K11 `diarize_memo` with `lemma_diarize_once_per_transcript` (labels only when a diarizer is available,
+none yet and no attempt on this transcript; at most one attempt per transcript over any runs). Mutations checked:
+the old step 1 fails K1; sending before recording the marker fails K6. Differential
 test: `crates/lucina-memo/tests/verus_kernel.rs` (production kernel vs the proved bodies, every small input);
 `Store::update` asserts `status_allowed` on every write.
 
@@ -959,7 +989,117 @@ dedup: without it the pending re-send repeats (G5, 7 actions).
 without `:` (above); `relatedKeys` grouping and `deal_keys` keep every member, so acknowledging a group covers all of
 its branches.
 
-### 15. Node retirement: Rust owns Telegram, Discord and reminders
+### 15. In-app maps
+
+A place appears as a map card everywhere (contract: the `place` block of `docs/lucina-message-format.md`, a
+proactive `meta.place`). iOS uses MapKit; the web app and the Android WebView use MapLibre GL with the self-hosted
+Protomaps extract from `secretary-maps` on nezopt (`:8840`, behind p1 Caddy `/v1/maps/*` with forward_auth and
+`X-Maps-Upstream-Key`; `crates/secretary-maps/README.md`). There is no multi-process protocol to model: the server is
+stateless apart from Places results (memory + atomic JSON snapshot, 5000 entries / 30 days) and
+per-mode route results (memory, drive/transit 5 min, walk/bike 24 h), so there is
+no Stateright model or TLA+ twin. The decisions every client depends on are pure functions, proved in Verus on
+integer coordinates in degrees × 10^7 (e7).
+
+Verus (`map_kernels.rs`; no `assume`/`admit`/`external_body`), each mirroring `crates/secretary-maps/src/kernel.rs`:
+- MK1 `coord_valid` is exactly the range predicate: |lat| ≤ 90e7, |lng| ≤ 180e7, not (0, 0) (`parse_coord` rounds a
+  finite f64 pair to e7, then applies it).
+- MK2 `fit_bounds` over valid points: `None` iff empty; otherwise min ≤ max on both axes, every point inside, every
+  bound attained by a point, and the bounds in range. The antimeridian is not special (a set straddling ±180° gets
+  a box around the globe); the maps cover Denmark.
+- MK3 `safe_asset_path` equals its byte-level spec (1..=512 bytes, no leading/trailing `/`, no empty, `.` or `..`
+  segment, no `..` at all, no `\`, `%`, NUL or other control byte); `lemma_safe_rejects_traversal`: every path with
+  a `..` segment or a leading `/` is refused. The server also canonicalizes and checks the result stays in
+  `MAPS_DIR/assets`.
+- MK4 `travel_minutes` (the web "≈" estimate: walk 4.8, bike 15, car 35 km/h, × 1.3 detour, so
+  `ceil(78 d / speed)` minutes for `d` whole metres, clamped to 1e8 m) is at least 1, overflow-free and monotone
+  non-decreasing in the distance for each mode; `travel_estimate_min` rounds the f64 distance up to whole metres.
+  The server's no-provider fallback (`/v1/maps/routes?…&estimate=1`, `osrm::estimate`) calls the same
+  `travel_estimate_min` over `distance_m`, so it inherits MK4 unchanged.
+- MK5 the normalizer's keep/drop decision `place_keep`: kept iff the title is non-empty and (the address is
+  non-empty or both coordinates are present and valid); a kept block carries both coordinates or neither, and they
+  are the input pair. Examples: title only is dropped; one coordinate with an address keeps the block without
+  coordinates; (0, 0) never counts.
+
+- MK6 `simplify`: an increasing index witness proves the result is a subsequence of the input, length ≤ max,
+  and first/last points retained when max ≥ 2 and the input is nonempty. max < 2 yields empty (two endpoints
+  cannot fit). Adaptive stride ceil(remaining/slots) skips points without changing their order.
+- MK7 `leave_at`: computes arrival milliseconds − (duration seconds + buffer seconds) × 1000, saturated at
+  i64::MIN; no overflow and result ≤ arrival. Production uses the same i128 intermediate.
+
+Boundaries: Google polyline precision-5 decoding (10 000 malformed/random UTF-8 inputs tested for panic freedom),
+provider JSON and RFC3339 timestamps, cache rounding. MK6/MK7 have fixed-seed differential/property tests.
+Other boundaries: f64 → e7 rounding, the haversine distance, string cleaning (one line, control characters, clipping
+with "…") and JSON. `crates/secretary-maps/tests/kernel_model.rs` (part of `cargo test -p secretary-maps`) runs the
+real functions against a plain-Rust copy of the specs on fixed-seed pseudo-random inputs biased to the boundaries:
+40 000 coordinates and `parse_coord` pairs, 5 000 point sets, 20 000 paths over an adversarial alphabet, 20 000
+distances (with monotonicity), 20 000 keep decisions and 5 000 JSON blocks through `normalize_place`.
+
+```sh
+verify-gate -- ~/tools/verus/verus-x86-linux/verus verification/verus/map_kernels.rs   # 0 errors
+cargo test -p secretary-maps
+```
+
+| Kernel (Verus) | Code |
+|---|---|
+| `coord_valid` | `kernel::coord_valid`, `parse_coord`; `Config::from_env` (home), `geocode::google`, route endpoints, the geocode bias |
+| `fit_bounds` | `kernel::fit_bounds` (the clients' fit-to-pins) |
+| `simplify` | `kernel::simplify` → route polylines (Google, OSRM), ≤400 points; step polylines, ≤100 points |
+| `leave_at` | `kernel::leave_at` → route `leaveAt`, 300 s buffer |
+| `safe_asset_path` | `kernel::safe_asset_path` → `resolve_asset` → `GET /v1/maps/assets/{*path}` |
+| `travel_minutes` | `kernel::travel_minutes`, `travel_estimate_min` (with `distance_m`) |
+| `coord_pair`, `place_keep` | `kernel::coord_pair`, `place_keep` inside `normalize_place` |
+
+### 16. Meetings
+
+The owner's Mac uploads a meeting (Secretary Code's recorder, `MEETINGS_API.md`) and `lucina-memo` turns it into a
+diarized transcript, a brief, an archive folder on the MyBook, a note, a memory entry and a notification
+(`docs/meetings.md`). The Mac creates the meeting (a lost response is retried with the same `Idempotency-Key`), asks
+for the stored offset and sends chunks; the network reorders, duplicates and cuts requests; the store appends by MT2,
+checks the SHA-256 at the declared size and queues on `complete` by MT3. The worker transcribes under the GPU lease,
+diarizes, analyses and briefs (the model may fail; on the last attempt the deterministic versions), writes the folder,
+the note, the memory entry, the notification and the voice question (each side effect after its marker, MT6/MT8),
+and finishes by MT4; it may crash anywhere, another job may hold the GPU, the owner may name a speaker afterwards.
+
+Invariants (Stateright name / TLA+ name):
+
+- `stored_is_prefix` / `StoredIsPrefix`: the stored bytes are always a prefix of the Mac's file.
+- `one_meeting_per_recording` / `OneMeetingPerRecording`: a retried create returns the same meeting.
+- `queued_only_when_whole` / `QueuedOnlyWhenWhole`: the pipeline starts only on whole, verified tracks.
+- `status_transitions_allowed` / `StatusTransitionsAllowed`: every status change is an MT1 transition.
+- `telegram_at_most_once`, `memory_at_most_once`, `voice_asked_at_most_once` (and the TLA+ names): one Telegram
+  message, one memory entry, one "who is this voice?" question, whatever the crashes.
+- `done_has_every_output` / `DoneHasEveryOutput`: `done` only with every output.
+- `finished_with_brief_note_and_notification` (eventually, Stateright).
+- Witnesses: `resumed_after_a_cut`, `fallback_brief_done`, `gpu_busy_then_done` (TLA+: the `Meetings_witness_*` cfgs).
+
+Each fix switched off is caught: append at any offset (`Meetings_offset_bug.cfg`), create without the key
+(`Meetings_idempotency_bug.cfg`), complete without checking the tracks (`Meetings_complete_bug.cfg`), side effects
+before their markers (`Meetings_marker_bug.cfg`). The Stateright cases and TLC explore the same 18 605 states.
+
+Verus (`meeting_kernel.rs`, 24 verified): MT1 `status_allowed`; MT2 `chunk` (append only at the stored offset, never
+past the declared size, never to a whole track) with `lemma_prefix_after_appends` (over any sequence of requests,
+cut-off bodies included, the stored length stays within the size); MT3 `may_complete`; MT4 `ready_to_finish`; MT5
+`best_match` (reaches the threshold, the highest, the first of equals; None only when nothing reaches it); MT6
+`should_ask` with `lemma_ask_at_most_once`; MT7 `speaker_for`; MT8 `send_once` with `lemma_send_at_most_once`.
+Mutations checked: MT2 without the offset check and MT8 always sending both fail. Differential test
+`crates/lucina-memo/tests/verus_meeting_kernel.rs` (every small input); `MeetingStore::update` refuses any status
+change MT1 does not allow.
+
+| Model action | Code |
+|---|---|
+| `Create`, `RetryCreate` | `uploader.ts` `uploadRecording` (`Idempotency-Key`) → `meetings::api::create` → `MeetingStore::create` |
+| `Query`, `Send` | `uploader.ts` `uploadTrack` (`bytes */N`, then chunks at the server's offset) |
+| `Deliver`, `Duplicate`, `Cut` | `meetings::api::upload` → `MeetingStore::put` (`kernel::chunk`, kept bytes of a broken body, SHA-256 at the size, reset on mismatch) |
+| `Complete` | `meetings::api::complete` → `MeetingStore::complete` (`kernel::may_complete`) |
+| `WorkerStep` transcribe / `FinishStep` | `meetings::worker::steps` step 1 (`Stt::transcribe_words`, the `gpu-lease` shim) |
+| `WorkerStep` diarize, analyze | steps 2 and 3 (`diarize`, `analyze::analyze`, `brief::write`, fallbacks on the last attempt) |
+| `LlmFails` | `process` → `StepError::Failed` (attempt counted, back to `queued`) |
+| `WorkerStep` publish | step 4: `write_outputs`, `publish::note`, `publish::remember` (`memory_rev` first), `publish::notify` (`notify_telegram_rev` first), `publish::ask_unknown_voices` (`VoiceBook::mark_asked` first) |
+| `WorkerStep` done | `kernel::ready_to_finish`, `status = done` |
+| `WorkerCrash`, `OtherTakesGpu`, `PruneDeadLease` | process death; other `gpu-lease` jobs; `gpu-lease` prunes dead pids |
+| `OwnerNamesSpeaker` | `POST /v1/meetings/{id}/speakers` (`rename_in_meeting`: files and note again, no new notification) |
+
+### 17. Node retirement: Rust owns Telegram, Discord and reminders
 
 The Node Lucina (`lucina-nez`) is removed one capability at a time, with **no Node code change**: the phase-2
 "Node shim" of PORT_PLAN (P2a's fixed order) is dropped. Code checked: branch `lucina-rs` (merged from `node-retire`) at 3c22447
@@ -1082,6 +1222,73 @@ Default Stateright results (all 21 cases meet their expectations; the TLC twins 
 TLC (`formal/retirement/`): `Reminders` 1 229, `Reminders_rollback_safety` 1 648 (NR3 keeps the safety invariants),
 `Delivery` 46 and `Delivery_fail_known` 36 (both with `<>Finished` under weak fairness), `Telegram` 1 250,
 `Updates` 70, `Discord` 26 distinct states, each under 2 s; 18 `*_witness.cfg` and 15 `*_bug.cfg` fail as required.
+### 18. Lucina Drive: the folder index
+
+The Drive (`docs/media-library.md`, "The Drive") indexes every regular file of the Drive folders
+(`LUCINA_MEDIA_FOLDERS` minus the film folders) in place. Every 30 minutes a scan walks a folder
+(`drive::index_drive_folder`: junk and symlinks skipped, an unchanged file costs one lookup, a new or changed one is
+hashed and registered with its path), then trashes, in the catalog only, the rows of files it did not see. The big
+disk can be unmounted at any time; an unmounted mountpoint is an empty directory on the NVMe's filesystem, where
+anything can write a stray file. A phone can upload the same bytes as a Drive file.
+
+Invariants (Stateright name / TLA+ name):
+
+- `unmount_never_trashes` / `UnmountNeverTrashes`: a scan never trashes the row of a file that stayed on the disk
+  through the scan (an unmount, an empty mountpoint or a stray file in it never empties the Drive).
+- `phone_original_kept` / `PhoneOriginalKept`: a phone's upload always has its bytes: owned by the library, or still in
+  the Drive file whose bytes they matched.
+- `owned_never_downgraded` / `OwnedNeverDowngraded`: once the library owns a copy of some bytes it keeps owning it.
+
+Witnesses (`sometimes` / `DriveIndex_witness_*.cfg`): `pruned_a_deleted_file`, `stray_file_seen`, `walk_error`,
+`dedupe_upgraded`.
+
+Verus (`drive_kernels.rs`, the same bodies the server compiles from `drive_kernel_shared.rs`):
+DK1 `segment_ok` accepts only Normal segments, and a root joined with Normal segments never climbs out of it, while
+one `..` can (`safe_rel` / `join_under` split on `/` and require every segment to pass, so `browse?path=`, catalog
+paths and the walk's paths all stay inside the folder); DK2 `scope_of` / `in_scope` (its `phone` input is "came from a device" since 2026-10-27: `db::FROM_DEVICE`, a phone source or a `device` set) partition the library into
+gallery, films and drive (`db::scope_condition` is that predicate in SQL; `tests/drive.rs::scope_sql_matches_the_kernel`
+checks all four combinations through the API); DK3 `blob_action`; DK4 `may_prune` / `may_adopt_fs`; DK5
+`drive_may_work` (Tctl at or above `LUCINA_MEDIA_DRIVE_MAX_TEMP`, 90 °C, or the load limit pauses the hashing, text
+extraction, PDF pages and Office conversion). Verus on nezopt (2026-10-26, through `verify-gate`): 15 verified, 0 errors.
+
+| Model action | Code |
+|---|---|
+| `StartScan` | `drive::index_drive_folder`: `root.is_dir()`, the folder's `st_dev` against `drive_folders.dev` (`same_fs`) |
+| `Visit` | the `walkdir` loop: `entry.metadata()` (an error counts in `errors`), `index_one` → `ingest::register_external` + the `drive_files` row |
+| `Finish` | `may_adopt_fs` → `drive_folders.dev`; `may_prune` → `drive::prune` (items `trashed_at`, `drive_files` and `drive_fts` rows; never a file) |
+| `Unmount`, `Mount`, `StrayWrite` | mybook unmounted or back; something writing into `~/mnt/mybook/…` while it is away |
+| `Delete`, `Edit` | the owner deletes or edits a Drive file (an edit is a new mtime: re-hashed at the next visit) |
+| `PhoneUpload` | `ingest::ingest_file` → `keep_owned_bytes` (DK3) under the catalog lock |
+
+### 20. The iOS chat engine kernel
+
+The iPhone app's chat engine merges server pages into the timeline it shows, orders them and walks the sync cursor.
+The rules live in Rust (`crates/secretary-chat`, called through `secretary_chat_request`; the views and the store stay
+Swift and pass small key records, not messages). The kernel is pure and deterministic.
+
+Verus (`chat_merge.rs`, 64 verified): over `u64`-interned ids in byte order, with the spec functions mapped to the
+production functions in the file's header.
+- M1 the merged sequence has distinct ids. M2 it is strictly sorted by `(ts, role, id)` and a strictly sorted sequence is
+  determined by its elements, so the result is a function of the merged set alone: it does not depend on the input order
+  of `current` nor on the order the locals are visited in (Swift iterates a dictionary there; `step` decides the
+  replacements on the whole map). M3 merging the same batch again changes nothing, for a batch of distinct non-local
+  items (a server page). M4 every current and incoming id is in the result or was replaced, a replaced id belongs to a
+  local item of the role of an incoming item, so a non-local item is never lost.
+- C1 in a run that ends without a reset every log id above the starting cursor and at most the final cursor was in an
+  applied page (the server is any one whose pages never move the cursor back; "the next `limit` ids after the cursor" is
+  one, `lemma_server_model`). C2 the stored cursor never moves backwards in such a run. C3 at most 11 fetches (10 cursor
+  pages and the fresh window), 1 without a cursor, and `Apply{reset}` is true exactly for the fresh window.
+
+Found while proving, and kept identical to Swift: the merge is not idempotent when the batch carries a local item that
+a server item of the same batch replaces and a local reply points at that local item (counterexample in the file's
+header and in `idempotence_fails_only_when_the_batch_carries_a_local_item`); "every incoming id is in the result" holds
+only up to an incoming local item a later incoming item replaces.
+
+Differential tests: `tests/verus_chat_merge.rs` runs the proof file's function bodies (plain Rust) against production
+on generated inputs: ids, replacements, `reply_to` updates, and the sync machine step by step, every action, phase and
+fetch count (random scripts, and every script of 6 reports out of 9 from both a missing and a given cursor).
+`tests/merge_props.rs` compares production with a port of the Swift loop whose dictionary order is shuffled on every
+run, and checks M1, M2, M3 and M4 as properties.
 
 ## Bugs found
 
@@ -1216,7 +1423,7 @@ Operator (Rust up as the store, writer=rust)  CreateViaTelegram(0) [Node RMW]  C
 CreateWrite(Node) CreateWrite(Rust)          -> reminder 0 is lost
 ```
 
-Fixed order, modeled and holding (with a Node shim; superseded by protocol 15, which needs no Node change):
+Fixed order, modeled and holding (with a Node shim; superseded by protocol 17, which needs no Node change):
 
 1. Rust opens only `/api/internal/reminders`. Its secretary path still forwards to Node, and nothing calls the
    internal endpoint yet.
@@ -1227,7 +1434,7 @@ Rollback: Rust stops writing first (scheduler off, forwarding, internal endpoint
 visibly for a few seconds), then Node takes the file and the scheduler back.
 
 The shim-free order (Node restarted with `LUCINA_REMINDERS_ENABLED=false` while idle, then Rust `writer=local`) is
-protocol 15, R1; its rollback must also resolve Rust's `sending` claims (NR3).
+protocol 17, R1; its rollback must also resolve Rust's `sending` claims (NR3).
 
 ### P2b: a restart during a scheduler tick re-sends the batch (medium, today in Node, planned in Rust)
 
@@ -1243,13 +1450,13 @@ implementation keeps that promise. Fix: claim before send (write `sending` atomi
 found after a restart becomes `failed` with `lastError: "interrupted; not resent"`, shown in the reminder list. That
 gives at-most-once delivery with a visible failure. Also restart Node only with an idle tick (drain on SIGTERM).
 `no_double_delivery` and `no_silent_loss` then both hold. The claim is in the Rust code (`process_due`, branch
-`lucina-rs`); protocol 15 checks it with the three-way delivery outcome (R2) and the shim-free handover (R1).
+`lucina-rs`); protocol 17 checks it with the three-way delivery outcome (R2) and the shim-free handover (R1).
 
 ### P3/P4: handovers (no bug)
 
 The documented order holds. Two witnesses document the rules: starting Rust on Discord before Node lost its token,
 and running with `HERMES_GATEWAY_LOCK=false`, each give two consumers. The model treats lock acquisition as one
-step; protocol 15 (R3, R5) splits Node's rendezvous, adds Rust's flock, a second Rust process, heartbeat expiry and
+step; protocol 17 (R3, R5) splits Node's rendezvous, adds Rust's flock, a second Rust process, heartbeat expiry and
 an unusable lock dir, and finds NR1.
 
 ### S1: a lost ack followed by a 409 applies an op twice (medium)
@@ -1392,11 +1599,11 @@ Found live (a 429 storm against p1's 60/min, which the gallery's tiles also spen
 play tokens so tiles no longer spend the device's requests. Verus (e) proves the decision and the 48-per-minute
 budget.
 
-### M3: two finishes of the same bytes can both create an item (low; found by the model)
+### M3: two finishes of the same bytes could both create an item (low; found by the model). **Fixed.**
 
 `ingest::ingest_file` reads `known_for` (by hash, by asset) under one catalog lock, then moves the file into the
 store (`place_new`, a durable copy to the big disk: seconds for a video) and runs `insert_item` under the lock
-again. Two finishes of the same bytes in that window both decide New. Shortest trace (`M current`):
+again. Two finishes of the same bytes in that window both decide New. Shortest trace (`M before fix M3`):
 
 ```
 Request(0, Ok) x3      device 0: create, put, finish photo 0 (decide: unknown bytes → New)
@@ -1407,10 +1614,36 @@ FinishStep(1)          insert item B, the same hash: the photo shows twice
 
 The two finishes can come from two devices or from a phone upload racing a Lucina ingest (`/internal/v1/ingest`:
 a Telegram or share-sheet attachment) of the same picture. There is no unique index on `items.hash` (an edit can
-legitimately bring two items to the same bytes), so nothing catches it. Proposed fix, modelled as `M + fix M3`
-(all hold): decide again inside `insert_item`'s transaction, and turn the insert into a duplicate when an item with
-this hash appeared meanwhile (the `by_asset` branch already has the unique `items_asset` index behind it). Not
-changed here: it is a lucina-media change with a deploy, outside this verification pass.
+legitimately bring two items to the same bytes), so nothing catches it.
+
+Fixed in cc5e663 (modelled as `M current`, all hold): `insert_new_or_duplicate` looks for an item with this hash
+again in the same `Db::with` as the insert and turns the insert into a duplicate of that item when one appeared
+meanwhile (recording the phone asset on it, as the Duplicate branch does). Regression tests in `ingest.rs`: the
+decided-then-raced insert, and two threads ingesting the same new bytes 20 times, which fails 3 runs out of 3 on
+the old code.
+
+### DI1: a phone copy of bytes a Drive file held was dropped (low-medium). **Fixed.**
+
+`ingest::ingest_file` removed the uploaded file whenever a `blobs` row existed for its hash, also when that row only
+referenced a file in place (a folder file, a voice memo). The phone's item then depended on a Drive file the owner
+can move, edit or delete; the phone itself never deletes, but the owner may, trusting the backup. The folder
+indexer already saw the owner's computer photo backups, so this was reachable before the Drive indexed everything.
+Shortest trace (`DI before DK3`): `Delete(0)`, `PhoneUpload` (the bytes are gone from the disk; the upload is dropped
+because the row exists). Fixed by DK3 (`keep_owned_bytes`): an in-place row is upgraded to the phone's owned copy;
+`tests/drive.rs::a_phone_copy_of_a_drive_file_is_owned_by_the_library`.
+
+### DI2: an empty mountpoint with a stray file would have emptied the Drive (medium; found by the model before release). **Fixed.**
+
+The first prune guard (an existing folder, a clean walk, at least one file seen) let a scan of the unmounted
+mountpoint with one stray file in it trash every real row. Trace (`DI ablation: DK4 without the filesystem check`):
+`Unmount`, `StartScan`, `Visit`, `Visit`, `StrayWrite`, `Visit`, `Finish`. Fixed before merge: each folder's `st_dev`
+is recorded (`drive_folders`), pruning needs the same filesystem, and a new filesystem is adopted only by a clean walk
+that sees every known file (`may_adopt_fs`); `drive.rs::prune_only_after_a_clean_full_scan`.
+
+### DI3: a phone backup filed in a film album was in both the Gallery and Films (low). **Fixed.**
+
+`scope=films` was "in a film album", without "not a phone backup", so the scopes overlapped. Now DK2 is a partition
+(phone backups are the Gallery).
 ### B1: a crash after the vault copy, then a rename, makes a second note (low). **Fixed.**
 
 The worker recorded the note's path only after the rsync. If it crashed in between and the owner renamed the memo
@@ -1570,7 +1803,7 @@ model holds with all three (G1 + fixes, G2 + fixes).
 
 ### NR1: a Node container started with its Telegram token can poll next to Rust (low-medium; design) **Moot since 2026-10-27** (Node removed)
 
-The cutover followed the order in §15 (Node idle, Node's token gone), and on 2026-10-27 the
+The cutover followed the order in §17 (Node idle, Node's token gone), and on 2026-10-27 the
 `lucina-nez` container and its image were removed, so no Node gateway can start. Kept as the record of the rule.
 
 Rust's own side holds: the flock separates Rust A from a stray Rust B (the record cannot, L2: both have the
@@ -1683,6 +1916,10 @@ Node change this cannot be closed; the rollback runbook should say so and run wh
   cooldown (10 min) is not modelled (a retry may come at any later time). Item names, body length and the five-item
   limit are not modelled (the real-code tests keep `compose` exact). The server keeps every dedup key (true for a few
   watch messages: 4096 LRU keys, 500 inbox items, no deletions).
+- **Drive index.** Two Drive files and a stray position; the folder is the disk's mountpoint (the harder case: a
+  Drive folder below it simply disappears when the disk does, and `root_ok` is false). A file read by path while its
+  filesystem is gone is an error (Linux: `metadata` fails); a scan started on the empty mountpoint sees only what is
+  there. blake3 collisions are ignored; the text index and the worker are not in the model (they only add rows).
 - **Node retirement.** One Rust crash per model; operator steps are atomic restarts. R3 has three Telegram ticks
   of 30 s and one boot (the Verus lease kernel covers boot ids and exact times); R4 has two queued updates and no
   new arrivals; the Discord presence watcher (a separate read-only session) is out of scope.

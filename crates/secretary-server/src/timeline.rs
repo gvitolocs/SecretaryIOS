@@ -1,8 +1,10 @@
 //! The unified conversation timeline: every message Lucina sees or sends,
 //! from any channel.
 //!
-//! - `GET /v1/timeline?before=&limit=` → Lucina's `{items, nextBefore}`
-//!   (typed through `secretary-core`, unknown fields kept).
+//! - `GET /v1/timeline` → history or incremental arrivals, optionally filtered
+//!   by conversation or authenticated device.
+//!   Typed through `secretary-core`, unknown fields kept.
+//! - `GET /v1/timeline/conversations` → conversation summaries.
 //! - `GET /v1/timeline/stream` → Server-Sent Events, relayed byte for byte
 //!   from Lucina's `/api/secretary/timeline/stream` without buffering.
 //!   `Last-Event-ID` (header, or `?lastEventId=` for a fresh EventSource) is
@@ -34,7 +36,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Extension, Json, Router};
 use futures_util::StreamExt;
-use secretary_core::models::{TimelinePage, TimelineQuery};
+use secretary_core::models::{TimelineConversations, TimelinePage, TimelineQuery};
 use secretary_core::Call;
 use serde::Deserialize;
 
@@ -124,10 +126,21 @@ fn too_many_streams() -> ApiError {
 
 async fn page(
     State(st): State<AppState>,
+    Extension(ident): Extension<Identity>,
+    headers: HeaderMap,
     QueryArgs(q): QueryArgs<TimelineQuery>,
 ) -> Result<Json<TimelinePage>, ApiError> {
-    let call = Call::timeline(&q)?;
+    let call = if q.scope.as_deref() == Some("mine") {
+        let channel = crate::routes::chat_channel(&headers, None)?;
+        Call::timeline_for_device(&q, &ident.device_id, &channel)?
+    } else {
+        Call::timeline(&q)?
+    };
     Ok(Json(st.lucina()?.call::<TimelinePage>(&call).await?))
+}
+
+async fn conversations(State(st): State<AppState>) -> Result<Json<TimelineConversations>, ApiError> {
+    Ok(Json(st.lucina()?.timeline_conversations().await?))
 }
 
 #[derive(Deserialize)]
@@ -211,11 +224,12 @@ async fn stream(
     Ok(resp)
 }
 
-/// Behind `require_device` (Bearer or cookie; both routes are GET, so no CSRF).
+/// Behind `require_device` (Bearer or cookie; GET needs no CSRF).
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/v1/timeline", get(page))
         .route("/v1/timeline/stream", get(stream))
+        .route("/v1/timeline/conversations", get(conversations))
 }
 
 #[cfg(test)]

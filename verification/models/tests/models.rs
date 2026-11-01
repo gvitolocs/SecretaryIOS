@@ -153,8 +153,18 @@ fn media_backup() {
 }
 
 #[test]
+fn drive_index() {
+    run("drive-index");
+}
+
+#[test]
 fn memos() {
     run("memos");
+}
+
+#[test]
+fn meetings() {
+    run("meetings");
 }
 
 #[test]

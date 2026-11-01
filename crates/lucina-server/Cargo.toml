@@ -1,0 +1,85 @@
+[package]
+name = "lucina-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The Rust Lucina: /api/secretary/* (identical to the Node contract), chat turns, agenda, SSE"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "lucina"
+path = "src/main.rs"
+
+[dependencies]
+getrandom = "0.3"
+zeroize = "=1.9.1"
+lucina-telegram = { path = "../lucina-telegram" }
+lucina-secrets = { path = "../lucina-secrets" }
+lucina-approvals = { path = "../lucina-approvals" }
+lucina-llm = { path = "../lucina-llm" }
+lucina-jev = { path = "../lucina-jev" }
+lucina-prompter = { path = "../lucina-prompter" }
+lucina-store = { path = "../lucina-store" }
+lucina-memory = { path = "../lucina-memory" }
+lucina-ops = { path = "../lucina-ops" }
+lucina-vault-ingest = { path = "../lucina-vault-ingest" }
+lucina-grocery = { path = "../lucina-grocery" }
+lucina-deals = { path = "../lucina-deals" }
+lucina-tools = { path = "../lucina-tools" }
+lucina-meshy = { path = "../lucina-meshy" }
+lucina-delegate = { path = "../lucina-delegate" }
+lucina-computer-use = { path = "../lucina-computer-use" }
+lucina-intent = { path = "../lucina-intent" }
+lucina-phone-core = { path = "../lucina-phone-core" }
+lucina-discord = { path = "../lucina-discord", features = ["gateway"] }
+axum = { version = "0.8", features = ["multipart", "ws"] }
+# LucinaDesk (src/desk.rs): the gateway socket; axum's own ws uses the same version.
+tokio-tungstenite = "0.29"
+hyper = { version = "1", features = ["server", "client", "http1"] }
+# The home-network door (src/lan.rs): its own TLS listener, ring like reqwest's rustls.
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tower = { version = "0.5", features = ["util"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+tokio = { workspace = true }
+tokio-stream = "0.1"
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = "=1.1.6"
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+subtle = "2"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+async-trait = { workspace = true }
+sha2 = { workspace = true }
+regex = "1"
+reqwest = { workspace = true, features = ["stream"] }
+http-body-util = "0.1"
+
+libc = "0.2"
+base64 = "=0.22.1"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+lopdf = "0.38"
+pdf-extract = "0.10"
+scraper = "0.24"
+tempfile = "3"
+lucina-memo = { path = "../lucina-memo" }
+lucina-notebooks = { path = "../lucina-notebooks" }
+rusqlite = { version = "0.32", features = ["bundled"] }
+calamine = "0.30"
+tar = "0.4"
+flate2 = "1"
+
+[dev-dependencies]
+lucina-approvals = { path = "../lucina-approvals", features = ["testing"] }
+secretary-core = { path = "../secretary-core" }
+secretary-server = { path = "../secretary-server" }
+reqwest = { workspace = true, features = ["stream", "multipart"] }
+wiremock = "0.6"

@@ -1,15 +1,24 @@
 import { A, useLocation, useNavigate } from "@solidjs/router";
 import { createEffect, createSignal, lazy, on, onCleanup, onMount, Show, Suspense, type JSX } from "solid-js";
+import { ApprovalPopup } from "../components/ApprovalPopup";
+import { DecisionBanner } from "../components/DecisionBanner";
+import { DecisionsButton } from "../components/DecisionsButton";
 import { AccountDialog } from "../components/AccountDialog";
-import { AvatarIcon, ChatIcon, DumbbellIcon, GridIcon, ListIcon, LogoutIcon, UserIcon } from "../components/Icons";
+import { SecretSheet } from "../components/SecretSheet";
+import { AvatarIcon, CalendarIcon, ChatIcon, DumbbellIcon, GridIcon, ListIcon, LogoutIcon, UserIcon } from "../components/Icons";
 import { LucinaDock } from "../components/LucinaDock";
 import { NotificationBell } from "../components/NotificationBell";
 import { StatusDot } from "../components/StatusDot";
 import { listShares } from "../lib/share";
 import { t } from "../i18n";
+import { showWebChrome } from "../lib/desktopShell";
+import "../styles/decisions.css";
+import "../styles/embedded.css";
 import { connectTimeline, resumeJobPolling } from "../state/chat";
 import { checkHealth, HEALTH_POLL_MS } from "../state/health";
 import { lucinaNotice, markLucinaOnline } from "../state/lucina";
+import { startInstagramBadges } from "../state/instagramBadge";
+import { startDecisions } from "../state/decisions";
 import { startNotifications } from "../state/notifications";
 import { signOut } from "../state/session";
 import { setStageHidden, stageHidden } from "../state/stage";
@@ -19,19 +28,28 @@ import "../styles/character-shell.css";
 // The Wardrobe panel is only fetched the first time it opens.
 const Wardrobe = lazy(() => import("../components/Wardrobe"));
 
-// The owner's four sections (2026-10-24), the same as the iPhone tabs: Chat, Shopping,
-// Training + Weight, Plugins. Everything else is a plugin card on /plugins.
+// The owner's sections: Chat, Calendar (2026-10-30), Shopping, Training + Weight, Plugins. All but Calendar are
+// also the iPhone tabs (2026-10-24). Everything else is a plugin card on /plugins.
 const TRAINING_PATHS = ["/training", "/gym", "/weight"];
-const PLUGIN_PATHS = ["/plugins", "/notes", "/tasks", "/links", "/models", "/memos", "/desk", "/library"];
+const PLUGIN_PATHS = ["/approvals", "/chats", "/plugins", "/notes", "/keep", "/tasks", "/links", "/models", "/memos", "/desk", "/library", "/media", "/drive", "/server-health", "/computer", "/nclient", "/pixiv", "/instagram", "/agents"];
 
 function NavLinks(props: { class: string }) {
   const location = useLocation();
   const under = (paths: string[]) => paths.some((p) => location.pathname === p || location.pathname.startsWith(`${p}/`));
   return (
     <nav class={props.class} aria-label={t("shell.sections")}>
-      <A href="/" end class="tab" activeClass="tab--active">
+      <A href="/" end class="tab" activeClass="tab--active" onClick={(e) => {
+        if (location.pathname === "/") {
+          e.preventDefault();
+          window.dispatchEvent(new CustomEvent("secretary:chat-latest"));
+        }
+      }}>
         <ChatIcon />
         <span>{t("shell.navChat")}</span>
+      </A>
+      <A href="/calendar" class="tab" activeClass="tab--active">
+        <CalendarIcon />
+        <span>{t("shell.navCalendar")}</span>
       </A>
       <A href="/shopping" class="tab" activeClass="tab--active">
         <ListIcon />
@@ -63,7 +81,7 @@ function useRouteTransition(target: () => HTMLElement | undefined) {
   const location = useLocation();
   createEffect(
     on(
-      () => (location.pathname.startsWith("/notes") ? "/notes" : location.pathname.startsWith("/tasks") ? "/tasks" : location.pathname),
+      () => (location.pathname.startsWith("/notes") ? "/notes" : location.pathname.startsWith("/keep") ? "/keep" : location.pathname.startsWith("/tasks") ? "/tasks" : location.pathname.startsWith("/agents") ? "/agents" : location.pathname),
       () => {
         const el = target();
         if (!el || reducedMotion() || typeof el.animate !== "function") return;
@@ -99,6 +117,8 @@ export default function Shell(props: { children?: JSX.Element }) {
       if (entries.length && location.pathname !== "/") navigate("/" + location.search);
     }).catch(() => undefined);
     onCleanup(startNotifications((route) => navigate(route)));
+    onCleanup(startInstagramBadges());
+    onCleanup(startDecisions());
     void checkHealth();
     resumeJobPolling();
     // The timeline stream stays open on every page, so Lucina's outfit changes arrive live.
@@ -125,63 +145,70 @@ export default function Shell(props: { children?: JSX.Element }) {
     }
   }
 
+  // Inside Secretary Code the desktop rail replaces the top bar and the tab bar, and names the pages (styles/embedded.css).
+  const chrome = showWebChrome();
+  if (!chrome) document.documentElement.dataset.shell = "desktop";
+
   return (
-    <div class="shell shell--character">
+    <div class="shell shell--character" classList={{ "shell--desktop": !chrome }}>
       <a class="skip-link" href="#main">
         {t("shell.skipToContent")}
       </a>
-      <header class="topbar">
-        <div class="brand">
-          <span class="brand-mark" aria-hidden="true">
-            <img src="/icon-192.png" alt="" width="32" height="32" />
-          </span>
-          <span class="brand-name">Secretary</span>
-        </div>
-        <NavLinks class="tabs-top" />
-        <div class="topbar-actions">
-          <StatusDot />
-          <Show when={stageHidden()}>
+      <Show when={chrome}>
+        <header class="topbar">
+          <div class="brand">
+            <span class="brand-mark" aria-hidden="true">
+              <img src="/icon-192.png" alt="" width="32" height="32" />
+            </span>
+            <span class="brand-name">Secretary</span>
+          </div>
+          <NavLinks class="tabs-top" />
+          <div class="topbar-actions">
+            <StatusDot />
+            <Show when={stageHidden()}>
+              <button
+                type="button"
+                class="icon-btn"
+                onClick={() => setStageHidden(false)}
+                aria-label={t("shell.lucinaShow")}
+                title={t("shell.lucinaShow")}
+              >
+                <AvatarIcon />
+              </button>
+            </Show>
+            <DecisionsButton />
+            <NotificationBell
+              onSettings={() => {
+                setAccountSection("notifications");
+                setAccountOpen(true);
+              }}
+            />
             <button
               type="button"
               class="icon-btn"
-              onClick={() => setStageHidden(false)}
-              aria-label={t("shell.lucinaShow")}
-              title={t("shell.lucinaShow")}
+              ref={accountButton}
+              onClick={() => {
+                setAccountSection(null);
+                setAccountOpen(true);
+              }}
+              aria-label={t("shell.account")}
+              title={t("shell.account")}
             >
-              <AvatarIcon />
+              <UserIcon />
             </button>
-          </Show>
-          <NotificationBell
-            onSettings={() => {
-              setAccountSection("notifications");
-              setAccountOpen(true);
-            }}
-          />
-          <button
-            type="button"
-            class="icon-btn"
-            ref={accountButton}
-            onClick={() => {
-              setAccountSection(null);
-              setAccountOpen(true);
-            }}
-            aria-label={t("shell.account")}
-            title={t("shell.account")}
-          >
-            <UserIcon />
-          </button>
-          <button
-            type="button"
-            class="icon-btn"
-            onClick={() => void logout()}
-            disabled={loggingOut()}
-            aria-label={t("shell.logout")}
-            title={t("shell.logout")}
-          >
-            <LogoutIcon />
-          </button>
-        </div>
-      </header>
+            <button
+              type="button"
+              class="icon-btn"
+              onClick={() => void logout()}
+              disabled={loggingOut()}
+              aria-label={t("shell.logout")}
+              title={t("shell.logout")}
+            >
+              <LogoutIcon />
+            </button>
+          </div>
+        </header>
+      </Show>
       <Show when={lucinaNotice()}>
         {(msg) => (
           <div class="banner" role="status">
@@ -207,12 +234,18 @@ export default function Shell(props: { children?: JSX.Element }) {
         </main>
         <LucinaDock />
       </div>
-      <NavLinks class="tabbar" />
+      <Show when={chrome}>
+        <NavLinks class="tabbar" />
+      </Show>
       <Show when={wardrobeLoaded()}>
         <Suspense>
           <Wardrobe />
         </Suspense>
       </Show>
+      <SecretSheet />
+      {/* Outside the chrome: Secretary Code has no top or tab bar, and the pop-up must still show. */}
+      <ApprovalPopup />
+      <DecisionBanner />
       <AccountDialog
         open={accountOpen()}
         section={accountSection()}

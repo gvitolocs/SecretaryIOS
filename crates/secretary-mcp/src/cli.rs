@@ -41,14 +41,21 @@ pub enum TokenCmd {
         /// Caller name Lucina sees: claude-code, chatgpt, grok, … (a-z, 0-9, '-').
         #[arg(long)]
         name: String,
-        /// Comma-separated scopes: read, chat, write.
+        /// Comma-separated scopes: read, chat, write, computer, agents, notebooks.
         #[arg(long, default_value = "read,chat")]
         scopes: String,
+        /// Delegation depth: 0 for the owner's clients, 1 for a token handed to an
+        /// agent run (it can use agents but not start any).
+        #[arg(long, default_value_t = 0)]
+        depth: u8,
     },
     /// List tokens (never the tokens themselves).
     List,
     /// Revoke by token id, or every token with this name.
     Revoke { id_or_name: String },
+    /// Add scopes to an active token (by id, or every active token with this name),
+    /// e.g. `add-scope grok computer`.
+    AddScope { id_or_name: String, scopes: String },
 }
 
 #[derive(Debug, Subcommand)]
@@ -57,6 +64,9 @@ pub enum OauthCmd {
     List,
     /// Revoke a grant (by grant id or client id), or `all`.
     Revoke { target: String },
+    /// Add scopes to a grant (by grant id or client id) and its live tokens,
+    /// e.g. `add-scope grant_… computer`. The owner's decision, as on the consent page.
+    AddScope { target: String, scopes: String },
 }
 
 fn data_dir() -> PathBuf {
@@ -75,9 +85,9 @@ pub fn run_admin(cmd: Cmd) -> anyhow::Result<i32> {
         Cmd::Token { cmd } => {
             let store = crate::tokens::TokenStore::new(&dir);
             match cmd {
-                TokenCmd::Issue { name, scopes } => {
+                TokenCmd::Issue { name, scopes, depth } => {
                     let scopes = Scopes::parse_list(&scopes).map_err(anyhow::Error::msg)?;
-                    let (rec, secret) = store.issue(&name, scopes)?;
+                    let (rec, secret) = store.issue_at(&name, scopes, depth)?;
                     eprintln!(
                         "Issued {} for {:?} with scopes {}. It is shown only now:",
                         rec.id, rec.name, rec.scopes
@@ -92,16 +102,29 @@ pub fn run_admin(cmd: Cmd) -> anyhow::Result<i32> {
                     }
                     for t in list {
                         println!(
-                            "{}  {:<14} scopes={:<16} created={} last_used={} {}",
+                            "{}  {:<14} scopes={:<16}{} created={} last_used={} {}",
                             t.id,
                             t.name,
                             t.scopes.to_string(),
+                            if t.depth > 0 { format!(" depth={}", t.depth) } else { String::new() },
                             rfc3339(t.created_at),
                             t.last_used_at
                                 .map(rfc3339)
                                 .unwrap_or_else(|| "never".into()),
                             if t.revoked { "REVOKED" } else { "active" }
                         );
+                    }
+                    Ok(0)
+                }
+                TokenCmd::AddScope { id_or_name, scopes } => {
+                    let add = Scopes::parse_list(&scopes).map_err(anyhow::Error::msg)?;
+                    let hit = store.add_scopes(&id_or_name, &add)?;
+                    if hit.is_empty() {
+                        eprintln!("no active token with id or name {id_or_name:?}");
+                        return Ok(1);
+                    }
+                    for t in hit {
+                        println!("{} ({}) scopes={}", t.id, t.name, t.scopes);
                     }
                     Ok(0)
                 }
@@ -149,6 +172,12 @@ pub fn run_admin(cmd: Cmd) -> anyhow::Result<i32> {
                         );
                     }
                     Ok(0)
+                }
+                OauthCmd::AddScope { target, scopes } => {
+                    let add = Scopes::parse_list(&scopes).map_err(anyhow::Error::msg)?;
+                    let n = oauth.add_scopes(&target, &add)?;
+                    println!("updated {n} grant(s)");
+                    Ok(if n == 0 { 1 } else { 0 })
                 }
                 OauthCmd::Revoke { target } => {
                     let n = oauth.revoke(&target)?;

@@ -97,6 +97,7 @@ const en = {
   linkAdded: "Link added.",
   noLinks: "No links yet. Add the sites you open often.",
 
+  proposalsEmpty: "There are no proposals waiting for your OK.",
   proposalsTitle: "Waiting for your OK",
   proposalFrom: "Proposed by {from}",
   accept: "Add to calendar",
@@ -210,6 +211,7 @@ export const links: FeatureDictionary<typeof en> = {
     linkAdded: "Link aggiunto.",
     noLinks: "Ancora nessun link. Aggiungi i siti che apri spesso.",
 
+    proposalsEmpty: "Non ci sono proposte in attesa del tuo consenso.",
     proposalsTitle: "In attesa del tuo ok",
     proposalFrom: "Proposto da {from}",
     accept: "Aggiungi al calendario",
@@ -320,6 +322,7 @@ export const links: FeatureDictionary<typeof en> = {
     linkAdded: "Link tilføjet.",
     noLinks: "Ingen links endnu. Tilføj de sider, du ofte åbner.",
 
+    proposalsEmpty: "Ingen forslag venter på dit ok.",
     proposalsTitle: "Venter på dit ok",
     proposalFrom: "Foreslået af {from}",
     accept: "Tilføj til kalender",

@@ -70,6 +70,26 @@ describe("PlaceCard", () => {
     expect(paths()).toEqual(["/v1/maps/config"]);
   });
 
+  it("opens a calendar event's card in the Calendar tab", async () => {
+    calls = stubFetch((call) => (call.url === "/v1/maps/config" ? { body: CONFIG } : { status: 404, body: {} }));
+    render(() => (
+      <PlaceCard
+        place={{
+          title: "Dentist",
+          address: "Søndergade 20, Aarhus",
+          lat: 56.1545,
+          lng: 10.2085,
+          when: "2026-10-30T14:00:00.000Z",
+          kind: "event",
+          eventId: "lucina:ev_1",
+        }}
+      />
+    ));
+    const link = screen.getByRole("link", { name: /Dentist/ });
+    expect(link.getAttribute("href")).toBe(`/calendar?event=lucina%3Aev_1&at=${Date.parse("2026-10-30T14:00:00.000Z")}`);
+    expect(link).toHaveAttribute("title", "Calendar: Dentist");
+  });
+
   it("shows Lucina's travel time from home", async () => {
     calls = stubFetch((call) => (call.url === "/v1/maps/config" ? { body: CONFIG } : { status: 404, body: {} }));
     render(() => (
@@ -100,7 +120,7 @@ describe("PlaceCard", () => {
     expect(await screen.findByText("3.9 km from home")).toBeInTheDocument();
   });
 
-  it("says not found and offers a Maps search when the geocoder has nothing", async () => {
+  it("says not found, and never sends the owner to another maps app, when the geocoder has nothing", async () => {
     calls = stubFetch((call) => {
       if (call.url === "/v1/maps/config") return { body: CONFIG };
       if (call.url.startsWith("/v1/maps/geocode")) return { body: { results: [] } };
@@ -110,9 +130,8 @@ describe("PlaceCard", () => {
     vi.stubGlobal("open", open);
     render(() => <PlaceCard place={{ title: "Mystery bar", kind: "place" }} />);
     expect(await screen.findByText("Not found on the map")).toBeInTheDocument();
-    const search = screen.getByRole("link", { name: "Search in Maps" });
-    expect(search).toHaveAttribute("href", "https://www.google.com/maps/search/?api=1&query=Mystery%20bar");
-    expect(search).toHaveAttribute("target", "_blank");
+    expect(screen.queryByRole("link", { name: "Search in Maps" })).toBeNull();
+    for (const a of document.querySelectorAll("a")) expect(a.getAttribute("href") ?? "").not.toMatch(/maps\.apple|google\.|^https?:/);
     // nothing went to a third party: only our own endpoints were called
     expect(paths().every((p) => p.startsWith("/v1/maps/"))).toBe(true);
     expect(paths()[1]).toBe("/v1/maps/geocode?q=Mystery+bar&limit=1&lat=56.19633&lng=10.2011");

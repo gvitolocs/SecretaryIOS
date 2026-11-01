@@ -1,0 +1,8 @@
+#!/bin/sh
+# Whisper for shared audio/video, in its own transient scope (lucina-rs.service is capped at 768M).
+# LUCINA_WHISPER_BIN points here; the real binary is the gpu-lease shim lucina-memo also uses.
+# lucina-memo's runner sets LD_LIBRARY_PATH to this script's folder: point it at the real one.
+real="${LUCINA_WHISPER_REAL_BIN:-$HOME/Projects/whisper.cpp/build/bin/whisper-cli}"
+LD_LIBRARY_PATH=$(dirname "$real")
+export LD_LIBRARY_PATH
+exec systemd-run --user --scope --quiet --collect -p MemoryMax=12G -- "$real" "$@"

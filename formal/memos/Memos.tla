@@ -3,7 +3,8 @@
 (* Voice memos end to end (docs/memos.md): the iPhone recorder and Live    *)
 (* Activity, the upload queue, the lucina-memo worker (transcript, summary,*)
 (* PDF, Obsidian push, notification), the GPU lease, owner rename and      *)
-(* reprocess, iOS killing the app, worker crashes; the calendar link      *)
+(* reprocess, iOS killing the app, worker crashes, speaker labels (K11); *)
+(* the calendar link                                                      *)
 (* (2026-10-26): the worker links the overlapping event unless the owner  *)
 (* chose one, the owner picks another or none, a linked note lives in the *)
 (* event's folder and moves when the event changes.                       *)
@@ -17,7 +18,8 @@ CONSTANTS FixNotePath,        \* kernel K7: record the note path before the rsyn
           FixTelegramMarker,  \* kernel K6: record the Telegram revision before sending
           FixRecovery,        \* the iPhone recovers a recording cut off by iOS
           PruneDead,          \* gpu-lease drops a dead holder
-          FixOldNotes,        \* every earlier note path is kept for deletion (B5: one slot)
+          FixDiarizeReset,    \* kernel K11: a new transcript clears the diarization attempt
+          FixOldNotes,       \* every earlier note path is kept for deletion (B5: one slot)
           FixLinkRecheck,     \* the link write re-checks the owner's choice (kernel K9)
           Events,             \* calendar linking on
           LateEvent,          \* the event reaches the server only after the memo was processed
@@ -25,14 +27,14 @@ CONSTANTS FixNotePath,        \* kernel K7: record the note path before the rsyn
           Kills, Crashes, NetFails, OwnerActs, OtherJobs, EventActs, GiveUps
 
 VARIABLES rec, appAlive, la, queued, uploaded, devSent,
-          transcript, hadWhisper, sawUpgrade, summarized, rendered, noteRec, published,
+          transcript, diarized, diarAttempted, hadWhisper, sawUpgrade, summarized, rendered, noteRec, published,
           notified, tgMarker, done, revision, title, step, lease, gpuWasBusy,
           vault, telegram, inbox,
           kills, crashes, netFails, ownerActs, otherJobs, toggles,
           oldNotes, event, eventSrc, linked, ownerChoice, failed, eventActs, giveUps, calendarHas, relinked
 
 vars == <<rec, appAlive, la, queued, uploaded, devSent,
-          transcript, hadWhisper, sawUpgrade, summarized, rendered, noteRec, published,
+          transcript, diarized, diarAttempted, hadWhisper, sawUpgrade, summarized, rendered, noteRec, published,
           notified, tgMarker, done, revision, title, step, lease, gpuWasBusy,
           vault, telegram, inbox,
           kills, crashes, netFails, ownerActs, otherJobs, toggles,
@@ -49,7 +51,7 @@ EventVars == <<oldNotes, event, eventSrc, linked, ownerChoice, failed, eventActs
 
 Init == /\ rec = "recording" /\ appAlive = TRUE /\ la = "running"
         /\ queued = FALSE /\ uploaded = FALSE /\ devSent = FALSE
-        /\ transcript = "none" /\ hadWhisper = FALSE /\ sawUpgrade = FALSE
+        /\ transcript = "none" /\ diarized = "none" /\ diarAttempted = FALSE /\ hadWhisper = FALSE /\ sawUpgrade = FALSE
         /\ summarized = FALSE /\ rendered = FALSE /\ noteRec = NoNote /\ published = FALSE
         /\ notified = FALSE /\ tgMarker = None /\ done = FALSE /\ revision = 0 /\ title = 0
         /\ step = "idle" /\ lease = "free" /\ gpuWasBusy = FALSE
@@ -63,12 +65,13 @@ Init == /\ rec = "recording" /\ appAlive = TRUE /\ la = "running"
 Pending == IF ~uploaded \/ done \/ failed THEN 0
            ELSE IF transcript = "none" THEN 1
            ELSE IF Events /\ ~linked THEN 10
+           ELSE IF ~diarAttempted THEN 11
            ELSE IF ~summarized THEN 2
            ELSE IF ~rendered THEN 3
            ELSE IF ~published THEN 4
            ELSE IF ~notified THEN 5 ELSE 6
 
-ServerVars == <<transcript, hadWhisper, sawUpgrade, summarized, rendered, noteRec, published,
+ServerVars == <<transcript, diarized, diarAttempted, hadWhisper, sawUpgrade, summarized, rendered, noteRec, published,
                 notified, tgMarker, done, revision, title, step, lease, gpuWasBusy,
                 vault, telegram, inbox, crashes, ownerActs, otherJobs>>
 
@@ -112,19 +115,19 @@ PhoneVars == <<rec, appAlive, la, queued, uploaded, devSent, kills, netFails, to
 \* ---------------------------------------------------------------- the GPU and the owner
 OtherTakesGpu == /\ otherJobs > 0 /\ lease = "free" /\ otherJobs' = otherJobs - 1 /\ lease' = "other"
                  /\ UNCHANGED PhoneVars
-                 /\ UNCHANGED <<transcript, hadWhisper, sawUpgrade, summarized, rendered, noteRec, published,
+                 /\ UNCHANGED <<transcript, diarized, diarAttempted, hadWhisper, sawUpgrade, summarized, rendered, noteRec, published,
                                 notified, tgMarker, done, revision, title, step, gpuWasBusy, vault,
                                 telegram, inbox, crashes, ownerActs>>
                  /\ UNCHANGED EventVars
 OtherReleasesGpu == /\ lease = "other" /\ lease' = "free"
                     /\ UNCHANGED PhoneVars
-                    /\ UNCHANGED <<transcript, hadWhisper, sawUpgrade, summarized, rendered, noteRec, published,
+                    /\ UNCHANGED <<transcript, diarized, diarAttempted, hadWhisper, sawUpgrade, summarized, rendered, noteRec, published,
                                    notified, tgMarker, done, revision, title, step, gpuWasBusy, vault,
                                    telegram, inbox, crashes, ownerActs, otherJobs>>
                     /\ UNCHANGED EventVars
 PruneDeadLease == /\ PruneDead /\ lease = "dead" /\ lease' = "free"
                   /\ UNCHANGED PhoneVars
-                  /\ UNCHANGED <<transcript, hadWhisper, sawUpgrade, summarized, rendered, noteRec, published,
+                  /\ UNCHANGED <<transcript, diarized, diarAttempted, hadWhisper, sawUpgrade, summarized, rendered, noteRec, published,
                                  notified, tgMarker, done, revision, title, step, gpuWasBusy, vault,
                                  telegram, inbox, crashes, ownerActs, otherJobs>>
                   /\ UNCHANGED EventVars
@@ -133,11 +136,12 @@ OwnerRename == /\ ownerActs > 0 /\ uploaded
                /\ IF rendered THEN rendered' = FALSE /\ published' = FALSE /\ done' = FALSE
                               ELSE UNCHANGED <<rendered, published, done>>
                /\ UNCHANGED PhoneVars
-               /\ UNCHANGED <<transcript, hadWhisper, sawUpgrade, summarized, noteRec, notified, tgMarker,
+               /\ UNCHANGED <<transcript, diarized, diarAttempted, hadWhisper, sawUpgrade, summarized, noteRec, notified, tgMarker,
                               revision, step, lease, gpuWasBusy, vault, telegram, inbox, crashes, otherJobs>>
                /\ UNCHANGED EventVars
 OwnerReprocess == /\ ownerActs > 0 /\ done
                   /\ ownerActs' = ownerActs - 1 /\ transcript' = "none" /\ summarized' = FALSE
+                  /\ diarAttempted' = (IF FixDiarizeReset THEN FALSE ELSE diarAttempted) /\ UNCHANGED diarized
                   /\ rendered' = FALSE /\ published' = FALSE /\ notified' = FALSE /\ done' = FALSE
                   /\ revision' = revision + 1 /\ telegram' = 0
                   /\ UNCHANGED PhoneVars
@@ -146,6 +150,7 @@ OwnerReprocess == /\ ownerActs > 0 /\ done
                   /\ UNCHANGED EventVars
 Upgrade == /\ done /\ transcript = "device" /\ lease = "free"
            /\ transcript' = "whisper" /\ hadWhisper' = TRUE /\ sawUpgrade' = TRUE
+           /\ diarAttempted' = (IF FixDiarizeReset THEN FALSE ELSE diarAttempted) /\ UNCHANGED diarized
            /\ summarized' = FALSE /\ rendered' = FALSE /\ published' = FALSE /\ done' = FALSE
            /\ revision' = revision + 1 /\ telegram' = 0 /\ notified' = TRUE
            /\ UNCHANGED PhoneVars
@@ -158,7 +163,7 @@ WorkerCrash == /\ crashes > 0 /\ (Pending > 0 \/ step # "idle")
                /\ crashes' = crashes - 1 /\ step' = "idle"
                /\ lease' = IF lease = "worker" THEN "dead" ELSE lease
                /\ UNCHANGED PhoneVars
-               /\ UNCHANGED <<transcript, hadWhisper, sawUpgrade, summarized, rendered, noteRec, published,
+               /\ UNCHANGED <<transcript, diarized, diarAttempted, hadWhisper, sawUpgrade, summarized, rendered, noteRec, published,
                               notified, tgMarker, done, revision, title, gpuWasBusy, vault, telegram, inbox,
                               ownerActs, otherJobs>>
                /\ UNCHANGED EventVars
@@ -169,6 +174,7 @@ WorkerFinishStep ==
     /\ step # "idle"
     /\ step' = "idle"
     /\ CASE step = "whisper" -> /\ lease' = "free" /\ transcript' = "whisper" /\ hadWhisper' = TRUE
+                                /\ diarAttempted' = (IF FixDiarizeReset THEN FALSE ELSE diarAttempted)
                                 /\ UNCHANGED <<noteRec, published, notified, vault, oldNotes, event, eventSrc, linked>>
          [] step = "linking" -> \* the update closure: the owner may have chosen meanwhile
                                 /\ linked' = TRUE
@@ -176,15 +182,17 @@ WorkerFinishStep ==
                                       THEN /\ eventSrc' = "auto"   \* no event known yet: link-pending
                                            /\ event' = (IF calendarHas THEN Course ELSE event)
                                       ELSE UNCHANGED <<event, eventSrc>>
-                                /\ UNCHANGED <<lease, transcript, hadWhisper, noteRec, published, notified, vault, oldNotes>>
+                                /\ UNCHANGED <<lease, transcript, hadWhisper, noteRec, published, notified, vault, oldNotes,
+                                               diarAttempted>>
          [] step = "pushed"  -> /\ noteRec' = (IF noteRec = NoNote THEN <<Folder, title>> ELSE noteRec)
                                 /\ vault' = vault \ oldNotes /\ oldNotes' = {} /\ published' = TRUE
-                                /\ UNCHANGED <<lease, transcript, hadWhisper, notified, event, eventSrc, linked>>
+                                /\ UNCHANGED <<lease, transcript, hadWhisper, notified, event, eventSrc, linked,
+                                               diarAttempted>>
          [] step = "sent"    -> /\ notified' = TRUE
                                 /\ UNCHANGED <<lease, transcript, hadWhisper, noteRec, published, vault, oldNotes,
-                                               event, eventSrc, linked>>
+                                               event, eventSrc, linked, diarAttempted>>
     /\ UNCHANGED PhoneVars
-    /\ UNCHANGED <<sawUpgrade, summarized, rendered, tgMarker, done, revision, title, gpuWasBusy,
+    /\ UNCHANGED <<diarized, sawUpgrade, summarized, rendered, tgMarker, done, revision, title, gpuWasBusy,
                    telegram, inbox, crashes, ownerActs, otherJobs, ownerChoice, failed, eventActs, giveUps,
                    calendarHas, relinked>>
 
@@ -202,6 +210,7 @@ WorkerStartStep ==
     /\ UNCHANGED <<crashes, ownerActs, otherJobs, title, revision, sawUpgrade>>
     /\ UNCHANGED <<event, eventSrc, linked, ownerChoice, failed, eventActs, giveUps, calendarHas, relinked>>
     /\ (Pending # 4 => UNCHANGED oldNotes)
+    /\ (Pending = 11 \/ (Pending = 1 /\ lease # "free") \/ UNCHANGED <<diarized, diarAttempted>>)
     /\ CASE Pending = 1 ->
               IF lease = "free"
                  THEN /\ lease' = "worker" /\ step' = "whisper"
@@ -209,11 +218,15 @@ WorkerStartStep ==
                                      notified, tgMarker, done, gpuWasBusy, vault, telegram, inbox>>
                  ELSE /\ devSent /\ ~(hadWhisper /\ FixNoDowngrade)   \* else: wait (no step)
                       /\ transcript' = "device" /\ gpuWasBusy' = TRUE
+                      /\ diarAttempted' = (IF FixDiarizeReset THEN FALSE ELSE diarAttempted) /\ UNCHANGED diarized
                       /\ UNCHANGED <<hadWhisper, summarized, rendered, noteRec, published, notified,
                                      tgMarker, done, step, lease, vault, telegram, inbox>>
          [] Pending = 10 -> /\ step' = "linking"
                             /\ UNCHANGED <<transcript, hadWhisper, summarized, rendered, noteRec, published, notified,
                                            tgMarker, done, lease, gpuWasBusy, vault, telegram, inbox>>
+         [] Pending = 11 -> /\ diarAttempted' = TRUE /\ diarized' = transcript
+                            /\ UNCHANGED <<transcript, hadWhisper, summarized, rendered, noteRec, published, notified,
+                                           tgMarker, done, step, lease, gpuWasBusy, vault, telegram, inbox>>
          [] Pending = 2 -> /\ summarized' = TRUE
                            /\ UNCHANGED <<transcript, hadWhisper, rendered, noteRec, published, notified,
                                           tgMarker, done, step, lease, gpuWasBusy, vault, telegram, inbox>>
@@ -249,7 +262,7 @@ OwnerChoosesEvent ==
                /\ done' = FALSE /\ revision' = revision + 1 /\ telegram' = 0
           ELSE UNCHANGED <<summarized, rendered, published, notified, done, revision, telegram>>
     /\ UNCHANGED PhoneVars
-    /\ UNCHANGED <<transcript, hadWhisper, sawUpgrade, noteRec, tgMarker, title, step, lease, gpuWasBusy,
+    /\ UNCHANGED <<transcript, diarized, diarAttempted, hadWhisper, sawUpgrade, noteRec, tgMarker, title, step, lease, gpuWasBusy,
                    vault, inbox, crashes, ownerActs, otherJobs, oldNotes, giveUps, calendarHas, relinked>>
 \* The last attempt failed (e.g. the old note's delete kept failing): `failed` until the owner acts.
 WorkerGivesUp ==
@@ -271,7 +284,7 @@ WorkerRelink ==
     /\ summarized' = FALSE /\ rendered' = FALSE /\ published' = FALSE /\ done' = FALSE
     /\ revision' = revision + 1 /\ telegram' = 0
     /\ UNCHANGED PhoneVars
-    /\ UNCHANGED <<transcript, hadWhisper, sawUpgrade, noteRec, notified, tgMarker, title, step, lease, gpuWasBusy,
+    /\ UNCHANGED <<transcript, diarized, diarAttempted, hadWhisper, sawUpgrade, noteRec, notified, tgMarker, title, step, lease, gpuWasBusy,
                    vault, inbox, crashes, ownerActs, otherJobs, oldNotes, linked, ownerChoice, eventActs, giveUps,
                    calendarHas>>
 
@@ -296,6 +309,7 @@ LiveActivityMatchesRecorder == appAlive => CASE rec = "recording" -> la = "runni
                                              [] rec = "paused"    -> la = "paused"
                                              [] OTHER             -> la = "none"
 DoneHasEveryOutput == done => transcript # "none" /\ summarized /\ rendered /\ published /\ notified
+DoneLabelsFollowTranscript == done => diarized = transcript
 
 \* Witness targets (a MUST FAIL cfg shows the state is reached).
 NeverGpuBusyThenFree == ~(gpuWasBusy /\ transcript = "whisper" /\ done)

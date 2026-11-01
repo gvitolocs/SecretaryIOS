@@ -1,0 +1,142 @@
+# lucina-proactive configuration (nezopt). Copy to
+# ~/.config/lucina-proactive/config.toml. Every key is optional; the values
+# below are the defaults unless marked "nezopt".
+#
+# Secrets and URLs are NOT here: they come from the environment or from the
+# env files listed in [paths] (only the names the engine needs are read).
+
+time_zone = "Europe/Copenhagen"
+# LUCINA_PROACTIVE_DRY_RUN overrides this; unset means dry-run.
+dry_run = true
+tick_seconds = 60
+language = "it"
+
+[paths]
+node_data_dir = "/home/nez/Projects/Lucina/data"
+# nezopt: Lucina's env holds the container paths; these are the host ones.
+service_token_file = "/home/nez/Projects/Lucina/private/lucina/secretary-service.token"
+deepseek_key_file = "/home/nez/secrets/env/deepseek.key"
+# nezopt: Lucina's own env files (whitelisted names only: database URL,
+# secretary-server URL, Telegram bot token and owner chat, Honcho, DeepSeek).
+env_files = [
+  "/home/nez/Projects/Lucina/private/lucina/.env.local",
+  "/home/nez/Projects/Lucina/private/lucina/lucina.nez.env",
+]
+
+# score = Σ weight × input, see `cargo doc -p lucina-proactive` (score module).
+[weights]
+urgency = 0.35
+relevance = 0.25
+confidence = 0.20
+actionability = 0.20
+
+[thresholds]
+send = 0.70
+digest = 0.45
+min_confidence = 0.60
+high_priority = 0.85
+
+[budget]
+max_per_day = 3
+not_now_hours = 6
+stop_days = 30
+hold_while_gaming = true
+hold_on_discord_dnd = true
+
+[budget.cooldown_minutes]
+meeting_prep = 45
+reminder_overdue = 60
+due_no_plan = 240
+note_for_event = 240
+thread_resolved = 180
+thread_open = 360
+service_down = 30
+service_recovered = 0
+
+# Used only when secretary-server's notification settings cannot be read.
+[quiet]
+enabled = true
+start = "22:30"
+end = "07:30"
+
+[pulse]
+enabled = true
+time = "08:00"
+deadline = "11:00"
+max_important = 3
+max_completed = 3
+max_watch = 3
+watch_reminder_days = 3
+
+[sources]
+prep_min_lead_minutes = 20
+prep_max_lead_minutes = 70
+overdue_grace_minutes = 15
+due_no_plan_days = 3
+thread_lookback_days = 3
+thread_quiet_hours = 12
+judge_max_per_tick = 3
+judge_max_per_day = 12
+judge_recheck_hours = 12
+
+[sources.calendar]
+enabled = true
+interval_secs = 180
+jitter_secs = 45
+
+[sources.reminders]
+enabled = true
+interval_secs = 300
+jitter_secs = 75
+
+[sources.notes]
+enabled = true
+interval_secs = 600
+jitter_secs = 150
+
+[sources.timeline]
+enabled = true
+interval_secs = 900
+jitter_secs = 225
+
+[health]
+enabled = true
+interval_secs = 120
+jitter_secs = 20
+timeout_secs = 10
+fail_threshold = 3
+min_down_minutes = 5
+recover_threshold = 2
+slow_ms = 8000
+
+[[health.targets]]
+name = "Secretary"
+url = "https://getsecretary.tech/v1/health"
+topic = "secretary"
+
+[[health.targets]]
+name = "pokoin.com"
+url = "https://pokoin.com"
+topic = "pokoin"
+
+# nezopt: Lucina's env names (ORACLE_MONITOR_* are SSH hosts, not URLs).
+[[health.targets]]
+name = "Poko bot"
+url_env = "BOT_HOSPITAL_POKO_HEALTH_URL"
+topic = "pokoin"
+
+[channels]
+app = true
+# off | fallback (only when the app push reached no device) | high | always
+telegram = "fallback"
+# While the Node Lucina owns timeline.jsonl (root-owned in its container).
+timeline_sink = "docker"
+docker_container = "lucina-nez"
+docker_timeline_path = "/app/data/timeline.jsonl"
+public_url = "https://getsecretary.tech"
+save_prep_notes = true
+
+[compose]
+llm = true
+judge = true
+max_chars = 700

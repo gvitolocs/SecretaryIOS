@@ -1,0 +1,19 @@
+[package]
+name = "secretary-image"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The image viewer core shared by the Secretary apps: ThumbHash placeholders, progressive JPEG XL decoding as bytes arrive, zoom and pan"
+
+[dependencies]
+jxl-oxide = "0.12"
+thumbhash = "0.1"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Markup text: the outline rasteriser for the embedded font (pure Rust, builds for wasm).
+ab_glyph = "0.2"
+
+[dev-dependencies]
+jpegxl-rs = { version = "0.16", features = ["vendored"] }
+jpegxl-sys = { version = "=0.13.0", features = ["vendored"] }

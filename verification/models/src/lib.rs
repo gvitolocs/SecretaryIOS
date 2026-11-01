@@ -25,10 +25,12 @@ use stateright::{Checker, Expectation, Model};
 
 pub mod deals;
 pub mod deploy;
+pub mod drive_index;
 pub mod game;
 pub mod gates;
 pub mod ink_sync;
 pub mod media_backup;
+pub mod meetings;
 pub mod memos;
 pub mod oauth;
 pub mod otp;
@@ -269,6 +271,7 @@ pub fn all_cases(deep: bool) -> Vec<Case> {
     v.extend(ownership::cases(deep));
     v.extend(shopping::cases(deep));
     v.extend(memos::cases(deep));
+    v.extend(meetings::cases(deep));
     v.extend(oauth::cases(deep));
     v.extend(gates::cases(deep));
     v.extend(ink_sync::cases(deep));
@@ -276,6 +279,7 @@ pub fn all_cases(deep: bool) -> Vec<Case> {
     v.extend(deploy::cases(deep));
     v.extend(game::cases(deep));
     v.extend(media_backup::cases(deep));
+    v.extend(drive_index::cases(deep));
     v.extend(player::cases(deep));
     v.extend(share::cases(deep));
     v

@@ -1,0 +1,391 @@
+import XCTest
+
+/// End-to-end flows against the local mock (`ios/scripts/run-mock.sh start`).
+/// Mock sign-in: owner@example.test / dev-password-123 (test credentials of the mock).
+@MainActor
+final class SecretaryFlowTests: XCTestCase {
+    static let baseURL = ProcessInfo.processInfo.environment["SECRETARY_MOCK_URL"] ?? "http://localhost:8791"
+
+    override func setUp() {
+        continueAfterFailure = false
+    }
+
+    private func launch(reset: Bool = true, tab: String? = nil) -> XCUIApplication {
+        let app = XCUIApplication()
+        // The assertions are in English; the simulator may be set to Danish or Italian.
+        app.launchArguments = ["-SecretaryBaseURL", Self.baseURL, "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+        if reset { app.launchArguments += ["-SecretaryResetState", "YES"] }
+        if let tab { app.launchArguments += ["-SecretaryInitialTab", tab] }
+        app.launch()
+        return app
+    }
+
+    private func signIn(_ app: XCUIApplication) {
+        let email = app.textFields["loginEmail"]
+        XCTAssertTrue(email.waitForExistence(timeout: 15), "login screen")
+        email.tap()
+        email.typeText("owner@example.test")
+        let password = app.secureTextFields["loginPassword"]
+        password.tap()
+        password.typeText("dev-password-123")
+        app.buttons["signIn"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Chat"].waitForExistence(timeout: 15), "signed in")
+    }
+
+    /// Settings is a lazy list: rows below the fold exist only once scrolled into view.
+    private func scrolledTo(_ element: XCUIElement, in app: XCUIApplication) -> XCUIElement {
+        for _ in 0..<6 where !(element.exists && element.isHittable) {
+            app.swipeUp()
+        }
+        return element
+    }
+
+    private func attach(_ app: XCUIApplication, _ name: String) {
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = name
+        shot.lifetime = .keepAlways
+        add(shot)
+    }
+
+    // MARK: - Login
+
+    func testLoginRejectsWrongPasswordThenSignsIn() {
+        let app = launch()
+        let email = app.textFields["loginEmail"]
+        XCTAssertTrue(email.waitForExistence(timeout: 15))
+        email.tap()
+        email.typeText("owner@example.test")
+        let password = app.secureTextFields["loginPassword"]
+        password.tap()
+        password.typeText("wrong-password")
+        app.buttons["signIn"].tap()
+        let error = app.staticTexts["loginError"]
+        XCTAssertTrue(error.waitForExistence(timeout: 10))
+        XCTAssertEqual(error.label, "That email and password don't match.")
+
+        password.tap()
+        password.press(forDuration: 1.0)
+        if app.menuItems["Select All"].waitForExistence(timeout: 2) { app.menuItems["Select All"].tap() }
+        password.typeText(XCUIKeyboardKey.delete.rawValue)
+        password.typeText("dev-password-123")
+        app.buttons["signIn"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Chat"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.otherElements["lucinaStatus"].firstMatch.waitForExistence(timeout: 5) || app.buttons["lucinaStatus"].exists
+            || app.descendants(matching: .any)["lucinaStatus"].exists)
+    }
+
+    func testAccessKeyFallbackSignsIn() {
+        let app = launch()
+        XCTAssertTrue(app.segmentedControls["loginMode"].waitForExistence(timeout: 15))
+        app.segmentedControls["loginMode"].buttons["Access key"].tap()
+        let key = app.secureTextFields["accessKey"]
+        XCTAssertTrue(key.waitForExistence(timeout: 5))
+        key.tap()
+        key.typeText("dev")
+        app.buttons["signIn"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Chat"].waitForExistence(timeout: 15))
+    }
+
+    // MARK: - Chat
+
+    func testChatSendsAndShowsLucinasReply() {
+        let app = launch()
+        signIn(app)
+        let composer = app.textViews["chatComposer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        composer.tap()
+        composer.typeText("hello Lucina\n")
+        let mine = app.descendants(matching: .any).matching(NSPredicate(format: "identifier == %@ AND label CONTAINS %@", "userMessage", "hello Lucina")).firstMatch
+        XCTAssertTrue(mine.waitForExistence(timeout: 5), "optimistic user bubble")
+        let reply = app.descendants(matching: .any).matching(NSPredicate(format: "identifier == %@ AND label CONTAINS %@", "lucinaMessage", "Good day")).firstMatch
+        XCTAssertTrue(reply.waitForExistence(timeout: 20), "Lucina's reply")
+        attach(app, "Chat")
+    }
+
+    func testTimelineShowsOtherChannelsLive() async throws {
+        let app = launch()
+        signIn(app)
+        // History from the timeline shows with source badges.
+        let badge = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "From ")).firstMatch
+        XCTAssertTrue(badge.waitForExistence(timeout: 15), "messages with their source badge")
+        // The stream needs a moment to connect (the Live pill is gone; the status dot is the only indicator).
+        try await Task.sleep(nanoseconds: 3_000_000_000)
+
+        // A Telegram message arrives through the stream while the app is open.
+        let text = "From Telegram \(Int.random(in: 1000...9999))"
+        var request = URLRequest(url: URL(string: "\(Self.baseURL)/v1/_mock/timeline")!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("1", forHTTPHeaderField: "X-Secretary-CSRF")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["channel": "telegram", "role": "user", "text": text])
+        _ = try await URLSession.shared.data(for: request)
+
+        let message = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "via Telegram: \(text)")).firstMatch
+        XCTAssertTrue(message.waitForExistence(timeout: 10), "live Telegram message")
+        attach(app, "Unified chat")
+    }
+
+    // MARK: - Shopping
+
+    func testShoppingAddAndToggle() {
+        let app = launch(tab: "shopping")
+        signIn(app)
+        // Shopping v2: tiles, search to add, tap to buy.
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "tile-")).firstMatch
+            .waitForExistence(timeout: 15), "seeded tiles")
+        // Bring!-style search sheet.
+        app.buttons["shoppingSearch"].tap()
+        let field = app.textFields["shoppingSearchField"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        let name = "UITest \(Int.random(in: 1000...9999))"
+        field.typeText(name)
+        let free = app.descendants(matching: .any)["suggestion-free"]
+        XCTAssertTrue(free.waitForExistence(timeout: 5))
+        free.tap()
+        app.buttons["searchDone"].tap()
+        let tile = app.descendants(matching: .any)["tile-\(name)"]
+        XCTAssertTrue(tile.waitForExistence(timeout: 10), "added tile")
+        XCTAssertEqual(tile.value as? String, "To buy")
+        tile.tap()
+        expectation(for: NSPredicate(format: "value == %@", "Bought"), evaluatedWith: app.descendants(matching: .any)["tile-\(name)"])
+        waitForExpectations(timeout: 10)
+        XCTAssertTrue(app.buttons["undo"].waitForExistence(timeout: 3), "undo offered")
+        attach(app, "Shopping")
+    }
+
+    // MARK: - Gym (on-device engine, like the original LucinaGym tests)
+
+    /// Fills the first weight field, completes the set and finishes the workout.
+    private func logBenchSet(_ app: XCUIApplication, weight value: String) {
+        let add = app.buttons["addExercise"]
+        XCTAssertTrue(add.waitForExistence(timeout: 10))
+        add.tap()
+        let bench = app.buttons["exercise-bench-press"]
+        XCTAssertTrue(bench.waitForExistence(timeout: 10))
+        bench.tap()
+        let weight = app.textFields.matching(NSPredicate(format: "identifier BEGINSWITH %@", "weight-")).firstMatch
+        XCTAssertTrue(weight.waitForExistence(timeout: 10))
+        weight.tap()
+        let previous = weight.value as? String ?? ""
+        weight.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: previous.count) + value)
+        if app.toolbars.buttons["Done"].exists { app.toolbars.buttons["Done"].tap() }
+        let complete = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "complete-set-")).firstMatch
+        XCTAssertTrue(complete.waitForExistence(timeout: 5))
+        complete.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["restTimer"].waitForExistence(timeout: 10), "rest timer started")
+    }
+
+    func testGymWorkoutPersistsAcrossRelaunch() {
+        let app = launch(tab: "gym")
+        signIn(app)
+        let start = app.buttons["startWorkout"]
+        XCTAssertTrue(start.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Make time\nfor strength."].exists || app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "for strength")).firstMatch.exists)
+        start.tap()
+        logBenchSet(app, weight: "62.5")
+        attach(app, "Workout")
+        app.buttons["finishWorkout"].tap()
+        XCTAssertTrue(start.waitForExistence(timeout: 10), "back on Training")
+        app.buttons["gymSection-Journal"].tap()
+        XCTAssertTrue(app.buttons["history-Workout"].firstMatch.waitForExistence(timeout: 8), "finished workout in the journal")
+
+        // The on-device engine file survives a relaunch.
+        app.terminate()
+        let relaunched = launch(reset: false, tab: "gym")
+        XCTAssertTrue(relaunched.buttons["gymSection-Progress"].waitForExistence(timeout: 15))
+        relaunched.buttons["gymSection-Progress"].tap()
+        XCTAssertTrue(relaunched.staticTexts["Bench Press"].firstMatch.waitForExistence(timeout: 8))
+        XCTAssertTrue(relaunched.staticTexts["62.5 kg"].firstMatch.exists)
+        attach(relaunched, "Progress after relaunch")
+    }
+
+    func testGymRoutineCanBeDiscardedWithoutCreatingHistory() {
+        let app = launch(tab: "gym")
+        signIn(app)
+        XCTAssertTrue(app.buttons["Start Full Body"].waitForExistence(timeout: 12))
+        app.buttons["Start Full Body"].tap()
+        XCTAssertTrue(app.buttons["Workout options"].waitForExistence(timeout: 8))
+        app.buttons["Workout options"].tap()
+        app.buttons["Discard workout"].tap()
+        app.buttons["Discard workout"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["startWorkout"].waitForExistence(timeout: 8))
+        app.buttons["gymSection-Journal"].tap()
+        XCTAssertTrue(app.staticTexts["Your story starts here"].waitForExistence(timeout: 8))
+    }
+
+    func testGymRepeatOpensTheWorkout() {
+        let app = launch(tab: "gym")
+        signIn(app)
+        XCTAssertTrue(app.buttons["startWorkout"].waitForExistence(timeout: 10))
+        app.buttons["startWorkout"].tap()
+        logBenchSet(app, weight: "50")
+        app.buttons["finishWorkout"].tap()
+        app.buttons["gymSection-Journal"].tap()
+        let entry = app.buttons["history-Workout"].firstMatch
+        XCTAssertTrue(entry.waitForExistence(timeout: 8))
+        entry.tap()
+        let repeatButton = app.buttons["repeatWorkout"]
+        XCTAssertTrue(repeatButton.waitForExistence(timeout: 8))
+        repeatButton.tap()
+        XCTAssertTrue(app.buttons["finishWorkout"].waitForExistence(timeout: 8), "the repeated workout opens")
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "complete-set-")).firstMatch.exists)
+    }
+
+    // MARK: - Lucina stage
+
+    func testLucinaTabLoadsHerOnlyWhenOpenedMutedByDefault() {
+        let app = launch()
+        signIn(app)
+        XCTAssertFalse(app.descendants(matching: .any)["lucinaStage"].exists, "no avatar in the Chat tab")
+        app.tabBars.buttons["Lucina"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["lucinaStage"].waitForExistence(timeout: 10), "the stage loads with her tab")
+        let mute = app.buttons["lucinaMute"]
+        XCTAssertTrue(mute.waitForExistence(timeout: 5))
+        XCTAssertEqual(mute.value as? String, "Muted", "no sound until the owner turns it on")
+        XCTAssertTrue(app.buttons["lucinaMic"].exists)
+        sleep(4) // let WebGL draw for the screenshot
+        attach(app, "Lucina tab")
+        app.tabBars.buttons["Chat"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Chat"].isSelected)
+    }
+
+    // MARK: - Device bridge
+
+    private func mock(_ method: String, _ path: String, _ body: [String: Any]? = nil) async throws -> [String: Any] {
+        var request = URLRequest(url: URL(string: "\(Self.baseURL)\(path)")!)
+        request.httpMethod = method
+        request.setValue("1", forHTTPHeaderField: "X-Secretary-CSRF")
+        if let body {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        }
+        let (data, _) = try await URLSession.shared.data(for: request)
+        return (try JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+    }
+
+    func testLucinaCommandNeedsConfirmationAndIsAcked() async throws {
+        let app = launch()
+        signIn(app)
+        // The stream needs a moment to connect (the Live pill is gone; the status dot is the only indicator).
+        try await Task.sleep(nanoseconds: 3_000_000_000)
+
+        let id = "cmd-\(Int.random(in: 10000...99999))"
+        _ = try await mock("POST", "/v1/_mock/timeline", [
+            "channel": "telegram", "role": "lucina", "text": "I'll delete your 7:00 alarm.",
+            "meta": ["kind": "device_command", "command": ["id": id, "type": "alarm.delete", "args": ["id": "x", "label": "Gym"]]],
+        ])
+        let decline = app.buttons["commandDecline"]
+        XCTAssertTrue(decline.waitForExistence(timeout: 10), "deletes ask first")
+        attach(app, "Command confirmation")
+        decline.tap()
+        var acked: [String: Any]?
+        for _ in 0..<30 {
+            let results = try await mock("GET", "/v1/_mock/device")["results"] as? [String: Any]
+            if let result = results?[id] as? [String: Any] { acked = result; break }
+            try await Task.sleep(for: .milliseconds(300))
+        }
+        XCTAssertEqual(acked?["ok"] as? Bool, false)
+        XCTAssertEqual(acked?["error"] as? String, "the owner declined it on the phone")
+        // The command stays in the shared mock timeline. A fresh install ignores commands sent
+        // more than 5 s before it started; let that window pass before the next test installs.
+        try await Task.sleep(for: .seconds(6))
+    }
+
+    func testAccessScreenListsEverySource() {
+        let app = launch(tab: "settings")
+        signIn(app)
+        XCTAssertTrue(app.buttons["openLinks"].waitForExistence(timeout: 10), "Settings")
+        let access = scrolledTo(app.buttons["lucinaAccess"], in: app)
+        XCTAssertTrue(access.waitForExistence(timeout: 5))
+        access.tap()
+        for source in ["alarms", "reminders", "calendar", "health", "location", "focus"] {
+            XCTAssertTrue(app.switches["access-\(source)"].waitForExistence(timeout: 5), source)
+        }
+        // Tap the switch itself (the row centre is the label).
+        app.switches["access-reminders"].coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+        XCTAssertTrue(app.buttons["accessContinue"].waitForExistence(timeout: 5), "explained before iOS asks")
+        attach(app, "Lucina's access")
+    }
+
+    // MARK: - Weight
+
+    func testWeightLogEntry() {
+        let app = launch()
+        signIn(app)
+        app.tabBars.buttons["Training"].tap()
+        let add = app.buttons["weightQuickAdd"]
+        XCTAssertTrue(add.waitForExistence(timeout: 10))
+        add.tap()
+        let field = app.textFields["weightSheetField"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        let value = "7\(Int.random(in: 1...8)).\(Int.random(in: 1...9))"
+        field.typeText(value)  // focused when the sheet opens
+        app.buttons["weightSaveButton"].tap()
+        app.buttons["weightAll"].tap()  // the entries are on the weight page
+        let entry = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "\(value) kg")).firstMatch
+        XCTAssertTrue(entry.waitForExistence(timeout: 10), "logged entry \(value) kg")
+        attach(app, "Weight")
+    }
+
+    // MARK: - Notes
+
+    func testNotesListDetailAndNewNote() {
+        let app = launch(tab: "notes")
+        signIn(app)
+        let row = app.buttons["note-reading-list"]
+        XCTAssertTrue(row.waitForExistence(timeout: 15), "the mock's sample note is listed")
+        row.tap()
+        XCTAssertTrue(app.staticTexts["Reading list"].waitForExistence(timeout: 10), "the note opens")
+        XCTAssertTrue(app.staticTexts["Name: reading-list"].exists)
+        attach(app, "Note")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+
+        app.buttons["newNoteButton"].tap()
+        let title = app.textFields["noteTitleField"]
+        XCTAssertTrue(title.waitForExistence(timeout: 5))
+        title.tap()
+        let name = "UI test \(Int.random(in: 1000...9999))"
+        title.typeText(name)
+        let content = app.textViews["noteContentField"]
+        content.tap()
+        content.typeText("Hello from the UI test")
+        app.buttons["saveNoteButton"].tap()
+        XCTAssertTrue(app.staticTexts[name].waitForExistence(timeout: 10), "the new note is listed")
+        attach(app, "Notes")
+    }
+
+    // MARK: - Links, notifications, wardrobe
+
+    func testLinksScreenListsConnections() {
+        let app = launch(tab: "settings")
+        signIn(app)
+        let links = app.buttons["openLinks"]
+        XCTAssertTrue(links.waitForExistence(timeout: 10), "Links is a row in Settings")
+        links.tap()
+        XCTAssertTrue(app.staticTexts["Google Calendar"].waitForExistence(timeout: 15), "the calendars group")
+        attach(app, "Links")
+    }
+
+    func testNotificationCenterShowsTheInbox() {
+        let app = launch()
+        signIn(app)
+        let bell = app.navigationBars.buttons["notificationBell"].firstMatch
+        XCTAssertTrue(bell.waitForExistence(timeout: 10), "the bell in the navigation bar")
+        XCTAssertTrue(app.navigationBars.buttons["notesButton"].exists, "Notes stays next to the chat title")
+        bell.tap()
+        let item = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "dentist")).firstMatch
+        XCTAssertTrue(item.waitForExistence(timeout: 15), "the mock's reminder is in the inbox")
+        attach(app, "Notification center")
+    }
+
+    func testWardrobeOpensFromSettings() {
+        let app = launch(tab: "settings")
+        signIn(app)
+        XCTAssertTrue(app.buttons["openLinks"].waitForExistence(timeout: 10), "Settings")
+        let row = scrolledTo(app.buttons["openWardrobe"], in: app)
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        row.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["wardrobeAuto"].waitForExistence(timeout: 15), "the Wardrobe sheet")
+        attach(app, "Wardrobe")
+    }
+}

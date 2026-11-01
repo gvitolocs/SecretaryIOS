@@ -1,0 +1,808 @@
+[
+  {
+    "id": "msVcAnP4E-42hyW3jrAvv",
+    "heading": "Schulstad Det Gode brød",
+    "description": "Ved køb af flere end 6 stk. pr. variant pr. dag er prisen op til 26.50 pr. stk.\n350-950 g\nMax. 42.86 pr. kg",
+    "pricing": {
+      "price": 15,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 350,
+        "to": 950
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": 6
+      }
+    },
+    "run_from": "2026-10-17T22:00:00+0000",
+    "run_till": "2026-10-24T21:59:59+0000",
+    "dealer_id": "11deC",
+    "dealer": {
+      "id": "11deC",
+      "name": "REMA 1000"
+    },
+    "store_id": null
+  },
+  {
+    "id": "7KcwdwxPQPpdSMZQzkOXL",
+    "heading": "Schulstad brød",
+    "description": "Ved køb af flere end 6 stk. pr. variant pr. dag er prisen 25.95 pr. stk.\nMax. 25.53 pr. kg",
+    "pricing": {
+      "price": 12,
+      "pre_price": 25.95,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 470,
+        "to": 1080
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": 6
+      }
+    },
+    "run_from": "2026-10-24T22:00:00+0000",
+    "run_till": "2026-10-31T22:59:59+0000",
+    "dealer_id": "11deC",
+    "dealer": {
+      "id": "11deC",
+      "name": "REMA 1000"
+    },
+    "store_id": null
+  },
+  {
+    "id": "IcdfmToOnNM8j0O4BS_Q1",
+    "heading": "SCHULSTAD Brød",
+    "description": "800-950 g. Pr. kg maks. 15,00\nMed Lidl Plus³\nPr. kg maks. 11,25",
+    "pricing": {
+      "price": 12,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 800,
+        "to": 950
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-17T22:00:00+0000",
+    "run_till": "2026-10-24T21:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "hhDyR_Muyd97rSPttyH4Q",
+    "heading": "SCHULSTAD Brød",
+    "description": "400-950 g. Pr. kg maks. 30,00 Maks. 3 pk. pr. kunde pr. dag. Spot¹",
+    "pricing": {
+      "price": 12,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 400,
+        "to": 950
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": 3
+      }
+    },
+    "run_from": "2026-10-24T22:00:00+0000",
+    "run_till": "2026-10-31T22:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "QD4i6Ds-_XulCMV7iXM6m",
+    "heading": "Kohberg familierugbrød eller protein boller",
+    "description": "450-750 g. Pr. kg max. 26,67 Pris ugens øvrige dage op til 22,95",
+    "pricing": {
+      "price": 12,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 450,
+        "to": 750
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-24T22:00:00+0000",
+    "run_till": "2026-10-25T22:59:59+0000",
+    "dealer_id": "bdf5A",
+    "dealer": {
+      "id": "bdf5A",
+      "name": "føtex"
+    },
+    "store_id": null
+  },
+  {
+    "id": "0mjVqzsUWd-Pq4WusPORD",
+    "heading": "KOHBERG FAVORIT RUGBRØD ELLER VELSMAG SANDWICH",
+    "description": "Flere varianter. 380-1000 g. Max. kg pris 42,11.",
+    "pricing": {
+      "price": 16,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 380,
+        "to": 1000
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "267e1m",
+    "dealer": {
+      "id": "267e1m",
+      "name": "MENY"
+    },
+    "store_id": null
+  },
+  {
+    "id": "gA4yyVcs2_dGDttw7kz-w",
+    "heading": "Kohberg brød",
+    "description": "470-750 g. Solsikkerugbrød eller yoghurtboller.\nPr. kg max. 25,53",
+    "pricing": {
+      "price": 12,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 470,
+        "to": 750
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-23T22:00:00+0000",
+    "run_till": "2026-10-30T22:59:59+0000",
+    "dealer_id": "9ba51",
+    "dealer": {
+      "id": "9ba51",
+      "name": "Netto"
+    },
+    "store_id": null
+  },
+  {
+    "id": "2c3UQGhmOM7Vr9Ig97Zzp",
+    "heading": "Kohberg Velsmag Rugbrød eller Hvedebrød",
+    "description": "Flere varianter. 320-600 g. Max. kg pris 56,25.",
+    "pricing": {
+      "price": 18,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 320,
+        "to": 600
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "88ddE",
+    "dealer": {
+      "id": "88ddE",
+      "name": "SPAR"
+    },
+    "store_id": null
+  },
+  {
+    "id": "_A40d4T4XTFi4yfJ71fYE",
+    "heading": "Kohberg rugbrød el. boller",
+    "description": "Udvalgte varianter",
+    "pricing": {
+      "price": 15.99,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 320,
+        "to": 600
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "65caN",
+    "dealer": {
+      "id": "65caN",
+      "name": "Løvbjerg"
+    },
+    "store_id": null
+  },
+  {
+    "id": "bKwQtpdsGvk75a3Ks_DQU",
+    "heading": "Softkernerugbrød",
+    "description": "Pr. stk.",
+    "pricing": {
+      "price": 20,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "pcs",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "bdf5A",
+    "dealer": {
+      "id": "bdf5A",
+      "name": "føtex"
+    },
+    "store_id": null
+  },
+  {
+    "id": "sIH-Im-EBqkBDtjk9nUSz",
+    "heading": "REMA 1000 Solsikkerugbrød",
+    "description": "500 g\nVed køb af dette brød støtter du Kræftens Bekæmpelse med 25 øre\n10.00 pr. kg",
+    "pricing": {
+      "price": 5,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 500,
+        "to": 500
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-24T22:00:00+0000",
+    "run_till": "2026-10-31T22:59:59+0000",
+    "dealer_id": "11deC",
+    "dealer": {
+      "id": "11deC",
+      "name": "REMA 1000"
+    },
+    "store_id": null
+  },
+  {
+    "id": "ia05c9MtZfXHiAofB9Gpa",
+    "heading": "Schulstad Signatur rugbrød",
+    "description": "",
+    "pricing": {
+      "price": 18.99,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 750,
+        "to": 850
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "65caN",
+    "dealer": {
+      "id": "65caN",
+      "name": "Løvbjerg"
+    },
+    "store_id": null
+  },
+  {
+    "id": "8xODS711x0JSfcXhJ58Td",
+    "heading": "Irma rugbrød eller Irma brioche fastfoodbrød",
+    "description": "250-750 g. Kg-pris maks. 88,00. 1 pakke.",
+    "pricing": {
+      "price": 22,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 250,
+        "to": 750
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-21T22:00:00+0000",
+    "run_till": "2026-10-28T22:59:59+0000",
+    "dealer_id": "DWZE1w",
+    "dealer": {
+      "id": "DWZE1w",
+      "name": "365discount"
+    },
+    "store_id": null
+  },
+  {
+    "id": "9rUeRLksDveX-le7RNtVm",
+    "heading": "MADVÆRKET Solsikkerugbrød",
+    "description": "Fast lav pris\n500 g / pk.\nPr. kg 11,90",
+    "pricing": {
+      "price": 5.95,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 500,
+        "to": 500
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-09-29T22:00:00+0000",
+    "run_till": "2026-12-31T22:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "msbMF0uKZMkAlmu7S1a8y",
+    "heading": "10 friskbagte rundstykker",
+    "description": "Flere varianter. Tilkøb: Softkernerugbrød Pr. stk. +20,- Små morgenkager Pr. stk. +7,- Morgenkage Pr. stk. +25,- Gælder hver dag indtil kl. 11.00",
+    "pricing": {
+      "price": 40,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "pcs",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 10,
+        "to": 10,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "bdf5A",
+    "dealer": {
+      "id": "bdf5A",
+      "name": "føtex"
+    },
+    "store_id": null
+  },
+  {
+    "id": "UKrPeNlWhJ4KnlAEFZ1uA",
+    "heading": "Schulstad Signaturbrød",
+    "description": "750-850 g. Kg-pris maks. 26,67. 1 pakke",
+    "pricing": {
+      "price": 20,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 750,
+        "to": 850
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "c1edq",
+    "dealer": {
+      "id": "c1edq",
+      "name": "Kvickly"
+    },
+    "store_id": null
+  },
+  {
+    "id": "plBwvymOvc67InxweHowx",
+    "heading": "Det Gode fra Schulstad",
+    "description": "350-950 g. Kg-pris maks. 42,86. 1 pakke. Ved køb af mere end 6 pakker pr. kunde pr. dag, er prisen 26,50 pr. pakke.",
+    "pricing": {
+      "price": 15,
+      "pre_price": 26.5,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 350,
+        "to": 950
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": 6
+      }
+    },
+    "run_from": "2026-10-21T22:00:00+0000",
+    "run_till": "2026-10-28T22:59:59+0000",
+    "dealer_id": "DWZE1w",
+    "dealer": {
+      "id": "DWZE1w",
+      "name": "365discount"
+    },
+    "store_id": null
+  },
+  {
+    "id": "n7rEG35Ik1zE0nLotwXsu",
+    "heading": "MADVÆRKET Schwarzbrød",
+    "description": "Fast lav pris\n500 g / pk.\nPr. kg 9,90",
+    "pricing": {
+      "price": 4.95,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 500,
+        "to": 500
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-09-29T22:00:00+0000",
+    "run_till": "2026-12-31T22:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "jqNC73Xmeu2FZaBcM0lR5",
+    "heading": "Levebrød eller det gode brød",
+    "description": "470-1080 g. Udvalgte varianter. Pr. kg max. 34,04",
+    "pricing": {
+      "price": 16,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 470,
+        "to": 1080
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "bdf5A",
+    "dealer": {
+      "id": "bdf5A",
+      "name": "føtex"
+    },
+    "store_id": null
+  },
+  {
+    "id": "ifdM6XC0S4gl-fhFl--gm",
+    "heading": "VALSEMØLLEN Gourmetsolsikke-rugbrød eller koldhævede brunchboller",
+    "description": "Bageblanding. 900 g / pk. Pr. kg 16,61 Fast lav pris",
+    "pricing": {
+      "price": 14.95,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 900,
+        "to": 900
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-05-02T22:00:00+0000",
+    "run_till": "2026-12-31T22:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "XBtaM5DAKKnBCMBHd0zsZ",
+    "heading": "Softkernerugbrød",
+    "description": "Pris ugens øvrige dage 34,-",
+    "pricing": {
+      "price": 25,
+      "pre_price": 34,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "pcs",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-24T22:00:00+0000",
+    "run_till": "2026-10-26T22:59:59+0000",
+    "dealer_id": "bdf5A",
+    "dealer": {
+      "id": "bdf5A",
+      "name": "føtex"
+    },
+    "store_id": null
+  },
+  {
+    "id": "3vfOZBWYDhNY5_inHeSsK",
+    "heading": "Gulerodsrugbrød",
+    "description": "Bagerens klassiske gulerodsrugbrød nu med nøglehulsmærkning. Friskbagt hver dag.",
+    "pricing": {
+      "price": 34,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "pcs",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "bdf5A",
+    "dealer": {
+      "id": "bdf5A",
+      "name": "føtex"
+    },
+    "store_id": null
+  },
+  {
+    "id": "lS2yxwOu-SV-ypZ5lQInS",
+    "heading": "Kohberg cafésandwich",
+    "description": "Flere varianter. 380-400 g. Kg-pris maks. 39,47. 1 pakke.",
+    "pricing": {
+      "price": 15,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 380,
+        "to": 400
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-24T22:00:00+0000",
+    "run_till": "2026-10-28T22:59:59+0000",
+    "dealer_id": "DWZE1w",
+    "dealer": {
+      "id": "DWZE1w",
+      "name": "365discount"
+    },
+    "store_id": null
+  },
+  {
+    "id": "6IUkbeC6HO4iYP5B0DfaG",
+    "heading": "Chia eller mørkt durum-kerne rugbrød",
+    "description": "Stk.-pris 35,00. 1 stk.",
+    "pricing": {
+      "price": 35,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "pcs",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "c1edq",
+    "dealer": {
+      "id": "c1edq",
+      "name": "Kvickly"
+    },
+    "store_id": null
+  },
+  {
+    "id": "oMXghJRk5GyQrx5i87srE",
+    "heading": "Amo brødblandinger",
+    "description": "Gælder kun\nviste varianter\n900-1000 g",
+    "pricing": {
+      "price": 9.99,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 900,
+        "to": 1000
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "65caN",
+    "dealer": {
+      "id": "65caN",
+      "name": "Løvbjerg"
+    },
+    "store_id": null
+  },
+  {
+    "id": "4SI6bAZ1O0hihQe1BIWZn",
+    "heading": "Pågen Brød",
+    "description": "Flere varianter. 400-800 g. Max. kg pris 45,00. Pr. pose",
+    "pricing": {
+      "price": 18,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 400,
+        "to": 800
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "88ddE",
+    "dealer": {
+      "id": "88ddE",
+      "name": "SPAR"
+    },
+    "store_id": null
+  }
+]

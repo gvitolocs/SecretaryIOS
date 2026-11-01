@@ -2,6 +2,7 @@ import { A, useParams } from "@solidjs/router";
 import { createMemo, Show } from "solid-js";
 import type { GymView } from "../../api/gym";
 import { BarChart } from "./BarChart";
+import { ExerciseDetailDesk } from "./DeskViews";
 import { RecordMetrics } from "./Progress";
 import { exerciseById, Eyebrow, GymPage } from "./shared";
 import { gt } from "./strings";
@@ -68,5 +69,13 @@ function DetailBody(props: { view: GymView; exerciseId: string }) {
 
 export default function ProgressDetailView() {
   const params = useParams();
-  return <GymPage>{(view) => <DetailBody view={view()} exerciseId={params.exerciseId ?? ""} />}</GymPage>;
+  return (
+    <GymPage>
+      {(view, wide) => (
+        <Show when={wide()} fallback={<DetailBody view={view()} exerciseId={params.exerciseId ?? ""} />}>
+          <ExerciseDetailDesk view={view()} exerciseId={params.exerciseId ?? ""} />
+        </Show>
+      )}
+    </GymPage>
+  );
 }

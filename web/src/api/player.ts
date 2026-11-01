@@ -20,6 +20,15 @@ export interface MediaItem {
   thumb_url?: string;
 }
 
+/** A folder on the server (`/v1/media/albums`); `system_key` marks the generated ones. */
+export interface MediaAlbum {
+  id: string;
+  title: string;
+  system_key: string | null;
+  cover_item: string | null;
+  count: number;
+}
+
 export interface MediaPage {
   items: MediaItem[];
   next_cursor: string | null;
@@ -83,6 +92,26 @@ export const mediaApi = {
     let cursor: string | undefined;
     do {
       const page = await this.items(kind, cursor);
+      all.push(...page.items);
+      cursor = page.next_cursor ?? undefined;
+    } while (cursor && all.length < 2000);
+    return all;
+  },
+
+  /** The film folders ("Film", "Dansk film"): the owner's own albums in `scope=films`. */
+  async filmFolders(): Promise<MediaAlbum[]> {
+    const page = await request<{ albums: MediaAlbum[] }>("GET", "/v1/media/albums?scope=films");
+    return page.albums.filter((a) => a.system_key == null && a.count > 0);
+  },
+
+  /** Every film in a folder. */
+  async filmsIn(albumId: string): Promise<MediaItem[]> {
+    const all: MediaItem[] = [];
+    let cursor: string | undefined;
+    do {
+      const q = new URLSearchParams({ scope: "films", kind: "video", album: albumId, limit: "200" });
+      if (cursor) q.set("cursor", cursor);
+      const page = await request<MediaPage>("GET", `/v1/media/items?${q}`);
       all.push(...page.items);
       cursor = page.next_cursor ?? undefined;
     } while (cursor && all.length < 2000);

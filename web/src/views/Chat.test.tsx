@@ -1,8 +1,8 @@
 import { createMemoryHistory, MemoryRouter, Route, useNavigate } from "@solidjs/router";
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import type { JSX } from "solid-js";
-import { beforeEach, describe, expect, it } from "vitest";
-import { chat, reloadChatFromStorage } from "../state/chat";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { chat, loadLatest, reloadChatFromStorage } from "../state/chat";
 import { installEventSource, MockEventSource } from "../test/eventsource";
 import { deferred, stubFetch, type Call, type Handler } from "../test/fetch";
 import ChatView from "./Chat";
@@ -47,6 +47,160 @@ const MIXED = [
 describe("Chat", () => {
   beforeEach(() => reloadChatFromStorage());
 
+  it("pins cached messages through late growth, ignores the initial top, preserves older messages and handles latest taps", async () => {
+    installEventSource();
+    let height = 1200;
+    let resized: (() => void) | undefined;
+    const originalObserver = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = class {
+      constructor(callback: ResizeObserverCallback) { resized = () => callback([], this); }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
+    const heightSpy = vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(function (this: HTMLElement) {
+      return this.classList.contains("messages") ? height : 0;
+    });
+    const clientSpy = vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(400);
+    let olderCalls = 0;
+    const gate = deferred<{ body: { items: typeof MIXED; nextBefore: null } }>();
+    serve(() => ({ body: {} }), (c) => {
+      if (c.url.includes("before=")) {
+        olderCalls++;
+        return gate.promise;
+      }
+      return { body: { items: MIXED, nextBefore: "3" } };
+    });
+    try {
+      await loadLatest();
+      render(() => <ChatView />);
+      const log = screen.getByRole("log");
+      let top = 0;
+      log.scrollTo = (options?: ScrollToOptions | number) => {
+        log.scrollTop = typeof options === "number" ? options : options?.top ?? 0;
+      };
+      Object.defineProperty(log, "scrollTop", {
+        configurable: true,
+        get: () => top,
+        set: (value: number) => { top = Math.min(value, height - 400); },
+      });
+      fireEvent.scroll(log);
+      expect(olderCalls).toBe(0);
+      await waitFor(() => expect(top).toBe(800));
+      height = 1500;
+      resized?.();
+      expect(top).toBe(1100);
+      // Even a small upward scroll releases the pin before content grows again.
+      fireEvent.scroll(log);
+      fireEvent.wheel(log, { deltaY: -50 });
+      top = 1050;
+      fireEvent.scroll(log);
+      height = 1600;
+      resized?.();
+      expect(top).toBe(1050);
+      top = 0;
+      fireEvent.scroll(log);
+      await waitFor(() => expect(olderCalls).toBe(1));
+      height = 1800;
+      resized?.();
+      expect(top).toBe(0);
+      gate.resolve({ body: { items: [{ ...MIXED[0]!, id: "1", ts: at(40 * H), text: "Earlier page" }], nextBefore: null } });
+      await screen.findByText("Earlier page");
+      await waitFor(() => expect(top).toBe(200));
+      window.dispatchEvent(new CustomEvent("secretary:chat-latest"));
+      expect(top).toBe(1400);
+      window.dispatchEvent(new CustomEvent("secretary:chat-latest"));
+      expect(top).toBe(1400);
+    } finally {
+      heightSpy.mockRestore();
+      clientSpy.mockRestore();
+      globalThis.ResizeObserver = originalObserver;
+    }
+  });
+
+  it("stays on the newest message when layout lowers scrollTop, pins while hidden, and only the reader unpins it", async () => {
+    const es = installEventSource();
+    let height = 1200;
+    let client = 400;
+    let resized: (() => void) | undefined;
+    const originalObserver = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = class {
+      constructor(callback: ResizeObserverCallback) { resized = () => callback([], this); }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
+    const heightSpy = vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(function (this: HTMLElement) {
+      return this.classList.contains("messages") ? height : 0;
+    });
+    const clientSpy = vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(() => client);
+    let olderCalls = 0;
+    serve(() => ({ body: {} }), (c) => {
+      if (c.url.includes("before=")) olderCalls++;
+      return c.url.includes("before=") ? EMPTY_PAGE : { body: { items: MIXED, nextBefore: "3" } };
+    });
+    let top = 0;
+    const clamp = () => { top = Math.max(0, Math.min(top, height - client)); };
+    try {
+      await loadLatest();
+      render(() => <ChatView />);
+      const log = screen.getByRole("log");
+      log.scrollTo = (options?: ScrollToOptions | number) => {
+        log.scrollTop = typeof options === "number" ? options : options?.top ?? 0;
+      };
+      Object.defineProperty(log, "scrollTop", {
+        configurable: true,
+        get: () => top,
+        set: (value: number) => { top = value; clamp(); },
+      });
+      await waitFor(() => expect(top).toBe(800));
+      // Secretary Code re-places its view taller: the browser clamps scrollTop down. Not a scroll up.
+      client = 600;
+      clamp();
+      fireEvent.scroll(log);
+      height = 1500;
+      resized?.();
+      expect(top).toBe(900);
+      // Content above shrinks so far that the clamp lands near the top: no older page, still pinned.
+      height = 700;
+      clamp();
+      expect(top).toBe(100);
+      fireEvent.scroll(log);
+      height = 1300;
+      resized?.();
+      expect(top).toBe(700);
+      expect(olderCalls).toBe(0);
+      // Hidden (another rail item or tab in front): animation frames never run, the pin happens anyway.
+      const frames = vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
+      const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+      try {
+        height = 1500;
+        es.latest().emit("item", { id: "20", ts: new Date().toISOString(), channel: "web", role: "lucina", text: "Arrived while hidden" });
+        await screen.findByText("Arrived while hidden");
+        await waitFor(() => expect(top).toBe(900));
+      } finally {
+        frames.mockRestore();
+        visibility.mockRestore();
+      }
+      // The reader's wheel unpins, even when a busy page delivers its scroll event late.
+      const clock = vi.spyOn(Date, "now");
+      const start = Date.now();
+      clock.mockReturnValue(start);
+      fireEvent.wheel(log, { deltaY: -100 });
+      clock.mockReturnValue(start + 1500);
+      top = 300;
+      fireEvent.scroll(log);
+      clock.mockRestore();
+      height = 1600;
+      resized?.();
+      expect(top).toBe(300);
+    } finally {
+      heightSpy.mockRestore();
+      clientSpy.mockRestore();
+      globalThis.ResizeObserver = originalObserver;
+    }
+  });
+
   it("shows an optimistic bubble, a thinking indicator, then the reply as plain text", async () => {
     const gate = deferred<void>();
     const calls = serve(async () => {
@@ -82,9 +236,7 @@ describe("Chat", () => {
     expect(body.clientMessageId).toMatch(/[0-9a-f-]{36}/);
     await waitFor(() => expect(box).not.toHaveAttribute("readonly"));
 
-    // Cached for a fast first paint.
-    const stored = JSON.parse(sessionStorage.getItem("secretary.timeline.v1") ?? "[]") as unknown[];
-    expect(stored).toHaveLength(2);
+    expect(sessionStorage.getItem("secretary.timeline.v1")).toBeNull();
   });
 
   it("Shift+Enter does not send", () => {
@@ -172,6 +324,25 @@ describe("Chat", () => {
     expect(screen.getByText("From Alexa").closest(".msg")!.textContent).not.toContain("Imported from history");
   });
 
+  it("shows the Jev badge with certainty and latency on a reply Jev decided", async () => {
+    const now = new Date().toISOString();
+    const items = [
+      { id: "j1", ts: now, channel: "web", role: "user", text: "Ho palestra oggi?" },
+      { id: "j2", ts: now, channel: "web", role: "lucina", text: "Sì (93%, quasi sicuro). Oggi alle 17:00 hai Palestra.",
+        meta: { jev: { feature: "yesno", answer: "yes", p: 0.93, ms: 412, totalMs: 1300 } } },
+      { id: "j3", ts: now, channel: "web", role: "lucina", text: "Plain reply",
+        meta: { jev: { feature: "<b>", p: 7 } } },
+    ];
+    serve(() => ({ status: 404 }), () => ({ body: { items, nextBefore: null } }));
+    render(() => <ChatView />);
+    const msg = (await screen.findByText(/Oggi alle 17:00 hai Palestra/)).closest(".msg")!;
+    const badge = msg.querySelector(".jev-badge")!;
+    expect(badge.textContent).toContain("Jev · 93% · 412 ms");
+    expect(badge).toHaveAttribute("data-answer", "yes");
+    expect(screen.getByText("Plain reply").closest(".msg")!.querySelector(".jev-badge")).toBeNull();
+    expect(screen.getByText("Ho palestra oggi?").closest(".msg")!.querySelector(".jev-badge")).toBeNull();
+  });
+
   it("separates days and reveals a message's time on tap", async () => {
     serve(() => ({ status: 404 }), () => ({ body: { items: MIXED, nextBefore: null } }));
     render(() => <ChatView />);
@@ -250,7 +421,7 @@ describe("Chat", () => {
     render(() => <ChatView />);
     fireEvent.click(await screen.findByRole("button", { name: "Load earlier messages" }));
     expect(await screen.findByText("The very first")).toBeInTheDocument();
-    expect(calls.some((c) => c.url === "/v1/timeline?before=8&limit=50")).toBe(true);
+    expect(calls.some((c) => c.url === "/v1/timeline?before=8&limit=50&scope=mine")).toBe(true);
     expect(await screen.findByText("Start of the conversation")).toBeInTheDocument();
   });
 
@@ -262,8 +433,8 @@ describe("Chat", () => {
     const es = MockEventSource.latest();
     es.open();
     expect(await screen.findByText("Live")).toBeInTheDocument();
-    es.emit("item", { id: "42", ts: new Date().toISOString(), channel: "telegram", role: "user", text: "Live from Telegram" });
-    expect(await screen.findByText("Live from Telegram")).toBeInTheDocument();
+    es.emit("item", { id: "42", ts: new Date().toISOString(), channel: "web", role: "user", text: "Live from this device" });
+    expect(await screen.findByText("Live from this device")).toBeInTheDocument();
     es.drop();
     expect(await screen.findByText("Reconnecting…")).toBeInTheDocument();
   });
@@ -280,6 +451,34 @@ describe("Chat", () => {
     fireEvent.click(retry);
     expect(await screen.findByText("Web reply")).toBeInTheDocument();
     expect(screen.queryByText("Couldn't load the conversation.")).toBeNull();
+  });
+
+  describe("notes in the conversation", () => {
+    it("cites [note:<slug>] as a link into Keep and leaves the rest of the text", async () => {
+      serve(() => ({ status: 404 }), () => ({
+        body: { items: [{ id: "30", ts: at(500), channel: "web", role: "lucina", text: "Done, it is in [note:gift-ideas] with **bold** words.", meta: {} }], nextBefore: null },
+      }));
+      render(() => <ChatView />);
+      const link = await screen.findByRole("link", { name: "note:gift-ideas" });
+      expect(link).toHaveAttribute("href", "/keep/note/gift-ideas");
+      expect(link.closest(".bubble")).toHaveTextContent("Done, it is in note:gift-ideas with bold words.");
+    });
+
+    it("shows an Open note link under a message with meta.kind note and a slug", async () => {
+      serve(() => ({ status: 404 }), () => ({
+        body: {
+          items: [
+            { id: "32", ts: at(400), channel: "web", role: "lucina", text: "Saved.", meta: { kind: "note", slug: "rome-weekend" } },
+            { id: "31", ts: at(500), channel: "web", role: "lucina", text: "No slug here.", meta: { kind: "note", slug: "Not A Slug!" } },
+          ],
+          nextBefore: null,
+        },
+      }));
+      render(() => <ChatView />);
+      const link = await screen.findByRole("link", { name: "Open note" });
+      expect(link).toHaveAttribute("href", "/keep/note/rome-weekend");
+      expect(screen.getAllByRole("link", { name: "Open note" })).toHaveLength(1);
+    });
   });
 
   describe("Lucina reached out", () => {

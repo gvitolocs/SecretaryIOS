@@ -40,6 +40,8 @@ export interface RequestOptions {
   timeoutMs?: number;
   /** Extra request headers (e.g. X-Secretary-Client). */
   headers?: Record<string, string>;
+  /** A raw body (an uploaded file) instead of JSON; `contentType` is sent as its Content-Type. */
+  raw?: { body: Blob | ArrayBuffer; contentType: string };
 }
 
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -90,7 +92,11 @@ export async function request<T>(method: Method, path: string, opts: RequestOpti
   const headers: Record<string, string> = { Accept: "application/json", ...(opts.headers ?? {}) };
   if (method !== "GET") headers["X-Secretary-CSRF"] = "1";
   let body: string | undefined;
-  if (opts.body !== undefined) {
+  let rawBody: Blob | ArrayBuffer | undefined;
+  if (opts.raw) {
+    headers["Content-Type"] = opts.raw.contentType;
+    rawBody = opts.raw.body;
+  } else if (opts.body !== undefined) {
     headers["Content-Type"] = "application/json";
     body = JSON.stringify(opts.body);
   }
@@ -103,7 +109,7 @@ export async function request<T>(method: Method, path: string, opts: RequestOpti
     res = await fetch(path, {
       method,
       headers,
-      body,
+      body: rawBody ?? body,
       credentials: "same-origin",
       cache: "no-store",
       signal: controller.signal,

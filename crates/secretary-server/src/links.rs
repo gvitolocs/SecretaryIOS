@@ -46,6 +46,8 @@ use crate::AppState;
 
 pub const LINKS_FILE: &str = "links.json";
 pub const CALENDAR_FILE: &str = "calendar.json";
+/// Lucina's own calendar: the owner's events (primary data, not a cache).
+pub const OWN_FILE: &str = "calendar-events.json";
 const PENDING_TTL: Duration = Duration::from_secs(600);
 const MAX_ICS: usize = 20;
 const MAX_CUSTOM: usize = 200;
@@ -167,16 +169,21 @@ pub struct IphoneCache {
     pub items: Vec<Item>,
 }
 
-/// An event proposed by a client that may not write (the Lucina MCP),
-/// waiting for the owner's confirmation in the app.
+/// An event proposed by a client that may not write (the Lucina MCP, an
+/// agent), or one Lucina could not create directly for the owner, waiting for
+/// the owner's confirmation in the app.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Proposal {
     pub id: String,
     /// What would be sent to `POST /v1/calendar/events`.
     pub event: Value,
-    /// Who proposed it (`mcp:claude-code`, …).
+    /// Who proposed it (`mcp:claude-code`, `lucina:ios`, …).
     pub from: String,
+    /// Why it is a proposal and not an event (Lucina's direct create failed:
+    /// "Google Calendar needs reconnecting", …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
     pub created_at: String,
     pub expires_at_ms: i64,
 }
@@ -194,9 +201,23 @@ pub struct CalendarCache {
     pub proposals: Vec<Proposal>,
 }
 
+/// Lucina's own calendar. Each event is stored in Google Calendar's event
+/// shape (`summary`, `start`/`end` as `{date}` or `{dateTime, timeZone}`,
+/// `location`, `description`, `hangoutLink`,
+/// `extendedProperties.private.addedBy`, `created`, `updated`), so it is
+/// validated, expanded and shown by the same code as Google events, and a
+/// later Google sync can copy it as it is.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OwnCalendar {
+    /// Event id (`ev_…`) → event.
+    #[serde(default)]
+    pub events: BTreeMap<String, Value>,
+}
+
 pub struct Data {
     pub links: LinksState,
     pub cache: CalendarCache,
+    pub own: OwnCalendar,
 }
 
 struct PendingOAuth {
@@ -265,6 +286,9 @@ impl Hub {
             tracing::warn!(error = %e, "calendar cache unreadable; starting empty");
             CalendarCache::default()
         });
+        // The owner's own events: unlike the cache, a corrupt file stops the
+        // server instead of starting empty.
+        let own: OwnCalendar = load(&cfg.data_dir.join(OWN_FILE))?;
         let google = match &cfg.google {
             Some(g) => Some(GoogleClient::new(g.clone())?),
             None => None,
@@ -272,7 +296,7 @@ impl Hub {
         Ok(Self {
             dir: cfg.data_dir.clone(),
             sealer: Sealer::new(&cfg.data_dir),
-            data: tokio::sync::Mutex::new(Data { links, cache }),
+            data: tokio::sync::Mutex::new(Data { links, cache, own }),
             google,
             access: tokio::sync::Mutex::new(None),
             pending: Mutex::new(Vec::new()),
@@ -292,6 +316,17 @@ impl Hub {
             mcp: cfg.mcp_status.clone(),
             mcp_cache: Mutex::new(None),
             channel_cache: Mutex::new(None),
+        })
+    }
+
+    pub fn save_own(&self, d: &Data) -> Result<(), ApiError> {
+        crate::devices::save_json_atomic(&self.dir, OWN_FILE, &d.own).map_err(|e| {
+            tracing::error!(error = %e, "calendar-events.json write failed");
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "storage_error",
+                "could not save the calendar",
+            )
         })
     }
 
@@ -470,6 +505,10 @@ fn private_ip(ip: IpAddr) -> bool {
                 || v.octets()[0] == 100 && (v.octets()[1] & 0xc0) == 64 // 100.64/10 (Tailscale, CGNAT)
         }
         IpAddr::V6(v) => {
+            // ::ffff:a.b.c.d reaches a.b.c.d (verification L1).
+            if let Some(v4) = v.to_ipv4_mapped() {
+                return private_ip(IpAddr::V4(v4));
+            }
             v.is_loopback()
                 || v.is_unspecified()
                 || (v.segments()[0] & 0xfe00) == 0xfc00
@@ -616,6 +655,7 @@ async fn channel_activity(st: &AppState) -> HashMap<String, i64> {
         let q = secretary_core::models::TimelineQuery {
             before: None,
             limit: Some("200".into()),
+            ..Default::default()
         };
         if let Ok(call) = secretary_core::Call::timeline(&q) {
             let page =

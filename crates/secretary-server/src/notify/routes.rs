@@ -8,7 +8,8 @@
 //! - `GET /v1/push/key`
 //! - `POST|DELETE /v1/push/subscribe`, `DELETE /v1/push/subscriptions/{id}`
 //! - `POST /v1/push/test {id?}`
-//! - `POST /v1/push/apns {token}` (503 `apns_disabled` until configured)
+//! - `POST /v1/push/apns {token}` (saved even while APNs is off; `apnsEnabled` says which)
+//! - `POST /v1/push/liveactivity {kind, token, approvalId?}` (the approval Live Activity's tokens)
 //!
 //! Service route (the `svc_` token, Lucina): `POST /v1/notify`.
 
@@ -19,6 +20,7 @@ use axum::{middleware, Extension, Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use super::live::{LiveKind, LiveToken};
 use super::model::{clip, now_ms, Category, NewNotification, Outcome};
 use super::push::{self, Kind, Subscription};
 use super::settings::Settings;
@@ -101,15 +103,16 @@ async fn read(State(st): State<AppState>, JsonBody(body): JsonBody<ReadBody>) ->
 fn settings_view(st: &AppState, ident: &Identity) -> Value {
     let n = &st.notify;
     let subs: Vec<_> = n.pusher.list().iter().map(Subscription::view).collect();
+    let apns = n.pusher.apns.get();
     json!({
         "settings": n.settings.get(),
-        "categories": Category::ALL.iter().map(|c| json!({"id": c.as_str(), "defaultOn": c.default_on()})).collect::<Vec<_>>(),
+        "categories": Category::ALL.iter().map(|c| json!({"id": c.as_str(), "defaultOn": c.default_on(), "locked": c.always_on()})).collect::<Vec<_>>(),
         "subscriptions": subs,
         "currentDevice": {"id": ident.device_id, "name": ident.device_name},
         "webPush": {"enabled": true, "publicKey": n.pusher.vapid.public_key},
         "apns": {
-            "enabled": n.pusher.apns.is_some(),
-            "environment": n.pusher.apns.as_ref().map(|a| if a.cfg.sandbox { "sandbox" } else { "production" }),
+            "enabled": apns.is_some(),
+            "environment": apns.as_ref().map(|a| if a.cfg.sandbox { "sandbox" } else { "production" }),
         },
         "present": n.present(),
     })
@@ -258,6 +261,24 @@ struct ApnsBody {
     token: String,
     #[serde(default)]
     lang: Option<String>,
+    /// What iOS lets the app show (`authorization`, `alert`, `lockScreen`,
+    /// `timeSensitive`, ...): logged, since a push can arrive and show nothing.
+    #[serde(default)]
+    notifications: Option<serde_json::Map<String, Value>>,
+}
+
+/// `key=value` pairs of the app's notification settings for the log: short
+/// letter keys and values only, at most 12.
+fn settings_summary(m: &serde_json::Map<String, Value>) -> String {
+    let word = |s: &str, max: usize| (1..=max).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphabetic());
+    m.iter()
+        .filter_map(|(k, v)| {
+            let v = v.as_str()?;
+            (word(k, 24) && word(v, 16)).then(|| format!("{k}={v}"))
+        })
+        .take(12)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 async fn apns_register(
@@ -265,17 +286,12 @@ async fn apns_register(
     Extension(ident): Extension<Identity>,
     JsonBody(body): JsonBody<ApnsBody>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    if st.notify.pusher.apns.is_none() {
-        return Err(ApiError::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "apns_disabled",
-            "APNs is not configured on this server (needs a paid Apple developer team)",
-        ));
-    }
     let token = body.token.trim().to_ascii_lowercase();
     if !super::apns::valid_device_token(&token) {
         return Err(bad("token: an APNs device token (hex)"));
     }
+    let settings = body.notifications.as_ref().map(settings_summary).unwrap_or_default();
+    tracing::info!(device = %ident.device_id, settings = %settings, "apns token registered");
     let sub = Subscription {
         id: format!(
             "ps_{}",
@@ -296,7 +312,52 @@ async fn apns_register(
     };
     let n = st.notify.clone();
     let saved = blocking(move || n.pusher.upsert(sub)).await?;
-    Ok((StatusCode::CREATED, Json(json!(saved.view()))))
+    // Kept while APNs is off too: pushes start once a key is installed.
+    let mut view = json!(saved.view());
+    view["apnsEnabled"] = json!(st.notify.pusher.apns.get().is_some());
+    Ok((StatusCode::CREATED, Json(view)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LiveActivityBody {
+    kind: String,
+    token: String,
+    #[serde(default)]
+    approval_id: Option<String>,
+}
+
+/// The approval Live Activity's push-to-start token (`kind: start`) or one activity's update token
+/// (`kind: update` with its `approvalId`). Kept while APNs is off, like `/v1/push/apns`.
+async fn live_activity_register(
+    State(st): State<AppState>,
+    Extension(ident): Extension<Identity>,
+    JsonBody(body): JsonBody<LiveActivityBody>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let token = body.token.trim().to_ascii_lowercase();
+    if !super::apns::valid_device_token(&token) {
+        return Err(bad("token: an APNs push token (hex)"));
+    }
+    let (kind, approval_id) = match (body.kind.as_str(), body.approval_id) {
+        ("start", _) => (LiveKind::Start, None),
+        ("update", Some(id)) if crate::approvals::valid_approval_id(&id) => {
+            (LiveKind::Update, Some(id))
+        }
+        ("update", Some(_)) => return Err(bad("approvalId: an approval id (apr_…)")),
+        ("update", None) => return Err(bad("approvalId: required for kind update")),
+        _ => return Err(bad("kind: start or update")),
+    };
+    tracing::info!(device = %ident.device_id, kind = %body.kind, approval = ?approval_id, "live activity token registered");
+    let t = LiveToken {
+        device_id: ident.device_id.clone(),
+        kind,
+        token,
+        approval_id,
+        created_at: now_ms(),
+    };
+    let n = st.notify.clone();
+    blocking(move || n.live.register(t)).await?;
+    Ok((StatusCode::CREATED, Json(json!({"ok": true}))))
 }
 
 /// `POST /v1/notify` (service token): Lucina pushes a notification.
@@ -332,7 +393,7 @@ async fn notify(
     JsonBody(b): JsonBody<NotifyBody>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let category = Category::parse(&b.category).ok_or_else(|| {
-        bad("category: one of lucina_message, reminder, calendar, device_confirm, shopping, presence, system")
+        bad("category: one of lucina_message, reminder, calendar, device_confirm, agent, shopping, presence, system")
     })?;
     let body = b.body.trim();
     if body.is_empty() || body.chars().count() > 2000 {
@@ -407,6 +468,7 @@ pub fn routes() -> Router<AppState> {
         .route("/v1/push/subscriptions/{id}", delete(remove_subscription))
         .route("/v1/push/test", post(test))
         .route("/v1/push/apns", post(apns_register))
+        .route("/v1/push/liveactivity", post(live_activity_register))
 }
 
 /// Behind `require_service`.
@@ -431,5 +493,19 @@ mod tests {
         assert!(!valid_route("https://evil.example"));
         assert!(!valid_route("/a b"));
         assert!(!valid_route("/\\evil"));
+    }
+
+    #[test]
+    fn app_notification_settings_are_logged_as_plain_words() {
+        let m = json!({
+            "authorization": "authorized",
+            "lockScreen": "off",
+            "timeSensitive": "on",
+            "evil\nkey": "on",
+            "alert": "on\nINJECTED",
+            "sound": 1,
+        });
+        let s = settings_summary(m.as_object().unwrap());
+        assert_eq!(s, "authorization=authorized lockScreen=off timeSensitive=on");
     }
 }

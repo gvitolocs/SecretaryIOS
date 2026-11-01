@@ -1,9 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
-import { beforeEach, describe, expect, it } from "vitest";
+import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BodyStats, BodyView } from "../api/body";
 import { resetBody } from "../state/body";
 import { markLucinaOnline } from "../state/lucina";
 import { stubFetch, type Call } from "../test/fetch";
+import { stubWide } from "../test/wide";
 import WeightView from "./Weight";
 
 const STATS: BodyStats = {
@@ -171,5 +172,60 @@ describe("Weight", () => {
     await screen.findByLabelText("Current");
     expect(container.querySelector(".chart-line--primary")).not.toBeNull();
     expect(container.querySelector(".chart-line--secondary")).not.toBeNull();
+  });
+});
+
+
+describe("Weight desktop page", () => {
+  beforeEach(() => { resetBody(); markLucinaOnline(); localStorage.clear(); stubWide(); });
+  afterEach(() => vi.unstubAllGlobals());
+  it("keeps the header above its chart, rows, quiet log form and stats rail", async () => {
+    stubFetch(() => ({ body: { ok: true, view: bodyView() } }));
+    render(() => <WeightView />);
+    expect(screen.getByRole("heading", { level: 1, name: "Weight" })).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "Weigh-ins" })).toHaveTextContent("80.1 kg");
+    expect(screen.getByRole("list", { name: "Weigh-ins" })).toHaveClass("pg-rows");
+    expect(screen.getByRole("region", { name: "Trend" })).toContainElement(screen.getByRole("img", { name: "Body weight trend with 7-day average" }));
+    expect(screen.getByRole("region", { name: "Statistics" }).querySelector(".pg-stats")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "‹ Training" })).toHaveAttribute("href", "/training");
+    expect(screen.getByRole("button", { name: "Log weigh-in" })).toHaveClass("pg-btn");
+    expect(document.querySelector(".pg-context")).toHaveTextContent("80.5 kg");
+    expect(document.querySelector(".pg-grid--rail")).toBeInTheDocument();
+    expect(document.querySelectorAll(".pg-cta").length).toBeLessThanOrEqual(1);
+    expect(document.querySelector(".view-title, .stat-grid, .weight-list, .segmented, .pg-seg")).toBeNull();
+  });
+  it("logs from the rail, edits in a sheet and confirms deletion", async () => {
+    let revision = 4;
+    const calls = stubFetch(call => ({ body: { ok: true, view: bodyView({revision: call.method === "GET" ? revision : ++revision}) } }));
+    render(() => <WeightView />);
+    await screen.findByRole("region", { name: "Weigh-ins" });
+    fireEvent.input(screen.getByLabelText("Weight"), { target: { value: "80,5" } });
+    submitLog();
+    await waitFor(() => expect(posts(calls)[0]?.command).toEqual({ type: "log_entry", weight: "80,5" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Log weigh-in" })).toBeEnabled());
+    const row = within(screen.getByRole("list", { name: "Weigh-ins" })).getAllByRole("listitem")[0]!;
+    fireEvent.click(within(row).getByRole("button", { name: "Edit" }));
+    const sheet = screen.getByRole("dialog", { name: "Edit weigh-in" });
+    fireEvent.input(within(sheet).getByLabelText("Note"), { target: { value: "Updated note" } });
+    fireEvent.submit(within(sheet).getByRole("form", { name: "Edit weigh-in" }));
+    await waitFor(() => expect(posts(calls)[1]?.command).toEqual({ type: "edit_entry", entry_id: "e1", note: "Updated note" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    fireEvent.click(within(row).getByRole("button", { name: "Delete" }));
+    expect(posts(calls)).toHaveLength(2);
+    const confirm = within(row).getByRole("button", { name: "Confirm delete" });
+    expect(confirm).toHaveClass("pg-btn--danger");
+    fireEvent.click(confirm);
+    await waitFor(() => expect(posts(calls)[2]?.command).toEqual({ type: "delete_entry", entry_id: "e1" }));
+  });
+  it("keeps the header for load failures and uses friendly empty cards after retry", async () => {
+    let failed = true;
+    stubFetch(() => failed ? { status: 503, body: {error: "Offline"} } : { body: {ok: true, view: bodyView({entries: [], series: []})} });
+    render(() => <WeightView />);
+    expect(await screen.findByRole("alert")).toHaveClass("pg-error");
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Weight");
+    failed = false;
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByText("Log your first weigh-in in the form beside this list.")).toHaveClass("pg-empty-text");
+    expect(screen.getByText("Log a few weigh-ins to see your trend.")).toHaveClass("pg-empty-text");
   });
 });

@@ -6,6 +6,7 @@ package tech.getsecretary.design
 object LucinaTokens {
     object Dark {
         const val bg: Int = 0xFF000000.toInt()
+        const val chatBg: Int = 0xFF1C2A8C.toInt()
         const val card: Int = 0xFF1C1C1E.toInt()
         const val cardRaised: Int = 0xFF2C2C2E.toInt()
         const val field: Int = 0x29767680.toInt()
@@ -22,10 +23,15 @@ object LucinaTokens {
         const val warning: Int = 0xFFFF9F0A.toInt()
         const val info: Int = 0xFF64D2FF.toInt()
         const val scrim: Int = 0x99000000.toInt()
+        const val glass: Int = 0x99141628.toInt()
+        const val glassBorder: Int = 0x1AFFFFFF.toInt()
+        const val glassHighlight: Int = 0x14FFFFFF.toInt()
+        const val glassFallback: Int = 0xFF16182A.toInt()
     }
 
     object Light {
         const val bg: Int = 0xFFF2F2F7.toInt()
+        const val chatBg: Int = 0xFF1C2A8C.toInt()
         const val card: Int = 0xFFFFFFFF.toInt()
         const val cardRaised: Int = 0xFFF2F2F7.toInt()
         const val field: Int = 0x1F767680.toInt()
@@ -42,6 +48,10 @@ object LucinaTokens {
         const val warning: Int = 0xFFFF9500.toInt()
         const val info: Int = 0xFF32ADE6.toInt()
         const val scrim: Int = 0x33000000.toInt()
+        const val glass: Int = 0x99FFFFFF.toInt()
+        const val glassBorder: Int = 0x173C3C43.toInt()
+        const val glassHighlight: Int = 0xCCFFFFFF.toInt()
+        const val glassFallback: Int = 0xFFF7F7FA.toInt()
     }
 
     object Radius {
@@ -50,6 +60,7 @@ object LucinaTokens {
         const val field: Float = 12f
         const val button: Float = 14f
         const val sheet: Float = 24f
+        const val glass: Float = 28f
         const val pill: Float = 999f
     }
 

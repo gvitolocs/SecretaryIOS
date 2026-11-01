@@ -17,8 +17,9 @@ import {
   type DealsMapData,
   type MapStore,
 } from "../../lib/dealsMap";
-import { googleDirectionsUrl, type MapPin } from "../../lib/mapKit";
+import { navigateRoute, type MapPin } from "../../lib/mapKit";
 import { LucinaMap } from "../../components/LucinaMap";
+import { Button, Card, EmptyState, ErrorState, ListRow, LoadingState, Page, PageGrid, PageHeader, RowList, useWide } from "../../components/page";
 import { shop, t } from "../../state/shopping";
 import "../../styles/shopping.css";
 import "../../styles/dealsMap.css";
@@ -67,6 +68,7 @@ function homeElement(): HTMLElement {
 }
 
 export default function DealsMapView() {
+  const { wide, track } = useWide();
   const [status, setStatus] = createSignal<"loading" | "ready" | "error">("loading");
   const [error, setError] = createSignal<string | null>(null);
   const [data, setData] = createSignal<DealsMapData | null>(null);
@@ -75,7 +77,7 @@ export default function DealsMapView() {
   /** null until LucinaMap knows whether tiles are installed. */
   const [mapShown, setMapShown] = createSignal<boolean | null>(null);
   const [focus, setFocus] = createSignal<{ id: string; tick: number } | null>(null);
-  let lists: HTMLUListElement | undefined;
+  let lists: HTMLElement | undefined;
 
   const stores = createMemo(() => data()?.stores ?? []);
   const filtered = createMemo(() =>
@@ -172,8 +174,90 @@ export default function DealsMapView() {
     </li>
   );
 
-  return (
-    <div class="bring deals" lang={shop.lang}>
+  const Filters = () => (
+    <div class={wide() ? "deals-filters deals-filters--wide" : "deals-filters"} role="group" aria-label={t("mapTitle")}>
+      <button type="button" class={wide() ? "pg-btn" : "deals-chipbtn"} aria-pressed={filters.myList} onClick={() => toggle("myList")}>
+        {t("mapMyListChip")}
+      </button>
+      <button type="button" class={wide() ? "pg-btn" : "deals-chipbtn"} aria-pressed={filters.clearance} onClick={() => toggle("clearance")}>
+        {t("mapClearanceChip")}
+      </button>
+      <For each={chains()}>
+        {(c) => (
+          <button
+            type="button"
+            class={wide() ? "pg-btn" : "deals-chipbtn"}
+            aria-pressed={filters.chain === c.key}
+            onClick={() => setFilters("chain", filters.chain === c.key ? "" : c.key)}
+          >
+            {c.label}
+          </button>
+        )}
+      </For>
+    </div>
+  );
+
+  const MapView = () => (
+    <div class="deals-map">
+      <div class="deals-map-host">
+        <LucinaMap
+          pins={pins()}
+          renderPin={renderPin}
+          onSelect={onPin}
+          focus={focus()}
+          onAvailable={setMapShown}
+          label={t("mapTitle")}
+        />
+      </div>
+    </div>
+  );
+
+  /** The offers of the selected store, as rows (list matches first, then food waste). */
+  const Offers = (p: { store: MapStore }) => (
+    <>
+      <A
+        class={wide() ? "pg-btn deals-directions-wide" : "deals-directions"}
+        href={navigateRoute({ title: p.store.name, address: p.store.street ?? undefined, lat: p.store.lat, lng: p.store.lng })}
+      >
+        🧭 {t("mapDirections")}
+      </A>
+      <Show when={p.store.listMatches.length > 0}>
+        <h3 class="deals-panel-sec">{t("mapListTitle")}</h3>
+        <ul class="deals-list">
+          <For each={p.store.listMatches}>
+            {(m) => (
+              <>
+                <li class="deals-matched">
+                  <span class="deals-matched-item">{m.item}</span>
+                </li>
+                <DealRow deal={m.deal} />
+              </>
+            )}
+          </For>
+        </ul>
+      </Show>
+      <Show when={p.store.clearances.length > 0}>
+        <h3 class="deals-panel-sec">{t("mapClearancesTitle")}</h3>
+        <ul class="deals-list">
+          <For each={p.store.clearances}>{(d) => <DealRow deal={d} />}</For>
+        </ul>
+      </Show>
+      <Show when={p.store.listMatches.length === 0 && p.store.clearances.length === 0}>
+        <p class="deals-note">{t("mapHint")}</p>
+      </Show>
+    </>
+  );
+
+  const FailureNote = () => (
+    <Show when={data() && data()!.failures.length > 0}>
+      <p class={wide() ? "pg-notice" : "deals-note deals-note--foot"} role="status">
+        {t("mapFailureNote", { src: data()!.failures.map((f) => (f === "flyer" ? t("mapFlyer") : t("mapClearanceChip"))).join(", ") })}
+      </p>
+    </Show>
+  );
+
+  const PhoneLayout = () => (
+    <>
       <header class="deals-head">
         <A class="bring-back-pill deals-back" href="/shopping" aria-label={t("mapBackList")}>
           <span class="bring-chevron-back" aria-hidden="true" />
@@ -182,26 +266,7 @@ export default function DealsMapView() {
         <h1 class="deals-title">{t("mapTitle")}</h1>
       </header>
 
-      <div class="deals-filters" role="group" aria-label={t("mapTitle")}>
-        <button type="button" class="deals-chipbtn" aria-pressed={filters.myList} onClick={() => toggle("myList")}>
-          {t("mapMyListChip")}
-        </button>
-        <button type="button" class="deals-chipbtn" aria-pressed={filters.clearance} onClick={() => toggle("clearance")}>
-          {t("mapClearanceChip")}
-        </button>
-        <For each={chains()}>
-          {(c) => (
-            <button
-              type="button"
-              class="deals-chipbtn"
-              aria-pressed={filters.chain === c.key}
-              onClick={() => setFilters("chain", filters.chain === c.key ? "" : c.key)}
-            >
-              {c.label}
-            </button>
-          )}
-        </For>
-      </div>
+      <Filters />
 
       <Show when={status() === "error"}>
         <div class="deals-note" role="alert">
@@ -220,22 +285,11 @@ export default function DealsMapView() {
       <Show when={status() === "ready"}>
         <div class="deals-body">
           <Show when={mapShown() !== false} fallback={<p class="deals-note deals-note--warn">{t("mapTilesMissing")}</p>}>
-            <div class="deals-map">
-              <div class="deals-map-host">
-                <LucinaMap
-                  pins={pins()}
-                  renderPin={renderPin}
-                  onSelect={onPin}
-                  focus={focus()}
-                  onAvailable={setMapShown}
-                  label={t("mapTitle")}
-                />
-              </div>
-            </div>
+            <MapView />
           </Show>
 
           <div class="deals-side">
-            <ul class="deals-stores" ref={lists} aria-label={t("mapTitle")}>
+            <ul class="deals-stores" ref={(el) => (lists = el)} aria-label={t("mapTitle")}>
               <For each={filtered()}>
                 {(s) => {
                   const on = () => selectedId() === s.id;
@@ -301,43 +355,125 @@ export default function DealsMapView() {
                     ×
                   </button>
                 </header>
-                <a class="deals-directions" href={googleDirectionsUrl(s())} target="_blank" rel="noreferrer">
-                  🧭 {t("mapDirections")}
-                </a>
-                <Show when={s().listMatches.length > 0}>
-                  <h3 class="deals-panel-sec">{t("mapListTitle")}</h3>
-                  <ul class="deals-list">
-                    <For each={s().listMatches}>
-                      {(m) => (
-                        <>
-                          <li class="deals-matched">
-                            <span class="deals-matched-item">{m.item}</span>
-                          </li>
-                          <DealRow deal={m.deal} />
-                        </>
-                      )}
-                    </For>
-                  </ul>
-                </Show>
-                <Show when={s().clearances.length > 0}>
-                  <h3 class="deals-panel-sec">{t("mapClearancesTitle")}</h3>
-                  <ul class="deals-list">
-                    <For each={s().clearances}>{(d) => <DealRow deal={d} />}</For>
-                  </ul>
-                </Show>
-                <Show when={s().listMatches.length === 0 && s().clearances.length === 0}>
-                  <p class="deals-note">{t("mapHint")}</p>
-                </Show>
+                <Offers store={s()} />
               </aside>
             )}
           </Show>
         </div>
       </Show>
 
-      <Show when={data() && data()!.failures.length > 0}>
-        <p class="deals-note deals-note--foot" role="status">
-          {t("mapFailureNote", { src: data()!.failures.map((f) => (f === "flyer" ? t("mapFlyer") : t("mapClearanceChip"))).join(", ") })}
-        </p>
+      <FailureNote />
+    </>
+  );
+
+  /** The desktop frame: header with a link back to the list, store chips, the stores list left and the map right. */
+  const WideLayout = () => (
+    <div class="bring-scroll deals-scroll">
+      <Page class="deals-wide">
+        <PageHeader
+          title={t("mapTitle")}
+          context={
+            <A class="pg-link pg-back" href="/shopping">
+              <span aria-hidden="true">‹</span> {t("mapBackList")}
+            </A>
+          }
+        />
+        <Filters />
+        <FailureNote />
+        <Show when={status() === "error"}>
+          <ErrorState message={error() ?? ""} retryLabel={t("retry")} onRetry={() => void refresh()} />
+        </Show>
+        <Show when={status() === "loading"}>
+          <LoadingState label={t("loading")} />
+        </Show>
+        <Show when={status() === "ready"}>
+          <PageGrid
+            layout="split"
+            railLabel={t("mapTitle")}
+            rail={
+              <Card list>
+                <Show when={filtered().length > 0} fallback={<EmptyState text={t("mapEmpty")} />}>
+                  <div class="deals-stores-wrap" ref={(el) => (lists = el)}>
+                    <RowList label={t("mapTitle")}>
+                      <For each={filtered()}>
+                        {(s) => {
+                          const on = () => selectedId() === s.id;
+                          return (
+                            <ListRow
+                              class={on() ? "deals-row--on" : undefined}
+                              leading={
+                                <span class="deals-store-letter" style={{ "--chip-h": String(chainHue(s)) }} aria-hidden="true">
+                                  {chainInitial(s)}
+                                </span>
+                              }
+                              title={
+                                <button
+                                  type="button"
+                                  class="pg-row-name"
+                                  data-store={s.id}
+                                  aria-current={on() ? "true" : undefined}
+                                  onClick={() => openStore(s.id, true)}
+                                >
+                                  {s.name}
+                                </button>
+                              }
+                              sub={[distanceLabel(s.distanceM), s.street].filter(Boolean).join(" · ")}
+                              meta={
+                                <>
+                                  {s.listMatches.length > 0 && (
+                                    <span class="deals-store-badge deals-store-badge--list" aria-label={t("mapMyListChip")}>
+                                      {s.listMatches.length}
+                                    </span>
+                                  )}
+                                  {s.clearances.length > 0 && (
+                                    <span class="deals-store-badge deals-store-badge--cl" aria-label={t("mapClearanceChip")}>
+                                      {s.clearances.length}
+                                    </span>
+                                  )}
+                                </>
+                              }
+                            />
+                          );
+                        }}
+                      </For>
+                    </RowList>
+                  </div>
+                </Show>
+              </Card>
+            }
+          >
+            <Card list class="deals-map-card">
+              <Show when={mapShown() !== false} fallback={<EmptyState text={t("mapTilesMissing")} />}>
+                <MapView />
+              </Show>
+            </Card>
+            <Show when={selected()}>
+              {(s) => (
+                <aside aria-label={s().name}>
+                  <Card
+                    title={s().name}
+                    actions={
+                      <Button variant="ghost" aria-label={t("mapClosePanel", { name: s().name })} onClick={() => setSelectedId(null)}>
+                        ×
+                      </Button>
+                    }
+                  >
+                    <p class="pg-context deals-wide-sub">{[s().chain, s().street, distanceLabel(s().distanceM)].filter(Boolean).join(" · ")}</p>
+                    <Offers store={s()} />
+                  </Card>
+                </aside>
+              )}
+            </Show>
+          </PageGrid>
+        </Show>
+      </Page>
+    </div>
+  );
+
+  return (
+    <div class="bring deals" ref={track} lang={shop.lang}>
+      <Show when={wide()} fallback={<PhoneLayout />}>
+        <WideLayout />
       </Show>
     </div>
   );

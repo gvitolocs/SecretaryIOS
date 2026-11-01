@@ -65,6 +65,7 @@ Text fields marked *md* allow inline markdown; the others are plain text.
 | `quote` | `text` *md*, `cite?` | |
 | `link_preview` | `url`, `title` | `url` must be `http(s)`. Opens in a new tab / Safari. |
 | `place` | `title`, `address?`, `lat?`+`lng?`, `when?`, `end?` (RFC 3339), `eventId?`, `kind: event\|place`, `travelMin?`+`travelMode?` (`walk\|bike\|transit\|drive`), `travelApprox?` | A title plus an address or a valid coordinate pair (both or neither, not (0,0)); at most 3 per message. The card opens the in-app place map (`/map/place`). `travelMin` (1-1440) is Lucina's travel time from home, `travelApprox: true` when it is a straight-line estimate. |
+| `image` | `src`, `alt?`, `caption?`, `width?`, `height?` | At most 2 per message. `src` is a path of the apps' API starting with `/v1/` (no `..`, no `//`, at most 300 characters, e.g. `/v1/au/map.png?building=1532&z=17`) or an `https://` URL on `getsecretary.tech`; anything else drops the block. `alt` and `caption` up to 200 characters; `width`/`height` in pixels (1-4096). Used for the AU campus map. | Tapping opens it full size.
 
 Lengths: titles 120, item texts 400, card bodies 600, labels and stat values 40,
 table cells 80 characters.
@@ -81,6 +82,7 @@ table cells 80 characters.
 | `route` | `{path}` | Navigates in the app: `/notes/<slug>`, `/notes`, `/shopping`, `/links`, `/gym`, `/weight`, `/tasks` (when the app has it). Must start with `/`; no `..`, no scheme, at most 121 characters. One path may carry a query: `/map/place?<query>` (the in-app place map; `title`, `address`, `lat`, `lng`, `when`, `end`, `eventId`, percent-encoded with `%20` for spaces, at most 600 characters), which iOS also opens as `secretary://open/map/place?…`. Unknown paths fall back to the chat. |
 | `confirm` | `{answer: yes\|no\|edit, text}` | Answers Lucina's pending confirmation (today: calendar events). `yes`/`no` send `text` (`sì`/`no`, which her yes/no flow understands). `edit` prefills the composer with `text` instead; the pending action is dropped when the next message is not a yes or no. |
 | `dismiss` | `{}` | Nothing is sent; the buttons are just marked as answered. |
+| `secret` | `{mode: save\|project, name?, project?, environment?, path?, target?, held?, projectName?}` | Opens the "Add secret" sheet with those names filled in (`project` is an Infisical id, `target` the `/secret` alias form, `held` the id of a value Lucina holds in memory for 10 minutes). Never carries a value: clients and servers drop any other field. The owner still confirms in the sheet. |
 
 `id`: 1-48 characters `[A-Za-z0-9_.:-]`, unique within the message. `label`: up to
 40 characters. `emoji`: optional, one emoji.
@@ -136,7 +138,8 @@ Ecco cosa supporto **ora** ✅
 
 Checklist `✅`/`⬜`, card `emoji **title** — subtitle` + body, stat
 `label: **value** (delta)`, list `• text — meta` (or the item's emoji), table
-`a · b · c` rows, steps `1. …`, quote `> …`, link preview `🔗 [title](url)`.
+`a · b · c` rows, steps `1. …`, quote `> …`, link preview `🔗 [title](url)`,
+image `🗺️ caption` (followed by ` — <LUCINA_PUBLIC_URL><src>` when the public URL is configured).
 A prefill or `edit` action is shown as `«text …»`, a route as `nell'app: label`.
 
 ## How Lucina produces it

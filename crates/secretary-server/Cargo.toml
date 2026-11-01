@@ -24,6 +24,8 @@ secretary-tasks = { path = "../secretary-tasks" }
 ring = "0.17"
 chrono-tz = { workspace = true }
 axum = "0.8"
+hyper = "1"
+hyper-util = { version = "0.1", features = ["tokio"] }
 tokio = { workspace = true }
 reqwest = { workspace = true, features = ["stream", "http2"] }
 serde = { workspace = true }
@@ -41,12 +43,24 @@ mime = "0.3"
 futures-util = "0.3"
 base64 = "0.22"
 getrandom = "0.3"
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 anyhow = "1"
 web-push-native = { version = "=0.5.0", default-features = false }
 p256 = { version = "0.13", features = ["ecdsa", "pem"] }
 chrono = { workspace = true }
+zip = { version = "0.6.6", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 proptest = "1"
+# tests/desk.rs: a mock Lucina desk socket and a WebSocket client.
+axum = { version = "0.8", features = ["ws"] }
+tokio-tungstenite = "0.29"
+# tests/agents.rs: the real daemon router behind a mock Lucina.
+lucina-agentd = { path = "../lucina-agentd" }
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
 tempfile = "3"
 url = "2"
+# Stateright model of device-event delivery (tests/device_events_model.rs), checked by `cargo test`.
+stateright = { version = "=0.31.0", default-features = false }

@@ -1,0 +1,2117 @@
+[
+  {
+    "query": "",
+    "fields": [
+      "Fix the scroll anchor",
+      "lucina-agents",
+      "agent/fix-scroll",
+      "SecretaryIOS"
+    ],
+    "typo": {
+      "tier": 0,
+      "offset": 0,
+      "spread": 0
+    },
+    "exact": {
+      "tier": 0,
+      "offset": 0,
+      "spread": 0
+    }
+  },
+  {
+    "query": "fix",
+    "fields": [
+      "Fix the scroll anchor",
+      "lucina-agents",
+      "agent/fix-scroll",
+      "SecretaryIOS"
+    ],
+    "typo": {
+      "tier": 1,
+      "offset": 0,
+      "spread": 3
+    },
+    "exact": {
+      "tier": 1,
+      "offset": 0,
+      "spread": 3
+    }
+  },
+  {
+    "query": "FIX",
+    "fields": [
+      "Fix the scroll anchor",
+      "lucina-agents",
+      "agent/fix-scroll",
+      "SecretaryIOS"
+    ],
+    "typo": {
+      "tier": 1,
+      "offset": 0,
+      "spread": 3
+    },
+    "exact": {
+      "tier": 1,
+      "offset": 0,
+      "spread": 3
+    }
+  },
+  {
+    "query": "scroll anchor",
+    "fields": [
+      "Fix the scroll anchor",
+      "lucina-agents",
+      "agent/fix-scroll",
+      "SecretaryIOS"
+    ],
+    "typo": {
+      "tier": 2,
+      "offset": 23,
+      "spread": 12
+    },
+    "exact": {
+      "tier": 2,
+      "offset": 23,
+      "spread": 12
+    }
+  },
+  {
+    "query": "scrol",
+    "fields": [
+      "Fix the scroll anchor",
+      "lucina-agents",
+      "agent/fix-scroll",
+      "SecretaryIOS"
+    ],
+    "typo": {
+      "tier": 3,
+      "offset": 8,
+      "spread": 5
+    },
+    "exact": {
+      "tier": 3,
+      "offset": 8,
+      "spread": 5
+    }
+  },
+  {
+    "query": "ancor",
+    "fields": [
+      "Fix the scroll anchor",
+      "lucina-agents",
+      "agent/fix-scroll",
+      "SecretaryIOS"
+    ],
+    "typo": {
+      "tier": 5,
+      "offset": 15,
+      "spread": 6
+    },
+    "exact": {
+      "tier": 5,
+      "offset": 15,
+      "spread": 6
+    }
+  },
+  {
+    "query": "scorll",
+    "fields": [
+      "Fix the scroll anchor",
+      "lucina-agents",
+      "agent/fix-scroll",
+      "SecretaryIOS"
+    ],
+    "typo": {
+      "tier": 6,
+      "offset": 8,
+      "spread": 1
+    },
+    "exact": null
+  },
+  {
+    "query": "confug",
+    "fields": [
+      "Fix the scroll anchor",
+      "lucina-agents",
+      "agent/fix-scroll",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "configuraton",
+    "fields": [
+      "Fix the scroll anchor",
+      "lucina-agents",
+      "agent/fix-scroll",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "loadr",
+    "fields": [
+      "Fix the scroll anchor",
+      "lucina-agents",
+      "agent/fix-scroll",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "refcator",
+    "fields": [
+      "Fix the scroll anchor",
+      "lucina-agents",
+      "agent/fix-scroll",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "agents p6",
+    "fields": [
+      "Fix the scroll anchor",
+      "lucina-agents",
+      "agent/fix-scroll",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "p6",
+    "fields": [
+      "Fix the scroll anchor",
+      "lucina-agents",
+      "agent/fix-scroll",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "paseo sched",
+    "fields": [
+      "Fix the scroll anchor",
+      "lucina-agents",
+      "agent/fix-scroll",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "sio",
+    "fields": [
+      "Fix the scroll anchor",
+      "lucina-agents",
+      "agent/fix-scroll",
+      "SecretaryIOS"
+    ],
+    "typo": {
+      "tier": 5,
+      "offset": 0,
+      "spread": 11
+    },
+    "exact": {
+      "tier": 5,
+      "offset": 0,
+      "spread": 11
+    }
+  },
+  {
+    "query": "cafe",
+    "fields": [
+      "Fix the scroll anchor",
+      "lucina-agents",
+      "agent/fix-scroll",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "café",
+    "fields": [
+      "Fix the scroll anchor",
+      "lucina-agents",
+      "agent/fix-scroll",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "naive",
+    "fields": [
+      "Fix the scroll anchor",
+      "lucina-agents",
+      "agent/fix-scroll",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "zzz",
+    "fields": [
+      "Fix the scroll anchor",
+      "lucina-agents",
+      "agent/fix-scroll",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "fix zzz",
+    "fields": [
+      "Fix the scroll anchor",
+      "lucina-agents",
+      "agent/fix-scroll",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "secretaryios",
+    "fields": [
+      "Fix the scroll anchor",
+      "lucina-agents",
+      "agent/fix-scroll",
+      "SecretaryIOS"
+    ],
+    "typo": {
+      "tier": 0,
+      "offset": 0,
+      "spread": 12
+    },
+    "exact": {
+      "tier": 0,
+      "offset": 0,
+      "spread": 12
+    }
+  },
+  {
+    "query": "a",
+    "fields": [
+      "Fix the scroll anchor",
+      "lucina-agents",
+      "agent/fix-scroll",
+      "SecretaryIOS"
+    ],
+    "typo": {
+      "tier": 2,
+      "offset": 0,
+      "spread": 1
+    },
+    "exact": {
+      "tier": 2,
+      "offset": 0,
+      "spread": 1
+    }
+  },
+  {
+    "query": "anchr",
+    "fields": [
+      "Fix the scroll anchor",
+      "lucina-agents",
+      "agent/fix-scroll",
+      "SecretaryIOS"
+    ],
+    "typo": {
+      "tier": 5,
+      "offset": 15,
+      "spread": 6
+    },
+    "exact": {
+      "tier": 5,
+      "offset": 15,
+      "spread": 6
+    }
+  },
+  {
+    "query": "fx",
+    "fields": [
+      "Fix the scroll anchor",
+      "lucina-agents",
+      "agent/fix-scroll",
+      "SecretaryIOS"
+    ],
+    "typo": {
+      "tier": 5,
+      "offset": 0,
+      "spread": 3
+    },
+    "exact": {
+      "tier": 5,
+      "offset": 0,
+      "spread": 3
+    }
+  },
+  {
+    "query": "schedules",
+    "fields": [
+      "Fix the scroll anchor",
+      "lucina-agents",
+      "agent/fix-scroll",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "sched",
+    "fields": [
+      "Fix the scroll anchor",
+      "lucina-agents",
+      "agent/fix-scroll",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "ule",
+    "fields": [
+      "Fix the scroll anchor",
+      "lucina-agents",
+      "agent/fix-scroll",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "  spaced   query ",
+    "fields": [
+      "Fix the scroll anchor",
+      "lucina-agents",
+      "agent/fix-scroll",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "agent/fix",
+    "fields": [
+      "Fix the scroll anchor",
+      "lucina-agents",
+      "agent/fix-scroll",
+      "SecretaryIOS"
+    ],
+    "typo": {
+      "tier": 1,
+      "offset": 0,
+      "spread": 9
+    },
+    "exact": {
+      "tier": 1,
+      "offset": 0,
+      "spread": 9
+    }
+  },
+  {
+    "query": "fix-scroll",
+    "fields": [
+      "Fix the scroll anchor",
+      "lucina-agents",
+      "agent/fix-scroll",
+      "SecretaryIOS"
+    ],
+    "typo": {
+      "tier": 1,
+      "offset": 6,
+      "spread": 10
+    },
+    "exact": {
+      "tier": 1,
+      "offset": 6,
+      "spread": 10
+    }
+  },
+  {
+    "query": "lucina",
+    "fields": [
+      "Fix the scroll anchor",
+      "lucina-agents",
+      "agent/fix-scroll",
+      "SecretaryIOS"
+    ],
+    "typo": {
+      "tier": 1,
+      "offset": 0,
+      "spread": 6
+    },
+    "exact": {
+      "tier": 1,
+      "offset": 0,
+      "spread": 6
+    }
+  },
+  {
+    "query": "lucna",
+    "fields": [
+      "Fix the scroll anchor",
+      "lucina-agents",
+      "agent/fix-scroll",
+      "SecretaryIOS"
+    ],
+    "typo": {
+      "tier": 5,
+      "offset": 0,
+      "spread": 6
+    },
+    "exact": {
+      "tier": 5,
+      "offset": 0,
+      "spread": 6
+    }
+  },
+  {
+    "query": "luicna",
+    "fields": [
+      "Fix the scroll anchor",
+      "lucina-agents",
+      "agent/fix-scroll",
+      "SecretaryIOS"
+    ],
+    "typo": {
+      "tier": 6,
+      "offset": 0,
+      "spread": 1
+    },
+    "exact": null
+  },
+  {
+    "query": "",
+    "fields": [
+      "Configuration loader refactor",
+      "",
+      "main",
+      "lucina"
+    ],
+    "typo": {
+      "tier": 0,
+      "offset": 0,
+      "spread": 0
+    },
+    "exact": {
+      "tier": 0,
+      "offset": 0,
+      "spread": 0
+    }
+  },
+  {
+    "query": "fix",
+    "fields": [
+      "Configuration loader refactor",
+      "",
+      "main",
+      "lucina"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "FIX",
+    "fields": [
+      "Configuration loader refactor",
+      "",
+      "main",
+      "lucina"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "scroll anchor",
+    "fields": [
+      "Configuration loader refactor",
+      "",
+      "main",
+      "lucina"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "scrol",
+    "fields": [
+      "Configuration loader refactor",
+      "",
+      "main",
+      "lucina"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "ancor",
+    "fields": [
+      "Configuration loader refactor",
+      "",
+      "main",
+      "lucina"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "scorll",
+    "fields": [
+      "Configuration loader refactor",
+      "",
+      "main",
+      "lucina"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "confug",
+    "fields": [
+      "Configuration loader refactor",
+      "",
+      "main",
+      "lucina"
+    ],
+    "typo": {
+      "tier": 6,
+      "offset": 0,
+      "spread": 1
+    },
+    "exact": null
+  },
+  {
+    "query": "configuraton",
+    "fields": [
+      "Configuration loader refactor",
+      "",
+      "main",
+      "lucina"
+    ],
+    "typo": {
+      "tier": 5,
+      "offset": 0,
+      "spread": 13
+    },
+    "exact": {
+      "tier": 5,
+      "offset": 0,
+      "spread": 13
+    }
+  },
+  {
+    "query": "loadr",
+    "fields": [
+      "Configuration loader refactor",
+      "",
+      "main",
+      "lucina"
+    ],
+    "typo": {
+      "tier": 5,
+      "offset": 14,
+      "spread": 6
+    },
+    "exact": {
+      "tier": 5,
+      "offset": 14,
+      "spread": 6
+    }
+  },
+  {
+    "query": "refcator",
+    "fields": [
+      "Configuration loader refactor",
+      "",
+      "main",
+      "lucina"
+    ],
+    "typo": {
+      "tier": 6,
+      "offset": 21,
+      "spread": 1
+    },
+    "exact": null
+  },
+  {
+    "query": "agents p6",
+    "fields": [
+      "Configuration loader refactor",
+      "",
+      "main",
+      "lucina"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "p6",
+    "fields": [
+      "Configuration loader refactor",
+      "",
+      "main",
+      "lucina"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "paseo sched",
+    "fields": [
+      "Configuration loader refactor",
+      "",
+      "main",
+      "lucina"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "sio",
+    "fields": [
+      "Configuration loader refactor",
+      "",
+      "main",
+      "lucina"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "cafe",
+    "fields": [
+      "Configuration loader refactor",
+      "",
+      "main",
+      "lucina"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "café",
+    "fields": [
+      "Configuration loader refactor",
+      "",
+      "main",
+      "lucina"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "naive",
+    "fields": [
+      "Configuration loader refactor",
+      "",
+      "main",
+      "lucina"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "zzz",
+    "fields": [
+      "Configuration loader refactor",
+      "",
+      "main",
+      "lucina"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "fix zzz",
+    "fields": [
+      "Configuration loader refactor",
+      "",
+      "main",
+      "lucina"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "secretaryios",
+    "fields": [
+      "Configuration loader refactor",
+      "",
+      "main",
+      "lucina"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "a",
+    "fields": [
+      "Configuration loader refactor",
+      "",
+      "main",
+      "lucina"
+    ],
+    "typo": {
+      "tier": 4,
+      "offset": 1,
+      "spread": 1
+    },
+    "exact": {
+      "tier": 4,
+      "offset": 1,
+      "spread": 1
+    }
+  },
+  {
+    "query": "anchr",
+    "fields": [
+      "Configuration loader refactor",
+      "",
+      "main",
+      "lucina"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "fx",
+    "fields": [
+      "Configuration loader refactor",
+      "",
+      "main",
+      "lucina"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "schedules",
+    "fields": [
+      "Configuration loader refactor",
+      "",
+      "main",
+      "lucina"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "sched",
+    "fields": [
+      "Configuration loader refactor",
+      "",
+      "main",
+      "lucina"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "ule",
+    "fields": [
+      "Configuration loader refactor",
+      "",
+      "main",
+      "lucina"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "  spaced   query ",
+    "fields": [
+      "Configuration loader refactor",
+      "",
+      "main",
+      "lucina"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "agent/fix",
+    "fields": [
+      "Configuration loader refactor",
+      "",
+      "main",
+      "lucina"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "fix-scroll",
+    "fields": [
+      "Configuration loader refactor",
+      "",
+      "main",
+      "lucina"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "lucina",
+    "fields": [
+      "Configuration loader refactor",
+      "",
+      "main",
+      "lucina"
+    ],
+    "typo": {
+      "tier": 0,
+      "offset": 0,
+      "spread": 6
+    },
+    "exact": {
+      "tier": 0,
+      "offset": 0,
+      "spread": 6
+    }
+  },
+  {
+    "query": "lucna",
+    "fields": [
+      "Configuration loader refactor",
+      "",
+      "main",
+      "lucina"
+    ],
+    "typo": {
+      "tier": 5,
+      "offset": 0,
+      "spread": 6
+    },
+    "exact": {
+      "tier": 5,
+      "offset": 0,
+      "spread": 6
+    }
+  },
+  {
+    "query": "luicna",
+    "fields": [
+      "Configuration loader refactor",
+      "",
+      "main",
+      "lucina"
+    ],
+    "typo": {
+      "tier": 6,
+      "offset": 0,
+      "spread": 1
+    },
+    "exact": null
+  },
+  {
+    "query": "",
+    "fields": [
+      "Add Paseo schedules",
+      "agents-p6",
+      "agents-p6",
+      "SecretaryIOS"
+    ],
+    "typo": {
+      "tier": 0,
+      "offset": 0,
+      "spread": 0
+    },
+    "exact": {
+      "tier": 0,
+      "offset": 0,
+      "spread": 0
+    }
+  },
+  {
+    "query": "fix",
+    "fields": [
+      "Add Paseo schedules",
+      "agents-p6",
+      "agents-p6",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "FIX",
+    "fields": [
+      "Add Paseo schedules",
+      "agents-p6",
+      "agents-p6",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "scroll anchor",
+    "fields": [
+      "Add Paseo schedules",
+      "agents-p6",
+      "agents-p6",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "scrol",
+    "fields": [
+      "Add Paseo schedules",
+      "agents-p6",
+      "agents-p6",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "ancor",
+    "fields": [
+      "Add Paseo schedules",
+      "agents-p6",
+      "agents-p6",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "scorll",
+    "fields": [
+      "Add Paseo schedules",
+      "agents-p6",
+      "agents-p6",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "confug",
+    "fields": [
+      "Add Paseo schedules",
+      "agents-p6",
+      "agents-p6",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "configuraton",
+    "fields": [
+      "Add Paseo schedules",
+      "agents-p6",
+      "agents-p6",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "loadr",
+    "fields": [
+      "Add Paseo schedules",
+      "agents-p6",
+      "agents-p6",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "refcator",
+    "fields": [
+      "Add Paseo schedules",
+      "agents-p6",
+      "agents-p6",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "agents p6",
+    "fields": [
+      "Add Paseo schedules",
+      "agents-p6",
+      "agents-p6",
+      "SecretaryIOS"
+    ],
+    "typo": {
+      "tier": 2,
+      "offset": 7,
+      "spread": 8
+    },
+    "exact": {
+      "tier": 2,
+      "offset": 7,
+      "spread": 8
+    }
+  },
+  {
+    "query": "p6",
+    "fields": [
+      "Add Paseo schedules",
+      "agents-p6",
+      "agents-p6",
+      "SecretaryIOS"
+    ],
+    "typo": {
+      "tier": 1,
+      "offset": 7,
+      "spread": 2
+    },
+    "exact": {
+      "tier": 1,
+      "offset": 7,
+      "spread": 2
+    }
+  },
+  {
+    "query": "paseo sched",
+    "fields": [
+      "Add Paseo schedules",
+      "agents-p6",
+      "agents-p6",
+      "SecretaryIOS"
+    ],
+    "typo": {
+      "tier": 4,
+      "offset": 14,
+      "spread": 10
+    },
+    "exact": {
+      "tier": 4,
+      "offset": 14,
+      "spread": 10
+    }
+  },
+  {
+    "query": "sio",
+    "fields": [
+      "Add Paseo schedules",
+      "agents-p6",
+      "agents-p6",
+      "SecretaryIOS"
+    ],
+    "typo": {
+      "tier": 5,
+      "offset": 0,
+      "spread": 11
+    },
+    "exact": {
+      "tier": 5,
+      "offset": 0,
+      "spread": 11
+    }
+  },
+  {
+    "query": "cafe",
+    "fields": [
+      "Add Paseo schedules",
+      "agents-p6",
+      "agents-p6",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "café",
+    "fields": [
+      "Add Paseo schedules",
+      "agents-p6",
+      "agents-p6",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "naive",
+    "fields": [
+      "Add Paseo schedules",
+      "agents-p6",
+      "agents-p6",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "zzz",
+    "fields": [
+      "Add Paseo schedules",
+      "agents-p6",
+      "agents-p6",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "fix zzz",
+    "fields": [
+      "Add Paseo schedules",
+      "agents-p6",
+      "agents-p6",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "secretaryios",
+    "fields": [
+      "Add Paseo schedules",
+      "agents-p6",
+      "agents-p6",
+      "SecretaryIOS"
+    ],
+    "typo": {
+      "tier": 0,
+      "offset": 0,
+      "spread": 12
+    },
+    "exact": {
+      "tier": 0,
+      "offset": 0,
+      "spread": 12
+    }
+  },
+  {
+    "query": "a",
+    "fields": [
+      "Add Paseo schedules",
+      "agents-p6",
+      "agents-p6",
+      "SecretaryIOS"
+    ],
+    "typo": {
+      "tier": 2,
+      "offset": 0,
+      "spread": 1
+    },
+    "exact": {
+      "tier": 2,
+      "offset": 0,
+      "spread": 1
+    }
+  },
+  {
+    "query": "anchr",
+    "fields": [
+      "Add Paseo schedules",
+      "agents-p6",
+      "agents-p6",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "fx",
+    "fields": [
+      "Add Paseo schedules",
+      "agents-p6",
+      "agents-p6",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "schedules",
+    "fields": [
+      "Add Paseo schedules",
+      "agents-p6",
+      "agents-p6",
+      "SecretaryIOS"
+    ],
+    "typo": {
+      "tier": 1,
+      "offset": 10,
+      "spread": 9
+    },
+    "exact": {
+      "tier": 1,
+      "offset": 10,
+      "spread": 9
+    }
+  },
+  {
+    "query": "sched",
+    "fields": [
+      "Add Paseo schedules",
+      "agents-p6",
+      "agents-p6",
+      "SecretaryIOS"
+    ],
+    "typo": {
+      "tier": 3,
+      "offset": 10,
+      "spread": 5
+    },
+    "exact": {
+      "tier": 3,
+      "offset": 10,
+      "spread": 5
+    }
+  },
+  {
+    "query": "ule",
+    "fields": [
+      "Add Paseo schedules",
+      "agents-p6",
+      "agents-p6",
+      "SecretaryIOS"
+    ],
+    "typo": {
+      "tier": 4,
+      "offset": 15,
+      "spread": 3
+    },
+    "exact": {
+      "tier": 4,
+      "offset": 15,
+      "spread": 3
+    }
+  },
+  {
+    "query": "  spaced   query ",
+    "fields": [
+      "Add Paseo schedules",
+      "agents-p6",
+      "agents-p6",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "agent/fix",
+    "fields": [
+      "Add Paseo schedules",
+      "agents-p6",
+      "agents-p6",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "fix-scroll",
+    "fields": [
+      "Add Paseo schedules",
+      "agents-p6",
+      "agents-p6",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "lucina",
+    "fields": [
+      "Add Paseo schedules",
+      "agents-p6",
+      "agents-p6",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "lucna",
+    "fields": [
+      "Add Paseo schedules",
+      "agents-p6",
+      "agents-p6",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "luicna",
+    "fields": [
+      "Add Paseo schedules",
+      "agents-p6",
+      "agents-p6",
+      "SecretaryIOS"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "",
+    "fields": [
+      "naïve café test",
+      "",
+      "",
+      "x"
+    ],
+    "typo": {
+      "tier": 0,
+      "offset": 0,
+      "spread": 0
+    },
+    "exact": {
+      "tier": 0,
+      "offset": 0,
+      "spread": 0
+    }
+  },
+  {
+    "query": "fix",
+    "fields": [
+      "naïve café test",
+      "",
+      "",
+      "x"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "FIX",
+    "fields": [
+      "naïve café test",
+      "",
+      "",
+      "x"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "scroll anchor",
+    "fields": [
+      "naïve café test",
+      "",
+      "",
+      "x"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "scrol",
+    "fields": [
+      "naïve café test",
+      "",
+      "",
+      "x"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "ancor",
+    "fields": [
+      "naïve café test",
+      "",
+      "",
+      "x"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "scorll",
+    "fields": [
+      "naïve café test",
+      "",
+      "",
+      "x"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "confug",
+    "fields": [
+      "naïve café test",
+      "",
+      "",
+      "x"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "configuraton",
+    "fields": [
+      "naïve café test",
+      "",
+      "",
+      "x"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "loadr",
+    "fields": [
+      "naïve café test",
+      "",
+      "",
+      "x"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "refcator",
+    "fields": [
+      "naïve café test",
+      "",
+      "",
+      "x"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "agents p6",
+    "fields": [
+      "naïve café test",
+      "",
+      "",
+      "x"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "p6",
+    "fields": [
+      "naïve café test",
+      "",
+      "",
+      "x"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "paseo sched",
+    "fields": [
+      "naïve café test",
+      "",
+      "",
+      "x"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "sio",
+    "fields": [
+      "naïve café test",
+      "",
+      "",
+      "x"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "cafe",
+    "fields": [
+      "naïve café test",
+      "",
+      "",
+      "x"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "café",
+    "fields": [
+      "naïve café test",
+      "",
+      "",
+      "x"
+    ],
+    "typo": {
+      "tier": 1,
+      "offset": 6,
+      "spread": 4
+    },
+    "exact": {
+      "tier": 1,
+      "offset": 6,
+      "spread": 4
+    }
+  },
+  {
+    "query": "naive",
+    "fields": [
+      "naïve café test",
+      "",
+      "",
+      "x"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "zzz",
+    "fields": [
+      "naïve café test",
+      "",
+      "",
+      "x"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "fix zzz",
+    "fields": [
+      "naïve café test",
+      "",
+      "",
+      "x"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "secretaryios",
+    "fields": [
+      "naïve café test",
+      "",
+      "",
+      "x"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "a",
+    "fields": [
+      "naïve café test",
+      "",
+      "",
+      "x"
+    ],
+    "typo": {
+      "tier": 4,
+      "offset": 1,
+      "spread": 1
+    },
+    "exact": {
+      "tier": 4,
+      "offset": 1,
+      "spread": 1
+    }
+  },
+  {
+    "query": "anchr",
+    "fields": [
+      "naïve café test",
+      "",
+      "",
+      "x"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "fx",
+    "fields": [
+      "naïve café test",
+      "",
+      "",
+      "x"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "schedules",
+    "fields": [
+      "naïve café test",
+      "",
+      "",
+      "x"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "sched",
+    "fields": [
+      "naïve café test",
+      "",
+      "",
+      "x"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "ule",
+    "fields": [
+      "naïve café test",
+      "",
+      "",
+      "x"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "  spaced   query ",
+    "fields": [
+      "naïve café test",
+      "",
+      "",
+      "x"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "agent/fix",
+    "fields": [
+      "naïve café test",
+      "",
+      "",
+      "x"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "fix-scroll",
+    "fields": [
+      "naïve café test",
+      "",
+      "",
+      "x"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "lucina",
+    "fields": [
+      "naïve café test",
+      "",
+      "",
+      "x"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "lucna",
+    "fields": [
+      "naïve café test",
+      "",
+      "",
+      "x"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "luicna",
+    "fields": [
+      "naïve café test",
+      "",
+      "",
+      "x"
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "",
+    "fields": [
+      "",
+      "",
+      "",
+      ""
+    ],
+    "typo": {
+      "tier": 0,
+      "offset": 0,
+      "spread": 0
+    },
+    "exact": {
+      "tier": 0,
+      "offset": 0,
+      "spread": 0
+    }
+  },
+  {
+    "query": "fix",
+    "fields": [
+      "",
+      "",
+      "",
+      ""
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "FIX",
+    "fields": [
+      "",
+      "",
+      "",
+      ""
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "scroll anchor",
+    "fields": [
+      "",
+      "",
+      "",
+      ""
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "scrol",
+    "fields": [
+      "",
+      "",
+      "",
+      ""
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "ancor",
+    "fields": [
+      "",
+      "",
+      "",
+      ""
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "scorll",
+    "fields": [
+      "",
+      "",
+      "",
+      ""
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "confug",
+    "fields": [
+      "",
+      "",
+      "",
+      ""
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "configuraton",
+    "fields": [
+      "",
+      "",
+      "",
+      ""
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "loadr",
+    "fields": [
+      "",
+      "",
+      "",
+      ""
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "refcator",
+    "fields": [
+      "",
+      "",
+      "",
+      ""
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "agents p6",
+    "fields": [
+      "",
+      "",
+      "",
+      ""
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "p6",
+    "fields": [
+      "",
+      "",
+      "",
+      ""
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "paseo sched",
+    "fields": [
+      "",
+      "",
+      "",
+      ""
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "sio",
+    "fields": [
+      "",
+      "",
+      "",
+      ""
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "cafe",
+    "fields": [
+      "",
+      "",
+      "",
+      ""
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "café",
+    "fields": [
+      "",
+      "",
+      "",
+      ""
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "naive",
+    "fields": [
+      "",
+      "",
+      "",
+      ""
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "zzz",
+    "fields": [
+      "",
+      "",
+      "",
+      ""
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "fix zzz",
+    "fields": [
+      "",
+      "",
+      "",
+      ""
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "secretaryios",
+    "fields": [
+      "",
+      "",
+      "",
+      ""
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "a",
+    "fields": [
+      "",
+      "",
+      "",
+      ""
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "anchr",
+    "fields": [
+      "",
+      "",
+      "",
+      ""
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "fx",
+    "fields": [
+      "",
+      "",
+      "",
+      ""
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "schedules",
+    "fields": [
+      "",
+      "",
+      "",
+      ""
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "sched",
+    "fields": [
+      "",
+      "",
+      "",
+      ""
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "ule",
+    "fields": [
+      "",
+      "",
+      "",
+      ""
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "  spaced   query ",
+    "fields": [
+      "",
+      "",
+      "",
+      ""
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "agent/fix",
+    "fields": [
+      "",
+      "",
+      "",
+      ""
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "fix-scroll",
+    "fields": [
+      "",
+      "",
+      "",
+      ""
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "lucina",
+    "fields": [
+      "",
+      "",
+      "",
+      ""
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "lucna",
+    "fields": [
+      "",
+      "",
+      "",
+      ""
+    ],
+    "typo": null,
+    "exact": null
+  },
+  {
+    "query": "luicna",
+    "fields": [
+      "",
+      "",
+      "",
+      ""
+    ],
+    "typo": null,
+    "exact": null
+  }
+]

@@ -70,6 +70,24 @@ pub fn session_id(field: &'static str, s: &str) -> Result<()> {
     Ok(())
 }
 
+/// A timeline item id a chat message replies to (`replyTo`): the same
+/// alphabet and length as [`session_id`], `[A-Za-z0-9_-]{1,64}`.
+pub fn timeline_ref(field: &'static str, s: &str) -> Result<()> {
+    session_id(field, s)
+}
+
+/// Conversation key: lowercase kind, optionally a 1..=64 character token.
+pub fn conversation(s: &str) -> Result<()> {
+    let (kind, token) = s.split_once(':').map_or((s, None), |(k, t)| (k, Some(t)));
+    if kind.is_empty() || !kind.bytes().all(|b| b.is_ascii_lowercase()) {
+        return Err(invalid("conversation", "must have a lowercase kind"));
+    }
+    if let Some(token) = token {
+        session_id("conversation", token)?;
+    }
+    Ok(())
+}
+
 /// Optional id: absent is fine, present must pass [`id`].
 pub fn opt_id(field: &'static str, s: Option<&str>) -> Result<()> {
     s.map_or(Ok(()), |s| id(field, s))
@@ -115,6 +133,10 @@ pub fn flag(field: &'static str, s: &str) -> Result<&'static str> {
 
 /// Max page size of `GET /timeline`.
 pub const MAX_TIMELINE_LIMIT: u32 = 200;
+
+/// Longest `q` and page size of `GET /ops/search` (Lucina's ops record).
+pub const MAX_OPS_QUERY_CHARS: usize = 500;
+pub const MAX_OPS_SEARCH_LIMIT: u32 = 50;
 
 /// Radius range of `GET /grocery/deals/map?radiusM=` (meters),
 /// also enforced by the server route.

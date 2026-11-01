@@ -1,0 +1,25 @@
+BEGIN:VCARD
+VERSION:3.0
+PRODID:-//Apple Inc.//iPhone OS 26.0//EN
+N:Bianchi;Giulia;;Dott.;
+FN:Dott. Giulia Bianchi
+ORG:Studio Bianchi;Consulenza;
+TITLE:Commercialista
+EMAIL;type=INTERNET;type=WORK;type=pref:giulia@studiobianchi.example
+EMAIL;type=INTERNET;type=HOME:giulia.b@example.com
+TEL;type=CELL;type=VOICE;type=pref:+39 333 123 4567
+TEL;type=WORK;type=VOICE:+39 02 1234 5678
+item1.TEL:+45 20 12 34 56
+item1.X-ABLabel:Copenhagen
+item2.ADR;type=WORK;type=pref:;;Via Monte Napoleone 8;Milano;MI;20121;Italia
+item2.X-ABADR:it
+item3.URL;type=pref:https://studiobianchi.example
+item3.X-ABLabel:_$!<HomePage>!$_
+item4.X-ABDATE;type=pref:2019-06-01
+item4.X-ABLabel:_$!<Anniversary>!$_
+BDAY;value=date:1988-03-21
+NOTE:Met at the Copenhagen fair\, 2025.\nPrefers WhatsApp.
+PHOTO;ENCODING=b;TYPE=JPEG:/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0
+ aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIy
+ MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAA
+END:VCARD

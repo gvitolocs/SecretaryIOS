@@ -65,6 +65,8 @@ pub type BResult<T> = Result<T, BackendError>;
 enum Cred {
     Device,
     Service,
+    /// `SECRETARY_MCP_AGENTS_TOKEN_FILE`, for `/v1/agents/*` only.
+    Agents,
     None,
 }
 
@@ -83,6 +85,7 @@ pub struct Backend {
     base: String,
     device_token: Option<String>,
     service_token: Option<String>,
+    agents_token: Option<String>,
 }
 
 impl Backend {
@@ -98,7 +101,18 @@ impl Backend {
             base: base.trim_end_matches('/').to_owned(),
             device_token,
             service_token,
+            agents_token: None,
         }
+    }
+
+    /// The service token `/v1/agents/*` calls carry (`crate::agents`).
+    pub fn with_agents_token(mut self, token: Option<String>) -> Self {
+        self.agents_token = token;
+        self
+    }
+
+    pub fn has_agents_token(&self) -> bool {
+        self.agents_token.is_some()
     }
 
     pub fn has_device_token(&self) -> bool {
@@ -139,6 +153,12 @@ impl Backend {
                 BackendError::local(
                     "backend_not_configured",
                     "SECRETARY_MCP_SERVICE_TOKEN_FILE is not set",
+                )
+            })?),
+            Cred::Agents => Some(self.agents_token.as_deref().ok_or_else(|| {
+                BackendError::local(
+                    "agents_not_configured",
+                    "SECRETARY_MCP_AGENTS_TOKEN_FILE is not set",
                 )
             })?),
             Cred::None => None,
@@ -239,8 +259,116 @@ impl Backend {
         .map(|(_, _, v)| v)
     }
 
+    /// A `/v1/agents/*` call with the agents service token (never the device
+    /// token), its own deadline and the caller headers (`crate::agents`).
+    pub(crate) async fn send_agents(
+        &self,
+        method: Method,
+        path: &str,
+        query: &[(&str, String)],
+        body: Option<&Value>,
+        timeout: Duration,
+        extra: HeaderMap,
+    ) -> BResult<Value> {
+        self.send(method, path, query, body, Cred::Agents, timeout, extra)
+            .await
+            .map(|(_, _, v)| v)
+    }
+
+    /// A device-token call with its own deadline and headers (`crate::computer`).
+    pub(crate) async fn send_device(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&Value>,
+        timeout: Duration,
+        extra: HeaderMap,
+    ) -> BResult<Value> {
+        self.send(method, path, &[], body, Cred::Device, timeout, extra)
+            .await
+            .map(|(_, _, v)| v)
+    }
+
+    /// A device-token call with a query and headers (`crate::ops`).
+    pub(crate) async fn send_device_query(
+        &self,
+        method: Method,
+        path: &str,
+        query: &[(&str, String)],
+        body: Option<&Value>,
+        extra: HeaderMap,
+    ) -> BResult<Value> {
+        self.send(method, path, query, body, Cred::Device, DEFAULT_TIMEOUT, extra)
+            .await
+            .map(|(_, _, v)| v)
+    }
+
+    /// A device-token GET whose answer is not JSON (the AU campus map PNG):
+    /// its content type and body. Failures are classified like JSON calls.
+    pub(crate) async fn get_device_bytes(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+        extra: HeaderMap,
+    ) -> BResult<(String, Vec<u8>)> {
+        let token = self.device_token.as_deref().ok_or_else(|| {
+            BackendError::local(
+                "backend_not_configured",
+                "SECRETARY_MCP_BACKEND_TOKEN_FILE is not set",
+            )
+        })?;
+        let transport = |e: reqwest::Error| {
+            if e.is_timeout() {
+                BackendError::local("backend_timeout", "secretary-server did not answer in time")
+            } else {
+                BackendError::local("backend_unreachable", e.without_url().to_string())
+            }
+        };
+        let resp = self
+            .http
+            .get(format!("{}{path}", self.base))
+            .query(query)
+            .timeout(DEFAULT_TIMEOUT)
+            .headers(extra)
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(transport)?;
+        let status = resp.status();
+        let content_type = resp
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("application/octet-stream")
+            .to_owned();
+        let retry_after = resp
+            .headers()
+            .get(RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse().ok());
+        let bytes = resp.bytes().await.map_err(transport)?;
+        if status.is_success() {
+            return Ok((content_type, bytes.to_vec()));
+        }
+        let mut err = error_from(status, &serde_json::from_slice(&bytes).unwrap_or(Value::Null));
+        err.retry_after = retry_after;
+        Err(err)
+    }
+
     pub async fn get(&self, path: &str, query: &[(&str, String)]) -> BResult<Value> {
         self.call(Method::GET, path, query, None).await
+    }
+
+    /// Decision creation has a 60 s server deadline, plus transport headroom.
+    pub async fn create_decision(&self, body: &Value) -> BResult<Value> {
+        self.send_device(
+            Method::POST,
+            "/v1/decisions",
+            Some(body),
+            Duration::from_secs(65),
+            HeaderMap::new(),
+        )
+        .await
     }
 
     pub async fn post(&self, path: &str, body: &Value) -> BResult<Value> {

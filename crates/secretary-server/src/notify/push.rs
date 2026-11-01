@@ -1,6 +1,6 @@
 //! Push delivery: Web Push (VAPID, RFC 8030/8291/8292) for browsers and
 //! home-screen web apps, and the APNs adapter for the native app (off until
-//! configured, see [`super::apns`]).
+//! a key is configured or installed, see [`super::apns`]).
 //!
 //! - **VAPID keys** are generated on first start into `vapid.json` (0600)
 //!   in the data dir: the P-256 private key and the public key browsers get
@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use web_push_native::{Auth, WebPushBuilder};
 
-use super::apns::{Apns, ApnsConfig};
+use super::apns::{ApnsConfig, ApnsSlot};
 use super::model::{now_ms, Category};
 use super::store::JsonFile;
 use crate::devices::save_json_atomic;
@@ -367,6 +367,40 @@ impl PushOpts {
             topic: c.collapse_key().map(str::to_owned),
         }
     }
+
+    /// [`Self::for_category`], plus a per-key topic for categories whose
+    /// `dedupKey` names a replaceable slot ([`Category::replaces_by_key`]).
+    pub fn for_notification(n: &super::Notification) -> Self {
+        let mut opts = Self::for_category(n.category);
+        if let Some(k) = replace_key(n) {
+            opts.topic = Some(key_topic(k));
+        }
+        opts
+    }
+}
+
+fn replace_key(n: &super::Notification) -> Option<&str> {
+    n.dedup_key
+        .as_deref()
+        .filter(|_| n.category.replaces_by_key())
+}
+
+/// RFC 8030 `Topic` (≤ 32 base64url characters) and APNs collapse id for a
+/// dedup key: the first 24 bytes of its SHA-256, base64url.
+pub fn key_topic(key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    URL_SAFE_NO_PAD.encode(&Sha256::digest(key.as_bytes())[..24])
+}
+
+/// The notification tag a client shows it under: a newer one with the same
+/// tag replaces it.
+pub fn tag_for(n: &super::Notification) -> String {
+    if let Some(k) = replace_key(n) {
+        return format!("k:{}", key_topic(k));
+    }
+    n.category
+        .collapse_key()
+        .map_or_else(|| n.id.clone(), str::to_owned)
 }
 
 /// The JSON a service worker (or the app) receives.
@@ -386,6 +420,23 @@ pub struct Payload {
     pub unread: usize,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub digest: bool,
+    /// Approvals only: the web route again as `url`, the approval's id and
+    /// whether approving it needs a biometric proof.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sensitive: Option<bool>,
+    /// Approvals only, with previews on: the request's `details` (a root plan's commands), clipped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// Lucina's decisions (`data: {kind: "decision", decisionId, options}`): the id and the options, so the
+    /// app's notification can answer with a button.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decision_options: Vec<String>,
 }
 
 /// Result of one delivery (after retries).
@@ -445,7 +496,7 @@ pub struct Pusher {
     pub vapid: Vapid,
     pub subs: JsonFile<Vec<Subscription>>,
     http: reqwest::Client,
-    pub apns: Option<Apns>,
+    pub apns: ApnsSlot,
 }
 
 impl Pusher {
@@ -456,10 +507,7 @@ impl Pusher {
             .redirect(reqwest::redirect::Policy::none())
             .user_agent(concat!("secretary-server/", env!("CARGO_PKG_VERSION")))
             .build()?;
-        let apns = match &cfg.apns {
-            Some(a) => Some(Apns::new(a.clone())?),
-            None => None,
-        };
+        let apns = ApnsSlot::open(dir, cfg.apns.clone())?;
         Ok(Self {
             vapid: Vapid::load_or_create(dir)?,
             subs: JsonFile::open(dir, SUBSCRIPTIONS_FILE),
@@ -527,28 +575,37 @@ impl Pusher {
     }
 
     /// Deliver `payload` to `sub` with retries, then record the result.
+    /// An APNs target while APNs is off is skipped and not recorded, so the
+    /// token is kept for when the key arrives.
     pub async fn deliver(
         &self,
         sub: &Subscription,
         payload: &Payload,
         opts: &PushOpts,
     ) -> Delivery {
+        let apns = match sub.kind {
+            Kind::Apns => match self.apns.get() {
+                Some(a) => Some(a),
+                None => {
+                    tracing::debug!(sub = %sub.id, "apns is not configured; push skipped");
+                    return Delivery::Failed {
+                        error: "apns is not configured".into(),
+                    };
+                }
+            },
+            Kind::Webpush => None,
+        };
         let delays = self.cfg.retry_delays.clone();
         let mut attempt = 0;
         let result = loop {
-            let a = match sub.kind {
-                Kind::Webpush => self.try_webpush(sub, payload, opts).await,
-                Kind::Apns => match &self.apns {
-                    Some(apns) => match apns.send(&sub.endpoint, payload, opts).await {
-                        Ok((status, retry, detail)) => match classify(status, retry, detail) {
-                            Ok(d) => Attempt::Done(d),
-                            Err((e, r)) => Attempt::Retry(e, r),
-                        },
-                        Err(e) => Attempt::Retry(e, None),
+            let a = match &apns {
+                None => self.try_webpush(sub, payload, opts).await,
+                Some(apns) => match apns.send(&sub.endpoint, payload, opts).await {
+                    Ok((status, retry, detail)) => match classify(status, retry, detail) {
+                        Ok(d) => Attempt::Done(d),
+                        Err((e, r)) => Attempt::Retry(e, r),
                     },
-                    None => Attempt::Done(Delivery::Failed {
-                        error: "apns is not configured".into(),
-                    }),
+                    Err(e) => Attempt::Retry(e, None),
                 },
             };
             match a {
@@ -676,20 +733,84 @@ pub async fn deliver_all(
     out
 }
 
+/// Bytes of an approval's commands an APNs body carries (the whole body must stay under 4 KB).
+const APNS_DETAIL_BYTES: usize = 2400;
+
+/// The first `max` bytes of `s`, cut at a line (or else a character) boundary, with `…` when cut.
+fn clip_bytes(s: &str, max: usize) -> String {
+    let s = s.trim();
+    if s.len() <= max {
+        return s.to_owned();
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    let head = &s[..end];
+    let head = head.rfind('\n').map_or(head, |i| &head[..i]);
+    format!("{}\n…", head.trim_end())
+}
+
 /// JSON for the APNs body (`aps` + our fields).
 pub fn apns_body(payload: &Payload) -> Value {
-    json!({
+    // The app registers the notification categories "APPROVAL" and "APPROVAL_SENSITIVE" (Approve/Deny actions).
+    let aps_category = match (payload.approval_id.is_some(), payload.sensitive) {
+        (true, Some(true)) => "APPROVAL_SENSITIVE",
+        (true, _) => "APPROVAL",
+        (false, _) => payload.category.as_str(),
+    };
+    // An approval's body is the summary, then its commands: the lock screen shows a few lines, and
+    // long-pressing the notification shows all of them.
+    let alert_body = match (&payload.approval_id, &payload.detail) {
+        (Some(_), Some(d)) => format!("{}\n{}", payload.body, clip_bytes(d, APNS_DETAIL_BYTES)),
+        _ => payload.body.clone(),
+    };
+    // A decision: the static DECISION category (Option 1 / Option 2 / my own words), its options listed in the
+    // text so the buttons read clearly; the app swaps in one with the options' own labels when the push wakes it.
+    let (aps_category, alert_body) = match &payload.decision_id {
+        Some(_) if !payload.decision_options.is_empty() => {
+            let options: Vec<String> = payload
+                .decision_options
+                .iter()
+                .take(6)
+                .enumerate()
+                .map(|(i, o)| format!("{}. {}", i + 1, clip_bytes(o, 200)))
+                .collect();
+            ("DECISION", format!("{alert_body}\n{}", options.join("\n")))
+        }
+        Some(_) => ("DECISION", alert_body),
+        None => (aps_category, alert_body),
+    };
+    let mut body = json!({
         "aps": {
-            "alert": {"title": payload.title, "body": payload.body},
+            "alert": {"title": payload.title, "body": alert_body},
             "sound": "default",
             "badge": payload.unread,
             "thread-id": payload.category,
-            "category": payload.category,
+            "category": aps_category,
         },
         "id": payload.id,
         "route": payload.route,
         "category": payload.category,
-    })
+    });
+    if let Some(id) = &payload.approval_id {
+        let sensitive = payload.sensitive.unwrap_or(false);
+        body["approvalId"] = json!(id);
+        body["sensitive"] = json!(sensitive);
+        // The key the app's own approval notifications use.
+        body["approvalSensitive"] = json!(sensitive);
+        // Wake the app too, so it refreshes its approvals and the Lock Screen widget; and let the
+        // request through a Focus (the app has the time-sensitive entitlement).
+        body["aps"]["content-available"] = json!(1);
+        body["aps"]["interruption-level"] = json!("time-sensitive");
+    }
+    if let Some(id) = &payload.decision_id {
+        body["decisionId"] = json!(id);
+        body["decisionOptions"] = json!(payload.decision_options.iter().take(6).collect::<Vec<_>>());
+        body["aps"]["content-available"] = json!(1);
+        body["aps"]["interruption-level"] = json!("time-sensitive");
+    }
+    body
 }
 
 #[cfg(test)]
@@ -698,6 +819,73 @@ mod tests {
 
     fn cfg() -> PushConfig {
         PushConfig::default()
+    }
+
+    fn approval_payload(sensitive: bool, detail: Option<String>) -> Payload {
+        Payload {
+            id: Some("n_1".into()),
+            category: "approval".into(),
+            title: "Approval needed".into(),
+            body: "Run 2 commands as root on nezopt: test".into(),
+            route: "/approvals/apr_1".into(),
+            tag: None,
+            ts: 0,
+            unread: 1,
+            digest: false,
+            url: Some("/approvals/apr_1".into()),
+            approval_id: Some("apr_1".into()),
+            sensitive: Some(sensitive),
+            detail,
+            decision_id: None,
+            decision_options: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn apns_decision_body_has_the_options_and_the_decision_category() {
+        let mut p = approval_payload(false, None);
+        p.approval_id = None;
+        p.sensitive = None;
+        p.category = "lucina".into();
+        p.title = "Decision needed: claude-code".into();
+        p.body = "Deploy the gallery fix?".into();
+        p.decision_id = Some("dc-0123456789ab".into());
+        p.decision_options = vec!["Deploy now".into(), "Wait".into()];
+        let b = apns_body(&p);
+        assert_eq!(b["aps"]["category"], "DECISION");
+        assert_eq!(b["aps"]["alert"]["body"], "Deploy the gallery fix?\n1. Deploy now\n2. Wait");
+        assert_eq!(b["decisionId"], "dc-0123456789ab");
+        assert_eq!(b["decisionOptions"], json!(["Deploy now", "Wait"]));
+        assert_eq!(b["aps"]["content-available"], 1);
+        assert!(b.get("approvalId").is_none());
+    }
+
+    #[test]
+    fn apns_approval_body_has_the_commands_and_the_right_category() {
+        let b = apns_body(&approval_payload(false, Some("true\nid -u".into())));
+        assert_eq!(b["aps"]["category"], "APPROVAL");
+        assert_eq!(
+            b["aps"]["alert"]["body"],
+            "Run 2 commands as root on nezopt: test\ntrue\nid -u"
+        );
+        assert_eq!(b["aps"]["content-available"], 1);
+        assert_eq!(b["approvalSensitive"], false);
+        let b = apns_body(&approval_payload(true, None));
+        assert_eq!(b["aps"]["category"], "APPROVAL_SENSITIVE");
+        assert_eq!(b["aps"]["alert"]["body"], "Run 2 commands as root on nezopt: test");
+        // A long plan is cut at a line, and the whole body stays well under APNs' 4 KB.
+        let long: String = (0..400).map(|i| format!("echo line-{i}\n")).collect();
+        let b = apns_body(&approval_payload(true, Some(long)));
+        let text = b["aps"]["alert"]["body"].as_str().unwrap();
+        assert!(text.ends_with("\n…"), "{text}");
+        assert!(text.lines().all(|l| l == "…" || l.starts_with("echo line-") || l.starts_with("Run ")));
+        assert!(serde_json::to_vec(&b).unwrap().len() < 4096);
+        // Not an approval: unchanged.
+        let mut p = approval_payload(false, Some("x".into()));
+        p.approval_id = None;
+        let b = apns_body(&p);
+        assert_eq!(b["aps"]["category"], "approval");
+        assert!(b["aps"].get("content-available").is_none());
     }
 
     #[test]

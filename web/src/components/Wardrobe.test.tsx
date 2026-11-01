@@ -4,7 +4,7 @@ import { setLocale } from "../i18n";
 import { stubFetch, type Call } from "../test/fetch";
 import { merge, settings, WARDROBE } from "../test/wardrobe";
 import { avatarSettings, closeWardrobe, loadAvatar, openWardrobe, resetWardrobeState, setAvatarPath, wardrobeOpen } from "../state/wardrobe";
-import Wardrobe from "./Wardrobe";
+import Wardrobe, { COM3D2_KEY, COM3D2_URL } from "./Wardrobe";
 
 function serve(wardrobe: unknown = WARDROBE): Call[] {
   let current = settings();
@@ -76,6 +76,33 @@ describe("Wardrobe", () => {
     expect(within(grid()).getAllByRole("button").map((b) => b.getAttribute("aria-label"))).toEqual(["Put on Chef", "Put on Maid"]);
   });
 
+  it("scrolls only the body under a fixed header, with full names on the tiles", async () => {
+    await show();
+    const dialog = screen.getByRole("dialog", { name: "Wardrobe" });
+    const body = dialog.querySelector(".wardrobe-body")!;
+    expect(body).toContainElement(grid());
+    expect(body).not.toContainElement(screen.getByRole("heading", { name: "Wardrobe" }));
+    expect(screen.getByRole("button", { name: "Put on Maid" })).toHaveAttribute("title", "Maid");
+  });
+
+  it("fades the edge of the chip row that has more chips behind it", async () => {
+    await show();
+    const chips = screen.getByRole("radiogroup", { name: "Categories" });
+    const size = (scrollLeft: number) => {
+      Object.defineProperty(chips, "scrollWidth", { configurable: true, value: 500 });
+      Object.defineProperty(chips, "clientWidth", { configurable: true, value: 300 });
+      chips.scrollLeft = scrollLeft;
+      fireEvent.scroll(chips);
+    };
+    size(0);
+    expect(chips).toHaveClass("wchips--more-end");
+    expect(chips).not.toHaveClass("wchips--more-start");
+    size(100);
+    expect(chips).toHaveClass("wchips--more-start", "wchips--more-end");
+    size(200);
+    expect(chips).not.toHaveClass("wchips--more-end");
+  });
+
   it("styles her hair from the Hair tab, her own hair first", async () => {
     const calls = await show();
     fireEvent.click(tab("Hair"));
@@ -132,6 +159,28 @@ describe("Wardrobe", () => {
     expect(screen.getByRole("button", { name: "Put on Gym" })).toHaveAttribute("aria-pressed", "true");
     fireEvent.click(tab("Hair"));
     expect(screen.getByRole("button", { name: "Style her hair: Ponytail" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("opens the COM3D2 fitting room behind an off-by-default switch, remembered on this device", async () => {
+    localStorage.removeItem(COM3D2_KEY);
+    await show();
+    const sw = screen.getByRole("switch", { name: "COM3D2 body (beta)" });
+    expect(sw).toHaveAttribute("aria-checked", "false");
+    expect(screen.queryByTitle("COM3D2 fitting room")).toBeNull();
+
+    fireEvent.click(sw);
+    expect(sw).toHaveAttribute("aria-checked", "true");
+    const frame = screen.getByTitle("COM3D2 fitting room");
+    expect(frame.tagName).toBe("IFRAME");
+    expect(frame).toHaveAttribute("src", COM3D2_URL);
+    expect(screen.queryByRole("tablist", { name: "Wardrobe" })).toBeNull();
+    expect(screen.getByRole("dialog")).toHaveClass("wardrobe-panel--wide");
+    expect(localStorage.getItem(COM3D2_KEY)).toBe("1");
+
+    fireEvent.click(sw);
+    expect(screen.queryByTitle("COM3D2 fitting room")).toBeNull();
+    expect(tab("Outfit")).toBeInTheDocument();
+    expect(localStorage.getItem(COM3D2_KEY)).toBeNull();
   });
 
   it("closes with Escape and the close button", async () => {
