@@ -126,6 +126,7 @@ audio bytes received and sent for the turn. In `events.jsonl` it is an event of 
   `at` is UTC with milliseconds (`2026-11-01T10:00:09.000Z`). A malformed `since`, `before`, `kind` or `limit` is `400
   bad_request`.
 
-Who may read: a **speaker** (a device that has sent a `hello`) sees only itself: its own id, `403 owner_only` for any
-other id. Every other device token (the owner's apps) and every browser session (cookie) sees all devices. An id with
-no voice data is `404 device_not_found` (for a speaker asking for another id, always 403). No credentials: `401`.
+Who may read: only the owner's browser session (cookie) sees all devices. **Every device token** sees only its
+own id: a speaker, a speaker paired but not connected yet, the owner's phone app alike (`403 owner_only` for any
+other id, even an unknown one; its own list holds at most itself). An id with no voice data is `404
+device_not_found` for the owner's session or a device asking for itself. No credentials: `401`.

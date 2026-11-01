@@ -1255,7 +1255,7 @@ async fn events_filter_page_and_validate() {
 }
 
 #[tokio::test]
-async fn speakers_see_only_themselves_and_owners_see_all() {
+async fn device_tokens_see_only_themselves_and_the_owner_session_sees_all() {
     let h = harness().await;
     // Speaker A (the harness's device) and speaker B say hello.
     let mut a = h.connect().await;
@@ -1263,7 +1263,8 @@ async fn speakers_see_only_themselves_and_owners_see_all() {
     let (b_id, b_token) = h.issue("Kitchen");
     let mut b = h.try_connect(Some(&b_token)).await.unwrap();
     send(&mut b, hello_frame()).await;
-    // An owner's phone, and a browser session.
+    // A speaker paired a moment ago that has not connected yet, and an owner's phone app.
+    let (fresh_id, fresh) = h.issue("LucinaVoice");
     let (_, phone) = h.issue("Phone");
     let login = h
         .http
@@ -1279,16 +1280,27 @@ async fn speakers_see_only_themselves_and_owners_see_all() {
         .next()
         .unwrap()
         .to_owned();
+    let owner = |path: String| {
+        let req = h
+            .http
+            .get(format!("http://{}{path}", h.addr))
+            .header("cookie", &cookie);
+        async move {
+            let r = req.send().await.unwrap();
+            let code = r.status().as_u16();
+            (code, r.json::<Value>().await.unwrap_or(Value::Null))
+        }
+    };
 
     let a_path = format!("/v1/voice/devices/{}/status", h.dev_id);
     let b_path = format!("/v1/voice/devices/{b_id}/status");
-    h.wait_for(&phone, &a_path, |v| v["specs"]["chip"] == "esp32")
+    h.wait_for(&h.token, &a_path, |v| v["specs"]["chip"] == "esp32")
         .await;
-    h.wait_for(&phone, &b_path, |v| v["specs"]["chip"] == "esp32")
+    h.wait_for(&b_token, &b_path, |v| v["specs"]["chip"] == "esp32")
         .await;
 
-    // The phone sees both, and a name per device.
-    let (code, list) = h.get(Some(&phone), "/v1/voice/devices").await;
+    // The owner's session sees both, a name per device, and 404 for unknown ids.
+    let (code, list) = owner("/v1/voice/devices".into()).await;
     assert_eq!(code, 200);
     let names: Vec<&str> = list
         .as_array()
@@ -1298,67 +1310,63 @@ async fn speakers_see_only_themselves_and_owners_see_all() {
         .collect();
     assert_eq!(names.len(), 2, "{names:?}");
     assert!(names.contains(&"Speaker") && names.contains(&"Kitchen"));
-    assert_eq!(h.get(Some(&phone), &a_path).await.0, 200);
-    assert_eq!(h.get(Some(&phone), &b_path).await.0, 200);
-    // The phone has no voice data of its own, and unknown ids are 404.
-    let (code, v) = h
-        .get(Some(&phone), "/v1/voice/devices/dev_nobody/status")
-        .await;
+    assert_eq!(owner(a_path.clone()).await.0, 200);
+    assert_eq!(owner(b_path.clone()).await.0, 200);
+    assert_eq!(
+        owner(format!("/v1/voice/devices/{b_id}/events")).await.0,
+        200
+    );
+    let (code, v) = owner("/v1/voice/devices/dev_nobody/status".into()).await;
     assert_eq!(
         (code, v["error"]["code"].as_str()),
         (404, Some("device_not_found"))
     );
     assert_eq!(
-        h.get(Some(&phone), "/v1/voice/devices/dev_nobody/events")
-            .await
-            .0,
-        404
-    );
-    assert_eq!(
-        h.get(Some(&phone), "/v1/voice/devices/..%2Fetc/status")
-            .await
-            .0,
+        owner("/v1/voice/devices/..%2Fetc/status".into()).await.0,
         404
     );
 
-    // Speaker A: itself only.
-    let (code, list) = h.get(Some(&h.token), "/v1/voice/devices").await;
-    assert_eq!(code, 200);
-    assert_eq!(list.as_array().unwrap().len(), 1);
-    assert_eq!(list[0]["id"], h.dev_id.as_str());
-    assert_eq!(h.get(Some(&h.token), &a_path).await.0, 200);
-    let (code, v) = h.get(Some(&h.token), &b_path).await;
+    // Every device token is confined to its own id: a speaker, one that never connected
+    // (just paired, no hello yet) and any other device such as the phone app alike.
+    for (who, token, own) in [
+        ("speaker A", h.token.as_str(), Some(h.dev_id.as_str())),
+        ("fresh speaker", fresh.as_str(), None),
+        ("phone", phone.as_str(), None),
+    ] {
+        let (code, list) = h.get(Some(token), "/v1/voice/devices").await;
+        assert_eq!(code, 200, "{who}");
+        let ids: Vec<&str> = list
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, own.into_iter().collect::<Vec<_>>(), "{who}");
+        for path in [
+            b_path.clone(),
+            format!("/v1/voice/devices/{b_id}/events"),
+            "/v1/voice/devices/dev_nobody/status".to_owned(),
+        ] {
+            let (code, v) = h.get(Some(token), &path).await;
+            assert_eq!(
+                (code, v["error"]["code"].as_str()),
+                (403, Some("owner_only")),
+                "{who} {path}"
+            );
+        }
+    }
+    // The fresh speaker reading speaker A: refused before it has ever said hello.
+    let (code, _) = h.get(Some(&fresh), &a_path).await;
+    assert_eq!(code, 403);
+    // Its own id with no data yet is a 404, not someone else's data.
+    let (code, v) = h
+        .get(Some(&fresh), &format!("/v1/voice/devices/{fresh_id}/status"))
+        .await;
     assert_eq!(
         (code, v["error"]["code"].as_str()),
-        (403, Some("owner_only"))
+        (404, Some("device_not_found"))
     );
-    assert_eq!(
-        h.get(Some(&h.token), &format!("/v1/voice/devices/{b_id}/events"))
-            .await
-            .0,
-        403
-    );
-    // Even an unknown id is a 403 for a speaker (no probing).
-    assert_eq!(
-        h.get(Some(&h.token), "/v1/voice/devices/dev_nobody/status")
-            .await
-            .0,
-        403
-    );
-
-    // A browser session sees all, even when it belongs to a speaker's token.
-    let r = h
-        .http
-        .get(format!("http://{}/v1/voice/devices", h.addr))
-        .header("cookie", &cookie)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(r.status(), 200);
-    assert_eq!(
-        r.json::<Value>().await.unwrap().as_array().unwrap().len(),
-        2
-    );
+    assert_eq!(h.get(Some(&h.token), &a_path).await.0, 200);
 
     // No credentials: 401 on all three.
     for p in [
@@ -1370,7 +1378,6 @@ async fn speakers_see_only_themselves_and_owners_see_all() {
     }
     drop((a, b));
 }
-
 #[tokio::test]
 async fn post_voice_turns_are_recorded_too() {
     let h = harness().await;

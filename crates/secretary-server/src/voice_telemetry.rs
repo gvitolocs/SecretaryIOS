@@ -45,10 +45,10 @@
 //! - `GET /v1/voice/devices/{id}/status`
 //! - `GET /v1/voice/devices/{id}/events?since=&before=&kind=&limit=`
 //!
-//! *Who sees what.* A browser session ([`Via::Cookie`]) and any device that is
-//! not a speaker see every device. A **speaker** is a device that has sent a
-//! `hello` over the voice socket; its token sees only itself (`403
-//! owner_only` for another id). An id with no voice data is `404
+//! *Who sees what.* Only the owner's browser session ([`Via::Cookie`]) sees
+//! every device. Every device token (a speaker, the phone app, a speaker
+//! paired but not connected yet) sees only its own id (`403 owner_only` for
+//! any other id, even an unknown one). An id with no voice data is `404
 //! device_not_found`.
 
 use std::collections::HashMap;
@@ -1129,9 +1129,10 @@ pub fn spawn_flusher(st: &AppState) {
 
 // -- HTTP ----------------------------------------------------------------------------
 
-/// A speaker's token sees only itself; browser sessions and other devices see all.
-fn only_self(st: &AppState, ident: &Identity) -> bool {
-    !matches!(ident.via, Via::Cookie) && st.voice_log.is_speaker(&ident.device_id)
+/// Every device token (speaker, phone app, a speaker paired but not connected yet) sees only its own
+/// id; only the owner's browser session sees every device.
+fn only_self(_st: &AppState, ident: &Identity) -> bool {
+    !matches!(ident.via, Via::Cookie)
 }
 
 fn check_access(st: &AppState, ident: &Identity, id: &str) -> Result<(), ApiError> {

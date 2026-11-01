@@ -1503,9 +1503,9 @@ Answer `{events: [{at, k, t?, …}], next?}`, newest first; `next` (the `at` of 
 oldest event returned) is present when more remain and is what `before` takes
 for the next page.
 
-Access: a **speaker** (a device that has sent a `hello`) reads only its own id
-(`403 owner_only` for another); any other device token and every cookie session
-read all. `404 device_not_found` for an id with no voice data, `400 bad_request`
+Access: only the owner's browser session (cookie) reads all devices. **Every
+device token** (a speaker, one paired but not connected yet, the phone app)
+reads only its own id (`403 owner_only` for any other, even an unknown one). `404 device_not_found` for an id with no voice data, `400 bad_request`
 for a malformed parameter, `401` without credentials.
 
 ## Avatar wardrobe
