@@ -5,7 +5,7 @@ LucinaOS (kernel from Asterinas, Kindle from Amazon's kernel and userspace, the 
 reader, lucina-media, and anything added to `docs/upstreams.toml` later. Every porting brief links this file.
 A copy is a fixed Claude memory (`rust-porting-guidelines`), so every session loads it.
 
-Sources: LucinaAndroidOS `docs/management/master-plan.md` "Principles"; the owner's rules "Original code is the
+Sources: LucinaOS `docs/management/master-plan.md` "Principles"; the owner's rules "Original code is the
 source of truth (all Lucina)" (2026-11-01), "No Codex on Lucina" (2026-10-29), "Scripts and tools in Rust"
 (2026-10-15); the weekly upstream watch (`docs/upstream-watch.md`).
 

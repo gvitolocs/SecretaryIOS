@@ -31,7 +31,7 @@ a coordinator that sequences merges (a merge queue), a FIFO queue for shared res
 - `lagent task adopt <path>` takes over a worktree made by hand (label `adopted`, start = merge base with the
   trunk). A workspace that merges without a task becomes one on its first merge.
 - Any Lucina repo works: the trunk is `.lucina/pipeline.toml`'s `trunk`, else origin's HEAD, else `main`. Repos
-  without a remote (lucinaos, LucinaAndroidOS) merge into the local trunk branch.
+  without a remote (LucinaOS) merge into the local trunk branch.
 - **Hook**: `tools/pipeline-guard` is a Claude Code PreToolUse(Bash) hook (Mac and nezopt `~/.claude/settings.json`).
   In Lucina repos it denies `git worktree add` / `wt add` (→ `lagent task start`) and `git push … main`
   (→ `lagent merge`). `LAGENT_BYPASS=<reason>` in the command passes and is logged.

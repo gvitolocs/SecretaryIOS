@@ -240,15 +240,15 @@ local = "/home/nez/Projects/Lucina/SecretaryIOS"
 branch = "origin/main"
 pin = "127622327a995969e6c36fef384f94b7640d989b"
 paths = ["crates/ink-epub", "crates/ink-render", "crates/ink-library", "crates/ink-sync", "crates/ink-kindle-hal"]
-ours = [{ repo = "/home/nez/Projects/Lucina/lucinaos", path = "crates/lucina-reader", base = "usb-dev-loop" }]
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "userspace/crates/lucina-reader", base = "main" }]
 licence_upstream = "MIT"
 licence_ours = "unknown"
 relation = "vendored"
 confidence = "confirmed"
 rely_on = ["epub parsing", "page layout", "fonts", "covers", "sync outbox"]
-notes = "Our own crates: lucina-reader / lucina-mobi pin ink-* by file:// git rev 12762232 (lucinaos branch usb-dev-loop; lucina-reader is not on lucinaos main yet). LucinaOS licence decision D-006 open."
+notes = "Our own crates: lucina-reader / lucina-mobi pin ink-* by file:// git rev 12762232 (LucinaOS userspace/). LucinaOS licence decision D-006 open."
 
-# ───────────────────────── LucinaOS kernel (LucinaAndroidOS) ─────────────────────────
+# ───────────────────────── LucinaOS kernel ─────────────────────────
 
 [[upstream]]
 id = "asterinas"
@@ -260,8 +260,8 @@ branch = "main"
 track = "releases"
 pin = "c4b7ed575b7b32773475b194d2ad41fb6d03765b"
 ours = [
-  { repo = "/home/nez/Projects/Lucina/LucinaAndroidOS", path = "kernel/patches", base = "main" },
-  { repo = "/home/nez/Projects/Lucina/LucinaAndroidOS", path = "third_party/asterinas", base = "main" },
+  { repo = "/home/nez/Projects/Lucina/LucinaOS", path = "kernel/patches", base = "main" },
+  { repo = "/home/nez/Projects/Lucina/LucinaOS", path = "third_party/asterinas", base = "main" },
 ]
 licence_upstream = "MPL-2.0"
 licence_ours = "MPL-2.0"
@@ -273,7 +273,7 @@ notes = "v0.19.0 = c4b7ed57 (references/upstream.lock, .gitmodules); submodule u
   [[upstream.contrib]]
   id = "asterinas-aarch64-boot-patches"
   title = "AArch64 hardware boot series (kernel/patches 0001-0021: DRAM base, linear map, BSS zeroing, DT framebuffer, 512 GiB leaves, early exceptions, fallible copy, CPU-local, signal/ptrace fixes, PSCI CPU_ON SMP, tick stop on idle)"
-  ours = "LucinaAndroidOS kernel/patches/0001-0021"
+  ours = "LucinaOS kernel/patches/0001-0021"
   upstream_target = "asterinas/asterinas main, as a small patch series per topic"
   notes = "integration-decisions.md already says they go in as a small upstreamable series. Strip board-private values."
   status = "candidate"
@@ -281,7 +281,7 @@ notes = "v0.19.0 = c4b7ed57 (references/upstream.lock, .gitmodules); submodule u
   [[upstream.contrib]]
   id = "asterinas-aarch64-uefi"
   title = "LucinaUEFI: booting AArch64 Asterinas under UEFI at EL1/EL2 (Asterinas has an EFI stub only for x86)"
-  ours = "LucinaAndroidOS boot/lucina-uefi, boot/lucina-loader"
+  ours = "LucinaOS boot/lucina-uefi, boot/lucina-loader"
   upstream_target = "asterinas/asterinas (ostd/boot aarch64)"
   notes = "Biggest contribute-back candidate; licence decision D-006 first."
   status = "candidate"
@@ -295,7 +295,7 @@ repo = "asterinas/vostd"
 branch = "main"
 track = "commits"
 pin = "020b85418e2d4edcd5089cbf818e477b1d07f3ea"
-ours = [{ repo = "/home/nez/Projects/Lucina/LucinaAndroidOS", path = "verification", base = "main" }]
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "verification", base = "main" }]
 licence_upstream = "MPL-2.0"
 licence_ours = "MPL-2.0"
 relation = "port"
@@ -313,7 +313,7 @@ branch = "main"
 track = "commits"
 pin = "55fb0185e42957ac5f1f6e16c8beb9e2093a3a2e"
 notify = "report"
-ours = [{ repo = "/home/nez/Projects/Lucina/LucinaAndroidOS", path = "verification", base = "main" }]
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "verification", base = "main" }]
 licence_upstream = "MIT"
 licence_ours = "MPL-2.0"
 relation = "reference"
@@ -331,7 +331,7 @@ track = "releases"
 pin = "release/0.2026.10.26.d17fbd0"
 notify = "report"
 ours = [
-  { repo = "/home/nez/Projects/Lucina/LucinaAndroidOS", path = "verification", base = "main" },
+  { repo = "/home/nez/Projects/Lucina/LucinaOS", path = "verification", base = "main" },
   { repo = "/home/nez/Projects/Lucina/SecretaryIOS", path = "crates/nclient-core" },
 ]
 licence_upstream = "MIT"
@@ -351,7 +351,7 @@ branch = "main"
 track = "releases"
 pin = "uefi-v0.37.0"
 notify = "report"
-ours = [{ repo = "/home/nez/Projects/Lucina/LucinaAndroidOS", path = "boot/lucina-uefi", base = "main" }]
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "boot/lucina-uefi", base = "main" }]
 licence_upstream = "MIT OR Apache-2.0"
 licence_ours = "MPL-2.0"
 relation = "reference"
@@ -368,7 +368,7 @@ repo = "linux-msm/qrtr"
 branch = "master"
 track = "commits"
 pin = "29e36ae1"
-ours = [{ repo = "/home/nez/Projects/Lucina/lucinaos", path = "crates/lucina-qcom", base = "main" }]
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "userspace/crates/lucina-qcom", base = "main" }]
 licence_upstream = "BSD-3-Clause"
 licence_ours = "GPL-3.0-or-later"
 relation = "port"
@@ -386,7 +386,7 @@ branch = "main"
 track = "commits"
 pin = "337c05a80c739f15c09f9d1f714393828e9f5583"
 notify = "report"
-ours = [{ repo = "/home/nez/Projects/Lucina/LucinaAndroidOS", path = ".", base = "main" }]
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = ".", base = "main" }]
 licence_upstream = "GPL-2.0"
 licence_ours = "MPL-2.0"
 relation = "reference"
@@ -403,7 +403,7 @@ branch = "main"
 track = "commits"
 pin = "d7eadb03f230506140839f18a6c0ef3c43016d7e"
 notify = "report"
-ours = [{ repo = "/home/nez/Projects/Lucina/LucinaAndroidOS", path = ".", base = "main" }]
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = ".", base = "main" }]
 licence_upstream = "unknown"
 licence_ours = "MPL-2.0"
 relation = "reference"
@@ -420,7 +420,7 @@ branch = "v7.2"
 track = "commits"
 pin = "fd78d17954a86ea6ceb0c535e618ea129e09f8dd"
 notify = "report"
-ours = [{ repo = "/home/nez/Projects/Lucina/LucinaAndroidOS", path = ".", base = "main" }]
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = ".", base = "main" }]
 licence_upstream = "GPL-2.0"
 licence_ours = "MPL-2.0"
 relation = "reference"
@@ -437,7 +437,7 @@ branch = "lineage-22.2"
 track = "commits"
 pin = "e5a8a8a42c95d8ad588f261bdc9d60c75ca3b3fd"
 notify = "report"
-ours = [{ repo = "/home/nez/Projects/Lucina/LucinaAndroidOS", path = "docs/parity", base = "main" }]
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "docs/parity", base = "main" }]
 licence_upstream = "Apache-2.0"
 licence_ours = "MPL-2.0"
 relation = "reference"
@@ -452,7 +452,7 @@ source = "git"
 branch = "main"
 pin = "d2bb0af5ba6d3198a3e99529c97eda1be0b5a093"
 notify = "report"
-ours = [{ repo = "/home/nez/Projects/Lucina/LucinaAndroidOS", path = ".", base = "main" }]
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = ".", base = "main" }]
 licence_upstream = "Apache-2.0"
 licence_ours = "MPL-2.0"
 relation = "reference"
@@ -470,13 +470,13 @@ package = "linux"
 suite = "trixie"
 pin = "6.12.107-1"
 notify = "report"
-ours = [{ repo = "/home/nez/Projects/Lucina/lucinaos", path = "boards/gbgo", base = "main" }]
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "userspace/boards/gbgo", base = "main" }]
 licence_upstream = "GPL-2.0"
 licence_ours = "GPL-2.0"
 relation = "vendored"
 confidence = "likely"
 rely_on = ["arm64 kernel", "sc7180", "grub"]
-notes = "Debian 13.7 arm64 netinst, kernel 6.12.107, GRUB 2.12, pinned by SHA-256 in lucinaos/boards/gbgo/build.sh. Exact Debian package revision (-1) not checked."
+notes = "Debian 13.7 arm64 netinst, kernel 6.12.107, GRUB 2.12, pinned by SHA-256 in userspace/boards/gbgo/build.sh. Exact Debian package revision (-1) not checked."
 
 [[upstream]]
 id = "gbgo-dtb"
@@ -484,12 +484,12 @@ name = "velvet-os / xbill9 Galaxy Book Go DTB"
 url = "https://github.com/search?q=velvet-os"
 source = "manual"
 check_hint = "No public repo found for velvet-os 251220-01 or xbill9's fixes (2026-11-01). Check the sources noted in ~/Hardware/SamsungPC/ on the Mac for a newer DTB than sha256 5c08a267…"
-ours = [{ repo = "/home/nez/Projects/Lucina/lucinaos", path = "boards/gbgo", base = "main" }]
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "userspace/boards/gbgo", base = "main" }]
 licence_upstream = "unknown"
 licence_ours = "unknown"
 relation = "vendored"
 confidence = "unconfirmed"
-notes = "DTB byte-identical to xbill9's final DTB 5c08a267 (lucinaos/boards/gbgo/README.md:66, build.sh:17); kept outside git."
+notes = "DTB byte-identical to xbill9's final DTB 5c08a267 (userspace/boards/gbgo/README.md:66, build.sh:17); kept outside git."
 
 # ───────────────────────── LucinaOS Kindle (PW3) ─────────────────────────
 
@@ -502,18 +502,18 @@ repo = "akemnade/linux"
 branch = "kobo/drm-merged-7.1"
 track = "commits"
 pin = "8c68d420f"
-ours = [{ repo = "/home/nez/Projects/Lucina/lucinaos-kernel", path = ".", base = "pw3" }]
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = ".", base = "minerva-linux" }]
 licence_upstream = "GPL-2.0"
 licence_ours = "GPL-2.0"
 relation = "fork"
 confidence = "confirmed"
 rely_on = ["epd drm", "imx6sl", "max77696", "cyttsp4", "usb gadget"]
-notes = "Linux 7.1.10 base (lucinaos-kernel/lucinaos/README.md, LUCINAOS-ARCHITECTURE.md); our branches pw3 / pw3-usb-bringup."
+notes = "Linux 7.1.10 base (branch minerva-linux lucinaos/README.md, LUCINAOS-ARCHITECTURE.md); our branch minerva-linux."
 
   [[upstream.contrib]]
   id = "akemnade-wario-pw3"
   title = "Kindle PW3 (Wario) device tree, defconfig and MAX77696/cyttsp4 driver ports"
-  ours = "lucinaos-kernel branches pw3 / pw3-usb-bringup"
+  ours = "LucinaOS branch minerva-linux"
   upstream_target = "akemnade/linux, then mainline via its maintainer"
   notes = "Needs cleanup to mainline style first; values from Amazon WARIO_BASE code."
   status = "candidate"
@@ -524,12 +524,12 @@ name = "Amazon Kindle GPL sources (PW3 5.16.2.1.1)"
 url = "https://www.amazon.com/gp/help/customer/display.html?nodeId=200203720"
 source = "manual"
 check_hint = "Amazon's Kindle source-code page: a newer Kindle_src_5.x tarball for the Paperwhite 3 (WARIO_BASE) than 5.16.2.1.1."
-ours = [{ repo = "/home/nez/Projects/Lucina/lucinaos", path = "vendor/amazon-gpl", base = "main" }]
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "userspace/vendor/amazon-gpl", base = "main" }]
 licence_upstream = "GPL-2.0"
 licence_ours = "GPL-2.0"
 relation = "reference"
 confidence = "confirmed"
-notes = "linux 3.0.35-lab126 and U-Boot 2009.08-lab126 (lucinaos/vendor/amazon-gpl SHA256SUMS, ~/scratch/amazon-full/x). PW3 is WARIO_BASE, not WOODY. The PW3 gets no new firmware, so this rarely changes."
+notes = "linux 3.0.35-lab126 and U-Boot 2009.08-lab126 (userspace/vendor/amazon-gpl SHA256SUMS, ~/scratch/amazon-full/x). PW3 is WARIO_BASE, not WOODY. The PW3 gets no new firmware, so this rarely changes."
 
 [[upstream]]
 id = "busybox"
@@ -539,12 +539,12 @@ source = "git"
 branch = "master"
 pin = "1_37_0"
 notify = "report"
-ours = [{ repo = "/home/nez/Projects/Lucina/lucinaos", path = "rescue", base = "main" }]
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "userspace/rescue", base = "main" }]
 licence_upstream = "GPL-2.0"
 licence_ours = "GPL-2.0"
 relation = "vendored"
 confidence = "confirmed"
-notes = "Rescue shell for Kindle and gbgo, 1.37.0 pinned with SHA-256 in lucinaos/rescue/pins.sh. Tags via git ls-remote (tags sort by name, so the newest is not always last)."
+notes = "Rescue shell for Kindle and gbgo, 1.37.0 pinned with SHA-256 in userspace/rescue/pins.sh. Tags via git ls-remote (tags sort by name, so the newest is not always last)."
 
 [[upstream]]
 id = "dropbear"
@@ -555,13 +555,13 @@ repo = "mkj/dropbear"
 branch = "main"
 track = "tags"
 pin = "DROPBEAR_2025.88"
-ours = [{ repo = "/home/nez/Projects/Lucina/lucinaos", path = "rescue", base = "main" }]
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "userspace/rescue", base = "main" }]
 licence_upstream = "MIT"
 licence_ours = "GPL-2.0"
 relation = "vendored"
 confidence = "confirmed"
 rely_on = ["ssh server"]
-notes = "Rescue SSH, 2025.88 pinned in lucinaos/rescue/pins.sh. Security fixes matter here (it is the rescue door)."
+notes = "Rescue SSH, 2025.88 pinned in userspace/rescue/pins.sh. Security fixes matter here (it is the rescue door)."
 
 # ───────────────────────── Closed apps ported to Rust (no feed) ─────────────────────────
 

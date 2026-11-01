@@ -10,7 +10,7 @@ Sessions don't make worktrees, merge, deploy or install by hand any more. On the
 forwards to nezopt and passes your session id; on nezopt it is `~/.local/bin/lagent`.
 
 ```sh
-lagent task start "Instagram gallery paging" [--repo ~/Projects/Lucina/lucinaos] [--branch ig-gallery-paging]
+lagent task start "Instagram gallery paging" [--repo ~/Projects/Lucina/LucinaOS] [--branch ig-gallery-paging]
 #   -> a fresh worktree from origin/main in ~/Projects/.worktrees/<Repo>/<branch>, registered with your session
 cd <the printed path>; …work…; git commit …           # commit everything that belongs to the task
 lagent merge <workspace id | path | branch>          # queued per repo; Lucina rebases on origin/main, runs the gates

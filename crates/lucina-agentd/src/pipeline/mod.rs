@@ -223,9 +223,9 @@ pub struct Lease {
 /// The devices Lucina hands out (`lagent device ls`).
 pub const DEVICES: &[(&str, &str)] = &[
     ("iphone", "Giuseppe - iPhone (iPhone 16e): Secretary iOS builds, installed from the Mac with ios-install"),
-    ("stick", "Samsung laptop USB stick (gbgo): LucinaOS images"),
-    ("kindle", "Kindle Paperwhite 3: LucinaOS reader"),
-    ("poco", "POCO X3 (surya): LucinaAndroidOS"),
+    ("stick", "Samsung laptop USB stick (gbgo): LucinaOS Juno images"),
+    ("kindle", "Kindle Paperwhite 3 (pw3): LucinaOS Minerva reader"),
+    ("poco", "POCO X3 (surya): LucinaOS Diana"),
 ];
 
 /// Where jobs live and how they are started.

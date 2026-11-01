@@ -83,7 +83,7 @@ pub fn verdict(command: &str, cwd: &str) -> Option<String> {
     if hand_merge_into_main_checkout(command, cwd) {
         return Some(
             "Lucina repos: a repo's main checkout moves only through the merge queue (repos without a remote too: \
-             lucinaos, LucinaAndroidOS). Commit in your workspace and run `lagent merge <workspace id | path>`; \
+             LucinaOS). Commit in your workspace and run `lagent merge <workspace id | path>`; \
              it fast-forwards the main checkout itself. Merging origin/main into your own worktree is fine."
                 .into(),
         );

@@ -57,7 +57,7 @@ pub const DEFAULT_QWEN_URL: &str = "http://127.0.0.1:11436";
 pub const DEFAULT_MODEL: &str = "qwen3.8:27b-q4-72k";
 pub const DEFAULT_GIT: &str =
     "lucina-rs=/home/nez/Projects/Lucina/SecretaryIOS@origin/main#lucina;\
-lucinaos=/home/nez/Projects/Lucina/lucinaos@usb-dev-loop#lucinaos";
+lucinaos=/home/nez/Projects/Lucina/LucinaOS@main#lucinaos";
 /// The canonical vault: the Pi, reached as `pi-cursor` (user `nes`).
 pub const DEFAULT_TARGET: &str = "ssh:pi-cursor:/home/nes/Obsidian";
 /// Project slug → vault folder, first match wins (`x*` matches a prefix,

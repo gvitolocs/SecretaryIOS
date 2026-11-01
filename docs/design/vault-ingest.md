@@ -161,7 +161,7 @@ journal compacts itself past 4 MiB.
 | `LUCINA_VAULT_INGEST_QCODE_LOCK` | `~/.cache/qcode/lock` |
 | `LUCINA_VAULT_INGEST_LAST_USED_FILE` | `~/.local/state/llama-server-qwen/last-used` |
 | `LUCINA_VAULT_INGEST_QUIET_SECS` | 120 |
-| `LUCINA_VAULT_INGEST_GIT` | `lucina-rs=…/SecretaryIOS@origin/main#lucina;lucinaos=…/lucinaos@usb-dev-loop#lucinaos` |
+| `LUCINA_VAULT_INGEST_GIT` | `lucina-rs=…/SecretaryIOS@origin/main#lucina;lucinaos=…/LucinaOS@main#lucinaos` |
 | `LUCINA_VAULT_INGEST_COLD_AFTER_HOURS` | 6 (0: only manual runs load the model) |
 | `LUCINA_VAULT_INGEST_BACKFILL_DAYS` | 2 |
 | `LUCINA_VAULT_INGEST_BACKFILL_COMMITS` | 10 |
