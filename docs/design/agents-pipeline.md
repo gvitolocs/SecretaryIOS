@@ -99,9 +99,9 @@ Designed (with the "Enforce iPhone installs only from main" session, which owns 
 Built: `GET /pipeline/board` and `lagent board`: every worktree workspace with its state (`open`, `merge_queued`,
 `merging`, `merged`, `stale` = unmerged and idle over 3 days), changes ahead, dirtiness, idle days and session;
 worktrees nobody registered (`unmanaged`); the queue; recent jobs; leases; recent deploys (deploy-guard's
-history). secretary-server proxies `/v1/agents/*` to agentd; `pipeline` and `devices` are in its top-level path
-list (`crates/secretary-server/src/agents.rs` `TOP`), so once secretary-server is deployed from a main that has
-this, the app reads `/v1/agents/pipeline/board` and `/v1/agents/devices`.
+history). secretary-server proxies `/v1/agents/*` to agentd; adding `pipeline` and `devices` to its top-level path
+list (`crates/secretary-server/src/agents.rs` `TOP`) and deploying it lets the app read `/v1/agents/pipeline/board`
+and `/v1/agents/devices` (patch ready; it waits for main's failing secretary-server Keep test to be fixed).
 
 Designed:
 - **App**: a "Pipeline" section on the Agents page (web and iOS) with the same rows, grouped by state, a job's log
