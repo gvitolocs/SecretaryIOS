@@ -116,10 +116,11 @@ final class ApprovalNotifier: ApprovalNotifying {
                                                      icon: UNNotificationActionIcon(systemImageName: "faceid"))
         let deny = UNNotificationAction(identifier: denyAction, title: String(localized: "Deny"), options: [.destructive],
                                         icon: UNNotificationActionIcon(systemImageName: "xmark"))
+        // Deny first: the long-press menu lists it at the top, so a quick tap never lands on Approve.
         let mine: Set<UNNotificationCategory> = [
-            UNNotificationCategory(identifier: category, actions: [approve, deny], intentIdentifiers: [], options: []),
-            UNNotificationCategory(identifier: sensitiveCategory, actions: [approveInApp, deny], intentIdentifiers: [], options: []),
-            UNNotificationCategory(identifier: sensitiveInlineCategory, actions: [approveWithFaceID, deny],
+            UNNotificationCategory(identifier: category, actions: [deny, approve], intentIdentifiers: [], options: []),
+            UNNotificationCategory(identifier: sensitiveCategory, actions: [deny, approveInApp], intentIdentifiers: [], options: []),
+            UNNotificationCategory(identifier: sensitiveInlineCategory, actions: [deny, approveWithFaceID],
                                    intentIdentifiers: [], options: []),
             DecisionNotifier.pushCategoryDefinition(),
         ]
