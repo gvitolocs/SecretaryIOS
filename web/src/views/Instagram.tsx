@@ -1,5 +1,5 @@
 import { A, useNavigate, useParams } from "@solidjs/router";
-import { createEffect, createResource, createSignal, For, getOwner, on, onCleanup, onMount, Show, type Accessor } from "solid-js";
+import { createEffect, createMemo, createResource, createSignal, For, getOwner, on, onCleanup, onMount, Show, type Accessor } from "solid-js";
 import { ApiError } from "../api/client";
 import { instagramApi, type IgHighlight, type IgItem, type IgPage, type IgRecent, type IgWatch } from "../api/instagram";
 import {
@@ -484,12 +484,26 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
   let profilePolls = 0;
   createEffect(
     on(bundle, (b) => {
-      if (!b?.refreshing || profilePolls >= MAX_POLLS) return;
-      profilePolls += 1;
-      const timer = setTimeout(() => {
-        void instagramApi.profile(props.username).then((fresh) => profile.set(fresh), () => {});
-      }, POLL_MS);
-      onCleanup(() => clearTimeout(timer));
+      if (!b?.refreshing) return;
+      // Only a copy that differs goes on screen: each one repaints the page and its media.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let stopped = false;
+      const poll = () => {
+        if (stopped || profilePolls >= MAX_POLLS) return;
+        profilePolls += 1;
+        timer = setTimeout(() => {
+          void instagramApi.profile(props.username).then((fresh) => {
+            if (stopped) return;
+            if (fresh.refreshing && JSON.stringify(fresh) === JSON.stringify(bundle())) poll();
+            else profile.set(fresh);
+          }, () => {});
+        }, POLL_MS);
+      };
+      poll();
+      onCleanup(() => {
+        stopped = true;
+        clearTimeout(timer);
+      });
     }),
   );
   const [highlights, setHighlights] = createSignal<IgHighlight[]>(pageCache.peek<IgHighlight[]>(trayKey)?.value ?? []);
@@ -555,10 +569,11 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
     }),
   );
 
-  // Opening a watched account clears its red dot.
+  // Opening a watched account clears its red dot. A memo, so a newer copy of the same profile doesn't count as opening it.
+  const profileName = createMemo(() => bundle()?.profile.username);
   createEffect(
     on(
-      () => bundle()?.profile.username,
+      profileName,
       async (name) => {
         if (!name) return;
         await refreshInstagramWatched();
