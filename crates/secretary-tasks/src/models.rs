@@ -536,7 +536,7 @@ pub struct DueView {
     /// Days from today (negative = overdue).
     pub rel_days: i64,
     pub overdue: bool,
-    #[serde(skip_serializing_if = "is_false")]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub provisional: bool,
 }
 
@@ -571,7 +571,7 @@ pub struct TaskView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_minutes: Option<u32>,
     /// Nested sub-tasks (project, inbox, label and filter views).
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<TaskView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completed_ms: Option<u64>,

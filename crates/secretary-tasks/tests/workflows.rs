@@ -542,3 +542,13 @@ fn disconnect_keeps_local_tasks_only() {
     assert_eq!(st.sync.status, SyncStatus::Disconnected);
     assert!(st.outbox[0].args.get("project_id").is_none());
 }
+
+/// A native client (Juno) reads the server's answer with these same types.
+#[test]
+fn a_view_reads_back_from_its_json() {
+    let mut e = synced();
+    let v = view(&mut e, json!({"kind": "today"}));
+    let text = serde_json::to_string(&v).unwrap();
+    let back: View = serde_json::from_str(&text).unwrap();
+    assert_eq!(back, v);
+}
