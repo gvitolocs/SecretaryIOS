@@ -410,46 +410,19 @@ describe("Instagram", () => {
       expect(await screen.findByRole("dialog", { name: "Best of: all items" })).toBeInTheDocument();
     });
 
-    it("opens a story full screen: no panel under it, the info as an overlay that hides by itself", async () => {
-      vi.useFakeTimers({ shouldAdvanceTime: true });
-      try {
-        await openHighlight();
-        await waitFor(() => expect(tiles()).toHaveLength(7));
-        fireEvent.click(tiles()[2]!);
-        const viewer = await screen.findByRole("dialog", { name: "3 of 7" });
-        expect(viewer).toHaveClass("ig-story-viewer");
-        // The caption is in the overlay over the picture, not in a panel that shrinks it.
-        expect(viewer.querySelector(".pv-panel")).toBeNull();
-        expect(viewer).not.toHaveClass("pv--panel");
-        const overlay = viewer.querySelector(".pv-overlay")!;
-        expect(overlay).toHaveTextContent("@natgeo");
-        expect(overlay).toHaveTextContent("caption h3");
-        expect(overlay.querySelectorAll(".ig-story__bar")).toHaveLength(7);
-        expect(overlay.querySelector(".ig-story__bar--on")).toBe(overlay.querySelectorAll(".ig-story__bar")[2]);
-        // Shown on open, gone after about 3 s.
-        expect(viewer).toHaveClass("pv--chrome");
-        vi.advanceTimersByTime(3100);
-        await waitFor(() => expect(viewer).not.toHaveClass("pv--chrome"));
-      } finally {
-        vi.useRealTimers();
-      }
-    });
-
-    it("asks Secretary Code's focus mode for a story and gives it back on close", async () => {
-      const setFocusMode = vi.fn();
-      (window as { secretaryShell?: unknown }).secretaryShell = { setFocusMode, onFocusModeChange: () => () => undefined, setBadge() {} };
-      try {
-        await openHighlight();
-        await waitFor(() => expect(tiles()).toHaveLength(7));
-        fireEvent.click(tiles()[0]!);
-        await screen.findByRole("dialog", { name: "1 of 7" });
-        expect(setFocusMode).toHaveBeenCalledWith(true);
-        fireEvent.keyDown(window, { key: "Escape" });
-        await screen.findByRole("dialog", { name: "Best of: all items" });
-        expect(setFocusMode).toHaveBeenLastCalledWith(false);
-      } finally {
-        delete (window as { secretaryShell?: unknown }).secretaryShell;
-      }
+    it("opens a highlight item in the Gallery viewer: no panel under it, its info as an overlay with the controls", async () => {
+      await openHighlight();
+      await waitFor(() => expect(tiles()).toHaveLength(7));
+      fireEvent.click(tiles()[2]!);
+      const viewer = await screen.findByRole("dialog", { name: "3 of 7" });
+      expect(viewer).toHaveClass("ig-story-viewer");
+      expect(viewer.querySelector(".pv-panel")).toBeNull();
+      const overlay = viewer.querySelector(".pv-overlay")!;
+      expect(overlay).toHaveTextContent("@natgeo");
+      expect(overlay).toHaveTextContent("caption h3");
+      // The Gallery viewer's own controls: its Full screen, and no story-only buttons.
+      expect(viewer.querySelector(".ig-pv-sound")).toBeNull();
+      expect(viewer.querySelector(".ig-story__bar")).toBeNull();
     });
 
     it("moves between tiles with the arrow keys", async () => {
@@ -465,7 +438,7 @@ describe("Instagram", () => {
     });
   });
 
-  it("keeps a post's caption in the panel beside it (only stories go full screen)", async () => {
+  it("keeps a post's caption in the panel beside it (only stories use the overlay)", async () => {
     serve({ profile: bundle() });
     renderIg("/instagram/natgeo");
     fireEvent.click(await screen.findByRole("button", { name: /^Posts 1/ }));
@@ -921,6 +894,47 @@ describe("Instagram desktop", () => {
       renderIg();
       fireEvent.focus(await screen.findByRole("searchbox"));
       expect(await screen.findByRole("button", { name: "Open @nasa from the clipboard" })).toBeInTheDocument();
+    });
+  });
+
+  describe("paging", () => {
+    it("says the posts stop at the newest twelve of the profile's count", async () => {
+      serve({ profile: { ...bundle(), posts: posts(["p1", "p2", "p3"], null) } });
+      renderIg("/instagram/natgeo");
+      await screen.findByRole("button", { name: /^Posts 1/ });
+      const panel = screen.getByRole("tabpanel");
+      expect(panel).toHaveTextContent("3 of 32K posts");
+      expect(panel).toHaveTextContent("Showing the newest 3 of 32K posts");
+      expect(within(panel).queryByRole("button", { name: "Load more" })).toBeNull();
+    });
+
+    it("says all are loaded when the list ends at the profile's count", async () => {
+      const small = bundle();
+      small.profile.mediaCount = 2;
+      serve({ profile: { ...small, posts: posts(["p1", "p2"], null) } });
+      renderIg("/instagram/natgeo");
+      await screen.findByRole("button", { name: /^Posts 1/ });
+      expect(screen.getByRole("tabpanel")).toHaveTextContent("All 2 loaded.");
+    });
+
+    it("loads the next page when the end of the list comes into view", async () => {
+      const seen: IntersectionObserverCallback[] = [];
+      vi.stubGlobal("IntersectionObserver", class {
+        constructor(cb: IntersectionObserverCallback) { seen.push(cb); }
+        observe() {}
+        disconnect() {}
+      });
+      try {
+        const calls = serve({ profile: bundle(), posts: posts(["p3", "p4"], null) });
+        renderIg("/instagram/natgeo");
+        await screen.findByRole("button", { name: /^Posts 1/ });
+        await waitFor(() => expect(seen.length).toBeGreaterThan(0));
+        seen.at(-1)!([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver);
+        await waitFor(() => expect(calls.some((c) => c.url === "/v1/instagram/posts/natgeo?cursor=C2")).toBe(true));
+        await waitFor(() => expect(screen.getAllByRole("button", { name: /^Posts \d/ })).toHaveLength(4));
+      } finally {
+        vi.unstubAllGlobals();
+      }
     });
   });
 });

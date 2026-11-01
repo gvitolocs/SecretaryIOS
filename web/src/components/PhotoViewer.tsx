@@ -89,10 +89,6 @@ export interface PhotoViewerProps {
    * Its box lets pointers through; give `pointer-events: auto` to what is clickable inside.
    */
   overlay?: JSX.Element;
-  /** The controls (and `overlay`) hide this long after they were shown or the pointer last moved. */
-  chromeAutoHideMs?: number;
-  /** A tap on the left or right 30 % goes to the previous or next item at once; the middle toggles the controls. */
-  tapZones?: boolean;
   /** Extra class on the viewer's root. */
   class?: string;
 }
@@ -380,15 +376,6 @@ export function PhotoViewer(props: PhotoViewerProps) {
 
   const tap = (p: Pointer) => {
     const now = performance.now();
-    if (props.tapZones) {
-      const w = size().w || 1;
-      if (p.x < w * 0.3 || p.x > w * 0.7) {
-        window.clearTimeout(tapTimer);
-        lastTap = null;
-        move(p.x < w * 0.3 ? -1 : 1, true);
-        return;
-      }
-    }
     if (lastTap && now - lastTap.t < DOUBLE_TAP_MS && Math.hypot(p.x - lastTap.x, p.y - lastTap.y) < 30) {
       window.clearTimeout(tapTimer);
       lastTap = null;
@@ -694,24 +681,12 @@ export function PhotoViewer(props: PhotoViewerProps) {
   const sidePanel = children(() => props.panel);
   const overlay = children(() => props.overlay);
 
-  // Controls that hide by themselves (stories): shown on open and on a tap, gone again after a while.
-  let hideTimer: number | undefined;
-  const armHide = () => {
-    window.clearTimeout(hideTimer);
-    if (props.chromeAutoHideMs && chrome()) hideTimer = window.setTimeout(() => setChrome(false), props.chromeAutoHideMs);
-  };
-  createEffect(on(chrome, armHide));
-  onCleanup(() => window.clearTimeout(hideTimer));
-
   return (
     <Portal>
       <div
         ref={panel}
         class={props.class ? `pv ${props.class}` : "pv"}
         classList={{ "pv--chrome": chrome(), "pv--animating": animating(), "pv--closing": closing(), "pv--zoomed": zoomed(), "pv--panel": !!sidePanel() }}
-        onPointerMove={(e) => {
-          if (e.pointerType === "mouse" && props.chromeAutoHideMs && chrome()) armHide();
-        }}
         role="dialog"
         aria-modal="true"
         aria-label={label()}

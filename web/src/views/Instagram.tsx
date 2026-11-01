@@ -182,6 +182,20 @@ function StackBadge() {
   );
 }
 
+/** Asks for the next page while the end of a list comes near (the Load more button stays as the fallback). */
+function MoreSentinel(props: { onNear: () => void }) {
+  let el: HTMLDivElement | undefined;
+  onMount(() => {
+    if (!el || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) props.onNear();
+    }, { rootMargin: "800px 0px" });
+    io.observe(el);
+    onCleanup(() => io.disconnect());
+  });
+  return <div ref={el} class="ig-sentinel" aria-hidden="true" />;
+}
+
 function Tile(props: { item: IgItem; label: string; onOpen: () => void }) {
   const src = () => props.item.thumbUrl ?? (props.item.kind === "image" ? props.item.url : null);
   return (
@@ -683,6 +697,9 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
                     <Show when={feed()}>
                       {(f) => (
                         <>
+                          <Show when={tb === "posts" && f().items().length > 0 && b().profile.mediaCount > f().items().length}>
+                            <p class="ig-muted ig-count">{t("instagram.loadedOf", { shown: f().items().length, total: formatCount(b().profile.mediaCount) })}</p>
+                          </Show>
                           <Show when={f().items().length > 0}>
                             <div class="ig-grid" classList={{ "ig-grid--tall": tb !== "posts" }}>
                               <For each={f().items()}>
@@ -714,7 +731,16 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
                             </div>
                           </Show>
                           <Show when={f().hasMore() && !f().loading() && !f().error()}>
+                            <MoreSentinel onNear={() => void f().more()} />
                             <button type="button" class="ig-btn ig-more" onClick={() => void f().more()}>{t("instagram.loadMore")}</button>
+                          </Show>
+                          {/* The end of the list, said: posts stop at the newest twelve (StoryView ignores the cursor). */}
+                          <Show when={f().loaded() && !f().hasMore() && !f().loading() && !f().error() && f().items().length > 0}>
+                            <p class="ig-muted ig-end" role="status">
+                              {tb === "posts" && b().profile.mediaCount > f().items().length
+                                ? t("instagram.postsCapped", { shown: f().items().length, total: formatCount(b().profile.mediaCount) })
+                                : t("instagram.allLoaded", { count: f().items().length })}
+                            </p>
                           </Show>
                         </>
                       )}

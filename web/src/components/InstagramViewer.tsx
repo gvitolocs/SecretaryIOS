@@ -1,9 +1,8 @@
-import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from "solid-js";
 import { Portal } from "solid-js/web";
 import { instagramApi, type IgSaveItem } from "../api/instagram";
 import { ApiError } from "../api/client";
 import { t } from "../i18n";
-import { hasFocusMode, setFocusMode } from "../lib/focusMode";
 import { formatTaken, type Slide } from "../lib/instagram";
 import { CheckIcon, DownloadIcon, ExternalIcon, GridIcon } from "./Icons";
 import { PhotoViewer, type ViewerItem } from "./PhotoViewer";
@@ -12,10 +11,9 @@ import { PhotoViewer, type ViewerItem } from "./PhotoViewer";
 // ⌘/ctrl + wheel, double tap or click, drag while zoomed, swipe, arrows, Esc, full screen) with
 // "Save to Lucina" on every slide (POST /v1/instagram/save) and the post's caption in its panel.
 //
-// Stories and highlights (`story`) open full screen instead (owner, 2026-11-01): the picture or video edge to edge on
-// black and nothing under it; a tap in the middle shows who, when, the caption, the progress and the buttons over it
-// (they hide again after 3 s), a tap on the left or right third goes back or on, a long press pauses a video, and in
-// Secretary Code the shell's focus mode gives it the whole window (the Films player's full tab).
+// Stories and highlights (`story`) keep the whole viewer for the picture (owner, 2026-11-01: "I like the gallery views
+// more"): no panel under it; who, when and the caption are an overlay that comes and goes with the controls on a tap.
+// Everything else is the Gallery viewer's own (zoom, pinch, swipe, Full screen = the shell's full tab).
 
 type SaveState = "idle" | "saving" | "saved";
 
@@ -38,7 +36,7 @@ export default function InstagramViewer(props: {
   onIndex?: (index: number) => void;
   /** Back to the tiles (the top bar's grid button and G); without it there is no grid button. */
   onGrid?: () => void;
-  /** Stories and highlights: full screen, the info as an overlay on a tap. */
+  /** Stories and highlights: no panel, the info as an overlay with the controls. */
   story?: boolean;
 }) {
   const [index, setIndex] = createSignal(Math.max(0, Math.min(props.start, props.slides.length - 1)));
@@ -105,43 +103,6 @@ export default function InstagramViewer(props: {
 
   onCleanup(() => clearTimeout(toastTimer));
 
-  // Stories: sound off until asked (autoplay needs it), a long press pauses the video, and the shell's full tab.
-  const [muted, setMuted] = createSignal(true);
-  onMount(() => {
-    if (!props.story) return;
-    if (hasFocusMode()) {
-      setFocusMode(true);
-      onCleanup(() => setFocusMode(false));
-    }
-    let holdTimer: ReturnType<typeof setTimeout> | undefined;
-    let held: HTMLVideoElement | null = null;
-    const down = (e: PointerEvent) => {
-      if (!(e.target as Element | null)?.closest?.(".ig-story-viewer .pv-stage")) return;
-      clearTimeout(holdTimer);
-      holdTimer = setTimeout(() => {
-        const video = document.querySelector<HTMLVideoElement>(".ig-story-viewer .pv-slot video");
-        if (video && !video.paused) {
-          video.pause();
-          held = video;
-        }
-      }, 350);
-    };
-    const up = () => {
-      clearTimeout(holdTimer);
-      if (held) void held.play().catch(() => undefined);
-      held = null;
-    };
-    document.addEventListener("pointerdown", down, true);
-    document.addEventListener("pointerup", up, true);
-    document.addEventListener("pointercancel", up, true);
-    onCleanup(() => {
-      clearTimeout(holdTimer);
-      document.removeEventListener("pointerdown", down, true);
-      document.removeEventListener("pointerup", up, true);
-      document.removeEventListener("pointercancel", up, true);
-    });
-  });
-
   createEffect(on(index, (i) => total() - i <= 3 && props.onNearEnd?.()));
   createEffect(on(index, (i) => props.onIndex?.(i), { defer: true }));
 
@@ -155,16 +116,6 @@ export default function InstagramViewer(props: {
 
   const Toolbar = () => (
     <>
-      <Show when={props.story && slide()?.kind === "video"}>
-        <button
-          type="button"
-          class="pv-btn pv-text ig-pv-sound"
-          aria-pressed={!muted()}
-          onClick={() => setMuted((m) => !m)}
-        >
-          {muted() ? t("instagram.soundOn") : t("instagram.soundOff")}
-        </button>
-      </Show>
       <Show when={props.onGrid}>
         <button type="button" class="pv-btn ig-pv-grid" aria-label={t("instagram.showTiles")} title={t("instagram.showTiles")} onClick={() => props.onGrid?.()}>
           <GridIcon />
@@ -219,14 +170,9 @@ export default function InstagramViewer(props: {
     </div>
   );
 
-  // A story's info, over the picture with the controls: the progress through the slides, who and when, the caption.
+  // A story's info, over the picture with the controls: who and when, the caption.
   const StoryOverlay = () => (
     <div class="ig-story">
-      <div class="ig-story__bars" aria-hidden="true">
-        <For each={props.slides}>
-          {(_, i) => <span classList={{ "ig-story__bar": true, "ig-story__bar--seen": i() < index(), "ig-story__bar--on": i() === index() }} />}
-        </For>
-      </div>
       <div class="ig-story__info">
         <p class="ig-pv-who">
           @{props.username}
@@ -242,8 +188,6 @@ export default function InstagramViewer(props: {
       <PhotoViewer
         class={props.story ? "ig-story-viewer" : undefined}
         overlay={props.story ? <StoryOverlay /> : undefined}
-        chromeAutoHideMs={props.story ? 3000 : undefined}
-        tapZones={props.story}
         items={items()}
         index={index()}
         onIndex={setIndex}
@@ -253,23 +197,7 @@ export default function InstagramViewer(props: {
         toolbar={<Toolbar />}
         panel={!props.story && hasPanel() ? <Panel /> : undefined}
         renderVideo={({ item, current }) =>
-          current && props.story ? (
-            <video
-              class="pv-video"
-              src={item.src ?? undefined}
-              poster={item.poster ?? undefined}
-              autoplay
-              loop
-              playsinline
-              preload="auto"
-              ref={(el) => {
-                el.muted = true;
-                createEffect(() => {
-                  el.muted = muted();
-                });
-              }}
-            />
-          ) : current ? (
+          current ? (
             <video
               class="pv-video"
               src={item.src ?? undefined}
