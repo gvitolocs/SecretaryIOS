@@ -120,6 +120,8 @@ pub struct HeadParser {
     pub reply: Field<200>,
     /// `Content-Type`, cut to fit.
     pub content_type: Field<64>,
+    /// `Sec-WebSocket-Accept` (upgrades only).
+    pub ws_accept: Field<40>,
 }
 
 impl Default for HeadParser {
@@ -141,6 +143,7 @@ impl HeadParser {
             transcript: Field::default(),
             reply: Field::default(),
             content_type: Field::default(),
+            ws_accept: Field::default(),
         }
     }
 
@@ -201,6 +204,8 @@ impl HeadParser {
             self.chunked = value.eq_ignore_ascii_case(b"chunked");
         } else if name.eq_ignore_ascii_case(b"content-type") {
             set_prefix(&mut self.content_type, value);
+        } else if name.eq_ignore_ascii_case(b"sec-websocket-accept") {
+            set_prefix(&mut self.ws_accept, value);
         } else if name.eq_ignore_ascii_case(b"x-lucina-transcript") {
             percent_decode_into(value, &mut self.transcript);
         } else if name.eq_ignore_ascii_case(b"x-lucina-reply") {

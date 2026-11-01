@@ -1,8 +1,14 @@
 # LucinaVoice firmware
 
 A push-to-talk speaker for Lucina on an ESP32, meant to replace the board of an old Amazon Echo. Hold the button,
-speak, let go: the audio streams to `POST /v1/voice` on getsecretary.tech, and Lucina's spoken answer plays as it
+speak, let go: the audio streams to getsecretary.tech while you speak, and Lucina's spoken answer plays as it
 arrives.
+
+It keeps one WebSocket open (`/v1/voice/ws`, protocol in `docs/lucinavoice-protocol.md`), so a turn needs no TLS
+handshake. The server warms speech-to-text on the press, streams Lucina's reply and synthesizes it sentence by
+sentence. An earcon sounds on press and a short blip on release, and pressing again while she answers cuts her
+off and starts a new turn. If the link is down, a turn falls back to one `POST /v1/voice` request. Wi-Fi power
+save is off (it delays incoming packets to the next DTIM beacon).
 
 | crate | |
 |---|---|

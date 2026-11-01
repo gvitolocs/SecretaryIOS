@@ -58,6 +58,15 @@ impl<const N: usize> Field<N> {
         true
     }
 
+    /// The longest prefix of `s` that fits, cut on a char boundary.
+    pub fn set_prefix(&mut self, s: &str) {
+        let mut end = s.len().min(N);
+        while !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        self.set(&s[..end]);
+    }
+
     pub fn as_str(&self) -> &str {
         // Only `set` and `decode` (which checks UTF-8) write the buffer.
         core::str::from_utf8(&self.buf[..self.len as usize]).unwrap_or("")

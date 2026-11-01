@@ -11,18 +11,22 @@
 //! | pin | use |
 //! |---|---|
 //! | GPIO0 (BOOT) or GPIO4 to GND | push to talk |
-//! | GPIO2 | status LED (on: listening, blinking: pairing or waiting) |
+//! | GPIO2 | status LED (on: listening, pulsing: waiting for Lucina, blinking: pairing) |
 //! | I2S pins | see `lucinavoice::audio` |
 //!
-//! A turn: press → TLS connect → beep → stream the mic (chunked s16le
-//! 16 kHz) while held, max 30 s → release → read the answer head (logs
-//! transcript and reply) → play the s16le 24 kHz body as it arrives.
+//! A turn over the persistent link (`docs/lucinavoice-protocol.md`): press →
+//! earcon at once, `start`, mic frames while held → release → `end` and an
+//! "ack" blip → the answer plays as its frames arrive. Pressing again while
+//! Lucina answers cancels that turn and starts a new one (barge-in). Without
+//! the link (old server, link reconnecting) a turn falls back to one
+//! `POST /v1/voice` request.
 
 use alloc::vec;
 use core::fmt::Write as _;
+use core::sync::atomic::Ordering;
 
 use embassy_executor::Spawner;
-use embassy_futures::select::{Either, select};
+use embassy_futures::select::{Either, Either3, select, select3};
 use embassy_time::{Duration, Instant, Timer};
 use embedded_io_async::Write;
 use esp_backtrace as _;
@@ -38,7 +42,9 @@ use esp_println::println;
 use log::{error, info, warn};
 use lucinavoice::audio::{Mic, SPEAKER_RATE, Speaker};
 use lucinavoice::console::{self, COMMANDS, Command};
+use lucinavoice::link::{self, ENDPOINT, EVENTS, Event, FRAME, LINK_UP, OUT, Out, PcmBuf};
 use lucinavoice::net::{self, Client, NetError};
+use lucinavoice::player::{self, PLAY, Play};
 use lucinavoice::store::Store;
 use lucinavoice_core::http::{self, Body, SliceWriter};
 use lucinavoice_core::settings::Settings;
@@ -52,6 +58,8 @@ esp_bootloader_esp_idf::esp_app_desc!();
 
 /// Longest recording per turn.
 const MAX_TURN: Duration = Duration::from_secs(30);
+/// Longest wait for the answer to finish after the end of speech.
+const MAX_ANSWER: Duration = Duration::from_secs(60);
 
 macro_rules! mk_static {
     ($t:ty, $val:expr) => {{
@@ -61,14 +69,38 @@ macro_rules! mk_static {
 }
 
 struct Device {
+    spawner: Spawner,
     store: Store,
     settings: Settings,
     client: Option<Client>,
-    speaker: Speaker,
+    link_started: bool,
     mic: Mic,
     led: Output<'static>,
     ptt: Input<'static>,
     ptt2: Input<'static>,
+}
+
+/// How a turn over the link ended.
+enum Outcome {
+    Done,
+    /// The button was pressed again while Lucina answered: start a new turn.
+    BargeIn,
+}
+
+#[derive(Debug)]
+#[allow(dead_code, reason = "the fields are read through Debug in the logs")]
+enum TurnError {
+    Net(NetError),
+    LinkLost,
+    Server(lucinavoice_core::settings::Field<40>),
+    Timeout,
+    Mic,
+}
+
+impl From<NetError> for TurnError {
+    fn from(e: NetError) -> Self {
+        TurnError::Net(e)
+    }
 }
 
 #[allow(
@@ -114,7 +146,7 @@ async fn main(spawner: Spawner) -> ! {
     // Logged after the UART is set up: reconfiguring it cuts a line in flight.
     info!("LucinaVoice {} starting", env!("CARGO_PKG_VERSION"));
 
-    // Speaker: I2S0 out, 24 kHz stereo 16-bit.
+    // Speaker: I2S0 out, 24 kHz stereo 16-bit, owned by the player task.
     let i2s0 = I2s::new(
         peripherals.I2S0,
         peripherals.DMA_I2S0,
@@ -132,6 +164,7 @@ async fn main(spawner: Spawner) -> ! {
         .with_dout(peripherals.GPIO22)
         .build();
     let speaker = Speaker::new(i2s_tx, dma_tx_stream_buffer!(12 * 1024, 1024));
+    spawner.spawn(player::player_task(speaker).expect("player task"));
 
     // Microphone: I2S1 in, 16 kHz stereo 32-bit words.
     let i2s1 = I2s::new(
@@ -170,6 +203,10 @@ async fn main(spawner: Spawner) -> ! {
                 esp_radio::wifi::WifiController::new(peripherals.WIFI, Default::default())
                     .expect("wifi controller");
             controller.set_config(&config).expect("station config");
+            // Modem sleep delays incoming packets to the next DTIM beacon: off, for latency.
+            if let Err(e) = controller.set_power_saving(esp_radio::wifi::PowerSaveMode::None) {
+                warn!("wifi: could not turn power saving off: {e:?}");
+            }
             let (stack, runner) = embassy_net::new(
                 esp_radio::wifi::Interface::station(),
                 embassy_net::Config::dhcpv4(Default::default()),
@@ -191,16 +228,18 @@ async fn main(spawner: Spawner) -> ! {
     }
 
     let mut dev = Device {
+        spawner,
         store,
         settings,
         client,
-        speaker,
+        link_started: false,
         mic,
         led,
         ptt,
         ptt2,
     };
-    dev.speaker.beep(660, 60).await;
+    dev.start_link();
+    PLAY.send(Play::Beep { freq: 660, ms: 60 }).await;
     info!("ready; free heap {} bytes", esp_alloc::HEAP.free());
 
     loop {
@@ -233,13 +272,23 @@ impl Device {
         }
     }
 
-    async fn error_tone(&mut self) {
-        self.speaker.beep(330, 120).await;
-        Timer::after(Duration::from_millis(60)).await;
-        self.speaker.beep(220, 180).await;
+    /// Opens the persistent link once Wi-Fi and pairing are set up.
+    fn start_link(&mut self) {
+        if self.link_started || !self.settings.is_paired() {
+            return;
+        }
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        match link::link_task(client, self.settings.token.clone()) {
+            Ok(token) => {
+                self.spawner.spawn(token);
+                self.link_started = true;
+            }
+            Err(e) => warn!("link: could not start: {e:?}"),
+        }
     }
 
-    /// One push-to-talk turn; failures are logged and signalled with a tone.
     /// One turn: while a button is held, or for `fixed` (the `talk` command).
     async fn turn(&mut self, fixed: Option<Duration>) {
         let ready = self.client.as_ref().is_some_and(Client::is_up) && self.settings.is_paired();
@@ -249,24 +298,140 @@ impl Device {
                 self.client.as_ref().is_some_and(Client::is_up),
                 self.settings.is_paired()
             );
-            self.error_tone().await;
+            player::error().await;
             self.wait_release().await;
             return;
         }
-        let started = Instant::now();
-        match self.voice_turn(fixed).await {
-            Ok(()) => info!("turn: done in {} ms", started.elapsed().as_millis()),
-            Err(e) => {
-                error!("turn: {e:?}");
-                self.led.set_low();
-                self.error_tone().await;
+        loop {
+            let started = Instant::now();
+            let result = if LINK_UP.load(Ordering::Acquire) {
+                self.link_turn(fixed).await
+            } else {
+                info!("turn: link down, using POST /v1/voice");
+                self.http_turn(fixed).await.map(|()| Outcome::Done)
+            };
+            self.led.set_low();
+            match result {
+                Ok(Outcome::Done) => info!("turn: done in {} ms", started.elapsed().as_millis()),
+                Ok(Outcome::BargeIn) => {
+                    info!("turn: barge-in");
+                    continue;
+                }
+                Err(e) => {
+                    match &e {
+                        TurnError::Server(code) => error!("turn: server error {}", code.as_str()),
+                        _ => error!("turn: {e:?}"),
+                    }
+                    PLAY.send(Play::Flush).await;
+                    player::error().await;
+                }
             }
+            break;
         }
-        self.led.set_low();
         self.wait_release().await;
     }
 
-    async fn voice_turn(&mut self, fixed: Option<Duration>) -> Result<(), NetError> {
+    /// A turn over the persistent link.
+    async fn link_turn(&mut self, fixed: Option<Duration>) -> Result<Outcome, TurnError> {
+        ENDPOINT.store(false, Ordering::Release);
+        while let Ok(stale) = EVENTS.try_receive() {
+            if let Event::Down = stale {
+                return Err(TurnError::LinkLost);
+            }
+        }
+        player::listening().await;
+        OUT.send(Out::Start).await;
+        self.led.set_high();
+
+        let mut sent = 0usize;
+        {
+            let mut rec = self.mic.start().ok_or(TurnError::Mic)?;
+            let until = Instant::now() + fixed.unwrap_or(MAX_TURN);
+            while (fixed.is_some() || self.ptt.is_low() || self.ptt2.is_low())
+                && Instant::now() < until
+                && !ENDPOINT.load(Ordering::Acquire)
+            {
+                if !LINK_UP.load(Ordering::Acquire) {
+                    return Err(TurnError::LinkLost);
+                }
+                let mut frame = [0u8; FRAME];
+                let n = match rec.read(&mut frame).await {
+                    Ok(n) => n,
+                    Err(_) => {
+                        warn!("turn: mic overrun, cutting the turn short");
+                        break;
+                    }
+                };
+                if n > 0 {
+                    OUT.send(Out::Audio(frame, n)).await;
+                    sent += n;
+                }
+            }
+        }
+        OUT.send(Out::End).await;
+        let end_of_speech = Instant::now();
+        self.led.set_low();
+        player::ack().await;
+        info!(
+            "turn: sent {} ms of audio",
+            sent as u64 * 1000 / (MIC_RATE as u64 * 2)
+        );
+
+        // Wait for the answer, pulsing the LED; a new press cancels it.
+        let deadline = end_of_speech + MAX_ANSWER;
+        let mut pulse = false;
+        let mut first_audio = None;
+        loop {
+            if Instant::now() > deadline {
+                OUT.send(Out::Cancel).await;
+                return Err(TurnError::Timeout);
+            }
+            match select3(
+                EVENTS.receive(),
+                press(&mut self.ptt, &mut self.ptt2),
+                Timer::after(Duration::from_millis(250)),
+            )
+            .await
+            {
+                Either3::First(event) => match event {
+                    Event::Listening | Event::Up => {}
+                    Event::Transcript(t) => info!("turn: heard {:?}", t.as_str()),
+                    Event::AudioStart => {
+                        let ms = end_of_speech.elapsed().as_millis();
+                        first_audio = Some(ms);
+                        info!("turn: first audio {ms} ms after the end of speech");
+                        self.led.set_low();
+                    }
+                    Event::Reply(r) => info!("turn: Lucina says {:?}", r.as_str()),
+                    Event::Done(ms) => {
+                        info!(
+                            "turn: done; device first audio {:?} ms; server {}",
+                            first_audio,
+                            ms.as_str()
+                        );
+                        return Ok(Outcome::Done);
+                    }
+                    Event::Error(code) => return Err(TurnError::Server(code)),
+                    Event::Down => return Err(TurnError::LinkLost),
+                },
+                Either3::Second(()) => {
+                    OUT.send(Out::Cancel).await;
+                    PLAY.send(Play::Flush).await;
+                    return Ok(Outcome::BargeIn);
+                }
+                Either3::Third(()) => {
+                    if first_audio.is_none() {
+                        pulse = !pulse;
+                        self.led
+                            .set_level(if pulse { Level::High } else { Level::Low });
+                    }
+                }
+            }
+        }
+    }
+
+    /// The fallback: one `POST /v1/voice` request (TLS handshake included).
+    async fn http_turn(&mut self, fixed: Option<Duration>) -> Result<(), TurnError> {
         let client = self.client.clone().ok_or(NetError::Connect)?;
         let mut rx = vec![0u8; 16 * 1024];
         let mut tx = vec![0u8; 8 * 1024];
@@ -283,17 +448,13 @@ impl Device {
             Body::Chunked,
         )
         .ok_or(NetError::TooLong)?;
-        session.write_all(head).await?;
+        session.write_all(head).await.map_err(NetError::from)?;
 
-        // Listening.
-        self.speaker.beep(880, 70).await;
+        player::listening().await;
         self.led.set_high();
         let mut sent = 0usize;
-        let mut overrun = false;
         {
-            let Some(mut rec) = self.mic.start() else {
-                return Err(NetError::Http);
-            };
+            let mut rec = self.mic.start().ok_or(TurnError::Mic)?;
             let until = Instant::now() + fixed.unwrap_or(MAX_TURN);
             let mut pcm = [0u8; 1024];
             let mut size = [0u8; 18];
@@ -302,41 +463,39 @@ impl Device {
             {
                 let n = match rec.read(&mut pcm).await {
                     Ok(n) => n,
-                    Err(_) => {
-                        overrun = true;
-                        break;
-                    }
+                    Err(_) => break,
                 };
                 if n == 0 {
                     continue;
                 }
                 session
                     .write_all(http::chunk_size_line(n, &mut size))
-                    .await?;
-                session.write_all(&pcm[..n]).await?;
-                session.write_all(b"\r\n").await?;
+                    .await
+                    .map_err(NetError::from)?;
+                session.write_all(&pcm[..n]).await.map_err(NetError::from)?;
+                session.write_all(b"\r\n").await.map_err(NetError::from)?;
                 sent += n;
             }
         }
-        session.write_all(http::LAST_CHUNK).await?;
-        session.flush().await?;
+        session
+            .write_all(http::LAST_CHUNK)
+            .await
+            .map_err(NetError::from)?;
+        session.flush().await.map_err(NetError::from)?;
+        let end_of_speech = Instant::now();
         self.led.set_low();
+        player::ack().await;
         info!(
-            "turn: sent {} ms of audio{}",
-            sent as u64 * 1000 / (MIC_RATE as u64 * 2),
-            if overrun {
-                " (mic overrun, cut short)"
-            } else {
-                ""
-            }
+            "turn: sent {} ms of audio",
+            sent as u64 * 1000 / (MIC_RATE as u64 * 2)
         );
 
-        // The answer.
         let mut buf = vec![0u8; 2048];
         let (head, mut body) = net::read_head(&mut session, &mut buf).await?;
         info!(
-            "turn: HTTP {} heard {:?}",
+            "turn: HTTP {} after {} ms, heard {:?}",
             head.status,
+            end_of_speech.elapsed().as_millis(),
             head.transcript.as_str()
         );
         if head.status != 200 {
@@ -345,36 +504,23 @@ impl Device {
                 "turn: server said {}",
                 core::str::from_utf8(&msg).unwrap_or("?")
             );
-            return Err(NetError::Http);
+            return Err(TurnError::Net(NetError::Http));
         }
-        info!("turn: Lucina says {:?}", head.reply.as_str());
-        let mut playback = self.speaker.start();
-        let mut carry: Option<u8> = None;
-        let mut played = 0usize;
+        let mut out = PcmBuf::default();
+        let mut first = true;
         while let Some(chunk) = body.next(&mut session, &mut buf).await? {
-            let mut chunk = chunk;
-            if let Some(lo) = carry.take()
-                && let Some((&hi, rest)) = chunk.split_first()
-            {
-                playback.push(&[lo, hi]).await;
-                chunk = rest;
-                played += 2;
+            if first && !chunk.is_empty() {
+                first = false;
+                info!(
+                    "turn: first audio {} ms after the end of speech",
+                    end_of_speech.elapsed().as_millis()
+                );
             }
-            let even = chunk.len() & !1;
-            playback.push(&chunk[..even]).await;
-            played += even;
-            if even < chunk.len() {
-                carry = Some(chunk[even]);
-            }
+            out.push(chunk).await;
         }
-        let restarts = playback.restarts;
-        playback.finish().await;
+        out.send().await;
+        PLAY.send(Play::Stop).await;
         let _ = session.close().await;
-        info!(
-            "turn: played {} ms, {} speaker restarts",
-            played as u64 * 1000 / (SPEAKER_RATE as u64 * 2),
-            restarts
-        );
         Ok(())
     }
 
@@ -414,7 +560,7 @@ impl Device {
             .and_then(|c| c.stack.config_v4())
             .map(|c| c.address);
         println!(
-            "wifi: {} ({}), address: {:?}, paired: {}, free heap: {} bytes, firmware {}",
+            "wifi: {} ({}), address: {:?}, paired: {}, link: {}, free heap: {} bytes, firmware {}",
             if self.settings.has_wifi() {
                 self.settings.ssid.as_str()
             } else {
@@ -426,6 +572,11 @@ impl Device {
                 "yes"
             } else {
                 "no"
+            },
+            if LINK_UP.load(Ordering::Acquire) {
+                "up"
+            } else {
+                "down"
             },
             esp_alloc::HEAP.free(),
             env!("CARGO_PKG_VERSION"),
@@ -515,7 +666,8 @@ impl Device {
                         Err(_) => println!("Paired, but saving to flash failed."),
                     }
                     self.led.set_low();
-                    self.speaker.beep(990, 80).await;
+                    PLAY.send(Play::Beep { freq: 990, ms: 80 }).await;
+                    self.start_link();
                     return;
                 }
                 other => {

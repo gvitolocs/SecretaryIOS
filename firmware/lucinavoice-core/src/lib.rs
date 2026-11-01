@@ -7,6 +7,7 @@
 //! | [`http`] | HTTP/1.1 request heads, response-head parsing, chunked framing |
 //! | [`json`] | string fields out of the server's small JSON replies |
 //! | [`pcm`] | INMP441 words to 16-bit PCM, mono to stereo frames |
+//! | [`ws`] | WebSocket client: upgrade, masked frames, streaming frame parser |
 
 #![no_std]
 
@@ -14,6 +15,7 @@ pub mod http;
 pub mod json;
 pub mod pcm;
 pub mod settings;
+pub mod ws;
 
 /// The only origin the device talks to.
 pub const HOST: &str = "getsecretary.tech";

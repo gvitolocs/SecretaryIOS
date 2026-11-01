@@ -91,7 +91,46 @@ pub struct Client {
     ca: Certificate<'static>,
 }
 
-pub type TlsStream<'s> = Session<'static, TcpSocket<'s>>;
+pub type TlsStream<'s> = Session<'static, SplitTcp<'s>>;
+
+/// A TCP socket that Mbed TLS can split into read and write halves (the
+/// voice link reads and writes at the same time).
+pub struct SplitTcp<'a>(pub TcpSocket<'a>);
+
+impl embedded_io_async::ErrorType for SplitTcp<'_> {
+    type Error = embassy_net::tcp::Error;
+}
+
+impl Read for SplitTcp<'_> {
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+        self.0.read(buf).await
+    }
+}
+
+impl Write for SplitTcp<'_> {
+    async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+        self.0.write(buf).await
+    }
+
+    async fn flush(&mut self) -> Result<(), Self::Error> {
+        self.0.flush().await
+    }
+}
+
+impl mbedtls_rs::Split for SplitTcp<'_> {
+    type Read<'a>
+        = embassy_net::tcp::TcpReader<'a>
+    where
+        Self: 'a;
+    type Write<'a>
+        = embassy_net::tcp::TcpWriter<'a>
+    where
+        Self: 'a;
+
+    fn split(&mut self) -> (Self::Read<'_>, Self::Write<'_>) {
+        self.0.split()
+    }
+}
 
 impl Client {
     pub fn new(stack: Stack<'static>, tls: TlsReference<'static>) -> Self {
@@ -128,7 +167,7 @@ impl Client {
             min_version: TlsVersion::Tls1_2,
             ..ClientSessionConfig::new()
         });
-        let mut session = Session::new(self.tls, socket, &config)?;
+        let mut session = Session::new(self.tls, SplitTcp(socket), &config)?;
         session.connect().await?;
         Ok(session)
     }
