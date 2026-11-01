@@ -96,6 +96,7 @@ targets:
       - framework: Frameworks/SecretaryCore.xcframework
         embed: false
       - target: SecretaryShare
+      - target: SecretaryPhotoUpload
       - sdk: Intents.framework
       - target: SecretarySafari
       - target: SecretaryScreenTimeReport
@@ -159,6 +160,36 @@ targets:
         CODE_SIGN_ENTITLEMENTS: Extensions/SecretaryShare/SecretaryShare.entitlements
         APPLICATION_EXTENSION_API_ONLY: YES
         SWIFT_EMIT_LOC_STRINGS: YES
+  # Photo backup while Secretary is closed (iOS 27): iOS uploads new photos itself
+  # (Extensions/SecretaryPhotoUpload, crates/lucina-media/src/bgupload.rs). An ExtensionKit extension.
+  SecretaryPhotoUpload:
+    type: extensionkit-extension
+    platform: iOS
+    deploymentTarget: "27.0"
+    sources:
+      - path: Extensions/SecretaryPhotoUpload
+        excludes: ["Info.plist", "*.entitlements"]
+      - path: Secretary/Core/Keychain.swift
+      - path: Secretary/Features/Gallery/BackgroundUploadShared.swift
+    info:
+      path: Extensions/SecretaryPhotoUpload/Info.plist
+      properties:
+        CFBundleDisplayName: Secretary Photo Backup
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        SecretaryKeychainGroup: "$(AppIdentifierPrefix)tech.getsecretary.shared"
+        # The server iOS sends the uploads to (ServerConfig.production).
+        BackgroundUploadURLBase: https://getsecretary.tech
+        EXAppExtensionAttributes:
+          EXExtensionPointIdentifier: com.apple.photos.background-upload
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: tech.getsecretary.app.photoupload
+        PRODUCT_NAME: SecretaryPhotoUpload
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        CODE_SIGN_ENTITLEMENTS: Extensions/SecretaryPhotoUpload/SecretaryPhotoUpload.entitlements
+        APPLICATION_EXTENSION_API_ONLY: YES
   SecretarySafari:
     type: app-extension
     platform: iOS
