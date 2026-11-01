@@ -70,7 +70,7 @@ pub struct DeployArgs {
     /// What this deploy brings (goes to the ledger and the ops record)
     #[arg(long)]
     pub note: Option<String>,
-    /// Deploy even when deploy-guard plan sees nothing new
+    /// Deploy even when deploy-guard plan sees nothing new, or the recipe would wait (agentd: running agents)
     #[arg(long)]
     pub force: bool,
     #[arg(long)]

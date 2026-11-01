@@ -15,6 +15,8 @@ skip = ["firmware/lucinavoice"]
 # `lagent deploy <runtime>`: from main's tip, inside the merge lock, between deploy-guard check and record.
 # Runtimes without a recipe still deploy by hand (docs/repo-workflow.md, "Deploying").
 [deploy.lucina-agentd]
+# A restart interrupts running agents: refuse while any runs (--force overrides).
+build = "bash deploy/lucina-agentd/no-running-agents.sh"
 install = "deploy/lucina-agentd/install.sh"
 timeout_min = 30
 

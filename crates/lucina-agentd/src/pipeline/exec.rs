@@ -121,6 +121,7 @@ impl Exec {
             .env("PATH", &self.path)
             .env("CARGO_TARGET_DIR", &self.spec.target_dir)
             .env("LAGENT_JOB", &self.spec.job_id)
+            .env("LAGENT_FORCE", if self.spec.force { "1" } else { "" })
             .env("CARGO_TERM_COLOR", "never")
             .stdin(Stdio::null())
             .stdout(Stdio::from(out))
