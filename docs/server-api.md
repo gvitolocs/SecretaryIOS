@@ -267,7 +267,7 @@ answered with an error).
 | `message` | Required, 1–12000 characters (12100 with a Lucina MCP prefix), not blank, no control characters except newline/tab. For longer documents, save a [note](#notes). |
 | `sessionId` | Optional, `[A-Za-z0-9_-]{1,64}`. Lucina uses Honcho session `secretary_<sessionId>`. |
 | `clientMessageId` | Optional, 1–128 characters of `[A-Za-z0-9_.:-]` (a UUID works). A retry with the same `sessionId` + `clientMessageId` within 10 minutes returns the first answer with `"duplicate": true`. |
-| `channel` | Optional, `web` or `ios`: which client the message came from (it labels the message in the [timeline](#timeline)). |
+| `channel` | Optional, `web` or `ios`: which client the message came from (it labels the message in the [timeline](#timeline)). `voice` is **refused here** (`400 bad_request`, like any unknown value): it is the shared "Lucina Voice" thread, and only the server's own voice pipeline sends it. |
 | `device`, `deviceName` | Optional device stamps. The server always overwrites these from the authenticated identity; client values are ignored. |
 | `replyTo` | Optional, `[A-Za-z0-9_-]{1,64}`: the timeline id of the earlier message this one replies to (swipe to reply, see [Replies](#replies)). Empty = absent. |
 
@@ -453,6 +453,12 @@ timeout 15 s. `200`:
 
 `device`, `deviceName`, and `caller` are optional; agent conversations can
 include `caller`. Unknown fields on conversations and the response are kept.
+
+The LucinaVoice speakers share **one** conversation, `{"key": "voice", "kind": "voice",
+"title": "Lucina Voice", "channel": "voice", …}` (protocol section 7). Its items have
+channel `voice`; each carries `meta.device` / `meta.deviceName` (which speaker heard it)
+and `meta.voice` (`{turnId, ms, route, layers, …}`, all optional) for the app's timing
+line. `GET /v1/timeline?conversation=voice` reads it like any other conversation.
 
 **Lucina's own endpoints (lucina-server).** `GET /api/secretary/timeline` and
 `GET /api/secretary/timeline/conversations` serve the same data with the same bearer
@@ -1326,7 +1332,8 @@ error status), it falls back to Gemini (the provider and settings of
 transcription_unavailable` when Gemini is not configured. An empty local
 transcript is `422 no_speech` with no Gemini retry. The transcript goes to Lucina
 like `POST /v1/chat` but **streamed** (`Accept: text/event-stream`, `voice: true`;
-`sessionId: "lucinavoice"`, `channel: "web"`, the calling device; a Lucina
+`sessionId: "lucinavoice"`, `channel: "voice"` (the shared "Lucina Voice" thread),
+the calling device, and `voiceMeta` (below); a Lucina
 that answers in plain JSON still works). The reply is cut into sentences as it
 is written and each goes to Kokoro as raw PCM, in order, the next one
 requested while the current one streams, so audio starts after the first
@@ -1426,9 +1433,9 @@ Pipeline per turn:
 2. Speech-to-text: the local engine first, Gemini as fallback, as for
    `POST /v1/voice`.
 3. Streaming chat (`POST {lucina}/api/secretary/chat`, `Accept:
-   text/event-stream`, `voice: true`, `sessionId: "lucinavoice"`, the device).
-   Events `delta` / `reply{text,sensitive,replaces}` / `done` / `error`; plain
-   JSON from an older Lucina counts as one `reply`.
+   text/event-stream`, `voice: true`, `sessionId: "lucinavoice"`, `channel: "voice"`, the device,
+   `voiceMeta`). Events `route` / `ack` / `delta` / `reply{text,sensitive,replaces}` /
+   `done` / `error`; plain JSON from an older Lucina counts as one `reply`.
 4. Sentence splitter: the first segment ends at the first `. ! ? …` (followed
    by a space) or newline, or at a comma once it is 60 characters long; later
    segments are one sentence each. `3.5` does not split. If `replaces` is
@@ -1445,6 +1452,75 @@ Pipeline per turn:
 
 The timings are also logged at `info` (`voice turn`: device id and the
 milliseconds; never the transcript, audio or credentials).
+
+#### The thread and what the server tells Lucina
+
+Every `POST /v1/voice` and `/v1/voice/ws` turn is a chat request with `channel: "voice"` and
+a `voiceMeta` object (never audio), which lucina-server's chat route reads:
+
+```json
+{"turnId": "voice-1761048000000-1a2b3c4d", "ms": {"stt": 84},
+ "ambiguous": [{"heard": "via", "candidates": ["Skibigårdsvej", "Skibbyvej"]}]}
+```
+
+`turnId` is the request's `clientMessageId`; `ms.stt` is the speech-to-text time from the end
+of speech (both end up in the thread item's `meta.voice`, next to the route and layers Lucina
+adds); `ambiguous` (at most 3 spans of at most 5 candidates) is what the local engine
+(`/v1/memos/stt`) left alone as too close to call, for Lucina's `vocab` layer, and is absent
+when there is none. The engine's `corrections` are counted here (telemetry), not sent. A Lucina
+that does not know the field ignores it. The WebSocket `done` message carries the layers next
+to `ms`: `{"type":"done","ms":{…},"layers":[…]}` (`layers` only when there are any; `ms` stays
+numbers). The later stages of the turn (LLM, TTS, first audio, total) are known only after the
+thread item is written, so the thread's timing line has the STT time and Lucina's own route and
+layers; the whole `ms` is on the device page.
+
+### Voice Learn (`/v1/voice/learn`)
+
+The shared custom vocabulary of every speech-to-text path (protocol section 8). Lucina owns
+the entries (`{id, word, soundsLike?, meaning?, lang?: "it"|"en"|"da", source, createdAt,
+updatedAt}`, at most 500, 100 characters per field); these routes forward to Lucina's
+`/api/secretary/voice-learn` with the server's token and return its `data` (and its `400`
+validation messages, with its own code) unchanged. Code: `voice_learn.rs`.
+
+| Route | Who |
+|---|---|
+| `GET /v1/voice/learn` | the owner's session, any device token (a LucinaVoice speaker too) |
+| `POST /v1/voice/learn` `{word, soundsLike?, meaning?, lang?}` → `201` | the owner's browser session only |
+| `PATCH /v1/voice/learn/{id}` (any of the fields; `meaning: ""` and `lang: null` clear) | same |
+| `DELETE /v1/voice/learn/{id}` | same |
+| `POST /v1/voice/learn/suggest` `{transcript, corrected}` → candidate entries `{word, soundsLike, meaning?, lang?}` | same |
+| `POST /v1/voice/learn/sample` | same |
+
+The rule is the one of `/v1/voice/devices*`: a device token only ever reads, and only the
+owner's user session (cookie, with `X-Secretary-CSRF: 1` on writes) does the owner things.
+Every write by a device token gets `403 owner_only`, whatever device it is: a speaker, one
+just paired that never connected, the phone app. `401` without credentials; `400 bad_request`
+for a malformed id or body (an unknown field in `suggest`, a body that is not an object, text
+over 12100 characters).
+
+**`POST /v1/voice/learn/sample`** turns a short phone recording into what the speech-to-text
+engine heard, so the app can offer it as `soundsLike`. Body: `Content-Type: audio/wav` (PCM) or
+`audio/x-s16le;rate=16000`, at most 10 seconds (about 330 kB; `413 payload_too_large` above
+that, `400 invalid_audio` for 10.25 s to the size limit or a file that is not a PCM WAV,
+`415` for any other type such as the MediaRecorder's WebM or MP4). The web app decodes the
+clip in the browser and sends a 16 kHz mono WAV. Optional `?lang=it|en|da`. It goes through
+the same path as a voice turn (the local engine with the caller's credentials, Gemini as the
+fallback) and answers `{"heard": "…", "corrections": [{"from","to"}]}`: `heard` is the
+engine's text after its own Voice Learn post-correction, so a word it already fixed shows
+there as a correction whose `from` is what it first heard. `422 no_speech` for silence or
+under 0.3 s, `503 transcription_unavailable` when no engine can answer, `429` at 20 per minute
+per device. Nothing is stored, here or at Lucina.
+
+**Gemini fallback.** When the local engine fails and Gemini is set up, the transcription
+request gets a second part after the audio, `Vocabulary: Skibigårdsvej (sounds like skibi gård
+vej); Lucina` (newest entries first, at most 700 characters), built from the list above. The
+list is fetched with the server's Lucina token, cached for 60 seconds (15 after a failure), and
+fails open: no list, no line, and the turn goes on. Gemini's text then gets the same
+post-correction as the local engine's (`lucina-vocab`'s `Vocab::correct` over those cached
+entries): a close mishearing is replaced by the entry's word ("Skibi gaardsvej" →
+"Skibigårdsvej"), and the spans that are close to several entries are left alone and go to
+Lucina in `voiceMeta.ambiguous`, so both paths answer the same `{text, corrections, ambiguous}`
+(also for `/v1/voice/learn/sample`).
 
 ### LucinaVoice device telemetry
 
@@ -1497,6 +1573,13 @@ is open now.
 A turn Lucina routed (protocol section 6) also has `intent`, `confidence`,
 `jev_ms`, `fast` and `source` (no transcript text), and `spans.route` /
 `spans.ack` when those events came.
+
+A turn also has `layers` (protocol section 9: `[{layer, verdict, confidence, ms, used}]`,
+`layer` being `intent`, `slots`, `confirm` or `vocab`; from the `route` event's `layers`,
+completed by the `done` body's `voice.layers` when it arrives while the audio is still being
+made, at most 250 ms after it) and, when Voice Learn changed the transcript, the counts
+`stt_corrections` and `stt_ambiguous` (never the words). All of it is absent for a Lucina
+that sends none. The same keys are in the `server_turn` events.
 
 #### `GET /v1/voice/devices/{id}/events` (authenticated)
 

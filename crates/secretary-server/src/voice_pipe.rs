@@ -31,19 +31,25 @@
 //!   synthesized like a sentence (and a cache rebuild starts). The answer's
 //!   segments queue behind it in the same ordered stream, so they cannot
 //!   overlap it. The filler is not part of the text returned as spoken.
+//! - **Thread and layers** (protocol sections 7 and 9). The chat request is channel `voice`
+//!   ([`CHANNEL`]) with `voiceMeta` ([`voice_meta`]: turn id, STT ms, the Voice Learn facts of
+//!   the speech-to-text engine). The Jev layers of the turn are collected in [`Shared`]: those
+//!   of the `route` event first, then those of the `done` body's `voice.layers` (a layer of the
+//!   same name replaces the earlier one). A routed turn waits at most [`DONE_GRACE`] after its
+//!   audio for the `done`, so the turn's record usually has the settled layers.
 //! - **After `reply`** the connection to Lucina is read to its end by a
 //!   background task, so Lucina finishes the turn (memory, rich reply) after
 //!   the audio is done. Dropping [`speak_turn`] before it returns (a cancel,
 //!   a closed socket or HTTP client) aborts everything, that task included.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use axum::body::Bytes;
 use futures_util::StreamExt;
 use secretary_core::models::ChatRequest;
-use secretary_core::ChatEvent;
+use secretary_core::{ChatEvent, RouteLayer};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, Semaphore};
 use tokio::task::JoinHandle;
@@ -54,12 +60,32 @@ use crate::tts::{self, Format};
 use crate::voice_split::Splitter;
 use crate::AppState;
 
+/// How long a routed turn waits for Lucina's `done` after its audio is made.
+const DONE_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
 /// Largest PCM frame forwarded.
 pub const FRAME_BYTES: usize = 8192;
 /// Segments being synthesized at once: the one playing and the next.
 pub const IN_FLIGHT: usize = 2;
 /// Lucina's chat session for the speaker.
 pub const SESSION_ID: &str = "lucinavoice";
+/// Lucina's timeline channel for every voice turn: one shared "Lucina Voice" thread.
+pub const CHANNEL: &str = "voice";
+
+/// What a voice turn tells Lucina besides the words (`voiceMeta`, read by lucina-server's chat
+/// route): `{turnId, ms: {stt}, ambiguous?: [{heard, candidates}]}`. `turnId` and `ms` end up in
+/// the thread item's `meta.voice` (the later stages are Lucina's own: the route and its layers);
+/// `ambiguous` feeds Lucina's `vocab` layer. Never audio; no transcript beyond the spans the
+/// speech-to-text engine could not settle.
+pub fn voice_meta(turn_id: &str, stt_ms: Option<u64>, facts: &crate::voice::SttFacts) -> serde_json::Value {
+    let mut m = serde_json::json!({"turnId": turn_id});
+    if let Some(ms) = stt_ms {
+        m["ms"] = serde_json::json!({"stt": ms});
+    }
+    if !facts.ambiguous.is_empty() {
+        m["ambiguous"] = serde_json::Value::Array(facts.ambiguous_json());
+    }
+    m
+}
 
 /// Spoken instead of a sensitive reply: (Italian, English).
 pub const SENSITIVE_PHRASE: (&str, &str) =
@@ -77,6 +103,8 @@ pub struct Spec {
     /// `it`, `en` (or `it-IT` …) when the client said; else the voice follows the text.
     pub lang: Option<String>,
     pub ident: Identity,
+    /// What the speech-to-text engine said about Voice Learn for this turn.
+    pub facts: crate::voice::SttFacts,
 }
 
 /// Why a turn did not end in complete audio.
@@ -160,6 +188,9 @@ pub struct Shared {
     /// The filler (or synthesized ack) audio was handed to the client.
     ack_ms: AtomicU64,
     route: OnceLock<RouteInfo>,
+    /// The Jev layers of the turn (protocol section 9): from the `route` event, then
+    /// completed by the `done` body. Facts only, never text.
+    layers: Mutex<Vec<RouteLayer>>,
     /// PCM bytes handed to the client.
     down_bytes: AtomicU64,
     /// The Kokoro voice, set when the first segment is known.
@@ -179,6 +210,7 @@ impl Shared {
             route_ms: AtomicU64::new(UNSET),
             ack_ms: AtomicU64::new(UNSET),
             route: OnceLock::new(),
+            layers: Mutex::new(Vec::new()),
             down_bytes: AtomicU64::new(0),
             voice: OnceLock::new(),
         }
@@ -235,6 +267,25 @@ impl Shared {
     /// What the `route` event said, if there was one.
     pub fn route(&self) -> Option<&RouteInfo> {
         self.route.get()
+    }
+
+    /// The Jev layers reported so far (`route` event, then `done`).
+    pub fn layers(&self) -> Vec<RouteLayer> {
+        self.layers.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    /// Add reported layers: one with the name of an earlier one replaces it
+    /// (the `done` body is the settled version), the rest are appended, up to
+    /// [`secretary_core::chat_stream::MAX_LAYERS`].
+    pub fn merge_layers(&self, more: Vec<RouteLayer>) {
+        let mut mine = self.layers.lock().unwrap_or_else(|p| p.into_inner());
+        for l in more {
+            if let Some(old) = mine.iter_mut().find(|o| o.layer == l.layer) {
+                *old = l;
+            } else if mine.len() < secretary_core::chat_stream::MAX_LAYERS {
+                mine.push(l);
+            }
+        }
     }
 
     /// PCM bytes handed to the client so far.
@@ -520,15 +571,23 @@ async fn speak_inner(
     out: mpsc::Sender<Bytes>,
     drain_guard: &mut Guard,
 ) -> Result<String, PipeError> {
-    let Spec { heard, lang, ident } = spec;
+    let Spec {
+        heard,
+        lang,
+        ident,
+        facts,
+    } = spec;
+    let turn_id = crate::voice::client_message_id().map_err(PipeError::Lucina)?;
     let chat = ChatRequest {
         message: heard.clone(),
         session_id: Some(SESSION_ID.into()),
-        client_message_id: Some(crate::voice::client_message_id().map_err(PipeError::Lucina)?),
-        channel: Some("web".into()),
+        client_message_id: Some(turn_id.clone()),
+        // The shared "Lucina Voice" thread (protocol section 7).
+        channel: Some(CHANNEL.into()),
         device: Some(ident.device_id.clone()),
         device_name: Some(ident.device_name.clone()),
         reply_to: None,
+        voice_meta: Some(voice_meta(&turn_id, shared.stt(), &facts)),
     };
     let lucina = st.lucina().map_err(PipeError::Lucina)?;
     let mut events = lucina
@@ -587,8 +646,10 @@ async fn speak_inner(
                 jev_ms,
                 fast,
                 source,
+                layers,
             }) => {
                 shared.mark(&shared.route_ms);
+                shared.merge_layers(layers);
                 let info = RouteInfo {
                     intent,
                     confidence,
@@ -650,6 +711,7 @@ async fn speak_inner(
                 // No `reply` event: take the answer from the body (the SSE
                 // `done` carries `{ok, data}`, a plain JSON answer just `data`).
                 shared.mark(&shared.lucina_first);
+                shared.merge_layers(RouteLayer::from_done(&v));
                 let data = if v["data"].is_object() {
                     &v["data"]
                 } else {
@@ -692,15 +754,37 @@ async fn speak_inner(
     drop(say.seg_tx);
 
     // Lucina goes on after `reply` (memory, rich reply): keep reading so it
-    // does not see a closed connection, but never wait for it.
-    let drain = tokio::spawn(async move { while let Ok(Some(_)) = events.next().await {} });
+    // does not see a closed connection, but never wait for it. Its `done` body
+    // may complete the Jev layers; the turn's record picks them up if it
+    // arrives while the audio is still being made (see below).
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
+    let drain = tokio::spawn({
+        let shared = shared.clone();
+        async move {
+            let mut done_tx = Some(done_tx);
+            while let Ok(Some(ev)) = events.next().await {
+                if let ChatEvent::Done(v) = ev {
+                    shared.merge_layers(RouteLayer::from_done(&v));
+                    if let Some(tx) = done_tx.take() {
+                        let _ = tx.send(());
+                    }
+                }
+            }
+        }
+    });
     *drain_guard = Guard(Some(drain.abort_handle()));
 
-    match (&mut worker.0).await {
+    let outcome = match (&mut worker.0).await {
         Ok(Ok(())) => Ok(spoken.join(" ")),
         Ok(Err(e)) => Err(e),
         Err(_) => Err(PipeError::Tts(ApiError::internal("speech worker failed"))),
+    };
+    // A Lucina that routes turns (it sent `route`) also sends layers in `done`:
+    // give it a moment after the audio, no more.
+    if outcome.is_ok() && shared.route().is_some() {
+        let _ = tokio::time::timeout(DONE_GRACE, done_rx).await;
     }
+    outcome
 }
 
 #[cfg(test)]

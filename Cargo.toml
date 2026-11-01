@@ -61,6 +61,7 @@ members = [
     "crates/lucina-jev",
     "crates/lucina-upstream",
     "crates/secretary-image",
+    "crates/lucina-vocab",
 ]
 exclude = [
     # Standalone crates with their own [workspace] and Cargo.lock (docs/repo-workflow.md).

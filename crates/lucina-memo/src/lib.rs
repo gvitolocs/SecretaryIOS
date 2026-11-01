@@ -32,6 +32,7 @@ pub mod store;
 pub mod stt;
 pub mod summarize;
 pub mod transcribe;
+pub mod vocab;
 pub mod worker;
 
 use std::path::PathBuf;
@@ -84,6 +85,8 @@ pub struct Config {
 impl Config {
     pub fn from_lookup(get: impl Fn(&str) -> Option<String> + Copy) -> Self {
         let home = get("HOME").unwrap_or_else(|| "/home/nez".into());
+        // One WhisperConfig, so the prompter's engine shares its Voice Learn file watcher.
+        let whisper = transcribe::WhisperConfig::from_lookup(get);
         Self {
             data_dir: PathBuf::from(
                 get("LUCINA_MEMO_DIR")
@@ -114,8 +117,8 @@ impl Config {
                 .or_else(|| get("LUCINA_TIMEZONE"))
                 .and_then(|z| z.trim().parse().ok())
                 .unwrap_or(chrono_tz::Europe::Copenhagen),
-            whisper: transcribe::WhisperConfig::from_lookup(get),
-            prompter: prompter::PrompterConfig::from_lookup(get, &transcribe::WhisperConfig::from_lookup(get)),
+            prompter: prompter::PrompterConfig::from_lookup(get, &whisper),
+            whisper,
             vault: obsidian::VaultTarget::from_lookup(get),
             notify: notify::NotifyConfig::from_lookup(get),
             calendar_url: get("LUCINA_SECRETARY_SERVER_URL"),

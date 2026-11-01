@@ -35,7 +35,11 @@
 //!    {ms}`.
 //!    When Lucina sends `route` / `ack` (protocol section 6), a cached filler
 //!    phrase goes out first, `done.ms` gains `route` and `ack`, and the
-//!    turn's record gets the route ([`crate::voice_pipe`]).
+//!    turn's record gets the route ([`crate::voice_pipe`]). The Jev layers of
+//!    the turn (protocol section 9: `route.layers`, completed by the chat's
+//!    `done` body) go in `done.layers` next to `ms` when there are any.
+//!    Every chat turn is sent as channel `voice` (the "Lucina Voice" thread,
+//!    protocol section 7) with `voiceMeta` (turn id, STT ms, Voice Learn facts).
 //! 4. A turn that ends without complete audio sends `error` instead of `done`:
 //!    `no_speech` (under 0.3 s of audio, no speech in `vad` mode, or an empty
 //!    transcript), `stt_unavailable`, `lucina_unavailable`, `tts_failed`. The
@@ -473,6 +477,7 @@ async fn run_turn(
         transcript_chars: 0,
         speech_ms: pcm.len() as u64 / 32,
         up_bytes,
+        ..TurnInfo::default()
     };
     turn_steps(&st, &ident, &creds, &tx, pcm, lang, &shared, &mut info).await;
     if info.err.as_deref() != Some("closed") {
@@ -497,7 +502,7 @@ async fn turn_steps(
     };
     let device = ident.device_id.clone();
 
-    let heard = match voice::transcribe(st, creds, &Audio::Pcm(pcm), lang.as_deref()).await {
+    let voice::Heard { text: heard, facts } = match voice::transcribe(st, creds, &Audio::Pcm(pcm), lang.as_deref()).await {
         Ok(h) => h,
         Err(e) => {
             tracing::warn!(device = %device, code = %e.code, "voice turn: speech-to-text failed");
@@ -508,6 +513,8 @@ async fn turn_steps(
     };
     let stt_ms = shared.elapsed_ms();
     shared.set_stt(stt_ms);
+    info.stt_corrections = facts.corrections.len() as u32;
+    info.stt_ambiguous = facts.ambiguous.len() as u32;
     if heard.is_empty() {
         info.err = Some("no_speech".into());
         send(error_msg("no_speech", "no speech was heard")).await;
@@ -526,6 +533,7 @@ async fn turn_steps(
             heard,
             lang,
             ident: ident.clone(),
+            facts,
         },
         shared.clone(),
         out_tx,
@@ -576,7 +584,13 @@ async fn turn_steps(
             if let Some(v) = shared.ack_ms() {
                 ms["ack"] = json!(v);
             }
-            send(json!({"type": "done", "ms": ms})).await;
+            let mut done = json!({"type": "done", "ms": ms});
+            // The Jev layers that decided the turn (protocol section 9), next to `ms`.
+            let layers = shared.layers();
+            if !layers.is_empty() {
+                done["layers"] = json!(layers);
+            }
+            send(done).await;
         }
         Err(voice_pipe::PipeError::Closed) => info.err = Some("closed".into()),
         Err(e) => {

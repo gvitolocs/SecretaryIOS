@@ -4,6 +4,7 @@ import { formatBytes, formatClock, formatMs, spanMs, turnBar, type SegmentKey } 
 import { relativeTime } from "../../lib/relativeTime";
 import { t, type MessageKey } from "../../i18n";
 import { Card, EmptyState } from "../page";
+import { LayerChips } from "./LayerChips";
 
 // The last turns of a voice device, each with a stacked timing bar from the end of speech:
 // STT, Lucina's first text, the first TTS audio, the first audio sent, and the rest of the reply.
@@ -62,6 +63,8 @@ function TurnRow(props: { turn: VoiceTurn; scale: number }) {
         <Show when={turn().fast === true}><span class="vd-badge" data-kind="fast">{t("voice.fastBadge")}</span></Show>
       </div>
 
+      <LayerChips layers={turn().layers} />
+
       <Show when={bar().segments.length} fallback={<p class="pg-muted vd-notimings">{t("voice.noTimings")}</p>}>
         <div class="vd-bar-wrap">
           <div class="vd-bar" role="img" aria-label={t("voice.timingBar", { parts: parts() })}>
@@ -91,6 +94,8 @@ function TurnRow(props: { turn: VoiceTurn; scale: number }) {
         <Show when={ack() !== null}><span class="vd-ack">{t("voice.ackAfter", { time: formatMs(ack()!) })}</span></Show>
         <Show when={total() !== null}><span class="vd-total">{t("voice.total", { time: formatMs(total()!) })}</span></Show>
         <Show when={deviceFirst() !== null}><span class="vd-device">{t("voice.deviceFirstAudio", { time: formatMs(deviceFirst()!) })}</span></Show>
+        <Show when={(turn().stt_corrections ?? 0) > 0}><span class="vd-stt-facts">{t("voice.sttCorrections", { count: turn().stt_corrections! })}</span></Show>
+        <Show when={(turn().stt_ambiguous ?? 0) > 0}><span class="vd-stt-facts">{t("voice.sttAmbiguous", { count: turn().stt_ambiguous! })}</span></Show>
         <Show when={typeof turn().speech_ms === "number"}><span>{t("voice.youSpoke", { time: formatMs(turn().speech_ms!) })}</span></Show>
         <Show when={typeof turn().transcript_chars === "number"}><span>{t("voice.chars", { count: turn().transcript_chars! })}</span></Show>
         <Show when={typeof turn().up_bytes === "number"}><span>{t("voice.sent", { bytes: formatBytes(turn().up_bytes!) })}</span></Show>

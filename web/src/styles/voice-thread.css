@@ -1,0 +1,133 @@
+/*
+ * The Lucina Voice chat (views/Chats.tsx with components/voice/VoiceThread.tsx): the timing line under a
+ * spoken turn and the "edit transcript" form. Only global tokens, so it reads the same in the narrow and
+ * the desktop layout.
+ */
+
+.vt-row {
+  display: flex;
+  flex-direction: column;
+}
+
+.vt-extras {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: -2px 12px 10px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.vt-extras[data-role="user"] {
+  align-items: flex-end;
+}
+
+.vt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.vt-link {
+  min-height: 28px;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.vt-link:hover {
+  text-decoration: underline;
+}
+
+.vt-timing {
+  max-width: 100%;
+}
+
+.vt-timing-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.vt-timing-list li {
+  white-space: nowrap;
+}
+
+.vt-timing-list b {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.vt-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(100%, 460px);
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.vt-form label {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.vt-form textarea,
+.vt-form input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 36px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+  color: var(--text);
+  font: inherit;
+}
+
+.vt-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.vt-error {
+  margin: 0;
+  color: var(--danger-text);
+  font-size: 13px;
+}
+
+.vt-suggest {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+}
+
+.vt-suggest p {
+  margin: 0;
+}
+
+.vt-suggest-word {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.vt-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}

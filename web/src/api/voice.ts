@@ -79,6 +79,17 @@ export interface VoiceSpans {
   ack?: number | null;
 }
 
+/** One Jev layer of a turn (protocol section 9); a layer the Lucina of the time did not time has no `ms`. */
+export interface VoiceTurnLayer {
+  /** "intent" | "slots" | "confirm" | "vocab". */
+  layer: string;
+  verdict?: string | null;
+  confidence?: number | null;
+  ms?: number | null;
+  /** The verdict was acted on. */
+  used?: boolean;
+}
+
 export interface VoiceTurn {
   at: string;
   ok: boolean;
@@ -96,6 +107,11 @@ export interface VoiceTurn {
   /** Answered without the planner LLM. */
   fast?: boolean;
   source?: string;
+  /** The Jev layers that decided the turn; absent for a Lucina without layers. */
+  layers?: VoiceTurnLayer[];
+  /** Words Voice Learn replaced in the transcript, and ambiguous matches (counts, never the words). */
+  stt_corrections?: number;
+  stt_ambiguous?: number;
 }
 
 export interface VoiceStatus {

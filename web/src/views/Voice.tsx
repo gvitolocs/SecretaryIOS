@@ -100,7 +100,17 @@ function DeviceList() {
       <A href="/plugins" class="pg-link pg-back">
         <BackIcon /> {t("voice.back")}
       </A>
-      <PageHeader title={t("voice.title")} action={<RefreshButton loading={loading()} onClick={() => void load(true)} />} />
+      <PageHeader
+        title={t("voice.title")}
+        action={
+          <span class="vd-header-actions">
+            <A href={`${BASE}/learn`} class="vd-learn-link">
+              {t("voice.learn")}
+            </A>
+            <RefreshButton loading={loading()} onClick={() => void load(true)} />
+          </span>
+        }
+      />
       <Show
         when={data()}
         fallback={

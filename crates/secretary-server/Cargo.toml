@@ -16,6 +16,7 @@ path = "src/main.rs"
 ink-library = { path = "../ink-library" }
 ink-obsidian = { path = "../ink-obsidian" }
 ink-sync = { path = "../ink-sync" }
+lucina-vocab = { path = "../lucina-vocab" }
 secretary-core = { path = "../secretary-core" }
 secretary-gym = { path = "../secretary-gym" }
 secretary-body = { path = "../secretary-body" }
