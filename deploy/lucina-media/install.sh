@@ -13,9 +13,11 @@ STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 [ -f "$BIN" ] && cp -p "$BIN" "$BIN.bak-$STAMP-pre-$SHA"
 install -m 0755 "$TARGET/release/lucina-media" "$BIN.new"
 mv -f "$BIN.new" "$BIN"
+# /healthz answers on the main listener (the internal loopback one has no such route).
+ADDR=$(sed -n 's/^LUCINA_MEDIA_LISTEN=//p' "$HOME/.config/lucina-media/env")
 systemctl --user restart lucina-media.service
 for _ in $(seq 1 30); do
-  if curl -fsS -m 3 http://127.0.0.1:8830/healthz >/dev/null 2>&1; then
+  if curl -fsS -m 3 "http://${ADDR:?LUCINA_MEDIA_LISTEN is not set}/healthz" >/dev/null 2>&1; then
     echo "installed lucina-media at $SHA (previous: $BIN.bak-$STAMP-pre-$SHA)"
     exit 0
   fi
