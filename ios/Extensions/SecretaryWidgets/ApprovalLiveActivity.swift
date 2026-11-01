@@ -156,9 +156,16 @@ private struct ApprovalActivityBody: View {
                 commands
                 buttons
             } else {
-                Label(phase.title, systemImage: phase.symbol)
-                    .font(LucinaTokens.Fonts.subheadline.weight(.semibold))
-                    .foregroundStyle(phase.tint)
+                // The outcome, readable at a glance for the few seconds the activity stays: no buttons.
+                HStack(spacing: LucinaTokens.Space.sm) {
+                    Image(systemName: phase.symbol)
+                        .font(.system(size: compact ? 24 : 32, weight: .semibold))
+                    Text(phase.title)
+                        .font(compact ? LucinaTokens.Fonts.title3 : LucinaTokens.Fonts.title)
+                }
+                .foregroundStyle(phase.tint)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityElement(children: .combine)
             }
         }
     }
