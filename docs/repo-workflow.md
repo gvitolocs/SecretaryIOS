@@ -37,12 +37,18 @@ specified with one `main`. The lines were a drift away from the verified design.
    - Fast-forward only: never force-push `main`.
 3. **Shared code changes once.** A change to `secretary-core`, `lucina-store` or `web/src/lib` lands once on `main`.
    `deploy-guard plan` then shows every runtime it touches.
-4. **Deploy from `main` only.** `deploy-guard check` refuses:
-   - a commit that is not on `origin/main`;
+4. **Deploy from `main` only.** `deploy-guard check` takes the lock first (it refuses at once without it), then
+   fetches `origin/main` and the `deploy/<runtime>/*` tags, then refuses:
+   - a commit that is not `origin/main`'s tip: one on a branch, or a stale or older `main` (it lists the newer commits);
    - any `--target` other than `main`;
-   - a commit that does not contain the live build.
+   - a commit that does not contain the live build: the newest `deploy/<runtime>/*` tag and the ledger entry (it lists
+     the live commits the deploy would drop).
 
-   It is the gate for every deploy script. Run it inside the lock, then deploy, then `deploy-guard record`.
+   It is the gate for every deploy script. Run it inside the lock, then deploy, then `deploy-guard record`. Two
+   overrides exist, and each one is logged to the ops record. `--allow-not-main=<reason>` deploys a commit that is
+   not `main`'s tip, but it must still contain the live build. `--rollback-to <deploy tag> --reason <text>` goes back
+   to a build that was live before: check out the tag, and pass both flags to `check` and to `record`. `record`
+   tags the rollback too, so the newest tag is always what is live.
 5. **Deployed versions are tags.** `deploy-guard record` writes the ledger with the `main` sha and creates and pushes
    the annotated tag `deploy/<runtime>/<UTC yyyymmddThhmmZ>-<sha8>`. To find what is live, read the newest
    `deploy/<runtime>/*` tag or run `deploy-guard status`.
