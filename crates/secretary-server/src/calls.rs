@@ -88,7 +88,7 @@ async fn transcribe(JsonBody(v): JsonBody<Recording>) -> Result<Json<Value>, Api
             "Another recording is being transcribed. Try again shortly.",
         )
     })?;
-    let t = transcribe_inline(&v.mime_type, &v.audio_base64, Options::DIARIZED).await?;
+    let t = transcribe_inline(&v.mime_type, &v.audio_base64, Options::DIARIZED, None).await?;
     if t.text.trim().is_empty() {
         return Err(ApiError::new(
             StatusCode::BAD_GATEWAY,
@@ -99,6 +99,12 @@ async fn transcribe(JsonBody(v): JsonBody<Recording>) -> Result<Json<Value>, Api
     Ok(Json(
         json!({"transcript":t.text,"partial":t.partial,"model":t.model,"source":"uploaded_recording"}),
     ))
+}
+
+/// Whether the Gemini transcriber is set up at all (a key file is named). A cheap
+/// check, so callers do not prepare a request that cannot be sent.
+pub(crate) fn gemini_configured() -> bool {
+    std::env::var_os("SECRETARY_GEMINI_KEY_FILE").is_some()
 }
 
 /// How [`transcribe_inline`] asks the provider.
@@ -132,11 +138,13 @@ const DEFAULT_PROVIDER_URL: &str = "https://generativelanguage.googleapis.com";
 /// Gemini: `SECRETARY_GEMINI_KEY_FILE` holds the key,
 /// `SECRETARY_TRANSCRIPTION_MODEL` names the model. Shared by
 /// `/v1/calls/transcribe` and `/v1/voice`; 503 `transcription_unavailable`
-/// when it is not configured.
+/// when it is not configured. `vocabulary` (Voice Learn, [`crate::voice_learn`])
+/// is a "Vocabulary: …" line sent as a text part after the audio.
 pub(crate) async fn transcribe_inline(
     mime_type: &str,
     data_base64: &str,
     opts: Options,
+    vocabulary: Option<&str>,
 ) -> Result<Transcript, ApiError> {
     let path = std::env::var_os("SECRETARY_GEMINI_KEY_FILE").ok_or_else(unavailable)?;
     let key = tokio::fs::read_to_string(path)
@@ -160,9 +168,13 @@ pub(crate) async fn transcribe_inline(
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|_| unavailable())?;
+    let mut parts = vec![json!({"inlineData":{"mimeType":mime_type,"data":data_base64}})];
+    if let Some(line) = vocabulary.filter(|l| !l.trim().is_empty()) {
+        parts.push(json!({"text": line}));
+    }
     let mut response=client.post(format!("{}/v1beta/models/{model}:generateContent", base.trim_end_matches('/')))
   .header("x-goog-api-key",key.trim()).json(&json!({
-   "contents":[{"role":"user","parts":[{"inlineData":{"mimeType":mime_type,"data":data_base64}}]}],
+   "contents":[{"role":"user","parts":parts}],
    "generationConfig":{"audioTranscriptionConfig":{"diarization":opts.diarization},"maxOutputTokens":8192}
   })).send().await.map_err(|_|ApiError::new(StatusCode::BAD_GATEWAY,"transcription_failed","The transcription provider could not be reached."))?;
     if !response.status().is_success() {

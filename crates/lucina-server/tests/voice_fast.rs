@@ -371,7 +371,9 @@ async fn a_clock_intent_that_needs_data_takes_the_normal_path() {
 
 #[tokio::test]
 async fn low_confidence_takes_the_normal_path() {
-    let jev = JevScript::default().on("che ore sono?", say("temporal_query", 0.6));
+    // Below `LUCINA_JEV_INTENT_MIN` (0.6) the turn's classifier does not trust the verdict either (it is the
+    // same one: a spoken turn asks Jev once), so DeepSeek classifies and the casual-chat reply streams.
+    let jev = JevScript::default().on("che ore sono?", say("temporal_query", 0.55));
     let server = fake_jev(&jev).await;
     let h = harness(chat_script(), with_jev(&server)).await;
     let (s, _) = stream(&h, chat_body("che ore sono?")).await;

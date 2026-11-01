@@ -1,0 +1,15 @@
+[Unit]
+Description=Lucina weekly upstream watch (docs/upstream-watch.md)
+After=lucina-rs.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/.config/lucina-rs/lucina.env
+EnvironmentFile=%h/.config/lucina-rs/mode.env
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/lucina-rs upstream check
+Nice=10
+CPUQuota=50%
+MemoryMax=256M
+TimeoutStartSec=30min
+UMask=0077

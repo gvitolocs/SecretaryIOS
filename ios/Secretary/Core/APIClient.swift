@@ -247,11 +247,13 @@ final class APIClient: @unchecked Sendable {
             let base = snapshot.endpoints[index]
             let request = try makeRequest(base: base, method: method, path: path, query: query, body: body, timeout: timeout,
                                           accessKey: authenticated ? snapshot.accessKey : nil, headers: headers)
+            let started = Date()
             do {
                 let (data, urlResponse) = try await session.data(for: request)
                 guard let http = urlResponse as? HTTPURLResponse else {
                     throw APIError.network(message: "Not an HTTP response.")
                 }
+                DebugEvents.request(method, path, status: http.statusCode, since: started)
                 // Any HTTP answer means this endpoint reaches the server.
                 markWorking(base)
                 var responseHeaders: [String: String] = [:]
@@ -266,6 +268,7 @@ final class APIClient: @unchecked Sendable {
             } catch let error as URLError where error.code == .cancelled {
                 throw CancellationError()
             } catch let error as URLError {
+                DebugEvents.request(method, path, error: error, since: started)
                 lastError = error
                 // The network may have changed: the next request races the endpoints again.
                 config.withLock { $0.settled = false }

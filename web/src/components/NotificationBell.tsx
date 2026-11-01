@@ -51,6 +51,7 @@ export const CHANNEL_NAMES: Record<string, string> = {
   telegram: "Telegram",
   discord: "Discord",
   alexa: "Alexa",
+  voice: "Lucina Voice",
   web: "Web",
   ios: "iPhone",
   memo: "Voice memo",

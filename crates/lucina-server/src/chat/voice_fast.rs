@@ -16,6 +16,20 @@
 //!    else is a slow route (and, for the slow intents, an `ack`). The `route` event and the one
 //!    `event="voice_route"` log line say which.
 //!
+//! Around that route sit the other Jev layers of a spoken turn (docs/lucinavoice-protocol.md section 9), each with
+//! its own fixed facts-only state, the same 400 ms cap, a place in the turn's [`voice::Trace`] and a fail-open
+//! rule (no answer in time: the turn does what it did before the layer existed). A turn makes at most three Jev
+//! calls in all ([`voice::MAX_JEV_CALLS`]):
+//!
+//! - `intent`: the call above. Its verdict is also the context builder's intent verdict, so a spoken turn
+//!   asks Jev its intent questions once ([`crate::voice::shared_intent`]);
+//! - `slots`: only when the deterministic parser of a quick command is unsure (a reminder whose time was not
+//!   said, or whose text is long; a shopping list with several products), one question. It can hand a reminder
+//!   to the planner or split a shopping list;
+//! - `confirm`: a risky action (a message to another assistant or a post, a purchase, a delete) is held for a
+//!   spoken "sei sicuro?" when Jev says it must be; the next turn's yes runs the held request;
+//! - `vocab`: the "which of these words did they say" choice of Voice Learn (`crate::voice_learn`).
+//!
 //! Fast intents: the current time or date; the shopping list's contents; the reminders (today's or all);
 //! adding to or removing from the shopping list and scheduling a reminder or a timer, when the existing
 //! parsers resolve them without a model. A fast turn writes the timeline like any other (the caller does).
@@ -27,15 +41,16 @@ use std::time::{Duration, Instant};
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use chrono_tz::Tz;
 use lucina_intent::{grocery as gi, notes as nt, tier0};
-use lucina_jev::Jev;
+use lucina_jev::{Decision, Jev, Question};
 use lucina_store::parser::{parse_reminder_message, ParseOptions};
 use lucina_store::reminders::{filter_for_scope, Reminder};
 use lucina_store::timeline::Meta;
+use lucina_tools::pending::{classify_reply, Reply};
 use serde_json::{json, Value};
 
 use super::{create_turn_reminder, readable_domains, resolve_reminder, Finish, Turn};
 use crate::api::owner_reminders;
-use crate::voice::{self, RouteInfo};
+use crate::voice::{self, Layer, RouteInfo, SharedIntent};
 use crate::AppState;
 
 /// Intents a spoken turn can answer without the planner.
@@ -84,6 +99,8 @@ pub(super) struct Started {
     /// Jev is configured: the route and the ack are events of the stream. Without a Jev client the turn
     /// is today's path to the last event (and the log line still says so).
     announce: bool,
+    /// The call's verdict in the classifier's shape, for the context building (one intent call per turn).
+    intent: tokio::sync::watch::Receiver<Option<SharedIntent>>,
 }
 
 /// The facts Jev sees, in one fixed template: no recent turns, no guessed context.
@@ -98,63 +115,79 @@ fn state_of(message: &str, tz: Tz, now: DateTime<Utc>) -> Value {
     })
 }
 
+/// The Jev client of spoken turns: the config's own (tests), else the process-wide one.
+fn jev_of(st: &AppState) -> &Jev {
+    match &st.voice_jev {
+        Some(j) => j,
+        None => lucina_jev::shared(),
+    }
+}
+
 /// Starts Jev's intent call. Call it before anything else of the turn runs.
 pub(super) fn start(st: &AppState, message: &str) -> Started {
     let own = st.voice_jev.clone();
     let cap = st.cfg.voice_jev_cap;
     let state = state_of(message, st.cfg.time_zone, Utc::now());
-    let announce = own
-        .as_ref()
-        .map_or_else(|| lucina_jev::shared().configured(), |j| j.configured());
+    let announce = jev_of(st).configured();
+    // The intent call is the first of the turn's three (a Jev that is not available makes none).
+    if jev_of(st).available() {
+        if let Some(trace) = voice::trace() {
+            trace.take_call();
+        }
+    }
+    let (tx, intent) = voice::intent_channel();
     let task = tokio::spawn(async move {
         let jev: &Jev = match &own {
             Some(j) => j,
             None => lucina_jev::shared(),
         };
-        ask(jev, state, cap).await
+        let (outcome, shared) = ask(jev, state, cap).await;
+        let _ = tx.send(Some(shared));
+        outcome
     });
-    Started { task, announce }
+    Started {
+        task,
+        announce,
+        intent,
+    }
 }
 
-async fn ask(jev: &Jev, state: Value, cap: Duration) -> Outcome {
+async fn ask(jev: &Jev, state: Value, cap: Duration) -> (Outcome, SharedIntent) {
+    let failed = |reason, ms| (Outcome::Failed { reason, ms }, None);
     if !jev.available() {
-        return Outcome::Failed {
-            reason: "unavailable",
-            ms: 0,
-        };
+        return failed("unavailable", 0);
     }
     let questions = crate::jev_route::intent_questions();
     let started = Instant::now();
     let answer = tokio::time::timeout(cap, jev.decide("voice", state, &questions)).await;
     let ms = started.elapsed().as_millis() as u64;
     match answer {
-        Err(_) => Outcome::Failed {
-            reason: "timeout",
-            ms,
-        },
-        Ok(Err(_)) => Outcome::Failed {
-            reason: "error",
-            ms,
-        },
-        Ok(Ok(d)) => match d.choice("intent") {
-            Some((intent, confidence)) => Outcome::Verdict {
-                intent: intent.to_owned(),
-                confidence,
-                scope: d
-                    .choice("scope")
-                    .map(|c| c.0.to_owned())
-                    .unwrap_or_default(),
-                ms,
-            },
-            None => Outcome::Failed {
-                reason: "error",
-                ms,
-            },
+        Err(_) => failed("timeout", ms),
+        Ok(Err(_)) => failed("error", ms),
+        Ok(Ok(d)) => match (d.choice("intent"), crate::jev_route::intent_json(&d)) {
+            (Some((intent, confidence)), shared) => (
+                Outcome::Verdict {
+                    intent: intent.to_owned(),
+                    confidence,
+                    scope: d
+                        .choice("scope")
+                        .map(|c| c.0.to_owned())
+                        .unwrap_or_default(),
+                    ms,
+                },
+                shared,
+            ),
+            (None, _) => failed("error", ms),
         },
     }
 }
 
 impl Started {
+    /// The receiving end of the intent verdict, for the context building.
+    pub(super) fn intent_rx(&self) -> tokio::sync::watch::Receiver<Option<SharedIntent>> {
+        self.intent.clone()
+    }
+
     /// Jev's outcome, while `prepare` (the turn's context building) makes progress at the same time. When
     /// `prepare` finishes first its result is handed back; otherwise it stays pending in the caller's pin
     /// (and is simply dropped if a fast route answers the turn).
@@ -164,6 +197,7 @@ impl Started {
     ) -> (Outcome, bool, Option<P::Output>) {
         let announce = self.announce;
         let mut task = self.task;
+        drop(self.intent);
         let lost = |r: Result<Outcome, tokio::task::JoinError>| {
             r.unwrap_or(Outcome::Failed {
                 reason: "error",
@@ -189,8 +223,9 @@ enum Plan {
         lang: &'static str,
     },
     ShoppingQuery,
-    /// Add or remove: the grocery path of the normal turn does it.
-    ShoppingWrite,
+    /// Add or remove: the grocery path of the normal turn does it. With several products (the `slots`
+    /// layer split the sentence): one `(message, product)` per product, each run through the same path.
+    ShoppingWrite(Vec<(String, String)>),
     Reminder {
         text: String,
         due: String,
@@ -205,27 +240,477 @@ enum Clock {
     Date,
 }
 
+/// A spoken turn's pending "sei sicuro?" (`st.pending`, tool name).
+const CONFIRM_TOOL: &str = "voice_confirm";
+/// The action of the confirmation question and of the cancel answer.
+pub(super) const CONFIRM_ACTION: &str = "voice_confirm";
+
 /// Decides the turn's route; announces it (`route` event, log line); answers a fast turn. `None`: the
-/// turn goes on the normal path (after an `ack` for the slow intents).
-pub(super) async fn route(t: &Turn<'_>, outcome: Outcome, announce: bool) -> Option<Finish> {
-    let (info, plan) = decide(t, &outcome);
+/// turn goes on the normal path (after an `ack` for the slow intents). `confirmed`: this turn runs a request
+/// the owner just confirmed, so the `confirm` layer does not ask again.
+pub(super) async fn route(
+    t: &Turn<'_>,
+    outcome: Outcome,
+    announce: bool,
+    confirmed: bool,
+) -> Option<Finish> {
+    let trace = voice::trace();
+    let (mut info, mut plan) = decide(t, &outcome);
+    if let Some(layer) = intent_layer(&outcome, &info) {
+        push(layer);
+    }
+    let mut held: Option<Finish> = None;
+    if t.st.cfg.voice_layers {
+        if let Some(p) = plan.take() {
+            // A quick command the parser was unsure about gets one more look.
+            plan = Box::pin(slots_layer(t, p)).await;
+            info.fast = plan.is_some();
+        } else if !confirmed {
+            // A risky action may need a spoken yes first: the question is the whole answer of this turn.
+            held = Box::pin(confirm_layer(t, &info)).await;
+            info.fast = held.is_some();
+        }
+    }
+    info.layers = trace.as_ref().map(|t| t.layers()).unwrap_or_default();
+    if let Some(trace) = trace.as_ref().filter(|_| announce) {
+        trace.set_route(info.clone());
+    }
     let (jev, reason) = match &outcome {
         Outcome::Verdict { .. } => ("ok", ""),
         Outcome::Failed { reason, .. } => ("failed", *reason),
     };
+    let layers = info
+        .layers
+        .iter()
+        .map(|l| format!("{}:{}:{:.2}:{}ms{}", l.layer, l.verdict, l.confidence, l.ms, if l.used { ":used" } else { "" }))
+        .collect::<Vec<_>>()
+        .join(",");
     tracing::info!(target: "lucina_voice::route", event = "voice_route", intent = %info.intent,
         confidence = info.confidence, jev_ms = info.jev_ms, fast = info.fast, source = info.source,
-        jev, reason, "voice route");
+        jev, reason, jev_calls = trace.as_ref().map_or(0, |t| t.calls()), layers = %layers, "voice route");
     if announce {
         voice::route(info.clone());
     }
+    if let Some(finish) = held {
+        return Some(finish);
+    }
     if let Some(plan) = plan {
-        return Some(answer(t, plan).await);
+        return Some(Box::pin(answer(t, plan)).await);
     }
     if announce && ACK_INTENTS.contains(&info.intent.as_str()) {
         voice::ack(voice::ack_text());
     }
     None
+}
+
+fn push(layer: Layer) {
+    if let Some(trace) = voice::trace() {
+        trace.push(layer);
+    }
+}
+
+/// The intent layer's record: Jev's verdict (or why it gave none), and whether the route took it.
+fn intent_layer(outcome: &Outcome, info: &RouteInfo) -> Option<Layer> {
+    match outcome {
+        Outcome::Verdict {
+            intent,
+            confidence,
+            ms,
+            ..
+        } => Some(Layer {
+            layer: "intent",
+            verdict: intent.clone(),
+            confidence: *confidence,
+            ms: *ms,
+            used: info.fast || *confidence >= crate::jev_route::intent_min(),
+        }),
+        // Not configured, or the breaker is open: no call was made, nothing to report.
+        Outcome::Failed {
+            reason: "unavailable",
+            ..
+        } => None,
+        Outcome::Failed { reason, ms } => Some(Layer {
+            layer: "intent",
+            verdict: (*reason).to_owned(),
+            confidence: 0.0,
+            ms: *ms,
+            used: false,
+        }),
+    }
+}
+
+/// One capped Jev call of a layer. `Err(reason)`: no answer (`unavailable`, `budget` when the turn's three
+/// calls are used, `timeout`, `error`), with the milliseconds spent.
+async fn layer_call(
+    t: &Turn<'_>,
+    purpose: &'static str,
+    state: Value,
+    questions: &[(&str, Question)],
+) -> Result<(Decision, u64), (&'static str, u64)> {
+    let jev = jev_of(t.st);
+    if !jev.available() {
+        return Err(("unavailable", 0));
+    }
+    if let Some(trace) = voice::trace() {
+        if !trace.take_call() {
+            return Err(("budget", 0));
+        }
+    }
+    let started = Instant::now();
+    let answer = tokio::time::timeout(
+        t.st.cfg.voice_jev_cap,
+        jev.decide(purpose, state, questions),
+    )
+    .await;
+    let ms = started.elapsed().as_millis() as u64;
+    match answer {
+        Err(_) => Err(("timeout", ms)),
+        Ok(Err(_)) => Err(("error", ms)),
+        Ok(Ok(d)) => Ok((d, ms)),
+    }
+}
+
+/// Records a layer that got no answer (a Jev that is not available made no call and leaves no record).
+fn push_failed(layer: &'static str, reason: &'static str, ms: u64) {
+    if reason != "unavailable" {
+        push(Layer {
+            layer,
+            verdict: reason.to_owned(),
+            confidence: 0.0,
+            ms,
+            used: false,
+        });
+    }
+}
+
+/// `p` of a yes/no question as a verdict word and the confidence in it.
+fn yes_no(p: f64, yes: &str, no: &str) -> (String, f64) {
+    if p >= 0.5 {
+        (yes.to_owned(), p)
+    } else {
+        (no.to_owned(), 1.0 - p)
+    }
+}
+
+// ------------------------------------------------------------------------------------------ slots layer
+
+/// The pieces of a shopping sentence's product phrase ("latte, uova e pane"), if it names several.
+fn split_products(raw: &str) -> Vec<String> {
+    static SPLIT: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = SPLIT.get_or_init(|| {
+        regex::Regex::new(r"(?i)\s*(?:,|;|\+|&|\s+e\s+|\s+and\s+|\s+og\s+)\s*").expect("valid")
+    });
+    let pieces: Vec<String> = re
+        .split(raw)
+        .map(|p| p.trim().to_owned())
+        .filter(|p| !p.is_empty())
+        .collect();
+    if (2..=6).contains(&pieces.len()) && pieces.iter().all(|p| p.chars().count() <= 40) {
+        pieces
+    } else {
+        Vec::new()
+    }
+}
+
+/// Is a parsed reminder one the deterministic parser may have got wrong? The time was not said (a part of the
+/// day or a bare day gives a default hour), the text is long (a second clause rode along), or the parser
+/// removed nothing from the sentence.
+fn reminder_unsure(message: &str, text: &str, relative: bool) -> bool {
+    (!relative && !message.bytes().any(|b| b.is_ascii_digit()))
+        || text.split_whitespace().count() > 10
+        || text.trim().eq_ignore_ascii_case(message.trim())
+}
+
+/// The `slots` layer: a quick command whose parse was unsure gets one question; `None` hands the turn to
+/// the planner (fail open keeps the plan).
+async fn slots_layer(t: &Turn<'_>, plan: Plan) -> Option<Plan> {
+    let st = t.st;
+    let tz = st.cfg.time_zone;
+    let min = st.cfg.voice_slots_min;
+    match plan {
+        Plan::Reminder {
+            ref text,
+            ref due,
+            relative,
+            ..
+        } => {
+            if !reminder_unsure(&t.message, text, relative) {
+                return Some(plan);
+            }
+            let due_local = lucina_store::timeutil::parse_js_date(due)
+                .map(|d| {
+                    d.with_timezone(&tz)
+                        .to_rfc3339_opts(chrono::SecondsFormat::Secs, false)
+                })
+                .unwrap_or_default();
+            let state = json!({
+                "channel": "voice",
+                "message": t.message,
+                "time_zone": tz.name(),
+                "parsed": {"kind": "reminder", "text": text, "due": due_local, "relative": relative},
+            });
+            let q = [(
+                "slots_ok",
+                Question::noul("Do the parsed fields (the reminder's text and the day and time it is due) say exactly what the message asks for? Answer no if the message names a different time, or more than one thing to be reminded of."),
+            )];
+            match layer_call(t, "voice_slots", state, &q).await {
+                Ok((d, ms)) => {
+                    let p = d.yes("slots_ok").unwrap_or(1.0);
+                    let (verdict, confidence) = yes_no(p, "ok", "no");
+                    let demote = verdict == "no" && confidence >= min;
+                    push(Layer {
+                        layer: "slots",
+                        verdict,
+                        confidence,
+                        ms,
+                        used: demote,
+                    });
+                    (!demote).then_some(plan)
+                }
+                Err((reason, ms)) => {
+                    push_failed("slots", reason, ms);
+                    Some(plan)
+                }
+            }
+        }
+        Plan::ShoppingWrite(_) => {
+            let Some(g) = gi::parse_grocery_intent(&t.message) else {
+                return Some(plan);
+            };
+            let names = split_products(&g.raw_product);
+            if names.len() < 2 {
+                return Some(plan);
+            }
+            // Each piece must parse alone to the same intent with a product, or the split is not safe.
+            let each: Vec<(String, String)> = names
+                .iter()
+                .filter_map(|n| {
+                    let m = t.message.replacen(&g.raw_product, n, 1);
+                    let p = gi::parse_grocery_intent(&m)?;
+                    (p.intent == g.intent && p.product.is_some()).then(|| (m, n.clone()))
+                })
+                .collect();
+            if each.len() != names.len() {
+                return Some(plan);
+            }
+            let state = json!({
+                "channel": "voice",
+                "message": t.message,
+                "parsed": {"kind": "shopping_list", "phrase": g.raw_product, "pieces": names},
+            });
+            let q = [(
+                "products",
+                Question::choice(
+                    "Does the product phrase name one product or several separate products?",
+                    [
+                        ("one", "One product (its name may hold an 'and' or a comma, like salt and vinegar crisps)."),
+                        ("several", "Two or more separate products, one per piece."),
+                    ],
+                ),
+            )];
+            match layer_call(t, "voice_slots", state, &q).await {
+                Ok((d, ms)) => {
+                    let (verdict, confidence) = d
+                        .choice("products")
+                        .map_or(("one".to_owned(), 0.0), |(c, p)| (c.to_owned(), p));
+                    let split = verdict == "several" && confidence >= min;
+                    push(Layer {
+                        layer: "slots",
+                        verdict,
+                        confidence,
+                        ms,
+                        used: split,
+                    });
+                    Some(if split { Plan::ShoppingWrite(each) } else { plan })
+                }
+                Err((reason, ms)) => {
+                    push_failed("slots", reason, ms);
+                    Some(plan)
+                }
+            }
+        }
+        other => Some(other),
+    }
+}
+
+// ----------------------------------------------------------------------------------------- confirm layer
+
+/// What kind of risky action the turn is, if it is one: a message to another assistant (`message`), a post
+/// to the Pokoin channel (`post`), a purchase or an order (`purchase`), a delete (`delete`). Deterministic and
+/// cheap: it only decides whether the Jev question is worth asking.
+fn risk_kind(intent: &str, message: &str) -> Option<&'static str> {
+    static BUY: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static DEL: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static OBJ: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let buy = BUY.get_or_init(|| {
+        regex::Regex::new(r"(?i)\b(compra\w*|acquist\w*|ordin(?:a|ami|are)|pag(?:a|ami|are)|checkout|buy|purchase|order|pay|køb\w*|bestil\w*|betal\w*)\b").expect("valid")
+    });
+    let del = DEL.get_or_init(|| {
+        regex::Regex::new(r"(?i)\b(cancell\w*|elimin\w*|rimuov\w*|rimuovi|togli\w*|delete|remove|erase|slet\w*|fjern\w*)\b").expect("valid")
+    });
+    let obj = OBJ.get_or_init(|| {
+        regex::Regex::new(r"(?i)\b(tutt\w*|all|everything|promemoria|reminders?|event\w*|appuntament\w*|not[ae]|notes?|file|folder|account|lista|list)\b").expect("valid")
+    });
+    match intent {
+        "agent_message" => return Some("message"),
+        "social_post" => return Some("post"),
+        _ => {}
+    }
+    if matches!(intent, "computer_task" | "web_crawl") && buy.is_match(message) {
+        return Some("purchase");
+    }
+    const READ_ONLY: &[&str] = &[
+        "social_greeting",
+        "agent_status_check",
+        "temporal_query",
+        "explicit_memory_recall",
+        "list_reminders",
+        "model_status",
+        "grocery.shopping_list.query",
+        "grocery.shopping_list.remove",
+        "grocery.consume",
+        "grocery.finished",
+        "grocery.pantries.query",
+        "grocery.price.query",
+        "grocery.expense.query",
+        "grocery.analytics.query",
+        "grocery.offer.search",
+    ];
+    if READ_ONLY.contains(&intent) || !del.is_match(message) {
+        return None;
+    }
+    // Plain conversation only counts when it names something that can be deleted.
+    let talk = matches!(intent, "chat" | "unknown" | "continue_current_topic" | "new_topic");
+    (!talk || obj.is_match(message)).then_some("delete")
+}
+
+fn confirm_question(kind: &str, lang: &str) -> String {
+    let what = match (kind, lang) {
+        ("message", "it") => "inoltrare un messaggio a un altro assistente",
+        ("post", "it") => "pubblicare un post",
+        ("purchase", "it") => "fare un acquisto o un ordine",
+        (_, "it") => "cancellare qualcosa",
+        ("message", "da") => "sende en besked videre til en anden assistent",
+        ("post", "da") => "udgive et opslag",
+        ("purchase", "da") => "foretage et køb eller en bestilling",
+        (_, "da") => "slette noget",
+        ("message", _) => "pass a message on to another assistant",
+        ("post", _) => "publish a post",
+        ("purchase", _) => "make a purchase or an order",
+        _ => "delete something",
+    };
+    match lang {
+        "it" => format!("Sei sicuro? Sto per {what}. Dimmi sì per confermare."),
+        "da" => format!("Er du sikker? Jeg er ved at {what}. Sig ja for at bekræfte."),
+        _ => format!("Are you sure? I'm about to {what}. Say yes to confirm."),
+    }
+}
+
+fn cancel_text(lang: &str) -> &'static str {
+    match lang {
+        "it" => "Va bene, non lo faccio.",
+        "da" => "Okay, det gør jeg ikke.",
+        _ => "OK, I won't do it.",
+    }
+}
+
+/// The `confirm` layer: for a risky action, one question says whether to ask first. If so, the request is held
+/// (`st.pending`, ten minutes) and this turn answers with the question.
+async fn confirm_layer(t: &Turn<'_>, info: &RouteInfo) -> Option<Finish> {
+    let kind = risk_kind(&info.intent, &t.message)?;
+    let state = json!({
+        "channel": "voice",
+        "message": t.message,
+        "intent": info.intent,
+        "risk": kind,
+    });
+    let q = [(
+        "confirm",
+        Question::noul("Must Lucina ask the owner \"are you sure?\" by voice, and wait for a yes, before doing this? Answer yes when the action is hard to undo, costs money, or sends words to someone else; answer no when it is harmless, easy to undo, or the owner's words already make exactly this action unmistakable."),
+    )];
+    match layer_call(t, "voice_confirm", state, &q).await {
+        Ok((d, ms)) => {
+            let p = d.yes("confirm").unwrap_or(0.0);
+            let (verdict, confidence) = yes_no(p, "ask", "act");
+            let ask = verdict == "ask" && confidence >= t.st.cfg.voice_confirm_min;
+            push(Layer {
+                layer: "confirm",
+                verdict,
+                confidence,
+                ms,
+                used: ask,
+            });
+            if !ask {
+                return None;
+            }
+            t.st.pending.create(
+                &t.session,
+                CONFIRM_TOOL,
+                json!({"message": t.message, "intent": info.intent, "risk": kind}),
+                &format!("spoken {kind}"),
+                Utc::now(),
+            );
+            let lang = crate::jev_yesno::turn_lang_code();
+            let mut f = Finish::reply(confirm_question(kind, lang), CONFIRM_ACTION);
+            f.action_result = format!("[voice confirm asked: {kind}]");
+            Some(f)
+        }
+        Err((reason, ms)) => {
+            push_failed("confirm", reason, ms);
+            None
+        }
+    }
+}
+
+/// What a spoken turn does with its session's pending "sei sicuro?".
+pub(super) enum Held {
+    /// None pending (or the turn is something else: the pending question is dropped).
+    None,
+    /// A yes: run this held request.
+    Run(String),
+    /// A no: answer with this text.
+    Cancel(String),
+}
+
+/// Settles the session's pending spoken confirmation with this turn's words: only an explicit yes runs the
+/// held request; a no cancels it; anything else drops it (the turn is read as itself).
+pub(super) fn settle_confirmation(st: &AppState, session: &str, message: &str) -> Held {
+    let Some(p) = st
+        .pending
+        .current(session, Utc::now())
+        .filter(|p| p.tool == CONFIRM_TOOL)
+    else {
+        return Held::None;
+    };
+    let Some(action) = st.pending.take(&p.id) else {
+        return Held::None;
+    };
+    let word = |verdict: &str, used: bool| {
+        push(Layer {
+            layer: "confirm",
+            verdict: verdict.to_owned(),
+            confidence: 1.0,
+            ms: 0,
+            used,
+        })
+    };
+    match classify_reply(message) {
+        Reply::Yes => match action.args["message"].as_str().filter(|m| !m.is_empty()) {
+            Some(m) => {
+                word("yes", true);
+                Held::Run(m.to_owned())
+            }
+            None => Held::None,
+        },
+        Reply::No => {
+            word("no", true);
+            Held::Cancel(cancel_text(crate::jev_yesno::turn_lang_code()).to_owned())
+        }
+        Reply::Other => {
+            word("dropped", false);
+            Held::None
+        }
+    }
 }
 
 fn decide(t: &Turn<'_>, outcome: &Outcome) -> (RouteInfo, Option<Plan>) {
@@ -243,6 +728,7 @@ fn decide(t: &Turn<'_>, outcome: &Outcome) -> (RouteInfo, Option<Plan>) {
                 jev_ms: *ms,
                 fast: plan.is_some(),
                 source: "jev",
+                layers: Vec::new(),
             };
             (info, plan)
         }
@@ -254,6 +740,7 @@ fn decide(t: &Turn<'_>, outcome: &Outcome) -> (RouteInfo, Option<Plan>) {
                     jev_ms: *ms,
                     fast: false,
                     source: "tier0",
+                    layers: Vec::new(),
                 },
                 None => RouteInfo {
                     intent: "unknown".into(),
@@ -261,6 +748,7 @@ fn decide(t: &Turn<'_>, outcome: &Outcome) -> (RouteInfo, Option<Plan>) {
                     jev_ms: *ms,
                     fast: false,
                     source: "fallback",
+                    layers: Vec::new(),
                 },
             };
             (info, None)
@@ -324,7 +812,7 @@ fn plan(t: &Turn<'_>, intent: &str, confidence: f64, scope: &str) -> Option<Plan
             st.grocery.as_ref()?;
             let g = gi::parse_grocery_intent(msg)?;
             (g.intent == intent && g.product.is_some() && agrees(false))
-                .then_some(Plan::ShoppingWrite)
+                .then(|| Plan::ShoppingWrite(Vec::new()))
         }
         "schedule_reminder" => {
             let lang = template_lang()?;
@@ -374,7 +862,8 @@ async fn answer(t: &Turn<'_>, plan: Plan) -> Finish {
             .with("[voice fast: reminders]", None)
         }
         Plan::ShoppingQuery => shopping_query(t).await,
-        Plan::ShoppingWrite => {
+        Plan::ShoppingWrite(pieces) if !pieces.is_empty() => shopping_pieces(t, &pieces).await,
+        Plan::ShoppingWrite(_) => {
             match crate::grocery_turn::process(
                 st.grocery.as_deref(),
                 &st.cfg.grocery_user_id,
@@ -430,6 +919,56 @@ async fn answer(t: &Turn<'_>, plan: Plan) -> Finish {
             }
         }
     }
+}
+
+/// A shopping sentence the `slots` layer split: every product goes through the grocery path on its own, and
+/// one sentence says what was done.
+async fn shopping_pieces(t: &Turn<'_>, pieces: &[(String, String)]) -> Finish {
+    let st = t.st;
+    let mut intent = String::new();
+    let mut names = Vec::new();
+    let mut list_id = None;
+    for (message, name) in pieces {
+        match crate::grocery_turn::process(
+            st.grocery.as_deref(),
+            &st.cfg.grocery_user_id,
+            message,
+            "",
+            &t.channel,
+        )
+        .await
+        {
+            Ok(Some(h)) => {
+                intent = h.intent;
+                list_id = list_id.or(h.list_id);
+                names.push(name.clone());
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::error!(error = %e, "secretary grocery turn failed");
+                return Finish::reply(
+                    "I could not update grocery accounting right now. Your purchase was not recorded.",
+                    "grocery",
+                );
+            }
+        }
+    }
+    if names.is_empty() {
+        return Finish::reply("I could not do that just now.", "grocery");
+    }
+    let lang = lucina_grocery::message_language(&t.message, None);
+    let joiner = match lang {
+        "it" => " e ",
+        "da" => " og ",
+        _ => " and ",
+    };
+    let kind = if intent.ends_with(".remove") { "removed" } else { "added" };
+    let reply = crate::grocery_turn::shopping_reply(lang, kind, &names.join(joiner));
+    let meta = list_id.map(|id| Meta {
+        list_id: Some(id),
+        ..Meta::kind("shopping")
+    });
+    Finish::reply(reply, "grocery").with(intent, meta)
 }
 
 async fn shopping_query(t: &Turn<'_>) -> Finish {
@@ -964,6 +1503,56 @@ fn shopping_list_reply(names: &[String], lang: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn product_phrases_split_on_the_usual_separators() {
+        assert_eq!(split_products("latte e uova"), ["latte", "uova"]);
+        assert_eq!(split_products("latte, uova e pane"), ["latte", "uova", "pane"]);
+        assert_eq!(split_products("milk and eggs"), ["milk", "eggs"]);
+        assert_eq!(split_products("mælk og æg"), ["mælk", "æg"]);
+        assert!(split_products("latte").is_empty());
+        assert!(split_products("a, b, c, d, e, f, g").is_empty(), "more than six is not a list");
+    }
+
+    #[test]
+    fn a_reminder_parse_is_unsure_without_a_said_time_or_with_a_long_text() {
+        // A relative timer and a clock time are sure.
+        assert!(!reminder_unsure("tra 20 minuti ricordami di spegnere il forno", "spegnere il forno", true));
+        assert!(!reminder_unsure("ricordami domani alle 9 di pagare", "pagare", false));
+        // A day with no hour is a default hour.
+        assert!(reminder_unsure("ricordami domani di chiamare Marco", "chiamare Marco", false));
+        // A long text rode a second clause along.
+        assert!(reminder_unsure(
+            "ricordami domani alle 9 di chiamare Marco e poi di portare fuori il cane e di comprare il latte",
+            "chiamare Marco e poi di portare fuori il cane e di comprare il latte",
+            false
+        ));
+        // The parser removed nothing.
+        assert!(reminder_unsure("domani", "domani", false));
+    }
+
+    #[test]
+    fn only_risky_actions_get_the_confirm_question() {
+        assert_eq!(risk_kind("agent_message", "dì a Claude di controllare"), Some("message"));
+        assert_eq!(risk_kind("social_post", "pubblica la notizia"), Some("post"));
+        assert_eq!(risk_kind("computer_task", "ordina la pizza su Wolt"), Some("purchase"));
+        assert_eq!(risk_kind("computer_task", "apri Outlook e leggi la posta"), None);
+        assert_eq!(risk_kind("calendar_event", "cancella l'appuntamento di domani"), Some("delete"));
+        assert_eq!(risk_kind("unknown", "elimina tutti i promemoria"), Some("delete"));
+        // Plain talk about deleting is not a delete; reads and list edits are never asked about.
+        assert_eq!(risk_kind("chat", "come si elimina un messaggio su Telegram?"), None);
+        assert_eq!(risk_kind("grocery.shopping_list.remove", "togli il latte dalla lista"), None);
+        assert_eq!(risk_kind("temporal_query", "che ore sono?"), None);
+        assert_eq!(risk_kind("schedule_reminder", "ricordami domani alle 9 di pagare"), None);
+    }
+
+    #[test]
+    fn the_confirmation_is_said_in_the_turns_language() {
+        assert!(confirm_question("message", "it").starts_with("Sei sicuro?"));
+        assert!(confirm_question("purchase", "en").starts_with("Are you sure?"));
+        assert!(confirm_question("delete", "da").starts_with("Er du sikker?"));
+        assert!(!confirm_question("message", "it").contains("Claude"), "no transcript in the question");
+    }
+
     use super::*;
     use chrono::TimeZone;
 

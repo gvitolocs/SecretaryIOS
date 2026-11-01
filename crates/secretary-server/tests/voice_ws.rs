@@ -42,6 +42,9 @@ const ACK_SLOW: &str = "Cerca sul web le notizie di oggi per me";
 const ACK_LATE: &str = "Cerca nel web le novita di oggi per me";
 const ACK_TWICE: &str = "Cerca online le ultime notizie per me";
 const FAST_TIME: &str = "Che ore sono adesso per favore";
+// Layered Jev decisions and Voice Learn (protocol sections 8 and 9).
+const LAYERED: &str = "Parlami della via Skibigaardsvej per favore";
+const LAYERED_NO_DONE: &str = "Dimmi una cosa sulla mia via per favore";
 
 fn pcm_of(len: usize) -> Vec<u8> {
     let s = (len as i16).to_le_bytes();
@@ -54,6 +57,8 @@ struct Mock {
     transcript: Mutex<String>,
     /// Make the local STT answer 500.
     stt_fails: Mutex<bool>,
+    /// Extra keys of the local STT's JSON answer (`corrections`, `ambiguous`).
+    stt_extra: Mutex<Option<Value>>,
     stt_calls: Mutex<Vec<SttCall>>,
     chats: Mutex<Vec<(Value, Option<String>)>>,
     /// (input text, when it arrived)
@@ -135,7 +140,11 @@ async fn local_stt(
     } else {
         m.transcript.lock().unwrap().clone()
     };
-    Json(json!({"text": text, "language": "it", "ms": 5, "mode": "gpu"})).into_response()
+    let mut answer = json!({"text": text, "language": "it", "ms": 5, "mode": "gpu"});
+    if let (Some(Value::Object(extra)), false) = (m.stt_extra.lock().unwrap().clone(), silence) {
+        answer.as_object_mut().unwrap().extend(extra);
+    }
+    Json(answer).into_response()
 }
 
 fn sse(
@@ -293,6 +302,43 @@ async fn lucina(
                 (100, "ack", json!({"text": "Ancora un attimo…"})),
                 (150, "delta", d("Fatto qui. ")),
                 (0, "reply", reply("Fatto qui.", false, false)),
+                (0, "done", done()),
+            ],
+            None,
+            "",
+        ),
+        LAYERED => sse(
+            vec![
+                (
+                    0,
+                    "route",
+                    json!({"intent": "chat", "confidence": 0.91, "jev_ms": 210, "fast": false,
+                           "source": "jev", "layers": [
+                        {"layer": "intent", "verdict": "chat", "confidence": 0.91, "ms": 210, "used": true}]}),
+                ),
+                (0, "delta", d("Una via di Aarhus. ")),
+                (0, "reply", reply("Una via di Aarhus.", false, false)),
+                (
+                    0,
+                    "done",
+                    json!({"ok": true, "data": {"reply": "x", "action": "reply", "voice": {"layers": [
+                        {"layer": "intent", "verdict": "chat", "confidence": 0.91, "ms": 215, "used": true},
+                        {"layer": "vocab", "verdict": "Skibigårdsvej", "confidence": 0.77, "ms": 130, "used": true}]}}}),
+                ),
+            ],
+            None,
+            "",
+        ),
+        LAYERED_NO_DONE => sse(
+            vec![
+                (
+                    0,
+                    "route",
+                    json!({"intent": "chat", "confidence": 0.8, "jev_ms": 190, "fast": false,
+                           "source": "jev", "layers": [
+                        {"layer": "intent", "verdict": "chat", "confidence": 0.8, "ms": 190, "used": true}]}),
+                ),
+                (0, "reply", reply("Una via.", false, true)),
                 (0, "done", done()),
             ],
             None,
@@ -1693,6 +1739,108 @@ async fn a_fast_route_gets_no_filler_and_its_route_is_recorded() {
         .await;
     assert_eq!(v["turns"][0]["fast"], true);
     assert!(v["turns"][0]["spans"].get("ack").is_none());
+}
+
+#[tokio::test]
+async fn voice_turns_are_the_voice_channel_and_carry_stt_facts_to_lucina() {
+    let h = harness().await;
+    *h.mock.stt_extra.lock().unwrap() = Some(json!({
+        "corrections": [{"from": "skibi gard", "to": "Skibigårdsvej"}, {"from": "Mikel", "to": "Mikkel"}],
+        "ambiguous": [{"heard": "via", "candidates": ["Skibigårdsvej", "Skibbyvej"]}]
+    }));
+    h.mock.say(TWO);
+    let mut ws = h.connect().await;
+    let out = say_ptt(&mut ws, 800).await;
+    assert_eq!(json_of(&out, "done")["type"], "done");
+    let chats = h.mock.chats.lock().unwrap().clone();
+    let chat = &chats[0].0;
+    assert_eq!(chat["channel"], "voice");
+    assert_eq!(chat["sessionId"], "lucinavoice");
+    assert_eq!(chat["voiceMeta"]["turnId"], chat["clientMessageId"]);
+    assert!(chat["voiceMeta"]["ms"]["stt"].is_u64());
+    // Lucina's vocab layer gets the doubtful spans; the replaced words are counted here, not sent.
+    assert_eq!(
+        chat["voiceMeta"]["ambiguous"],
+        json!([{"heard": "via", "candidates": ["Skibigårdsvej", "Skibbyvej"]}])
+    );
+    assert!(chat["voiceMeta"].get("corrections").is_none());
+
+    // The telemetry keeps counts only: no words, no transcript text.
+    let path = format!("/v1/voice/devices/{}/status", h.dev_id);
+    let v = h
+        .wait_for(&h.token, &path, |v| v["turns"][0]["stt_corrections"] == 2)
+        .await;
+    assert_eq!(v["turns"][0]["stt_ambiguous"], 1);
+    assert_eq!(v["turns"][0]["transcript_chars"], TWO.chars().count());
+    let dir = h.data_dir.join("voice").join(&h.dev_id);
+    for f in ["status.json", "events.jsonl"] {
+        let text = std::fs::read_to_string(dir.join(f)).unwrap_or_default();
+        for word in ["Skibigårdsvej", "Mikkel", "skibi gard", "Ciao Lucina"] {
+            assert!(!text.contains(word), "{f} holds {word:?}");
+        }
+    }
+    // A turn with nothing to report has no such keys.
+    h.mock.say(PIPELINE);
+    *h.mock.stt_extra.lock().unwrap() = None;
+    let out = say_ptt(&mut ws, 800).await;
+    assert_eq!(json_of(&out, "done")["type"], "done");
+    let v = h
+        .wait_for(&h.token, &path, |v| v["turns"].as_array().is_some_and(|t| t.len() == 2))
+        .await;
+    assert!(v["turns"][0].get("stt_corrections").is_none() && v["turns"][0].get("layers").is_none());
+    let chats = h.mock.chats.lock().unwrap().clone();
+    assert!(chats[1].0["voiceMeta"].get("ambiguous").is_none());
+}
+
+#[tokio::test]
+async fn jev_layers_reach_the_done_message_the_status_api_and_the_event_log() {
+    let h = harness().await;
+    h.mock.say(LAYERED);
+    let mut ws = h.connect().await;
+    let out = say_ptt(&mut ws, 900).await;
+    // `route.layers` completed by the `done` body (a layer of the same name is replaced).
+    let layers = json!([
+        {"layer": "intent", "verdict": "chat", "confidence": 0.91, "ms": 215, "used": true},
+        {"layer": "vocab", "verdict": "Skibigårdsvej", "confidence": 0.77, "ms": 130, "used": true}
+    ]);
+    assert_eq!(json_of(&out, "done")["layers"], layers);
+    assert!(json_of(&out, "done")["ms"].get("layers").is_none(), "ms stays numbers only");
+
+    let path = format!("/v1/voice/devices/{}/status", h.dev_id);
+    let v = h
+        .wait_for(&h.token, &path, |v| v["turns"][0]["layers"].is_array())
+        .await;
+    assert_eq!(v["turns"][0]["layers"], layers);
+    assert_eq!(v["turns"][0]["intent"], "chat");
+    let (_, ev) = h
+        .get(
+            Some(&h.token),
+            &format!("/v1/voice/devices/{}/events?kind=server_turn", h.dev_id),
+        )
+        .await;
+    assert_eq!(ev["events"][0]["layers"], layers);
+    // Facts only: the transcript and the reply never reach the stored files.
+    let dir = h.data_dir.join("voice").join(&h.dev_id);
+    for f in ["status.json", "events.jsonl"] {
+        let text = std::fs::read_to_string(dir.join(f)).unwrap_or_default();
+        assert!(!text.contains("Skibigaardsvej") && !text.contains("Aarhus"), "{f}");
+    }
+}
+
+#[tokio::test]
+async fn a_done_without_layers_keeps_the_routes_layers() {
+    let h = harness().await;
+    h.mock.say(LAYERED_NO_DONE);
+    let mut ws = h.connect().await;
+    let out = say_ptt(&mut ws, 900).await;
+    assert_eq!(
+        json_of(&out, "done")["layers"],
+        json!([{"layer": "intent", "verdict": "chat", "confidence": 0.8, "ms": 190, "used": true}])
+    );
+    // And a Lucina that sends no layers at all leaves the message as it was.
+    h.mock.say(TWO);
+    let out = say_ptt(&mut ws, 900).await;
+    assert!(json_of(&out, "done").get("layers").is_none());
 }
 
 #[tokio::test]

@@ -60,6 +60,13 @@ pub const MAX_MESSAGE_CHARS: usize = 12_000;
 const CLIENT_MESSAGE_TTL: Duration = Duration::from_secs(600);
 const CLIENT_MESSAGE_KEEP: usize = 200;
 pub const PLANNER_PLATFORM: &str = "secretary";
+/// The LucinaVoice speakers' timeline channel and conversation (docs/lucinavoice-protocol.md section 7).
+pub const VOICE_CHANNEL: &str = "voice";
+/// The session of the Lucina Voice thread when the sender names none.
+pub const VOICE_SESSION: &str = "lucinavoice";
+/// The source label of a speaker turn in Honcho (the app's turns say `Secretary app`).
+pub const VOICE_LABEL: &str = "LucinaVoice speaker";
+
 pub const SECRETARY_EXTRA_SYSTEM: &str = "This conversation comes from the Secretary app on Giuseppe's iPhone. Reply in the language of the message. Keep it short: usually 1-3 sentences. Plain text only: no markdown tables or headings.";
 
 /// Validate the body, classify the turn's memory surface (once), dedupe
@@ -75,9 +82,40 @@ pub async fn handle_chat(
     body: Value,
 ) -> Result<Value, ApiError> {
     let spoken = body["voice"].as_bool().unwrap_or(false);
-    crate::voice::SPOKEN
-        .scope(spoken, handle_chat_turn(st, bearer, body))
-        .await
+    // A spoken turn keeps a trace of its Jev layers (protocol section 9); the `done` body reports it.
+    let trace = spoken.then(|| Arc::new(crate::voice::Trace::default()));
+    let out = crate::voice::SPOKEN
+        .scope(
+            spoken,
+            // Boxed: a debug build moves a future by value through each wrapper, and this one is huge.
+            crate::voice::with_trace(trace.clone(), Box::pin(handle_chat_turn(st, bearer, body))),
+        )
+        .await;
+    match (out, trace) {
+        (Ok(mut out), Some(trace)) if !trace.is_empty() && out["duplicate"] != json!(true) => {
+            out["voice"] = trace.json();
+            Ok(out)
+        }
+        (out, _) => out,
+    }
+}
+
+/// The `voiceMeta` a voice turn's sender attaches (secretary-server: its STT timing and the vocabulary's
+/// doubtful words): `{turnId?, ms?: {..}, ambiguous?: [{heard, candidates}]}`. `base` is what goes on the
+/// timeline items (`turnId`, `ms`), cut to size here and checked again by the store.
+fn voice_base(body: &Value) -> Option<Value> {
+    let m = body.get("voiceMeta")?.as_object()?;
+    let mut out = serde_json::Map::new();
+    if let Some(id) = m.get("turnId").and_then(Value::as_str) {
+        out.insert("turnId".into(), json!(id.chars().take(64).collect::<String>()));
+    }
+    if let Some(ms) = m.get("ms").and_then(Value::as_object) {
+        out.insert(
+            "ms".into(),
+            Value::Object(ms.iter().take(16).map(|(k, v)| (k.clone(), v.clone())).collect()),
+        );
+    }
+    (!out.is_empty()).then_some(Value::Object(out))
 }
 
 async fn handle_chat_turn(
@@ -114,9 +152,15 @@ async fn handle_chat_turn(
     } else {
         channel
     };
-    if channel != "web" && channel != "ios" {
-        return Err(ApiError::bad_request("channel must be web or ios"));
+    if channel != "web" && channel != "ios" && channel != VOICE_CHANNEL {
+        return Err(ApiError::bad_request("channel must be web, ios or voice"));
     }
+    // The speaker's own thread has its own session unless the sender names one.
+    let requested = if requested.is_empty() && channel == VOICE_CHANNEL {
+        VOICE_SESSION.to_owned()
+    } else {
+        requested
+    };
     // Swipe to reply: the earlier timeline item this message answers.
     let reply_to = optional_string(&body, "replyTo", 64)?;
     if !reply_to.is_empty() && !reply::valid_id(&reply_to) {
@@ -183,6 +227,13 @@ async fn handle_chat_turn(
         }));
     }
     let (text, held) = crate::owner_secrets::mask_message(&st, &text);
+    // Voice Learn's `vocab` layer (after the masking: Jev never sees a token): doubtful spans of a spoken
+    // sentence, settled by Jev when it is sure.
+    let text = if crate::voice::spoken() {
+        Box::pin(crate::voice_learn::apply_ambiguity(&st, text, &body)).await
+    } else {
+        text
+    };
     if let Some(name) = (held.is_empty() && mcp_turn.is_none())
         .then(|| crate::owner_secrets::project_request(&text))
         .flatten()
@@ -214,6 +265,7 @@ async fn handle_chat_turn(
     let device_meta = Meta {
         device: body["device"].as_str().map(str::to_owned),
         device_name: body["deviceName"].as_str().map(str::to_owned),
+        voice: voice_base(&body).filter(|_| channel == VOICE_CHANNEL),
         ..Meta::default()
     };
     let offer_timeline = st.timeline_for(&session);
@@ -791,15 +843,31 @@ async fn run_turn_scoped(
     reply_to: Option<String>,
     device_meta: Meta,
 ) -> Result<Value, ApiError> {
-    // LucinaVoice, Jev fast path (docs/lucinavoice-protocol.md section 6): a spoken turn of the owner starts
-    // Jev's intent call first of all, so it runs while the rest of the turn is prepared.
-    let voice_route = (crate::voice::spoken()
+    // What was said, for the timeline and the recent turns (a confirmed request below runs as the held text).
+    let heard = message.clone();
+    let voice_eligible = crate::voice::spoken()
         && existing.is_none()
         && origin.is_none()
         && mcp_turn.is_none()
         && st.cfg.planner == PlannerMode::Json
-        && !crate::selftest::is_session(&session))
-    .then(|| voice_fast::start(&st, &message));
+        && !crate::selftest::is_session(&session);
+    // A pending "sei sicuro?" (the confirm layer, section 9) is settled by this turn: a yes runs the request
+    // that was held, a no cancels it, anything else drops it and the turn goes on as itself.
+    let (message, confirmed, cancelled) = if voice_eligible {
+        match voice_fast::settle_confirmation(&st, &session, &message) {
+            voice_fast::Held::Run(original) => (original, true, None),
+            voice_fast::Held::Cancel(text) => (message, false, Some(text)),
+            voice_fast::Held::None => (message, false, None),
+        }
+    } else {
+        (message, false, None)
+    };
+    // LucinaVoice, Jev fast path (docs/lucinavoice-protocol.md section 6): a spoken turn of the owner starts
+    // Jev's intent call first of all, so it runs while the rest of the turn is prepared.
+    let voice_route = (voice_eligible && cancelled.is_none()).then(|| voice_fast::start(&st, &message));
+    // A routed spoken turn writes its owner item once the route is known, so that the item carries it.
+    let defer_user_item = voice_route.is_some();
+
     let normal_share = existing.as_ref().is_some_and(|s| !s.voice_only);
     let secrets_text = existing.as_ref().map(|s| s.owner_text.clone());
     let voice_only = existing.as_ref().is_some_and(|s| s.voice_only);
@@ -884,17 +952,18 @@ async fn run_turn_scoped(
     let timeline = TimelineTurn::new(timeline_store, &channel, cmid.clone())
         .with_meta(turn_meta.clone())
         .with_reply_to(reply_to);
-    let timeline = if let Some(item) = existing {
+    let mut timeline = if let Some(item) = existing {
         timeline.with_user_item(item.item)
     } else {
         timeline
     };
-    let user_item = match &origin {
+    let mut user_item = match &origin {
         Some(o) => timeline.record_user(
-            o.timeline_text.as_deref().unwrap_or(&message),
+            o.timeline_text.as_deref().unwrap_or(&heard),
             o.user_attachments.clone(),
         ),
-        None => timeline.record_user(&message, Vec::new()),
+        None if defer_user_item => None,
+        None => timeline.record_user(&heard, Vec::new()),
     };
     let guarded = (mcp_turn.is_some() && (!st.cfg.mcp_trusted || consult))
         || origin.as_ref().is_some_and(|o| !o.owner);
@@ -916,18 +985,23 @@ async fn run_turn_scoped(
     // (MCP included), status and audit for the owner.
     let not_owner = t.mcp.is_some() || t.origin.as_ref().is_some_and(|o| !o.owner);
     // A fast voice turn (voice_fast) is answered without the model: no rich-reply composer either.
-    let mut voice_fast_turn = false;
-    let (finish, prepared) = match secrets_finish(
-        &st,
-        secrets_text.as_deref().unwrap_or(&t.message),
-        not_owner,
-        t.mcp.as_ref().map(|m| m.caller.as_str()),
-    )
-    .await
-    {
+    let mut voice_fast_turn = cancelled.is_some();
+    let early = match cancelled {
+        Some(text) => Some(Finish::reply(text, voice_fast::CONFIRM_ACTION)),
+        None => {
+            secrets_finish(
+                &st,
+                secrets_text.as_deref().unwrap_or(&t.message),
+                not_owner,
+                t.mcp.as_ref().map(|m| m.caller.as_str()),
+            )
+            .await
+        }
+    };
+    let (finish, prepared) = match early {
         Some(f) => {
             t.recent()
-                .append(t.recent_key(), "user", &t.message, Utc::now());
+                .append(t.recent_key(), "user", &heard, Utc::now());
             (f, None)
         }
         None => {
@@ -939,6 +1013,7 @@ async fn run_turn_scoped(
                     recent: t.recent(),
                     recent_key: t.recent_key(),
                     peer: t.peer(),
+                    voice: t.channel == VOICE_CHANNEL,
                 },
                 &t.message,
                 &t.user_label,
@@ -946,22 +1021,33 @@ async fn run_turn_scoped(
                 false,
             );
             // Voice: Jev's route and the context building run together (the building holds its
-            // model calls until the route is known); a fast intent answers the turn here and drops it.
+            // model calls until the route is known, and takes the route's intent verdict instead of
+            // asking Jev again); a fast intent answers the turn here and drops it.
             let (open, gate) = crate::voice::gate();
-            let prepare = crate::voice::gated(gate, prepare);
+            let prepare = crate::voice::with_intent(
+                voice_route.as_ref().map(voice_fast::Started::intent_rx),
+                Box::pin(crate::voice::gated(gate, prepare)),
+            );
             let mut prepare = std::pin::pin!(prepare);
             let mut early = None;
             let mut fast = None;
             if let Some(started) = voice_route {
                 let (outcome, announce, done) = started.verdict(prepare.as_mut()).await;
                 early = done;
-                fast = voice_fast::route(&t, outcome, announce).await;
+                fast = Box::pin(voice_fast::route(&t, outcome, announce, confirmed)).await;
+                // The route is known: the owner item carries it, and the Lucina item after it.
+                if let Some(trace) = crate::voice::trace() {
+                    let mut meta = turn_meta.clone().unwrap_or_default();
+                    meta.voice = Some(trace.meta(meta.voice.as_ref()));
+                    timeline.set_meta(Some(meta));
+                }
+                user_item = timeline.record_user(&heard, Vec::new());
             }
             let _ = open.send(true);
             if let Some(finish) = fast {
                 voice_fast_turn = true;
                 t.recent()
-                    .append(t.recent_key(), "user", &t.message, Utc::now());
+                    .append(t.recent_key(), "user", &heard, Utc::now());
                 (finish, None)
             } else {
                 let prepared = match early {
@@ -969,7 +1055,7 @@ async fn run_turn_scoped(
                     None => prepare.await,
                 };
                 t.recent()
-                    .append(t.recent_key(), "user", &t.message, Utc::now());
+                    .append(t.recent_key(), "user", &heard, Utc::now());
                 let game_system = if prepared.game.is_empty() || !t.guarded {
                     prepared.game.clone()
                 } else {
@@ -983,6 +1069,14 @@ async fn run_turn_scoped(
                 // `"voice": true`: every model call of the turn (the plan, the replies) is told it is spoken.
                 let game_system = if crate::voice::spoken() {
                     format!("{game_system}\n{}", crate::voice::SPOKEN_RULE)
+                        .trim()
+                        .to_owned()
+                } else {
+                    game_system
+                };
+                // The Lucina Voice thread is an owner device, not an outside platform.
+                let game_system = if t.channel == VOICE_CHANNEL {
+                    format!("{game_system}\n{}", crate::prompts::VOICE_SURFACE_RULE)
                         .trim()
                         .to_owned()
                 } else {
@@ -1060,6 +1154,10 @@ async fn run_turn_scoped(
     let meta = reply_meta
         .map(|m| meta.clone().unwrap_or_default().merge(m))
         .or(meta);
+    // A spoken turn that never reached the route (a secrets answer) writes its owner item now.
+    if user_item.is_none() {
+        user_item = timeline.record_user(&heard, Vec::new());
+    }
     let lucina_item = timeline.record_lucina(&reply, Vec::new(), meta);
     // Node queues the job's result after the ack on the turn's timeline chain.
     if let (Some(job), Some(plan)) = (&finish.job, &finish.job_plan) {
@@ -1346,6 +1444,7 @@ fn remember_turn(st: &AppState, t: &Turn<'_>, action: &str, reply: &str, action_
             m.label(),
             t.message
         ),
+        None if t.channel == VOICE_CHANNEL => format!("[{VOICE_LABEL}] {}", t.message),
         None => format!("[{PLATFORM_LABEL}] {}", t.message),
     };
     let assistant = [
@@ -3055,6 +3154,11 @@ async fn tools_turn(
     } else {
         voice_system
     };
+    let voice_system = if channel == VOICE_CHANNEL {
+        format!("{voice_system} {}", crate::prompts::VOICE_SURFACE_RULE)
+    } else {
+        voice_system
+    };
     let turn = TimelineTurn::new(st.timeline_for(&session), &channel, cmid.clone())
         .with_meta(Some(device_meta))
         .with_reply_to(reply_to);
@@ -3083,10 +3187,16 @@ async fn tools_turn(
     let (memory_context, game_system) = if secrets.is_some() {
         (String::new(), String::new())
     } else {
-        let p = crate::context::prepare_with(
+        let p = crate::context::prepare_keyed(
             &st,
             &surface,
             &session,
+            crate::context::Keys {
+                recent: &st.recent,
+                recent_key: &session,
+                peer: &st.cfg.owner_peer_id,
+                voice: channel == VOICE_CHANNEL,
+            },
             &message,
             USER_LABEL,
             PLANNER_PLATFORM,

@@ -44,6 +44,7 @@ Lucina may message you (issue reports, requests the owner asked her to pass on):
 AU questions (Aarhus University people, rooms, buildings, campus map) go to au_people_search, au_building and au_campus_map; always cite the source and never invent. \
 Questions like who called the owner from a number, and lists of unknown callers, go to caller_screen (180.dk public reports, then Jev's spam / kind / pick-up table); show its table with the quoted sources. \
 When available, diagnostics_recent, diagnostics_get and diagnostics_file show crash reports and logs from the owner's Lucina apps. \
+debug_events shows what happened on the owner's phone and other devices step by step (taps, notification buttons, Face ID, approvals, failed requests): read it after a phone test instead of asking him. \
 Lucina's computer is an isolated Linux desktop sandbox (container `lucina-workspace` on nezopt; not nezopt's host, not the owner's Mac). Its only browser is Chromium: one window, already open and signed in to the owner's accounts (Outlook, Google). Use the Lucina MCP tools: `computer_screenshot` to see it (it lists each window's pid and window_id), `computer_call` with `get_window_state` {pid, window_id} to read that Chromium window and `click`, `type_text`, `press_key` to act in it (reuse its tabs; ctrl+t opens a new tab there), `computer_bash` for shell work, or `computer_task` to have Lucina do the whole job. The driver's browser_* tools cannot attach to that window; never open a second browser window or an isolated profile, and never install or launch Firefox. Those signed-in sessions are the owner's: read and navigate freely, but never send email or messages, buy anything, accept terms or change account settings without the owner's explicit OK.\n\n\
 With the `agents` scope you can also drive Lucina Agents, the owner's coding agents on nezopt (Claude Code, Codex, OpenCode, Cursor, Copilot): \
 make a git worktree with workspace_create, start an agent in it with agent_run (provider + task), follow it with agent_wait and agent_logs, \
@@ -292,6 +293,7 @@ impl LucinaMcp {
             name if name.starts_with("ops_") => t.ops(name, args).await,
             "lucina_inbox" | "lucina_reply" => t.reach(name, args).await,
             name if name.starts_with("diagnostics_") => t.diagnostics(name, args).await,
+            "debug_events" => t.debug_events(args).await,
             _ => Err(ToolError(format!("unknown tool {name}"))),
         }
     }

@@ -12,7 +12,7 @@ describe("conversation keys", () => {
    [{ channel: "ios", meta: { device: "I" } }, "device:I"],
    [{ channel: "web" }, "legacy:web"], [{ channel: "ios" }, "legacy:ios"],
    [{ channel: "telegram" }, "telegram"], [{ channel: "discord" }, "discord"],
-   [{ channel: "alexa" }, "alexa"], [{ channel: "other" }, "lucina"],
+   [{ channel: "alexa" }, "alexa"], [{ channel: "voice", meta: { device: "esp" } }, "voice"], [{ channel: "voice" }, "voice"], [{ channel: "other" }, "lucina"],
  ] as [Partial<TimelineItem>, string][]) ("maps %j to %s", (extra, key) => expect(conversationKey(item("1", extra))).toBe(key));
  it("restricts mine to this device, legacy web and lucina", () => {
    expect(isMine(item("1", { meta: { device: "D" } }), "D")).toBe(true);
@@ -21,6 +21,7 @@ describe("conversation keys", () => {
    expect(isMine(item("1"))).toBe(true);
    expect(isMine(item("1", { channel: "other" }))).toBe(true);
    expect(isMine(item("1", { channel: "ios" }), "D")).toBe(false);
+   expect(isMine(item("1", { channel: "voice", meta: { device: "D" } }), "D")).toBe(false);
  });
 });
 describe("IndexedDB cache", () => {

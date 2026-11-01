@@ -149,6 +149,48 @@ describe("Voice device page", () => {
     expect(within(plain).queryByText("Fast")).toBeNull();
   });
 
+  it("shows the Jev layers that decided a turn as chips, and the Voice Learn counts", async () => {
+    api({
+      status: status({
+        turns: [
+          turn({
+            intent: "chat",
+            layers: [
+              { layer: "intent", verdict: "chat", confidence: 0.91, ms: 210, used: true },
+              { layer: "vocab", verdict: "Skibigårdsvej", confidence: 0.62, ms: null, used: false },
+            ],
+            stt_corrections: 2,
+            stt_ambiguous: 1,
+          }),
+          turn(),
+        ],
+      }),
+    });
+    show();
+    const list = await screen.findByRole("list", { name: "Last turns, newest first" });
+    const [withLayers, plain] = [...list.querySelectorAll<HTMLElement>(".vd-turn")] as [HTMLElement, HTMLElement];
+    const chips = within(withLayers).getByRole("list", { name: "Jev layers" });
+    const [intent, vocab] = within(chips).getAllByRole("listitem");
+    expect(intent).toHaveTextContent("Intent");
+    expect(intent).toHaveTextContent("chat");
+    expect(intent).toHaveAttribute("data-used", "true");
+    expect(intent).toHaveAttribute("title", "Intent · chat · confidence 91% · 210 ms · used");
+    expect(vocab).toHaveAttribute("data-used", "false");
+    expect(vocab).toHaveAttribute("title", "Vocabulary · Skibigårdsvej · confidence 62% · not used");
+    expect(within(withLayers).getByText("Voice Learn fixed 2")).toBeInTheDocument();
+    expect(within(withLayers).getByText("1 unsure")).toBeInTheDocument();
+    // A turn without layers has no chips and no counts.
+    expect(within(plain).queryByRole("list", { name: "Jev layers" })).toBeNull();
+    expect(within(plain).queryByText(/Voice Learn fixed/)).toBeNull();
+  });
+
+  it("links to Voice Learn from the list of devices", async () => {
+    api();
+    show("/voice");
+    const link = await screen.findByRole("link", { name: "Voice Learn" });
+    expect(link).toHaveAttribute("href", "/voice/learn");
+  });
+
   it("says so when a turn has no timings, and when there are no turns", async () => {
     api({ status: status({ turns: [turn({ ok: false, spans: {} })] }) });
     show();

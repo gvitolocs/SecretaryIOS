@@ -22,7 +22,10 @@
 //! in either order) into one record with `device_first_audio_ms`. An
 //! unmatched device turn stands alone. When Lucina sent `route` / `ack`
 //! (protocol section 6), the spans gain `route` and `ack` and the record gains
-//! `intent`, `confidence`, `jev_ms`, `fast` and `source` (never text).
+//! `intent`, `confidence`, `jev_ms`, `fast` and `source` (never text). Layered Jev
+//! decisions (protocol section 9) add `layers: [{layer, verdict, confidence, ms, used}]`,
+//! and Voice Learn adds the counts `stt_corrections` and `stt_ambiguous` (only when
+//! above zero; never the words or the transcript).
 //!
 //! **Storage**, under `SECRETARY_DATA_DIR/voice/<device id>/` (0700/0600):
 //! - `events.jsonl`: one JSON object per line, `{"at", "k", "t"?, ...}`:
@@ -72,6 +75,7 @@ use serde_json::{json, Map, Value};
 use crate::auth::{Identity, Via};
 use crate::error::{ApiError, QueryArgs};
 use crate::voice_pipe::{RouteInfo, Shared};
+use secretary_core::RouteLayer;
 use crate::AppState;
 
 /// Largest `hello` / `telemetry` frame taken in.
@@ -325,6 +329,20 @@ pub struct TurnRecord {
     /// `source`); absent for a Lucina without the voice fast path. No text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route: Option<RouteInfo>,
+    /// The Jev layers that decided the turn (intent, slots, confirm, vocab; protocol
+    /// section 9). Facts only; empty for a Lucina without layers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub layers: Vec<RouteLayer>,
+    /// How many words Voice Learn replaced in the transcript (a count, never the words).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub stt_corrections: u32,
+    /// How many Voice Learn matches were ambiguous (a count).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub stt_ambiguous: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -374,6 +392,9 @@ impl Turn {
         }
         if let Some(r) = s.and_then(|s| s.route.as_ref()) {
             put_route(&mut v, r);
+        }
+        if let Some(s) = s {
+            put_voice_learn(&mut v, s);
         }
         v
     }
@@ -939,6 +960,7 @@ impl Store {
         if let Some(r) = &rec.route {
             put_route(&mut line, r);
         }
+        put_voice_learn(&mut line, &rec);
         self.append(d, id, &line);
         d.add_server_turn(rec);
         self.maybe_flush(d, id, false);
@@ -1062,7 +1084,21 @@ fn put_route(v: &mut Value, r: &RouteInfo) {
     v["source"] = json!(r.source);
 }
 
+/// The Jev layers and the Voice Learn counts of a turn, on a turn object (only when present).
+fn put_voice_learn(v: &mut Value, rec: &TurnRecord) {
+    if !rec.layers.is_empty() {
+        v["layers"] = json!(rec.layers);
+    }
+    if rec.stt_corrections > 0 {
+        v["stt_corrections"] = json!(rec.stt_corrections);
+    }
+    if rec.stt_ambiguous > 0 {
+        v["stt_ambiguous"] = json!(rec.stt_ambiguous);
+    }
+}
+
 /// What the caller knows of a finished turn; the rest is in [`Shared`].
+#[derive(Default)]
 pub struct TurnInfo {
     /// The error code, or `None` for a good turn.
     pub err: Option<String>,
@@ -1070,6 +1106,9 @@ pub struct TurnInfo {
     pub speech_ms: u64,
     /// Audio bytes received for the turn.
     pub up_bytes: u64,
+    /// Words Voice Learn replaced in the transcript, and ambiguous matches (counts only).
+    pub stt_corrections: u32,
+    pub stt_ambiguous: u32,
 }
 
 /// Record a finished turn for `ident`'s device.
@@ -1096,6 +1135,9 @@ pub fn finish_turn(st: &AppState, ident: &Identity, shared: &Shared, info: TurnI
             up_bytes: info.up_bytes,
             down_bytes: shared.down_bytes(),
             route: shared.route().cloned(),
+            layers: shared.layers(),
+            stt_corrections: info.stt_corrections,
+            stt_ambiguous: info.stt_ambiguous,
         },
     );
 }
@@ -1324,6 +1366,9 @@ mod tests {
             up_bytes: 48_000,
             down_bytes: 96_000,
             route: None,
+            layers: Vec::new(),
+            stt_corrections: 0,
+            stt_ambiguous: 0,
         }
     }
 

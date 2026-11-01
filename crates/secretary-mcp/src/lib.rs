@@ -13,6 +13,7 @@
 //! - [`mcp`] / [`tools`]: the MCP handler and its tools.
 //! - [`backend`]: the secretary-server client.
 //! - [`diagnostics`]: crash reports from lucina-diagnostics (optional).
+//! - [`debug_events`]: the apps' debug event log (secretary-server).
 
 pub mod agents;
 pub mod au;
@@ -22,6 +23,7 @@ pub mod backend;
 pub mod cli;
 pub mod computer;
 pub mod config;
+pub mod debug_events;
 pub mod diagnostics;
 pub mod format;
 pub mod keep;

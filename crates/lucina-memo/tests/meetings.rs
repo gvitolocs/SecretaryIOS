@@ -105,6 +105,7 @@ impl Stt for FakeStt {
             segments,
             speakers: false,
             created_at: Utc::now(),
+            corrections: vec![],
         })
     }
     async fn gpu_free(&self) -> bool {

@@ -10,6 +10,7 @@ const CHANNEL_KEYS: Record<Channel, MessageKey> = {
   telegram: "chat.channelTelegram",
   discord: "chat.channelDiscord",
   alexa: "chat.channelAlexa",
+  voice: "chat.channelVoice",
   other: "chat.channelOther",
 };
 

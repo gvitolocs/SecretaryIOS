@@ -123,3 +123,8 @@ enum APIError: Error, Equatable, Sendable {
 extension APIError: LocalizedError {
     var errorDescription: String? { userMessage }
 }
+
+extension APIError: APIErrorCodeProviding {
+    /// `APIError:409:already_decided`, `APIError:0:timeout` in the debug log (never the message).
+    var debugCode: String { "APIError:\(status):\(code)" }
+}

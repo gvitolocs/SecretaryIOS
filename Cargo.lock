@@ -3575,6 +3575,7 @@ dependencies = [
  "lucina-llm",
  "lucina-memory",
  "lucina-prompter",
+ "lucina-vocab",
  "ort",
  "realfft",
  "reqwest 0.12.28",
@@ -3808,7 +3809,9 @@ dependencies = [
  "lucina-store",
  "lucina-telegram",
  "lucina-tools",
+ "lucina-upstream",
  "lucina-vault-ingest",
+ "lucina-vocab",
  "pdf-extract 0.10.0",
  "regex",
  "reqwest 0.12.28",
@@ -3917,6 +3920,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "lucina-upstream"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "lucina-jev",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "toml 1.1.6+spec-1.1.0",
+]
+
+[[package]]
 name = "lucina-vault-ingest"
 version = "0.1.0"
 dependencies = [
@@ -3936,6 +3953,15 @@ dependencies = [
  "tokio",
  "tracing",
  "wiremock",
+]
+
+[[package]]
+name = "lucina-vocab"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -5848,6 +5874,7 @@ dependencies = [
  "ink-obsidian",
  "ink-sync",
  "lucina-agentd",
+ "lucina-vocab",
  "mime",
  "p256",
  "proptest",

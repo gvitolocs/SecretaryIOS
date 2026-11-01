@@ -137,22 +137,31 @@ reason and the commands are redacted (who asks, the time left and the buttons
 stay); with notification previews off, an activity the app starts itself says
 only "Open Secretary to see what it is."
 
-- **Deny** works without unlocking (like the widget). It is the card's only
-  intent button (`DenyApprovalActivityIntent`).
-- **Approve** is a link, not an intent button:
-  `secretary://open/approvals/<id>?approve=1&hash=<payloadHash>`. It opens the
-  app on the request's card. For a sensitive request (root plans) the card asks
-  Face ID at once (or shows the PIN pad) over the exact commands, but only if the
-  request is still pending, hasn't expired and still has the `payloadHash` the
-  activity showed. Otherwise the card opens without asking. A plain request opens
-  on its card, and the owner taps Approve there. The link never answers or
-  signs anything by itself, so a link opened from anywhere can do no more than
-  open the card. Cancelling Face ID leaves the card open. The card signs the
-  request that was on screen when tapped.
-- Why one intent button: on iOS 27.2 (iPhone 16e) every tap on a card with two
-  `Button(intent:)`s reached the app as the same action. Taps on Deny ran
-  `ApproveApprovalActivityIntent`, so Deny approved behind Face ID. That intent,
-  and its continue-in-foreground path, are gone.
+- **Deny** works without unlocking (like the widget)
+  (`DenyApprovalActivityIntent`, unchanged).
+- **Approve** is an intent button too (`ApproveApprovalActivityIntent`,
+  `requiresLocalDeviceAuthentication`): iOS asks Face ID or the passcode on the
+  Lock Screen before it runs. The app then fetches the request and does nothing
+  more if it is decided (by this tap too: a repeat is a no-op) or expired. If its
+  `payloadHash` differs from the card's, the app opens on the new request
+  without asking. With **one-tap Approve** ready (below) it signs with the
+  unlock key and answers in the background: nothing opens, the card ends
+  "Approved". A plain request without the unlock key is answered unsigned, as
+  the notification's Approve does. Otherwise (no unlock key or switched off, an
+  approver change, or the unlock key's answer failing) the app comes to the
+  front on the card and asks Face ID there (`continueInForeground`, iOS 26
+  `.foreground(.dynamic)`). If it can't come to the front, "Open Secretary to
+  approve" is posted. A second tap while one is on its way does nothing.
+- **Tap log:** each card intent logs `card tap intent=<Deny|Approve> id=<id>`
+  first thing, and each notification action `notification action=<id> id=<id>`
+  (subsystem `tech.getsecretary.app`, category `ApprovalActivity`). The outcome
+  follows as `tap outcome id=<id>: …` (`decided approve via unlock key`,
+  `decided deny`, `opened card …`, `refused: <why>`; categories `Approvals` and
+  `ApprovalActivity`). A tap that reaches the wrong intent shows here.
+  On iOS 27.2 an earlier two-button card looked like Deny ran Approve, which is
+  why the card briefly had an Approve link. Those were deliberate Approve taps.
+  Cards from then still carry `secretary://open/approvals/<id>?approve=1&hash=…`,
+  and the app still opens those on the card with its approve step.
 - Every root approval is a real Face ID (or passcode) prompt. An earlier build
   reused the Face ID unlock of the iPhone instead; the Secure Enclave key
   refuses such a context (CryptoTokenKit -5), so that is gone, and so is the
@@ -199,8 +208,8 @@ prompt from a background action, and the Secure Enclave refused a reused unlock
   "unlock key (notification/card) on iPhone".
 - **Repeats:** a repeated answer from the same iPhone is a 200 (`repeated`), so
   an action iOS runs twice succeeds without a second prompt.
-- **Unchanged:** `APPROVAL` (plain) and `APPROVAL_SENSITIVE` are unchanged, and
-  so is the Live Activity card (Deny intent, Approve link).
+- **Unchanged:** `APPROVAL` (plain) and `APPROVAL_SENSITIVE` are unchanged. The
+  Live Activity card's Approve uses the same unlock key (above).
 
 When the request is answered anywhere, withdrawn or expires, the server ends
 the activity (an `end` push to its update token); the app also ends any

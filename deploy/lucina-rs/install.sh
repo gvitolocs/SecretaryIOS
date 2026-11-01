@@ -26,8 +26,11 @@ mv -f "$HOME/.local/bin/lucina-rs.new" "$HOME/.local/bin/lucina-rs"
 mkdir -p "$UNITS" /home/nez/Projects/Lucina/data/lucina-rs
 
 install -m 0644 "$REPO/deploy/lucina-rs.service" "$REPO/deploy/lucina-rs-health.service" "$REPO/deploy/lucina-rs-health.timer" "$UNITS/"
+# The upstream watch (docs/upstream-watch.md): `lucina-rs upstream check` weekly, `reconcile` hourly.
+install -m 0644 "$REPO"/crates/lucina-upstream/deploy/lucina-upstream-{watch,reconcile}.{service,timer} "$UNITS/"
 systemctl --user daemon-reload
 systemctl --user enable lucina-rs.service lucina-rs-health.timer >/dev/null
+systemctl --user enable --now lucina-upstream-watch.timer lucina-upstream-reconcile.timer >/dev/null
 # The unit's ExecStartPost waits for /health, so a failed start fails here.
 systemctl --user restart lucina-rs.service
 systemctl --user start lucina-rs-health.timer

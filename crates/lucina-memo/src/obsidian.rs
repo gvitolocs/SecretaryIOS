@@ -600,6 +600,7 @@ pub(crate) mod tests {
             ],
             speakers: false,
             created_at: Utc::now(),
+            corrections: vec![],
         };
         let s = Summary {
             template: None,

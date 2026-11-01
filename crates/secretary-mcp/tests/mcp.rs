@@ -5,7 +5,7 @@ mod common;
 use common::*;
 use serde_json::{json, Value};
 
-const ALL_TOOLS: [&str; 48] = [
+const ALL_TOOLS: [&str; 49] = [
     "ask_lucina",
     "lucina_decide",
     "lucina_decision_status",
@@ -54,6 +54,7 @@ const ALL_TOOLS: [&str; 48] = [
     "library_find_related_notes",
     "library_sync_status",
     "library_generate_brief",
+    "debug_events",
 ];
 
 #[tokio::test]
@@ -2054,4 +2055,25 @@ async fn ask_allow_is_encoded_in_prefix() {
         h.mock.requests("/v1/chat")[0].body["message"],
         "[via Lucina MCP, from claude-code; allow=notes,tasks] Hi"
     );
+}
+
+#[tokio::test]
+async fn debug_events_lists_the_phone_steps_with_filters() {
+    let h = start().await;
+    let t = h.issue("claude-code", "read");
+    let (err, text) = h
+        .call(&t, "debug_events", json!({"device": "iphone", "since": "1h", "type": "net", "limit": 50}))
+        .await;
+    assert!(!err, "{text}");
+    assert!(text.starts_with("2 debug event(s) (device iphone, type net*, since 1h)"), "{text}");
+    assert!(text.contains("[Giuseppe's iPhone/app] notification.action action=approve id=ap_1  (seq 41, build adfd5fe)"), "{text}");
+    assert!(text.contains("net.request duration_ms=210 method=POST path=/v1/approvals/{id}/decide status=409"), "{text}");
+    let q = &h.mock.requests("/v1/debug/events")[0].query;
+    for (k, v) in [("device", "iphone"), ("since", "1h"), ("type", "net"), ("limit", "50")] {
+        assert_eq!(query_param(&format!("http://x/?{q}"), k).as_deref(), Some(v), "{q}");
+    }
+    let (err, text) = h.call(&t, "debug_events", json!({"limit": 0})).await;
+    assert!(err && text.contains("limit"), "{text}");
+    let (err, _) = h.call(&t, "debug_events", json!({"nope": 1})).await;
+    assert!(err);
 }

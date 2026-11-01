@@ -1,0 +1,7 @@
+[
+  {"tag_name": "v0.21.0-rc1", "name": "", "draft": true, "prerelease": true, "published_at": null, "body": "draft", "html_url": "https://github.com/a/x/releases/tag/v0.21.0-rc1"},
+  {"tag_name": "v0.20.1", "name": "v0.20.1", "draft": false, "prerelease": false, "published_at": "2026-10-30T10:00:00Z", "body": "- Fix CVE-2026-0001 in the virtio block driver", "html_url": "https://github.com/a/x/releases/tag/v0.20.1"},
+  {"tag_name": "v0.20.0-beta.1", "name": "Beta", "draft": false, "prerelease": true, "published_at": "2026-10-20T10:00:00Z", "body": "beta", "html_url": "https://github.com/a/x/releases/tag/v0.20.0-beta.1"},
+  {"tag_name": "v0.19.0", "name": "v0.19.0", "draft": false, "prerelease": false, "published_at": "2026-10-12T21:37:46Z", "body": "the pin", "html_url": "https://github.com/a/x/releases/tag/v0.19.0"},
+  {"tag_name": "v0.18.1", "name": "v0.18.1", "draft": false, "prerelease": false, "published_at": "2026-08-18T15:10:29Z", "body": "old", "html_url": "https://github.com/a/x/releases/tag/v0.18.1"}
+]

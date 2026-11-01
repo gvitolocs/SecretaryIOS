@@ -18,6 +18,7 @@ pub mod cli;
 pub mod computer;
 pub mod desk;
 pub mod config;
+pub mod debug_events;
 pub mod device;
 pub mod devices;
 pub mod engines;
@@ -53,6 +54,7 @@ pub mod tts;
 pub mod upstream;
 pub mod voice;
 pub mod voice_filler;
+pub mod voice_learn;
 pub mod voice_pipe;
 pub mod voice_split;
 pub mod voice_telemetry;
@@ -161,6 +163,8 @@ pub struct Inner {
     pub voice: voice::Voice,
     /// Cached filler phrases spoken on a slow turn's `ack` (protocol section 6).
     pub fillers: voice_filler::Fillers,
+    /// The Gemini fallback's "Vocabulary:" line from Voice Learn (60 s cache, fails open).
+    pub voice_vocab: voice_learn::VocabCache,
     /// LucinaVoice device telemetry and turn spans (`voice/` in the data dir).
     pub voice_log: voice_telemetry::Store,
     /// Open `/v1/timeline/stream` responses.
@@ -183,6 +187,8 @@ pub struct Inner {
     pub grant_signer: owner_secrets::GrantSigner,
     /// Owner approvals: requests, grants, audit (`/v1/approvals*`).
     pub approvals: Arc<approvals::Approvals>,
+    /// Debug event log of the owner's apps (`debug-events.jsonl`).
+    pub debug_events: Arc<debug_events::Store>,
 }
 
 #[derive(Clone)]
@@ -243,6 +249,7 @@ impl AppState {
             tts: tts::Tts::new(&cfg.tts_url, cfg.tts_voices.clone(), cfg.tts_timeout)?,
             voice: voice::Voice::new(cfg.voice_stt_url.clone())?,
             fillers: voice_filler::Fillers::new(),
+            voice_vocab: voice_learn::VocabCache::new(),
             voice_log: voice_telemetry::Store::new(&cfg.data_dir, cfg.timezone),
             streams: timeline::StreamSlots::new(timeline::PER_DEVICE, timeline::TOTAL),
             shutdown: tokio::sync::watch::Sender::new(false),
@@ -257,6 +264,7 @@ impl AppState {
                 &cfg.data_dir,
                 cfg.approvals.clone(),
             )?),
+            debug_events: Arc::new(debug_events::Store::new(&cfg.data_dir)),
         })))
     }
 
@@ -358,6 +366,11 @@ pub fn app(state: AppState) -> Router {
 
     let approvals = approvals::routes(state.clone());
 
+    let debug_events = debug_events::routes().route_layer(middleware::from_fn_with_state(
+        state.clone(),
+        auth::require_device_or_service,
+    ));
+
     let device_events = device::events_routes().route_layer(middleware::from_fn_with_state(
         state.clone(),
         auth::require_device_events,
@@ -370,6 +383,7 @@ pub fn app(state: AppState) -> Router {
         .merge(tasks::routes(state.clone()))
         .merge(calendar)
         .merge(device_events)
+        .merge(debug_events)
         .merge(auth::session_routes())
         .merge(auth::owner_routes())
         .merge(qr_login::public_routes())

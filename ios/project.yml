@@ -90,6 +90,9 @@ targets:
         UIBackgroundModes: [fetch, audio, processing, remote-notification]
         BGTaskSchedulerPermittedIdentifiers: [tech.getsecretary.app.refresh, tech.getsecretary.app.photobackup]
         SecretaryAPNsEnabled: true
+        # The git commit of this build, for the debug event log (Core/DebugEvents.swift); the "Stamp build
+        # commit" phase below replaces it. Extensions read the app's.
+        SecretaryBuildCommit: unknown
     dependencies:
       - sdk: libsqlite3.tbd
       # Built by scripts/build-ios-core.sh (gitignored): the Rust gym/body engines.
@@ -117,6 +120,22 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         SWIFT_EMIT_LOC_STRINGS: YES
+        # The build-commit stamp runs git on the checkout, which the script sandbox does not allow.
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+    postBuildScripts:
+      # docs/debug-events.md: every debug event carries the commit it was built from. SECRETARY_BUILD_COMMIT
+      # overrides git (e.g. from ios-install); "-dirty" marks uncommitted changes. Runs before code signing.
+      - name: Stamp build commit
+        basedOnDependencyAnalysis: false
+        script: |
+          commit="${SECRETARY_BUILD_COMMIT:-}"
+          if [ -z "$commit" ]; then
+            commit="$(git -C "$SRCROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+            if [ "$commit" != unknown ] && ! git -C "$SRCROOT" diff --quiet HEAD -- 2>/dev/null; then commit="$commit-dirty"; fi
+          fi
+          plist="$TARGET_BUILD_DIR/$INFOPLIST_PATH"
+          /usr/libexec/PlistBuddy -c "Set :SecretaryBuildCommit $commit" "$plist" 2>/dev/null \
+            || /usr/libexec/PlistBuddy -c "Add :SecretaryBuildCommit string $commit" "$plist"
   SecretaryShare:
     type: app-extension
     platform: iOS
@@ -125,6 +144,7 @@ targets:
         excludes: ["Info.plist"]
       - path: Extensions/ShareShared
       - path: Secretary/Core/Keychain.swift
+      - path: Secretary/Core/DebugEvents.swift
       - path: Secretary/Shared/LucinaTokens.swift
       - path: Secretary/Features/Share/LucinaDonations.swift
       - path: Secretary/Features/Share/ShareUploads.swift
@@ -170,6 +190,7 @@ targets:
       - path: Extensions/SecretaryPhotoUpload
         excludes: ["Info.plist", "*.entitlements"]
       - path: Secretary/Core/Keychain.swift
+      - path: Secretary/Core/DebugEvents.swift
       - path: Secretary/Features/Gallery/BackgroundUploadShared.swift
     info:
       path: Extensions/SecretaryPhotoUpload/Info.plist
@@ -299,6 +320,7 @@ targets:
       - path: Secretary/Core/APIError.swift
       - path: Secretary/Core/JSONValue.swift
       - path: Secretary/Core/Keychain.swift
+      - path: Secretary/Core/DebugEvents.swift
       - path: Secretary/Resources/Localizable.xcstrings
     dependencies:
       - sdk: WidgetKit.framework

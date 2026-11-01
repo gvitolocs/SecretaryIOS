@@ -143,8 +143,9 @@ pub const MAX_OPS_SEARCH_LIMIT: u32 = 50;
 pub const DEALS_RADIUS_MIN: u32 = 500;
 pub const DEALS_RADIUS_MAX: u32 = 15_000;
 
-/// Client surfaces a chat message may come from.
-pub const CHAT_CHANNELS: &[&str] = &["web", "ios"];
+/// Client surfaces a chat message may come from. `voice` is the LucinaVoice speaker's shared
+/// thread: only secretary-server's own voice pipeline sends it (`POST /v1/chat` refuses it from clients).
+pub const CHAT_CHANNELS: &[&str] = &["web", "ios", "voice"];
 
 /// A decimal integer in `min..=max` (no sign, no leading `+`).
 pub fn bounded_int(field: &'static str, s: &str, min: u32, max: u32) -> Result<u32> {
@@ -359,6 +360,7 @@ mod tests {
             assert!(bounded_int("limit", bad, 1, 200).is_err(), "{bad:?}");
         }
         assert!(chat_channel("channel", "ios").is_ok());
+        assert!(chat_channel("channel", "voice").is_ok());
         assert!(chat_channel("channel", "telegram").is_err());
     }
 }
