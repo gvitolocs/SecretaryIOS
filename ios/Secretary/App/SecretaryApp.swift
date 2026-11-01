@@ -10,6 +10,9 @@ struct SecretaryApp: App {
         // recorder is set up here; AppModel waits for a window (AppWindow) or the stop.
         MemoRecordingCenter.install()
         LucinaTabBarAppearance.apply()
+        #if DEBUG || SCREENSHOTS
+        WindowSnapshots.schedule()
+        #endif
     }
 
     var body: some Scene {
