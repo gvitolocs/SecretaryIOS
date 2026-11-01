@@ -58,13 +58,23 @@ extension ApprovalActivityAttributes.ContentState {
     var isPending: Bool { status == "pending" }
 }
 
+/// The owner's explicit tap that an approve comes from. Every approve carries one; only these call sites create it:
+/// `ApproveApprovalActivityIntent.perform` (`.activityApproveButton`), the notification's Approve action in
+/// `AppDelegate.userNotificationCenter(_:didReceive:)` (`.notificationApproveAction`), and the card's Approve button
+/// or PIN submit (`.cardApproveButton`). Polls, pushes, background refreshes and activity observers have none.
+enum ApprovalTrigger: String, Equatable, Sendable {
+    case activityApproveButton
+    case notificationApproveAction
+    case cardApproveButton
+}
+
 /// What the app does for the activity's buttons. Set by the app at launch; nil in the widget extension (it never
 /// runs these intents: LiveActivityIntents and `openAppWhenRun` intents run in the app).
 enum ApprovalActivityCommands {
     /// Deny `approvalId` (`sensitive` as the activity knows it).
     @MainActor static var deny: ((_ approvalId: String, _ sensitive: Bool) async -> Void)?
     /// Approve: answered in the background when it can be, else on the card in front (`intent` asks iOS for that).
-    @MainActor static var approve: ((_ approvalId: String, _ intent: any AppIntent) async -> Void)?
+    @MainActor static var approve: ((_ approvalId: String, _ trigger: ApprovalTrigger, _ intent: any AppIntent) async -> Void)?
 }
 
 enum ApprovalActivityError: Error, CustomLocalizedStringResourceConvertible {
@@ -112,7 +122,8 @@ struct ApproveApprovalActivityIntent: LiveActivityIntent {
     @MainActor
     func perform() async throws -> some IntentResult {
         guard let approve = ApprovalActivityCommands.approve else { throw ApprovalActivityError.notInApp }
-        await approve(approvalId, self)
+        // The owner tapped Approve on the activity: the only place this trigger is made.
+        await approve(approvalId, .activityApproveButton, self)
         return .result()
     }
 }

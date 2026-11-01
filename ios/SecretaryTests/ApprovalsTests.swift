@@ -190,7 +190,7 @@ final class ApprovalsTests: XCTestCase {
     func testSensitiveApproveSignsAndSendsTheProof() async throws {
         StubURLProtocol.handler = { _ in .init(body: #"{"status":"approved"}"#) }
         let item = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_s", sensitive: true))
-        let result = await store.answer(item, .approve)
+        let result = await store.answer(item, .approve(.cardApproveButton))
         XCTAssertEqual(result, .approved)
         XCTAssertEqual(signer.signed.count, 1)
         XCTAssertEqual(signer.signed[0].message, "secretary-approval-v1\napr_s\n\(item.payloadHash)\napprove")
@@ -208,7 +208,7 @@ final class ApprovalsTests: XCTestCase {
     func testNonSensitiveApproveDoesNotSign() async throws {
         StubURLProtocol.handler = { _ in .init(body: #"{"status":"approved"}"#) }
         let item = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_n", sensitive: false))
-        let result = await store.answer(item, .approve)
+        let result = await store.answer(item, .approve(.cardApproveButton))
         XCTAssertEqual(result, .approved)
         XCTAssertTrue(signer.signed.isEmpty)
         let body = decodeBody(try XCTUnwrap(decideRequests().first))
@@ -230,7 +230,7 @@ final class ApprovalsTests: XCTestCase {
     func testSensitiveApproveWithoutAKeyNeedsSetupAndSendsNothing() async throws {
         signer.keyId = nil
         let item = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_k", sensitive: true))
-        let result = await store.answer(item, .approve)
+        let result = await store.answer(item, .approve(.cardApproveButton))
         XCTAssertEqual(result, .needsSetup)
         XCTAssertTrue(StubURLProtocol.requests.isEmpty)
     }
@@ -240,7 +240,7 @@ final class ApprovalsTests: XCTestCase {
         let item = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_c", sensitive: true))
         await store.apply([item])
         XCTAssertEqual(store.sheetItem?.id, "apr_c")
-        await store.decide(.approve)
+        await store.decide(.approve(.cardApproveButton))
         XCTAssertNil(store.outcome)
         XCTAssertNil(store.working)
         XCTAssertTrue(decideRequests().isEmpty)
@@ -251,7 +251,7 @@ final class ApprovalsTests: XCTestCase {
         StubURLProtocol.handler = { _ in .init(body: #"{"status":"approved"}"#) }
         let item = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_p", sensitive: true))
         await store.apply([item])
-        await store.decide(.approve)
+        await store.decide(.approve(.cardApproveButton))
         XCTAssertEqual(store.outcome, .approved)
         XCTAssertTrue(store.pending.isEmpty)
         XCTAssertEqual(notifier.removed, ["apr_p"])
@@ -286,7 +286,7 @@ final class ApprovalsTests: XCTestCase {
         }
         let item = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_9", sensitive: false))
         await store.apply([item])
-        await store.decide(.approve)
+        await store.decide(.approve(.cardApproveButton))
         // The prompt learns who answered first.
         XCTAssertEqual(store.outcome, .alreadyDecided(.denied, by: "iPad"))
         XCTAssertTrue(store.pending.isEmpty)
@@ -373,7 +373,7 @@ final class ApprovalsTests: XCTestCase {
         await store.apply([plain, secret])
 
         // Approve a non-sensitive request straight from the notification: no sheet, no signing.
-        await store.handleNotification(actionIdentifier: ApprovalNotifier.approveAction, approvalId: "apr_plain", sensitive: false)
+        await store.handleNotification(actionIdentifier: ApprovalNotifier.approveAction, approvalId: "apr_plain", sensitive: false, trigger: .notificationApproveAction)
         XCTAssertEqual(decideRequests().count, 1)
         XCTAssertEqual(decodeBody(decideRequests()[0])["decision"] as? String, "approve")
         XCTAssertTrue(signer.signed.isEmpty)
@@ -393,14 +393,14 @@ final class ApprovalsTests: XCTestCase {
         await store.apply([secret])
         await store.dismissSheet()
         XCTAssertNil(store.sheetItem)
-        await store.handleNotification(actionIdentifier: ApprovalNotifier.approveAction, approvalId: "apr_secret", sensitive: true)
+        await store.handleNotification(actionIdentifier: ApprovalNotifier.approveAction, approvalId: "apr_secret", sensitive: true, trigger: .notificationApproveAction)
         XCTAssertEqual(store.sheetItem?.id, "apr_secret")
         XCTAssertTrue(decideRequests().isEmpty)
         XCTAssertTrue(signer.signed.isEmpty, "the passcode is asked only when Approve is tapped on the card")
         // A request that turned sensitive after the notification was made is not approved blindly either.
         let turned = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_turned", sensitive: true))
         await store.apply([secret, turned])
-        await store.handleNotification(actionIdentifier: ApprovalNotifier.approveAction, approvalId: "apr_turned", sensitive: false)
+        await store.handleNotification(actionIdentifier: ApprovalNotifier.approveAction, approvalId: "apr_turned", sensitive: false, trigger: .notificationApproveAction)
         XCTAssertTrue(decideRequests().isEmpty)
         XCTAssertEqual(store.sheetItem?.id, "apr_turned")
     }
@@ -446,7 +446,7 @@ final class ApprovalsTests: XCTestCase {
         await store.apply([plain, secret])
         XCTAssertEqual(learned, [["apr_plain", "apr_secret"], ["apr_plain", "apr_secret"]], "every list, changed or not")
         // The activity's Deny and plain Approve answer through the notification's path, and end the activity.
-        await store.handleNotification(actionIdentifier: ApprovalNotifier.approveAction, approvalId: "apr_plain", sensitive: false)
+        await store.handleNotification(actionIdentifier: ApprovalNotifier.approveAction, approvalId: "apr_plain", sensitive: false, trigger: .notificationApproveAction)
         await store.handleNotification(actionIdentifier: ApprovalNotifier.denyAction, approvalId: "apr_secret", sensitive: true)
         XCTAssertEqual(settled, ["apr_plain": .approved, "apr_secret": .denied])
     }
@@ -454,15 +454,14 @@ final class ApprovalsTests: XCTestCase {
     func testTheActivitysSensitiveApproveStartsTheApproveStepOnTheCard() async throws {
         let secret = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_secret", sensitive: true))
         await store.apply([secret])
-        await store.open(id: "apr_secret", startApprove: true)
+        await store.open(id: "apr_secret", startApprove: .activityApproveButton)
         XCTAssertEqual(store.sheetItem?.id, "apr_secret")
         XCTAssertTrue(signer.signed.isEmpty, "nothing is signed until the card runs its approve action")
-        XCTAssertFalse(store.takeStartApprove("apr_other"))
-        XCTAssertTrue(store.takeStartApprove("apr_secret"))
-        XCTAssertFalse(store.takeStartApprove("apr_secret"), "once")
+        XCTAssertEqual(store.takeStartApprove("apr_secret")?.trigger, .activityApproveButton)
+        XCTAssertNil(store.takeStartApprove("apr_secret"), "once")
         // A plain open (a notification tap) does not start it.
         await store.open(id: "apr_secret")
-        XCTAssertFalse(store.takeStartApprove("apr_secret"))
+        XCTAssertNil(store.takeStartApprove("apr_secret"))
     }
 
     func testStrictFaceIDIsOffByDefaultAndPickedUpFromTheSetting() async throws {
@@ -470,11 +469,11 @@ final class ApprovalsTests: XCTestCase {
         XCTAssertEqual(store.cardAuthMode, .reuseUnlock(interactive: true))
         StubURLProtocol.handler = { _ in .init(body: #"{"status":"approved"}"#) }
         let item = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_s", sensitive: true))
-        _ = await store.answer(item, .approve)
+        _ = await store.answer(item, .approve(.cardApproveButton))
         XCTAssertEqual(signer.modes, [.reuseUnlock(interactive: true)], "the card's Approve counts a recent Face ID unlock")
         store.setStrictFaceID(true)
         XCTAssertEqual(defaults.object(forKey: ApprovalsStore.strictFaceIDKey) as? Bool, true)
-        _ = await store.answer(item, .approve)
+        _ = await store.answer(item, .approve(.cardApproveButton))
         XCTAssertEqual(signer.modes.last, .prompt)
         let again = ApprovalsStore(api: { nil }, signer: signer, notifier: notifier, defaults: defaults)
         XCTAssertTrue(again.strictFaceID, "kept on this iPhone")
@@ -509,7 +508,7 @@ final class ApprovalsTests: XCTestCase {
         await store.apply([secret, plain])
 
         // A recent Face ID unlock: signed in the background, without a prompt.
-        let needsCard = await store.approveFromActivity(id: "apr_secret")
+        let needsCard = await store.approveFromActivity(id: "apr_secret", trigger: .activityApproveButton)
         XCTAssertFalse(needsCard)
         XCTAssertEqual(signer.modes, [.reuseUnlock(interactive: false)])
         XCTAssertEqual(decodeBody(try XCTUnwrap(decideRequests().last))["decision"] as? String, "approve")
@@ -519,7 +518,7 @@ final class ApprovalsTests: XCTestCase {
         await store.apply([secret, plain])
         signer.error = ApprovalSignError.needsInteraction
         let sent = decideRequests().count
-        let handOver = await store.approveFromActivity(id: "apr_secret")
+        let handOver = await store.approveFromActivity(id: "apr_secret", trigger: .activityApproveButton)
         XCTAssertTrue(handOver)
         XCTAssertEqual(decideRequests().count, sent)
         XCTAssertTrue(notifier.failures.isEmpty)
@@ -527,12 +526,12 @@ final class ApprovalsTests: XCTestCase {
         // Strict mode: the card, nothing signed in the background.
         store.setStrictFaceID(true)
         let signs = signer.modes.count
-        let strict = await store.approveFromActivity(id: "apr_secret")
+        let strict = await store.approveFromActivity(id: "apr_secret", trigger: .activityApproveButton)
         XCTAssertTrue(strict)
         XCTAssertEqual(signer.modes.count, signs)
 
         // A plain request is answered at once, strict or not.
-        let plainCard = await store.approveFromActivity(id: "apr_plain")
+        let plainCard = await store.approveFromActivity(id: "apr_plain", trigger: .activityApproveButton)
         XCTAssertFalse(plainCard)
         XCTAssertEqual(settled["apr_plain"], .approved)
     }
@@ -738,7 +737,7 @@ final class ApprovalsTests: XCTestCase {
         let item = ApprovalItem(id: "apr_1", summary: "x", sensitive: true)
         failing.keyId = "k"
         failing.error = ApprovalSignError.needsDeviceSecurity
-        let result = await store.answer(item, .approve)
+        let result = await store.answer(item, .approve(.cardApproveButton))
         XCTAssertEqual(result, .failed(ApprovalSignError.needsDeviceSecurity.userMessage))
     }
 
@@ -834,16 +833,16 @@ final class ApprovalsTests: XCTestCase {
         let item = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_pin", sensitive: true))
         await store.loadSettings()
         // No key, PIN set: nothing is sent, the pad opens.
-        let first = await store.answer(item, .approve)
+        let first = await store.answer(item, .approve(.cardApproveButton))
         XCTAssertEqual(first, .pinRequired)
         XCTAssertTrue(decideRequests().isEmpty)
         await store.apply([item])
-        await store.decide(.approve)
+        await store.decide(.approve(.cardApproveButton))
         XCTAssertTrue(store.pinEntry)
         XCTAssertNil(store.outcome)
         XCTAssertTrue(decideRequests().isEmpty)
         // The PIN goes in the decide body, with no proof, and nothing is signed.
-        await store.decide(.approve, pin: "123456")
+        await store.decide(.approve(.cardApproveButton), pin: "123456")
         XCTAssertEqual(store.outcome, .approved)
         XCTAssertTrue(signer.signed.isEmpty)
         let body = decodeBody(try XCTUnwrap(decideRequests().first))
@@ -856,7 +855,7 @@ final class ApprovalsTests: XCTestCase {
     func testUsePinInsteadWhenTheKeyExists() async throws {
         StubURLProtocol.handler = { _ in .init(body: #"{"status":"approved"}"#) }
         let item = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_pin2", sensitive: true))
-        let result = await store.answer(item, .approve, pin: "246810")
+        let result = await store.answer(item, .approve(.cardApproveButton), pin: "246810")
         XCTAssertEqual(result, .approved)
         XCTAssertTrue(signer.signed.isEmpty)
         XCTAssertEqual(decodeBody(try XCTUnwrap(decideRequests().first))["pin"] as? String, "246810")
@@ -869,7 +868,7 @@ final class ApprovalsTests: XCTestCase {
         await store.loadSettings()
         signer.error = ApprovalSignError.needsDeviceSecurity
         let item = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_lock", sensitive: true))
-        let result = await store.answer(item, .approve)
+        let result = await store.answer(item, .approve(.cardApproveButton))
         XCTAssertEqual(result, .pinRequired)
         XCTAssertTrue(decideRequests().isEmpty)
     }
@@ -882,13 +881,13 @@ final class ApprovalsTests: XCTestCase {
         await store.loadSettings()
         XCTAssertFalse(store.hasPin)
         let item = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_setup", sensitive: true))
-        let result = await store.answer(item, .approve)
+        let result = await store.answer(item, .approve(.cardApproveButton))
         XCTAssertEqual(result, .needsSetup)
         XCTAssertTrue(decideRequests().isEmpty)
         // A request that is not sensitive never needs either.
         let plain = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_plain2", sensitive: false))
         StubURLProtocol.handler = { _ in .init(body: #"{"status":"approved"}"#) }
-        let ok = await store.answer(plain, .approve)
+        let ok = await store.answer(plain, .approve(.cardApproveButton))
         XCTAssertEqual(ok, .approved)
     }
 
@@ -898,7 +897,7 @@ final class ApprovalsTests: XCTestCase {
                 .init(status: status, body: body, headers: ["Content-Type": "application/json"].merging(headers) { $1 })
             }
             let item = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_m", sensitive: true))
-            let result = await store.answer(item, .approve, pin: "000000")
+            let result = await store.answer(item, .approve(.cardApproveButton), pin: "000000")
             return try XCTUnwrap(result)
         }
         // attemptsLeft next to the error, or inside it.
@@ -929,7 +928,7 @@ final class ApprovalsTests: XCTestCase {
         await store.loadSettings()
         let item = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_w", sensitive: true))
         await store.apply([item])
-        await store.decide(.approve, pin: "000000")
+        await store.decide(.approve(.cardApproveButton), pin: "000000")
         XCTAssertEqual(store.outcome, .pinWrong(attemptsLeft: 4))
         XCTAssertTrue(store.pinEntry)
         XCTAssertEqual(store.sheetItem?.id, "apr_w")

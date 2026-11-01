@@ -162,7 +162,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             // Local notifications say `approvalSensitive`, older server pushes only `sensitive`; unknown = sensitive.
             let sensitive = info[ApprovalNotifier.sensitiveKey] as? Bool ?? info["sensitive"] as? Bool ?? true
             let action = response.actionIdentifier
-            await AppModel.shared.approvals.handleNotification(actionIdentifier: action, approvalId: approvalId, sensitive: sensitive)
+            // The owner tapped the notification's Approve: the only place this trigger is made.
+            let trigger: ApprovalTrigger? = action == ApprovalNotifier.approveAction ? .notificationApproveAction : nil
+            await AppModel.shared.approvals.handleNotification(actionIdentifier: action, approvalId: approvalId,
+                                                               sensitive: sensitive, trigger: trigger)
             return
         }
         // A decision: an option or the owner's words from the notification, or its tap opens it.

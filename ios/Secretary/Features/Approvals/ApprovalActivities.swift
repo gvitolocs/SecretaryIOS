@@ -48,27 +48,33 @@ final class ApprovalActivities {
         }
         // Approve: a plain request is answered; a sensitive one is signed in the background after a recent Face ID
         // unlock. When that can't be done (strict mode, a passcode unlock, too long ago), the card takes over.
-        ApprovalActivityCommands.approve = { id, intent in
-            guard await AppModel.shared.approvals.approveFromActivity(id: id) else { return }
-            await continueOnCard(id, intent: intent)
+        ApprovalActivityCommands.approve = { id, trigger, intent in
+            guard await AppModel.shared.approvals.approveFromActivity(id: id, trigger: trigger) else { return }
+            await continueOnCard(id, trigger: trigger, intent: intent)
         }
     }
 
     /// Brings the app to the front on `id`'s card with its approve step started (Face ID or the PIN over the commands).
-    /// iOS asks the owner to continue in Secretary; declined, the card is there the next time the app opens.
-    private static func continueOnCard(_ id: String, intent: any AppIntent) async {
+    /// iOS asks the owner to continue in Secretary; declined (or not possible), the card is there the next time the
+    /// app opens, without its approve step: nothing is ever approved with the app in the background from here.
+    private static func continueOnCard(_ id: String, trigger: ApprovalTrigger, intent: any AppIntent) async {
         let store = AppModel.shared.approvals
-        if UIApplication.shared.applicationState != .active, let foreground = intent as? any ForegroundContinuableIntent {
+        if UIApplication.shared.applicationState == .active {
+            await store.open(id: id, startApprove: trigger)
+            return
+        }
+        if let foreground = intent as? any ForegroundContinuableIntent {
             do {
                 try await foreground.requestToContinueInForeground {
-                    await store.open(id: id, startApprove: true)
+                    // Now in front: the window starts here.
+                    await store.open(id: id, startApprove: trigger, now: Date())
                 }
                 return
             } catch {
                 ApprovalActivities.shared.log.info("approval card not brought to the front: \(error.localizedDescription, privacy: .public)")
             }
         }
-        await store.open(id: id, startApprove: true)
+        await store.open(id: id)
     }
 
     /// Watches the tokens and the activities (from AppModel, once it is built). `status` looks a request up on the

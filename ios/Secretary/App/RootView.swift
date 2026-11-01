@@ -175,6 +175,7 @@ struct MainTabs: View {
             app.isForeground = phase == .active
             if phase == .background {
                 PerfLog.backgrounded()
+                app.approvals.sceneBackgrounded()
                 app.publishWidgets()
                 BackgroundRefresh.schedule()
                 if app.backup.settings.enabled { PhotoBackup.scheduleProcessing(chargingOnly: app.backup.settings.chargingOnly) }
