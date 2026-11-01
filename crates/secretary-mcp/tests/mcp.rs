@@ -5,7 +5,7 @@ mod common;
 use common::*;
 use serde_json::{json, Value};
 
-const ALL_TOOLS: [&str; 48] = [
+const ALL_TOOLS: [&str; 49] = [
     "ask_lucina",
     "lucina_decide",
     "lucina_decision_status",
