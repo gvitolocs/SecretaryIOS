@@ -59,6 +59,7 @@ const PixivView = lazy(() => import("./views/Pixiv"));
 const InstagramView = lazy(() => import("./views/Instagram"));
 const AgentsView = lazy(() => import("./views/Agents"));
 const DriveView = lazy(() => import("./views/Drive"));
+const SheetView = lazy(() => import("./views/Sheet"));
 const ServerHealthView = lazy(() => import("./views/ServerHealth"));
 const VoiceView = lazy(() => import("./views/Voice"));
 const VoiceLearnView = lazy(() => import("./views/VoiceLearn"));
@@ -139,6 +140,7 @@ render(
       <Route path="/films" component={FilmsView} />
       <Route path="/films/play/:id" component={FilmsView} />
       <Route path="/pixiv/:id?" component={PixivView} />
+      <Route path="/drive/sheet/:id" component={SheetView} />
       <Route path="/drive/*rest" component={DriveView} />
       <Route path="/server-health/:section?" component={ServerHealthView} />
       <Route path="/voice/learn" component={VoiceLearnView} />

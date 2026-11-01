@@ -70,7 +70,9 @@ import {
   openParam,
   parseDriveRoute,
   parseFilters,
+  opensAsSheet,
   previewLines,
+  sheetHref,
   SHARE_FILE_LIMIT,
   type TextPreview,
   thumbnailUrl,
@@ -546,6 +548,11 @@ function PreviewBody(props: { item: DriveItem }) {
   };
   return (
     <>
+      <Show when={opensAsSheet(props.item)}>
+        <A class="drive-btn drive-btn--primary" href={sheetHref(props.item.id)}>
+          {t("sheet.openSheet")}
+        </A>
+      </Show>
       <Show when={canToggle()}>
         <div class="drive-chips drive-chips--small" role="tablist" aria-label={t("drive.type")}>
           <button type="button" role="tab" class="media-chip" aria-selected={!asText()} onClick={() => setAsText(false)}>
@@ -616,6 +623,11 @@ function PreviewDialog(props: { item: DriveItem | null; loading: boolean; failed
                 <span class="drive-row__meta">{[fileMeta(item()), itemLocation(item())].filter(Boolean).join(" · ")}</span>
               </span>
               <span class="drive-preview__actions">
+                <Show when={opensAsSheet(item())}>
+                  <A class="drive-btn" href={sheetHref(item().id)}>
+                    {t("sheet.openSheet")}
+                  </A>
+                </Show>
                 <Show when={item().urls.pdf && (itemPreview(item()) === "pdf" || itemPreview(item()) === "office")}>
                   <a class="drive-btn" href={item().urls.pdf} target="_blank" rel="noopener">
                     <ExternalIcon /> <span class="drive-btn__label">{t("drive.openNewTab")}</span>

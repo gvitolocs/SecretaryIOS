@@ -570,6 +570,16 @@ export function fileHref(id: string): string {
   return `/drive/file/${encodeSegment(id)}`;
 }
 
+/** The sheet editor (views/Sheet.tsx, docs/xlsx.md). */
+export function sheetHref(id: string): string {
+  return `/drive/sheet/${encodeSegment(id)}`;
+}
+
+/** Workbooks the sheet editor opens (lucina-media `sheet_ext`); .xls, .ods and .numbers only preview. */
+export function opensAsSheet(item: DriveItem): boolean {
+  return item.kind === "file" && /\.(xlsx|xlsm|xltx|xltm)$/i.test(itemName(item));
+}
+
 export function albumHref(id: string): string {
   return `/drive/album/${encodeSegment(id)}`;
 }

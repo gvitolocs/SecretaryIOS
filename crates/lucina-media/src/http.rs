@@ -134,6 +134,7 @@ pub fn router(lib: Library, extra: Option<Router>) -> Router {
         .merge(crate::smart::routes())
         .merge(crate::faces_http::routes())
         .merge(crate::categories_http::routes())
+        .merge(crate::sheet::routes())
         .with_state(lib.clone())
         .merge(extra.unwrap_or_default())
         .layer(middleware::from_fn_with_state(lib, upstream_guard))
@@ -693,7 +694,7 @@ pub(crate) fn valid_item_id(id: &str) -> bool {
 }
 
 /// An item, its Drive info, its document type, its name and its original's path.
-async fn doc_item(
+pub(crate) async fn doc_item(
     lib: &Library,
     id: &str,
 ) -> ApiResult<(Item, Option<DriveInfo>, DocType, String, PathBuf)> {

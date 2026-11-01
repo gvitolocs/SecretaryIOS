@@ -8,13 +8,16 @@ export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
   readonly retryAfterSeconds: number | null;
+  /** The parsed error body, for endpoints whose errors carry more than a code (api/sheet.ts). */
+  readonly body: unknown;
 
-  constructor(status: number, code: string, message: string, retryAfterSeconds: number | null = null) {
+  constructor(status: number, code: string, message: string, retryAfterSeconds: number | null = null, body?: unknown) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
     this.retryAfterSeconds = retryAfterSeconds;
+    this.body = body;
   }
 
   /** Lucina (the AI backend behind the server) is offline or timed out. */
@@ -149,7 +152,7 @@ export async function request<T>(method: Method, path: string, opts: RequestOpti
     }
     if (typeof body.code === "string" && body.code) code = body.code;
   }
-  const err = new ApiError(res.status, code, message, parseRetryAfter(res.headers.get("Retry-After")));
+  const err = new ApiError(res.status, code, message, parseRetryAfter(res.headers.get("Retry-After")), data);
 
   // /v1/session* answers 401 for wrong credentials; that is not a lost session.
   if (res.status === 401 && !path.startsWith("/v1/session")) onUnauthorized?.();
