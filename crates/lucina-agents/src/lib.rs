@@ -53,6 +53,7 @@
 pub mod branch_slug;
 pub mod bucket;
 pub mod curator;
+pub mod device;
 pub mod diffparse;
 pub mod display;
 pub mod envelope;

@@ -162,10 +162,8 @@ pub fn hard_limits(req: &Request, target: Option<AgentId>, max_depth: u8) -> Res
     {
         return Err(Refusal::Depth);
     }
-    if let (Some(t), Some(caller)) = (target, req.caller.as_deref()) {
-        if AgentId::parse(caller) == Some(t) || caller.to_lowercase().contains(t.as_str()) {
-            return Err(Refusal::Loop(t));
-        }
+    if let Some(t) = target.filter(|t| is_caller(req, *t)) {
+        return Err(Refusal::Loop(t));
     }
     if money_intent(&req.task) {
         return Err(Refusal::Money);
@@ -174,6 +172,13 @@ pub fn hard_limits(req: &Request, target: Option<AgentId>, max_depth: u8) -> Res
         return Err(Refusal::ProactiveReadOnly);
     }
     Ok(())
+}
+
+/// Is `agent` the one calling Lucina (`req.caller`)? Such a request never goes back to it.
+pub fn is_caller(req: &Request, agent: AgentId) -> bool {
+    req.caller.as_deref().is_some_and(|c| {
+        AgentId::parse(c) == Some(agent) || c.to_lowercase().contains(agent.as_str())
+    })
 }
 
 fn news_re() -> &'static Regex {
