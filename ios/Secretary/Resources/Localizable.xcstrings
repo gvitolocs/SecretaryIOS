@@ -24796,6 +24796,22 @@
           }
         }
       }
+    },
+    "Opened %@" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aperto %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Åbnet %@"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"

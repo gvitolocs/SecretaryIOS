@@ -108,6 +108,22 @@ final class InstagramTests: XCTestCase {
         }
         XCTAssertEqual(InstagramText.compact(12500, locale: Locale(identifier: "da_DK")), "12,5K")
     }
+    func testANextPageWhileTheViewerIsOpenKeepsTheSelectedSlide() {
+        let first = (0..<12).map { IgItem(id: "p\($0)", url: "u\($0)") }
+        let selected = IgSlide.startID(first, itemIndex: 4)
+        XCTAssertEqual(IgSlide.index(of: selected, in: IgSlide.slides(first)), 4)
+        // The next page lands (with one item again that the store drops as a duplicate).
+        let more = first + (12..<24).map { IgItem(id: "p\($0)", url: "u\($0)") }
+        XCTAssertEqual(IgSlide.index(of: selected, in: IgSlide.slides(more)), 4)
+        XCTAssertEqual(IgSlide.slides(more)[4].item.id, "p4")
+        // Even items before it (a refresh with a new story first) keep the viewer on the same item.
+        let refreshed = [IgItem(id: "new", url: "n")] + more
+        XCTAssertEqual(IgSlide.slides(refreshed)[IgSlide.index(of: selected, in: IgSlide.slides(refreshed))].item.id, "p4")
+        // A carousel's frames keep their own ids, so the frame on screen stays too.
+        let carousel = IgItem(id: "c", kind: "carousel", url: "c0", children: [IgChild(id: "a", kind: "image", url: "a"), IgChild(id: "b", kind: "image", url: "b")])
+        let frame = IgSlide.slides([carousel])[1].id
+        XCTAssertEqual(IgSlide.index(of: frame, in: IgSlide.slides([IgItem(id: "x", url: "x"), carousel])), 2)
+    }
     func testCarouselSlidesAndSavePayloads() throws {
         let item = IgItem(id: "c", kind: "carousel", url: "first", takenAt: 5, caption: "caption", children: [
             IgChild(id: "a", kind: "image", url: "image"), IgChild(id: "b", kind: "video", url: "video")])

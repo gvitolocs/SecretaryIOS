@@ -10,14 +10,17 @@ struct InstagramGalleryViewer: View {
     @Environment(\.dismiss) private var dismiss
     let store: InstagramStore
     let request: IgViewerRequest
-    @State private var selection: Int
+    /// The slide on screen, by id: the next page arriving while the viewer is open (the highlight screen behind it
+    /// keeps loading) re-builds the pages; an index selection then slid to another item by itself (2026-11-01).
+    @State private var selectedID: String
     @State private var chromeHidden = false
     @State private var zoomed = false
 
     init(store: InstagramStore, request: IgViewerRequest) {
         self.store = store; self.request = request
-        _selection = State(initialValue: IgSlide.startIndex(request.items, itemIndex: request.start))
+        _selectedID = State(initialValue: IgSlide.startID(request.items, itemIndex: request.start))
     }
+    private var selection: Int { IgSlide.index(of: selectedID, in: slides) }
     private var items: [IgItem] {
         if let key = request.highlight?.id ?? request.tab?.rawValue { return store.pages[key]?.items ?? request.items }
         return request.items
@@ -28,9 +31,9 @@ struct InstagramGalleryViewer: View {
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            TabView(selection: $selection) {
-                ForEach(Array(slides.enumerated()), id: \.element.id) { index, slide in
-                    page(slide, active: selection == index).tag(index)
+            TabView(selection: $selectedID) {
+                ForEach(slides) { slide in
+                    page(slide, active: selectedID == slide.id).tag(slide.id)
                 }
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
@@ -44,8 +47,8 @@ struct InstagramGalleryViewer: View {
             if !zoomed && value.translation.height > 120 && abs(value.translation.width) < 80 { dismiss() }
         })
         .overlay(alignment: .bottom) { IgNotice(store: store) }
-        .onChange(of: selection) { _, _ in zoomed = false }
-        .task(id: selection) {
+        .onChange(of: selectedID) { _, _ in zoomed = false }
+        .task(id: selectedID) {
             if selection >= slides.count - 3 {
                 if let highlight = request.highlight {
                     await store.load(.highlights, username: request.username, more: true, highlight: highlight)

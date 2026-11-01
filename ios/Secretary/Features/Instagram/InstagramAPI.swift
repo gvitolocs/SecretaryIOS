@@ -278,13 +278,16 @@ struct IgRecent: Decodable, Equatable, Sendable, Identifiable {
     var isVerified: Bool = false
     var picUrl: String? = nil
     var openedAt: Double = 0
+    /// Private when last opened (older servers: false).
+    var isPrivate: Bool = false
     var id: String { username }
-    init(username: String = "", fullName: String = "", isVerified: Bool = false, picUrl: String? = nil, openedAt: Double = 0) {
+    init(username: String = "", fullName: String = "", isVerified: Bool = false, picUrl: String? = nil, openedAt: Double = 0, isPrivate: Bool = false) {
         self.username = username
         self.fullName = fullName
         self.isVerified = isVerified
         self.picUrl = picUrl
         self.openedAt = openedAt
+        self.isPrivate = isPrivate
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: IgKey.self)
@@ -293,6 +296,7 @@ struct IgRecent: Decodable, Equatable, Sendable, Identifiable {
         isVerified = c.value("isVerified", false)
         picUrl = c.optional("picUrl")
         openedAt = c.value("openedAt", 0)
+        isPrivate = c.value("isPrivate", false)
     }
 }
 
