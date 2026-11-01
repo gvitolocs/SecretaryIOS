@@ -271,6 +271,7 @@ final class ApprovalsStore {
 
     /// The prompt's X: not answered, so it returns the next time the app becomes active.
     func dismissSheet() async {
+        ApprovalsDebug.tap("close", screen: "approval_sheet", id: sheetItem?.id)
         pinEntry = false
         startApprove = nil
         if let item = sheetItem, outcome?.isFinal != true { dismissed.insert(item.id) }
@@ -338,9 +339,11 @@ final class ApprovalsStore {
     /// `shownHash`: the payload hash of the request on screen when the owner tapped; a request that changed since is
     /// not answered (the card shows the new one).
     func decide(_ choice: ApprovalAnswer, pin: String? = nil, shownHash: String? = nil) async {
+        ApprovalsDebug.answer(choice, id: sheetItem?.id, pad: pin != nil, ignored: !(sheetItem?.canAnswer ?? false) || working != nil || outcome?.isFinal == true)
         guard let item = sheetItem, item.canAnswer, working == nil, outcome?.isFinal != true else { return }
         if let shownHash, shownHash != item.payloadHash {
             log.error("answer refused id=\(item.id, privacy: .public): changed since shown")
+            DebugEvents.record("approval.card", ["id": item.id, "step": "changed_since_shown"])
             outcome = .failed(String(localized: "This request changed. Read it again before you answer."))
             return
         }
@@ -386,6 +389,7 @@ final class ApprovalsStore {
                     proof = try await signer.sign(item.signingString(for: .approve), reason: item.summary.isEmpty ? item.action : item.summary)
                     log.info("sign ok id=\(item.id, privacy: .public)")
                 } catch ApprovalSignError.cancelled {
+                    ApprovalsDebug.decide(item.id, decision, sensitive: true, via: "face_id", error: ApprovalSignError.cancelled)
                     log.info("sign cancelled id=\(item.id, privacy: .public)")
                     return nil
                 } catch ApprovalSignError.noKey {
@@ -405,9 +409,11 @@ final class ApprovalsStore {
         }
         do {
             try await api.decide(item.id, decision: decision, payloadHash: item.payloadHash, proof: proof, pin: sentPin)
+            ApprovalsDebug.decide(item.id, decision, sensitive: item.sensitive, via: proof != nil ? "face_id" : sentPin != nil ? "approval_pin" : "plain", outcome: decision == .approve ? .approved : .denied)
             return decision == .approve ? .approved : .denied
         } catch {
             let e = APIError.wrap(error)
+            ApprovalsDebug.decide(item.id, decision, sensitive: item.sensitive, via: proof != nil ? "face_id" : sentPin != nil ? "approval_pin" : "plain", outcome: ApprovalOutcome.from(error), error: e)
             if e.endsSession { onTransportError?(e) }
             let result = ApprovalOutcome.from(error)
             return result == .needsSetup && hasPin ? .pinRequired : result
@@ -416,6 +422,7 @@ final class ApprovalsStore {
 
     /// The PIN pad's "Use PIN instead" / its back button.
     func showPinPad(_ on: Bool) {
+        ApprovalsDebug.tap(on ? "use_pin_pad" : "use_face_id", screen: "approval_sheet", id: sheetItem?.id)
         pinEntry = on
         if on, case .failed? = outcome { outcome = nil }
     }
@@ -523,6 +530,7 @@ final class ApprovalsStore {
     private func approveInPlace(_ id: String, shownHash: String?, trigger: ApprovalTrigger?, now: Date) async {
         guard trigger == .notificationApproveAction else {
             log.error("one-tap approve refused id=\(id, privacy: .public): not from the notification's Approve")
+            ApprovalsDebug.oneTap(id, "refused_no_trigger")
             return
         }
         guard !approvingInPlace.contains(id) else { return }
@@ -539,6 +547,7 @@ final class ApprovalsStore {
             let e = APIError.wrap(error)
             if e.endsSession { onTransportError?(e) }
             log.error("one-tap approve id=\(id, privacy: .public): request not fetched (\(e.status, privacy: .public))")
+            ApprovalsDebug.oneTap(id, "fetch_failed:\(e.status):\(e.code)")
             let result = ApprovalOutcome.from(error)
             let item = pending.first { $0.id == id } ?? ApprovalItem(id: id, summary: "", sensitive: true)
             if result.isFinal { await finishButtonAnswer(item, result) } else { await notifier.postFailure(for: item) }
@@ -548,16 +557,19 @@ final class ApprovalsStore {
         guard item.status == nil || item.status == .pending else {
             // Answered already (by this iPhone too: a repeated tap): nothing to ask, nothing to open.
             log.info("one-tap approve id=\(id, privacy: .public): no longer pending")
+            ApprovalsDebug.oneTap(id, "not_pending")
             await forgetAnswered(item)
             return
         }
         guard !item.isExpired(at: now) else {
             log.info("one-tap approve id=\(id, privacy: .public): expired")
+            ApprovalsDebug.oneTap(id, "expired")
             await forgetAnswered(item)
             return
         }
         guard let shownHash, shownHash == item.payloadHash else {
             log.error("one-tap approve refused id=\(id, privacy: .public): changed since shown")
+            ApprovalsDebug.oneTap(id, "changed_since_shown")
             await notifier.postOpenToApprove(for: item)
             return
         }
@@ -565,6 +577,7 @@ final class ApprovalsStore {
         // (the server takes Face ID for those): the card instead.
         guard oneTapReady, unlockSigner.keyId != nil, !item.action.hasPrefix("approver.") else {
             log.info("one-tap approve id=\(id, privacy: .public): not ready, open-to-approve")
+            ApprovalsDebug.oneTap(id, "not_ready")
             await notifier.postOpenToApprove(for: item)
             return
         }
@@ -592,6 +605,7 @@ final class ApprovalsStore {
             }
         }
         log.info("one-tap approve id=\(id, privacy: .public): \(String(describing: result), privacy: .public)")
+        ApprovalsDebug.decide(item.id, .approve, sensitive: item.sensitive, via: "unlock_key", outcome: result)
         await finishButtonAnswer(item, result)
     }
 
@@ -700,6 +714,7 @@ final class ApprovalsStore {
 
     /// "Main device for approvals": the server sends the first 30 s of every request to this device only.
     func setThisDeviceMain(_ on: Bool) async {
+        ApprovalsDebug.tap("main_device", screen: "settings_approvals", on: on)
         guard let api = api(), let id = settings?.thisDeviceId, !settingsBusy else { return }
         settingsBusy = true
         defer { settingsBusy = false }
@@ -717,6 +732,7 @@ final class ApprovalsStore {
     /// passcode). Returns true when the key is registered and saved.
     @discardableResult
     func setUpFaceID() async -> Bool {
+        ApprovalsDebug.enroll("face_id_key.enroll", "requested")
         guard let api = api(), !settingsBusy else { return false }
         settingsBusy = true
         defer { settingsBusy = false }
@@ -727,20 +743,25 @@ final class ApprovalsStore {
             guard let deviceId = latest.thisDeviceId, !deviceId.isEmpty else {
                 throw ApprovalSignError.failed(String(localized: "The server doesn't know this iPhone yet. Open Secretary again in a moment."))
             }
+            ApprovalsDebug.enroll("face_id_key.enroll", "start")
             let publicKey = try signer.prepareKey().base64EncodedString()
             let signature = try await signer.signWithPreparedKey(
                 ApprovalsAPI.registrationString(deviceId: deviceId, publicKey: publicKey),
                 reason: String(localized: "Set up approvals on this iPhone"))
             let keyId = try await api.registerKey(publicKey: publicKey, label: "Face ID on \(deviceLabel())", signature: signature)
             try signer.commitKey(keyId: keyId)
+            ApprovalsDebug.enroll("face_id_key.enroll", "registered")
             settingsMessage = nil
             registered = true
         } catch ApprovalSignError.cancelled {
+            ApprovalsDebug.enroll("face_id_key.enroll", "cancelled")
             settingsMessage = nil
         } catch let error as ApprovalSignError {
+            ApprovalsDebug.enroll("face_id_key.enroll", "failed", error: error)
             settingsMessage = error.userMessage
         } catch {
             let e = APIError.wrap(error)
+            ApprovalsDebug.enroll("face_id_key.enroll", "failed", error: e)
             switch e.status {
             case 404, 405: settingsMessage = String(localized: "Approvals aren't on the server yet. Try again later."); availability = .unsupported
             default: settingsMessage = e.userMessage
@@ -774,6 +795,7 @@ final class ApprovalsStore {
     }
 
     private func changePIN(currentPin: String?, send: (ApprovalsAPI, ApprovalsAPI.SignatureProof?) async throws -> Void, validate: () -> Bool) async -> PinChange {
+        ApprovalsDebug.enroll("approval_pin.change", "requested")
         guard validate() else { return .refused(String(localized: "A PIN is 6 digits."), currentWasWrong: false) }
         guard let api = api() else { return .refused(APIError.network(message: "").userMessage, currentWasWrong: false) }
         guard !settingsBusy else { return .cancelled }
@@ -807,6 +829,7 @@ final class ApprovalsStore {
     }
 
     func removeFaceID() async {
+        ApprovalsDebug.tap("remove_face_id", screen: "settings_approvals")
         guard !settingsBusy else { return }
         settingsBusy = true
         defer { settingsBusy = false }
@@ -829,6 +852,7 @@ final class ApprovalsStore {
     /// The Settings switch. On: enroll the unlock key (one Face ID); if that doesn't happen the switch goes back off.
     /// Off: the server forgets the key, then this iPhone deletes it.
     func setOneTap(_ on: Bool) async {
+        ApprovalsDebug.tap("one_tap_approve", screen: "settings_approvals", on: on)
         let wasReady = oneTapReady
         oneTapOn = on
         defaults.set(on, forKey: Self.oneTapKey)
@@ -865,8 +889,10 @@ final class ApprovalsStore {
             guard let deviceId = latest.thisDeviceId, !deviceId.isEmpty, latest.serverHasKeyForThisDevice else {
                 // No Face ID key on the server yet (not set up, or waiting for another device's OK): nothing to ask.
                 log.info("unlock key not enrolled: no active Face ID key")
+                ApprovalsDebug.enroll("unlock_key.enroll", "skipped_no_face_id_key")
                 return false
             }
+            ApprovalsDebug.enroll("unlock_key.enroll", "start")
             let publicKey = try unlockSigner.prepareKey().base64EncodedString()
             let proof = try await signer.sign(ApprovalsAPI.unlockKeyString(deviceId: deviceId, publicKey: publicKey),
                                               reason: String(localized: "Allow one-tap Approve"))
@@ -875,15 +901,19 @@ final class ApprovalsStore {
             let wasReady = oneTapReady
             unlockKeyId = keyId
             log.info("unlock key enrolled")
+            ApprovalsDebug.enroll("unlock_key.enroll", "enrolled")
             if oneTapReady != wasReady { onOneTapChanged?(oneTapReady) }
             return true
         } catch ApprovalSignError.cancelled {
+            ApprovalsDebug.enroll("unlock_key.enroll", "cancelled")
             return false
         } catch let error as ApprovalSignError {
+            ApprovalsDebug.enroll("unlock_key.enroll", "failed", error: error)
             settingsMessage = error.userMessage
             return false
         } catch {
             let e = APIError.wrap(error)
+            ApprovalsDebug.enroll("unlock_key.enroll", "failed", error: e)
             if e.endsSession { onTransportError?(e) }
             log.error("unlock key not enrolled: \(e.status, privacy: .public) \(e.code, privacy: .public)")
             settingsMessage = e.userMessage

@@ -26,8 +26,11 @@ final class PhotoUploadExtension: PHBackgroundResourceUploadJobExtension {
 
     func processJobs() async -> PHBackgroundResourceUploadProcessingResult {
         cancelled.store(false, ordering: .releasing)
+        DebugEvents.record("bg.task", ["task": "photo_upload_ext", "phase": "start"])
+        defer { DebugEvents.flushSoon() }
         guard let config = BackgroundUpload.readConfig() else {
             log.info("PhotoUpload no configuration; nothing to do")
+            DebugEvents.record("bg.task", ["task": "photo_upload_ext", "phase": "end", "outcome": "not_configured"])
             return .completed
         }
         let uploader = Uploader(config: config, cancelled: { [unowned self] in self.cancelled.load(ordering: .acquiring) })
@@ -36,17 +39,21 @@ final class PhotoUploadExtension: PHBackgroundResourceUploadJobExtension {
             try await uploader.retryFailed()
             try await uploader.acknowledgeFinished()
             let more = try await uploader.createJobs()
+            DebugEvents.record("bg.task", ["task": "photo_upload_ext", "phase": "end", "outcome": more ? "more" : "completed", "jobs": uploader.state.jobs.count])
             return more ? .processing : .completed
         } catch PHPhotosError.limitExceeded {
             log.info("PhotoUpload job limit reached; more later")
+            DebugEvents.record("bg.task", ["task": "photo_upload_ext", "phase": "end", "outcome": "limit_exceeded"])
             return .processing
         } catch {
             log.error("PhotoUpload failed: \(String(describing: error), privacy: .public)")
+            DebugEvents.record("bg.task", ["task": "photo_upload_ext", "phase": "end", "outcome": "failed", "error": error])
             return .failure
         }
     }
 
     func willTerminate() async {
+        DebugEvents.record("bg.task", ["task": "photo_upload_ext", "phase": "terminated"])
         cancelled.store(true, ordering: .releasing)
     }
 }

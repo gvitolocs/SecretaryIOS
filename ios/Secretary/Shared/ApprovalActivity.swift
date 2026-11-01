@@ -136,6 +136,7 @@ struct DenyApprovalActivityIntent: LiveActivityIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult {
+        let trace = DebugEvents.intent("deny_approval_activity", ["id": approvalId, "sensitive": sensitive]); defer { trace.end() }
         guard let deny = ApprovalActivityCommands.deny else { throw ApprovalActivityError.notInApp }
         await deny(approvalId, sensitive)
         return .result()

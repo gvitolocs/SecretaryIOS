@@ -66,6 +66,7 @@ final class ApprovalActivities {
     /// for (iOS runs LiveActivityIntents in the app's process). Approve is a link (`ApprovalLink`, AppModel.openWidgetRoute).
     static func install() {
         ApprovalActivityCommands.deny = { id, sensitive in
+            DebugEvents.record("card.tap", ["action": "deny", "id": id, "sensitive": sensitive])
             shared.log.info("deny tapped id=\(id, privacy: .public)")
             await AppModel.shared.approvals.handleNotification(actionIdentifier: ApprovalNotifier.denyAction,
                                                                approvalId: id, sensitive: sensitive)
@@ -83,6 +84,7 @@ final class ApprovalActivities {
             Task {
                 for await data in Activity<ApprovalActivityAttributes>.pushToStartTokenUpdates {
                     self.startToken = APNsAdapter.hex(data)
+                    DebugEvents.record("activity.push_token", ["kind": "start"])
                     self.flush()
                 }
             }
@@ -118,17 +120,20 @@ final class ApprovalActivities {
             return
         }
         watched[activity.id] = approvalId
+        DebugEvents.record("activity.start", ["id": approvalId, "state": "\(activity.activityState)"])
         shown.insert(approvalId)
         if activity.activityState == .active { cardUp(approvalId) }
         Task {
             // Ended, dismissed or stale: the card no longer carries the request.
             for await state in activity.activityStateUpdates where state != .active {
+                DebugEvents.record("activity.update", ["id": approvalId, "state": "\(state)"])
                 self.cardsUp.remove(approvalId)
             }
         }
         Task {
             for await data in activity.pushTokenUpdates {
                 self.updateTokens[approvalId] = APNsAdapter.hex(data)
+                DebugEvents.record("activity.push_token", ["kind": "update", "id": approvalId])
                 self.flush()
             }
         }
@@ -146,6 +151,7 @@ final class ApprovalActivities {
                     self.defaults.set(token, forKey: Self.startTokenKey)
                 } catch {
                     self.log.info("live activity start token not registered: \(APIError.wrap(error).status ?? 0, privacy: .public)")
+                    DebugEvents.record("activity.push_token", ["kind": "start", "registered": false, "error": APIError.wrap(error)])
                 }
             }
         }
@@ -157,6 +163,7 @@ final class ApprovalActivities {
                     self.sentUpdates.insert(token)
                 } catch {
                     self.log.info("live activity update token not registered: \(APIError.wrap(error).status ?? 0, privacy: .public)")
+                    DebugEvents.record("activity.push_token", ["kind": "update", "id": approvalId, "registered": false, "error": APIError.wrap(error)])
                 }
             }
         }
@@ -231,6 +238,7 @@ final class ApprovalActivities {
             watch(activity)
         } catch {
             log.info("live activity not started: \(error.localizedDescription, privacy: .public)")
+            DebugEvents.record("activity.start", ["id": item.id, "ok": false, "error": error])
         }
     }
 
@@ -251,6 +259,7 @@ final class ApprovalActivities {
     func replaceNotifications(_ ids: [String]) async {
         guard let notifier, await notifier.removeRequest(ids: ids) > 0 else { return }
         for id in ids { log.info("notification replaced by card id=\(id, privacy: .public)") }
+        for id in ids { DebugEvents.record("notification.replaced", ["id": id, "by": "activity"]) }
     }
 
     // MARK: - Ending
@@ -278,6 +287,7 @@ final class ApprovalActivities {
     }
 
     private func end(_ id: String, status: String, dismissal: ActivityUIDismissalPolicy) async {
+        DebugEvents.record("activity.end", ["id": id, "status": status, "count": activities(for: id).count])
         for activity in activities(for: id) {
             await activity.end(ActivityContent(state: .init(status: status), staleDate: nil), dismissalPolicy: dismissal)
         }
