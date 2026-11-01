@@ -156,3 +156,13 @@
 .ig-head__pic:focus-visible { outline: 2px solid var(--lu-accent); outline-offset: 3px; }
 .ig-head__pic:hover .ig-avatar { filter: brightness(1.08); }
 .ig-bio__label { display: block; margin-bottom: 2px; color: var(--lu-text-tertiary, var(--lu-text-secondary)); font-size: var(--lu-type-caption-2); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+
+/* A private account (2026-11-01): the lock with the shared chip (styles/ui.css .chip) next to the @name in the
+   header, the lock alone in lists; an empty tab says why with the page system's empty state. */
+.ig-head__user { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+:root:root .chip.ig-private { min-height: 24px; padding: 0 9px 0 7px; gap: 4px; font-size: 12px; cursor: default; }
+:root:root .chip.ig-private:hover { border-color: #ffffff1f; color: var(--ui-muted); }
+.ig-private .icon { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.ig-lock .icon { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.ig-lock { display: inline-grid; place-items: center; flex: none; color: var(--lu-text-secondary); }
+.ig-private-empty { justify-self: stretch; }

@@ -15,6 +15,9 @@ pub struct RecentEntry {
     /// The Instagram CDN URL of the profile picture (signed again on every read).
     pub pic_cdn: Option<String>,
     pub verified: bool,
+    /// Private when last opened (entries written before 2026-11-01 have none: public).
+    #[serde(default)]
+    pub private: bool,
     pub opened_at: i64,
 }
 
@@ -73,6 +76,7 @@ mod tests {
             full_name: String::new(),
             pic_cdn: None,
             verified: false,
+            private: false,
             opened_at: t,
         }
     }

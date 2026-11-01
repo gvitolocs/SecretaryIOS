@@ -324,7 +324,7 @@ describe("Instagram", () => {
     const calls = serve({ profile: bundle({ isPrivate: true }) });
     renderIg("/instagram/natgeo");
     fireEvent.click(await screen.findByRole("tab", { name: "Highlights" }));
-    expect(screen.getByText("No highlights.")).toBeInTheDocument();
+    expect(screen.getByRole("tabpanel")).toHaveTextContent("Private account");
     expect(calls.some((c) => c.url === "/v1/instagram/highlights/natgeo")).toBe(false);
   });
 
@@ -456,6 +456,28 @@ describe("Instagram", () => {
     expect(await screen.findByText(/This account is private/)).toBeInTheDocument();
   });
 
+  it("marks a private account at its name, and says why its tabs are empty", async () => {
+    serve({ profile: { ...bundle({ isPrivate: true }), posts: posts([]) }, stories: { items: [], nextCursor: null } });
+    renderIg("/instagram/natgeo");
+    const chip = (await screen.findByText("Private")).closest(".chip")!;
+    expect(chip).toHaveClass("ig-private");
+    expect(chip.closest(".ig-head__user")).toHaveTextContent("@natgeo");
+    expect(chip.querySelector("svg")).not.toBeNull();
+    const panel = screen.getByRole("tabpanel");
+    await waitFor(() => expect(panel).toHaveTextContent("Private account"));
+    expect(panel).toHaveTextContent("Instagram doesn't show this to visitors.");
+    expect(panel).not.toHaveTextContent("No posts to show.");
+    fireEvent.click(screen.getByRole("tab", { name: "Highlights" }));
+    await waitFor(() => expect(screen.getByRole("tabpanel")).toHaveTextContent("Instagram doesn't show this to visitors."));
+  });
+
+  it("shows no Private chip on a public account", async () => {
+    serve({ profile: bundle() });
+    renderIg("/instagram/natgeo");
+    await screen.findByRole("heading", { name: /National Geographic/ });
+    expect(document.querySelector(".ig-private")).toBeNull();
+  });
+
   it("says when the account is not found, with no retry button", async () => {
     serve({ profileStatus: 404 });
     renderIg("/instagram/ghost");
@@ -491,6 +513,23 @@ describe("Instagram", () => {
       expect(within(chip).getByText("3")).toBeInTheDocument();
       const quiet = screen.getByRole("button", { name: "@nasa" });
       expect(quiet.querySelector(".ig-dot")).toBeNull();
+    });
+
+    it("puts a lock on private accounts in the watched and recent lists", async () => {
+      serve({
+        watched: [entry({ username: "kuroasha", private: true, newStories: 0, newPosts: 0 }), entry({ username: "nasa", newStories: 0, newPosts: 0 })],
+        recent: [
+          { username: "kuroasha", fullName: "Manu", isVerified: false, isPrivate: true, picUrl: null, openedAt: 2 },
+          { username: "nasa", fullName: "NASA", isVerified: true, picUrl: null, openedAt: 1 },
+        ],
+      });
+      renderIg();
+      const chip = await screen.findByRole("button", { name: "@kuroasha, Private account" });
+      expect(chip.querySelector(".ig-lock")).not.toBeNull();
+      expect(screen.getByRole("button", { name: "@nasa" }).querySelector(".ig-lock")).toBeNull();
+      const person = await screen.findByRole("button", { name: /Manu/ });
+      expect(within(person).getByRole("img", { name: "Private account" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /^NASA/ }).querySelector(".ig-lock")).toBeNull();
     });
 
     it("opens a chip's profile and clears its badge", async () => {

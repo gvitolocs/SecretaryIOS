@@ -11,7 +11,7 @@ import {
   setInstagramBadges,
   setInstagramWatchSettings,
 } from "../state/instagramBadge";
-import { BackIcon, BellIcon, CheckIcon, ExternalIcon, SearchIcon } from "../components/Icons";
+import { BackIcon, BellIcon, CheckIcon, ExternalIcon, LockIcon, SearchIcon } from "../components/Icons";
 import {
   Card,
   EmptyState,
@@ -248,6 +248,30 @@ function ProfilePicture(props: { url: string | null; username: string }) {
   );
 }
 
+/** A private account: the lock and "Private" (the shared chip) in the profile header, the lock alone in lists. */
+function PrivateMark(props: { chip?: boolean }) {
+  return (
+    <Show
+      when={props.chip}
+      fallback={
+        <span class="ig-lock" role="img" aria-label={t("instagram.privateAccount")} title={t("instagram.privateAccount")}>
+          <LockIcon />
+        </span>
+      }
+    >
+      <span class="chip ig-private" title={t("instagram.private")}>
+        <LockIcon />
+        <span>{t("instagram.privateChip")}</span>
+      </span>
+    </Show>
+  );
+}
+
+/** An empty tab of a private account: why there is nothing (the page system's empty state). */
+function PrivateEmpty() {
+  return <EmptyState class="ig-private-empty" title={t("instagram.privateAccount")} text={t("instagram.privateEmpty")} />;
+}
+
 function Verified() {
   return (
     <span class="ig-verified" role="img" aria-label={t("instagram.verified")}>
@@ -467,7 +491,10 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
                   <span>{b().profile.fullName || b().profile.username}</span>
                   <Show when={b().profile.isVerified}><Verified /></Show>
                 </h2>
-                <p class="ig-head__user">@{b().profile.username}</p>
+                <p class="ig-head__user">
+                  <span>@{b().profile.username}</span>
+                  <Show when={b().profile.isPrivate}><PrivateMark chip /></Show>
+                </p>
               </div>
               <ul class="ig-stats">
                 <li><strong>{formatCount(b().profile.mediaCount)}</strong> <span>{t("instagram.posts")}</span></li>
@@ -550,7 +577,7 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
               <Show when={tab() === "highlights"}>
                 <Show when={!highlightsLoading()} fallback={<p role="status" class="ig-muted">{t("instagram.loading")}</p>}>
                   <Show when={!highlightsError()} fallback={<p role="alert">{errorText(highlightsError())}</p>}>
-                    <Show when={highlights().length > 0} fallback={<p class="ig-muted">{empty("highlights")}</p>}>
+                    <Show when={highlights().length > 0} fallback={b().profile.isPrivate ? <PrivateEmpty /> : <p class="ig-muted">{empty("highlights")}</p>}>
                       <ul class="ig-highlights">
                         <For each={highlights()}>
                           {(h) => (
@@ -593,7 +620,9 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
                             </div>
                           </Show>
                           <Show when={f().loaded() && f().items().length === 0 && !f().error()}>
-                            <p class="ig-muted">{empty(tb)}</p>
+                            <Show when={b().profile.isPrivate} fallback={<p class="ig-muted">{empty(tb)}</p>}>
+                              <PrivateEmpty />
+                            </Show>
                           </Show>
                           <Show when={f().loading()}>
                             <p class="ig-muted" role="status">{t("instagram.loading")}</p>
@@ -783,11 +812,12 @@ export default function InstagramView() {
                                 <button
                                   type="button"
                                   class="ig-chip"
-                                  aria-label={fresh() > 0 ? t("instagram.chipLabel", { name: w.username, count: fresh() }) : `@${w.username}`}
+                                  aria-label={[fresh() > 0 ? t("instagram.chipLabel", { name: w.username, count: fresh() }) : `@${w.username}`, w.private ? t("instagram.privateAccount") : ""].filter(Boolean).join(", ")}
                                   onClick={() => navigate(`/instagram/${encodeURIComponent(w.username)}`)}
                                 >
                                   <Avatar url={w.picUrl ?? null} name={w.username} />
                                   <span class="ig-chip__name">@{w.username}</span>
+                                  <Show when={w.private}><PrivateMark /></Show>
                                   <Show when={fresh() > 0}>
                                     <span class="ig-dot" aria-hidden="true">
                                       {fresh()}
@@ -817,6 +847,9 @@ export default function InstagramView() {
                                     <span>{r.fullName || r.username}</span>
                                     <Show when={r.isVerified}>
                                       <Verified />
+                                    </Show>
+                                    <Show when={r.isPrivate}>
+                                      <PrivateMark />
                                     </Show>
                                   </span>
                                   <small>@{r.username}</small>

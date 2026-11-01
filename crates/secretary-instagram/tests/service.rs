@@ -601,6 +601,7 @@ async fn opened_profiles_are_remembered_newest_first_in_a_private_file() {
     assert_eq!(items[0]["username"], "natgeo");
     assert_eq!(items[1]["username"], "nasa");
     assert_eq!(items[1]["fullName"], "NASA");
+    assert_eq!(items[0]["isPrivate"], false);
     assert!(items[0]["picUrl"]
         .as_str()
         .unwrap()
@@ -614,6 +615,15 @@ async fn opened_profiles_are_remembered_newest_first_in_a_private_file() {
             0o600
         );
     }
+    // A private account says so in the list (the web shows a lock there).
+    let mut private = bundle();
+    private["profile"]["username"] = json!("hidden");
+    private["profile"]["is_private"] = json!(true);
+    mount_json(&e.server, "/api/v1/users/hidden/bundle", private).await;
+    get(&e.app, "/v1/instagram/profile/hidden").await;
+    let r = get(&e.app, "/v1/instagram/recent").await;
+    assert_eq!(r.json["data"]["items"][0]["username"], "hidden");
+    assert_eq!(r.json["data"]["items"][0]["isPrivate"], true);
     // A failed lookup is not remembered.
     let r = get(&e.app, "/v1/instagram/profile/nobody").await;
     assert_ne!(r.status, StatusCode::OK);
@@ -622,7 +632,7 @@ async fn opened_profiles_are_remembered_newest_first_in_a_private_file() {
             .as_array()
             .unwrap()
             .len(),
-        2
+        3
     );
 }
 
