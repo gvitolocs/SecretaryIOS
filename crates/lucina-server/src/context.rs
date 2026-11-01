@@ -105,6 +105,7 @@ pub fn presence_block(st: &AppState, prompt: &str) -> String {
 
 /// Classify a turn: tier 0, else the model (tier 1) on the recent turns.
 /// `mcp`: the turn comes from a Lucina MCP client (an agent's or assistant app's text, not the owner's).
+/// `sample`: a real turn of the owner's own, whose Jev answer is kept (`jev_samples`).
 pub async fn classify(
     st: &AppState,
     user_text: &str,
@@ -112,6 +113,7 @@ pub async fn classify(
     user_label: &str,
     platform: &str,
     mcp: bool,
+    sample: bool,
 ) -> Classification {
     let s = &st.cfg.intent;
     let t = TurnInput {
@@ -134,6 +136,10 @@ pub async fn classify(
     } else {
         None
     };
+    if let (true, Some(verdict)) = (sample, &jev) {
+        let tier0 = rule.as_ref().map(|r| r.intent.as_str());
+        crate::jev_samples::record(user_text, platform, verdict, tier0);
+    }
     let chat = |confidence: f64| {
         tier0::from_model_json(
             &serde_json::json!({"intent": "chat", "confidence": confidence,
@@ -325,6 +331,7 @@ pub async fn prepare_keyed(
             user_label,
             platform,
             surface.caller().is_some(),
+            owner && surface.caller().is_none() && !crate::selftest::is_session(session),
         )
         .await;
         let (p, r) = policy::resolve(&c, first_after_idle, st.cfg.intent.confidence_min);

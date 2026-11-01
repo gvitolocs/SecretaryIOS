@@ -133,6 +133,7 @@ pub fn intent_json(d: &lucina_jev::Decision) -> Option<(Value, f64)> {
     let mode = lucina_intent::tier0::default_reply_mode(intent);
     let v = json!({
         "intent": intent,
+        "model": d.model,
         "confidence": confidence,
         "reply_mode": mode,
         "scope": d.choice("scope").map(|c| c.0),

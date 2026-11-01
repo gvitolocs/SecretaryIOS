@@ -118,6 +118,12 @@ Reads only. Body `{"text", "recent", "platform", "mcp"}`. The response is tier 0
 and confidence, whether JEV-first is on, and the intent the live router would pick. No turn, no
 timeline write, no memory write. The same bearer token as the rest of `/api/secretary`.
 
+## Samples
+
+Each real turn of the owner's that Jev answered adds one line to `<LUCINA_JEV_CAL_DIR>/samples-YYYY-MM.jsonl`
+(mode 0600), for a future local heuristic: message, intent, confidence, model, platform, tier-0 rule. It makes
+no Jev call. MCP, guest and selftest turns and the drift replay are left out. `LUCINA_JEV_SAMPLES=off` stops it.
+
 ## Drift report
 
 `lucina-rs jev drift-report [--days 7] [--labels-dir DIR] [--dry-run] [--recalibrate]` reads the

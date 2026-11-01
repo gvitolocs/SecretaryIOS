@@ -627,7 +627,7 @@ async fn route(
             let rule = lucina_intent::tier0::classify_tier0(text, recent, &st.cfg.intent);
             let t = crate::planner::TurnInput { user_text: text, memory: recent, user_label: USER_LABEL, platform };
             let jev = crate::jev_route::classify_intent(lucina_jev::shared(), &t).await;
-            let routed = crate::context::classify(st, text, recent, USER_LABEL, platform, mcp).await;
+            let routed = crate::context::classify(st, text, recent, USER_LABEL, platform, mcp, false).await;
             Ok(ok(json!({
                 "tier0": rule.as_ref().map(|c| c.intent.clone()),
                 "tier0Confidence": rule.as_ref().map(|c| c.confidence),
