@@ -551,9 +551,12 @@ describe("Instagram", () => {
       const tile = await screen.findByRole("button", { name: "@kuroasha, Private account" });
       expect(tile.querySelector(".ig-private")).toHaveTextContent("Private");
       expect(screen.getByRole("button", { name: "@nasa" }).querySelector(".ig-private")).toBeNull();
+      // Recent profiles are the same tiles (owner, 2026-11-01), with the Private chip.
       const person = await screen.findByRole("button", { name: /Manu/ });
-      expect(within(person).getByRole("img", { name: "Private account" })).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: /^NASA/ }).querySelector(".ig-lock")).toBeNull();
+      expect(person).toHaveClass("ig-wtile");
+      expect(person.querySelector(".ig-private")).toHaveTextContent("Private");
+      expect(person).toHaveTextContent("@kuroasha");
+      expect(screen.getByRole("button", { name: /^NASA/ }).querySelector(".ig-private")).toBeNull();
     });
 
     it("shows each watched account as a tile with its picture, names, count and last check", async () => {
@@ -906,6 +909,9 @@ describe("Instagram desktop", () => {
       expect(panel).toHaveTextContent("3 of 32K posts");
       expect(panel).toHaveTextContent("Showing the newest 3 of 32K posts");
       expect(within(panel).queryByRole("button", { name: "Load more" })).toBeNull();
+      // The reels page further: one tap there.
+      fireEvent.click(within(panel).getByRole("button", { name: "See the reels" }));
+      expect(await screen.findByRole("tab", { name: "Reels", selected: true })).toBeInTheDocument();
     });
 
     it("says all are loaded when the list ends at the profile's count", async () => {

@@ -1,7 +1,7 @@
 import { A, useNavigate, useParams } from "@solidjs/router";
 import { createEffect, createResource, createSignal, For, on, onCleanup, onMount, Show, type Accessor } from "solid-js";
 import { ApiError } from "../api/client";
-import { instagramApi, type IgHighlight, type IgItem, type IgPage, type IgWatch } from "../api/instagram";
+import { instagramApi, type IgHighlight, type IgItem, type IgPage, type IgRecent, type IgWatch } from "../api/instagram";
 import {
   instagramWatched,
   instagramWatchSettings,
@@ -15,13 +15,11 @@ import { BackIcon, BellIcon, CheckIcon, ExternalIcon, LockIcon, PasteIcon, Searc
 import {
   Card,
   EmptyState,
-  ListRow,
   LoadingState,
   Page,
   PageGrid,
   PageHeader,
   PrimaryAction,
-  RowList,
   useWide,
 } from "../components/page";
 import InstagramOpened from "../components/InstagramOpened";
@@ -320,42 +318,91 @@ async function clipboardReadable(): Promise<boolean> {
   }
 }
 
-/** Watched accounts as tiles: picture, name, @name, Private, the new count and when it was last checked. */
+/** One profile tile (watched and recent accounts): picture, name, @name, Private, a new count, a time line. */
+function ProfileTile(props: {
+  username: string;
+  fullName?: string;
+  picUrl?: string | null;
+  verified?: boolean;
+  isPrivate?: boolean;
+  fresh?: number;
+  when: string;
+  /** The button's name in a short form ("@name, 3 new, Private account"); without it the tile's text names it. */
+  shortLabel?: boolean;
+  onOpen: () => void;
+}) {
+  const fresh = () => props.fresh ?? 0;
+  return (
+    <li>
+      <button
+        type="button"
+        class="ig-wtile"
+        aria-label={
+          props.shortLabel
+            ? [fresh() > 0 ? t("instagram.chipLabel", { name: props.username, count: fresh() }) : `@${props.username}`, props.isPrivate ? t("instagram.privateAccount") : ""].filter(Boolean).join(", ")
+            : undefined
+        }
+        onClick={() => props.onOpen()}
+      >
+        <span class="ig-wtile__pic">
+          <Avatar url={props.picUrl ?? null} name={props.username} size="lg" />
+          <Show when={fresh() > 0}>
+            <span class="ig-dot ig-wtile__dot" aria-hidden="true">{fresh()}</span>
+          </Show>
+        </span>
+        <span class="ig-wtile__name">
+          <span>{props.fullName || props.username}</span>
+          <Show when={props.verified}><Verified /></Show>
+        </span>
+        <span class="ig-wtile__user">
+          <span>@{props.username}</span>
+          <Show when={props.isPrivate}><PrivateMark chip /></Show>
+        </span>
+        <span class="ig-wtile__when">{props.when}</span>
+      </button>
+    </li>
+  );
+}
+
+/** Watched accounts as tiles, with the new count and when each was last checked. */
 function WatchedTiles(props: { items: IgWatch[]; onOpen: (username: string) => void }) {
   return (
     <ul class="ig-wtiles">
       <For each={props.items}>
-        {(w) => {
-          const fresh = () => w.newStories + w.newPosts;
-          return (
-            <li>
-              <button
-                type="button"
-                class="ig-wtile"
-                aria-label={[fresh() > 0 ? t("instagram.chipLabel", { name: w.username, count: fresh() }) : `@${w.username}`, w.private ? t("instagram.privateAccount") : ""].filter(Boolean).join(", ")}
-                onClick={() => props.onOpen(w.username)}
-              >
-                <span class="ig-wtile__pic">
-                  <Avatar url={w.picUrl ?? null} name={w.username} size="lg" />
-                  <Show when={fresh() > 0}>
-                    <span class="ig-dot ig-wtile__dot" aria-hidden="true">{fresh()}</span>
-                  </Show>
-                </span>
-                <span class="ig-wtile__name">
-                  <span>{w.fullName || w.username}</span>
-                  <Show when={w.isVerified}><Verified /></Show>
-                </span>
-                <span class="ig-wtile__user">
-                  <span>@{w.username}</span>
-                  <Show when={w.private}><PrivateMark chip /></Show>
-                </span>
-                <span class="ig-wtile__when">
-                  {w.lastCheck ? t("instagram.checkedAgo", { when: relativeTime(w.lastCheck) }) : t("instagram.notChecked")}
-                </span>
-              </button>
-            </li>
-          );
-        }}
+        {(w) => (
+          <ProfileTile
+            username={w.username}
+            fullName={w.fullName}
+            picUrl={w.picUrl}
+            verified={w.isVerified}
+            isPrivate={!!w.private}
+            fresh={w.newStories + w.newPosts}
+            shortLabel
+            when={w.lastCheck ? t("instagram.checkedAgo", { when: relativeTime(w.lastCheck) }) : t("instagram.notChecked")}
+            onOpen={() => props.onOpen(w.username)}
+          />
+        )}
+      </For>
+    </ul>
+  );
+}
+
+/** Recently opened profiles as the same tiles (owner, 2026-11-01), with when each was opened. */
+function RecentTiles(props: { items: IgRecent[]; onOpen: (username: string) => void }) {
+  return (
+    <ul class="ig-wtiles">
+      <For each={props.items}>
+        {(r) => (
+          <ProfileTile
+            username={r.username}
+            fullName={r.fullName}
+            picUrl={r.picUrl}
+            verified={r.isVerified}
+            isPrivate={!!r.isPrivate}
+            when={t("instagram.openedAgo", { when: relativeTime(r.openedAt) })}
+            onOpen={() => props.onOpen(r.username)}
+          />
+        )}
       </For>
     </ul>
   );
@@ -741,6 +788,9 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
                                 ? t("instagram.postsCapped", { shown: f().items().length, total: formatCount(b().profile.mediaCount) })
                                 : t("instagram.allLoaded", { count: f().items().length })}
                             </p>
+                            <Show when={tb === "posts" && b().profile.mediaCount > f().items().length}>
+                              <button type="button" class="ig-btn ig-more" onClick={() => setTab("reels")}>{t("instagram.seeReels")}</button>
+                            </Show>
                           </Show>
                         </>
                       )}
@@ -882,7 +932,7 @@ export default function InstagramView() {
   );
 
   const recentMain = () => (
-    <Card list title={t("instagram.recent")}>
+    <Card title={t("instagram.recent")}>
       <Show when={recent.loading}>
         <LoadingState label={t("instagram.loading")} />
       </Show>
@@ -890,27 +940,7 @@ export default function InstagramView() {
         <EmptyState text={t("instagram.recentEmpty")} />
       </Show>
       <Show when={(recent() ?? []).length > 0}>
-        <RowList label={t("instagram.recent")}>
-          <For each={recent()}>
-            {(r) => (
-              <ListRow
-                leading={<Avatar url={r.picUrl} name={r.username} />}
-                title={
-                  <button type="button" class="pg-row-name" onClick={() => navigate(`/instagram/${encodeURIComponent(r.username)}`)}>
-                    {r.fullName || r.username}
-                  </button>
-                }
-                sub={
-                  <>
-                    @{r.username}
-                    <Show when={r.isPrivate}> <PrivateMark /></Show>
-                  </>
-                }
-                badge={r.isVerified ? <Verified /> : undefined}
-              />
-            )}
-          </For>
-        </RowList>
+        <RecentTiles items={recent() ?? []} onOpen={openProfile} />
       </Show>
     </Card>
   );
@@ -950,29 +980,7 @@ export default function InstagramView() {
                       {t("instagram.recent")}
                     </h2>
                     <Show when={(recent() ?? []).length > 0} fallback={<p class="ig-muted">{recent.loading ? t("instagram.loading") : t("instagram.recentEmpty")}</p>}>
-                      <ul class="ig-recent__list">
-                        <For each={recent()}>
-                          {(r) => (
-                            <li>
-                              <button type="button" class="ig-person" onClick={() => navigate(`/instagram/${encodeURIComponent(r.username)}`)}>
-                                <Avatar url={r.picUrl} name={r.username} />
-                                <span class="ig-person__text">
-                                  <span class="ig-person__name">
-                                    <span>{r.fullName || r.username}</span>
-                                    <Show when={r.isVerified}>
-                                      <Verified />
-                                    </Show>
-                                    <Show when={r.isPrivate}>
-                                      <PrivateMark />
-                                    </Show>
-                                  </span>
-                                  <small>@{r.username}</small>
-                                </span>
-                              </button>
-                            </li>
-                          )}
-                        </For>
-                      </ul>
+                      <RecentTiles items={recent() ?? []} onOpen={(u) => navigate(`/instagram/${encodeURIComponent(u)}`)} />
                     </Show>
                     <p class="ig-muted ig-hint">{t("instagram.hint")}</p>
                   </section>
