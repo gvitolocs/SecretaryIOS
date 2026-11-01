@@ -182,6 +182,7 @@ targets:
         BackgroundUploadURLBase: https://getsecretary.tech
         EXAppExtensionAttributes:
           EXExtensionPointIdentifier: com.apple.photos.background-upload
+          BackgroundUploadURLBase: https://getsecretary.tech
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: tech.getsecretary.app.photoupload
