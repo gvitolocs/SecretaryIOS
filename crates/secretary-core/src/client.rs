@@ -124,6 +124,19 @@ impl Call {
         Ok(Self::new(Method::POST, &["secrets", "grant"]).with_body(body))
     }
 
+    /// `POST /secrets/request {name, project, environment, path?, reason, from?, new_project?}`:
+    /// an agent asks the owner for a secret by name (Lucina checks the fields and refuses a
+    /// value). A JSON object up to 8 KiB.
+    pub fn secret_request(body: Value) -> Result<Self> {
+        if !body.is_object() || body.to_string().len() > 8 * 1024 {
+            return Err(Error::Invalid {
+                field: "body",
+                message: "must be a JSON object up to 8 KB".into(),
+            });
+        }
+        Ok(Self::new(Method::POST, &["secrets", "request"]).with_body(body))
+    }
+
     fn new(method: Method, segments: &[&str]) -> Self {
         Self {
             method,

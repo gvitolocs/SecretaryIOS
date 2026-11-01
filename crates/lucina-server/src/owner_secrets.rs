@@ -18,6 +18,12 @@
 //!   same way and Lucina offers "Save as secret?".
 //! - **"crea un progetto Infisical per X"** gets a card that opens the
 //!   sheet's new-project step; nothing is created without the owner's tap.
+//! - `POST /api/secretary/secrets/request {name, project, environment, path?,
+//!   reason, from?, new_project?}`: an agent (secretary-mcp `secret_request`)
+//!   asks the owner for a secret **by name**. Lucina posts a card that opens
+//!   the sheet prefilled; he pastes the value and saves it the usual way (a
+//!   grant). A request that carries a value, or a reason that looks like one,
+//!   is refused: the value never passes through the agent or the timeline.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -387,6 +393,9 @@ pub async fn relay(st: &crate::AppState, mut body: Value) -> Result<Value, ApiEr
     }
     record_grant(&grants_file(&st.cfg.data_dir), &record);
     let result = answer.map_err(|(c, m)| broker_error(&c, &m))?;
+    if let Some(list) = result.get("projects").and_then(Value::as_array) {
+        remember_projects(list, true);
+    }
     if result.get("fingerprint").is_some() {
         // A save: learn the value under its name, forget the held copy, write the receipt.
         let name = result["key"].as_str().unwrap_or("SECRET").to_owned();
@@ -409,6 +418,7 @@ pub async fn relay(st: &crate::AppState, mut body: Value) -> Result<Value, ApiEr
         .get("project")
         .filter(|_| result.get("access").is_some())
     {
+        remember_projects(std::slice::from_ref(p), false);
         let envs: Vec<&str> = p["environments"]
             .as_array()
             .into_iter()
@@ -708,6 +718,259 @@ pub fn answer_project_request(
     (reply, id)
 }
 
+// ---------------------------------------------------------------- agent requests
+
+/// Project keys (lowercase id, name, slug, alias) from the last catalog the
+/// owner's sheet loaded through Lucina: names only, memory only. `None`
+/// until one passes; then an agent's request knows whether its project exists.
+static KNOWN_PROJECTS: Mutex<Option<Vec<String>>> = Mutex::new(None);
+
+/// Requests posted in the last [`REQUEST_REPEAT`]: (when, name/project/env/path, card id).
+static RECENT_REQUESTS: Mutex<Vec<(Instant, String, Option<String>)>> = Mutex::new(Vec::new());
+/// A repeat of the same request inside this window answers with the first card.
+const REQUEST_REPEAT: Duration = Duration::from_secs(600);
+
+/// The fields a request may carry. Anything else is refused, above all a value.
+const REQUEST_FIELDS: [&str; 8] = [
+    "name",
+    "project",
+    "environment",
+    "path",
+    "reason",
+    "from",
+    "asking_client",
+    "new_project",
+];
+
+/// `catalog`: the whole list (replaces what was known); else one project to add.
+fn remember_projects(list: &[Value], catalog: bool) {
+    let mut known = KNOWN_PROJECTS.lock().unwrap_or_else(|e| e.into_inner());
+    let keys = known.get_or_insert_with(Vec::new);
+    if catalog {
+        keys.clear();
+    }
+    for p in list {
+        for k in ["id", "name", "slug", "alias"] {
+            if let Some(v) = p[k].as_str().filter(|v| !v.is_empty()) {
+                keys.push(v.to_lowercase());
+            }
+        }
+    }
+}
+
+/// Whether `project` is in the last catalog; `None` when no catalog passed yet.
+fn project_known(project: &str) -> Option<bool> {
+    let known = KNOWN_PROJECTS.lock().unwrap_or_else(|e| e.into_inner());
+    let p = project.to_lowercase();
+    known.as_ref().map(|keys| keys.contains(&p))
+}
+
+/// A secret name or a project / environment slug: `[A-Za-z0-9_.@-]`, 1-`max`.
+fn slug_ok(s: &str, max: usize) -> bool {
+    (1..=max).contains(&s.len())
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'@' | b'-'))
+}
+
+/// `/`, `/a/b`, `a/b/` -> `/a/b` (segments like names, not `.`/`..`), at most 512 bytes.
+fn request_folder(path: &str) -> Option<String> {
+    let t = path.trim().trim_matches('/');
+    if t.is_empty() {
+        return Some("/".into());
+    }
+    let segs: Vec<&str> = t.split('/').collect();
+    let ok = t.len() < 512 && segs.iter().all(|s| slug_ok(s, 128) && *s != "." && *s != "..");
+    ok.then(|| format!("/{}", segs.join("/")))
+}
+
+/// What an agent asks for: names, never a value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecretRequest {
+    pub name: String,
+    pub project: String,
+    pub environment: String,
+    pub path: String,
+    pub reason: String,
+    /// Who asks: the MCP client, with the session it named.
+    pub who: String,
+    pub new_project: bool,
+}
+
+fn request_error(code: &str, message: &str) -> ApiError {
+    ApiError::new(400, code, message)
+}
+
+/// One line of at most `max` characters (whitespace collapsed); `None` when empty.
+fn request_text(body: &Value, key: &str, max: usize) -> Result<Option<String>, ApiError> {
+    let Some(v) = body.get(key).filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    let s = v
+        .as_str()
+        .ok_or_else(|| request_error("bad_request", &format!("{key} must be a string")))?;
+    let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if s.chars().count() > max {
+        return Err(request_error(
+            "bad_request",
+            &format!("{key}: at most {max} characters"),
+        ));
+    }
+    // A token shape, or a value Lucina already knows: the agent pasted a secret.
+    if !lucina_secrets::redact::detect(&s).is_empty()
+        || lucina_secrets::redactor().redact(&s).as_ref() != s
+    {
+        return Err(request_error(
+            "value_refused",
+            &format!("{key} looks like it contains a secret: a request names the secret, the owner pastes the value in the app"),
+        ));
+    }
+    Ok((!s.is_empty()).then_some(s))
+}
+
+/// Check a request body. Refuses unknown fields (a value above all) and token-like text.
+pub fn parse_request(body: &Value) -> Result<SecretRequest, ApiError> {
+    let Value::Object(m) = body else {
+        return Err(request_error("bad_request", "the body must be a JSON object"));
+    };
+    if let Some(k) = m.keys().find(|k| !REQUEST_FIELDS.contains(&k.as_str())) {
+        let lower = k.to_lowercase();
+        let valueish = ["value", "secret", "password", "passphrase", "psk", "token", "held", "key"]
+            .iter()
+            .any(|w| lower.contains(w));
+        return Err(if valueish {
+            request_error(
+                "value_refused",
+                "a secret request carries names only: the owner pastes the value in the app",
+            )
+        } else {
+            request_error("bad_request", &format!("unknown field {k:?}"))
+        });
+    }
+    let slug = |key: &str, max: usize| -> Result<String, ApiError> {
+        body[key].as_str().map(str::trim).filter(|s| slug_ok(s, max)).map(str::to_owned).ok_or_else(|| {
+            request_error(
+                "bad_request",
+                &format!("{key}: required, 1-{max} of letters, digits, _ . @ -"),
+            )
+        })
+    };
+    let name = slug("name", 256)?;
+    let project = slug("project", 128)?;
+    let environment = slug("environment", 128)?;
+    let path = match body.get("path").filter(|v| !v.is_null()) {
+        None => "/".to_owned(),
+        Some(v) => v.as_str().and_then(request_folder).ok_or_else(|| {
+            request_error("bad_request", "path: folders of letters, digits, _ . @ -")
+        })?,
+    };
+    let reason = request_text(body, "reason", 500)?
+        .ok_or_else(|| request_error("bad_request", "reason: required, why you need it (1-500 characters)"))?;
+    let from = request_text(body, "from", 120)?;
+    let client = request_text(body, "asking_client", 32)?.unwrap_or_else(|| "an agent".into());
+    let who = match from {
+        Some(f) if f != client => format!("{client} ({f})"),
+        _ => client,
+    };
+    let new_project = match body.get("new_project") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => return Err(request_error("bad_request", "new_project must be true or false")),
+    };
+    Ok(SecretRequest {
+        name,
+        project,
+        environment,
+        path,
+        reason,
+        who,
+        new_project,
+    })
+}
+
+/// The card: Lucina's text and its buttons. `missing`: offer "Create project".
+fn request_card(r: &SecretRequest, known: Option<bool>) -> (String, Vec<Value>, bool) {
+    let place = format!("{} / {} / {}", r.project, r.environment, r.path);
+    let missing = known == Some(false) || (known.is_none() && r.new_project);
+    let mut text = format!(
+        "🔐 {} asks for the secret `{}` in Infisical {place}.\nWhy: {}\nTap \"Add {}\" and paste the value: it goes straight to Infisical, never to {}, this chat or my memory.",
+        r.who, r.name, r.reason, r.name, r.who
+    );
+    if known == Some(false) {
+        text.push_str(&format!("\nThe project {} isn't in your Infisical yet: create it first.", r.project));
+    } else if missing {
+        text.push_str(&format!("\nThe project {} may not exist yet.", r.project));
+    }
+    // `target` too: sheets bundled before 2026-11-01 (the Mac app's) match `project` by id only,
+    // but resolve a target by slug or name; newer sheets ignore it when `project` is set.
+    let target = format!("{}/{}{}", r.project, r.environment, if r.path == "/" { "" } else { &r.path });
+    let mut actions = vec![json!({
+        "id": "secret-request",
+        "label": format!("Add {}", r.name),
+        "emoji": "🔐",
+        "kind": "secret",
+        "payload": {"mode": "save", "name": r.name, "project": r.project,
+                    "environment": r.environment, "path": r.path, "target": target},
+    })];
+    if missing {
+        actions.push(json!({
+            "id": "secret-request-project",
+            "label": format!("Create project {}", r.project),
+            "emoji": "🗂️",
+            "kind": "secret",
+            "payload": {"mode": "project", "projectName": r.project},
+        }));
+    }
+    actions.push(json!({"id": "secret-request-dismiss", "label": "Not now", "kind": "dismiss", "payload": {}}));
+    (text, actions, missing)
+}
+
+/// `POST /api/secretary/secrets/request`: post the card to the owner's chat and push it.
+pub async fn request(st: &crate::AppState, body: &Value) -> Result<Value, ApiError> {
+    let r = parse_request(body)?;
+    let key = format!("{}\n{}\n{}\n{}", r.name, r.project.to_lowercase(), r.environment, r.path);
+    let known = project_known(&r.project);
+    let answer = |status: &str, id: &Option<String>, missing: bool| {
+        json!({"status": status, "itemId": id, "name": r.name, "project": r.project,
+               "environment": r.environment, "path": r.path, "projectKnown": known,
+               "createProject": missing})
+    };
+    {
+        let mut recent = RECENT_REQUESTS.lock().unwrap_or_else(|e| e.into_inner());
+        recent.retain(|(at, _, _)| at.elapsed() < REQUEST_REPEAT);
+        if let Some((_, _, id)) = recent.iter().find(|(_, k, _)| *k == key) {
+            return Ok(answer("already_asked", id, false));
+        }
+    }
+    let (text, actions, missing) = request_card(&r, known);
+    let meta = rich_meta(vec![text.clone()], actions);
+    let id = lucina_item(&st.timeline, &text, "secret_request", meta);
+    RECENT_REQUESTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push((Instant::now(), key, id.clone()));
+    tracing::info!(name = %r.name, project = %r.project, environment = %r.environment,
+                   who = %r.who, "agent secret request posted");
+    let mut push = json!({
+        "category": "lucina_message",
+        "title": format!("Secret requested: {}", r.name),
+        "body": format!("{} asks for {} in {}/{}: {}", r.who, r.name, r.project, r.environment, r.reason),
+        "route": "/",
+        "channel": "web",
+        "data": {"kind": "secret_request", "name": r.name, "project": r.project, "environment": r.environment},
+    });
+    if let Some(id) = &id {
+        // The timeline ingest pushes the same item: one dedup key for both.
+        push["timelineId"] = json!(id);
+        push["dedupKey"] = json!(format!("tl:{id}"));
+    }
+    lucina_secrets::redactor().redact_json(&mut push);
+    let pushed = crate::bridges::notify(&st.secretary, &push).await;
+    if !pushed.ok {
+        tracing::warn!(status = pushed.status, code = %pushed.code, "secret request push failed (the timeline item still notifies)");
+    }
+    Ok(answer("asked", &id, missing))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -825,6 +1088,90 @@ mod tests {
         let lines: Vec<Value> = text.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[1]["outcome"], "error");
+    }
+
+    fn wifi_request() -> Value {
+        json!({"name": "GBGO_WIFI_PSK", "project": "lucinaos", "environment": "prod",
+               "reason": "The Galaxy Book Go image joins the home Wi-Fi at boot",
+               "from": "gbgo-wifi", "asking_client": "claude-code"})
+    }
+
+    #[test]
+    fn requests_take_names_and_refuse_values() {
+        let r = parse_request(&wifi_request()).unwrap();
+        assert_eq!((r.name.as_str(), r.project.as_str(), r.environment.as_str(), r.path.as_str()),
+                   ("GBGO_WIFI_PSK", "lucinaos", "prod", "/"));
+        assert_eq!(r.who, "claude-code (gbgo-wifi)");
+        assert!(!r.new_project);
+        let mut b = wifi_request();
+        b["path"] = json!("gbgo/wifi/");
+        assert_eq!(parse_request(&b).unwrap().path, "/gbgo/wifi");
+        for field in ["value", "secretValue", "psk", "Password", "held", "api_key"] {
+            let mut b = wifi_request();
+            b[field] = json!("hunter2-hunter2");
+            let e = parse_request(&b).unwrap_err();
+            assert_eq!(e.code, "value_refused", "{field}");
+            assert!(!e.message.contains("hunter2"), "{field}");
+        }
+        let mut b = wifi_request();
+        b["extra"] = json!(1);
+        assert_eq!(parse_request(&b).unwrap_err().code, "bad_request");
+        // A token (or a value Lucina knows) in the reason: the agent pasted a secret.
+        let mut b = wifi_request();
+        b["reason"] = json!("use sk-abcdefghijklmnop0123456789 for it");
+        let e = parse_request(&b).unwrap_err();
+        assert_eq!(e.code, "value_refused");
+        assert!(!e.message.contains("sk-abc"));
+        for (k, v) in [("name", json!("a b")), ("name", json!("A/B")), ("project", json!("")), ("environment", json!(3)),
+                       ("path", json!("/a/../b")), ("reason", json!("  ")), ("reason", json!("x".repeat(501))),
+                       ("new_project", json!("yes"))] {
+            let mut b = wifi_request();
+            b[k] = v;
+            assert_eq!(parse_request(&b).unwrap_err().code, "bad_request", "{k}");
+        }
+        let mut b = wifi_request();
+        b.as_object_mut().unwrap().remove("asking_client");
+        b.as_object_mut().unwrap().remove("from");
+        assert_eq!(parse_request(&b).unwrap().who, "an agent");
+    }
+
+    #[test]
+    fn request_cards_open_the_sheet_prefilled() {
+        let r = parse_request(&wifi_request()).unwrap();
+        let (text, actions, missing) = request_card(&r, Some(true));
+        assert!(!missing && actions.len() == 2, "{actions:?}");
+        assert!(text.contains("claude-code (gbgo-wifi) asks for the secret `GBGO_WIFI_PSK` in Infisical lucinaos / prod / /"), "{text}");
+        let meta = rich_meta(vec![text], actions).expect("a valid rich message");
+        let rich = serde_json::to_value(&meta).unwrap();
+        let a = &rich["actions"][0];
+        assert_eq!(a["kind"], "secret");
+        assert_eq!(a["label"], "Add GBGO_WIFI_PSK");
+        assert_eq!(a["payload"], json!({"mode": "save", "name": "GBGO_WIFI_PSK", "project": "lucinaos",
+                                         "environment": "prod", "path": "/", "target": "lucinaos/prod"}));
+        let mut deep = r.clone();
+        deep.path = "/gbgo/wifi".into();
+        let (_, actions, _) = request_card(&deep, Some(true));
+        assert_eq!(actions[0]["payload"]["target"], "lucinaos/prod/gbgo/wifi");
+        // A project the last catalog didn't list, or one the agent says is new: "Create project".
+        let (text, actions, missing) = request_card(&r, Some(false));
+        assert!(missing && text.contains("isn't in your Infisical yet"));
+        assert_eq!(actions[1]["payload"], json!({"mode": "project", "projectName": "lucinaos"}));
+        assert_eq!(request_card(&r, None).1.len(), 2);
+        let mut r2 = r.clone();
+        r2.new_project = true;
+        assert!(request_card(&r2, None).2);
+        assert!(!request_card(&r2, Some(true)).2);
+    }
+
+    #[test]
+    fn catalogs_teach_project_names() {
+        remember_projects(&[json!({"id": "a1b2", "name": "LucinaOS", "slug": "lucinaos-x1", "alias": null})], true);
+        assert_eq!(project_known("lucinaos"), Some(true));
+        assert_eq!(project_known("LUCINAOS-X1"), Some(true));
+        assert_eq!(project_known("poko"), Some(false));
+        remember_projects(&[json!({"id": "c3", "name": "Poko"})], false);
+        assert_eq!(project_known("poko"), Some(true));
+        assert_eq!(project_known("lucinaos"), Some(true));
     }
 
     #[test]

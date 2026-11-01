@@ -1,0 +1,24 @@
+# SecretaryIOS pipeline rules (lucina-agentd reads this from main, never from the branch being merged).
+# Format and defaults: crates/lucina-agentd/src/pipeline/repo.rs; workflow: docs/repo-workflow.md.
+trunk = "main"
+
+[merge]
+# diffgate over the merged range, cargo test of every touched workspace crate (and of touched
+# standalone crates under crates/), then `cargo check --workspace`.
+diffgate = true
+cargo = "touched"
+timeout_min = 45
+# Standalone crates (tools/*, crates/secretary-{instagram,pixiv}, firmware/lucinavoice-core, ...) get
+# `cargo test --manifest-path` when touched. These use other toolchains and are left alone:
+skip = ["firmware/lucinavoice"]
+
+# `lagent deploy <runtime>`: from main's tip, inside the merge lock, between deploy-guard check and record.
+# Runtimes without a recipe still deploy by hand (docs/repo-workflow.md, "Deploying").
+[deploy.lucina-agentd]
+install = "deploy/lucina-agentd/install.sh"
+timeout_min = 30
+
+[deploy.lucina-rs]
+# install.sh builds lucina-server, installs it, restarts lucina-rs and checks /health.
+install = "deploy/lucina-rs/install.sh"
+timeout_min = 40

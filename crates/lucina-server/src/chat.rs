@@ -2457,7 +2457,8 @@ async fn json_turn_rest(
     Finish::reply(text, "reply")
 }
 
-/// A delegation request from the owner's own turn.
+/// A delegation request from the owner's own turn. On an MCP turn the caller (ChatGPT, Grok, …) is
+/// set, so the request never goes back to the agent that sent it.
 fn owner_request(
     t: &Turn<'_>,
     to: Option<lucina_delegate::AgentId>,
@@ -2472,7 +2473,7 @@ fn owner_request(
         workspace,
         origin: lucina_delegate::Origin::Owner,
         depth: 0,
-        caller: None,
+        caller: t.mcp.as_ref().map(|m| m.caller.clone()),
         session_id: t.session.clone(),
         channel: t.channel.clone(),
         lang: None,
@@ -2528,6 +2529,15 @@ async fn delegation_hook(
     if t.guarded {
         tracing::warn!(session_id = %t.session, "secretary mcp turn refused: delegation");
         return Some(delegation_refused(i.lang));
+    }
+    // A trusted MCP turn relays the owner, but the regexes also match an agent's report: Jev checks.
+    if let Some(m) = &t.mcp {
+        let (yes, p) =
+            crate::jev_route::mcp_delegation(lucina_jev::shared(), &m.caller, &t.message).await;
+        tracing::info!(event = "mcp_delegation", caller = %m.caller, p = ?p, delegate = yes, "mcp delegation check");
+        if !yes {
+            return None;
+        }
     }
     let req = owner_request(t, i.to, i.kind, i.task, i.workspace);
     Some(delegated_finish(t, d, req, memory).await)

@@ -5,11 +5,12 @@ mod common;
 use common::*;
 use serde_json::{json, Value};
 
-const ALL_TOOLS: [&str; 47] = [
+const ALL_TOOLS: [&str; 48] = [
     "ask_lucina",
     "lucina_decide",
     "lucina_decision_status",
     "lucina_decision_withdraw",
+    "secret_request",
     "lucina_job_status",
     "lucina_timeline",
     "shopping_list",
@@ -259,6 +260,7 @@ async fn scopes_are_enforced() {
             "lucina_decide".to_string(),
             "lucina_decision_status".to_string(),
             "lucina_decision_withdraw".to_string(),
+            "secret_request".to_string(),
             "lucina_job_status".to_string()
         ]
     );
@@ -1884,6 +1886,55 @@ async fn au_find_tools() {
     let maps = h.mock.requests("/v1/au/map.png");
     assert_eq!(maps[0].query, "building=1532&z=17");
     assert_eq!(maps[1].query, "lat=56.1697&lng=10.2039&z=15");
+}
+
+#[tokio::test]
+async fn secret_requests_send_names_and_never_a_value() {
+    let h = start().await;
+    let t = h.issue("claude-code", "chat");
+    let r = h.rpc(&t, "tools/list", json!({})).await;
+    let tools = r["tools"].as_array().unwrap();
+    let tool = tools.iter().find(|t| t["name"] == "secret_request").unwrap();
+    assert_eq!(tool["inputSchema"]["additionalProperties"], false);
+    assert_eq!(tool["inputSchema"]["required"], json!(["name", "project", "environment", "reason"]));
+    assert!(tool["inputSchema"]["properties"].get("value").is_none());
+    assert!(tool["inputSchema"]["properties"].get("asking_client").is_none());
+    assert!(tool["description"].as_str().unwrap().contains("never takes a value"));
+    let base = json!({"name":"GBGO_WIFI_PSK","project":"lucinaos","environment":"prod",
+                      "reason":"The laptop image joins the home Wi-Fi","from":"gbgo-wifi"});
+    for (field, value) in [
+        ("value", json!("hunter2-hunter2")),
+        ("secret", json!("x")),
+        ("asking_client", json!("spoof")),
+        ("name", json!("A B")),
+        ("project", json!("")),
+        ("environment", json!("prod/x")),
+        ("reason", json!(" ")),
+        ("reason", json!("x".repeat(501))),
+        ("from", json!("x".repeat(121))),
+    ] {
+        let mut args = base.clone();
+        args[field] = value;
+        assert!(h.call(&t, "secret_request", args).await.0, "{field}");
+    }
+    assert!(h.mock.requests("/v1/secrets/request").is_empty());
+    let (err, text) = h.call(&t, "secret_request", base.clone()).await;
+    assert!(!err, "{text}");
+    assert!(text.starts_with("Asked the owner for `GBGO_WIFI_PSK` in lucinaos / prod / /"), "{text}");
+    assert!(text.contains("never comes back here"), "{text}");
+    let sent = &h.mock.requests("/v1/secrets/request")[0];
+    assert_eq!(sent.body["asking_client"], "claude-code");
+    assert_eq!(sent.body["from"], "gbgo-wifi");
+    assert!(sent.body.get("path").is_none() && sent.body.get("new_project").is_none());
+    assert_eq!(sent.headers["authorization"], format!("Bearer {DEVICE_TOKEN}"));
+    let mut args = base.clone();
+    args["new_project"] = json!(true);
+    let (err, text) = h.call(&t, "secret_request", args).await;
+    assert!(!err && text.contains("create the project"), "{text}");
+    // Needs the chat scope.
+    let read = h.issue("reader", "read");
+    let (err, text) = h.call(&read, "secret_request", base).await;
+    assert!(err && text.contains("`chat` scope"), "{text}");
 }
 
 #[tokio::test]

@@ -1,0 +1,20 @@
+#!/bin/bash
+# Mac -> nezopt: forward `lagent` over SSH (install as ~/.local/bin/lagent on the Mac).
+# - Mac mount paths /Users/giuseppe/mnt/nezopt/X become /home/nez/X (arguments and the cwd);
+# - the Claude session id goes along as LAGENT_SESSION, so tasks, merges and leases name the session.
+host=nezopt; nc -z -G 2 nezopt.fritz.box 22 >/dev/null 2>&1 || host=nezopt-remote
+prefix=/Users/giuseppe/mnt/nezopt/
+map() {
+  case "$1" in
+    "$prefix"*) printf '%s' "/home/nez/${1#"$prefix"}" ;;
+    --*="$prefix"*) printf '%s' "${1%%=*}=/home/nez/${1#*="$prefix"}" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+args=()
+for a in "$@"; do args+=("$(printf '%q' "$(map "$a")")"); done
+session=${LAGENT_SESSION:-${CLAUDE_CODE_HOST_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}}
+cd_part=
+case "$PWD/" in "$prefix"*) cd_part="cd $(printf '%q' "$(map "$PWD")") 2>/dev/null; " ;; esac
+exec ssh -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 "$host" \
+  "${cd_part}LAGENT_SESSION=$(printf '%q' "$session") /home/nez/.local/bin/lagent ${args[*]}"

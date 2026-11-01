@@ -221,6 +221,41 @@ pub fn mcp_falls_back_to_chat(tier0: &lucina_intent::tier0::Classification, jev_
     SIDE_EFFECT_INTENTS.contains(&tier0.intent.as_str()) && jev_intent != tier0.intent
 }
 
+/// An MCP turn's delegation regex hit runs only from this P(yes) up ([`mcp_delegation`]).
+pub const MCP_DELEGATION_MIN: f64 = 0.75;
+
+/// Jev's state for [`mcp_delegation`]: who sent it and how the message opens. Facts only, short:
+/// the opening says whether it asks for work or reports something.
+pub fn mcp_delegation_state(caller: &str, message: &str) -> Value {
+    json!({
+        "sender": caller,
+        "message_start": message.trim().chars().take(400).collect::<String>(),
+    })
+}
+
+/// On an MCP turn, the owner's delegation regexes ("research …", "ask Grok …") also match an agent's
+/// relayed report (2026-11-01: ChatGPT's "Research follow-up requested by Giuseppe on …, please
+/// retain this" became a research job that failed). The hit runs only when Jev reads the message as a
+/// request to get work done by another AI agent; unsure, down or over quota → plain chat.
+pub async fn mcp_delegation(jev: &Jev, caller: &str, message: &str) -> (bool, Option<f64>) {
+    if !jev.available() {
+        return (false, None);
+    }
+    let q = Question::noul_with(
+        "Does the message ask Lucina to get a task done now by another AI agent (Grok, Claude, ChatGPT, Cursor) or to run a web research job, and wait for its answer?",
+        "A request for work, e.g. 'Ask Grok what is trending on X about Rust', 'Do some research on flights to Rome next week', 'Have Claude review this plan'.",
+        "Not one: a report, an update, an idea or findings shared with her, or a request to remember, acknowledge or answer it herself.",
+    );
+    let p = match jev
+        .decide("mcp_delegation", mcp_delegation_state(caller, message), &[("delegate", q)])
+        .await
+    {
+        Ok(d) => d.yes("delegate"),
+        Err(_) => None,
+    };
+    (p.is_some_and(|p| p >= MCP_DELEGATION_MIN), p)
+}
+
 /// `LUCINA_JEV_FIRST` (off until calibrated): Jev routes every turn it is sure of, before the
 /// tier-0 rules (owner's rule, 2026-10-28: "for confidence over 75%, we trust Jeff").
 pub fn jev_first_enabled() -> bool {
@@ -348,6 +383,32 @@ pub fn tool_router() -> Option<Arc<dyn lucina_tools::agent::ToolRouter>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mcp_delegation_state_is_short_facts_only() {
+        let long = format!("Research follow-up requested by Giuseppe on {}", "x".repeat(2000));
+        let s = mcp_delegation_state("chatgpt", &format!("  {long}"));
+        assert_eq!(s.as_object().unwrap().len(), 2);
+        assert_eq!(s["sender"], "chatgpt");
+        let start = s["message_start"].as_str().unwrap();
+        assert_eq!(start.chars().count(), 400);
+        assert!(start.starts_with("Research follow-up"));
+    }
+
+    #[tokio::test]
+    async fn mcp_delegation_without_jev_is_plain_chat() {
+        let jev = Jev::new(lucina_jev::Config {
+            url: "http://127.0.0.1:9/v1/systemone".into(),
+            model: "jev-1.14.0".into(),
+            key: None,
+            timeout: std::time::Duration::from_secs(1),
+            enabled: true,
+        });
+        assert_eq!(
+            mcp_delegation(&jev, "chatgpt", "Ask Grok what is trending").await,
+            (false, None)
+        );
+    }
 
     #[test]
     fn every_intent_option_is_one_lucina_knows() {

@@ -245,9 +245,13 @@ impl Delegator {
 
     async fn choose(&self, req: &Request) -> Result<Arc<dyn Agent>, Refusal> {
         let now = Utc::now();
+        // Auto choice never picks the agent that is calling Lucina (`hard_limits` refuses a named one).
         let order = match req.to {
             Some(a) => vec![a],
-            None => policy::preference(req.kind, &req.task),
+            None => policy::preference(req.kind, &req.task)
+                .into_iter()
+                .filter(|a| !policy::is_caller(req, *a))
+                .collect(),
         };
         self.state.check_global(now)?;
         let mut errs: Vec<Refusal> = Vec::new();

@@ -26,6 +26,8 @@
 //! - Phase 6: [`schedules`] (cron and run bookkeeping; the scheduler is in
 //!   [`manager`]), and [`mcp`]: `lagent mcp`, the tools agents use to start subagents,
 //!   message them, set heartbeats and search.
+//! - [`pipeline`]: tasks, the merge and deploy queue, and device leases (every coding
+//!   session's way to main, production and the owner's devices).
 
 #![forbid(unsafe_code)]
 
@@ -34,6 +36,7 @@ pub mod approvals_bridge;
 pub mod cli;
 pub mod client;
 pub mod config;
+pub mod devices;
 pub mod external;
 pub mod journal;
 pub mod jsonrpc;
@@ -43,6 +46,7 @@ pub mod mcp;
 pub mod mock;
 pub mod notify;
 pub mod peer;
+pub mod pipeline;
 pub mod process;
 pub mod provider;
 pub mod providers;
