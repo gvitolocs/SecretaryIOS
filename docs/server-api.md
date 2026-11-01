@@ -2607,6 +2607,55 @@ location/source and say when progress, sessions or relationships are unknown.
 note as `[obsidian:<vault>/<path>#L<line>]`, stating that mentions are not
 reading evidence and saying plainly when no vault has been indexed.
 
+## Approvals
+
+Owner approvals (the whole contract is the module doc of `crates/secretary-server/src/approvals.rs`).
+A requester (service token or device) asks and long-polls; one of the owner's devices answers. A
+sensitive approve (`root.*`, `secret.*`, `approver.*`, …) needs a proof by one of the deciding
+device's own keys, or the app PIN. Denying never does.
+
+| Route | Auth | |
+|---|---|---|
+| `POST /v1/approvals` | svc or device | create |
+| `GET /v1/approvals/{id}/wait?timeout=` | the requester | long poll (≤ 30 s); the grant once approved |
+| `POST /v1/approvals/{id}/withdraw` | the requester | a pending request becomes `expired` |
+| `GET /v1/approvals/public-key` | public | the grant verification key |
+| `GET /v1/approvals?status=pending\|all&since=&wait=` | device | what this device may decide now |
+| `GET /v1/approvals/{id}` | device | one request, decided or expired too (`decidedVia`, `biometric`, `verifiedBy`) |
+| `POST /v1/approvals/{id}/decide` | device | `{decision, payloadHash, proof?: {keyId, signature}, pin?}` → `{status}` |
+| `GET`, `PUT /v1/approvals/settings` | device | main device; each device's `hasBiometricKey`, `hasUnlockKey` |
+| `POST`, `DELETE /v1/approvals/keys` | device | this device's biometric key |
+| `DELETE /v1/approvals/keys/{deviceId}` | device with a key | revoke another device's key (proof or PIN) |
+| `POST`, `DELETE /v1/approvals/unlock-key` | device | this device's unlock key (below) |
+| `PUT`, `DELETE /v1/approvals/pin` | device | the optional app PIN |
+
+`proof.signature`: base64 DER ECDSA P-256 over `secretary-approval-v1\n{id}\n{payloadHash}\n{decision}`.
+
+**Repeated answers.** The same device sending the same decision (and `payloadHash`) for a request it
+already decided gets `200 {status, repeated: true}`: nothing is recorded or pushed again, no PIN or
+proof is checked. A different decision, or another device, is `409 approval_decided`.
+
+**Unlock key** (optional, one per device). A second Secure Enclave key that the device can use
+whenever it is unlocked, without Face ID at signing time. The iPhone uses it for the notification's
+one-tap Approve: iOS asks Face ID or the passcode to run the action, and the biometric key's own
+prompt can't show from a background action. The trade-off: anyone who can unlock the iPhone can
+approve a root command with one tap, with no second Face ID.
+
+- `POST /v1/approvals/unlock-key {publicKey, proof: {signature}}`: only for a device that has an
+  active biometric key (else `403 biometric_key_required`). `publicKey` is base64 of an uncompressed
+  P-256 point; `proof.signature` is that biometric key's signature over
+  `secretary-unlock-key-v1\n{deviceId}\n{publicKey}` (else `400 proof_invalid`). It replaces any
+  earlier unlock key of the device and answers `{keyId}`. Audit: `unlock_key.enrolled`.
+- `DELETE /v1/approvals/unlock-key` → `{removed}`. Audit: `unlock_key.removed`. Removing, revoking or
+  replacing the device's biometric key also drops it.
+- In `decide`, a proof by the deciding device's unlock key (its `keyId`) verifies like the
+  biometric key, except for `approver.*` actions (adding approvers keeps Face ID / Touch ID:
+  `403 biometric_required`). It is recorded as `verifiedBy: "unlock_key"`, `biometric: false`,
+  `decidedVia: "unlock key (notification/card) on {device}"`. The grant carries
+  `verifiedBy: "unlock_key"` and `biometric: true`: in a grant `biometric` means the owner was
+  verified (it is also true for the PIN), and that is what the root and agentd verifiers check. One
+  device's keys never verify another device's decision.
+
 ## Secrets ("Add secret")
 
 The owner stores secrets and creates projects in Infisical from the apps. **Device login only**
@@ -2684,8 +2733,8 @@ video?, rigged?}`. Clients build the file URLs from the id on their own origin.
 | 400 | `due_in_past`, `unparseable_reminder`, `invalid_status` | Lucina | See the routes above. |
 | 401 | `unauthorized` | server | No/invalid/revoked device token or session. |
 | 403 | `csrf` | server | Cookie request that changes state without `X-Secretary-CSRF: 1`. |
-| 400 | `proof_invalid` | server | Approvals: key registration without a valid proof of possession. |
-| 403 | `self_approval`, `not_main_device`, `biometric_required`, `pin_wrong` (+ `attemptsLeft`), `pin_auth_required`, `service_cannot_decide` | server | Approvals: see [Approvals](#approvals). |
+| 400 | `proof_invalid` | server | Approvals: key (or unlock key) registration without a valid proof. |
+| 403 | `self_approval`, `not_main_device`, `biometric_required`, `biometric_key_required`, `pin_wrong` (+ `attemptsLeft`), `pin_auth_required`, `service_cannot_decide` | server | Approvals: see [Approvals](#approvals). |
 | 429 | `pin_locked` | server | Approvals: 5 wrong PINs in a row; `Retry-After` is the seconds left of 15 min. |
 | 404 | `approval_not_found` | server | No such approval request (or not yours to wait on). |
 | 409 | `approval_decided`, `payload_mismatch` | server | Approvals. |
