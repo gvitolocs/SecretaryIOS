@@ -9,10 +9,14 @@
 use alloc::vec;
 use alloc::vec::Vec;
 use core::ffi::CStr;
+use core::fmt::Write as _;
+use core::sync::atomic::Ordering;
 
+use crate::telemetry;
+use embassy_futures::select::{Either, select};
 use embassy_net::Stack;
 use embassy_net::dns::DnsQueryType;
-use embassy_net::tcp::TcpSocket;
+use embassy_net::tcp::{TcpReader, TcpSocket, TcpWriter};
 use embassy_time::{Duration, Timer};
 use embedded_io_async::{Read, Write};
 use esp_radio::wifi::sta::StationConfig;
@@ -63,17 +67,47 @@ pub fn station_config(settings: &Settings) -> Option<Config> {
     ))
 }
 
-/// Keeps the station connected, retrying every 5 s.
+/// Keeps the station connected, retrying every 5 s; keeps [`telemetry::RSSI`]
+/// fresh (once a minute) and records joins and drops.
 #[embassy_executor::task]
 pub async fn wifi_task(mut controller: WifiController<'static>) {
     loop {
         match controller.connect_async().await {
             Ok(_) => {
-                log::info!("wifi: connected");
-                let _ = controller.wait_for_disconnect_async().await;
-                log::warn!("wifi: disconnected");
+                let rssi = controller.rssi().unwrap_or(0);
+                telemetry::RSSI.store(rssi, Ordering::Relaxed);
+                log::info!("wifi: connected, RSSI {rssi} dBm");
+                telemetry::record("wifi", |w| write!(w, ",\"up\":true,\"rssi\":{rssi}"));
+                loop {
+                    match select(
+                        controller.wait_for_disconnect_async(),
+                        Timer::after(Duration::from_secs(60)),
+                    )
+                    .await
+                    {
+                        Either::First(info) => {
+                            let reason = info.map(|i| i.reason);
+                            log::warn!("wifi: disconnected ({reason:?})");
+                            telemetry::RSSI.store(0, Ordering::Relaxed);
+                            telemetry::record("wifi", |w| {
+                                write!(w, ",\"up\":false,\"reason\":\"{}\"", telemetry::Esc(reason))
+                            });
+                            break;
+                        }
+                        Either::Second(()) => {
+                            if let Ok(rssi) = controller.rssi() {
+                                telemetry::RSSI.store(rssi, Ordering::Relaxed);
+                            }
+                        }
+                    }
+                }
             }
-            Err(e) => log::warn!("wifi: connect failed: {e:?}"),
+            Err(e) => {
+                log::warn!("wifi: connect failed: {e:?}");
+                telemetry::record("wifi", |w| {
+                    write!(w, ",\"up\":false,\"reason\":\"connect failed\"")
+                });
+            }
         }
         Timer::after(Duration::from_secs(5)).await;
     }
@@ -94,22 +128,70 @@ pub struct Client {
 pub type TlsStream<'s> = Session<'static, SplitTcp<'s>>;
 
 /// A TCP socket that Mbed TLS can split into read and write halves (the
-/// voice link reads and writes at the same time).
+/// voice link reads and writes at the same time). Every byte through it is
+/// counted in [`telemetry::UP_BYTES`] / [`telemetry::DOWN_BYTES`] (TLS
+/// records included: what actually crosses Wi-Fi, minus TCP/IP headers).
 pub struct SplitTcp<'a>(pub TcpSocket<'a>);
 
 impl embedded_io_async::ErrorType for SplitTcp<'_> {
     type Error = embassy_net::tcp::Error;
 }
 
+fn count_down(n: usize) {
+    telemetry::DOWN_BYTES.fetch_add(n as u32, Ordering::Relaxed);
+}
+
+fn count_up(n: usize) {
+    telemetry::UP_BYTES.fetch_add(n as u32, Ordering::Relaxed);
+    telemetry::UP_WRITES.fetch_add(1, Ordering::Relaxed);
+}
+
 impl Read for SplitTcp<'_> {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
-        self.0.read(buf).await
+        let n = self.0.read(buf).await?;
+        count_down(n);
+        Ok(n)
     }
 }
 
 impl Write for SplitTcp<'_> {
     async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
-        self.0.write(buf).await
+        let n = self.0.write(buf).await?;
+        count_up(n);
+        Ok(n)
+    }
+
+    async fn flush(&mut self) -> Result<(), Self::Error> {
+        self.0.flush().await
+    }
+}
+
+/// The read half of a [`SplitTcp`], counted.
+pub struct CountedReader<'a>(TcpReader<'a>);
+/// The write half of a [`SplitTcp`], counted.
+pub struct CountedWriter<'a>(TcpWriter<'a>);
+
+impl embedded_io_async::ErrorType for CountedReader<'_> {
+    type Error = embassy_net::tcp::Error;
+}
+
+impl embedded_io_async::ErrorType for CountedWriter<'_> {
+    type Error = embassy_net::tcp::Error;
+}
+
+impl Read for CountedReader<'_> {
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+        let n = self.0.read(buf).await?;
+        count_down(n);
+        Ok(n)
+    }
+}
+
+impl Write for CountedWriter<'_> {
+    async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+        let n = self.0.write(buf).await?;
+        count_up(n);
+        Ok(n)
     }
 
     async fn flush(&mut self) -> Result<(), Self::Error> {
@@ -119,16 +201,17 @@ impl Write for SplitTcp<'_> {
 
 impl mbedtls_rs::Split for SplitTcp<'_> {
     type Read<'a>
-        = embassy_net::tcp::TcpReader<'a>
+        = CountedReader<'a>
     where
         Self: 'a;
     type Write<'a>
-        = embassy_net::tcp::TcpWriter<'a>
+        = CountedWriter<'a>
     where
         Self: 'a;
 
     fn split(&mut self) -> (Self::Read<'_>, Self::Write<'_>) {
-        self.0.split()
+        let (r, w) = self.0.split();
+        (CountedReader(r), CountedWriter(w))
     }
 }
 

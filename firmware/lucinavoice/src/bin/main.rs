@@ -32,6 +32,7 @@ use embedded_io_async::Write;
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
 use esp_hal::gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull};
+use esp_hal::i2c::master::{Config as I2cConfig, I2c};
 use esp_hal::i2s::master::{Channels, DataFormat, I2s, TdmConfig};
 use esp_hal::rng::{Trng, TrngSource};
 use esp_hal::time::Rate;
@@ -46,6 +47,7 @@ use lucinavoice::link::{self, ENDPOINT, EVENTS, Event, FRAME, LINK_UP, OUT, Out,
 use lucinavoice::net::{self, Client, NetError};
 use lucinavoice::player::{self, PLAY, Play};
 use lucinavoice::store::Store;
+use lucinavoice::telemetry::{self, PowerModel, Specs, Tele};
 use lucinavoice_core::http::{self, Body, SliceWriter};
 use lucinavoice_core::settings::Settings;
 use lucinavoice_core::{DEVICE_NAME, MIC_RATE, json};
@@ -73,12 +75,29 @@ struct Device {
     store: Store,
     settings: Settings,
     client: Option<Client>,
+    specs: Specs,
+    /// Handed to the link task when it starts.
+    tele: Option<Tele>,
     link_started: bool,
     mic: Mic,
     led: Output<'static>,
     ptt: Input<'static>,
     ptt2: Input<'static>,
+    /// What the current turn measured, for its `turn` event.
+    report: TurnReport,
 }
+
+#[derive(Default)]
+struct TurnReport {
+    speech_ms: u64,
+    first_audio_ms: Option<u64>,
+    /// The server's `done.ms` object.
+    server_ms: Option<lucinavoice_core::settings::Field<200>>,
+}
+
+/// Resets since power-on (software resets, watchdogs, panics), kept in RTC RAM.
+#[esp_hal::ram(unstable(rtc_fast, persistent))]
+static mut BOOT_SEQ: u32 = 0;
 
 /// How a turn over the link ended.
 enum Outcome {
@@ -113,7 +132,7 @@ async fn main(spawner: Spawner) -> ! {
     let peripherals = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::max()));
 
     esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 98768);
-    esp_alloc::heap_allocator!(size: 72 * 1024);
+    esp_alloc::heap_allocator!(size: 60 * 1024);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
@@ -133,6 +152,26 @@ async fn main(spawner: Spawner) -> ! {
     let mut store =
         Store::new(esp_storage::FlashStorage::new(peripherals.FLASH)).expect("nvs partition");
     let settings = store.load();
+
+    // Why we booted, and how many resets since power-on.
+    let mut reset = lucinavoice_core::settings::Field::<32>::default();
+    {
+        let mut buf = [0u8; 32];
+        let mut w = SliceWriter::new(&mut buf);
+        let _ = match esp_hal::system::reset_reason() {
+            Some(r) => write!(w, "{}", telemetry::Esc(r)),
+            None => write!(w, "unknown"),
+        };
+        reset.set_prefix(core::str::from_utf8(w.bytes()).unwrap_or("?"));
+    }
+    // SAFETY: read and written once, here, before any other task runs.
+    let boot_seq = unsafe {
+        BOOT_SEQ = BOOT_SEQ.wrapping_add(1);
+        BOOT_SEQ
+    };
+    telemetry::record("boot", |w| {
+        write!(w, ",\"reset\":\"{}\",\"seq\":{boot_seq}", reset.as_str())
+    });
 
     // Serial console on UART0 (shared with the log output).
     let uart = Uart::new(peripherals.UART0, Default::default())
@@ -195,6 +234,27 @@ async fn main(spawner: Spawner) -> ! {
         InputConfig::default().with_pull(Pull::Up),
     );
 
+    // Optional INA219/INA226 on the 5 V input (I2C: SDA GPIO21, SCL GPIO18).
+    let mut i2c = I2c::new(peripherals.I2C0, I2cConfig::default())
+        .ok()
+        .map(|i| i.with_sda(peripherals.GPIO21).with_scl(peripherals.GPIO18));
+    let ina = i2c.as_mut().and_then(telemetry::probe);
+    match ina {
+        Some(ina) => info!("power: {ina:?} found, measuring the 5 V rail"),
+        None => info!("power: no INA219/INA226 at 0x40, estimating"),
+    }
+    let tele = Tele {
+        specs: Specs {
+            flash_bytes: store.capacity() as u32,
+            heap_total: esp_alloc::HEAP.stats().size as u32,
+            ina,
+            reset,
+            boot_seq,
+        },
+        i2c: if ina.is_some() { i2c } else { None },
+        power: PowerModel::default(),
+    };
+
     // Wi-Fi, only once it is set up.
     let mut client = None;
     match net::station_config(&settings) {
@@ -232,11 +292,14 @@ async fn main(spawner: Spawner) -> ! {
         store,
         settings,
         client,
+        specs: tele.specs.clone(),
+        tele: Some(tele),
         link_started: false,
         mic,
         led,
         ptt,
         ptt2,
+        report: TurnReport::default(),
     };
     dev.start_link();
     PLAY.send(Play::Beep { freq: 660, ms: 60 }).await;
@@ -280,7 +343,10 @@ impl Device {
         let Some(client) = self.client.clone() else {
             return;
         };
-        match link::link_task(client, self.settings.token.clone()) {
+        let Some(tele) = self.tele.take() else {
+            return;
+        };
+        match link::link_task(client, self.settings.token.clone(), tele) {
             Ok(token) => {
                 self.spawner.spawn(token);
                 self.link_started = true;
@@ -304,31 +370,96 @@ impl Device {
         }
         loop {
             let started = Instant::now();
-            let result = if LINK_UP.load(Ordering::Acquire) {
+            let (up0, down0) = (
+                telemetry::UP_BYTES.load(Ordering::Relaxed),
+                telemetry::DOWN_BYTES.load(Ordering::Relaxed),
+            );
+            self.report = TurnReport::default();
+            let link = LINK_UP.load(Ordering::Acquire);
+            let result = if link {
                 self.link_turn(fixed).await
             } else {
                 info!("turn: link down, using POST /v1/voice");
                 self.http_turn(fixed).await.map(|()| Outcome::Done)
             };
             self.led.set_low();
+            let err = match &result {
+                Ok(Outcome::Done) => {
+                    info!("turn: done in {} ms", started.elapsed().as_millis());
+                    None
+                }
+                Ok(Outcome::BargeIn) => Some("barge_in"),
+                Err(TurnError::Server(code)) => {
+                    error!("turn: server error {}", code.as_str());
+                    Some("server")
+                }
+                Err(e) => {
+                    error!("turn: {e:?}");
+                    Some(match e {
+                        TurnError::Net(_) => "network",
+                        TurnError::LinkLost => "link_lost",
+                        TurnError::Timeout => "timeout",
+                        TurnError::Mic => "mic",
+                        TurnError::Server(_) => "server",
+                    })
+                }
+            };
+            self.record_turn(link, err, &result, started, up0, down0);
             match result {
-                Ok(Outcome::Done) => info!("turn: done in {} ms", started.elapsed().as_millis()),
                 Ok(Outcome::BargeIn) => {
                     info!("turn: barge-in");
                     continue;
                 }
-                Err(e) => {
-                    match &e {
-                        TurnError::Server(code) => error!("turn: server error {}", code.as_str()),
-                        _ => error!("turn: {e:?}"),
-                    }
+                Err(_) => {
                     PLAY.send(Play::Flush).await;
                     player::error().await;
                 }
+                Ok(Outcome::Done) => {}
             }
             break;
         }
         self.wait_release().await;
+    }
+
+    /// Records the finished turn's `turn` event and sends the batch now.
+    fn record_turn(
+        &self,
+        link: bool,
+        err: Option<&str>,
+        result: &Result<Outcome, TurnError>,
+        started: Instant,
+        up0: u32,
+        down0: u32,
+    ) {
+        let r = &self.report;
+        let up = telemetry::UP_BYTES
+            .load(Ordering::Relaxed)
+            .wrapping_sub(up0);
+        let down = telemetry::DOWN_BYTES
+            .load(Ordering::Relaxed)
+            .wrapping_sub(down0);
+        telemetry::REC_MS.fetch_add(r.speech_ms as u32, Ordering::Relaxed);
+        telemetry::record("turn", |w| {
+            write!(
+                w,
+                ",\"ok\":{},\"mode\":\"{}\",\"speech_ms\":{},\"total_ms\":{},\"up_bytes\":{up},\"down_bytes\":{down}",
+                result.as_ref().is_ok_and(|o| matches!(o, Outcome::Done)),
+                if link { "link" } else { "http" },
+                r.speech_ms,
+                started.elapsed().as_millis(),
+            )?;
+            if let Some(e) = err {
+                write!(w, ",\"err\":\"{e}\"")?;
+            }
+            if let Some(ms) = r.first_audio_ms {
+                write!(w, ",\"first_audio_ms\":{ms}")?;
+            }
+            if let Some(s) = r.server_ms.as_ref().filter(|s| s.as_str().starts_with('{')) {
+                write!(w, ",\"server_ms\":{}", s.as_str())?;
+            }
+            Ok(())
+        });
+        telemetry::kick();
     }
 
     /// A turn over the persistent link.
@@ -370,6 +501,7 @@ impl Device {
         }
         OUT.send(Out::End).await;
         let end_of_speech = Instant::now();
+        self.report.speech_ms = sent as u64 * 1000 / (MIC_RATE as u64 * 2);
         self.led.set_low();
         player::ack().await;
         info!(
@@ -399,11 +531,13 @@ impl Device {
                     Event::AudioStart => {
                         let ms = end_of_speech.elapsed().as_millis();
                         first_audio = Some(ms);
+                        self.report.first_audio_ms = Some(ms);
                         info!("turn: first audio {ms} ms after the end of speech");
                         self.led.set_low();
                     }
                     Event::Reply(r) => info!("turn: Lucina says {:?}", r.as_str()),
                     Event::Done(ms) => {
+                        self.report.server_ms = Some(ms.clone());
                         info!(
                             "turn: done; device first audio {:?} ms; server {}",
                             first_audio,
@@ -483,6 +617,7 @@ impl Device {
             .map_err(NetError::from)?;
         session.flush().await.map_err(NetError::from)?;
         let end_of_speech = Instant::now();
+        self.report.speech_ms = sent as u64 * 1000 / (MIC_RATE as u64 * 2);
         self.led.set_low();
         player::ack().await;
         info!(
@@ -511,6 +646,7 @@ impl Device {
         while let Some(chunk) = body.next(&mut session, &mut buf).await? {
             if first && !chunk.is_empty() {
                 first = false;
+                self.report.first_audio_ms = Some(end_of_speech.elapsed().as_millis());
                 info!(
                     "turn: first audio {} ms after the end of speech",
                     end_of_speech.elapsed().as_millis()
@@ -541,6 +677,12 @@ impl Device {
             Command::Pair => self.pair().await,
             Command::Talk => self.turn(Some(Duration::from_secs(3))).await,
             Command::Status => self.status(),
+            Command::Specs => {
+                let mut buf = [0u8; 512];
+                if let Some(n) = telemetry::hello_frame(&self.specs, &mut buf) {
+                    println!("{}", core::str::from_utf8(&buf[..n]).unwrap_or("?"));
+                }
+            }
             Command::Forget => {
                 let _ = self.store.erase();
                 println!("Wi-Fi and pairing erased. Restarting...");

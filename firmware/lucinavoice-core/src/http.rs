@@ -37,6 +37,10 @@ impl<'a> SliceWriter<'a> {
     pub fn bytes(&self) -> &[u8] {
         &self.buf[..self.len]
     }
+
+    pub fn capacity(&self) -> usize {
+        self.buf.len()
+    }
 }
 
 impl core::fmt::Write for SliceWriter<'_> {

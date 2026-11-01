@@ -12,7 +12,9 @@
 use alloc::vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use embassy_futures::select::{Either, select};
+use core::fmt::Write as _;
+
+use embassy_futures::select::{Either, Either3, select, select3};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Instant, Timer};
@@ -24,12 +26,15 @@ use lucinavoice_core::ws::{self, Event as WsEvent, Parser};
 
 use crate::net::{Client, NetError};
 use crate::player::{CHUNK, PLAY, Play};
+use crate::telemetry::{self, Tele};
 
 /// Bytes per uplink mic frame (32 ms at 16 kHz).
 pub const FRAME: usize = 1024;
 const PATH: &str = "/v1/voice/ws";
 const PING_EVERY: Duration = Duration::from_secs(30);
 const MAX_BACKOFF: u64 = 30;
+/// Largest telemetry text frame (32 events of at most 256 bytes, plus the header).
+const FRAME_TEXT: usize = 8 * 1024 + 128;
 
 /// The link is open (the upgrade succeeded and nothing failed since).
 pub static LINK_UP: AtomicBool = AtomicBool::new(false);
@@ -87,9 +92,10 @@ impl From<mbedtls_rs::SessionError> for LinkError {
 }
 
 #[embassy_executor::task]
-pub async fn link_task(client: Client, token: Field<MAX_TOKEN>) {
+pub async fn link_task(client: Client, token: Field<MAX_TOKEN>, mut tele: Tele) {
     let mut rx = vec![0u8; 16 * 1024];
     let mut tx = vec![0u8; 4 * 1024];
+    let mut frame = vec![0u8; FRAME_TEXT];
     let mut backoff = 1;
     loop {
         if !client.is_up() {
@@ -97,14 +103,27 @@ pub async fn link_task(client: Client, token: Field<MAX_TOKEN>) {
             continue;
         }
         let opened = Instant::now();
-        let result = run(&client, token.as_str(), &mut rx, &mut tx).await;
+        let result = run(
+            &client,
+            token.as_str(),
+            &mut rx,
+            &mut tx,
+            &mut tele,
+            &mut frame,
+        )
+        .await;
         if LINK_UP.swap(false, Ordering::AcqRel) {
             let _ = EVENTS.try_send(Event::Down);
         }
         while OUT.try_receive().is_ok() {}
         match result {
             Ok(()) => log::info!("link: closed by the server"),
-            Err(e) => log::warn!("link: {e:?}"),
+            Err(e) => {
+                log::warn!("link: {e:?}");
+                telemetry::record("link", |w| {
+                    write!(w, ",\"up\":false,\"err\":\"{}\"", telemetry::Esc(&e))
+                });
+            }
         }
         if opened.elapsed() > Duration::from_secs(60) {
             backoff = 1;
@@ -114,7 +133,14 @@ pub async fn link_task(client: Client, token: Field<MAX_TOKEN>) {
     }
 }
 
-async fn run(client: &Client, token: &str, rx: &mut [u8], tx: &mut [u8]) -> Result<(), LinkError> {
+async fn run(
+    client: &Client,
+    token: &str,
+    rx: &mut [u8],
+    tx: &mut [u8],
+    tele: &mut Tele,
+    frame: &mut [u8],
+) -> Result<(), LinkError> {
     let started = Instant::now();
     let mut session = client.connect(rx, tx).await?;
     let rng = Trng::try_new().map_err(|_| LinkError::Closed)?;
@@ -144,7 +170,17 @@ async fn run(client: &Client, token: &str, rx: &mut [u8], tx: &mut [u8]) -> Resu
     if parser.ws_accept.as_str().as_bytes() != ws::expected_accept(&nonce) {
         return Err(LinkError::BadAccept);
     }
-    log::info!("link: up in {} ms", started.elapsed().as_millis());
+    let up_ms = started.elapsed().as_millis();
+    log::info!("link: up in {up_ms} ms");
+    telemetry::record("link", |w| write!(w, ",\"up\":true,\"ms\":{up_ms}"));
+    // Specs first, then whatever waited in the ring while the link was down.
+    if let Some(n) = telemetry::hello_frame(&tele.specs, frame) {
+        send(&mut session, &rng, ws::OP_TEXT, &mut frame[..n]).await?;
+    }
+    tele.record_stats();
+    while let Some(n) = telemetry::batch_frame(frame) {
+        send(&mut session, &rng, ws::OP_TEXT, &mut frame[..n]).await?;
+    }
     LINK_UP.store(true, Ordering::Release);
     let _ = EVENTS.try_send(Event::Up);
 
@@ -152,7 +188,12 @@ async fn run(client: &Client, token: &str, rx: &mut [u8], tx: &mut [u8]) -> Resu
     let early_len = end - start;
     early[..early_len].copy_from_slice(&buf[start..end]);
     let (mut r, mut w) = session.split().await?;
-    match select(reader(&mut r, &early[..early_len]), writer(&mut w, &rng)).await {
+    match select(
+        reader(&mut r, &early[..early_len]),
+        writer(&mut w, &rng, tele, frame),
+    )
+    .await
+    {
         Either::First(res) | Either::Second(res) => res,
     }
 }
@@ -307,7 +348,7 @@ impl Reader {
                 self.pcm.send().await;
                 PLAY.send(Play::Stop).await;
                 let mut f = Field::default();
-                f.set_prefix(text.find("\"ms\"").map_or("", |i| &text[i..]));
+                f.set_prefix(json::object_field(text, "ms").unwrap_or("{}"));
                 Event::Done(f)
             }
             Some("error") => {
@@ -322,13 +363,39 @@ impl Reader {
     }
 }
 
-/// Sends queued frames and keep-alive pings until a write fails.
-async fn writer<W: Write>(w: &mut W, rng: &Trng) -> Result<(), LinkError> {
+/// Sends queued frames, keep-alive pings and telemetry batches (after a turn
+/// and every [`telemetry::STATS_EVERY`]) until a write fails.
+async fn writer<W: Write>(
+    w: &mut W,
+    rng: &Trng,
+    tele: &mut Tele,
+    frame: &mut [u8],
+) -> Result<(), LinkError> {
+    let mut last_stats = Instant::now();
     loop {
-        let out = match select(OUT.receive(), Timer::after(PING_EVERY)).await {
-            Either::First(out) => out,
-            Either::Second(()) => {
-                send(w, rng, ws::OP_PING, &mut []).await?;
+        let due = (last_stats + telemetry::STATS_EVERY).saturating_duration_since(Instant::now());
+        let out = match select3(
+            OUT.receive(),
+            Timer::after(PING_EVERY.min(due)),
+            telemetry::KICK.wait(),
+        )
+        .await
+        {
+            Either3::First(out) => out,
+            Either3::Second(()) => {
+                if last_stats.elapsed() >= telemetry::STATS_EVERY {
+                    last_stats = Instant::now();
+                    tele.record_stats();
+                    flush_telemetry(w, rng, frame).await?;
+                } else {
+                    send(w, rng, ws::OP_PING, &mut []).await?;
+                }
+                continue;
+            }
+            Either3::Third(()) => {
+                last_stats = Instant::now();
+                tele.record_stats();
+                flush_telemetry(w, rng, frame).await?;
                 continue;
             }
         };
@@ -340,6 +407,17 @@ async fn writer<W: Write>(w: &mut W, rng: &Trng) -> Result<(), LinkError> {
             Out::Pong(mut buf, n) => send(w, rng, ws::OP_PONG, &mut buf[..n]).await?,
         }
     }
+}
+
+async fn flush_telemetry<W: Write>(
+    w: &mut W,
+    rng: &Trng,
+    frame: &mut [u8],
+) -> Result<(), LinkError> {
+    while let Some(n) = telemetry::batch_frame(frame) {
+        send(w, rng, ws::OP_TEXT, &mut frame[..n]).await?;
+    }
+    Ok(())
 }
 
 async fn send_text<W: Write>(w: &mut W, rng: &Trng, text: &str) -> Result<(), LinkError> {

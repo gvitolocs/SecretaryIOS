@@ -4,6 +4,7 @@
 //! |---|---|
 //! | `wifi` | asks for the SSID and the password (not echoed), saves, restarts |
 //! | `pair` | shows a 6-digit code to approve in the Lucina app, saves the device token |
+//! | `specs` | chip, memory, firmware and power-sensor facts (what the server gets) |
 //! | `talk` | a 3-second voice turn without the button (bench test) |
 //! | `status` | Wi-Fi, address, pairing, free heap |
 //! | `forget` | erases Wi-Fi and pairing, restarts |
@@ -25,6 +26,7 @@ pub enum Command {
     },
     Pair,
     Talk,
+    Specs,
     Status,
     Forget,
     Reboot,
@@ -33,7 +35,7 @@ pub enum Command {
 pub static COMMANDS: Channel<CriticalSectionRawMutex, Command, 2> = Channel::new();
 
 pub fn help() {
-    print!("\r\nLucinaVoice commands: wifi, pair, talk, status, forget, reboot\r\n> ");
+    print!("\r\nLucinaVoice commands: wifi, pair, talk, status, specs, forget, reboot\r\n> ");
 }
 
 #[embassy_executor::task]
@@ -73,6 +75,7 @@ pub async fn console_task(mut rx: UartRx<'static, Async>) {
             }
             "pair" => Command::Pair,
             "talk" => Command::Talk,
+            "specs" => Command::Specs,
             "status" => Command::Status,
             "forget" => Command::Forget,
             "reboot" => Command::Reboot,

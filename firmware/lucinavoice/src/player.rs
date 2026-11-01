@@ -11,7 +11,12 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Timer};
 
+use core::sync::atomic::Ordering;
+
+use embassy_time::Instant;
+
 use crate::audio::Speaker;
+use crate::telemetry;
 
 /// Bytes per PCM chunk (about 21 ms at 24 kHz).
 pub const CHUNK: usize = 1024;
@@ -57,6 +62,7 @@ pub async fn player_task(mut speaker: Speaker) {
             Play::Beep { freq, ms } => speaker.beep(freq, ms).await,
             Play::Stop | Play::Flush => {}
             Play::Pcm(buf, n) => {
+                let started = Instant::now();
                 let mut playback = speaker.start();
                 playback.push(&buf[..n]).await;
                 let flush = loop {
@@ -85,6 +91,8 @@ pub async fn player_task(mut speaker: Speaker) {
                         log::info!("player: {restarts} underruns");
                     }
                 }
+                telemetry::PLAY_MS
+                    .fetch_add(started.elapsed().as_millis() as u32, Ordering::Relaxed);
             }
         }
     }

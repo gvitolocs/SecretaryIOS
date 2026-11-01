@@ -9,6 +9,7 @@
 //! | [`net`] | Wi-Fi, DNS, TLS to the server, HTTP requests |
 //! | [`player`] | the speaker task: earcons and streamed answers |
 //! | [`link`] | the persistent WebSocket to `/v1/voice/ws` |
+//! | [`telemetry`] | device logs, specs, network and power, sent over the link |
 //! | [`console`] | serial setup commands: `wifi`, `pair`, `status`, `forget` |
 //!
 //! Hardware-free logic (HTTP framing, settings records, PCM) lives in the
@@ -24,3 +25,4 @@ pub mod link;
 pub mod net;
 pub mod player;
 pub mod store;
+pub mod telemetry;
