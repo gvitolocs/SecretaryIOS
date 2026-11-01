@@ -527,6 +527,7 @@ final class ApprovalsStore {
                 \(decision.rawValue, privacy: .public) id=\(approvalId, privacy: .public): \
                 \(result.isFinal ? "decided" : "failed", privacy: .public) \(String(describing: result), privacy: .public)
                 """)
+            if result.isFinal { log.info("tap outcome id=\(approvalId, privacy: .public): decided \(decision.rawValue, privacy: .public)") }
             await finishButtonAnswer(item, result)
         }
     }
@@ -585,31 +586,140 @@ final class ApprovalsStore {
             await notifier.postOpenToApprove(for: item)
             return
         }
-        log.info("approve id=\(item.id, privacy: .public) trigger=\(ApprovalTrigger.notificationApproveAction.rawValue, privacy: .public) via=unlock_key")
+        guard let result = await approveWithUnlockKey(item, api: api, trigger: .notificationApproveAction) else {
+            await notifier.postFailure(for: item)
+            return
+        }
+        log.info("one-tap approve id=\(id, privacy: .public): \(String(describing: result), privacy: .public)")
+        if result == .approved { log.info("tap outcome id=\(id, privacy: .public): decided approve via unlock key") }
+        await finishButtonAnswer(item, result)
+    }
+
+    /// Signs `item`'s approve with the unlock key only (never the Face ID key: no prompt can show from the
+    /// background) and sends it. Nil: the key did not sign. A server that no longer takes the key (`.needsSetup`)
+    /// gets it removed here: one-tap is off until it is enrolled again.
+    private func approveWithUnlockKey(_ item: ApprovalItem, api: ApprovalsAPI, trigger: ApprovalTrigger) async -> ApprovalOutcome? {
+        log.info("approve id=\(item.id, privacy: .public) trigger=\(trigger.rawValue, privacy: .public) via=unlock_key")
         let proof: ApprovalProof
         do {
             proof = try unlockSigner.sign(item.signingString(for: .approve))
         } catch {
-            log.error("one-tap approve id=\(id, privacy: .public): unlock key did not sign")
-            await notifier.postFailure(for: item)
-            return
+            log.error("one-tap approve id=\(item.id, privacy: .public): unlock key did not sign")
+            return nil
         }
-        let result: ApprovalOutcome
         do {
             try await api.decide(item.id, decision: .approve, payloadHash: item.payloadHash, proof: proof)
-            result = .approved
+            return .approved
         } catch {
             let e = APIError.wrap(error)
             if e.endsSession { onTransportError?(e) }
-            result = ApprovalOutcome.from(error)
+            let result = ApprovalOutcome.from(error)
             if result == .needsSetup {
                 // The server no longer takes this unlock key (the Face ID key changed): back to the card's Approve.
-                log.error("one-tap approve id=\(id, privacy: .public): unlock key refused, removed")
+                log.error("one-tap approve id=\(item.id, privacy: .public): unlock key refused, removed")
                 forgetUnlockKey()
             }
+            return result
         }
-        log.info("one-tap approve id=\(id, privacy: .public): \(String(describing: result), privacy: .public)")
-        await finishButtonAnswer(item, result)
+    }
+
+    /// What the app does after the Live Activity's Approve.
+    enum ActivityApproveOutcome: Equatable {
+        /// Answered, refused, or nothing to do: the app stays where it is (the card ends with the answer).
+        case done
+        /// The card in the app, in front: with its approve step started (Face ID over the commands), or only shown
+        /// (the request changed since the activity showed it, or could not be looked up).
+        case openCard(startApprove: Bool)
+    }
+
+    /// The Live Activity's Approve (iOS ran it after Face ID or the passcode on this iPhone; the app may be in the
+    /// background). Only for the activity's own tap, on a request that is pending now (fetched now), not expired and
+    /// still the one the activity showed (`shownHash`), and once at a time per request: a repeated tap does nothing,
+    /// and a request answered already (by this tap too) is left alone. With one-tap Approve ready it is signed with the
+    /// unlock key and answered here; a plain request without it is answered unsigned (as the notification's Approve
+    /// does). Otherwise, or when the unlock key's answer fails, the card with its approve step: nothing is signed with
+    /// the Face ID key from the background.
+    func approveFromActivity(id: String, shownHash: String, trigger: ApprovalTrigger,
+                             now: Date = Date()) async -> ActivityApproveOutcome {
+        guard trigger == .activityApproveButton else {
+            log.error("tap outcome id=\(id, privacy: .public): refused: not from the activity's Approve")
+            return .done
+        }
+        guard !approvingInPlace.contains(id), !(working != nil && sheetItem?.id == id) else {
+            log.info("tap outcome id=\(id, privacy: .public): refused: already in flight")
+            return .done
+        }
+        approvingInPlace.insert(id)
+        defer { approvingInPlace.remove(id) }
+        guard let api = api() else {
+            log.info("tap outcome id=\(id, privacy: .public): opened card (signed out)")
+            return .openCard(startApprove: false)
+        }
+        let item: ApprovalItem
+        do {
+            item = try await api.get(id)
+        } catch {
+            let e = APIError.wrap(error)
+            if e.endsSession { onTransportError?(e) }
+            let result = ApprovalOutcome.from(error)
+            if result.isFinal {
+                log.info("tap outcome id=\(id, privacy: .public): refused: \(String(describing: result), privacy: .public)")
+                await finishButtonAnswer(pending.first { $0.id == id } ?? ApprovalItem(id: id, summary: "", sensitive: true), result)
+                return .done
+            }
+            // Offline: the card shows what it can; nothing starts on a request the app can't see.
+            log.info("tap outcome id=\(id, privacy: .public): opened card (request not fetched)")
+            return .openCard(startApprove: false)
+        }
+        guard item.status == nil || item.status == .pending else {
+            // Answered already (by this iPhone too: a repeated tap): nothing to ask, nothing to open.
+            log.info("tap outcome id=\(id, privacy: .public): refused: no longer pending")
+            await forgetAnswered(item)
+            return .done
+        }
+        guard !item.isExpired(at: now) else {
+            log.info("tap outcome id=\(id, privacy: .public): refused: expired")
+            await forgetAnswered(item)
+            return .done
+        }
+        guard item.payloadHash == shownHash else {
+            // The owner reads the new request on the card and answers there.
+            log.error("tap outcome id=\(id, privacy: .public): refused: changed since shown")
+            return .openCard(startApprove: false)
+        }
+        // Approver changes keep Face ID (the server refuses the unlock key for them).
+        if oneTapReady, unlockSigner.keyId != nil, !item.action.hasPrefix("approver.") {
+            if let result = await approveWithUnlockKey(item, api: api, trigger: trigger), result.isFinal {
+                if result == .approved {
+                    log.info("tap outcome id=\(id, privacy: .public): decided approve via unlock key")
+                } else {
+                    log.info("tap outcome id=\(id, privacy: .public): refused: \(String(describing: result), privacy: .public)")
+                }
+                await finishButtonAnswer(item, result)
+                return .done
+            }
+            log.error("tap outcome id=\(id, privacy: .public): opened card (unlock key approve failed)")
+            return .openCard(startApprove: true)
+        }
+        if !item.sensitive {
+            if let result = await answer(item, .approve(trigger)), result.isFinal {
+                let said = result == .approved ? "decided approve" : "refused: \(String(describing: result))"
+                log.info("tap outcome id=\(id, privacy: .public): \(said, privacy: .public)")
+                await finishButtonAnswer(item, result)
+                return .done
+            }
+            log.error("tap outcome id=\(id, privacy: .public): opened card (approve failed)")
+            return .openCard(startApprove: true)
+        }
+        log.info("tap outcome id=\(id, privacy: .public): opened card (one-tap not ready)")
+        return .openCard(startApprove: true)
+    }
+
+    /// "Open Secretary to approve" for `id` (the activity's Approve could not bring the card to the front).
+    func postOpenToApprove(id: String) async {
+        let item = pending.first { $0.id == id } ?? sheetItem.flatMap { $0.id == id ? $0 : nil }
+            ?? ApprovalItem(id: id, summary: "", sensitive: true)
+        await notifier.postOpenToApprove(for: item)
     }
 
     /// The Live Activity's Approve link (`approvals/<id>?approve=1&hash=…`; the app is coming to the front): the card,
