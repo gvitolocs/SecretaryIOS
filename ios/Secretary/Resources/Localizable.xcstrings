@@ -24748,6 +24748,54 @@
           }
         }
       }
+    },
+    "%lld of %@ posts" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld di %@ post"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld af %@ opslag"
+          }
+        }
+      }
+    },
+    "Showing the newest %lld of %lld posts: the anonymous source doesn't give older ones (reels go further)." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sono i %lld post più recenti su %lld: la fonte anonima non dà quelli più vecchi (i reel vanno più indietro)."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Viser de nyeste %lld af %lld opslag: den anonyme kilde giver ikke ældre (reels går længere tilbage)."
+          }
+        }
+      }
+    },
+    "All %lld loaded." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Caricati tutti (%lld)."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Alle %lld er hentet."
+          }
+        }
+      }
     }
   },
   "version" : "1.0"

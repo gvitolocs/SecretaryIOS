@@ -47,9 +47,9 @@ struct InstagramViewer: View {
     }
     private var slides: [IgSlide] { IgSlide.slides(items) }
     var body: some View {
-        // Stories and highlights open full screen, their info as an overlay on a tap (InstagramStoryViewer).
+        // Stories and highlights open the Gallery's way: full screen, zoom, one tap for the bars (InstagramGalleryViewer).
         if request.tab == .stories || request.highlight != nil {
-            InstagramStoryViewer(store: store, request: request)
+            InstagramGalleryViewer(store: store, request: request)
         } else {
             paged
         }
@@ -182,11 +182,15 @@ struct InstagramProfilePicture: View {
 struct InstagramZoomPicture: View {
     let store: InstagramStore
     let path: String?
+    /// One tap (not a double tap): the viewer shows or hides its bars.
+    var onTap: () -> Void = {}
+    /// The picture went from fitted to zoomed or back (a swipe down closes only when fitted).
+    var onZoom: (Bool) -> Void = { _ in }
     @State private var image: UIImage?
     @State private var failed = false
     var body: some View {
         Group {
-            if let image { InstagramZoomScroll(image: image) }
+            if let image { InstagramZoomScroll(image: image, onTap: onTap, onZoom: onZoom) }
             else if failed {
                 ContentUnavailableView {
                     Label("Couldn't load the image.", systemImage: "photo")
@@ -206,6 +210,8 @@ struct InstagramZoomPicture: View {
 /// UIScrollView gives photos native pinch, panning and double-tap zoom on iOS 17.
 private struct InstagramZoomScroll: UIViewRepresentable {
     let image: UIImage
+    var onTap: () -> Void = {}
+    var onZoom: (Bool) -> Void = { _ in }
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeUIView(context: Context) -> UIScrollView {
         let scroll = InstagramPhotoScroll()
@@ -221,9 +227,16 @@ private struct InstagramZoomScroll: UIViewRepresentable {
         let doubleTap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.doubleTap(_:)))
         doubleTap.numberOfTapsRequired = 2
         scroll.addGestureRecognizer(doubleTap)
+        let singleTap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.singleTap(_:)))
+        singleTap.require(toFail: doubleTap)
+        scroll.addGestureRecognizer(singleTap)
+        context.coordinator.onTap = onTap
+        context.coordinator.onZoom = onZoom
         return scroll
     }
     func updateUIView(_ scroll: UIScrollView, context: Context) {
+        context.coordinator.onTap = onTap
+        context.coordinator.onZoom = onZoom
         if context.coordinator.picture.image !== image {
             scroll.setZoomScale(1, animated: false)
             context.coordinator.picture.image = image
@@ -232,6 +245,14 @@ private struct InstagramZoomScroll: UIViewRepresentable {
     }
     final class Coordinator: NSObject, UIScrollViewDelegate {
         let picture = UIImageView()
+        var onTap: () -> Void = {}
+        var onZoom: (Bool) -> Void = { _ in }
+        private var wasZoomed = false
+        @objc func singleTap(_ gesture: UITapGestureRecognizer) { onTap() }
+        func scrollViewDidEndZooming(_ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat) {
+            let zoomed = scale > 1.01
+            if zoomed != wasZoomed { wasZoomed = zoomed; onZoom(zoomed) }
+        }
         func viewForZooming(in scrollView: UIScrollView) -> UIView? { picture }
         func scrollViewDidZoom(_ scrollView: UIScrollView) {
             let horizontal = max(0, (scrollView.bounds.width - picture.frame.width) / 2)

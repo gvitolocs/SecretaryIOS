@@ -191,6 +191,11 @@ private struct InstagramProfileView: View {
                     if tab == .highlights {
                         highlights
                     } else {
+                        // Posts stop at the newest twelve (StoryView ignores the cursor): say it against the profile's count.
+                        if tab == .posts, let total = store.bundle?.profile.mediaCount,
+                           let shown = store.pages[tab.rawValue]?.items.count, shown > 0, total > shown {
+                            Text("\(shown) of \(InstagramText.compact(total)) posts").font(.caption).foregroundStyle(Theme.textSecondary)
+                        }
                         InstagramTileGrid(store: store, items: store.pages[tab.rawValue]?.items ?? [], username: username,
                                           archived: tab == .archive) { index in
                             viewer = IgViewerRequest(items: store.pages[tab.rawValue]?.items ?? [], start: index,
@@ -206,6 +211,18 @@ private struct InstagramProfileView: View {
                         Button("Load more") { Task { await store.load(tab, username: username, more: true) } }
                             .accessibilityIdentifier("instagram-load-more")
                             .onAppear { Task { await store.load(tab, username: username, more: true) } }
+                    } else if tab != .highlights, let page = store.pages[tab.rawValue], !page.items.isEmpty,
+                              !store.loading.contains(tab.rawValue), store.errors[tab.rawValue] == nil {
+                        // The end of the list, said.
+                        Group {
+                            if tab == .posts, let total = store.bundle?.profile.mediaCount, total > page.items.count {
+                                Text("Showing the newest \(page.items.count) of \(total) posts: the anonymous source doesn't give older ones (reels go further).")
+                            } else {
+                                Text("All \(page.items.count) loaded.")
+                            }
+                        }
+                        .font(.caption).foregroundStyle(Theme.textSecondary).multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity).accessibilityIdentifier("instagram-list-end")
                     }
                 }
                 if store.loading.contains("profile") { ProgressView().frame(maxWidth: .infinity) }
