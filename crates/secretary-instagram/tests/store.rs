@@ -444,6 +444,33 @@ async fn a_watched_account_stays_through_eviction() {
 }
 
 #[tokio::test]
+async fn an_account_watched_before_the_store_existed_is_filled_by_the_backfill() {
+    let e = env().await;
+    mount_full_account(&e).await;
+    let svc = &e.st.service;
+    svc.watch_put("natgeo", Some(false)).unwrap();
+    // A name that no longer answers is tried once, and does not hold the others up.
+    svc.watch_put("aaa_dead", Some(false)).unwrap();
+    assert!(svc.store.profile("natgeo").profile.is_none());
+    assert!(svc.backfill_tick().await, "the dead name");
+    assert!(svc.backfill_tick().await, "the account");
+    assert!(svc.store.profile("natgeo").profile.is_some());
+    assert_eq!(svc.store.feed(FeedKind::Reels, "natgeo").items.len(), 1);
+    assert_eq!(count(&e.server, "/api/v1/users/aaa_dead/bundle").await, 1);
+    assert!(
+        matches!(
+            svc.mirror_tick().await,
+            MirrorOutcome::Fetched | MirrorOutcome::Failed
+        ),
+        "its media is on the queue"
+    );
+    // The tray's highlight is the next call, then nothing is left, and the dead name stays alone.
+    assert!(svc.backfill_tick().await);
+    assert!(!svc.backfill_tick().await);
+    assert_eq!(count(&e.server, "/api/v1/users/aaa_dead/bundle").await, 1);
+}
+
+#[tokio::test]
 async fn the_backfill_walks_older_pages_and_stops_when_nothing_is_new() {
     let e = env().await;
     mount_json(&e.server, "/api/v1/users/natgeo/bundle", {

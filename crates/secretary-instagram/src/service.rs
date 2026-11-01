@@ -54,6 +54,8 @@ const MAX_REFRESH_PAGES: usize = 5;
 const MIRROR_RETRY_SECS: i64 = 6 * 3600;
 /// Recently opened accounts stay backfilled this long after the last open.
 const BACKFILL_RECENT_SECS: i64 = 30 * 24 * 3600;
+/// What a first fill costs the backfill's daily budget: bundle, stories, reels, tray.
+const SEED_CALLS: usize = 4;
 const STORY_LIFE_SECS: i64 = 24 * 3600;
 /// `fetched_at` of a first answer that may have come from an older JSON copy: asked, and out of
 /// date, so the refresh behind it runs (it costs no backend call if a fresh answer is in the cache).
@@ -1673,7 +1675,16 @@ impl Service {
         out
     }
 
-    /// One older page of the first feed that has any left. Says whether the backend was asked.
+    /// An account with nothing in the store was not tried lately (a dead name must not eat the
+    /// day's calls).
+    fn seed_due(&self, user: &str) -> bool {
+        let g = self.refreshes.lock().unwrap_or_else(|e| e.into_inner());
+        g.1.get(user)
+            .is_none_or(|t| now_secs() - t >= MIRROR_RETRY_SECS)
+    }
+
+    /// One older page of the first feed that has any left, or the first fill of an account. Says
+    /// whether the backend was asked.
     pub async fn backfill_tick(&self) -> bool {
         if self.warmer_paused().is_some() || self.up.blocked_for().is_some() {
             return false;
@@ -1691,6 +1702,21 @@ impl Service {
         }
         for user in self.backfill_accounts() {
             let doc = self.store.profile(&user);
+            // Opened or watched before the store existed: fill it now, not at the next open.
+            if doc.profile.is_none() && !doc.gone {
+                if !self.seed_due(&user) || !self.claim_refresh(&user) {
+                    continue;
+                }
+                for _ in 0..SEED_CALLS {
+                    self.count_backfill_call();
+                }
+                let r = self.refresh_account(&user).await;
+                self.refresh_done(&user);
+                if let Err(e) = r {
+                    self.backfill_failed(e, FeedKind::Reels, &user, Some(""));
+                }
+                return true;
+            }
             if doc.gone || doc.profile.as_ref().is_none_or(|p| p.is_private) {
                 continue;
             }
@@ -1755,7 +1781,7 @@ impl Service {
         tracing::warn!(error = %e, "instagram backfill");
         match e {
             UpstreamError::RateLimited(s) => self.pause_warmer(Duration::from_secs(s)),
-            UpstreamError::Status(400 | 404 | 410 | 422) => {
+            UpstreamError::Status(400 | 404 | 410 | 422) if cursor != Some("") => {
                 self.store.update_feed(kind, owner, |f| {
                     if cursor.is_some() {
                         f.next_cursor = None;
