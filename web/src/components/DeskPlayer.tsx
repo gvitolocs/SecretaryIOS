@@ -101,18 +101,6 @@ function sizeOf(n: number): string {
   return `${(n / 1024 / 1024).toFixed(n < 10 * 1024 * 1024 ? 1 : 0)} MB`;
 }
 
-/**
- * Inside Secretary Code: the owner left focus mode (✕, Exit, Esc, the shell's own ways out) and has not come back
- * to the page since. Leaving focus brings the shell's rail back, which can drop /computer below its wide layout and
- * mount a new player; that player must not take focus mode straight back (it did, so ✕ seemed to do nothing).
- */
-let leftFocus = false;
-
-/** Tests: start from a first visit. */
-export function forgetLeftFocus(): void {
-  leftFocus = false;
-}
-
 function touchScreen(): boolean {
   return typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches === true;
 }
@@ -138,9 +126,8 @@ export default function DeskPlayer(props: DeskPlayerProps) {
   const [keysOpen, setKeysOpen] = createSignal(false);
   // Inside Secretary Code the stream owns the content area from the start, if it is on screen: the
   // shell also (re)loads this page in the background, and focus there would hide its rail over another
-  // view. A background mount asks when it becomes visible (`onVisible`). One mounted after the owner left
-  // focus (the page re-laid out for the rail) waits for his next visit or his Focus button.
-  const [focus, setFocus] = createSignal(inShell && !leftFocus && typeof document !== "undefined" && document.visibilityState === "visible");
+  // view. A background mount asks when it becomes visible (`onVisible`).
+  const [focus, setFocus] = createSignal(inShell && typeof document !== "undefined" && document.visibilityState === "visible");
   /** Show the tucked-away pill for a moment (focus starts, who drives changes). */
   const [peek, setPeek] = createSignal(true);
   let peekTimer: number | undefined;
@@ -426,7 +413,6 @@ export default function DeskPlayer(props: DeskPlayerProps) {
   };
 
   const exit = () => {
-    if (inShell) leftFocus = true;
     if (driving()) giveBack();
     leaveFocus();
   };
@@ -814,7 +800,6 @@ export default function DeskPlayer(props: DeskPlayerProps) {
 
   const enterFocus = () => {
     if (inShell) {
-      leftFocus = false;
       setFocus(true);
       return;
     }
@@ -898,10 +883,7 @@ export default function DeskPlayer(props: DeskPlayerProps) {
       } else {
         // Secretary Code keeps this page warm while another view shows and leaves focus then:
         // coming back to Computer is a new visit, so the stream takes the whole area again.
-        if (inShell) {
-          leftFocus = false;
-          setFocus(true);
-        }
+        if (inShell) setFocus(true);
         if (!cur && !error()) {
           attempts = 0;
           open("watch");
@@ -914,7 +896,6 @@ export default function DeskPlayer(props: DeskPlayerProps) {
       shellFocus = on;
       setFocus(on);
       if (on) return;
-      leftFocus = true;
       closeKeyboard();
       if (driving()) giveBack();
     });

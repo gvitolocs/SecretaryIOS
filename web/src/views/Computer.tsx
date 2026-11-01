@@ -1,5 +1,5 @@
 import { A } from "@solidjs/router";
-import { createEffect, createSignal, For, lazy, on, onCleanup, onMount, Show, type JSX } from "solid-js";
+import { createEffect, createMemo, createSignal, For, lazy, on, onCleanup, onMount, Show, type JSX } from "solid-js";
 import { toApiError } from "../api/client";
 import {
   computerApi,
@@ -1055,6 +1055,23 @@ export default function ComputerView() {
     }),
   );
 
+  // One LucinaDesk player for both layouts. In Secretary Code focus mode hides the shell's rail, so the page
+  // crosses its wide breakpoint each time focus mode comes or goes; a player made by each layout was mounted again
+  // there: it reconnected, and the new player asked for focus mode at once, so its ✕ seemed to do nothing. Made here,
+  // the same player moves between the layouts.
+  const deskOn = createMemo(desk);
+  const deskPlayer = createMemo(() =>
+    deskOn() ? (
+      <LucinaDesk
+        sandbox={sandbox()}
+        state={state()}
+        onFallback={deskFallback}
+        onChanged={() => void loadState()}
+        onDriving={setDeskDriving}
+      />
+    ) : null,
+  );
+
   const PhoneHeader = () => <>      <A href="/plugins" class="computer-back">
         <BackIcon /> {t("plugins.title")}
       </A>
@@ -1156,15 +1173,7 @@ export default function ComputerView() {
         <Show when={wide()} fallback={<p class="computer-error" role="alert">{error()}</p>}><ErrorState message={error()!} retryLabel={t("common.tryAgain")} onRetry={() => { void loadState(); void openView(viewMode()); }} /></Show>
       </Show>
 
-      <Show when={desk()}>
-        <LucinaDesk
-          sandbox={sandbox()}
-          state={state()}
-          onFallback={deskFallback}
-          onChanged={() => void loadState()}
-          onDriving={setDeskDriving}
-        />
-      </Show>
+      {deskPlayer()}
 
       <Show when={!desk()}>
         <div
