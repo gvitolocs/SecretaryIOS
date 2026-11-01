@@ -435,5 +435,8 @@ mod tests {
         p.update_job("job_1", |j| j.state = JobState::Succeeded).unwrap();
         assert_eq!(p.active_jobs().len(), 1);
         assert_eq!(p.jobs(10)[0].job_id, "job_2");
+        // One lock for every repo: the one deploy-guard checks and hand merges take.
+        assert_eq!(MERGE_LOCK, "/tmp/lucina-merge.lock");
+        assert_eq!(Config::from_env(dir.path()).lock, PathBuf::from(MERGE_LOCK));
     }
 }
