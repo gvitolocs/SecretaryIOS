@@ -78,6 +78,14 @@ pub fn verdict(command: &str, cwd: &str) -> Option<String> {
                 .into(),
         );
     }
+    if hand_merge_into_main_checkout(command, cwd) {
+        return Some(
+            "Lucina repos: a repo's main checkout moves only through the merge queue (repos without a remote too: \
+             lucinaos, LucinaAndroidOS). Commit in your workspace and run `lagent merge <workspace id | path>`; \
+             it fast-forwards the main checkout itself. Merging origin/main into your own worktree is fine."
+                .into(),
+        );
+    }
     for c in push.captures_iter(command) {
         let args = c.get(2).map(|m| m.as_str()).unwrap_or_default();
         if to_main.is_match(args) && !args.contains("--dry-run") {
@@ -188,6 +196,33 @@ pub fn decide(command: &str, cwd: &str) -> Option<String> {
         .find_map(|(f, text)| device_install(&text).filter(|_| in_scope(&text) || in_scope(cwd)).map(|w| device_reason(w, Some(&f))))
 }
 
+/// A Lucina repo's main checkout (`…/Projects/Lucina/<Repo>`, not a worktree under `.worktrees`).
+fn main_checkout(dir: &str) -> bool {
+    Regex::new(r#"(^|/|~)Projects/Lucina/[A-Za-z0-9_.-]+/?$"#).is_ok_and(|r| r.is_match(dir.trim_matches(|c| c == '"' || c == '\'')))
+}
+
+/// `git merge` (not `merge-base`, not `--abort`) run in a main checkout: the session's cwd, a
+/// `cd` earlier in the command, or `git -C <dir>`.
+fn hand_merge_into_main_checkout(command: &str, cwd: &str) -> bool {
+    let Ok(split) = Regex::new(r"&&|\|\||;|\n|'|\x22") else { return false };
+    let Ok(cd) = Regex::new(r"^\s*cd\s+(\S+)") else { return false };
+    let Ok(merge) = Regex::new(r"\bgit\s+((-C\s+(\S+)|-c\s+\S+)\s+)*merge(\s|$)") else { return false };
+    let mut dir = cwd.to_string();
+    for seg in split.split(command) {
+        if let Some(c) = cd.captures(seg) {
+            dir = c[1].to_string();
+            continue;
+        }
+        if let Some(m) = merge.captures(seg) {
+            let at = m.get(3).map(|d| d.as_str().to_string()).unwrap_or_else(|| dir.clone());
+            if main_checkout(&at) && !seg.contains("--abort") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn main() {
     let mut input = String::new();
     if std::io::stdin().read_to_string(&mut input).is_err() {
@@ -296,6 +331,19 @@ mod tests {
         assert!(verdict("git push origin deploy/web/20261101T1200Z-abc", LUCINA).is_none());
         assert!(verdict("git push --dry-run origin HEAD:main", LUCINA).is_none());
         assert!(verdict("git log origin/main", LUCINA).is_none());
+    }
+
+    #[test]
+    fn main_checkouts_move_only_through_the_queue() {
+        let android = "/home/nez/Projects/Lucina/LucinaAndroidOS";
+        assert!(verdict("timeout 1500 flock /tmp/lucina-merge.lock git merge --ff-only gbgo-m2", android).is_some());
+        assert!(verdict("ssh nezopt 'cd ~/Projects/Lucina/lucinaos && git merge --ff-only gbgo-ota'", "/Users/g").is_some());
+        assert!(verdict("git -C /home/nez/Projects/Lucina/LucinaAndroidOS merge topic", "/tmp").is_some());
+        // In a worktree (resolving a CONFLICT the queue reported) or read-only: fine.
+        assert!(verdict("cd ~/Projects/.worktrees/LucinaAndroidOS/gbgo-m2 && git merge main", "/Users/g").is_none());
+        assert!(verdict("git merge-base --is-ancestor a b", android).is_none());
+        assert!(verdict("git merge --abort", android).is_none());
+        assert!(verdict("git log main", android).is_none());
     }
 
     #[test]

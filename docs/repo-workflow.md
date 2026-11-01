@@ -22,8 +22,8 @@ lagent device lease iphone --purpose "owner test"    # devices are leased (iphon
 
 - **One task, one workspace.** `lagent task start` instead of `wt add` / `git worktree add` (a hook denies those in
   Lucina repos). A worktree you already made by hand: `lagent task adopt <path>`.
-- **Main moves only through the queue.** `lagent merge` instead of `git push origin HEAD:main` (the hook denies that
-  too). One merge at a time, FIFO, under `/tmp/lucina-merge.lock`; the CLI shows the log and exits non-zero on
+- **Main moves only through the queue.** `lagent merge` instead of `git push origin HEAD:main`, or a `git merge` in a
+  repo's main checkout for repos without a remote (the hook denies those too). One merge at a time, FIFO, under `/tmp/lucina-merge.lock`; the CLI shows the log and exits non-zero on
   `CONFLICT` (merge `origin/main` into your branch, commit, merge again) or `GATE_FAILED` (`lagent job logs <id>`).
   The session's worktree is never touched during the merge; afterwards it is archived (worktree and branch go,
   gitignored outputs too: copy artifacts out first) unless you pass `--keep`.

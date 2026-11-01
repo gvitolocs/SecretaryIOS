@@ -241,14 +241,11 @@ impl Config {
     }
 }
 
-/// The merge lock of a repo. SecretaryIOS keeps the lock every hand merge and
-/// deploy-guard already use.
-pub fn lock_path(repo_name: &str) -> PathBuf {
-    if repo_name == "SecretaryIOS" {
-        PathBuf::from("/tmp/lucina-merge.lock")
-    } else {
-        PathBuf::from(format!("/tmp/lucina-merge-{repo_name}.lock"))
-    }
+/// The merge lock. One for every Lucina repo: it is the lock deploy-guard checks and the one
+/// sessions already took by hand for all of them (lucinaos and LucinaAndroidOS included), so a
+/// job and a hand merge or deploy never overlap. The argument is the repo, for a future split.
+pub fn lock_path(_repo_name: &str) -> PathBuf {
+    PathBuf::from("/tmp/lucina-merge.lock")
 }
 
 pub fn new_id(prefix: &str) -> String {
@@ -435,6 +432,6 @@ mod tests {
         assert_eq!(p.active_jobs().len(), 1);
         assert_eq!(p.jobs(10)[0].job_id, "job_2");
         assert_eq!(lock_path("SecretaryIOS"), PathBuf::from("/tmp/lucina-merge.lock"));
-        assert_eq!(lock_path("lucinaos"), PathBuf::from("/tmp/lucina-merge-lucinaos.lock"));
+        assert_eq!(lock_path("lucinaos"), PathBuf::from("/tmp/lucina-merge.lock"));
     }
 }
