@@ -163,6 +163,9 @@ pub struct Pagination {
     pub size: Size,
     pub style: Style,
     pub pages: Vec<Page>,
+    /// Only some chapters are laid out ([`crate::Reader::set_style_quick`]): page numbers are not
+    /// the book's, and the footer leaves them out.
+    pub partial: bool,
 }
 
 impl Pagination {
@@ -735,65 +738,81 @@ pub fn paginate_with(
     book: &Book,
     images: &mut dyn Images,
 ) -> Pagination {
-    let measure = (size.w - style.margins.left - style.margins.right) as f32;
-    let max_h = content_height(size, style);
     let mut pages = Vec::new();
-    for (ci, chapter) in book.chapters.iter().enumerate() {
-        let lines = layout_chapter_with(fonts, style, measure, max_h, chapter, ci as u32, images);
-        let chapter_len = chapter.char_len();
-        let first_page = pages.len();
-        let mut page = Page {
-            chapter: ci as u32,
-            start: 0,
-            end: chapter_len,
-            lines: Vec::new(),
-        };
-        let mut y = 0;
-        let mut it = lines.into_iter().peekable();
-        while let Some(line) = it.next() {
-            let sb = if page.lines.is_empty() {
-                0
-            } else {
-                line.space_before
-            };
-            let mut need = sb + line.height;
-            if line.keep_with_next {
-                if let Some(n) = it.peek() {
-                    need += n.space_before + n.height;
-                }
-            }
-            if !page.lines.is_empty() && y + need > max_h {
-                let next = Page {
-                    chapter: ci as u32,
-                    start: line.start,
-                    end: chapter_len,
-                    lines: Vec::new(),
-                };
-                pages.push(std::mem::replace(&mut page, next));
-                y = 0;
-            }
-            let sb = if page.lines.is_empty() {
-                0
-            } else {
-                line.space_before
-            };
-            y += sb;
-            let h = line.height;
-            page.lines.push(PlacedLine { y, line });
-            y += h;
-        }
-        pages.push(page);
-        // Each page ends where the next one starts.
-        for k in first_page..pages.len().saturating_sub(1) {
-            pages[k].end = pages[k + 1].start;
-        }
-        if let Some(p) = pages.get_mut(first_page) {
-            p.start = 0;
-        }
+    for ci in 0..book.chapters.len() {
+        pages.extend(paginate_chapter_with(fonts, style, size, book, ci, images));
     }
     Pagination {
         size,
         style: *style,
         pages,
+        partial: false,
     }
+}
+
+/// The pages of chapter `ci` alone. Chapters are laid out independently, so these are exactly that
+/// chapter's pages in [`paginate_with`]'s result (which is every chapter's, in order).
+pub fn paginate_chapter_with(
+    fonts: &mut Fonts,
+    style: &Style,
+    size: Size,
+    book: &Book,
+    ci: usize,
+    images: &mut dyn Images,
+) -> Vec<Page> {
+    let measure = (size.w - style.margins.left - style.margins.right) as f32;
+    let max_h = content_height(size, style);
+    let chapter = &book.chapters[ci];
+    let lines = layout_chapter_with(fonts, style, measure, max_h, chapter, ci as u32, images);
+    let chapter_len = chapter.char_len();
+    let mut pages = Vec::new();
+    let mut page = Page {
+        chapter: ci as u32,
+        start: 0,
+        end: chapter_len,
+        lines: Vec::new(),
+    };
+    let mut y = 0;
+    let mut it = lines.into_iter().peekable();
+    while let Some(line) = it.next() {
+        let sb = if page.lines.is_empty() {
+            0
+        } else {
+            line.space_before
+        };
+        let mut need = sb + line.height;
+        if line.keep_with_next {
+            if let Some(n) = it.peek() {
+                need += n.space_before + n.height;
+            }
+        }
+        if !page.lines.is_empty() && y + need > max_h {
+            let next = Page {
+                chapter: ci as u32,
+                start: line.start,
+                end: chapter_len,
+                lines: Vec::new(),
+            };
+            pages.push(std::mem::replace(&mut page, next));
+            y = 0;
+        }
+        let sb = if page.lines.is_empty() {
+            0
+        } else {
+            line.space_before
+        };
+        y += sb;
+        let h = line.height;
+        page.lines.push(PlacedLine { y, line });
+        y += h;
+    }
+    pages.push(page);
+    // Each page ends where the next one starts.
+    for k in 0..pages.len().saturating_sub(1) {
+        pages[k].end = pages[k + 1].start;
+    }
+    if let Some(p) = pages.first_mut() {
+        p.start = 0;
+    }
+    pages
 }

@@ -3,7 +3,7 @@
 use crate::dirty;
 use crate::font::Fonts;
 use crate::images::{ImageRequest, Images, NoImages, PageImages};
-use crate::layout::{paginate_with, Anchor, LineContent, Pagination, Style};
+use crate::layout::{paginate_chapter_with, paginate_with, Anchor, LineContent, Pagination, Style};
 use crate::render::render_page_with;
 use crate::Result;
 use ink_epub::{Block, Book};
@@ -252,6 +252,7 @@ impl<D: Display> Reader<D> {
 
     /// Go to `page` with a partial (dirty-region) update.
     pub fn goto_page(&mut self, page: usize) -> Result<StepReport> {
+        self.complete_layout();
         self.page = page.min(self.page_count().saturating_sub(1));
         self.anchor = self.pagination.anchor_of(self.page);
         self.show(false)
@@ -259,12 +260,14 @@ impl<D: Display> Reader<D> {
 
     /// Jump to a position (e.g. a TOC entry: `Anchor { chapter, offset: 0 }`).
     pub fn goto_anchor(&mut self, a: Anchor) -> Result<StepReport> {
+        self.complete_layout();
         self.page = self.pagination.page_for(a);
         self.anchor = a;
         self.show(false)
     }
 
     pub fn next_page(&mut self) -> Result<Option<StepReport>> {
+        self.complete_layout();
         if self.page + 1 >= self.page_count() {
             return Ok(None);
         }
@@ -272,6 +275,7 @@ impl<D: Display> Reader<D> {
     }
 
     pub fn prev_page(&mut self) -> Result<Option<StepReport>> {
+        self.complete_layout();
         if self.page == 0 {
             return Ok(None);
         }
@@ -295,6 +299,74 @@ impl<D: Display> Reader<D> {
         let mut rep = self.show(true)?;
         rep.layout_ms = layout_ms;
         Ok(rep)
+    }
+
+    /// [`Reader::set_style`] in two steps, for a quick first page on a long book: lays out only the
+    /// chapter holding the anchor and shows its page with a full refresh. The page is the one the
+    /// whole-book layout gives (chapters are laid out independently); only the page numbers (`page`,
+    /// `page_count`) count that chapter alone, and the footer leaves its number out, until
+    /// [`Reader::finish_layout`] lays out the rest. Navigation lays out the rest first by itself.
+    pub fn set_style_quick(&mut self, style: Style) -> Result<StepReport> {
+        let ci = self.anchor.chapter as usize;
+        if ci >= self.book.chapters.len() || self.book.chapters.len() == 1 {
+            return self.set_style(style);
+        }
+        self.style = style;
+        let t = Instant::now();
+        let pages = paginate_chapter_with(
+            &mut self.fonts,
+            &self.style,
+            self.display.size(),
+            &self.book,
+            ci,
+            self.images.as_mut(),
+        );
+        self.pagination = Pagination {
+            size: self.display.size(),
+            style: self.style,
+            pages,
+            partial: true,
+        };
+        let layout_ms = ms(t);
+        self.page = self.pagination.page_for(self.anchor);
+        let mut rep = self.show(true)?;
+        rep.layout_ms = layout_ms;
+        Ok(rep)
+    }
+
+    /// The rest of the book still has to be laid out after [`Reader::set_style_quick`].
+    pub fn layout_pending(&self) -> bool {
+        self.pagination.partial
+    }
+
+    /// After [`Reader::set_style_quick`]: lay out the whole book, keep the page, and update what
+    /// changed on the panel (the footer's number) with a partial update. `None` when nothing was
+    /// pending.
+    pub fn finish_layout(&mut self) -> Result<Option<StepReport>> {
+        let Some(layout_ms) = self.complete_layout() else {
+            return Ok(None);
+        };
+        let mut rep = self.show(false)?;
+        rep.layout_ms = layout_ms;
+        Ok(Some(rep))
+    }
+
+    /// After [`Reader::set_style_quick`]: lay out the whole book without drawing (the next page shown
+    /// has the book's numbers), keeping the anchor; the time it took, `None` when nothing was pending.
+    pub fn complete_layout(&mut self) -> Option<f64> {
+        if !self.pagination.partial {
+            return None;
+        }
+        let t = Instant::now();
+        self.pagination = paginate_with(
+            &mut self.fonts,
+            &self.style,
+            self.display.size(),
+            &self.book,
+            self.images.as_mut(),
+        );
+        self.page = self.pagination.page_for(self.anchor);
+        Some(ms(t))
     }
 
     pub fn set_font_px(&mut self, px: u16) -> Result<StepReport> {

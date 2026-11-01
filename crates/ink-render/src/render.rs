@@ -227,17 +227,20 @@ fn draw_footer(
     let px = style.footer_px;
     let baseline = pag.size.h as i32 - (style.margins.bottom as i32 / 2) + i32::from(px) / 3;
     let right_edge = (pag.size.w - style.margins.right) as f32;
-    let num = format!("{} / {}", index + 1, pag.pages.len());
-    let nw = fonts.measure(Face::Regular, px, &num);
-    draw_text(
-        img,
-        fonts,
-        Face::Regular,
-        px,
-        right_edge - nw,
-        baseline,
-        &num,
-    );
+    // A partial layout's numbers are not the book's: none until the rest is laid out.
+    if !pag.partial {
+        let num = format!("{} / {}", index + 1, pag.pages.len());
+        let nw = fonts.measure(Face::Regular, px, &num);
+        draw_text(
+            img,
+            fonts,
+            Face::Regular,
+            px,
+            right_edge - nw,
+            baseline,
+            &num,
+        );
+    }
     let title = book.chapters[page.chapter as usize]
         .title
         .clone()

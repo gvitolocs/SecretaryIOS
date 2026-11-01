@@ -14,7 +14,8 @@ pub mod session;
 pub use font::{Face, Fonts};
 pub use images::{DrawOutcome, ImageRequest, ImageSize, Images, NoImages, PageImages};
 pub use layout::{
-    image_box, paginate, paginate_with, Anchor, Margins, Page, Pagination, Style, FONT_SIZES,
+    image_box, paginate, paginate_chapter_with, paginate_with, Anchor, Margins, Page, Pagination,
+    Style, FONT_SIZES,
 };
 pub use reader::{Reader, StepReport};
 pub use screens::{Background, ScreenKind, ScreenSource, SystemScreens};

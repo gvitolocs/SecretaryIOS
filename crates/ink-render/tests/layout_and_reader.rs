@@ -404,3 +404,117 @@ fn emulated_session_with_gestures_and_font_changes() {
     assert_eq!(r.pagination().pages[rep.page].chapter, 1);
     assert_eq!(r.pagination().pages[rep.page].start, 0);
 }
+
+#[test]
+fn a_quick_style_change_shows_the_same_page_then_lays_out_the_rest() {
+    let book = sample_book(150);
+    assert!(book.chapters.len() > 3);
+    let bigger = Style {
+        font_px: Style::default().step_font(1),
+        ..Style::default()
+    };
+    // Somewhere in the third chapter.
+    let at = Anchor {
+        chapter: 2,
+        offset: 900,
+    };
+    let mut slow = reader(book.clone(), 0);
+    let mut quick = reader(book, 0);
+    slow.goto_anchor(at).unwrap();
+    quick.goto_anchor(at).unwrap();
+    let whole = slow.set_style(bigger).unwrap();
+
+    let first = quick.set_style_quick(bigger).unwrap();
+    assert!(quick.layout_pending());
+    assert!(
+        first.updates.len() == 1 && first.updates[0].full,
+        "one full refresh"
+    );
+    assert!(first.pages < whole.pages, "the chapter's pages only");
+    assert!(quick.pagination().pages.iter().all(|p| p.chapter == 2));
+    assert_eq!(quick.current_anchor(), at);
+    // The same lines in the same places; only the footer's number is left out.
+    assert_eq!(
+        quick.pagination().pages[first.page],
+        slow.pagination().pages[whole.page]
+    );
+    let (q, s) = (quick.screen(), slow.screen());
+    let w = PW3_SIZE.w as usize;
+    let number = (PW3_SIZE.h - Style::default().margins.bottom) as usize * w;
+    assert_eq!(q.data[..number], s.data[..number], "the text");
+    let ink = |img: &GrayImage| {
+        (number..img.data.len())
+            .filter(|&i| i % w > w / 2 && img.data[i] < 0x80)
+            .count()
+    };
+    assert!(ink(s) > 0 && ink(q) == 0, "no number in the footer");
+
+    let rest = quick.finish_layout().unwrap().expect("pending");
+    assert!(!quick.layout_pending());
+    assert_eq!((rest.page, rest.pages), (whole.page, whole.pages));
+    assert_eq!(quick.pagination(), slow.pagination());
+    assert_eq!(
+        quick.screen().data,
+        slow.screen().data,
+        "the footer is right now"
+    );
+    assert!(rest.updates.iter().all(|u| !u.full), "a partial update");
+    assert!(quick.finish_layout().unwrap().is_none(), "nothing left");
+    assert_eq!(quick.display().stale_pixels(), 0);
+
+    // complete_layout lays out the rest without drawing.
+    quick.set_style_quick(bigger).unwrap();
+    let shown = quick.screen().data.clone();
+    assert!(quick.complete_layout().is_some());
+    assert!(!quick.layout_pending() && quick.complete_layout().is_none());
+    assert_eq!(quick.page(), whole.page);
+    assert_eq!(quick.screen().data, shown, "nothing drawn");
+
+    // A page turn before finish_layout lays the rest out first.
+    quick.set_style_quick(Style::default()).unwrap();
+    let rep = quick.next_page().unwrap().unwrap();
+    assert!(!quick.layout_pending());
+    slow.set_style(Style::default()).unwrap();
+    let want = slow.next_page().unwrap().unwrap();
+    assert_eq!((rep.page, rep.pages), (want.page, want.pages));
+    assert_eq!(quick.screen().data, slow.screen().data);
+
+    // A one-chapter book has nothing to split: a plain style change.
+    let mut one = reader(from_txt(b"Just one chapter of text.", "One"), 0);
+    one.set_style_quick(bigger).unwrap();
+    assert!(!one.layout_pending());
+}
+
+#[test]
+fn chapters_paginate_alone_as_in_the_whole_book() {
+    let book = sample_book(150);
+    let mut f = fonts();
+    let style = Style::default();
+    let whole = paginate(&mut f, &style, PW3_SIZE, &book);
+    let mut joined = Vec::new();
+    for ci in 0..book.chapters.len() {
+        joined.extend(ink_render::paginate_chapter_with(
+            &mut f,
+            &style,
+            PW3_SIZE,
+            &book,
+            ci,
+            &mut ink_render::NoImages,
+        ));
+    }
+    assert_eq!(joined, whole.pages);
+}
+
+#[test]
+fn a_bad_face_leaves_the_fonts_as_they_were() {
+    let mut f = fonts();
+    let bad = std::env::temp_dir().join(format!("ink-bad-face-{}.ttf", std::process::id()));
+    std::fs::write(&bad, b"not a font").unwrap();
+    assert!(f.set_face(ink_render::Face::Italic, &bad).is_err());
+    assert!(!f.has_face(ink_render::Face::Italic));
+    assert!(f.measure(ink_render::Face::Italic, 30, "still drawn") > 0.0);
+    f.set_face(ink_render::Face::Italic, std::path::Path::new(FONT))
+        .unwrap();
+    assert!(f.has_face(ink_render::Face::Italic));
+    std::fs::remove_file(&bad).unwrap();
+}

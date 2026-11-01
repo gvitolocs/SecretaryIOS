@@ -84,12 +84,18 @@ impl Fonts {
     }
     /// Add a bold/italic face.
     pub fn with_face(mut self, face: Face, path: &Path) -> Result<Self> {
+        self.set_face(face, path)?;
+        Ok(self)
+    }
+    /// Add a bold/italic face in place; on an error the fonts stay as they were (so a caller can
+    /// skip a bad face without parsing it twice).
+    pub fn set_face(&mut self, face: Face, path: &Path) -> Result<()> {
         let bytes =
             std::fs::read(path).map_err(|e| Error::Font(format!("{}: {e}", path.display())))?;
         self.faces[face as usize] = Some(parse(bytes)?);
         self.advances.clear();
         self.glyphs.clear();
-        Ok(self)
+        Ok(())
     }
     pub fn has_face(&self, face: Face) -> bool {
         self.faces[face as usize].is_some()
