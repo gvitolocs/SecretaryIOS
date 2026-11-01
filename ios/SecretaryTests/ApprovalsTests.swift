@@ -305,6 +305,12 @@ final class ApprovalsTests: XCTestCase {
     // MARK: Notifications
 
     func testNotificationActionRouting() {
+        XCTAssertEqual(ApprovalNotificationAction(identifier: ApprovalNotifier.approveAction), .approve)
+        XCTAssertEqual(ApprovalNotificationAction(identifier: ApprovalNotifier.denyAction), .deny)
+        XCTAssertEqual(ApprovalNotificationAction(identifier: UNNotificationDefaultActionIdentifier), .open)
+        XCTAssertNil(ApprovalNotificationAction(identifier: UNNotificationDismissActionIdentifier))
+        XCTAssertNil(ApprovalNotificationAction(identifier: "SOMETHING_ELSE"))
+
         typealias N = ApprovalNotificationAction
         for sensitive in [true, false] {
             for inline in [true, false] {
