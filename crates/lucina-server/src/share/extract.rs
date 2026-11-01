@@ -512,7 +512,11 @@ async fn audio(
 ) -> anyhow::Result<Extracted> {
     let mut x = Extracted::new("audio");
     let (transcript, source) = match on_device.filter(|t| !t.trim().is_empty()) {
-        Some(t) => (t.trim().to_owned(), "on-device"),
+        // The phone's own transcript gets the Voice Learn vocabulary like Whisper's does (lucina-memo).
+        Some(t) => (
+            Box::pin(crate::voice_learn::correct_transcript(st, t.trim())).await,
+            "on-device",
+        ),
         None => match transcribe(st, path, voice).await {
             Ok((t, _)) => (t, "whisper"),
             Err(e) => {

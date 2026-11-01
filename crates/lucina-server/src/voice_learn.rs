@@ -526,9 +526,6 @@ pub async fn apply_ambiguity(st: &AppState, message: String, body: &Value) -> St
     else {
         return message;
     };
-    if !st.cfg.voice_layers {
-        return message;
-    }
     // Clean the sender's spans: short, at most three, each with two to five candidates.
     let spans: Vec<(String, Vec<String>)> = spans
         .iter()
@@ -546,7 +543,42 @@ pub async fn apply_ambiguity(st: &AppState, message: String, body: &Value) -> St
         })
         .take(3)
         .collect();
-    if spans.is_empty() {
+    apply_spans(st, message, spans).await
+}
+
+/// A transcript that did not come through a spoken turn (a voice note's on-device transcript): the vocabulary
+/// corrects it, and doubtful spans go to the `vocab` layer like a spoken turn's. Without a turn trace there is
+/// no call count to share; the layer is still one capped call that fails open.
+pub async fn correct_transcript(st: &AppState, text: &str) -> String {
+    let vocab = st.vocab.get();
+    if vocab.entries.is_empty() {
+        return text.to_owned();
+    }
+    let c = vocab.correct(text);
+    if !c.corrections.is_empty() {
+        tracing::info!(
+            corrections = c.corrections.len(),
+            "voice learn corrected a transcript"
+        );
+    }
+    let spans: Vec<(String, Vec<String>)> = c
+        .ambiguous
+        .iter()
+        .take(3)
+        .map(|a| {
+            (
+                a.heard.clone(),
+                a.candidates.iter().take(5).cloned().collect(),
+            )
+        })
+        .filter(|(h, c): &(String, Vec<String>)| !h.is_empty() && !c.is_empty())
+        .collect();
+    apply_spans(st, c.text, spans).await
+}
+
+/// The `vocab` layer on cleaned spans.
+async fn apply_spans(st: &AppState, message: String, spans: Vec<(String, Vec<String>)>) -> String {
+    if !st.cfg.voice_layers || spans.is_empty() {
         return message;
     }
     let jev = match &st.voice_jev {

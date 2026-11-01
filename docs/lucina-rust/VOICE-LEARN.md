@@ -43,3 +43,13 @@ Same bearer as every `/api/secretary` route. Writes read-modify-write the file u
   id + text), so the same text is never written twice. The response says `memory`: `written`, `removed`,
   `unchanged`, `skipped` (memory off or read-only) or `failed` (the call still succeeds).
 - `vocab` layer: see JEV-ROUTING.md.
+
+## Voice notes
+
+`share/extract.rs` `audio()`: the Whisper branch is corrected inside `lucina_memo::transcribe`; the `on_device`
+branch (the phone's own transcript) goes through `voice_learn::correct_transcript`: `Vocab::correct`, then, if
+spans are ambiguous, the same `vocab` layer as a spoken turn (300 ms, fail open; a voice note has no turn trace,
+so there is no shared call count: it is one call). The corrected text is what the memory record and the turn read;
+the owner's timeline item keeps the phone's transcript as the phone made it. Meanings reach the note's turn through
+the usual `Vocabulary:` context lines (a voice-only note's message is the transcript; a mixed share holds it in the
+shared content).
