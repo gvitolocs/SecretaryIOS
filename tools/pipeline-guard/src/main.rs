@@ -38,7 +38,7 @@ pub fn verdict(command: &str, cwd: &str) -> Option<String> {
     let wt = Regex::new(r#"(^|[\s;&|('"])(~/\.local/bin/)?wt\s+add\b"#).ok()?;
     let push = Regex::new(r#"\bgit\s+(-C\s+\S+\s+|-c\s+\S+\s+)*push\b([^;&|\n'"]*)"#).ok()?;
     let to_main = Regex::new(r"(^|\s|:|\+)(refs/heads/)?main(\s|$)").ok()?;
-    let detached = Regex::new(r"\bworktree\s+add\b[^;&|\n'\"]*\s(--detach|-d)\b").ok()?;
+    let detached = Regex::new(r#"\bworktree\s+add\b[^;&|\n'"]*\s(--detach|-d)\b"#).ok()?;
     if (worktree.is_match(command) && !detached.is_match(command)) || wt.is_match(command) {
         return Some(
             "Lucina repos: start work with `lagent task start \"<title>\" [--repo <path>] [--branch <name>]` on nezopt \
