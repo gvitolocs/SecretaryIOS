@@ -52,6 +52,7 @@ pub mod plugin_turn;
 mod reach_turn;
 pub mod reply;
 mod share_turn;
+mod voice_fast;
 mod youtube_turn;
 
 /// Counted after the MCP prefix (which may add up to 100 more on the wire).
@@ -790,6 +791,15 @@ async fn run_turn_scoped(
     reply_to: Option<String>,
     device_meta: Meta,
 ) -> Result<Value, ApiError> {
+    // LucinaVoice, Jev fast path (docs/lucinavoice-protocol.md section 6): a spoken turn of the owner starts
+    // Jev's intent call first of all, so it runs while the rest of the turn is prepared.
+    let voice_route = (crate::voice::spoken()
+        && existing.is_none()
+        && origin.is_none()
+        && mcp_turn.is_none()
+        && st.cfg.planner == PlannerMode::Json
+        && !crate::selftest::is_session(&session))
+    .then(|| voice_fast::start(&st, &message));
     let normal_share = existing.as_ref().is_some_and(|s| !s.voice_only);
     let secrets_text = existing.as_ref().map(|s| s.owner_text.clone());
     let voice_only = existing.as_ref().is_some_and(|s| s.voice_only);
@@ -905,6 +915,8 @@ async fn run_turn_scoped(
     // Secrets first, without the model: a fixed refusal for reveal requests
     // (MCP included), status and audit for the owner.
     let not_owner = t.mcp.is_some() || t.origin.as_ref().is_some_and(|o| !o.owner);
+    // A fast voice turn (voice_fast) is answered without the model: no rich-reply composer either.
+    let mut voice_fast_turn = false;
     let (finish, prepared) = match secrets_finish(
         &st,
         secrets_text.as_deref().unwrap_or(&t.message),
@@ -919,7 +931,7 @@ async fn run_turn_scoped(
             (f, None)
         }
         None => {
-            let prepared = crate::context::prepare_keyed(
+            let prepare = crate::context::prepare_keyed(
                 &st,
                 &t.surface,
                 &t.session,
@@ -932,36 +944,59 @@ async fn run_turn_scoped(
                 &t.user_label,
                 t.planner_platform(),
                 false,
-            )
-            .await;
-            t.recent()
-                .append(t.recent_key(), "user", &t.message, Utc::now());
-            let game_system = if prepared.game.is_empty() || !t.guarded {
-                prepared.game.clone()
+            );
+            // Voice: Jev's route and the context building run together (the building holds its
+            // model calls until the route is known); a fast intent answers the turn here and drops it.
+            let (open, gate) = crate::voice::gate();
+            let prepare = crate::voice::gated(gate, prepare);
+            let mut prepare = std::pin::pin!(prepare);
+            let mut early = None;
+            let mut fast = None;
+            if let Some(started) = voice_route {
+                let (outcome, announce, done) = started.verdict(prepare.as_mut()).await;
+                early = done;
+                fast = voice_fast::route(&t, outcome, announce).await;
+            }
+            let _ = open.send(true);
+            if let Some(finish) = fast {
+                voice_fast_turn = true;
+                t.recent()
+                    .append(t.recent_key(), "user", &t.message, Utc::now());
+                (finish, None)
             } else {
-                format!("{}\n{}", prepared.game, crate::bridges::GAME_MCP_NOTE)
-            };
-            let game_system = if voice_only {
-                format!("{game_system}\n{}", crate::share::guidance::VOICE_SYSTEM)
-            } else {
-                game_system
-            };
-            // `"voice": true`: every model call of the turn (the plan, the replies) is told it is spoken.
-            let game_system = if crate::voice::spoken() {
-                format!("{game_system}\n{}", crate::voice::SPOKEN_RULE)
-                    .trim()
-                    .to_owned()
-            } else {
-                game_system
-            };
-            let finish = crate::planner::TURN_REPLY
-                .scope(
-                    reply_block,
-                    crate::planner::TURN_SYSTEM
-                        .scope(game_system, json_turn(&t, &prepared, cmid.as_deref())),
-                )
-                .await;
-            (finish, Some(prepared))
+                let prepared = match early {
+                    Some(p) => p,
+                    None => prepare.await,
+                };
+                t.recent()
+                    .append(t.recent_key(), "user", &t.message, Utc::now());
+                let game_system = if prepared.game.is_empty() || !t.guarded {
+                    prepared.game.clone()
+                } else {
+                    format!("{}\n{}", prepared.game, crate::bridges::GAME_MCP_NOTE)
+                };
+                let game_system = if voice_only {
+                    format!("{game_system}\n{}", crate::share::guidance::VOICE_SYSTEM)
+                } else {
+                    game_system
+                };
+                // `"voice": true`: every model call of the turn (the plan, the replies) is told it is spoken.
+                let game_system = if crate::voice::spoken() {
+                    format!("{game_system}\n{}", crate::voice::SPOKEN_RULE)
+                        .trim()
+                        .to_owned()
+                } else {
+                    game_system
+                };
+                let finish = crate::planner::TURN_REPLY
+                    .scope(
+                        reply_block,
+                        crate::planner::TURN_SYSTEM
+                            .scope(game_system, json_turn(&t, &prepared, cmid.as_deref())),
+                    )
+                    .await;
+                (finish, Some(prepared))
+            }
         }
     };
 
@@ -983,7 +1018,8 @@ async fn run_turn_scoped(
             &finish.action,
             &finish.action_result,
             // Secrets replies are fixed texts, AU Find, caller and Jev yes/no answers keep their wording: no model rewrite.
-            !finish.action.starts_with("secrets_")
+            !voice_fast_turn
+                && !finish.action.starts_with("secrets_")
                 && finish.action != au_turn::ACTION
                 && finish.action != callers_turn::ACTION
                 && finish.action != crate::jev_yesno::ACTION,
@@ -1720,6 +1756,33 @@ async fn json_turn(
     }
 }
 
+/// The reminder write of a turn: the JSON planner's `schedule_reminder` and the voice fast path
+/// (`voice_fast`) both go through it.
+async fn create_turn_reminder(
+    t: &Turn<'_>,
+    chat: String,
+    text: String,
+    due: String,
+) -> Result<(bool, lucina_store::reminders::Reminder), lucina_tools::reminder_writer::WriteError> {
+    t.st.writer
+        .create(CreateReminder {
+            text,
+            due_at: due,
+            chat_id: chat,
+            user_peer_id: t.peer().to_owned(),
+            user_label: t.user_label.clone(),
+            persona: t.persona().to_owned(),
+            time_zone: t.st.cfg.time_zone.name().into(),
+            dedupe_key: None,
+            source: t
+                .origin
+                .as_ref()
+                .map_or("secretary", |o| o.reminder_source)
+                .into(),
+        })
+        .await
+}
+
 /// The JSON turn after the read-only shortcuts that come before yes/no questions (decisions, YouTube,
 /// shares, her computer, the ops record, AU Find, caller screening).
 async fn json_turn_rest(
@@ -2202,25 +2265,7 @@ async fn json_turn_rest(
         let Some((text, due)) = resolved else {
             return Finish::reply("I could not work out when to remind you. Try \"domani mattina di comprare il latte\", \"alle 21:30 di fare la doccia\" or \"28 August 2026 — unsubscribe from Google AI Plus\".".to_owned(), &action);
         };
-        return match st
-            .writer
-            .create(CreateReminder {
-                text,
-                due_at: due,
-                chat_id: chat,
-                user_peer_id: t.peer().to_owned(),
-                user_label: t.user_label.clone(),
-                persona: persona.clone(),
-                time_zone: tz.name().into(),
-                dedupe_key: None,
-                source: t
-                    .origin
-                    .as_ref()
-                    .map_or("secretary", |o| o.reminder_source)
-                    .into(),
-            })
-            .await
-        {
+        return match create_turn_reminder(t, chat, text, due).await {
             Ok((created, reminder)) => {
                 let prefix = if created {
                     ""

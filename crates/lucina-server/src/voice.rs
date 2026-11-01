@@ -18,6 +18,10 @@
 //!   known, before rich-reply, Honcho, memory and the timeline. Answers that never reach a `Finish`
 //!   (the `/secret` command, OTP, a replayed `clientMessageId`) settle in [`respond`] from the result.
 //!
+//! Two more events come from the Jev fast path (`chat::voice_fast`, protocol section 6): [`route`] (once, as
+//! soon as the turn's route is decided, before any reply text) and [`ack`] (at most once, for a slow path;
+//! never for a fast turn nor once text was streamed).
+//!
 //! A client that disconnects only drops the receiving end: the turn task goes on and writes the timeline.
 //!
 //! [`Finish`]: crate::chat
@@ -54,12 +58,34 @@ pub enum VoiceEvent {
         sensitive: bool,
         replaces: bool,
     },
+    /// The route the turn takes (protocol section 6): sent once, before any reply text.
+    Route(RouteInfo),
+    /// "One moment…": the turn takes a slow path and nothing was said yet. At most once.
+    Ack(String),
     /// The whole non-streaming response body (`{"ok":true,"data":{…}}`).
     Done(Value),
     Error {
         code: String,
         message: String,
     },
+}
+
+/// The `route` event's data. Never holds transcript text.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RouteInfo {
+    pub intent: String,
+    pub confidence: f64,
+    pub jev_ms: u64,
+    pub fast: bool,
+    /// `jev` (Jev's verdict decided), `tier0` (Jev gave none; a tier-0 rule did) or `fallback`.
+    pub source: &'static str,
+}
+
+impl RouteInfo {
+    pub fn json(&self) -> Value {
+        json!({"intent": self.intent, "confidence": self.confidence, "jev_ms": self.jev_ms,
+            "fast": self.fast, "source": self.source})
+    }
 }
 
 impl VoiceEvent {
@@ -75,6 +101,8 @@ impl VoiceEvent {
                 "reply",
                 json!({"text": text, "sensitive": sensitive, "replaces": replaces}),
             ),
+            VoiceEvent::Route(info) => ("route", info.json()),
+            VoiceEvent::Ack(text) => ("ack", json!({"text": text})),
             VoiceEvent::Done(body) => ("done", body.clone()),
             VoiceEvent::Error { code, message } => {
                 ("error", json!({"code": code, "message": message}))
@@ -96,6 +124,12 @@ struct State {
     markup: bool,
     /// The `reply` event went out.
     replied: bool,
+    /// The `route` event went out.
+    routed: bool,
+    /// The route is a fast one: no `ack`, ever.
+    fast: bool,
+    /// The `ack` event went out.
+    acked: bool,
 }
 
 /// One streamed turn's event sink.
@@ -135,6 +169,28 @@ impl VoiceSink {
         let _ = self.tx.send(VoiceEvent::Delta(text.to_owned()));
     }
 
+    /// The turn's route (once per turn; later calls do nothing).
+    pub fn route(&self, info: RouteInfo) {
+        let mut s = self.state();
+        if s.routed {
+            return;
+        }
+        s.routed = true;
+        s.fast = info.fast;
+        let _ = self.tx.send(VoiceEvent::Route(info));
+    }
+
+    /// "One moment…", once per turn, after the route and only while nothing was said: never for a fast
+    /// turn, never once text was streamed or the reply settled.
+    pub fn ack(&self, text: &str) {
+        let mut s = self.state();
+        if !s.routed || s.fast || s.acked || s.replied || !s.streamed.is_empty() {
+            return;
+        }
+        s.acked = true;
+        let _ = self.tx.send(VoiceEvent::Ack(text.to_owned()));
+    }
+
     /// The turn's settled reply text. Exactly one `reply` event per turn: later calls do nothing.
     pub fn settle(&self, text: &str, sensitive: bool) {
         let mut s = self.state();
@@ -157,6 +213,9 @@ impl VoiceSink {
 }
 
 tokio::task_local! {
+    /// Jev's route for a spoken turn is not decided yet (`chat::voice_fast`): the context building runs
+    /// next to it but must not start a model call a fast route would make pointless ([`hold`]).
+    static GATE: tokio::sync::watch::Receiver<bool>;
     /// The streamed turn's sink. Absent: the turn behaves as it always did.
     static SINK: Arc<VoiceSink>;
     /// `"voice": true`: the turn is spoken aloud (set by `chat::handle_chat`, streamed or not).
@@ -168,6 +227,25 @@ pub async fn scope<F: std::future::Future>(sink: Option<Arc<VoiceSink>>, fut: F)
     match sink {
         Some(s) => SINK.scope(s, fut).await,
         None => fut.await,
+    }
+}
+
+/// A gate for a spoken turn's context building: a future wrapped by [`gated`] waits at [`hold`] until the
+/// returned sender sends `true`.
+pub fn gate() -> (tokio::sync::watch::Sender<bool>, tokio::sync::watch::Receiver<bool>) {
+    tokio::sync::watch::channel(false)
+}
+
+/// Runs `fut` behind `rx`'s gate.
+pub async fn gated<F: std::future::Future>(rx: tokio::sync::watch::Receiver<bool>, fut: F) -> F::Output {
+    GATE.scope(rx, fut).await
+}
+
+/// Waits for the turn's route to be decided, when the turn has a gate (nothing otherwise). A model call
+/// that only the normal path needs waits here; a fast route drops the turn's context building instead.
+pub async fn hold() {
+    if let Ok(mut rx) = GATE.try_with(Clone::clone) {
+        let _ = rx.wait_for(|open| *open).await;
     }
 }
 
@@ -184,6 +262,26 @@ pub fn spoken() -> bool {
 /// Feeds the current turn's sink (nothing outside a streamed turn).
 pub fn delta(text: &str) {
     let _ = SINK.try_with(|s| s.delta(text));
+}
+
+/// Announces the current turn's route (nothing outside a streamed turn; once per turn).
+pub fn route(info: RouteInfo) {
+    let _ = SINK.try_with(|s| s.route(info));
+}
+
+/// The `ack` event for a slow path (nothing outside a streamed turn; at most once, never after the first
+/// words).
+pub fn ack(text: &str) {
+    let _ = SINK.try_with(|s| s.ack(text));
+}
+
+/// "Un attimo…" in the turn's language (`planner::TURN_LANG`).
+pub fn ack_text() -> &'static str {
+    match crate::jev_yesno::turn_lang_code() {
+        "it" => "Un attimo…",
+        "da" => "Et øjeblik…",
+        _ => "One moment…",
+    }
 }
 
 /// Settles the current turn's reply (nothing outside a streamed turn; once per turn).
@@ -409,6 +507,84 @@ mod tests {
             }
         );
         assert!(rx.try_recv().is_err());
+    }
+
+    fn info(fast: bool) -> RouteInfo {
+        RouteInfo {
+            intent: "temporal_query".into(),
+            confidence: 0.95,
+            jev_ms: 210,
+            fast,
+            source: "jev",
+        }
+    }
+
+    #[test]
+    fn route_and_ack_frames_are_the_documented_events() {
+        assert_eq!(
+            VoiceEvent::Route(info(true)).frame(),
+            "event: route\ndata: {\"confidence\":0.95,\"fast\":true,\"intent\":\"temporal_query\",\"jev_ms\":210,\"source\":\"jev\"}\n\n"
+        );
+        assert_eq!(
+            VoiceEvent::Ack("Un attimo…".into()).frame(),
+            "event: ack\ndata: {\"text\":\"Un attimo…\"}\n\n"
+        );
+        assert!(!VoiceEvent::Route(info(false)).last());
+        assert!(!VoiceEvent::Ack("x".into()).last());
+    }
+
+    #[test]
+    fn the_ack_comes_once_after_the_route_and_before_any_words() {
+        // Never before the route (a turn that was not routed has no ack).
+        let (s, mut rx) = sink();
+        s.ack("Un attimo…");
+        assert!(rx.try_recv().is_err());
+        // Route, then the ack once.
+        s.route(info(false));
+        s.route(info(true));
+        s.ack("Un attimo…");
+        s.ack("Un attimo…");
+        assert!(matches!(rx.try_recv().unwrap(), VoiceEvent::Route(i) if !i.fast));
+        assert_eq!(rx.try_recv().unwrap(), VoiceEvent::Ack("Un attimo…".into()));
+        assert!(rx.try_recv().is_err(), "one route, one ack");
+
+        // A fast turn never gets one.
+        let (s, mut rx) = sink();
+        s.route(info(true));
+        s.ack("Un attimo…");
+        assert!(matches!(rx.try_recv().unwrap(), VoiceEvent::Route(_)));
+        assert!(rx.try_recv().is_err());
+
+        // Not once words were streamed, nor once the reply is settled.
+        let (s, mut rx) = sink();
+        s.route(info(false));
+        s.delta("Ciao");
+        s.ack("Un attimo…");
+        let (s2, mut rx2) = sink();
+        s2.route(info(false));
+        s2.settle("Fatto.", false);
+        s2.ack("Un attimo…");
+        assert!(matches!(rx.try_recv().unwrap(), VoiceEvent::Route(_)));
+        assert!(matches!(rx.try_recv().unwrap(), VoiceEvent::Delta(_)));
+        assert!(rx.try_recv().is_err());
+        assert!(matches!(rx2.try_recv().unwrap(), VoiceEvent::Route(_)));
+        assert!(matches!(rx2.try_recv().unwrap(), VoiceEvent::Reply { .. }));
+        assert!(rx2.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn the_gate_holds_until_it_opens_and_is_free_without_one() {
+        hold().await; // no gate: returns at once
+        let (open, rx) = gate();
+        let started = std::time::Instant::now();
+        let waiter = tokio::spawn(gated(rx, async move {
+            hold().await;
+            started.elapsed()
+        }));
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert!(!waiter.is_finished());
+        open.send(true).unwrap();
+        assert!(waiter.await.unwrap() >= Duration::from_millis(55));
     }
 
     #[tokio::test]

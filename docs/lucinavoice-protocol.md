@@ -143,29 +143,53 @@ Measured before (stub audio → first audio, server side): "che ore sono?" 1.6�
 sentence 0.4–0.9 s. The rest is the planner LLM, which runs after Jev has already classified the turn in about 0.2 s.
 
 ### lucina-rs (voice turns only: `voice: true`)
-- **Jev starts first.** Jev intent classification starts at the beginning of the turn, concurrently with the rest of
-  the turn's setup. Its state is facts only: the transcript, the current local date and time, and the channel `voice`,
-  in the same template every time with no guessed context. Cap: 400 ms. A slower answer, a quota error or a breaker
-  means fail open to today's path (tier-0, then planner), unchanged.
-- **Fast intents** are answered without the planner LLM, with a short templated spoken reply in the turn's language
-  (it/en). They are taken only when Jev's confidence is at least `LUCINA_VOICE_FAST_MIN` (default 0.85) and the
-  existing tier-0 rules don't contradict it:
-  - `temporal_query`, only for the current time or date (today's date, weekday, time); anything needing data
-    (deadlines, appointments) goes the normal way;
-  - `grocery.shopping_list.query`, read from the store;
-  - `list_reminders`, today's or upcoming, read from the store;
-  - `grocery.shopping_list.add` / `.remove` and `schedule_reminder` (including relative timers), only when the
-    existing deterministic parsers resolve them without an LLM (items, due time). Otherwise they take the normal
-    path. The write goes through the same store and writers as the normal path.
+Implemented in `crates/lucina-server/src/chat/voice_fast.rs` (details: `docs/lucina-rust/JEV-ROUTING.md`).
+It routes the owner's own spoken turns on the JSON planner (`LUCINA_PLANNER=json`). A turn from an MCP caller,
+a share, a guest channel or the tools planner is not routed: no Jev call, no `route`, no `ack`, and the
+normal path as before.
+- **Jev starts first.** Jev intent classification starts at the very beginning of the turn, in a task of its
+  own, concurrently with the rest of the turn's setup (context building runs next to it; it holds its
+  tier-1 model call until the route is known, so a fast turn makes no model call at all). Its state is
+  facts only: the transcript, the current local date and time (with weekday and time zone), and the channel
+  `voice`, in the same template every time with no guessed context. The questions are the ones of everyday
+  intent routing, so verdicts stay comparable. Cap: `LUCINA_VOICE_JEV_CAP_MS`, 400 ms. A slower answer,
+  a quota error or a breaker means fail open to today's path (tier-0, then planner), unchanged.
+- **Fast intents** are answered without the planner LLM, with a short templated spoken reply in the turn's
+  language (it/en; the language the turn's other replies use). They are taken only when Jev's confidence is
+  at least `LUCINA_VOICE_FAST_MIN` (default 0.85) and the existing tier-0 rules don't contradict it (a tier-0
+  rule for another intent wins; plain `chat` does not count as a contradiction for a read):
+  - `temporal_query`, only when the whole sentence is a plain question about the current time or date
+    ("che ore sono?", "che giorno è oggi?", "what time is it?"); anything else, such as a deadline, an
+    appointment, another city or another day, goes the normal way;
+  - `grocery.shopping_list.query`, read from the store (at most 8 items read out);
+  - `list_reminders`, today's or upcoming, read from the store (at most 3 read out);
+  - `grocery.shopping_list.add` / `.remove` and `schedule_reminder` (including relative timers), only when
+    the existing deterministic parsers resolve them without an LLM: `parse_grocery_intent` returns the same
+    intent with a product; `parse_reminder_message` and `resolve_reminder` give the text and the due time.
+    Otherwise they take the normal path. The write goes through the same store and writers as the normal
+    path (`grocery_turn::process`, the reminder writer).
+  - Never fast: a compound question over several data sources, a notes request, and (for the intents with
+    it/en templates) a transcript in Danish.
 - A fast turn still writes the timeline (user item and Lucina item) like a normal turn, so the app shows it.
-- **SSE additions** (both optional for clients):
-  - `event: route` / `data: {"intent","confidence","jev_ms","fast":bool,"source":"jev"|"tier0"|"fallback"}`, as soon
-    as the route is decided, before any reply text;
-  - `event: ack` / `data: {"text":"Un attimo…"}`, sent right after `route` when the turn will take a slow path
-    (intents `web_crawl`, `computer_task`, `explicit_memory_recall`, `calendar_event`, `agent_message`,
-    `generate_image`, `graph_task`, `spreadsheet_update`, `cursor_task`, or any planner turn whose reply is not
-    streaming), at most once per turn. It is never sent for fast turns or for streamed chat.
-- **Log line:** one `event="voice_route"` line per voice turn with intent, confidence, jev_ms, fast and source.
+  Its `reply` event has `replaces: true` (nothing was streamed) and no `delta` comes before it; `done` is the
+  normal body (no rich-reply composer runs, so no model call).
+- **SSE additions** (both optional for clients; `route` and `ack` are not sent for turns that are not routed,
+  nor when lucina-rs has no Jev client configured: then the stream is the one of section 1, event for
+  event. A configured Jev that is down, cooling or too slow still gets `route`, with `source` `tier0` or
+  `fallback`):
+  - `event: route` / `data: {"intent","confidence","jev_ms","fast":bool,"source":"jev"|"tier0"|"fallback"}`, as
+    soon as the route is decided, before any reply text. `source` is `jev` when Jev's verdict decided (fast or
+    not), `tier0` when Jev gave none (slow, failed or unavailable) and a tier-0 rule names the intent, else
+    `fallback` (intent `unknown`, confidence 0). `jev_ms` is the time spent on Jev (0 when it was not called;
+    the cap on a timeout). A fast route is always `source: "jev"`;
+  - `event: ack` / `data: {"text":"Un attimo…"}` (it, `Et øjeblik…` da, `One moment…` otherwise), sent when
+    the turn will take a slow path: right after `route` for the intents `web_crawl`, `computer_task`,
+    `explicit_memory_recall`, `calendar_event`, `agent_message`, `generate_image`, `graph_task`,
+    `spreadsheet_update`, `cursor_task`, and, for any other planner turn whose reply is not streaming, when the
+    JSON plan call starts. At most once per turn, always after `route`, and never for fast turns, never
+    once words were streamed or the reply was settled (so never for streamed chat).
+- **Log line:** one `event="voice_route"` line per routed voice turn (target `lucina_voice::route`) with intent,
+  confidence, jev_ms, fast, source, and `jev` (`ok`/`failed`) with `reason` (`unavailable`, `timeout`, `error`).
 
 ### secretary-server
 - **Filler audio:** at startup (a background task, `voice_filler::spawn_prewarm`; it never delays the listener),

@@ -213,6 +213,8 @@ pub async fn classify(
             }
         }
     }
+    // A spoken turn's Jev route may still make this model call pointless (`chat::voice_fast`).
+    crate::voice::hold().await;
     match st.planner.classify_json(&t).await {
         Ok(Some(v)) => tier0::from_model_json(&v, user_text, recent, s),
         Ok(None) | Err(_) if jev.is_some() => {

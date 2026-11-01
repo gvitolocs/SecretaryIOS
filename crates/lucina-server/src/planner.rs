@@ -526,6 +526,9 @@ impl Planner {
     /// `planResponse` (Lucina): the JSON plan plus Node's post-processing. The request asks for JSON
     /// mode; a reply that still is not JSON gets one repair retry before the caller falls back.
     pub async fn plan_response(&self, t: &TurnInput<'_>) -> Result<Value, LlmError> {
+        // A spoken turn that needs the JSON plan has nothing to say for seconds (docs/lucinavoice-protocol.md
+        // section 6): the caller hears "One moment…" once (the sink ignores it after the first words).
+        crate::voice::ack(crate::voice::ack_text());
         let system = format!(
             "{}\n\n{PLAN_JSON_REMINDER}",
             with_turn_system(

@@ -41,7 +41,7 @@ fn store(r: &StoreRow) -> Store {
 }
 
 /// Shopping-list replies in the language of the owner's message (Node `SHOPPING_REPLIES`).
-fn shopping_reply(lang: &str, kind: &str, name: &str) -> String {
+pub(crate) fn shopping_reply(lang: &str, kind: &str, name: &str) -> String {
     match (lang, kind) {
         ("it", "added") => format!("Ho aggiunto {name} alla lista della spesa."),
         ("it", "already") => format!("{name} è già nella lista della spesa."),

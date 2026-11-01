@@ -80,7 +80,7 @@ pub const INTENT_OPTIONS: &[(&str, &str)] = &[
     ("unknown", "None of the above fits, or the message cannot be understood."),
 ];
 
-fn intent_questions() -> Vec<(&'static str, Question)> {
+pub(crate) fn intent_questions() -> Vec<(&'static str, Question)> {
     vec![
         (
             "intent",

@@ -68,6 +68,15 @@ pub struct Config {
     pub mcp_owner_clients: Vec<String>,
     /// `LUCINA_RICH_COMPOSE_TIMEOUT_MS` (25000): one JSON-mode compose call.
     pub rich_compose_timeout: Duration,
+    /// `LUCINA_VOICE_FAST_MIN` (0.85): Jev's confidence from which a voice turn takes a fast intent
+    /// (`chat::voice_fast`, docs/lucinavoice-protocol.md section 6).
+    pub voice_fast_min: f64,
+    /// `LUCINA_VOICE_JEV_CAP_MS` (400): how long a voice turn waits for Jev's route; a slower answer
+    /// leaves the turn on the normal path.
+    pub voice_jev_cap: Duration,
+    /// Test seam: the Jev client for voice routing. `None` (always, in production): the process-wide
+    /// client (`lucina_jev::shared`).
+    pub voice_jev: Option<lucina_jev::Config>,
     /// `LUCINA_MAPS_GEOCODE_URL` (+ `LUCINA_MAPS_UPSTREAM_KEY_FILE`): fill the
     /// coordinates of place blocks from the map server; unset = off.
     pub maps_geocode: Option<crate::geocode::GeocodeConfig>,
@@ -445,6 +454,12 @@ impl Config {
             rich_compose_timeout: Duration::from_millis(
                 num("LUCINA_RICH_COMPOSE_TIMEOUT_MS", 25_000).max(1000),
             ),
+            voice_fast_min: get("LUCINA_VOICE_FAST_MIN")
+                .and_then(|v| v.trim().parse::<f64>().ok())
+                .filter(|v| (0.0..=1.0).contains(v))
+                .unwrap_or(0.85),
+            voice_jev_cap: Duration::from_millis(num("LUCINA_VOICE_JEV_CAP_MS", 400).max(1)),
+            voice_jev: None,
             maps_geocode: crate::geocode::GeocodeConfig::from_lookup(&get),
             notes_enabled: flag("LUCINA_NOTES", false),
             calendar_enabled: flag("LUCINA_CALENDAR", false),

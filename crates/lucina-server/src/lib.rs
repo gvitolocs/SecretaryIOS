@@ -143,6 +143,8 @@ pub struct Inner {
     pub ops: Option<Arc<lucina_ops::Ops>>,
     /// The Obsidian ingest (`LUCINA_VAULT_INGEST=on`, crate::ops); `None`: off.
     pub ingest: Option<Arc<lucina_vault_ingest::Ingest>>,
+    /// The Jev client of the voice fast path when the config sets one (tests); `None`: the shared client.
+    pub voice_jev: Option<Arc<lucina_jev::Jev>>,
 }
 
 #[derive(Clone)]
@@ -516,6 +518,7 @@ impl AppState {
             supervisor: Arc::default(),
             ops,
             ingest,
+            voice_jev: cfg.voice_jev.clone().map(|c| Arc::new(lucina_jev::Jev::new(c))),
             hospital_health: Arc::new(Mutex::new(bot_hospital::HospitalHealth {
                 enabled: cfg.hospital.enabled && cfg.hospital.daily_audit_enabled,
                 ..Default::default()
