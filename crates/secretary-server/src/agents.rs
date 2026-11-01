@@ -76,7 +76,7 @@ pub const STREAM_IDLE: Duration = Duration::from_secs(90);
 const LONG_POLL: Duration = Duration::from_secs(15 * 60);
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 /// The daemon's top-level routes.
-const TOP: [&str; 13] = ["permissions", "workspaces", "projects", "clone", "providers", "stream", "commands", "files", "health", "schedules", "usage", "terminals", "catalog"];
+const TOP: [&str; 15] = ["permissions", "workspaces", "projects", "clone", "providers", "stream", "commands", "files", "health", "schedules", "usage", "terminals", "catalog", "pipeline", "devices"];
 const PASS: [HeaderName; 3] = [header::CONTENT_TYPE, header::ACCEPT, HeaderName::from_static("last-event-id")];
 /// Also passed on to a workspace service (the dev server an agent started).
 const PASS_SERVICE: [&str; 5] = ["accept-language", "if-none-match", "if-modified-since", "range", "x-requested-with"];
@@ -469,6 +469,8 @@ mod tests {
             ("/v1/agents/workspaces/wks_1/diff", "/workspaces/wks_1/diff"),
             ("/v1/agents/projects", "/projects"),
             ("/v1/agents/clone", "/clone"),
+            ("/v1/agents/pipeline/board", "/pipeline/board"),
+            ("/v1/agents/devices", "/devices"),
             ("/v1/agents/providers", "/providers"),
             ("/v1/agents/stream", "/stream"),
             ("/v1/agents/commands", "/commands"),

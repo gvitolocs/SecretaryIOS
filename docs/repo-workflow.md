@@ -3,6 +3,38 @@
 Since 2026-10-30 SecretaryIOS has **one long-lived branch, `main`**. Every deploy target is built from `main`, and what
 is live is marked with tags, not with branches.
 
+## Every session, every Lucina repo (since 2026-11-01): Lucina is the pipeline
+
+Lucina Agents (`lagent`, lucina-agentd on nezopt) owns the path from a task to main, production and the devices.
+Sessions don't make worktrees, merge, deploy or install by hand any more. On the Mac, `~/.local/bin/lagent`
+forwards to nezopt and passes your session id; on nezopt it is `~/.local/bin/lagent`.
+
+```sh
+lagent task start "Instagram gallery paging" [--repo ~/Projects/Lucina/lucinaos] [--branch ig-gallery-paging]
+#   -> a fresh worktree from origin/main in ~/Projects/.worktrees/<Repo>/<branch>, registered with your session
+cd <the printed path>; …work…; git commit …           # commit everything that belongs to the task
+lagent merge <workspace id | path | branch>          # queued; Lucina rebases on origin/main, runs the repo's gates
+                                                     # (.lucina/pipeline.toml), pushes main, archives the workspace
+lagent deploy lucina-agentd --note "what it brings"  # from main's tip: deploy-guard plan/check, install, record
+lagent board                                         # every workspace's state, the queue, leases, recent deploys
+lagent device lease iphone --purpose "owner test"    # devices are leased (iphone, stick, kindle, poco)
+```
+
+- **One task, one workspace.** `lagent task start` instead of `wt add` / `git worktree add` (a hook denies those in
+  Lucina repos). A worktree you already made by hand: `lagent task adopt <path>`.
+- **Main moves only through the queue.** `lagent merge` instead of `git push origin HEAD:main` (the hook denies that
+  too). One merge at a time, FIFO, under `/tmp/lucina-merge.lock`; the CLI shows the log and exits non-zero on
+  `CONFLICT` (merge `origin/main` into your branch, commit, merge again) or `GATE_FAILED` (`lagent job logs <id>`).
+  The session's worktree is never touched during the merge; afterwards it is archived (worktree and branch go,
+  gitignored outputs too: copy artifacts out first) unless you pass `--keep`.
+- **Deploys** go through `lagent deploy <runtime>` where `.lucina/pipeline.toml` has a recipe (`lucina-agentd`,
+  `lucina-rs` so far). Other runtimes still deploy by hand as in "Deploying" below, always through deploy-guard.
+- **Devices**: lease before you touch one; the iPhone installs only through `ios-install` (main's tip, or a test
+  build the owner approved through `lucina_decide`), and owner tests go through the coordinator session.
+- **Exceptions** need the owner's go (`lucina_decide`); then `LAGENT_BYPASS=<reason>` in the command passes the hook
+  and is logged.
+- Design and internals: [`docs/design/agents-pipeline.md`](design/agents-pipeline.md).
+
 ## Why
 
 Until 2026-10-30 the repo had five deploy-line branches: `lucina-rs` (nezopt), `server-live` (p1 server and MCP),
@@ -29,12 +61,12 @@ specified with one `main`. The lines were a drift away from the verified design.
 
 ## Rules
 
-1. **Work on a topic branch from `origin/main`**: `wt add <topic> origin/main` on nezopt. Never branch from, or merge,
-   another deploy target's tree. There is only `main`.
-2. **Land on `main`** with a PR, or under the lock:
-   - `flock /tmp/lucina-merge.lock`, then `git fetch`, `git merge origin/main` (or rebase), the gates, and
-     `git push origin HEAD:main`.
-   - Fast-forward only: never force-push `main`.
+1. **Work on a topic branch from `origin/main`**: `lagent task start "<title>"` on nezopt (it runs `wt add <topic>
+   origin/main` for you and registers the task). Never branch from, or merge, another deploy target's tree. There is
+   only `main`.
+2. **Land on `main`** through the merge queue: `lagent merge <workspace>` (rebase or merge onto `origin/main`, the
+   gates, a fast-forward push, all under `/tmp/lucina-merge.lock`). A GitHub PR merged on GitHub is fine too; the
+   merge sweep then archives the workspace. Never force-push `main`.
 3. **Shared code changes once.** A change to `secretary-core`, `lucina-store` or `web/src/lib` lands once on `main`.
    `deploy-guard plan` then shows every runtime it touches.
 4. **Deploy from `main` only.** `deploy-guard check` takes the lock first (it refuses at once without it), then
@@ -82,8 +114,12 @@ falls back to `origin/main`. `LUCINA_WEB_REF` still overrides it.
 
 ## Deploying
 
+With a recipe in `.lucina/pipeline.toml`: `lagent deploy <runtime> --note "<what>"` does all of the below in
+`~/Projects/.worktrees/SecretaryIOS/.deploy`. Without one, by hand, from a clean detached checkout of main's tip
+(`git worktree add --detach` is fine here: a deploy tree is not a task; give the command `LAGENT_BYPASS=deploy-tree`):
+
 ```sh
-cd <worktree at origin/main>          # wt add deploy-<runtime> origin/main
+cd <worktree at origin/main>          # detached at origin/main
 flock /tmp/lucina-merge.lock bash -c '
   git fetch -q origin && git merge-base --is-ancestor HEAD origin/main   # on main
   ~/.local/bin/deploy-guard plan                        # which runtimes main changed
@@ -139,5 +175,5 @@ Bringing a plugin into the workspace later takes one PR: add it to `members` and
 ## Agents and lanes
 
 Lucina work goes through `lane run --category deep-lucina|routine-lucina` (no Codex). Specs name `main` as the base,
-and the worktree is `wt add <topic> origin/main`. An agent never merges a whole branch into another to "sync" a line:
+and the worktree is the task's (`lagent task start`), merged with `lagent merge`. An agent never merges a whole branch into another to "sync" a line:
 there are no lines.

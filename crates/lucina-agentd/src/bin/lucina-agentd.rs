@@ -81,9 +81,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         gate: GateConfig::from_env(),
         workspaces: lucina_agentd::workspaces::Config::from_env(),
         terminals: lucina_agentd::terminals::Config::from_env(&state_dir),
+        pipeline: lucina_agentd::pipeline::Config::from_env(&state_dir),
     };
     let manager = Manager::open_with(Store::open(&state_dir)?, providers, lanes, options)?;
     manager.spawn_sweeper();
+    manager.spawn_pipeline();
     manager.spawn_command_sweeper();
     manager.spawn_terminal_ticker();
     manager.terminals().configure(|c| {
