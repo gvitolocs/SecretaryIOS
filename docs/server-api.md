@@ -208,6 +208,33 @@ call, never for signed `/s/*` media) does not use up the 60 requests a minute
 the app's own routes share. No CSRF check here: Caddy turns the subrequest into
 a GET and gates the real method (`X-Secretary-CSRF: 1` for cookie writes).
 
+### QR sign-in (`/v1/session/qr*`)
+
+A signed-out client shows a QR code (or a 6-digit code) and polls; a device
+that is already signed in approves it. No password is typed. Requests live 120 s
+in the server's memory and are collected once.
+
+| Route | Auth | |
+|---|---|---|
+| `POST /v1/session/qr` | none | Optional body `{"device": {"name": "…"}}`. `200` `{code, shortCode, pollToken, approveUrl, expiresIn}`. Counts as a login attempt of the client IP. |
+| `GET /v1/session/qr/image?c=<code>` | none | The QR of `approveUrl` (SVG). |
+| `GET /v1/session/qr/poll?t=<pollToken>` | none | `{status: "pending" \| "approved" \| "denied" \| "expired"}`. |
+| `GET /v1/session/qr/info?c=<code or shortCode>` | device | For the approve screen: `{kind: "browser" \| "device", deviceName?, ip, userAgent, createdAt, expiresIn}`. |
+| `POST /v1/session/qr/approve {code, approve}` | device | `{status: "approved" \| "denied"}`; `409 qr_already_decided`, `404 qr_not_found`. |
+
+- **Browser** (no body, or no `device`): the poll that sees `approved` sets the
+  `sec_session` cookie and answers `{status: "approved", authenticated: true,
+  deviceId, deviceName}`.
+- **Headless device** (the LucinaVoice speaker, say): send
+  `{"device": {"name": "LucinaVoice"}}`, 1–40 printable characters
+  (else `400 bad_request`; a body that is not JSON is `400 invalid_json`).
+  `info` then says `kind: "device"` and the name, so the approver knows what
+  they are pairing. The poll that sees `approved` registers a device exactly
+  like `POST /v1/auth/device` and answers `{status: "approved", token:
+  "sec_…", deviceId, deviceName}` with **no cookie**. The token is shown once;
+  store it and send it as `Authorization: Bearer`. If the response is lost the
+  device exists but its token is gone: revoke it and pair again.
+
 ## Health
 
 ### `GET /v1/health` (no auth)
@@ -1266,6 +1293,61 @@ tts_unavailable` (Kokoro unreachable or failed), `504 tts_unavailable`
 const r = await api("/v1/tts", { method: "POST", body: { text } });
 const audio = new Audio(URL.createObjectURL(await r.blob()));
 await audio.play();
+```
+
+### `POST /v1/voice` (authenticated)
+
+One push-to-talk turn for LucinaVoice, the ESP32 speaker: audio in, Lucina's
+spoken answer out.
+
+Request: the recording as the body, with `Transfer-Encoding: chunked` (the
+device streams it while the button is held) or a `Content-Length`. At most 1 MiB
+(about 32 s).
+
+| `Content-Type` | Body |
+|---|---|
+| `audio/x-s16le;rate=16000` | Raw little-endian signed 16-bit mono PCM at 16 kHz (wrapped into a WAV header by the server). |
+| `audio/wav` | A PCM WAV file (sent to the transcriber as is). |
+
+Optional query `lang=it\|en` (`it-IT` style accepted) picks the Kokoro voice
+and the language of the fixed phrases; without it the voice follows the
+language of the reply text, as for `/v1/tts`.
+
+The server transcribes the audio (Gemini, the same provider and settings as
+`/v1/calls/transcribe`, as a plain transcript), sends the transcript to Lucina
+like `POST /v1/chat` (`sessionId: "lucinavoice"`, `channel: "web"`, the calling
+device) and synthesizes the reply with Kokoro. A reply Lucina marks `sensitive`
+is not spoken: the device hears "I'll answer that in the app." (Italian: "Ti
+rispondo nell'app.") and the text never appears in a header. An empty reply
+becomes "Sorry, I don't have an answer." The spoken text is the reply with
+markdown marks dropped, at most 1200 characters.
+
+`200`: `Content-Type: audio/x-s16le;rate=24000`, raw little-endian signed 16-bit
+mono PCM at **24 kHz**, streamed chunked as Kokoro produces it (chunk boundaries
+do not respect sample boundaries). Headers:
+
+| Header | Value |
+|---|---|
+| `X-Lucina-Transcript` | What was heard. UTF-8, cut at 1000 bytes on a character boundary, then percent-encoded (everything but `A-Za-z0-9-_.~`). |
+| `X-Lucina-Reply` | The text that is spoken, same encoding. |
+| `X-TTS-Voice` | The voice used. |
+
+Errors: `400 bad_request` (`lang`), `400 invalid_audio` (a `audio/wav` body
+that is not a PCM WAV), `401`, `413 payload_too_large`, `415
+unsupported_media_type`, `422 no_speech` (empty, under 0.3 s of audio, or an
+empty transcript), `429 rate_limited` (20 turns/minute per device, its own
+bucket), `429 voice_busy` (the device's previous turn is still running), `429
+transcription_provider_refused`, `502 transcription_failed` /
+`lucina_unreachable` / `lucina_error` / `tts_unavailable`, `503
+transcription_unavailable` (no `SECRETARY_GEMINI_KEY_FILE`), `504`
+`lucina_timeout` / `tts_unavailable`.
+
+```sh
+# 16 kHz mono s16le PCM from a file, streamed chunked, reply as raw PCM
+curl -sS -D - -X POST "$HOST/v1/voice?lang=it" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: audio/x-s16le;rate=16000" \
+  -H "Transfer-Encoding: chunked" --data-binary @speech.s16le -o reply.s16le
+ffplay -f s16le -ar 24000 -ac 1 reply.s16le
 ```
 
 ## Avatar wardrobe
@@ -2458,7 +2540,7 @@ video?, rigged?}`. Clients build the file URLs from the id on their own origin.
 | 409 | `conflict` | gym/body engine | Stale `expected_revision` (engine body `{ok:false, code, error}`). |
 | 409 | `conflict` | server | `PATCH /v1/notes/{key}` with a stale `baseUpdatedAt`. |
 | 409 | `slug_taken`, `notes_full` | server | Notes: the slug is used by another note; 2000 live notes. |
-| 413 | `payload_too_large` | server or Lucina | Body over 256 KiB (server; 768 KiB on `/v1/notes*`, 4.5 MiB for `POST /v1/device/events`) / 64 KiB (Lucina). |
+| 413 | `payload_too_large` | server or Lucina | Body over 256 KiB (server; 768 KiB on `/v1/notes*`, 4.5 MiB for `POST /v1/device/events`, 1 MiB for `POST /v1/voice`) / 64 KiB (Lucina). |
 | 413 | `note_too_large` | server | A note would hold more than 256 KiB of text. |
 | 415 | `unsupported_media_type` | server | Body without `Content-Type: application/json`. |
 | 422 | `invalid_command`, `op_id_reused` | gym/body engine | Engine rejected the command (engine body). |
@@ -2469,7 +2551,9 @@ video?, rigged?}`. Clients build the file URLs from the id on their own origin.
 | 500 | `storage_error` | gym/body engine | The server could not write the module file (engine body). |
 | 502 | `lucina_error` | server | Lucina failed (5xx), rejected the server's credentials, has the secretary API disabled, or answered off-contract. |
 | 502 | `lucina_unreachable` | server | Could not connect to Lucina. |
-| 502 | `tts_unavailable` | server | Kokoro unreachable or failed (`POST /v1/tts`). |
+| 502 | `tts_unavailable` | server | Kokoro unreachable or failed (`POST /v1/tts`, `POST /v1/voice`). |
+| 422 | `no_speech` | server | `POST /v1/voice`: empty or under 0.3 s of audio, or an empty transcript. |
+| 429 | `voice_busy` | server | `POST /v1/voice`: the device's previous turn is still running. |
 | 503 | `lucina_not_configured` | server | The server has no Lucina token configured. |
 | 503 | `au_unavailable` | server | `/v1/au/*`: Lucina or AU Find is not reachable right now. |
 | 503 | `catalog_unavailable` | server | `catalog.{lang}.json` missing from `SECRETARY_CATALOG_DIR`. |

@@ -120,7 +120,12 @@ impl H {
         DeviceStore::new(&self.data).issue("Phone").unwrap().1
     }
 
-    async fn approve_with_bearer(&self, token: &str, code: &str, approve: bool) -> (StatusCode, Value) {
+    async fn approve_with_bearer(
+        &self,
+        token: &str,
+        code: &str,
+        approve: bool,
+    ) -> (StatusCode, Value) {
         let (s, v, _) = self
             .send(
                 self.http
@@ -250,7 +255,10 @@ async fn requests_expire() {
         .json::<Value>()
         .await
         .unwrap();
-    let (code, token) = (r["code"].as_str().unwrap(), r["pollToken"].as_str().unwrap());
+    let (code, token) = (
+        r["code"].as_str().unwrap(),
+        r["pollToken"].as_str().unwrap(),
+    );
     tokio::time::sleep(Duration::from_millis(400)).await;
     let phone = h.device_token();
     let (s, _) = h.approve_with_bearer(&phone, code, true).await;
@@ -273,7 +281,10 @@ async fn a_wrong_poll_token_learns_nothing() {
     let phone = h.device_token();
     h.approve_with_bearer(&phone, &req.code, true).await;
     // Not a token, the QR code itself, or a missing parameter.
-    assert_eq!(h.poll("AAAAAAAAAAAAAAAAAAAAAA").await, ("expired".into(), None));
+    assert_eq!(
+        h.poll("AAAAAAAAAAAAAAAAAAAAAA").await,
+        ("expired".into(), None)
+    );
     assert_eq!(h.poll(&req.code).await, ("expired".into(), None));
     let (s, _, h2) = h.send(h.http.get(h.url("/v1/session/qr/poll"))).await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
@@ -408,4 +419,200 @@ async fn the_short_code_can_be_typed_instead_of_scanned() {
     assert!(h.poll(&req.poll_token).await.1.is_some());
     let (s, _) = h.approve_with_bearer(&phone, &req.short_code, true).await;
     assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+// -- headless devices ------------------------------------------------------
+
+impl H {
+    /// `POST /v1/session/qr` with a JSON body, like a headless device.
+    async fn start_with(&self, body: Value) -> (StatusCode, Value, HeaderMap) {
+        self.send(self.http.post(self.url("/v1/session/qr")).json(&body))
+            .await
+    }
+
+    async fn info_for(&self, token: &str, code: &str) -> Value {
+        let (s, v, _) = self
+            .send(
+                self.http
+                    .get(self.url("/v1/session/qr/info"))
+                    .bearer_auth(token)
+                    .query(&[("c", code)]),
+            )
+            .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        v
+    }
+}
+
+#[tokio::test]
+async fn a_device_request_collects_a_working_token_and_no_cookie() {
+    let h = harness(|_| {}).await;
+    let (s, v, _) = h
+        .start_with(json!({"device": {"name": "  LucinaVoice  "}}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (code, short, poll) = (
+        v["code"].as_str().unwrap(),
+        v["shortCode"].as_str().unwrap(),
+        v["pollToken"].as_str().unwrap(),
+    );
+
+    // The phone's approve screen learns it is a device, by either code.
+    let phone = h.device_token();
+    for c in [code, short] {
+        let info = h.info_for(&phone, c).await;
+        assert_eq!(info["kind"], "device");
+        assert_eq!(info["deviceName"], "LucinaVoice");
+        assert_eq!(info["ip"], "127.0.0.1");
+    }
+    assert_eq!(h.poll(poll).await, ("pending".into(), None));
+
+    let (s, v) = h.approve_with_bearer(&phone, code, true).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+
+    let (s, v, headers) = h
+        .send(
+            h.http
+                .get(h.url("/v1/session/qr/poll"))
+                .query(&[("t", poll)]),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(
+        headers.get("set-cookie").is_none(),
+        "a device gets no cookie"
+    );
+    assert_eq!(v["status"], "approved");
+    assert_eq!(v["deviceName"], "LucinaVoice");
+    let token = v["token"].as_str().unwrap().to_owned();
+    let device_id = v["deviceId"].as_str().unwrap().to_owned();
+    assert!(token.starts_with("sec_"), "{token}");
+    assert!(device_id.starts_with("dev_"), "{device_id}");
+
+    // The token is a real device token: it authenticates, as that device.
+    let (s, _, _) = h
+        .send(h.http.get(h.url("/v1/body/state")).bearer_auth(&token))
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let devices = DeviceStore::new(&h.data).list().unwrap();
+    let dev = devices.iter().find(|d| d.id == device_id).unwrap();
+    assert_eq!(dev.name, "LucinaVoice");
+    assert!(!dev.web_login && !dev.revoked);
+    // It can approve other sign-ins, like any device token.
+    let again = h.start().await;
+    let (s, _) = h.approve_with_bearer(&token, &again.code, true).await;
+    assert_eq!(s, StatusCode::OK);
+
+    // One time only.
+    assert_eq!(h.poll(poll).await, ("expired".into(), None));
+    assert_eq!(
+        devices.iter().filter(|d| d.name == "LucinaVoice").count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn a_denied_device_request_yields_no_token() {
+    let h = harness(|_| {}).await;
+    let (_, v, _) = h.start_with(json!({"device": {"name": "Speaker"}})).await;
+    let (code, poll) = (
+        v["code"].as_str().unwrap(),
+        v["pollToken"].as_str().unwrap(),
+    );
+    let phone = h.device_token();
+    h.approve_with_bearer(&phone, code, false).await;
+    let (s, v, headers) = h
+        .send(
+            h.http
+                .get(h.url("/v1/session/qr/poll"))
+                .query(&[("t", poll)]),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v, json!({"status": "denied"}));
+    assert!(headers.get("set-cookie").is_none());
+    let names: Vec<_> = DeviceStore::new(&h.data)
+        .list()
+        .unwrap()
+        .into_iter()
+        .map(|d| d.name)
+        .collect();
+    assert!(!names.contains(&"Speaker".to_owned()), "{names:?}");
+}
+
+#[tokio::test]
+async fn bad_device_names_and_bodies_are_rejected() {
+    let h = harness(|_| {}).await;
+    let long = "x".repeat(41);
+    for name in [
+        "",
+        "   ",
+        long.as_str(),
+        "a\u{7}b",
+        "line\nbreak",
+        "tab\there",
+    ] {
+        let (s, v, _) = h.start_with(json!({"device": {"name": name}})).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{name:?}: {v}");
+        assert_eq!(v["error"]["code"], "bad_request", "{name:?}");
+    }
+    // 40 characters (multi-byte ones count once) are fine.
+    let (s, _, _) = h
+        .start_with(json!({"device": {"name": "é".repeat(40)}}))
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    // A device object without a name, a wrong type, or a body that is not JSON.
+    for body in [
+        json!({"device": {}}),
+        json!({"device": {"name": 7}}),
+        json!({"device": "x"}),
+    ] {
+        let (s, _, _) = h.start_with(body.clone()).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{body}");
+    }
+    let (s, v, _) = h
+        .send(h.http.post(h.url("/v1/session/qr")).body("not json"))
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    let (s, _, _) = h
+        .send(h.http.post(h.url("/v1/session/qr")).body("x".repeat(5000)))
+        .await;
+    assert_eq!(s, StatusCode::PAYLOAD_TOO_LARGE);
+    // None of that registered a device.
+    assert_eq!(DeviceStore::new(&h.data).list().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn requests_without_a_device_stay_browser_sign_ins() {
+    let h = harness(|_| {}).await;
+    let phone = h.device_token();
+    // No body (start()), an empty JSON object, and a null device.
+    let mut requests = vec![h.start().await];
+    for body in [json!({}), json!({"device": null})] {
+        let (s, v, _) = h.start_with(body).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        requests.push(Started {
+            code: v["code"].as_str().unwrap().to_owned(),
+            short_code: v["shortCode"].as_str().unwrap().to_owned(),
+            poll_token: v["pollToken"].as_str().unwrap().to_owned(),
+        });
+    }
+    for req in requests {
+        let info = h.info_for(&phone, &req.code).await;
+        assert_eq!(info["kind"], "browser");
+        assert!(info.get("deviceName").is_none(), "{info}");
+        h.approve_with_bearer(&phone, &req.code, true).await;
+        let (status, sid) = h.poll(&req.poll_token).await;
+        assert_eq!(status, "approved");
+        assert!(sid.is_some(), "a browser gets the cookie");
+    }
+    assert_eq!(
+        DeviceStore::new(&h.data)
+            .list()
+            .unwrap()
+            .iter()
+            .filter(|d| d.web_login)
+            .count(),
+        1
+    );
 }

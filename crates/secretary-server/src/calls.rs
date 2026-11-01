@@ -88,6 +88,56 @@ async fn transcribe(JsonBody(v): JsonBody<Recording>) -> Result<Json<Value>, Api
             "Another recording is being transcribed. Try again shortly.",
         )
     })?;
+    let t = transcribe_inline(&v.mime_type, &v.audio_base64, Options::DIARIZED).await?;
+    if t.text.trim().is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_GATEWAY,
+            "empty_transcript",
+            "No speech transcript was returned.",
+        ));
+    }
+    Ok(Json(
+        json!({"transcript":t.text,"partial":t.partial,"model":t.model,"source":"uploaded_recording"}),
+    ))
+}
+
+/// How [`transcribe_inline`] asks the provider.
+#[derive(Clone, Copy)]
+pub(crate) struct Options {
+    /// Speaker labels in the transcript.
+    pub diarization: bool,
+    pub timeout: Duration,
+}
+
+impl Options {
+    /// Recordings: speaker labels, up to 100 s.
+    pub const DIARIZED: Self = Self {
+        diarization: true,
+        timeout: Duration::from_secs(100),
+    };
+}
+
+/// What the provider heard. `text` is empty when it heard no speech.
+pub(crate) struct Transcript {
+    pub text: String,
+    /// The provider stopped before the end of the audio.
+    pub partial: bool,
+    pub model: String,
+}
+
+/// Provider origin; `SECRETARY_TRANSCRIPTION_URL` points tests at a mock.
+const DEFAULT_PROVIDER_URL: &str = "https://generativelanguage.googleapis.com";
+
+/// Transcribe one inline audio clip (`data_base64` of `mime_type`) with
+/// Gemini: `SECRETARY_GEMINI_KEY_FILE` holds the key,
+/// `SECRETARY_TRANSCRIPTION_MODEL` names the model. Shared by
+/// `/v1/calls/transcribe` and `/v1/voice`; 503 `transcription_unavailable`
+/// when it is not configured.
+pub(crate) async fn transcribe_inline(
+    mime_type: &str,
+    data_base64: &str,
+    opts: Options,
+) -> Result<Transcript, ApiError> {
     let path = std::env::var_os("SECRETARY_GEMINI_KEY_FILE").ok_or_else(unavailable)?;
     let key = tokio::fs::read_to_string(path)
         .await
@@ -104,15 +154,16 @@ async fn transcribe(JsonBody(v): JsonBody<Recording>) -> Result<Json<Value>, Api
     {
         return Err(unavailable());
     }
+    let base = std::env::var("SECRETARY_TRANSCRIPTION_URL").unwrap_or(DEFAULT_PROVIDER_URL.into());
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(100))
+        .timeout(opts.timeout)
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|_| unavailable())?;
-    let mut response=client.post(format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"))
+    let mut response=client.post(format!("{}/v1beta/models/{model}:generateContent", base.trim_end_matches('/')))
   .header("x-goog-api-key",key.trim()).json(&json!({
-   "contents":[{"role":"user","parts":[{"inlineData":{"mimeType":v.mime_type,"data":v.audio_base64}}]}],
-   "generationConfig":{"audioTranscriptionConfig":{"diarization":true},"maxOutputTokens":8192}
+   "contents":[{"role":"user","parts":[{"inlineData":{"mimeType":mime_type,"data":data_base64}}]}],
+   "generationConfig":{"audioTranscriptionConfig":{"diarization":opts.diarization},"maxOutputTokens":8192}
   })).send().await.map_err(|_|ApiError::new(StatusCode::BAD_GATEWAY,"transcription_failed","The transcription provider could not be reached."))?;
     if !response.status().is_success() {
         return Err(ApiError::new(if response.status().as_u16()==429{StatusCode::TOO_MANY_REQUESTS}else{StatusCode::BAD_GATEWAY},"transcription_provider_refused","The configured transcription model refused the request or reached its quota. No transcript was produced."));
@@ -148,19 +199,14 @@ async fn transcribe(JsonBody(v): JsonBody<Recording>) -> Result<Json<Value>, Api
         .filter_map(|p| p["text"].as_str())
         .collect::<Vec<_>>()
         .join("\n");
-    if text.trim().is_empty() {
-        return Err(ApiError::new(
-            StatusCode::BAD_GATEWAY,
-            "empty_transcript",
-            "No speech transcript was returned.",
-        ));
-    }
     let partial = result["candidates"][0]["finishReason"]
         .as_str()
         .is_some_and(|s| s != "STOP");
-    Ok(Json(
-        json!({"transcript":text,"partial":partial,"model":model,"source":"uploaded_recording"}),
-    ))
+    Ok(Transcript {
+        text,
+        partial,
+        model,
+    })
 }
 pub fn routes() -> Router<AppState> {
     Router::new()

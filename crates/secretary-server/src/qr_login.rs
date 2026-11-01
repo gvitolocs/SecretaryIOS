@@ -18,12 +18,20 @@
 //!   bucket ([`POLLS_PER_MINUTE`]), so a page polling every 2 s does not use
 //!   up the password logins.
 //!
+//! - A headless device (the ESP32 speaker, say) pairs the same way: it sends
+//!   `{"device": {"name": "<1-40 printable characters>"}}` with the request
+//!   and shows the QR code or the short code on its own screen or in its
+//!   serial log. The approving app sees `kind: "device"` and the name in
+//!   `info`. The poll that sees the approval mints a device token exactly
+//!   like `POST /v1/auth/device` (shown once, no cookie) and returns it.
+//!   A request without that body is a browser sign-in, as before.
+//!
 //! | route | auth | |
 //! |---|---|---|
-//! | `POST /v1/session/qr` | public | `{code, shortCode, pollToken, approveUrl, expiresIn}` |
+//! | `POST /v1/session/qr` | public | optional `{device: {name}}`; `{code, shortCode, pollToken, approveUrl, expiresIn}` |
 //! | `GET /v1/session/qr/image?c=` | public | the QR of `approveUrl`, SVG |
-//! | `GET /v1/session/qr/poll?t=` | public | `{status: pending\|approved\|denied\|expired}`; `approved` sets the cookie |
-//! | `GET /v1/session/qr/info?c=` (code or shortCode) | device | `{ip, userAgent, createdAt, expiresIn}` for the approve screen |
+//! | `GET /v1/session/qr/poll?t=` | public | `{status: pending\|approved\|denied\|expired}`; `approved` sets the cookie (browser) or carries `{token, deviceId, deviceName}` and no cookie (device) |
+//! | `GET /v1/session/qr/info?c=` (code or shortCode) | device | `{kind: browser\|device, deviceName?, ip, userAgent, createdAt, expiresIn}` for the approve screen |
 //! | `POST /v1/session/qr/approve {code, approve}` | device | `{status: approved\|denied}` |
 
 use std::collections::HashMap;
@@ -72,6 +80,9 @@ struct Pending {
     created_at: String,
     born: Instant,
     decision: Decision,
+    /// `Some` for a headless device asking for a device token; `None` for a
+    /// browser asking for a session cookie.
+    device_name: Option<String>,
 }
 
 /// What the requesting page learns from a poll.
@@ -98,6 +109,8 @@ impl Poll {
 /// The requester, for the approve screen.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Info {
+    /// `Some(name)` when a headless device asks for a device token.
+    pub device_name: Option<String>,
     pub ip: String,
     pub user_agent: String,
     pub created_at: String,
@@ -174,10 +187,32 @@ impl QrLogins {
 
     /// A new request, or `Ok(None)` when [`MAX_PENDING`] are already waiting.
     pub fn create(&self, ip: &str, user_agent: &str) -> io::Result<Option<Created>> {
-        self.create_at(ip, user_agent, Instant::now())
+        self.create_for(ip, user_agent, None)
     }
 
+    /// Like [`Self::create`]; with `device_name` the request is a headless
+    /// device's, and its approval is collected as a device token.
+    pub fn create_for(
+        &self,
+        ip: &str,
+        user_agent: &str,
+        device_name: Option<String>,
+    ) -> io::Result<Option<Created>> {
+        self.create_full_at(ip, user_agent, device_name, Instant::now())
+    }
+
+    #[cfg(test)]
     fn create_at(&self, ip: &str, user_agent: &str, now: Instant) -> io::Result<Option<Created>> {
+        self.create_full_at(ip, user_agent, None, now)
+    }
+
+    fn create_full_at(
+        &self,
+        ip: &str,
+        user_agent: &str,
+        device_name: Option<String>,
+        now: Instant,
+    ) -> io::Result<Option<Created>> {
         let code = crate::devices::random_b64::<16>()?;
         let poll_token = crate::devices::random_b64::<16>()?;
         let mut map = self.lock();
@@ -202,6 +237,7 @@ impl QrLogins {
                 created_at: crate::devices::now_rfc3339(),
                 born: now,
                 decision: Decision::Pending,
+                device_name,
             },
         );
         Ok(Some(Created {
@@ -234,6 +270,7 @@ impl QrLogins {
             .get(&key)
             .filter(|p| p.decision == Decision::Pending && self.alive(p, now))?;
         Some(Info {
+            device_name: p.device_name.clone(),
             ip: p.ip.clone(),
             user_agent: p.user_agent.clone(),
             created_at: p.created_at.clone(),
@@ -275,27 +312,44 @@ impl QrLogins {
     }
 
     fn poll_at(&self, poll_token: &str, now: Instant) -> Poll {
+        self.poll_detail_at(poll_token, now).0
+    }
+
+    /// [`Self::poll`], plus the requested device name when the request was a
+    /// headless device's (the caller then mints a device token, not a cookie).
+    pub fn poll_detail(&self, poll_token: &str) -> (Poll, Option<String>) {
+        self.poll_detail_at(poll_token, Instant::now())
+    }
+
+    fn poll_detail_at(&self, poll_token: &str, now: Instant) -> (Poll, Option<String>) {
         let mut map = self.lock();
         let found = map
             .iter()
             .find(|(_, p)| bool::from(p.poll_token.as_bytes().ct_eq(poll_token.as_bytes())))
-            .map(|(code, p)| (code.clone(), self.alive(p, now), p.decision));
-        let Some((code, alive, decision)) = found else {
-            return Poll::Expired;
+            .map(|(code, p)| {
+                (
+                    code.clone(),
+                    self.alive(p, now),
+                    p.decision,
+                    p.device_name.clone(),
+                )
+            });
+        let Some((code, alive, decision, device_name)) = found else {
+            return (Poll::Expired, None);
         };
         if !alive {
             map.remove(&code);
-            return Poll::Expired;
+            return (Poll::Expired, None);
         }
         match decision {
-            Decision::Pending => Poll::Pending,
+            Decision::Pending => (Poll::Pending, None),
             Decision::Approved => {
                 map.remove(&code);
-                Poll::Approved
+                (Poll::Approved, device_name)
             }
             Decision::Denied => {
                 map.remove(&code);
-                Poll::Denied
+                (Poll::Denied, None)
             }
         }
     }
@@ -345,6 +399,60 @@ struct ApproveBody {
     approve: bool,
 }
 
+/// The optional body of `POST /v1/session/qr`.
+#[derive(Deserialize)]
+struct CreateBody {
+    device: Option<DeviceRequest>,
+}
+
+#[derive(Deserialize)]
+struct DeviceRequest {
+    name: String,
+}
+
+/// Longest device name asked for through a QR request.
+const MAX_DEVICE_NAME: usize = 40;
+/// A create body is a few dozen bytes.
+const MAX_CREATE_BODY: usize = 2048;
+
+fn bad_request(message: impl Into<String>) -> ApiError {
+    ApiError::new(StatusCode::BAD_REQUEST, "bad_request", message)
+}
+
+/// The device name of a QR request: trimmed, 1-40 printable characters.
+fn device_name(raw: &str) -> Result<String, ApiError> {
+    let name = raw.trim();
+    if name.is_empty()
+        || name.chars().count() > MAX_DEVICE_NAME
+        || name.chars().any(char::is_control)
+    {
+        return Err(bad_request(format!(
+            "device.name: 1-{MAX_DEVICE_NAME} printable characters"
+        )));
+    }
+    Ok(name.to_owned())
+}
+
+/// The device name in the request body, if it has one. No body or an empty
+/// one (what browsers send) is a browser request.
+async fn requested_device(req: Request) -> Result<Option<String>, ApiError> {
+    let bytes = axum::body::to_bytes(req.into_body(), MAX_CREATE_BODY)
+        .await
+        .map_err(|_| {
+            ApiError::new(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "payload_too_large",
+                "request body is too large",
+            )
+        })?;
+    if bytes.iter().all(u8::is_ascii_whitespace) {
+        return Ok(None);
+    }
+    let body: CreateBody = serde_json::from_slice(&bytes)
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, "invalid_json", e.to_string()))?;
+    body.device.map(|d| device_name(&d.name)).transpose()
+}
+
 /// `POST /v1/session/qr`
 async fn create(State(st): State<AppState>, req: Request) -> Result<Response, ApiError> {
     login_ip_check(&st, &req)?;
@@ -355,9 +463,10 @@ async fn create(State(st): State<AppState>, req: Request) -> Result<Response, Ap
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_owned();
+    let device = requested_device(req).await?;
     let created = st
         .qr_logins
-        .create(&ip, &user_agent)
+        .create_for(&ip, &user_agent, device)
         .map_err(|_| ApiError::internal("random source failed"))?;
     let Some(Created {
         code,
@@ -416,9 +525,23 @@ pub fn render_svg(text: &str) -> Result<String, ApiError> {
 async fn poll(State(st): State<AppState>, req: Request) -> Result<Response, ApiError> {
     poll_ip_check(&st, &req)?;
     let TokenQuery { t } = query(&req)?;
-    let outcome = st.qr_logins.poll(&t);
+    let (outcome, device) = st.qr_logins.poll_detail(&t);
     if outcome != Poll::Approved {
         return Ok(Json(json!({"status": outcome.as_str()})).into_response());
+    }
+    if let Some(name) = device {
+        // A headless device collects a device token, never a cookie.
+        let (dev, token) = crate::auth::mint_device(&st, name).await?;
+        tracing::info!(device = %dev.id, "QR device pairing collected");
+        let mut resp = Json(json!({
+            "status": "approved",
+            "token": token,
+            "deviceId": dev.id,
+            "deviceName": dev.name,
+        }))
+        .into_response();
+        resp.extensions_mut().insert(DeviceId(dev.id));
+        return Ok(resp);
     }
     let ident = web_login_identity(&st).await?;
     let cookie = session_cookie(&st, &ident).await?;
@@ -440,12 +563,17 @@ async fn info(
     QueryArgs(q): QueryArgs<CodeQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let info = st.qr_logins.info(&q.c).ok_or_else(not_found)?;
-    Ok(Json(json!({
+    let mut out = json!({
+        "kind": if info.device_name.is_some() { "device" } else { "browser" },
         "ip": info.ip,
         "userAgent": info.user_agent,
         "createdAt": info.created_at,
         "expiresIn": info.expires_in,
-    })))
+    });
+    if let Some(name) = info.device_name {
+        out["deviceName"] = json!(name);
+    }
+    Ok(Json(out))
 }
 
 /// `POST /v1/session/qr/approve {code, approve}` (authenticated)
@@ -504,7 +632,11 @@ mod tests {
     #[test]
     fn codes_and_poll_tokens_are_distinct_128_bit_values() {
         let s = store();
-        let Created { code, poll_token: token, .. } = s.create("1.2.3.4", "ua").unwrap().unwrap();
+        let Created {
+            code,
+            poll_token: token,
+            ..
+        } = s.create("1.2.3.4", "ua").unwrap().unwrap();
         assert_ne!(code, token);
         // 16 bytes = 22 base64url characters, no padding.
         assert_eq!(code.len(), 22);
@@ -517,7 +649,11 @@ mod tests {
     #[test]
     fn approval_is_collected_once() {
         let s = store();
-        let Created { code, poll_token: token, .. } = s.create("1.2.3.4", "ua").unwrap().unwrap();
+        let Created {
+            code,
+            poll_token: token,
+            ..
+        } = s.create("1.2.3.4", "ua").unwrap().unwrap();
         assert_eq!(s.poll(&token), Poll::Pending);
         s.decide(&code, true).unwrap();
         assert_eq!(s.decide(&code, false), Err(DecideError::AlreadyDecided));
@@ -531,7 +667,11 @@ mod tests {
     fn requests_expire() {
         let s = store();
         let t0 = Instant::now();
-        let Created { code, poll_token: token, .. } = s.create_at("1.2.3.4", "ua", t0).unwrap().unwrap();
+        let Created {
+            code,
+            poll_token: token,
+            ..
+        } = s.create_at("1.2.3.4", "ua", t0).unwrap().unwrap();
         let info = s.info_at(&code, t0 + Duration::from_secs(20)).unwrap();
         assert_eq!(info.expires_in, 100);
         let late = t0 + TTL;
@@ -539,7 +679,11 @@ mod tests {
         assert_eq!(s.decide_at(&code, true, late), Err(DecideError::NotFound));
         assert_eq!(s.poll_at(&token, late), Poll::Expired);
         // An approval that is not collected in time expires too.
-        let Created { code, poll_token: token, .. } = s.create_at("1.2.3.4", "ua", t0).unwrap().unwrap();
+        let Created {
+            code,
+            poll_token: token,
+            ..
+        } = s.create_at("1.2.3.4", "ua", t0).unwrap().unwrap();
         s.decide_at(&code, true, t0).unwrap();
         assert_eq!(s.poll_at(&token, late), Poll::Expired);
     }
@@ -629,6 +773,41 @@ mod tests {
         let s = store();
         let code = s.create("ip", &"x".repeat(5000)).unwrap().unwrap().code;
         assert_eq!(s.info(&code).unwrap().user_agent.len(), MAX_USER_AGENT);
+    }
+
+    #[test]
+    fn device_requests_carry_their_name_to_info_and_poll() {
+        let s = store();
+        let c = s
+            .create_for("1.2.3.4", "ua", Some("Speaker".into()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            s.info(&c.code).unwrap().device_name.as_deref(),
+            Some("Speaker")
+        );
+        assert_eq!(s.poll_detail(&c.poll_token), (Poll::Pending, None));
+        s.decide(&c.code, true).unwrap();
+        assert_eq!(
+            s.poll_detail(&c.poll_token),
+            (Poll::Approved, Some("Speaker".into()))
+        );
+        assert_eq!(s.poll_detail(&c.poll_token), (Poll::Expired, None));
+        // A browser request has no device name.
+        let b = s.create("1.2.3.4", "ua").unwrap().unwrap();
+        assert!(s.info(&b.code).unwrap().device_name.is_none());
+        s.decide(&b.code, true).unwrap();
+        assert_eq!(s.poll_detail(&b.poll_token), (Poll::Approved, None));
+    }
+
+    #[test]
+    fn device_names_are_1_to_40_printable_characters() {
+        assert_eq!(device_name("  LucinaVoice  ").unwrap(), "LucinaVoice");
+        assert!(device_name(&"x".repeat(40)).is_ok());
+        for bad in ["", "   ", "a\nb", "a\u{0}b", "a\tb"] {
+            assert!(device_name(bad).is_err(), "{bad:?}");
+        }
+        assert!(device_name(&"x".repeat(41)).is_err());
     }
 
     #[test]

@@ -14,7 +14,10 @@
 //! | `SECRETARY_PUBLIC_URL` | `https://getsecretary.tech` | this server's public origin (links in QR sign-in codes) |
 //! | `SECRETARY_TRUST_PROXY` | `0` | `1`: take the client IP from `X-Forwarded-For` (Caddy in front) |
 //! | `SECRETARY_PRIVATE_ASSETS_DIR` | `/var/lib/secretary/private-assets` | files for `GET /v1/assets/{name}` (authenticated only) |
-//! | `SECRETARY_TTS_URL` | `http://100.107.164.33:8880` | Kokoro (OpenAI-compatible) for `POST /v1/tts` |
+//! | `SECRETARY_TTS_URL` | `http://100.107.164.33:8880` | Kokoro (OpenAI-compatible) for `POST /v1/tts` (MP3) and `POST /v1/voice` (raw PCM, 24 kHz) |
+//! | `SECRETARY_GEMINI_KEY_FILE` | — | file with the Gemini API key; enables `POST /v1/calls/transcribe` and `POST /v1/voice` |
+//! | `SECRETARY_TRANSCRIPTION_MODEL` | `gemini-3.5-transcribe` | the transcription model (`gemini-…`) |
+//! | `SECRETARY_TRANSCRIPTION_URL` | `https://generativelanguage.googleapis.com` | transcription API origin (tests point it at a mock) |
 //! | `SECRETARY_CATALOG_DIR` | `/var/lib/secretary/catalog` | `catalog.{it,en,da}.json` for `GET /v1/shopping/catalog` |
 //! | `SECRETARY_DEVICE_EVENTS_PER_MINUTE` | `120` | `POST /v1/device/events` requests per device per minute |
 //! | `SECRETARY_OWNER_AUTH_PER_MINUTE` | `600` | `GET /v1/auth/owner` (Caddy forward_auth for the owner-only plugins) per device per minute, its own bucket |

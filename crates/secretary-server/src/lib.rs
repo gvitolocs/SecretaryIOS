@@ -51,6 +51,7 @@ pub mod timeline;
 pub mod todoist;
 pub mod tts;
 pub mod upstream;
+pub mod voice;
 pub mod web;
 
 use std::net::SocketAddr;
@@ -150,6 +151,8 @@ pub struct Inner {
     /// Client-side Google Maps keys (`GET /v1/grocery/deals/map`).
     pub maps: config::MapsKeys,
     pub tts: tts::Tts,
+    /// `POST /v1/voice`: rate limit and one turn at a time per device.
+    pub voice: voice::Voice,
     /// Open `/v1/timeline/stream` responses.
     pub streams: timeline::StreamSlots,
     /// Flipped to `true` on shutdown; open streams end when it is.
@@ -228,6 +231,7 @@ impl AppState {
             catalog_dir: cfg.catalog_dir.clone(),
             maps: cfg.maps.clone(),
             tts: tts::Tts::new(&cfg.tts_url, cfg.tts_voices.clone(), cfg.tts_timeout)?,
+            voice: voice::Voice::new(),
             streams: timeline::StreamSlots::new(timeline::PER_DEVICE, timeline::TOTAL),
             shutdown: tokio::sync::watch::Sender::new(false),
             notify: Arc::new(notify::Notifier::open(&cfg.data_dir, cfg.notify.clone())?),
@@ -309,6 +313,7 @@ pub fn app(state: AppState) -> Router {
         .merge(qr_login::routes())
         .merge(assets::routes())
         .merge(tts::routes())
+        .merge(voice::routes())
         .merge(calls::routes())
         .merge(timeline::routes())
         .merge(shopping::routes())

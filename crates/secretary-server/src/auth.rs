@@ -408,16 +408,15 @@ async fn login(State(st): State<AppState>, req: Request) -> Result<Response, Api
     new_session(&st, ident).await
 }
 
-/// `POST /v1/auth/device {email, password, deviceName}`: native apps trade
-/// the owner's password for a new device token (shown once).
-async fn device_login(State(st): State<AppState>, req: Request) -> Result<Response, ApiError> {
-    login_ip_check(&st, &req)?;
-    let JsonBody(body) =
-        <JsonBody<DeviceLoginBody> as axum::extract::FromRequest<AppState>>::from_request(req, &st)
-            .await?;
-    check_password(&st, body.email, body.password).await?;
+/// Register a new device and return it with its token (shown once). A bad
+/// name is a 400 (`deviceName: …`). Also raises the `system` notification
+/// (off by default) that a new device signed in. Used by `POST
+/// /v1/auth/device` and by the QR sign-in of a headless device.
+pub(crate) async fn mint_device(
+    st: &AppState,
+    name: String,
+) -> Result<(crate::devices::Device, String), ApiError> {
     let devices = st.devices.store().clone();
-    let name = body.device_name;
     let issued = tokio::task::spawn_blocking(move || devices.issue(&name))
         .await
         .map_err(|_| ApiError::internal("device store failed"))?;
@@ -432,7 +431,6 @@ async fn device_login(State(st): State<AppState>, req: Request) -> Result<Respon
         }
         Err(e) => return Err(registry_error(&e)),
     };
-    // `system` notification (off by default): a new device signed in.
     let notifier = st.notify.clone();
     let lang = notifier.settings.read(|s| s.language.clone());
     let notice = crate::notify::NewNotification::new(
@@ -442,6 +440,18 @@ async fn device_login(State(st): State<AppState>, req: Request) -> Result<Respon
     tokio::spawn(async move {
         let _ = notifier.publish(notice).await;
     });
+    Ok((dev, token))
+}
+
+/// `POST /v1/auth/device {email, password, deviceName}`: native apps trade
+/// the owner's password for a new device token (shown once).
+async fn device_login(State(st): State<AppState>, req: Request) -> Result<Response, ApiError> {
+    login_ip_check(&st, &req)?;
+    let JsonBody(body) =
+        <JsonBody<DeviceLoginBody> as axum::extract::FromRequest<AppState>>::from_request(req, &st)
+            .await?;
+    check_password(&st, body.email, body.password).await?;
+    let (dev, token) = mint_device(&st, body.device_name).await?;
     let mut resp = (
         StatusCode::CREATED,
         Json(json!({"token": token, "deviceId": dev.id, "deviceName": dev.name})),
