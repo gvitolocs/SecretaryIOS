@@ -65,6 +65,8 @@ final class FakeApprovalNotifier: ApprovalNotifying {
     }
 
     func postFailure(for item: ApprovalItem) async { failures.append(item.id) }
+    private(set) var followUps: [String] = []
+    func postOpenToApprove(for item: ApprovalItem) async { followUps.append(item.id) }
     func remove(ids: [String]) async { removed.append(contentsOf: ids) }
 }
 
@@ -312,12 +314,20 @@ final class ApprovalsTests: XCTestCase {
         XCTAssertNil(ApprovalNotificationAction(identifier: UNNotificationDismissActionIdentifier))
         XCTAssertNil(ApprovalNotificationAction(identifier: "SOMETHING_ELSE"))
 
-        XCTAssertEqual(ApprovalNotificationAction.deny.route(sensitive: true), .decide(.deny))
-        XCTAssertEqual(ApprovalNotificationAction.deny.route(sensitive: false), .decide(.deny))
-        XCTAssertEqual(ApprovalNotificationAction.approve.route(sensitive: false), .decide(.approve))
-        XCTAssertEqual(ApprovalNotificationAction.approve.route(sensitive: true), .openSheet)
-        XCTAssertEqual(ApprovalNotificationAction.open.route(sensitive: false), .openSheet)
-        XCTAssertEqual(ApprovalNotificationAction.open.route(sensitive: true), .openSheet)
+        typealias N = ApprovalNotificationAction
+        for sensitive in [true, false] {
+            for inline in [true, false] {
+                for strict in [true, false] {
+                    XCTAssertEqual(N.deny.route(sensitive: sensitive, inline: inline, strict: strict), .decide(.deny), "deny always decides")
+                    XCTAssertEqual(N.open.route(sensitive: sensitive, inline: inline, strict: strict), .openSheet, "a tap opens the card")
+                }
+                XCTAssertEqual(N.approve.route(sensitive: false, inline: inline, strict: sensitive), .decide(.approve), "plain approve")
+            }
+        }
+        XCTAssertEqual(N.approve.route(sensitive: true, inline: true, strict: false), .decideSigned, "the whole plan was shown")
+        XCTAssertEqual(N.approve.route(sensitive: true, inline: false, strict: false), .openSheet, "not the whole plan")
+        XCTAssertEqual(N.approve.route(sensitive: true, inline: true, strict: true), .openSheet, "strict mode")
+        XCTAssertEqual(N.approve.route(sensitive: true, inline: false, strict: true), .openSheet)
     }
 
     func testNotificationContentAndCategories() throws {
@@ -418,7 +428,8 @@ final class ApprovalsTests: XCTestCase {
         await notifier.post(pushed, previews: true)
         await notifier.post(fresh, previews: true)
         XCTAssertEqual(center.added.map(\.identifier), ["approval.apr_2"])
-        XCTAssertEqual(center.added.first?.content.categoryIdentifier, ApprovalNotifier.sensitiveCategory)
+        XCTAssertEqual(center.added.first?.content.categoryIdentifier, ApprovalNotifier.sensitiveInlineCategory,
+                       "its one command is in the body")
         // Answered: the APNs one goes too.
         await notifier.remove(ids: ["apr_1"])
         XCTAssertTrue(center.delivered.contains("apns-apr_1"))
@@ -832,6 +843,118 @@ final class ApprovalsTests: XCTestCase {
         XCTAssertEqual(hidden.commands, "")
         XCTAssertEqual(hidden.commandCount, 0)
         XCTAssertEqual(hidden.payloadHash, fixtureHash)
+    }
+
+    // MARK: The root-plan notification's Approve in place
+
+    func testARootPlanNotificationCarriesItsCommandsAndHash() {
+        let short = ApprovalItem(id: "apr_s", summary: "Restart the tunnel", details: "systemctl daemon-reload\nsystemctl restart x",
+                                 sensitive: true, payloadHash: fixtureHash)
+        let c = ApprovalNotifier.content(for: short, previews: true)
+        XCTAssertEqual(c.categoryIdentifier, ApprovalNotifier.sensitiveInlineCategory)
+        XCTAssertEqual(c.body, "Restart the tunnel\nsystemctl daemon-reload\nsystemctl restart x")
+        XCTAssertEqual(c.userInfo[ApprovalNotifier.payloadHashKey] as? String, fixtureHash)
+        XCTAssertEqual(ApprovalNotifier.payloadHash(in: c.userInfo), fixtureHash)
+        XCTAssertEqual(ApprovalNotifier.payloadHash(in: ["payloadHash": "sha256:00"]), "sha256:00", "the server push's key")
+
+        let long = (0..<400).map { "echo line-\($0)" }.joined(separator: "\n")
+        XCTAssertGreaterThan(long.utf8.count, ApprovalNotifier.detailBytes)
+        let big = ApprovalNotifier.content(for: ApprovalItem(id: "apr_l", summary: "Many", details: long, sensitive: true), previews: true)
+        XCTAssertEqual(big.categoryIdentifier, ApprovalNotifier.sensitiveCategory, "cut: Approve opens the card")
+        XCTAssertTrue(big.body.hasSuffix("\n…"))
+        XCTAssertLessThanOrEqual(big.body.utf8.count, "Many\n".utf8.count + ApprovalNotifier.detailBytes + "\n…".utf8.count)
+        XCTAssertTrue(big.body.split(separator: "\n").dropFirst().allSatisfy { $0 == "…" || $0.hasPrefix("echo line-") }, "cut at a line")
+
+        let hidden = ApprovalNotifier.content(for: short, previews: false)
+        XCTAssertEqual(hidden.categoryIdentifier, ApprovalNotifier.sensitiveCategory)
+        XCTAssertEqual(hidden.body, "Open Secretary to see what it is.")
+        XCTAssertFalse(hidden.body.contains("systemctl"))
+        XCTAssertEqual(hidden.userInfo[ApprovalNotifier.payloadHashKey] as? String, fixtureHash)
+
+        let none = ApprovalNotifier.content(for: ApprovalItem(id: "apr_n", summary: "Reveal", sensitive: true), previews: true)
+        XCTAssertEqual(none.categoryIdentifier, ApprovalNotifier.sensitiveCategory, "no commands to show")
+        XCTAssertEqual(ApprovalNotifier.clipBytes("ab").cut, false)
+        XCTAssertEqual(ApprovalNotifier.clipBytes(String(repeating: "è", count: 1201)).text.utf8.count <= ApprovalNotifier.detailBytes + 4, true)
+    }
+
+    /// The notification's Approve on an `APPROVAL_SENSITIVE_INLINE` request.
+    private func approveInline(_ id: String, hash: String?, now: Date = fixtureNow) async {
+        await store.handleNotification(actionIdentifier: ApprovalNotifier.approveAction, approvalId: id, sensitive: true,
+                                       inline: true, shownHash: hash, trigger: .notificationApproveAction, now: now)
+    }
+
+    func testTheInlineApproveSignsInPlaceOnce() async throws {
+        StubURLProtocol.handler = { request in
+            request.url?.path.hasSuffix("/decide") == true ? .init(body: #"{"status":"ok"}"#) : .init(body: "{}")
+        }
+        var settled: [String: ApprovalOutcome] = [:]
+        store.onSettled = { id, outcome in settled[id] = outcome }
+        let secret = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_secret", sensitive: true))
+        await store.apply([secret])
+        await approveInline("apr_secret", hash: fixtureHash)
+        XCTAssertEqual(decideRequests().count, 1)
+        XCTAssertEqual(decodeBody(decideRequests()[0])["decision"] as? String, "approve")
+        XCTAssertEqual(signer.modes, [.reuseUnlock(interactive: false)])
+        XCTAssertEqual(settled["apr_secret"], .approved)
+        XCTAssertTrue(notifier.followUps.isEmpty)
+        XCTAssertTrue(notifier.removed.contains("apr_secret"))
+    }
+
+    func testTheInlineApproveRefusesWhatItCannotBindOrSign() async throws {
+        StubURLProtocol.handler = { request in
+            request.url?.path.hasSuffix("/decide") == true ? .init(body: #"{"status":"ok"}"#) : .init(body: "{}")
+        }
+        let secret = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_secret", sensitive: true))
+        await store.apply([secret])
+        // A different plan than the one shown, or no hash at all.
+        await approveInline("apr_secret", hash: "sha256:" + String(repeating: "cd", count: 32))
+        await approveInline("apr_secret", hash: nil)
+        // Its time is up.
+        await approveInline("apr_secret", hash: fixtureHash, now: fixtureNow.addingTimeInterval(600))
+        XCTAssertTrue(signer.signed.isEmpty)
+        XCTAssertTrue(decideRequests().isEmpty)
+        XCTAssertEqual(notifier.followUps, ["apr_secret", "apr_secret", "apr_secret"])
+        // Unlocked with the passcode or too long ago: the signature would need Face ID on screen.
+        signer.error = ApprovalSignError.needsInteraction
+        await approveInline("apr_secret", hash: fixtureHash)
+        XCTAssertTrue(decideRequests().isEmpty)
+        XCTAssertEqual(notifier.followUps.count, 4, "open Secretary to approve")
+        // Strict mode: the card (a tap on the follow-up or the app), nothing in place.
+        signer.error = nil
+        await store.setStrictFaceID(true)
+        let signs = signer.signed.count
+        await store.dismissSheet()
+        await approveInline("apr_secret", hash: fixtureHash)
+        XCTAssertEqual(signer.signed.count, signs)
+        XCTAssertTrue(decideRequests().isEmpty)
+        XCTAssertEqual(store.sheetItem?.id, "apr_secret")
+    }
+
+    func testASecondInlineTapWhileTheFirstIsOnItsWayDoesNothing() async throws {
+        StubURLProtocol.handler = { request in
+            request.url?.path.hasSuffix("/decide") == true ? .init(body: #"{"status":"ok"}"#) : .init(body: "{}")
+        }
+        let secret = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_secret", sensitive: true))
+        await store.apply([secret])
+        async let first: Void = approveInline("apr_secret", hash: fixtureHash)
+        async let second: Void = approveInline("apr_secret", hash: fixtureHash)
+        _ = await (first, second)
+        XCTAssertEqual(decideRequests().count, 1, "one answer")
+        XCTAssertEqual(signer.signed.count, 1, "one signature")
+    }
+
+    func testDenyFromAnInlineNotificationIsUnchanged() async throws {
+        StubURLProtocol.handler = { request in
+            request.url?.path.hasSuffix("/decide") == true ? .init(body: #"{"status":"ok"}"#) : .init(body: "{}")
+        }
+        let secret = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_secret", sensitive: true))
+        await store.apply([secret])
+        await store.handleNotification(actionIdentifier: ApprovalNotifier.denyAction, approvalId: "apr_secret", sensitive: true,
+                                       inline: true, shownHash: nil)
+        XCTAssertEqual(decodeBody(try XCTUnwrap(decideRequests().first))["decision"] as? String, "deny")
+        XCTAssertNil(decodeBody(decideRequests()[0])["proof"])
+        XCTAssertTrue(signer.signed.isEmpty)
+        XCTAssertTrue(notifier.followUps.isEmpty)
     }
 
     // MARK: Polling

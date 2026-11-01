@@ -1303,6 +1303,9 @@ async fn announce(st: &AppState, c: &Created, main: Option<String>) {
         "approvalId": c.id,
         "sensitive": c.sensitive,
         "details": clip(&c.details, 2000),
+        // The push says whether its body carries the whole plan (the app approves a root plan in place only then).
+        "detailsCut": c.details.trim().chars().count() > 2000,
+        "payloadHash": c.payload_hash,
     }));
     let audience = main.clone().map_or(Audience::All, Audience::Only);
     let scope = if main.is_some() { "main" } else { "all" };
@@ -2498,7 +2501,7 @@ mod tests {
         assert_eq!(notifier.pusher.list().len(), 2);
         let mut n = NewNotification::new(Category::Approval, "Restart the tunnel");
         n.route = Some("/approvals/apr_1".into());
-        n.data = Some(json!({"approvalId": "apr_1", "sensitive": true}));
+        n.data = Some(json!({"approvalId": "apr_1", "sensitive": true, "payloadHash": "sha256:00ff"}));
         let Outcome::Created { notification, .. } = notifier
             .publish_to(n, &Audience::Only("dev_main".into()))
             .await
@@ -2524,6 +2527,7 @@ mod tests {
         assert_eq!(apns["approvalId"], "apr_1");
         assert_eq!(apns["sensitive"], true);
         assert_eq!(apns["approvalSensitive"], true);
+        assert_eq!(apns["payloadHash"], "sha256:00ff");
         assert_eq!(apns["aps"]["content-available"], 1);
         // Quiet hours and DND do not hold it, and no switch mutes it.
         notifier

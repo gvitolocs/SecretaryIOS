@@ -6,6 +6,8 @@ import UserNotifications
 protocol ApprovalNotifying: AnyObject {
     func post(_ item: ApprovalItem, previews: Bool) async
     func postFailure(for item: ApprovalItem) async
+    /// An Approve the notification could not answer in place: "Open Secretary to approve", its tap opens the card.
+    func postOpenToApprove(for item: ApprovalItem) async
     func remove(ids: [String]) async
 }
 
@@ -26,15 +28,21 @@ enum ApprovalNotificationAction: Equatable {
     /// What the app does with it.
     enum Route: Equatable {
         case decide(ApprovalDecision)
+        /// Approve a sensitive request in place, signed with a recent Face ID unlock (`.reuseUnlock(interactive: false)`).
+        case decideSigned
         case openSheet
     }
 
-    /// Deny, and a non-sensitive approve, are answered from the notification. A sensitive approve (or a tap) opens
-    /// the card: the owner reads it there, and the passcode is asked only when he taps Approve on it.
-    func route(sensitive: Bool) -> Route {
+    /// Deny, and a plain approve, are answered from the notification. A sensitive approve is answered in place too
+    /// when the notification showed the whole plan (`inline`: category `APPROVAL_SENSITIVE_INLINE`) and the owner did
+    /// not ask for Face ID every time (`strict`); otherwise (or a tap) it opens the card, where the owner reads it and
+    /// Face ID is asked when he taps Approve.
+    func route(sensitive: Bool, inline: Bool, strict: Bool) -> Route {
         switch self {
         case .deny: return .decide(.deny)
-        case .approve: return sensitive ? .openSheet : .decide(.approve)
+        case .approve:
+            guard sensitive else { return .decide(.approve) }
+            return inline && !strict ? .decideSigned : .openSheet
         case .open: return .openSheet
         }
     }
@@ -44,17 +52,27 @@ enum ApprovalNotificationAction: Equatable {
 /// and `userInfo` keys, and a request already on the lock screen from APNs is not posted again.
 ///
 /// Category `APPROVAL` has Approve (the iPhone must be unlocked) and Deny (no unlock), both answered without
-/// opening the app. `APPROVAL_SENSITIVE`'s Approve opens the card instead: a sensitive approve needs the passcode,
-/// asked on the card. Older servers send `APPROVAL` for every request; the store opens the card for a sensitive one.
+/// opening the app. `APPROVAL_SENSITIVE`'s Approve opens the card instead: a sensitive approve needs Face ID or the
+/// passcode, asked on the card. `APPROVAL_SENSITIVE_INLINE` is a sensitive request whose body carries the whole plan:
+/// its Approve answers in place, signed with the Face ID unlock that showed it (with "Require Face ID or passcode for
+/// root approvals" on, it opens the card like `APPROVAL_SENSITIVE`). Older servers send `APPROVAL` for every request;
+/// the store opens the card for a sensitive one.
 @MainActor
 final class ApprovalNotifier: ApprovalNotifying {
     nonisolated static let category = "APPROVAL"
     nonisolated static let sensitiveCategory = "APPROVAL_SENSITIVE"
+    nonisolated static let sensitiveInlineCategory = "APPROVAL_SENSITIVE_INLINE"
     nonisolated static let approveAction = "APPROVAL_APPROVE"
     nonisolated static let denyAction = "APPROVAL_DENY"
     /// Keys in `userInfo`.
     nonisolated static let idKey = "approvalId"
     nonisolated static let sensitiveKey = "approvalSensitive"
+    /// The request's payload hash: `approvalPayloadHash` in the app's own notifications, `payloadHash` in the server's
+    /// pushes.
+    nonisolated static let payloadHashKey = "approvalPayloadHash"
+    nonisolated static let pushPayloadHashKey = "payloadHash"
+    /// Bytes of the commands a notification body carries (the server's `APNS_DETAIL_BYTES`).
+    nonisolated static let detailBytes = 2400
 
     let center: NotificationScheduling
 
@@ -64,8 +82,32 @@ final class ApprovalNotifier: ApprovalNotifying {
 
     static func identifier(_ id: String) -> String { "approval.\(id)" }
 
-    /// Registers the two categories (the app sets no others).
-    nonisolated static func registerCategories(on center: UNUserNotificationCenter = .current()) {
+    /// The payload hash a notification carries (the app's own key, or the server push's).
+    nonisolated static func payloadHash(in userInfo: [AnyHashable: Any]) -> String? {
+        (userInfo[payloadHashKey] as? String) ?? (userInfo[pushPayloadHashKey] as? String)
+    }
+
+    /// The first `max` UTF-8 bytes of `text`, cut at a line (or else a character) boundary, with "\n…" when cut; and
+    /// whether it was cut. Like the server's `clip_bytes`.
+    nonisolated static func clipBytes(_ text: String, max: Int = detailBytes) -> (text: String, cut: Bool) {
+        let s = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard s.utf8.count > max else { return (s, false) }
+        var head = ""
+        var used = 0
+        for ch in s {
+            let n = String(ch).utf8.count
+            if used + n > max { break }
+            head.append(ch)
+            used += n
+        }
+        if let nl = head.lastIndex(of: "\n") { head = String(head[..<nl]) }
+        while head.last?.isWhitespace == true { head.removeLast() }
+        return (head + "\n…", true)
+    }
+
+    /// Registers the categories (the app sets no others). `strict` ("Require Face ID or passcode for root
+    /// approvals"): the inline category's Approve opens the card too. Registered at launch and on every change.
+    nonisolated static func registerCategories(strict: Bool, on center: UNUserNotificationCenter = .current()) {
         let approve = UNNotificationAction(identifier: approveAction, title: String(localized: "Approve"), options: [.authenticationRequired],
                                            icon: UNNotificationActionIcon(systemImageName: "checkmark"))
         let approveInApp = UNNotificationAction(identifier: approveAction, title: String(localized: "Review and approve"),
@@ -76,6 +118,9 @@ final class ApprovalNotifier: ApprovalNotifying {
         let mine: Set<UNNotificationCategory> = [
             UNNotificationCategory(identifier: category, actions: [approve, deny], intentIdentifiers: [], options: []),
             UNNotificationCategory(identifier: sensitiveCategory, actions: [approveInApp, deny], intentIdentifiers: [], options: []),
+            // The whole plan is in the body: Approve in place (Face ID unlock), or the card in strict mode.
+            UNNotificationCategory(identifier: sensitiveInlineCategory, actions: [strict ? approveInApp : approve, deny],
+                                   intentIdentifiers: [], options: []),
             DecisionNotifier.pushCategoryDefinition(),
         ]
         // Decision categories (DecisionNotifier) registered earlier keep their buttons.
@@ -87,12 +132,26 @@ final class ApprovalNotifier: ApprovalNotifying {
     static func content(for item: ApprovalItem, previews: Bool) -> UNMutableNotificationContent {
         let c = UNMutableNotificationContent()
         c.title = String(localized: "\(item.requester.displayName) needs your OK")
-        c.body = previews ? item.summary : String(localized: "Open Secretary to see what it is.")
         c.sound = .default
-        c.categoryIdentifier = item.sensitive ? sensitiveCategory : category
         c.interruptionLevel = .timeSensitive
         c.threadIdentifier = category
-        c.userInfo = [idKey: item.id, sensitiveKey: item.sensitive]
+        c.userInfo = [idKey: item.id, sensitiveKey: item.sensitive, payloadHashKey: item.payloadHash]
+        guard previews else {
+            c.body = String(localized: "Open Secretary to see what it is.")
+            c.categoryIdentifier = item.sensitive ? sensitiveCategory : category
+            return c
+        }
+        guard item.sensitive else {
+            c.body = item.summary
+            c.categoryIdentifier = category
+            return c
+        }
+        // A sensitive request: the summary, then its commands (the expanded notification, where the buttons are, shows
+        // them all). Approve answers in place only when every command is in the body.
+        let details = item.details.trimmingCharacters(in: .whitespacesAndNewlines)
+        let (shown, cut) = clipBytes(details)
+        c.body = details.isEmpty ? item.summary : item.summary + "\n" + shown
+        c.categoryIdentifier = !details.isEmpty && !cut ? sensitiveInlineCategory : sensitiveCategory
         return c
     }
 
@@ -109,6 +168,17 @@ final class ApprovalNotifier: ApprovalNotifying {
         c.title = String(localized: "Your answer didn't go through")
         c.body = String(localized: "Open Secretary and answer again: \(item.summary)")
         c.sound = .default
+        c.userInfo = [Self.idKey: item.id, Self.sensitiveKey: item.sensitive]
+        try? await center.add(UNNotificationRequest(identifier: "approval.failed.\(item.id)", content: c, trigger: nil))
+    }
+
+    /// Uses the failure's slot: either way the owner has to answer in the app, and it goes with the request.
+    func postOpenToApprove(for item: ApprovalItem) async {
+        let c = UNMutableNotificationContent()
+        c.title = String(localized: "Open Secretary to approve")
+        c.body = item.summary
+        c.sound = .default
+        c.interruptionLevel = .timeSensitive
         c.userInfo = [Self.idKey: item.id, Self.sensitiveKey: item.sensitive]
         try? await center.add(UNNotificationRequest(identifier: "approval.failed.\(item.id)", content: c, trigger: nil))
     }

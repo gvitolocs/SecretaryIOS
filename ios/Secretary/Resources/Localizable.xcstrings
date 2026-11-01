@@ -1,6 +1,22 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Open Secretary to approve" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apri Secretary per approvare"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Åbn Secretary for at godkende"
+          }
+        }
+      }
+    },
     "Open Secretary to see what it is." : {
       "localizations" : {
         "it" : {

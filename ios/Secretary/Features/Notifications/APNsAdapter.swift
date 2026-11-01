@@ -79,7 +79,7 @@ enum BackgroundRefresh {
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
-        ApprovalNotifier.registerCategories()
+        ApprovalNotifier.registerCategories(strict: UserDefaults.standard.bool(forKey: ApprovalsStore.strictFaceIDKey))
         Task { @MainActor in APNsAdapter.registerIfEnabled() }
         // Photo backup: longer passes when iOS grants processing time (Wi-Fi, often charging).
         BGTaskScheduler.shared.register(forTaskWithIdentifier: PhotoBackup.processingIdentifier, using: nil) { task in
@@ -170,8 +170,12 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             let action = response.actionIdentifier
             // The owner tapped the notification's Approve: the only place this trigger is made.
             let trigger = Self.approvalTrigger(forAction: action)
+            // A root plan whose notification showed every command, and the hash of what it showed.
+            let inline = response.notification.request.content.categoryIdentifier == ApprovalNotifier.sensitiveInlineCategory
+            let shownHash = ApprovalNotifier.payloadHash(in: info)
             await AppModel.shared.approvals.handleNotification(actionIdentifier: action, approvalId: approvalId,
-                                                               sensitive: sensitive, trigger: trigger)
+                                                               sensitive: sensitive, inline: inline, shownHash: shownHash,
+                                                               trigger: trigger)
             return
         }
         // A decision: an option or the owner's words from the notification, or its tap opens it.

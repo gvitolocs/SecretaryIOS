@@ -159,6 +159,18 @@ only "Open Secretary to see what it is."
   anyone holding the iPhone within 5 minutes of a Face ID unlock could approve
   a short, fully shown plan with one tap.
 
+**The notification** follows the same rule. A root plan whose push body
+carries every command uncut (category `APPROVAL_SENSITIVE_INLINE`; the
+expanded notification, where the buttons are, shows the whole body) has
+Approve (Face ID on this iPhone) and Deny (nothing): Approve is signed in place
+with the Face ID unlock, bound to the push's `payloadHash`. A plan that does
+not fit (over 2400 bytes, or cut in the inbox), or previews off, keeps
+`APPROVAL_SENSITIVE`, whose "Review and approve" opens the card; so does every
+root plan with strict mode on. When the in-place Approve can't be signed
+(unlocked with the passcode or too long ago, the request changed or expired,
+already being answered), nothing is signed and an "Open Secretary to approve"
+notification takes the owner to the card.
+
 When the request is answered anywhere, withdrawn or expires, the server ends
 the activity (an `end` push to its update token); the app also ends any
 activity whose request is no longer pending whenever it refreshes the list.
