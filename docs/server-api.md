@@ -2706,6 +2706,22 @@ Lucina writes the receipt to the timeline (`meta.kind: secret_receipt`): "Saved 
 env / path (fingerprint xxxxxxxx)". In chat, `/secret …` never reaches her model, timeline, Honcho
 or replay cache, and token-shaped text is masked before the turn and offered as a held value.
 
+**Secret requests (agents).** `POST /v1/secrets/request` is a device-token route like
+`/v1/decisions` (secretary-mcp `secret_request`), not one of the device-login routes above: it
+asks, it never writes. Body `{name, project, environment, path?, reason, from?, new_project?,
+asking_client}` (≤ 8 KiB) → Lucina `POST /api/secretary/secrets/request`. She refuses any other
+field with 400 (`value_refused` for value-like names: `value`, `secret`, `psk`, `password`,
+`token`, `held`, `…key`) and a `reason`/`from` that holds a token shape or a value she knows. She
+posts one card to the owner's chat (`meta.kind: secret_request`): who asks and why, the button
+"Add NAME" (`kind: secret`, `{mode: save, name, project, environment, path}`) and "Not now"; plus
+"Create project" (`mode: project`) when the last catalog the owner's sheet loaded doesn't list
+`project` (or, before any catalog, when `new_project` is true). A push (`lucina_message`, dedup
+`tl:<item>`) goes with it. Answer `{status: asked | already_asked, itemId, name, project,
+environment, path, projectKnown: bool | null, createProject}`; the same request within 10 minutes
+is `already_asked` with the first card. The owner then saves through `POST /v1/secrets` as usual,
+so the value never passes through the agent, the timeline or a log. The sheet matches `project`
+by id, alias, slug or name, never picks another project for it, and puts the cursor in the value.
+
 APNs key: a `value` named `APNS_AUTH_KEY_<KEYID>` (10 letters/digits; the whole `.p8` text) is also
 installed as this server's APNs key before it is forwarded, and push to the native app is on at once.
 400 `bad_request` when it is not a P-256 `.p8` (nothing is forwarded) or the server has no

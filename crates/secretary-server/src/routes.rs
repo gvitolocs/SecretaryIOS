@@ -100,6 +100,11 @@ async fn create_decision(State(st): State<AppState>, JsonBody(body): JsonBody<Va
     Ok((StatusCode::OK, Json(data)))
 }
 
+/// An agent asks the owner for a secret by name: Lucina posts the card that opens "Add secret".
+async fn secret_request(State(st): State<AppState>, JsonBody(body): JsonBody<Value>) -> ApiResult {
+    forward(&st, Call::secret_request(body)?).await
+}
+
 async fn decision(State(st): State<AppState>, Path(id): Path<String>) -> ApiResult {
     forward(&st, Call::decision(&id)?).await
 }
@@ -277,6 +282,10 @@ pub fn protected() -> Router<AppState> {
         .route(
             "/v1/decisions/{id}",
             get(decision).delete(withdraw_decision),
+        )
+        .route(
+            "/v1/secrets/request",
+            axum::routing::post(secret_request).layer(DefaultBodyLimit::max(8 * 1024)),
         )
         .route("/v1/reminders", get(reminders).post(create_reminder))
         .route("/v1/reminders/{id}", delete(cancel_reminder))

@@ -723,6 +723,55 @@ impl Registry {
         self.lock().workspaces.values().filter(|w| w.cwd == cwd && w.archived_at.is_none()).max_by(|a, b| a.created_at.cmp(&b.created_at)).cloned()
     }
 
+    /// Register a worktree someone made by hand (`git worktree add`, `wt add`) as an owned
+    /// worktree workspace, so the pipeline merges it and archive may remove it. Its start
+    /// is where it left `base` (the merge base).
+    pub async fn adopt(&self, dir: &Path, title: Option<String>, base: &str) -> Result<WorkspaceRecord, WsError> {
+        let info = git::info(dir).await;
+        if info.kind() != WorkspaceKind::Worktree {
+            return Err(WsError::Invalid(format!("Not a linked worktree: {}", dir.display())));
+        }
+        let repo = info.main_root.clone().ok_or_else(|| WsError::Invalid(format!("No main checkout for {}", dir.display())))?;
+        let branch = info.branch.clone().ok_or_else(|| WsError::Invalid(format!("{} is on a detached HEAD", dir.display())))?;
+        let project = self.project_for(&repo, true)?;
+        let base_ref = git::resolve_ref(&repo, base).await;
+        let base_sha = git::read(dir, &["merge-base", "HEAD", base]).await;
+        let now = now_iso();
+        let w = WorkspaceRecord {
+            workspace_id: new_id("wks"),
+            project_id: project.project_id,
+            cwd: dir.display().to_string(),
+            kind: WorkspaceKind::Worktree,
+            display_name: branch.clone(),
+            title: title.filter(|t| !t.trim().is_empty()),
+            branch: Some(branch),
+            base_ref,
+            base_sha,
+            main_repo_root: Some(repo.display().to_string()),
+            owned_worktree: true,
+            created_at: now.clone(),
+            updated_at: now,
+            archived_at: None,
+            pinned_at: None,
+            labels: vec!["adopted".into()],
+            untrusted_source: None,
+            background: false,
+            setup: None,
+            port: None,
+            auto_name: None,
+            removed_reason: None,
+        };
+        self.lock().workspaces.insert(w.workspace_id.clone(), w.clone());
+        self.save(&w);
+        Ok(w)
+    }
+
+    /// A kept workspace continues from `sha` (its branch was moved there after a merge),
+    /// so the merge sweep doesn't take it for merged work.
+    pub fn restart_at(&self, id: &str, sha: &str) -> Option<WorkspaceRecord> {
+        self.update(id, |r| r.base_sha = Some(sha.to_string()))
+    }
+
     /// Refresh the branch of local checkouts (the owner may switch it).
     pub async fn refresh(&self, id: &str) -> Option<WorkspaceRecord> {
         let w = self.get(id)?;

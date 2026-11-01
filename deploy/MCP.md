@@ -29,6 +29,7 @@ client ──HTTPS──▶ Caddy (getsecretary.tech) ──▶ secretary-mcp 12
 | `lucina_decide {question, options, reversible, impact, recommendation?, context?, urgency?, topic?, asking_session?, wait_seconds?}` | `chat` | Ask for a go-ahead; pending means wait for the owner's answer. |
 | `lucina_decision_status {decision_id, wait_seconds?}` | `chat` | Check a decision, optionally polling for up to 100 seconds. |
 | `lucina_decision_withdraw {decision_id, reason?}` | `chat` | Take back a pending decision; the owner's buttons then say it was withdrawn. The optional reason is trimmed and limited to 500 characters. |
+| `secret_request {name, project, environment, reason, path?, from?, new_project?}` | `chat` | Ask the owner for a secret **by name** (`POST /v1/secrets/request`). There is no value field: Lucina posts a card that opens "Add secret" prefilled, he pastes the value and it goes to Infisical by an owner grant, never through the agent. Repeats within 10 minutes answer with the first card. Read the secret afterwards with your own broker caller. |
 | `lucina_timeline {limit?, before?, channel?}` | `read` | Recent messages on all channels, newest first; paginate with `before`. |
 | `shopping_list {list?}` | `read` | v2 list state: needed items with ids, recently bought, other lists. Falls back to legacy `/v1/shopping` when v2 answers 404/502. |
 | `shopping_add {items: [name \| {name, spec?, quantity?, unit?}], list?}` | `write` | v2 `add` ops (new UUID `opId`s); legacy `POST /v1/shopping` as fallback. |

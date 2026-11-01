@@ -13,8 +13,10 @@ use serde_json::{json, Value};
 use crate::client::{Client, ClientError};
 use crate::config::{default_socket, shorten_path};
 
+mod device;
 mod term;
 mod orch;
+mod pipe;
 mod rewind;
 mod ws;
 
@@ -97,6 +99,24 @@ pub enum Command {
     Fork(rewind::ForkArgs),
     /// Serve the agents' MCP tools on stdio (agentd attaches this to its agents)
     Mcp,
+    /// Tasks: one workspace from main per piece of work (Lucina only)
+    #[command(subcommand)]
+    Task(pipe::TaskCommand),
+    /// Put a workspace's commits on main: queued, rebased, gated, pushed, archived (Lucina only)
+    Merge(pipe::MergeArgs),
+    /// Deploy a runtime from main's tip through deploy-guard (Lucina only)
+    Deploy(pipe::DeployArgs),
+    /// Merge and deploy jobs (Lucina only)
+    #[command(subcommand)]
+    Job(pipe::JobCommand),
+    /// Device leases: iPhone, stick, Kindle, POCO (Lucina only)
+    #[command(subcommand)]
+    Device(pipe::DeviceCommand),
+    /// Every workspace's state, the queue, leases and recent deploys (Lucina only)
+    Board,
+    /// Run one pipeline job (agentd starts this under the merge lock)
+    #[command(hide = true)]
+    PipelineExec { dir: std::path::PathBuf },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1122,6 +1142,16 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
         Command::Mcp => {
             crate::mcp::serve(client).await.map_err(|e| CmdError::new("MCP_FAILED", e.to_string()))?;
             Ok(Output { json: None, text: String::new() })
+        }
+        Command::Task(cmd) => pipe::task(&client, cmd).await,
+        Command::Merge(a) => pipe::merge(&client, a).await,
+        Command::Deploy(a) => pipe::deploy(&client, a).await,
+        Command::Job(cmd) => pipe::job(&client, cmd).await,
+        Command::Device(cmd) => pipe::device(&client, cmd).await,
+        Command::Board => pipe::board(&client).await,
+        Command::PipelineExec { dir } => {
+            let code = crate::pipeline::exec::run(dir);
+            std::process::exit(code);
         }
     }
 }

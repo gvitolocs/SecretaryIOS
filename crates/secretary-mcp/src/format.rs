@@ -125,6 +125,30 @@ pub fn chat_reply(r: &Value) -> String {
     out
 }
 
+/// The answer to `secret_request`: names only (Lucina's answer never holds a value).
+pub fn secret_request(r: &Value) -> String {
+    let name = s(r, "name").unwrap_or("?");
+    let place = format!(
+        "{} / {} / {}",
+        s(r, "project").unwrap_or("?"),
+        s(r, "environment").unwrap_or("?"),
+        s(r, "path").unwrap_or("/")
+    );
+    let head = if s(r, "status") == Some("already_asked") {
+        format!("Already asked: the owner has a card for `{name}` in {place} from the last 10 minutes.")
+    } else {
+        format!("Asked the owner for `{name}` in {place}: a card in his Lucina chat and a push to his phone.")
+    };
+    let project = if r["createProject"] == Value::Bool(true) {
+        " The card also offers to create the project, which may not exist yet."
+    } else {
+        ""
+    };
+    format!(
+        "{head}{project} The value never comes back here: once he saves it, lucina_timeline shows a receipt \"Saved `{name}` in …\"; read it with your own broker caller after he gives that caller access."
+    )
+}
+
 /// Contract decision summary followed by the complete record.
 pub fn decision(r: &Value) -> String {
     let id = s(r, "decision_id").unwrap_or("?");

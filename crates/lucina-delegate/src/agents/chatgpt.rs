@@ -115,14 +115,7 @@ impl Chatgpt {
             .trim()
             .to_owned();
         if answer.is_empty() {
-            let tail: String = out
-                .stderr
-                .lines()
-                .chain(out.stdout.lines())
-                .filter(|l| l.contains("ERROR") || l.contains("error"))
-                .take(2)
-                .collect::<Vec<_>>()
-                .join(" | ");
+            let tail = codex_error(&out.stderr, &out.stdout);
             return Err(format!(
                 "codex gave no answer (exit {:?}){}",
                 out.status,
@@ -173,6 +166,24 @@ impl Chatgpt {
             backend: "openai-api".into(),
         })
     }
+}
+
+/// Why codex failed: its own `ERROR: …` lines ("Your workspace is out of credits"), else any line
+/// that mentions an error. Its INFO trace lines (`auth_retry_after_error=…`) are not the reason.
+fn codex_error(stderr: &str, stdout: &str) -> String {
+    let lines = || stderr.lines().chain(stdout.lines()).map(str::trim);
+    let mut own: Vec<&str> = lines()
+        .filter_map(|l| l.strip_prefix("ERROR:").map(str::trim))
+        .collect();
+    own.dedup();
+    if !own.is_empty() {
+        return own.into_iter().take(2).collect::<Vec<_>>().join(" | ");
+    }
+    lines()
+        .filter(|l| (l.contains("ERROR") || l.contains("error")) && !l.contains(" INFO "))
+        .take(2)
+        .collect::<Vec<_>>()
+        .join(" | ")
 }
 
 fn home() -> PathBuf {
@@ -231,5 +242,20 @@ mod tests {
         };
         assert!(c.codex_args(&job)[0] == "exec");
         assert!(!c.supports(Kind::Code));
+    }
+
+    #[test]
+    fn codex_error_is_its_own_error_line_not_the_trace() {
+        // 2026-11-01: the reply to ChatGPT carried an INFO trace line instead of the reason.
+        let stderr = "2026-11-01T12:12:41.639433Z  INFO list_models{refresh_strategy=online}: feedback_tags: auth_mode=\"Chatgpt\" auth_retry_after_error=false\nERROR: Your workspace is out of credits. Add credits to continue.\nERROR: Your workspace is out of credits. Add credits to continue.\n";
+        assert_eq!(
+            codex_error(stderr, ""),
+            "Your workspace is out of credits. Add credits to continue."
+        );
+        assert_eq!(
+            codex_error("2026 INFO x auth_retry_after_error=false\n", "thread error: boom"),
+            "thread error: boom"
+        );
+        assert_eq!(codex_error("2026 INFO x error=none\n", ""), "");
     }
 }
