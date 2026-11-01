@@ -339,6 +339,28 @@ async fn a_voice_turn_lands_in_the_lucina_voice_thread() {
 }
 
 #[tokio::test]
+async fn an_owner_turn_keeps_jevs_answer_in_the_servers_data_dir() {
+    let jev = Fake::new().intent("che ore sono?", "temporal_query", 0.97);
+    let server = fake_jev(&jev).await;
+    let h = harness(chat_script(), with_jev(&server)).await;
+    stream(&h, voice_body("che ore sono?")).await;
+    let dir = h.dir.path().join("jev-cal");
+    let mut body = String::new();
+    for _ in 0..100 {
+        if let Some(Ok(entry)) = std::fs::read_dir(&dir).ok().and_then(|mut d| d.next()) {
+            body = std::fs::read_to_string(entry.path()).unwrap();
+        }
+        if !body.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let row: Value = serde_json::from_str(body.lines().next().expect("a sample")).unwrap();
+    assert_eq!(row["message"], "che ore sono?");
+    assert_eq!(row["intent"], "temporal_query");
+}
+
+#[tokio::test]
 async fn the_speakers_turns_are_in_the_main_chats_recent_context_and_back() {
     let jev = Fake::new().intent("che ore sono?", "temporal_query", 0.97);
     let server = fake_jev(&jev).await;

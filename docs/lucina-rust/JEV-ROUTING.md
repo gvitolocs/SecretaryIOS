@@ -120,7 +120,7 @@ timeline write, no memory write. The same bearer token as the rest of `/api/secr
 
 ## Samples
 
-Each real turn of the owner's that Jev answered adds one line to `<LUCINA_JEV_CAL_DIR>/samples-YYYY-MM.jsonl`
+Each real turn of the owner's that Jev answered adds one line to `<data>/jev-cal/samples-YYYY-MM.jsonl`
 (mode 0600), for a future local heuristic: message, intent, confidence, model, platform, tier-0 rule. It makes
 no Jev call. MCP, guest and selftest turns and the drift replay are left out. `LUCINA_JEV_SAMPLES=off` stops it.
 

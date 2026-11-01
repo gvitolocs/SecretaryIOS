@@ -1,10 +1,10 @@
 //! Intent samples for a future local heuristic (owner, 2026-11-01). Each of the owner's own turns
 //! that Jev already classified adds one line. This module never calls Jev, so it costs no Jev tokens.
 //!
-//! `<LUCINA_JEV_CAL_DIR>/samples-YYYY-MM.jsonl`, mode 0600: the owner's words, like the labelled set
+//! `<data>/jev-cal/samples-YYYY-MM.jsonl`, mode 0600: the owner's words, like the labelled set
 //! beside them. `LUCINA_JEV_SAMPLES=off` stops it. Nothing reads these files yet.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
@@ -15,12 +15,6 @@ const MAX_TEXT: usize = 4000;
 fn enabled() -> bool {
     !std::env::var("LUCINA_JEV_SAMPLES")
         .is_ok_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off" | "no"))
-}
-
-fn dir() -> PathBuf {
-    std::env::var("LUCINA_JEV_CAL_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(crate::jev_drift::DEFAULT_LABELS_DIR))
 }
 
 fn line(
@@ -56,13 +50,19 @@ fn append(dir: &Path, now: DateTime<Utc>, line: &str) -> std::io::Result<()> {
 }
 
 /// Note a turn Jev answered, in the background. A failure is logged and never touches the turn.
-pub fn record(text: &str, platform: &str, verdict: &(Value, f64), rule: Option<&str>) {
+pub fn record(
+    data_dir: &Path,
+    text: &str,
+    platform: &str,
+    verdict: &(Value, f64),
+    rule: Option<&str>,
+) {
     if !enabled() {
         return;
     }
     let now = Utc::now();
     let line = line(now, text, platform, verdict, rule);
-    let dir = dir();
+    let dir = data_dir.join("jev-cal");
     tokio::task::spawn_blocking(move || {
         if let Err(e) = append(&dir, now, &line) {
             tracing::warn!(error = %e, "jev sample not saved");

@@ -138,7 +138,7 @@ pub async fn classify(
     };
     if let (true, Some(verdict)) = (sample, &jev) {
         let tier0 = rule.as_ref().map(|r| r.intent.as_str());
-        crate::jev_samples::record(user_text, platform, verdict, tier0);
+        crate::jev_samples::record(&st.cfg.data_dir, user_text, platform, verdict, tier0);
     }
     let chat = |confidence: f64| {
         tier0::from_model_json(
