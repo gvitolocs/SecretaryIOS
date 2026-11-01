@@ -147,10 +147,15 @@ pub struct Vocab {
 
 /// `LUCINA_VOICE_LEARN_FILE`, else `$HOME/Projects/Lucina/data/voice-learn.json`.
 pub fn default_path() -> PathBuf {
-    if let Some(p) = std::env::var_os("LUCINA_VOICE_LEARN_FILE").filter(|p| !p.is_empty()) {
+    path_from_lookup(|k| std::env::var(k).ok())
+}
+
+/// [`default_path`] with the variables read through `get` (a config lookup).
+pub fn path_from_lookup(get: impl Fn(&str) -> Option<String>) -> PathBuf {
+    if let Some(p) = get("LUCINA_VOICE_LEARN_FILE").filter(|p| !p.is_empty()) {
         return PathBuf::from(p);
     }
-    match std::env::var_os("HOME").filter(|h| !h.is_empty()) {
+    match get("HOME").filter(|h| !h.is_empty()) {
         Some(h) => PathBuf::from(h).join("Projects/Lucina/data/voice-learn.json"),
         None => PathBuf::from("voice-learn.json"),
     }
@@ -317,6 +322,13 @@ impl Vocab {
 
     /// Replace close mishearings in `text` by the canonical word; see [`Corrected`].
     pub fn correct(&self, text: &str) -> Corrected {
+        correct::run(self, text).0
+    }
+
+    /// [`Vocab::correct`] plus where each replacement happened, as byte ranges of
+    /// the input `text` in increasing order (to map a correction back onto word
+    /// timings).
+    pub fn correct_with_spans(&self, text: &str) -> (Corrected, Vec<Replacement>) {
         correct::run(self, text)
     }
 
@@ -354,6 +366,15 @@ pub struct Corrected {
     /// Spans that are close to more than one entry, or only borderline close to
     /// one: left unchanged. The caller may ask Jev "which did they mean".
     pub ambiguous: Vec<Ambiguity>,
+}
+
+/// One replacement made by [`Vocab::correct_with_spans`]: `text[start..end]` of the
+/// input became `to`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Replacement {
+    pub start: usize,
+    pub end: usize,
+    pub to: String,
 }
 
 /// A span of the text that might be one of several entries' words.

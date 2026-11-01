@@ -429,3 +429,31 @@ fn default_path_follows_the_environment() {
     let p = default_path();
     assert!(p.to_string_lossy().ends_with("voice-learn.json"));
 }
+
+#[test]
+fn spans_locate_each_replacement_in_the_input() {
+    let v = owner();
+    let text = "A «skibi gaardsvej», e orus!";
+    let (r, spans) = v.correct_with_spans(text);
+    assert_eq!(r.corrections.len(), 2);
+    assert_eq!(spans.len(), 2);
+    assert_eq!(&text[spans[0].start..spans[0].end], "skibi gaardsvej");
+    assert_eq!(spans[0].to, "Skibigårdsvej");
+    assert_eq!(&text[spans[1].start..spans[1].end], "orus");
+    assert_eq!(spans[1].to, "Horus");
+}
+
+#[test]
+fn path_follows_the_lookup() {
+    let p = path_from_lookup(|k| (k == "LUCINA_VOICE_LEARN_FILE").then(|| "/x/v.json".to_string()));
+    assert_eq!(p, PathBuf::from("/x/v.json"));
+    let p = path_from_lookup(|k| (k == "HOME").then(|| "/home/u".to_string()));
+    assert_eq!(
+        p,
+        PathBuf::from("/home/u/Projects/Lucina/data/voice-learn.json")
+    );
+    assert_eq!(
+        path_from_lookup(|_| None),
+        PathBuf::from("voice-learn.json")
+    );
+}

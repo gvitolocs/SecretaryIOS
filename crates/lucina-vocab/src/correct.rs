@@ -10,7 +10,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use crate::phonetic::{fold, key, ratio};
-use crate::{stop, Ambiguity, Corrected, Vocab};
+use crate::{stop, Ambiguity, Corrected, Replacement, Vocab};
 
 const MAX_SPAN: usize = 4;
 /// Tolerance for float comparisons of ratios.
@@ -245,13 +245,14 @@ fn decide(cands: &[Cand]) -> Decision {
     }
 }
 
-pub(crate) fn run(vocab: &Vocab, text: &str) -> Corrected {
+pub(crate) fn run(vocab: &Vocab, text: &str) -> (Corrected, Vec<Replacement>) {
     let mut out = Corrected {
         text: text.to_owned(),
         ..Corrected::default()
     };
+    let mut spans: Vec<Replacement> = Vec::new();
     if vocab.entries.is_empty() || text.is_empty() {
-        return out;
+        return (out, spans);
     }
     let m = Matcher::new(vocab);
     let (toks, joinable) = tokenize(text);
@@ -291,6 +292,11 @@ pub(crate) fn run(vocab: &Vocab, text: &str) -> Corrected {
                     result.push_str(word);
                     copied = e;
                     out.corrections.push((heard.to_owned(), word.to_owned()));
+                    spans.push(Replacement {
+                        start: s,
+                        end: e,
+                        to: word.to_owned(),
+                    });
                 }
             }
             Decision::Ambiguous(entries) => {
@@ -314,5 +320,5 @@ pub(crate) fn run(vocab: &Vocab, text: &str) -> Corrected {
     }
     result.push_str(&text[copied..]);
     out.text = result;
-    out
+    (out, spans)
 }

@@ -16,6 +16,7 @@ path = "src/main.rs"
 fs4 = { workspace = true }
 lucina-llm = { path = "../lucina-llm" }
 lucina-prompter = { path = "../lucina-prompter" }
+lucina-vocab = { path = "../lucina-vocab" }
 axum = { version = "0.8", features = ["ws"] }
 tokio = { workspace = true }
 tokio-util = { version = "0.7", features = ["io"] }

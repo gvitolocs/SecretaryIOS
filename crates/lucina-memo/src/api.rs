@@ -373,7 +373,11 @@ async fn device_transcript(
         segments,
         speakers: false,
         created_at: Utc::now(),
+        corrections: vec![],
     };
+    // The iPhone's own recognizer misspells taught words too (Voice Learn).
+    let mut t = t;
+    crate::vocab::correct_transcript(&app.cfg.whisper.vocab.get(), &mut t);
     crate::store::write_json(&app.store.device_transcript_path(&id), &t)
         .map_err(StoreError::from)?;
     // A memo waiting for the GPU can go ahead now.

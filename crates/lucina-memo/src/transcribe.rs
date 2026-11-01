@@ -13,6 +13,7 @@
 //! Audio never leaves this host.
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
@@ -43,6 +44,8 @@ pub struct WhisperConfig {
     pub gpu_lease: PathBuf,
     /// Hard cap on one whisper run.
     pub timeout: Duration,
+    /// Voice Learn words (`LUCINA_VOICE_LEARN_FILE`), re-read when the file changes.
+    pub vocab: Arc<lucina_vocab::Watched>,
 }
 
 impl WhisperConfig {
@@ -93,6 +96,15 @@ impl WhisperConfig {
                     .and_then(|v| v.trim().parse().ok())
                     .unwrap_or(4 * 3600),
             ),
+            vocab: Arc::new(lucina_vocab::Watched::new(lucina_vocab::path_from_lookup(
+                |k| {
+                    if k == "HOME" {
+                        Some(home.clone())
+                    } else {
+                        get(k)
+                    }
+                },
+            ))),
         }
     }
 }
@@ -304,6 +316,10 @@ async fn run(
         return Err(SttError::ModelMissing(cfg.model.clone()));
     }
     let prefix = work.join("whisper");
+    // Voice Learn: the taught words go last in the prompt, the output is corrected below.
+    let vocab = cfg.vocab.get();
+    let merged = crate::vocab::prompt(&vocab, prompt.unwrap_or(""));
+    let prompt = Some(merged.as_str()).filter(|p| !p.is_empty());
     let gpu = run_whisper(cfg, wav, &prefix, &cfg.model, true, gpu_wait, words, prompt).await;
     let (out, engine) = match gpu {
         Ok(o) => (o, format!("whisper.cpp {} (GPU)", model_name(&cfg.model))),
@@ -319,7 +335,9 @@ async fn run(
         }
         Err(e) => return Err(SttError::Whisper(e.to_string())),
     };
-    parse_output(&out, engine, duration_sec)
+    let mut t = parse_output(&out, engine, duration_sec)?;
+    crate::vocab::correct_transcript(&vocab, &mut t);
+    Ok(t)
 }
 
 fn model_name(p: &Path) -> String {
@@ -530,6 +548,7 @@ pub fn parse_output(json: &str, engine: String, duration_sec: f64) -> Result<Tra
         segments,
         speakers: false,
         created_at: Utc::now(),
+        corrections: vec![],
     })
 }
 
@@ -689,6 +708,76 @@ mod tests {
         remux_adts(&cfg, &cut, &out).await.unwrap();
         let d = duration(&cfg, &out).await.unwrap();
         assert!(d > 2.0 && d < 4.0, "duration {d}");
+    }
+
+    /// A fake `whisper-cli`: records `--prompt` and answers with a fixed transcript.
+    #[tokio::test]
+    async fn voice_learn_prompt_goes_last_and_the_transcript_is_corrected() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let seen = dir.path().join("prompt.txt");
+        let cli = dir.path().join("whisper-cli");
+        std::fs::write(
+            &cli,
+            format!(
+                "#!/bin/sh\nwhile [ $# -gt 0 ]; do case \"$1\" in -of) of=\"$2\"; shift;; --prompt) printf '%s' \"$2\" > {}; shift;; esac; shift; done\n\
+                 cat > \"$of.json\" <<'EOF'\n{{\"result\":{{\"language\":\"it\"}},\"transcription\":[{{\"offsets\":{{\"from\":0,\"to\":4000}},\"text\":\" Torno a skibi gaardsvej con orus.\"}}]}}\nEOF\n",
+                seen.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let model = dir.path().join("ggml-large-v3.bin");
+        std::fs::write(&model, b"x").unwrap();
+        let vocab_file = dir.path().join("voice-learn.json");
+        let mut cfg = WhisperConfig::from_lookup(|k| match k {
+            "LUCINA_VOICE_LEARN_FILE" => Some(vocab_file.display().to_string()),
+            "LUCINA_MEMO_WHISPER_CLI" => Some(cli.display().to_string()),
+            "LUCINA_MEMO_WHISPER_MODEL" => Some(model.display().to_string()),
+            _ => None,
+        });
+        cfg.vad_model = None;
+        cfg.cpu_model = None;
+        let wav = dir.path().join("a.wav");
+
+        // No vocabulary file: nothing is added and nothing is changed.
+        let t = transcribe(&cfg, &wav, dir.path(), 4.0, Duration::ZERO)
+            .await
+            .unwrap();
+        assert_eq!(t.text(), "Torno a skibi gaardsvej con orus.");
+        assert!(t.corrections.is_empty());
+        assert!(!seen.exists(), "no --prompt without words");
+
+        let mut v = lucina_vocab::Vocab::default();
+        for (id, w, at) in [("1", "Skibigårdsvej", "1"), ("2", "Horus", "2")] {
+            let mut e = lucina_vocab::Entry::new(w);
+            e.id = id.into();
+            e.updated_at = at.into();
+            v.add(e).unwrap();
+        }
+        v.save(&vocab_file).unwrap();
+        let t = transcribe_prompted(
+            &cfg,
+            &wav,
+            dir.path(),
+            4.0,
+            Duration::ZERO,
+            "Video su Aarhus",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&seen).unwrap(),
+            "Video su Aarhus, Horus, Skibigårdsvej"
+        );
+        assert_eq!(t.text(), "Torno a Skibigårdsvej con Horus.");
+        assert_eq!(
+            t.corrections
+                .iter()
+                .map(|c| (c.from.as_str(), c.to.as_str()))
+                .collect::<Vec<_>>(),
+            [("skibi gaardsvej", "Skibigårdsvej"), ("orus", "Horus")]
+        );
     }
 
     #[test]

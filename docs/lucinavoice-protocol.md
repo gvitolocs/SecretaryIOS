@@ -272,6 +272,33 @@ normal path as before.
 - **Accuracy check:** a reproducible bench with Kokoro-generated clips of the entries (it/da/en voices, including a
   voice-note style clip through the memo path), measured without and with the vocabulary. It reports the word hit rate.
 
+### Implementation notes: the shared core and lucina-memo (2026-11-01)
+
+- **`crates/lucina-vocab`** is the one implementation of the vocabulary file, validation, the Whisper prompt, the
+  post-correction and the meanings; lucina-rs (owner of the file), lucina-memo and anything else that transcribes
+  use it. `Vocab::load/save` (atomic, 0600), `default_path()` (`LUCINA_VOICE_LEARN_FILE`, else
+  `$HOME/Projects/Lucina/data/voice-learn.json`), `Vocab::prompt(max_chars)`, `Vocab::correct(text) -> Corrected
+  {text, corrections: [(heard, word)], ambiguous: [{heard, candidates}]}`, `Vocab::meanings_for(text)`, and
+  `Watched` (re-reads when the file changes). The caps are validated there: 500 entries, 100 characters per
+  field, 20 `soundsLike` phrases per entry, unique words case-insensitively.
+- **Prompt:** the words only, newest `updatedAt` first, after the caller's own prompt (`Lucina` for `/v1/memos/stt`),
+  at most about 500 characters in all (a Whisper prompt holds 224 tokens and whisper.cpp keeps the end, so the
+  vocabulary goes last). `soundsLike` is *not* put in the prompt: it lists mishearings, and a prompt only steers
+  spelling, so it would make Whisper write them. `soundsLike` feeds the post-correction (exact match, any case) and
+  the "did they mean" check.
+- **`POST /v1/memos/stt`** answers `{text, language, ms, mode, corrections: [{from, to}], ambiguous: [{heard,
+  candidates}]}`; `text` already has the corrections, both lists are `[]` when there are none. `ambiguous` entries
+  are spans left unchanged (borderline, or equally close to two entries): the caller asks Jev (the `vocab` layer
+  of §9) and, on a yes, applies the replacement itself.
+- **Where chat voice notes are transcribed:** not by a separate service. A voice note from the iOS, Mac or web chat
+  is an audio attachment (kind `voice`) of the chat turn; lucina-rs (`crates/lucina-server/src/share/extract.rs`,
+  `audio()`) either takes the transcript the client made on the device (Apple's recognizer, `on_device`) or runs
+  `lucina_memo::transcribe::transcribe` in its own process (whisper-cli large-v3). The second path uses the
+  vocabulary through lucina-memo's `transcribe` module with no change in lucina-server; the first does not, so
+  lucina-rs should run `Vocab::correct` on an `on_device` transcript. Voice memos (the Memos tab) go through
+  lucina-memo's worker, whose device transcript is corrected when stored. Video reports (`video/`) use the same
+  function.
+
 ## 9. Layered Jev decisions (voice turns)
 
 Every layer has a fixed facts-only state, a budget of at most 400 ms, runs concurrently with other work where it

@@ -494,6 +494,7 @@ mod tests {
             }],
             speakers: false,
             created_at: Utc::now(),
+            corrections: vec![],
         }
     }
 

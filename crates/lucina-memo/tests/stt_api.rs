@@ -42,7 +42,7 @@ async fn inference(State(w): State<Whisper>, body: Bytes) -> axum::response::Res
 struct H {
     app: Arc<App>,
     whisper: Whisper,
-    _dir: tempfile::TempDir,
+    dir: tempfile::TempDir,
 }
 
 /// `lease_script` is the body of the fake gpu-lease.
@@ -52,6 +52,11 @@ async fn harness(lease_script: &str) -> H {
 
 /// With `serve: false` nothing answers on the engine's port (a server that never comes up).
 async fn harness_with(lease_script: &str, serve: bool) -> H {
+    harness_full(lease_script, serve, None).await
+}
+
+/// `vocab`: the Voice Learn file's JSON (none = no file).
+async fn harness_full(lease_script: &str, serve: bool, vocab: Option<&str>) -> H {
     let whisper = Whisper::default();
     *whisper.reply.lock().unwrap() = (
         200,
@@ -75,10 +80,16 @@ async fn harness_with(lease_script: &str, serve: bool) -> H {
         dir.path().join("data").display().to_string(),
         lease.display().to_string(),
     );
+    let vocab_file = dir.path().join("voice-learn.json");
+    if let Some(v) = vocab {
+        std::fs::write(&vocab_file, v).unwrap();
+    }
+    let vocab_path = vocab_file.display().to_string();
     let cfg = Config::from_lookup(|k| match k {
         "LUCINA_MEMO_DIR" => Some(data.clone()),
         "LUCINA_MEMO_OBSIDIAN_VAULT" => Some("off".into()),
         "LUCINA_MEMO_GPU_LEASE" => Some(lease.clone()),
+        "LUCINA_VOICE_LEARN_FILE" => Some(vocab_path.clone()),
         "LUCINA_PROMPTER_STT_PORT" => Some(port.clone()),
         // No CPU fallback in tests: systemd-run must not start anything.
         "LUCINA_PROMPTER_WHISPER_SERVER" => Some("/nonexistent/whisper-server".into()),
@@ -91,11 +102,7 @@ async fn harness_with(lease_script: &str, serve: bool) -> H {
     )
     .unwrap()
     .with_tokens(Some("gateway-key-0123456789abcdef"), Some(SVC));
-    H {
-        app,
-        whisper,
-        _dir: dir,
-    }
+    H { app, whisper, dir }
 }
 
 fn pcm(samples: usize) -> Vec<u8> {
@@ -291,5 +298,76 @@ async fn a_failing_transcription_is_502_and_still_releases() {
     assert_eq!(s, StatusCode::BAD_GATEWAY, "{v}");
     assert_eq!(v["error"]["code"], "stt_failed");
     assert_eq!(h.sessions().await, 0);
+    h.app.prompter.engine.shutdown().await;
+}
+
+const VOCAB: &str = r#"{"entries":[
+  {"id":"1","word":"Skibigårdsvej","updatedAt":"2026-11-01T10:00:00Z"},
+  {"id":"2","word":"Horus","soundsLike":["orus"],"updatedAt":"2026-11-01T11:00:00Z"}]}"#;
+
+#[tokio::test]
+async fn the_vocabulary_biases_the_prompt_and_corrects_the_text() {
+    let h = harness_full("exec sleep 600", true, Some(VOCAB)).await;
+    *h.whisper.reply.lock().unwrap() = (
+        200,
+        r#"{"text":" Torno a skibi gaardsvej, poi guardo orus. ","language":"italian"}"#.into(),
+    );
+    let (s, v) = h.raw("?lang=it", 16_000).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["text"], "Torno a Skibigårdsvej, poi guardo Horus.");
+    assert_eq!(
+        v["corrections"],
+        serde_json::json!([
+            {"from": "skibi gaardsvej", "to": "Skibigårdsvej"},
+            {"from": "orus", "to": "Horus"}
+        ])
+    );
+    assert_eq!(v["ambiguous"], serde_json::json!([]));
+    let seen = h.whisper.seen.lock().unwrap().clone();
+    assert!(
+        seen[0].contains("name=\"prompt\"\r\n\r\nLucina, Horus, Skibigårdsvej\r\n"),
+        "{}",
+        &seen[0][..400.min(seen[0].len())]
+    );
+
+    // The file is re-read when it changes: a new word shows up in the next prompt.
+    std::fs::write(
+        h.dir.path().join("voice-learn.json"),
+        r#"{"entries":[{"id":"3","word":"Kokoro","updatedAt":"2026-11-02T00:00:00Z"}]}"#,
+    )
+    .unwrap();
+    let (s, v) = h.raw("?lang=it", 16_000).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["text"], "Torno a skibi gaardsvej, poi guardo orus.");
+    let seen = h.whisper.seen.lock().unwrap().clone();
+    assert!(seen[1].contains("\r\n\r\nLucina, Kokoro\r\n"));
+    h.app.prompter.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_borderline_match_is_reported_not_applied() {
+    let h = harness_full("exec sleep 600", true, Some(VOCAB)).await;
+    *h.whisper.reply.lock().unwrap() = (
+        200,
+        r#"{"text":" Come sta Horas? ","language":"italian"}"#.into(),
+    );
+    let (s, v) = h.raw("?lang=it", 16_000).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["text"], "Come sta Horas?");
+    assert_eq!(v["corrections"], serde_json::json!([]));
+    assert_eq!(
+        v["ambiguous"],
+        serde_json::json!([{"heard": "Horas", "candidates": ["Horus"]}])
+    );
+    h.app.prompter.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn without_a_vocabulary_the_answer_has_empty_lists() {
+    let h = harness("exec sleep 600").await;
+    let (s, v) = h.raw("?lang=it", 16_000).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["corrections"], serde_json::json!([]));
+    assert_eq!(v["ambiguous"], serde_json::json!([]));
     h.app.prompter.engine.shutdown().await;
 }

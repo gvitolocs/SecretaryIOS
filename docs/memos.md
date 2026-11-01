@@ -71,11 +71,37 @@ summary runs; 404 for an event not around the recording).
 secretary-server's `POST /v1/voice` for the LucinaVoice speaker): body `audio/wav` (16 kHz mono 16-bit) or
 `audio/x-s16le;rate=16000`, at most 2 MiB (413); another type or WAV format 415, under 0.3 s of audio 422
 `no_speech`, unknown query parameter or `lang` 400. It runs on the prompter's whisper-server (small model, GPU
-lease first, CPU if none; `docs/prompter.md`) as a session that is always released. `200 {text, language, ms, mode}`
-(`language` it/en/da, `mode` gpu/cpu; silence is `text: ""`), 503 `stt_unavailable` when the engine does not start,
-502 `stt_failed` when it fails on the clip.
+lease first, CPU if none; `docs/prompter.md`) as a session that is always released. `200 {text, language, ms, mode,
+corrections, ambiguous}` (`language` it/en/da, `mode` gpu/cpu; silence is `text: ""`; `corrections` `[{from, to}]` and
+`ambiguous` `[{heard, candidates}]` are the Voice Learn result below, `[]` when there is none), 503 `stt_unavailable`
+when the engine does not start, 502 `stt_failed` when it fails on the clip.
 Auth: `X-Memo-Gateway` from Caddy (after secretary-server accepted the device), or `Authorization: Bearer <service.token>`
 for local callers. Cookie writes need `X-Secretary-CSRF: 1`. `GET /health` is open.
+
+## Voice Learn (the taught vocabulary)
+
+`docs/lucinavoice-protocol.md` section 8. Lucina owns the vocabulary (a JSON file written by lucina-rs,
+`LUCINA_VOICE_LEARN_FILE`, default `$HOME/Projects/Lucina/data/voice-learn.json`); this service only reads it, through
+the `lucina-vocab` crate, and re-reads it when the file changes (one `stat` per transcription). A missing or empty
+file changes nothing. Every transcription path here uses it ([`src/vocab.rs`](../crates/lucina-memo/src/vocab.rs)):
+
+- **Bias:** the words go into Whisper's initial prompt, newest first, after the caller's own prompt ("Lucina" for
+  `/v1/memos/stt`, the app's terms for the prompter, a video's title for a video report). whisper.cpp keeps the end
+  of an over-long prompt, so the vocabulary goes last; the whole prompt stays under about 500 characters.
+  `soundsLike` is not in the prompt (it would steer Whisper toward the mishearing); it is used by the correction.
+- **Post-correction:** after Whisper, a word or span of up to four words that is close to an entry's word or
+  `soundsLike` becomes the canonical word. Phonetic key (diacritics, å/ø/æ, aa, ph/f, w/v, y/i, ch/k, silent h,
+  doubled letters, a Danish "vej" = "vai") plus a weighted Damerau distance, a threshold that grows with the length, never
+  on words of three letters or fewer, never on common Italian/English/Danish words or on another entry's exact word.
+  A match that is only borderline, or equally close to two entries, is not replaced: it is returned in `ambiguous`
+  (the caller may ask Jev "which did they mean").
+- **Paths:** `POST /v1/memos/stt` (voice turns) and the prompter's live engine (`Engine::transcribe`); the memo worker,
+  the idle upgrade of an iPhone transcript, meetings, and every other caller of `transcribe::transcribe*` (lucina-rs
+  uses these for chat voice notes and shared audio, and for video reports); and the iPhone's own recognizer text, which
+  is corrected when it is stored (`PUT …/device-transcript`). Word timings follow: the words of a replaced span become one word.
+- **Record:** `Transcript.corrections` (`[{from, to}]`, absent when empty) in `transcript.json` keeps what was changed.
+- **Accuracy:** `cargo run -p lucina-memo --example vocab_bench` (Kokoro clips through the engine and the worker,
+  without the vocabulary / correction only / prompt only / prompt + correction; temporary vocabulary file).
 
 ## Pipeline (worker)
 
