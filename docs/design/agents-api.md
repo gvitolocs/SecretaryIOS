@@ -100,6 +100,9 @@ one. Its `ownerDeviceId` is the registering device. Sends, steers, stops and per
 `agent_command` events, queued for that device until it acknowledges them. Unacknowledged commands expire after
 24 h, and an expired permission answer counts as denied.
 
+Claude sessions (provider `claude-session`) are external agents without an owner device: a hook on their host reports
+for them through `lagent session beat`, and only `send` reaches them (`docs/design/agents-pipeline.md`, section 6).
+
 **phase 7 decided:** they live in agentd, as its built-in provider `secretary-code` (`crates/lucina-agentd/src/external.rs`,
 wire types and rules in `lucina-agents::external`). So they keep a record, timeline, state, attention, pushes and
 the permission book like any agent, survive a daemon restart, and the queue survives with them (SQLite). Rules:

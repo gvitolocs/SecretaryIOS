@@ -405,7 +405,7 @@ pub async fn board(client: &Client) -> Result<Output, CmdError> {
                 format!("{}{}", w["ahead"].as_u64().map(|a| format!("+{a}")).unwrap_or_default(), if w["dirty"] == true { " dirty" } else { "" }),
                 w["idleDays"].as_i64().map(|d| format!("{d}d")).unwrap_or_default(),
                 if w["procs"].as_u64().unwrap_or(0) > 0 { format!("{}p {}M", w["procs"], w["rssMb"]) } else { String::new() },
-                s(&w["task"]["session"]),
+                s(&w["session"]),
                 s(&w["workspaceId"]),
             ]
         })

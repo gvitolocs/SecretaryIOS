@@ -6,6 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::{Args, Parser, Subcommand};
 use lucina_agents::curator::{curate_activity, CurateOptions};
+use lucina_agents::external::SESSION_PROVIDER;
 use lucina_agents::projection::project_rows;
 use lucina_agents::{TimelineItem, TimelineRow};
 use serde_json::{json, Value};
@@ -18,6 +19,7 @@ mod term;
 mod orch;
 mod pipe;
 mod rewind;
+mod session;
 mod ws;
 
 #[derive(Parser, Debug)]
@@ -109,6 +111,9 @@ pub enum Command {
     /// Merge and deploy jobs (Lucina only)
     #[command(subcommand)]
     Job(pipe::JobCommand),
+    /// Claude sessions working in Lucina workspaces, shown as agents (Lucina only)
+    #[command(subcommand)]
+    Session(session::SessionCommand),
     /// Device leases: iPhone, stick, Kindle, POCO (Lucina only)
     #[command(subcommand)]
     Device(pipe::DeviceCommand),
@@ -377,6 +382,9 @@ pub struct LsArgs {
     pub cwd: Option<String>,
     #[arg(long = "label", value_name = "KEY=VALUE")]
     pub label: Vec<String>,
+    /// Only agents agentd runs itself, not the Claude sessions it shows (Lucina only)
+    #[arg(long)]
+    pub supervised: bool,
 }
 
 #[derive(Args, Debug)]
@@ -883,6 +891,9 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
             if !a.all {
                 agents.retain(|x| x["archivedAt"].is_null());
             }
+            if a.supervised {
+                agents.retain(|x| x["provider"] != SESSION_PROVIDER);
+            }
             if let Some(st) = &a.status {
                 agents.retain(|x| x["status"] == st.as_str());
             }
@@ -951,12 +962,15 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
             };
             let agent = resolve(&client, &a.id).await?;
             let id = agent["id"].as_str().unwrap_or_default().to_string();
+            let is_session = agent["provider"] == SESSION_PROVIDER;
             let behavior = a.behavior.clone().unwrap_or_else(|| "interrupt".into());
             client
                 .post(&format!("/agents/{id}/send"), &json!({"prompt": prompt, "activeTurnBehavior": behavior}))
                 .await
                 .map_err(|e| CmdError::new("SEND_FAILED", format!("Failed to send message: {e}")))?;
-            let result = if a.no_wait {
+            let result = if is_session {
+                json!({"agentId": id, "status": "queued", "message": "Queued: the Claude session reads it at its next tool call or prompt, or wakes up for it when idle. Nothing waits for an answer here."})
+            } else if a.no_wait {
                 json!({"agentId": a.id, "status": "sent", "message": "Message sent, not waiting for completion"})
             } else {
                 let state = wait_for(&client, &id, 600_000, false).await?;
@@ -971,10 +985,15 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
         }
         Command::Stop(a) => {
             let agents = targets(&client, a).await?;
+            if let [one] = agents.as_slice() {
+                if one["provider"] == SESSION_PROVIDER {
+                    return Err(CmdError::new("NOT_SUPERVISED", format!("{} is a Claude session on {}, not a run Lucina Agents supervises: it can't be stopped from here. `lagent send` leaves it a message.", s(&one["shortId"]), s(&one["host"]))));
+                }
+            }
             let mut stopped = Vec::new();
             for agent in agents {
                 let id = agent["id"].as_str().unwrap_or_default().to_string();
-                if agent["status"] != "running" {
+                if agent["status"] != "running" || agent["provider"] == SESSION_PROVIDER {
                     continue;
                 }
                 match client.post(&format!("/agents/{id}/stop"), &json!({})).await {
@@ -1031,7 +1050,8 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
             if !agent["archivedAt"].is_null() {
                 return Err(CmdError::new("AGENT_ALREADY_ARCHIVED", format!("Agent {short} is already archived")));
             }
-            if agent["status"] == "running" && !a.force {
+            // A Claude session's refusal comes from the daemon, which knows if it is live.
+            if agent["status"] == "running" && !a.force && agent["provider"] != SESSION_PROVIDER {
                 return Err(CmdError::new("AGENT_RUNNING", format!("Agent {short} is currently running")).details(
                     "Use --force to archive a running agent (it will interrupt the active run), or stop it first with: lagent stop. Use lagent delete to hard-delete it.",
                 ));
@@ -1051,10 +1071,12 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
         Command::Delete(a) => {
             let agents = targets(&client, a).await?;
             let mut deleted = Vec::new();
+            let only = agents.len() == 1;
             for agent in agents {
                 let id = agent["id"].as_str().unwrap_or_default().to_string();
                 match client.request("DELETE", &format!("/agents/{id}"), None).await {
                     Ok(_) => deleted.push(Value::String(id)),
+                    Err(e) if only && agent["provider"] == SESSION_PROVIDER => return Err(CmdError::new("NOT_SUPERVISED", e.to_string())),
                     Err(e) => eprintln!("Warning: Failed to delete agent {}: {e}", &id[..id.len().min(7)]),
                 }
             }
@@ -1158,6 +1180,7 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
         Command::Merge(a) => pipe::merge(&client, a).await,
         Command::Deploy(a) => pipe::deploy(&client, a).await,
         Command::Job(cmd) => pipe::job(&client, cmd).await,
+        Command::Session(cmd) => session::session_cmd(&client, cmd).await,
         Command::Device(cmd) => pipe::device(&client, cmd).await,
         Command::Board => pipe::board(&client).await,
         Command::Top => pipe::top(&client).await,

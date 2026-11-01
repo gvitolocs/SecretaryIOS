@@ -57,6 +57,16 @@ fn allow(m: &Manager, peer: &Peer, headers: &HeaderMap, agents_too: bool, what: 
     }
 }
 
+/// The session that took a task shows as an agent from now on. An agentd agent already is one.
+async fn link_session(m: &Manager, peer: &Peer, headers: &HeaderMap, task: &crate::pipeline::Task) {
+    if origin(peer, headers, &m.provider_pids()) != Origin::Local {
+        return;
+    }
+    if let Some(session) = &task.session {
+        m.session_link(session, &task.workspace_id).await;
+    }
+}
+
 async fn tasks(State(m): State<Manager>) -> ApiResult {
     to_json(json!({"tasks": m.pipeline().tasks()}))
 }
@@ -64,12 +74,14 @@ async fn tasks(State(m): State<Manager>) -> ApiResult {
 async fn start(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Json(req): Json<StartTask>) -> ApiResult {
     allow(&m, &peer, &headers, true, "start a task")?;
     let (task, w) = m.start_task(req).await?;
+    link_session(&m, &peer, &headers, &task).await;
     to_json(json!({"task": task, "workspace": view(&m, &w)}))
 }
 
 async fn adopt(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Json(req): Json<AdoptTask>) -> ApiResult {
     allow(&m, &peer, &headers, false, "adopt a worktree")?;
     let (task, w) = m.adopt_task(req).await?;
+    link_session(&m, &peer, &headers, &task).await;
     to_json(json!({"task": task, "workspace": view(&m, &w)}))
 }
 

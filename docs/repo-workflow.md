@@ -38,6 +38,9 @@ lagent device lease iphone --purpose "owner test"    # devices are leased (iphon
   a remote, and the board lists them. Lost your task's link after a restart? `lagent task adopt <path>` takes it back.
 - **Exceptions** need the owner's go (`lucina_decide`); then `LAGENT_BYPASS=<reason>` in the command passes the hook
   and is logged.
+- **You show as an agent.** A hook reports every Claude session that works in a workspace to `lagent ls` and the app's
+  Agents page. A message from Lucina or the owner arrives through the hook, at your next tool result or by waking you:
+  answer it (`lucina_reply` when it names a thread).
 - Design and internals: [`docs/design/agents-pipeline.md`](design/agents-pipeline.md).
 
 ## Why

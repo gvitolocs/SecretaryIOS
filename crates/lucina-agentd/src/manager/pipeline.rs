@@ -644,6 +644,7 @@ impl Manager {
     pub async fn board(&self) -> Value {
         let jobs = self.pipeline().jobs(40);
         let tasks = self.pipeline().tasks();
+        let live_sessions = self.live_sessions_by_workspace();
         let mut rows = Vec::new();
         let mut repos: Vec<(PathBuf, String)> = Vec::new();
         let worktrees: Vec<WorkspaceRecord> = self.workspaces().list(true).into_iter().filter(|w| w.kind == WorkspaceKind::Worktree).collect();
@@ -690,6 +691,8 @@ impl Manager {
                 "rssMb": used.rss_bytes / (1024 * 1024),
                 "commands": used.commands,
                 "task": task,
+                // Whoever is working there now, else who took the task.
+                "session": live_sessions.get(&w.workspace_id).cloned().or_else(|| task.and_then(|t| t.session.clone())),
                 "lastJob": last.map(|j| json!({"jobId": j.job_id, "state": j.state, "code": j.outcome.as_ref().map(|o| o.code.clone())})),
             }));
         }

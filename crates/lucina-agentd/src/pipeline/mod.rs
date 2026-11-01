@@ -55,6 +55,23 @@ pub struct Task {
     pub stale_decision: Option<String>,
 }
 
+/// A Claude session working in Lucina workspaces, and the agent that shows it
+/// (`manager/sessions.rs`). A live session's workspaces are never swept.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeSession {
+    pub session_id: String,
+    pub agent_id: String,
+    pub host: String,
+    /// The workspaces it works in, the latest last.
+    #[serde(default)]
+    pub workspaces: Vec<String>,
+    pub last_seen_ms: u64,
+    /// It ended, or went silent. The next beat clears this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_at_ms: Option<u64>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JobKind {
@@ -277,7 +294,8 @@ impl Pipeline {
                      record TEXT NOT NULL
                  );
                  CREATE INDEX IF NOT EXISTS pipeline_jobs_state ON pipeline_jobs (state, seq);
-                 CREATE TABLE IF NOT EXISTS device_leases (device TEXT PRIMARY KEY, record TEXT NOT NULL);",
+                 CREATE TABLE IF NOT EXISTS device_leases (device TEXT PRIMARY KEY, record TEXT NOT NULL);
+                 CREATE TABLE IF NOT EXISTS claude_sessions (id TEXT PRIMARY KEY, record TEXT NOT NULL);",
             )
         })?;
         std::fs::create_dir_all(config.dir.join("jobs"))?;
@@ -379,6 +397,23 @@ impl Pipeline {
 
     pub fn drop_lease(&self, device: &str) -> Result<(), StoreError> {
         self.store.with_db(|db| db.execute("DELETE FROM device_leases WHERE device = ?1", params![device]))?;
+        Ok(())
+    }
+
+    pub fn claude_session(&self, id: &str) -> Option<ClaudeSession> {
+        self.get("claude_sessions", "id", id).ok().flatten()
+    }
+
+    pub fn claude_sessions(&self) -> Vec<ClaudeSession> {
+        self.all("SELECT record FROM claude_sessions").unwrap_or_default()
+    }
+
+    pub fn save_claude_session(&self, s: &ClaudeSession) -> Result<(), StoreError> {
+        self.put("claude_sessions", &s.session_id, serde_json::to_string(s)?)
+    }
+
+    pub fn drop_claude_session(&self, id: &str) -> Result<(), StoreError> {
+        self.store.with_db(|db| db.execute("DELETE FROM claude_sessions WHERE id = ?1", params![id]))?;
         Ok(())
     }
 }
