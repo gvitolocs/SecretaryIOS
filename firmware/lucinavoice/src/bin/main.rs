@@ -454,7 +454,11 @@ impl Device {
             if let Some(ms) = r.first_audio_ms {
                 write!(w, ",\"first_audio_ms\":{ms}")?;
             }
-            if let Some(s) = r.server_ms.as_ref().filter(|s| s.as_str().starts_with('{')) {
+            if let Some(s) = r
+                .server_ms
+                .as_ref()
+                .filter(|s| s.as_str().starts_with('{') && s.as_str().ends_with('}'))
+            {
                 write!(w, ",\"server_ms\":{}", s.as_str())?;
             }
             Ok(())
