@@ -31,7 +31,7 @@ lagent device lease iphone --purpose "owner test"    # devices are leased (iphon
   again) or `GATE_FAILED` (`lagent job logs <id>`). Your worktree isn't touched during the merge; afterwards it is
   archived (worktree and branch go, gitignored outputs too: copy artifacts out first) unless you pass `--keep`.
 - **Deploys** go through `lagent deploy <runtime>`: recipes in `.lucina/pipeline.toml` cover `lucina-agentd`, `lucina-rs`,
-  `lucina-memo`, `secretary-server`, `secretary-mcp` and `web`. A runtime without one gets `NO_RECIPE`; add it, or deploy by
+  `lucina-media`, `lucina-memo`, `secretary-server`, `secretary-mcp` and `web`. A runtime without one gets `NO_RECIPE`; add it, or deploy by
   hand as in "Deploying" below, always through deploy-guard. A hand deploy holds the merge lock and stalls the queue.
 - **Devices**: lease before you touch one. The iPhone installs only through `lagent device install iphone`: main's tip,
   or a test build with your lease and the owner's approval through `lucina_decide`. Owner tests go through the

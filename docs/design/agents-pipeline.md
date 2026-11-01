@@ -72,7 +72,7 @@ a coordinator that sequences merges (a merge queue), a FIFO queue for shared res
   `deploy-guard check` (refused: `REFUSED`; it already refuses anything but main's tip and anything that drops a
   live commit), `install`, `health`, then `deploy-guard record --note "<note> (lagent deploy <job>)"`: ledger,
   `deploy/<runtime>/*` tag and the ops record.
-- Recipes are `[deploy.<runtime>]` in `.lucina/pipeline.toml`: `lucina-agentd`, `lucina-rs`, `lucina-memo`, `secretary-server`,
+- Recipes are `[deploy.<runtime>]` in `.lucina/pipeline.toml`: `lucina-agentd`, `lucina-rs`, `lucina-media`, `lucina-memo`, `secretary-server`,
   `secretary-mcp` and `web` (p1 scripts in `deploy/p1/`). A runtime without one gets `NO_RECIPE` and is deployed by hand
   (iOS goes through `lagent device install`). Adding one is a change to that file.
 - `lucina-agentd` waits for its agents: while one runs, its recipe stops with `BUILD_FAILED` before anything changes,

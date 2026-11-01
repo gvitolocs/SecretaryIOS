@@ -45,3 +45,8 @@ timeout_min = 30
 build = "(cd packages/lucina-stage && npm ci --no-audit --no-fund && npm run -s build) && (cd web && npm ci --no-audit --no-fund && npm run -s build)"
 install = "bash deploy/p1/install-web.sh"
 timeout_min = 30
+
+[deploy.lucina-media]
+# install.sh builds lucina-media, installs it, restarts the unit and checks /healthz.
+install = "deploy/lucina-media/install.sh"
+timeout_min = 30
