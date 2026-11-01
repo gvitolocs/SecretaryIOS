@@ -722,6 +722,7 @@ export default function WeightView(props: { compact?: boolean } = {}) {
                         series={chartData().series}
                         xLabels={chartData().labels}
                         ariaLabel={t("weight.chartLabel")}
+                        marks={7}
                         height={180}
                         formatY={(value) => String(Math.round(value * 10) / 10)}
                       />
@@ -867,6 +868,7 @@ export default function WeightView(props: { compact?: boolean } = {}) {
                       series={chartData().series}
                       xLabels={chartData().labels}
                       ariaLabel={t("weight.chartLabel")}
+                      marks={7}
                       height={180}
                       formatY={(value) => String(Math.round(value * 10) / 10)}
                     />
