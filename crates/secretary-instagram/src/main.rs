@@ -4,8 +4,13 @@
 //! |---|---|---|
 //! | `INSTAGRAM_BIND` | `127.0.0.1:8871` | nezopt's tailnet address in production (p1's Caddy proxies `/v1/instagram/*`) |
 //! | `INSTAGRAM_DATA_DIR` | `$HOME/.local/share/secretary-instagram` | recent profiles, signing key, spool |
-//! | `INSTAGRAM_CACHE_DIR` | `$INSTAGRAM_DATA_DIR/cache` | upstream JSON and proxied media |
-//! | `INSTAGRAM_CACHE_MAX_BYTES` | `2147483648` | cache size cap, oldest files go first |
+//! | `INSTAGRAM_CACHE_DIR` | `$INSTAGRAM_DATA_DIR/cache` | upstream JSON, the profile store and media. Must already exist: a missing one (its disk not mounted) falls back to the default with the default cap, so nothing lands on the wrong disk |
+//! | `INSTAGRAM_CACHE_MAX_BYTES` | `2147483648` | cache size cap, oldest files go first; watched accounts and saved items stay |
+//! | `INSTAGRAM_MIRROR` | `1` | `0` turns the background download and backfill off |
+//! | `INSTAGRAM_MIRROR_INTERVAL_MS` | `1000` | rest between two background downloads |
+//! | `INSTAGRAM_MIRROR_DAILY_MAX_BYTES` | `21474836480` | background download bytes per UTC day |
+//! | `INSTAGRAM_BACKFILL_INTERVAL_SECS` | `20` | rest between two older-pages calls to the backend |
+//! | `INSTAGRAM_BACKFILL_DAILY_CALLS` | `300` | older-pages calls to the backend per UTC day |
 //! | `INSTAGRAM_GATEWAY_SECRET_FILE` | required | the secret p1's Caddy sends as `X-Lucina-Gateway` |
 //! | `INSTAGRAM_SIGNING_KEY_FILE` | `$INSTAGRAM_DATA_DIR/signing.key` | media URL HMAC key, created (0600) when missing |
 //! | `INSTAGRAM_API_INTERVAL_MS` | `1000` | spacing between backend requests; never below 1000 |
@@ -29,7 +34,7 @@ use secretary_instagram::cache::DiskCache;
 use secretary_instagram::http::{router, Http};
 use secretary_instagram::media::Signer;
 use secretary_instagram::recent::Recent;
-use secretary_instagram::service::{Service, ServiceConfig, WatchConfig};
+use secretary_instagram::service::{MirrorConfig, Service, ServiceConfig, WatchConfig};
 use secretary_instagram::upstream::{Upstream, UpstreamConfig};
 
 fn env(name: &str) -> Option<String> {
@@ -109,12 +114,19 @@ async fn main() -> anyhow::Result<()> {
             .join(".local/share/secretary-instagram"),
     };
     std::fs::create_dir_all(&data)?;
-    let cache_dir = env("INSTAGRAM_CACHE_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| data.join("cache"));
+    const SMALL_CACHE: u64 = 2 * 1024 * 1024 * 1024;
     let max_bytes = env("INSTAGRAM_CACHE_MAX_BYTES")
         .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(2 * 1024 * 1024 * 1024);
+        .unwrap_or(SMALL_CACHE);
+    let (cache_dir, max_bytes) = match env("INSTAGRAM_CACHE_DIR").map(PathBuf::from) {
+        Some(d) if d.is_dir() => (d, max_bytes),
+        Some(_) => {
+            // The big disk is not mounted: never fill the small one in its place.
+            tracing::warn!("INSTAGRAM_CACHE_DIR is missing; using the small local cache");
+            (data.join("cache"), SMALL_CACHE)
+        }
+        None => (data.join("cache"), max_bytes),
+    };
     let gateway = read_secret(
         &env("INSTAGRAM_GATEWAY_SECRET_FILE")
             .context("INSTAGRAM_GATEWAY_SECRET_FILE is required")?,
@@ -156,6 +168,19 @@ async fn main() -> anyhow::Result<()> {
     svc_cfg.notify_url = env("INSTAGRAM_NOTIFY_URL");
     svc_cfg.notify_token_file = env("INSTAGRAM_NOTIFY_TOKEN_FILE").map(PathBuf::from);
     svc_cfg.watch = watch;
+    let mut mirror = MirrorConfig {
+        interval: millis("INSTAGRAM_MIRROR_INTERVAL_MS", 1000, 100),
+        backfill_interval: secs("INSTAGRAM_BACKFILL_INTERVAL_SECS", 20).max(Duration::from_secs(5)),
+        ..Default::default()
+    };
+    if let Some(n) = env("INSTAGRAM_MIRROR_DAILY_MAX_BYTES").and_then(|v| v.parse().ok()) {
+        mirror.daily_max_bytes = n;
+    }
+    if let Some(n) = env("INSTAGRAM_BACKFILL_DAILY_CALLS").and_then(|v| v.parse().ok()) {
+        mirror.backfill_daily_calls = n;
+    }
+    svc_cfg.mirror = mirror;
+    let mirror_on = env("INSTAGRAM_MIRROR").is_none_or(|v| v != "0");
     let service = Service::new(
         Upstream::new(up_cfg)?,
         DiskCache::new(cache_dir, max_bytes)?,
@@ -166,9 +191,17 @@ async fn main() -> anyhow::Result<()> {
     let service = Arc::new(service);
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     let warmer = {
-        let service = service.clone();
-        tokio::spawn(async move { service.run_warmer(stop_rx).await })
+        let (service, stop) = (service.clone(), stop_rx.clone());
+        tokio::spawn(async move { service.run_warmer(stop).await })
     };
+    let mirror = mirror_on.then(|| {
+        let (service, stop) = (service.clone(), stop_rx.clone());
+        tokio::spawn(async move { service.run_mirror(stop).await })
+    });
+    let backfill = mirror_on.then(|| {
+        let (service, stop) = (service.clone(), stop_rx.clone());
+        tokio::spawn(async move { service.run_backfill(stop).await })
+    });
     let st = Arc::new(Http {
         service,
         gateway_secret: gateway,
@@ -183,6 +216,9 @@ async fn main() -> anyhow::Result<()> {
         })
         .await?;
     let _ = warmer.await;
+    for task in [mirror, backfill].into_iter().flatten() {
+        let _ = task.await;
+    }
     tracing::info!("stopped");
     Ok(())
 }

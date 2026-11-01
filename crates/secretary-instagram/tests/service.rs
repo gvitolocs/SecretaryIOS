@@ -137,6 +137,11 @@ async fn highlights_left_out_of_the_bundle_come_from_the_highlights_list() {
 
     let r = get(&e.app, "/v1/instagram/profile/natgeo").await;
     assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(
+        r.json["data"]["refreshing"], true,
+        "the tray comes behind the answer"
+    );
+    let r = settled(&e.app, "natgeo").await;
     let d = &r.json["data"];
     assert_eq!(d["profile"]["username"], "natgeo");
     assert_eq!(d["posts"]["items"].as_array().unwrap().len(), 2);
@@ -186,7 +191,7 @@ async fn empty_highlights_are_retried_by_profile_and_list_even_from_an_old_cache
         .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
         .mount_as_scoped(&e.server)
         .await;
-    let r = get(&e.app, "/v1/instagram/profile/natgeo").await;
+    let r = settled(&e.app, "natgeo").await;
     assert_eq!(r.json["data"]["highlights"], json!([]));
     assert_eq!(count(&e.server, "/api/v1/users/natgeo/highlights").await, 1);
     drop(empty);
@@ -196,6 +201,14 @@ async fn empty_highlights_are_retried_by_profile_and_list_even_from_an_old_cache
         recorded("highlights"),
     )
     .await;
+    // An empty tray answers at once and is asked again behind the answer, sooner than a full one.
+    let r = get(&e.app, "/v1/instagram/highlights/natgeo").await;
+    assert_eq!(r.json["data"]["items"], json!([]));
+    assert_eq!(count(&e.server, "/api/v1/users/natgeo/highlights").await, 1);
+    e.st.service
+        .store
+        .update_profile("natgeo", |d| d.highlights_at = 1);
+    e.st.service.refresh_account("natgeo").await.unwrap();
     let r = get(&e.app, "/v1/instagram/highlights/natgeo").await;
     assert_eq!(r.json["data"]["items"][0]["title"], "BOTW 2027");
     let r = get(&e.app, "/v1/instagram/profile/natgeo").await;
@@ -239,7 +252,7 @@ async fn a_failing_highlights_list_still_gives_the_profile() {
         .respond_with(ResponseTemplate::new(500))
         .mount(&e.server)
         .await;
-    let r = get(&e.app, "/v1/instagram/profile/natgeo").await;
+    let r = settled(&e.app, "natgeo").await;
     assert_eq!(
         r.status,
         StatusCode::OK,
@@ -558,10 +571,10 @@ async fn a_posts_page_that_is_the_first_page_again_is_the_end() {
     assert_eq!(r.json["data"]["nextCursor"], Value::Null);
     assert_eq!(r.json["data"]["exhausted"], true);
 
-    // Without a cursor it is just the page.
+    // Without a cursor it is just the page, and the dead cursor is not offered again.
     let r = get(&e.app, "/v1/instagram/posts/natgeo").await;
     assert_eq!(r.json["data"]["items"].as_array().unwrap().len(), 3);
-    assert_eq!(r.json["data"]["nextCursor"], "CUR2");
+    assert_eq!(r.json["data"]["nextCursor"], Value::Null);
 }
 
 #[tokio::test]

@@ -35,6 +35,65 @@ Media URLs in every response point to `…workers.dev/cdn?url=<instagram cdn url
 service unwraps `url=`, checks the host (`*.cdninstagram.com`, `*.fbcdn.net`, https only, no IPs,
 no credentials, no port) and fetches it itself with no Referer.
 
+## Local first (2026-11-01)
+
+The owner: "you should cache and download all the content and just refetch new content". The backend answers in
+5 s on average, 30-55 s at worst (timeouts included), one request at a time, so a page must never wait for it when there
+is something to show.
+
+- **Store** (`store.rs`, `<cache>/profiles/`, one 0600 JSON per profile or feed, hashed names, never evicted): the
+  profile, the tray, and every item seen per feed (posts, reels, stories, each highlight), newest first. `GET /profile`,
+  `/posts`, `/reels`, `/stories`, `/highlights`, `/highlights/items` answer from it in milliseconds, with every URL signed
+  afresh, plus `refreshing` (the service is asking the backend behind this answer: ask again shortly; the apps poll
+  every 3 s with nothing on screen) and `updatedAt`. Only an account never opened waits for the backend, and then only
+  for what that route needs. A backend failure leaves the page as it was.
+- **Refresh** behind the answer, per kind when past its TTL (bundle and reels 5 min, stories 2 min, tray 10 min, an empty
+  tray 1 min), at the warmer's low priority, one per account: reels go page by page **until a known item comes up**
+  (at most 5 pages). A refresh that failed waits 60 s. 404 after a known account: `gone: true` and what is kept stays.
+- **Pages:** an answer holds 48 items; `nextCursor` is `d<offset>` (the next page of the store) and, past what is known,
+  the backend's own cursor. Clients treat it as opaque.
+- **Stories** stay after they expire upstream: the ones up now first, then expired ones (`expired: true`, up to 500)
+  that have a local copy; one without a copy is left out.
+- **Download** (`run_mirror`): when an item is first seen on a profile that is opened or watched, its files (poster,
+  media, carousel frames; profile picture and covers) go on a queue and are fetched one at a time, a second apart,
+  images before videos, newest first, last opened first. It takes at most one of the two CDN slots and waits while an
+  owner request is waiting for a file. Budget: `INSTAGRAM_MIRROR_DAILY_MAX_BYTES` (20 GiB per UTC day). A link the CDN
+  refuses is left alone for 6 h. An item keeps the URL whose file is on disk, because a fresh backend URL can name
+  another rendition of the same picture (`efg` differed in 11 of 432 repeats, 2026-11-01).
+- **Backfill** (`run_backfill`): older reels pages and highlights' items of watched accounts and of those opened in the
+  last 30 days, one call every 20 s at low priority, 300 calls per UTC day over all accounts. A page with nothing new ends
+  a feed however its cursor goes on. A 429 rests it with the warmer.
+- **Where and how much:** `INSTAGRAM_CACHE_DIR=/home/nez/mnt/mybook/secretary-instagram-cache`, cap 200 GiB
+  (nezopt's system disk is 96 % full; mybook has 12 TB free). The directory must exist: if it is missing (mybook not
+  mounted) the service uses `$INSTAGRAM_DATA_DIR/cache` with the small 2 GiB cap, so nothing lands on the wrong disk.
+- **Eviction:** oldest file first, except media of watched accounts and of saved items (pinned, recomputed every
+  10 min and after each check) and the store. If what is pinned alone is over the cap, a warning says so and the download
+  pauses.
+
+**The 403s (2026-11-01):** 116 of about 1800 media requests in a day answered 403, in bursts at the first frame of a
+visit (14 at 15:31, 38 at 08:55). `/s/` answers 403 only for a refused signature; a CDN refusal is 410, and there were
+none. So these were expired links: the web opens a page on its copy of up to 7 days (`lib/pageCache`) and links have
+lived 60-75 minutes since 2026-10-31, so every visit over an hour after the last showed broken tiles until the refresh
+landed. Fixed without longer links: `POST /v1/instagram/resign {urls}` (behind the gateway; at most 500) gives new links
+for ones the service signed, however old, and nothing else, and clients re-sign an expired link before showing it
+(`web/src/lib/instagramImages.ts`, iOS `IgPicture`). A tile that fails is asked again (at once, 3 s, 15 s, then every
+minute) with no broken image, "Can't load. Trying again…" from the third failure, and the page asks for newer links.
+`POST /save` takes an expired link of ours too, being behind the gateway. Each refusal now logs
+`instagram media refused` with its reason.
+
+**Logs:** every request has `ms`. `instagram page` (kind, `source=disk|backend`, ms, refreshing), `instagram backend`
+(kind, ms, attempts), `instagram refresh` (ms), `instagram cdn` (type, bytes, ms), `instagram mirror` (files, bytes, left,
+today's bytes, every 100 files), `instagram backfill` (failures).
+
+| Measured on the real backend, 2026-11-01 (a throwaway instance, by curl) | Before | After |
+|---|---|---|
+| First open: profile answer (bundle only now; the tray comes behind it) | 20.1 s (with the tray) | 1.1-30 s (the backend's bundle) |
+| Repeat visit past the TTL: profile | 2 ms | 1 ms |
+| Repeat visit past the TTL: stories | 848 ms, up to 55 s | 0-64 ms, never waits |
+| Repeat visit, backend down: stories, reels past 2 days | error | from the store |
+| Repeat visit: 12 tiles, 6 at a time | 153 ms | 65 ms |
+| Tiles on a first open of a page copy over an hour old | 403s until the refresh | re-signed first |
+
 ## HTTP (`/v1/instagram`, behind p1's forward_auth + `X-Lucina-Gateway`)
 
 Success: `{"ok":true,"data":…}`. Error: `{"ok":false,"error":"<code>"}`; 429 is
@@ -52,6 +111,7 @@ Success: `{"ok":true,"data":…}`. Error: `{"ok":false,"error":"<code>"}`; 429 i
 | `GET /resolve?url=<instagram post/reel url>` | `{items, nextCursor}` |
 | `GET /recent` | `{items:[{username, fullName, isVerified, isPrivate, picUrl, openedAt}]}`, newest first, max 30 (`isPrivate`: when last opened; absent on entries from before 2026-11-01) |
 | `POST /save {items:[{url, kind, username, takenAt?, caption?}]}` | `{saved:[{index,itemId,duplicate}], failed:[{index,error}]}` |
+| `POST /resign {urls:[signed url]}` | `{urls:{old:new}}`, only links this service signed, however old; at most 500 |
 | `GET /s/{exp}/{sig}/{token}` | media bytes (signed, 60-75 min, GET/HEAD, **no gateway header**), Range supported |
 
 Media item (camelCase): `{id, kind:"image"|"video"|"carousel", url, thumbUrl, takenAt?, caption?,
@@ -82,7 +142,8 @@ owner's requests. Owner requests go first: the warmer waits while one is pending
 429 (to the warmer or to the owner) the warmer stays quiet for at least `INSTAGRAM_WATCH_PAUSE_SECS`
 (30 min) and the account is rescheduled after the pause. A refresh is the profile bundle plus, for a
 public account, the stories: two backend calls, both read-only (nothing is ever sent that Instagram
-could count as "seen"). Both answers are written to the cache, so the owner's next visit is instant.
+could count as "seen"), then what else is out of date (reels down to the first known one, the tray). All of
+it goes into the store and its media on the download queue, so the owner's next visit is instant.
 
 **Auto-save.** Each refresh saves the stories that are up and not saved yet (images and videos, the
 original file through our CDN fetcher) into the Gallery through lucina-media's `POST /internal/v1/ingest`:
@@ -145,8 +206,8 @@ thumbnail (`/v1/media/items/{id}/thumb?size=256`, the owner's session).
   media fetches run two at a time, 250 ms apart (`INSTAGRAM_MEDIA_INTERVAL_MS`). This differs from
   the "one request, 1 s" rule for the backend on purpose. Concurrent requests for one item (a
   browser's Range requests on a video) share one download.
-- **Cache:** `~/.local/share/secretary-instagram/cache`, capped by `INSTAGRAM_CACHE_MAX_BYTES`
-  (default 2 GiB, JSON and media together), oldest file first (a hit refreshes a file's age).
+- **Cache:** `INSTAGRAM_CACHE_DIR`, capped by `INSTAGRAM_CACHE_MAX_BYTES`
+  (see "Local first"; JSON and media together), oldest file first (a hit refreshes a file's age).
   Media is keyed by CDN path plus the `stp`/`efg` rendition parameters, not by the volatile
   `oh`/`oe`, so a fresh backend URL for the same picture hits the cache and an expired link is
   still served from it. JSON bodies live 2-10 minutes. Images up to 32 MiB, videos 256 MiB.

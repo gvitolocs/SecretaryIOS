@@ -10,5 +10,6 @@ pub mod http;
 pub mod media;
 pub mod recent;
 pub mod service;
+pub mod store;
 pub mod upstream;
 pub mod watch;

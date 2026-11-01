@@ -1,15 +1,18 @@
 //! The plugin's logic: ask the StoryView backend (through `instarust-core`'s URL builders and
-//! parsers), turn what comes back into the plugin's JSON with signed media URLs, serve media
-//! through the disk cache, remember opened profiles, and save items into lucina-media.
+//! parsers), keep what comes back in the profile store, answer pages from the store with signed
+//! media URLs while a refresh behind them adds what is new, download media to the disk cache in the
+//! background, remember opened profiles, and save items into lucina-media.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Notify;
+use tokio::time::Instant;
 
 use instarust_core::media::{parse_highlights, parse_media_page};
-use instarust_core::profile::parse_profile_bundle;
+use instarust_core::profile::{parse_profile_bundle, ProfileBundle};
 use instarust_core::url as core_url;
 use instarust_core::{HighlightSummary, MediaItem, MediaPage, UserProfile, BASE_URL};
 use serde::Deserialize;
@@ -21,6 +24,7 @@ use crate::archive::{Archive, Saved};
 use crate::cache::{ctype_for_ext, ext_for_ctype, DiskCache};
 use crate::media::{cache_key, inner_cdn_url, is_video_url, SignError, Signer};
 use crate::recent::{Recent, RecentEntry};
+use crate::store::{Feed, FeedKind, ProfileDoc, Store};
 use crate::upstream::{Upstream, UpstreamError};
 use crate::watch::{apply_not_found, apply_observation, Account, Change, Observation, WatchStore};
 
@@ -31,12 +35,29 @@ const TTL_PROFILE: Duration = Duration::from_secs(300);
 const TTL_POSTS: Duration = Duration::from_secs(300);
 const TTL_STORIES: Duration = Duration::from_secs(120);
 const TTL_HIGHLIGHTS: Duration = Duration::from_secs(600);
+const TTL_EMPTY_TRAY: Duration = Duration::from_secs(60);
 const TTL_RESOLVE: Duration = Duration::from_secs(600);
 const TTL_FIRST_PAGE: Duration = Duration::from_secs(24 * 3600);
 /// How old a cached answer may be and still be shown while a fresh one is fetched behind it.
 /// More than the warmer's 23 h, so a watched account always opens at once. (Instagram's CDN URLs
 /// in it stay valid for days; media already fetched is served from the disk cache anyway.)
 const STALE_MAX: Duration = Duration::from_secs(2 * 24 * 3600);
+/// Items in one answer from the store; the next ones are `d<offset>` cursors.
+const DISK_PAGE: usize = 48;
+/// A refresh that failed is not tried again sooner.
+const REFRESH_RETRY_SECS: i64 = 60;
+/// A refresh stops at a known item, at the latest after this many pages (the rest is a gap the
+/// owner's "more" or the backfill's next pass does not fill: the feed is newest first anyway).
+const MAX_REFRESH_PAGES: usize = 5;
+/// A download that failed for good (its CDN link has expired) is left alone this long; a refresh
+/// meanwhile brings a fresh link only for an item still up.
+const MIRROR_RETRY_SECS: i64 = 6 * 3600;
+/// Recently opened accounts stay backfilled this long after the last open.
+const BACKFILL_RECENT_SECS: i64 = 30 * 24 * 3600;
+const STORY_LIFE_SECS: i64 = 24 * 3600;
+/// `fetched_at` of a first answer that may have come from an older JSON copy: asked, and out of
+/// date, so the refresh behind it runs (it costs no backend call if a fresh answer is in the cache).
+const ASK_AGAIN: i64 = 1;
 
 /// Per cache key, the lock a backend fetch holds ([`Service::fetch_shared`]).
 type Flights = Arc<std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>;
@@ -59,6 +80,12 @@ fn nonempty_tray(text: &str) -> bool {
 }
 
 const MAX_SAVE_ITEMS: usize = 50;
+const MAX_RESIGN: usize = 500;
+
+/// The offset in a `d<offset>` cursor (a page of the store, not of the backend).
+fn disk_offset(cursor: &str) -> Option<usize> {
+    cursor.strip_prefix('d')?.parse().ok()
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ServiceError {
@@ -103,6 +130,31 @@ pub struct ServiceConfig {
     pub notify_url: Option<String>,
     pub notify_token_file: Option<PathBuf>,
     pub watch: WatchConfig,
+    pub mirror: MirrorConfig,
+}
+
+/// The slow background download of what opened and watched profiles show.
+#[derive(Debug, Clone)]
+pub struct MirrorConfig {
+    /// Bytes downloaded per UTC day.
+    pub daily_max_bytes: u64,
+    /// Rest between two downloads (on top of the CDN spacing).
+    pub interval: Duration,
+    /// Rest between two older-pages calls to the backend (on top of its spacing).
+    pub backfill_interval: Duration,
+    /// Older-pages calls to the backend per UTC day, over all accounts.
+    pub backfill_daily_calls: u32,
+}
+
+impl Default for MirrorConfig {
+    fn default() -> Self {
+        MirrorConfig {
+            daily_max_bytes: 20 * 1024 * 1024 * 1024,
+            interval: Duration::from_secs(1),
+            backfill_interval: Duration::from_secs(20),
+            backfill_daily_calls: 300,
+        }
+    }
 }
 
 impl ServiceConfig {
@@ -114,8 +166,48 @@ impl ServiceConfig {
             notify_url: None,
             notify_token_file: None,
             watch: WatchConfig::default(),
+            mirror: MirrorConfig::default(),
         }
     }
+}
+
+/// What the background download has to do and has done today.
+#[derive(Default)]
+struct MirrorQueue {
+    images: VecDeque<String>,
+    videos: VecDeque<String>,
+    queued: HashSet<String>,
+    /// Keys not to try again before this time.
+    skip_until: HashMap<String, i64>,
+    day: String,
+    day_bytes: u64,
+    backfill_day: String,
+    backfill_calls: u32,
+    /// Files fetched and bytes since the last log line.
+    done: u64,
+    done_bytes: u64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum MirrorOutcome {
+    /// One file is on disk.
+    Fetched,
+    /// One file could not be fetched.
+    Failed,
+    /// Nothing to do.
+    Idle,
+    /// The owner is waiting for media: the background gives way.
+    Busy,
+    /// The day's budget is spent, the cache is full, or the CDN said 429.
+    Paused,
+}
+
+fn today() -> String {
+    chrono::Utc::now().format("%Y-%m-%d").to_string()
+}
+
+fn now_secs() -> i64 {
+    chrono::Utc::now().timestamp()
 }
 
 #[derive(Debug, Clone)]
@@ -207,6 +299,8 @@ pub struct Service {
     pub signer: Signer,
     pub watch: WatchStore,
     pub archive: Archive,
+    /// Profiles and feeds as last seen: what pages are answered from.
+    pub store: Store,
     cfg: ServiceConfig,
     http: reqwest::Client,
     notifier: Notifier,
@@ -217,6 +311,29 @@ pub struct Service {
     warmer_paused_until: std::sync::Mutex<Option<tokio::time::Instant>>,
     /// Wakes the warmer (a newly watched account).
     pub wake: Notify,
+    /// Accounts and highlights being refreshed, and when each was last tried.
+    refreshes: std::sync::Mutex<(HashSet<String>, HashMap<String, i64>)>,
+    mirror: std::sync::Mutex<MirrorQueue>,
+    /// Wakes the background download (something was queued).
+    mirror_wake: Notify,
+    /// Owner requests waiting for a file that is not on disk yet.
+    owner_media: AtomicUsize,
+}
+
+/// Counts an owner request while it waits for a download.
+struct OwnerMedia<'a>(&'a AtomicUsize);
+
+impl<'a> OwnerMedia<'a> {
+    fn new(n: &'a AtomicUsize) -> Self {
+        n.fetch_add(1, Ordering::SeqCst);
+        OwnerMedia(n)
+    }
+}
+
+impl Drop for OwnerMedia<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 pub struct MediaFile {
@@ -348,6 +465,7 @@ impl Service {
             .build()?;
         let svc = Service {
             up: Arc::new(up),
+            store: Store::open(cache.root().join("profiles"))?,
             cache: Arc::new(cache),
             recent,
             signer,
@@ -364,10 +482,15 @@ impl Service {
             json_flights: Flights::default(),
             warmer_paused_until: std::sync::Mutex::new(None),
             wake: Notify::new(),
+            refreshes: Default::default(),
+            mirror: Default::default(),
+            mirror_wake: Notify::new(),
+            owner_media: AtomicUsize::new(0),
         };
         // Before the warmer's first pass: what was checked just before a restart is not checked
         // again now.
         svc.reschedule_watched();
+        svc.pin_kept_media();
         Ok(svc)
     }
 
@@ -455,6 +578,62 @@ impl Service {
             "items": page.items.iter().filter_map(|m| self.item_json(m)).collect::<Vec<_>>(),
             "nextCursor": page.next_cursor.as_deref().filter(|c| !c.is_empty()),
         })
+    }
+
+    /// One page of a feed from the store: `DISK_PAGE` items from `offset`. Past the end of what is
+    /// known the cursor is the backend's own, where its older items start.
+    fn feed_json(&self, feed: &Feed, offset: usize, refreshing: bool) -> Value {
+        let end = (offset + DISK_PAGE).min(feed.items.len());
+        let slice = feed.items.get(offset..end).unwrap_or(&[]);
+        let next = if end < feed.items.len() {
+            Some(format!("d{end}"))
+        } else {
+            feed.next_cursor.clone().filter(|c| !c.is_empty())
+        };
+        json!({
+            "items": slice.iter().filter_map(|m| self.item_json(m)).collect::<Vec<_>>(),
+            "nextCursor": next,
+            "updatedAt": feed.fetched_at,
+            "refreshing": refreshing,
+        })
+    }
+
+    /// Stories from the store: the ones up now first, then the expired ones that still have their
+    /// local copy (`expired: true`).
+    fn stories_json(&self, feed: &Feed, offset: usize, refreshing: bool) -> Value {
+        let now = now_secs();
+        let items: Vec<Value> = feed
+            .items
+            .iter()
+            .filter_map(|m| {
+                // Not in the last answer; or a day old, with no answer since to say it is still up.
+                let expired = !feed.is_live(&m.id)
+                    || m.taken_at.is_some_and(|t| {
+                        now - t > STORY_LIFE_SECS && feed.fetched_at - t <= STORY_LIFE_SECS
+                    });
+                if expired && !self.has_local(&m.media_url) {
+                    return None;
+                }
+                let mut v = self.item_json(m)?;
+                if expired {
+                    v["expired"] = json!(true);
+                }
+                Some(v)
+            })
+            .collect();
+        let end = (offset + DISK_PAGE).min(items.len());
+        let next = (end < items.len()).then(|| format!("d{end}"));
+        json!({
+            "items": items.get(offset..end).unwrap_or(&[]),
+            "nextCursor": next,
+            "updatedAt": feed.fetched_at,
+            "refreshing": refreshing,
+        })
+    }
+
+    /// Whether the file behind a backend media URL is on disk.
+    fn has_local(&self, backend_url: &str) -> bool {
+        inner_cdn_url(backend_url).is_some_and(|c| self.cache.has_media(&cache_key(&c)))
     }
 
     fn highlights_json(&self, hs: &[HighlightSummary]) -> Vec<Value> {
@@ -568,49 +747,358 @@ impl Service {
         parse_media_page(&text).ok_or(ServiceError::Upstream)
     }
 
-    // ---- endpoints ----
+    // ---- the store ----
 
-    /// Profile, the first page of posts and the highlights, in one backend call (two when the
-    /// bundle leaves the highlights out).
-    pub async fn profile(&self, raw_username: &str) -> Result<Value, ServiceError> {
-        let username =
-            normalize_username(raw_username).ok_or(ServiceError::BadRequest("username"))?;
-        let text = self
-            .fetch_text(&rel(core_url::user_bundle_url(&username)), TTL_PROFILE)
-            .await?;
-        let bundle = parse_profile_bundle(&text).ok_or(ServiceError::Upstream)?;
-        self.remember_first_page(&username, &bundle.posts);
-        self.recent.add(RecentEntry {
-            username: username.clone(),
-            full_name: bundle.profile.full_name.clone(),
-            pic_cdn: inner_cdn_url(&bundle.profile.profile_pic_url),
-            verified: bundle.profile.is_verified,
-            private: bundle.profile.is_private,
-            opened_at: chrono::Utc::now().timestamp(),
+    /// Fold a bundle into the store: the profile, its tray when it has one, the posts.
+    fn absorb_bundle(&self, user: &str, bundle: &ProfileBundle) {
+        let now = now_secs();
+        self.store.update_profile(user, |d| {
+            d.profile = Some(bundle.profile.clone());
+            d.fetched_at = now;
+            d.gone = false;
+            if !bundle.highlights.is_empty() {
+                d.highlights = bundle.highlights.clone();
+                d.highlights_at = now;
+            }
         });
-        let highlights = if bundle.highlights.is_empty() && !bundle.profile.is_private {
-            self.fallback_highlights(&username).await
-        } else {
-            bundle.highlights
-        };
-        Ok(json!({
-            "profile": self.profile_json(&bundle.profile),
-            "posts": self.page_json(&bundle.posts),
-            "highlights": self.highlights_json(&highlights),
-        }))
+        let local = |u: &str| self.has_local(u);
+        self.store.update_feed(FeedKind::Posts, user, |f| {
+            if f.fetched_at == 0 {
+                f.next_cursor = bundle.posts.next_cursor.clone();
+            }
+            f.merge_front(&bundle.posts.items, &local);
+            f.fetched_at = now;
+        });
+        self.remember_first_page(user, &bundle.posts);
     }
 
-    /// The bundle's `highlights` has been empty since 2026-10-29 even for accounts that have
-    /// some, while `/users/{u}/highlights` still lists them. Asked through the same cache entry as
-    /// [`Service::highlights`]; a failure only costs the list, never the profile.
-    async fn fallback_highlights(&self, username: &str) -> Vec<HighlightSummary> {
-        match self.fetch_highlights(username).await {
-            Ok(hs) => hs,
-            Err(e) => {
-                tracing::warn!(error = ?e, "instagram profile: the highlights list failed");
-                Vec::new()
+    fn absorb_stories(&self, user: &str, page: &MediaPage) {
+        let local = |u: &str| self.has_local(u);
+        self.store.update_feed(FeedKind::Stories, user, |f| {
+            f.set_stories(&page.items, &local);
+            f.fetched_at = now_secs();
+        });
+    }
+
+    /// Fold the first answer of a feed in (or a refresh's), with where its older items start.
+    fn absorb_first(&self, kind: FeedKind, owner: &str, items: &[MediaItem], next: Option<String>) {
+        let local = |u: &str| self.has_local(u);
+        self.store.update_feed(kind, owner, |f| {
+            if f.fetched_at == 0 {
+                f.next_cursor = next;
+            }
+            f.merge_front(items, &local);
+            f.fetched_at = now_secs();
+        });
+    }
+
+    /// Fold an older page in. The page that continues from the feed's end moves the end on; one
+    /// that brought nothing new ends the feed, however the backend's cursor goes on.
+    fn absorb_older(&self, kind: FeedKind, owner: &str, cursor: &str, page: &MediaPage) {
+        let local = |u: &str| self.has_local(u);
+        self.store.update_feed(kind, owner, |f| {
+            let added = f.append_older(&page.items, &local);
+            if f.next_cursor.as_deref() == Some(cursor) {
+                f.next_cursor = if added == 0 {
+                    None
+                } else {
+                    page.next_cursor.clone().filter(|c| !c.is_empty())
+                };
+            }
+        });
+    }
+
+    // ---- the refresh behind an answer ----
+
+    fn stale(at: i64, ttl: Duration) -> bool {
+        now_secs() - at > ttl.as_secs() as i64
+    }
+
+    fn account_needs_refresh(&self, user: &str) -> bool {
+        let doc = self.store.profile(user);
+        if Self::stale(doc.fetched_at, TTL_PROFILE) {
+            return true;
+        }
+        if doc.gone || doc.profile.as_ref().is_some_and(|p| p.is_private) {
+            return false;
+        }
+        Self::stale(
+            self.store.feed(FeedKind::Stories, user).fetched_at,
+            TTL_STORIES,
+        ) || Self::stale(self.store.feed(FeedKind::Reels, user).fetched_at, TTL_POSTS)
+            || Self::tray_stale(&doc)
+    }
+
+    /// An empty tray is not known to be empty (the backend answers `[]` for accounts that have
+    /// highlights): it is asked again sooner, behind the answer.
+    fn tray_stale(doc: &ProfileDoc) -> bool {
+        let ttl = if doc.highlights.is_empty() {
+            TTL_EMPTY_TRAY
+        } else {
+            TTL_HIGHLIGHTS
+        };
+        Self::stale(doc.highlights_at, ttl)
+    }
+
+    /// May a refresh of `key` start? Marks it running when it may.
+    fn claim_refresh(&self, key: &str) -> bool {
+        let now = now_secs();
+        let mut g = self.refreshes.lock().unwrap_or_else(|e| e.into_inner());
+        if g.0.contains(key) || g.1.get(key).is_some_and(|t| now - t < REFRESH_RETRY_SECS) {
+            return false;
+        }
+        g.0.insert(key.to_string());
+        g.1.insert(key.to_string(), now);
+        true
+    }
+
+    fn refresh_running(&self, key: &str) -> bool {
+        let g = self.refreshes.lock().unwrap_or_else(|e| e.into_inner());
+        g.0.contains(key)
+    }
+
+    fn refresh_done(&self, key: &str) {
+        let mut g = self.refreshes.lock().unwrap_or_else(|e| e.into_inner());
+        g.0.remove(key);
+    }
+
+    /// Start what is out of date for this account, behind the answer. Says whether a refresh is
+    /// running (the client asks the store again until it is not).
+    fn refresh_behind(self: &Arc<Self>, user: &str) -> bool {
+        if self.refresh_running(user) {
+            return true;
+        }
+        if !self.account_needs_refresh(user) || !self.claim_refresh(user) {
+            return false;
+        }
+        let svc = self.clone();
+        let user = user.to_string();
+        tokio::spawn(async move {
+            let started = Instant::now();
+            let r = svc.refresh_account(&user).await;
+            svc.refresh_done(&user);
+            let ms = started.elapsed().as_millis() as u64;
+            match r {
+                Ok(()) => tracing::info!(ms, "instagram refresh"),
+                Err(e) => tracing::warn!(ms, error = %e, "instagram refresh"),
+            }
+        });
+        true
+    }
+
+    /// A backend answer at the warmer's low priority, through the JSON cache and its one fetch
+    /// per key: within `ttl` no call is made.
+    async fn low_text(
+        &self,
+        path: &str,
+        ttl: Duration,
+        keep: fn(&str) -> bool,
+    ) -> Result<String, UpstreamError> {
+        match self
+            .fetch_shared(path, hash_key(path), ttl, keep, Priority::Low)
+            .await
+        {
+            Ok(r) => r,
+            Err(_) => Err(UpstreamError::Network),
+        }
+    }
+
+    /// What is out of date for one account: the bundle, the stories, the reels down to the first
+    /// known item, the tray. A kind that fails costs that kind; a 429 ends the pass.
+    pub async fn refresh_account(&self, user: &str) -> Result<(), UpstreamError> {
+        fn soft(r: Result<(), UpstreamError>, what: &'static str) -> Result<(), UpstreamError> {
+            match r {
+                Err(UpstreamError::RateLimited(s)) => Err(UpstreamError::RateLimited(s)),
+                Err(e) => {
+                    tracing::warn!(what, error = %e, "instagram refresh: one kind failed");
+                    Ok(())
+                }
+                Ok(()) => Ok(()),
             }
         }
+        if Self::stale(self.store.profile(user).fetched_at, TTL_PROFILE) {
+            let path = rel(core_url::user_bundle_url(user));
+            match self.low_text(&path, TTL_PROFILE, keep_any).await {
+                Ok(text) => match parse_profile_bundle(&text) {
+                    Some(b) => self.absorb_bundle(user, &b),
+                    None => tracing::warn!("instagram refresh: a bundle did not parse"),
+                },
+                Err(UpstreamError::Status(404)) => {
+                    // Known before: what is here is what is left. Never known: there is no such
+                    // account, and the profile route says so.
+                    if self.store.profile(user).profile.is_some() {
+                        self.store.update_profile(user, |d| {
+                            d.gone = true;
+                            d.fetched_at = now_secs();
+                        });
+                    }
+                    return Ok(());
+                }
+                Err(e) => soft(Err(e), "bundle")?,
+            }
+        }
+        let doc = self.store.profile(user);
+        if doc.gone || doc.profile.as_ref().is_none_or(|p| p.is_private) {
+            self.mirror_account(user).await;
+            return Ok(());
+        }
+        if Self::stale(
+            self.store.feed(FeedKind::Stories, user).fetched_at,
+            TTL_STORIES,
+        ) {
+            let path = rel(core_url::user_stories_url(user, None, None));
+            match self.low_text(&path, TTL_STORIES, keep_any).await {
+                Ok(text) => {
+                    if let Some(p) = parse_media_page(&text) {
+                        self.absorb_stories(user, &p);
+                    }
+                }
+                Err(e) => soft(Err(e), "stories")?,
+            }
+        }
+        if Self::stale(self.store.feed(FeedKind::Reels, user).fetched_at, TTL_POSTS) {
+            soft(self.refresh_reels(user).await, "reels")?;
+        }
+        if Self::tray_stale(&self.store.profile(user)) {
+            let path = rel(core_url::user_highlights_url(user));
+            match self.low_text(&path, TTL_HIGHLIGHTS, nonempty_tray).await {
+                Ok(text) => {
+                    let tray = parse_highlights(&text).unwrap_or_default();
+                    self.store.update_profile(user, |d| {
+                        // An empty tray is not known to be empty: the old one stays, and it is
+                        // asked again (only a nonempty answer is cached).
+                        if !tray.is_empty() {
+                            d.highlights = tray;
+                        }
+                        d.highlights_at = now_secs();
+                    });
+                }
+                Err(e) => soft(Err(e), "highlights")?,
+            }
+        }
+        self.mirror_account(user).await;
+        Ok(())
+    }
+
+    /// New reels: page by page until a known one comes up. The first time, one page; the older
+    /// ones come through the backfill.
+    async fn refresh_reels(&self, user: &str) -> Result<(), UpstreamError> {
+        let feed = self.store.feed(FeedKind::Reels, user);
+        let known: HashSet<&str> = feed.items.iter().map(|m| m.id.as_str()).collect();
+        let mut fresh: Vec<MediaItem> = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut tail = None;
+        for _ in 0..MAX_REFRESH_PAGES {
+            let path = users_path(user, "/reels", cursor.as_deref());
+            let text = self.low_text(&path, TTL_POSTS, keep_any).await?;
+            let page = parse_media_page(&text).ok_or(UpstreamError::Network)?;
+            let met_known = page.items.iter().any(|m| known.contains(m.id.as_str()));
+            tail = page.next_cursor.clone().filter(|c| !c.is_empty());
+            fresh.extend(page.items);
+            if feed.fetched_at == 0 || met_known || tail.is_none() {
+                break;
+            }
+            cursor = tail.clone();
+        }
+        self.absorb_first(FeedKind::Reels, user, &fresh, tail);
+        Ok(())
+    }
+
+    fn highlight_refresh_key(id: &str) -> String {
+        format!("hl:{id}")
+    }
+
+    /// New items of a highlight, behind the answer.
+    fn refresh_highlight_behind(self: &Arc<Self>, id: &str) -> bool {
+        let key = Self::highlight_refresh_key(id);
+        if self.refresh_running(&key) {
+            return true;
+        }
+        let feed = self.store.feed(FeedKind::Highlight, id);
+        if !Self::stale(feed.fetched_at, TTL_HIGHLIGHTS) || !self.claim_refresh(&key) {
+            return false;
+        }
+        let svc = self.clone();
+        let id = id.to_string();
+        tokio::spawn(async move {
+            let path = rel(core_url::highlight_items_url(&id, None));
+            match svc.low_text(&path, TTL_HIGHLIGHTS, keep_any).await {
+                Ok(text) => {
+                    if let Some(p) = parse_media_page(&text) {
+                        let next = p.next_cursor.clone().filter(|c| !c.is_empty());
+                        svc.absorb_first(FeedKind::Highlight, &id, &p.items, next);
+                        svc.mirror_feed(&svc.store.feed(FeedKind::Highlight, &id).items);
+                    }
+                }
+                Err(e) => tracing::warn!(error = %e, "instagram refresh: a highlight failed"),
+            }
+            svc.refresh_done(&Self::highlight_refresh_key(&id));
+        });
+        true
+    }
+
+    // ---- endpoints ----
+
+    fn page_log(kind: &'static str, disk: bool, started: Instant, refreshing: bool) {
+        tracing::info!(
+            kind,
+            source = if disk { "disk" } else { "backend" },
+            ms = started.elapsed().as_millis() as u64,
+            refreshing,
+            "instagram page"
+        );
+    }
+
+    /// Profile, the newest posts and the highlights, from the store; only a profile never opened
+    /// waits for the backend, and then only for its bundle. Everything else comes behind the
+    /// answer (`refreshing`).
+    pub async fn profile(self: &Arc<Self>, raw_username: &str) -> Result<Value, ServiceError> {
+        let username =
+            normalize_username(raw_username).ok_or(ServiceError::BadRequest("username"))?;
+        let started = Instant::now();
+        let on_disk = self.store.profile(&username).profile.is_some();
+        if !on_disk {
+            let asked = self
+                .fetch_text(&rel(core_url::user_bundle_url(&username)), TTL_PROFILE)
+                .await;
+            let text = match asked {
+                Ok(t) => t,
+                Err(ServiceError::NotFound) => return Err(ServiceError::NotFound),
+                Err(e) => {
+                    // The backend timed out or refused: keep asking behind the error, so the
+                    // owner's "Try again" finds it.
+                    self.refresh_behind(&username);
+                    return Err(e);
+                }
+            };
+            let bundle = parse_profile_bundle(&text).ok_or(ServiceError::Upstream)?;
+            self.absorb_bundle(&username, &bundle);
+            self.store
+                .update_profile(&username, |d| d.fetched_at = ASK_AGAIN);
+            self.store
+                .update_feed(FeedKind::Posts, &username, |f| f.fetched_at = ASK_AGAIN);
+        }
+        let doc = self.store.profile(&username);
+        let profile = doc.profile.as_ref().ok_or(ServiceError::Upstream)?;
+        self.recent.add(RecentEntry {
+            username: username.clone(),
+            full_name: profile.full_name.clone(),
+            pic_cdn: inner_cdn_url(&profile.profile_pic_url),
+            verified: profile.is_verified,
+            private: profile.is_private,
+            opened_at: now_secs(),
+        });
+        let refreshing = self.refresh_behind(&username);
+        Self::page_log("profile", on_disk, started, refreshing);
+        let posts = self.store.feed(FeedKind::Posts, &username);
+        Ok(json!({
+            "profile": self.profile_json(profile),
+            "posts": self.feed_json(&posts, 0, refreshing),
+            "highlights": self.highlights_json(&doc.highlights),
+            "updatedAt": doc.fetched_at,
+            "refreshing": refreshing,
+            "gone": doc.gone,
+        }))
     }
 
     /// Empty trays are unknown, including entries written by older versions. Retry them on
@@ -635,23 +1123,46 @@ impl Service {
         self.cache.put(&Self::first_page_key(username), &ids);
     }
 
-    /// Posts. The backend's `/users/{u}/posts` ignores `cursor` (observed 2026-10-28: the same
-    /// twelve posts come back whatever the cursor, though `next_cursor` keeps changing). A
-    /// cursor page that is just the first page again is reported as the end of the list.
+    /// Posts, from the store. The backend's `/users/{u}/posts` ignores `cursor` (observed
+    /// 2026-10-28: the same twelve posts come back whatever the cursor, though `next_cursor` keeps
+    /// changing). A cursor page that is just the first page again is reported as the end of the
+    /// list, and the store stops offering the cursor.
     pub async fn posts(
-        &self,
+        self: &Arc<Self>,
         raw_username: &str,
         cursor: &Option<String>,
     ) -> Result<Value, ServiceError> {
         let username =
             normalize_username(raw_username).ok_or(ServiceError::BadRequest("username"))?;
         let cursor = valid_cursor(cursor)?;
-        let page = self
-            .fetch_page(&users_path(&username, "/posts", cursor), TTL_POSTS)
-            .await?;
+        let started = Instant::now();
+        let feed = self.store.feed(FeedKind::Posts, &username);
         match cursor {
-            None => self.remember_first_page(&username, &page),
-            Some(_) => {
+            None if feed.fetched_at > 0 => {
+                let refreshing = self.refresh_behind(&username);
+                Self::page_log("posts", true, started, refreshing);
+                Ok(self.feed_json(&feed, 0, refreshing))
+            }
+            None => {
+                let page = self
+                    .fetch_page(&users_path(&username, "/posts", None), TTL_POSTS)
+                    .await?;
+                self.remember_first_page(&username, &page);
+                let next = page.next_cursor.clone().filter(|c| !c.is_empty());
+                self.absorb_first(FeedKind::Posts, &username, &page.items, next);
+                self.store
+                    .update_feed(FeedKind::Posts, &username, |f| f.fetched_at = ASK_AGAIN);
+                let refreshing = self.refresh_behind(&username);
+                Self::page_log("posts", false, started, refreshing);
+                Ok(self.feed_json(&self.store.feed(FeedKind::Posts, &username), 0, refreshing))
+            }
+            Some(c) if disk_offset(c).is_some() => {
+                Ok(self.feed_json(&feed, disk_offset(c).unwrap_or(0), false))
+            }
+            Some(c) => {
+                let page = self
+                    .fetch_page(&users_path(&username, "/posts", Some(c)), TTL_POSTS)
+                    .await?;
                 let first: Option<Vec<String>> = self
                     .cache
                     .get(&Self::first_page_key(&username), TTL_FIRST_PAGE);
@@ -660,59 +1171,125 @@ impl Service {
                     let again = !page.items.is_empty()
                         && page.items.iter().all(|m| first.contains(m.id.as_str()));
                     if again {
+                        self.store
+                            .update_feed(FeedKind::Posts, &username, |f| f.next_cursor = None);
                         return Ok(json!({"items": [], "nextCursor": null, "exhausted": true}));
                     }
                 }
+                self.absorb_older(FeedKind::Posts, &username, c, &page);
+                Ok(self.page_json(&page))
             }
         }
-        Ok(self.page_json(&page))
     }
 
-    /// Reels: the backend has a separate `/users/{u}/reels` (video posts only, cursor works).
+    /// Reels, from the store: the backend has a separate `/users/{u}/reels` (video posts only,
+    /// cursor works). A backend cursor comes after everything known.
     pub async fn reels(
-        &self,
+        self: &Arc<Self>,
         raw_username: &str,
         cursor: &Option<String>,
     ) -> Result<Value, ServiceError> {
         let username =
             normalize_username(raw_username).ok_or(ServiceError::BadRequest("username"))?;
         let cursor = valid_cursor(cursor)?;
-        let page = self
-            .fetch_page(&users_path(&username, "/reels", cursor), TTL_POSTS)
-            .await?;
-        Ok(self.page_json(&page))
+        let started = Instant::now();
+        let feed = self.store.feed(FeedKind::Reels, &username);
+        match cursor {
+            None if feed.fetched_at > 0 => {
+                let refreshing = self.refresh_behind(&username);
+                Self::page_log("reels", true, started, refreshing);
+                Ok(self.feed_json(&feed, 0, refreshing))
+            }
+            None => {
+                let page = self
+                    .fetch_page(&users_path(&username, "/reels", None), TTL_POSTS)
+                    .await?;
+                let next = page.next_cursor.clone().filter(|c| !c.is_empty());
+                self.absorb_first(FeedKind::Reels, &username, &page.items, next);
+                self.store
+                    .update_feed(FeedKind::Reels, &username, |f| f.fetched_at = ASK_AGAIN);
+                let refreshing = self.refresh_behind(&username);
+                Self::page_log("reels", false, started, refreshing);
+                Ok(self.feed_json(&self.store.feed(FeedKind::Reels, &username), 0, refreshing))
+            }
+            Some(c) if disk_offset(c).is_some() => {
+                Ok(self.feed_json(&feed, disk_offset(c).unwrap_or(0), false))
+            }
+            Some(c) => {
+                let page = self
+                    .fetch_page(&users_path(&username, "/reels", Some(c)), TTL_POSTS)
+                    .await?;
+                self.absorb_older(FeedKind::Reels, &username, c, &page);
+                self.mirror_feed(&page.items);
+                Ok(self.page_json(&page))
+            }
+        }
     }
 
+    /// Stories, from the store: the ones up now, then the expired ones with a local copy. Only an
+    /// account whose stories were never asked waits for the backend.
     pub async fn stories(
-        &self,
+        self: &Arc<Self>,
         raw_username: &str,
         cursor: &Option<String>,
     ) -> Result<Value, ServiceError> {
         let username =
             normalize_username(raw_username).ok_or(ServiceError::BadRequest("username"))?;
         let cursor = valid_cursor(cursor)?;
-        // No older copy: yesterday's stories have expired, and today's would be missing.
-        let text = self
-            .fetch_cached(
-                &rel(core_url::user_stories_url(&username, cursor, None)),
-                TTL_STORIES,
-                Duration::ZERO,
-                keep_any,
-            )
-            .await?;
-        let page = parse_media_page(&text).ok_or(ServiceError::Upstream)?;
-        Ok(self.page_json(&page))
+        let started = Instant::now();
+        let feed = self.store.feed(FeedKind::Stories, &username);
+        if let Some(offset) = cursor.and_then(disk_offset) {
+            return Ok(self.stories_json(&feed, offset, false));
+        }
+        let on_disk = feed.fetched_at > 0;
+        if !on_disk {
+            let text = self
+                .fetch_cached(
+                    &rel(core_url::user_stories_url(&username, cursor, None)),
+                    TTL_STORIES,
+                    Duration::ZERO,
+                    keep_any,
+                )
+                .await?;
+            let page = parse_media_page(&text).ok_or(ServiceError::Upstream)?;
+            self.absorb_stories(&username, &page);
+            self.mirror_feed(&page.items);
+        }
+        let refreshing = self.refresh_behind(&username);
+        Self::page_log("stories", on_disk, started, refreshing);
+        Ok(self.stories_json(
+            &self.store.feed(FeedKind::Stories, &username),
+            0,
+            refreshing,
+        ))
     }
 
-    pub async fn highlights(&self, raw_username: &str) -> Result<Value, ServiceError> {
+    /// The tray, from the store (kept when a later answer is empty); an account with none known
+    /// asks the backend.
+    pub async fn highlights(self: &Arc<Self>, raw_username: &str) -> Result<Value, ServiceError> {
         let username =
             normalize_username(raw_username).ok_or(ServiceError::BadRequest("username"))?;
+        let started = Instant::now();
+        let doc = self.store.profile(&username);
+        if !doc.highlights.is_empty() || doc.highlights_at > 0 {
+            let refreshing = self.refresh_behind(&username);
+            Self::page_log("highlights", true, started, refreshing);
+            return Ok(json!({
+                "items": self.highlights_json(&doc.highlights),
+                "refreshing": refreshing,
+            }));
+        }
         let hs = self.fetch_highlights(&username).await?;
+        self.store.update_profile(&username, |d| {
+            d.highlights.clone_from(&hs);
+            d.highlights_at = now_secs();
+        });
+        Self::page_log("highlights", false, started, false);
         Ok(json!({"items": self.highlights_json(&hs)}))
     }
 
     pub async fn highlight_items(
-        &self,
+        self: &Arc<Self>,
         id: &str,
         cursor: &Option<String>,
     ) -> Result<Value, ServiceError> {
@@ -725,13 +1302,58 @@ impl Service {
             return Err(ServiceError::BadRequest("highlight id"));
         }
         let cursor = valid_cursor(cursor)?;
-        let page = self
-            .fetch_page(
-                &rel(core_url::highlight_items_url(id, cursor)),
-                TTL_HIGHLIGHTS,
-            )
-            .await?;
-        Ok(self.page_json(&page))
+        let started = Instant::now();
+        let feed = self.store.feed(FeedKind::Highlight, id);
+        match cursor {
+            None if feed.fetched_at > 0 => {
+                let refreshing = self.refresh_highlight_behind(id);
+                Self::page_log("highlight", true, started, refreshing);
+                Ok(self.feed_json(&feed, 0, refreshing))
+            }
+            None => {
+                let page = self
+                    .fetch_page(
+                        &rel(core_url::highlight_items_url(id, None)),
+                        TTL_HIGHLIGHTS,
+                    )
+                    .await?;
+                let next = page.next_cursor.clone().filter(|c| !c.is_empty());
+                self.absorb_first(FeedKind::Highlight, id, &page.items, next);
+                self.store
+                    .update_feed(FeedKind::Highlight, id, |f| f.fetched_at = ASK_AGAIN);
+                self.mirror_feed(&page.items);
+                let refreshing = self.refresh_highlight_behind(id);
+                Self::page_log("highlight", false, started, refreshing);
+                Ok(self.feed_json(&self.store.feed(FeedKind::Highlight, id), 0, refreshing))
+            }
+            Some(c) if disk_offset(c).is_some() => {
+                Ok(self.feed_json(&feed, disk_offset(c).unwrap_or(0), false))
+            }
+            Some(c) => {
+                let page = self
+                    .fetch_page(
+                        &rel(core_url::highlight_items_url(id, Some(c))),
+                        TTL_HIGHLIGHTS,
+                    )
+                    .await?;
+                self.absorb_older(FeedKind::Highlight, id, c, &page);
+                self.mirror_feed(&page.items);
+                Ok(self.page_json(&page))
+            }
+        }
+    }
+
+    /// New links for ones this service signed; anything else is left out. Behind the owner's
+    /// check, so a page kept for days never shows a dead link and never holds a link longer.
+    pub fn resign(&self, urls: &[String]) -> Result<Value, ServiceError> {
+        if urls.len() > MAX_RESIGN {
+            return Err(ServiceError::BadRequest("urls"));
+        }
+        let map: serde_json::Map<String, Value> = urls
+            .iter()
+            .filter_map(|u| Some((u.clone(), Value::String(self.signer.resign(u)?))))
+            .collect();
+        Ok(json!({"urls": map}))
     }
 
     pub async fn resolve(&self, post_url: &str) -> Result<Value, ServiceError> {
@@ -800,11 +1422,19 @@ impl Service {
             return Ok(f);
         }
         let tmp = self.cache.tmp_media(key);
-        let (ctype, _) = self
-            .up
-            .media_to_file(cdn, &tmp)
-            .await
-            .map_err(media_error)?;
+        let started = Instant::now();
+        let fetched = self.up.media_to_file(cdn, &tmp).await;
+        let ms = started.elapsed().as_millis() as u64;
+        let ctype = match fetched {
+            Ok((ctype, bytes)) => {
+                tracing::info!(ctype, bytes, ms, "instagram cdn");
+                ctype
+            }
+            Err(e) => {
+                tracing::warn!(ms, error = %e, "instagram cdn");
+                return Err(media_error(e));
+            }
+        };
         let ext = ext_for_ctype(ctype).ok_or(ServiceError::Upstream)?;
         let path = self
             .cache
@@ -827,7 +1457,337 @@ impl Service {
             .signer
             .verify(exp, sig, token)
             .map_err(SignedError::Sign)?;
+        if let Some(f) = self.cached_media(&cache_key(&cdn)) {
+            return Ok(f);
+        }
+        let _waiting = OwnerMedia::new(&self.owner_media);
         self.media_file(&cdn).await.map_err(SignedError::Service)
+    }
+
+    // ---- the background download ----
+
+    /// Every file of an item: picture or poster, then the media itself, then a carousel's frames.
+    fn item_files(m: &MediaItem) -> Vec<(String, bool)> {
+        let mut out = Vec::new();
+        let mut add = |u: &str| {
+            if let Some(cdn) = inner_cdn_url(u) {
+                let video = is_video_url(&cdn);
+                out.push((cdn, video));
+            }
+        };
+        add(&m.thumbnail_url);
+        add(&m.media_url);
+        m.carousel_urls.iter().for_each(|u| add(u));
+        out
+    }
+
+    fn mirror_files(&self, files: Vec<(String, bool)>) {
+        let now = now_secs();
+        let mut missing: Vec<(String, String, bool)> = Vec::new();
+        for (cdn, video) in files {
+            let key = cache_key(&cdn);
+            if !self.cache.has_media(&key) {
+                missing.push((key, cdn, video));
+            }
+        }
+        if missing.is_empty() {
+            return;
+        }
+        let mut g = self.mirror.lock().unwrap_or_else(|e| e.into_inner());
+        // In front, in reverse: what was opened last comes first, newest item first.
+        for (key, cdn, video) in missing.into_iter().rev() {
+            if g.skip_until.get(&key).is_some_and(|t| *t > now) || !g.queued.insert(key) {
+                continue;
+            }
+            if video {
+                g.videos.push_front(cdn);
+            } else {
+                g.images.push_front(cdn);
+            }
+        }
+        drop(g);
+        self.mirror_wake.notify_one();
+    }
+
+    /// Queue what these items need on disk.
+    fn mirror_feed(&self, items: &[MediaItem]) {
+        self.mirror_files(items.iter().flat_map(Self::item_files).collect());
+    }
+
+    /// Queue everything known about an account (off the async threads: this asks the disk once
+    /// per file, and the disk is a slow one).
+    pub async fn mirror_account(&self, user: &str) {
+        let mut files: Vec<(String, bool)> = Vec::new();
+        let doc = self.store.profile(user);
+        if let Some(p) = &doc.profile {
+            files.extend(inner_cdn_url(&p.profile_pic_url).map(|c| (c, false)));
+        }
+        for h in &doc.highlights {
+            files.extend(inner_cdn_url(&h.cover_url).map(|c| (c, false)));
+            let feed = self.store.feed(FeedKind::Highlight, &h.id);
+            files.extend(feed.items.iter().flat_map(Self::item_files));
+        }
+        for kind in [FeedKind::Stories, FeedKind::Posts, FeedKind::Reels] {
+            let feed = self.store.feed(kind, user);
+            files.extend(feed.items.iter().flat_map(Self::item_files));
+        }
+        // No spawn_blocking here: `self` is not 'static on this path, and block_in_place keeps the
+        // runtime's other tasks moving while the disk is asked.
+        if tokio::runtime::Handle::current().runtime_flavor()
+            == tokio::runtime::RuntimeFlavor::MultiThread
+        {
+            tokio::task::block_in_place(|| self.mirror_files(files));
+        } else {
+            self.mirror_files(files);
+        }
+    }
+
+    /// One step of the background download. Images go before videos; the owner's requests go
+    /// before all of it, and one of the two CDN slots is always left to them.
+    pub async fn mirror_tick(&self) -> MirrorOutcome {
+        if self.cache.is_full() {
+            return MirrorOutcome::Paused;
+        }
+        if self.owner_media.load(Ordering::SeqCst) > 0 {
+            return MirrorOutcome::Busy;
+        }
+        let cdn = {
+            let mut g = self.mirror.lock().unwrap_or_else(|e| e.into_inner());
+            let day = today();
+            if g.day != day {
+                g.day = day;
+                g.day_bytes = 0;
+            }
+            if g.day_bytes >= self.cfg.mirror.daily_max_bytes {
+                return MirrorOutcome::Paused;
+            }
+            let Some(cdn) = g.images.pop_front().or_else(|| g.videos.pop_front()) else {
+                return MirrorOutcome::Idle;
+            };
+            g.queued.remove(&cache_key(&cdn));
+            cdn
+        };
+        let key = cache_key(&cdn);
+        if self.cache.has_media(&key) {
+            return MirrorOutcome::Fetched;
+        }
+        match self.media_file(&cdn).await {
+            Ok(file) => {
+                let mut g = self.mirror.lock().unwrap_or_else(|e| e.into_inner());
+                g.day_bytes += file.len;
+                g.done += 1;
+                g.done_bytes += file.len;
+                let left = g.images.len() + g.videos.len();
+                if g.done >= 100 || left == 0 {
+                    tracing::info!(
+                        files = g.done,
+                        bytes = g.done_bytes,
+                        left,
+                        today_bytes = g.day_bytes,
+                        "instagram mirror"
+                    );
+                    g.done = 0;
+                    g.done_bytes = 0;
+                }
+                MirrorOutcome::Fetched
+            }
+            Err(ServiceError::RateLimited(_)) => {
+                let mut g = self.mirror.lock().unwrap_or_else(|e| e.into_inner());
+                if g.queued.insert(key) {
+                    g.images.push_back(cdn);
+                }
+                MirrorOutcome::Paused
+            }
+            Err(_) => {
+                let mut g = self.mirror.lock().unwrap_or_else(|e| e.into_inner());
+                g.skip_until.insert(key, now_secs() + MIRROR_RETRY_SECS);
+                MirrorOutcome::Failed
+            }
+        }
+    }
+
+    /// The download's loop: slow, and quiet when there is nothing to do.
+    pub async fn run_mirror(&self, mut stop: tokio::sync::watch::Receiver<bool>) {
+        let mut last_pin = Instant::now();
+        for a in self.backfill_accounts() {
+            self.mirror_account(&a).await;
+        }
+        loop {
+            let outcome = tokio::select! {
+                o = self.mirror_tick() => o,
+                _ = stop.changed() => return,
+            };
+            if last_pin.elapsed() > Duration::from_secs(600) {
+                last_pin = Instant::now();
+                self.pin_kept_media();
+            }
+            let rest = match outcome {
+                MirrorOutcome::Fetched | MirrorOutcome::Failed => self.cfg.mirror.interval,
+                MirrorOutcome::Busy => Duration::from_millis(300),
+                MirrorOutcome::Idle => Duration::from_secs(300),
+                MirrorOutcome::Paused => Duration::from_secs(60),
+            };
+            tokio::select! {
+                _ = tokio::time::sleep(rest) => {}
+                _ = self.mirror_wake.notified(), if outcome == MirrorOutcome::Idle => {}
+                _ = stop.changed() => return,
+            }
+            if *stop.borrow() {
+                return;
+            }
+        }
+    }
+
+    /// What eviction must leave alone: everything of a watched account, and the local copies of
+    /// saved items.
+    pub fn pin_kept_media(&self) {
+        let mut keys: HashSet<String> = self.archive.cache_keys().into_iter().collect();
+        let mut add = |items: &[MediaItem]| {
+            for m in items {
+                keys.extend(Self::item_files(m).iter().map(|(c, _)| cache_key(c)));
+            }
+        };
+        for a in self.watch.list() {
+            let doc = self.store.profile(&a.username);
+            for h in &doc.highlights {
+                add(&self.store.feed(FeedKind::Highlight, &h.id).items);
+            }
+            for kind in [FeedKind::Stories, FeedKind::Posts, FeedKind::Reels] {
+                add(&self.store.feed(kind, &a.username).items);
+            }
+        }
+        self.cache.set_pinned(keys);
+    }
+
+    // ---- the backfill: older pages, slowly ----
+
+    /// Watched accounts, then the ones opened in the last month, newest first.
+    fn backfill_accounts(&self) -> Vec<String> {
+        let now = now_secs();
+        let mut out: Vec<String> = self.watch.list().into_iter().map(|a| a.username).collect();
+        for e in self.recent.list() {
+            if now - e.opened_at <= BACKFILL_RECENT_SECS && !out.contains(&e.username) {
+                out.push(e.username);
+            }
+        }
+        out
+    }
+
+    /// One older page of the first feed that has any left. Says whether the backend was asked.
+    pub async fn backfill_tick(&self) -> bool {
+        if self.warmer_paused().is_some() || self.up.blocked_for().is_some() {
+            return false;
+        }
+        {
+            let mut g = self.mirror.lock().unwrap_or_else(|e| e.into_inner());
+            let day = today();
+            if g.backfill_day != day {
+                g.backfill_day = day;
+                g.backfill_calls = 0;
+            }
+            if g.backfill_calls >= self.cfg.mirror.backfill_daily_calls {
+                return false;
+            }
+        }
+        for user in self.backfill_accounts() {
+            let doc = self.store.profile(&user);
+            if doc.gone || doc.profile.as_ref().is_none_or(|p| p.is_private) {
+                continue;
+            }
+            let reels = self.store.feed(FeedKind::Reels, &user);
+            if let (true, Some(c)) = (reels.fetched_at > 0, reels.next_cursor.as_deref()) {
+                let path = users_path(&user, "/reels", Some(c));
+                self.backfill_page(FeedKind::Reels, &user, c, &path).await;
+                return true;
+            }
+            for h in &doc.highlights {
+                let feed = self.store.feed(FeedKind::Highlight, &h.id);
+                if feed.fetched_at == 0 {
+                    let path = rel(core_url::highlight_items_url(&h.id, None));
+                    self.count_backfill_call();
+                    match self.low_text(&path, TTL_HIGHLIGHTS, keep_any).await {
+                        Ok(text) => {
+                            if let Some(p) = parse_media_page(&text) {
+                                let next = p.next_cursor.clone().filter(|c| !c.is_empty());
+                                self.absorb_first(FeedKind::Highlight, &h.id, &p.items, next);
+                                self.mirror_feed(&p.items);
+                            }
+                        }
+                        Err(e) => {
+                            self.backfill_failed(e, FeedKind::Highlight, &h.id, None);
+                        }
+                    }
+                    return true;
+                }
+                if let Some(c) = feed.next_cursor.as_deref() {
+                    let path = rel(core_url::highlight_items_url(&h.id, Some(c)));
+                    self.backfill_page(FeedKind::Highlight, &h.id, c, &path)
+                        .await;
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    fn count_backfill_call(&self) {
+        let mut g = self.mirror.lock().unwrap_or_else(|e| e.into_inner());
+        g.backfill_calls += 1;
+    }
+
+    async fn backfill_page(&self, kind: FeedKind, owner: &str, cursor: &str, path: &str) {
+        self.count_backfill_call();
+        match self.low_text(path, TTL_POSTS, keep_any).await {
+            Ok(text) => {
+                if let Some(p) = parse_media_page(&text) {
+                    self.absorb_older(kind, owner, cursor, &p);
+                    self.mirror_feed(&p.items);
+                }
+            }
+            Err(e) => self.backfill_failed(e, kind, owner, Some(cursor)),
+        }
+    }
+
+    /// A 429 rests the backfill with the warmer. A cursor the backend no longer takes ends that
+    /// feed's backfill (the newest items keep coming through refreshes); a first page that fails
+    /// is marked as asked, so one bad highlight does not hold up the rest.
+    fn backfill_failed(&self, e: UpstreamError, kind: FeedKind, owner: &str, cursor: Option<&str>) {
+        tracing::warn!(error = %e, "instagram backfill");
+        match e {
+            UpstreamError::RateLimited(s) => self.pause_warmer(Duration::from_secs(s)),
+            UpstreamError::Status(400 | 404 | 410 | 422) => {
+                self.store.update_feed(kind, owner, |f| {
+                    if cursor.is_some() {
+                        f.next_cursor = None;
+                    } else {
+                        f.fetched_at = now_secs();
+                    }
+                });
+            }
+            _ => {}
+        }
+    }
+
+    /// The backfill's loop.
+    pub async fn run_backfill(&self, mut stop: tokio::sync::watch::Receiver<bool>) {
+        loop {
+            let asked = tokio::select! {
+                a = self.backfill_tick() => a,
+                _ = stop.changed() => return,
+            };
+            let rest = if asked {
+                self.cfg.mirror.backfill_interval
+            } else {
+                Duration::from_secs(300)
+            };
+            tokio::select! {
+                _ = tokio::time::sleep(rest) => {}
+                _ = stop.changed() => return,
+            }
+            if *stop.borrow() {
+                return;
+            }
+        }
     }
 
     // ---- save to lucina-media ----
@@ -854,11 +1814,14 @@ impl Service {
             return Err("bad_request");
         }
         let username = normalize_username(&item.username).ok_or("bad_request")?;
-        let cdn = self.signer.verify_url(&item.url).map_err(|e| match e {
-            SignError::Expired => "expired",
-            SignError::HostNotAllowed => "forbidden",
-            _ => "bad_url",
-        })?;
+        // Any age: this route is behind the owner's check, and a page may have been open for hours.
+        let cdn = self
+            .signer
+            .verify_url_any_age(&item.url)
+            .map_err(|e| match e {
+                SignError::HostNotAllowed => "forbidden",
+                _ => "bad_url",
+            })?;
         let file = self.media_file(&cdn).await.map_err(|e| match e {
             ServiceError::RateLimited(_) => "rate_limited",
             ServiceError::Gone => "expired",
@@ -894,6 +1857,7 @@ impl Service {
                 saved_at: chrono::Utc::now().timestamp(),
                 caption: item.caption.clone().filter(|c| !c.trim().is_empty()),
                 auto: false,
+                cache_key: Some(cache_key(&cdn)),
             },
         );
         Ok((id, duplicate))
@@ -1276,6 +2240,7 @@ impl Service {
             return Ok(());
         };
         self.cache.put(&Self::latest_key("bundle", user), &text);
+        self.absorb_bundle(user, &bundle);
 
         // Stories: not for a private account (the backend has none to give).
         let mut stories: Option<MediaPage> = None;
@@ -1285,6 +2250,7 @@ impl Service {
                 Ok(t) => {
                     if let Some(p) = parse_media_page(&t) {
                         self.cache.put(&Self::latest_key("stories", user), &t);
+                        self.absorb_stories(user, &p);
                         stories = Some(p);
                     }
                 }
@@ -1310,10 +2276,19 @@ impl Service {
         for c in &changes {
             self.watch.queue_notice(user, c, now);
         }
-        if let Some(page) = &stories {
-            return self.autosave_stories(user, &page.items).await;
+        let saved = match &stories {
+            Some(page) => self.autosave_stories(user, &page.items).await,
+            None => Ok(()),
+        };
+        // The rest of the account (reels, tray), and everything it shows on disk. A 429 here is
+        // the block's business; the check itself is done.
+        if saved.is_ok() {
+            if let Err(e) = self.refresh_account(user).await {
+                tracing::warn!(error = %e, "instagram watch: the rest of the account failed");
+            }
         }
-        Ok(())
+        self.pin_kept_media();
+        saved
     }
 
     /// Save the stories not saved yet into the Gallery (album "Instagram · @user"). Reads only:
@@ -1379,6 +2354,7 @@ impl Service {
                             saved_at: chrono::Utc::now().timestamp(),
                             caption: m.caption.clone().filter(|c| !c.trim().is_empty()),
                             auto: true,
+                            cache_key: Some(cache_key(&cdn)),
                         },
                     );
                 }
