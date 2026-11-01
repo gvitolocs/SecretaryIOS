@@ -144,14 +144,22 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             guard app.phase == .signedIn else { return UIBackgroundFetchResult.noData }
             app.approvals.markNotified(approvalId)
             await app.approvals.poll()
+            // The push may land after the request's Live Activity card: the card carries it.
+            if ApprovalActivities.shared.hasCard(approvalId) {
+                await ApprovalActivities.shared.replaceNotifications([approvalId])
+            }
             return .newData
         }.value
     }
 
     /// Show banners while the app is open (the store only posts what the owner isn't looking at).
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
-        // An approval is already on screen as the prompt while the app is open: no banner on top of it.
-        if notification.request.content.userInfo[ApprovalNotifier.idKey] != nil { return [.list] }
+        // An approval is already on screen as the prompt while the app is open: no banner on top of it; and none at all
+        // while its Live Activity card is up (one alert per request).
+        if let id = notification.request.content.userInfo[ApprovalNotifier.idKey] as? String {
+            let card = await MainActor.run { ApprovalActivities.shared.hasCard(id) }
+            return card && !notification.request.identifier.hasPrefix("approval.failed.") ? [] : [.list]
+        }
         return [.banner, .list, .sound]
     }
 

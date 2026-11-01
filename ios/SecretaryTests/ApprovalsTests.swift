@@ -46,7 +46,11 @@ final class ApprovalFakeCenter: NotificationScheduling, @unchecked Sendable {
     func removeDelivered(_ identifiers: [String]) async { delivered.append(contentsOf: identifiers) }
     /// Approval ids the server's APNs push already put on the lock screen (identifier `apns-<id>`).
     var pushed: Set<String> = []
-    func deliveredApprovals(_ ids: Set<String>) async -> [String] { ids.intersection(pushed).map { "apns-\($0)" } }
+    /// Approval ids with a follow-up ("approval.failed.<id>") on the lock screen.
+    var followUps: Set<String> = []
+    func deliveredApprovals(_ ids: Set<String>) async -> [String] {
+        ids.intersection(pushed).map { "apns-\($0)" } + ids.intersection(followUps).map { "approval.failed.\($0)" }
+    }
 }
 
 @MainActor
@@ -65,6 +69,11 @@ final class FakeApprovalNotifier: ApprovalNotifying {
     private(set) var followUps: [String] = []
     func postOpenToApprove(for item: ApprovalItem) async { followUps.append(item.id) }
     func remove(ids: [String]) async { removed.append(contentsOf: ids) }
+    private(set) var replaced: [String] = []
+    func removeRequest(ids: [String]) async -> Int {
+        replaced.append(contentsOf: ids)
+        return ids.count
+    }
 }
 
 private func itemJSON(id: String, sensitive: Bool, status: String? = nil, extra: String = "") -> String {
@@ -775,6 +784,74 @@ final class ApprovalsTests: XCTestCase {
         await store.postOpenToApprove(id: "apr_unknown")
         XCTAssertEqual(notifier.followUps, ["apr_secret", "apr_unknown"])
         assertNothingApproved("a follow-up only")
+    }
+
+    // MARK: One alert per request
+
+    func testTheCardReplacesOnlyItsRequestsNotification() async {
+        let center = ApprovalFakeCenter()
+        center.pushed = ["apr_1", "apr_2"]
+        center.followUps = ["apr_1"]
+        let notifier = ApprovalNotifier(center: center)
+        let found = await notifier.removeRequest(ids: ["apr_1"])
+        XCTAssertEqual(found, 1, "the server's push")
+        XCTAssertEqual(Set(center.delivered), ["approval.apr_1", "apns-apr_1"], "the follow-up and other ids stay")
+        XCTAssertFalse(center.delivered.contains("approval.failed.apr_1"))
+        XCTAssertFalse(center.delivered.contains("apns-apr_2"))
+        // Answered: everything about it goes, the follow-up too (unchanged).
+        center.delivered = []
+        await notifier.remove(ids: ["apr_1"])
+        XCTAssertTrue(center.delivered.contains("approval.failed.apr_1"))
+    }
+
+    func testNoLocalNotificationWhileTheCardIsUp() async throws {
+        let center = ApprovalFakeCenter()
+        let notifier = ApprovalNotifier(center: center)
+        var cards: Set<String> = ["apr_card"]
+        notifier.cardShown = { cards.contains($0) }
+        await notifier.post(ApprovalItem(id: "apr_card", summary: "x"), previews: true)
+        await notifier.post(ApprovalItem(id: "apr_other", summary: "y"), previews: true)
+        XCTAssertEqual(center.added.map(\.identifier), ["approval.apr_other"], "only the request without a card")
+        cards = []
+        await notifier.post(ApprovalItem(id: "apr_card", summary: "x"), previews: true)
+        XCTAssertEqual(center.added.map(\.identifier), ["approval.apr_other", "approval.apr_card"], "no card: the notification stays the alert")
+    }
+
+    /// Waits (up to 1 s) for work the code under test hands to a Task.
+    private func eventually(_ condition: () -> Bool) async {
+        for _ in 0..<100 where !condition() { try? await Task.sleep(for: .milliseconds(10)) }
+    }
+
+    func testAnActiveCardReplacesTheNotificationAndNoCardKeepsIt() async throws {
+        let secret = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_secret", sensitive: true))
+        let plain = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_plain", sensitive: false))
+        var started: [String] = []
+        let activities = ApprovalActivities(defaults: defaults, requestActivity: { attributes, _ in started.append(attributes.approvalId) },
+                                            liveActivities: { [] }, activitiesEnabled: { true }, now: { fixtureNow })
+        activities.notifier = notifier
+        // In the background no card starts: both notifications stay.
+        activities.sync(pending: [secret, plain], foreground: false)
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertFalse(activities.hasCard("apr_secret"))
+        XCTAssertTrue(notifier.replaced.isEmpty, "no card: the notification stays")
+        // In front the card starts: that request's own notification goes.
+        activities.sync(pending: [secret], foreground: true)
+        await eventually { notifier.replaced.contains("apr_secret") }
+        XCTAssertEqual(started, ["apr_secret"])
+        XCTAssertTrue(activities.hasCard("apr_secret"))
+        XCTAssertFalse(activities.hasCard("apr_plain"), "other ids untouched")
+        XCTAssertTrue(notifier.replaced.contains("apr_secret"))
+        XCTAssertFalse(notifier.replaced.contains("apr_plain"))
+        XCTAssertTrue(notifier.removed.isEmpty, "the follow-ups are not removed")
+        // The push landing after the card: the next list removes it again.
+        let before = notifier.replaced.count
+        activities.sync(pending: [secret, plain], foreground: false)
+        await eventually { notifier.replaced.count > before }
+        XCTAssertEqual(notifier.replaced.count, before + 1)
+        XCTAssertEqual(notifier.replaced.last, "apr_secret")
+        // Signed out: no cards.
+        activities.reset()
+        XCTAssertFalse(activities.hasCard("apr_secret"))
     }
 
     func testALocalActivityHonoursThePreviewsSetting() throws {

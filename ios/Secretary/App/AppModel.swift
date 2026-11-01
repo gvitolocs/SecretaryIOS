@@ -219,9 +219,12 @@ final class AppModel {
         device = PerfLog.measure("device") { DeviceHub(client: client, weight: weight) }
         notifications = PerfLog.measure("notifications") { NotificationCenterStore(api: { NotificationsClient(client: client) }) }
         let notificationStore = notifications
+        // One alert per request: no notification of its own while the request's Live Activity card is up.
+        let approvalNotifier = ApprovalNotifier()
+        approvalNotifier.cardShown = { id in ApprovalActivities.shared.hasCard(id) }
         approvals = PerfLog.measure("approvals") {
             ApprovalsStore(api: { client.accessKey?.isEmpty == false ? ApprovalsAPI(client: client) : nil },
-                           signer: SecureEnclaveApprovalSigner(), notifier: ApprovalNotifier(),
+                           signer: SecureEnclaveApprovalSigner(), notifier: approvalNotifier,
                            previews: { notificationStore.rules.settings.previews },
                            deviceLabel: { UIDevice.current.name })
         }
@@ -378,6 +381,7 @@ final class AppModel {
         approvals.onSettled = { id, outcome in ApprovalActivities.shared.settled(id, outcome) }
         let approvalStore = approvals
         ApprovalActivities.shared.previews = { notifications.rules.settings.previews }
+        ApprovalActivities.shared.notifier = approvalNotifier
         ApprovalActivities.shared.start(client: client, status: { id in await approvalStore.status(of: id) })
         agents.onTransportError = onError
         server.onTransportError = onError

@@ -9,6 +9,10 @@ protocol ApprovalNotifying: AnyObject {
     /// An Approve the notification could not answer in place: "Open Secretary to approve", its tap opens the card.
     func postOpenToApprove(for item: ApprovalItem) async
     func remove(ids: [String]) async
+    /// Takes only the requests' own notifications off the lock screen (the app's and the server's push), not the
+    /// "answer didn't go through" / "Open Secretary to approve" follow-ups. Returns how many were delivered.
+    @discardableResult
+    func removeRequest(ids: [String]) async -> Int
 }
 
 /// What a notification button or tap asks for.
@@ -73,12 +77,16 @@ final class ApprovalNotifier: ApprovalNotifying {
     nonisolated static let detailBytes = 2400
 
     let center: NotificationScheduling
+    /// The request's Live Activity card is up: it carries the request, so no notification of its own is posted.
+    var cardShown: (String) -> Bool = { _ in false }
 
     nonisolated init(center: NotificationScheduling = SystemNotificationCenter()) {
         self.center = center
     }
 
     static func identifier(_ id: String) -> String { "approval.\(id)" }
+    /// The follow-ups' slot ("Your answer didn't go through", "Open Secretary to approve").
+    static func followUpIdentifier(_ id: String) -> String { "approval.failed.\(id)" }
 
     /// The payload hash a notification carries (the app's own key, or the server push's).
     nonisolated static func payloadHash(in userInfo: [AnyHashable: Any]) -> String? {
@@ -157,6 +165,8 @@ final class ApprovalNotifier: ApprovalNotifying {
     }
 
     func post(_ item: ApprovalItem, previews: Bool) async {
+        // One alert per request: the Live Activity card has it.
+        if cardShown(item.id) { return }
         // Already on the lock screen from the server's push.
         if await !center.deliveredApprovals([item.id]).isEmpty { return }
         let request = UNNotificationRequest(identifier: Self.identifier(item.id), content: Self.content(for: item, previews: previews), trigger: nil)
@@ -170,7 +180,7 @@ final class ApprovalNotifier: ApprovalNotifying {
         c.body = String(localized: "Open Secretary and answer again: \(item.summary)")
         c.sound = .default
         c.userInfo = [Self.idKey: item.id, Self.sensitiveKey: item.sensitive]
-        try? await center.add(UNNotificationRequest(identifier: "approval.failed.\(item.id)", content: c, trigger: nil))
+        try? await center.add(UNNotificationRequest(identifier: Self.followUpIdentifier(item.id), content: c, trigger: nil))
     }
 
     /// Uses the failure's slot: either way the owner has to answer in the app, and it goes with the request.
@@ -181,13 +191,23 @@ final class ApprovalNotifier: ApprovalNotifying {
         c.sound = .default
         c.interruptionLevel = .timeSensitive
         c.userInfo = [Self.idKey: item.id, Self.sensitiveKey: item.sensitive]
-        try? await center.add(UNNotificationRequest(identifier: "approval.failed.\(item.id)", content: c, trigger: nil))
+        try? await center.add(UNNotificationRequest(identifier: Self.followUpIdentifier(item.id), content: c, trigger: nil))
     }
 
     func remove(ids: [String]) async {
         guard !ids.isEmpty else { return }
         // The server's APNs pushes have identifiers of their own: find them by their approval id.
         let pushed = await center.deliveredApprovals(Set(ids))
-        await center.removeDelivered(ids.flatMap { [Self.identifier($0), "approval.failed.\($0)"] } + pushed)
+        await center.removeDelivered(ids.flatMap { [Self.identifier($0), Self.followUpIdentifier($0)] } + pushed)
+    }
+
+    @discardableResult
+    func removeRequest(ids: [String]) async -> Int {
+        guard !ids.isEmpty else { return 0 }
+        let followUps = Set(ids.map(Self.followUpIdentifier))
+        let delivered = await center.deliveredApprovals(Set(ids)).filter { !followUps.contains($0) }
+        let own = Set(ids.map(Self.identifier))
+        await center.removeDelivered(Array(own.union(delivered)).sorted())
+        return delivered.count
     }
 }

@@ -45,6 +45,10 @@ final class ApprovalActivities {
     private let now: () -> Date
     /// The notifier's previews setting: off, a local activity says only "Open Secretary to see what it is."
     var previews: () -> Bool
+    /// The approval notifications: a request's own notification goes once its card is up (one alert per request).
+    var notifier: ApprovalNotifying?
+    /// Approvals whose card is up on this iPhone (activities this app started or watched while active).
+    private var cardsUp: Set<String> = []
 
     init(defaults: UserDefaults = .standard, requestActivity: ((ApprovalActivityAttributes, Date) -> Void)? = nil,
          liveActivities: @escaping () -> [Activity<ApprovalActivityAttributes>] = { Activity<ApprovalActivityAttributes>.activities },
@@ -187,6 +191,7 @@ final class ApprovalActivities {
 
     /// Sign-out: the server forgets this device's tokens with it; the activities go.
     func reset() {
+        cardsUp.removeAll()
         defaults.removeObject(forKey: Self.startTokenKey)
         sentUpdates.removeAll()
         updateTokens.removeAll()
@@ -210,6 +215,13 @@ final class ApprovalActivities {
         }
         watched[activity.id] = approvalId
         shown.insert(approvalId)
+        if activity.activityState == .active { cardUp(approvalId) }
+        Task {
+            // Ended, dismissed or stale: the card no longer carries the request.
+            for await state in activity.activityStateUpdates where state != .active {
+                self.cardsUp.remove(approvalId)
+            }
+        }
         Task {
             for await data in activity.pushTokenUpdates {
                 self.updateTokens[approvalId] = APNsAdapter.hex(data)
@@ -248,11 +260,14 @@ final class ApprovalActivities {
 
     // MARK: - The pending list
 
-    /// Every pending list the store learns: activities whose request is gone end; in the foreground, a pending
-    /// request without one gets one.
+    /// Every pending list the store learns: activities whose request is gone end; a request whose card is up loses its
+    /// own notification (the server's push may land after the card); in the foreground, a pending request without a
+    /// card gets one.
     func sync(pending items: [ApprovalItem], foreground: Bool) {
         flush()
         let live = liveActivities().filter { $0.activityState == .active || $0.activityState == .stale }
+        let withCard = items.map(\.id).filter { hasCard($0) }
+        if !withCard.isEmpty { Task { await self.replaceNotifications(withCard) } }
         let showing = live.filter { $0.content.state.isPending }.map(\.attributes.approvalId)
         for id in ApprovalActivityAttributes.toEnd(activityIds: showing, pending: Set(items.map(\.id))) {
             Task { await endVanished(id) }
@@ -302,6 +317,7 @@ final class ApprovalActivities {
         let expires = attributes.expiresAt
         if let requestActivity {
             requestActivity(attributes, expires)
+            cardUp(item.id)
             return
         }
         do {
@@ -312,6 +328,25 @@ final class ApprovalActivities {
         } catch {
             log.info("live activity not started: \(error.localizedDescription, privacy: .public)")
         }
+    }
+
+    // MARK: - One alert per request
+
+    /// The card for `approvalId` is up on this iPhone.
+    func hasCard(_ approvalId: String) -> Bool {
+        cardsUp.contains(approvalId)
+            || liveActivities().contains { $0.attributes.approvalId == approvalId && $0.activityState == .active }
+    }
+
+    private func cardUp(_ approvalId: String) {
+        cardsUp.insert(approvalId)
+        Task { await replaceNotifications([approvalId]) }
+    }
+
+    /// Takes the requests' own notifications off the lock screen (their cards carry them); the follow-ups stay.
+    func replaceNotifications(_ ids: [String]) async {
+        guard let notifier, await notifier.removeRequest(ids: ids) > 0 else { return }
+        for id in ids { log.info("notification replaced by card id=\(id, privacy: .public)") }
     }
 
     // MARK: - Ending
@@ -342,6 +377,7 @@ final class ApprovalActivities {
         for activity in activities(for: id) {
             await activity.end(ActivityContent(state: .init(status: status), staleDate: nil), dismissalPolicy: dismissal)
         }
+        cardsUp.remove(id)
         updateTokens[id] = nil
     }
 }
