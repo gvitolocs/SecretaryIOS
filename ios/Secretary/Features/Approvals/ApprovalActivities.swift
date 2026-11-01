@@ -35,8 +35,16 @@ final class ApprovalActivities {
     /// Approvals whose activity is being ended (a status lookup is in flight).
     private var ending: Set<String> = []
 
-    init(defaults: UserDefaults = .standard) {
+    /// Starts a local activity; nil: ActivityKit (tests record the attributes instead).
+    private let requestActivity: ((ApprovalActivityAttributes, Date) -> Void)?
+    /// The activities on this iPhone (tests: none).
+    private let liveActivities: () -> [Activity<ApprovalActivityAttributes>]
+
+    init(defaults: UserDefaults = .standard, requestActivity: ((ApprovalActivityAttributes, Date) -> Void)? = nil,
+         liveActivities: @escaping () -> [Activity<ApprovalActivityAttributes>] = { Activity<ApprovalActivityAttributes>.activities }) {
         self.defaults = defaults
+        self.requestActivity = requestActivity
+        self.liveActivities = liveActivities
     }
 
     /// Installs the buttons' handlers. Called from `SecretaryApp.init`, before any scene: a button may be all this
@@ -165,12 +173,12 @@ final class ApprovalActivities {
     /// request without one gets one.
     func sync(pending items: [ApprovalItem], foreground: Bool) {
         flush()
-        let live = Activity<ApprovalActivityAttributes>.activities.filter { $0.activityState == .active || $0.activityState == .stale }
+        let live = liveActivities().filter { $0.activityState == .active || $0.activityState == .stale }
         let showing = live.filter { $0.content.state.isPending }.map(\.attributes.approvalId)
         for id in ApprovalActivityAttributes.toEnd(activityIds: showing, pending: Set(items.map(\.id))) {
             Task { await endVanished(id) }
         }
-        guard foreground, ActivityAuthorizationInfo().areActivitiesEnabled else { return }
+        guard foreground, requestActivity != nil || ActivityAuthorizationInfo().areActivitiesEnabled else { return }
         let covered = shown.union(live.map(\.attributes.approvalId))
         let now = Date()
         for item in items where !covered.contains(item.id) && !item.isExpired(at: now) && (item.status ?? .pending) == .pending {
@@ -205,6 +213,10 @@ final class ApprovalActivities {
             summary: item.summary.isEmpty ? item.action : item.summary,
             commands: commands, commandCount: count, sensitive: item.sensitive, payloadHash: item.payloadHash,
             expiresAtUnix: expires.timeIntervalSince1970)
+        if let requestActivity {
+            requestActivity(attributes, expires)
+            return
+        }
         do {
             let activity = try Activity.request(attributes: attributes,
                                                 content: ActivityContent(state: .pending, staleDate: expires, relevanceScore: 100),
@@ -234,7 +246,7 @@ final class ApprovalActivities {
     }
 
     private func activities(for id: String) -> [Activity<ApprovalActivityAttributes>] {
-        Activity<ApprovalActivityAttributes>.activities.filter {
+        liveActivities().filter {
             $0.attributes.approvalId == id && ($0.activityState == .active || $0.activityState == .stale)
         }
     }

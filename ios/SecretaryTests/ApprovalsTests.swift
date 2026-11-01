@@ -569,6 +569,139 @@ final class ApprovalsTests: XCTestCase {
         XCTAssertEqual(ApprovalActivityAttributes.toEnd(activityIds: ["apr_a"], pending: []), ["apr_a"])
     }
 
+    // MARK: No approve without the owner's tap
+
+    /// Nothing was decided, signed or set to start an approve step.
+    private func assertNothingApproved(_ when: String, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertTrue(decideRequests().isEmpty, "no decide: \(when)", file: file, line: line)
+        XCTAssertTrue(signer.signed.isEmpty, "no signature: \(when)", file: file, line: line)
+        XCTAssertNil(store.startApprove, "no start-approve: \(when)", file: file, line: line)
+    }
+
+    func testANewRequestArrivingIsNeverApproved() async throws {
+        StubURLProtocol.handler = { request in
+            request.url?.path == "/v1/approvals"
+                ? .init(body: "[\(itemJSON(id: "apr_pushed", sensitive: true))]")
+                : .init(body: "{}")
+        }
+        let secret = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_secret", sensitive: true))
+        let plain = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_plain", sensitive: false))
+        var started: [String] = []
+        let activities = ApprovalActivities(defaults: defaults, requestActivity: { attributes, _ in started.append(attributes.approvalId) },
+                                            liveActivities: { [] })
+
+        // In front: the list, the prompt and the local Live Activity start.
+        store.onPendingLearned = { activities.sync(pending: $0, foreground: true) }
+        await store.apply([secret, plain])
+        XCTAssertEqual(started, ["apr_secret", "apr_plain"], "the local activity starts")
+        XCTAssertEqual(store.sheetItem?.id, "apr_secret", "the prompt shows")
+        assertNothingApproved("apply in front, local activity start")
+
+        // In the background (an approval push woke the app).
+        store.onPendingLearned = { activities.sync(pending: $0, foreground: false) }
+        await store.apply([secret, plain])
+        assertNothingApproved("apply in the background")
+
+        // The push wake (didReceiveRemoteNotification: markNotified, then poll) and the background refresh (poll).
+        store.markNotified("apr_pushed")
+        await store.poll()
+        XCTAssertEqual(store.pending.map(\.id), ["apr_pushed"])
+        await store.poll()
+        assertNothingApproved("push wake and background refresh")
+        XCTAssertEqual(started, ["apr_secret", "apr_plain"], "no activity started in the background")
+    }
+
+    func testOpeningACardWithoutTheActivityButtonStartsNothing() async throws {
+        let secret = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_secret", sensitive: true))
+        await store.apply([secret])
+        await store.dismissSheet()
+        await store.open(id: "apr_secret")
+        XCTAssertEqual(store.sheetItem?.id, "apr_secret")
+        XCTAssertNil(store.takeStartApprove("apr_secret"))
+        assertNothingApproved("a notification tap or the Details link")
+    }
+
+    func testAStartApproveExpiresAfterTenSeconds() async throws {
+        let secret = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_secret", sensitive: true))
+        await store.apply([secret])
+        let tap = Date(timeIntervalSince1970: 1_800_000_000)
+        await store.open(id: "apr_secret", startApprove: .activityApproveButton, now: tap)
+        XCTAssertNil(store.takeStartApprove("apr_secret", now: tap.addingTimeInterval(11)), "too late")
+        XCTAssertNil(store.takeStartApprove("apr_secret", now: tap.addingTimeInterval(1)), "and gone")
+        XCTAssertTrue(decideRequests().isEmpty)
+        XCTAssertTrue(signer.signed.isEmpty)
+        // Within the window it is handed over once, with the activity's trigger.
+        await store.open(id: "apr_secret", startApprove: .activityApproveButton, now: tap)
+        XCTAssertEqual(store.takeStartApprove("apr_secret", now: tap.addingTimeInterval(9))?.trigger, .activityApproveButton)
+    }
+
+    func testAStaleStartApproveNeverReachesAnotherCard() async throws {
+        let a = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_a", sensitive: true))
+        let b = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_b", sensitive: true))
+        await store.apply([a, b])
+        let tap = Date()
+        await store.open(id: "apr_a", startApprove: .activityApproveButton, now: tap)
+        // B's card shows instead: it does not take A's start-approve, and A's is gone with it.
+        XCTAssertNil(store.takeStartApprove("apr_b", now: tap))
+        XCTAssertNil(store.takeStartApprove("apr_a", now: tap))
+        assertNothingApproved("B's card after A's tap")
+
+        // Cleared when the sheet closes, when the request leaves the list, and in the background.
+        await store.open(id: "apr_a", startApprove: .activityApproveButton)
+        await store.dismissSheet()
+        XCTAssertNil(store.startApprove, "sheet closed")
+        await store.open(id: "apr_a", startApprove: .activityApproveButton)
+        await store.apply([b])
+        XCTAssertNil(store.startApprove, "answered elsewhere")
+        await store.apply([a, b])
+        await store.open(id: "apr_a", startApprove: .activityApproveButton)
+        store.sceneBackgrounded()
+        XCTAssertNil(store.startApprove, "app in the background")
+        await store.open(id: "apr_a", startApprove: .activityApproveButton)
+        store.reset()
+        XCTAssertNil(store.startApprove, "signed out")
+        XCTAssertTrue(decideRequests().isEmpty)
+        XCTAssertTrue(signer.signed.isEmpty)
+    }
+
+    func testTheActivitysApproveLeavesARequestThatIsNoLongerPending() async throws {
+        StubURLProtocol.handler = { request in
+            request.url?.path == "/v1/approvals/apr_done"
+                ? .init(body: itemJSON(id: "apr_done", sensitive: true, status: "approved"))
+                : .init(body: "{}")
+        }
+        let needsCard = await store.approveFromActivity(id: "apr_done", trigger: .activityApproveButton)
+        XCTAssertFalse(needsCard)
+        assertNothingApproved("already answered on another device")
+        // A trigger from elsewhere is refused outright, even for a pending request.
+        let secret = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_secret", sensitive: true))
+        await store.apply([secret])
+        let refused = await store.approveFromActivity(id: "apr_secret", trigger: .notificationApproveAction)
+        XCTAssertFalse(refused)
+        assertNothingApproved("a notification trigger on the activity path")
+    }
+
+    func testTheNotificationsApproveNeedsItsTrigger() async throws {
+        StubURLProtocol.handler = { _ in .init(body: #"{"status":"ok"}"#) }
+        let plain = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_plain", sensitive: false))
+        await store.apply([plain])
+        await store.handleNotification(actionIdentifier: ApprovalNotifier.approveAction, approvalId: "apr_plain", sensitive: false)
+        XCTAssertTrue(decideRequests().isEmpty, "no trigger, no approve")
+        await store.handleNotification(actionIdentifier: ApprovalNotifier.approveAction, approvalId: "apr_plain", sensitive: false,
+                                       trigger: .cardApproveButton)
+        XCTAssertTrue(decideRequests().isEmpty, "only the notification's own trigger")
+    }
+
+    func testStrictModeNeverSignsInTheBackground() async throws {
+        StubURLProtocol.handler = { _ in .init(body: #"{"status":"ok"}"#) }
+        store.setStrictFaceID(true)
+        let secret = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_secret", sensitive: true))
+        await store.apply([secret])
+        let needsCard = await store.approveFromActivity(id: "apr_secret", trigger: .activityApproveButton)
+        XCTAssertTrue(needsCard, "the card asks for Face ID")
+        assertNothingApproved("strict mode, background")
+    }
+
     // MARK: Polling
 
     func testPollingTheOldServerIsQuiet() async throws {
