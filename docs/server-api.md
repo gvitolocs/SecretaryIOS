@@ -1325,22 +1325,28 @@ error status), it falls back to Gemini (the provider and settings of
 `/v1/calls/transcribe`, as a plain transcript), and answers `503
 transcription_unavailable` when Gemini is not configured. An empty local
 transcript is `422 no_speech` with no Gemini retry. The transcript goes to Lucina
-like `POST /v1/chat` (`sessionId: "lucinavoice"`, `channel: "web"`, the calling
-device) and synthesizes the reply with Kokoro. A reply Lucina marks `sensitive`
+like `POST /v1/chat` but **streamed** (`Accept: text/event-stream`, `voice: true`;
+`sessionId: "lucinavoice"`, `channel: "web"`, the calling device; a Lucina
+that answers in plain JSON still works). The reply is cut into sentences as it
+is written and each goes to Kokoro as raw PCM, in order, the next one
+requested while the current one streams, so audio starts after the first
+sentence instead of after the whole reply. A reply Lucina marks `sensitive`
 is not spoken: the device hears "I'll answer that in the app." (Italian: "Ti
-rispondo nell'app.") and the text never appears in a header. An empty reply
-becomes "Sorry, I don't have an answer." The spoken text is the reply with
-markdown marks dropped, at most 1200 characters.
+rispondo nell'app."). An empty reply becomes "Sorry, I don't have an answer."
+The spoken text has markdown marks dropped and is at most 1200 characters.
+The same pipeline serves the persistent socket, [`GET /v1/voice/ws`](#get-v1voicews-websocket-authenticated).
 
 `200`: `Content-Type: audio/x-s16le;rate=24000`, raw little-endian signed 16-bit
-mono PCM at **24 kHz**, streamed chunked as Kokoro produces it (chunk boundaries
-do not respect sample boundaries). Headers:
+mono PCM at **24 kHz**, streamed chunked in frames of at most 8 KiB that keep
+sample boundaries. The headers go out with the first audio, so a failure
+before it is an error status; one after it ends the body abnormally.
+**`X-Lucina-Reply` is gone** (the reply is not known yet when the headers are
+sent). Headers:
 
 | Header | Value |
 |---|---|
 | `X-Lucina-Transcript` | What was heard. UTF-8, cut at 1000 bytes on a character boundary, then percent-encoded (everything but `A-Za-z0-9-_.~`). |
-| `X-Lucina-Reply` | The text that is spoken, same encoding. |
-| `X-TTS-Voice` | The voice used. |
+| `X-TTS-Voice` | The voice used: from `lang`, else from the transcript and the first sentence. |
 
 Errors: `400 bad_request` (`lang`), `400 invalid_audio` (a `audio/wav` body
 that is not a PCM WAV), `401`, `413 payload_too_large`, `415
@@ -1359,6 +1365,86 @@ curl -sS -D - -X POST "$HOST/v1/voice?lang=it" \
   -H "Transfer-Encoding: chunked" --data-binary @speech.s16le -o reply.s16le
 ffplay -f s16le -ar 24000 -ac 1 reply.s16le
 ```
+
+### `GET /v1/voice/ws` (WebSocket, authenticated)
+
+The low-latency LucinaVoice channel: one persistent socket per speaker, a
+turn per button press. Contract: `docs/lucinavoice-protocol.md` (section 2);
+code: `voice_ws.rs`, `voice_pipe.rs`, `voice_vad.rs`, `voice_split.rs`.
+
+Auth: the normal device auth on the upgrade request
+(`Authorization: Bearer <device token>`; a cookie session also works). `401`
+without it; a plain `GET` that is not a WebSocket upgrade is `400 bad_request`. A cookie
+caller that sends an `Origin` header must send this server's own origin, else `403
+forbidden_origin` (the cookie is `SameSite=Strict` as well).
+The server pings every 20 s and closes a socket that sent nothing (pongs
+included) for 50 s, and on shutdown. One turn at a time per connection and per
+device (also against `POST /v1/voice`); turns share `POST /v1/voice`'s rate
+limit (20 per minute per device). Messages are at most 64 KiB.
+
+Client → server:
+
+| Message | |
+|---|---|
+| text `{"type":"start","mode":"ptt"\|"vad","lang":"it"\|"en"?}` | A turn begins. `mode` defaults to `ptt`; `lang` as for `POST /v1/voice` (voice, fixed phrases, speech-to-text hint). The server starts warming speech-to-text now (0.5 s of silence to `SECRETARY_VOICE_STT_URL` with the caller's credentials), unless the engine answered in the last 60 s. |
+| binary | s16le mono 16 kHz PCM, any size (an odd split of a sample is stitched). At most 1 MiB per turn (about 32 s), then the server acts as if the turn ended. |
+| text `{"type":"end"}` | The button was released (`ptt`), or the device gives up. |
+| text `{"type":"cancel"}` | Drop the turn at any stage; speech-to-text, chat and speech are aborted at once and the device is free. |
+
+With no turn running, binary frames, `end` and `cancel` are ignored (they may be late). The device's
+`hello` and `telemetry` text frames (protocol section 4) are accepted at any time and dropped: the
+telemetry store and API (section 5) are not built yet.
+
+Server → client:
+
+| Message | |
+|---|---|
+| `{"type":"listening"}` | Answer to a good `start`. |
+| `{"type":"endpoint"}` | The server stopped listening: the VAD found the end of speech (`vad` mode), or the size cap was hit (either mode). The device stops sending. |
+| `{"type":"transcript","text":"…"}` | What was heard. |
+| `{"type":"audio","rate":24000}` | Once per turn, before the first binary audio frame. |
+| binary | s16le mono 24 kHz PCM, at most 8 KiB per frame, even lengths. |
+| `{"type":"reply","text":"…"}` | What was spoken (for logs). A sensitive reply shows the fixed phrase only. |
+| `{"type":"done","ms":{"stt","lucina_first","tts_first","first_audio","total"}}` | Milliseconds since the end of speech (the `end` frame or the endpoint). `stt`: transcript ready; `lucina_first`: first delta (or the reply) from Lucina; `tts_first`: first PCM byte from Kokoro; `first_audio`: first audio frame handed to the socket; `total`: everything sent. |
+| `{"type":"error","code","message"}` | The turn ended without (complete) audio, or the message was refused. The socket stays open. |
+
+Error codes: `no_speech` (under 0.3 s of audio after trimming, no speech in
+`vad` mode, or an empty transcript), `stt_unavailable` (local engine and
+Gemini both failed), `lucina_unavailable` (including an SSE `error` event),
+`tts_failed`, `busy` (a turn is already running on this connection or for
+this device), `rate_limited`, `bad_request` (bad `mode`/`lang`, unknown
+`type`, not JSON).
+
+Pipeline per turn:
+
+1. Energy VAD ([`voice_vad`](../crates/secretary-server/src/voice_vad.rs)) over
+   20 ms frames with an adaptive noise floor: speech after 300 ms above
+   `max(200 RMS, 3 × floor)`, end of speech after 700 ms of silence. In `vad`
+   mode the end of speech is the endpoint; in `ptt` mode the VAD only trims
+   trailing silence (keeping 200 ms) and `end` is the endpoint. A `ptt`
+   recording of at least 0.3 s always goes to speech-to-text.
+2. Speech-to-text: the local engine first, Gemini as fallback, as for
+   `POST /v1/voice`.
+3. Streaming chat (`POST {lucina}/api/secretary/chat`, `Accept:
+   text/event-stream`, `voice: true`, `sessionId: "lucinavoice"`, the device).
+   Events `delta` / `reply{text,sensitive,replaces}` / `done` / `error`; plain
+   JSON from an older Lucina counts as one `reply`.
+4. Sentence splitter: the first segment ends at the first `. ! ? …` (followed
+   by a space) or newline, or at a comma once it is 60 characters long; later
+   segments are one sentence each. `3.5` does not split. If `replaces` is
+   true and nothing was cut into a segment yet, the reply text is spoken
+   instead of the deltas; if something was, the rest is dropped. A `sensitive`
+   reply drops the segments not started yet and speaks the fixed phrase (what
+   already reached the speaker cannot be recalled).
+5. Kokoro (`pcm`): segments are synthesized strictly in order, the next one
+   requested while the current one streams; PCM is forwarded as it arrives.
+   At most 1200 characters are spoken.
+6. After `reply`, the connection to Lucina is read to its end in the
+   background so Lucina finishes the turn (memory, rich reply) after the
+   audio; `cancel` or a closed socket drops it.
+
+The timings are also logged at `info` (`voice turn`: device id and the
+milliseconds; never the transcript, audio or credentials).
 
 ## Avatar wardrobe
 
@@ -2562,7 +2648,7 @@ video?, rigged?}`. Clients build the file URLs from the id on their own origin.
 | 502 | `lucina_error` | server | Lucina failed (5xx), rejected the server's credentials, has the secretary API disabled, or answered off-contract. |
 | 502 | `lucina_unreachable` | server | Could not connect to Lucina. |
 | 502 | `tts_unavailable` | server | Kokoro unreachable or failed (`POST /v1/tts`, `POST /v1/voice`). |
-| 422 | `no_speech` | server | `POST /v1/voice`: empty or under 0.3 s of audio, or an empty transcript. |
+| 422 | `no_speech` | server | `POST /v1/voice`: empty or under 0.3 s of audio, or an empty transcript (on the socket: an `error` message). |
 | 429 | `voice_busy` | server | `POST /v1/voice`: the device's previous turn is still running. |
 | 503 | `lucina_not_configured` | server | The server has no Lucina token configured. |
 | 503 | `au_unavailable` | server | `/v1/au/*`: Lucina or AU Find is not reachable right now. |

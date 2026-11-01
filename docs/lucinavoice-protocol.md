@@ -36,19 +36,22 @@ Client → server:
   warming STT now.
 - binary: s16le mono PCM at 16 kHz, any frame size up to 8 KiB.
 - text `{"type":"end"}`: the button was released (ptt), or the device gives up.
-- text `{"type":"cancel"}`: drop the current turn (stop sending audio frames).
+- text `{"type":"cancel"}`: drop the current turn (stop sending audio frames). The server aborts it at once and sends
+  nothing for it; frames, `end` and `cancel` with no turn running are ignored.
 
 Server → client:
 - `{"type":"listening"}`: reply to `start`.
-- `{"type":"endpoint"}`: VAD found the end of speech (vad mode only). The client stops sending.
+- `{"type":"endpoint"}`: VAD found the end of speech (vad mode), or the 1 MiB (about 32 s) recording cap was hit (either
+  mode). The client stops sending.
 - `{"type":"transcript","text":"…"}`
 - `{"type":"audio","rate":24000}`: precedes the first binary audio frame of the turn. Binary frames are s16le mono
   24 kHz PCM, at most 8 KiB each. Sample boundaries are kept (even lengths).
-- `{"type":"reply","text":"…"}`: the final spoken text (for logs).
+- `{"type":"reply","text":"…"}`: the text that was spoken (for logs), sent after the last audio frame and before
+  `done`. For a sensitive reply it is the fixed phrase.
 - `{"type":"done","ms":{"stt":…,"lucina_first":…,"tts_first":…,"first_audio":…,"total":…}}`: all measured from
   end-of-speech (the `end` frame or the VAD endpoint).
 - `{"type":"error","code":"…","message":"…"}`: the turn ended without (complete) audio. `no_speech`, `stt_unavailable`,
-  `lucina_unavailable`, `tts_failed`, `busy`, `bad_request`.
+  `lucina_unavailable`, `tts_failed`, `busy`, `rate_limited`, `bad_request`. The socket stays open after an error.
 
 Server pipeline per turn: `start` warms STT (a background 0.5 s-silence call to the local STT, unless one ran in the
 last 60 s). PCM accumulates while an energy VAD watches it. On end-of-speech the server runs STT, then streaming chat

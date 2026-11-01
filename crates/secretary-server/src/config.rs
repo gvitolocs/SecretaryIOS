@@ -16,7 +16,7 @@
 //! | `SECRETARY_PRIVATE_ASSETS_DIR` | `/var/lib/secretary/private-assets` | files for `GET /v1/assets/{name}` (authenticated only) |
 //! | `SECRETARY_TTS_URL` | `http://100.107.164.33:8880` | Kokoro (OpenAI-compatible) for `POST /v1/tts` (MP3) and `POST /v1/voice` (raw PCM, 24 kHz) |
 //! | `SECRETARY_GEMINI_KEY_FILE` | — | file with the Gemini API key; enables `POST /v1/calls/transcribe` and `POST /v1/voice` |
-//! | `SECRETARY_VOICE_STT_URL` | `http://127.0.0.1:8801/v1/memos/stt` | local speech-to-text tried first by `POST /v1/voice` (Caddy's loopback site on p1 → lucina-memo's whisper.cpp); `off` = Gemini only |
+//! | `SECRETARY_VOICE_STT_URL` | `http://127.0.0.1:8801/v1/memos/stt` | local speech-to-text tried first by `POST /v1/voice` and `GET /v1/voice/ws`, and warmed by the latter (Caddy's loopback site on p1 → lucina-memo's whisper.cpp); `off` = Gemini only |
 //! | `SECRETARY_TRANSCRIPTION_MODEL` | `gemini-3.5-transcribe` | the transcription model (`gemini-…`) |
 //! | `SECRETARY_TRANSCRIPTION_URL` | `https://generativelanguage.googleapis.com` | transcription API origin (tests point it at a mock) |
 //! | `SECRETARY_CATALOG_DIR` | `/var/lib/secretary/catalog` | `catalog.{it,en,da}.json` for `GET /v1/shopping/catalog` |

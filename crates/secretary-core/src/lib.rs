@@ -10,11 +10,13 @@
 //! Product logic lives here or in Lucina — never in the iOS shell, and the
 //! server only authenticates, validates and forwards.
 
+pub mod chat_stream;
 pub mod client;
 pub mod error;
 pub mod models;
 pub mod shopping;
 pub mod validate;
 
+pub use chat_stream::{ChatEvent, ChatStream};
 pub use client::{Call, LucinaClient, TimeoutClass, Timeouts};
 pub use error::{Error, Result};

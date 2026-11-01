@@ -52,6 +52,10 @@ pub mod todoist;
 pub mod tts;
 pub mod upstream;
 pub mod voice;
+pub mod voice_pipe;
+pub mod voice_split;
+pub mod voice_vad;
+pub mod voice_ws;
 pub mod web;
 
 use std::net::SocketAddr;

@@ -32,21 +32,31 @@
 //!    `SECRETARY_TRANSCRIPTION_MODEL`; a plain transcript without speaker
 //!    labels), and is `503 transcription_unavailable` when that is not set up
 //!    either. An empty local transcript is `422 no_speech` with no Gemini retry.
-//! 2. The transcript goes to Lucina like `POST /v1/chat`: `sessionId:
-//!    "lucinavoice"`, `channel: "web"`, a fresh `clientMessageId`
-//!    (`voice-<ms>-<rand>`) and the calling device. A reply Lucina marks
-//!    `sensitive` is never spoken or sent in a header: the device hears a
-//!    fixed "I'll answer that in the app." instead. An empty reply is
-//!    replaced by a fixed short apology.
-//! 3. The spoken text (at most [`crate::tts::MAX_CHARS`] characters) is
-//!    synthesized by Kokoro as raw PCM and streamed back as it is produced.
+//! 2. The transcript goes to Lucina like `POST /v1/chat` but as a stream
+//!    (`Accept: text/event-stream`, `voice: true`; see [`crate::voice_pipe`]):
+//!    `sessionId: "lucinavoice"`, `channel: "web"`, a fresh `clientMessageId`
+//!    (`voice-<ms>-<rand>`) and the calling device. A Lucina that answers in
+//!    plain JSON works too. A reply Lucina marks `sensitive` is never spoken:
+//!    the device hears a fixed "I'll answer that in the app." instead. An empty
+//!    reply is replaced by a fixed short apology.
+//! 3. The reply is cut into sentences as it is written; each goes to Kokoro as
+//!    raw PCM, in order, the next one requested while the current one streams
+//!    ([`crate::voice_pipe`]). At most [`crate::tts::MAX_CHARS`] characters are
+//!    spoken. The response body starts with the first audio and carries the
+//!    PCM as it is produced.
 //!
 //! **Response.** `200`, `Content-Type: audio/x-s16le;rate=24000` (see
 //! [`crate::tts::PCM_RATE`]): raw little-endian signed 16-bit mono samples,
-//! streamed chunked; the chunk boundaries do not respect sample boundaries.
-//! `X-Lucina-Transcript` and `X-Lucina-Reply` carry what was heard and the
-//! text that is spoken, UTF-8 percent-encoded after cutting each at 1000
-//! bytes (on a character boundary). `X-Tts-Voice` names the voice.
+//! streamed chunked, in frames of at most 8 KiB that keep sample boundaries.
+//! `X-Lucina-Transcript` carries what was heard, UTF-8 percent-encoded after
+//! cutting at 1000 bytes (on a character boundary). `X-Tts-Voice` names the
+//! voice, chosen from `lang`, else from the transcript and the first sentence.
+//! **There is no `X-Lucina-Reply` any more:** the reply is not known when the
+//! first audio (and with it the headers) goes out. A failure after the body
+//! started ends the stream abnormally instead of changing the status.
+//!
+//! The same pipeline serves the persistent socket, `GET /v1/voice/ws`
+//! ([`crate::voice_ws`]), which is what LucinaVoice uses.
 //!
 //! **Limits.** [`PER_MINUTE`] turns per device per minute (its own bucket,
 //! `429 rate_limited`); one turn at a time per device (`429 voice_busy`).
@@ -62,22 +72,23 @@
 //! | 503 | `transcription_unavailable`, `lucina_not_configured` | not configured |
 
 use std::collections::HashSet;
-use std::sync::Mutex;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, FromRequest, Query, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Extension, Router};
 use base64::Engine;
-use secretary_core::models::ChatRequest;
 use serde::Deserialize;
+use tokio::sync::mpsc;
 
 use crate::auth::Identity;
 use crate::error::ApiError;
-use crate::tts::{self, Format};
+use crate::tts;
+use crate::voice_pipe::{self, Shared, Spec};
 use crate::AppState;
 
 /// Longest recording accepted.
@@ -97,16 +108,11 @@ const HEADER_TEXT_BYTES: usize = 1000;
 pub const DEFAULT_STT_URL: &str = "http://127.0.0.1:8801/v1/memos/stt";
 /// Local speech-to-text deadline.
 const STT_TIMEOUT: Duration = Duration::from_secs(45);
-/// Lucina's chat session for the speaker.
-const SESSION_ID: &str = "lucinavoice";
-
-/// Spoken instead of a sensitive reply: (Italian, English).
-const SENSITIVE_PHRASE: (&str, &str) = ("Ti rispondo nell'app.", "I'll answer that in the app.");
-/// Spoken when Lucina's reply is empty: (Italian, English).
-const EMPTY_PHRASE: (&str, &str) = (
-    "Scusa, non ho una risposta.",
-    "Sorry, I don't have an answer.",
-);
+/// A warm-up (or any answered local transcription) this recent means the
+/// engine is loaded: `start` on the socket does not warm it again.
+pub const WARM_FRESH: Duration = Duration::from_secs(60);
+/// What the warm-up sends: 0.5 s of silence at 16 kHz.
+const WARM_BYTES: usize = 16_000;
 
 /// Rate limit and the one-turn-at-a-time guard.
 pub struct Voice {
@@ -115,6 +121,14 @@ pub struct Voice {
     /// The local speech-to-text endpoint, if any.
     stt_url: Option<String>,
     stt: reqwest::Client,
+    warm: Mutex<Warm>,
+}
+
+/// When the local engine last answered, and whether a warm-up is under way.
+#[derive(Default)]
+struct Warm {
+    last_ok: Option<Instant>,
+    in_flight: bool,
 }
 
 impl Voice {
@@ -122,6 +136,7 @@ impl Voice {
         Ok(Self {
             limiter: crate::ratelimit::RateLimiter::new(PER_MINUTE),
             busy: Mutex::new(HashSet::new()),
+            warm: Mutex::new(Warm::default()),
             stt_url,
             stt: reqwest::Client::builder()
                 .timeout(STT_TIMEOUT)
@@ -171,11 +186,13 @@ impl Voice {
         })?;
         let status = resp.status();
         if status == StatusCode::UNPROCESSABLE_ENTITY {
+            self.engine_answered();
             return Ok(String::new()); // no speech, as far as the engine can tell
         }
         if !status.is_success() {
             return Err(format!("answered {status}"));
         }
+        self.engine_answered();
         let v: serde_json::Value = resp
             .json()
             .await
@@ -186,30 +203,134 @@ impl Voice {
             .ok_or_else(|| "reply without text".to_owned())
     }
 
-    /// Claim the device's turn; `None` while it has one running.
-    fn begin<'a>(&'a self, device: &str) -> Option<Turn<'a>> {
-        let mut busy = self.busy.lock().unwrap_or_else(|p| p.into_inner());
-        busy.insert(device.to_owned()).then(|| Turn {
-            voice: self,
+    fn engine_answered(&self) {
+        self.warm.lock().unwrap_or_else(|p| p.into_inner()).last_ok = Some(Instant::now());
+    }
+
+    /// Load the local engine ahead of a turn: post 0.5 s of silence with the
+    /// caller's credentials, unless the engine answered in the last
+    /// [`WARM_FRESH`] or a warm-up is already running. The result is only
+    /// logged.
+    pub async fn warm_stt(&self, headers: &HeaderMap, lang: Option<&str>) {
+        if self.stt_url.is_none() {
+            return;
+        }
+        {
+            let mut w = self.warm.lock().unwrap_or_else(|p| p.into_inner());
+            if w.in_flight || w.last_ok.is_some_and(|t| t.elapsed() < WARM_FRESH) {
+                return;
+            }
+            w.in_flight = true;
+        }
+        let started = Instant::now();
+        let r = self
+            .local_stt(
+                headers,
+                Bytes::from(vec![0u8; WARM_BYTES]),
+                "audio/x-s16le;rate=16000",
+                lang,
+            )
+            .await;
+        self.warm
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .in_flight = false;
+        match r {
+            Ok(_) => tracing::debug!(
+                ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                "speech-to-text warmed"
+            ),
+            Err(why) => tracing::debug!(%why, "speech-to-text warm-up failed"),
+        }
+    }
+
+    /// Claim the device's turn; `false` while it has one running.
+    fn claim(&self, device: &str) -> bool {
+        self.busy
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(device.to_owned())
+    }
+
+    fn release(&self, device: &str) {
+        self.busy
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(device);
+    }
+}
+
+/// A running turn of a device; frees the device's slot when dropped.
+pub struct Turn {
+    st: AppState,
+    device: String,
+}
+
+impl Turn {
+    /// Claim the device's turn; `None` while it has one running (over HTTP or
+    /// on a socket).
+    pub fn begin(st: &AppState, device: &str) -> Option<Self> {
+        st.voice.claim(device).then(|| Self {
+            st: st.clone(),
             device: device.to_owned(),
         })
     }
 }
 
-/// A running turn; frees the device's slot when dropped.
-struct Turn<'a> {
-    voice: &'a Voice,
-    device: String,
+impl Drop for Turn {
+    fn drop(&mut self) {
+        self.st.voice.release(&self.device);
+    }
 }
 
-impl Drop for Turn<'_> {
-    fn drop(&mut self) {
-        self.voice
-            .busy
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&self.device);
-    }
+/// The recording of a turn.
+pub enum Audio {
+    /// A PCM WAV file.
+    Wav(Bytes),
+    /// Raw s16le mono 16 kHz.
+    Pcm(Bytes),
+}
+
+/// Speech to text: the local engine first (`caller`'s credentials, `lang`
+/// passed through), Gemini when that fails. The text is trimmed; empty means
+/// nobody spoke. The error is the HTTP one (`503 transcription_unavailable`
+/// when Gemini is not set up either).
+pub async fn transcribe(
+    st: &AppState,
+    caller: &HeaderMap,
+    audio: &Audio,
+    lang: Option<&str>,
+) -> Result<String, ApiError> {
+    let (body, content_type) = match audio {
+        Audio::Wav(b) => (b.clone(), "audio/wav"),
+        Audio::Pcm(b) => (b.slice(..b.len() & !1), "audio/x-s16le;rate=16000"),
+    };
+    let text = match st.voice.local_stt(caller, body, content_type, lang).await {
+        Ok(text) => text,
+        Err(why) => {
+            tracing::warn!(%why, "local speech-to-text failed; falling back to Gemini");
+            let wav = match audio {
+                Audio::Wav(b) => b.to_vec(),
+                Audio::Pcm(b) => {
+                    let pcm = &b[..b.len() & !1];
+                    let mut wav = wav_header(pcm.len(), INPUT_RATE);
+                    wav.extend_from_slice(pcm);
+                    wav
+                }
+            };
+            crate::calls::transcribe_inline(
+                "audio/wav",
+                &base64::engine::general_purpose::STANDARD.encode(&wav),
+                crate::calls::Options {
+                    diarization: false,
+                    timeout: TRANSCRIBE_TIMEOUT,
+                },
+            )
+            .await?
+            .text
+        }
+    };
+    Ok(text.trim().to_owned())
 }
 
 #[derive(Deserialize)]
@@ -338,36 +459,8 @@ fn header_text(s: &str) -> HeaderValue {
     HeaderValue::from_str(&out).unwrap_or_else(|_| HeaderValue::from_static(""))
 }
 
-/// The reply as it is read aloud: markdown marks dropped, at most
-/// [`tts::MAX_CHARS`] characters, cut between sentences where possible.
-fn speakable(reply: &str) -> String {
-    let plain: String = reply
-        .lines()
-        .map(|l| l.trim_start_matches('#').trim())
-        .collect::<Vec<_>>()
-        .join("\n")
-        .chars()
-        .filter(|c| !matches!(c, '*' | '`' | '_'))
-        .collect();
-    let plain = plain.trim();
-    if plain.chars().count() <= tts::MAX_CHARS {
-        return plain.to_owned();
-    }
-    let mut out = String::new();
-    for part in tts::chunks(plain, tts::CHUNK_CHARS) {
-        if out.chars().count() + part.chars().count() + 1 > tts::MAX_CHARS {
-            break;
-        }
-        if !out.is_empty() {
-            out.push(' ');
-        }
-        out.push_str(&part);
-    }
-    out
-}
-
 /// `fresh clientMessageId`: `voice-<ms>-<8 hex>`.
-fn client_message_id() -> Result<String, ApiError> {
+pub(crate) fn client_message_id() -> Result<String, ApiError> {
     let ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis());
@@ -388,13 +481,12 @@ async fn voice(
     let Query(VoiceQuery { lang }) = Query::<VoiceQuery>::try_from_uri(req.uri())
         .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, "bad_request", e.body_text()))?;
     // Validates `lang` (it, en, it-IT, ...).
-    let tts = &st.tts;
-    tts::pick_voice(&tts.voices, None, lang.as_deref(), "")
+    tts::pick_voice(&st.tts.voices, None, lang.as_deref(), "")
         .map_err(|m| ApiError::new(StatusCode::BAD_REQUEST, "bad_request", m))?;
     if let Err(wait) = st.voice.limiter.check(&ident.device_id) {
         return Err(ApiError::rate_limited(wait));
     }
-    let _turn = st.voice.begin(&ident.device_id).ok_or_else(|| {
+    let turn = Turn::begin(&st, &ident.device_id).ok_or_else(|| {
         ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
             "voice_busy",
@@ -408,83 +500,78 @@ async fn voice(
     if body.is_empty() {
         return Err(no_speech());
     }
-    let (wav, seconds) = match kind {
+    let (audio, seconds) = match kind {
         Input::Wav => {
             let seconds = wav_seconds(&body).ok_or_else(|| invalid_audio("not a PCM WAV file"))?;
-            (body.to_vec(), seconds)
+            (Audio::Wav(body), seconds)
         }
         Input::Pcm16k => {
-            let pcm = &body[..body.len() & !1]; // whole samples only
-            let mut wav = wav_header(pcm.len(), INPUT_RATE);
-            wav.extend_from_slice(pcm);
-            (wav, pcm.len() as f64 / f64::from(INPUT_RATE * 2))
+            let pcm = body.slice(..body.len() & !1); // whole samples only
+            let seconds = pcm.len() as f64 / f64::from(INPUT_RATE * 2);
+            (Audio::Pcm(pcm), seconds)
         }
     };
     if seconds < MIN_SECONDS {
         return Err(no_speech());
     }
 
-    let (audio, content_type) = match kind {
-        Input::Wav => (body.clone(), "audio/wav"),
-        Input::Pcm16k => (body.slice(..body.len() & !1), "audio/x-s16le;rate=16000"),
-    };
-    let heard = match st
-        .voice
-        .local_stt(&caller, audio, content_type, lang.as_deref())
-        .await
-    {
-        Ok(text) => text,
-        Err(why) => {
-            tracing::warn!(%why, "local speech-to-text failed; falling back to Gemini");
-            crate::calls::transcribe_inline(
-                "audio/wav",
-                &base64::engine::general_purpose::STANDARD.encode(&wav),
-                crate::calls::Options {
-                    diarization: false,
-                    timeout: TRANSCRIBE_TIMEOUT,
-                },
-            )
-            .await?
-            .text
-        }
-    }
-    .trim()
-    .to_owned();
+    let heard = transcribe(&st, &caller, &audio, lang.as_deref()).await?;
     if heard.is_empty() {
         return Err(no_speech());
     }
 
-    let chat = ChatRequest {
-        message: heard.clone(),
-        session_id: Some(SESSION_ID.into()),
-        client_message_id: Some(client_message_id()?),
-        channel: Some("web".into()),
-        device: Some(ident.device_id.clone()),
-        device_name: Some(ident.device_name.clone()),
-        reply_to: None,
+    // The spoken reply, produced by a task that outlives this handler and
+    // feeds the response body.
+    let shared = Arc::new(Shared::new(Instant::now()));
+    let (out_tx, mut out_rx) = mpsc::channel::<Bytes>(16);
+    let spec = Spec {
+        heard: heard.clone(),
+        lang,
+        ident,
     };
-    let reply = st.lucina()?.chat(&chat).await?;
-    let sensitive = reply.extra.get("sensitive").and_then(|v| v.as_bool()) == Some(true);
+    let task = tokio::spawn({
+        let (st, shared) = (st.clone(), shared.clone());
+        async move {
+            let _turn = turn; // the device is busy until its audio is made
+            voice_pipe::speak_turn(st, spec, shared, out_tx).await
+        }
+    });
+    let mut task = AbortOnDrop(task);
 
-    // What is spoken, and the language it is in when `lang` did not say.
-    let italian = match lang.as_deref() {
-        Some(l) => l.to_ascii_lowercase().starts_with("it"),
-        None => tts::looks_italian(&heard),
+    // Headers wait for the first audio, so a failure before it is a status.
+    let Some(first) = out_rx.recv().await else {
+        return Err(match (&mut task.0).await {
+            Ok(Err(e)) => e.into_api(),
+            Ok(Ok(_)) => ApiError::internal("no audio was produced"),
+            Err(_) => ApiError::internal("voice turn failed"),
+        });
     };
-    let phrase = |p: (&'static str, &'static str)| (if italian { p.0 } else { p.1 }).to_owned();
-    let spoken = if sensitive {
-        phrase(SENSITIVE_PHRASE)
-    } else {
-        Some(speakable(&reply.reply))
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| phrase(EMPTY_PHRASE))
-    };
-    let voice_name = tts::pick_voice(&tts.voices, None, lang.as_deref(), &spoken)
-        .map_err(|m| ApiError::new(StatusCode::BAD_REQUEST, "bad_request", m))?;
-    let stream = tts
-        .synthesize(&spoken, &voice_name, 1.0, Format::Pcm)
-        .await?;
+    let voice_name = shared.voice.get().cloned();
 
+    let stream = futures_util::stream::unfold(
+        (Some(first), out_rx, Some(task)),
+        |(first, mut rx, mut task)| async move {
+            if let Some(chunk) = first {
+                return Some((Ok::<_, std::io::Error>(chunk), (None, rx, task)));
+            }
+            if let Some(chunk) = rx.recv().await {
+                return Some((Ok(chunk), (None, rx, task)));
+            }
+            // The audio is over: a failure ends the body abnormally.
+            let mut task = task.take()?;
+            let result = (&mut task.0).await;
+            match result {
+                Ok(Err(e)) => {
+                    tracing::warn!(code = e.code(), "voice turn failed after its audio began");
+                    Some((
+                        Err(std::io::Error::other("voice turn failed")),
+                        (None, rx, None),
+                    ))
+                }
+                _ => None,
+            }
+        },
+    );
     let mut resp = Body::from_stream(stream).into_response();
     let h = resp.headers_mut();
     h.insert(
@@ -493,19 +580,29 @@ async fn voice(
             .unwrap_or_else(|_| HeaderValue::from_static("audio/x-s16le")),
     );
     h.insert("x-lucina-transcript", header_text(&heard));
-    h.insert("x-lucina-reply", header_text(&spoken));
-    if let Ok(v) = HeaderValue::from_str(&voice_name) {
+    if let Some(v) = voice_name.and_then(|v| HeaderValue::from_str(&v).ok()) {
         h.insert("x-tts-voice", v);
     }
     Ok(resp)
 }
 
+/// Aborts its task when dropped (the response body went away).
+struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// Behind `require_device`.
 pub fn routes() -> Router<AppState> {
-    Router::new().route(
-        "/v1/voice",
-        post(voice).layer(DefaultBodyLimit::max(MAX_BODY)),
-    )
+    Router::new()
+        .route(
+            "/v1/voice",
+            post(voice).layer(DefaultBodyLimit::max(MAX_BODY)),
+        )
+        .route("/v1/voice/ws", get(crate::voice_ws::upgrade))
 }
 
 #[cfg(test)]
@@ -582,25 +679,12 @@ mod tests {
     }
 
     #[test]
-    fn spoken_text_is_plain_and_bounded() {
-        assert_eq!(
-            speakable("## Meteo\n**Oggi** sole `ok`"),
-            "Meteo\nOggi sole ok"
-        );
-        let long = "Questa è una frase. ".repeat(200);
-        let s = speakable(&long);
-        assert!(s.chars().count() <= tts::MAX_CHARS);
-        assert!(s.ends_with('.'));
-        assert_eq!(speakable("  \n "), "");
-    }
-
-    #[test]
     fn one_turn_per_device() {
         let v = Voice::new(None).unwrap();
-        let a = v.begin("dev_a").unwrap();
-        assert!(v.begin("dev_a").is_none());
-        assert!(v.begin("dev_b").is_some());
-        drop(a);
-        assert!(v.begin("dev_a").is_some());
+        assert!(v.claim("dev_a"));
+        assert!(!v.claim("dev_a"));
+        assert!(v.claim("dev_b"));
+        v.release("dev_a");
+        assert!(v.claim("dev_a"));
     }
 }
