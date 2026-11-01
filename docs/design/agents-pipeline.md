@@ -72,9 +72,9 @@ a coordinator that sequences merges (a merge queue), a FIFO queue for shared res
   `deploy-guard check` (refused: `REFUSED`; it already refuses anything but main's tip and anything that drops a
   live commit), `install`, `health`, then `deploy-guard record --note "<note> (lagent deploy <job>)"`: ledger,
   `deploy/<runtime>/*` tag and the ops record.
-- Recipes are `[deploy.<runtime>]` in `.lucina/pipeline.toml`: `lucina-agentd` (`deploy/lucina-agentd/install.sh`)
-  and `lucina-rs` (`deploy/lucina-rs/install.sh`) so far. A runtime without one gets `NO_RECIPE` and is deployed
-  by hand as before (p1 runtimes, web, iOS). Adding one is a PR to that file.
+- Recipes are `[deploy.<runtime>]` in `.lucina/pipeline.toml`: `lucina-agentd`, `lucina-rs`, `lucina-memo`, `secretary-server`,
+  `secretary-mcp` and `web` (p1 scripts in `deploy/p1/`). A runtime without one gets `NO_RECIPE` and is deployed by hand
+  (iOS goes through `lagent device install`). Adding one is a change to that file.
 - A failed install, health check or record pushes a notification to the owner.
 
 ## 4. Devices
@@ -128,6 +128,28 @@ Designed:
   task so it is asked once; "archive" archives (a dirty worktree is kept on disk and listed), "merge" queues it.
 - **Hand-made worktrees**: clean ones whose commits are all on main are archived; clean unmerged ones are adopted;
   dirty ones wait for the owner's answer through `lucina_decide`.
+
+## What the first real day changed (2026-11-01)
+
+- **The sweep leaves used worktrees alone.** Most work runs in Claude sessions agentd can't see, so it goes by what the
+  checkout shows: no sweep during a rebase, merge, cherry-pick, revert or bisect, on a detached HEAD, with
+  uncommitted changes, with a process whose cwd is inside, or within 30 minutes of git last touching it
+  (`LUCINA_AGENTD_SWEEP_IDLE_SECS`). The branch itself must be merged, not HEAD.
+- **One lock**: every repo's jobs hold `/tmp/lucina-merge.lock`. A long hand deploy inside it stalls the queue, so
+  runtimes should get recipes.
+- **Local trunks** fast-forward where they are checked out; uncommitted files that don't overlap stay, and an overlap is
+  `TRUNK_CHECKOUT_BLOCKED` naming the files. `lagent board` lists main checkouts with uncommitted files or running
+  processes. git can't say who wrote a file; the processes named there are the lead.
+- **Flaky tests**: a failed `cargo test` gate runs once more; a pass is reported as flaky, not hidden.
+- **Resources**: `lagent top` and the board's RUNNING column show processes and memory per workspace.
+- **Moves**: `lagent project move <prj> --path <new> [--name <n>]` after a checkout moved on disk (move it, and
+  `<worktrees>/<old>` to `<worktrees>/<new>`, then `git worktree repair`). Workspaces follow; one whose new directory
+  doesn't exist keeps its path and is reported. Running agents keep their cwd, so leave a symlink at the old path.
+- **Sessions**: `lagent task adopt <path>` also takes a task back after a session lost its link. A session that calls
+  `ssh nezopt lagent …` shows as `nez@nez_opt`; the Mac wrapper or `LAGENT_SESSION=…` names it.
+
+Not built yet: Claude desktop sessions as entries in the Agents list (agentd only knows agents it runs and devices that
+register), Lucina messaging them, the app's Pipeline section, and the daily stale question.
 
 ## Files
 

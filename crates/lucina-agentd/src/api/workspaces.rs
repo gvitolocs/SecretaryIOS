@@ -4,6 +4,7 @@
 //! |---|---|---|---|
 //! | GET/POST | `/projects` | `{path}` | `{projects}` / project |
 //! | PATCH/DELETE | `/projects/{id}` | `{name}` (null resets) | project / `{projectId, removedWorkspaceIds}` |
+//! | POST | `/projects/{id}/move` | `{path, name}` | `{project, moved, skipped}` (the checkout moved on disk) |
 //! | GET/POST | `/workspaces` | `?background=true` / create request | `{workspaces}` / `{workspace, setupSkippedReason}` |
 //! | GET/PATCH | `/workspaces/{id}` | `{title, pinned}` | workspace |
 //! | POST | `/workspaces/{id}/labels` | `{label, assigned}` | workspace |
@@ -47,6 +48,7 @@ pub fn routes() -> Router<Manager> {
     Router::new()
         .route("/projects", get(projects).post(create_project))
         .route("/projects/{id}", axum::routing::patch(rename_project).delete(delete_project))
+        .route("/projects/{id}/move", post(move_project))
         .route("/workspaces", get(list).post(create))
         .route("/workspaces/sweep", post(sweep))
         .route("/workspaces/{id}", get(inspect).patch(update))
@@ -118,6 +120,18 @@ struct NameBody {
 async fn rename_project(State(m): State<Manager>, Path(id): Path<String>, Json(b): Json<NameBody>) -> ApiResult {
     let p = m.workspaces().rename_project(&id, b.name.filter(|n| !n.trim().is_empty())).map_err(ManagerError::from)?;
     to_json(project_view(&p))
+}
+
+#[derive(Deserialize)]
+struct MoveBody {
+    path: String,
+    #[serde(default)]
+    name: Option<String>,
+}
+
+async fn move_project(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Path(id): Path<String>, Json(b): Json<MoveBody>) -> ApiResult {
+    owner_only(&m, &peer, &headers, "move a project")?;
+    to_json(m.move_project(&id, &b.path, b.name)?)
 }
 
 async fn delete_project(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Path(id): Path<String>) -> ApiResult {

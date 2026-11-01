@@ -17,6 +17,8 @@ RestartSec=2
 # lucina-agentd drains in at most ~4 s on SIGTERM and exits 0.
 TimeoutStopSec=10s
 KillMode=mixed
+# The drop-in runs it through infisical-broker exec; journal lines keep this name.
+SyslogIdentifier=lucina-agentd
 Environment=RUST_LOG=info
 Environment=PATH=%h/.local/bin:%h/.opencode/bin:%h/bin:/usr/local/bin:/usr/bin:/bin
 

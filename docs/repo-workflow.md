@@ -17,6 +17,7 @@ lagent merge <workspace id | path | branch>          # queued; Lucina rebases on
                                                      # (.lucina/pipeline.toml), pushes main, archives the workspace
 lagent deploy lucina-agentd --note "what it brings"  # from main's tip: deploy-guard plan/check, install, record
 lagent board                                         # every workspace's state, the queue, leases, recent deploys
+lagent top                                           # what is running in each workspace, and its memory
 lagent device lease iphone --purpose "owner test"    # devices are leased (iphone, stick, kindle, poco)
 ```
 
@@ -27,11 +28,14 @@ lagent device lease iphone --purpose "owner test"    # devices are leased (iphon
   `CONFLICT` (merge `origin/main` into your branch, commit, merge again) or `GATE_FAILED` (`lagent job logs <id>`).
   The session's worktree is never touched during the merge; afterwards it is archived (worktree and branch go,
   gitignored outputs too: copy artifacts out first) unless you pass `--keep`.
-- **Deploys** go through `lagent deploy <runtime>` where `.lucina/pipeline.toml` has a recipe (`lucina-agentd`,
-  `lucina-rs` so far). Other runtimes still deploy by hand as in "Deploying" below, always through deploy-guard.
+- **Deploys** go through `lagent deploy <runtime>`: recipes in `.lucina/pipeline.toml` cover `lucina-agentd`, `lucina-rs`,
+  `lucina-memo`, `secretary-server`, `secretary-mcp` and `web`. A runtime without one gets `NO_RECIPE`; add it, or deploy by
+  hand as in "Deploying" below, always through deploy-guard. A hand deploy holds the merge lock and stalls the queue.
 - **Devices**: lease before you touch one. The iPhone installs only through `lagent device install iphone`: main's tip,
   or a test build with your lease and the owner's approval through `lucina_decide`. Owner tests go through the
   coordinator session.
+- **Never work in a main checkout** (`~/Projects/Lucina/<repo>`): files left there can block merges into repos without
+  a remote, and the board lists them. Lost your task's link after a restart? `lagent task adopt <path>` takes it back.
 - **Exceptions** need the owner's go (`lucina_decide`); then `LAGENT_BYPASS=<reason>` in the command passes the hook
   and is logged.
 - Design and internals: [`docs/design/agents-pipeline.md`](design/agents-pipeline.md).

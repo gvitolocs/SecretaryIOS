@@ -114,6 +114,8 @@ pub enum Command {
     Device(pipe::DeviceCommand),
     /// Every workspace's state, the queue, leases and recent deploys (Lucina only)
     Board,
+    /// Which workspaces and main checkouts have processes running, and how much memory they use (Lucina only)
+    Top,
     /// Run one pipeline job (agentd starts this under the merge lock)
     #[command(hide = true)]
     PipelineExec { dir: std::path::PathBuf },
@@ -131,6 +133,15 @@ pub enum ProjectCommand {
         name: Option<String>,
         #[arg(long)]
         reset: bool,
+    },
+    /// The checkout moved on disk (renamed, regrouped): the project and its workspaces follow
+    Move {
+        id: String,
+        /// The checkout's new path
+        #[arg(long)]
+        path: String,
+        #[arg(long)]
+        name: Option<String>,
     },
     /// Delete a project and its workspaces
     Delete { id: String },
@@ -1149,6 +1160,7 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
         Command::Job(cmd) => pipe::job(&client, cmd).await,
         Command::Device(cmd) => pipe::device(&client, cmd).await,
         Command::Board => pipe::board(&client).await,
+        Command::Top => pipe::top(&client).await,
         Command::PipelineExec { dir } => {
             let code = crate::pipeline::exec::run(dir);
             std::process::exit(code);

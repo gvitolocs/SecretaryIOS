@@ -338,8 +338,8 @@ impl Exec {
                     self.say(&format!("{} moved while the gates ran; starting over", self.spec.trunk));
                     continue;
                 }
-                Err(Stop::Blocked(why)) => {
-                    return Outcome { ok: false, code: "TRUNK_CHECKOUT_BLOCKED".into(), message: why, method: Some(method.into()), gates: results, ..Outcome::default() };
+                Err(Stop::Blocked(why, conflicts)) => {
+                    return Outcome { ok: false, code: "TRUNK_CHECKOUT_BLOCKED".into(), message: why, method: Some(method.into()), gates: results, conflicts, ..Outcome::default() };
                 }
             }
         }
@@ -376,11 +376,15 @@ impl Exec {
                             return Err(Stop::Moved);
                         }
                         self.git_logged(&p, &["merge", "-q", "--ff-only", candidate]).map(|_| ()).map_err(|e| {
-                            Stop::Blocked(format!(
-                                "{trunk} is checked out in {} with uncommitted changes to files this merge changes; commit or stash them there, then lagent merge again ({})",
-                                p.display(),
-                                e.lines().next().unwrap_or_default()
-                            ))
+                            let files = blocking_files(&e);
+                            Stop::Blocked(
+                                format!(
+                                    "{trunk} is checked out in {} and {} there would be overwritten by this merge; whoever wrote them should commit them or move them to a workspace (a main checkout is not for working in), then lagent merge again",
+                                    p.display(),
+                                    if files.is_empty() { "uncommitted files".to_string() } else { format!("{} uncommitted file(s)", files.len()) },
+                                ),
+                                files,
+                            )
                         })
                     }
                     None => self.git_logged(&repo, &["update-ref", &format!("refs/heads/{trunk}"), candidate, base]).map(|_| ()).map_err(|_| Stop::Moved),
@@ -445,7 +449,13 @@ impl Exec {
 /// can't take the fast-forward.
 enum Stop {
     Moved,
-    Blocked(String),
+    /// Why, and the files in the way.
+    Blocked(String, Vec<String>),
+}
+
+/// The files git names when it refuses a merge (indented lines of its error).
+fn blocking_files(err: &str) -> Vec<String> {
+    err.lines().filter(|l| l.starts_with([' ', '\t'])).map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect()
 }
 
 #[cfg(test)]
@@ -624,6 +634,7 @@ mod tests {
         std::fs::write(repo.join("c.txt"), "local edit\n").unwrap();
         let out = exec(root, Spec { head: Some(head2), ..s });
         assert_eq!(out.code, "TRUNK_CHECKOUT_BLOCKED", "{out:?}");
+        assert_eq!(out.conflicts, vec!["c.txt".to_string()]);
         assert_eq!(git(&repo, &["rev-parse", "main"]), head);
     }
 }

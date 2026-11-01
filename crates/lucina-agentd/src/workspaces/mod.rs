@@ -20,6 +20,7 @@ pub mod checkout;
 pub mod files;
 pub mod git;
 mod names;
+pub mod procs;
 pub mod setup;
 
 use std::collections::{BTreeMap, HashSet};
@@ -59,6 +60,9 @@ pub struct Config {
     /// (`LUCINA_AGENTD_CODEX_REPOS`, comma-separated basenames; default `SecretaryIOS`).
     pub codex_repos: Vec<String>,
     pub codex_base: String,
+    /// The merge sweep leaves a worktree git touched more recently than this
+    /// (`LUCINA_AGENTD_SWEEP_IDLE_SECS`, default 30 minutes).
+    pub sweep_idle_secs: u64,
 }
 
 impl Config {
@@ -73,7 +77,37 @@ impl Config {
         let codex_repos = std::env::var("LUCINA_AGENTD_CODEX_REPOS")
             .map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect())
             .unwrap_or_else(|_| vec!["SecretaryIOS".to_string()]);
-        Config { wt, wt_root, projects_root, codex_repos, codex_base: "lucina-rs".into() }
+        let sweep_idle_secs = std::env::var("LUCINA_AGENTD_SWEEP_IDLE_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(1800);
+        Config { wt, wt_root, projects_root, codex_repos, codex_base: "lucina-rs".into(), sweep_idle_secs }
+    }
+}
+
+/// What a worktree's checkout and processes show, for the merge sweep.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SweepFacts {
+    pub in_progress: Option<&'static str>,
+    pub detached: bool,
+    pub dirty: bool,
+    pub idle_secs: Option<u64>,
+    pub procs: u32,
+}
+
+/// Why the merge sweep must leave a worktree alone, if it must. During a rebase HEAD sits on
+/// the base's tip, so a merged-looking HEAD proves nothing while something is under way or
+/// the checkout was just used.
+pub fn sweep_blocker(f: &SweepFacts, min_idle_secs: u64) -> Option<&'static str> {
+    if f.in_progress.is_some() {
+        Some("an operation is in progress")
+    } else if f.detached {
+        Some("detached HEAD")
+    } else if f.dirty {
+        Some("uncommitted changes")
+    } else if f.procs > 0 {
+        Some("a process runs in it")
+    } else if f.idle_secs.is_none_or(|s| s < min_idle_secs) {
+        Some("used recently")
+    } else {
+        None
     }
 }
 
@@ -243,6 +277,65 @@ impl Registry {
         };
         self.inner.store.save_project(&p)?;
         Ok(p)
+    }
+
+    /// A project's checkout moved on disk (renamed, regrouped): point the project at its new
+    /// path, and its workspaces there too: those under the old checkout, and those under
+    /// `<worktrees root>/<old name>` when that became `<worktrees root>/<new name>`. Nothing
+    /// on disk changes, and a workspace whose new directory doesn't exist keeps its old path
+    /// (returned as skipped). Agents already running keep their cwd: leave a symlink at the old
+    /// path while any runs. Returns the project, `(workspace, new cwd)` and `(workspace, old cwd)`.
+    #[allow(clippy::type_complexity)]
+    pub fn move_project(&self, id: &str, path: &Path, name: Option<String>) -> Result<(ProjectRecord, Vec<(String, String)>, Vec<(String, String)>), WsError> {
+        if !path.is_dir() {
+            return Err(WsError::Invalid(format!("Not a directory: {}", path.display())));
+        }
+        let new_root = git::canon(path);
+        let new_root_s = new_root.display().to_string();
+        let old = self.project(id).filter(|p| p.archived_at.is_none()).ok_or_else(|| WsError::NotFound(format!("Project not found: {id}")))?;
+        let old_root = PathBuf::from(&old.root_path);
+        if self.lock().projects.values().any(|p| p.project_id != id && p.root_path == new_root_s && p.archived_at.is_none()) {
+            return Err(WsError::Invalid(format!("Another project is at {new_root_s}")));
+        }
+        let wt_root = &self.inner.config.wt_root;
+        let (old_wt, new_wt) = (wt_root.join(basename(&old_root)), wt_root.join(basename(&new_root)));
+        let moved_path = |p: &str| -> Option<String> {
+            let p = Path::new(p);
+            let (from, to) = if p.starts_with(&old_root) { (&old_root, &new_root) } else if p.starts_with(&old_wt) { (&old_wt, &new_wt) } else { return None };
+            let rest = p.strip_prefix(from).ok()?;
+            Some(if rest.as_os_str().is_empty() { to.display().to_string() } else { to.join(rest).display().to_string() })
+        };
+        let list: Vec<WorkspaceRecord> = self.lock().workspaces.values().filter(|w| w.project_id == id && w.archived_at.is_none()).cloned().collect();
+        let (mut moved, mut skipped) = (Vec::new(), Vec::new());
+        for w in list {
+            let Some(cwd) = moved_path(&w.cwd) else { continue };
+            if cwd == w.cwd {
+                continue;
+            }
+            if !Path::new(&cwd).is_dir() {
+                skipped.push((w.workspace_id, w.cwd));
+                continue;
+            }
+            self.update(&w.workspace_id, |r| {
+                r.cwd = cwd.clone();
+                r.main_repo_root = r.main_repo_root.as_deref().map(|m| moved_path(m).unwrap_or_else(|| m.to_string()));
+            });
+            moved.push((w.workspace_id, cwd));
+        }
+        let p = {
+            let mut st = self.lock();
+            let p = st.projects.get_mut(id).ok_or_else(|| WsError::NotFound(format!("Project not found: {id}")))?;
+            p.root_path = new_root_s;
+            p.display_name = basename(&new_root);
+            if name.is_some() {
+                p.custom_name = name;
+            }
+            p.updated_at = now_iso();
+            p.clone()
+        };
+        self.inner.store.save_project(&p)?;
+        tracing::info!(project = id, from = %old.root_path, to = %p.root_path, moved = moved.len(), skipped = skipped.len(), "project moved");
+        Ok((p, moved, skipped))
     }
 
     /// Remove a project; returns its active workspaces (the caller archives them).
@@ -523,6 +616,7 @@ impl Registry {
         };
         self.lock().workspaces.insert(w.workspace_id.clone(), w.clone());
         self.save(&w);
+        tracing::info!(workspace = %w.workspace_id, project = %basename(&repo), branch = %branch, cwd = %w.cwd, "worktree workspace created");
         let skipped = match &untrusted {
             Some(u) => {
                 let msg = format!("Scripts are blocked for PR #{} from {}. Run setup to allow them.", u.number, u.head_repository);
@@ -646,6 +740,7 @@ impl Registry {
                 }
             }
         }
+        tracing::info!(workspace = id, project = %self.project_name(&w), branch = ?w.branch, cwd = %w.cwd, note = ?note, "workspace archived");
         let w = self
             .update(id, |r| {
                 r.archived_at = Some(now_iso());
@@ -658,11 +753,15 @@ impl Registry {
     }
 
     /// Owned worktrees whose branch moved past its start and is now merged into its base
-    /// (or merged on GitHub), clean, with no agent running (`busy`).
+    /// (or merged on GitHub), and that nobody is using ([`sweep_blocker`]; `busy` = an
+    /// agentd agent runs there). Most work happens in sessions agentd doesn't know, so what
+    /// the checkout and its processes show is all there is to go on.
     pub async fn merged_candidates(&self, busy: &HashSet<String>) -> Vec<(String, String)> {
         let list: Vec<WorkspaceRecord> = self.lock().workspaces.values().filter(|w| w.archived_at.is_none() && w.owned_worktree).cloned().collect();
+        let dirs: Vec<PathBuf> = list.iter().map(|w| PathBuf::from(&w.cwd)).collect();
+        let usage = procs::usage(&dirs);
         let mut out = Vec::new();
-        for w in list {
+        for (w, used) in list.iter().zip(&usage) {
             if busy.contains(&w.workspace_id) {
                 continue;
             }
@@ -671,12 +770,25 @@ impl Registry {
                 continue;
             }
             let (Some(base), Some(start)) = (&w.base_ref, &w.base_sha) else { continue };
+            let info = git::info(&dir).await;
+            let facts = SweepFacts {
+                in_progress: git::in_progress(&dir).await,
+                detached: info.branch.is_none(),
+                dirty: git::is_dirty(&dir).await,
+                idle_secs: git::idle_secs(&dir).await,
+                procs: used.procs,
+            };
+            if let Some(why) = sweep_blocker(&facts, self.inner.config.sweep_idle_secs) {
+                tracing::debug!(workspace = %w.workspace_id, why, "merge sweep: left alone");
+                continue;
+            }
+            let Some(branch) = info.branch else { continue };
             let head = git::read(&dir, &["rev-parse", "HEAD"]).await;
-            if head.as_deref() == Some(start.as_str()) || git::is_dirty(&dir).await {
+            if head.as_deref() == Some(start.as_str()) {
                 continue;
             }
             let short = base.trim_start_matches("refs/heads/").trim_start_matches("refs/remotes/");
-            if git::merged_into(&dir, "HEAD", base).await {
+            if git::merged_into(&dir, &format!("refs/heads/{branch}"), base).await {
                 out.push((w.workspace_id.clone(), format!("merged into {short}")));
             } else if checkout::merged_on_github(&dir).await {
                 out.push((w.workspace_id.clone(), "pull request merged".to_string()));
@@ -763,6 +875,7 @@ impl Registry {
         };
         self.lock().workspaces.insert(w.workspace_id.clone(), w.clone());
         self.save(&w);
+        tracing::info!(workspace = %w.workspace_id, project = %basename(&repo), branch = ?w.branch, cwd = %w.cwd, "worktree adopted");
         Ok(w)
     }
 
@@ -802,6 +915,7 @@ mod tests {
             projects_root: root.join("proj"),
             codex_repos: vec!["SecretaryIOS".into()],
             codex_base: "lucina-rs".into(),
+            sweep_idle_secs: 0,
         };
         Registry::open(store, config, Arc::new(|_: &WorkspaceRecord| {})).unwrap()
     }
@@ -813,6 +927,42 @@ mod tests {
         std::fs::write(dir.join("README"), "x").unwrap();
         run(&["add", "."]);
         run(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"]);
+    }
+
+    #[test]
+    fn the_sweep_leaves_used_worktrees_alone() {
+        let idle = SweepFacts { idle_secs: Some(4000), ..SweepFacts::default() };
+        assert_eq!(sweep_blocker(&idle, 1800), None);
+        assert!(sweep_blocker(&SweepFacts { in_progress: Some("rebase"), ..idle.clone() }, 1800).is_some());
+        assert!(sweep_blocker(&SweepFacts { detached: true, ..idle.clone() }, 1800).is_some());
+        assert!(sweep_blocker(&SweepFacts { dirty: true, ..idle.clone() }, 1800).is_some());
+        assert!(sweep_blocker(&SweepFacts { procs: 1, ..idle.clone() }, 1800).is_some());
+        assert!(sweep_blocker(&SweepFacts { idle_secs: Some(60), ..idle.clone() }, 1800).is_some());
+        assert!(sweep_blocker(&SweepFacts { idle_secs: None, ..idle }, 1800).is_some(), "unknown means used");
+    }
+
+    #[tokio::test]
+    async fn an_operation_in_progress_is_seen() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("r");
+        repo(&dir);
+        let git = |args: &[&str]| std::process::Command::new("git").arg("-C").arg(&dir).args(["-c", "user.name=t", "-c", "user.email=t@t"]).args(args).output().unwrap();
+        let edit = |text: &str, msg: &str| {
+            std::fs::write(dir.join("f.txt"), text).unwrap();
+            assert!(git(&["add", "-A"]).status.success());
+            assert!(git(&["commit", "-q", "-m", msg]).status.success());
+        };
+        edit("base\n", "base");
+        assert!(git(&["checkout", "-q", "-b", "topic"]).status.success());
+        edit("topic\n", "topic");
+        assert!(git(&["checkout", "-q", "main"]).status.success());
+        edit("main\n", "main");
+        assert_eq!(git::in_progress(&dir).await, None);
+        assert!(git(&["checkout", "-q", "topic"]).status.success());
+        assert!(!git(&["rebase", "-q", "main"]).status.success(), "the rebase conflicts");
+        assert_eq!(git::in_progress(&dir).await, Some("rebase"));
+        assert_eq!(git::info(&dir).await.branch, None, "a rebase detaches HEAD");
+        assert!(git::idle_secs(&dir).await.is_some());
     }
 
     #[tokio::test]

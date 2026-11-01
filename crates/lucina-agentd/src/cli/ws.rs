@@ -190,6 +190,16 @@ pub async fn project(client: &Client, cmd: &ProjectCommand) -> Result<Output, Cm
             let p = client.request("PATCH", &format!("/projects/{id}"), Some(&json!({"name": name}))).await.map_err(failed("PROJECT_RENAME_FAILED"))?;
             Ok(single(json!({"projectId": id, "name": p["customName"]}), &["projectId", "name"]))
         }
+        ProjectCommand::Move { id, path, name } => {
+            let path = std::fs::canonicalize(path).map(|p| p.display().to_string()).unwrap_or_else(|_| path.clone());
+            let v = client.post(&format!("/projects/{id}/move"), &json!({"path": path, "name": name})).await.map_err(failed("PROJECT_MOVE_FAILED"))?;
+            let count = |k: &str| v[k].as_array().map(Vec::len).unwrap_or(0);
+            let mut text = format!("{} is at {}; {} workspace(s) moved", super::s(&v["project"]["displayName"]), super::s(&v["project"]["rootPath"]), count("moved"));
+            for w in v["skipped"].as_array().map(Vec::as_slice).unwrap_or_default() {
+                text.push_str(&format!("\nkept (its new directory doesn't exist): {} {}", super::s(&w["workspaceId"]), super::s(&w["cwd"])));
+            }
+            Ok(Output { text, json: Some(v) })
+        }
         ProjectCommand::Delete { id } => {
             let v = client.request("DELETE", &format!("/projects/{id}"), None).await.map_err(failed("PROJECT_DELETE_FAILED"))?;
             let n = v["removedWorkspaceIds"].as_array().map(Vec::len).unwrap_or(0);

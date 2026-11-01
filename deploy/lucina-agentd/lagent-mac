@@ -16,5 +16,15 @@ for a in "$@"; do args+=("$(printf '%q' "$(map "$a")")"); done
 session=${LAGENT_SESSION:-${CLAUDE_CODE_HOST_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}}
 cd_part=
 case "$PWD/" in "$prefix"*) cd_part="cd $(printf '%q' "$(map "$PWD")") 2>/dev/null; " ;; esac
-exec ssh -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 "$host" \
-  "${cd_part}LAGENT_SESSION=$(printf '%q' "$session") /home/nez/.local/bin/lagent ${args[*]}"
+opts=(-o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3
+      -o ControlMaster=auto -o "ControlPath=$HOME/.ssh/cm-lagent-%r@%h" -o ControlPersist=120)
+# nezopt's sshd resets connections when many sessions connect at once: try again, but only when
+# ssh failed at once (exit 255 within seconds), so a dropped long job is never run twice.
+for try in 1 2 3 4 5 6; do
+  start=$SECONDS
+  ssh "${opts[@]}" "$host" "${cd_part}LAGENT_SESSION=$(printf '%q' "$session") /home/nez/.local/bin/lagent ${args[*]}"
+  rc=$?
+  [ "$rc" -eq 255 ] && [ $((SECONDS - start)) -lt 8 ] || exit "$rc"
+  sleep $((try * 3))
+done
+exit 255

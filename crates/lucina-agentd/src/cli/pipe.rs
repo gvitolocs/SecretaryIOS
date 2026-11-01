@@ -14,7 +14,7 @@ use crate::client::{Client, ClientError};
 pub enum TaskCommand {
     /// Start a task: a fresh worktree from main, registered with its owner and session
     Start(StartArgs),
-    /// Take over a worktree made by hand, so it merges through the queue
+    /// Take over a worktree made by hand, or take a task back after losing the link to it
     Adopt(AdoptArgs),
     /// List tasks
     Ls,
@@ -216,7 +216,8 @@ pub async fn task(client: &Client, cmd: &TaskCommand) -> Result<Output, CmdError
         }
         TaskCommand::Adopt(a) => {
             let path = std::fs::canonicalize(&a.path).map(|p| p.display().to_string()).unwrap_or_else(|_| a.path.clone());
-            let body = json!({"path": path, "title": a.title, "owner": a.owner, "session": a.session});
+            let session = a.session.clone().unwrap_or_else(session);
+            let body = json!({"path": path, "title": a.title, "owner": a.owner.clone().unwrap_or_else(|| session.clone()), "session": session});
             Ok(started(client.post("/pipeline/tasks/adopt", &body).await.map_err(api)?))
         }
         TaskCommand::Ls => {
@@ -371,6 +372,25 @@ pub async fn device(client: &Client, cmd: &DeviceCommand) -> Result<Output, CmdE
     }
 }
 
+pub async fn top(client: &Client) -> Result<Output, CmdError> {
+    let v = client.get("/pipeline/board").await.map_err(api)?;
+    let mut items: Vec<(u64, Vec<String>)> = Vec::new();
+    let commands = |x: &Value| x["commands"].as_object().map(|c| c.iter().map(|(k, n)| format!("{k}×{n}")).collect::<Vec<_>>().join(" ")).unwrap_or_default();
+    for w in v["workspaces"].as_array().map(Vec::as_slice).unwrap_or_default() {
+        if w["procs"].as_u64().unwrap_or(0) > 0 {
+            items.push((w["rssMb"].as_u64().unwrap_or(0), vec![s(&w["project"]), s(&w["branch"]), s(&w["procs"]), s(&w["rssMb"]), commands(w)]));
+        }
+    }
+    for m in v["mainCheckouts"].as_array().map(Vec::as_slice).unwrap_or_default() {
+        if m["procs"].as_u64().unwrap_or(0) > 0 {
+            items.push((m["rssMb"].as_u64().unwrap_or(0), vec![s(&m["path"]), "(main checkout)".into(), s(&m["procs"]), s(&m["rssMb"]), commands(m)]));
+        }
+    }
+    items.sort_by_key(|(rss, _)| std::cmp::Reverse(*rss));
+    let rows: Vec<Vec<String>> = items.into_iter().map(|(_, r)| r).collect();
+    Ok(Output { text: table(&["REPO", "BRANCH", "PROCS", "RSS MB", "COMMANDS"], &rows), json: Some(json!({"workspaces": v["workspaces"], "mainCheckouts": v["mainCheckouts"]})) })
+}
+
 pub async fn board(client: &Client) -> Result<Output, CmdError> {
     let v = client.get("/pipeline/board").await.map_err(api)?;
     let mut text = String::new();
@@ -384,12 +404,25 @@ pub async fn board(client: &Client) -> Result<Output, CmdError> {
                 s(&w["branch"]),
                 format!("{}{}", w["ahead"].as_u64().map(|a| format!("+{a}")).unwrap_or_default(), if w["dirty"] == true { " dirty" } else { "" }),
                 w["idleDays"].as_i64().map(|d| format!("{d}d")).unwrap_or_default(),
+                if w["procs"].as_u64().unwrap_or(0) > 0 { format!("{}p {}M", w["procs"], w["rssMb"]) } else { String::new() },
                 s(&w["task"]["session"]),
                 s(&w["workspaceId"]),
             ]
         })
         .collect();
-    text.push_str(&table(&["STATE", "REPO", "BRANCH", "CHANGES", "IDLE", "SESSION", "WORKSPACE"], &rows));
+    text.push_str(&table(&["STATE", "REPO", "BRANCH", "CHANGES", "IDLE", "RUNNING", "SESSION", "WORKSPACE"], &rows));
+    let mains = v["mainCheckouts"].as_array().cloned().unwrap_or_default();
+    if !mains.is_empty() {
+        text.push_str("\n\nMain checkouts in use (work belongs in a workspace; uncommitted files here can block merges):\n");
+        let rows: Vec<Vec<String>> = mains
+            .iter()
+            .map(|m| {
+                let sample: Vec<String> = m["sample"].as_array().map(Vec::as_slice).unwrap_or_default().iter().map(s).collect();
+                vec![s(&m["path"]), format!("{} file(s)", m["dirtyFiles"]), format!("{}p {}M", m["procs"], m["rssMb"]), sample.join(", ")]
+            })
+            .collect();
+        text.push_str(&table(&["PATH", "UNCOMMITTED", "RUNNING", "FILES"], &rows));
+    }
     let un = v["unmanaged"].as_array().cloned().unwrap_or_default();
     if !un.is_empty() {
         text.push_str(&format!("\n\nUnmanaged worktrees ({}; `lagent task adopt <path>` or archive):\n", un.len()));

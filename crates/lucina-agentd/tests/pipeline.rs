@@ -25,7 +25,14 @@ fn commit(dir: &Path, file: &str, text: &str, msg: &str) -> String {
 }
 
 fn manager(root: &Path) -> Manager {
+    manager_with_wt_root(root, &root.join("wt"))
+}
+
+fn manager_with_wt_root(root: &Path, wt_root: &Path) -> Manager {
+    let mut workspaces = lucina_agentd::workspaces::Config::from_env();
+    workspaces.wt_root = wt_root.to_path_buf();
     let options = Options {
+        workspaces,
         pipeline: Config {
             dir: root.join("state/pipeline"),
             lagent: PathBuf::from(env!("CARGO_BIN_EXE_lagent")),
@@ -78,6 +85,9 @@ async fn an_adopted_worktree_merges_through_the_queue_and_is_archived() {
     let (task, w) = m.adopt_task(AdoptTask { path: wt.display().to_string(), title: Some("Add b".into()), owner: None, session: Some("local_test".into()) }).await.unwrap();
     assert_eq!((task.via.as_str(), task.branch.as_str(), task.trunk.as_str()), ("adopt", "topic", "main"));
     assert!(w.owned_worktree);
+    // Adopting again gives the task to the session asking; nothing else changes.
+    let (again, same) = m.adopt_task(AdoptTask { path: wt.display().to_string(), session: Some("local_back".into()), ..AdoptTask::default() }).await.unwrap();
+    assert_eq!((again.session.as_deref(), same.workspace_id.as_str()), (Some("local_back"), w.workspace_id.as_str()));
 
     // Uncommitted changes refuse the merge.
     std::fs::write(wt.join("scratch.txt"), "x").unwrap();
@@ -105,6 +115,45 @@ async fn an_adopted_worktree_merges_through_the_queue_and_is_archived() {
 
     let board = m.board().await;
     assert_eq!(board["recentJobs"][0]["jobId"], job.job_id.as_str());
+}
+
+#[tokio::test]
+async fn a_moved_checkout_keeps_its_workspaces_and_tasks() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let old = root.join("Old");
+    Command::new("git").args(["init", "-q", "-b", "main"]).arg(&old).status().unwrap();
+    git(&old, &["config", "user.email", "t@t"]);
+    git(&old, &["config", "user.name", "t"]);
+    commit(&old, "a.txt", "1\n", "a");
+    let m = manager_with_wt_root(&root, &root.join("wt"));
+    let wt = root.join("wt/Old/topic");
+    git(&old, &["worktree", "add", "-q", "-b", "topic", &wt.display().to_string()]);
+    let stray = root.join("wt/Old/stray");
+    git(&old, &["worktree", "add", "-q", "-b", "stray", &stray.display().to_string()]);
+    let (task, w) = m.adopt_task(AdoptTask { path: wt.display().to_string(), ..AdoptTask::default() }).await.unwrap();
+    let (_, kept) = m.adopt_task(AdoptTask { path: stray.display().to_string(), ..AdoptTask::default() }).await.unwrap();
+
+    // Moved on disk, but `stray` was left out of the new worktrees folder.
+    let new = root.join("New");
+    std::fs::rename(&old, &new).unwrap();
+    std::fs::create_dir_all(root.join("wt/New")).unwrap();
+    let wt2 = root.join("wt/New/topic");
+    std::fs::rename(&wt, &wt2).unwrap();
+    git(&new, &["worktree", "repair", &wt2.display().to_string()]);
+
+    let bad = m.move_project(&w.project_id, root.join("nowhere").to_str().unwrap(), None).unwrap_err();
+    assert!(matches!(bad, ManagerError::Workspace(_)), "{bad}");
+    let v = m.move_project(&w.project_id, new.to_str().unwrap(), Some("Renamed".into())).unwrap();
+    assert_eq!(v["project"]["rootPath"], new.display().to_string());
+    assert_eq!(v["moved"][0]["workspaceId"], w.workspace_id.as_str());
+    assert_eq!(v["skipped"][0]["workspaceId"], kept.workspace_id.as_str());
+    let after = m.workspaces().get(&w.workspace_id).unwrap();
+    assert_eq!(after.cwd, wt2.display().to_string());
+    assert_eq!(after.main_repo_root.as_deref(), Some(new.to_str().unwrap()));
+    assert_eq!(m.workspaces().get(&kept.workspace_id).unwrap().cwd, stray.display().to_string());
+    assert_eq!(m.pipeline().task(&task.workspace_id).unwrap().repo, new.display().to_string());
+    assert_eq!(m.workspaces().project(&w.project_id).unwrap().name(), "Renamed");
 }
 
 #[tokio::test]

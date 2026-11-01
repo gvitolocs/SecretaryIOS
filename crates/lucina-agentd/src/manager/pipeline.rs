@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 use super::{Manager, ManagerError};
 use crate::now_iso;
 use crate::pipeline::{self, repo::Rules, Job, JobKind, JobState, Lease, Outcome, Pipeline, Spec, Task};
-use crate::workspaces::{git, CreateWorkspace, WsError};
+use crate::workspaces::{git, procs, CreateWorkspace, WsError};
 
 /// How long a lease lasts unless asked otherwise, and at most.
 const LEASE_DEFAULT_MIN: i64 = 30;
@@ -240,6 +240,18 @@ impl Manager {
             None => self.workspaces().adopt(&dir, req.title.clone(), &repo.base_ref()).await?,
         };
         if let Some(t) = self.pipeline().task(&w.workspace_id) {
+            // Adopting again is how a session takes a task back (it lost its link, or changed).
+            let t = self
+                .pipeline()
+                .update_task(&w.workspace_id, |t| {
+                    if req.session.is_some() {
+                        t.session = req.session.clone();
+                    }
+                    if req.owner.is_some() {
+                        t.owner = req.owner.clone();
+                    }
+                })
+                .unwrap_or(t);
             return Ok((t, w));
         }
         let task = Task {
@@ -259,6 +271,19 @@ impl Manager {
         };
         self.pipeline().save_task(&task).map_err(ManagerError::Store)?;
         Ok((task, w))
+    }
+
+    /// A project's checkout moved on disk: the project, its workspaces and its tasks follow.
+    pub fn move_project(&self, id: &str, path: &str, name: Option<String>) -> Result<Value, ManagerError> {
+        let old = self.workspaces().project(id).map(|p| p.root_path);
+        let (project, moved, skipped) = self.workspaces().move_project(id, Path::new(path), name)?;
+        for t in self.pipeline().tasks() {
+            if Some(&t.repo) == old.as_ref() {
+                self.pipeline().update_task(&t.workspace_id, |t| t.repo = project.root_path.clone());
+            }
+        }
+        let list = |v: &[(String, String)]| v.iter().map(|(w, c)| json!({"workspaceId": w, "cwd": c})).collect::<Vec<_>>();
+        Ok(json!({"project": project, "moved": list(&moved), "skipped": list(&skipped)}))
     }
 
     /// A workspace by id, path or branch.
@@ -621,10 +646,9 @@ impl Manager {
         let tasks = self.pipeline().tasks();
         let mut rows = Vec::new();
         let mut repos: Vec<(PathBuf, String)> = Vec::new();
-        for w in self.workspaces().list(true) {
-            if w.kind != WorkspaceKind::Worktree {
-                continue;
-            }
+        let worktrees: Vec<WorkspaceRecord> = self.workspaces().list(true).into_iter().filter(|w| w.kind == WorkspaceKind::Worktree).collect();
+        let usage = procs::usage(&worktrees.iter().map(|w| PathBuf::from(&w.cwd)).collect::<Vec<_>>());
+        for (w, used) in worktrees.iter().zip(&usage) {
             let dir = PathBuf::from(&w.cwd);
             let task = tasks.iter().find(|t| t.workspace_id == w.workspace_id);
             let active = jobs.iter().find(|j| j.workspace_id.as_deref() == Some(w.workspace_id.as_str()) && !j.state.done());
@@ -633,10 +657,15 @@ impl Manager {
             let base = w.base_ref.clone().unwrap_or_else(|| "origin/main".into());
             let ahead = git::ahead_behind(&dir, &base).await;
             let idle = idle_secs(&dir).await;
+            let underway = git::in_progress(&dir).await;
+            let detached = git::info(&dir).await.branch.is_none();
             let merged = ahead.is_some_and(|(a, _)| a == 0) && w.base_sha.as_deref() != git::read(&dir, &["rev-parse", "HEAD"]).await.as_deref();
             let state = match active.map(|j| j.state) {
                 Some(JobState::Queued) => "merge_queued",
                 Some(JobState::Running) => "merging",
+                // HEAD says nothing about the branch while these last.
+                _ if underway.is_some() => underway.unwrap_or_default(),
+                _ if detached => "detached",
                 _ if merged => "merged",
                 _ if idle.is_some_and(|s| s > STALE_DAYS * 86400) => "stale",
                 _ => "open",
@@ -649,7 +678,7 @@ impl Manager {
             rows.push(json!({
                 "workspaceId": w.workspace_id,
                 "name": w.name(),
-                "project": self.workspaces().project_name(&w),
+                "project": self.workspaces().project_name(w),
                 "branch": w.branch,
                 "cwd": w.cwd,
                 "state": state,
@@ -657,6 +686,9 @@ impl Manager {
                 "ahead": ahead.map(|a| a.0),
                 "behind": ahead.map(|a| a.1),
                 "idleDays": idle.map(|s| s / 86400),
+                "procs": used.procs,
+                "rssMb": used.rss_bytes / (1024 * 1024),
+                "commands": used.commands,
                 "task": task,
                 "lastJob": last.map(|j| json!({"jobId": j.job_id, "state": j.state, "code": j.outcome.as_ref().map(|o| o.code.clone())})),
             }));
@@ -667,15 +699,38 @@ impl Manager {
         for (root, _) in &repos {
             for (path, branch) in git::worktrees(root).await {
                 let p = path.display().to_string();
-                if path == *root || known.contains(&p) || p.ends_with("/.landing") || p.ends_with("/.deploy") {
+                // Dot directories are the pipeline's and deploys' own detached trees.
+                let hidden = path.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.'));
+                if path == *root || known.contains(&p) || hidden {
                     continue;
                 }
                 unmanaged.push(json!({"path": p, "branch": branch, "dirty": git::is_dirty(&path).await, "idleDays": idle_secs(&path).await.map(|s| s / 86400)}));
             }
         }
+        // Main checkouts are not for working in: uncommitted files there block merges into a
+        // local trunk, and two sessions there overwrite each other.
+        let roots: Vec<PathBuf> = repos.iter().map(|(r, _)| r.clone()).collect();
+        let root_usage = procs::usage(&roots);
+        let mut main_checkouts = Vec::new();
+        for (root, used) in roots.iter().zip(&root_usage) {
+            let status = git::read(root, &["status", "--porcelain", "--untracked-files=normal"]).await.unwrap_or_default();
+            let files: Vec<&str> = status.lines().map(|l| l.get(3..).unwrap_or(l)).collect();
+            if files.is_empty() && used.procs == 0 {
+                continue;
+            }
+            main_checkouts.push(json!({
+                "path": root.display().to_string(),
+                "dirtyFiles": files.len(),
+                "sample": files.iter().take(8).collect::<Vec<_>>(),
+                "procs": used.procs,
+                "rssMb": used.rss_bytes / (1024 * 1024),
+                "commands": used.commands,
+            }));
+        }
         let deploys = recent_deploys(12);
         json!({
             "workspaces": rows,
+            "mainCheckouts": main_checkouts,
             "unmanaged": unmanaged,
             "queue": jobs.iter().filter(|j| !j.state.done()).collect::<Vec<_>>(),
             "recentJobs": jobs.iter().filter(|j| j.state.done()).take(15).collect::<Vec<_>>(),
