@@ -130,3 +130,45 @@ Who may read: only the owner's browser session (cookie) sees all devices. **Ever
 own id: a speaker, a speaker paired but not connected yet, the owner's phone app alike (`403 owner_only` for any
 other id, even an unknown one; its own list holds at most itself). An id with no voice data is `404
 device_not_found` for the owner's session or a device asking for itself. No credentials: `401`.
+
+## 6. Jev fast path for voice turns (2026-11-01)
+
+Measured before (stub audio → first audio, server side): "che ore sono?" 1.6–5 s, "che giorno è oggi?" 2.0 s,
+"quali promemoria ho oggi?" 4.1 s, "cosa c'è nella lista della spesa?" 7.0 s. STT is about 80 ms and the first TTS
+sentence 0.4–0.9 s. The rest is the planner LLM, which runs after Jev has already classified the turn in about 0.2 s.
+
+### lucina-rs (voice turns only: `voice: true`)
+- **Jev starts first.** Jev intent classification starts at the beginning of the turn, concurrently with the rest of
+  the turn's setup. Its state is facts only: the transcript, the current local date and time, and the channel `voice`,
+  in the same template every time with no guessed context. Cap: 400 ms. A slower answer, a quota error or a breaker
+  means fail open to today's path (tier-0, then planner), unchanged.
+- **Fast intents** are answered without the planner LLM, with a short templated spoken reply in the turn's language
+  (it/en). They are taken only when Jev's confidence is at least `LUCINA_VOICE_FAST_MIN` (default 0.85) and the
+  existing tier-0 rules don't contradict it:
+  - `temporal_query`, only for the current time or date (today's date, weekday, time); anything needing data
+    (deadlines, appointments) goes the normal way;
+  - `grocery.shopping_list.query`, read from the store;
+  - `list_reminders`, today's or upcoming, read from the store;
+  - `grocery.shopping_list.add` / `.remove` and `schedule_reminder` (including relative timers), only when the
+    existing deterministic parsers resolve them without an LLM (items, due time). Otherwise they take the normal
+    path. The write goes through the same store and writers as the normal path.
+- A fast turn still writes the timeline (user item and Lucina item) like a normal turn, so the app shows it.
+- **SSE additions** (both optional for clients):
+  - `event: route` / `data: {"intent","confidence","jev_ms","fast":bool,"source":"jev"|"tier0"|"fallback"}`, as soon
+    as the route is decided, before any reply text;
+  - `event: ack` / `data: {"text":"Un attimo…"}`, sent right after `route` when the turn will take a slow path
+    (intents `web_crawl`, `computer_task`, `explicit_memory_recall`, `calendar_event`, `agent_message`,
+    `generate_image`, `graph_task`, `spreadsheet_update`, `cursor_task`, or any planner turn whose reply is not
+    streaming), at most once per turn. It is never sent for fast turns or for streamed chat.
+- **Log line:** one `event="voice_route"` line per voice turn with intent, confidence, jev_ms, fast and source.
+
+### secretary-server
+- **Filler audio:** at startup, and again on a TTS-voice change, synthesize a few filler phrases ("Un attimo…",
+  "Vediamo…", "One moment…") with Kokoro and keep the PCM in memory. That is a few hundred KB at most; it is
+  rebuilt lazily if Kokoro was down.
+- **On `ack`:** if no audio has been sent for the turn yet, send the cached filler PCM at once, preceded by the
+  `audio` header if it is the first audio, then continue with the real answer. If the cache is empty, synthesize the
+  ack text like a sentence.
+- **Timings:** the `route` fields go into the turn's `done.ms` (`route` = ms from end of speech to the route event,
+  `ack` = ms to the filler audio) and into the telemetry turn record (`intent`, `confidence`, `jev_ms`, `fast`,
+  `source`). They never include transcript text.
