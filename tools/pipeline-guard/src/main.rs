@@ -24,8 +24,39 @@ use serde_json::{json, Value};
 /// Names that put a command or cwd in scope.
 const SCOPE: &str = r"(?i)(Projects/Lucina\b|SecretaryIOS|\.worktrees/(SecretaryIOS|lucinaos|LucinaAndroidOS|lucina)|\blucinaos\b|LucinaAndroidOS|lucina-rs\b)";
 
+/// The command without its here-documents' bodies: text a command writes to a file or feeds to
+/// a program (a doc, a Python edit) is data, not something the shell runs.
+pub fn without_heredocs(command: &str) -> String {
+    let Ok(start) = Regex::new(r#"<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)['"]?"#) else { return command.to_string() };
+    let mut out = String::new();
+    let mut until: Option<(String, bool)> = None;
+    for line in command.split('\n') {
+        if let Some((tag, dash)) = &until {
+            let l = if *dash { line.trim_start_matches('\t') } else { line };
+            if l.trim_end() == tag {
+                until = None;
+                out.push_str(line);
+                out.push('\n');
+            }
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+        if let Some(c) = start.captures(line) {
+            // A body a shell runs (`bash <<EOF`, `ssh host <<EOF`) is commands: keep it.
+            let before = &line[..c.get(0).map(|m| m.start()).unwrap_or(0)];
+            let runs = Regex::new(r"(^|[\s;&|(])(bash|sh|zsh|ssh|sudo)\b").is_ok_and(|r| r.is_match(before));
+            if !runs {
+                until = Some((c[2].to_string(), c[0].starts_with("<<-")));
+            }
+        }
+    }
+    out
+}
+
 /// What a command does that the pipeline does instead, if anything.
 pub fn verdict(command: &str, cwd: &str) -> Option<String> {
+    let command = &without_heredocs(command);
     let scope = Regex::new(SCOPE).ok()?;
     if !scope.is_match(command) && !scope.is_match(cwd) {
         return None;
@@ -188,7 +219,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{decide, verdict};
+    use super::{decide, verdict, without_heredocs};
 
     const LUCINA: &str = "/home/nez/Projects/Lucina/SecretaryIOS";
     const PHONE: &str = "-destination 'id=00008140-001225CE1A03801C'";
@@ -271,5 +302,20 @@ mod tests {
     fn a_bypass_with_a_reason_passes() {
         assert!(verdict("LAGENT_BYPASS=owner-said-so git push origin HEAD:main", LUCINA).is_none());
         assert!(verdict("LAGENT_BYPASS= git push origin HEAD:main", LUCINA).is_some());
+    }
+
+    #[test]
+    fn heredoc_bodies_are_data() {
+        let doc = "cat > docs/x.md <<'EOF'\nUse lagent task start, not wt add x origin/main or git push origin HEAD:main.\nEOF\ngit status";
+        assert!(verdict(doc, LUCINA).is_none());
+        let py = "python3 - <<EOF\ns = s.replace('wt add', 'lagent task start')\nEOF";
+        assert!(verdict(py, LUCINA).is_none());
+        // What runs after the heredoc still counts.
+        let after = "cat > a <<'EOF'\nnotes\nEOF\ngit push origin HEAD:main";
+        assert!(verdict(after, LUCINA).is_some());
+        // A heredoc a shell runs is commands.
+        assert!(verdict("bash <<'EOF'\ncd ~/Projects/Lucina/SecretaryIOS && wt add x\nEOF", "/Users/g").is_some());
+        assert!(verdict("ssh nezopt bash -s <<EOF\ngit push origin HEAD:main\nEOF", LUCINA).is_some());
+        assert_eq!(without_heredocs("a <<-END\n\tbody\n\tEND\nb"), "a <<-END\n\tEND\nb\n");
     }
 }
