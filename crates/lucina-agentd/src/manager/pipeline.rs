@@ -572,7 +572,7 @@ impl Manager {
             .iter()
             .map(|(id, about)| {
                 let l = leases.iter().find(|l| l.device == *id && !expired(&l.expires_at));
-                json!({"device": id, "about": about, "lease": l})
+                json!({"device": id, "about": about, "lease": l, "installed": self.devices().installed(id)})
             })
             .collect()
     }

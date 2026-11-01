@@ -127,6 +127,20 @@ pub enum DeviceCommand {
         #[arg(long)]
         reason: Option<String>,
     },
+    /// Build on the Mac and install: origin/main's tip, or `--test --approval` a branch build (iphone)
+    Install(super::device::InstallArgs),
+    /// A grant for a phone test run started on the Mac (`ios-install exec --grant <id> -- xcodebuild test …`)
+    Grant(super::device::GrantArgs),
+    /// The Mac executor's check that a grant may be used (exit 1 when not)
+    GrantCheck { device: String, grant: String },
+    /// The Mac executor's report that a test run ended
+    GrantDone(super::device::GrantDoneArgs),
+    /// Recent installs and test runs of a device
+    History {
+        device: String,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
 }
 
 /// A cell: the string, number or bool, blank for null (`cli::s` prints `null`).
@@ -332,8 +346,11 @@ pub async fn device(client: &Client, cmd: &DeviceCommand) -> Result<Output, CmdE
         DeviceCommand::Ls => {
             let v = client.get("/devices").await.map_err(api)?;
             let list = v["devices"].as_array().cloned().unwrap_or_default();
-            let rows: Vec<Vec<String>> = list.iter().map(|d| vec![s(&d["device"]), s(&d["lease"]["holder"]), s(&d["lease"]["expiresAt"]), s(&d["lease"]["purpose"]), s(&d["about"])]).collect();
-            Ok(Output { text: table(&["DEVICE", "HOLDER", "UNTIL", "PURPOSE", "ABOUT"], &rows), json: Some(Value::Array(list)) })
+            let rows: Vec<Vec<String>> = list
+                .iter()
+                .map(|d| vec![s(&d["device"]), s(&d["lease"]["holder"]), s(&d["lease"]["expiresAt"]), s(&d["lease"]["purpose"]), super::device::installed_text(&d["installed"]), s(&d["about"])])
+                .collect();
+            Ok(Output { text: table(&["DEVICE", "HOLDER", "UNTIL", "PURPOSE", "INSTALLED", "ABOUT"], &rows), json: Some(Value::Array(list)) })
         }
         DeviceCommand::Lease { device, purpose, minutes, holder, workspace } => {
             let body = json!({"holder": holder.clone().unwrap_or_else(session), "purpose": purpose, "minutes": minutes, "workspaceId": workspace});
@@ -346,6 +363,11 @@ pub async fn device(client: &Client, cmd: &DeviceCommand) -> Result<Output, CmdE
             let text = if v["released"] == true { format!("{device} released") } else { format!("{device} had no lease") };
             Ok(Output { text, json: Some(v) })
         }
+        DeviceCommand::Install(a) => super::device::install(client, a).await,
+        DeviceCommand::Grant(a) => super::device::grant(client, a).await,
+        DeviceCommand::GrantCheck { device, grant } => super::device::grant_check(client, device, grant).await,
+        DeviceCommand::GrantDone(a) => super::device::grant_done(client, a).await,
+        DeviceCommand::History { device, limit } => super::device::history(client, device, *limit).await,
     }
 }
 
