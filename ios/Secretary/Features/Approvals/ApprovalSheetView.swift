@@ -62,6 +62,25 @@ private struct RequestView: View {
             // Whether a PIN is set decides which buttons a sensitive request shows.
             if item.sensitive { await store.loadSettings() }
         }
+        .onChange(of: store.startApproveId, initial: true) { _, id in
+            // Not tied to the view's task: a redraw must not cancel the answer on its way.
+            guard id == item.id, store.takeStartApprove(item.id) else { return }
+            Task { await startApproveStep() }
+        }
+    }
+
+    /// Opened by the Live Activity's Approve: the approve step starts at once, as if Approve was tapped (Face ID over
+    /// this card; cancelling leaves the card open). With the PIN pad showing, the pad is that step.
+    private func startApproveStep() async {
+        guard item.sensitive else { return }
+        if store.settings == nil { await store.loadSettings() }
+        guard !needsSetup, !showsPad, store.working == nil else { return }
+        // The app is still coming to the front: Face ID only asks once it is active.
+        for _ in 0..<30 where UIApplication.shared.applicationState != .active {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        guard !item.isExpired(at: Date()), store.sheetItem?.id == item.id, store.outcome?.isFinal != true else { return }
+        await store.decide(.approve)
     }
 
     private var requester: some View {

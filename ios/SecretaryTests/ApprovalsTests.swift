@@ -427,6 +427,74 @@ final class ApprovalsTests: XCTestCase {
         XCTAssertEqual(store.pending.map(\.id), ["apr_plain"])
     }
 
+    // MARK: Live Activity
+
+    func testLiveActivityButtonsReportTheAnswer() async throws {
+        StubURLProtocol.handler = { request in
+            request.url?.path.hasSuffix("/decide") == true ? .init(body: #"{"status":"ok"}"#) : .init(body: "{}")
+        }
+        var settled: [String: ApprovalOutcome] = [:]
+        store.onSettled = { id, outcome in settled[id] = outcome }
+        var learned: [[String]] = []
+        store.onPendingLearned = { items in learned.append(items.map(\.id)) }
+        let plain = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_plain", sensitive: false))
+        let secret = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_secret", sensitive: true))
+        await store.apply([plain, secret])
+        await store.apply([plain, secret])
+        XCTAssertEqual(learned, [["apr_plain", "apr_secret"], ["apr_plain", "apr_secret"]], "every list, changed or not")
+        // The activity's Deny and plain Approve answer through the notification's path, and end the activity.
+        await store.handleNotification(actionIdentifier: ApprovalNotifier.approveAction, approvalId: "apr_plain", sensitive: false)
+        await store.handleNotification(actionIdentifier: ApprovalNotifier.denyAction, approvalId: "apr_secret", sensitive: true)
+        XCTAssertEqual(settled, ["apr_plain": .approved, "apr_secret": .denied])
+    }
+
+    func testTheActivitysSensitiveApproveStartsTheApproveStepOnTheCard() async throws {
+        let secret = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_secret", sensitive: true))
+        await store.apply([secret])
+        await store.open(id: "apr_secret", startApprove: true)
+        XCTAssertEqual(store.sheetItem?.id, "apr_secret")
+        XCTAssertTrue(signer.signed.isEmpty, "nothing is signed until the card runs its approve action")
+        XCTAssertFalse(store.takeStartApprove("apr_other"))
+        XCTAssertTrue(store.takeStartApprove("apr_secret"))
+        XCTAssertFalse(store.takeStartApprove("apr_secret"), "once")
+        // A plain open (a notification tap) does not start it.
+        await store.open(id: "apr_secret")
+        XCTAssertFalse(store.takeStartApprove("apr_secret"))
+    }
+
+    /// The push-to-start attributes exactly as the server sends them (crates/secretary-server/src/notify/live.rs,
+    /// `start_body_is_exact`).
+    func testLiveActivityAttributesDecodeTheServersStartPush() throws {
+        let json = """
+        {"approvalId": "apr_AbCdEfGhIjKlMnOpQrStUv", "requester": "Lucina", "summary": "Restart the tunnel on nezopt",
+         "commands": "systemctl restart cloudflared\\njournalctl -u cloudflared -n 20\\nsystemctl status cloudflared",
+         "commandCount": 4, "sensitive": true,
+         "payloadHash": "sha256:abababababababababababababababababababababababababababababababab",
+         "expiresAtUnix": 1761048300}
+        """
+        let a = try JSONDecoder().decode(ApprovalActivityAttributes.self, from: Data(json.utf8))
+        XCTAssertEqual(a.approvalId, "apr_AbCdEfGhIjKlMnOpQrStUv")
+        XCTAssertEqual(a.requester, "Lucina")
+        XCTAssertEqual(a.commands.split(separator: "\n").count, 3)
+        XCTAssertEqual(a.commandCount, 4)
+        XCTAssertTrue(a.sensitive)
+        XCTAssertEqual(a.expiresAt, Date(timeIntervalSince1970: 1_761_048_300))
+        let state = try JSONDecoder().decode(ApprovalActivityAttributes.ContentState.self, from: Data(#"{"status": "pending"}"#.utf8))
+        XCTAssertTrue(state.isPending)
+        // The app builds the same commands from a request's details.
+        let local = ApprovalActivityAttributes.commandLines("systemctl restart cloudflared\n\njournalctl -u cloudflared -n 20\nsystemctl status cloudflared\nuptime\n")
+        XCTAssertEqual(local.commands, a.commands)
+        XCTAssertEqual(local.count, 4)
+        XCTAssertEqual(ApprovalActivityAttributes.commandLines("").count, 0)
+    }
+
+    func testActivitiesOfRequestsNoLongerPendingEnd() {
+        XCTAssertEqual(ApprovalActivityAttributes.toEnd(activityIds: ["apr_a", "apr_b", "apr_c", "apr_b"], pending: ["apr_a"]),
+                       ["apr_b", "apr_c"])
+        XCTAssertEqual(ApprovalActivityAttributes.toEnd(activityIds: [], pending: ["apr_a"]), [])
+        XCTAssertEqual(ApprovalActivityAttributes.toEnd(activityIds: ["apr_a"], pending: []), ["apr_a"])
+    }
+
     // MARK: Polling
 
     func testPollingTheOldServerIsQuiet() async throws {

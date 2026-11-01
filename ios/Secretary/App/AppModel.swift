@@ -371,6 +371,13 @@ final class AppModel {
         gym.onFinished = { start, end in Task { await device.health.exportWorkout(start: start, end: end) } }
         approvals.onTransportError = onError
         approvals.onPendingChanged = { items in AppModel.publishApprovals(items) }
+        // The approval Live Activity: tokens to the server, stale activities ended, a missing one started in front.
+        approvals.onPendingLearned = { [weak self] items in
+            ApprovalActivities.shared.sync(pending: items, foreground: self?.isForeground ?? false)
+        }
+        approvals.onSettled = { id, outcome in ApprovalActivities.shared.settled(id, outcome) }
+        let approvalStore = approvals
+        ApprovalActivities.shared.start(client: client, status: { id in await approvalStore.status(of: id) })
         agents.onTransportError = onError
         server.onTransportError = onError
         callers.onTransportError = onError
@@ -494,6 +501,7 @@ final class AppModel {
         weight.reset()
         notifications.reset()
         approvals.reset()
+        ApprovalActivities.shared.reset()
         agents.reset()
         showAgents = false
         server.reset()

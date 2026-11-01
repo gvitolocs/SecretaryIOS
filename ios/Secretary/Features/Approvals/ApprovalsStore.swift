@@ -52,6 +52,8 @@ final class ApprovalsStore {
     private(set) var working: ApprovalDecision?
     /// The PIN pad is showing instead of the Approve / Deny buttons.
     private(set) var pinEntry = false
+    /// The card opened from the Live Activity's sensitive Approve: it starts the approve step as it appears.
+    private(set) var startApproveId: String?
 
     // Settings → Approvals
     private(set) var settings: ApprovalSettings?
@@ -69,6 +71,10 @@ final class ApprovalsStore {
     @ObservationIgnored var onTransportError: ((APIError) -> Void)?
     /// The pending list changed (the app hands it to the approvals widget).
     @ObservationIgnored var onPendingChanged: (([ApprovalItem]) -> Void)?
+    /// Every pending list the store learns, changed or not (the app ends stale Live Activities, starts missing ones).
+    @ObservationIgnored var onPendingLearned: (([ApprovalItem]) -> Void)?
+    /// This iPhone answered a request, or learned how it ended (the app ends its Live Activity).
+    @ObservationIgnored var onSettled: ((_ id: String, _ outcome: ApprovalOutcome) -> Void)?
     /// Requests the owner closed without answering; they come back when the app becomes active again.
     @ObservationIgnored private var dismissed: Set<String> = []
     @ObservationIgnored private var polling = false
@@ -143,6 +149,7 @@ final class ApprovalsStore {
         let now = Set(items.map(\.id))
         if items != pending { onPendingChanged?(items) }
         pending = items
+        onPendingLearned?(items)
         let gone = before.subtracting(now)
         if !gone.isEmpty { await notifier.remove(ids: Array(gone)) }
 
@@ -215,12 +222,14 @@ final class ApprovalsStore {
         await refreshSheet()
     }
 
-    /// Opens the prompt on one request (a tapped notification), fetching it when it is not listed yet.
-    func open(id: String) async {
+    /// Opens the prompt on one request (a tapped notification), fetching it when it is not listed yet. `startApprove`
+    /// (the Live Activity's sensitive Approve): the card starts its approve step as it appears (Face ID over the card).
+    func open(id: String, startApprove: Bool = false) async {
         dismissed.remove(id)
         pinEntry = false
         working = nil
         outcome = nil
+        startApproveId = startApprove ? id : nil
         if let item = pending.first(where: { $0.id == id }) {
             sheetItem = item
             return
@@ -235,10 +244,24 @@ final class ApprovalsStore {
             case .expired: outcome = .expired
             case .pending, nil: break
             }
+            if let outcome, outcome.isFinal { onSettled?(id, outcome) }
         } catch {
             sheetItem = ApprovalItem(id: id, summary: "")
             outcome = ApprovalOutcome.from(error)
         }
+    }
+
+    /// True once for the card `open(id:startApprove: true)` opened: it runs its approve action as it appears.
+    func takeStartApprove(_ id: String) -> Bool {
+        guard startApproveId == id else { return false }
+        startApproveId = nil
+        return true
+    }
+
+    /// How a request stands on the server now (nil: unknown, offline).
+    func status(of id: String) async -> ApprovalStatus? {
+        guard let api = api() else { return nil }
+        return try? await api.get(id).status
     }
 
     // MARK: - Answering
@@ -318,6 +341,11 @@ final class ApprovalsStore {
             onPendingChanged?(pending)
             await notifier.remove(ids: [item.id])
         }
+        defer {
+            // After the lookup below: "Already approved on iPad" ends the Live Activity as approved.
+            let ended = sheetItem?.id == item.id ? (outcome ?? result) : result
+            if ended.isFinal { onSettled?(item.id, ended) }
+        }
         guard let api = api() else { return }
         switch result {
         case .alreadyDecided(nil, _):
@@ -357,6 +385,11 @@ final class ApprovalsStore {
             }
             guard item.status == nil || item.status == .pending else {
                 await notifier.remove(ids: [item.id])
+                switch item.status {
+                case .approved?: onSettled?(item.id, .alreadyDecided(.approved, by: item.decidedBy))
+                case .denied?: onSettled?(item.id, .alreadyDecided(.denied, by: item.decidedBy))
+                default: onSettled?(item.id, .expired)
+                }
                 return
             }
             // The request became sensitive since the notification was made: ask on the card.
@@ -370,6 +403,7 @@ final class ApprovalsStore {
                 onPendingChanged?(pending)
                 if sheetItem?.id == item.id { sheetItem = nil; outcome = nil }
                 await notifier.remove(ids: [item.id])
+                onSettled?(item.id, result)
             } else {
                 await notifier.postFailure(for: item)
             }
@@ -551,6 +585,7 @@ final class ApprovalsStore {
         keyStatus = .unknown
         availability = .unknown
         dismissed = []
+        startApproveId = nil
         defaults.removeObject(forKey: Self.notifiedKey)
         try? signer.removeKey()
         let notifier = notifier
