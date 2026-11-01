@@ -130,6 +130,10 @@ struct ApproveApprovalActivityIntent: LiveActivityIntent {
     static let title: LocalizedStringResource = "Approve an approval"
     static let isDiscoverable = false
     static let authenticationPolicy: IntentAuthenticationPolicy = .requiresLocalDeviceAuthentication
+    /// Runs in the background, and may bring the app to the front when the approve step has to happen on the card
+    /// (`continueInForeground`). iOS 26 replaced `ForegroundContinuableIntent` with this; it does nothing there.
+    @available(iOS 26.0, *)
+    static var supportedModes: IntentModes { [.background, .foreground(.dynamic)] }
 
     @Parameter(title: "Approval") var approvalId: String
     @Parameter(title: "Payload hash") var payloadHash: String

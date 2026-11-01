@@ -148,7 +148,10 @@ only "Open Secretary to see what it is."
   key and the server's signature check are unchanged). Otherwise (a longer
   plan, unlocked with the passcode, too long ago, no key) the app comes to the
   front on that card and starts the approve step there: the Face ID prompt (or
-  the PIN pad) over the exact commands. Cancelling leaves the card open. A
+  the PIN pad) over the exact commands (iOS 26+: the intent's
+  `.foreground(.dynamic)` mode); if the app can't come to the front, an "Open
+  Secretary to approve" notification leads to the card instead, so a tap never
+  ends in nothing. Cancelling leaves the card open. A
   request that changed since the activity showed it, or expired, only opens
   the card. The card's own Approve also reuses a recent Face ID unlock and signs
   the request that was on screen when tapped.

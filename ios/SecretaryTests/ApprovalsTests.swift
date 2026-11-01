@@ -833,6 +833,29 @@ final class ApprovalsTests: XCTestCase {
         XCTAssertEqual(A.cardOpening(startRequested: false, appActive: true, continued: false), .withoutApproveStep)
     }
 
+    func testTheActivitysApproveIsNeverLeftWithNothingToSee() {
+        typealias A = ApprovalActivities
+        XCTAssertEqual(A.handOff(appActive: true, canContinue: false, continueSucceeded: false), .openInFront)
+        XCTAssertEqual(A.handOff(appActive: false, canContinue: true, continueSucceeded: true), .openInFront, "brought to the front")
+        XCTAssertEqual(A.handOff(appActive: false, canContinue: true, continueSucceeded: false), .openAndNotify,
+                       "continuing failed: open-to-approve")
+        XCTAssertEqual(A.handOff(appActive: false, canContinue: false, continueSucceeded: false), .openAndNotify,
+                       "no way to the front: open-to-approve")
+        XCTAssertEqual(A.handOff(appActive: false, canContinue: false, continueSucceeded: true), .openAndNotify)
+        // Brought to the front: the approve step starts there; left behind: the card only.
+        XCTAssertEqual(A.cardOpening(startRequested: true, appActive: false, continued: true), .withApproveStep)
+        XCTAssertEqual(A.cardOpening(startRequested: true, appActive: false, continued: false), .withoutApproveStep)
+    }
+
+    func testOpenToApproveNamesTheRequest() async throws {
+        let secret = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_secret", sensitive: true))
+        await store.apply([secret])
+        await store.postOpenToApprove(id: "apr_secret")
+        await store.postOpenToApprove(id: "apr_unknown")
+        XCTAssertEqual(notifier.followUps, ["apr_secret", "apr_unknown"])
+        assertNothingApproved("a follow-up only")
+    }
+
     func testALocalActivityHonoursThePreviewsSetting() throws {
         let secret = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_secret", sensitive: true))
         let shown = ApprovalActivities.localAttributes(for: secret, previews: true, now: fixtureNow)

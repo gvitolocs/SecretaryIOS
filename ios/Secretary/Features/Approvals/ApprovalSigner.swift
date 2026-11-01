@@ -2,6 +2,10 @@ import CryptoKit
 import Foundation
 import LocalAuthentication
 import Security
+import os
+
+/// Where a signature's failure is logged (its error domain and code; never the message or the key).
+private let signLog = Logger(subsystem: "tech.getsecretary.app", category: "Approvals")
 
 /// How a signature asks for the owner.
 enum ApprovalAuthMode: Equatable, Sendable {
@@ -199,10 +203,12 @@ final class SecureEnclaveApprovalSigner: ApprovalSigning, @unchecked Sendable {
                 return try key.signature(for: Data(message.utf8)).derRepresentation
             }.value
         } catch let error as LAError {
+            signLog.info("sign error \(LAError.errorDomain, privacy: .public) \(error.code.rawValue, privacy: .public) mode=\(String(describing: mode), privacy: .public)")
             throw ApprovalSignError.from(error)
         } catch {
             // The Keychain reports a cancelled prompt as errSecUserCanceled (-128).
             let code = (error as NSError).code
+            signLog.info("sign error \((error as NSError).domain, privacy: .public) \(code, privacy: .public) mode=\(String(describing: mode), privacy: .public)")
             if code == -128 { throw ApprovalSignError.cancelled }
             // errSecInteractionNotAllowed: the key wanted Face ID or the passcode on screen.
             if code == Int(errSecInteractionNotAllowed) || (!interactive && code == Int(errSecAuthFailed)) {

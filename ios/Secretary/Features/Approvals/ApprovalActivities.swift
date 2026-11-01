@@ -62,11 +62,12 @@ final class ApprovalActivities {
     /// launch is for (iOS runs LiveActivityIntents in the app's process).
     static func install() {
         ApprovalActivityCommands.deny = { id, sensitive in
+            shared.log.info("deny tapped id=\(id, privacy: .public)")
             await AppModel.shared.approvals.handleNotification(actionIdentifier: ApprovalNotifier.denyAction,
                                                                approvalId: id, sensitive: sensitive)
         }
         // Approve: a plain request is answered; a sensitive one is signed in the background after a recent Face ID
-        // unlock, when the activity showed the whole plan. Otherwise the card takes over.
+        // unlock, when the activity showed the whole plan. Otherwise the card takes over, in front.
         ApprovalActivityCommands.approve = { id, payloadHash, trigger, intent in
             let outcome = await AppModel.shared.approvals.approveFromActivity(id: id, shownHash: payloadHash, trigger: trigger)
             guard case let .openCard(startApprove) = outcome else { return }
@@ -88,30 +89,80 @@ final class ApprovalActivities {
         startRequested && (appActive || continued) ? .withApproveStep : .withoutApproveStep
     }
 
-    /// Brings the app to the front on `id`'s card, with its approve step started when `trigger` is set. iOS asks the
-    /// owner to continue in Secretary; declined (or not possible), the card is there the next time the app opens,
-    /// without its approve step: nothing is ever approved with the app in the background from here.
+    /// Where the card ends up after the activity's Approve.
+    enum CardHandOff: Equatable {
+        /// The app is in front: the card shows (with its approve step when asked).
+        case openInFront
+        /// The app stayed in the background: the card waits, and "Open Secretary to approve" tells the owner.
+        case openAndNotify
+    }
+
+    /// In front already, or brought there (`canContinue` and `continueSucceeded`); otherwise the follow-up
+    /// notification, so a tap is never left with nothing to see.
+    nonisolated static func handOff(appActive: Bool, canContinue: Bool, continueSucceeded: Bool) -> CardHandOff {
+        appActive || (canContinue && continueSucceeded) ? .openInFront : .openAndNotify
+    }
+
+    /// Brings the app to the front on `id`'s card, with its approve step started when `trigger` is set (Face ID over
+    /// the exact commands). iOS 26+: `continueInForeground` (the intent's `.foreground(.dynamic)` mode); earlier:
+    /// `requestToContinueInForeground`. When the app can't come to the front, the card is there the next time it
+    /// opens, without its approve step, and "Open Secretary to approve" says so: nothing is ever approved with the
+    /// app in the background from here.
     private static func continueOnCard(_ id: String, trigger: ApprovalTrigger?, intent: any AppIntent) async {
         let store = AppModel.shared.approvals
+        let log = shared.log
+        let startRequested = trigger != nil
         func open(_ opening: CardOpening) async {
+            log.info("card opened id=\(id, privacy: .public) approveStep=\(opening == .withApproveStep, privacy: .public)")
             await store.open(id: id, startApprove: opening == .withApproveStep ? trigger : nil, now: Date())
         }
+        func finish(appActive: Bool, canContinue: Bool, continued: Bool) async {
+            switch handOff(appActive: appActive, canContinue: canContinue, continueSucceeded: continued) {
+            case .openInFront:
+                await open(cardOpening(startRequested: startRequested, appActive: appActive, continued: continued))
+            case .openAndNotify:
+                await open(.withoutApproveStep)
+                log.info("card left in the background id=\(id, privacy: .public): open-to-approve posted")
+                await store.postOpenToApprove(id: id)
+            }
+        }
         if UIApplication.shared.applicationState == .active {
-            await open(cardOpening(startRequested: trigger != nil, appActive: true, continued: false))
+            await finish(appActive: true, canContinue: false, continued: false)
+            return
+        }
+        if #available(iOS 26.0, *) {
+            log.info("continue in foreground requested id=\(id, privacy: .public)")
+            do {
+                try await intent.continueInForeground(nil, alwaysConfirm: false)
+                // Coming to the front (active, or still becoming active: the approve step waits for it).
+                let inFront = UIApplication.shared.applicationState != .background
+                log.info("continue in foreground succeeded id=\(id, privacy: .public) inFront=\(inFront, privacy: .public)")
+                await finish(appActive: false, canContinue: true, continued: inFront)
+            } catch {
+                let e = error as NSError
+                log.error("continue in foreground failed id=\(id, privacy: .public): \(e.domain, privacy: .public) \(e.code, privacy: .public)")
+                await finish(appActive: false, canContinue: true, continued: false)
+            }
             return
         }
         if let foreground = intent as? any ForegroundContinuableIntent {
+            log.info("continue in foreground requested id=\(id, privacy: .public) (iOS < 26)")
             do {
                 try await foreground.requestToContinueInForeground {
                     // Now in front: the window starts here.
-                    await open(cardOpening(startRequested: trigger != nil, appActive: false, continued: true))
+                    log.info("continue in foreground succeeded id=\(id, privacy: .public)")
+                    await finish(appActive: false, canContinue: true, continued: true)
                 }
                 return
             } catch {
-                ApprovalActivities.shared.log.info("approval card not brought to the front: \(error.localizedDescription, privacy: .public)")
+                let e = error as NSError
+                log.error("continue in foreground failed id=\(id, privacy: .public): \(e.domain, privacy: .public) \(e.code, privacy: .public)")
+                await finish(appActive: false, canContinue: true, continued: false)
+                return
             }
         }
-        await open(cardOpening(startRequested: trigger != nil, appActive: false, continued: false))
+        log.error("continue in foreground unavailable id=\(id, privacy: .public)")
+        await finish(appActive: false, canContinue: false, continued: false)
     }
 
     /// Watches the tokens and the activities (from AppModel, once it is built). `status` looks a request up on the

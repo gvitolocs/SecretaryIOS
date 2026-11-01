@@ -400,17 +400,24 @@ final class ApprovalsStore {
                 do {
                     proof = try await signer.sign(item.signingString(for: .approve), reason: item.summary.isEmpty ? item.action : item.summary,
                                                   mode: mode ?? cardAuthMode)
+                    log.info("sign ok id=\(item.id, privacy: .public) mode=\(String(describing: mode ?? self.cardAuthMode), privacy: .public)")
                 } catch ApprovalSignError.cancelled {
+                    log.info("sign needs card id=\(item.id, privacy: .public): cancelled")
                     return nil
                 } catch ApprovalSignError.needsInteraction {
+                    log.info("sign needs card id=\(item.id, privacy: .public): needsInteraction")
                     return nil
                 } catch ApprovalSignError.noKey {
+                    log.info("sign needs card id=\(item.id, privacy: .public): noKey")
                     return hasPin ? .pinRequired : .needsSetup
                 } catch let error as ApprovalSignError {
+                    log.error("sign failed id=\(item.id, privacy: .public): \(String(describing: error), privacy: .public)")
                     // Face ID is locked out or not set up, or there is no Secure Enclave: the PIN takes over.
                     if hasPin, error == .needsDeviceSecurity || error == .unavailable { return .pinRequired }
                     return .failed(error.userMessage)
                 } catch {
+                    let e = error as NSError
+                    log.error("sign failed id=\(item.id, privacy: .public): \(e.domain, privacy: .public) \(e.code, privacy: .public)")
                     return .failed(error.localizedDescription)
                 }
             }
@@ -488,10 +495,12 @@ final class ApprovalsStore {
             var known = pending.first { $0.id == approvalId }
             if known == nil, let api = api() { known = try? await api.get(approvalId) }
             guard let item = known else {
+                log.info("\(decision.rawValue, privacy: .public) id=\(approvalId, privacy: .public): opened (request not found)")
                 await open(id: approvalId)
                 return
             }
             guard item.status == nil || item.status == .pending else {
+                log.info("\(decision.rawValue, privacy: .public) id=\(approvalId, privacy: .public): forgotten (no longer pending)")
                 await forgetAnswered(item)
                 return
             }
@@ -511,9 +520,23 @@ final class ApprovalsStore {
                 }
                 choice = .approve(trigger)
             }
-            guard let result = await answer(item, choice) else { return }
+            guard let result = await answer(item, choice) else {
+                log.info("\(decision.rawValue, privacy: .public) id=\(approvalId, privacy: .public): cancelled")
+                return
+            }
+            log.info("""
+                \(decision.rawValue, privacy: .public) id=\(approvalId, privacy: .public): \
+                \(result.isFinal ? "decided" : "failed", privacy: .public) \(String(describing: result), privacy: .public)
+                """)
             await finishButtonAnswer(item, result)
         }
+    }
+
+    /// "Open Secretary to approve" for `id` (the activity's Approve could not bring the card to the front).
+    func postOpenToApprove(id: String) async {
+        let item = pending.first { $0.id == id } ?? sheetItem.flatMap { $0.id == id ? $0 : nil }
+            ?? ApprovalItem(id: id, summary: "", sensitive: true)
+        await notifier.postOpenToApprove(for: item)
     }
 
     /// The notification's in-place Approve of a sensitive request (see `handleNotification`).
@@ -629,13 +652,25 @@ final class ApprovalsStore {
             return .openCard(startApprove: false)
         }
         let shownWhole = previews() && ApprovalActivityAttributes.fullyShown(item.details)
-        switch Self.activityApproveRoute(sensitive: item.sensitive, strict: strictFaceID, fullyShown: shownWhole) {
+        let route = Self.activityApproveRoute(sensitive: item.sensitive, strict: strictFaceID, fullyShown: shownWhole)
+        log.info("""
+            activity approve route id=\(id, privacy: .public) route=\(String(describing: route), privacy: .public) \
+            sensitive=\(item.sensitive, privacy: .public) strict=\(self.strictFaceID, privacy: .public) \
+            shownWhole=\(shownWhole, privacy: .public)
+            """)
+        switch route {
         case .openCard:
             return .openCard(startApprove: true)
         case let .decide(mode):
             let result = await answer(item, .approve(trigger), mode: mode)
-            if Self.needsCard(after: result) { return .openCard(startApprove: true) }
-            if let result { await finishButtonAnswer(item, result) }
+            if Self.needsCard(after: result) {
+                log.info("activity approve needs card id=\(id, privacy: .public) outcome=\(String(describing: result), privacy: .public)")
+                return .openCard(startApprove: true)
+            }
+            if let result {
+                log.info("activity approve answered id=\(id, privacy: .public) outcome=\(String(describing: result), privacy: .public)")
+                await finishButtonAnswer(item, result)
+            }
             return .done
         }
     }
