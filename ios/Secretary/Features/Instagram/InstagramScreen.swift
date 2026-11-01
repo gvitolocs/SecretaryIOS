@@ -37,10 +37,11 @@ struct InstagramScreen: View {
                             }
                         }
                         if store.watched.isEmpty { Text("No watched accounts yet.").foregroundStyle(Theme.textSecondary) }
-                        ForEach(store.watched) { person in
-                            personRow(store, username: person.username, name: person.fullName, pic: person.picUrl,
-                                      verified: person.isVerified, badge: store.badges.accounts[person.username] ?? 0,
-                                      isPrivate: person.isPrivate == true, gone: person.gone)
+                        // Tiles, not rows (owner, 2026-11-01): picture, names, Private, the new count, the last check.
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 12)], spacing: 12) {
+                            ForEach(store.watched) { person in
+                                watchedTile(store, person, badge: store.badges.accounts[person.username] ?? 0)
+                            }
                         }
                         Text("Recent profiles").font(LucinaTokens.Fonts.headline)
                         ForEach(store.recent) { person in
@@ -100,6 +101,53 @@ struct InstagramScreen: View {
             }
         }
     }
+    private func watchedTile(_ store: InstagramStore, _ person: IgWatch, badge: Int) -> some View {
+        Button { username = person.username } label: {
+            VStack(spacing: 6) {
+                IgPicture(store: store, path: person.picUrl).frame(width: 68, height: 68).clipShape(Circle())
+                    .overlay(alignment: .topTrailing) {
+                        if badge > 0 {
+                            Text(verbatim: String(badge)).font(.caption2.bold()).foregroundStyle(.white)
+                                .padding(.horizontal, 6).padding(.vertical, 2).background(Color.red, in: Capsule()).offset(x: 6, y: -2)
+                        }
+                    }
+                    .padding(.bottom, 4)
+                HStack(spacing: 4) {
+                    Text(verbatim: person.fullName.isEmpty ? person.username : person.fullName)
+                        .font(.subheadline.weight(.semibold)).lineLimit(2).multilineTextAlignment(.center)
+                    if person.isVerified { Image(systemName: "checkmark.seal.fill").foregroundStyle(Theme.accent).accessibilityLabel("Verified") }
+                }
+                Text(verbatim: "@" + person.username).font(.caption).foregroundStyle(Theme.textSecondary).lineLimit(1)
+                if person.gone {
+                    Text("Gone").font(.caption2)
+                } else if person.isPrivate == true {
+                    Label("Private", systemImage: "lock.fill").font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 8).padding(.vertical, 3).background(Theme.page, in: Capsule())
+                }
+                Group {
+                    if let last = person.lastCheck {
+                        Text("Checked \(Date(timeIntervalSince1970: last).formatted(.relative(presentation: .named)))")
+                    } else {
+                        Text("Not checked yet")
+                    }
+                }
+                .font(.caption2).foregroundStyle(Theme.textSecondary)
+            }
+            .frame(maxWidth: .infinity).padding(.vertical, 14).padding(.horizontal, 8)
+            .background(Theme.card, in: RoundedRectangle(cornerRadius: 16))
+        }
+        .buttonStyle(.plain).accessibilityIdentifier("instagram-account-" + person.username)
+        .contextMenu { personMenu(store, person.username) }
+    }
+    @ViewBuilder private func personMenu(_ store: InstagramStore, _ name: String) -> some View {
+        Button("Open") { username = name }
+        if let link = InstagramText.profileLink(name) {
+            Button("Copy link") { UIPasteboard.general.url = link; store.notice = String(localized: "Link copied") }
+        }
+        Button(store.entry(name) == nil ? String(localized: "Watch") : String(localized: "Stop watching")) {
+            Task { await store.changeWatch(name) }
+        }.disabled(store.changingWatch)
+    }
     private func personRow(_ store: InstagramStore, username name: String, name fullName: String, pic: String?,
                            verified: Bool, badge: Int = 0, isPrivate: Bool = false, gone: Bool = false) -> some View {
         Button { username = name } label: {
@@ -119,15 +167,7 @@ struct InstagramScreen: View {
             }.padding(12).background(Theme.card, in: RoundedRectangle(cornerRadius: 16))
         }
         .buttonStyle(.plain).accessibilityIdentifier("instagram-account-" + name)
-        .contextMenu {
-            Button("Open") { username = name }
-            if let link = InstagramText.profileLink(name) {
-                Button("Copy link") { UIPasteboard.general.url = link; store.notice = String(localized: "Link copied") }
-            }
-            Button(store.entry(name) == nil ? String(localized: "Watch") : String(localized: "Stop watching")) {
-                Task { await store.changeWatch(name) }
-            }.disabled(store.changingWatch)
-        }
+        .contextMenu { personMenu(store, name) }
     }
 }
 

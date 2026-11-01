@@ -24716,6 +24716,38 @@
           }
         }
       }
+    },
+    "Checked %@" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Controllato %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tjekket %@"
+          }
+        }
+      }
+    },
+    "Not checked yet" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Non ancora controllato"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ikke tjekket endnu"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"

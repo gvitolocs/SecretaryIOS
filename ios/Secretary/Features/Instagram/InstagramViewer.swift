@@ -47,6 +47,14 @@ struct InstagramViewer: View {
     }
     private var slides: [IgSlide] { IgSlide.slides(items) }
     var body: some View {
+        // Stories and highlights open full screen, their info as an overlay on a tap (InstagramStoryViewer).
+        if request.tab == .stories || request.highlight != nil {
+            InstagramStoryViewer(store: store, request: request)
+        } else {
+            paged
+        }
+    }
+    private var paged: some View {
         VStack(spacing: 0) {
             HStack {
                 Button { dismiss() } label: { Image(systemName: "xmark") }
