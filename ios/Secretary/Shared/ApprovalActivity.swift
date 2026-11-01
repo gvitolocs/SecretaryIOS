@@ -8,10 +8,12 @@ import Foundation
 // (crates/secretary-server/src/notify/live.rs: the attribute names below are its wire format); the app also starts
 // one in the foreground and ends stale ones (ApprovalActivities).
 //
-// The buttons: Deny and the plain Approve are LiveActivityIntents, which iOS runs in the app's process through the
-// handlers the app installs at launch (`ApprovalActivityCommands`). Deny needs no unlock (like the widget); the plain
-// Approve needs the iPhone unlocked. A sensitive Approve (root plans) opens the app on the request's card and starts
-// the approve step there: the Face ID signature or the PIN is only ever given on the card that shows the commands.
+// The buttons are LiveActivityIntents, which iOS runs in the app's process through the handlers the app installs at
+// launch (`ApprovalActivityCommands`). Deny needs no unlock (like the widget). Approve needs the iPhone unlocked; a
+// plain request is then answered at once. A sensitive one (root plans) is signed with the Face ID key in the
+// background when the iPhone was unlocked with Face ID in the last 5 minutes (unless "Require Face ID for root
+// approvals" is on); otherwise the app comes to the front on the request's card and starts the approve step there
+// (Face ID or the PIN over the exact commands).
 
 struct ApprovalActivityAttributes: ActivityAttributes {
     struct ContentState: Codable, Hashable {
@@ -61,10 +63,8 @@ extension ApprovalActivityAttributes.ContentState {
 enum ApprovalActivityCommands {
     /// Deny `approvalId` (`sensitive` as the activity knows it).
     @MainActor static var deny: ((_ approvalId: String, _ sensitive: Bool) async -> Void)?
-    /// Approve a plain request; one that became sensitive opens its card instead.
-    @MainActor static var approve: ((_ approvalId: String) async -> Void)?
-    /// Open the card of a sensitive request and start its approve step (Face ID or the PIN, on the card).
-    @MainActor static var approveOnCard: ((_ approvalId: String) async -> Void)?
+    /// Approve: answered in the background when it can be, else on the card in front (`intent` asks iOS for that).
+    @MainActor static var approve: ((_ approvalId: String, _ intent: any AppIntent) async -> Void)?
 }
 
 enum ApprovalActivityError: Error, CustomLocalizedStringResourceConvertible {
@@ -97,7 +97,7 @@ struct DenyApprovalActivityIntent: LiveActivityIntent {
     }
 }
 
-/// Approve a plain (not sensitive) request from the Lock Screen: iOS asks to unlock first.
+/// Approve from the Lock Screen: iOS asks to unlock first. The app decides how (plain, sensitive, strict mode).
 struct ApproveApprovalActivityIntent: LiveActivityIntent {
     static let title: LocalizedStringResource = "Approve an approval"
     static let isDiscoverable = false
@@ -112,29 +112,7 @@ struct ApproveApprovalActivityIntent: LiveActivityIntent {
     @MainActor
     func perform() async throws -> some IntentResult {
         guard let approve = ApprovalActivityCommands.approve else { throw ApprovalActivityError.notInApp }
-        await approve(approvalId)
-        return .result()
-    }
-}
-
-/// Approve a sensitive request: unlock, open Secretary on the request's card, and start the approve step there
-/// (the Face ID prompt over the card with the exact commands; cancelling leaves the card open).
-struct ApproveOnCardIntent: AppIntent {
-    static let title: LocalizedStringResource = "Review and approve"
-    static let isDiscoverable = false
-    static let openAppWhenRun = true
-    static let authenticationPolicy: IntentAuthenticationPolicy = .requiresAuthentication
-
-    @Parameter(title: "Approval") var approvalId: String
-
-    init() {}
-
-    init(approvalId: String) { self.approvalId = approvalId }
-
-    @MainActor
-    func perform() async throws -> some IntentResult {
-        guard let approveOnCard = ApprovalActivityCommands.approveOnCard else { throw ApprovalActivityError.notInApp }
-        await approveOnCard(approvalId)
+        await approve(approvalId, self)
         return .result()
     }
 }

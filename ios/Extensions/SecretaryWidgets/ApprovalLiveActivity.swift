@@ -192,17 +192,11 @@ private struct ApprovalActivityBody: View {
                     Label("Deny", systemImage: "xmark").frame(maxWidth: .infinity, minHeight: compact ? 28 : 36)
                 }
                 .tint(LucinaTokens.Colors.negative)
-                if attributes.sensitive {
-                    Button(intent: ApproveOnCardIntent(approvalId: attributes.approvalId)) {
-                        Label("Approve", systemImage: "faceid").frame(maxWidth: .infinity, minHeight: compact ? 28 : 36)
-                    }
-                    .tint(LucinaTokens.Colors.accent)
-                } else {
-                    Button(intent: ApproveApprovalActivityIntent(approvalId: attributes.approvalId)) {
-                        Label("Approve", systemImage: "checkmark").frame(maxWidth: .infinity, minHeight: compact ? 28 : 36)
-                    }
-                    .tint(LucinaTokens.Colors.accent)
+                Button(intent: ApproveApprovalActivityIntent(approvalId: attributes.approvalId)) {
+                    Label("Approve", systemImage: attributes.sensitive ? "faceid" : "checkmark")
+                        .frame(maxWidth: .infinity, minHeight: compact ? 28 : 36)
                 }
+                .tint(LucinaTokens.Colors.accent)
             }
             .font(LucinaTokens.Fonts.subheadline.weight(.semibold))
             .buttonStyle(.borderedProminent)

@@ -24,8 +24,11 @@ final class FakeApprovalSigner: ApprovalSigning, @unchecked Sendable {
     func commitKey(keyId: String) throws { self.keyId = keyId }
     func removeKey() throws { keyId = nil }
 
-    func sign(_ message: String, reason: String) async throws -> ApprovalProof {
+    private(set) var modes: [ApprovalAuthMode] = []
+
+    func sign(_ message: String, reason: String, mode: ApprovalAuthMode) async throws -> ApprovalProof {
         signed.append((message, reason))
+        modes.append(mode)
         if let error { throw error }
         return ApprovalProof(keyId: keyId ?? "", signature: "c2ln")
     }
@@ -460,6 +463,78 @@ final class ApprovalsTests: XCTestCase {
         // A plain open (a notification tap) does not start it.
         await store.open(id: "apr_secret")
         XCTAssertFalse(store.takeStartApprove("apr_secret"))
+    }
+
+    func testStrictFaceIDIsOffByDefaultAndPickedUpFromTheSetting() async throws {
+        XCTAssertFalse(store.strictFaceID)
+        XCTAssertEqual(store.cardAuthMode, .reuseUnlock(interactive: true))
+        StubURLProtocol.handler = { _ in .init(body: #"{"status":"approved"}"#) }
+        let item = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_s", sensitive: true))
+        _ = await store.answer(item, .approve)
+        XCTAssertEqual(signer.modes, [.reuseUnlock(interactive: true)], "the card's Approve counts a recent Face ID unlock")
+        store.setStrictFaceID(true)
+        XCTAssertEqual(defaults.object(forKey: ApprovalsStore.strictFaceIDKey) as? Bool, true)
+        _ = await store.answer(item, .approve)
+        XCTAssertEqual(signer.modes.last, .prompt)
+        let again = ApprovalsStore(api: { nil }, signer: signer, notifier: notifier, defaults: defaults)
+        XCTAssertTrue(again.strictFaceID, "kept on this iPhone")
+        again.reset()
+        XCTAssertTrue(ApprovalsStore(api: { nil }, signer: signer, notifier: notifier, defaults: defaults).strictFaceID,
+                      "signing out never makes approvals less strict")
+    }
+
+    func testTheActivitysApproveRoute() {
+        typealias S = ApprovalsStore
+        XCTAssertEqual(S.activityApproveRoute(sensitive: false, strict: false), .decide(nil))
+        XCTAssertEqual(S.activityApproveRoute(sensitive: false, strict: true), .decide(nil))
+        XCTAssertEqual(S.activityApproveRoute(sensitive: true, strict: false), .decide(.reuseUnlock(interactive: false)))
+        XCTAssertEqual(S.activityApproveRoute(sensitive: true, strict: true), .openCard)
+        // After the background signature: no Face ID unlock to reuse (nil), no key → the card; an answer → done.
+        XCTAssertTrue(S.needsCard(after: nil))
+        XCTAssertTrue(S.needsCard(after: .needsSetup))
+        XCTAssertTrue(S.needsCard(after: .pinRequired))
+        XCTAssertFalse(S.needsCard(after: .approved))
+        XCTAssertFalse(S.needsCard(after: .expired))
+        XCTAssertFalse(S.needsCard(after: .failed("boom")))
+    }
+
+    func testTheActivitysApproveSignsSilentlyOrHandsOverToTheCard() async throws {
+        StubURLProtocol.handler = { request in
+            request.url?.path.hasSuffix("/decide") == true ? .init(body: #"{"status":"ok"}"#) : .init(body: "{}")
+        }
+        var settled: [String: ApprovalOutcome] = [:]
+        store.onSettled = { id, outcome in settled[id] = outcome }
+        let secret = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_secret", sensitive: true))
+        let plain = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_plain", sensitive: false))
+        await store.apply([secret, plain])
+
+        // A recent Face ID unlock: signed in the background, without a prompt.
+        let needsCard = await store.approveFromActivity(id: "apr_secret")
+        XCTAssertFalse(needsCard)
+        XCTAssertEqual(signer.modes, [.reuseUnlock(interactive: false)])
+        XCTAssertEqual(decodeBody(try XCTUnwrap(decideRequests().last))["decision"] as? String, "approve")
+        XCTAssertEqual(settled["apr_secret"], .approved)
+
+        // Unlocked with the passcode, or too long ago: nothing is sent, the card takes over.
+        await store.apply([secret, plain])
+        signer.error = ApprovalSignError.needsInteraction
+        let sent = decideRequests().count
+        let handOver = await store.approveFromActivity(id: "apr_secret")
+        XCTAssertTrue(handOver)
+        XCTAssertEqual(decideRequests().count, sent)
+        XCTAssertTrue(notifier.failures.isEmpty)
+
+        // Strict mode: the card, nothing signed in the background.
+        store.setStrictFaceID(true)
+        let signs = signer.modes.count
+        let strict = await store.approveFromActivity(id: "apr_secret")
+        XCTAssertTrue(strict)
+        XCTAssertEqual(signer.modes.count, signs)
+
+        // A plain request is answered at once, strict or not.
+        let plainCard = await store.approveFromActivity(id: "apr_plain")
+        XCTAssertFalse(plainCard)
+        XCTAssertEqual(settled["apr_plain"], .approved)
     }
 
     /// The push-to-start attributes exactly as the server sends them (crates/secretary-server/src/notify/live.rs,

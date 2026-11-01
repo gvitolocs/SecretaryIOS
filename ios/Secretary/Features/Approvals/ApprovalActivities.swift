@@ -1,5 +1,7 @@
 import ActivityKit
+import AppIntents
 import Foundation
+import UIKit
 import os
 
 /// The app's side of the approval Live Activity (Secretary/Shared/ApprovalActivity.swift): it sends the push-to-start
@@ -16,7 +18,7 @@ final class ApprovalActivities {
     static let ownAnswerLinger: TimeInterval = 4
 
     private let defaults: UserDefaults
-    private let log = Logger(subsystem: "tech.getsecretary.app", category: "ApprovalActivity")
+    fileprivate let log = Logger(subsystem: "tech.getsecretary.app", category: "ApprovalActivity")
     private var client: APIClient?
     private var status: ((String) async -> ApprovalStatus?)?
     private var observing = false
@@ -44,15 +46,29 @@ final class ApprovalActivities {
             await AppModel.shared.approvals.handleNotification(actionIdentifier: ApprovalNotifier.denyAction,
                                                                approvalId: id, sensitive: sensitive)
         }
-        // The plain Approve answers like the notification's; a request that became sensitive opens its card.
-        ApprovalActivityCommands.approve = { id in
-            await AppModel.shared.approvals.handleNotification(actionIdentifier: ApprovalNotifier.approveAction,
-                                                               approvalId: id, sensitive: false)
+        // Approve: a plain request is answered; a sensitive one is signed in the background after a recent Face ID
+        // unlock. When that can't be done (strict mode, a passcode unlock, too long ago), the card takes over.
+        ApprovalActivityCommands.approve = { id, intent in
+            guard await AppModel.shared.approvals.approveFromActivity(id: id) else { return }
+            await continueOnCard(id, intent: intent)
         }
-        // The app is coming to the front: the card opens and starts the approve step (Face ID or the PIN).
-        ApprovalActivityCommands.approveOnCard = { id in
-            await AppModel.shared.approvals.open(id: id, startApprove: true)
+    }
+
+    /// Brings the app to the front on `id`'s card with its approve step started (Face ID or the PIN over the commands).
+    /// iOS asks the owner to continue in Secretary; declined, the card is there the next time the app opens.
+    private static func continueOnCard(_ id: String, intent: any AppIntent) async {
+        let store = AppModel.shared.approvals
+        if UIApplication.shared.applicationState != .active, let foreground = intent as? any ForegroundContinuableIntent {
+            do {
+                try await foreground.requestToContinueInForeground {
+                    await store.open(id: id, startApprove: true)
+                }
+                return
+            } catch {
+                ApprovalActivities.shared.log.info("approval card not brought to the front: \(error.localizedDescription, privacy: .public)")
+            }
         }
+        await store.open(id: id, startApprove: true)
     }
 
     /// Watches the tokens and the activities (from AppModel, once it is built). `status` looks a request up on the
@@ -224,3 +240,7 @@ final class ApprovalActivities {
         updateTokens[id] = nil
     }
 }
+
+/// The Live Activity's Approve may have to bring the app to the front (the card). Declared here, in the app only:
+/// app extensions cannot continue in the foreground.
+extension ApproveApprovalActivityIntent: ForegroundContinuableIntent {}

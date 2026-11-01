@@ -85,6 +85,15 @@ struct ApprovalsSettingsSection: View {
         } footer: {
             Text("When Lucina needs your OK, the main device gets the prompt first. Your other devices get it after \(store.settings?.escalateAfterSecs ?? 30) seconds. Secrets, root commands, messages and payments need Face ID or the passcode, or your PIN, on the device that approves them.")
         }
+
+        Section {
+            Toggle(isOn: Binding(get: { store.strictFaceID }, set: { store.setStrictFaceID($0) })) {
+                Label("Require Face ID for root approvals", systemImage: "faceid")
+            }
+            .accessibilityIdentifier("approvalsStrictFaceID")
+        } footer: {
+            Text("Off: right after you unlock with Face ID, Approve works in one tap. Anyone holding your unlocked iPhone could approve. On: Face ID is asked for every approval.")
+        }
     }
 
     @ViewBuilder private var status: some View {

@@ -40,6 +40,9 @@ final class ApprovalsStore {
     static let backoffInterval: Duration = .seconds(30)
     static let errorInterval: Duration = .seconds(10)
     static let notifiedKey = "secretary.approvals.notified"
+    /// "Require Face ID for root approvals", this iPhone only. Off (the default): a Face ID unlock in the last
+    /// 5 minutes signs a sensitive approve in one tap.
+    static let strictFaceIDKey = "secretary.approvals.strictFaceID"
     static let notifiedLimit = 100
 
     private(set) var pending: [ApprovalItem] = []
@@ -54,6 +57,8 @@ final class ApprovalsStore {
     private(set) var pinEntry = false
     /// The card opened from the Live Activity's sensitive Approve: it starts the approve step as it appears.
     private(set) var startApproveId: String?
+    /// "Require Face ID for root approvals" (Settings → Approvals).
+    private(set) var strictFaceID: Bool
 
     // Settings → Approvals
     private(set) var settings: ApprovalSettings?
@@ -92,7 +97,16 @@ final class ApprovalsStore {
         self.previews = previews
         self.deviceLabel = deviceLabel
         self.defaults = defaults
+        strictFaceID = defaults.bool(forKey: Self.strictFaceIDKey)
     }
+
+    func setStrictFaceID(_ on: Bool) {
+        strictFaceID = on
+        defaults.set(on, forKey: Self.strictFaceIDKey)
+    }
+
+    /// How a sensitive approve on the card asks: Face ID every time in strict mode, else a recent Face ID unlock counts.
+    var cardAuthMode: ApprovalAuthMode { strictFaceID ? .prompt : .reuseUnlock(interactive: true) }
 
     // MARK: - Polling
 
@@ -290,9 +304,11 @@ final class ApprovalsStore {
     /// This iPhone knows the owner set a PIN (from Settings → Approvals, loaded when a sensitive prompt opens).
     var hasPin: Bool { settings?.hasPin ?? false }
 
-    /// Sends the answer. A sensitive approve carries the owner's `pin`, or is signed first (Face ID or the passcode);
-    /// a deny never needs either. Nil: Face ID was cancelled. `.pinRequired`: the PIN pad takes over.
-    func answer(_ item: ApprovalItem, _ decision: ApprovalDecision, pin: String? = nil) async -> ApprovalOutcome? {
+    /// Sends the answer. A sensitive approve carries the owner's `pin`, or is signed first (Face ID or the passcode, as
+    /// `mode` says; default: `cardAuthMode`); a deny never needs either. Nil: Face ID was cancelled, or it had to be
+    /// shown and `mode` does not allow it. `.pinRequired`: the PIN pad takes over.
+    func answer(_ item: ApprovalItem, _ decision: ApprovalDecision, pin: String? = nil,
+                mode: ApprovalAuthMode? = nil) async -> ApprovalOutcome? {
         guard let api = api() else { return .failed(APIError.network(message: "").userMessage) }
         var proof: ApprovalProof?
         var sentPin: String?
@@ -303,8 +319,11 @@ final class ApprovalsStore {
                 return hasPin ? .pinRequired : .needsSetup
             } else {
                 do {
-                    proof = try await signer.sign(item.signingString(for: .approve), reason: item.summary.isEmpty ? item.action : item.summary)
+                    proof = try await signer.sign(item.signingString(for: .approve), reason: item.summary.isEmpty ? item.action : item.summary,
+                                                  mode: mode ?? cardAuthMode)
                 } catch ApprovalSignError.cancelled {
+                    return nil
+                } catch ApprovalSignError.needsInteraction {
                     return nil
                 } catch ApprovalSignError.noKey {
                     return hasPin ? .pinRequired : .needsSetup
@@ -398,15 +417,65 @@ final class ApprovalsStore {
                 return
             }
             guard let result = await answer(item, decision) else { return }
-            if result.isFinal {
-                pending.removeAll { $0.id == item.id }
-                onPendingChanged?(pending)
-                if sheetItem?.id == item.id { sheetItem = nil; outcome = nil }
-                await notifier.remove(ids: [item.id])
-                onSettled?(item.id, result)
-            } else {
-                await notifier.postFailure(for: item)
-            }
+            await finishButtonAnswer(item, result)
+        }
+    }
+
+    /// A button's answer (notification, Live Activity): tidy up, or tell the owner it failed.
+    private func finishButtonAnswer(_ item: ApprovalItem, _ result: ApprovalOutcome) async {
+        if result.isFinal {
+            pending.removeAll { $0.id == item.id }
+            onPendingChanged?(pending)
+            if sheetItem?.id == item.id { sheetItem = nil; outcome = nil }
+            await notifier.remove(ids: [item.id])
+            onSettled?(item.id, result)
+        } else {
+            await notifier.postFailure(for: item)
+        }
+    }
+
+    /// What the Live Activity's Approve does with a request, before anything is signed.
+    enum ActivityApproveRoute: Equatable {
+        /// Answer from the Lock Screen: no signature (`nil`, a plain request), or one with this mode.
+        case decide(ApprovalAuthMode?)
+        /// Open the card in front and start its approve step.
+        case openCard
+    }
+
+    /// Plain requests are answered at once. A sensitive one is signed in the background with a recent Face ID
+    /// unlock, unless the owner asked for Face ID every time (strict): then the card asks.
+    nonisolated static func activityApproveRoute(sensitive: Bool, strict: Bool) -> ActivityApproveRoute {
+        guard sensitive else { return .decide(nil) }
+        return strict ? .openCard : .decide(.reuseUnlock(interactive: false))
+    }
+
+    /// After the background attempt: the card takes over when no signature could be made without showing Face ID
+    /// (unlocked with the passcode or too long ago, cancelled, no key: `nil`, `.needsSetup`, `.pinRequired`).
+    nonisolated static func needsCard(after result: ApprovalOutcome?) -> Bool {
+        switch result {
+        case nil, .needsSetup?, .pinRequired?: return true
+        default: return false
+        }
+    }
+
+    /// The Live Activity's Approve (iOS ran it after the iPhone was unlocked; the app may be in the background). True:
+    /// the approve step has to happen on the card, in front.
+    func approveFromActivity(id: String) async -> Bool {
+        var known = pending.first { $0.id == id }
+        if known == nil, let api = api() { known = try? await api.get(id) }
+        guard let item = known else { return true }
+        guard item.status == nil || item.status == .pending else {
+            await handleNotification(actionIdentifier: ApprovalNotifier.approveAction, approvalId: id, sensitive: item.sensitive)
+            return false
+        }
+        switch Self.activityApproveRoute(sensitive: item.sensitive, strict: strictFaceID) {
+        case .openCard:
+            return true
+        case let .decide(mode):
+            let result = await answer(item, .approve, mode: mode)
+            if Self.needsCard(after: result) { return true }
+            if let result { await finishButtonAnswer(item, result) }
+            return false
         }
     }
 

@@ -137,10 +137,19 @@ The Dynamic Island shows the same, compact.
 - **Deny** works without unlocking (like the widget).
 - **Approve** of a plain request needs the iPhone unlocked (Face ID or the
   passcode), then answers from the lock screen.
-- **Approve** of a sensitive request (root plans) opens the app on that card
-  and starts the approve step at once: the Face ID prompt (or the PIN pad)
-  appears over the card that shows the exact commands. Cancelling leaves the
-  card open. The Face ID signature or the PIN is still required.
+- **Approve** of a sensitive request (root plans): when the iPhone was
+  unlocked with Face ID in the last 5 minutes, the app signs with its Face ID
+  key in the background, without a second prompt (the unlock's biometric
+  authentication is reused; the key and the server's signature check are
+  unchanged). Otherwise (unlocked with the passcode, too long ago, no key) the
+  app comes to the front on that card and starts the approve step there: the
+  Face ID prompt (or the PIN pad) over the exact commands. Cancelling leaves
+  the card open. The card's own Approve also reuses a recent Face ID unlock.
+- Settings → Approvals → **Require Face ID for root approvals** (this iPhone,
+  off by default) turns the reuse off: Face ID is asked for every approval,
+  and the activity's sensitive Approve goes to the card. The trade-off of
+  leaving it off: anyone holding the iPhone within 5 minutes of a Face ID
+  unlock could approve with one tap.
 
 When the request is answered anywhere, withdrawn or expires, the server ends
 the activity (an `end` push to its update token); the app also ends any
