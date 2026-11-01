@@ -353,6 +353,7 @@ could not be made", route `/gallery/lab`, `dedupKey lab:<job>`), the same path t
     - It sends originals (edited renderings as new versions, both halves of Live Photos) and a JPEG preview, because the server cannot decode HEIC.
     - Transfers go through a background URLSession. A BGProcessingTask and the app-refresh task continue the work.
     - Rules: Wi-Fi only, while charging, include videos. It never deletes on the phone.
+    - While Secretary is closed (iOS 27), iOS uploads new photos itself: see "Background uploads" below.
 - **Lucina** (`lucina-tools` `media` tool, `lucina-server` `chat/media_turn.rs`):
   - Requests about photos, videos or albums run a short tool loop.
   - Results go to "Lucina's picks", and the reply gets a "Show in Gallery" route button (`/gallery/album/<id>`).
@@ -568,6 +569,40 @@ Every `/v1/media/*` request outside `/s/` passes p1's forward_auth, which allows
 - pauses the whole pass on network, timeout and 502–504 errors (retries after 120 s), and skips just the asset on anything else.
 
 An upload whose bytes are gone answers 410 on finish, and the phone starts that asset again. Ingest and the "finished" mark run in one blocking step, because a client hang-up drops the handler.
+
+## Background uploads (2026-11-01)
+
+Before, a photo reached the library only when Secretary ran: under a minute with the app open, 6 to 45 minutes when
+iOS woke it for a BGProcessing or app-refresh task. On iOS 27 the PhotoKit background upload extension
+(`ios/Extensions/SecretaryPhotoUpload`, `com.apple.photos.background-upload`) closes that gap: iOS calls it when there
+is upload work and performs the uploads itself, also while the app is closed.
+
+- **Phone.** The extension makes one upload job per new photo (and Live Photo motion half), with the same asset ids,
+  metadata and edited-rendering rules as `PhotoBackup.swift` (`BackgroundUploadShared.swift`). It only takes photos
+  added after it was turned on, plus edits of photos it sent; the app's backup keeps the backlog. There is no App
+  Group, so the app passes the server, key and device id through the shared keychain group, and the extension
+  passes back each photo it sent (the app's next pass moves them into its ledger). The backup turns it on with
+  `enableUploadJobExtension` (Wi-Fi only = `preventsExpensiveNetworkAccess`), and turns it off while "Only while
+  charging" is on. Photo backup settings show its state. Logs: `log stream --predicate 'category == "PhotoUpload"'`.
+- **Info.plist.** `BackgroundUploadURLBase` must be inside `EXAppExtensionAttributes`: with it only at the top level,
+  as Apple's tutorial shows, assetsd refuses the extension (`com.apple.photos.error` 50207, "missing valid a
+  Info.plist BaseURL key"). `ios/project.yml` sets both.
+- **Server** (`bgupload.rs`, `resumable.rs`; own listener `LUCINA_MEDIA_BG_LISTEN`, 100.107.164.33:8831). iOS speaks
+  the IETF resumable upload draft (interop version 6 seen):
+  - `OPTIONS /v1/media/bgupload`: 200 with `Upload-Limit` (20 GB, p1's cap);
+  - `POST /v1/media/bgupload`: the file, with the metadata in `X-Lucina-Meta` (base64url `ClientMeta` JSON). The server
+    sends `104 Upload Resumption Supported` with the upload's URL, then 201 with `Upload-Offset`, `Upload-Complete`
+    (or the older `Upload-Incomplete`, answered in the client's dialect) and `X-Lucina-Item`;
+  - `HEAD`, `PATCH` (`Upload-Offset`, exact or 409) and `DELETE` on `/v1/media/bgupload/<id>.<token>`.
+  - hyper can't send a 1xx, so this listener hands each request its socket and the handler writes the 104 itself.
+  - The upload URL is a capability (a random token, stored as its blake3), because iOS may resume without the
+    original headers. Unfinished uploads are dropped after a week (`sweep_uploads`).
+  - A completed upload is ingested like the app's own: dedupe by device and asset id, then by hash.
+- **p1 Caddy** (`/etc/caddy/Caddyfile`): the POST needs a `Bearer` device key and passes forward_auth; the preflight and
+  the capability URLs skip device auth, but Caddy still adds the upstream key.
+- **HEIC without the phone's preview.** The extension sends only the original. ffmpeg 8 decodes an iPhone HEIC's tiles
+  but does not join them, so `heif.rs` decodes each tile stream and stitches them (cropped, EXIF-oriented, 2048 px)
+  into `preview.jpg`.
 
 ## Internal API for other services on nezopt
 
