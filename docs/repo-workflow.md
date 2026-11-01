@@ -75,7 +75,7 @@ row when a crate gains a path dependency.
 | `lucina-otp-relay` | p1 | `crates/lucina-otp-relay` (musl) | `deploy/lucina-otp/deploy.sh` | lucina-rs |
 | `secretary-server`, `secretary-mcp` | p1 | `crates/secretary-{server,mcp,core}` (musl) | `deploy/README.md` | server-live |
 | `web` | p1 | `web/`, `packages/lucina-stage`, `assets/icons` | `deploy/README.md` §4 | web-live |
-| `ios` | iPhone (built on the Mac) | `ios/`, `crates/secretary-{ffi,core,image}`, `design/` | Xcode → devicectl | ios-app |
+| `ios` | iPhone (built on the Mac) | `ios/`, `crates/secretary-{ffi,core,image}`, `design/` | `ios-install` on the Mac (see "iPhone installs") | ios-app |
 
 The Mac app (SecretaryCode `bundle-lucina-web.ts`) bundles the newest `deploy/web/*` tag, which is what p1 serves. It
 falls back to `origin/main`. `LUCINA_WEB_REF` still overrides it.
@@ -94,8 +94,34 @@ flock /tmp/lucina-merge.lock bash -c '
 '
 ```
 
-iOS: build and install on the Mac from a checkout at a `main` commit. Then record it on nezopt with
-`deploy-guard record --runtime ios --commit <sha>`.
+## iPhone installs
+
+Every build reaches the owner's iPhone through **`ios-install`** on the Mac (`~/.local/bin/ios-install`, since
+2026-11-01). On 2026-11-01 sessions installed branch builds over each other with raw `devicectl`: a test build at 09:18
+and an install at 10:38 that dropped the `SecretaryPhotoUpload` extension, and neither reached the deploy ledger.
+
+- `ios-install` installs `origin/main`'s tip. It resolves the tip on nezopt, runs `deploy-guard check --runtime ios`,
+  builds Release in its own clean worktree (`~/Library/Caches/ios-install`), takes the device lease and
+  `/tmp/iphone16e.lock`, installs with `devicectl`, and runs `deploy-guard record --runtime ios` (ledger, `deploy/ios/*`
+  tag, ops record). It refuses any other commit.
+- A test build of a branch needs the owner's own go and a lease:
+  1. `ios-install lease acquire --purpose "<what>"`;
+  2. get the go: `lucina-rs decide --impact high …` with a question naming the sha8 or your session id. It must be
+     decided by the owner, not by Lucina, and be at most 24 h old;
+  3. `ios-install --test-build --approval dc-<id> --commit <sha>`.
+
+  A test build is recorded in the ios-install history and `phone.json`, never in the deploy ledger. When you are done,
+  run `ios-install` to put main back, then `ios-install lease release`.
+- Phone test runs (`xcodebuild test` installs the test host over the app) go through
+  `ios-install exec [--approval dc-<id>] -- xcodebuild test …`. They need your lease, and an approval unless the
+  checkout is `main`'s clean tip.
+- `ios-install status` shows who holds the phone, what is on it, and the last installs. `--dry-run` checks everything
+  without touching the phone.
+- A Claude Code PreToolUse hook (`~/.claude/hooks/ios-install-guard.sh`) blocks raw `devicectl device install|uninstall`,
+  `ios-deploy`, `ideviceinstaller`, `pymobiledevice3 apps install` and `xcodebuild test|install` on the iPhone, also inside
+  scripts a command runs. Don't work around it. If `ios-install` refuses, report why to the coordinator.
+- Only the coordinator or the owner breaks another session's lease (`ios-install lease release --force --reason …`,
+  logged).
 
 ## Standalone crates
 
