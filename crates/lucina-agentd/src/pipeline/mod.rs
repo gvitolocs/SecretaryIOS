@@ -121,6 +121,9 @@ pub struct GateResult {
     pub command: String,
     pub ok: bool,
     pub seconds: u64,
+    /// It failed, then passed when run again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub flaky: bool,
 }
 
 /// What the executor wrote (`result.json`).

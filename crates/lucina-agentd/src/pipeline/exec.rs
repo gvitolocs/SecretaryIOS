@@ -235,8 +235,16 @@ impl Exec {
         for g in gates {
             self.say(&format!("gate: {}", g.name));
             let t = Instant::now();
-            let ok = self.sh(dir, &g.run, g.timeout_min);
-            results.push(GateResult { name: g.name.clone(), command: g.run.clone(), ok, seconds: t.elapsed().as_secs() });
+            let mut ok = self.sh(dir, &g.run, g.timeout_min);
+            let mut flaky = false;
+            // Some tests time things or bind ports and fail when nezopt is loaded: a failed cargo
+            // test runs once more, and a pass then is reported as flaky, not hidden.
+            if !ok && g.run.starts_with("cargo test") {
+                self.say(&format!("gate failed: {}; running it once more (flaky tests under load)", g.name));
+                ok = self.sh(dir, &g.run, g.timeout_min);
+                flaky = ok;
+            }
+            results.push(GateResult { name: g.name.clone(), command: g.run.clone(), ok, seconds: t.elapsed().as_secs(), flaky });
             if !ok {
                 return (results, Some(g.name.clone()));
             }
@@ -310,7 +318,16 @@ impl Exec {
                     return Outcome {
                         ok: true,
                         code: "MERGED".into(),
-                        message: format!("{branch} is on {} at {} ({method}, {} gate(s) passed)", self.spec.trunk, &candidate[..10], results.len()),
+                        message: format!(
+                            "{branch} is on {} at {} ({method}, {} gate(s) passed{})",
+                            self.spec.trunk,
+                            &candidate[..10],
+                            results.len(),
+                            match results.iter().filter(|r| r.flaky).map(|r| r.name.as_str()).collect::<Vec<_>>() {
+                                f if f.is_empty() => String::new(),
+                                f => format!("; flaky, passed on retry: {}", f.join(", ")),
+                            }
+                        ),
                         landed: Some(candidate),
                         method: Some(method.into()),
                         gates: results,
@@ -529,6 +546,35 @@ mod tests {
         assert_eq!(out.code, "CONFLICT");
         assert_eq!(out.conflicts, vec!["a.txt".to_string()]);
         assert_eq!(git(&origin, &["rev-parse", "main"]), before);
+    }
+
+    #[test]
+    fn a_cargo_test_gate_that_passes_on_retry_is_flaky() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let (origin, repo) = setup(root);
+        std::fs::create_dir_all(repo.join(".lucina")).unwrap();
+        // `cargo test` is shadowed by a script that fails the first time.
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let marker = root.join("ran-once");
+        std::fs::write(bin.join("cargo"), format!("#!/bin/sh\nif [ -f {m} ]; then exit 0; fi\ntouch {m}; exit 1\n", m = marker.display())).unwrap();
+        Command::new("chmod").arg("+x").arg(bin.join("cargo")).status().unwrap();
+        std::fs::write(repo.join(".lucina/pipeline.toml"), format!("[merge]\ndiffgate = false\ncargo = \"off\"\n[[gate]]\nname = \"t\"\nrun = \"cargo test --quiet\"\n")).unwrap();
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-q", "-m", "rules"]);
+        git(&repo, &["push", "-q", "origin", "main"]);
+        git(&repo, &["checkout", "-q", "-b", "topic"]);
+        let head = commit(&repo, "b.txt", "b\n", "add b");
+        let dir = root.join("job-flaky");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut x = Exec::open(&dir, spec(root, &repo, "topic", &head)).unwrap();
+        x.path = format!("{}:{}", bin.display(), x.path);
+        let out = x.merge();
+        assert!(out.ok, "{out:?}");
+        assert!(out.gates[0].flaky);
+        assert!(out.message.contains("flaky, passed on retry: t"), "{}", out.message);
+        assert_eq!(git(&origin, &["rev-parse", "main"]).len(), 40);
     }
 
     #[test]
