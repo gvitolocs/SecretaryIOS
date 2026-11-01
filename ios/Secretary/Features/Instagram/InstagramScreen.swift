@@ -332,7 +332,14 @@ private struct InstagramHighlightView: View {
                 }
             }.padding(.vertical)
         }.lucinaScreen("Highlights")
-            .task { await load() }.refreshable { await load(refresh: true) }
+            .task {
+                await load()
+                let items = store.pages[highlight.id]?.items ?? []
+                if PluginScreenshotHooks.opensHighlightStory, viewer == nil, !items.isEmpty {
+                    viewer = IgViewerRequest(items: items, start: 0, username: username, highlight: highlight)
+                }
+            }
+            .refreshable { await load(refresh: true) }
             .fullScreenCover(item: $viewer) { InstagramViewer(store: store, request: $0) }
             .overlay(alignment: .bottom) { IgNotice(store: store) }
     }
