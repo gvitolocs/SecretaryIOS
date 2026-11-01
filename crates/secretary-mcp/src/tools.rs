@@ -841,6 +841,8 @@ pub fn specs() -> Vec<ToolSpec> {
             "One crash report by id: message, stack, context (window, route, engine version, ...), how often and where it repeated, its attachments, and the end of its main log, so you can explain to the owner what happened and why (e.g. \"Secretary Code crashed at 19:44: the background service timed out\"). Secrets were scrubbed before storage."),
         spec!("diagnostics_file", "Crash report attachment", Scope::Read, ro = true, destructive = false, idempotent = true, crate::diagnostics::FileArgs,
             "Read a text attachment of a crash report (a log, a JSON dump), by default its end, up to 60000 characters per call. Binary attachments such as minidumps are not readable here."),
+        spec!("debug_events", "App debug events", Scope::Read, ro = true, destructive = false, idempotent = true, crate::debug_events::Args,
+            "What happened on the owner's devices, step by step, from the apps' debug event log: in-app taps, notification and Live Activity buttons, card intents, Face ID / passcode prompts and results, approval decisions, unlock-key enrollment, app launch / foreground / background, background tasks and every server request (method, path with ids as {id}, status, error code, duration). Oldest first with times in the owner's time zone, device, process (app, widgets, share …), type, fields, seq and build commit. Filter by device (\"iphone\"), since (\"30m\", \"2h\", a date), until, type prefix (\"net\", \"auth\", \"notification.action\") and limit. Use it to see what the owner did in a phone test and what failed, without asking him. Never holds secrets or message, note or command text."),
 
     ]
 }
@@ -2382,6 +2384,11 @@ impl Tools<'_> {
             "diagnostics_file" => d.file(parse(args)?).await,
             _ => Err(bad(format!("unknown tool {name}"))),
         }
+    }
+
+    /// `debug_events`.
+    pub async fn debug_events(&self, args: &JsonObject) -> ToolResult {
+        crate::debug_events::query(&self.app.backend, parse(args)?, self.app.cfg.timezone).await
     }
 
     pub async fn status(&self) -> ToolResult {

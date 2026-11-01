@@ -1,4 +1,4 @@
-//! Command line: `serve`, `token issue|list|revoke`, `oauth list|revoke`.
+//! Command line: `serve`, `token issue|list|revoke`, `oauth list|revoke`, `debug-events`.
 
 use std::path::PathBuf;
 
@@ -31,6 +31,24 @@ pub enum Cmd {
     Oauth {
         #[command(subcommand)]
         cmd: OauthCmd,
+    },
+    /// The apps' debug event log, as the `debug_events` tool shows it (secretary-server
+    /// from SECRETARY_MCP_BACKEND_URL with SECRETARY_MCP_BACKEND_TOKEN_FILE).
+    DebugEvents {
+        /// Device id or part of its name, e.g. iphone.
+        #[arg(long)]
+        device: Option<String>,
+        /// 30m, 2h, 1d, YYYY-MM-DD or RFC 3339.
+        #[arg(long)]
+        since: Option<String>,
+        #[arg(long)]
+        until: Option<String>,
+        /// Type prefix: net, ui.tap, notification, auth, approval, …
+        #[arg(long = "type")]
+        kind: Option<String>,
+        /// Newest matching events to show (1-500).
+        #[arg(long, default_value_t = crate::debug_events::DEFAULT_LIMIT)]
+        limit: u32,
     },
 }
 
@@ -82,6 +100,22 @@ pub fn run_admin(cmd: Cmd) -> anyhow::Result<i32> {
     let dir = data_dir();
     match cmd {
         Cmd::Serve => unreachable!("serve is handled by main"),
+        Cmd::DebugEvents { device, since, until, kind, limit } => {
+            let cfg = crate::Config::from_env()?;
+            let backend = crate::backend::Backend::new(&cfg.backend_url, cfg.backend_token.clone(), None);
+            let args = crate::debug_events::Args { device, since, until, kind, limit: Some(limit) };
+            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+            match rt.block_on(crate::debug_events::query(&backend, args, cfg.timezone)) {
+                Ok(text) => {
+                    print!("{text}");
+                    Ok(0)
+                }
+                Err(e) => {
+                    eprintln!("{}", e.0);
+                    Ok(1)
+                }
+            }
+        }
         Cmd::Token { cmd } => {
             let store = crate::tokens::TokenStore::new(&dir);
             match cmd {

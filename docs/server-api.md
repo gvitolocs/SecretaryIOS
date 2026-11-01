@@ -1511,6 +1511,24 @@ device token** (a speaker, one paired but not connected yet, the phone app)
 reads only its own id (`403 owner_only` for any other, even an unknown one). `404 device_not_found` for an id with no voice data, `400 bad_request`
 for a malformed parameter, `401` without credentials.
 
+## Debug events
+
+The apps' step-by-step debug log (taps, intents, notifications, Live Activities, Face ID, approvals, failed
+requests; never secrets or text). Full contract, the never-log list and how to read a phone test:
+[debug-events.md](debug-events.md).
+
+### `POST /v1/debug/events` (device token)
+
+`{events: [{ts, seq, build, process, type, fields}]}`, at most 200 events and 256 KiB; the server sets `device`,
+re-runs the sanitizer (an event with a forbidden field name is refused alone) and appends to
+`debug-events.jsonl` (0600, rotated at 50 MiB, 3 old files kept). Answer `{accepted, refused: [{seq, reason}],
+max_seq}`. `403 devices_only` for the service token, `429` past 30 batches a minute per device.
+
+### `GET /v1/debug/events?device=&since=&until=&type=&limit=` (device or service token)
+
+`device` = id or part of a name, `since` / `until` = RFC 3339, `YYYY-MM-DD` or `30m` / `2h` / `1d`, `type` = prefix,
+`limit` 1–2000 (default 200). Answer `{count, more, events}`, the newest matches, oldest first.
+
 ## Avatar wardrobe
 
 Lucina's 3D avatar has outfits, hairstyles and hair colours. The owner picks
