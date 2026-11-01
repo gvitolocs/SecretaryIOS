@@ -117,13 +117,17 @@ Designed:
 Built: `GET /pipeline/board` and `lagent board`: every worktree workspace with its state (`open`, `merge_queued`,
 `merging`, `merged`, `stale` = unmerged and idle over 3 days), changes ahead, dirtiness, idle days and session;
 worktrees nobody registered (`unmanaged`); the queue; recent jobs; leases; recent deploys (deploy-guard's
-history). secretary-server proxies `/v1/agents/*` to agentd; adding `pipeline` and `devices` to its top-level path
-list (`crates/secretary-server/src/agents.rs` `TOP`) and deploying it lets the app read `/v1/agents/pipeline/board`
-and `/v1/agents/devices` (patch ready; it waits for main's failing secretary-server Keep test to be fixed).
+history). secretary-server proxies `/v1/agents/*` to agentd, so the app reads `/v1/agents/pipeline/board` and
+`/v1/agents/devices`.
+
+Built: the web app's Pipeline section at `/agents/pipeline` (`web/src/components/agents/PipelinePage.tsx`, also in
+Secretary Code, which bundles the web app): running jobs, workspaces grouped by state with repo, branch, changes,
+session and `lagent top`'s load, leases, recent jobs and deploys. It is read-only. The board takes agentd up to about
+11 s on a busy nezopt, so the page reads it every 30 s while visible and never twice at once.
 
 Designed:
-- **App**: a "Pipeline" section on the Agents page (web and iOS) with the same rows, grouped by state, a job's log
-  on tap, and the leases. Read-only for agents; the owner can cancel a job or release a lease.
+- **App**: the same section in the native iOS app, a job's log on tap, and for the owner cancelling a job or
+  releasing a lease.
 - **Stale work**: once a day agentd asks `lucina_decide` about each stale workspace ("keep or archive
   `<branch>`: +N commits, idle D days, dirty?"), options keep / archive / merge, impact low for clean ones, medium
   for dirty ones (owner-only: dirty work is never thrown away without his answer). The decision id is kept on the
@@ -155,7 +159,7 @@ Designed:
 - **Sessions**: `lagent task adopt <path>` also takes a task back after a session lost its link. A session that calls
   `ssh nezopt lagent …` first shows as `nez@nez_opt`, until its hook reports the workspace (section 6).
 
-Not built yet: the app's Pipeline section and the daily stale question.
+Not built yet: the daily stale question.
 
 ## 6. Claude sessions
 

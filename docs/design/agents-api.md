@@ -394,6 +394,13 @@ past that the client gets `stream.reset` and refetches.
 - A client that lags behind the bus catches up from the buffer, or gets a reset.
 - secretary-server: at most 4 open streams per caller and 40 in all, terminal streams included (429 `too_many_streams`); a stream ends on
   shutdown, when Lucina is quiet for 90 s (the daemon sends a keep-alive comment every 15 s), or when it ends.
+- secretary-server starts every stream with the comment `: connected`. Caddy's `encode` holds the response headers until the
+  first write when the client accepts compression, as browsers do, so without it a quiet stream didn't open until the first
+  keep-alive (found 2026-11-01: 15.1 s through Caddy, 0.05 s at the server). It also keeps a large first frame from turning on
+  compression for the whole stream. Clients ignore comments.
+- The web page (`web/src/state/agents.ts`) says nothing about a drop of up to 5 s. After that it reads the REST routes: if they
+  fail it shows that the backend is down, with the server's message; if they work it says live updates are paused and refreshes
+  every 15 s. Either way it keeps retrying the stream and clears the message itself.
 
 ## Pushes
 

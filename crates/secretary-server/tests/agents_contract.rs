@@ -287,6 +287,16 @@ async fn the_broker_only_asks_and_the_mcp_never_answers() {
     assert_eq!(status, 200, "an owner device answers");
 }
 
+/// What a stream sends, up to and including `needle` (5 s at most).
+async fn read_until(body: &mut (impl futures_util::Stream<Item = reqwest::Result<Bytes>> + Unpin), needle: &str) -> String {
+    let mut text = String::new();
+    while !text.contains(needle) {
+        let chunk = tokio::time::timeout(Duration::from_secs(5), body.next()).await.expect(&text).unwrap().unwrap();
+        text.push_str(&String::from_utf8_lossy(&chunk));
+    }
+    text
+}
+
 #[tokio::test]
 async fn streams_pass_last_event_id_and_are_limited() {
     let h = harness().await;
@@ -295,9 +305,10 @@ async fn streams_pass_last_event_id_and_are_limited() {
     assert!(resp.headers()["content-type"].to_str().unwrap().starts_with("text/event-stream"));
     assert_eq!(resp.headers()["x-accel-buffering"], "no");
     let mut body = resp.bytes_stream();
-    let chunk = tokio::time::timeout(Duration::from_secs(5), body.next()).await.unwrap().unwrap().unwrap();
-    let text = String::from_utf8_lossy(&chunk);
-    assert!(text.contains("id: 101") && text.contains("\"after\":\"100\""), "{text}");
+    let text = read_until(&mut body, "id: 101").await;
+    // The comment comes first, before anything the daemon has to say (STREAM_OPEN explains why).
+    assert!(text.starts_with(": connected\n\n"), "{text}");
+    assert!(text.contains("\"after\":\"100\""), "{text}");
     // `?lastEventId=` passes as it is.
     h.req(Method::GET, "/v1/agents/stream?lastEventId=55", Some(&h.mac)).send().await.unwrap();
     assert_eq!(h.last().query.as_deref(), Some("lastEventId=55"));
@@ -320,8 +331,8 @@ async fn terminal_streams_and_owner_only_services() {
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.headers()["x-accel-buffering"], "no");
     let mut body = resp.bytes_stream();
-    let chunk = tokio::time::timeout(Duration::from_secs(5), body.next()).await.unwrap().unwrap().unwrap();
-    assert!(String::from_utf8_lossy(&chunk).contains("\"after\":\"10\""));
+    let text = read_until(&mut body, "\"after\":\"10\"").await;
+    assert!(text.starts_with(": connected\n\n"), "{text}");
     drop(body);
     for (public, daemon) in [
         ("/v1/agents/terminals?workspaceId=wks_1", "/api/secretary/agentd/terminals"),
