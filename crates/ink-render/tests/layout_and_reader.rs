@@ -404,3 +404,215 @@ fn emulated_session_with_gestures_and_font_changes() {
     assert_eq!(r.pagination().pages[rep.page].chapter, 1);
     assert_eq!(r.pagination().pages[rep.page].start, 0);
 }
+
+/// The page holding `a` in `pag`, and whether its first line holds `a` (or is the first after it).
+fn page_of(pag: &ink_render::Pagination, a: Anchor) -> (usize, bool) {
+    let i = pag.page_for(a);
+    let p = &pag.pages[i];
+    let first = p.lines.first().is_none_or(|l| l.line.end > a.offset);
+    (i, p.chapter == a.chapter && p.start <= a.offset && first)
+}
+
+#[test]
+fn the_page_at_an_anchor_is_the_paginators_page_there() {
+    let book = sample_book(150);
+    let mut f = fonts();
+    let base = Style::default();
+    let normal = paginate(&mut f, &base, PW3_SIZE, &book);
+    for px in [28u16, 40, 56, 72] {
+        let style = Style {
+            font_px: px,
+            ..base
+        };
+        // Anchors at old page starts (what a reader holds), mid-line and at a chapter's very start.
+        let mut anchors: Vec<Anchor> = (0..normal.pages.len())
+            .step_by(5)
+            .map(|i| normal.anchor_of(i))
+            .collect();
+        anchors.extend([
+            Anchor {
+                chapter: 2,
+                offset: 917,
+            },
+            Anchor {
+                chapter: 0,
+                offset: 0,
+            },
+            Anchor {
+                chapter: 1,
+                offset: u32::MAX,
+            },
+        ]);
+        for a in anchors {
+            let shown = ink_render::layout::pages_at(
+                &mut f,
+                &style,
+                PW3_SIZE,
+                &book,
+                a,
+                &mut ink_render::NoImages,
+                2,
+            );
+            assert!(!shown.is_empty(), "{px} {a:?}");
+            let mut lazy = ink_render::layout::Paginator::new(
+                style,
+                PW3_SIZE,
+                ink_render::layout::break_of(&shown[0]),
+            );
+            assert!(lazy.step(&mut f, &book, &mut ink_render::NoImages, None));
+            let whole = lazy.into_pagination();
+            let i = whole.pages.iter().position(|p| *p == shown[0]);
+            let i =
+                i.unwrap_or_else(|| panic!("{px} {a:?}: the shown page is not in the pagination"));
+            assert_eq!(&whole.pages[i..i + shown.len()], &shown[..], "{px} {a:?}");
+            if a.offset < u32::MAX {
+                assert_eq!(page_of(&whole, a), (i, true), "{px} {a:?}");
+            }
+            // Pages tile each chapter: every page ends where the next starts.
+            for w in whole.pages.windows(2) {
+                if w[0].chapter == w[1].chapter {
+                    assert_eq!(w[0].end, w[1].start);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_paginator_in_small_steps_gives_what_it_gives_at_once() {
+    let book = sample_book(150);
+    let mut f = fonts();
+    let style = Style::default();
+    let brk = Some((2, 900, 900));
+    let mut once = ink_render::layout::Paginator::new(style, PW3_SIZE, brk);
+    assert!(once.step(&mut f, &book, &mut ink_render::NoImages, None));
+    let mut steps = ink_render::layout::Paginator::new(style, PW3_SIZE, brk);
+    let mut n = 0;
+    // A deadline already past: one paragraph per step.
+    while !steps.step(
+        &mut f,
+        &book,
+        &mut ink_render::NoImages,
+        Some(std::time::Instant::now()),
+    ) {
+        n += 1;
+    }
+    assert!(n > 100, "{n} steps");
+    assert_eq!(steps.into_pagination(), once.into_pagination());
+    // Without a break it is paginate().
+    let mut plain = ink_render::layout::Paginator::new(style, PW3_SIZE, None);
+    plain.step(&mut f, &book, &mut ink_render::NoImages, None);
+    assert_eq!(
+        plain.into_pagination(),
+        paginate(&mut f, &style, PW3_SIZE, &book)
+    );
+}
+
+#[test]
+fn a_quick_style_change_shows_the_page_at_the_anchor_then_paginates_the_rest() {
+    let book = sample_book(150);
+    assert!(book.chapters.len() > 3);
+    let bigger = Style {
+        font_px: Style::default().step_font(1),
+        ..Style::default()
+    };
+    let mut r = reader(book.clone(), 0);
+    let at = r.pagination().anchor_of(37);
+    r.goto_anchor(at).unwrap();
+    let first = r.set_style_quick(bigger).unwrap();
+    assert!(r.layout_pending());
+    assert!(
+        first.updates.len() == 1 && first.updates[0].full,
+        "one full refresh"
+    );
+    assert_eq!((first.page, first.pages), (0, 2), "the page and the next");
+    let shown = r.pagination().pages[0].clone();
+    assert!(shown.start <= at.offset && shown.lines[0].line.end > at.offset);
+    assert_eq!(r.current_anchor(), at);
+    // No number in the footer while the rest is not paginated.
+    let (w, h) = (PW3_SIZE.w as usize, PW3_SIZE.h as usize);
+    let footer = (h - Style::default().margins.bottom as usize) * w;
+    let ink = |img: &GrayImage| {
+        (footer..img.data.len())
+            .filter(|&i| i % w > w / 2 && img.data[i] < 0x80)
+            .count()
+    };
+    assert_eq!(ink(r.screen()), 0, "no number");
+    let text = r.screen().data[..footer].to_vec();
+
+    // A little at a time, then the number comes with a partial update; the text stays.
+    let mut steps = 0;
+    while !r.layout_step(std::time::Duration::ZERO) {
+        steps += 1;
+    }
+    assert!(steps > 10 && !r.layout_pending());
+    let whole = r.page_count();
+    assert!(whole > 2);
+    assert_eq!(r.pagination().pages[r.page()], shown);
+    let rest = r.finish_layout().unwrap().expect("the number");
+    assert!(rest.updates.iter().all(|u| !u.full));
+    assert!(ink(r.screen()) > 0, "the number");
+    assert_eq!(r.screen().data[..footer], text[..]);
+    assert!(r.finish_layout().unwrap().is_none(), "nothing left");
+    assert_eq!(r.display().stale_pixels(), 0);
+
+    // A page turn while it is pending paginates the rest first and goes on from the page shown.
+    r.set_style_quick(Style::default()).unwrap();
+    let rep = r.next_page().unwrap().unwrap();
+    assert!(!r.layout_pending());
+    assert_eq!(rep.pages, r.page_count());
+    assert!(r.pagination().pages[rep.page].start > at.offset);
+
+    // Font+ then font- (quick) comes back to exactly the page it left.
+    let mut r = reader(book.clone(), 0);
+    r.goto_anchor(at).unwrap();
+    let before = r.screen().data.clone();
+    r.set_style_quick(bigger).unwrap();
+    r.set_style_quick(Style::default()).unwrap();
+    r.finish_layout().unwrap();
+    assert_eq!(r.screen().data, before);
+
+    // A one-chapter book works the same.
+    let mut one = reader(from_txt(b"Just one chapter of text.", "One"), 0);
+    one.set_style_quick(bigger).unwrap();
+    one.finish_layout().unwrap();
+    assert_eq!(one.page_count(), 1);
+}
+
+#[test]
+fn chapters_paginate_alone_as_in_the_whole_book() {
+    let book = sample_book(150);
+    let mut f = fonts();
+    let style = Style::default();
+    let whole = paginate(&mut f, &style, PW3_SIZE, &book);
+    let mut joined = Vec::new();
+    for ci in 0..book.chapters.len() {
+        joined.extend(ink_render::paginate_chapter_with(
+            &mut f,
+            &style,
+            PW3_SIZE,
+            &book,
+            ci,
+            &mut ink_render::NoImages,
+        ));
+    }
+    assert_eq!(joined, whole.pages);
+}
+
+#[test]
+fn a_bad_face_falls_back_to_the_regular_one() {
+    let mut f = fonts();
+    let bad = std::env::temp_dir().join(format!("ink-bad-face-{}.ttf", std::process::id()));
+    std::fs::write(&bad, b"not a font").unwrap();
+    // A file that does not parse counts as missing: the regular face draws it.
+    f.set_face(ink_render::Face::Italic, &bad).unwrap();
+    assert!(!f.has_face(ink_render::Face::Italic));
+    let gone = std::env::temp_dir().join("ink-no-such-face.ttf");
+    assert!(f.set_face(ink_render::Face::Bold, &gone).is_err());
+    assert!(!f.has_face(ink_render::Face::Bold));
+    assert!(f.measure(ink_render::Face::Italic, 30, "still drawn") > 0.0);
+    f.set_face(ink_render::Face::Italic, std::path::Path::new(FONT))
+        .unwrap();
+    assert!(f.has_face(ink_render::Face::Italic));
+    std::fs::remove_file(&bad).unwrap();
+}

@@ -79,7 +79,8 @@ enum BackgroundRefresh {
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
-        ApprovalNotifier.registerCategories()
+        // One-tap Approve as this iPhone last left it (the store registers them again when it changes).
+        ApprovalNotifier.registerCategories(oneTap: ApprovalsStore.oneTapReady(unlockKeyId: UnlockApprovalSigner().keyId))
         Task { @MainActor in APNsAdapter.registerIfEnabled() }
         // Photo backup: longer passes when iOS grants processing time (Wi-Fi, often charging).
         BGTaskScheduler.shared.register(forTaskWithIdentifier: PhotoBackup.processingIdentifier, using: nil) { task in
@@ -144,15 +145,30 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             guard app.phase == .signedIn else { return UIBackgroundFetchResult.noData }
             app.approvals.markNotified(approvalId)
             await app.approvals.poll()
+            // The push may land after the request's Live Activity card: the card carries it.
+            if ApprovalActivities.shared.hasCard(approvalId) {
+                await ApprovalActivities.shared.replaceNotifications([approvalId])
+            }
             return .newData
         }.value
     }
 
     /// Show banners while the app is open (the store only posts what the owner isn't looking at).
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
-        // An approval is already on screen as the prompt while the app is open: no banner on top of it.
-        if notification.request.content.userInfo[ApprovalNotifier.idKey] != nil { return [.list] }
+        // An approval is already on screen as the prompt while the app is open: no banner on top of it; and none at all
+        // while its Live Activity card is up (one alert per request).
+        if let id = notification.request.content.userInfo[ApprovalNotifier.idKey] as? String {
+            let card = await MainActor.run { ApprovalActivities.shared.hasCard(id) }
+            return card && !notification.request.identifier.hasPrefix("approval.failed.") ? [] : [.list]
+        }
         return [.banner, .list, .sound]
+    }
+
+    /// The trigger of a notification answer: only the notification's own Approve actions approve (the card one and
+    /// the one-tap one); a tap, Deny or any other action carries none.
+    static func approvalTrigger(forAction actionIdentifier: String) -> ApprovalTrigger? {
+        actionIdentifier == ApprovalNotifier.approveAction || actionIdentifier == ApprovalNotifier.approveInPlaceAction
+            ? .notificationApproveAction : nil
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
@@ -162,7 +178,14 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             // Local notifications say `approvalSensitive`, older server pushes only `sensitive`; unknown = sensitive.
             let sensitive = info[ApprovalNotifier.sensitiveKey] as? Bool ?? info["sensitive"] as? Bool ?? true
             let action = response.actionIdentifier
-            await AppModel.shared.approvals.handleNotification(actionIdentifier: action, approvalId: approvalId, sensitive: sensitive)
+            // The owner tapped the notification's Approve: the only place this trigger is made.
+            let trigger = Self.approvalTrigger(forAction: action)
+            // A root plan whose notification showed every command, and the hash of what it showed.
+            let inline = response.notification.request.content.categoryIdentifier == ApprovalNotifier.sensitiveInlineCategory
+            let shownHash = ApprovalNotifier.payloadHash(in: info)
+            await AppModel.shared.approvals.handleNotification(actionIdentifier: action, approvalId: approvalId,
+                                                               sensitive: sensitive, inline: inline, shownHash: shownHash,
+                                                               trigger: trigger)
             return
         }
         // A decision: an option or the owner's words from the notification, or its tap opens it.

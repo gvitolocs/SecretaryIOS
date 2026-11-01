@@ -878,7 +878,16 @@ async fn a_second_decision_is_refused_and_the_grant_is_stable() {
     let (a, b) = (h.device("iPhone"), h.device("iPad"));
     let id = h.ask("agent.permission").await;
     assert_eq!(h.decide(&a, &id, "approve", None).await.0, StatusCode::OK);
-    for (dev, decision) in [(&a, "approve"), (&b, "approve"), (&b, "deny")] {
+    // The same device's same answer again (a retried notification action) is a no-op 200.
+    let (s, v) = h.decide(&a, &id, "approve", None).await;
+    assert_eq!(
+        (s, v),
+        (
+            StatusCode::OK,
+            json!({"status": "approved", "repeated": true})
+        )
+    );
+    for (dev, decision) in [(&a, "deny"), (&b, "approve"), (&b, "deny")] {
         let (s, v) = h.decide(dev, &id, decision, None).await;
         assert_eq!(
             (s, v["error"]["code"].as_str()),
@@ -1840,7 +1849,13 @@ async fn a_pin_never_helps_with_the_other_checks() {
         .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(h.decide_pin(&a, &id, PIN).await.0, StatusCode::OK);
-    let r = h.decide_pin(&a, &id, PIN).await;
+    // The same answer again is a no-op (no PIN checked); another answer is refused.
+    let r = h.decide_pin(&a, &id, "000000").await;
+    assert_eq!(
+        (r.0, r.1["repeated"].clone()),
+        (StatusCode::OK, json!(true))
+    );
+    let r = h.decide(&a, &id, "deny", None).await;
     assert_eq!(code(&r), (StatusCode::CONFLICT, Some("approval_decided")));
 }
 
@@ -2075,9 +2090,16 @@ async fn a_mac_becomes_an_approver_only_with_the_iphones_face_id_and_can_be_revo
         .iter()
         .all(|a| a["id"] != root.as_str()));
 
-    // Replay: the same proof again, or on another request, does nothing.
-    let (s, _) = h.decide(&mac, &root, "approve", Some(good.clone())).await;
-    assert_eq!(s, StatusCode::CONFLICT);
+    // Replay: the same proof again, or on another request, does nothing (the same answer again: a no-op 200).
+    let (s, v) = h.decide(&mac, &root, "approve", Some(good.clone())).await;
+    assert_eq!((s, v["repeated"].clone()), (StatusCode::OK, json!(true)));
+    assert_eq!(
+        h.audit_events(&root)
+            .iter()
+            .filter(|e| *e == "decided")
+            .count(),
+        1
+    );
     let other = h.ask("root.exec").await;
     let (s, v) = h.decide(&mac, &other, "approve", Some(good.clone())).await;
     assert_eq!(
@@ -2301,4 +2323,389 @@ async fn the_pending_list_long_polls_until_it_changes() {
         "the poll ends at the expiry: {took:?}"
     );
     assert_eq!(v["approvals"], json!([]));
+}
+
+// -- the unlock key ------------------------------------------------------------
+
+/// The biometric key's proof that `unlock` may become `device_id`'s unlock key.
+fn unlock_proof(bio: &SigningKey, device_id: &str, pk_b64: &str) -> Value {
+    let sig: Signature =
+        bio.sign(format!("secretary-unlock-key-v1\n{device_id}\n{pk_b64}").as_bytes());
+    json!({"signature": STANDARD.encode(sig.to_der().as_bytes())})
+}
+
+impl H {
+    /// Enroll `unlock` as `dev`'s unlock key, proved by `bio` (its biometric key).
+    async fn enroll_unlock(
+        &self,
+        dev: &Dev,
+        bio: &SigningKey,
+        unlock: &SigningKey,
+    ) -> (StatusCode, Value) {
+        let pk = pk_b64(unlock);
+        self.call(
+            "POST",
+            "/v1/approvals/unlock-key",
+            Some(&dev.token),
+            Some(json!({"publicKey": pk, "proof": unlock_proof(bio, &dev.id, &pk)})),
+        )
+        .await
+    }
+
+    /// `dev`'s entry in the settings' device list.
+    async fn device_settings(&self, dev: &Dev) -> Value {
+        let (_, v) = self
+            .call("GET", "/v1/approvals/settings", Some(&dev.token), None)
+            .await;
+        v["devices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["id"] == dev.id.as_str())
+            .unwrap()
+            .clone()
+    }
+
+    fn audit_named(&self, event: &str) -> Vec<Value> {
+        self.audit()
+            .into_iter()
+            .filter(|e| e["event"] == event)
+            .collect()
+    }
+}
+
+fn refused(r: &(StatusCode, Value), status: StatusCode, code: &str) {
+    assert_eq!(
+        (r.0, r.1["error"]["code"].as_str()),
+        (status, Some(code)),
+        "{}",
+        r.1
+    );
+}
+
+#[tokio::test]
+async fn an_unlock_key_is_enrolled_with_face_id_and_approves_a_root_command() {
+    let h = harness(|_| {}).await;
+    let a = h.device("iPhone");
+    let (ka, ua, other) = (key(1), key(11), key(12));
+
+    // Only a device with a biometric key, which proves the new key.
+    refused(
+        &h.enroll_unlock(&a, &ka, &ua).await,
+        StatusCode::FORBIDDEN,
+        "biometric_key_required",
+    );
+    let (s, v) = h.register_key(&a, &ka).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let pua = pk_b64(&ua);
+    for (why, body) in [
+        ("no proof", json!({"publicKey": pua})),
+        (
+            "signed by the unlock key itself",
+            json!({"publicKey": pua, "proof": unlock_proof(&ua, &a.id, &pua)}),
+        ),
+        (
+            "signed by another key",
+            json!({"publicKey": pua, "proof": unlock_proof(&other, &a.id, &pua)}),
+        ),
+        (
+            "over another public key",
+            json!({"publicKey": pua, "proof": unlock_proof(&ka, &a.id, &pk_b64(&other))}),
+        ),
+        (
+            "the biometric key's registration proof",
+            json!({"publicKey": pua, "proof": key_proof(&ka, &a.id, &pua)}),
+        ),
+    ] {
+        let r = h
+            .call(
+                "POST",
+                "/v1/approvals/unlock-key",
+                Some(&a.token),
+                Some(body),
+            )
+            .await;
+        assert_eq!(
+            (r.0, r.1["error"]["code"].as_str()),
+            (StatusCode::BAD_REQUEST, Some("proof_invalid")),
+            "{why}: {}",
+            r.1
+        );
+    }
+    assert_eq!(h.device_settings(&a).await["hasUnlockKey"], false);
+    let (s, v) = h.enroll_unlock(&a, &ka, &ua).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let uid = v["keyId"].as_str().unwrap().to_owned();
+    assert_eq!(h.device_settings(&a).await["hasUnlockKey"], true);
+    assert_eq!(h.audit_named("unlock_key.enrolled").len(), 1);
+
+    // A root command, approved with the unlock key: no Face ID at signing time, and every record says so.
+    let id = h.ask("root.exec").await;
+    let (s, v) = h
+        .decide(
+            &a,
+            &id,
+            "approve",
+            Some(proof(&ua, &uid, &id, HASH, "approve")),
+        )
+        .await;
+    assert_eq!((s, v), (StatusCode::OK, json!({"status": "approved"})));
+    let decided: Vec<Value> = h
+        .audit_named("decided")
+        .into_iter()
+        .filter(|e| e["id"] == id.as_str())
+        .collect();
+    assert_eq!(decided.len(), 1);
+    assert_eq!(decided[0]["verifiedBy"], "unlock_key");
+    assert_eq!(decided[0]["biometric"], false);
+    assert_eq!(
+        decided[0]["via"],
+        "unlock key (notification/card) on iPhone"
+    );
+    let (_, item) = h
+        .call("GET", &format!("/v1/approvals/{id}"), Some(&a.token), None)
+        .await;
+    assert_eq!(item["verifiedBy"], "unlock_key");
+    assert_eq!(item["biometric"], false);
+    assert_eq!(
+        item["decidedVia"],
+        "unlock key (notification/card) on iPhone"
+    );
+    // The grant says the owner was verified (what the root verifier needs) and how.
+    let (_, w) = h.wait(&id, 0).await;
+    let g = h.verify_grant(w["grant"].as_str().unwrap()).await;
+    assert_eq!(
+        (g["verifiedBy"].clone(), g["biometric"].clone()),
+        (json!("unlock_key"), json!(true))
+    );
+
+    // Repeated (iOS retries the action): 200, one "decided" line, still one grant. The opposite answer: 409.
+    let (s, v) = h
+        .decide(
+            &a,
+            &id,
+            "approve",
+            Some(proof(&ua, &uid, &id, HASH, "approve")),
+        )
+        .await;
+    assert_eq!(
+        (s, v),
+        (
+            StatusCode::OK,
+            json!({"status": "approved", "repeated": true})
+        )
+    );
+    assert_eq!(
+        h.audit_events(&id)
+            .iter()
+            .filter(|e| *e == "decided")
+            .count(),
+        1
+    );
+    let (_, w2) = h.wait(&id, 0).await;
+    assert_eq!(w["grant"], w2["grant"]);
+    refused(
+        &h.decide(&a, &id, "deny", None).await,
+        StatusCode::CONFLICT,
+        "approval_decided",
+    );
+
+    // A replacement unlock key takes over; the old one no longer verifies.
+    let ua2 = key(13);
+    let (s, v) = h.enroll_unlock(&a, &ka, &ua2).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let id2 = h.ask("root.exec").await;
+    refused(
+        &h.decide(
+            &a,
+            &id2,
+            "approve",
+            Some(proof(&ua, &uid, &id2, HASH, "approve")),
+        )
+        .await,
+        StatusCode::FORBIDDEN,
+        "biometric_required",
+    );
+    let uid2 = v["keyId"].as_str().unwrap();
+    assert_eq!(
+        h.decide(
+            &a,
+            &id2,
+            "approve",
+            Some(proof(&ua2, uid2, &id2, HASH, "approve"))
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn another_devices_keys_never_verify_this_devices_decision() {
+    let h = harness(|_| {}).await;
+    let (a, b) = (h.device("iPhone"), h.device("iPad"));
+    let (ka, kb, ua) = (key(1), key(2), key(11));
+    let (_, v) = h.register_key(&a, &ka).await;
+    let ia = v["keyId"].as_str().unwrap().to_owned();
+    h.enroll(&b, &kb, &a, &ka, &ia).await;
+    let (_, v) = h.enroll_unlock(&a, &ka, &ua).await;
+    let uid = v["keyId"].as_str().unwrap().to_owned();
+
+    // The iPad answers with the iPhone's unlock key, or the iPhone's biometric key: refused, nothing decided.
+    let id = h.ask("root.exec").await;
+    for (why, sk, kid) in [
+        ("the iPhone's unlock key", &ua, &uid),
+        ("the iPhone's biometric key", &ka, &ia),
+    ] {
+        let r = h
+            .decide(
+                &b,
+                &id,
+                "approve",
+                Some(proof(sk, kid, &id, HASH, "approve")),
+            )
+            .await;
+        assert_eq!(
+            (r.0, r.1["error"]["code"].as_str()),
+            (StatusCode::FORBIDDEN, Some("biometric_required")),
+            "{why}: {}",
+            r.1
+        );
+    }
+    assert!(!h.audit_events(&id).contains(&"decided".to_owned()));
+    // An unlock key can't be enrolled with another device's biometric key either.
+    let ub = key(21);
+    refused(
+        &h.enroll_unlock(&b, &ka, &ub).await,
+        StatusCode::BAD_REQUEST,
+        "proof_invalid",
+    );
+    // The iPhone's own unlock key works for the iPhone.
+    assert_eq!(
+        h.decide(
+            &a,
+            &id,
+            "approve",
+            Some(proof(&ua, &uid, &id, HASH, "approve"))
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn the_unlock_key_never_adds_an_approver() {
+    let h = harness(|_| {}).await;
+    let (a, b) = (h.device("iPhone"), h.device("Mac"));
+    let (ka, kb, ua) = (key(1), key(2), key(11));
+    let (_, v) = h.register_key(&a, &ka).await;
+    let ia = v["keyId"].as_str().unwrap().to_owned();
+    let (_, v) = h.enroll_unlock(&a, &ka, &ua).await;
+    let uid = v["keyId"].as_str().unwrap().to_owned();
+    let (_, v) = h.register_key(&b, &kb).await;
+    let enroll = v["approvalId"].as_str().unwrap().to_owned();
+    let (_, item) = h
+        .call(
+            "GET",
+            &format!("/v1/approvals/{enroll}"),
+            Some(&a.token),
+            None,
+        )
+        .await;
+    let hash = item["payloadHash"].as_str().unwrap().to_owned();
+    let answer = |sk: &SigningKey, kid: &str| json!({"decision": "approve", "payloadHash": hash, "proof": proof(sk, kid, &enroll, &hash, "approve")});
+    let path = format!("/v1/approvals/{enroll}/decide");
+    let r = h
+        .call("POST", &path, Some(&a.token), Some(answer(&ua, &uid)))
+        .await;
+    refused(&r, StatusCode::FORBIDDEN, "biometric_required");
+    assert_eq!(h.device_settings(&b).await["hasBiometricKey"], false);
+    let r = h
+        .call("POST", &path, Some(&a.token), Some(answer(&ka, &ia)))
+        .await;
+    assert_eq!(r.0, StatusCode::OK, "{}", r.1);
+    assert_eq!(h.device_settings(&b).await["hasBiometricKey"], true);
+}
+
+#[tokio::test]
+async fn removing_the_unlock_key_or_the_biometric_key_ends_it() {
+    let h = harness(|_| {}).await;
+    let (a, b) = (h.device("iPhone"), h.device("iPad"));
+    let (ka, kb, ua) = (key(1), key(2), key(11));
+    let (_, v) = h.register_key(&a, &ka).await;
+    let ia = v["keyId"].as_str().unwrap().to_owned();
+    h.enroll(&b, &kb, &a, &ka, &ia).await;
+    let approve_with_unlock = |uid: String| {
+        let h = &h;
+        let (a, ua) = (&a, &ua);
+        async move {
+            let id = h.ask("root.exec").await;
+            h.decide(
+                a,
+                &id,
+                "approve",
+                Some(proof(ua, &uid, &id, HASH, "approve")),
+            )
+            .await
+        }
+    };
+
+    // DELETE: gone on the server, audited; it approves nothing any more.
+    let (_, v) = h.enroll_unlock(&a, &ka, &ua).await;
+    let uid = v["keyId"].as_str().unwrap().to_owned();
+    let r = h
+        .call("DELETE", "/v1/approvals/unlock-key", Some(&a.token), None)
+        .await;
+    assert_eq!(r, (StatusCode::OK, json!({"removed": true})));
+    assert_eq!(
+        h.call("DELETE", "/v1/approvals/unlock-key", Some(&a.token), None)
+            .await
+            .1,
+        json!({"removed": false})
+    );
+    assert_eq!(h.audit_named("unlock_key.removed").len(), 1);
+    refused(
+        &approve_with_unlock(uid.clone()).await,
+        StatusCode::FORBIDDEN,
+        "biometric_required",
+    );
+
+    // Another device revokes the iPhone's biometric key: its unlock key goes with it.
+    h.enroll_unlock(&a, &ka, &ua).await;
+    let r = h
+        .call(
+            "DELETE",
+            &format!("/v1/approvals/keys/{}", a.id),
+            Some(&b.token),
+            Some(json!({"proof": revoke_proof(&kb, &b.id, &a.id)})),
+        )
+        .await;
+    assert_eq!(r.0, StatusCode::OK, "{}", r.1);
+    assert_eq!(h.device_settings(&a).await["hasUnlockKey"], false);
+    refused(
+        &approve_with_unlock(uid.clone()).await,
+        StatusCode::FORBIDDEN,
+        "biometric_required",
+    );
+
+    // The iPad removes its own biometric key: same.
+    let ub = key(21);
+    let (s, v) = h.enroll_unlock(&b, &kb, &ub).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        h.call("DELETE", "/v1/approvals/keys", Some(&b.token), None)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(h.device_settings(&b).await["hasUnlockKey"], false);
+    assert_eq!(h.audit_named("unlock_key.removed").len(), 3);
+    // The unlock-key routes are a device's, never the service token's.
+    assert_eq!(
+        h.call("DELETE", "/v1/approvals/unlock-key", Some(&h.svc), None)
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
 }

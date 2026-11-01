@@ -185,14 +185,18 @@ pub fn start_body(r: &ActivityRequest, now_s: i64) -> Value {
     })
 }
 
-/// The body that ends an activity with `status` (`approved`, `denied`, `expired`, `withdrawn`), dismissed now.
+/// How long an ended activity stays on the Lock Screen, so its outcome can be read.
+pub const END_LINGER_SECS: i64 = 4;
+
+/// The body that ends an activity with `status` (`approved`, `denied`, `expired`, `withdrawn`), dismissed
+/// [`END_LINGER_SECS`] later.
 pub fn end_body(status: &str, now_s: i64) -> Value {
     json!({
         "aps": {
             "timestamp": now_s,
             "event": "end",
             "content-state": {"status": status},
-            "dismissal-date": now_s,
+            "dismissal-date": now_s + END_LINGER_SECS,
         }
     })
 }
@@ -373,7 +377,7 @@ mod tests {
                 "timestamp": 1_761_048_010,
                 "event": "end",
                 "content-state": {"status": "denied"},
-                "dismissal-date": 1_761_048_010,
+                "dismissal-date": 1_761_048_014,
             }})
         );
     }

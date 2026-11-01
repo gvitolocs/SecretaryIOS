@@ -175,6 +175,7 @@ struct MainTabs: View {
             app.isForeground = phase == .active
             if phase == .background {
                 PerfLog.backgrounded()
+                app.approvals.sceneBackgrounded()
                 app.publishWidgets()
                 BackgroundRefresh.schedule()
                 if app.backup.settings.enabled { PhotoBackup.scheduleProcessing(chargingOnly: app.backup.settings.chargingOnly) }
@@ -186,6 +187,14 @@ struct MainTabs: View {
         .task(id: foreground) {
             guard foreground else { return }
             await app.approvals.foregroundLoop()
+        }
+        // One-tap Approve is on by default: the first time in front with a Face ID key and no unlock key yet, one
+        // Face ID enrolls it. A moment after the launch, so a waiting request's card goes first.
+        .task(id: foreground) {
+            guard foreground else { return }
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled else { return }
+            await app.approvals.ensureUnlockKey()
         }
         .task(id: foreground) {
             guard foreground else { return }

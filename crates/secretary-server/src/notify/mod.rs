@@ -377,6 +377,8 @@ impl Notifier {
                         Some((
                             d["approvalId"].as_str()?.to_owned(),
                             d["sensitive"].as_bool().unwrap_or(false),
+                            d["payloadHash"].as_str().map(str::to_owned),
+                            d["detailsCut"].as_bool().unwrap_or(false),
                         ))
                     })
                     .flatten();
@@ -405,7 +407,7 @@ impl Notifier {
                     unread,
                     digest: false,
                     url: approval.as_ref().map(|_| n.route.clone()),
-                    sensitive: approval.as_ref().map(|(_, s)| *s),
+                    sensitive: approval.as_ref().map(|(_, s, _, _)| *s),
                     // The exact commands, for the lock screen's expanded view; hidden with previews off.
                     detail: approval
                         .as_ref()
@@ -413,7 +415,9 @@ impl Notifier {
                         .and_then(|_| n.data.as_ref()?["details"].as_str())
                         .filter(|d| !d.trim().is_empty())
                         .map(str::to_owned),
-                    approval_id: approval.map(|(id, _)| id),
+                    detail_cut: approval.as_ref().is_some_and(|(_, _, _, cut)| *cut),
+                    payload_hash: approval.as_ref().and_then(|(_, _, h, _)| h.clone()),
+                    approval_id: approval.map(|(id, _, _, _)| id),
                     decision_id: decision.as_ref().map(|(id, _)| id.clone()),
                     decision_options: decision.map(|(_, o)| o).unwrap_or_default(),
                 };
@@ -589,6 +593,8 @@ impl Notifier {
                 approval_id: None,
                 sensitive: None,
                 detail: None,
+                detail_cut: false,
+                payload_hash: None,
                 decision_id: None,
                 decision_options: Vec::new(),
             };
@@ -629,6 +635,8 @@ impl Notifier {
                     approval_id: None,
                     sensitive: None,
                     detail: None,
+                    detail_cut: false,
+                    payload_hash: None,
                     decision_id: None,
                     decision_options: Vec::new(),
                 };

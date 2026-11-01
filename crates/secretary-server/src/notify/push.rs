@@ -431,6 +431,12 @@ pub struct Payload {
     /// Approvals only, with previews on: the request's `details` (a root plan's commands), clipped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// Approvals only: `detail` is already cut short of the request's `details` (the inbox keeps 2000 characters).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub detail_cut: bool,
+    /// Approvals only: the request's `payloadHash` (`sha256:…`), so the app binds an answer to what was shown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload_hash: Option<String>,
     /// Lucina's decisions (`data: {kind: "decision", decisionId, options}`): the id and the options, so the
     /// app's notification can answer with a button.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -751,10 +757,20 @@ fn clip_bytes(s: &str, max: usize) -> String {
     format!("{}\n…", head.trim_end())
 }
 
+/// Whether `detail` goes into an APNs body whole (not cut by [`clip_bytes`]).
+fn fits_whole(detail: &str) -> bool {
+    detail.trim().len() <= APNS_DETAIL_BYTES
+}
+
 /// JSON for the APNs body (`aps` + our fields).
 pub fn apns_body(payload: &Payload) -> Value {
-    // The app registers the notification categories "APPROVAL" and "APPROVAL_SENSITIVE" (Approve/Deny actions).
+    // The app registers the notification categories "APPROVAL", "APPROVAL_SENSITIVE" and
+    // "APPROVAL_SENSITIVE_INLINE" (Approve/Deny actions). INLINE: a sensitive request whose body carries every
+    // command uncut, so the expanded notification (where its buttons are) shows the whole plan; its Approve
+    // answers in place with Face ID. Without the whole plan, Approve opens the app's card.
+    let whole_plan = payload.detail.as_deref().is_some_and(fits_whole) && !payload.detail_cut;
     let aps_category = match (payload.approval_id.is_some(), payload.sensitive) {
+        (true, Some(true)) if whole_plan => "APPROVAL_SENSITIVE_INLINE",
         (true, Some(true)) => "APPROVAL_SENSITIVE",
         (true, _) => "APPROVAL",
         (false, _) => payload.category.as_str(),
@@ -799,6 +815,9 @@ pub fn apns_body(payload: &Payload) -> Value {
         body["sensitive"] = json!(sensitive);
         // The key the app's own approval notifications use.
         body["approvalSensitive"] = json!(sensitive);
+        if let Some(h) = &payload.payload_hash {
+            body["payloadHash"] = json!(h);
+        }
         // Wake the app too, so it refreshes its approvals and the Lock Screen widget; and let the
         // request through a Focus (the app has the time-sensitive entitlement).
         body["aps"]["content-available"] = json!(1);
@@ -836,6 +855,8 @@ mod tests {
             approval_id: Some("apr_1".into()),
             sensitive: Some(sensitive),
             detail,
+            detail_cut: false,
+            payload_hash: Some(format!("sha256:{}", "ab".repeat(32))),
             decision_id: None,
             decision_options: Vec::new(),
         }
@@ -871,7 +892,7 @@ mod tests {
         assert_eq!(b["aps"]["content-available"], 1);
         assert_eq!(b["approvalSensitive"], false);
         let b = apns_body(&approval_payload(true, None));
-        assert_eq!(b["aps"]["category"], "APPROVAL_SENSITIVE");
+        assert_eq!(b["aps"]["category"], "APPROVAL_SENSITIVE", "no commands in the body");
         assert_eq!(b["aps"]["alert"]["body"], "Run 2 commands as root on nezopt: test");
         // A long plan is cut at a line, and the whole body stays well under APNs' 4 KB.
         let long: String = (0..400).map(|i| format!("echo line-{i}\n")).collect();
@@ -880,12 +901,41 @@ mod tests {
         assert!(text.ends_with("\n…"), "{text}");
         assert!(text.lines().all(|l| l == "…" || l.starts_with("echo line-") || l.starts_with("Run ")));
         assert!(serde_json::to_vec(&b).unwrap().len() < 4096);
+        assert_eq!(b["aps"]["category"], "APPROVAL_SENSITIVE", "the body is cut: Approve opens the card");
         // Not an approval: unchanged.
         let mut p = approval_payload(false, Some("x".into()));
         p.approval_id = None;
         let b = apns_body(&p);
         assert_eq!(b["aps"]["category"], "approval");
         assert!(b["aps"].get("content-available").is_none());
+    }
+
+    #[test]
+    fn a_root_plan_shown_whole_is_approved_in_place() {
+        let short = apns_body(&approval_payload(true, Some("systemctl daemon-reload\nsystemctl restart x".into())));
+        assert_eq!(short["aps"]["category"], "APPROVAL_SENSITIVE_INLINE");
+        assert_eq!(
+            short["aps"]["alert"]["body"],
+            "Run 2 commands as root on nezopt: test\nsystemctl daemon-reload\nsystemctl restart x"
+        );
+        assert_eq!(short["payloadHash"], format!("sha256:{}", "ab".repeat(32)));
+        // Exactly the limit still fits; one byte more is cut.
+        let at_limit = "x".repeat(APNS_DETAIL_BYTES);
+        assert_eq!(apns_body(&approval_payload(true, Some(at_limit.clone())))["aps"]["category"], "APPROVAL_SENSITIVE_INLINE");
+        let over = apns_body(&approval_payload(true, Some(at_limit + "\ny")));
+        assert_eq!(over["aps"]["category"], "APPROVAL_SENSITIVE");
+        // Cut already in the inbox (over 2000 characters): never inline.
+        let mut cut = approval_payload(true, Some("echo short".into()));
+        cut.detail_cut = true;
+        assert_eq!(apns_body(&cut)["aps"]["category"], "APPROVAL_SENSITIVE");
+        // No commands (previews off, or none): the card.
+        assert_eq!(apns_body(&approval_payload(true, None))["aps"]["category"], "APPROVAL_SENSITIVE");
+        // A plain request keeps APPROVAL, whole or not.
+        assert_eq!(apns_body(&approval_payload(false, Some("ls".into())))["aps"]["category"], "APPROVAL");
+        // No hash, no key.
+        let mut no_hash = approval_payload(true, Some("ls".into()));
+        no_hash.payload_hash = None;
+        assert!(apns_body(&no_hash).get("payloadHash").is_none());
     }
 
     #[test]

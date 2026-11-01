@@ -514,3 +514,46 @@ fn reader_prefetches_and_redraws_pending_pictures() {
     assert_eq!(plain.pagination(), with_none.pagination());
     assert_eq!(plain.screen(), with_none.screen());
 }
+
+#[test]
+fn the_page_at_an_anchor_after_a_picture_is_the_paginators_page() {
+    use ink_render::layout::{break_of, pages_at, Paginator};
+    let style = Style::default();
+    let mut f = fonts();
+    // A known size and an unknown one (the placeholder): the paragraph after each starts with a
+    // different space above it.
+    for src in ["wide.png", "missing.png"] {
+        let book = picture_book(5, src, 12);
+        let mut images = Fake::with(&[("wide.png", 400, 200)]);
+        let block_after = book.chapters[0]
+            .blocks
+            .iter()
+            .position(|b| matches!(b, Block::Image { .. }))
+            .unwrap()
+            + 1;
+        let offset = book.chapters[0].block_starts()[block_after];
+        for a in [
+            Anchor { chapter: 0, offset },
+            Anchor {
+                chapter: 0,
+                offset: offset + 40,
+            },
+            Anchor {
+                chapter: 0,
+                offset: offset - 1,
+            },
+        ] {
+            let shown = pages_at(&mut f, &style, PW3_SIZE, &book, a, &mut images, 2);
+            let mut lazy = Paginator::new(style, PW3_SIZE, break_of(&shown[0]));
+            assert!(lazy.step(&mut f, &book, &mut images, None));
+            let whole = lazy.into_pagination();
+            let i = whole
+                .pages
+                .iter()
+                .position(|p| *p == shown[0])
+                .unwrap_or_else(|| panic!("{src} {a:?}"));
+            assert_eq!(&whole.pages[i..i + shown.len()], &shown[..], "{src} {a:?}");
+            assert_eq!(whole.page_for(a), i, "{src} {a:?}");
+        }
+    }
+}

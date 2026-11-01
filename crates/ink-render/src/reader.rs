@@ -3,7 +3,9 @@
 use crate::dirty;
 use crate::font::Fonts;
 use crate::images::{ImageRequest, Images, NoImages, PageImages};
-use crate::layout::{paginate_with, Anchor, LineContent, Pagination, Style};
+use crate::layout::{
+    break_of, pages_at, paginate_with, Anchor, LineContent, Pagination, Paginator, Style,
+};
 use crate::render::render_page_with;
 use crate::Result;
 use ink_epub::{Block, Book};
@@ -49,6 +51,13 @@ pub struct Reader<D: Display> {
     images: Box<dyn Images>,
     /// How the pictures of the page on the panel came out.
     last_images: PageImages,
+    /// After [`Reader::set_style_quick`]: the rest of the book being paginated, and the time it took
+    /// so far (ms).
+    lazy: Option<(Paginator, f64)>,
+    /// The page on the panel was drawn without its number (a partial layout).
+    numbers_stale: bool,
+    /// How long the last pagination of the rest took in all (ms).
+    rest_ms: f64,
 }
 
 fn ms(t: Instant) -> f64 {
@@ -102,6 +111,9 @@ impl<D: Display> Reader<D> {
             max_rects: 4,
             images,
             last_images: PageImages::default(),
+            lazy: None,
+            numbers_stale: false,
+            rest_ms: 0.0,
         };
         let mut rep = r.show(true)?;
         rep.layout_ms = layout_ms;
@@ -197,6 +209,7 @@ impl<D: Display> Reader<D> {
     }
 
     fn show(&mut self, full: bool) -> Result<StepReport> {
+        self.numbers_stale = self.pagination.partial;
         let t = Instant::now();
         self.last_images = render_page_with(
             &mut self.back,
@@ -252,6 +265,7 @@ impl<D: Display> Reader<D> {
 
     /// Go to `page` with a partial (dirty-region) update.
     pub fn goto_page(&mut self, page: usize) -> Result<StepReport> {
+        self.complete_layout();
         self.page = page.min(self.page_count().saturating_sub(1));
         self.anchor = self.pagination.anchor_of(self.page);
         self.show(false)
@@ -259,12 +273,14 @@ impl<D: Display> Reader<D> {
 
     /// Jump to a position (e.g. a TOC entry: `Anchor { chapter, offset: 0 }`).
     pub fn goto_anchor(&mut self, a: Anchor) -> Result<StepReport> {
+        self.complete_layout();
         self.page = self.pagination.page_for(a);
         self.anchor = a;
         self.show(false)
     }
 
     pub fn next_page(&mut self) -> Result<Option<StepReport>> {
+        self.complete_layout();
         if self.page + 1 >= self.page_count() {
             return Ok(None);
         }
@@ -272,6 +288,7 @@ impl<D: Display> Reader<D> {
     }
 
     pub fn prev_page(&mut self) -> Result<Option<StepReport>> {
+        self.complete_layout();
         if self.page == 0 {
             return Ok(None);
         }
@@ -282,6 +299,7 @@ impl<D: Display> Reader<D> {
     pub fn set_style(&mut self, style: Style) -> Result<StepReport> {
         let anchor = self.anchor;
         self.style = style;
+        self.lazy = None;
         let t = Instant::now();
         self.pagination = paginate_with(
             &mut self.fonts,
@@ -295,6 +313,105 @@ impl<D: Display> Reader<D> {
         let mut rep = self.show(true)?;
         rep.layout_ms = layout_ms;
         Ok(rep)
+    }
+
+    /// [`Reader::set_style`] the KindleOS way, for a page on the panel at once on any book: lays out
+    /// only from the anchor's paragraph to fill the page that starts at the line holding the anchor
+    /// (and the next one, for the turn), and shows it with a full refresh. The rest of the book is
+    /// paginated later, a little at a time ([`Reader::layout_step`], or at once with
+    /// [`Reader::complete_layout`] / [`Reader::finish_layout`]; navigation completes it first), with a
+    /// page break at that line, so the page shown stays as it is (the one before it may be short). Until
+    /// then `page` and `page_count` count those two pages and the footer leaves its number out. A new
+    /// style change drops the unfinished pagination.
+    pub fn set_style_quick(&mut self, style: Style) -> Result<StepReport> {
+        let t = Instant::now();
+        let size = self.display.size();
+        let pages = pages_at(
+            &mut self.fonts,
+            &style,
+            size,
+            &self.book,
+            self.anchor,
+            self.images.as_mut(),
+            2,
+        );
+        let Some(first) = pages.first() else {
+            return self.set_style(style);
+        };
+        let lazy = Paginator::new(style, size, break_of(first));
+        self.style = style;
+        self.pagination = Pagination {
+            size,
+            style,
+            pages,
+            partial: true,
+        };
+        self.lazy = Some((lazy, 0.0));
+        let layout_ms = ms(t);
+        self.page = self.pagination.page_for(self.anchor);
+        let mut rep = self.show(true)?;
+        rep.layout_ms = layout_ms;
+        Ok(rep)
+    }
+
+    /// The rest of the book still has to be paginated after [`Reader::set_style_quick`].
+    pub fn layout_pending(&self) -> bool {
+        self.lazy.is_some()
+    }
+
+    /// Paginate more of the rest for about `budget` (at least one paragraph), without drawing; true when
+    /// the whole book is paginated (also when nothing was pending). Call it while the reader is idle.
+    pub fn layout_step(&mut self, budget: std::time::Duration) -> bool {
+        self.advance(Some(Instant::now() + budget))
+    }
+
+    /// After [`Reader::set_style_quick`]: paginate the rest at once, without drawing (the next page shown
+    /// has the book's numbers), keeping the anchor; the time the whole pagination took, `None` when
+    /// nothing was pending.
+    pub fn complete_layout(&mut self) -> Option<f64> {
+        let ms = self.lazy.as_ref().map(|(_, ms)| *ms)?;
+        let t = Instant::now();
+        self.advance(None);
+        Some(ms + self::ms(t))
+    }
+
+    /// After [`Reader::set_style_quick`]: paginate what is left, then update what changed on the panel
+    /// (the footer's number) with a partial update. `None` when the page on the panel already has its
+    /// number.
+    pub fn finish_layout(&mut self) -> Result<Option<StepReport>> {
+        self.complete_layout();
+        let layout_ms = self.rest_ms;
+        if !self.numbers_stale {
+            return Ok(None);
+        }
+        let mut rep = self.show(false)?;
+        rep.layout_ms = layout_ms;
+        Ok(Some(rep))
+    }
+
+    /// Run the pagination of the rest until `deadline`; when it is done, its pages replace the partial
+    /// ones (the anchor's page keeps its place). True when nothing is left.
+    fn advance(&mut self, deadline: Option<Instant>) -> bool {
+        let Some((mut p, mut spent)) = self.lazy.take() else {
+            return true;
+        };
+        let t = Instant::now();
+        let done = p.step(&mut self.fonts, &self.book, self.images.as_mut(), deadline);
+        spent += ms(t);
+        if !done {
+            self.lazy = Some((p, spent));
+            return false;
+        }
+        self.pagination = p.into_pagination();
+        self.page = self.pagination.page_for(self.anchor);
+        self.numbers_stale = true;
+        self.rest_ms = spent;
+        true
+    }
+
+    /// How long the last pagination of the rest after [`Reader::set_style_quick`] took in all (ms).
+    pub fn rest_layout_ms(&self) -> f64 {
+        self.rest_ms
     }
 
     pub fn set_font_px(&mut self, px: u16) -> Result<StepReport> {
