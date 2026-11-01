@@ -1,22 +1,26 @@
-//! Lucina's Obsidian ingest: the vault keeps itself current at about zero cost.
+//! Lucina's Obsidian ingest: the owner's vault keeps itself current at about
+//! zero cost.
 //!
 //! Items come from three sources ([`sources`]): every ops record, every
 //! first-parent commit or merge on the followed branches of the Lucina repos,
-//! and Claude session wrap-up reports. They are redacted and queued durably
-//! ([`queue`], dedup key per item). A worker turns each one into Zettelkasten
-//! notes in the vault folder (`Permanent/` claims, an `Events/` digest, the
-//! project's `MOC/` page and `00 Lucina hub.md`, [`notes`]), following the
-//! owner's guidelines (`guidelines/zettelkasten.md`, `templates/`).
+//! and Claude session wrap-up reports. They are redacted and queued durably on
+//! nezopt ([`queue`], dedup key per item).
 //!
-//! The writing model is the local Qwen through the gateway, used only while
-//! nobody else needs it ([`gate`]): a busy, switching, leased or unloaded GPU
-//! means "wait and keep queueing", never a preemption and never another
-//! model. A manual run ([`RunOpts::cold`]) or a queue older than
-//! `cold_after` may load an idle model.
+//! 1. **Plan** (needs Qwen): the local Qwen drafts each item's notes following
+//!    the owner's guidelines (`guidelines/zettelkasten.md`); the checked draft
+//!    is stored in the queue, with a readable preview in `<state>/staging/`
+//!    (neither a vault nor a repo). Qwen is used only while nobody else needs
+//!    it ([`gate`]): busy, switching, leased or unloaded means "wait and keep
+//!    queueing", never a preemption and never another model.
+//! 2. **Deliver** (needs the vault): the draft becomes notes in the project's
+//!    folder of the canonical vault, `/home/nes/Obsidian` on the Raspberry Pi
+//!    (owner's rule: never nezopt, never a git repo), over SSH with
+//!    compare-and-swap writes ([`store`], [`notes`]). While the Pi is offline
+//!    the drafts stay queued and delivery retries; nothing is lost.
 //!
 //! Replays and restarts never duplicate notes: keys are deduplicated at
-//! enqueue, the model's answer is stored before any write, and every line the
-//! worker adds carries the item's `ingest:` marker.
+//! enqueue, the draft is stored before any write, and every line the worker
+//! adds carries the item's `ingest:` marker.
 
 pub mod gate;
 pub mod model;
@@ -25,6 +29,7 @@ pub mod plan;
 pub mod queue;
 pub mod redact;
 pub mod sources;
+pub mod store;
 pub mod templates;
 
 use std::collections::BTreeMap;
@@ -37,12 +42,14 @@ use chrono_tz::Tz;
 use lucina_ops::Ops;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use gate::{Gate, Verdict};
 use model::{ModelError, Qwen};
 use plan::Plan;
 use queue::{Depth, Item, Queue, Slot, State};
 use sources::GitRepo;
+use store::{StoreError, VaultStore};
 use templates::Templates;
 
 pub const DEFAULT_QWEN_URL: &str = "http://127.0.0.1:11436";
@@ -51,14 +58,23 @@ pub const DEFAULT_MODEL: &str = "qwen3.8:27b-q4-72k";
 pub const DEFAULT_GIT: &str =
     "lucina-rs=/home/nez/Projects/Lucina/SecretaryIOS@origin/main#lucina;\
 lucinaos=/home/nez/Projects/Lucina/lucinaos@usb-dev-loop#lucinaos";
+/// The canonical vault: the Pi, reached as `pi-cursor` (user `nes`).
+pub const DEFAULT_TARGET: &str = "ssh:pi-cursor:/home/nes/Obsidian";
+/// Project slug → vault folder, first match wins (`x*` matches a prefix,
+/// `slug=-` means "no folder"). A project with no folder is skipped.
+pub const DEFAULT_FOLDERS: &str = "lucinaos=LucinaOS;lucina-ink=LucinaOS;lucinadsi=-;\
+lucina*=LucinaRS;secretary*=LucinaRS;gallery*=LucinaRS;ops=LucinaRS;\
+pokoin*=Pokoin;tcgprices=Pokoin;\
+nezopt=Infra;nespc*=Infra;hosts=Infra;p1=Infra;p2=Infra;pi=Infra;edge=Infra;infisical=Infra;\
+honcho=Infra;homelab*=Infra;peer1*=Infra;\
+orchestra=Harness;lanes=Harness;delegation-lanes=Harness;jev-agents*=Harness;hermes=Hermes";
 const STATE_FILE: &str = "state.json";
+const STAGING_DIR: &str = "staging";
 
 #[derive(Debug, thiserror::Error)]
 pub enum IngestError {
     #[error("vault-ingest config: {0}")]
     Config(String),
-    #[error(transparent)]
-    Vault(#[from] lucina_ops::VaultError),
     #[error(transparent)]
     Ops(#[from] lucina_ops::OpsError),
     #[error("vault-ingest: {0}")]
@@ -75,10 +91,58 @@ pub fn clip(s: &str, max: usize) -> String {
     t
 }
 
+/// One project → folder rule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FolderRule {
+    /// The slug, or its prefix when `prefix`.
+    pub pattern: String,
+    pub prefix: bool,
+    pub folder: String,
+}
+
+/// `slug=Folder;prefix*=Folder;…`. Folders are one plain path component and
+/// never `Lucina` (the Mac's Syncthing ops folder of the same vault).
+pub fn parse_folders(s: &str) -> Result<Vec<FolderRule>, String> {
+    s.split([';', '\n', ','])
+        .filter(|p| !p.trim().is_empty())
+        .map(|p| {
+            let (pat, folder) = p
+                .split_once('=')
+                .ok_or_else(|| format!("{p:?}: expected slug=Folder"))?;
+            let (pat, folder) = (pat.trim(), folder.trim());
+            let (pattern, prefix) = match pat.strip_suffix('*') {
+                Some(x) => (x, true),
+                None => (pat, false),
+            };
+            let slug_ok = !pattern.is_empty()
+                && pattern
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+            let folder_ok = folder == "-"
+                || !folder.is_empty()
+                    && folder.len() <= 60
+                    && !folder.starts_with(['.', ' '])
+                    && !folder.contains(['/', '\\', '\0', ':', '[', ']', '#', '^', '|'])
+                    && !folder.eq_ignore_ascii_case("lucina");
+            if !slug_ok || !folder_ok {
+                return Err(format!("{p:?}: bad rule"));
+            }
+            Ok(FolderRule {
+                pattern: pattern.to_owned(),
+                prefix,
+                folder: folder.to_owned(),
+            })
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IngestConfig {
-    /// `queue.jsonl`, `state.json`, the locks.
+    /// `queue.jsonl`, `state.json`, `staging/`, the locks.
     pub state_dir: PathBuf,
+    /// Where notes are delivered: `ssh:<hosts>:<root>` or `dir:<path>`.
+    pub target: String,
+    pub folders: Vec<FolderRule>,
     /// The gateway (loopback only).
     pub qwen_url: String,
     pub key_file: Option<PathBuf>,
@@ -121,6 +185,8 @@ impl IngestConfig {
         let home = std::env::var_os("HOME").map(PathBuf::from);
         Self {
             state_dir: state_dir.into(),
+            target: DEFAULT_TARGET.into(),
+            folders: parse_folders(DEFAULT_FOLDERS).expect("default folder rules"),
             qwen_url: DEFAULT_QWEN_URL.into(),
             key_file: home
                 .as_ref()
@@ -170,6 +236,12 @@ impl IngestConfig {
                 .unwrap_or_else(|| default_state.to_owned()),
             time_zone,
         );
+        if let Some(t) = v("TARGET") {
+            c.target = t;
+        }
+        if let Some(f) = v("FOLDERS") {
+            c.folders = parse_folders(&f).map_err(IngestError::Config)?;
+        }
         if let Some(u) = v("QWEN_URL") {
             c.qwen_url = u.trim_end_matches('/').to_owned();
         }
@@ -217,12 +289,27 @@ impl IngestConfig {
         }
         Ok(())
     }
+
+    /// The vault folder of a project, `None`: not vaulted.
+    pub fn folder_for(&self, project: &str) -> Option<&str> {
+        self.folders
+            .iter()
+            .find(|r| {
+                if r.prefix {
+                    project.starts_with(&r.pattern)
+                } else {
+                    project == r.pattern
+                }
+            })
+            .map(|r| r.folder.as_str())
+            .filter(|f| *f != "-")
+    }
 }
 
 /// What a run may do.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RunOpts {
-    /// Ignore the backoff (`next_try`); the gate still decides.
+    /// Ignore the backoffs (`next_try`, `deliver_next_try`); the gate still decides.
     pub force: bool,
     /// May load an unloaded model (a manual "ingest now").
     pub cold: bool,
@@ -233,16 +320,25 @@ pub struct RunOpts {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RunReport {
     pub at: Option<DateTime<Utc>>,
-    /// `ran` | `waiting` (gate or backoff) | `idle` (nothing due) | `already_running`
+    /// `ran` | `waiting` (gate, vault or backoff) | `idle` (nothing due) | `already_running`
     pub outcome: String,
+    /// Drafts made by Qwen this run.
+    #[serde(default)]
+    pub planned: usize,
+    /// Items delivered into the vault.
     pub ingested: usize,
     pub skipped: usize,
     pub failed: usize,
-    /// Why the run stopped short (the gate's reason, a busy gateway).
+    /// Why planning stopped short (the gate's reason, a busy gateway).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waiting_for: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_try: Option<DateTime<Utc>>,
+    /// Why delivery stopped short (the vault is offline).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vault_waiting_for: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deliver_next_try: Option<DateTime<Utc>>,
     #[serde(default)]
     pub notes: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -257,6 +353,14 @@ pub struct ScanReport {
     pub errors: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct VaultHealth {
+    pub last_ok: Option<DateTime<Utc>>,
+    /// Set while delivery cannot reach the vault.
+    pub offline_since: Option<DateTime<Utc>>,
+    pub last_error: Option<String>,
+}
+
 /// `state.json`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct Persisted {
@@ -265,6 +369,10 @@ struct Persisted {
     /// Last commit seen per repo name.
     git: BTreeMap<String, String>,
     next_try: Option<DateTime<Utc>>,
+    #[serde(default)]
+    deliver_next_try: Option<DateTime<Utc>>,
+    #[serde(default)]
+    vault: VaultHealth,
     last_run: Option<RunReport>,
     last_scan: Option<DateTime<Utc>>,
 }
@@ -282,9 +390,16 @@ pub struct RepoStatus {
 #[derive(Debug, Clone, Serialize)]
 pub struct Status {
     pub queue: Depth,
+    /// Drafted, waiting to reach the vault (`queue.planned`).
+    pub undelivered: usize,
     pub oldest_pending: Option<DateTime<Utc>>,
-    /// The worker's next attempt (backoff after a "wait").
+    /// The next planning attempt (backoff after a "wait").
     pub next_try: Option<DateTime<Utc>>,
+    /// The next delivery attempt (backoff while the vault is offline).
+    pub deliver_next_try: Option<DateTime<Utc>>,
+    pub target: String,
+    pub vault: VaultHealth,
+    pub staging: String,
     pub last_run: Option<RunReport>,
     pub last_scan: Option<DateTime<Utc>>,
     pub running: bool,
@@ -306,6 +421,7 @@ pub struct FailedItem {
 pub struct Ingest {
     cfg: IngestConfig,
     ops: Arc<Ops>,
+    store: Box<dyn VaultStore>,
     queue: Queue,
     templates: Templates,
     gate: Gate,
@@ -317,7 +433,7 @@ impl std::fmt::Debug for Ingest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Ingest")
             .field("state_dir", &self.cfg.state_dir)
-            .field("vault", &self.ops.vault().root())
+            .field("target", &self.store.describe())
             .finish()
     }
 }
@@ -330,17 +446,79 @@ impl Drop for Running<'_> {
     }
 }
 
+fn key_file_name(key: &str) -> String {
+    Sha256::digest(key.as_bytes())
+        .iter()
+        .take(8)
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// A readable preview of a draft (the staging copy; not a vault page).
+fn preview(item: &Item, folder: &str, plan: &Plan) -> String {
+    let mut s = format!(
+        "# Draft: {}\n\n- key: `{}`\n- folder: `{folder}`\n- source: {}\n\n## Event summary\n\n{}\n",
+        item.title,
+        item.key,
+        notes::backlink_text(&item.backlink),
+        plan.summary
+    );
+    for c in &plan.claims {
+        s.push_str(&format!("\n## Claim: {}\n\n{}\n", c.title, c.body));
+        if !c.update.is_empty() {
+            s.push_str(&format!("\nUpdate: {}\n", c.update));
+        }
+        for f in &c.files {
+            s.push_str(&format!("- file `{f}`\n"));
+        }
+        for l in c.connects_to.iter().chain(&c.enables) {
+            s.push_str(&format!("- link [[{l}]]\n"));
+        }
+    }
+    redact::redact(&s)
+}
+
 impl Ingest {
     pub fn open(cfg: IngestConfig, ops: Arc<Ops>) -> Result<Self, IngestError> {
         cfg.check()?;
         let queue = Queue::open(&cfg.state_dir)?;
+        // The SSH control socket needs a short path (Unix sockets: 108 bytes).
+        let runtime = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .filter(|p| p.is_dir())
+            .unwrap_or_else(|| PathBuf::from("/tmp"));
+        let store = store::open_target(&cfg.target, &runtime)
+            .map_err(|e| IngestError::Config(e.to_string()))?;
+        Self::with_store(cfg, ops, store, queue)
+    }
+
+    /// With a given store (tests).
+    pub fn open_with(
+        cfg: IngestConfig,
+        ops: Arc<Ops>,
+        store: Box<dyn VaultStore>,
+    ) -> Result<Self, IngestError> {
+        cfg.check()?;
+        let queue = Queue::open(&cfg.state_dir)?;
+        Self::with_store(cfg, ops, store, queue)
+    }
+
+    fn with_store(
+        cfg: IngestConfig,
+        ops: Arc<Ops>,
+        store: Box<dyn VaultStore>,
+        queue: Queue,
+    ) -> Result<Self, IngestError> {
         let templates = Templates::load(cfg.templates_dir.as_deref());
         let gate = Gate::new(&cfg.qwen_url, cfg.key_file.clone(), cfg.qcode_lock.clone())
             .with_quiet(cfg.last_used.clone(), cfg.quiet);
         let qwen = Qwen::new(&cfg.qwen_url, cfg.key_file.clone(), &cfg.model);
+        std::fs::create_dir_all(cfg.state_dir.join(STAGING_DIR))
+            .map_err(|e| IngestError::Io(format!("staging: {e}")))?;
         Ok(Self {
             cfg,
             ops,
+            store,
             queue,
             templates,
             gate,
@@ -355,6 +533,10 @@ impl Ingest {
 
     pub fn queue(&self) -> &Queue {
         &self.queue
+    }
+
+    pub fn staging_dir(&self) -> PathBuf {
+        self.cfg.state_dir.join(STAGING_DIR)
     }
 
     fn state_path(&self) -> PathBuf {
@@ -379,7 +561,23 @@ impl Ingest {
             .map_err(|e| IngestError::Io(format!("state.json: {e}")))
     }
 
-    /// Queue what is new in the sources (cheap: no model).
+    fn stage(&self, item: &Item, folder: &str, plan: &Plan) {
+        let p = self
+            .staging_dir()
+            .join(format!("{}.md", key_file_name(&item.key)));
+        if let Err(e) = std::fs::write(&p, preview(item, folder, plan)) {
+            tracing::warn!(error = %e, "vault-ingest: staging preview not written");
+        }
+    }
+
+    fn unstage(&self, key: &str) {
+        let _ = std::fs::remove_file(
+            self.staging_dir()
+                .join(format!("{}.md", key_file_name(key))),
+        );
+    }
+
+    /// Queue what is new in the sources (cheap: no model, no vault).
     pub async fn scan(&self, now: DateTime<Utc>) -> Result<ScanReport, IngestError> {
         let mut st = self.load();
         let mut report = ScanReport::default();
@@ -456,6 +654,7 @@ impl Ingest {
         if n > 0 {
             let mut st = self.load();
             st.next_try = None;
+            st.deliver_next_try = None;
             self.save(&st)?;
         }
         Ok(n)
@@ -482,9 +681,14 @@ impl Ingest {
             .take(20)
             .collect();
         Ok(Status {
+            undelivered: queue.planned,
             queue,
             oldest_pending,
             next_try: st.next_try,
+            deliver_next_try: st.deliver_next_try,
+            target: self.store.describe(),
+            vault: st.vault,
+            staging: self.staging_dir().display().to_string(),
             last_run: st.last_run,
             last_scan: st.last_scan,
             running: self.running(),
@@ -507,7 +711,7 @@ impl Ingest {
         })
     }
 
-    /// The server's tick: scan, then run when the backoff allows.
+    /// The server's tick: scan, then run when the backoffs allow.
     pub async fn tick(&self) -> Result<RunReport, IngestError> {
         let now = Utc::now();
         if let Err(e) = self.scan(now).await {
@@ -516,7 +720,8 @@ impl Ingest {
         self.run(RunOpts::default(), Utc::now()).await
     }
 
-    /// Turn due items into notes while the model is free.
+    /// Draft due items while Qwen is free, then deliver drafts while the
+    /// vault is reachable.
     pub async fn run(&self, opts: RunOpts, now: DateTime<Utc>) -> Result<RunReport, IngestError> {
         let mut report = RunReport {
             at: Some(now),
@@ -535,119 +740,182 @@ impl Ingest {
             tracing::warn!(error = %e, "vault-ingest: compaction failed");
         }
         let mut st = self.load();
-        if !opts.force {
-            if let Some(t) = st.next_try.filter(|t| *t > now) {
-                report.outcome = "waiting".into();
-                report.next_try = Some(t);
-                report.waiting_for = st.last_run.as_ref().and_then(|r| r.waiting_for.clone());
-                return Ok(report);
-            }
-        }
-        let mut due: Vec<(String, Slot)> = self
+        let due: Vec<(String, Slot)> = self
             .queue
             .ordered()?
             .into_iter()
             .filter(|(_, s)| s.due(now) && s.item.is_some())
             .collect();
-        // Items with a stored plan need no model: they are written first.
-        due.sort_by_key(|(_, s)| s.plan.is_none());
         if due.is_empty() {
             report.outcome = "idle".into();
             st.next_try = None;
+            st.deliver_next_try = None;
             st.last_run = Some(report.clone());
             self.save(&st)?;
             return Ok(report);
         }
-        let oldest = due.iter().map(|(_, s)| s.enqueued_at).min().unwrap_or(now);
-        let mut allow_cold = opts.cold || self.cfg.cold_after.is_some_and(|d| oldest <= now - d);
-        let budget = opts.limit.unwrap_or(self.cfg.batch).max(1);
-        let mut asked = 0usize;
         let today = now.with_timezone(&self.cfg.time_zone).date_naive();
         let writer = notes::Writer {
-            vault: self.ops.vault(),
+            store: self.store.as_ref(),
             templates: &self.templates,
             today,
         };
-        report.outcome = "ran".into();
-        for (key, slot) in due {
-            let Some(item) = slot.item.as_ref() else {
-                continue;
-            };
-            let plan = match slot.plan {
-                Some(p) => p,
-                None => {
-                    if asked >= budget {
+
+        // 1. Plan: drafts from Qwen while it is free.
+        let plan_backoff = st.next_try.filter(|t| !opts.force && *t > now);
+        let to_plan: Vec<&(String, Slot)> = due.iter().filter(|(_, s)| s.plan.is_none()).collect();
+        let mut drafts: Vec<(String, Item, Plan)> = due
+            .iter()
+            .filter_map(|(k, s)| Some((k.clone(), s.item.clone()?, s.plan.clone()?)))
+            .collect();
+        if let Some(t) = plan_backoff.filter(|_| !to_plan.is_empty()) {
+            report.next_try = Some(t);
+            report.waiting_for = st.last_run.as_ref().and_then(|r| r.waiting_for.clone());
+        } else {
+            let oldest = to_plan
+                .iter()
+                .map(|(_, s)| s.enqueued_at)
+                .min()
+                .unwrap_or(now);
+            let mut allow_cold =
+                opts.cold || self.cfg.cold_after.is_some_and(|d| oldest <= now - d);
+            let budget = opts.limit.unwrap_or(self.cfg.batch).max(1);
+            let mut asked = 0usize;
+            for (key, slot) in to_plan {
+                let Some(item) = slot.item.as_ref() else {
+                    continue;
+                };
+                let Some(folder) = self.cfg.folder_for(&item.project) else {
+                    let why = format!("no vault folder for project {}", item.project);
+                    self.queue.skipped(key, &why, Utc::now())?;
+                    report.skipped += 1;
+                    continue;
+                };
+                if asked >= budget {
+                    break;
+                }
+                let cold = match self.gate.check(allow_cold).await {
+                    Verdict::Go { cold } => cold,
+                    Verdict::Wait { reason, retry_in } => {
+                        report.waiting_for = Some(reason);
+                        report.next_try = Some(
+                            now + Duration::from_std(retry_in).unwrap_or(Duration::minutes(10)),
+                        );
                         break;
                     }
-                    let verdict = self.gate.check(allow_cold).await;
-                    let cold = match verdict {
-                        Verdict::Go { cold } => cold,
-                        Verdict::Wait { reason, retry_in } => {
-                            let t =
-                                now + Duration::from_std(retry_in).unwrap_or(Duration::minutes(10));
-                            report.waiting_for = Some(reason);
-                            report.next_try = Some(t);
-                            break;
-                        }
-                    };
-                    asked += 1;
-                    match self.plan_item(&writer, item, cold).await {
-                        Ok(p) => {
-                            // Loaded now: later items need no cold start.
-                            allow_cold = false;
-                            self.queue.planned(&key, &p, Utc::now())?;
-                            p
-                        }
-                        Err(ModelError::Busy(why)) => {
-                            report.waiting_for = Some(why);
-                            report.next_try = Some(now + Duration::minutes(5));
-                            break;
-                        }
-                        Err(ModelError::Failed(why)) => {
-                            let n = self.queue.failed(&key, &why, Utc::now())?;
-                            tracing::warn!(key = %key, attempts = n, error = %why, "vault-ingest: item failed");
-                            report.failed += 1;
-                            report.errors.push(format!("{key}: {why}"));
-                            continue;
+                };
+                asked += 1;
+                match self.plan_item(&writer, folder, item, cold).await {
+                    Ok(p) => {
+                        self.gate.note_own_use();
+                        // Loaded now: later items need no cold start.
+                        allow_cold = false;
+                        self.queue.planned(key, &p, Utc::now())?;
+                        report.planned += 1;
+                        if p.skip {
+                            self.queue.skipped(key, &p.skip_reason, Utc::now())?;
+                            report.skipped += 1;
+                        } else {
+                            self.stage(item, folder, &p);
+                            drafts.push((key.clone(), item.clone(), p));
                         }
                     }
+                    Err(ModelError::Busy(why)) => {
+                        report.waiting_for = Some(why);
+                        report.next_try = Some(now + Duration::minutes(5));
+                        break;
+                    }
+                    Err(ModelError::Failed(why)) => {
+                        let n = self.queue.failed(key, &why, Utc::now())?;
+                        tracing::warn!(key = %key, attempts = n, error = %why, "vault-ingest: draft failed");
+                        report.failed += 1;
+                        report.errors.push(format!("{key}: {why}"));
+                    }
                 }
-            };
-            if plan.skip {
-                self.queue.skipped(&key, &plan.skip_reason, Utc::now())?;
-                report.skipped += 1;
-                continue;
             }
-            match writer.write(item, &plan) {
-                Ok(pages) => {
-                    self.queue.done(&key, pages.clone(), Utc::now())?;
-                    report.ingested += 1;
-                    for p in pages {
-                        if !report.notes.contains(&p) {
-                            report.notes.push(p);
+            st.next_try = report.next_try;
+        }
+
+        // 2. Deliver: drafts into the vault while it is reachable.
+        let deliver_backoff = st.deliver_next_try.filter(|t| !opts.force && *t > now);
+        if let Some(t) = deliver_backoff.filter(|_| !drafts.is_empty()) {
+            report.deliver_next_try = Some(t);
+            report.vault_waiting_for = st.vault.last_error.clone();
+        } else {
+            st.deliver_next_try = None;
+            for (key, item, plan) in &drafts {
+                if plan.skip {
+                    self.queue.skipped(key, &plan.skip_reason, Utc::now())?;
+                    report.skipped += 1;
+                    continue;
+                }
+                let Some(folder) = self.cfg.folder_for(&item.project) else {
+                    self.queue.skipped(
+                        key,
+                        &format!("no vault folder for project {}", item.project),
+                        Utc::now(),
+                    )?;
+                    report.skipped += 1;
+                    continue;
+                };
+                match writer.write(folder, item, plan).await {
+                    Ok(pages) => {
+                        self.queue.done(key, pages.clone(), Utc::now())?;
+                        self.unstage(key);
+                        st.vault.last_ok = Some(Utc::now());
+                        st.vault.offline_since = None;
+                        st.vault.last_error = None;
+                        report.ingested += 1;
+                        for p in pages {
+                            if !report.notes.contains(&p) {
+                                report.notes.push(p);
+                            }
                         }
                     }
-                }
-                Err(e) => {
-                    let why = e.to_string();
-                    self.queue.failed(&key, &why, Utc::now())?;
-                    report.failed += 1;
-                    report.errors.push(format!("{key}: {why}"));
+                    Err(StoreError::Offline(why)) => {
+                        // Not the item's fault: keep every draft, try later.
+                        st.vault.offline_since.get_or_insert(now);
+                        st.vault.last_error = Some(why.clone());
+                        let t = now + Duration::minutes(10);
+                        st.deliver_next_try = Some(t);
+                        report.deliver_next_try = Some(t);
+                        report.vault_waiting_for = Some(format!("vault offline: {why}"));
+                        break;
+                    }
+                    Err(StoreError::Conflict(page)) => {
+                        // Edited meanwhile: the next run reads it again.
+                        report
+                            .errors
+                            .push(format!("{key}: {page} changed meanwhile; retried next run"));
+                    }
+                    Err(StoreError::Other(why)) => {
+                        self.queue.failed(key, &why, Utc::now())?;
+                        st.vault.last_error = Some(why.clone());
+                        report.failed += 1;
+                        report.errors.push(format!("{key}: {why}"));
+                    }
                 }
             }
         }
-        if report.ingested + report.skipped + report.failed == 0 && report.waiting_for.is_some() {
-            report.outcome = "waiting".into();
+        let progress = report.planned + report.ingested + report.skipped + report.failed;
+        report.outcome = if progress > 0 {
+            "ran"
+        } else if report.waiting_for.is_some() || report.vault_waiting_for.is_some() {
+            "waiting"
+        } else {
+            "idle"
         }
-        st.next_try = report.next_try;
+        .into();
         st.last_run = Some(report.clone());
         self.save(&st)?;
         tracing::info!(
             outcome = %report.outcome,
+            planned = report.planned,
             ingested = report.ingested,
             skipped = report.skipped,
             failed = report.failed,
             waiting_for = report.waiting_for.as_deref().unwrap_or(""),
+            vault_waiting_for = report.vault_waiting_for.as_deref().unwrap_or(""),
             "vault-ingest: run"
         );
         Ok(report)
@@ -656,12 +924,13 @@ impl Ingest {
     async fn plan_item(
         &self,
         writer: &notes::Writer<'_>,
+        folder: &str,
         item: &Item,
         cold: bool,
     ) -> Result<Plan, ModelError> {
-        let existing = writer
-            .claim_index()
-            .map_err(|e| ModelError::Failed(e.to_string()))?;
+        // Offline vault: draft without the titles; delivery still matches
+        // existing claims by title.
+        let existing = writer.claim_index(folder).await.unwrap_or_default();
         let related = plan::related_titles(&existing, item, plan::PROMPT_TITLES);
         let user = plan::prompt(item, &related);
         let answer = self
@@ -711,6 +980,7 @@ mod tests {
             ("LUCINA_VAULT_INGEST_GIT", "a=/r@main#lucina"),
             ("LUCINA_VAULT_INGEST_COLD_AFTER_HOURS", "0"),
             ("LUCINA_VAULT_INGEST_BATCH", "3"),
+            ("LUCINA_VAULT_INGEST_TARGET", "dir:/tmp/v"),
         ]
         .into();
         let c = IngestConfig::from_lookup(
@@ -723,11 +993,13 @@ mod tests {
         assert_eq!(c.git.len(), 1);
         assert_eq!(c.cold_after, None);
         assert_eq!(c.batch, 3);
+        assert_eq!(c.target, "dir:/tmp/v");
         assert_eq!(c.qwen_url, DEFAULT_QWEN_URL);
         let d =
             IngestConfig::from_lookup(|_| None, Path::new("/s"), chrono_tz::Europe::Rome).unwrap();
         assert_eq!(d.git.len(), 2, "default repos");
         assert_eq!(d.cold_after, Some(Duration::hours(6)));
+        assert_eq!(d.target, DEFAULT_TARGET);
         let bad: std::collections::HashMap<&str, &str> =
             [("LUCINA_VAULT_INGEST_BATCH", "-1")].into();
         assert!(IngestConfig::from_lookup(
@@ -737,5 +1009,29 @@ mod tests {
         )
         .is_err());
         assert_eq!(clip("abcdef", 4), "abc…");
+    }
+
+    #[test]
+    fn folders() {
+        let c = IngestConfig::new("/s", chrono_tz::Europe::Rome);
+        for (p, f) in [
+            ("lucinaos", Some("LucinaOS")),
+            ("lucina-ink", Some("LucinaOS")),
+            ("lucina", Some("LucinaRS")),
+            ("lucina-agents", Some("LucinaRS")),
+            ("secretary-pixiv", Some("LucinaRS")),
+            ("pokoin-bots", Some("Pokoin")),
+            ("nezopt", Some("Infra")),
+            ("nespc-mint22", Some("Infra")),
+            ("hermes", Some("Hermes")),
+            ("cardrails", None),
+            ("lucinadsi", None),
+            ("university", None),
+        ] {
+            assert_eq!(c.folder_for(p), f, "{p}");
+        }
+        for bad in ["x=Lucina", "x=a/b", "X=Ok", "x=.hidden", "x=", "=F"] {
+            assert!(parse_folders(bad).is_err(), "{bad}");
+        }
     }
 }

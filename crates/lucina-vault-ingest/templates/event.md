@@ -2,7 +2,9 @@
 type: event
 tags:
 {{tags}}
+date: {{date}}
 created: {{date}}
+status: complete
 ingest_key: {{key}}
 generated: lucina-vault-ingest
 ---
@@ -21,4 +23,4 @@ generated: lucina-vault-ingest
 
 ## Related
 
-- [[00 Lucina hub]] · [[{{project_page}}|{{project}}]] · [[MOC {{project}}]]
+- [[{{hub}}]] · [[{{moc}}]]

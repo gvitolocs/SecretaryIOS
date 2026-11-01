@@ -26,7 +26,7 @@ generated: lucina-vault-ingest
 
 ## Index
 
-- [[00 Lucina hub]] · [[{{project_page}}|{{project}}]] · [[MOC {{project}}]]
+- [[{{hub}}]] · [[{{moc}}]]
 
 ## Part of
 

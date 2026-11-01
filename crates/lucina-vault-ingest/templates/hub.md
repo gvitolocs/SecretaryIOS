@@ -2,17 +2,16 @@
 type: moc
 tags:
   - moc
-  - lucina
 generated: lucina-vault-ingest
 ---
 
-# 00 Lucina hub
+# {{hub}}
 
-Zettelkasten notes Lucina writes from the ops record, the commits of the Lucina repos and
-Claude session reports: one claim per note in `Permanent/`, dated digests in `Events/`, one
-map of content per project in `MOC/`. Text above the first section is yours; Lucina only adds
-lines to the sections below.
+{{folder}} knowledge base: atomic notes, one claim per note in `Permanent/`, dated digests in `Events/`,
+thin maps of content in `MOC/`. Lucina adds notes from the ops record, the commits of the {{folder}}
+repos and Claude session reports; text above the first section is yours, and she only adds lines to
+the sections below.
 
-## Projects
+## Maps of content
 
 ## Events

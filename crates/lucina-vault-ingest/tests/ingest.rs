@@ -1,23 +1,68 @@
-//! The ingest end to end against a fake gateway (wiremock): queueing and
-//! dedup, idempotent notes, amending, redaction, the availability gate and
-//! its backoff, recovery from a stored plan, and the ops and git sources.
+//! The ingest end to end against a fake gateway (wiremock) and a local vault
+//! directory standing in for the Pi: queueing and dedup, idempotent notes,
+//! amending, redaction, the availability gate and its backoff, drafts kept
+//! while the vault is offline, compare-and-swap conflicts, and the ops and
+//! git sources.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
 use lucina_ops::{Ops, OpsConfig};
 use lucina_vault_ingest::queue::{Backlink, Item, SourceKind, State, MAX_ATTEMPTS};
+use lucina_vault_ingest::store::{LocalStore, StoreError, VaultStore};
 use lucina_vault_ingest::{Ingest, IngestConfig, RunOpts};
 use serde_json::{json, Value};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+/// The test vault: a local directory that can be switched offline.
+struct Switchable {
+    inner: LocalStore,
+    offline: Arc<AtomicBool>,
+}
+
+#[async_trait::async_trait]
+impl VaultStore for Switchable {
+    async fn read(&self, rel: &str) -> Result<Option<String>, StoreError> {
+        self.up()?;
+        self.inner.read(rel).await
+    }
+    async fn list(&self, dir: &str) -> Result<Vec<String>, StoreError> {
+        self.up()?;
+        self.inner.list(dir).await
+    }
+    async fn write(
+        &self,
+        rel: &str,
+        text: &str,
+        expected: Option<&str>,
+    ) -> Result<bool, StoreError> {
+        self.up()?;
+        self.inner.write(rel, text, expected).await
+    }
+    fn describe(&self) -> String {
+        "test".into()
+    }
+}
+
+impl Switchable {
+    fn up(&self) -> Result<(), StoreError> {
+        if self.offline.load(Ordering::SeqCst) {
+            Err(StoreError::Offline("pi-cursor: No route to host".into()))
+        } else {
+            Ok(())
+        }
+    }
+}
+
 struct Env {
     _dir: tempfile::TempDir,
-    vault: std::path::PathBuf,
+    vault: PathBuf,
     ingest: Ingest,
     ops: Arc<Ops>,
+    offline: Arc<AtomicBool>,
 }
 
 fn now() -> DateTime<Utc> {
@@ -28,11 +73,18 @@ fn now() -> DateTime<Utc> {
 
 fn env_with(url: &str, git: Vec<lucina_vault_ingest::sources::GitRepo>) -> Env {
     let dir = tempfile::tempdir().unwrap();
-    let vault = dir.path().join("Lucina");
+    let ops_vault = dir.path().join("ops-vault");
+    let vault = dir.path().join("Obsidian");
+    std::fs::create_dir_all(&ops_vault).unwrap();
     std::fs::create_dir_all(&vault).unwrap();
+    std::fs::write(
+        vault.join("00 Home.md"),
+        "# Obsidian vault hub\n\n## Projects\n\n| Vault | Hub |\n| --- | --- |\n| Pokoin | [[00 Pokoin hub]] |\n\n## Lectures\n\n- x\n",
+    )
+    .unwrap();
     let ops = Arc::new(
         Ops::open(
-            OpsConfig::new(&vault, dir.path().join("ops"), chrono_tz::Europe::Rome),
+            OpsConfig::new(&ops_vault, dir.path().join("ops"), chrono_tz::Europe::Rome),
             None,
         )
         .unwrap(),
@@ -43,12 +95,18 @@ fn env_with(url: &str, git: Vec<lucina_vault_ingest::sources::GitRepo>) -> Env {
     cfg.qcode_lock = None;
     cfg.last_used = None;
     cfg.git = git;
-    let ingest = Ingest::open(cfg, ops.clone()).unwrap();
+    let offline = Arc::new(AtomicBool::new(false));
+    let store = Switchable {
+        inner: LocalStore::open(&vault).unwrap(),
+        offline: offline.clone(),
+    };
+    let ingest = Ingest::open_with(cfg, ops.clone(), Box::new(store)).unwrap();
     Env {
         _dir: dir,
         vault,
         ingest,
         ops,
+        offline,
     }
 }
 
@@ -118,6 +176,8 @@ async fn gateway(status: Value) -> MockServer {
     s
 }
 
+const CLAIM: &str = "LucinaRS/Permanent/lucina-ops writes the store before the vault pages.md";
+
 fn read(v: &Path, rel: &str) -> String {
     std::fs::read_to_string(v.join(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"))
 }
@@ -135,12 +195,19 @@ fn list(v: &Path, dir: &str) -> Vec<String> {
 
 fn snapshot(v: &Path) -> Vec<(String, String)> {
     let mut out = Vec::new();
-    for d in ["Permanent", "Events", "MOC"] {
+    for d in [
+        "LucinaRS/Permanent",
+        "LucinaRS/Events",
+        "LucinaRS/MOC",
+        "LucinaRS",
+    ] {
         for f in list(v, d) {
-            out.push((format!("{d}/{f}"), read(v, &format!("{d}/{f}"))));
+            if f.ends_with(".md") {
+                out.push((format!("{d}/{f}"), read(v, &format!("{d}/{f}"))));
+            }
         }
     }
-    out.push(("hub".into(), read(v, "00 Lucina hub.md")));
+    out.push(("home".into(), read(v, "00 Home.md")));
     out
 }
 
@@ -198,15 +265,12 @@ async fn an_item_becomes_notes_once() {
         .unwrap();
     let r = e.ingest.run(RunOpts::default(), now()).await.unwrap();
     assert_eq!(
-        (r.outcome.as_str(), r.ingested, r.failed),
-        ("ran", 1, 0),
+        (r.outcome.as_str(), r.planned, r.ingested, r.failed),
+        ("ran", 1, 1, 0),
         "{r:?}"
     );
 
-    let claim = read(
-        &e.vault,
-        "Permanent/lucina-ops writes the store before the vault pages.md",
-    );
+    let claim = read(&e.vault, CLAIM);
     assert!(claim.starts_with("---\ntype: permanent\n"), "{claim}");
     assert!(claim.contains("# lucina-ops writes the store before the vault pages"));
     assert!(
@@ -217,6 +281,7 @@ async fn an_item_becomes_notes_once() {
         !claim.contains("A link to nothing"),
         "dangling link dropped"
     );
+    assert!(claim.contains("- [[00 LucinaRS hub]] · [[MOC LucinaRS change log]]"));
     assert!(claim.contains("[[2026-11-01 Ops store first]]"));
     assert!(claim.contains("<!-- ingest:session:a -->"));
     for s in [
@@ -229,14 +294,28 @@ async fn an_item_becomes_notes_once() {
     ] {
         assert!(claim.contains(s), "{s}");
     }
-    let ev = read(&e.vault, "Events/2026-11-01 Ops store first.md");
-    assert!(ev.contains("ingest_key: session:a"));
+    let ev = read(&e.vault, "LucinaRS/Events/2026-11-01 Ops store first.md");
+    assert!(ev.contains("ingest_key: session:a") && ev.contains("status: complete"));
     assert!(ev.contains("- [[lucina-ops writes the store before the vault pages]]"));
     assert!(ev.contains("Claude session report `session:a`"));
-    let moc = read(&e.vault, "MOC/MOC lucina.md");
+    let moc = read(&e.vault, "LucinaRS/MOC/MOC LucinaRS change log.md");
     assert!(moc.contains("- [[lucina-ops writes the store before the vault pages]]"));
-    let hub = read(&e.vault, "00 Lucina hub.md");
-    assert!(hub.contains("- [[MOC lucina]]") && hub.contains("[[2026-11-01 Ops store first]]"));
+    let hub = read(&e.vault, "LucinaRS/00 LucinaRS hub.md");
+    assert!(
+        hub.contains("- [[MOC LucinaRS change log]]")
+            && hub.contains("[[2026-11-01 Ops store first]]")
+    );
+    let home = read(&e.vault, "00 Home.md");
+    assert!(
+        home.contains(
+            "| Pokoin | [[00 Pokoin hub]] |\n| LucinaRS | [[00 LucinaRS hub]] |\n\n## Lectures"
+        ),
+        "the new hub is a row of the Projects table: {home}"
+    );
+    assert!(
+        list(&e.ingest.staging_dir(), "").is_empty(),
+        "delivered drafts leave staging"
+    );
 
     // Replay: nothing is due; writing the same stored plan again (a crash
     // after the notes, before `done`) changes no page and makes no second claim.
@@ -260,16 +339,22 @@ async fn an_item_becomes_notes_once() {
         .unwrap()
         .remove("session:a")
         .unwrap();
+    let store = LocalStore::open(&e.vault).unwrap();
     let w = lucina_vault_ingest::notes::Writer {
-        vault: e.ops.vault(),
+        store: &store,
         templates: &lucina_vault_ingest::templates::Templates::default(),
         today: chrono::NaiveDate::from_ymd_opt(2026, 11, 3).unwrap(),
     };
-    w.write(slot.item.as_ref().unwrap(), slot.plan.as_ref().unwrap())
-        .unwrap();
+    w.write(
+        "LucinaRS",
+        slot.item.as_ref().unwrap(),
+        slot.plan.as_ref().unwrap(),
+    )
+    .await
+    .unwrap();
     assert_eq!(snapshot(&e.vault), before);
-    assert_eq!(list(&e.vault, "Permanent").len(), 1);
-    assert_eq!(list(&e.vault, "Events").len(), 1);
+    assert_eq!(list(&e.vault, "LucinaRS/Permanent").len(), 1);
+    assert_eq!(list(&e.vault, "LucinaRS/Events").len(), 1);
 }
 
 #[tokio::test]
@@ -285,11 +370,11 @@ async fn a_known_claim_is_amended_not_duplicated() {
         .await;
     let e = env(&gw.uri());
     let owner = "---\ntype: permanent\nupdated: 2026-10-01\n---\n\n# lucina-ops writes the store before the vault pages\n\nThe owner's own words.\n\n## Sources\n\n- hand-written\n";
-    std::fs::create_dir_all(e.vault.join("Permanent")).unwrap();
+    std::fs::create_dir_all(e.vault.join("LucinaRS/Permanent")).unwrap();
+    std::fs::write(e.vault.join(CLAIM), owner).unwrap();
     std::fs::write(
-        e.vault
-            .join("Permanent/lucina-ops writes the store before the vault pages.md"),
-        owner,
+        e.vault.join("LucinaRS/00 LucinaRS hub.md"),
+        "# 00 LucinaRS hub\n\nThe owner's hub.\n\n## Recent events\n\n- older\n",
     )
     .unwrap();
     e.ingest
@@ -299,14 +384,11 @@ async fn a_known_claim_is_amended_not_duplicated() {
     let r = e.ingest.run(RunOpts::default(), now()).await.unwrap();
     assert_eq!(r.ingested, 1, "{r:?}");
     assert_eq!(
-        list(&e.vault, "Permanent").len(),
+        list(&e.vault, "LucinaRS/Permanent").len(),
         1,
         "amended, not duplicated"
     );
-    let t = read(
-        &e.vault,
-        "Permanent/lucina-ops writes the store before the vault pages.md",
-    );
+    let t = read(&e.vault, CLAIM);
     assert!(t.contains("The owner's own words."));
     assert!(t.contains("updated: 2026-11-01"));
     assert!(
@@ -314,27 +396,14 @@ async fn a_known_claim_is_amended_not_duplicated() {
         "{t}"
     );
     assert!(t.contains("## Updates\n\n- 2026-11-01: It now fsyncs the store too. ([[2026-11-01 fsync the store]]) <!-- ingest:session:b -->"), "{t}");
-    assert!(t.contains("## Project files\n\n- `/home/nez/Projects/Lucina/SecretaryIOS/crates/lucina-ops/src/lib.rs`"), "{t}");
-    // Amending again with the same item changes nothing.
-    let w = lucina_vault_ingest::notes::Writer {
-        vault: e.ops.vault(),
-        templates: &lucina_vault_ingest::templates::Templates::default(),
-        today: chrono::NaiveDate::from_ymd_opt(2026, 11, 2).unwrap(),
-    };
-    let claim = lucina_vault_ingest::plan::Claim {
-        title: "x".into(),
-        body: "y".into(),
-        ..Default::default()
-    };
-    assert_eq!(
-        w.amend(
-            &t,
-            &claim,
-            &item("session:b", "fsync the store"),
-            "e",
-            "<!-- ingest:session:b -->"
-        ),
-        t
+    let hub = read(&e.vault, "LucinaRS/00 LucinaRS hub.md");
+    assert!(
+        hub.contains("## Recent events\n\n- [[2026-11-01 fsync the store]] · lucina <!-- ingest:session:b -->\n- older"),
+        "an existing hub keeps its own events section: {hub}"
+    );
+    assert!(
+        !read(&e.vault, "00 Home.md").contains("LucinaRS"),
+        "an existing hub is not re-linked"
     );
 }
 
@@ -377,8 +446,97 @@ async fn secrets_never_reach_a_note() {
     let q = std::fs::read_to_string(e.ingest.queue().dir().join("queue.jsonl")).unwrap();
     assert!(
         !q.contains("hunter2") && !q.contains("ghp_"),
-        "the stored plan is redacted too"
+        "the stored draft is redacted too"
     );
+}
+
+#[tokio::test]
+async fn an_offline_vault_keeps_the_drafts_until_it_is_back() {
+    let gw = gateway(ready()).await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(answer(store_first_plan()))
+        .expect(1)
+        .mount(&gw)
+        .await;
+    let e = env(&gw.uri());
+    e.offline.store(true, Ordering::SeqCst);
+    e.ingest
+        .queue()
+        .enqueue(
+            vec![item("session:o", "Drafted while the Pi is off")],
+            now(),
+        )
+        .unwrap();
+    let r = e.ingest.run(RunOpts::default(), now()).await.unwrap();
+    assert_eq!((r.planned, r.ingested, r.failed), (1, 0, 0), "{r:?}");
+    assert!(r.vault_waiting_for.as_deref().unwrap().contains("No route"));
+    let st = e.ingest.status().unwrap();
+    assert_eq!((st.undelivered, st.queue.failed), (1, 0));
+    assert!(st.vault.offline_since.is_some());
+    assert_eq!(
+        list(&e.ingest.staging_dir(), "").len(),
+        1,
+        "the draft is staged"
+    );
+    // Backoff: the next tick does not even try; still nothing lost.
+    let r = e
+        .ingest
+        .run(RunOpts::default(), now() + Duration::minutes(1))
+        .await
+        .unwrap();
+    assert_eq!((r.outcome.as_str(), r.ingested), ("waiting", 0), "{r:?}");
+    // Back online: delivered from the stored draft, without asking Qwen again.
+    e.offline.store(false, Ordering::SeqCst);
+    let r = e
+        .ingest
+        .run(RunOpts::default(), now() + Duration::minutes(11))
+        .await
+        .unwrap();
+    assert_eq!((r.planned, r.ingested), (0, 1), "{r:?}");
+    assert!(e
+        .vault
+        .join("LucinaRS/Events/2026-11-01 Drafted while the Pi is off.md")
+        .exists());
+    let st = e.ingest.status().unwrap();
+    assert_eq!((st.undelivered, st.queue.done), (0, 1));
+    assert!(st.vault.offline_since.is_none() && st.vault.last_ok.is_some());
+}
+
+#[tokio::test]
+async fn an_edit_made_meanwhile_is_never_overwritten() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = LocalStore::open(dir.path()).unwrap();
+    s.write("P/Permanent/x.md", "owner v1", None).await.unwrap();
+    let read_at = lucina_vault_ingest::store::version(Some("owner v1"));
+    // The owner edits between our read and our write.
+    std::fs::write(dir.path().join("P/Permanent/x.md"), "owner v2").unwrap();
+    assert!(matches!(
+        s.write("P/Permanent/x.md", "ours", read_at.as_deref())
+            .await,
+        Err(StoreError::Conflict(_))
+    ));
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("P/Permanent/x.md")).unwrap(),
+        "owner v2"
+    );
+}
+
+#[tokio::test]
+async fn a_project_without_a_vault_folder_is_skipped_without_qwen() {
+    let gw = gateway(ready()).await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(answer(store_first_plan()))
+        .expect(0)
+        .mount(&gw)
+        .await;
+    let e = env(&gw.uri());
+    let mut it = item("session:u", "University lecture");
+    it.project = "university".into();
+    e.ingest.queue().enqueue(vec![it], now()).unwrap();
+    let r = e.ingest.run(RunOpts::default(), now()).await.unwrap();
+    assert_eq!(r.skipped, 1, "{r:?}");
 }
 
 #[tokio::test]
@@ -516,8 +674,8 @@ async fn a_gateway_refusal_is_a_wait_and_bad_answers_are_failures() {
 }
 
 #[tokio::test]
-async fn a_stored_plan_is_written_without_the_model() {
-    // The gateway is down: only the stored plan can make the notes.
+async fn a_stored_draft_is_delivered_without_the_model() {
+    // The gateway is down: only the stored draft can make the notes.
     let e = env("http://127.0.0.1:9");
     let it = item("session:p", "Planned before a crash");
     e.ingest.queue().enqueue(vec![it.clone()], now()).unwrap();
@@ -529,7 +687,7 @@ async fn a_stored_plan_is_written_without_the_model() {
     assert_eq!(r.ingested, 1, "{r:?}");
     assert!(e
         .vault
-        .join("Events/2026-11-01 Planned before a crash.md")
+        .join("LucinaRS/Events/2026-11-01 Planned before a crash.md")
         .exists());
 }
 
@@ -548,7 +706,7 @@ async fn skipped_items_write_nothing() {
         .unwrap();
     let r = e.ingest.run(RunOpts::default(), now()).await.unwrap();
     assert_eq!((r.ingested, r.skipped), (0, 1));
-    assert!(list(&e.vault, "Events").is_empty());
+    assert!(list(&e.vault, "LucinaRS").is_empty());
     assert_eq!(e.ingest.status().unwrap().queue.skipped, 1);
 }
 
@@ -665,7 +823,7 @@ async fn git_commits_and_merges_are_queued_once() {
 }
 
 #[test]
-fn a_remote_model_url_is_refused() {
+fn a_remote_model_url_or_a_repo_vault_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let vault = dir.path().join("v");
     std::fs::create_dir_all(&vault).unwrap();
@@ -677,6 +835,14 @@ fn a_remote_model_url_is_refused() {
         .unwrap(),
     );
     let mut cfg = IngestConfig::new(dir.path().join("i"), chrono_tz::Europe::Rome);
+    cfg.target = format!("dir:{}", vault.display());
     cfg.qwen_url = "https://api.deepseek.com".into();
-    assert!(Ingest::open(cfg, ops).is_err());
+    assert!(Ingest::open(cfg.clone(), ops.clone()).is_err());
+    cfg.qwen_url = lucina_vault_ingest::DEFAULT_QWEN_URL.into();
+    assert!(Ingest::open(cfg.clone(), ops.clone()).is_ok());
+    std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+    assert!(
+        Ingest::open(cfg, ops).is_err(),
+        "never a vault inside a git repo"
+    );
 }

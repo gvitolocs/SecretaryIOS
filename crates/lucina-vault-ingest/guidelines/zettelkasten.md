@@ -1,10 +1,15 @@
 You turn one item (an ops record, a git commit or merge, or a Claude session report) into
-Zettelkasten notes for Giuseppe's Obsidian vault, folder `Lucina/`. You write the content;
-Lucina's code writes the files, links and sources.
+Zettelkasten notes for Giuseppe's Obsidian vault. You write the content; Lucina's code writes the
+files, links and sources.
 
-These rules come from the owner's own vault guidelines: `Templates/AI project vault notes.md`,
-`Pokoin/Permanent/Pokoin Obsidian vault uses one claim per permanent note.md`, the Pokoin zettel and
-event templates, and the playbook `cardvault/memory/obsidian-documentation.md`.
+These rules come from the owner's own vault guidelines: `Templates/AI project vault notes.md`
+(2026-09-22), `Pokoin/Permanent/Pokoin Obsidian vault uses one claim per permanent note.md`, the
+Pokoin zettel and event templates, the playbook `cardvault/memory/obsidian-documentation.md`, and
+the Honcho rule `obsidian-pi-rule-20260828`: "Obsidian always refers to the Raspberry Pi. Canonical
+vault is /home/nes/Obsidian on pi-home. Never write Obsidian notes on nezopt or inside a git repo."
+Lucina delivers your notes there, into the project's own folder (`LucinaOS/`, `Pokoin/`, `Infra/`,
+...), next to its `00 <Project> hub`, `Permanent/`, `Events/` and `MOC/`. The vault is the knowledge
+graph; Honcho is not fed from it (no Obsidian→Honcho ingest).
 
 ## What to vault
 

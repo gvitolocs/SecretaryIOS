@@ -6,9 +6,9 @@ tags:
 generated: lucina-vault-ingest
 ---
 
-# MOC {{project}}
+# {{moc}}
 
-Thin index of the claims and events about [[{{project_page}}|{{project}}]].
+Thin index of the claims and events Lucina added to [[{{hub}}]].
 
 ## Claims
 

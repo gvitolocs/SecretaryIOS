@@ -163,6 +163,18 @@ pub struct Gate {
     /// request is admitted and when it ends).
     last_used: Option<PathBuf>,
     quiet: Duration,
+    /// When the worker's own last request ended (epoch seconds): a stamp no
+    /// later than that is ours and needs no quiet period.
+    own_last: std::sync::Arc<std::sync::Mutex<Option<f64>>>,
+}
+
+fn epoch_now() -> Option<f64> {
+    Some(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_secs_f64(),
+    )
 }
 
 impl Gate {
@@ -177,6 +189,7 @@ impl Gate {
             qcode_lock,
             last_used: None,
             quiet: Duration::ZERO,
+            own_last: Default::default(),
         }
     }
 
@@ -187,15 +200,23 @@ impl Gate {
         self
     }
 
-    /// How long ago the gateway last admitted or finished a dense request.
+    /// The worker's own request just ended (its stamp is not someone else's use).
+    pub fn note_own_use(&self) {
+        if let Ok(mut g) = self.own_last.lock() {
+            *g = epoch_now();
+        }
+    }
+
+    /// How long ago someone else last had a dense request admitted or
+    /// finished; `None` when unknown or when the last use was the worker's own.
     pub fn idle(&self) -> Option<Duration> {
         let s = std::fs::read_to_string(self.last_used.as_ref()?).ok()?;
         let t = s.trim().parse::<f64>().ok()?;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()?
-            .as_secs_f64();
-        Some(Duration::from_secs_f64((now - t).max(0.0)))
+        let own = self.own_last.lock().ok().and_then(|g| *g);
+        if own.is_some_and(|o| t <= o + 2.0) {
+            return None;
+        }
+        Some(Duration::from_secs_f64((epoch_now()? - t).max(0.0)))
     }
 
     /// Whether a `qcode-run` holds its lock (probed with a non-blocking flock
@@ -343,9 +364,14 @@ mod tests {
             .unwrap()
             .as_secs();
         std::fs::write(&p, format!("{}\n", now - 50)).unwrap();
-        let g = Gate::new("http://127.0.0.1:1", None, None).with_quiet(Some(p), Q);
+        let g = Gate::new("http://127.0.0.1:1", None, None).with_quiet(Some(p.clone()), Q);
         let idle = g.idle().unwrap().as_secs();
         assert!((49..=52).contains(&idle), "{idle}");
+        // The stamp of the worker's own request is no reason to wait.
+        g.note_own_use();
+        assert_eq!(g.idle(), None);
+        std::fs::write(&p, format!("{}\n", now + 30)).unwrap();
+        assert!(g.idle().is_some(), "a later use is someone else's");
     }
 
     #[test]

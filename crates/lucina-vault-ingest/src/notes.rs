@@ -1,6 +1,11 @@
-//! Writing a plan into the vault: claims in `Permanent/`, the event digest in
-//! `Events/`, the project's map in `MOC/`, the hub.
+//! Delivering a plan into the project's folder of the vault (`<Folder>/…`):
+//! claims in `Permanent/`, the event digest in `Events/`, the folder's change
+//! log MOC, its hub `00 <Folder> hub.md` (and a line in `00 Home.md` when the
+//! hub is new).
 //!
+//! - Every change is read → amend → compare-and-swap write against the vault
+//!   itself, so an edit made meanwhile (the owner, the Mac sync, another agent)
+//!   is never overwritten: the write is refused and the item retried.
 //! - A claim whose title (normalized) names an existing note is amended, never
 //!   rewritten: a source line, a dated update, missing files and links are
 //!   added to its sections; the owner's text stays as it is.
@@ -10,30 +15,32 @@
 //!   the model, so a retry lands on the same page.
 
 use chrono::NaiveDate;
-use lucina_ops::{vault, Vault};
 
 use crate::plan::{clean_title, normalize, Claim, Plan};
 use crate::queue::{Backlink, Item};
+use crate::store::{version, StoreError, VaultStore};
 use crate::templates::{fill, Templates};
-use crate::IngestError;
 
-/// Event lines kept on the hub and on a MOC.
+/// Event lines kept on the hub and on the change log.
 const HUB_EVENTS: usize = 60;
 const MOC_EVENTS: usize = 40;
 /// Characters of the source title in an event's file name.
 const EVENT_NAME: usize = 80;
+pub const PERMANENT_DIR: &str = "Permanent";
+pub const EVENTS_DIR: &str = "Events";
+pub const MOC_DIR: &str = "MOC";
+pub const HOME: &str = "00 Home.md";
 
 pub fn marker(key: &str) -> String {
     format!("<!-- ingest:{key} -->")
 }
 
-fn page(dir: &str, stem: &str) -> String {
-    format!("{dir}/{stem}.md")
+pub fn hub_name(folder: &str) -> String {
+    format!("00 {folder} hub")
 }
 
-/// The project's page in the ops folder (`[[Projects/x|x]]`).
-fn project_page(project: &str) -> String {
-    lucina_ops::render::link_target(&lucina_ops::render::project_path(project)).to_owned()
+pub fn moc_name(folder: &str) -> String {
+    format!("MOC {folder} change log")
 }
 
 fn bullets(v: &[String], f: impl Fn(&String) -> String) -> String {
@@ -48,11 +55,7 @@ fn bullets(v: &[String], f: impl Fn(&String) -> String) -> String {
 }
 
 fn tags(item: &Item) -> String {
-    let mut t = vec![
-        "lucina".to_owned(),
-        item.project.clone(),
-        item.source.as_str().to_owned(),
-    ];
+    let mut t = vec![item.project.clone(), item.source.as_str().to_owned()];
     t.dedup();
     t.iter()
         .map(|x| format!("  - {x}"))
@@ -60,7 +63,8 @@ fn tags(item: &Item) -> String {
         .join("\n")
 }
 
-/// How the notes link back to the item's source.
+/// How the notes point back to the item's source (plain text: the ops
+/// folder and the repos are not in this vault).
 pub fn backlink_text(b: &Backlink) -> String {
     match b {
         Backlink::Ops {
@@ -69,13 +73,11 @@ pub fn backlink_text(b: &Backlink) -> String {
             incident,
             commit,
         } => {
-            let mut s = format!(
-                "ops record `{id}` · [[{}]]",
-                lucina_ops::render::link_target(log)
-            );
+            let mut s = format!("ops record `{id}` (Lucina ops `{log}`");
             if let Some(i) = incident {
-                s.push_str(&format!(" · [[{}]]", lucina_ops::render::link_target(i)));
+                s.push_str(&format!(", `{i}`"));
             }
+            s.push(')');
             if let Some(c) = commit {
                 s.push_str(&format!(" · commit `{c}`"));
             }
@@ -96,32 +98,24 @@ pub fn backlink_text(b: &Backlink) -> String {
     }
 }
 
-/// The event's page: `Events/YYYY-MM-DD <title>.md`, or `… (n).md` when that
-/// name belongs to another item.
-fn event_path(v: &Vault, item: &Item) -> Result<String, IngestError> {
-    let mut t = clean_title(&item.title);
+/// The event's name from the source title: at most 80 characters, cut at a
+/// word, without a dangling comma or bracket.
+pub fn event_name(title: &str, fallback: &str) -> String {
+    let mut t = clean_title(title);
     if t.chars().count() > EVENT_NAME {
-        t = clean_title(&t.chars().take(EVENT_NAME).collect::<String>());
-    }
-    if t.is_empty() {
-        t = item.source.as_str().into();
-    }
-    let base = format!("{} {t}", item.at.format("%Y-%m-%d"));
-    let own = format!("ingest_key: {}", item.key);
-    for n in 1..100 {
-        let stem = if n == 1 {
-            base.clone()
-        } else {
-            format!("{base} ({n})")
-        };
-        let p = page(vault::EVENTS_DIR, &stem);
-        match v.read(&p)? {
-            None => return Ok(p),
-            Some(text) if text.lines().any(|l| l.trim() == own) => return Ok(p),
-            Some(_) => {}
+        t = t.chars().take(EVENT_NAME).collect();
+        if let Some(i) = t.rfind(' ') {
+            t.truncate(i);
         }
     }
-    Err(IngestError::Io("no free event page name".into()))
+    let t = t
+        .trim_end_matches([',', ';', '-', '(', '+', '&', ' ', '.'])
+        .to_owned();
+    if t.is_empty() {
+        fallback.to_owned()
+    } else {
+        t
+    }
 }
 
 fn stem(rel: &str) -> &str {
@@ -138,6 +132,16 @@ fn section(lines: &[String], name: &str) -> Option<(usize, usize)> {
         .position(|l| l.starts_with("## ") || l.starts_with("# "))
         .map_or(lines.len(), |j| i + 1 + j);
     Some((i + 1, end))
+}
+
+/// The first of `names` that is a section of `text`, else the first name.
+fn section_named<'a>(text: &str, names: &[&'a str]) -> &'a str {
+    let lines: Vec<String> = text.lines().map(str::to_owned).collect();
+    names
+        .iter()
+        .copied()
+        .find(|n| section(&lines, n).is_some())
+        .unwrap_or(names[0])
 }
 
 /// Add `new` lines to a section (created at the end when missing). `top`:
@@ -224,49 +228,96 @@ fn touch_updated(text: &str, date: NaiveDate) -> String {
 }
 
 pub struct Writer<'a> {
-    pub vault: &'a Vault,
+    pub store: &'a dyn VaultStore,
     pub templates: &'a Templates,
     /// The owner's local date (stamps on lines and updates).
     pub today: NaiveDate,
 }
 
 impl Writer<'_> {
-    /// Existing claims: normalized title → file stem.
-    pub fn claim_index(&self) -> Result<Vec<String>, IngestError> {
+    /// Existing claims of a folder (file stems of `<folder>/Permanent/`).
+    pub async fn claim_index(&self, folder: &str) -> Result<Vec<String>, StoreError> {
         Ok(self
-            .vault
-            .list_pages(vault::PERMANENT_DIR)?
+            .store
+            .list(&format!("{folder}/{PERMANENT_DIR}"))
+            .await?
             .iter()
             .map(|n| stem(n).to_owned())
             .collect())
     }
 
-    /// Write one item's plan. Returns the pages it changed or confirmed.
-    pub fn write(&self, item: &Item, plan: &Plan) -> Result<Vec<String>, IngestError> {
+    /// Read, change, write back only if the page did not move meanwhile.
+    /// `change` gets the current text (`None`: missing) and returns the new
+    /// text, or `None` to leave it. Returns whether the page changed.
+    async fn update(
+        &self,
+        rel: &str,
+        change: impl Fn(Option<&str>) -> Option<String>,
+    ) -> Result<bool, StoreError> {
+        let cur = self.store.read(rel).await?;
+        let Some(new) = change(cur.as_deref()) else {
+            return Ok(false);
+        };
+        if cur.as_deref() == Some(new.as_str()) {
+            return Ok(false);
+        }
+        let new = crate::redact::redact(&new);
+        self.store
+            .write(rel, &new, version(cur.as_deref()).as_deref())
+            .await
+    }
+
+    /// `<folder>/Events/YYYY-MM-DD <title>.md`, or `… (n).md` when that name
+    /// belongs to another item.
+    async fn event_path(&self, folder: &str, item: &Item) -> Result<String, StoreError> {
+        let t = event_name(&item.title, item.source.as_str());
+        let base = format!("{} {t}", item.at.format("%Y-%m-%d"));
+        let own = format!("ingest_key: {}", item.key);
+        for n in 1..100 {
+            let stem = if n == 1 {
+                base.clone()
+            } else {
+                format!("{base} ({n})")
+            };
+            let p = format!("{folder}/{EVENTS_DIR}/{stem}.md");
+            match self.store.read(&p).await? {
+                None => return Ok(p),
+                Some(text) if text.lines().any(|l| l.trim() == own) => return Ok(p),
+                Some(_) => {}
+            }
+        }
+        Err(StoreError::Other("no free event page name".into()))
+    }
+
+    /// Deliver one item's plan into `folder`. Returns the pages written or
+    /// confirmed.
+    pub async fn write(
+        &self,
+        folder: &str,
+        item: &Item,
+        plan: &Plan,
+    ) -> Result<Vec<String>, StoreError> {
         let mark = marker(&item.key);
-        let event = event_path(self.vault, item)?;
+        let event = self.event_path(folder, item).await?;
         let event_stem = stem(&event).to_owned();
-        let existing = self.claim_index()?;
+        let existing = self.claim_index(folder).await?;
         let mut pages = Vec::new();
         let mut claim_stems = Vec::new();
         for c in &plan.claims {
-            let found = existing
+            let s = existing
                 .iter()
-                .find(|s| normalize(s) == normalize(&c.title));
-            let (rel, text) = match found {
-                Some(s) => {
-                    let rel = page(vault::PERMANENT_DIR, s);
-                    let old = self.vault.read(&rel)?.unwrap_or_default();
-                    (rel, self.amend(&old, c, item, &event_stem, &mark))
-                }
-                None => {
-                    let s = clean_title(&c.title);
-                    let rel = page(vault::PERMANENT_DIR, &s);
-                    (rel, self.new_claim(c, item, &event_stem, &mark))
-                }
-            };
-            self.vault.write_note(&rel, &text)?;
-            claim_stems.push(stem(&rel).to_owned());
+                .find(|s| normalize(s) == normalize(&c.title))
+                .cloned()
+                .unwrap_or_else(|| clean_title(&c.title));
+            let rel = format!("{folder}/{PERMANENT_DIR}/{s}.md");
+            self.update(&rel, |cur| {
+                Some(match cur {
+                    Some(old) => self.amend(old, c, item, &event_stem, &mark),
+                    None => self.new_claim(c, item, folder, &event_stem, &mark),
+                })
+            })
+            .await?;
+            claim_stems.push(s);
             pages.push(rel);
         }
         let ev = fill(
@@ -282,14 +333,18 @@ impl Writer<'_> {
                     "source",
                     format!("- {} {mark}", backlink_text(&item.backlink)),
                 ),
-                ("project_page", project_page(&item.project)),
-                ("project", item.project.clone()),
+                ("hub", hub_name(folder)),
+                ("moc", moc_name(folder)),
+                ("folder", folder.to_owned()),
             ],
         );
-        self.vault.write_note(&event, &ev)?;
+        self.update(&event, |_| Some(ev.clone())).await?;
         pages.push(event.clone());
-        pages.push(self.update_moc(item, &claim_stems, &event_stem, &mark)?);
-        pages.push(self.update_hub(item, &event_stem, &mark)?);
+        pages.push(
+            self.update_moc(folder, item, &claim_stems, &event_stem, &mark)
+                .await?,
+        );
+        pages.extend(self.update_hub(folder, item, &event_stem, &mark).await?);
         Ok(pages)
     }
 
@@ -301,13 +356,20 @@ impl Writer<'_> {
         )
     }
 
-    fn new_claim(&self, c: &Claim, item: &Item, event_stem: &str, mark: &str) -> String {
+    fn new_claim(
+        &self,
+        c: &Claim,
+        item: &Item,
+        folder: &str,
+        event_stem: &str,
+        mark: &str,
+    ) -> String {
         fill(
             &self.templates.permanent,
             &[
                 ("tags", tags(item)),
                 ("date", self.today.to_string()),
-                ("source", item.key.clone()),
+                ("source", backlink_text(&item.backlink).replace('`', "")),
                 ("title", c.title.clone()),
                 ("body", c.body.clone()),
                 ("files", bullets(&c.files, |f| format!("`{f}`"))),
@@ -316,8 +378,8 @@ impl Writer<'_> {
                     bullets(&c.connects_to, |t| format!("[[{t}]]")),
                 ),
                 ("enables", bullets(&c.enables, |t| format!("[[{t}]]"))),
-                ("project_page", project_page(&item.project)),
-                ("project", item.project.clone()),
+                ("hub", hub_name(folder)),
+                ("moc", moc_name(folder)),
                 ("event", event_stem.to_owned()),
                 ("sources", self.source_line(item, event_stem, mark)),
             ],
@@ -367,67 +429,115 @@ impl Writer<'_> {
         touch_updated(&t, self.today)
     }
 
-    fn update_moc(
+    async fn update_moc(
         &self,
+        folder: &str,
         item: &Item,
         claims: &[String],
         event_stem: &str,
         mark: &str,
-    ) -> Result<String, IngestError> {
-        let rel = page(vault::MOC_DIR, &format!("MOC {}", item.project));
-        let old = match self.vault.read(&rel)? {
-            Some(t) => t,
-            None => fill(
-                &self.templates.moc,
-                &[
-                    ("tags", format!("  - {}", item.project)),
-                    ("project", item.project.clone()),
-                    ("project_page", project_page(&item.project)),
-                ],
-            ),
-        };
-        let lines: Vec<String> = claims
-            .iter()
-            .filter(|s| !old.contains(&format!("[[{s}]]")))
-            .map(|s| format!("- [[{s}]]"))
-            .collect();
-        let mut t = add_lines(&old, "Claims", &lines, false, None);
-        if !t.contains(mark) {
-            t = add_lines(
-                &t,
-                "Events",
-                &[format!("- [[{event_stem}]] {mark}")],
-                true,
-                Some(MOC_EVENTS),
-            );
-        }
-        self.vault.write_note(&rel, &t)?;
+    ) -> Result<String, StoreError> {
+        let rel = format!("{folder}/{MOC_DIR}/{}.md", moc_name(folder));
+        let fresh = fill(
+            &self.templates.moc,
+            &[
+                ("tags", format!("  - {}", item.project)),
+                ("folder", folder.to_owned()),
+                ("hub", hub_name(folder)),
+                ("moc", moc_name(folder)),
+            ],
+        );
+        self.update(&rel, |cur| {
+            let old = cur.map(str::to_owned).unwrap_or_else(|| fresh.clone());
+            let lines: Vec<String> = claims
+                .iter()
+                .filter(|s| !old.contains(&format!("[[{s}]]")))
+                .map(|s| format!("- [[{s}]]"))
+                .collect();
+            let mut t = add_lines(&old, "Claims", &lines, false, None);
+            if !t.contains(mark) {
+                t = add_lines(
+                    &t,
+                    "Events",
+                    &[format!("- [[{event_stem}]] {mark}")],
+                    true,
+                    Some(MOC_EVENTS),
+                );
+            }
+            Some(t)
+        })
+        .await?;
         Ok(rel)
     }
 
-    fn update_hub(&self, item: &Item, event_stem: &str, mark: &str) -> Result<String, IngestError> {
-        let rel = vault::HUB.to_owned();
-        let old = self
-            .vault
-            .read(&rel)?
-            .unwrap_or_else(|| self.templates.hub.clone());
-        let moc = format!("[[MOC {}]]", item.project);
-        let mut t = if old.contains(&moc) {
-            old.clone()
-        } else {
-            add_lines(&old, "Projects", &[format!("- {moc}")], false, None)
-        };
-        if !t.contains(mark) {
-            t = add_lines(
-                &t,
-                "Events",
-                &[format!("- [[{event_stem}]] · {} {mark}", item.project)],
-                true,
-                Some(HUB_EVENTS),
-            );
+    /// The folder's hub (created from the template when missing, then linked
+    /// from `00 Home.md`): the change log and the event, newest first.
+    async fn update_hub(
+        &self,
+        folder: &str,
+        item: &Item,
+        event_stem: &str,
+        mark: &str,
+    ) -> Result<Vec<String>, StoreError> {
+        let hub = hub_name(folder);
+        let rel = format!("{folder}/{hub}.md");
+        let existed = self.store.read(&rel).await?.is_some();
+        let fresh = fill(
+            &self.templates.hub,
+            &[
+                ("folder", folder.to_owned()),
+                ("hub", hub.clone()),
+                ("moc", moc_name(folder)),
+            ],
+        );
+        let moc = format!("[[{}]]", moc_name(folder));
+        self.update(&rel, |cur| {
+            let old = cur.map(str::to_owned).unwrap_or_else(|| fresh.clone());
+            let mut t = old.clone();
+            if !t.contains(&moc) {
+                let maps = section_named(&t, &["Maps of content", "Map", "Maps"]);
+                t = add_lines(&t, maps, &[format!("- {moc}")], false, None);
+            }
+            if !t.contains(mark) {
+                let events = section_named(&t, &["Events", "Recent events"]);
+                t = add_lines(
+                    &t,
+                    events,
+                    &[format!("- [[{event_stem}]] · {} {mark}", item.project)],
+                    true,
+                    Some(HUB_EVENTS),
+                );
+            }
+            Some(t)
+        })
+        .await?;
+        let mut pages = vec![rel];
+        if !existed {
+            // A new folder is linked from the vault's home page (never created here).
+            let link = format!("[[{hub}]]");
+            let changed = self
+                .update(HOME, |cur| {
+                    let old = cur?;
+                    if old.contains(&link) {
+                        return None;
+                    }
+                    let lines: Vec<String> = old.lines().map(str::to_owned).collect();
+                    let table = section(&lines, "Projects")
+                        .and_then(|(s, e)| lines[s..e].iter().rev().find(|l| !l.trim().is_empty()))
+                        .is_some_and(|l| l.trim_start().starts_with('|'));
+                    let line = if table {
+                        format!("| {folder} | {link} |")
+                    } else {
+                        format!("- {link}")
+                    };
+                    Some(add_lines(old, "Projects", &[line], false, None))
+                })
+                .await?;
+            if changed {
+                pages.push(HOME.to_owned());
+            }
         }
-        self.vault.write_note(&rel, &t)?;
-        Ok(rel)
+        Ok(pages)
     }
 }
 
@@ -475,6 +585,14 @@ mod tests {
             ev,
             "## Events\n\n- e4 <!-- ingest:4 -->\n- e3 <!-- ingest:3 -->\n- e2 <!-- ingest:2 -->\n"
         );
+        assert_eq!(
+            section_named("## Recent events\n", &["Events", "Recent events"]),
+            "Recent events"
+        );
+        assert_eq!(
+            section_named("# x\n", &["Events", "Recent events"]),
+            "Events"
+        );
     }
 
     #[test]
@@ -488,6 +606,16 @@ mod tests {
             "---\ntype: x\nupdated: 2026-11-01\n---\n# t\nupdated: keep\n"
         );
         assert_eq!(touch_updated("# no fm\n", d), "# no fm\n");
+    }
+
+    #[test]
+    fn event_names() {
+        assert_eq!(
+            event_name("iOS launch perf landed on main 6826494e: incremental photo backup, endpoint race, lighter chat", "x"),
+            "iOS launch perf landed on main 6826494e incremental photo backup, endpoint"
+        );
+        assert_eq!(event_name("short one", "x"), "short one");
+        assert_eq!(event_name("::", "session"), "session");
     }
 
     #[test]
@@ -511,7 +639,7 @@ mod tests {
         };
         assert_eq!(
             backlink_text(&b),
-            "ops record `abcd` · [[Log/2026-11-01]] · [[Incidents/2026-11-01-x]] · commit `372dec64`"
+            "ops record `abcd` (Lucina ops `Log/2026-11-01.md`, `Incidents/2026-11-01-x.md`) · commit `372dec64`"
         );
     }
 }

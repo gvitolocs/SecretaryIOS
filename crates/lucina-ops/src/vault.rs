@@ -20,13 +20,6 @@ pub const PROJECTS_DIR: &str = "Projects";
 pub const INCIDENTS_DIR: &str = "Incidents";
 pub const CONFLICTS_DIR: &str = "Conflicts";
 pub const README: &str = "README.md";
-/// The Zettelkasten notes of the vault-ingest worker (crate
-/// `lucina-vault-ingest`, [`Vault::write_note`]): atomic claims, dated event
-/// digests, thin maps of content, and the hub at the root.
-pub const PERMANENT_DIR: &str = "Permanent";
-pub const EVENTS_DIR: &str = "Events";
-pub const MOC_DIR: &str = "MOC";
-pub const HUB: &str = "00 Lucina hub.md";
 /// A page may be at most this big (UTF-8 bytes).
 pub const MAX_PAGE_BYTES: usize = 512 * 1024;
 const MAX_REL_BYTES: usize = 1024;
@@ -43,9 +36,6 @@ first `## ` section is yours: Lucina never touches it, and she only adds or trim
 entries (the lines that end in a hidden `ops:` comment) inside the sections.\n\
 - `Incidents/YYYY-MM-DD-<project>-<slug>.md`: one page per incident.\n\
 - `Map/`: written by the project-map session, not by the ops record.\n\
-- `Permanent/`, `Events/`, `MOC/` and `00 Lucina hub.md`: Zettelkasten notes the \
-vault-ingest worker writes from records, commits and session reports (one claim per \
-note; your edits are kept, Lucina only adds sources and dated updates).\n\
 - `Conflicts/`: Syncthing conflict copies Lucina moved out of the way; the entries they \
 held are back in the pages.\n\n\
 To report something, use the MCP tool `ops_record` (or ask Lucina in chat). \
@@ -182,39 +172,6 @@ impl Vault {
         }
         self.write(rel, &content)?;
         Ok(true)
-    }
-
-    /// Replace a whole note of the vault-ingest worker: a page directly under
-    /// `Permanent/`, `Events/` or `MOC/`, or the hub. Redacted; identical
-    /// content is left alone. Returns whether the page changed.
-    pub fn write_note(&self, rel: &str, content: &str) -> Result<bool, VaultError> {
-        let parts = check_rel(rel)?;
-        let allowed = match parts.as_slice() {
-            [name] => *name == HUB,
-            [dir, _] => [PERMANENT_DIR, EVENTS_DIR, MOC_DIR].contains(dir),
-            _ => false,
-        };
-        if !allowed {
-            return Err(VaultError::NotAllowed(rel.to_owned()));
-        }
-        let content = lucina_secrets::redactor().redact(content);
-        if self.read(rel)?.as_deref() == Some(content.as_ref()) {
-            return Ok(false);
-        }
-        self.write(rel, &content)?;
-        Ok(true)
-    }
-
-    /// The `.md` pages directly in a vault directory (no symlinks, no
-    /// hidden files), sorted. Empty when the directory does not exist.
-    pub fn list_pages(&self, rel_dir: &str) -> Result<Vec<String>, VaultError> {
-        Ok(self
-            .list_dir(rel_dir)?
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|(n, k)| *k == Entry::File && n.ends_with(".md") && !n.starts_with('.'))
-            .map(|(n, _)| n)
-            .collect())
     }
 
     /// Walk from the root to the parent of `rel`, refusing symlinks and
@@ -457,41 +414,5 @@ mod tests {
         ] {
             assert!(check_rel(bad).is_err(), "{bad:?}");
         }
-    }
-
-    #[test]
-    fn notes_stay_in_their_folders() {
-        let dir = tempfile::tempdir().unwrap();
-        let v = Vault::open(dir.path()).unwrap();
-        for ok in [
-            "Permanent/A claim.md",
-            "Events/2026-11-01 x.md",
-            "MOC/MOC lucina.md",
-            HUB,
-        ] {
-            assert!(v.write_note(ok, "x\n").unwrap(), "{ok}");
-            assert!(!v.write_note(ok, "x\n").unwrap(), "unchanged {ok}");
-        }
-        for bad in [
-            "Log/2026-11-01.md",
-            "Projects/lucina.md",
-            "Map/index.md",
-            "README.md",
-            "Permanent/sub/x.md",
-            "other.md",
-        ] {
-            assert!(
-                matches!(v.write_note(bad, "x"), Err(VaultError::NotAllowed(_))),
-                "{bad}"
-            );
-        }
-        v.write_note(
-            "Permanent/k.md",
-            "token: ghp_abcdefghijklmnopqrstuvwxyz0123456789\n",
-        )
-        .unwrap();
-        assert!(!v.read("Permanent/k.md").unwrap().unwrap().contains("ghp_"));
-        assert_eq!(v.list_pages("Permanent").unwrap(), ["A claim.md", "k.md"]);
-        assert!(v.list_pages("Nope").unwrap().is_empty());
     }
 }
