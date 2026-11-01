@@ -1742,7 +1742,7 @@ async fn finish_upload(
 
 /// What the library holds for one phone, so a reinstalled app can skip assets already backed up.
 /// `[A-Za-z0-9._-]{1,64}`: what the apps send (`ios-<uuid>`, `mac-<uuid>`).
-fn device_id_ok(id: &str) -> bool {
+pub(crate) fn device_id_ok(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 64
         && id

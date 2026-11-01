@@ -759,6 +759,7 @@ pub fn sweep_uploads(lib: &Library) -> anyhow::Result<usize> {
         lib.db
             .with(|c| c.execute("DELETE FROM uploads WHERE id = ?1", [id]))?;
     }
+    let _ = crate::bgupload::sweep(lib);
     Ok(stale.len())
 }
 

@@ -50,6 +50,9 @@ thumbhash = "0.1"
 base64 = "0.22"
 # Album share tokens (16 bytes from the OS RNG) and the share page's CSP nonce.
 getrandom = "0.3"
+# Background uploads (`bgupload.rs`): its own HTTP/1.1 listener, which can send a 104 first.
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio", "service"] }
 # The Drive: archive listings, code highlighting, PDF text (pure Rust).
 tar = "0.4"
 flate2 = "1"

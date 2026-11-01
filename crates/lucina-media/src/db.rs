@@ -272,6 +272,8 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     crate::faces::migrate(conn)?;
     // Automatic photo categories (2026-10-28): `categories.rs`.
     crate::categories::migrate(conn)?;
+    // Background uploads from the PhotoKit extension (2026-11-01): `bgupload.rs`.
+    crate::bgupload::migrate(conn)?;
     Ok(())
 }
 

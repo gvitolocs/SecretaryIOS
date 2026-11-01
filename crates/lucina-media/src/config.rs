@@ -50,6 +50,9 @@ pub struct Config {
     /// The unit background scopes are bound to (`BindsTo=`), so a restart stops their ffmpeg:
     /// `LUCINA_MEDIA_PREPARE_BIND`, else this process's own `.service` from /proc/self/cgroup.
     pub prepare_bind_to: Option<String>,
+    /// Listener for the PhotoKit background uploads (`bgupload.rs`), off when unset:
+    /// `LUCINA_MEDIA_BG_LISTEN`.
+    pub bg_listen: Option<SocketAddr>,
     pub prepare_max_load: u32,
     /// Names the Drive leaves out (`LUCINA_MEDIA_DRIVE_IGNORE`, `;`-separated, `*` at either end).
     pub drive_ignore: Vec<String>,
@@ -155,6 +158,9 @@ impl Config {
             None => None,
         };
         Ok(Self {
+            bg_listen: var("LUCINA_MEDIA_BG_LISTEN")
+                .map(|v| v.parse())
+                .transpose()?,
             listen: var("LUCINA_MEDIA_LISTEN")
                 .unwrap_or_else(|| "127.0.0.1:8830".into())
                 .parse()?,
@@ -251,6 +257,7 @@ impl Config {
     /// A config rooted in one directory, for tests and one-off CLI runs.
     pub fn for_dirs(data_dir: PathBuf, store_dir: PathBuf) -> Self {
         Self {
+            bg_listen: None,
             listen: "127.0.0.1:0".parse().unwrap(),
             internal_listen: "127.0.0.1:0".parse().unwrap(),
             stream_cache_dir: data_dir.join("stream"),
