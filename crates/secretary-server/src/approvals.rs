@@ -81,6 +81,7 @@ use sha2::{Digest, Sha256};
 
 use crate::auth::{Identity, SERVICE_DEVICE_ID};
 use crate::error::{ApiError, JsonBody, QueryArgs};
+use crate::notify::live;
 use crate::notify::model::{clip, now_ms};
 use crate::notify::store::JsonFile;
 use crate::notify::{Audience, Category, NewNotification, Outcome};
@@ -446,6 +447,8 @@ pub struct Created {
     pub expires_ms: i64,
     summary: String,
     details: String,
+    requester_name: String,
+    payload_hash: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -527,6 +530,15 @@ fn action_ok(a: &str) -> bool {
         })
 }
 
+/// An approval id as [`Approvals`] makes them: `apr_` and 16 random bytes in base64url.
+pub fn valid_approval_id(id: &str) -> bool {
+    id.strip_prefix("apr_").is_some_and(|r| {
+        r.len() == 22
+            && r.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    })
+}
+
 fn hash_ok(h: &str) -> bool {
     h.strip_prefix("sha256:").is_some_and(|x| {
         x.len() == 64
@@ -550,6 +562,8 @@ pub struct Approvals {
     /// Part of the list's `cursor`, so a cursor from before a restart never matches.
     started_ms: i64,
     limiter: RateLimiter,
+    /// Requests that expired undecided since the sweeper last looked (their Live Activities end).
+    expired: Mutex<Vec<String>>,
 }
 
 impl Approvals {
@@ -569,6 +583,7 @@ impl Approvals {
             changed: tokio::sync::watch::Sender::new(0),
             started_ms: now_ms(),
             map: Mutex::new(HashMap::new()),
+            expired: Mutex::default(),
             cfg,
         })
     }
@@ -592,6 +607,10 @@ impl Approvals {
                 a.expiry_logged = true;
                 self.audit
                     .log("expired", json!({"id": a.id, "action": a.action}));
+                self.expired
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .push(a.id.clone());
             }
         }
         map.retain(|_, a| {
@@ -607,6 +626,11 @@ impl Approvals {
     pub fn sweep(&self) {
         let now = now_ms();
         self.sweep_locked(&mut self.lock(), now);
+    }
+
+    /// The requests that expired undecided since the last call.
+    pub fn take_expired(&self) -> Vec<String> {
+        std::mem::take(&mut *self.expired.lock().unwrap_or_else(|p| p.into_inner()))
     }
 
     fn create_at(&self, who: &Identity, body: CreateBody, now: i64) -> Result<Created, ApiError> {
@@ -696,6 +720,8 @@ impl Approvals {
             expires_ms: a.expires_ms,
             summary: a.summary.clone(),
             details: a.details.clone(),
+            requester_name: a.requester.name.clone(),
+            payload_hash: a.payload_hash.clone(),
         };
         map.insert(a.id.clone(), a);
         drop(map);
@@ -1242,6 +1268,20 @@ async fn create(
     tracing::info!(id = %created.id, requester = %who.device_id, "approval requested");
     let main = effective_main(&st);
     announce(&st, &created, main).await;
+    if st.notify.pusher.apns.get().is_some() {
+        tokio::spawn(live::send_start(
+            st.notify.clone(),
+            live::ActivityRequest {
+                approval_id: created.id.clone(),
+                requester: created.requester_name.clone(),
+                summary: created.summary.clone(),
+                details: created.details.clone(),
+                sensitive: created.sensitive,
+                payload_hash: created.payload_hash.clone(),
+                expires_ms: created.expires_ms,
+            },
+        ));
+    }
     Ok((
         StatusCode::CREATED,
         Json(json!({
@@ -1353,6 +1393,9 @@ async fn withdraw(
 ) -> Result<Json<Value>, ApiError> {
     let status = st.approvals.withdraw_at(&id, &who.device_id, now_ms())?;
     tracing::info!(id = %id, requester = %who.device_id, status, "approval withdrawn");
+    if status == "expired" {
+        tokio::spawn(live::send_end(st.notify.clone(), id.clone(), "withdrawn"));
+    }
     Ok(Json(json!({"id": id, "status": status})))
 }
 
@@ -1502,6 +1545,11 @@ async fn decide(
         now_ms(),
     )?;
     tracing::info!(id = %id, device = %who.device_id, approve, "approval answered");
+    tokio::spawn(live::send_end(
+        st.notify.clone(),
+        id.clone(),
+        if approve { "approved" } else { "denied" },
+    ));
     if decided.action == ENROLL_ACTION {
         finish_enrollment(&st, &decided).await;
     }
@@ -2084,7 +2132,12 @@ pub fn spawn_sweeper(st: &AppState) {
         every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
-                _ = every.tick() => st.approvals.sweep(),
+                _ = every.tick() => {
+                    st.approvals.sweep();
+                    for id in st.approvals.take_expired() {
+                        tokio::spawn(live::send_end(st.notify.clone(), id, "expired"));
+                    }
+                }
                 () = crate::notify::stopped(&mut shutdown) => break,
             }
         }
@@ -2310,6 +2363,30 @@ mod tests {
             .is_err());
         let audit = std::fs::read_to_string(dir.path().join(AUDIT_FILE)).unwrap();
         assert!(audit.lines().any(|l| l.contains("\"expired\"")), "{audit}");
+    }
+
+    #[test]
+    fn expiries_are_handed_to_the_sweeper_once_and_withdrawals_are_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let ap = store(dir.path());
+        let a = ap.create_at(&who("svc"), body("calendar.add"), 0).unwrap();
+        let b = ap.create_at(&who("svc"), body("calendar.add"), 0).unwrap();
+        assert!(valid_approval_id(&a.id), "{}", a.id);
+        assert_eq!(ap.withdraw_at(&b.id, "svc", 1_000).unwrap(), "expired");
+        assert!(ap.take_expired().is_empty());
+        ap.get_at(&a.id, "dev_a", None, 300_001).unwrap();
+        ap.get_at(&a.id, "dev_a", None, 300_002).unwrap();
+        assert_eq!(ap.take_expired(), std::slice::from_ref(&a.id));
+        assert!(ap.take_expired().is_empty());
+        for bad in [
+            "apr_short",
+            "apr_AbCdEfGhIjKlMnOpQrSt.v",
+            "xyz_AbCdEfGhIjKlMnOpQrStUv",
+            "",
+        ] {
+            assert!(!valid_approval_id(bad), "{bad}");
+        }
+        assert!(valid_approval_id("apr_AbCdEfGhIjKlMnOpQr-_Uv"));
     }
 
     #[test]

@@ -125,6 +125,31 @@ iOS settings for it live under Settings → Notifications → Secretary (the web
 - **Settings → Notifications** mirrors the web settings (same server document)
   and adds this iPhone's switch and the iOS permission.
 
+### Live Activity for approvals
+
+With APNs on, a new approval request also starts a **Live Activity** on the
+owner's iPhone (push-to-start, also with the app closed); the time-sensitive
+notification stays as it is. The lock screen shows who asks, the reason, the
+first 3 command lines (monospace, "+N more"), the time left, **Deny** and
+**Approve** side by side, and a **Details** link that opens the approval card.
+The Dynamic Island shows the same, compact.
+
+- **Deny** works without unlocking (like the widget).
+- **Approve** of a plain request needs the iPhone unlocked (Face ID or the
+  passcode), then answers from the lock screen.
+- **Approve** of a sensitive request (root plans) opens the app on that card
+  and starts the approve step at once: the Face ID prompt (or the PIN pad)
+  appears over the card that shows the exact commands. Cancelling leaves the
+  card open. The Face ID signature or the PIN is still required.
+
+When the request is answered anywhere, withdrawn or expires, the server ends
+the activity (an `end` push to its update token); the app also ends any
+activity whose request is no longer pending whenever it refreshes the list.
+With the app in front, a new request gets a local activity if none came by
+push. Tokens: `POST /v1/push/liveactivity`, kept in
+`live-activity-tokens.json` (0600); pushes go out as
+`apns-push-type: liveactivity` to `<topic>.push-type.liveactivity`.
+
 ### APNs with a paid account
 
 What it unlocks: instant push to the native app for every category, with the

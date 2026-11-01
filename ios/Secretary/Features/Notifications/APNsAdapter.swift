@@ -22,6 +22,44 @@ enum APNsAdapter {
     static func hex(_ token: Data) -> String {
         token.map { String(format: "%02x", $0) }.joined()
     }
+
+    /// What iOS lets the app show, sent with the token: background wakes work without any of it.
+    static func settingsReport(_ s: UNNotificationSettings) -> [String: String] {
+        func on(_ v: UNNotificationSetting) -> String {
+            switch v {
+            case .enabled: return "on"
+            case .disabled: return "off"
+            case .notSupported: return "unsupported"
+            @unknown default: return "unknown"
+            }
+        }
+        let authorization: String
+        switch s.authorizationStatus {
+        case .notDetermined: authorization = "notDetermined"
+        case .denied: authorization = "denied"
+        case .authorized: authorization = "authorized"
+        case .provisional: authorization = "provisional"
+        case .ephemeral: authorization = "ephemeral"
+        @unknown default: authorization = "unknown"
+        }
+        let style: String
+        switch s.alertStyle {
+        case .none: style = "none"
+        case .banner: style = "banner"
+        case .alert: style = "alert"
+        @unknown default: style = "unknown"
+        }
+        return [
+            "authorization": authorization,
+            "alert": on(s.alertSetting),
+            "alertStyle": style,
+            "lockScreen": on(s.lockScreenSetting),
+            "notificationCenter": on(s.notificationCenterSetting),
+            "sound": on(s.soundSetting),
+            "timeSensitive": on(s.timeSensitiveSetting),
+            "scheduledDelivery": on(s.scheduledDeliverySetting),
+        ]
+    }
 }
 
 /// `BGAppRefreshTask`: iOS wakes the app now and then (its own schedule, at
@@ -77,7 +115,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         Task { @MainActor in
             let app = AppModel.shared
             guard app.phase == .signedIn else { return }
-            try? await NotificationsClient(client: app.client).registerAPNs(token: token, lang: AppLanguage.effectiveCode)
+            let report = APNsAdapter.settingsReport(await UNUserNotificationCenter.current().notificationSettings())
+            try? await NotificationsClient(client: app.client).registerAPNs(token: token, lang: AppLanguage.effectiveCode, notifications: report)
         }
     }
 
