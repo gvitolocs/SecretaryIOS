@@ -58,20 +58,20 @@ is something to show.
   rendition, its signed CDN URL refuses other sizes (2026-10-30), and Instagram's own `web_profile_info`, the one place
   with `profile_pic_url_hd`, answers an anonymous request 401 `require_login`. The HD picture needs a logged-in source,
   which this anonymous service does not use.
-- **Download** (`run_mirror`): when an item is first seen on a profile that is opened or watched, its files (poster,
+- **Download** (`run_mirror`): when an item is first seen on a **watched** account (owner, 2026-11-01: "at least for the watching creators"), its files (poster,
   media, carousel frames; profile picture and covers) go on a queue and are fetched one at a time, a second apart,
-  images before videos, newest first, last opened first. It takes at most one of the two CDN slots and waits while an
+  images before videos, newest first. Other profiles render at once from the store and fetch media only as it is looked at, in the ordinary cache, evicted first. Unwatching stops what is left of an account on the queue. It takes at most one of the two CDN slots and waits while an
   owner request is waiting for a file. Budget: `INSTAGRAM_MIRROR_DAILY_MAX_BYTES` (20 GiB per UTC day). A link the CDN
   refuses is left alone for 6 h. An item keeps the URL whose file is on disk, because a fresh backend URL can name
   another rendition of the same picture (`efg` differed in 11 of 432 repeats, 2026-11-01).
-- **Backfill** (`run_backfill`): for watched accounts and those opened in the last 30 days, the first fill of one with
+- **Backfill** (`run_backfill`): for watched accounts only, the first fill of one with
   nothing in the store (four calls; a name that does not answer waits 6 h), older reels pages and highlights' items: one
   step every 20 s at low priority, 300 calls per UTC day over all accounts. A page with nothing new ends a feed however
   its cursor goes on. A 429 rests it with the warmer.
 - **Where and how much:** `INSTAGRAM_CACHE_DIR=/home/nez/mnt/mybook/secretary-instagram-cache`, cap 200 GiB
   (nezopt's system disk is 96 % full; mybook has 12 TB free). The directory must exist: if it is missing (mybook not
   mounted) the service uses `$INSTAGRAM_DATA_DIR/cache` with the small 2 GiB cap, so nothing lands on the wrong disk.
-- **Eviction:** oldest file first, except media of watched accounts and of saved items (pinned, recomputed every
+- **Eviction:** oldest file first, so other profiles go first; never media of watched accounts or of saved items (pinned, recomputed every
   10 min and after each check) and the store. If what is pinned alone is over the cap, a warning says so and the download
   pauses.
 

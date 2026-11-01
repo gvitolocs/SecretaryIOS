@@ -119,6 +119,14 @@ impl DiskCache {
         *self.pinned.lock().unwrap_or_else(|e| e.into_inner()) = keys;
     }
 
+    /// One more media key eviction must leave alone.
+    pub fn pin(&self, key: &str) {
+        self.pinned
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key.to_string());
+    }
+
     /// Whether the last eviction could not get under the cap (too much is pinned).
     pub fn is_full(&self) -> bool {
         self.full.load(Ordering::Relaxed)

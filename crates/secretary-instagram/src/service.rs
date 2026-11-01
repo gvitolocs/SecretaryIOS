@@ -52,8 +52,6 @@ const MAX_REFRESH_PAGES: usize = 5;
 /// A download that failed for good (its CDN link has expired) is left alone this long; a refresh
 /// meanwhile brings a fresh link only for an item still up.
 const MIRROR_RETRY_SECS: i64 = 6 * 3600;
-/// Recently opened accounts stay backfilled this long after the last open.
-const BACKFILL_RECENT_SECS: i64 = 30 * 24 * 3600;
 /// What a first fill costs the backfill's daily budget: bundle, stories, reels, tray.
 const SEED_CALLS: usize = 4;
 const STORY_LIFE_SECS: i64 = 24 * 3600;
@@ -176,8 +174,9 @@ impl ServiceConfig {
 /// What the background download has to do and has done today.
 #[derive(Default)]
 struct MirrorQueue {
-    images: VecDeque<String>,
-    videos: VecDeque<String>,
+    /// CDN URL and the watched account it is for.
+    images: VecDeque<(String, String)>,
+    videos: VecDeque<(String, String)>,
     queued: HashSet<String>,
     /// Keys not to try again before this time.
     skip_until: HashMap<String, i64>,
@@ -196,6 +195,8 @@ pub enum MirrorOutcome {
     Fetched,
     /// One file could not be fetched.
     Failed,
+    /// A queued file needed no fetch.
+    Skipped,
     /// Nothing to do.
     Idle,
     /// The owner is waiting for media: the background gives way.
@@ -1029,7 +1030,7 @@ impl Service {
                     if let Some(p) = parse_media_page(&text) {
                         let next = p.next_cursor.clone().filter(|c| !c.is_empty());
                         svc.absorb_first(FeedKind::Highlight, &id, &p.items, next);
-                        svc.mirror_feed(&svc.store.feed(FeedKind::Highlight, &id).items);
+                        svc.mirror_highlight(&id, &svc.store.feed(FeedKind::Highlight, &id).items);
                     }
                 }
                 Err(e) => tracing::warn!(error = %e, "instagram refresh: a highlight failed"),
@@ -1222,7 +1223,7 @@ impl Service {
                     .fetch_page(&users_path(&username, "/reels", Some(c)), TTL_POSTS)
                     .await?;
                 self.absorb_older(FeedKind::Reels, &username, c, &page);
-                self.mirror_feed(&page.items);
+                self.mirror_items(&username, &page.items);
                 Ok(self.page_json(&page))
             }
         }
@@ -1255,7 +1256,7 @@ impl Service {
                 .await?;
             let page = parse_media_page(&text).ok_or(ServiceError::Upstream)?;
             self.absorb_stories(&username, &page);
-            self.mirror_feed(&page.items);
+            self.mirror_items(&username, &page.items);
         }
         let refreshing = self.refresh_behind(&username);
         Self::page_log("stories", on_disk, started, refreshing);
@@ -1323,7 +1324,7 @@ impl Service {
                 self.absorb_first(FeedKind::Highlight, id, &page.items, next);
                 self.store
                     .update_feed(FeedKind::Highlight, id, |f| f.fetched_at = ASK_AGAIN);
-                self.mirror_feed(&page.items);
+                self.mirror_highlight(id, &page.items);
                 let refreshing = self.refresh_highlight_behind(id);
                 Self::page_log("highlight", false, started, refreshing);
                 Ok(self.feed_json(&self.store.feed(FeedKind::Highlight, id), 0, refreshing))
@@ -1339,7 +1340,7 @@ impl Service {
                     )
                     .await?;
                 self.absorb_older(FeedKind::Highlight, id, c, &page);
-                self.mirror_feed(&page.items);
+                self.mirror_highlight(id, &page.items);
                 Ok(self.page_json(&page))
             }
         }
@@ -1483,7 +1484,7 @@ impl Service {
         out
     }
 
-    fn mirror_files(&self, files: Vec<(String, bool)>) {
+    fn mirror_files(&self, files: Vec<(String, bool)>, account: &str) {
         let now = now_secs();
         let mut missing: Vec<(String, String, bool)> = Vec::new();
         for (cdn, video) in files {
@@ -1496,29 +1497,45 @@ impl Service {
             return;
         }
         let mut g = self.mirror.lock().unwrap_or_else(|e| e.into_inner());
-        // In front, in reverse: what was opened last comes first, newest item first.
+        // In front, in reverse: what came last comes first, newest item first.
         for (key, cdn, video) in missing.into_iter().rev() {
             if g.skip_until.get(&key).is_some_and(|t| *t > now) || !g.queued.insert(key) {
                 continue;
             }
             if video {
-                g.videos.push_front(cdn);
+                g.videos.push_front((cdn, account.to_string()));
             } else {
-                g.images.push_front(cdn);
+                g.images.push_front((cdn, account.to_string()));
             }
         }
         drop(g);
         self.mirror_wake.notify_one();
     }
 
-    /// Queue what these items need on disk.
-    fn mirror_feed(&self, items: &[MediaItem]) {
-        self.mirror_files(items.iter().flat_map(Self::item_files).collect());
+    /// Queue what these items need on disk, when their account is watched.
+    fn mirror_items(&self, account: &str, items: &[MediaItem]) {
+        if self.watch.get(account).is_some() {
+            self.mirror_files(items.iter().flat_map(Self::item_files).collect(), account);
+        }
     }
 
-    /// Queue everything known about an account (off the async threads: this asks the disk once
-    /// per file, and the disk is a slow one).
+    /// [`Service::mirror_items`] for a highlight, whose id does not name its account.
+    fn mirror_highlight(&self, id: &str, items: &[MediaItem]) {
+        let account = self
+            .watched_accounts()
+            .into_iter()
+            .find(|u| self.store.profile(u).highlights.iter().any(|h| h.id == id));
+        if let Some(account) = account {
+            self.mirror_items(&account, items);
+        }
+    }
+
+    /// Queue everything known about a watched account (off the async threads: this asks the disk
+    /// once per file, and the disk is a slow one). Any other account: nothing.
     pub async fn mirror_account(&self, user: &str) {
+        if self.watch.get(user).is_none() {
+            return;
+        }
         let mut files: Vec<(String, bool)> = Vec::new();
         let doc = self.store.profile(user);
         if let Some(p) = &doc.profile {
@@ -1538,9 +1555,9 @@ impl Service {
         if tokio::runtime::Handle::current().runtime_flavor()
             == tokio::runtime::RuntimeFlavor::MultiThread
         {
-            tokio::task::block_in_place(|| self.mirror_files(files));
+            tokio::task::block_in_place(|| self.mirror_files(files, user));
         } else {
-            self.mirror_files(files);
+            self.mirror_files(files, user);
         }
     }
 
@@ -1553,7 +1570,7 @@ impl Service {
         if self.owner_media.load(Ordering::SeqCst) > 0 {
             return MirrorOutcome::Busy;
         }
-        let cdn = {
+        let (cdn, account) = {
             let mut g = self.mirror.lock().unwrap_or_else(|e| e.into_inner());
             let day = today();
             if g.day != day {
@@ -1563,15 +1580,21 @@ impl Service {
             if g.day_bytes >= self.cfg.mirror.daily_max_bytes {
                 return MirrorOutcome::Paused;
             }
-            let Some(cdn) = g.images.pop_front().or_else(|| g.videos.pop_front()) else {
+            let Some((cdn, account)) = g.images.pop_front().or_else(|| g.videos.pop_front()) else {
                 return MirrorOutcome::Idle;
             };
             g.queued.remove(&cache_key(&cdn));
-            cdn
+            (cdn, account)
         };
         let key = cache_key(&cdn);
+        // Unwatched since it was queued: what is left of it is not fetched.
+        if self.watch.get(&account).is_none() {
+            return MirrorOutcome::Skipped;
+        }
+        // From before the file lands, so its own arrival cannot evict it.
+        self.cache.pin(&key);
         if self.cache.has_media(&key) {
-            return MirrorOutcome::Fetched;
+            return MirrorOutcome::Skipped;
         }
         match self.media_file(&cdn).await {
             Ok(file) => {
@@ -1596,7 +1619,7 @@ impl Service {
             Err(ServiceError::RateLimited(_)) => {
                 let mut g = self.mirror.lock().unwrap_or_else(|e| e.into_inner());
                 if g.queued.insert(key) {
-                    g.images.push_back(cdn);
+                    g.images.push_back((cdn, account));
                 }
                 MirrorOutcome::Paused
             }
@@ -1611,7 +1634,7 @@ impl Service {
     /// The download's loop: slow, and quiet when there is nothing to do.
     pub async fn run_mirror(&self, mut stop: tokio::sync::watch::Receiver<bool>) {
         let mut last_pin = Instant::now();
-        for a in self.backfill_accounts() {
+        for a in self.watched_accounts() {
             self.mirror_account(&a).await;
         }
         loop {
@@ -1625,6 +1648,7 @@ impl Service {
             }
             let rest = match outcome {
                 MirrorOutcome::Fetched | MirrorOutcome::Failed => self.cfg.mirror.interval,
+                MirrorOutcome::Skipped => Duration::ZERO,
                 MirrorOutcome::Busy => Duration::from_millis(300),
                 MirrorOutcome::Idle => Duration::from_secs(300),
                 MirrorOutcome::Paused => Duration::from_secs(60),
@@ -1644,18 +1668,22 @@ impl Service {
     /// saved items.
     pub fn pin_kept_media(&self) {
         let mut keys: HashSet<String> = self.archive.cache_keys().into_iter().collect();
-        let mut add = |items: &[MediaItem]| {
-            for m in items {
-                keys.extend(Self::item_files(m).iter().map(|(c, _)| cache_key(c)));
-            }
-        };
         for a in self.watch.list() {
             let doc = self.store.profile(&a.username);
+            let mut add = |items: &[MediaItem]| {
+                for m in items {
+                    keys.extend(Self::item_files(m).iter().map(|(c, _)| cache_key(c)));
+                }
+            };
             for h in &doc.highlights {
                 add(&self.store.feed(FeedKind::Highlight, &h.id).items);
             }
             for kind in [FeedKind::Stories, FeedKind::Posts, FeedKind::Reels] {
                 add(&self.store.feed(kind, &a.username).items);
+            }
+            let pics = doc.profile.iter().map(|p| &p.profile_pic_url);
+            for u in pics.chain(doc.highlights.iter().map(|h| &h.cover_url)) {
+                keys.extend(inner_cdn_url(u).map(|c| cache_key(&c)));
             }
         }
         self.cache.set_pinned(keys);
@@ -1663,16 +1691,10 @@ impl Service {
 
     // ---- the backfill: older pages, slowly ----
 
-    /// Watched accounts, then the ones opened in the last month, newest first.
-    fn backfill_accounts(&self) -> Vec<String> {
-        let now = now_secs();
-        let mut out: Vec<String> = self.watch.list().into_iter().map(|a| a.username).collect();
-        for e in self.recent.list() {
-            if now - e.opened_at <= BACKFILL_RECENT_SECS && !out.contains(&e.username) {
-                out.push(e.username);
-            }
-        }
-        out
+    /// Only watched accounts are downloaded in full (owner, 2026-11-01: "at least for the watching
+    /// creators"); others keep what was looked at, in the ordinary cache.
+    fn watched_accounts(&self) -> Vec<String> {
+        self.watch.list().into_iter().map(|a| a.username).collect()
     }
 
     /// An account with nothing in the store was not tried lately (a dead name must not eat the
@@ -1700,9 +1722,9 @@ impl Service {
                 return false;
             }
         }
-        for user in self.backfill_accounts() {
+        for user in self.watched_accounts() {
             let doc = self.store.profile(&user);
-            // Opened or watched before the store existed: fill it now, not at the next open.
+            // Watched before the store existed: fill it now, not at the next check.
             if doc.profile.is_none() && !doc.gone {
                 if !self.seed_due(&user) || !self.claim_refresh(&user) {
                     continue;
@@ -1723,7 +1745,8 @@ impl Service {
             let reels = self.store.feed(FeedKind::Reels, &user);
             if let (true, Some(c)) = (reels.fetched_at > 0, reels.next_cursor.as_deref()) {
                 let path = users_path(&user, "/reels", Some(c));
-                self.backfill_page(FeedKind::Reels, &user, c, &path).await;
+                self.backfill_page(FeedKind::Reels, &user, &user, c, &path)
+                    .await;
                 return true;
             }
             for h in &doc.highlights {
@@ -1736,7 +1759,7 @@ impl Service {
                             if let Some(p) = parse_media_page(&text) {
                                 let next = p.next_cursor.clone().filter(|c| !c.is_empty());
                                 self.absorb_first(FeedKind::Highlight, &h.id, &p.items, next);
-                                self.mirror_feed(&p.items);
+                                self.mirror_items(&user, &p.items);
                             }
                         }
                         Err(e) => {
@@ -1747,7 +1770,7 @@ impl Service {
                 }
                 if let Some(c) = feed.next_cursor.as_deref() {
                     let path = rel(core_url::highlight_items_url(&h.id, Some(c)));
-                    self.backfill_page(FeedKind::Highlight, &h.id, c, &path)
+                    self.backfill_page(FeedKind::Highlight, &h.id, &user, c, &path)
                         .await;
                     return true;
                 }
@@ -1761,13 +1784,20 @@ impl Service {
         g.backfill_calls += 1;
     }
 
-    async fn backfill_page(&self, kind: FeedKind, owner: &str, cursor: &str, path: &str) {
+    async fn backfill_page(
+        &self,
+        kind: FeedKind,
+        owner: &str,
+        account: &str,
+        cursor: &str,
+        path: &str,
+    ) {
         self.count_backfill_call();
         match self.low_text(path, TTL_POSTS, keep_any).await {
             Ok(text) => {
                 if let Some(p) = parse_media_page(&text) {
                     self.absorb_older(kind, owner, cursor, &p);
-                    self.mirror_feed(&p.items);
+                    self.mirror_items(account, &p.items);
                 }
             }
             Err(e) => self.backfill_failed(e, kind, owner, Some(cursor)),
@@ -2004,6 +2034,8 @@ impl Service {
     pub fn watch_delete(&self, raw: &str) -> Result<(), ServiceError> {
         let user = normalize_username(raw).ok_or(ServiceError::BadRequest("username"))?;
         if self.watch.remove(&user) {
+            // Its media goes back to the ordinary cache; the queue drops what is left of it.
+            self.pin_kept_media();
             Ok(())
         } else {
             Err(ServiceError::NotFound)

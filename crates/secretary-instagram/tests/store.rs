@@ -282,9 +282,10 @@ async fn an_expired_story_keeps_playing_from_its_local_copy() {
 }
 
 #[tokio::test]
-async fn opened_media_is_downloaded_in_the_background_and_outlives_its_cdn_link() {
+async fn watched_media_is_downloaded_in_the_background_and_outlives_its_cdn_link() {
     let e = env().await;
     mount_full_account(&e).await;
+    e.st.service.watch_put("natgeo", Some(false)).unwrap();
     for f in [
         "pfp.jpg",
         "h.jpg",
@@ -321,6 +322,7 @@ async fn opened_media_is_downloaded_in_the_background_and_outlives_its_cdn_link(
 #[tokio::test]
 async fn a_link_the_cdn_refuses_is_left_alone_for_a_while() {
     let e = env().await;
+    e.st.service.watch_put("natgeo", Some(false)).unwrap();
     mount_json(
         &e.server,
         "/api/v1/users/natgeo/stories",
@@ -444,6 +446,47 @@ async fn a_watched_account_stays_through_eviction() {
 }
 
 #[tokio::test]
+async fn an_opened_account_that_is_not_watched_is_only_cached() {
+    let e = env().await;
+    mount_full_account(&e).await;
+    let r = settled(&e.app, "natgeo").await;
+    get(&e.app, "/v1/instagram/stories/natgeo").await;
+    get(&e.app, "/v1/instagram/highlights/items?id=highlight%3A1").await;
+    let svc = &e.st.service;
+    assert_eq!(svc.mirror_tick().await, MirrorOutcome::Idle);
+    assert!(!svc.backfill_tick().await);
+    assert_eq!(count(&e.server, "/cdn/").await, 0);
+    // A tile the owner looks at is fetched and cached as ever.
+    mount_media(&e.server, "p1.jpg", JPEG, "image/jpeg").await;
+    let post = r.json["data"]["posts"]["items"][0]["url"].as_str().unwrap();
+    assert_eq!(send(&e.app, "GET", post, None, None, &[]).await.bytes, JPEG);
+    assert_eq!(count(&e.server, "/cdn/").await, 1);
+    // A repeat visit still renders from the store.
+    e.server.reset().await;
+    let r = get(&e.app, "/v1/instagram/profile/natgeo").await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(ids(&r.json["data"]["posts"]).len(), 3);
+}
+
+#[tokio::test]
+async fn unwatching_stops_the_download_of_what_is_left() {
+    let e = env().await;
+    mount_full_account(&e).await;
+    let svc = &e.st.service;
+    svc.watch_put("natgeo", Some(false)).unwrap();
+    settled(&e.app, "natgeo").await;
+    svc.mirror_account("natgeo").await;
+    svc.watch_delete("natgeo").unwrap();
+    for _ in 0..200 {
+        if svc.mirror_tick().await == MirrorOutcome::Idle {
+            break;
+        }
+    }
+    assert_eq!(svc.mirror_tick().await, MirrorOutcome::Idle);
+    assert_eq!(count(&e.server, "/cdn/").await, 0);
+}
+
+#[tokio::test]
 async fn an_account_watched_before_the_store_existed_is_filled_by_the_backfill() {
     let e = env().await;
     mount_full_account(&e).await;
@@ -506,6 +549,7 @@ async fn the_backfill_walks_older_pages_and_stops_when_nothing_is_new() {
         )
         .mount(&e.server)
         .await;
+    e.st.service.watch_put("natgeo", Some(false)).unwrap();
     settled(&e.app, "natgeo").await;
     let svc = &e.st.service;
     assert!(svc.backfill_tick().await, "C1");
