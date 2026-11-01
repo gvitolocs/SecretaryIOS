@@ -104,6 +104,8 @@ The workspace is the root `Cargo.toml`. These crates stay outside it on purpose,
 - `crates/secretary-instagram` and `crates/secretary-pixiv`: plugin services with their own release cadence. Keeping
   them out keeps their dependency bumps off the shared `Cargo.lock`, which was the busiest conflict file.
 - `tools/*`: deploy-guard, catalog-check, design-tokens, icons, lan-cert and lucina-device.
+- `firmware/lucinavoice` and `firmware/lucinavoice-core`: the ESP32 speaker firmware (`esp` toolchain, Xtensa
+  target) and its host-tested logic. See `firmware/README.md`.
 
 Build and test them with `--manifest-path crates/<name>/Cargo.toml`. AU Find lives in its own repo (`aufind-rust`).
 Bringing a plugin into the workspace later takes one PR: add it to `members` and drop its lock.
