@@ -1485,18 +1485,18 @@ validation messages, with its own code) unchanged. Code: `voice_learn.rs`.
 | Route | Who |
 |---|---|
 | `GET /v1/voice/learn` | the owner's session, any device token (a LucinaVoice speaker too) |
-| `POST /v1/voice/learn` `{word, soundsLike?, meaning?, lang?}` → `201` | the owner's session and the owner's devices |
+| `POST /v1/voice/learn` `{word, soundsLike?, meaning?, lang?}` → `201` | the owner's browser session only |
 | `PATCH /v1/voice/learn/{id}` (any of the fields; `meaning: ""` and `lang: null` clear) | same |
 | `DELETE /v1/voice/learn/{id}` | same |
 | `POST /v1/voice/learn/suggest` `{transcript, corrected}` → candidate entries `{word, soundsLike, meaning?, lang?}` | same |
 | `POST /v1/voice/learn/sample` | same |
 
-A *speaker* is a device that has sent a voice `hello` on `/v1/voice/ws`; every other device
-token is the owner's (the phone app, a Mac, a paired browser). A speaker gets `403 owner_only`
-on everything but `GET`. A speaker that has not said hello yet cannot be told from the owner's
-devices. `401` without credentials; `400 bad_request` for a malformed id or body (an unknown
-field in `suggest`, a body that is not an object, text over 12100 characters); a cookie caller
-sends `X-Secretary-CSRF: 1` on writes.
+The rule is the one of `/v1/voice/devices*`: a device token only ever reads, and only the
+owner's user session (cookie, with `X-Secretary-CSRF: 1` on writes) does the owner things.
+Every write by a device token gets `403 owner_only`, whatever device it is: a speaker, one
+just paired that never connected, the phone app. `401` without credentials; `400 bad_request`
+for a malformed id or body (an unknown field in `suggest`, a body that is not an object, text
+over 12100 characters).
 
 **`POST /v1/voice/learn/sample`** turns a short phone recording into what the speech-to-text
 engine heard, so the app can offer it as `soundsLike`. Body: `Content-Type: audio/wav` (PCM) or

@@ -1,6 +1,6 @@
 //! Voice Learn: the shared custom vocabulary of every speech-to-text path
 //! (`docs/lucinavoice-protocol.md` section 8). Lucina owns the entries; this
-//! module is the gateway for the app and the speaker, plus the one place in
+//! module is the gateway for the web app and the speaker, plus the one place in
 //! secretary-server that uses them: the "Vocabulary:" line of the Gemini
 //! fallback.
 //!
@@ -9,13 +9,12 @@
 //! | route | who |
 //! |---|---|
 //! | `GET /v1/voice/learn` | the owner's browser session, any device token (the speaker too) |
-//! | `POST /v1/voice/learn`, `PATCH\|DELETE /v1/voice/learn/{id}`, `POST /v1/voice/learn/suggest`, `POST /v1/voice/learn/sample` | the owner's browser session and the owner's devices; **not** a LucinaVoice speaker (`403 owner_only`) |
+//! | `POST /v1/voice/learn`, `PATCH\|DELETE /v1/voice/learn/{id}`, `POST /v1/voice/learn/suggest`, `POST /v1/voice/learn/sample` | the owner's browser session (cookie) only; any device token gets `403 owner_only` |
 //!
-//! A *speaker* is a device that has sent a voice `hello` over `/v1/voice/ws`
-//! ([`crate::voice_telemetry::Store::is_speaker`]); every other device token
-//! is the owner's (phone app, Mac, a paired browser). A speaker that has not
-//! said hello yet is not known as one: it is the same token class as the
-//! owner's devices until it connects once.
+//! The same rule as `/v1/voice/devices*`: a device token only ever reads (here: the list, so a
+//! speaker can have it), and only the owner's user session does the owner things. So a speaker
+//! that has just been paired and never said hello can never write either, and the iOS app (a
+//! device token) reads the vocabulary but edits it from the web app.
 //!
 //! The four Lucina routes are forwarded as is (`/api/secretary/voice-learn`,
 //! [`Call::voice_learn_list`] and friends); Lucina validates the fields and
@@ -73,13 +72,15 @@ fn owner_only() -> ApiError {
     ApiError::new(
         StatusCode::FORBIDDEN,
         "owner_only",
-        "a LucinaVoice speaker may only read the vocabulary",
+        "only the owner's session can change the vocabulary; a device token can only read it",
     )
 }
 
-/// Writes need the owner's session or one of the owner's devices.
-fn require_owner(st: &AppState, ident: &Identity) -> Result<(), ApiError> {
-    if matches!(ident.via, Via::Cookie) || !st.voice_log.is_speaker(&ident.device_id) {
+/// Writes need the owner's browser session (cookie), like `/v1/voice/devices*`: a device
+/// token only ever reads, whatever device it is (a speaker, one paired but not connected yet,
+/// the phone app).
+fn require_owner(ident: &Identity) -> Result<(), ApiError> {
+    if matches!(ident.via, Via::Cookie) {
         Ok(())
     } else {
         Err(owner_only())
@@ -95,7 +96,7 @@ async fn create(
     Extension(ident): Extension<Identity>,
     JsonBody(body): JsonBody<Value>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    require_owner(&st, &ident)?;
+    require_owner(&ident)?;
     forward(&st, Call::voice_learn_create(body)?).await
 }
 
@@ -105,7 +106,7 @@ async fn update(
     Path(id): Path<String>,
     JsonBody(body): JsonBody<Value>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    require_owner(&st, &ident)?;
+    require_owner(&ident)?;
     forward(&st, Call::voice_learn_update(&id, body)?).await
 }
 
@@ -114,7 +115,7 @@ async fn remove(
     Extension(ident): Extension<Identity>,
     Path(id): Path<String>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    require_owner(&st, &ident)?;
+    require_owner(&ident)?;
     forward(&st, Call::voice_learn_delete(&id)?).await
 }
 
@@ -130,7 +131,7 @@ async fn suggest(
     Extension(ident): Extension<Identity>,
     JsonBody(b): JsonBody<SuggestBody>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    require_owner(&st, &ident)?;
+    require_owner(&ident)?;
     forward(&st, Call::voice_learn_suggest(&b.transcript, &b.corrected)?).await
 }
 
@@ -144,7 +145,7 @@ async fn sample(
     Extension(ident): Extension<Identity>,
     req: Request,
 ) -> Result<Json<Value>, ApiError> {
-    require_owner(&st, &ident)?;
+    require_owner(&ident)?;
     let kind = voice::input_kind(req.headers())?;
     let Query(SampleQuery { lang }) = Query::<SampleQuery>::try_from_uri(req.uri())
         .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, "bad_request", e.body_text()))?;

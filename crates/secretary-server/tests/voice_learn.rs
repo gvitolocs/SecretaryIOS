@@ -2,9 +2,9 @@
 //! `/sample`, with a mock Lucina (the four `voice-learn` routes) and a mock
 //! local speech-to-text. Its own test binary (no Gemini key in the process).
 //!
-//! Who may do what: GET for every device (and the owner's session); writes,
-//! suggest and sample for the owner's session and non-speaker devices only. A
-//! speaker is a device that has said `hello` on the voice socket.
+//! Who may do what: GET for every device and the owner's session; writes,
+//! suggest and sample for the owner's browser session (cookie) only. A device token,
+//! a speaker or a just-paired one that never connected, can only read.
 
 use std::sync::{Arc, Mutex};
 
@@ -109,9 +109,7 @@ async fn local_stt(
     body: Bytes,
 ) -> axum::response::Response {
     m.stt_calls.lock().unwrap().push((
-        headers
-            .get("authorization")
-            .map(|v| v.to_str().unwrap().to_owned()),
+        headers.get("cookie").map(|v| v.to_str().unwrap().to_owned()),
         headers
             .get("content-type")
             .map(|v| v.to_str().unwrap().to_owned())
@@ -144,8 +142,10 @@ struct H {
     http: Client,
     data_dir: std::path::PathBuf,
     mock: Arc<Mock>,
-    /// The owner's phone app: never said hello.
+    /// A device token that never said hello (the phone app, or a speaker just paired).
     phone: String,
+    /// The owner's browser session cookie.
+    owner: String,
     /// A speaker that has said hello on the voice socket.
     speaker: String,
     _ws: tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
@@ -178,16 +178,18 @@ async fn harness() -> H {
     ))
     .await
     .unwrap();
-    let h = H {
+    let mut h = H {
         addr,
         http: Client::new(),
         data_dir: cfg.data_dir.clone(),
         mock,
         phone,
+        owner: String::new(),
         speaker,
         _ws: ws,
         _dir: dir,
     };
+    h.owner = h.cookie().await;
     // Telemetry is stored asynchronously: wait until the speaker is known.
     for _ in 0..150 {
         let r = h
@@ -270,6 +272,13 @@ const ROUTES: [(&str, &str); 5] = [
     ("POST", "/v1/voice/learn/sample"),
 ];
 
+/// The same request as the owner's browser session (cookie and the CSRF header).
+fn as_owner(h: &H, method: &str, path: &str) -> reqwest::RequestBuilder {
+    request(h, method, path, None)
+        .header("cookie", &h.owner)
+        .header("x-secretary-csrf", "1")
+}
+
 fn request(h: &H, method: &str, path: &str, token: Option<&str>) -> reqwest::RequestBuilder {
     let m = Method::from_bytes(method.as_bytes()).unwrap();
     let mut rb = h.http.request(m, h.url(path));
@@ -289,25 +298,25 @@ fn request(h: &H, method: &str, path: &str, token: Option<&str>) -> reqwest::Req
 // -- proxying and the auth matrix -----------------------------------------------------
 
 #[tokio::test]
-async fn an_owner_device_reads_and_writes_through_to_lucina() {
+async fn the_owner_session_reads_and_writes_through_to_lucina() {
     let h = harness().await;
-    let t = Some(h.phone.as_str());
+    let o = |m: &str, p: &str| as_owner(&h, m, p);
 
-    let (s, b) = send(request(&h, "GET", "/v1/voice/learn", t)).await;
+    let (s, b) = send(o("GET", "/v1/voice/learn")).await;
     assert_eq!(s, 200, "{b}");
     assert_eq!(b["entries"][0]["word"], "Skibigårdsvej");
     assert_eq!(b["max"], 500, "Lucina's data passes through unwrapped");
 
-    let (s, b) = send(request(&h, "POST", "/v1/voice/learn", t)).await;
+    let (s, b) = send(o("POST", "/v1/voice/learn")).await;
     assert_eq!((s, b["id"].as_str()), (201, Some("vl_2")), "{b}");
 
-    let (s, b) = send(request(&h, "PATCH", "/v1/voice/learn/vl_1", t)).await;
+    let (s, b) = send(o("PATCH", "/v1/voice/learn/vl_1")).await;
     assert_eq!(s, 200, "{b}");
 
-    let (s, b) = send(request(&h, "DELETE", "/v1/voice/learn/vl_1", t)).await;
+    let (s, b) = send(o("DELETE", "/v1/voice/learn/vl_1")).await;
     assert_eq!((s, &b["deleted"]), (200, &json!(true)), "{b}");
 
-    let (s, b) = send(request(&h, "POST", "/v1/voice/learn/suggest", t)).await;
+    let (s, b) = send(o("POST", "/v1/voice/learn/suggest")).await;
     assert_eq!(s, 200, "{b}");
     assert_eq!(b["candidates"][0]["word"], "Skibigårdsvej");
 
@@ -356,6 +365,26 @@ async fn the_owner_session_may_write_with_the_csrf_header() {
 }
 
 #[tokio::test]
+async fn a_device_token_that_never_connected_may_only_read() {
+    // The phone app, or a speaker paired a moment ago that has not said hello: no write is possible
+    // with a device token, whatever it is; only the owner's session does the owner things.
+    let h = harness().await;
+    let t = Some(h.phone.as_str());
+    let (s, b) = send(request(&h, "GET", "/v1/voice/learn", t)).await;
+    assert_eq!(s, 200, "{b}");
+    for (method, path) in ROUTES {
+        let (s, b) = send(request(&h, method, path, t)).await;
+        assert_eq!((s, code(&b)), (403, "owner_only"), "{method} {path}: {b}");
+        // The same request from the owner's session goes through.
+        let (s, b) = send(as_owner(&h, method, path)).await;
+        assert!(s == 200 || s == 201, "{method} {path}: {s} {b}");
+    }
+    // Lucina saw the read and the five owner writes; the device's five never reached it.
+    assert_eq!(h.mock.seen().len(), 1 + 4);
+    assert_eq!(h.mock.stt_calls.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn a_speaker_may_only_read() {
     let h = harness().await;
     let t = Some(h.speaker.as_str());
@@ -386,33 +415,32 @@ async fn no_credentials_is_401_everywhere() {
 #[tokio::test]
 async fn lucinas_validation_errors_pass_through_and_bad_input_stops_here() {
     let h = harness().await;
-    let t = Some(h.phone.as_str());
     // Lucina's own 400 reaches the app with its code and message (shown in the form).
     let (s, b) = send(
         h.http
             .post(h.url("/v1/voice/learn"))
-            .bearer_auth(&h.phone)
+            .header("cookie", &h.owner).header("x-secretary-csrf", "1")
             .json(&json!({"word": ""})),
     )
     .await;
     assert_eq!((s, code(&b)), (400, "invalid_word"), "{b}");
     assert_eq!(b["error"]["message"], "word is required");
     // An unknown id is Lucina's 404 (not the "route missing" 502).
-    let (s, b) = send(request(&h, "DELETE", "/v1/voice/learn/vl_9", t)).await;
+    let (s, b) = send(as_owner(&h, "DELETE", "/v1/voice/learn/vl_9")).await;
     assert_eq!((s, code(&b)), (404, "entry_not_found"), "{b}");
 
     let before = h.mock.seen().len();
     // Not an object, a path-walking id, a bad suggest body: refused here.
-    let (s, b) = send(h.http.post(h.url("/v1/voice/learn")).bearer_auth(&h.phone).json(&json!(["x"]))).await;
+    let (s, b) = send(h.http.post(h.url("/v1/voice/learn")).header("cookie", &h.owner).header("x-secretary-csrf", "1").json(&json!(["x"]))).await;
     assert_eq!((s, code(&b)), (400, "bad_request"), "{b}");
-    let (s, _) = send(h.http.delete(h.url("/v1/voice/learn/a%2Fb")).bearer_auth(&h.phone)).await;
+    let (s, _) = send(h.http.delete(h.url("/v1/voice/learn/a%2Fb")).header("cookie", &h.owner).header("x-secretary-csrf", "1")).await;
     assert_eq!(s, 400);
     for body in [
         json!({"transcript": "x"}),
         json!({"transcript": "x", "corrected": "y", "extra": 1}),
         json!({"transcript": "  ", "corrected": "y"}),
     ] {
-        let (s, b) = send(h.http.post(h.url("/v1/voice/learn/suggest")).bearer_auth(&h.phone).json(&body)).await;
+        let (s, b) = send(h.http.post(h.url("/v1/voice/learn/suggest")).header("cookie", &h.owner).header("x-secretary-csrf", "1").json(&body)).await;
         assert_eq!(s, 400, "{body}: {b}");
     }
     assert_eq!(h.mock.seen().len(), before);
@@ -428,7 +456,7 @@ async fn a_sample_returns_what_the_engine_heard_and_stores_nothing() {
     let (s, b) = send(
         h.http
             .post(h.url("/v1/voice/learn/sample?lang=da"))
-            .bearer_auth(&h.phone)
+            .header("cookie", &h.owner).header("x-secretary-csrf", "1")
             .header("content-type", "audio/wav")
             .body(audio.clone()),
     )
@@ -436,10 +464,10 @@ async fn a_sample_returns_what_the_engine_heard_and_stores_nothing() {
     assert_eq!(s, 200, "{b}");
     assert_eq!(b["heard"], "skibi gard vej");
     assert_eq!(b["corrections"], json!([{"from": "skibi gard", "to": "Skibigårdsvej"}]));
-    // The engine got the clip with the phone's own credentials, as WAV, whole.
+    // The engine got the clip with the owner session's own credentials, as WAV, whole.
     let calls = h.mock.stt_calls.lock().unwrap().clone();
     assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].0.as_deref(), Some(format!("Bearer {}", h.phone).as_str()));
+    assert_eq!(calls[0].0.as_deref(), Some(h.owner.as_str()));
     assert_eq!(calls[0].1, "audio/wav");
     assert_eq!(calls[0].2, audio.len());
     // Nothing was sent to Lucina and nothing was written to the data directory.
@@ -458,7 +486,7 @@ async fn a_sample_returns_what_the_engine_heard_and_stores_nothing() {
     let (s, b) = send(
         h.http
             .post(h.url("/v1/voice/learn/sample"))
-            .bearer_auth(&h.phone)
+            .header("cookie", &h.owner).header("x-secretary-csrf", "1")
             .header("content-type", "audio/x-s16le;rate=16000")
             .body(pcm),
     )
@@ -488,7 +516,7 @@ async fn a_sample_is_limited_and_validated() {
     let post = |ct: &'static str, body: Vec<u8>| {
         h.http
             .post(h.url("/v1/voice/learn/sample"))
-            .bearer_auth(&h.phone)
+            .header("cookie", &h.owner).header("x-secretary-csrf", "1")
             .header("content-type", ct)
             .body(body)
     };
@@ -512,7 +540,7 @@ async fn a_sample_is_limited_and_validated() {
     let (s, _) = send(
         h.http
             .post(h.url("/v1/voice/learn/sample?lang=fr"))
-            .bearer_auth(&h.phone)
+            .header("cookie", &h.owner).header("x-secretary-csrf", "1")
             .header("content-type", "audio/wav")
             .body(wav(1000)),
     )
@@ -526,7 +554,7 @@ async fn silence_and_a_missing_engine_are_reported() {
     let post = || {
         h.http
             .post(h.url("/v1/voice/learn/sample"))
-            .bearer_auth(&h.phone)
+            .header("cookie", &h.owner).header("x-secretary-csrf", "1")
             .header("content-type", "audio/wav")
             .body(wav(1000))
     };
@@ -547,7 +575,7 @@ async fn samples_are_rate_limited_per_device() {
         let r = h
             .http
             .post(h.url("/v1/voice/learn/sample"))
-            .bearer_auth(&h.phone)
+            .header("cookie", &h.owner).header("x-secretary-csrf", "1")
             .header("content-type", "audio/wav")
             .body(wav(500))
             .send()

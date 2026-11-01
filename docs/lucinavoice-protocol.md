@@ -248,8 +248,10 @@ normal path as before.
   is used only once, to suggest `soundsLike` through STT, and is then discarded.
 - **API:**
   - lucina-rs: `GET|POST /api/secretary/voice-learn`, `PATCH|DELETE /api/secretary/voice-learn/{id}`.
-  - secretary-server proxies them as `/v1/voice/learn[/{id}]`, owner session or the owner's devices; a LucinaVoice
-    speaker token gets read-only `GET`.
+  - secretary-server proxies them as `/v1/voice/learn[/{id}]`. `GET` is open to the owner's session and to any device
+    token (a speaker needs the list). Every write (`POST`, `PATCH`, `DELETE`, `/suggest`, `/sample`) is the owner's
+    browser session only, like `/v1/voice/devices*`: a device token, even one just paired that never said hello, gets
+    `403 owner_only`.
   - `POST /v1/voice/learn/suggest {transcript, corrected}` returns candidate entries from a transcript edit (the
     "add to Voice Learn" offer).
 - **Every STT path uses it:**
