@@ -646,8 +646,15 @@ pub fn parse_decision(v: &Value, questions: &[(&str, Question)]) -> Result<Decis
             }
             Question::Noul { .. } => Answer::Noul(prob(&a["noul"], name)?),
             Question::Score { levels, .. } => {
+                // The live API answers the expected level (`3.77`), not an integer: the nearest level.
                 let score = a["score"]
                     .as_u64()
+                    .or_else(|| {
+                        a["score"]
+                            .as_f64()
+                            .filter(|s| s.is_finite() && *s >= 0.0)
+                            .map(|s| s.round() as u64)
+                    })
                     .ok_or_else(|| JevError::Malformed(format!("{name}: no score")))?;
                 if score as usize >= levels.len() {
                     return Err(JevError::Malformed(format!(
