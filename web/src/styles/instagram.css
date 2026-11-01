@@ -195,3 +195,10 @@
 .ig-sentinel { height: 1px; }
 .ig-end, .ig-count { text-align: center; }
 .ig-count { text-align: start; }
+
+/* The viewer top bar on a phone (stories): the count on one line, the date is in the overlay, Save is its icon. */
+.ig-story-viewer .pv-count { white-space: nowrap; }
+.ig-story-viewer .ig-pv-date { display: none; }
+@media (max-width: 600px) {
+  .ig-story-viewer .ig-pv-save span { display: none; }
+}
