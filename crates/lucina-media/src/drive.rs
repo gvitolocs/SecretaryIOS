@@ -132,7 +132,7 @@ fn mtime_of(meta: &std::fs::Metadata) -> (i64, String) {
 }
 
 /// Derived files of an item that describe its old bytes.
-fn drop_derived(lib: &Library, item_id: &str) {
+pub(crate) fn drop_derived(lib: &Library, item_id: &str) {
     let dir = thumbs::dir_for(&lib.cfg, item_id);
     for f in ["text.txt", "page1.jpg", "doc.pdf"] {
         let _ = std::fs::remove_file(dir.join(f));
@@ -216,7 +216,7 @@ pub fn index_drive_folder(lib: &Library, label: &str, root: &Path) -> anyhow::Re
                 continue;
             };
             seen.insert(rel.clone());
-            match index_one(lib, label, &rel, path, &md) {
+            match index_one(lib, label, &rel, path, &md, true) {
                 Ok(true) => st.added += 1,
                 Ok(false) => st.kept += 1,
                 Err(e) => {
@@ -296,13 +296,22 @@ fn prune(lib: &Library, row: i64, item_id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Index one file; `Ok(false)` when it is unchanged since the last scan.
+/// Index one Drive file now, without the thermal pause: the sheet editor just replaced it and
+/// the owner is waiting for the new view (`sheet.rs`).
+pub(crate) fn reindex_file(lib: &Library, label: &str, rel: &str, path: &Path) -> anyhow::Result<()> {
+    let md = std::fs::metadata(path)?;
+    index_one(lib, label, rel, path, &md, false).map(|_| ())
+}
+
+/// Index one file; `Ok(false)` when it is unchanged since the last scan. `pause` waits while the
+/// box is hot before hashing (the background scan).
 fn index_one(
     lib: &Library,
     label: &str,
     rel: &str,
     path: &Path,
     md: &std::fs::Metadata,
+    pause: bool,
 ) -> anyhow::Result<bool> {
     let size = md.len() as i64;
     let (mtime_ns, mtime) = mtime_of(md);
@@ -318,7 +327,9 @@ fn index_one(
         return Ok(false);
     }
     // Hashing reads the whole file: background work, paused when hot.
-    wait_until_cool(lib);
+    if pause {
+        wait_until_cool(lib);
+    }
     let (dir, name) = split_rel(rel);
     let mime = meta::mime_for(path, None);
     let kind = meta::kind_for_mime(&mime);

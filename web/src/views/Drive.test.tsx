@@ -183,6 +183,19 @@ describe("Drive", () => {
     expect(screen.getByRole("button", { name: /main\.rs/ })).toBeInTheDocument();
   });
 
+  it("offers the sheet editor for an .xlsx, and only for workbooks it can open", async () => {
+    const book = file("itm_xl", "Admin/worktime.xlsx", "spreadsheet", "office");
+    const old = file("itm_xls", "Admin/old.xls", "spreadsheet", "office");
+    stubFetch((call) => {
+      if (call.url.includes("/items/itm_xl")) return { body: call.url.includes("itm_xls") ? old : book };
+      return { body: ROOTS };
+    });
+    renderAt("/drive/file/itm_xl", () => <Route path="/drive/*rest" component={DriveView} />);
+    const dialog = await screen.findByRole("dialog", { name: "worktime.xlsx" });
+    const links = within(dialog).getAllByRole("link", { name: "Open sheet" });
+    expect(links.every((l) => l.getAttribute("href") === "/drive/sheet/itm_xl")).toBe(true);
+  });
+
   it("waits while the server is still reading a file", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     let asks = 0;

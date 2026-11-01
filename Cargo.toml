@@ -57,6 +57,7 @@ members = [
     "verification/models",
     "crates/secretary-media-stream",
     "crates/lucina-media",
+    "crates/secretary-xlsx",
     "crates/lucina-media-ml",
     "crates/lucina-jev",
     "crates/secretary-image",

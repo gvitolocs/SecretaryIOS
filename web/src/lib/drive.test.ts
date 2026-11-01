@@ -7,6 +7,7 @@ import {
   downloadUrl,
   encodeSegment,
   fileHref,
+  sheetHref,
   filterLabelKey,
   filtersSearch,
   folderHref,
@@ -262,6 +263,7 @@ describe("routes", () => {
     expect(/^\/[A-Za-z0-9/_\-.%]{0,120}$/.test(href)).toBe(true);
     expect(parseDriveRoute(href)).toEqual({ view: "folder", folder: "Lezioni", path: "Digital Forensics/L(05) it's #1?" });
     expect(fileHref("itm_a/b")).toBe("/drive/file/itm_a%2Fb");
+    expect(sheetHref("itm_a/b")).toBe("/drive/sheet/itm_a%2Fb");
     expect(encodeSegment("~!*")).toBe("%7E%21%2A");
   });
 

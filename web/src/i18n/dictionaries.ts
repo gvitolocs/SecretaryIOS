@@ -10,6 +10,7 @@ import { chat } from "./dict/chat";
 import { common } from "./dict/common";
 import { films } from "./dict/films";
 import { drive } from "./dict/drive";
+import { sheet } from "./dict/sheet";
 import { computer } from "./dict/computer";
 import { desk } from "./dict/desk";
 import { gym } from "./dict/gym";
@@ -53,6 +54,6 @@ import { prompter } from "./dict/prompter";
 import { notebooks } from "./dict/notebooks";
 import { voice } from "./dict/voice";
 
-export const dictionaries = { decisions, approvals, calendar, chats, library, common, computer, desk, shell, share, chat, login, weight, gym, wardrobe, notify, links, maps, notes, keep, tasks, studio, models, memos, media, films, drive, plugins, serverHealth, viewer, secrets, gallery, galleryInfo, nclient, pixiv, instagram, agents, prompter, notebooks, editor, browse, galleryShare, galleryCompare, lab, galleryAlbums, galleryLive, gallerySmart, galleryPeople, galleryDedup, galleryCategories, voice };
+export const dictionaries = { decisions, approvals, calendar, chats, library, common, computer, desk, shell, share, chat, login, weight, gym, wardrobe, notify, links, maps, notes, keep, tasks, studio, models, memos, media, films, drive, sheet, plugins, serverHealth, viewer, secrets, gallery, galleryInfo, nclient, pixiv, instagram, agents, prompter, notebooks, editor, browse, galleryShare, galleryCompare, lab, galleryAlbums, galleryLive, gallerySmart, galleryPeople, galleryDedup, galleryCategories, voice };
 
 export type Dictionaries = typeof dictionaries;

@@ -55,6 +55,7 @@ pub mod resumable;
 pub mod share;
 pub mod share_http;
 pub mod share_sel;
+pub mod sheet;
 pub mod smart;
 pub mod source;
 pub mod stacks;
