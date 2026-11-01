@@ -473,6 +473,353 @@
   font-size: 13px;
 }
 
+/* Header: the calendar's colour as a bar beside the date and time (the sheet's own header has the title). */
+.cal-detail-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 12px;
+  border-left: 4px solid var(--cal-color, var(--pg-accent));
+  border-radius: 2px;
+}
+
+.cal-detail-date {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.cal-detail-date::first-letter {
+  text-transform: uppercase;
+}
+
+.cal-detail-time {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+.cal-detail-time .icon {
+  width: 15px;
+  height: 15px;
+  color: var(--pg-muted);
+}
+
+.cal-detail-head .cal-detail-cal {
+  margin-top: 2px;
+  font-size: 13px;
+}
+
+/* Rounded cards like Apple's grouped rows, in Lucina's surfaces. */
+.cal-card {
+  border: 1px solid var(--pg-border);
+  border-radius: var(--lu-radius-tile, 14px);
+  background: var(--lu-card-raised, var(--pg-surface));
+}
+
+.cal-phone {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+}
+
+.cal-phone-badge {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: var(--lu-positive, #34c759);
+  color: #fff;
+}
+
+.cal-phone-badge .icon {
+  width: 22px;
+  height: 22px;
+}
+
+.cal-phone-number {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: inherit;
+  font-size: 17px;
+  font-variant-numeric: tabular-nums;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.cal-pill {
+  min-height: 34px;
+  padding: 0 16px;
+  border-radius: 999px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.cal-round {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--pg-border);
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.cal-round .icon {
+  width: 17px;
+  height: 17px;
+}
+
+.cal-phone-copied {
+  position: absolute;
+  right: 12px;
+  bottom: -18px;
+  color: var(--pg-muted);
+  font-size: 12px;
+}
+
+.cal-place {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+}
+
+.cal-place-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.cal-place-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 16px;
+  overflow-wrap: anywhere;
+}
+
+.cal-place-map {
+  flex: none;
+  width: 132px;
+  height: 92px;
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--lu-card-raised);
+}
+
+.cal-place-map .lmap {
+  min-height: 0;
+  height: 100%;
+}
+
+/* The hours around the event: hour lines, the event and its neighbours side by side. */
+.cal-strip {
+  padding: 10px 12px 14px;
+}
+
+.cal-strip-grid {
+  position: relative;
+  height: calc(var(--hours, 3) * 44px);
+  margin-left: 48px;
+}
+
+.cal-strip-hour {
+  position: absolute;
+  right: 0;
+  left: 0;
+  border-top: 1px solid var(--pg-border);
+}
+
+.cal-strip-hour-label {
+  position: absolute;
+  top: -8px;
+  left: -48px;
+  width: 40px;
+  color: var(--pg-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.cal-strip-lane {
+  position: absolute;
+  inset: 0 0 0 4px;
+}
+
+.cal-strip-ev {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  overflow: hidden;
+  padding: 3px 6px;
+  border: 0;
+  border-left: 3px solid var(--cal-color);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--cal-color) 18%, transparent);
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cal-strip-ev:disabled {
+  cursor: default;
+}
+
+.cal-strip-ev--self {
+  z-index: 1;
+  background: color-mix(in srgb, var(--cal-color) 42%, var(--lu-card-raised, transparent));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--cal-color) 70%, transparent);
+}
+
+.cal-strip-title {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cal-strip-when {
+  color: var(--pg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cal-strip-ev--self .cal-strip-when {
+  color: inherit;
+  opacity: 0.85;
+}
+
+/* Settings rows: icon, name, value or picker. */
+.cal-settings {
+  display: flex;
+  flex-direction: column;
+  padding: 0 12px;
+}
+
+.cal-set {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  padding: 6px 0;
+}
+
+.cal-set + .cal-set {
+  border-top: 1px solid var(--pg-border);
+}
+
+.cal-set > .icon {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  color: var(--pg-muted);
+}
+
+.cal-set-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 15px;
+}
+
+.cal-set-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--pg-muted);
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.cal-set-value--stack {
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  font-size: 13px;
+}
+
+.cal-set-note {
+  padding: 0 0 10px 32px;
+  font-size: 13px;
+}
+
+.cal-select {
+  max-width: 60%;
+  padding: 4px 4px 4px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--pg-muted);
+  font: inherit;
+  font-size: 15px;
+  text-align: right;
+  cursor: pointer;
+}
+
+.cal-select:hover,
+.cal-select:focus-visible {
+  background: color-mix(in srgb, var(--pg-accent) 10%, transparent);
+  color: inherit;
+}
+
+.cal-switch {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--pg-accent);
+}
+
+.cal-detail-error {
+  color: var(--lu-negative, #e5534b);
+  font-size: 13px;
+}
+
+/* Notes with tappable data; long ones clamp to five lines until "Show more". */
+.cal-notes-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 12px;
+}
+
+.cal-detail-notes--clamped {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 5;
+}
+
+.cal-note-data {
+  color: var(--pg-accent);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.cal-more {
+  align-self: flex-end;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--pg-accent);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
 .cal-sheet .pg-sheet-foot {
   flex-wrap: wrap;
 }

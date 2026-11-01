@@ -2,6 +2,8 @@ import type { TimelineItem } from "../api/timeline";
 
 export function conversationKey(item: TimelineItem): string {
   if (item.meta?.via === "mcp") return `agent:${(item.meta.caller ?? "").toLowerCase().replace(/[^a-z0-9_-]/g, "") || "mcp"}`;
+  // Every LucinaVoice speaker shares one thread, "Lucina Voice" (docs/lucinavoice-protocol.md section 7).
+  if (item.channel === "voice") return "voice";
   if (item.channel === "web" || item.channel === "ios") return item.meta?.device ? `device:${item.meta.device}` : `legacy:${item.channel}`;
   return ["telegram", "discord", "alexa"].includes(item.channel) ? item.channel : "lucina";
 }

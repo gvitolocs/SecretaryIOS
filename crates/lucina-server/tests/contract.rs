@@ -40,6 +40,7 @@ async fn secretary_core_client_decodes_every_route() {
                 reply_to: None,
                 device: None,
                 device_name: None,
+                voice_meta: None,
             })
             .unwrap(),
         )

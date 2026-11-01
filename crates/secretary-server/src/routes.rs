@@ -18,7 +18,7 @@ type ApiResult = Result<(StatusCode, Json<Value>), ApiError>;
 
 /// Forward and return Lucina's `data` (after the call's unwrap) with
 /// Lucina's 2xx status (201 for a created reminder or shopping item).
-async fn forward(st: &AppState, call: Call) -> ApiResult {
+pub(crate) async fn forward(st: &AppState, call: Call) -> ApiResult {
     let (status, data) = st.lucina()?.call_with_status::<Value>(&call).await?;
     let status = StatusCode::from_u16(status).unwrap_or(StatusCode::OK);
     Ok((status, Json(data)))
@@ -37,7 +37,10 @@ async fn health(State(st): State<AppState>) -> Json<Value> {
 pub const CLIENT_HEADER: &str = "x-secretary-client";
 
 /// The chat `channel`: the `X-Secretary-Client` header, else the body's
-/// `channel`, else `web`. Explicit values must be `web` or `ios`.
+/// `channel`, else `web`. Explicit values must be `web` or `ios`. `voice` is
+/// valid for Lucina (the shared "Lucina Voice" thread) but only secretary-server's
+/// own voice pipeline may send it: a client claiming it here is refused like any
+/// unknown value, so nothing can write into the speaker's thread or pass for it.
 pub(crate) fn chat_channel(headers: &HeaderMap, body: Option<&str>) -> Result<String, ApiError> {
     let channel = match headers.get(CLIENT_HEADER) {
         Some(v) => v.to_str().map(str::trim).map_err(|_| {
@@ -49,18 +52,20 @@ pub(crate) fn chat_channel(headers: &HeaderMap, body: Option<&str>) -> Result<St
         })?,
         None => body.unwrap_or("web"),
     };
-    secretary_core::validate::chat_channel("X-Secretary-Client", channel).map_err(|_| {
+    if channel == crate::voice_pipe::CHANNEL
+        || secretary_core::validate::chat_channel("X-Secretary-Client", channel).is_err()
+    {
         let field = if headers.contains_key(CLIENT_HEADER) {
             "X-Secretary-Client"
         } else {
             "channel"
         };
-        ApiError::new(
+        return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "bad_request",
             format!("{field}: must be one of web, ios"),
-        )
-    })?;
+        ));
+    }
     Ok(channel.to_owned())
 }
 

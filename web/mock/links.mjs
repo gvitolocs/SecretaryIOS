@@ -113,6 +113,18 @@ const own = [
     attendees: ["sofie@example.com", "marco@example.com"],
     addedBy: "Mac",
   }),
+  // Apple Calendar's "Founders' Entry – Kitchen" (the event sheet's reference): a phone number, a Teams link and an
+  // address in the notes, overlapping Monday's Software Security seminar.
+  timed(evId(), "lucina", LUCINA_CAL, "Founders' Entry – Kitchen", dayAt(weekday(1, 0), 14), dayAt(weekday(1, 0), 15, 30), {
+    location: "Boiler, Kitchen, Universitetsbyen 76, 8000 Aarhus C",
+    description:
+      "In-person welcome to join Kitchen (required for AU Launch). Program: intro, startup presentations, house tour. " +
+      "You are already registered via Eventværk. SoftSec class the same day is 12:00–16:00.\n\n" +
+      "Can't make it? Join on Teams: https://teams.microsoft.com/l/meetup-join/19%3ameeting_kitchen%40thread.v2/0\n" +
+      "Questions: kitchen@au.dk or call Anna on 52 20 01 44.\nThe Kitchen, Universitetsbyen 76, 8000 Aarhus C.",
+    alarms: [60, 1440],
+    addedBy: "Lucina",
+  }),
   timed(evId(), "lucina", LUCINA_CAL, "Lunch with Anna", dayAt(4, 12, 30), dayAt(4, 13, 30), { location: "Gaia, Aarhus", addedBy: "Lucina" }),
   allDay(evId(), "lucina", LUCINA_CAL, "Trip to Rome", 8, 3, { addedBy: "iPhone" }),
 ];
@@ -201,6 +213,29 @@ function textFields(body, ev) {
       else delete ev[k];
     }
   }
+  // Event settings, as secretary-server validates them.
+  if ("alarms" in body) {
+    if (body.alarms === null) {
+      ev.alarms = [];
+      ev.alarmsDefault = true;
+    } else if (Array.isArray(body.alarms) && body.alarms.length <= 5 && body.alarms.every((m) => Number.isInteger(m) && m >= 0 && m <= 40320)) {
+      ev.alarms = [...new Set(body.alarms)].sort((a, b) => a - b);
+      delete ev.alarmsDefault;
+    } else return "alarms: minutes before the start, 0-40320, at most 5";
+  }
+  if ("free" in body) {
+    if (body.free === true) ev.free = true;
+    else delete ev.free;
+  }
+  if ("travelMin" in body) {
+    if (Number.isInteger(body.travelMin) && body.travelMin > 0 && body.travelMin <= 1440) ev.travelMin = body.travelMin;
+    else delete ev.travelMin;
+  }
+  if ("leaveAlert" in body) {
+    if (body.leaveAlert === true) ev.leaveAlert = true;
+    else delete ev.leaveAlert;
+  }
+  return null;
 }
 
 function createOwn(body, addedBy) {
@@ -451,9 +486,28 @@ export async function handleLinks(req, res, { path, method, url, send, fail, rea
       if (!times) return fail(res, 400, "bad_request", "start/end: a valid range"), true;
       Object.assign(ev, times);
     }
-    textFields(body, ev);
+    const bad = textFields(body, ev);
+    if (bad) return fail(res, 400, "bad_request", bad), true;
     store[i] = ev;
     return send(res, 200, { updated: true, event: ev }), true;
+  }
+  const moveMatch = path.match(/^\/v1\/calendar\/events\/([^/]+)\/move$/);
+  if (moveMatch && method === "POST") {
+    const id = decodeURIComponent(moveMatch[1]);
+    const body = (await readJson(req)) ?? {};
+    if (body.confirm !== true) return fail(res, 428, "confirmation_required", "ask the owner first, then send confirm: true"), true;
+    const from = id.startsWith("google:") ? google : id.startsWith("lucina:") ? own : null;
+    const to = body.target === "google" ? google : body.target === "lucina" ? own : null;
+    if (!from || !to) return fail(res, 400, "bad_request", "target: lucina or google"), true;
+    if (from === to) return fail(res, 400, "bad_request", "the event is already in that calendar"), true;
+    const i = from.findIndex((e) => e.id === id);
+    if (i < 0) return fail(res, 404, "event_not_found", "no such event"), true;
+    if (from[i].recurring) return fail(res, 422, "recurring_event", "a repeating event can't be moved to another calendar here"), true;
+    const [ev] = from.splice(i, 1);
+    const nid = body.target === "google" ? `google:${Math.random().toString(36).slice(2, 10)}` : evId();
+    const moved = { ...ev, id: nid, sourceId: nid.replace(/^[a-z]+:/, ""), source: body.target, calendar: body.target === "google" ? "Google" : LUCINA_CAL };
+    to.push(moved);
+    return send(res, 200, { moved: true, from: id, event: moved }), true;
   }
   if (path === "/v1/calendar/proposals" && method === "GET") {
     return send(res, 200, { proposals: proposals.filter((p) => p.expiresAtMs > Date.now()) }), true;

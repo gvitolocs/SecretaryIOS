@@ -124,8 +124,13 @@ pub async fn classify(
     let first = crate::jev_route::jev_first_enabled();
     // One Jev call per turn, shared by JEV-first, the tier-0 double-check and tier 1.
     let wants_jev = first || rule.as_ref().is_none_or(crate::jev_route::checks_tier0);
+    // A spoken turn already asked Jev its intent questions at the start of the turn (`chat::voice_fast`):
+    // that verdict is used, not a second call.
     let jev = if wants_jev {
-        crate::jev_route::classify_intent(lucina_jev::shared(), &t).await
+        match crate::voice::shared_intent().await {
+            Some(verdict) => verdict,
+            None => crate::jev_route::classify_intent(lucina_jev::shared(), &t).await,
+        }
     } else {
         None
     };
@@ -256,6 +261,7 @@ pub async fn prepare_with(
         recent: &st.recent,
         recent_key: session,
         peer: &st.cfg.owner_peer_id,
+        voice: false,
     };
     prepare_keyed(
         st, surface, session, keys, user_text, user_label, platform, tools_mode,
@@ -271,6 +277,9 @@ pub struct Keys<'a> {
     pub recent: &'a lucina_store::recent::RecentChat,
     pub recent_key: &'a str,
     pub peer: &'a str,
+    /// A turn of the Lucina Voice thread: it also reads the app's latest lines (`voice_thread`); an app turn
+    /// reads the speaker's.
+    pub voice: bool,
 }
 
 /// [`prepare_with`] for any channel.
@@ -322,6 +331,19 @@ pub async fn prepare_keyed(
 
     let presence = if owner {
         presence_block(st, user_text)
+    } else {
+        String::new()
+    };
+    // The other side of the Lucina Voice thread: the speaker's latest lines for an app turn, the app's for
+    // a spoken one (the timeline is the record both read, whatever session each used).
+    let other_surface = if owner && policy != Policy::PersonaOnly {
+        crate::voice_thread::other_side_block(st, keys.voice, now)
+    } else {
+        String::new()
+    };
+    // Voice Learn: what the owner's own words mean (every turn whose text holds one).
+    let vocabulary = if owner {
+        crate::voice_learn::context_block(st, user_text)
     } else {
         String::new()
     };
@@ -406,6 +428,8 @@ pub async fn prepare_keyed(
     let memory_context = [
         metadata,
         presence,
+        vocabulary,
+        other_surface,
         calendar,
         notes,
         attachments,

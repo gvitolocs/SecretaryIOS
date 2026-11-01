@@ -94,6 +94,30 @@ final class CalendarStore {
             if let event = try await api.save(draft, id: id) { self.upsert(event) }
         }
     }
+    /// Google can take events (a move from Lucina's calendar) while it is connected.
+    var googleWritable: Bool { sources?["google"]?["status"]?.stringValue == "connected" }
+    /// Changes alerts, show-as, travel time or the leave alert; the event as it now reads, nil when it failed.
+    func update(_ event: CalendarEntry, settings: CalendarSettingsPatch) async -> CalendarEntry? {
+        var updated = settings.applied(to: event)
+        let ok = await perform { api in
+            if let saved = try await api.update(event.id, settings: settings) { updated = saved }
+            self.upsert(updated)
+        }
+        guard ok else { return nil }
+        // The reloaded range has what a single event's answer leaves out (a Google calendar's default alerts).
+        return events.first { $0.id == updated.id && $0.startMs == updated.startMs } ?? updated
+    }
+    /// Moves the event to `target` ("lucina" or "google"); the new event (with its new id), nil when it failed.
+    func move(_ event: CalendarEntry, to target: String) async -> CalendarEntry? {
+        var moved: CalendarEntry?
+        let ok = await perform { api in
+            moved = try await api.move(event.id, to: target)
+            self.events.removeAll { $0.id == event.id && $0.startMs == event.startMs }
+            if let moved { self.upsert(moved) }
+        }
+        guard ok, let moved else { return nil }
+        return events.first { $0.id == moved.id } ?? moved
+    }
     func delete(_ event: CalendarEntry) async -> Bool {
         await perform { api in
             try await api.delete(event.id)
@@ -141,6 +165,7 @@ final class CalendarStore {
         switch apiError.code {
         case "read_only_source": self.error = String(localized: "This calendar is read-only.")
         case "google_reconnect_needed", "google_not_connected": self.error = String(localized: "Reconnect Google in Links, then try again.")
+        case "recurring_event": self.error = String(localized: "A repeating event can't be moved to another calendar.")
         case "event_not_found": self.error = String(localized: "This event is no longer in the calendar.")
         case "google_rejected": self.error = String(localized: "Google could not save this event. Check the details.")
         case "google_unreachable", "google_error": self.error = String(localized: "Google is unavailable. Try again later.")

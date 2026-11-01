@@ -147,6 +147,40 @@ pub struct Item {
     /// Who added it ("Lucina", a device name, the Google creator).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub added_by: Option<String>,
+    /// Alerts, in minutes before the start (Google reminder overrides,
+    /// VALARM triggers, EventKit alarms), ascending.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alarms: Vec<i64>,
+    /// The calendar's default alerts apply (Google `reminders.useDefault`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub alarms_default: bool,
+    /// Shown as free rather than busy (`TRANSP:TRANSPARENT`, Google
+    /// `transparency: "transparent"`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub free: bool,
+    /// Travel time blocked before the start, in minutes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub travel_min: Option<u32>,
+    /// A "time to leave" alert (start minus the travel time).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub leave_alert: bool,
+}
+
+/// Longest alert offset accepted (four weeks, Google's limit).
+pub const MAX_ALARM_MIN: i64 = 40_320;
+/// Most alerts per event (Google allows five overrides).
+pub const MAX_ALARMS: usize = 5;
+/// Longest travel time accepted.
+pub const MAX_TRAVEL_MIN: u32 = 1440;
+
+/// Alerts cleaned up: in range, ascending, no duplicates, at most
+/// [`MAX_ALARMS`].
+pub fn normalize_alarms(mut v: Vec<i64>) -> Vec<i64> {
+    v.retain(|m| (0..=MAX_ALARM_MIN).contains(m));
+    v.sort_unstable();
+    v.dedup();
+    v.truncate(MAX_ALARMS);
+    v
 }
 
 /// An expanded event as the clients see it.
@@ -183,6 +217,19 @@ pub struct Event {
     pub conference_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub added_by: Option<String>,
+    /// Alerts in minutes before the start, ascending (for Google events
+    /// with `alarmsDefault`, the calendar's defaults once the server knows
+    /// them).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alarms: Vec<i64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub alarms_default: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub free: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub travel_min: Option<u32>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub leave_alert: bool,
     pub recurring: bool,
     /// Whether the server can change it (Lucina's own and Google events).
     pub editable: bool,

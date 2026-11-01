@@ -4,6 +4,10 @@
 //   GET /v1/voice/devices/{id}/events?kind=&limit=&before=   newest first, {events, next?}
 // One online speaker ("Kitchen speaker") with 10 turns (fast, slow, one error, one over HTTP) and
 // events of every kind. MOCK_VOICE=offline: the speaker is offline; MOCK_VOICE=empty: no devices.
+// Voice Learn (section 8), over an in-memory vocabulary:
+//   GET|POST /v1/voice/learn, PATCH|DELETE /v1/voice/learn/{id}, POST /v1/voice/learn/suggest,
+//   POST /v1/voice/learn/sample (a WAV body: "heard" a fixed phrase; under 2 KB of audio is no_speech).
+// MOCK_VOICE_LEARN=empty starts with no words. MOCK_VOICE_LEARN=down: every Voice Learn route answers 502.
 
 const ID = "lucinavoice-dab8";
 const min = (m) => new Date(Date.now() - m * 60_000).toISOString();
@@ -26,8 +30,22 @@ const TURNS = [
   { ago: 156, ok: true, chars: 47, speech: 2900, spans: { stt: 430, lucina_first: 1500, tts_first: 1860, first_audio: 1930, total: 6100 }, dev: 2010, up: 92_160, down: 319_488 },
 ];
 
+// The Jev layers (section 9) of the newest turns: a quick command, a chat turn with a vocabulary choice.
+const LAYERS = [
+  { intent: "temporal_query", fast: true, layers: [{ layer: "intent", verdict: "temporal_query", confidence: 0.96, ms: 190, used: true }] },
+  { intent: "chat", fast: false, corrections: 1, ambiguous: 1, layers: [
+    { layer: "intent", verdict: "chat", confidence: 0.88, ms: 214, used: true },
+    { layer: "vocab", verdict: "Skibigårdsvej", confidence: 0.71, ms: 132, used: true },
+  ] },
+  { intent: "schedule_reminder", fast: false, layers: [
+    { layer: "intent", verdict: "schedule_reminder", confidence: 0.9, ms: 201, used: true },
+    { layer: "slots", verdict: "unsure", confidence: 0.55, ms: 150, used: false },
+    { layer: "confirm", verdict: "no", confidence: 0.8, ms: 160, used: false },
+  ] },
+];
+
 function turns() {
-  return TURNS.map((x) => ({
+  return TURNS.map((x, i) => ({
     at: min(x.ago),
     ok: x.ok,
     ...(x.err ? { err: x.err } : {}),
@@ -37,7 +55,92 @@ function turns() {
     ...(x.dev ? { device_first_audio_ms: x.dev } : {}),
     up_bytes: x.up,
     down_bytes: x.down,
+    ...(LAYERS[i] && x.ok
+      ? {
+          intent: LAYERS[i].intent,
+          confidence: LAYERS[i].layers[0].confidence,
+          jev_ms: LAYERS[i].layers[0].ms,
+          fast: LAYERS[i].fast,
+          source: "jev",
+          layers: LAYERS[i].layers,
+          ...(LAYERS[i].corrections ? { stt_corrections: LAYERS[i].corrections } : {}),
+          ...(LAYERS[i].ambiguous ? { stt_ambiguous: LAYERS[i].ambiguous } : {}),
+        }
+      : {}),
   }));
+}
+
+// ---- Voice Learn ------------------------------------------------------------------------------
+
+let learnSeq = 3;
+const learn = process.env.MOCK_VOICE_LEARN === "empty" ? [] : [
+  { id: "vl_1", word: "Skibigårdsvej", soundsLike: ["skibi gård vej", "skibigor"], meaning: "my home street", lang: "da", source: "app", createdAt: min(4000), updatedAt: min(4000) },
+  { id: "vl_2", word: "Lucina", soundsLike: ["lucina", "luchina"], lang: "it", source: "app", createdAt: min(3000), updatedAt: min(3000) },
+  { id: "vl_3", word: "Blåbærgrød", soundsLike: ["blo ber grød"], meaning: "breakfast", lang: "da", source: "correction", createdAt: min(900), updatedAt: min(900) },
+];
+
+const clean = (v, n = 100) => (typeof v === "string" ? v.trim().slice(0, n) : "");
+function readDraft(body, partial) {
+  const out = {};
+  if (!partial || "word" in body) {
+    const word = clean(body.word);
+    if (!word) return { error: ["word_required", "word is required"] };
+    if (typeof body.word === "string" && body.word.trim().length > 100) return { error: ["word_too_long", "word must be at most 100 characters"] };
+    out.word = word;
+  }
+  if ("soundsLike" in body) out.soundsLike = (Array.isArray(body.soundsLike) ? body.soundsLike : []).map((x) => clean(x)).filter(Boolean).slice(0, 20);
+  if ("meaning" in body) out.meaning = clean(body.meaning);
+  if ("lang" in body) {
+    if (body.lang !== null && !["it", "en", "da"].includes(body.lang)) return { error: ["invalid_lang", "lang must be it, en or da"] };
+    out.lang = body.lang;
+  }
+  return { draft: out };
+}
+
+async function handleLearn(req, res, { path, method, send, fail, readJson }) {
+  if (process.env.MOCK_VOICE_LEARN === "down") return fail(res, 502, "lucina_unreachable", "Lucina is not reachable"), true;
+  if (path === "/v1/voice/learn/sample" && method === "POST") {
+    let size = 0;
+    for await (const c of req) size += c.length;
+    if (size < 2000) return fail(res, 422, "no_speech", "no speech was heard"), true;
+    // What a Danish word said into a phone sounds like to a speech-to-text engine.
+    return send(res, 200, { heard: "skibi gard vej", corrections: [] }), true;
+  }
+  if (path === "/v1/voice/learn/suggest" && method === "POST") {
+    const body = await readJson(req);
+    const a = clean(body.transcript, 2000).split(/\s+/);
+    const b = clean(body.corrected, 2000).split(/\s+/);
+    const changed = b.filter((w) => w && !a.includes(w));
+    if (!changed.length) return send(res, 200, { candidates: [] }), true;
+    const heard = a.filter((w) => w && !b.includes(w));
+    return send(res, 200, { candidates: [{ word: changed.join(" "), soundsLike: heard.length ? [heard.join(" ").toLowerCase()] : [] }] }), true;
+  }
+  if (path === "/v1/voice/learn" && method === "GET") return send(res, 200, { entries: learn, max: 500 }), true;
+  if (path === "/v1/voice/learn" && method === "POST") {
+    const { draft, error } = readDraft(await readJson(req), false);
+    if (error) return fail(res, 400, error[0], error[1]), true;
+    if (learn.length >= 500) return fail(res, 400, "vocabulary_full", "the vocabulary is full (500 words)"), true;
+    if (learn.some((e) => e.word.toLowerCase() === draft.word.toLowerCase())) return fail(res, 409, "duplicate_word", `“${draft.word}” is already in the vocabulary`), true;
+    const now = new Date().toISOString();
+    const entry = { id: `vl_${++learnSeq}`, soundsLike: [], source: "app", createdAt: now, updatedAt: now, ...draft };
+    if (entry.lang === null) delete entry.lang;
+    learn.push(entry);
+    return send(res, 201, entry), true;
+  }
+  const m = /^\/v1\/voice\/learn\/([^/]+)$/.exec(path);
+  if (m && (method === "PATCH" || method === "DELETE")) {
+    const i = learn.findIndex((e) => e.id === decodeURIComponent(m[1]));
+    if (i < 0) return fail(res, 404, "entry_not_found", "no such word"), true;
+    if (method === "DELETE") return learn.splice(i, 1), send(res, 200, { deleted: true }), true;
+    const { draft, error } = readDraft(await readJson(req), true);
+    if (error) return fail(res, 400, error[0], error[1]), true;
+    const next = { ...learn[i], ...draft, updatedAt: new Date().toISOString() };
+    if (!next.meaning) delete next.meaning;
+    if (next.lang === null) delete next.lang;
+    learn[i] = next;
+    return send(res, 200, next), true;
+  }
+  return false;
 }
 
 /** Newest first. Events of every kind: boot, wifi, link, turn, stats and error. */
@@ -107,7 +210,8 @@ function status() {
   };
 }
 
-export async function handleVoice(req, res, { path, method, url, send, fail }) {
+export async function handleVoice(req, res, { path, method, url, send, fail, readJson }) {
+  if (path === "/v1/voice/learn" || path.startsWith("/v1/voice/learn/")) return handleLearn(req, res, { path, method, send, fail, readJson });
   if (!path.startsWith("/v1/voice/devices") || method !== "GET") return false;
   if (path === "/v1/voice/devices") {
     send(res, 200, mode() === "empty" ? [] : [summary()]);

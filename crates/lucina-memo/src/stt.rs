@@ -10,9 +10,13 @@
 //!   [`MAX_BODY`]. Another type or format is 415, under [`MIN_SECONDS`] of audio 422
 //!   `no_speech`.
 //! - Query: `lang` only: `auto` (default), `it`, `en` or `da`.
-//! - `200 {text, language, ms, mode}`: `language` is the code whisper heard
+//! - `200 {text, language, ms, mode, corrections, ambiguous}`: `language` is the code whisper heard
 //!   (`it`, `en`, `da`; whisper's own name for any other), `mode` is `gpu` or
 //!   `cpu`. Silence is a 200 with `text: ""`; the caller decides what that means.
+//!   Voice Learn (docs/lucinavoice-protocol.md section 8): the vocabulary is the whisper
+//!   prompt after "Lucina", `text` already has its corrections, `corrections` lists them
+//!   (`[{from, to}]`) and `ambiguous` lists the matches left alone because they were too
+//!   close to call (`[{heard, candidates}]`); both are `[]` when there is nothing.
 //! - 503 `stt_unavailable` when the engine does not start (no model, no
 //!   whisper-server), 502 `stt_failed` when a started engine fails on the clip.
 //! - Same auth as every `/v1/memos` route (Caddy's gateway key, or the service token).
@@ -205,11 +209,23 @@ async fn stt(
         .map(str::to_owned)
         .or_else(|| (!out.language.is_empty()).then(|| out.language.to_ascii_lowercase()))
         .unwrap_or(if lang == "auto" { String::new() } else { lang });
+    let corrections: Vec<_> = out
+        .corrections
+        .iter()
+        .map(|(from, to)| json!({"from": from, "to": to}))
+        .collect();
+    let ambiguous: Vec<_> = out
+        .ambiguous
+        .iter()
+        .map(|a| json!({"heard": a.heard, "candidates": a.candidates}))
+        .collect();
     Ok(Json(json!({
         "text": out.text,
         "language": language,
         "ms": out.ms,
         "mode": mode,
+        "corrections": corrections,
+        "ambiguous": ambiguous,
     })))
 }
 

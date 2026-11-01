@@ -3,7 +3,7 @@ import { toApiError } from "../api/client";
 import { parsePage, type TimelineItem } from "../api/timeline";
 import { getState, putItems, resetScope, setState, type Scope } from "./chatdb";
 export interface Conversation {
-  key: string; kind: "device" | "legacy" | "agent" | "telegram" | "discord" | "alexa" | "lucina";
+  key: string; kind: "device" | "legacy" | "agent" | "telegram" | "discord" | "alexa" | "lucina" | "voice";
   title: string; channel: string; device?: string; deviceName?: string; caller?: string;
   count: number; lastId: string; lastTs: number | string; lastRole: string; lastText: string;
 }

@@ -6,7 +6,8 @@ import { request } from "./client";
 //
 // GET    /v1/calendar/events?from&to      -> EventsPage
 // POST   /v1/calendar/events {title,start,end?,allDay?,location?,description?,conferenceUrl?} -> 201 {created, event}
-// PATCH  /v1/calendar/events/{id} {…, confirm: true} -> {updated, event}
+// PATCH  /v1/calendar/events/{id} {…, alarms?, free?, travelMin?, leaveAlert?, confirm: true} -> {updated, event}
+// POST   /v1/calendar/events/{id}/move {target: "lucina"|"google", confirm: true} -> {moved, from, event}
 // DELETE /v1/calendar/events/{id}?confirm=true -> {deleted, id}
 // GET    /v1/calendar/proposals -> {proposals}
 // POST   /v1/calendar/proposals/{id}/accept {confirm: true} · DELETE /v1/calendar/proposals/{id}
@@ -35,6 +36,16 @@ export interface CalEvent {
   attendees?: string[];
   addedBy?: string;
   conferenceUrl?: string;
+  /** Alerts in minutes before the start, ascending. */
+  alarms?: number[];
+  /** The calendar's default alerts apply (`alarms` holds them when the server knows them). */
+  alarmsDefault?: boolean;
+  /** Shown as free rather than busy. */
+  free?: boolean;
+  /** Travel time before the start, in minutes. */
+  travelMin?: number;
+  /** A "time to leave" alert at the start minus the travel time. */
+  leaveAlert?: boolean;
 }
 
 export interface CalSources {
@@ -60,6 +71,12 @@ export interface EventDraft {
   location?: string;
   description?: string;
   conferenceUrl?: string;
+  /** null: the calendar's default alerts. */
+  alarms?: number[] | null;
+  free?: boolean;
+  /** null or 0: no travel time. */
+  travelMin?: number | null;
+  leaveAlert?: boolean;
 }
 
 export interface ProposedEvent {
@@ -92,6 +109,12 @@ export const createEvent = (draft: EventDraft) =>
 export const updateEvent = (id: string, patch: Partial<EventDraft>) =>
   request<{ updated: boolean; event: CalEvent | null }>("PATCH", `/v1/calendar/events/${enc(id)}`, {
     body: { ...patch, confirm: true },
+  });
+
+/** Moves an event to Lucina's or Google's calendar (the pick in the sheet is the owner's confirmation). */
+export const moveEvent = (id: string, target: "lucina" | "google") =>
+  request<{ moved: boolean; from: string; event: CalEvent | null }>("POST", `/v1/calendar/events/${enc(id)}/move`, {
+    body: { target, confirm: true },
   });
 
 export const deleteEvent = (id: string) =>

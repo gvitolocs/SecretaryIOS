@@ -20,6 +20,7 @@ struct CheckShoppingItemIntent: AppIntent {
     }
 
     func perform() async throws -> some IntentResult {
+        let trace = DebugEvents.intent("check_shopping_item", ["list_id": listId, "item_id": itemId]); defer { trace.end() }
         let before = WidgetStore.read(ShoppingSection.self)
         WidgetStore.update(ShoppingSection.self) { section in
             section.items.removeAll { $0.id == itemId }
@@ -52,6 +53,7 @@ struct CompleteTaskIntent: AppIntent {
     }
 
     func perform() async throws -> some IntentResult {
+        let trace = DebugEvents.intent("complete_task", ["task_id": taskId, "kind": kind]); defer { trace.end() }
         let before = WidgetStore.read(TasksSection.self)
         let itemKind = TasksSection.Item.Kind(rawValue: kind) ?? .task
         WidgetStore.update(TasksSection.self) { section in

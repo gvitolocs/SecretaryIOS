@@ -1,0 +1,13 @@
+[package]
+name = "lucina-vocab"
+description = "Voice Learn vocabulary shared by every speech-to-text path: the entry store (atomic JSON file), the Whisper prompt, phonetic post-correction and meanings (docs/lucinavoice-protocol.md section 8). Pure: no async, no network."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

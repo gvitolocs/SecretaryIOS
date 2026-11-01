@@ -27,6 +27,7 @@ fn conversation_rules() {
         ("telegram", "telegram"),
         ("discord", "discord"),
         ("alexa", "alexa"),
+        ("voice", "voice"),
         ("other", "lucina"),
     ] {
         assert_eq!(conversation_key(channel, None), expected);
@@ -272,4 +273,83 @@ fn conversation_titles() {
         assert_eq!(c.title, title);
         assert_eq!(c.kind, "agent");
     }
+}
+
+#[test]
+fn the_voice_thread_is_one_conversation_for_every_speaker() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = TimelineStore::new(dir.path().join("timeline.jsonl"), 100000, true);
+    // A speaker's device never splits the thread, and the app's own devices keep theirs.
+    for (device, name) in [("spk-kitchen", "Kitchen"), ("spk-desk", "Desk")] {
+        let mut i = input("voice", Some(device), "che ore sono?");
+        i.meta.as_mut().unwrap().device_name = Some(name.into());
+        s.append(i).unwrap();
+    }
+    s.append(input("ios", Some("Phone-1"), "ciao")).unwrap();
+    let voice = s
+        .conversations()
+        .unwrap()
+        .into_iter()
+        .find(|c| c.key == "voice")
+        .unwrap();
+    assert_eq!(voice.title, "Lucina Voice");
+    assert_eq!(voice.kind, "voice");
+    assert_eq!(voice.channel, "voice");
+    assert_eq!(voice.count, 2);
+    assert!(voice.device.is_none() && voice.device_name.is_none());
+    let key = ConversationFilter::Key("voice".into());
+    assert_eq!(s.page(None, None, 10, &key).unwrap().items.len(), 2);
+    // `scope=mine` of an app device is its own chat and the main one, not the speakers' thread.
+    let mine = ConversationFilter::Mine {
+        device: "Phone-1".into(),
+        channel: "ios".into(),
+    };
+    let texts: Vec<String> = s
+        .page(None, None, 10, &mine)
+        .unwrap()
+        .items
+        .iter()
+        .map(|i| i.raw.to_string())
+        .collect();
+    assert_eq!(texts.len(), 1, "{texts:?}");
+}
+
+#[test]
+fn voice_meta_keeps_numbers_and_short_words_only() {
+    let mut i = input("voice", Some("spk-1"), "che ore sono?");
+    i.meta.as_mut().unwrap().voice = Some(serde_json::json!({
+        "turnId": "t-1",
+        "ms": {"stt": 80, "total": 1234.4, "bad key!": 5, "neg": -1, "text": "che ore sono"},
+        "transcript": "never stored",
+        "route": {"intent": "temporal_query", "fast": true, "source": "jev", "confidence": 0.9731,
+            "jevMs": 212, "note": "x",
+            "layers": [
+                {"layer": "intent", "verdict": "temporal_query", "confidence": 0.97, "ms": 212, "used": true},
+                {"layer": "slots<", "verdict": "x"},
+                {"layer": "confirm", "verdict": "ask: sure?", "used": true}
+            ]}
+    }));
+    let item = normalize(i, 0).unwrap();
+    let v = item.meta.unwrap().voice.unwrap();
+    assert_eq!(v["turnId"], "t-1");
+    assert_eq!(v["ms"]["stt"], 80);
+    assert_eq!(v["ms"]["total"], 1234.4);
+    assert!(v["ms"].get("bad key!").is_none() && v["ms"].get("neg").is_none());
+    assert!(v["ms"].get("text").is_none());
+    assert!(v.get("transcript").is_none());
+    assert_eq!(v["route"]["intent"], "temporal_query");
+    assert_eq!(v["route"]["fast"], true);
+    assert_eq!(v["route"]["confidence"], 0.973);
+    assert!(v["route"].get("note").is_none());
+    let layers = v["route"]["layers"].as_array().unwrap();
+    // A layer with a bad name is dropped; a verdict that is not a short word is dropped from its layer.
+    assert_eq!(layers.len(), 2, "{layers:?}");
+    assert_eq!(layers[0]["layer"], "intent");
+    assert_eq!(layers[0]["used"], true);
+    assert_eq!(layers[1]["layer"], "confirm");
+    assert!(layers[1].get("verdict").is_none());
+    // Nothing usable: no meta at all.
+    let mut i = input("voice", None, "x");
+    i.meta.as_mut().unwrap().voice = Some(serde_json::json!({"transcript": "no"}));
+    assert!(normalize(i, 0).unwrap().meta.is_none());
 }

@@ -748,6 +748,15 @@ fn voice_form(id: &str, bytes: Vec<u8>, transcript: Option<&str>, caption: &str)
 }
 
 async fn voice_setup(services: &Services, tools: bool, whisper_text: &str) -> H {
+    voice_setup_with(services, tools, whisper_text, |_| {}).await
+}
+
+async fn voice_setup_with(
+    services: &Services,
+    tools: bool,
+    whisper_text: &str,
+    tweak: impl FnOnce(&mut lucina_server::Config),
+) -> H {
     let whisper_json = json!({"result":{"language":"it"},"transcription":[
         {"offsets":{"from":0,"to":1000},"text":whisper_text}]})
     .to_string();
@@ -774,6 +783,7 @@ async fn voice_setup(services: &Services, tools: bool, whisper_text: &str) -> H 
         c.share.whisper.model = c.data_dir.join("test-model");
         std::fs::write(&c.share.whisper.model, "test").unwrap();
         c.share.whisper.vad_model = None;
+        tweak(c);
     }).await
 }
 
@@ -1242,4 +1252,167 @@ async fn shared_text_about_secrets_is_not_the_owner_asking() {
         done["reply"], "I read your shared text, article and image.",
         "{done}"
     );
+}
+
+/// A Jev that answers the vocab layer's `span0` question with `pick` at 0.95 (or fails with a 500).
+struct VocabJev {
+    pick: Option<&'static str>,
+    calls: Arc<Mutex<usize>>,
+}
+
+impl wiremock::Respond for VocabJev {
+    fn respond(&self, req: &wiremock::Request) -> wiremock::ResponseTemplate {
+        *self.calls.lock().unwrap() += 1;
+        let body: Value = serde_json::from_slice(&req.body).unwrap();
+        assert!(
+            body["questions"].get("span0").is_some(),
+            "only the vocab layer asks here"
+        );
+        let Some(c) = self.pick else {
+            return wiremock::ResponseTemplate::new(500);
+        };
+        let other = if c == "none" { "c1" } else { "none" };
+        wiremock::ResponseTemplate::new(200).set_body_json(json!({
+            "model": "jev-1.14.0", "usage": {"input_tokens": 10, "output_tokens": 1},
+            "answers": {"span0": {"type": "choice", "choice": c, "confidence": 0.95,
+                "probabilities": {c: 0.95, other: 0.05}}}}))
+    }
+}
+
+async fn vocab_jev(pick: Option<&'static str>) -> (wiremock::MockServer, Arc<Mutex<usize>>) {
+    let server = wiremock::MockServer::start().await;
+    let calls = Arc::new(Mutex::new(0));
+    wiremock::Mock::given(wiremock::matchers::any())
+        .respond_with(VocabJev {
+            pick,
+            calls: calls.clone(),
+        })
+        .mount(&server)
+        .await;
+    (server, calls)
+}
+
+fn with_vocab_jev(server: &wiremock::MockServer) -> impl FnOnce(&mut lucina_server::Config) + '_ {
+    let url = format!("{}/v1/systemone", server.uri());
+    move |c| {
+        c.voice_jev = Some(lucina_jev::Config {
+            url,
+            model: "jev-1.14.0".into(),
+            key: Some("test-key".into()),
+            timeout: Duration::from_secs(5),
+            enabled: true,
+        });
+        c.voice_jev_cap = Duration::from_secs(3);
+    }
+}
+
+fn write_vocab(h: &H, entries: &[(&str, &[&str], Option<&str>)]) {
+    let mut v = lucina_vocab::Vocab::default();
+    for (i, (word, sounds, meaning)) in entries.iter().enumerate() {
+        let mut e = lucina_vocab::Entry::new(*word);
+        e.id = format!("vl_t{i}");
+        e.sounds_like = sounds.iter().map(|s| s.to_string()).collect();
+        e.meaning = meaning.map(str::to_owned);
+        v.entries.push(e);
+    }
+    v.save(h.state.vocab.path()).unwrap();
+}
+
+/// Sends an on-device transcript as a voice note and returns what the share saw of it.
+async fn on_device_note(h: &H, id: &str, transcript: &str) -> (Value, String) {
+    let bytes = voice_bytes(h).await;
+    let ack = submit(h, voice_form(id, bytes, Some(transcript), "  ")).await;
+    assert_eq!(ack.status(), 202);
+    let done = finished(h, id).await;
+    assert_eq!(done["status"], "done", "{done}");
+    let all = h
+        .fake
+        .requests()
+        .iter()
+        .map(Value::to_string)
+        .collect::<String>();
+    (done, all)
+}
+
+#[tokio::test]
+async fn an_on_device_voice_note_gets_the_vocabulary_and_its_meanings() {
+    let services = services().await;
+    let h = voice_setup(&services, false, "unused").await;
+    write_vocab(
+        &h,
+        &[(
+            "Skibigårdsvej",
+            &["Skibi gaardsvej"],
+            Some("the owner's home street"),
+        )],
+    );
+    let (done, all) =
+        on_device_note(&h, "voice-vocab-0001", "porta il pacco a Skibi gaardsvej").await;
+    // The turn and the memory record read the corrected words, and the meaning joins the context.
+    assert!(all.contains("porta il pacco a Skibigårdsvej"), "{all}");
+    assert!(!all.contains("Skibi gaardsvej"), "{all}");
+    assert!(
+        all.contains("Vocabulary: Skibigårdsvej = the owner's home street"),
+        "{all}"
+    );
+    let records = h.state.share.memory.recent(0, 10).unwrap();
+    assert_eq!(records[0].text, "porta il pacco a Skibigårdsvej");
+    assert_eq!(done["status"], "done");
+    // The phone's own transcript stays on the owner's item as the phone made it.
+    assert_eq!(
+        h.timeline_lines()[0]["attachments"][0]["transcript"],
+        "porta il pacco a Skibi gaardsvej"
+    );
+    assert!(
+        !h.dir.path().join("whisper-test.calls").exists(),
+        "Whisper stayed out of it"
+    );
+}
+
+#[tokio::test]
+async fn an_ambiguous_word_in_a_voice_note_goes_to_jev_and_fails_open() {
+    let entries: &[(&str, &[&str], Option<&str>)] = &[("Nicola", &[], None), ("Nicolò", &[], None)];
+    let text = "Ho parlato con Nicolu.";
+    let first = lucina_vocab::Vocab {
+        entries: entries
+            .iter()
+            .enumerate()
+            .map(|(i, (w, _, _))| {
+                let mut e = lucina_vocab::Entry::new(*w);
+                e.id = format!("vl_t{i}");
+                e
+            })
+            .collect(),
+    }
+    .correct(text)
+    .ambiguous[0]
+        .candidates[0]
+        .clone();
+
+    // Jev picks the first candidate: the note says it.
+    let (jev, calls) = vocab_jev(Some("c1")).await;
+    let svc = services().await;
+    let h = voice_setup_with(&svc, false, "unused", with_vocab_jev(&jev)).await;
+    write_vocab(&h, entries);
+    let (_, all) = on_device_note(&h, "voice-vocab-0002", text).await;
+    assert_eq!(*calls.lock().unwrap(), 1);
+    assert!(all.contains(&format!("Ho parlato con {first}.")), "{all}");
+    assert!(!all.contains("Nicolu"), "{all}");
+
+    // "none", a Jev error and no Jev at all leave the words as the phone heard them.
+    for pick in [Some("none"), None] {
+        let (jev, calls) = vocab_jev(pick).await;
+        let svc = services().await;
+        let h = voice_setup_with(&svc, false, "unused", with_vocab_jev(&jev)).await;
+        write_vocab(&h, entries);
+        let (done, all) = on_device_note(&h, "voice-vocab-0003", text).await;
+        assert_eq!(*calls.lock().unwrap(), 1, "{pick:?}");
+        assert!(all.contains("Ho parlato con Nicolu."), "{all}");
+        assert_eq!(done["status"], "done", "the note is still answered");
+    }
+    let svc = services().await;
+    let h = voice_setup(&svc, false, "unused").await;
+    write_vocab(&h, entries);
+    let (_, all) = on_device_note(&h, "voice-vocab-0004", text).await;
+    assert!(all.contains("Ho parlato con Nicolu."), "{all}");
 }

@@ -95,7 +95,11 @@ async fn mock_handler(
                     "lastRole": "lucina", "lastText": "Ciao!", "future": true},
                     {"key": "agent:claude", "kind": "agent", "title": "Claude",
                     "channel": "other", "caller": "claude", "count": 1,
-                    "lastId": "tl_1", "lastTs": 1, "lastRole": "user", "lastText": "hi"}],
+                    "lastId": "tl_1", "lastTs": 1, "lastRole": "user", "lastText": "hi"},
+                    {"key": "voice", "kind": "voice", "title": "Lucina Voice",
+                    "channel": "voice", "count": 4,
+                    "lastId": "tl_20", "lastTs": 1761048009000_i64, "lastRole": "lucina",
+                    "lastText": "Sono le dieci."}],
                 "futurePage": 42
             }}))
             .into_response()
@@ -670,6 +674,9 @@ async fn chat_channel_from_header_or_body_defaults_to_web() {
         (Some("android"), json!({"message": "ciao"})),
         (None, json!({"message": "ciao", "channel": "telegram"})),
         (None, json!({"message": "ciao", "channel": ""})),
+        // `voice` is the speaker's thread: only the voice pipeline sends it, no client may claim it
+        (Some("voice"), json!({"message": "ciao"})),
+        (None, json!({"message": "ciao", "channel": "voice"})),
     ] {
         let (s, b) = h.json(chat(header, body.clone())).await;
         assert_eq!((s, code(&b)), (400, "bad_request"), "{header:?} {body}");
@@ -851,6 +858,11 @@ async fn conversations_are_typed_and_keep_unknown_fields() {
     assert_eq!(data.items[0].count, 2);
     assert_eq!(data.items[1].caller.as_deref(), Some("claude"));
     assert_eq!(data.items[1].device, None);
+    // The shared LucinaVoice thread is a conversation like any other (protocol section 7).
+    assert_eq!(data.items[2].key, "voice");
+    assert_eq!(data.items[2].title, "Lucina Voice");
+    assert_eq!(data.items[2].channel, secretary_core::models::Channel::Voice);
+    assert_eq!(b["items"][2]["channel"], "voice");
     assert_eq!(serde_json::to_value(data).unwrap(), b);
     assert_eq!(b["futurePage"], 42);
     assert_eq!(b["items"][0]["future"], true);

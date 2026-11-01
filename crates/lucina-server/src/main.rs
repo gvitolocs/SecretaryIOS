@@ -222,6 +222,12 @@ enum Cmd {
         #[command(subcommand)]
         cmd: JevCmd,
     },
+    /// The weekly upstream watch (docs/upstream-watch.md): what the originals we ported released
+    /// since our pin, JEV's verdict, and "Port into ours / Later / Ignore" for the owner.
+    Upstream {
+        #[command(subcommand)]
+        cmd: UpstreamCmd,
+    },
     /// Ask Lucina for a go-ahead through the running server (docs/design/decisions-api.md): she
     /// decides, or pushes the question to the owner's phone and answers `pending`. Prints the
     /// decision as JSON. `decide status <id> [--wait N]` and `decide list` read them back.
@@ -339,6 +345,48 @@ enum JevCmd {
         /// Add suggested `LUCINA_JEV_FIRST_INTENT_MIN` values. Does not edit mode.env.
         #[arg(long)]
         recalibrate: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum UpstreamCmd {
+    /// Reconcile, then check every entry: changes, summary, verdict, questions, report, ops record.
+    Check {
+        /// A registry file instead of origin/main:docs/upstreams.toml of LUCINA_UPSTREAM_REPO.
+        #[arg(long)]
+        registry: Option<PathBuf>,
+        /// Only these entries (repeatable).
+        #[arg(long)]
+        only: Vec<String>,
+        /// Ask nothing, store no state, write no ops record (the report goes to runs/<date>-dry-run.md).
+        #[arg(long)]
+        dry_run: bool,
+        /// Store the results but ask the owner nothing.
+        #[arg(long)]
+        no_notify: bool,
+        /// Questions to the owner this run (default: the registry's max_decisions_per_run).
+        #[arg(long)]
+        max_decisions: Option<usize>,
+    },
+    /// Act on the owner's answers: workspace and brief for "Port into ours", draft plans.
+    Reconcile {
+        #[arg(long)]
+        registry: Option<PathBuf>,
+        /// Show what would happen; run and store nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// One line per entry: pin, latest seen, decision, backlog, workspace.
+    Status {
+        #[arg(long)]
+        registry: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Parse and validate the registry; exit 1 on errors.
+    Validate {
+        #[arg(long)]
+        registry: Option<PathBuf>,
     },
 }
 
@@ -592,6 +640,35 @@ async fn jev_cmd(cmd: JevCmd) -> anyhow::Result<()> {
             })
             .await
         }
+    }
+}
+
+/// `lucina-rs upstream …` (lucina_server::upstream). The API token comes from the unit's env files
+/// and is never printed.
+async fn upstream_cmd(cmd: UpstreamCmd) -> anyhow::Result<()> {
+    use lucina_server::upstream;
+    match cmd {
+        UpstreamCmd::Check {
+            registry,
+            only,
+            dry_run,
+            no_notify,
+            max_decisions,
+        } => {
+            upstream::check(upstream::CheckArgs {
+                registry,
+                only,
+                dry_run,
+                no_notify,
+                max_decisions,
+            })
+            .await
+        }
+        UpstreamCmd::Reconcile { registry, dry_run } => {
+            upstream::reconcile(registry, dry_run).await
+        }
+        UpstreamCmd::Status { registry, json } => upstream::status(registry, json),
+        UpstreamCmd::Validate { registry } => upstream::validate(registry),
     }
 }
 
@@ -1002,10 +1079,10 @@ fn main() -> anyhow::Result<()> {
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default))
     };
     // Logs are a sink: every formatted line goes through the redactor.
-    // `deals`, `decide` and `jev` print their results on stdout, so their logs go to stderr.
+    // `deals`, `decide`, `jev` and `upstream` print their results on stdout, so their logs go to stderr.
     if matches!(
         cmd,
-        Cmd::Deals { .. } | Cmd::Decide { .. } | Cmd::Jev { .. }
+        Cmd::Deals { .. } | Cmd::Decide { .. } | Cmd::Jev { .. } | Cmd::Upstream { .. }
     ) {
         tracing_subscriber::fmt()
             .with_env_filter(filter("warn"))
@@ -1054,6 +1131,7 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Decide { cmd, ask } => decide_cmd(cmd, ask).await?,
         Cmd::Reach { cmd } => reach_cmd(cmd).await?,
         Cmd::Jev { cmd } => jev_cmd(cmd).await?,
+        Cmd::Upstream { cmd } => upstream_cmd(cmd).await?,
         Cmd::Ops {
             cmd,
             vault,

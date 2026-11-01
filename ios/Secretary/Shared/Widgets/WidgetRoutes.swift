@@ -64,6 +64,7 @@ struct OpenSecretaryIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult {
+        let trace = DebugEvents.intent("open_secretary", ["route": route]); defer { trace.end() }
         if let open = WidgetRouter.open { open(route) } else { WidgetRouter.pending = route }
         return .result()
     }

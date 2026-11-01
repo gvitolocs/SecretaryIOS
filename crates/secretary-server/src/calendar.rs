@@ -227,6 +227,7 @@ pub async fn sync_google(hub: &Hub) -> Result<usize, GError> {
         let mut page: Option<String> = None;
         let mut next_sync: Option<String> = None;
         let mut cal_tz: Option<String> = None;
+        let mut defaults: Option<Vec<i64>> = None;
         let mut gone = false;
         for _ in 0..MAX_PAGES {
             let mut q: Vec<(&str, String)> = vec![
@@ -254,6 +255,7 @@ pub async fn sync_google(hub: &Hub) -> Result<usize, GError> {
                             .cloned()
                             .unwrap_or_default(),
                     );
+                    defaults = gcal::default_reminders(&v).or(defaults);
                     cal_tz = v
                         .get("timeZone")
                         .and_then(Value::as_str)
@@ -307,6 +309,9 @@ pub async fn sync_google(hub: &Hub) -> Result<usize, GError> {
             };
         }
         let changed = gcal::apply_page(&mut cache.items, &events, &tz);
+        if defaults.is_some() {
+            cache.default_reminders = defaults;
+        }
         cache.sync_token = next_sync;
         cache.calendar_tz = Some(tz);
         if let Some(g) = d.links.google.as_mut() {
@@ -374,7 +379,8 @@ fn moment_of(v: &Value, all_day: bool, tz: Tz) -> Option<Moment> {
 }
 
 /// Keep the events of a `POST /v1/device/state` snapshot (`{id, title,
-/// start, end, allDay?, location?, calendar?, notes?}`, opaque otherwise).
+/// start, end, allDay?, location?, calendar?, notes?, alarms?, free?}`,
+/// opaque otherwise; `alarms`: minutes before the start).
 pub async fn ingest_device_events(st: &AppState, device: &str, events: &[Value]) {
     let hub = &st.links;
     let tz = hub.tz;
@@ -426,6 +432,16 @@ pub async fn ingest_device_events(st: &AppState, device: &str, events: &[Value])
                 location: s("location"),
                 description: s("notes"),
                 calendar: s("calendar"),
+                alarms: secretary_calendar::model::normalize_alarms(
+                    e.get("alarms")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_i64)
+                        .take(20)
+                        .collect(),
+                ),
+                free: e.get("free").and_then(Value::as_bool).unwrap_or(false),
                 ..Item::default()
             })
         })
@@ -494,6 +510,14 @@ pub async fn events_between(
     }
     let mut events = secretary_calendar::window(&sources, Window { from, to }, hub.tz);
     secretary_calendar::view::drop_mirrored(&mut events);
+    if let Some(defaults) = &d.cache.google.default_reminders {
+        for e in events
+            .iter_mut()
+            .filter(|e| e.source == Source::Google && e.alarms_default && e.alarms.is_empty())
+        {
+            e.alarms.clone_from(defaults);
+        }
+    }
     events
 }
 
@@ -737,10 +761,109 @@ fn google_body(
     } else if end.is_some() || all_day.is_some() {
         return Err(bad("start: required when changing end or allDay"));
     }
+    settings_fields(v, &mut out)?;
     if partial && out.is_empty() {
         return Err(bad("nothing to change"));
     }
     Ok(out)
+}
+
+/// The event settings of a request: `alarms` (minutes before the start; null:
+/// the calendar's defaults), `free` (show as free), `travelMin` (null or 0:
+/// none) and `leaveAlert`. Travel time and the leave alert go to private
+/// extended properties, `""` clearing one (see [`merge_private`]).
+fn settings_fields(v: &Map<String, Value>, out: &mut Map<String, Value>) -> Result<(), ApiError> {
+    use secretary_calendar::model::{MAX_ALARMS, MAX_ALARM_MIN, MAX_TRAVEL_MIN};
+    match v.get("alarms") {
+        None => {}
+        Some(Value::Null) => {
+            out.insert("reminders".into(), json!({"useDefault": true}));
+        }
+        Some(Value::Array(a)) => {
+            let mins: Option<Vec<i64>> = a
+                .iter()
+                .map(|m| m.as_i64().filter(|m| (0..=MAX_ALARM_MIN).contains(m)))
+                .collect();
+            let mins = mins.ok_or_else(|| {
+                bad(format!(
+                    "alarms: minutes before the start, 0-{MAX_ALARM_MIN}"
+                ))
+            })?;
+            let mins = secretary_calendar::model::normalize_alarms(mins);
+            if a.len() > MAX_ALARMS {
+                return Err(bad(format!("alarms: at most {MAX_ALARMS}")));
+            }
+            let overrides: Vec<Value> = mins
+                .iter()
+                .map(|m| json!({"method": "popup", "minutes": m}))
+                .collect();
+            out.insert(
+                "reminders".into(),
+                json!({"useDefault": false, "overrides": overrides}),
+            );
+        }
+        Some(_) => return Err(bad("alarms: a list of minutes, or null for the defaults")),
+    }
+    match v.get("free") {
+        None => {}
+        Some(Value::Bool(f)) => {
+            out.insert(
+                "transparency".into(),
+                json!(if *f { "transparent" } else { "opaque" }),
+            );
+        }
+        Some(_) => return Err(bad("free: true or false")),
+    }
+    let mut private = Map::new();
+    match v.get("travelMin") {
+        None => {}
+        Some(Value::Null) => {
+            private.insert("travelMin".into(), json!(""));
+        }
+        Some(m) => match m.as_u64().filter(|m| *m <= u64::from(MAX_TRAVEL_MIN)) {
+            Some(0) => {
+                private.insert("travelMin".into(), json!(""));
+            }
+            Some(m) => {
+                private.insert("travelMin".into(), json!(m.to_string()));
+            }
+            None => return Err(bad(format!("travelMin: 0-{MAX_TRAVEL_MIN} minutes"))),
+        },
+    }
+    match v.get("leaveAlert") {
+        None => {}
+        Some(Value::Bool(b)) => {
+            private.insert("leaveAlert".into(), json!(if *b { "1" } else { "" }));
+        }
+        Some(_) => return Err(bad("leaveAlert: true or false")),
+    }
+    if !private.is_empty() {
+        out.insert("extendedProperties".into(), json!({"private": private}));
+    }
+    Ok(())
+}
+
+/// `patch`'s private extended properties merged into `cur`'s (an empty
+/// value removes the key): Google and Lucina's store both keep the rest.
+fn merge_private(cur: Option<&Value>, patch: &Value) -> Value {
+    let mut private = cur
+        .and_then(|c| c.pointer("/extendedProperties/private"))
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    if let Some(p) = patch
+        .pointer("/extendedProperties/private")
+        .and_then(Value::as_object)
+    {
+        for (k, v) in p {
+            if v == &json!("") {
+                private.remove(k);
+            } else {
+                private.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    json!({"private": private})
 }
 
 fn as_object(v: Value) -> Result<Map<String, Value>, ApiError> {
@@ -802,10 +925,13 @@ fn added_by(ident: &Identity) -> String {
 }
 
 fn set_added_by(ev: &mut Map<String, Value>, who: &str) {
-    ev.insert(
-        "extendedProperties".into(),
-        json!({"private": {"addedBy": who}}),
-    );
+    let patch = json!({"extendedProperties": {"private": {"addedBy": who}}});
+    let mut cur = Value::Object(std::mem::take(ev));
+    let merged = merge_private(Some(&cur), &patch);
+    if let Value::Object(m) = &mut cur {
+        m.insert("extendedProperties".into(), merged);
+        *ev = std::mem::take(m);
+    }
 }
 
 /// `conferenceUrl` of a request: `Some("")` clears it.
@@ -850,6 +976,12 @@ pub async fn refresh_own_reminders(st: &AppState) {
         .filter(|e| !e.all_day)
         .take(200)
         .map(|e| crate::notify::store::CalendarEvent {
+            alerts: (!e.alarms_default)
+                .then(|| e.alarms.iter().map(|m| e.start_ms - m * 60_000).collect()),
+            leave_at: e
+                .travel_min
+                .filter(|_| e.leave_alert)
+                .map(|m| e.start_ms - i64::from(m) * 60_000),
             id: e.id,
             title: e.title.chars().take(120).collect(),
             start: e.start_ms,
@@ -973,7 +1105,10 @@ fn keep_duration(body: &mut Map<String, Value>, cur: &Value, tz: Tz) {
 fn apply_patch(cur: &Value, patch: Map<String, Value>, conference: Option<String>) -> Value {
     let mut ev = cur.as_object().cloned().unwrap_or_default();
     for (k, v) in patch {
-        if v == json!("") {
+        if k == "extendedProperties" {
+            let merged = merge_private(Some(cur), &json!({"extendedProperties": v}));
+            ev.insert(k, merged);
+        } else if v == json!("") {
             ev.remove(&k);
         } else {
             ev.insert(k, v);
@@ -1063,14 +1198,29 @@ async fn update(
         Target::Own(oid) => return update_own(&st, oid, body).await,
         Target::Google(gid) => gid,
     };
-    if body.contains_key("start") && !body.contains_key("end") {
-        let cur = hub
-            .google_api(Method::GET, &format!("{PRIMARY}/{}", seg(gid)), &[], None)
-            .await
-            .map_err(gerror)?;
-        keep_duration(&mut body, &cur, hub.tz);
+    let needs_cur = (body.contains_key("start") && !body.contains_key("end"))
+        || body.contains_key("travelMin")
+        || body.contains_key("leaveAlert");
+    let cur = if needs_cur {
+        Some(
+            hub.google_api(Method::GET, &format!("{PRIMARY}/{}", seg(gid)), &[], None)
+                .await
+                .map_err(gerror)?,
+        )
+    } else {
+        None
+    };
+    if let Some(cur) = &cur {
+        keep_duration(&mut body, cur, hub.tz);
     }
-    let gbody = google_body(&body, hub.tz, true)?;
+    let mut gbody = google_body(&body, hub.tz, true)?;
+    if gbody.contains_key("extendedProperties") {
+        let patch = Value::Object(gbody.clone());
+        gbody.insert(
+            "extendedProperties".into(),
+            merge_private(cur.as_ref(), &patch),
+        );
+    }
     let updated = hub
         .google_api(
             Method::PATCH,
@@ -1084,6 +1234,161 @@ async fn update(
     Ok(Json(
         json!({"updated": true, "event": event_of(&updated, hub.tz, Source::Google)}),
     ))
+}
+
+/// What a moved event keeps: its text, times, repeat rule, settings and
+/// private properties; the video link goes into the notes when the target
+/// cannot hold it (Google takes no plain link).
+fn movable_body(cur: &Value, to_google: bool) -> Map<String, Value> {
+    let mut out = Map::new();
+    for k in [
+        "summary",
+        "location",
+        "description",
+        "start",
+        "end",
+        "recurrence",
+        "reminders",
+        "transparency",
+        "extendedProperties",
+    ] {
+        if let Some(v) = cur.get(k).filter(|v| !v.is_null()) {
+            out.insert(k.into(), v.clone());
+        }
+    }
+    let link = cur
+        .get("hangoutLink")
+        .and_then(Value::as_str)
+        .filter(|u| u.starts_with("https://"));
+    if let Some(u) = link {
+        if to_google {
+            let notes = out.get("description").and_then(Value::as_str).unwrap_or("");
+            if !notes.contains(u) {
+                let joined = if notes.trim().is_empty() {
+                    u.to_owned()
+                } else {
+                    format!("{}\n\n{u}", notes.trim_end())
+                };
+                out.insert("description".into(), json!(joined));
+            }
+        } else {
+            out.insert("hangoutLink".into(), json!(u));
+        }
+    }
+    out
+}
+
+/// `POST /v1/calendar/events/{id}/move {target: "lucina"|"google", confirm: true}`:
+/// the event is created in the other calendar, then removed from its own.
+/// Instances of repeating events stay where they are.
+async fn move_event(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    JsonBody(body): JsonBody<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let hub = &st.links;
+    let body = as_object(body)?;
+    need_confirm(body.get("confirm").and_then(Value::as_bool) == Some(true))?;
+    let to_google = match body.get("target").and_then(Value::as_str) {
+        Some("google") => true,
+        Some("lucina") => false,
+        _ => return Err(bad("target: lucina or google")),
+    };
+    let recurring = || {
+        ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "recurring_event",
+            "a repeating event can't be moved to another calendar here",
+        )
+    };
+    match (target(&id)?, to_google) {
+        (Target::Own(_), false) | (Target::Google(_), true) => {
+            Err(bad("the event is already in that calendar"))
+        }
+        (Target::Own(oid), true) => {
+            let cur = hub
+                .data
+                .lock()
+                .await
+                .own
+                .events
+                .get(oid)
+                .cloned()
+                .ok_or_else(event_not_found)?;
+            if cur.get("recurrence").is_some() || cur.get("recurringEventId").is_some() {
+                return Err(recurring());
+            }
+            let created = hub
+                .google_api(
+                    Method::POST,
+                    PRIMARY,
+                    &[],
+                    Some(&Value::Object(movable_body(&cur, true))),
+                )
+                .await
+                .map_err(gerror)?;
+            {
+                let mut d = hub.data.lock().await;
+                if let Some(old) = d.own.events.remove(oid) {
+                    if let Err(e) = hub.save_own(&d) {
+                        d.own.events.insert(oid.to_owned(), old);
+                        return Err(e);
+                    }
+                }
+            }
+            refresh_own_reminders(&st).await;
+            after_write(hub).await;
+            Ok(Json(
+                json!({"moved": true, "from": id, "event": event_of(&created, hub.tz, Source::Google)}),
+            ))
+        }
+        (Target::Google(gid), false) => {
+            let path = format!("{PRIMARY}/{}", seg(gid));
+            let cur = hub
+                .google_api(Method::GET, &path, &[], None)
+                .await
+                .map_err(gerror)?;
+            if cur.get("recurrence").is_some() || cur.get("recurringEventId").is_some() {
+                return Err(recurring());
+            }
+            let mut ev = movable_body(&cur, false);
+            if let Some(u) = gcal::to_item(&cur, hub.tz.name()).and_then(|i| i.conference_url) {
+                ev.entry("hangoutLink").or_insert(json!(u));
+            }
+            let oid = random_id("ev_");
+            let now = now_iso();
+            ev.insert("id".into(), json!(oid));
+            ev.insert("created".into(), json!(now));
+            ev.insert("updated".into(), json!(now));
+            let v = Value::Object(ev);
+            {
+                let mut d = hub.data.lock().await;
+                if d.own.events.len() >= MAX_OWN_EVENTS {
+                    return Err(bad(format!("at most {MAX_OWN_EVENTS} events")));
+                }
+                d.own.events.insert(oid.clone(), v.clone());
+                if let Err(e) = hub.save_own(&d) {
+                    d.own.events.remove(&oid);
+                    return Err(e);
+                }
+            }
+            match hub.google_api(Method::DELETE, &path, &[], None).await {
+                Ok(_) | Err(GError::Gone) => {}
+                Err(e) => {
+                    // Keep one copy: drop the new one again.
+                    let mut d = hub.data.lock().await;
+                    d.own.events.remove(&oid);
+                    let _ = hub.save_own(&d);
+                    return Err(gerror(e));
+                }
+            }
+            refresh_own_reminders(&st).await;
+            after_write(hub).await;
+            Ok(Json(
+                json!({"moved": true, "from": id, "event": event_of(&v, hub.tz, Source::Lucina)}),
+            ))
+        }
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -1265,6 +1570,7 @@ pub fn routes() -> Router<AppState> {
             "/v1/calendar/events/{id}",
             axum::routing::patch(update).delete(remove),
         )
+        .route("/v1/calendar/events/{id}/move", post(move_event))
         .route("/v1/calendar/free", get(free))
         .route("/v1/calendar/sync", post(sync_now))
         .route("/v1/calendar/proposals", get(proposals).post(propose))
@@ -1318,5 +1624,86 @@ mod tests {
             google_id("google:abc_20261022T070000Z").unwrap(),
             "abc_20261022T070000Z"
         );
+    }
+    #[test]
+    fn event_settings() {
+        let tz = chrono_tz::Europe::Copenhagen;
+        let m = |v: Value| as_object(v).unwrap();
+        let b = google_body(
+            &m(json!({"alarms": [1440, 60, 60], "free": true, "travelMin": 25, "leaveAlert": true})),
+            tz,
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            b["reminders"],
+            json!({"useDefault": false, "overrides": [
+                {"method": "popup", "minutes": 60}, {"method": "popup", "minutes": 1440}]})
+        );
+        assert_eq!(b["transparency"], "transparent");
+        assert_eq!(
+            b["extendedProperties"],
+            json!({"private": {"travelMin": "25", "leaveAlert": "1"}})
+        );
+        let d = google_body(
+            &m(json!({"alarms": null, "travelMin": 0, "leaveAlert": false})),
+            tz,
+            true,
+        )
+        .unwrap();
+        assert_eq!(d["reminders"], json!({"useDefault": true}));
+        for bad_body in [
+            json!({"alarms": [-1]}),
+            json!({"alarms": [1, 2, 3, 4, 5, 6]}),
+            json!({"alarms": "15"}),
+            json!({"free": "yes"}),
+            json!({"travelMin": 5000}),
+        ] {
+            assert!(google_body(&m(bad_body), tz, true).is_err());
+        }
+
+        // Lucina's store: the patch keeps addedBy and clears what is "".
+        let cur = json!({"id": "ev_1", "summary": "x",
+            "extendedProperties": {"private": {"addedBy": "Lucina", "travelMin": "25", "leaveAlert": "1"}}});
+        let next = apply_patch(&cur, d, None);
+        assert_eq!(
+            next["extendedProperties"],
+            json!({"private": {"addedBy": "Lucina"}})
+        );
+        assert_eq!(next["reminders"], json!({"useDefault": true}));
+        let item = gcal::to_item(&next, "UTC").unwrap();
+        assert!(item.alarms_default && item.travel_min.is_none() && !item.leave_alert);
+
+        let mut created = google_body(
+            &m(json!({"title": "y", "start": "2026-11-02", "travelMin": 15})),
+            tz,
+            false,
+        )
+        .unwrap();
+        set_added_by(&mut created, "iPhone");
+        assert_eq!(
+            created["extendedProperties"],
+            json!({"private": {"travelMin": "15", "addedBy": "iPhone"}})
+        );
+    }
+
+    #[test]
+    fn moved_events_keep_their_settings() {
+        let cur = json!({"id": "ev_1", "created": "t", "summary": "Kitchen", "description": "Bring ID",
+            "start": {"dateTime": "2026-11-02T14:00:00+01:00"}, "end": {"dateTime": "2026-11-02T15:30:00+01:00"},
+            "reminders": {"useDefault": false, "overrides": [{"method": "popup", "minutes": 60}]},
+            "transparency": "transparent", "hangoutLink": "https://teams.microsoft.com/l/meetup-join/x"});
+        let g = movable_body(&cur, true);
+        assert!(
+            g.get("id").is_none() && g.get("created").is_none() && g.get("hangoutLink").is_none()
+        );
+        assert_eq!(
+            g["description"],
+            "Bring ID\n\nhttps://teams.microsoft.com/l/meetup-join/x"
+        );
+        assert_eq!(g["reminders"], cur["reminders"]);
+        let own = movable_body(&cur, false);
+        assert_eq!(own["hangoutLink"], cur["hangoutLink"]);
+        assert_eq!(own["description"], "Bring ID");
     }
 }

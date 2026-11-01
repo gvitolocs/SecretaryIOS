@@ -57,6 +57,15 @@ pub fn agent_title(reason: Option<&str>, l: &str) -> &'static str {
     }
 }
 
+/// Title of a "time to leave" calendar alert.
+pub fn leave_title(l: &str) -> &'static str {
+    match l {
+        "it" => "È ora di partire",
+        "da" => "Tid til at tage afsted",
+        _ => "Time to leave",
+    }
+}
+
 /// Title when several Lucina messages are unread.
 pub fn lucina_burst(n: usize, l: &str) -> String {
     match l {

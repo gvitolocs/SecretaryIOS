@@ -787,6 +787,9 @@ mod tests {
     fn lib_with(folders: &[(&str, &Path)]) -> (tempfile::TempDir, Library) {
         let t = tempfile::tempdir().unwrap();
         let mut cfg = Config::for_dirs(t.path().join("data"), t.path().join("store"));
+        // The scan pauses on a hot or busy box (DK5); nezopt often is both.
+        cfg.prepare_max_load = u32::MAX;
+        cfg.drive_max_temp_c = u32::MAX;
         cfg.folders = folders
             .iter()
             .map(|(l, p)| (l.to_string(), p.to_path_buf()))

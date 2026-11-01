@@ -5,7 +5,7 @@
 //!
 //! | event | data | |
 //! |---|---|---|
-//! | `route` | `{"intent","confidence","jev_ms","fast","source"}` | voice turns: how Lucina routed the turn, before any reply text (optional) |
+//! | `route` | `{"intent","confidence","jev_ms","fast","source","layers"?}` | voice turns: how Lucina routed the turn, before any reply text (optional) |
 //! | `ack` | `{"text"}` | voice turns: the turn takes a slow path; say a filler (optional, at most once) |
 //! | `delta` | `{"text"}` | a fragment of the reply as the model writes it |
 //! | `reply` | `{"text","sensitive","replaces"}` | the settled reply, sent once |
@@ -35,6 +35,8 @@ pub enum ChatEvent {
         fast: bool,
         /// `jev`, `tier0` or `fallback`.
         source: String,
+        /// The Jev layers decided so far (protocol section 9); empty without them.
+        layers: Vec<RouteLayer>,
     },
     /// Voice turns only: the turn will take a slow path (`ack` event), so the
     /// client may fill the wait with a short spoken phrase. At most once.
@@ -50,6 +52,75 @@ pub enum ChatEvent {
     },
     /// What the non-streaming call would have returned (`data` of the envelope).
     Done(Value),
+}
+
+/// Most layers kept from one turn (a voice turn makes at most 3 Jev calls).
+pub const MAX_LAYERS: usize = 8;
+
+/// One layer of a voice turn's Jev decisions (protocol section 9):
+/// `{layer, verdict, confidence, ms, used}`. Facts about the decision, never transcript text.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RouteLayer {
+    /// `intent`, `slots`, `confirm` or `vocab`.
+    pub layer: String,
+    /// What the layer decided, as a short word.
+    pub verdict: String,
+    pub confidence: Option<f64>,
+    pub ms: Option<u64>,
+    /// The verdict was acted on (not only computed).
+    pub used: bool,
+}
+
+fn clean_text(v: &Value, max: usize) -> String {
+    let s = match v {
+        Value::String(s) => s.clone(),
+        Value::Bool(_) | Value::Number(_) => v.to_string(),
+        _ => String::new(),
+    };
+    s.chars()
+        .filter(|c| !c.is_control() && !matches!(c, '<' | '>'))
+        .take(max)
+        .collect()
+}
+
+impl RouteLayer {
+    /// The layers of a `layers` JSON array: at most [`MAX_LAYERS`], strings cut and without
+    /// control characters or `<` `>`, confidence in 0..=1, ms bounded. An entry without a
+    /// layer name is dropped; anything that is not an array gives no layers.
+    pub fn parse_all(v: &Value) -> Vec<Self> {
+        let Some(list) = v.as_array() else {
+            return Vec::new();
+        };
+        list.iter()
+            .filter_map(|l| {
+                let layer = clean_text(&l["layer"], 32);
+                if layer.is_empty() {
+                    return None;
+                }
+                Some(Self {
+                    layer,
+                    verdict: clean_text(&l["verdict"], 64),
+                    confidence: l["confidence"]
+                        .as_f64()
+                        .filter(|c| c.is_finite())
+                        .map(|c| c.clamp(0.0, 1.0)),
+                    ms: l["ms"]
+                        .as_f64()
+                        .filter(|m| m.is_finite())
+                        .map(|m| m.clamp(0.0, 10_000_000.0) as u64),
+                    used: l["used"].as_bool() == Some(true),
+                })
+            })
+            .take(MAX_LAYERS)
+            .collect()
+    }
+
+    /// The layers a finished chat turn reports: `data.voice.layers` of the `done` body
+    /// (the SSE `done` carries `{ok, data}`, a plain JSON answer just `data`).
+    pub fn from_done(done: &Value) -> Vec<Self> {
+        let data = if done["data"].is_object() { &done["data"] } else { done };
+        Self::parse_all(&data["voice"]["layers"])
+    }
 }
 
 /// One parsed SSE block.
@@ -136,6 +207,7 @@ fn decode_block(block: &SseBlock) -> Result<Option<ChatEvent>> {
                     .map(|m| m.max(0.0) as u64),
                 fast: v["fast"].as_bool() == Some(true),
                 source: v["source"].as_str().unwrap_or("").to_owned(),
+                layers: RouteLayer::parse_all(&v["layers"]),
             }))
         }
         "ack" => {
@@ -350,7 +422,8 @@ mod tests {
                 confidence: Some(0.93),
                 jev_ms: Some(212),
                 fast: true,
-                source: "jev".into()
+                source: "jev".into(),
+                layers: Vec::new()
             })
         );
         assert_eq!(
@@ -360,8 +433,36 @@ mod tests {
                 confidence: None,
                 jev_ms: None,
                 fast: false,
-                source: String::new()
+                source: String::new(),
+                layers: Vec::new()
             })
+        );
+        // layers ride on the route event, cleaned
+        let Some(ChatEvent::Route { layers, .. }) = decode_block(&b(
+            "route",
+            r#"{"intent":"chat","layers":[{"layer":"intent","verdict":"chat","confidence":1.7,"ms":212,"used":true},{"verdict":"x"},{"layer":"vo<c>ab","verdict":7,"ms":-5}]}"#,
+        ))
+        .unwrap() else {
+            panic!("not a route")
+        };
+        assert_eq!(
+            layers,
+            vec![
+                RouteLayer {
+                    layer: "intent".into(),
+                    verdict: "chat".into(),
+                    confidence: Some(1.0),
+                    ms: Some(212),
+                    used: true
+                },
+                RouteLayer {
+                    layer: "vocab".into(),
+                    verdict: "7".into(),
+                    confidence: None,
+                    ms: Some(0),
+                    used: false
+                },
+            ]
         );
         assert_eq!(
             decode_block(&b("ack", r#"{"text":"Un attimo…"}"#)).unwrap(),
@@ -370,6 +471,27 @@ mod tests {
             })
         );
         assert!(decode_block(&b("delta", "not json")).is_err());
+    }
+
+    #[test]
+    fn done_layers_come_from_voice_layers_in_either_envelope() {
+        let layers = serde_json::json!([{"layer": "vocab", "verdict": "none", "confidence": 0.5, "ms": 80, "used": false}]);
+        let sse = serde_json::json!({"ok": true, "data": {"reply": "x", "voice": {"layers": layers}}});
+        let plain = serde_json::json!({"reply": "x", "voice": {"layers": layers}});
+        let want = vec![RouteLayer {
+            layer: "vocab".into(),
+            verdict: "none".into(),
+            confidence: Some(0.5),
+            ms: Some(80),
+            used: false,
+        }];
+        assert_eq!(RouteLayer::from_done(&sse), want);
+        assert_eq!(RouteLayer::from_done(&plain), want);
+        assert!(RouteLayer::from_done(&serde_json::json!({"reply": "x"})).is_empty());
+        assert!(RouteLayer::parse_all(&serde_json::json!("nope")).is_empty());
+        // at most MAX_LAYERS
+        let many: Vec<_> = (0..20).map(|i| serde_json::json!({"layer": format!("l{i}")})).collect();
+        assert_eq!(RouteLayer::parse_all(&serde_json::Value::Array(many)).len(), MAX_LAYERS);
     }
 
     #[test]

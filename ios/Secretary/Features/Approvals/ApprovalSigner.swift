@@ -169,17 +169,21 @@ final class SecureEnclaveApprovalSigner: ApprovalSigning, @unchecked Sendable {
         let signature: Data
         do {
             // Face ID first; the passcode when Face ID fails, is locked out or is not set up.
+            DebugEvents.record("auth.prompt", ["signer": "face_id", "policy": "device_owner"])
             try await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)
+            DebugEvents.record("auth.result", ["signer": "face_id", "ok": true])
             // Off the main thread: the key may still ask.
             signature = try await Task.detached {
                 let key = try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: blob, authenticationContext: context)
                 return try key.signature(for: Data(message.utf8)).derRepresentation
             }.value
         } catch let error as LAError {
+            DebugEvents.record("auth.result", ["signer": "face_id", "ok": false, "error": error, "cancelled": [LAError.Code.userCancel, .appCancel, .systemCancel].contains(error.code)])
             signLog.info("sign error \(LAError.errorDomain, privacy: .public) \(error.code.rawValue, privacy: .public)")
             throw ApprovalSignError.from(error)
         } catch {
             let e = error as NSError
+            DebugEvents.record("auth.result", ["signer": "face_id", "stage": "sign", "ok": false, "error": error, "cancelled": e.code == -128])
             signLog.info("sign error \(e.domain, privacy: .public) \(e.code, privacy: .public)")
             throw ApprovalSignError.from(keyError: e)
         }
@@ -285,6 +289,7 @@ final class UnlockApprovalSigner: UnlockApprovalSigning, @unchecked Sendable {
             return ApprovalProof(keyId: stored.keyId, signature: signature.base64EncodedString())
         } catch {
             let e = error as NSError
+            DebugEvents.record("auth.result", ["signer": "unlock", "stage": "sign", "ok": false, "error": error])
             signLog.info("unlock sign error \(e.domain, privacy: .public) \(e.code, privacy: .public)")
             throw ApprovalSignError.notSigned(domain: e.domain, code: e.code)
         }

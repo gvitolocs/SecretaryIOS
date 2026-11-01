@@ -70,6 +70,22 @@ fn refuses_unknown_options_missing_answers_and_bad_probabilities() {
     let mut v = answer();
     v["answers"]["urgency"]["score"] = json!(3);
     assert!(matches!(parse_decision(&v, &questions()), Err(JevError::Malformed(_))));
+
+    let mut v = answer();
+    v["answers"]["urgency"]["score"] = json!(2.6);
+    assert!(matches!(parse_decision(&v, &questions()), Err(JevError::Malformed(_))));
+}
+
+#[test]
+fn a_fractional_score_is_the_nearest_level() {
+    // The live API answers the expected level, e.g. 1.37.
+    let mut v = answer();
+    v["answers"]["urgency"]["score"] = json!(1.37);
+    let d = parse_decision(&v, &questions()).unwrap();
+    assert_eq!(d.score("urgency"), Some((1, 0.8)));
+    v["answers"]["urgency"]["score"] = json!(1.62);
+    let d = parse_decision(&v, &questions()).unwrap();
+    assert_eq!(d.score("urgency"), Some((2, 0.8)));
 }
 
 #[test]

@@ -55,8 +55,11 @@ pub mod share;
 pub mod shopping_mcp_gate;
 pub mod surface;
 pub mod telegram;
+pub mod upstream;
 pub mod video;
 pub mod voice;
+pub mod voice_learn;
+pub mod voice_thread;
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicUsize;
@@ -145,6 +148,10 @@ pub struct Inner {
     pub ingest: Option<Arc<lucina_vault_ingest::Ingest>>,
     /// The Jev client of the voice fast path when the config sets one (tests); `None`: the shared client.
     pub voice_jev: Option<Arc<lucina_jev::Jev>>,
+    /// Voice Learn (`voice_learn`): the vocabulary file, re-read when it changes.
+    pub vocab: Arc<lucina_vocab::Watched>,
+    /// Serialises the read-modify-write of the vocabulary file.
+    pub vocab_write: Mutex<()>,
 }
 
 #[derive(Clone)]
@@ -519,6 +526,8 @@ impl AppState {
             ops,
             ingest,
             voice_jev: cfg.voice_jev.clone().map(|c| Arc::new(lucina_jev::Jev::new(c))),
+            vocab: Arc::new(lucina_vocab::Watched::new(cfg.vocab_path.clone())),
+            vocab_write: Mutex::new(()),
             hospital_health: Arc::new(Mutex::new(bot_hospital::HospitalHealth {
                 enabled: cfg.hospital.enabled && cfg.hospital.daily_audit_enabled,
                 ..Default::default()

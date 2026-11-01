@@ -173,6 +173,17 @@ pub struct Transcript {
     #[serde(default)]
     pub speakers: bool,
     pub created_at: DateTime<Utc>,
+    /// Voice Learn: words replaced by a vocabulary entry's canonical spelling
+    /// ([`crate::vocab`]); absent when nothing was.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub corrections: Vec<Correction>,
+}
+
+/// A word the speech-to-text output had that a Voice Learn entry replaced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Correction {
+    pub from: String,
+    pub to: String,
 }
 
 impl Transcript {
