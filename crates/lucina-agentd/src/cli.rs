@@ -987,7 +987,7 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
             let agents = targets(&client, a).await?;
             if let [one] = agents.as_slice() {
                 if one["provider"] == SESSION_PROVIDER {
-                    return Err(CmdError::new("NOT_SUPERVISED", format!("{} is a Claude session on {}, not a run Lucina Agents supervises: it can't be stopped from here. `lagent send` leaves it a message.", s(&one["shortId"]), s(&one["host"]))));
+                    return Err(CmdError::new("NOT_SUPERVISED", format!("{} is a Claude session on {}, not a run Lucina Agents supervises: it can't be stopped from here. `lagent send` leaves it a message.", s(&one["id"]).chars().take(7).collect::<String>(), s(&one["host"]))));
                 }
             }
             let mut stopped = Vec::new();

@@ -166,7 +166,7 @@ fn a_registered_session_is_an_agent_that_can_only_be_told_things() {
     for args in [vec!["stop", &id[..]], vec!["archive", &id[..]], vec!["delete", &id[..]]] {
         let r = d.lagent(&args);
         assert_ne!(r.code, 0, "{args:?}: {}", r.stdout);
-        assert!(r.stderr.contains("Claude session"), "{args:?}: {}", r.stderr);
+        assert!(r.stderr.contains("Claude session") && !r.stderr.contains("null"), "{args:?}: {}", r.stderr);
     }
     let (status, v) = http(&d.socket(), "POST", &format!("/agents/{id}/stop"), None, Some(&json!({})));
     assert_eq!(status, 403, "{v}");
