@@ -231,7 +231,7 @@ impl AppState {
             catalog_dir: cfg.catalog_dir.clone(),
             maps: cfg.maps.clone(),
             tts: tts::Tts::new(&cfg.tts_url, cfg.tts_voices.clone(), cfg.tts_timeout)?,
-            voice: voice::Voice::new(),
+            voice: voice::Voice::new(cfg.voice_stt_url.clone())?,
             streams: timeline::StreamSlots::new(timeline::PER_DEVICE, timeline::TOTAL),
             shutdown: tokio::sync::watch::Sender::new(false),
             notify: Arc::new(notify::Notifier::open(&cfg.data_dir, cfg.notify.clone())?),

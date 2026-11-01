@@ -32,6 +32,7 @@ use crate::model::{Status, Summary, Transcript};
 use crate::store::{read_json, valid_id, NewMemo, StoreError};
 use crate::{search, worker, App};
 
+#[derive(Debug)]
 pub struct ApiError(
     pub(crate) StatusCode,
     pub(crate) &'static str,
@@ -152,6 +153,7 @@ pub fn router(app: Arc<App>) -> Router {
         .merge(api)
         .merge(crate::meetings::api::routes(app.clone()))
         .merge(crate::prompter::routes(app.clone()))
+        .merge(crate::stt::routes(app.clone()))
         .with_state(app)
 }
 

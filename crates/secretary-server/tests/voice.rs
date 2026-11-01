@@ -150,6 +150,74 @@ impl Gemini {
 struct Mock {
     chats: Mutex<Vec<Value>>,
     speech: Mutex<Vec<Value>>,
+    stt_calls: Mutex<Vec<SttCall>>,
+    stt_mode: Mutex<SttMode>,
+}
+
+/// What the mock local speech-to-text does.
+#[derive(Default, Clone, Copy)]
+enum SttMode {
+    /// 200 with the script's transcript.
+    #[default]
+    Ok,
+    /// 200 with empty text.
+    Empty,
+    Fail500,
+    /// lucina-memo's 503 `stt_unavailable`.
+    Unavailable,
+}
+
+#[derive(Debug, Clone)]
+struct SttCall {
+    auth: Option<String>,
+    cookie: Option<String>,
+    csrf: Option<String>,
+    content_type: String,
+    query: Option<String>,
+    len: usize,
+}
+
+async fn local_stt(
+    State(m): State<Arc<Mock>>,
+    uri: Uri,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> axum::response::Response {
+    let h = |n: &str| headers.get(n).map(|v| v.to_str().unwrap().to_owned());
+    let content_type = h("content-type").unwrap_or_default();
+    m.stt_calls.lock().unwrap().push(SttCall {
+        auth: h("authorization"),
+        cookie: h("cookie"),
+        csrf: h("x-secretary-csrf"),
+        content_type: content_type.clone(),
+        query: uri.query().map(str::to_owned),
+        len: body.len(),
+    });
+    let at = if content_type.starts_with("audio/wav") {
+        44
+    } else {
+        0
+    };
+    let script = body
+        .get(at..at + 2)
+        .map_or(0, |s| i16::from_le_bytes([s[0], s[1]]));
+    let mode = *m.stt_mode.lock().unwrap();
+    match mode {
+        SttMode::Ok | SttMode::Empty => {
+            let text = if matches!(mode, SttMode::Empty) {
+                ""
+            } else {
+                transcript(script)
+            };
+            Json(json!({"text": text, "language": "it", "ms": 5, "mode": "gpu"})).into_response()
+        }
+        SttMode::Fail500 => (AxumStatus::INTERNAL_SERVER_ERROR, "boom").into_response(),
+        SttMode::Unavailable => (
+            AxumStatus::SERVICE_UNAVAILABLE,
+            Json(json!({"error": {"code": "stt_unavailable", "message": "no engine"}})),
+        )
+            .into_response(),
+    }
 }
 
 async fn lucina(State(m): State<Arc<Mock>>, uri: Uri, body: Bytes) -> axum::response::Response {
@@ -218,7 +286,22 @@ struct H {
     _dir: tempfile::TempDir,
 }
 
+/// Where the server looks for local speech-to-text.
+#[derive(Clone, Copy, PartialEq)]
+enum Local {
+    /// Not configured: Gemini only.
+    Off,
+    /// The mock above.
+    Mock,
+    /// A port nothing listens on.
+    Dead,
+}
+
 async fn harness() -> H {
+    harness_with(Local::Off).await
+}
+
+async fn harness_with(local: Local) -> H {
     let gemini = gemini();
     let mock = Arc::new(Mock::default());
     let lucina_url = spawn(
@@ -231,10 +314,20 @@ async fn harness() -> H {
         false,
     )
     .await;
+    let stt = spawn(
+        Router::new().fallback(local_stt).with_state(mock.clone()),
+        false,
+    )
+    .await;
     let dir = tempfile::tempdir().unwrap();
     let mut cfg = Config::new(lucina_url, Some(LUCINA_TOKEN.into()));
     cfg.data_dir = dir.path().join("state");
     cfg.tts_url = format!("{tts}/");
+    cfg.voice_stt_url = match local {
+        Local::Off => None,
+        Local::Mock => Some(format!("{stt}/v1/memos/stt")),
+        Local::Dead => Some("http://127.0.0.1:9/v1/memos/stt".into()),
+    };
     let (dev, token) = DeviceStore::new(&cfg.data_dir).issue("Speaker").unwrap();
     let base = spawn(app(AppState::new(&cfg).unwrap()), true).await;
     H {
@@ -654,4 +747,116 @@ async fn tts_still_asks_for_mp3() {
     assert_eq!(r.headers()["content-type"], "audio/mpeg");
     let speech = h.mock.speech.lock().unwrap().clone();
     assert_eq!(speech[0]["response_format"], "mp3");
+}
+
+// -- local speech-to-text first --------------------------------------------------
+
+#[tokio::test]
+async fn local_stt_is_used_first_with_the_callers_bearer() {
+    let h = harness_with(Local::Mock).await;
+    let audio = pcm(1.0, HELLO, h.nonce);
+    let r = h
+        .chunked("?lang=it-IT", audio.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(header(&r, "x-lucina-transcript"), transcript(HELLO));
+    assert_eq!(r.bytes().await.unwrap().as_ref(), KOKORO_PCM);
+
+    let calls = h.mock.stt_calls.lock().unwrap().clone();
+    assert_eq!(calls.len(), 1);
+    let c = &calls[0];
+    // The device's own token, verbatim; no cookie.
+    assert_eq!(
+        c.auth.as_deref(),
+        Some(format!("Bearer {}", h.token).as_str())
+    );
+    assert!(c.cookie.is_none() && c.csrf.is_none());
+    assert_eq!(c.content_type, "audio/x-s16le;rate=16000");
+    assert_eq!(c.query.as_deref(), Some("lang=it"));
+    assert_eq!(c.len, audio.len());
+    // No Gemini call, and the transcript reached Lucina.
+    assert!(h.gemini.calls(HELLO, h.nonce).is_empty());
+    assert_eq!(
+        h.mock.chats.lock().unwrap()[0]["message"],
+        transcript(HELLO)
+    );
+}
+
+#[tokio::test]
+async fn local_stt_without_lang_has_no_query_and_wav_goes_as_wav() {
+    let h = harness_with(Local::Mock).await;
+    let file = wav(&pcm(0.8, ENGLISH, h.nonce));
+    let r = h
+        .req("", "audio/wav", file.clone().into())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(header(&r, "x-lucina-transcript"), transcript(ENGLISH));
+    let c = h.mock.stt_calls.lock().unwrap()[0].clone();
+    assert_eq!(c.content_type, "audio/wav");
+    assert_eq!(c.query, None);
+    assert_eq!(c.len, file.len());
+}
+
+#[tokio::test]
+async fn a_cookie_caller_is_forwarded_with_its_cookie_and_csrf() {
+    let h = harness_with(Local::Mock).await;
+    let login = h
+        .http
+        .post(format!("{}/v1/session", h.base))
+        .json(&json!({"token": h.token}))
+        .send()
+        .await
+        .unwrap();
+    let cookie = login.headers()["set-cookie"].to_str().unwrap().to_owned();
+    let cookie = cookie.split(';').next().unwrap().to_owned();
+    let r = h
+        .http
+        .post(format!("{}/v1/voice", h.base))
+        .header("cookie", &cookie)
+        .header("x-secretary-csrf", "1")
+        .header("content-type", RAW)
+        .body(pcm(1.0, HELLO, h.nonce))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    let c = h.mock.stt_calls.lock().unwrap()[0].clone();
+    assert_eq!(c.cookie.as_deref(), Some(cookie.as_str()));
+    assert_eq!(c.csrf.as_deref(), Some("1"));
+    assert!(c.auth.is_none());
+}
+
+#[tokio::test]
+async fn a_failing_local_stt_falls_back_to_gemini() {
+    for mode in [SttMode::Fail500, SttMode::Unavailable] {
+        let h = harness_with(Local::Mock).await;
+        *h.mock.stt_mode.lock().unwrap() = mode;
+        let r = h.say("", HELLO).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(header(&r, "x-lucina-transcript"), transcript(HELLO));
+        assert_eq!(h.mock.stt_calls.lock().unwrap().len(), 1);
+        assert_eq!(h.gemini.calls(HELLO, h.nonce).len(), 1);
+        assert_eq!(h.mock.chats.lock().unwrap().len(), 1);
+    }
+    // Nothing listening at all.
+    let h = harness_with(Local::Dead).await;
+    let r = h.say("", HELLO).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(h.gemini.calls(HELLO, h.nonce).len(), 1);
+}
+
+#[tokio::test]
+async fn an_empty_local_transcript_is_no_speech_without_a_gemini_retry() {
+    let h = harness_with(Local::Mock).await;
+    *h.mock.stt_mode.lock().unwrap() = SttMode::Empty;
+    let r = h.say("", HELLO).await;
+    assert_eq!(r.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(error_code(r).await, "no_speech");
+    assert_eq!(h.mock.stt_calls.lock().unwrap().len(), 1);
+    assert!(h.gemini.calls(HELLO, h.nonce).is_empty());
+    assert!(h.mock.chats.lock().unwrap().is_empty());
 }

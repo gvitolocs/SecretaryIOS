@@ -19,10 +19,19 @@
 //!
 //! **Steps.**
 //! 1. Under [`MIN_SECONDS`] of audio, or a transcript that is empty:
-//!    `422 no_speech`. The transcriber is the one behind
+//!    `422 no_speech`. Transcription goes **local first**: the audio is
+//!    posted to `SECRETARY_VOICE_STT_URL` (default [`DEFAULT_STT_URL`], Caddy's
+//!    loopback site on p1, which checks the device token and proxies to
+//!    lucina-memo's whisper.cpp on nezopt), with the caller's own
+//!    `Authorization: Bearer …` header unchanged (a cookie caller: its `Cookie`
+//!    plus `X-Secretary-CSRF: 1`), `lang` passed through, 45 s at most. Raw PCM
+//!    goes as `audio/x-s16le;rate=16000`, a WAV file as `audio/wav`. If that
+//!    fails (no connection, timeout, 5xx incl. `stt_unavailable`, any other
+//!    error status) the turn falls back to Gemini, the transcriber behind
 //!    `/v1/calls/transcribe` (`SECRETARY_GEMINI_KEY_FILE`,
-//!    `SECRETARY_TRANSCRIPTION_MODEL`), asked for a plain transcript without
-//!    speaker labels; `503 transcription_unavailable` when it is not set up.
+//!    `SECRETARY_TRANSCRIPTION_MODEL`; a plain transcript without speaker
+//!    labels), and is `503 transcription_unavailable` when that is not set up
+//!    either. An empty local transcript is `422 no_speech` with no Gemini retry.
 //! 2. The transcript goes to Lucina like `POST /v1/chat`: `sessionId:
 //!    "lucinavoice"`, `channel: "web"`, a fresh `clientMessageId`
 //!    (`voice-<ms>-<rand>`) and the calling device. A reply Lucina marks
@@ -83,6 +92,11 @@ pub const PER_MINUTE: u32 = 20;
 const TRANSCRIBE_TIMEOUT: Duration = Duration::from_secs(45);
 /// `X-Lucina-*` header text is cut at this many bytes before encoding.
 const HEADER_TEXT_BYTES: usize = 1000;
+/// Local speech-to-text: Caddy's loopback site on p1 (forward_auth against
+/// secretary-server, then lucina-memo's `POST /v1/memos/stt`).
+pub const DEFAULT_STT_URL: &str = "http://127.0.0.1:8801/v1/memos/stt";
+/// Local speech-to-text deadline.
+const STT_TIMEOUT: Duration = Duration::from_secs(45);
 /// Lucina's chat session for the speaker.
 const SESSION_ID: &str = "lucinavoice";
 
@@ -98,20 +112,78 @@ const EMPTY_PHRASE: (&str, &str) = (
 pub struct Voice {
     pub limiter: crate::ratelimit::RateLimiter,
     busy: Mutex<HashSet<String>>,
-}
-
-impl Default for Voice {
-    fn default() -> Self {
-        Self::new()
-    }
+    /// The local speech-to-text endpoint, if any.
+    stt_url: Option<String>,
+    stt: reqwest::Client,
 }
 
 impl Voice {
-    pub fn new() -> Self {
-        Self {
+    pub fn new(stt_url: Option<String>) -> anyhow::Result<Self> {
+        Ok(Self {
             limiter: crate::ratelimit::RateLimiter::new(PER_MINUTE),
             busy: Mutex::new(HashSet::new()),
+            stt_url,
+            stt: reqwest::Client::builder()
+                .timeout(STT_TIMEOUT)
+                .connect_timeout(Duration::from_secs(5))
+                .redirect(reqwest::redirect::Policy::none())
+                .build()?,
+        })
+    }
+
+    /// Ask the local engine. `Ok(text)` (maybe empty) when it answered 200,
+    /// `Err(reason)` when the turn should fall back (the reason is logged,
+    /// never the audio or the credentials).
+    async fn local_stt(
+        &self,
+        headers: &HeaderMap,
+        audio: Bytes,
+        content_type: &'static str,
+        lang: Option<&str>,
+    ) -> Result<String, String> {
+        let base = self
+            .stt_url
+            .as_deref()
+            .ok_or("local speech-to-text is off")?;
+        let url = match lang.and_then(|l| l.split(['-', '_']).next()) {
+            Some(l) if !l.is_empty() => format!("{base}?lang={}", l.to_ascii_lowercase()),
+            _ => base.to_owned(),
+        };
+        let mut req = self
+            .stt
+            .post(url)
+            .header(header::CONTENT_TYPE, content_type)
+            .body(audio);
+        // The caller's own credentials: the gateway checks them like it does for the app.
+        if let Some(auth) = headers.get(header::AUTHORIZATION) {
+            req = req.header(header::AUTHORIZATION, auth.clone());
+        } else if let Some(cookie) = headers.get(header::COOKIE) {
+            req = req
+                .header(header::COOKIE, cookie.clone())
+                .header("x-secretary-csrf", "1");
         }
+        let resp = req.send().await.map_err(|e| {
+            if e.is_timeout() {
+                "timed out".to_owned()
+            } else {
+                "unreachable".to_owned()
+            }
+        })?;
+        let status = resp.status();
+        if status == StatusCode::UNPROCESSABLE_ENTITY {
+            return Ok(String::new()); // no speech, as far as the engine can tell
+        }
+        if !status.is_success() {
+            return Err(format!("answered {status}"));
+        }
+        let v: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|_| "unreadable reply".to_owned())?;
+        v["text"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| "reply without text".to_owned())
     }
 
     /// Claim the device's turn; `None` while it has one running.
@@ -331,6 +403,7 @@ async fn voice(
     })?;
 
     // The recording: the device streams it while the button is held.
+    let caller = req.headers().clone();
     let body = Bytes::from_request(req, &st).await?;
     if body.is_empty() {
         return Err(no_speech());
@@ -351,16 +424,32 @@ async fn voice(
         return Err(no_speech());
     }
 
-    let transcript = crate::calls::transcribe_inline(
-        "audio/wav",
-        &base64::engine::general_purpose::STANDARD.encode(&wav),
-        crate::calls::Options {
-            diarization: false,
-            timeout: TRANSCRIBE_TIMEOUT,
-        },
-    )
-    .await?;
-    let heard = transcript.text.trim().to_owned();
+    let (audio, content_type) = match kind {
+        Input::Wav => (body.clone(), "audio/wav"),
+        Input::Pcm16k => (body.slice(..body.len() & !1), "audio/x-s16le;rate=16000"),
+    };
+    let heard = match st
+        .voice
+        .local_stt(&caller, audio, content_type, lang.as_deref())
+        .await
+    {
+        Ok(text) => text,
+        Err(why) => {
+            tracing::warn!(%why, "local speech-to-text failed; falling back to Gemini");
+            crate::calls::transcribe_inline(
+                "audio/wav",
+                &base64::engine::general_purpose::STANDARD.encode(&wav),
+                crate::calls::Options {
+                    diarization: false,
+                    timeout: TRANSCRIBE_TIMEOUT,
+                },
+            )
+            .await?
+            .text
+        }
+    }
+    .trim()
+    .to_owned();
     if heard.is_empty() {
         return Err(no_speech());
     }
@@ -507,7 +596,7 @@ mod tests {
 
     #[test]
     fn one_turn_per_device() {
-        let v = Voice::new();
+        let v = Voice::new(None).unwrap();
         let a = v.begin("dev_a").unwrap();
         assert!(v.begin("dev_a").is_none());
         assert!(v.begin("dev_b").is_some());

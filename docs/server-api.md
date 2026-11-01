@@ -1313,8 +1313,18 @@ Optional query `lang=it\|en` (`it-IT` style accepted) picks the Kokoro voice
 and the language of the fixed phrases; without it the voice follows the
 language of the reply text, as for `/v1/tts`.
 
-The server transcribes the audio (Gemini, the same provider and settings as
-`/v1/calls/transcribe`, as a plain transcript), sends the transcript to Lucina
+The server transcribes the audio **locally first**: it posts it to
+`SECRETARY_VOICE_STT_URL` (default `http://127.0.0.1:8801/v1/memos/stt`, Caddy's
+loopback site on p1, which checks the device token and proxies to lucina-memo's
+whisper.cpp on nezopt; `off` disables it), forwarding the caller's own
+`Authorization: Bearer …` unchanged (a cookie caller: its `Cookie` plus
+`X-Secretary-CSRF: 1`), `lang` when given, and the audio as
+`audio/x-s16le;rate=16000` (a WAV body as `audio/wav`), 45 s at most. If that
+fails (no connection, timeout, 5xx including `stt_unavailable`, any other
+error status), it falls back to Gemini (the provider and settings of
+`/v1/calls/transcribe`, as a plain transcript), and answers `503
+transcription_unavailable` when Gemini is not configured. An empty local
+transcript is `422 no_speech` with no Gemini retry. The transcript goes to Lucina
 like `POST /v1/chat` (`sessionId: "lucinavoice"`, `channel: "web"`, the calling
 device) and synthesizes the reply with Kokoro. A reply Lucina marks `sensitive`
 is not spoken: the device hears "I'll answer that in the app." (Italian: "Ti
@@ -1339,7 +1349,7 @@ empty transcript), `429 rate_limited` (20 turns/minute per device, its own
 bucket), `429 voice_busy` (the device's previous turn is still running), `429
 transcription_provider_refused`, `502 transcription_failed` /
 `lucina_unreachable` / `lucina_error` / `tts_unavailable`, `503
-transcription_unavailable` (no `SECRETARY_GEMINI_KEY_FILE`), `504`
+transcription_unavailable` (local speech-to-text failed and no `SECRETARY_GEMINI_KEY_FILE`), `504`
 `lucina_timeout` / `tts_unavailable`.
 
 ```sh

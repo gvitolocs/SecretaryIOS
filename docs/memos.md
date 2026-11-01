@@ -67,6 +67,13 @@ event's title, course, place, attendees and calendar), `GET …/events` (`{curre
 [{event, overlapMs, locMatch}]}` for the recording ± 2 h, best first; `stale: true` when using the cache after a live failure; 502 only when the live query fails and the cache has no events in the window),
 `PUT …/event {eventId | null}` (the owner's choice, `null` = no event; re-summarises a finished memo; 409 while a
 summary runs; 404 for an event not around the recording).
+`POST /v1/memos/stt[?lang=auto|it|en|da]` (speech-to-text for one short clip, no memo is made; used by
+secretary-server's `POST /v1/voice` for the LucinaVoice speaker): body `audio/wav` (16 kHz mono 16-bit) or
+`audio/x-s16le;rate=16000`, at most 2 MiB (413); another type or WAV format 415, under 0.3 s of audio 422
+`no_speech`, unknown query parameter or `lang` 400. It runs on the prompter's whisper-server (small model, GPU
+lease first, CPU if none; `docs/prompter.md`) as a session that is always released. `200 {text, language, ms, mode}`
+(`language` it/en/da, `mode` gpu/cpu; silence is `text: ""`), 503 `stt_unavailable` when the engine does not start,
+502 `stt_failed` when it fails on the clip.
 Auth: `X-Memo-Gateway` from Caddy (after secretary-server accepted the device), or `Authorization: Bearer <service.token>`
 for local callers. Cookie writes need `X-Secretary-CSRF: 1`. `GET /health` is open.
 
