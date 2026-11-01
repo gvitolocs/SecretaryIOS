@@ -1,6 +1,6 @@
 import { useNavigate } from "@solidjs/router";
 import { For, Show, type JSX } from "solid-js";
-import { AgentsIcon, BookIcon, BulbIcon, BubbleIcon, CheckCircleIcon, CodeIcon, ComputerIcon, DriveIcon, FilmIcon, GamepadIcon, GridIcon, HangerIcon, InstagramIcon, LinkIcon, ListIcon, MicIcon, NoteIcon, NotebookIcon, PagesIcon, PhoneIcon, PixivIcon, PulseIcon, QrIcon } from "../components/Icons";
+import { AgentsIcon, BookIcon, BulbIcon, BubbleIcon, CheckCircleIcon, CodeIcon, ComputerIcon, DriveIcon, FilmIcon, GamepadIcon, GridIcon, HangerIcon, InstagramIcon, LinkIcon, ListIcon, MicIcon, NoteIcon, NotebookIcon, PagesIcon, PhoneIcon, PixivIcon, PulseIcon, QrIcon, SpeakerIcon } from "../components/Icons";
 import { EmptyState, Page, PageGrid, PageHeader, useWide } from "../components/page";
 import { t } from "../i18n";
 import { desktopShell } from "../lib/desktopShell";
@@ -91,6 +91,8 @@ export const PLUGINS: Plugin[] = [
     },
   },
   { id: "server", icon: PulseIcon, title: () => t("plugins.server"), detail: () => t("plugins.serverDetail"), href: "/server-health" },
+  // The LucinaVoice ESP32 speaker: status, latency, power (views/Voice.tsx).
+  { id: "voice", icon: SpeakerIcon, title: () => t("voice.title"), detail: () => t("voice.detail"), href: "/voice" },
   { id: "instagram", icon: InstagramIcon, title: () => t("instagram.title"), detail: () => t("instagram.detail"), href: "/instagram", badge: () => instagramBadges().total },
   { id: "models", icon: GridIcon, title: () => t("plugins.models"), detail: () => t("plugins.modelsDetail"), href: "/models" },
   { id: "pixiv", icon: PixivIcon, title: () => t("pixiv.title"), detail: () => t("pixiv.detail"), href: "/pixiv" },

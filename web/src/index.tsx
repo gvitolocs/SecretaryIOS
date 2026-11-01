@@ -60,6 +60,7 @@ const InstagramView = lazy(() => import("./views/Instagram"));
 const AgentsView = lazy(() => import("./views/Agents"));
 const DriveView = lazy(() => import("./views/Drive"));
 const ServerHealthView = lazy(() => import("./views/ServerHealth"));
+const VoiceView = lazy(() => import("./views/Voice"));
 const NotificationsView = lazy(() => import("./views/ShellSheets").then((m) => ({ default: m.NotificationsView })));
 const AccountView = lazy(() => import("./views/ShellSheets").then((m) => ({ default: m.AccountView })));
 const SecretsView = lazy(() => import("./views/ShellSheets").then((m) => ({ default: m.SecretsView })));
@@ -139,6 +140,7 @@ render(
       <Route path="/pixiv/:id?" component={PixivView} />
       <Route path="/drive/*rest" component={DriveView} />
       <Route path="/server-health/:section?" component={ServerHealthView} />
+      <Route path="/voice/:id?/:tab?" component={VoiceView} />
       <Route path="/notifications" component={NotificationsView} />
       <Route path="/account" component={AccountView} />
       <Route path="/secrets" component={SecretsView} />
