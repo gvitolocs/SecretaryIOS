@@ -4,6 +4,7 @@ import { t } from "../../i18n";
 import { showAdult } from "../../lib/adult";
 import { createCached } from "../../lib/swr";
 import { BackIcon, BookmarkIcon, CloseIcon, DownloadIcon, SearchIcon } from "../Icons";
+import { createFreshSrc, freshUrl } from "../../lib/pixivImages";
 import { clampPan, clampZoom, fitScale, isTall, MAX_ZOOM, pannable, stepZoom, topPan, wheelFactor, widthScale, zoomAround, zoomLabel, type Pan, type Size } from "./zoom";
 
 // The Pixiv work viewer: every page of a work, one at a time. Swipe or the arrow keys turn pages; the
@@ -57,7 +58,9 @@ export function Reader(props: ReaderProps) {
   const author = () => work()?.author ?? props.preview?.author ?? "";
   // The original file, once loaded for this page (see the effect below).
   const [hires, setHires] = createSignal<string | null>(null);
-  const src = () => hires() || current()?.url || props.preview?.thumbUrl || "";
+  // The work may come from its cached copy: an expired page link is re-signed first (lib/pixivImages).
+  const shown = createFreshSrc(() => hires() || current()?.url || props.preview?.thumbUrl || "");
+  const src = shown.src;
   // The list's small thumbnail stands in while the page loads: it may be enlarged to fill the stage.
   const fit = () => fitScale(natural(), view(), current()?.url ? 1 : Number.POSITIVE_INFINITY);
   const scale = () => (mode() === "fit" ? fit() : mode() === "width" ? widthScale(natural(), view()) : free());
@@ -84,15 +87,17 @@ export function Reader(props: ReaderProps) {
     const page = index();
     hiresAsked = url;
     const im = new Image();
+    void freshUrl(url).then((fresh) => {
+      if (props.id === id && index() === page) im.src = fresh;
+    });
     im.onload = () => {
       if (props.id !== id || index() !== page || !im.naturalWidth || !im.naturalHeight) return;
       const old = natural();
       // Same size on screen: a free zoom is re-expressed against the larger file; Fit and Fit width recompute.
       if (old && mode() === "free") setFree(clampZoom((free() * old.w) / im.naturalWidth, fitScale({ w: im.naturalWidth, h: im.naturalHeight }, view())));
       setNatural({ w: im.naturalWidth, h: im.naturalHeight });
-      setHires(url);
+      setHires(im.src || url);
     };
-    im.src = url;
   });
 
   // The next page (and the previous one) are fetched before they are asked for.
@@ -376,6 +381,7 @@ export function Reader(props: ReaderProps) {
               alt={t("pixiv.pageOf", { page: index() + 1, total: total() })}
               draggable={false}
               onLoad={loaded}
+              onError={shown.onError}
               data-scale={natural() && view() ? String(scale()) : undefined}
               // Laid out at its on-screen size (not scaled with a transform), so the browser resamples the file at
               // the right resolution instead of stretching a bitmap.

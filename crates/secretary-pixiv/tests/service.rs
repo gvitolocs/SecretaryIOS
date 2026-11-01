@@ -1243,3 +1243,43 @@ async fn anonymous_answers_are_never_served_to_a_session() {
     get(&e.app, "/v1/pixiv/ranking?mode=day&adult=1").await;
     assert_eq!(e.mock.calls().len(), 5);
 }
+
+#[tokio::test]
+async fn signed_links_outlive_the_apps_page_cache() {
+    // The apps keep a page for 7 days (web lib/pageCache); its links must still load then.
+    let e = env().await;
+    let r = get(&e.app, "/v1/pixiv/ranking?mode=day").await;
+    let thumb = r.json["data"]["items"][0]["thumbUrl"].as_str().unwrap().to_string();
+    let exp: i64 = thumb.trim_start_matches("/v1/pixiv/s/").split('/').next().unwrap().parse().unwrap();
+    let now = chrono::Utc::now().timestamp();
+    assert!(exp - now > 29 * 86_400, "expires in {} s", exp - now);
+    assert_eq!(exp % 86_400, 0, "rounded to the day, so the URL stays stable");
+    let img1 = send(&e.app, "GET", &thumb, false, None).await;
+    let cc = img1.headers["cache-control"].to_str().unwrap().to_string();
+    let age: i64 = cc.trim_start_matches("private, max-age=").trim_end_matches(", immutable").parse().unwrap();
+    assert!(age > 29 * 86_400, "{cc}");
+}
+
+#[tokio::test]
+async fn expired_links_are_re_signed_on_request() {
+    let e = env().await;
+    let r = get(&e.app, "/v1/pixiv/ranking?mode=day").await;
+    let thumb = r.json["data"]["items"][0]["thumbUrl"].as_str().unwrap().to_string();
+    let token = thumb.trim_start_matches("/v1/pixiv/s/").split('/').nth(1).unwrap().to_string();
+    // an old, expired link to the same image is refused...
+    let old = e.http.sign_at(&String::from_utf8(hex::decode(&token).unwrap()).unwrap(), chrono::Utc::now().timestamp() - 60);
+    assert_eq!(send(&e.app, "GET", &old, false, None).await.status, StatusCode::FORBIDDEN);
+    // ...and re-signed: the fresh link loads
+    let bad = hex::encode("https://example.com/x.jpg");
+    let r = send(&e.app, "POST", "/v1/pixiv/resign", true, Some(json!({"tokens": [token, bad, "zz"]}))).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let fresh = r.json["data"]["urls"][&token].as_str().unwrap().to_string();
+    assert_ne!(fresh, old);
+    assert_eq!(send(&e.app, "GET", &fresh, false, None).await.status, StatusCode::OK);
+    assert_eq!(r.json["data"]["urls"][&bad], "");
+    assert_eq!(r.json["data"]["urls"]["zz"], "");
+    // gateway only, and bounded
+    assert_eq!(send(&e.app, "POST", "/v1/pixiv/resign", false, Some(json!({"tokens": []}))).await.status, StatusCode::UNAUTHORIZED);
+    let many: Vec<String> = (0..301).map(|_| "00".to_string()).collect();
+    assert_eq!(send(&e.app, "POST", "/v1/pixiv/resign", true, Some(json!({"tokens": many}))).await.status, StatusCode::BAD_REQUEST);
+}

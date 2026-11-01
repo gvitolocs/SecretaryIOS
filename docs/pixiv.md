@@ -26,7 +26,8 @@ Answers are `{ok:true, data}` or `{ok:false, error}`. Image fields are always si
 | `GET /illust/{id}?adult=` | `{id,title,author,authorId,created,kind,ugoira,r18,description,stats,pageCount,coverUrl,tags[{tag,en}],pages[{index,thumbUrl,url,originalUrl}],bookmarked}` |
 | `GET /bookmarks?content=safe\|all\|r18&adult=`, `PUT/DELETE /bookmarks/{id}` | local (0600 file); `content` defaults to `all` with `adult=1`, else `safe` |
 | `POST /save {id, pages?:[zero-based index], adult?}` | `{saved:[{page,itemId,duplicate}], failed:[{page,error}]}` |
-| `GET /s/{exp}/{token}/{sig}` | image (signed, 6 h, GET/HEAD, no header needed) |
+| `GET /s/{exp}/{token}/{sig}` | image (signed, 30 days with the expiry rounded to the day, `private, max-age=<until expiry>, immutable`, GET/HEAD, no header needed) |
+| `POST /resign {tokens: [hex]}` | `{urls: {token: url}}`: fresh signed links for old ones (`""` unless the token is an i.pximg.net URL), at most 300. The web re-signs expired links of a cached page with it (`web/src/lib/pixivImages.ts`) and retries a failing image once |
 
 Listing: `{items, page, hasMore, total, numPages, notice, sort}`. Item: `{id,title,author,authorId,tags,thumbUrl,
 pages,r18,popularTier,bookmarked}` (`addedAt` in bookmarks; bookmarks answer `{items}` only).

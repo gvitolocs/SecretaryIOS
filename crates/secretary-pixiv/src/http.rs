@@ -1,7 +1,7 @@
 //! `/v1/pixiv/*`. p1's Caddy authenticates the owner (forward_auth `/v1/auth/owner`) and adds
 //! `X-Lucina-Gateway: <secret>`; every route but the signed image URLs refuses a request without
-//! it. Image URLs are `/v1/pixiv/s/<expiry>/<token>/<sig>` (HMAC, six hours; the token is the
-//! i.pximg.net URL itself, in lowercase hex), so the apps' image loaders need no header and never contact pixiv.
+//! it. Image URLs are `/v1/pixiv/s/<expiry>/<token>/<sig>` (HMAC, 30 days, the expiry rounded to the
+//! day; the token is the i.pximg.net URL itself, in lowercase hex), so the apps' image loaders need no header and never contact pixiv.
 //!
 //! Adult content: `adult=1` (query) switches R-18 on for that request; without it R-18 modes and
 //! works answer 403 `adult_off` and R-18 items never appear in a list. Lists take a content
@@ -30,7 +30,11 @@ use crate::service::{SearchParams, Service};
 use crate::store::Store;
 
 pub const PREFIX: &str = "/v1/pixiv";
-const URL_LIFETIME: Duration = Duration::from_secs(6 * 3600);
+/// Longer than the apps keep a cached page (7 days, web lib/pageCache), so a page opened from its copy never shows
+/// expired links; an older copy re-signs them with `POST /resign`.
+const URL_LIFETIME: Duration = Duration::from_secs(30 * 86_400);
+/// At most this many links re-signed per request.
+const RESIGN_MAX: usize = 300;
 
 pub struct Http {
     pub service: Service,
@@ -101,8 +105,8 @@ impl Http {
     /// the tests can prove it.
     pub fn sign_unchecked(&self, upstream: &str) -> String {
         let exp = chrono::Utc::now().timestamp() + URL_LIFETIME.as_secs() as i64;
-        // Round the expiry to the hour so the URLs stay stable (client image caches).
-        self.sign_at(upstream, exp - exp % 3600 + 3600)
+        // Round the expiry to the day so the URLs stay stable (client image caches).
+        self.sign_at(upstream, exp - exp % 86_400 + 86_400)
     }
 
     /// Same, with an explicit expiry (tests use a past one).
@@ -202,6 +206,7 @@ pub fn router(st: St) -> Router {
         .route("/connect/finish", post(connect_finish))
         .route("/disconnect", post(disconnect))
         .route("/settings", get(settings).put(update_settings))
+        .route("/resign", post(resign))
         .route("/ranking", get(ranking))
         .route("/search", get(search))
         .route("/illust/{id}", get(illust))
@@ -306,6 +311,39 @@ async fn disconnect(State(st): State<St>) -> Response {
     st.service.reset_account().await;
     ok(v)
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Resign {
+    tokens: Vec<String>,
+}
+
+/// `POST /resign {tokens: [hex]}`: fresh signed URLs for the tokens of old ones (a page cached in an app holds links
+/// that may have expired). Answers `{urls: {token: url}}`; a token that is not an i.pximg.net URL gets `""`.
+async fn resign(
+    State(st): State<St>,
+    body: Result<Json<Resign>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let Ok(Json(r)) = body else {
+        return err(StatusCode::BAD_REQUEST, "bad_request");
+    };
+    if r.tokens.len() > RESIGN_MAX || r.tokens.iter().any(|t| t.len() > 4096) {
+        return err(StatusCode::BAD_REQUEST, "bad_request");
+    }
+    let urls: serde_json::Map<String, Value> = r
+        .tokens
+        .into_iter()
+        .map(|t| {
+            let url = hex::decode(t.as_bytes())
+                .ok()
+                .and_then(|b| String::from_utf8(b).ok())
+                .map(|u| st.signed_url(&u))
+                .unwrap_or_default();
+            (t, Value::String(url))
+        })
+        .collect();
+    ok(json!({ "urls": urls }))
+}
+
 async fn settings(State(st): State<St>) -> Response {
     ok(json!(st.store.settings()))
 }
@@ -505,7 +543,7 @@ async fn image(
                 HeaderValue::from_static("nosniff"),
             );
             // The bytes behind a signed URL never change: browsers keep them until the URL expires.
-            let max_age = (exp - chrono::Utc::now().timestamp()).clamp(0, URL_LIFETIME.as_secs() as i64 + 3600);
+            let max_age = (exp - chrono::Utc::now().timestamp()).clamp(0, URL_LIFETIME.as_secs() as i64 + 86_400);
             if let Ok(v) = HeaderValue::from_str(&format!("private, max-age={max_age}, immutable")) {
                 h.insert(header::CACHE_CONTROL, v);
             }
