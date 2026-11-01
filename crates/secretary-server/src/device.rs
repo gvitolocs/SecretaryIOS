@@ -205,13 +205,26 @@ async fn command_result(
     forward(&st, &Call::command_result(&id, &res)?).await
 }
 
+/// What Lucina gets of a snapshot: the calendar keeps an event's notes and link for the Calendar tab; they don't go on
+/// to her.
+fn for_lucina(snapshot: &DeviceState) -> DeviceState {
+    let mut copy = snapshot.clone();
+    for e in &mut copy.events {
+        if let Some(o) = e.as_object_mut() {
+            o.remove("notes");
+            o.remove("url");
+        }
+    }
+    copy
+}
+
 async fn state(
     State(st): State<AppState>,
     Extension(ident): Extension<Identity>,
     JsonBody(mut snapshot): JsonBody<DeviceState>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     snapshot.device = Some(device_ref(&ident));
-    let call = Call::device_state(&snapshot)?;
+    let call = Call::device_state(&for_lucina(&snapshot))?;
     // Upcoming events feed calendar notifications, whatever Lucina answers.
     let (notify, device, snap) = (st.notify.clone(), ident.device_id.clone(), snapshot.clone());
     match tokio::task::spawn_blocking(move || notify.device_state(&device, &snap)).await {
@@ -243,6 +256,22 @@ pub fn routes() -> Router<AppState> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lucina_does_not_get_an_events_notes() {
+        let snapshot: DeviceState = serde_json::from_value(json!({"events": [
+            {"id": "e1", "title": "Kitchen", "start": "2026-11-02T13:00:00Z", "location": "Boiler",
+             "notes": "Door code 1234", "url": "https://x.example/y", "alarms": [60], "free": true}
+        ]}))
+        .unwrap();
+        let e = &for_lucina(&snapshot).events[0];
+        assert!(e.get("notes").is_none() && e.get("url").is_none());
+        assert_eq!(e["title"], "Kitchen");
+        assert_eq!(e["location"], "Boiler");
+        assert_eq!(e["alarms"], json!([60]));
+        // The calendar's own copy keeps them.
+        assert_eq!(snapshot.events[0]["notes"], "Door code 1234");
+    }
 
     #[test]
     fn lru_evicts_least_recently_used() {

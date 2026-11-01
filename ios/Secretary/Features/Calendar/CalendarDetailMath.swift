@@ -215,6 +215,28 @@ extension CalendarMath {
         return DayStrip(start: start, end: end, hours: hours, items: items)
     }
 
+    // MARK: The iPhone's own events
+
+    /// `iphone:<EventKit id>@<start ms>` → the EventKit id (itself full of `:` and `@`); nil for other sources.
+    static func deviceEventIdentifier(_ id: String) -> String? {
+        guard id.hasPrefix("iphone:") else { return nil }
+        var rest = id.dropFirst("iphone:".count)
+        if let at = rest.lastIndex(of: "@"), rest[rest.index(after: at)...].allSatisfy(\.isNumber), rest.index(after: at) < rest.endIndex {
+            rest = rest[..<at]
+        }
+        return rest.isEmpty ? nil : String(rest)
+    }
+
+    /// EKAlarm offsets (seconds, negative before the start) → minutes before, ascending; alerts after the start are left out.
+    static func alarmMinutes(offsets: [TimeInterval]) -> [Int] {
+        Array(Set(offsets.filter { $0 <= 0 }.map { Int((-$0 / 60).rounded()) })).sorted()
+    }
+
+    /// Minutes before the start → EKAlarm offsets.
+    static func alarmOffsets(minutes: [Int]) -> [TimeInterval] {
+        Array(Set(minutes)).sorted().prefix(maxAlarms).map { -TimeInterval($0) * 60 }
+    }
+
     // MARK: Settings labels
 
     /// Alert choices, minutes before the start.

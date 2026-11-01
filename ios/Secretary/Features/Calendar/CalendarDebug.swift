@@ -10,6 +10,11 @@ enum CalendarDebug {
                                                     "phones": phones, "has_location": hasLocation, "alarms": event.alarms.count])
     }
 
+    /// The phone's own event behind an `iphone:` entry: found through EventKit, and whether its calendar takes changes.
+    static func deviceEvent(_ event: CalendarEntry, found: Bool, writable: Bool) {
+        DebugEvents.record("calendar.detail_device", ["id": event.id, "found": found, "writable": writable])
+    }
+
     /// The map thumbnail: whether the place was found.
     static func map(_ event: CalendarEntry, found: Bool) {
         DebugEvents.record("calendar.detail_map", ["id": event.id, "found": found])

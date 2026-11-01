@@ -1,6 +1,22 @@
 import XCTest
 @testable import Secretary
 
+final class CalendarDeviceEventTests: XCTestCase {
+    func testTheEventKitIdComesOutOfTheMergedId() {
+        XCTAssertEqual(CalendarMath.deviceEventIdentifier("iphone:6F79594D:ooae68g3@google.com@1793624400000"), "6F79594D:ooae68g3@google.com")
+        XCTAssertEqual(CalendarMath.deviceEventIdentifier("iphone:317472A7:2020!261176-15@mytimetable.au.dk@1793602800000"), "317472A7:2020!261176-15@mytimetable.au.dk")
+        XCTAssertEqual(CalendarMath.deviceEventIdentifier("iphone:plain-id"), "plain-id")
+        XCTAssertNil(CalendarMath.deviceEventIdentifier("google:abc"))
+        XCTAssertNil(CalendarMath.deviceEventIdentifier("iphone:"))
+    }
+
+    func testAlarmOffsets() {
+        XCTAssertEqual(CalendarMath.alarmMinutes(offsets: [-3600, -86_400, 0, -3600, 300]), [0, 60, 1440])
+        XCTAssertEqual(CalendarMath.alarmOffsets(minutes: [60, 0, 60]), [-0, -3600])
+        XCTAssertEqual(CalendarMath.alarmOffsets(minutes: [1, 2, 3, 4, 5, 6]).count, 5)
+    }
+}
+
 final class CalendarDetailTests: XCTestCase {
     private var calendar: Calendar {
         var c = Calendar(identifier: .gregorian)

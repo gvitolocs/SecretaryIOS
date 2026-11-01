@@ -1960,8 +1960,9 @@ triggers a full resync from 365 days back; recurring events are expanded by
 `secretary-calendar`, DST-correct, with EXDATEs and per-instance
 exceptions), ICS subscriptions, and the iPhone's EventKit events from the
 latest `POST /v1/device/state` snapshot (`events: [{id, title, start, end,
-allDay?, location?, calendar?, notes?, alarms?, free?}]`, start/end RFC 3339, epoch ms or
-`YYYY-MM-DD`; `alarms`: minutes before the start). Auth: device Bearer, cookie (+CSRF on writes), or **Lucina's
+allDay?, location?, calendar?, notes?, url?, alarms?, free?}]`, start/end RFC 3339, epoch ms or
+`YYYY-MM-DD`; `alarms`: minutes before the start; `notes` at most 2000 characters and left out when the
+snapshot would outgrow its body limit; `notes` and `url` stay in the calendar and are not forwarded to Lucina). Auth: device Bearer, cookie (+CSRF on writes), or **Lucina's
 service token** (`svc_…`).
 
 Event:
@@ -1987,6 +1988,10 @@ Event settings (the event sheet's Settings, like Apple Calendar's):
   `X-APPLE-TRAVEL-DURATION`); `leaveAlert`: a "time to leave" alert at start − `travelMin`
   (`extendedProperties.private.leaveAlert`). The clients work the travel time out with `/v1/maps/routes`
   (or MapKit) and send it with the alert.
+- `iphone:` events are read-only here. On the phone the event sheet reads the event itself through EventKit (full
+  notes, alerts, show as) and changes alerts, show as and its calendar there when that calendar is writable; the next
+  snapshot brings the change here. EventKit has no travel time, so on these events "time to leave" is an alert at
+  the worked-out travel time.
 - Lucina's own events notify at their own alerts and at the leave time (title "Time to leave");
   Google's alerts are Google's (and the iPhone's) to ring.
 

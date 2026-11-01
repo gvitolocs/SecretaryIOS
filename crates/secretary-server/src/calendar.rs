@@ -49,6 +49,8 @@ const PRIMARY: &str = "/calendar/v3/calendars/primary/events";
 /// The label of Lucina's own calendar.
 pub const OWN_LABEL: &str = "Lucina";
 const MAX_OWN_EVENTS: usize = 20_000;
+/// Longest notes kept of an iPhone event (the phone reads the full text itself).
+const MAX_DEVICE_NOTES: usize = 2000;
 /// How far ahead Lucina's own events feed "Coming up" notifications.
 const OWN_REMINDER_DAYS: i64 = 35;
 
@@ -379,7 +381,7 @@ fn moment_of(v: &Value, all_day: bool, tz: Tz) -> Option<Moment> {
 }
 
 /// Keep the events of a `POST /v1/device/state` snapshot (`{id, title,
-/// start, end, allDay?, location?, calendar?, notes?, alarms?, free?}`,
+/// start, end, allDay?, location?, calendar?, notes?, url?, alarms?, free?}`,
 /// opaque otherwise; `alarms`: minutes before the start).
 pub async fn ingest_device_events(st: &AppState, device: &str, events: &[Value]) {
     let hub = &st.links;
@@ -430,7 +432,12 @@ pub async fn ingest_device_events(st: &AppState, device: &str, events: &[Value])
                 start: Some(start),
                 end,
                 location: s("location"),
-                description: s("notes"),
+                description: e
+                    .get("notes")
+                    .and_then(Value::as_str)
+                    .map(|x| x.chars().take(MAX_DEVICE_NOTES).collect::<String>())
+                    .filter(|x| !x.is_empty()),
+                url: s("url").filter(|u| u.starts_with("https://") || u.starts_with("http://")),
                 calendar: s("calendar"),
                 alarms: secretary_calendar::model::normalize_alarms(
                     e.get("alarms")

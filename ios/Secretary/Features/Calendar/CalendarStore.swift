@@ -94,6 +94,8 @@ final class CalendarStore {
             if let event = try await api.save(draft, id: id) { self.upsert(event) }
         }
     }
+    /// An event changed on the phone (EventKit): shown at once, the next snapshot brings it to the server.
+    func adopt(_ event: CalendarEntry) { upsert(event) }
     /// Google can take events (a move from Lucina's calendar) while it is connected.
     var googleWritable: Bool { sources?["google"]?["status"]?.stringValue == "connected" }
     /// Changes alerts, show-as, travel time or the leave alert; the event as it now reads, nil when it failed.

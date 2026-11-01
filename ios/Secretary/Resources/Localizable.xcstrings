@@ -25809,6 +25809,22 @@
           }
         }
       }
+    },
+    "Couldn't save this on the iPhone." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Non è stato possibile salvarlo sull'iPhone."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Det kunne ikke gemmes på iPhonen."
+          }
+        }
+      }
     }
   },
   "version" : "1.0"

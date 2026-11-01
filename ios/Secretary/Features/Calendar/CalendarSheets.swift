@@ -14,6 +14,8 @@ struct CalendarDetail: View {
     @State private var resolved: PlaceResolver.Resolved?
     @State private var guess: TravelGuess?
     @State private var guessing = false
+    /// The iPhone's own event behind an `iphone:` entry: its full notes, and its settings change through EventKit.
+    @State private var device: CalendarDeviceEvents.Details?
 
     /// A travel time worked out for the event's place.
     struct TravelGuess: Equatable {
@@ -40,6 +42,12 @@ struct CalendarDetail: View {
         event.editable && !event.recurring && (event.source == "google" || (event.source == "lucina" && store.googleWritable))
     }
     private var leaveCapable: Bool { place != nil && !event.allDay }
+    private var canEdit: Bool { event.editable || device?.writable == true }
+    /// On the phone's own events "time to leave" is an alert at the travel time (EventKit has no travel time).
+    private var leaveOn: Bool {
+        guard device != nil else { return event.leaveAlert }
+        return guess.map { event.alarms.contains($0.minutes) } ?? false
+    }
 
     var body: some View {
         Form {
@@ -71,7 +79,7 @@ struct CalendarDetail: View {
             }
             Section {
                 if let addedBy = event.addedBy { Text("Added by \(addedBy)") }
-                if !event.editable { Text("This calendar is read-only.").foregroundStyle(.secondary) }
+                if !canEdit { Text("This calendar is read-only.").foregroundStyle(.secondary) }
                 if event.source == "google", let raw = event.url, let url = URL(string: raw), url.scheme == "https" {
                     Link("Open in Google Calendar", destination: url)
                 }
@@ -95,6 +103,7 @@ struct CalendarDetail: View {
         .onAppear {
             guard !opened else { return }
             opened = true
+            loadDevice()
             CalendarDebug.open(event, phones: phones.count, hasLocation: location != nil)
         }
         .task(id: place?.searchQuery) { await resolvePlace() }
@@ -192,7 +201,7 @@ struct CalendarDetail: View {
     private var settingsSection: some View {
         Section {
             calendarRow
-            if event.editable {
+            if event.editable || device?.availabilityEditable == true {
                 Picker(selection: Binding(get: { event.free }, set: { free in
                     change(CalendarSettingsPatch(free: free), "show_as", free ? "free" : "busy")
                 })) {
@@ -204,11 +213,11 @@ struct CalendarDetail: View {
                 LabeledContent { Text(event.free ? LocalizedStringKey("Free") : LocalizedStringKey("Busy")) } label: { Label("Show as", systemImage: "hand.raised") }
             }
             alertRows
-            if leaveCapable && (event.editable || event.leaveAlert) {
-                Toggle(isOn: Binding(get: { event.leaveAlert }, set: { setLeave($0) })) {
+            if leaveCapable && (canEdit || event.leaveAlert) {
+                Toggle(isOn: Binding(get: { leaveOn }, set: { setLeave($0) })) {
                     Label("Time to leave", systemImage: "figure.walk.departure")
                 }
-                .disabled(!event.editable || guessing)
+                .disabled(!canEdit || guessing)
                 .accessibilityIdentifier("calendar-leave-alert")
             }
             travelRow
@@ -222,7 +231,12 @@ struct CalendarDetail: View {
 
     @ViewBuilder private var calendarRow: some View {
         let label = Label("Calendar", systemImage: "calendar")
-        if canMove {
+        if let device, device.calendars.count > 1 {
+            Picker(selection: Binding(get: { device.calendarId }, set: { moveOnPhone(to: $0) })) {
+                ForEach(device.calendars) { Text($0.title).tag($0.id) }
+            } label: { label }
+            .accessibilityIdentifier("calendar-move")
+        } else if canMove {
             Picker(selection: Binding(get: { event.source }, set: { move(to: $0) })) {
                 Text("Lucina").tag("lucina")
                 Text("Google").tag("google")
@@ -241,7 +255,7 @@ struct CalendarDetail: View {
     /// One row per alert, and an empty one to add another (while there are fewer than five).
     @ViewBuilder private var alertRows: some View {
         let alarms = event.alarms
-        if event.editable {
+        if canEdit {
             ForEach(Array(alarms.enumerated()), id: \.offset) { index, minutes in
                 Picker(selection: Binding(get: { minutes }, set: { value in
                     var next = alarms
@@ -287,7 +301,13 @@ struct CalendarDetail: View {
             } label: { Label("Travel time", systemImage: "car") }
             .accessibilityIdentifier("calendar-travel")
         } else {
-            LabeledContent { Text(CalendarMath.travelLabel(event.travelMin)) } label: { Label("Travel time", systemImage: "car") }
+            LabeledContent {
+                if event.travelMin == nil, let guess {
+                    Text(CalendarMath.travelLabel(guess.minutes) + " · " + guess.mode)
+                } else {
+                    Text(CalendarMath.travelLabel(event.travelMin))
+                }
+            } label: { Label("Travel time", systemImage: "car") }
         }
     }
 
@@ -298,8 +318,34 @@ struct CalendarDetail: View {
 
     // MARK: Actions
 
+    /// Reads the phone's own event: what it says wins over the server's snapshot of it.
+    private func loadDevice() {
+        guard let found = CalendarDeviceEvents.shared.details(for: event) else {
+            if event.source == "iphone" { CalendarDebug.deviceEvent(event, found: false, writable: false) }
+            return
+        }
+        device = found
+        if let notes = found.notes, !notes.isEmpty { event.description = notes }
+        if event.url == nil { event.url = found.url }
+        event.alarms = found.alarms
+        event.free = found.free
+        CalendarDebug.deviceEvent(event, found: true, writable: found.writable)
+    }
+
     private func change(_ patch: CalendarSettingsPatch, _ setting: String, _ value: String) {
         let before = event
+        if let device {
+            do {
+                try CalendarDeviceEvents.shared.apply(patch, identifier: device.identifier, start: before.startDate)
+                event = patch.applied(to: before)
+                store.adopt(event)
+                CalendarDebug.setting(setting, before, value: value, ok: true)
+            } catch {
+                store.error = String(localized: "Couldn't save this on the iPhone.")
+                CalendarDebug.setting(setting, before, value: value, ok: false, error: String((error as NSError).code))
+            }
+            return
+        }
         event = patch.applied(to: before)
         Task {
             if let saved = await store.update(before, settings: patch) {
@@ -325,6 +371,7 @@ struct CalendarDetail: View {
     }
 
     private func setLeave(_ on: Bool) {
+        if device != nil { return setLeaveOnPhone(on) }
         guard on else { return change(CalendarSettingsPatch(leaveAlert: false), "leave_alert", "off") }
         if let travel = event.travelMin { return change(CalendarSettingsPatch(leaveAlert: true), "leave_alert", "on_\(travel)") }
         Task {
@@ -339,6 +386,37 @@ struct CalendarDetail: View {
             }
             guess = found
             change(CalendarSettingsPatch(travelMin: found.minutes, leaveAlert: true), "leave_alert", "on_\(found.minutes)")
+        }
+    }
+
+    private func setLeaveOnPhone(_ on: Bool) {
+        Task {
+            guessing = true
+            defer { guessing = false }
+            var found = guess
+            if found == nil { found = await travelGuess() }
+            guard let found else {
+                store.error = String(localized: "Couldn't work out the travel time. Pick one under Travel time.")
+                CalendarDebug.setting("leave_alert", event, value: "on", ok: false, error: "no_travel_time")
+                return
+            }
+            guess = found
+            let others = event.alarms.filter { $0 != found.minutes }
+            setAlarms(on ? others + [found.minutes] : others)
+        }
+    }
+
+    private func moveOnPhone(to calendarId: String) {
+        guard let current = device, calendarId != current.calendarId else { return }
+        do {
+            let moved = try CalendarDeviceEvents.shared.move(identifier: current.identifier, start: event.startDate, to: calendarId)
+            device = moved
+            event.calendar = CalendarDeviceEvents.shared.calendarTitle(calendarId) ?? event.calendar
+            store.adopt(event)
+            CalendarDebug.setting("calendar", event, value: "phone", ok: true)
+        } catch {
+            store.error = String(localized: "Couldn't save this on the iPhone.")
+            CalendarDebug.setting("calendar", event, value: "phone", ok: false, error: String((error as NSError).code))
         }
     }
 
@@ -374,7 +452,7 @@ struct CalendarDetail: View {
         guard !Task.isCancelled else { return }
         resolved = found
         CalendarDebug.map(event, found: found != nil)
-        if found != nil, event.editable, !event.allDay, event.endDate > Date(), guess == nil {
+        if found != nil, canEdit, !event.allDay, event.endDate > Date(), guess == nil {
             guess = await travelGuess()
         }
     }
