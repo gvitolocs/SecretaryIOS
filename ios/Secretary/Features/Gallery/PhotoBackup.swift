@@ -696,17 +696,20 @@ final class PhotoBackup {
                 if next != BackgroundUpload.readConfig() { BackgroundUpload.writeConfig(next) }
                 let options = PHAssetResourceUploadJobOptions()
                 options.preventsExpensiveNetworkAccess = wifiOnly
-                // iOS keeps a failing extension's backoff (up to an hour) across app updates. Turning it
-                // off and on once per build starts the new build clean; the config above stays, so
-                // the extension keeps its place in the library's changes.
-                let buildKey = "secretary.photoBackup.uploadExtensionBuild"
-                let build = Bundle.main.object(forInfoDictionaryKey: "SecretaryBuildCommit") as? String ?? "unknown"
-                if library.uploadJobExtensionEnabled, UserDefaults.standard.string(forKey: buildKey) != build {
+                // PhotoKit can get stuck refusing every new job (PHPhotosErrorDomain -1, 2026-11-01), and iOS
+                // keeps a failing extension's backoff (up to an hour) across app updates. Turning it off and
+                // on clears both, and only the app can: when the extension asks, and once per install (its
+                // bundle path changes). The config above stays, so it keeps its place in the library's changes.
+                let installKey = "secretary.photoBackup.uploadExtensionInstall"
+                let install = Bundle.main.bundlePath
+                let asked = BackgroundUpload.takeRestartRequest()
+                let newInstall = UserDefaults.standard.string(forKey: installKey) != install
+                if library.uploadJobExtensionEnabled, asked || newInstall {
                     try library.disableUploadJobExtension()
-                    log.info("PhotoBackup background uploads restarted for build \(build, privacy: .public)")
-                    DebugEvents.record("photo_upload.restart", ["build": build])
+                    log.info("PhotoBackup background uploads restarted (asked: \(asked))")
+                    DebugEvents.record("photo_upload.restart", ["asked": asked, "new_install": newInstall])
                 }
-                UserDefaults.standard.set(build, forKey: buildKey)
+                UserDefaults.standard.set(install, forKey: installKey)
                 if !library.uploadJobExtensionEnabled {
                     try library.enableUploadJobExtension(with: options)
                     log.info("PhotoBackup background uploads on (Wi-Fi only: \(wifiOnly))")

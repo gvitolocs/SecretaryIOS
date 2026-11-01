@@ -296,6 +296,8 @@ private final class Uploader {
                     throw error
                 } catch {
                     failure = error
+                    // Seen on 2026-11-01: every job refused until the app turned the extension off and on.
+                    BackgroundUpload.requestRestart()
                     log.error("PhotoUpload no job for \(w.key, privacy: .public): \(String(describing: error), privacy: .public)")
                     DebugEvents.record("photo_upload.job_create_failed", [
                         "asset": w.key, "error": error, "resource_type": w.resource.type.rawValue,

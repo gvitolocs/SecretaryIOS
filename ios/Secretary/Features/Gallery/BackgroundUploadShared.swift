@@ -50,6 +50,22 @@ enum BackgroundUpload {
         }
     }
 
+    private static var restartStore: KeychainStore? {
+        BridgeCredentials.accessGroup.map { KeychainStore(service: service, account: "restart", accessGroup: $0) }
+    }
+
+    /// The extension asks the app to turn it off and on (PhotoKit refused a job).
+    static func requestRestart() {
+        try? restartStore?.save("1")
+    }
+
+    /// Whether the extension asked; the request is used up.
+    static func takeRestartRequest() -> Bool {
+        guard let store = restartStore, (try? store.read()) != nil else { return false }
+        try? store.delete()
+        return true
+    }
+
     static func recordSent(_ sent: Sent) {
         guard let group = BridgeCredentials.accessGroup,
               let data = try? JSONEncoder().encode(sent), let text = String(data: data, encoding: .utf8) else { return }
