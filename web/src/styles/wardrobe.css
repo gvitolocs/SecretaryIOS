@@ -1019,11 +1019,13 @@
 
 /* ---------- COM3D2 fitting room (beta) ---------- */
 
+/* It takes the rest of the sheet below the switches, so the whole stage is in view without scrolling; a short
+   window still gets a usable stage. */
 .wardrobe-com3d2 {
   display: block;
-  flex: 1 1 auto;
+  flex: 1 1 0;
   width: 100%;
-  min-height: min(720px, 70vh);
+  min-height: min(420px, 55vh);
   border: 0;
   border-radius: 18px;
   background: #090e20;
