@@ -32,6 +32,24 @@ final class FakeApprovalSigner: ApprovalSigning, @unchecked Sendable {
 
 }
 
+/// An unlock key without a Secure Enclave: records what it signed.
+final class FakeUnlockSigner: UnlockApprovalSigning, @unchecked Sendable {
+    var keyId: String?
+    var error: Error?
+    private(set) var signed: [String] = []
+
+    init(keyId: String? = "ulk_1") { self.keyId = keyId }
+
+    func prepareKey() throws -> Data { Data([4, 9, 9, 9]) }
+    func commitKey(keyId: String) throws { self.keyId = keyId }
+    func removeKey() throws { keyId = nil }
+    func sign(_ message: String) throws -> ApprovalProof {
+        signed.append(message)
+        if let error { throw error }
+        return ApprovalProof(keyId: keyId ?? "", signature: "dW5sb2Nr")
+    }
+}
+
 /// Records what would go to `UNUserNotificationCenter`, delivered removals included.
 final class ApprovalFakeCenter: NotificationScheduling, @unchecked Sendable {
     var added: [UNNotificationRequest] = []
@@ -90,10 +108,10 @@ private func itemJSON(id: String, sensitive: Bool, status: String? = nil, extra:
 private let fixtureHash = "sha256:" + String(repeating: "ab", count: 32)
 private let fixtureNow = Date(timeIntervalSince1970: 1793181660) // 2026-10-28T10:01:00Z
 
-private func settingsJSON(hasPin: Bool, serverKey: Bool = false) -> String {
+private func settingsJSON(hasPin: Bool, serverKey: Bool = false, unlockKey: Bool = false) -> String {
     """
     {"mainDeviceId":null,"thisDeviceId":"dev_1","hasPin":\(hasPin),
-     "devices":[{"id":"dev_1","name":"iPhone","hasBiometricKey":\(serverKey)}]}
+     "devices":[{"id":"dev_1","name":"iPhone","hasBiometricKey":\(serverKey),"hasUnlockKey":\(unlockKey)}]}
     """
 }
 
@@ -315,6 +333,7 @@ final class ApprovalsTests: XCTestCase {
 
     func testNotificationActionRouting() {
         XCTAssertEqual(ApprovalNotificationAction(identifier: ApprovalNotifier.approveAction), .approve)
+        XCTAssertEqual(ApprovalNotificationAction(identifier: ApprovalNotifier.approveInPlaceAction), .approveInPlace)
         XCTAssertEqual(ApprovalNotificationAction(identifier: ApprovalNotifier.denyAction), .deny)
         XCTAssertEqual(ApprovalNotificationAction(identifier: UNNotificationDefaultActionIdentifier), .open)
         XCTAssertNil(ApprovalNotificationAction(identifier: UNNotificationDismissActionIdentifier))
@@ -331,6 +350,9 @@ final class ApprovalsTests: XCTestCase {
         XCTAssertEqual(N.approve.route(sensitive: false, inline: true), .decide(.approve))
         XCTAssertEqual(N.approve.route(sensitive: true, inline: true), .openSheetAndApprove, "the whole plan was shown: Face ID at once")
         XCTAssertEqual(N.approve.route(sensitive: true, inline: false), .openSheet, "not the whole plan: the card to read")
+        XCTAssertEqual(N.approveInPlace.route(sensitive: true, inline: true), .approveInPlace, "one-tap: answered where it is")
+        XCTAssertEqual(N.approveInPlace.route(sensitive: true, inline: false), .openSheet)
+        XCTAssertEqual(N.approveInPlace.route(sensitive: false, inline: true), .decide(.approve))
     }
 
     func testNotificationContentAndCategories() throws {
@@ -676,9 +698,230 @@ final class ApprovalsTests: XCTestCase {
 
     func testOnlyTheNotificationsApproveActionIsATrigger() {
         XCTAssertEqual(AppDelegate.approvalTrigger(forAction: ApprovalNotifier.approveAction), .notificationApproveAction)
+        XCTAssertEqual(AppDelegate.approvalTrigger(forAction: ApprovalNotifier.approveInPlaceAction), .notificationApproveAction)
         XCTAssertNil(AppDelegate.approvalTrigger(forAction: ApprovalNotifier.denyAction))
         XCTAssertNil(AppDelegate.approvalTrigger(forAction: UNNotificationDefaultActionIdentifier), "a tap opens the card")
         XCTAssertNil(AppDelegate.approvalTrigger(forAction: UNNotificationDismissActionIdentifier))
+    }
+
+    // MARK: One-tap Approve (the unlock key)
+
+    private func oneTapStore(_ unlock: FakeUnlockSigner) -> ApprovalsStore {
+        let client = StubURLProtocol.makeClient()
+        return ApprovalsStore(api: { ApprovalsAPI(client: client) }, signer: signer, unlockSigner: unlock, notifier: notifier, defaults: defaults)
+    }
+
+    /// The owner tapped the inline notification's one-tap Approve (iOS ran it after Face ID or the passcode).
+    private func oneTap(_ store: ApprovalsStore, _ id: String, hash: String? = fixtureHash, now: Date = fixtureNow) async {
+        await store.handleNotification(actionIdentifier: ApprovalNotifier.approveInPlaceAction, approvalId: id, sensitive: true,
+                                       inline: true, shownHash: hash,
+                                       trigger: AppDelegate.approvalTrigger(forAction: ApprovalNotifier.approveInPlaceAction), now: now)
+    }
+
+    /// The server's view of `apr_secret`, and its answer to a decide.
+    private func serve(status: String? = nil) {
+        StubURLProtocol.handler = { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("GET", "/v1/approvals/apr_secret"): return .init(body: itemJSON(id: "apr_secret", sensitive: true, status: status))
+            case ("POST", "/v1/approvals/apr_secret/decide"): return .init(body: #"{"status":"approved"}"#)
+            default: return .init(body: "{}")
+            }
+        }
+    }
+
+    func testOneTapApproveSignsWithTheUnlockKeyOnly() async throws {
+        let unlock = FakeUnlockSigner()
+        let store = oneTapStore(unlock)
+        var settled: [String: ApprovalOutcome] = [:]
+        store.onSettled = { id, outcome in settled[id] = outcome }
+        XCTAssertTrue(store.oneTapReady)
+        serve()
+        await oneTap(store, "apr_secret")
+        XCTAssertEqual(unlock.signed, ["secretary-approval-v1\napr_secret\n\(fixtureHash)\napprove"])
+        XCTAssertTrue(signer.signed.isEmpty, "the Face ID key is never asked from a notification action")
+        XCTAssertEqual(decideRequests().count, 1)
+        let body = decodeBody(try XCTUnwrap(decideRequests().first))
+        XCTAssertEqual(body["decision"] as? String, "approve")
+        XCTAssertEqual(body["payloadHash"] as? String, fixtureHash)
+        XCTAssertEqual(body["proof"] as? [String: String], ["keyId": "ulk_1", "signature": "dW5sb2Nr"])
+        XCTAssertEqual(settled["apr_secret"], .approved)
+        XCTAssertTrue(notifier.removed.contains("apr_secret"), "off the lock screen")
+        XCTAssertNil(store.sheetItem, "no card")
+        XCTAssertTrue(notifier.failures.isEmpty)
+        XCTAssertTrue(notifier.followUps.isEmpty)
+
+        // The same tap again once it went through (iOS runs it twice): nothing is signed or sent again, nothing opens.
+        serve(status: "approved")
+        await oneTap(store, "apr_secret")
+        XCTAssertEqual(unlock.signed.count, 1)
+        XCTAssertEqual(decideRequests().count, 1)
+        XCTAssertNil(store.sheetItem)
+        XCTAssertTrue(notifier.followUps.isEmpty)
+    }
+
+    func testOneTapApproveRefusesAChangedExpiredOrDecidedRequest() async throws {
+        let unlock = FakeUnlockSigner()
+        let store = oneTapStore(unlock)
+        // A different plan than the notification showed, or no hash: the card instead ("Open Secretary to approve").
+        serve()
+        await oneTap(store, "apr_secret", hash: "sha256:" + String(repeating: "cd", count: 32))
+        await oneTap(store, "apr_secret", hash: nil)
+        XCTAssertEqual(notifier.followUps, ["apr_secret", "apr_secret"])
+        // Past its time, or answered elsewhere: nothing to approve, nothing to open.
+        await oneTap(store, "apr_secret", now: fixtureNow.addingTimeInterval(600))
+        serve(status: "denied")
+        await oneTap(store, "apr_secret")
+        XCTAssertEqual(notifier.followUps.count, 2, "only the still pending ones")
+        XCTAssertTrue(unlock.signed.isEmpty)
+        XCTAssertTrue(signer.signed.isEmpty)
+        XCTAssertTrue(decideRequests().isEmpty)
+        // Without the notification's own trigger nothing happens at all.
+        await store.handleNotification(actionIdentifier: ApprovalNotifier.approveInPlaceAction, approvalId: "apr_secret",
+                                       sensitive: true, inline: true, shownHash: fixtureHash, trigger: nil, now: fixtureNow)
+        XCTAssertTrue(unlock.signed.isEmpty)
+    }
+
+    func testOneTapApproveFailingSaysSo() async throws {
+        let unlock = FakeUnlockSigner()
+        unlock.error = ApprovalSignError.notSigned(domain: "CryptoTokenKit", code: -5)
+        let store = oneTapStore(unlock)
+        serve()
+        await oneTap(store, "apr_secret")
+        XCTAssertEqual(notifier.failures, ["apr_secret"], "the key refused: the failure notification")
+        XCTAssertTrue(decideRequests().isEmpty)
+        // The server refuses the key (its Face ID key changed): the failure notification, and the key is dropped.
+        unlock.error = nil
+        StubURLProtocol.handler = { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("GET", "/v1/approvals/apr_secret"): return .init(body: itemJSON(id: "apr_secret", sensitive: true))
+            case ("POST", "/v1/approvals/apr_secret/decide"):
+                return .init(status: 403, body: #"{"error":{"code":"biometric_required","message":"no"}}"#)
+            default: return .init(body: "{}")
+            }
+        }
+        var changes: [Bool] = []
+        store.onOneTapChanged = { changes.append($0) }
+        await oneTap(store, "apr_secret")
+        XCTAssertEqual(notifier.failures, ["apr_secret", "apr_secret"])
+        XCTAssertNil(unlock.keyId)
+        XCTAssertFalse(store.oneTapReady)
+        XCTAssertEqual(changes, [false], "the categories fall back to the card's Approve")
+    }
+
+    func testOneTapFallsBackWithoutTheKeyOrWithTheSwitchOff() async throws {
+        func inlineApprove(_ oneTap: Bool) throws -> UNNotificationAction {
+            let category = try XCTUnwrap(ApprovalNotifier.categories(oneTap: oneTap).first { $0.identifier == ApprovalNotifier.sensitiveInlineCategory })
+            XCTAssertEqual(category.actions.first?.identifier, ApprovalNotifier.denyAction, "Deny stays first")
+            return try XCTUnwrap(category.actions.last)
+        }
+        let inPlace = try inlineApprove(true)
+        XCTAssertEqual(inPlace.identifier, ApprovalNotifier.approveInPlaceAction)
+        XCTAssertEqual(inPlace.options, [.authenticationRequired], "no app comes to the front")
+        let card = try inlineApprove(false)
+        XCTAssertEqual(card.identifier, ApprovalNotifier.approveAction)
+        XCTAssertTrue(card.options.contains(.foreground), "the card with Face ID")
+        for oneTap in [true, false] {
+            let other = ApprovalNotifier.categories(oneTap: oneTap).filter { $0.identifier != ApprovalNotifier.sensitiveInlineCategory }
+            XCTAssertEqual(Set(other.flatMap { $0.actions.map(\.identifier) }), [ApprovalNotifier.denyAction, ApprovalNotifier.approveAction],
+                           "APPROVAL and APPROVAL_SENSITIVE unchanged")
+        }
+        XCTAssertTrue(ApprovalsStore.oneTapReady(defaults: defaults, unlockKeyId: "ulk_1"), "on by default")
+        XCTAssertFalse(ApprovalsStore.oneTapReady(defaults: defaults, unlockKeyId: nil))
+
+        // No unlock key: an in-place tap (from categories registered earlier) goes to the card.
+        serve()
+        let noKey = FakeUnlockSigner(keyId: nil)
+        await oneTap(oneTapStore(noKey), "apr_secret")
+        // The switch off: the same.
+        defaults.set(false, forKey: ApprovalsStore.oneTapKey)
+        XCTAssertFalse(ApprovalsStore.oneTapReady(defaults: defaults, unlockKeyId: "ulk_1"))
+        let off = FakeUnlockSigner()
+        let offStore = oneTapStore(off)
+        XCTAssertFalse(offStore.oneTapReady)
+        await oneTap(offStore, "apr_secret")
+        XCTAssertEqual(notifier.followUps, ["apr_secret", "apr_secret"])
+        XCTAssertTrue(noKey.signed.isEmpty)
+        XCTAssertTrue(off.signed.isEmpty)
+        XCTAssertTrue(decideRequests().isEmpty)
+    }
+
+    func testEnrollingTheUnlockKeyTakesOneFaceIDProof() async throws {
+        let unlock = FakeUnlockSigner(keyId: nil)
+        let store = oneTapStore(unlock)
+        var changes: [Bool] = []
+        store.onOneTapChanged = { changes.append($0) }
+        StubURLProtocol.handler = { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("GET", "/v1/approvals/settings"): return .init(body: settingsJSON(hasPin: false, serverKey: true))
+            case ("POST", "/v1/approvals/unlock-key"): return .init(body: #"{"keyId":"ulk_new"}"#)
+            default: return .init(body: "{}")
+            }
+        }
+        // No Face ID key on this iPhone: nothing to ask.
+        signer.keyId = nil
+        await store.ensureUnlockKey()
+        XCTAssertTrue(signer.signed.isEmpty)
+        signer.keyId = "key_1"
+
+        await store.ensureUnlockKey()
+        let sentKey = Data([4, 9, 9, 9]).base64EncodedString()
+        XCTAssertEqual(signer.signed.map(\.message), [ApprovalsAPI.unlockKeyString(deviceId: "dev_1", publicKey: sentKey)])
+        XCTAssertEqual(ApprovalsAPI.unlockKeyString(deviceId: "dev_1", publicKey: sentKey), "secretary-unlock-key-v1\ndev_1\n\(sentKey)")
+        XCTAssertEqual(signer.signed.map(\.reason), ["Allow one-tap Approve"])
+        XCTAssertTrue(unlock.signed.isEmpty, "the unlock key does not vouch for itself")
+        let post = try XCTUnwrap(StubURLProtocol.requests.first { $0.httpMethod == "POST" && $0.url?.path == "/v1/approvals/unlock-key" })
+        let body = decodeBody(post)
+        XCTAssertEqual(body["publicKey"] as? String, sentKey)
+        XCTAssertEqual(body["proof"] as? [String: String], ["signature": "c2ln"])
+        XCTAssertEqual(unlock.keyId, "ulk_new")
+        XCTAssertTrue(store.oneTapReady)
+        XCTAssertEqual(changes, [true])
+        // Once per launch.
+        await store.ensureUnlockKey()
+        XCTAssertEqual(signer.signed.count, 1)
+
+        // A Face ID key the server doesn't have active (waiting for another device's OK): no prompt, the switch stays off.
+        let pendingKey = FakeUnlockSigner(keyId: nil)
+        let other = oneTapStore(pendingKey)
+        StubURLProtocol.handler = { _ in .init(body: settingsJSON(hasPin: false, serverKey: false)) }
+        await other.setOneTap(true)
+        XCTAssertEqual(signer.signed.count, 1)
+        XCTAssertFalse(other.oneTapOn)
+        XCTAssertNil(pendingKey.keyId)
+    }
+
+    func testTurningOneTapOffDeletesTheKeyOnTheServerAndHere() async throws {
+        let unlock = FakeUnlockSigner()
+        let store = oneTapStore(unlock)
+        var changes: [Bool] = []
+        store.onOneTapChanged = { changes.append($0) }
+        StubURLProtocol.handler = { _ in .init(body: #"{"removed":true}"#) }
+        await store.setOneTap(false)
+        XCTAssertEqual(StubURLProtocol.requests.filter { $0.httpMethod == "DELETE" && $0.url?.path == "/v1/approvals/unlock-key" }.count, 1)
+        XCTAssertNil(unlock.keyId)
+        XCTAssertFalse(store.oneTapOn)
+        XCTAssertEqual(defaults.object(forKey: ApprovalsStore.oneTapKey) as? Bool, false)
+        XCTAssertEqual(changes, [false])
+        XCTAssertTrue(signer.signed.isEmpty, "turning it off needs no Face ID")
+
+        // The server can't be reached: the key still goes here (without it nothing can sign).
+        let offline = FakeUnlockSigner()
+        let other = oneTapStore(offline)
+        StubURLProtocol.handler = { _ in .init(status: 500, body: #"{"error":{"code":"internal","message":"boom"}}"#) }
+        await other.setOneTap(false)
+        XCTAssertNil(offline.keyId)
+    }
+
+    func testAnUnlockKeyTheServerDroppedGoesHereToo() async throws {
+        let unlock = FakeUnlockSigner()
+        let store = oneTapStore(unlock)
+        StubURLProtocol.handler = { _ in .init(body: settingsJSON(hasPin: false, serverKey: true, unlockKey: true)) }
+        await store.loadSettings()
+        XCTAssertEqual(unlock.keyId, "ulk_1")
+        StubURLProtocol.handler = { _ in .init(body: settingsJSON(hasPin: false, serverKey: true, unlockKey: false)) }
+        await store.loadSettings()
+        XCTAssertNil(unlock.keyId)
+        XCTAssertFalse(store.oneTapReady)
     }
 
     // MARK: The activity's Approve link

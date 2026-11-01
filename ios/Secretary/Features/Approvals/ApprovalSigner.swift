@@ -186,3 +186,107 @@ final class SecureEnclaveApprovalSigner: ApprovalSigning, @unchecked Sendable {
         return signature.base64EncodedString()
     }
 }
+
+/// The unlock key's proof: one-tap Approve from a notification, which can't show the Face ID key's own prompt (iOS
+/// runs the action in the background after asking Face ID or the passcode to unlock). A separate protocol, so the
+/// in-place approve can only ever reach this key, never the Face ID one.
+protocol UnlockApprovalSigning: Sendable {
+    /// The id the server gave this iPhone's unlock key, when it has one.
+    var keyId: String? { get }
+    /// Makes a new Secure Enclave key (kept in memory, not saved) and returns its X9.63 public key.
+    func prepareKey() throws -> Data
+    /// Saves the prepared key once the server enrolled it under `keyId`.
+    func commitKey(keyId: String) throws
+    func removeKey() throws
+    /// Signs `message` (ASCII bytes) at once: no prompt, the iPhone just has to be unlocked.
+    func sign(_ message: String) throws -> ApprovalProof
+}
+
+/// No unlock key (fixtures, and stores that never approve in place).
+struct NoUnlockApprovalSigner: UnlockApprovalSigning {
+    var keyId: String? { nil }
+    func prepareKey() throws -> Data { throw ApprovalSignError.unavailable }
+    func commitKey(keyId: String) throws { throw ApprovalSignError.noKey }
+    func removeKey() throws {}
+    func sign(_ message: String) throws -> ApprovalProof { throw ApprovalSignError.noKey }
+}
+
+/// A P-256 key in the Secure Enclave usable whenever this iPhone is unlocked (`kSecAttrAccessibleWhenUnlocked
+/// ThisDeviceOnly`, `.privateKeyUsage` only: no Face ID or passcode at signing time). The owner chose this trade-off
+/// for the notification's one-tap Approve: anyone who can unlock the iPhone can approve with one tap. The server
+/// enrolls it only with the Face ID key's proof, and never accepts it for adding approver devices. Stored like the
+/// Face ID key (its opaque `dataRepresentation` and the server's key id in the Keychain).
+final class UnlockApprovalSigner: UnlockApprovalSigning, @unchecked Sendable {
+    static let store = KeychainStore(service: "tech.getsecretary.app", account: "approval-unlock-key")
+    static let keyVersion = 1
+
+    static func accessControl() -> SecAccessControl? {
+        var error: Unmanaged<CFError>?
+        let access = SecAccessControlCreateWithFlags(nil, kSecAttrAccessibleWhenUnlockedThisDeviceOnly, [.privateKeyUsage], &error)
+        _ = error?.takeRetainedValue()
+        return access
+    }
+
+    private struct Stored: Codable {
+        var data: String
+        var keyId: String
+        var version: Int?
+    }
+
+    private let store: KeychainStore
+    private let lock = NSLock()
+    private var prepared: SecureEnclave.P256.Signing.PrivateKey?
+
+    init(store: KeychainStore = UnlockApprovalSigner.store) {
+        self.store = store
+    }
+
+    private func stored() -> Stored? {
+        guard let text = try? store.read(), let data = text.data(using: .utf8),
+              let blob = try? JSONDecoder().decode(Stored.self, from: data),
+              blob.version == Self.keyVersion else { return nil }
+        return blob
+    }
+
+    var keyId: String? { stored()?.keyId }
+
+    func prepareKey() throws -> Data {
+        guard SecureEnclave.isAvailable, let access = Self.accessControl() else { throw ApprovalSignError.unavailable }
+        do {
+            let key = try SecureEnclave.P256.Signing.PrivateKey(accessControl: access)
+            lock.withLock { prepared = key }
+            return key.publicKey.x963Representation
+        } catch {
+            let code = (error as NSError).code
+            throw ApprovalSignError.failed("\(error.localizedDescription) (\(code))")
+        }
+    }
+
+    func commitKey(keyId: String) throws {
+        guard let key = lock.withLock({ prepared }) else { throw ApprovalSignError.noKey }
+        let blob = Stored(data: key.dataRepresentation.base64EncodedString(), keyId: keyId, version: Self.keyVersion)
+        guard let json = try? JSONEncoder().encode(blob), let text = String(data: json, encoding: .utf8) else {
+            throw ApprovalSignError.failed("encode")
+        }
+        try store.save(text)
+        lock.withLock { prepared = nil }
+    }
+
+    func removeKey() throws {
+        lock.withLock { prepared = nil }
+        try store.delete()
+    }
+
+    func sign(_ message: String) throws -> ApprovalProof {
+        guard let stored = stored(), let blob = Data(base64Encoded: stored.data) else { throw ApprovalSignError.noKey }
+        do {
+            let key = try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: blob)
+            let signature = try key.signature(for: Data(message.utf8)).derRepresentation
+            return ApprovalProof(keyId: stored.keyId, signature: signature.base64EncodedString())
+        } catch {
+            let e = error as NSError
+            signLog.info("unlock sign error \(e.domain, privacy: .public) \(e.code, privacy: .public)")
+            throw ApprovalSignError.notSigned(domain: e.domain, code: e.code)
+        }
+    }
+}

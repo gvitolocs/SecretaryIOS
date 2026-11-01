@@ -168,6 +168,40 @@ opens without asking. A plan that does not fit (over 2400 bytes, or cut in the
 inbox), or previews off, keeps `APPROVAL_SENSITIVE`, whose "Review and
 approve" opens the card for the owner to read and tap Approve there.
 
+**One-tap Approve** (Settings → Approvals → "One-tap Approve from
+notifications", on by default). With it, that `APPROVAL_SENSITIVE_INLINE`
+Approve (`APPROVAL_APPROVE_IN_PLACE`, checkmark icon) finishes in place. iOS
+asks Face ID or the passcode to run it, no app opens, and there is no second
+prompt. This takes a second Secure Enclave key, the **unlock key**
+(`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`, `.privateKeyUsage` only), which
+signs whenever the iPhone is unlocked. The Face ID key
+(`.privateKeyUsage, .userPresence`) can't be used from there: iOS can't show its
+prompt from a background action, and the Secure Enclave refused a reused unlock
+(CryptoTokenKit -5).
+- **The trade-off**, accepted by the owner: anyone who can unlock the iPhone can
+  approve a root command from the notification with one tap.
+- **Enrollment:** the app makes the unlock key and the Face ID key signs it once
+  ("Allow one-tap Approve"). This happens when the switch is turned on, the
+  first time the app is in front with a Face ID key and no unlock key, and after
+  "Set up Face ID again". The server then accepts it
+  (`POST /v1/approvals/unlock-key`, see docs/server-api.md).
+- **Turning it off** deletes the key on the server, then on the iPhone.
+- **Who refuses it:** the server never accepts it for adding approver devices,
+  and drops it when the Face ID key is removed, revoked or replaced. The app
+  then deletes its copy too, and the notification goes back to the card's
+  Approve.
+- **The tap itself:** the app fetches the request and signs it with the unlock
+  key only (never the Face ID key). Nothing happens if the request is decided or
+  expired. A request that changed since the notification, or one-tap not being
+  ready, gets "Open Secretary to approve". A signing or server failure gets
+  "Your answer didn't go through". The server records it as
+  `verifiedBy: unlock_key`, `biometric: false`,
+  "unlock key (notification/card) on iPhone".
+- **Repeats:** a repeated answer from the same iPhone is a 200 (`repeated`), so
+  an action iOS runs twice succeeds without a second prompt.
+- **Unchanged:** `APPROVAL` (plain) and `APPROVAL_SENSITIVE` are unchanged, and
+  so is the Live Activity card (Deny intent, Approve link).
+
 When the request is answered anywhere, withdrawn or expires, the server ends
 the activity (an `end` push to its update token); the app also ends any
 activity whose request is no longer pending whenever it refreshes the list.

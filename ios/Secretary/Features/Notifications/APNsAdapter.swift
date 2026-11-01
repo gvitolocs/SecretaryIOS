@@ -79,7 +79,8 @@ enum BackgroundRefresh {
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
-        ApprovalNotifier.registerCategories()
+        // One-tap Approve as this iPhone last left it (the store registers them again when it changes).
+        ApprovalNotifier.registerCategories(oneTap: ApprovalsStore.oneTapReady(unlockKeyId: UnlockApprovalSigner().keyId))
         Task { @MainActor in APNsAdapter.registerIfEnabled() }
         // Photo backup: longer passes when iOS grants processing time (Wi-Fi, often charging).
         BGTaskScheduler.shared.register(forTaskWithIdentifier: PhotoBackup.processingIdentifier, using: nil) { task in
@@ -163,10 +164,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         return [.banner, .list, .sound]
     }
 
-    /// The trigger of a notification answer: only the notification's own Approve action approves; a tap, Deny or any
-    /// other action carries none.
+    /// The trigger of a notification answer: only the notification's own Approve actions approve (the card one and
+    /// the one-tap one); a tap, Deny or any other action carries none.
     static func approvalTrigger(forAction actionIdentifier: String) -> ApprovalTrigger? {
-        actionIdentifier == ApprovalNotifier.approveAction ? .notificationApproveAction : nil
+        actionIdentifier == ApprovalNotifier.approveAction || actionIdentifier == ApprovalNotifier.approveInPlaceAction
+            ? .notificationApproveAction : nil
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {

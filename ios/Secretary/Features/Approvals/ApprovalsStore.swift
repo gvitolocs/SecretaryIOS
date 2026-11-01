@@ -71,6 +71,8 @@ final class ApprovalsStore {
     static let backoffInterval: Duration = .seconds(30)
     static let errorInterval: Duration = .seconds(10)
     static let notifiedKey = "secretary.approvals.notified"
+    /// Settings → Approvals → "One-tap Approve from notifications" (absent: on).
+    nonisolated static let oneTapKey = "secretary.approvals.oneTap"
     static let notifiedLimit = 100
 
     private(set) var pending: [ApprovalItem] = []
@@ -94,9 +96,23 @@ final class ApprovalsStore {
     private(set) var settingsBusy = false
     var settingsMessage: String?
     private(set) var keyStatus: KeyStatus = .unknown
+    /// "One-tap Approve from notifications" (default on).
+    private(set) var oneTapOn = true
+    /// The server's id of this iPhone's unlock key, when it has one.
+    private(set) var unlockKeyId: String? = nil
+    /// One-tap Approve works now: the switch is on and the unlock key enrolled.
+    var oneTapReady: Bool { oneTapOn && unlockKeyId != nil }
 
     @ObservationIgnored private let api: () -> ApprovalsAPI?
     @ObservationIgnored let signer: ApprovalSigning
+    /// The one-tap Approve's key: the only signer the in-place approve uses.
+    @ObservationIgnored let unlockSigner: UnlockApprovalSigning
+    /// `oneTapReady` changed (the app registers the notification categories again).
+    @ObservationIgnored var onOneTapChanged: ((Bool) -> Void)?
+    /// The automatic enrollment (`ensureUnlockKey`) was tried in this launch: one Face ID prompt at most.
+    @ObservationIgnored private var unlockEnrollTried = false
+    /// One-tap approves on their way, by request (iOS may run the action twice).
+    @ObservationIgnored private var approvingInPlace: Set<String> = []
     @ObservationIgnored let notifier: ApprovalNotifying
     @ObservationIgnored private let previews: () -> Bool
     @ObservationIgnored private let deviceLabel: () -> String
@@ -119,11 +135,14 @@ final class ApprovalsStore {
     /// Fixture data for the screenshots: nothing is polled.
     @ObservationIgnored private(set) var isFixture = false
 
-    init(api: @escaping () -> ApprovalsAPI?, signer: ApprovalSigning, notifier: ApprovalNotifying,
-         previews: @escaping () -> Bool = { true }, deviceLabel: @escaping () -> String = { "iPhone" },
+    init(api: @escaping () -> ApprovalsAPI?, signer: ApprovalSigning, unlockSigner: UnlockApprovalSigning = NoUnlockApprovalSigner(),
+         notifier: ApprovalNotifying, previews: @escaping () -> Bool = { true }, deviceLabel: @escaping () -> String = { "iPhone" },
          defaults: UserDefaults = .standard) {
         self.api = api
         self.signer = signer
+        self.unlockSigner = unlockSigner
+        oneTapOn = defaults.object(forKey: Self.oneTapKey) as? Bool ?? true
+        unlockKeyId = unlockSigner.keyId
         self.notifier = notifier
         self.previews = previews
         self.deviceLabel = deviceLabel
@@ -449,6 +468,8 @@ final class ApprovalsStore {
             await open(id: approvalId)
         case .openSheetAndApprove:
             await openCardToApprove(approvalId, shownHash: shownHash, trigger: trigger, now: now)
+        case .approveInPlace:
+            await approveInPlace(approvalId, shownHash: shownHash, trigger: trigger, now: now)
         case let .decide(decision):
             var known = pending.first { $0.id == approvalId }
             if known == nil, let api = api() { known = try? await api.get(approvalId) }
@@ -491,6 +512,87 @@ final class ApprovalsStore {
                 """)
             await finishButtonAnswer(item, result)
         }
+    }
+
+    /// The notification's one-tap Approve of a root plan it showed whole (`APPROVAL_SENSITIVE_INLINE` with the unlock key;
+    /// iOS asked Face ID or the passcode to run it, the app stays in the background). Fetches the request and signs it
+    /// with the unlock key only (never the Face ID key: its prompt can't show from here), for the owner's own tap on
+    /// the request the notification showed, while it is pending. A request answered already is left alone (no prompt,
+    /// no card); one that changed, or one-tap not ready, gets "Open Secretary to approve"; a failure the failure
+    /// notification. Nothing is ever dropped silently.
+    private func approveInPlace(_ id: String, shownHash: String?, trigger: ApprovalTrigger?, now: Date) async {
+        guard trigger == .notificationApproveAction else {
+            log.error("one-tap approve refused id=\(id, privacy: .public): not from the notification's Approve")
+            return
+        }
+        guard !approvingInPlace.contains(id) else { return }
+        approvingInPlace.insert(id)
+        defer { approvingInPlace.remove(id) }
+        guard let api = api() else {
+            await notifier.postFailure(for: pending.first { $0.id == id } ?? ApprovalItem(id: id, summary: "", sensitive: true))
+            return
+        }
+        let fetched: ApprovalItem
+        do {
+            fetched = try await api.get(id)
+        } catch {
+            let e = APIError.wrap(error)
+            if e.endsSession { onTransportError?(e) }
+            log.error("one-tap approve id=\(id, privacy: .public): request not fetched (\(e.status, privacy: .public))")
+            let result = ApprovalOutcome.from(error)
+            let item = pending.first { $0.id == id } ?? ApprovalItem(id: id, summary: "", sensitive: true)
+            if result.isFinal { await finishButtonAnswer(item, result) } else { await notifier.postFailure(for: item) }
+            return
+        }
+        let item = fetched
+        guard item.status == nil || item.status == .pending else {
+            // Answered already (by this iPhone too: a repeated tap): nothing to ask, nothing to open.
+            log.info("one-tap approve id=\(id, privacy: .public): no longer pending")
+            await forgetAnswered(item)
+            return
+        }
+        guard !item.isExpired(at: now) else {
+            log.info("one-tap approve id=\(id, privacy: .public): expired")
+            await forgetAnswered(item)
+            return
+        }
+        guard let shownHash, shownHash == item.payloadHash else {
+            log.error("one-tap approve refused id=\(id, privacy: .public): changed since shown")
+            await notifier.postOpenToApprove(for: item)
+            return
+        }
+        // Not ready (switched off, or the key went since the categories were registered), or an approver change
+        // (the server takes Face ID for those): the card instead.
+        guard oneTapReady, unlockSigner.keyId != nil, !item.action.hasPrefix("approver.") else {
+            log.info("one-tap approve id=\(id, privacy: .public): not ready, open-to-approve")
+            await notifier.postOpenToApprove(for: item)
+            return
+        }
+        log.info("approve id=\(item.id, privacy: .public) trigger=\(ApprovalTrigger.notificationApproveAction.rawValue, privacy: .public) via=unlock_key")
+        let proof: ApprovalProof
+        do {
+            proof = try unlockSigner.sign(item.signingString(for: .approve))
+        } catch {
+            log.error("one-tap approve id=\(id, privacy: .public): unlock key did not sign")
+            await notifier.postFailure(for: item)
+            return
+        }
+        let result: ApprovalOutcome
+        do {
+            try await api.decide(item.id, decision: .approve, payloadHash: item.payloadHash, proof: proof)
+            result = .approved
+        } catch {
+            let e = APIError.wrap(error)
+            if e.endsSession { onTransportError?(e) }
+            result = ApprovalOutcome.from(error)
+            if result == .needsSetup {
+                // The server no longer takes this unlock key (the Face ID key changed): back to the card's Approve.
+                log.error("one-tap approve id=\(id, privacy: .public): unlock key refused, removed")
+                forgetUnlockKey()
+            }
+        }
+        log.info("one-tap approve id=\(id, privacy: .public): \(String(describing: result), privacy: .public)")
+        await finishButtonAnswer(item, result)
     }
 
     /// The Live Activity's Approve link (`approvals/<id>?approve=1&hash=…`; the app is coming to the front): the card,
@@ -564,6 +666,12 @@ final class ApprovalsStore {
             settings = s
             if !keepMessage { settingsMessage = nil }
             availability = .available
+            // The server dropped this iPhone's unlock key (its Face ID key was removed or replaced): it signs nothing
+            // the server takes, so it goes here too, and the next launch in front enrolls a new one.
+            if unlockKeyId != nil, s.thisDevice != nil, !s.serverHasUnlockKeyForThisDevice {
+                log.info("unlock key no longer on the server: removed")
+                forgetUnlockKey()
+            }
         } catch {
             let e = APIError.wrap(error)
             if e.status == 404 || e.status == 405 {
@@ -704,8 +812,104 @@ final class ApprovalsStore {
         defer { settingsBusy = false }
         if let api = api() { try? await api.deleteKey() }
         try? signer.removeKey()
+        // The server drops the unlock key with the Face ID key.
+        forgetUnlockKey()
         settingsMessage = nil
         await loadSettings()
+    }
+
+    // MARK: - One-tap Approve (the unlock key)
+
+    /// Whether the notification's one-tap Approve is registered: the switch (absent: on) and an enrolled unlock key.
+    /// For the launch, before the store exists.
+    nonisolated static func oneTapReady(defaults: UserDefaults = .standard, unlockKeyId: String?) -> Bool {
+        (defaults.object(forKey: oneTapKey) as? Bool ?? true) && unlockKeyId != nil
+    }
+
+    /// The Settings switch. On: enroll the unlock key (one Face ID); if that doesn't happen the switch goes back off.
+    /// Off: the server forgets the key, then this iPhone deletes it.
+    func setOneTap(_ on: Bool) async {
+        let wasReady = oneTapReady
+        oneTapOn = on
+        defaults.set(on, forKey: Self.oneTapKey)
+        if on {
+            if unlockKeyId == nil, !(await enrollUnlockKey()) {
+                oneTapOn = false
+                defaults.set(false, forKey: Self.oneTapKey)
+            }
+        } else {
+            await removeUnlockKey()
+        }
+        if oneTapReady != wasReady { onOneTapChanged?(oneTapReady) }
+    }
+
+    /// The app is in front: with the switch on (the default) and no unlock key yet, but this iPhone's Face ID key
+    /// active on the server, enroll it. Once per launch, never over a card or an answer on its way.
+    func ensureUnlockKey() async {
+        guard oneTapOn, unlockKeyId == nil, signer.keyId != nil, !unlockEnrollTried, !isFixture,
+              sheetItem == nil, working == nil else { return }
+        unlockEnrollTried = true
+        await enrollUnlockKey()
+    }
+
+    /// Makes the unlock key, has the Face ID key prove it (`secretary-unlock-key-v1\n{thisDeviceId}\n{publicKeyB64}`, one
+    /// Face ID prompt: "Allow one-tap Approve") and enrolls it. Returns true when the key is enrolled and saved.
+    @discardableResult
+    func enrollUnlockKey() async -> Bool {
+        guard let api = api(), signer.keyId != nil, !settingsBusy else { return false }
+        settingsBusy = true
+        defer { settingsBusy = false }
+        do {
+            let latest = try await api.settings()
+            settings = latest
+            guard let deviceId = latest.thisDeviceId, !deviceId.isEmpty, latest.serverHasKeyForThisDevice else {
+                // No Face ID key on the server yet (not set up, or waiting for another device's OK): nothing to ask.
+                log.info("unlock key not enrolled: no active Face ID key")
+                return false
+            }
+            let publicKey = try unlockSigner.prepareKey().base64EncodedString()
+            let proof = try await signer.sign(ApprovalsAPI.unlockKeyString(deviceId: deviceId, publicKey: publicKey),
+                                              reason: String(localized: "Allow one-tap Approve"))
+            let keyId = try await api.registerUnlockKey(publicKey: publicKey, signature: proof.signature)
+            try unlockSigner.commitKey(keyId: keyId)
+            let wasReady = oneTapReady
+            unlockKeyId = keyId
+            log.info("unlock key enrolled")
+            if oneTapReady != wasReady { onOneTapChanged?(oneTapReady) }
+            return true
+        } catch ApprovalSignError.cancelled {
+            return false
+        } catch let error as ApprovalSignError {
+            settingsMessage = error.userMessage
+            return false
+        } catch {
+            let e = APIError.wrap(error)
+            if e.endsSession { onTransportError?(e) }
+            log.error("unlock key not enrolled: \(e.status, privacy: .public) \(e.code, privacy: .public)")
+            settingsMessage = e.userMessage
+            return false
+        }
+    }
+
+    /// The server forgets this iPhone's unlock key, then it is deleted here (also when the server can't be reached:
+    /// without the private key nothing can sign).
+    private func removeUnlockKey() async {
+        if let api = api() {
+            do {
+                try await api.deleteUnlockKey()
+            } catch {
+                log.error("unlock key not removed on the server: \(APIError.wrap(error).status, privacy: .public)")
+            }
+        }
+        forgetUnlockKey()
+    }
+
+    /// Deletes the local unlock key (one-tap falls back to the card's Approve).
+    private func forgetUnlockKey() {
+        let wasReady = oneTapReady
+        try? unlockSigner.removeKey()
+        unlockKeyId = nil
+        if oneTapReady != wasReady { onOneTapChanged?(oneTapReady) }
     }
 
     /// Sign-out: forget the requests and the Face ID key (it was registered to the device token that is gone).
@@ -725,6 +929,8 @@ final class ApprovalsStore {
         startApprove = nil
         defaults.removeObject(forKey: Self.notifiedKey)
         try? signer.removeKey()
+        forgetUnlockKey()
+        unlockEnrollTried = false
         let notifier = notifier
         Task { await notifier.remove(ids: ids) }
     }

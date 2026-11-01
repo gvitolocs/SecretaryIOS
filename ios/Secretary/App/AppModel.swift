@@ -224,7 +224,7 @@ final class AppModel {
         approvalNotifier.cardShown = { id in ApprovalActivities.shared.hasCard(id) }
         approvals = PerfLog.measure("approvals") {
             ApprovalsStore(api: { client.accessKey?.isEmpty == false ? ApprovalsAPI(client: client) : nil },
-                           signer: SecureEnclaveApprovalSigner(), notifier: approvalNotifier,
+                           signer: SecureEnclaveApprovalSigner(), unlockSigner: UnlockApprovalSigner(), notifier: approvalNotifier,
                            previews: { notificationStore.rules.settings.previews },
                            deviceLabel: { UIDevice.current.name })
         }
@@ -379,6 +379,8 @@ final class AppModel {
             ApprovalActivities.shared.sync(pending: items, foreground: self?.isForeground ?? false)
         }
         approvals.onSettled = { id, outcome in ApprovalActivities.shared.settled(id, outcome) }
+        // One-tap Approve on or off: the inline category's Approve changes with it.
+        approvals.onOneTapChanged = { ready in ApprovalNotifier.registerCategories(oneTap: ready) }
         let approvalStore = approvals
         ApprovalActivities.shared.previews = { notifications.rules.settings.previews }
         ApprovalActivities.shared.notifier = approvalNotifier

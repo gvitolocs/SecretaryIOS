@@ -17,12 +17,15 @@ protocol ApprovalNotifying: AnyObject {
 
 /// What a notification button or tap asks for.
 enum ApprovalNotificationAction: Equatable {
-    case approve, deny, open
+    /// `approveInPlace`: the one-tap Approve of `APPROVAL_SENSITIVE_INLINE` (the unlock key; the app stays in the
+    /// background).
+    case approve, approveInPlace, deny, open
 
     /// `UNNotificationResponse.actionIdentifier`; nil for the swipe-away.
     init?(identifier: String) {
         switch identifier {
         case ApprovalNotifier.approveAction: self = .approve
+        case ApprovalNotifier.approveInPlaceAction: self = .approveInPlace
         case ApprovalNotifier.denyAction: self = .deny
         case UNNotificationDefaultActionIdentifier: self = .open
         default: return nil
@@ -34,6 +37,8 @@ enum ApprovalNotificationAction: Equatable {
         case decide(ApprovalDecision)
         /// The card, with its approve step started: Face ID at once, over the commands.
         case openSheetAndApprove
+        /// Signed with the unlock key and answered where it is: no app, no second prompt.
+        case approveInPlace
         case openSheet
     }
 
@@ -46,6 +51,10 @@ enum ApprovalNotificationAction: Equatable {
         case .approve:
             guard sensitive else { return .decide(.approve) }
             return inline ? .openSheetAndApprove : .openSheet
+        case .approveInPlace:
+            guard sensitive else { return .decide(.approve) }
+            // Only the inline category carries it; a plan the owner didn't see whole goes to the card.
+            return inline ? .approveInPlace : .openSheet
         case .open: return .openSheet
         }
     }
@@ -57,14 +66,17 @@ enum ApprovalNotificationAction: Equatable {
 /// Category `APPROVAL` has Approve (the iPhone must be unlocked) and Deny (no unlock), both answered without
 /// opening the app. `APPROVAL_SENSITIVE`'s Approve opens the card instead: a sensitive approve needs Face ID or the
 /// passcode, asked on the card. `APPROVAL_SENSITIVE_INLINE` is a sensitive request whose body carries the whole plan:
-/// its Approve opens the card with Face ID asked at once. Older servers send `APPROVAL` for every request; the store
-/// opens the card for a sensitive one.
+/// its Approve opens the card with Face ID asked at once, or, with one-tap Approve on and this iPhone's unlock key
+/// enrolled, approves in place (`approveInPlaceAction`: iOS asks Face ID or the passcode to run it, no app opens).
+/// Older servers send `APPROVAL` for every request; the store opens the card for a sensitive one.
 @MainActor
 final class ApprovalNotifier: ApprovalNotifying {
     nonisolated static let category = "APPROVAL"
     nonisolated static let sensitiveCategory = "APPROVAL_SENSITIVE"
     nonisolated static let sensitiveInlineCategory = "APPROVAL_SENSITIVE_INLINE"
     nonisolated static let approveAction = "APPROVAL_APPROVE"
+    /// The one-tap Approve (its own identifier: the handler never guesses which Approve the owner saw).
+    nonisolated static let approveInPlaceAction = "APPROVAL_APPROVE_IN_PLACE"
     nonisolated static let denyAction = "APPROVAL_DENY"
     /// Keys in `userInfo`.
     nonisolated static let idKey = "approvalId"
@@ -111,8 +123,19 @@ final class ApprovalNotifier: ApprovalNotifying {
         return (head + "\n…", true)
     }
 
-    /// Registers the categories (the app sets no others).
-    nonisolated static func registerCategories(on center: UNUserNotificationCenter = .current()) {
+    /// Registers the categories (the app sets no others). `oneTap`: one-tap Approve is on and the unlock key enrolled
+    /// (`ApprovalsStore.oneTapReady`); registered again whenever that changes.
+    nonisolated static func registerCategories(oneTap: Bool, on center: UNUserNotificationCenter = .current()) {
+        let mine = categories(oneTap: oneTap).union([DecisionNotifier.pushCategoryDefinition()])
+        // Decision categories (DecisionNotifier) registered earlier keep their buttons.
+        center.getNotificationCategories { existing in
+            center.setNotificationCategories(mine.union(existing.filter { $0.identifier.hasPrefix(DecisionNotifier.prefix) }))
+        }
+    }
+
+    /// The approval categories. Deny first: the long-press menu lists it at the top, so a quick tap never lands on
+    /// Approve.
+    nonisolated static func categories(oneTap: Bool) -> Set<UNNotificationCategory> {
         let approve = UNNotificationAction(identifier: approveAction, title: String(localized: "Approve"), options: [.authenticationRequired],
                                            icon: UNNotificationActionIcon(systemImageName: "checkmark"))
         let approveInApp = UNNotificationAction(identifier: approveAction, title: String(localized: "Review and approve"),
@@ -122,20 +145,18 @@ final class ApprovalNotifier: ApprovalNotifying {
         let approveWithFaceID = UNNotificationAction(identifier: approveAction, title: String(localized: "Approve"),
                                                      options: [.authenticationRequired, .foreground],
                                                      icon: UNNotificationActionIcon(systemImageName: "faceid"))
+        // One-tap: iOS asks Face ID or the passcode to run it, then the unlock key signs in the background (no app).
+        let approveInPlace = UNNotificationAction(identifier: approveInPlaceAction, title: String(localized: "Approve"),
+                                                  options: [.authenticationRequired],
+                                                  icon: UNNotificationActionIcon(systemImageName: "checkmark"))
         let deny = UNNotificationAction(identifier: denyAction, title: String(localized: "Deny"), options: [.destructive],
                                         icon: UNNotificationActionIcon(systemImageName: "xmark"))
-        // Deny first: the long-press menu lists it at the top, so a quick tap never lands on Approve.
-        let mine: Set<UNNotificationCategory> = [
+        return [
             UNNotificationCategory(identifier: category, actions: [deny, approve], intentIdentifiers: [], options: []),
             UNNotificationCategory(identifier: sensitiveCategory, actions: [deny, approveInApp], intentIdentifiers: [], options: []),
-            UNNotificationCategory(identifier: sensitiveInlineCategory, actions: [deny, approveWithFaceID],
+            UNNotificationCategory(identifier: sensitiveInlineCategory, actions: [deny, oneTap ? approveInPlace : approveWithFaceID],
                                    intentIdentifiers: [], options: []),
-            DecisionNotifier.pushCategoryDefinition(),
         ]
-        // Decision categories (DecisionNotifier) registered earlier keep their buttons.
-        center.getNotificationCategories { existing in
-            center.setNotificationCategories(mine.union(existing.filter { $0.identifier.hasPrefix(DecisionNotifier.prefix) }))
-        }
     }
 
     static func content(for item: ApprovalItem, previews: Bool) -> UNMutableNotificationContent {

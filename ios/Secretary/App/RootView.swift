@@ -188,6 +188,14 @@ struct MainTabs: View {
             guard foreground else { return }
             await app.approvals.foregroundLoop()
         }
+        // One-tap Approve is on by default: the first time in front with a Face ID key and no unlock key yet, one
+        // Face ID enrolls it. A moment after the launch, so a waiting request's card goes first.
+        .task(id: foreground) {
+            guard foreground else { return }
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled else { return }
+            await app.approvals.ensureUnlockKey()
+        }
         .task(id: foreground) {
             guard foreground else { return }
             // Cold start: the first chat frame and the chat's own refresh go first; uploads, the

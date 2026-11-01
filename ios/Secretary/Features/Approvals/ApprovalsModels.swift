@@ -237,12 +237,15 @@ struct ApprovalDevice: Decodable, Equatable, Identifiable, Sendable {
     var name: String
     var isMain: Bool
     var hasBiometricKey: Bool
+    /// The device's unlock key (one-tap Approve) is enrolled.
+    var hasUnlockKey: Bool
 
-    init(id: String, name: String, isMain: Bool = false, hasBiometricKey: Bool = false) {
+    init(id: String, name: String, isMain: Bool = false, hasBiometricKey: Bool = false, hasUnlockKey: Bool = false) {
         self.id = id
         self.name = name
         self.isMain = isMain
         self.hasBiometricKey = hasBiometricKey
+        self.hasUnlockKey = hasUnlockKey
     }
 
     init(from decoder: Decoder) throws {
@@ -251,9 +254,10 @@ struct ApprovalDevice: Decodable, Equatable, Identifiable, Sendable {
         name = (try? c.decodeIfPresent(String.self, forKey: .name)) ?? ""
         isMain = (try? c.decodeIfPresent(Bool.self, forKey: .isMain)) ?? false
         hasBiometricKey = (try? c.decodeIfPresent(Bool.self, forKey: .hasBiometricKey)) ?? false
+        hasUnlockKey = (try? c.decodeIfPresent(Bool.self, forKey: .hasUnlockKey)) ?? false
     }
 
-    private enum CodingKeys: String, CodingKey { case id, name, isMain, hasBiometricKey }
+    private enum CodingKeys: String, CodingKey { case id, name, isMain, hasBiometricKey, hasUnlockKey }
 }
 
 struct ApprovalSettings: Decodable, Equatable, Sendable {
@@ -292,4 +296,5 @@ struct ApprovalSettings: Decodable, Equatable, Sendable {
     }
 
     var serverHasKeyForThisDevice: Bool { thisDevice?.hasBiometricKey ?? false }
+    var serverHasUnlockKeyForThisDevice: Bool { thisDevice?.hasUnlockKey ?? false }
 }
