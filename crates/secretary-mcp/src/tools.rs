@@ -699,6 +699,10 @@ pub fn specs() -> Vec<ToolSpec> {
             "Search Lucina's record of the owner's projects (deploys, incidents, decisions, status, findings) by words, project, kind and dates: answers 'what happened with X', 'why did we decide Y', 'when did Z go live'. Newest first when q is empty."),
         spec!("ops_get", "Read a record", Scope::Read, ro = true, destructive = false, idempotent = true, crate::ops::GetArgs,
             "One record of Lucina's ops record in full (timeline, cause, fix, follow-ups, links, pages), by the id ops_record or ops_search returned."),
+        spec!("ops_ingest_status", "Obsidian ingest status", Scope::Read, ro = true, destructive = false, idempotent = true, crate::ops::NoArgs,
+            "Status of Lucina's Obsidian ingest, which turns ops records, commits on the Lucina repos and session reports into Zettelkasten notes (Lucina/Permanent, Events, MOC) with the local Qwen while it is free: queue depth, the last run and why it waited, the next try, followed repos, items that gave up."),
+        spec!("ops_ingest_now", "Ingest into Obsidian now", Scope::Write, ro = false, destructive = false, idempotent = true, crate::ops::IngestNowArgs,
+            "Ask Lucina to scan the sources and write pending Obsidian notes now, in the background. It still never preempts another Qwen user: when the GPU is busy it waits and keeps the queue. cold (default true) lets it load the local model when the GPU is entirely free. Check the result with ops_ingest_status."),
         // Lucina's messages to Claude (crate::reach): the mailbox and replies; `agents` tokens too.
         spec!("lucina_inbox", "Lucina's messages to Claude", Scope::Read, ro = true, destructive = false, idempotent = true, crate::reach::InboxArgs,
             "Messages Lucina sent to Claude (or Grok/agents) that wait for an answer: issue reports and requests the owner asked her to pass on. Args: to (default claude), status (default open), limit; optional thread to read one in full. Newest first; answer one with lucina_reply."),

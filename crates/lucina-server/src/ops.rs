@@ -6,6 +6,9 @@
 //! - `GET  /ops/search?q=&project=&kind=&since=&until=&limit=`
 //! - `PUT  /ops/page`         `{path, content}`: a whole `Map/` page (the project-map session)
 //!
+//! - `GET  /ops/ingest`        the Obsidian ingest's status (queue depth, last run, next try)
+//! - `POST /ops/ingest`        `{cold?}`: ingest now (in the background) → 202, 409 when running
+//!
 //! The reporter is `x-lucina-caller` (`mcp:claude`, ...), set by secretary-server.
 //! On when `LUCINA_OPS_VAULT_DIR` names the synced folder; every 10 minutes the
 //! server sends records Honcho has not got yet (the CLI never calls Honcho) and
@@ -32,6 +35,7 @@ pub const DEFAULT_VAULT_DIR: &str = "/home/nez/data/lucina-vault/Lucina";
 const RECORD_BODY_BYTES: usize = 256 * 1024;
 const PAGE_BODY_BYTES: usize = lucina_ops::vault::MAX_PAGE_BYTES + 16 * 1024;
 const LOOP_EVERY: Duration = Duration::from_secs(600);
+const INGEST_EVERY: Duration = Duration::from_secs(300);
 
 /// `LUCINA_OPS_*`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +46,9 @@ pub struct OpsSettings {
     pub state_dir: PathBuf,
     pub honcho_session: String,
     pub honcho_peer: String,
+    /// `LUCINA_VAULT_INGEST=on` and its `LUCINA_VAULT_INGEST_*` settings
+    /// (crate `lucina_vault_ingest`; the time zone is set at open); `None`: off.
+    pub ingest: Option<lucina_vault_ingest::IngestConfig>,
 }
 
 impl OpsSettings {
@@ -51,15 +58,31 @@ impl OpsSettings {
                 .map(|v| v.trim().to_owned())
                 .filter(|v| !v.is_empty())
         };
+        let state_dir = non_empty("LUCINA_OPS_STATE_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| data_dir.join("ops"));
+        let ingest = match non_empty("LUCINA_VAULT_INGEST").as_deref() {
+            Some("on" | "true" | "1") => match lucina_vault_ingest::IngestConfig::from_lookup(
+                &get,
+                &state_dir.join("ingest"),
+                chrono_tz::Europe::Rome,
+            ) {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    tracing::warn!(error = %e, "vault ingest: off (bad settings)");
+                    None
+                }
+            },
+            _ => None,
+        };
         Self {
             vault_dir: non_empty("LUCINA_OPS_VAULT_DIR").map(PathBuf::from),
-            state_dir: non_empty("LUCINA_OPS_STATE_DIR")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| data_dir.join("ops")),
+            state_dir,
             honcho_session: non_empty("LUCINA_OPS_HONCHO_SESSION")
                 .unwrap_or_else(|| lucina_ops::DEFAULT_HONCHO_SESSION.into()),
             honcho_peer: non_empty("LUCINA_OPS_HONCHO_PEER")
                 .unwrap_or_else(|| lucina_ops::DEFAULT_HONCHO_PEER.into()),
+            ingest,
         }
     }
 }
@@ -95,6 +118,30 @@ pub fn open(
         }
         Err(e) => {
             tracing::warn!(vault = %vault.display(), error = %e, "ops record: off (vault or store not usable)");
+            None
+        }
+    }
+}
+
+/// The Obsidian ingest over the ops record (needs the record on).
+pub fn open_ingest(
+    s: &OpsSettings,
+    time_zone: Tz,
+    ops: Option<&Arc<Ops>>,
+) -> Option<Arc<lucina_vault_ingest::Ingest>> {
+    let mut cfg = s.ingest.clone()?;
+    let Some(ops) = ops else {
+        tracing::warn!("vault ingest: off (the ops record is off)");
+        return None;
+    };
+    cfg.time_zone = time_zone;
+    match lucina_vault_ingest::Ingest::open(cfg, ops.clone()) {
+        Ok(i) => {
+            tracing::info!(state = %i.config().state_dir.display(), model = %i.config().model, "vault ingest: on");
+            Some(Arc::new(i))
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "vault ingest: off");
             None
         }
     }
@@ -218,8 +265,63 @@ pub async fn route(
                 .map_err(|e| api_error(e.into()))?;
             Ok(ok(json!({"path": path, "changed": changed})))
         }
+        ["ingest"] => {
+            only(&["GET", "POST"])?;
+            let ingest = st.ingest.clone().ok_or_else(|| {
+                ApiError::new(
+                    404,
+                    "ingest_disabled",
+                    "The vault ingest is off (LUCINA_VAULT_INGEST)",
+                )
+            })?;
+            if *method == Method::GET {
+                let s = ingest
+                    .status()
+                    .map_err(|e| ApiError::new(500, "internal_error", e.to_string()))?;
+                return Ok(ok(json!(s)));
+            }
+            let v = read_json(body, 4096).await.unwrap_or_else(|_| json!({}));
+            let cold = v.get("cold").and_then(Value::as_bool).unwrap_or(true);
+            if ingest.running() {
+                return Ok(ok_status(
+                    409,
+                    json!({"started": false, "reason": "a run is in progress"}),
+                ));
+            }
+            tokio::spawn(async move {
+                if let Err(e) = ingest.scan(chrono::Utc::now()).await {
+                    tracing::warn!(error = %e, "vault ingest: scan failed");
+                }
+                let opts = lucina_vault_ingest::RunOpts {
+                    force: true,
+                    cold,
+                    limit: None,
+                };
+                if let Err(e) = ingest.run(opts, chrono::Utc::now()).await {
+                    tracing::warn!(error = %e, "vault ingest: manual run failed");
+                }
+            });
+            Ok(ok_status(202, json!({"started": true, "cold": cold})))
+        }
         _ => Err(ApiError::not_found()),
     }
+}
+
+/// Every 5 minutes (from a minute after start): queue what is new, then
+/// ingest while the local Qwen is free (the crate backs off on its own).
+pub fn spawn_ingest(st: &AppState) -> Option<tokio::task::JoinHandle<()>> {
+    let ingest = st.ingest.clone()?;
+    Some(tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        let mut every = tokio::time::interval(INGEST_EVERY);
+        every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            every.tick().await;
+            if let Err(e) = ingest.tick().await {
+                tracing::warn!(error = %e, "vault ingest: tick failed");
+            }
+        }
+    }))
 }
 
 /// Every 10 minutes (and at start): Honcho catch-up, then the conflict sweep.

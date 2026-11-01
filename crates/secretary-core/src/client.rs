@@ -275,6 +275,18 @@ impl Call {
         Self::new(Method::POST, &["ops", "records"]).with_body(body)
     }
 
+    /// `GET /ops/ingest`: the Obsidian ingest's status (queue depth, last
+    /// run, next try, followed repos).
+    pub fn ops_ingest_status() -> Self {
+        Self::new(Method::GET, &["ops", "ingest"])
+    }
+
+    /// `POST /ops/ingest {cold}`: ingest now (in the background; `cold`: it
+    /// may load the local model when the GPU is free).
+    pub fn ops_ingest_run(cold: bool) -> Self {
+        Self::new(Method::POST, &["ops", "ingest"]).with_body(serde_json::json!({ "cold": cold }))
+    }
+
     /// `GET /ops/records/{id}`: one record (id = 16 lowercase hex).
     pub fn ops_record_get(id: &str) -> Result<Self> {
         if id.len() != 16
@@ -1534,6 +1546,13 @@ mod tests {
         assert_eq!(c.url(&rec).as_str(), "http://h:1/api/secretary/ops/records");
         assert_eq!(rec.body().unwrap()["kind"], "deploy");
         assert_eq!(rec.caller.as_deref(), Some("mcp:claude"));
+        assert_eq!(
+            c.url(&Call::ops_ingest_status()).as_str(),
+            "http://h:1/api/secretary/ops/ingest"
+        );
+        let run = Call::ops_ingest_run(false);
+        assert_eq!(run.method(), &Method::POST);
+        assert_eq!(run.body().unwrap()["cold"], false);
 
         assert_eq!(
             c.url(&Call::ops_record_get("0123456789abcdef").unwrap())

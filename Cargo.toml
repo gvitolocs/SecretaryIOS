@@ -24,6 +24,7 @@ members = [
     "crates/lucina-store",
     "crates/lucina-memory",
     "crates/lucina-ops",
+    "crates/lucina-vault-ingest",
     "crates/lucina-grocery",
     "crates/lucina-deals",
     "crates/lucina-delegate",

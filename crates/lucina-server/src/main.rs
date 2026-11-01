@@ -390,6 +390,47 @@ enum OpsCmd {
     Page { path: String },
     /// Move Syncthing conflict copies to Conflicts/ and put lost entries back.
     Sweep,
+    /// The Obsidian ingest (crate lucina_vault_ingest): records, commits and session
+    /// reports become Zettelkasten notes, written by the local Qwen only while it is free.
+    Ingest {
+        #[command(subcommand)]
+        cmd: IngestCmd,
+        /// queue.jsonl and state.json (default LUCINA_VAULT_INGEST_STATE_DIR, else <state>/ingest).
+        #[arg(long)]
+        ingest_state: Option<PathBuf>,
+        /// Repos followed, `name=path@ref#project;…` (default LUCINA_VAULT_INGEST_GIT).
+        #[arg(long)]
+        git: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum IngestCmd {
+    /// Queue depth, last run, next try, followed repos (JSON).
+    Status,
+    /// Queue what is new in the ops record and the repos (no model).
+    Scan,
+    /// Scan, then ingest now: ignores the backoff, never preempts another Qwen user.
+    Run {
+        /// May load an unloaded model when the GPU is entirely free.
+        #[arg(long)]
+        cold: bool,
+        /// Items for the model this run.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Do not scan the sources first.
+        #[arg(long)]
+        no_scan: bool,
+    },
+    /// Queue a Claude session report from stdin: {id?, title, project, summary, at?, files?}.
+    Session,
+    /// Re-arm items that gave up (all when no key is given).
+    Retry {
+        keys: Vec<String>,
+        /// Also re-ingest done or skipped items.
+        #[arg(long)]
+        any: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -616,7 +657,7 @@ async fn ops_cmd(
     tz: Option<String>,
 ) -> anyhow::Result<()> {
     use std::io::Read as _;
-    let ops = lucina_server::ops::open_cli(vault, state, tz)?;
+    let ops = std::sync::Arc::new(lucina_server::ops::open_cli(vault, state, tz)?);
     let stdin = || -> anyhow::Result<String> {
         let mut s = String::new();
         std::io::stdin()
@@ -677,6 +718,58 @@ async fn ops_cmd(
         OpsCmd::Sweep => {
             let r = ops.sweep_conflicts()?;
             println!("{}", serde_json::to_string(&r)?);
+        }
+        OpsCmd::Ingest {
+            cmd,
+            ingest_state,
+            git,
+        } => {
+            let (state_dir, tz) = (ops.config().state_dir.clone(), ops.config().time_zone);
+            let mut cfg = lucina_vault_ingest::IngestConfig::from_lookup(
+                |k| std::env::var(k).ok(),
+                &state_dir.join("ingest"),
+                tz,
+            )?;
+            if let Some(s) = ingest_state {
+                cfg.state_dir = s;
+            }
+            if let Some(g) = git {
+                cfg.git = lucina_vault_ingest::sources::GitRepo::parse_list(&g)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+            }
+            let ingest = lucina_vault_ingest::Ingest::open(cfg, ops.clone())?;
+            let now = chrono::Utc::now;
+            let out = match cmd {
+                IngestCmd::Status => serde_json::to_value(ingest.status()?)?,
+                IngestCmd::Scan => serde_json::to_value(ingest.scan(now()).await?)?,
+                IngestCmd::Run {
+                    cold,
+                    limit,
+                    no_scan,
+                } => {
+                    let scan = if no_scan {
+                        None
+                    } else {
+                        Some(ingest.scan(now()).await?)
+                    };
+                    let opts = lucina_vault_ingest::RunOpts {
+                        force: true,
+                        cold,
+                        limit,
+                    };
+                    let run = ingest.run(opts, now()).await?;
+                    serde_json::json!({"scan": scan, "run": run})
+                }
+                IngestCmd::Session => {
+                    let v: serde_json::Value = serde_json::from_str(&stdin()?)?;
+                    let (key, added) = ingest.enqueue_session(&v, now())?;
+                    serde_json::json!({"key": key, "queued": added})
+                }
+                IngestCmd::Retry { keys, any } => {
+                    serde_json::json!({"rearmed": ingest.retry(&keys, any, now())?})
+                }
+            };
+            println!("{}", serde_json::to_string_pretty(&out)?);
         }
     }
     Ok(())

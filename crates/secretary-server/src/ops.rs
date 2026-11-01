@@ -17,6 +17,7 @@
 //!   the fields and denies unknown ones
 //! - `GET  /v1/ops/records/{id}`  one record (id = 16 lowercase hex)
 //! - `GET  /v1/ops/search?q=&project=&kind=&since=&until=&limit=` `{items, honcho}`
+//! - `GET  /v1/ops/ingest`        the Obsidian ingest's status; `POST {cold?}` ingests now (202, 409 when running)
 
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -94,6 +95,28 @@ async fn search(
 }
 
 /// Owner routes (behind `auth::require_device`).
+async fn ingest_status(State(st): State<AppState>, headers: HeaderMap) -> ApiResult {
+    forward(
+        &st,
+        Call::ops_ingest_status().with_caller(&caller(&headers)),
+    )
+    .await
+}
+
+#[derive(serde::Deserialize, Default)]
+struct IngestRun {
+    cold: Option<bool>,
+}
+
+async fn ingest_run(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    JsonBody(body): JsonBody<IngestRun>,
+) -> ApiResult {
+    let call = Call::ops_ingest_run(body.cold.unwrap_or(true));
+    forward(&st, call.with_caller(&caller(&headers))).await
+}
+
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route(
@@ -102,4 +125,5 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/v1/ops/records/{id}", get(record_get))
         .route("/v1/ops/search", get(search))
+        .route("/v1/ops/ingest", get(ingest_status).post(ingest_run))
 }

@@ -140,6 +140,8 @@ pub struct Inner {
     pub supervisor: Arc<delivery_monitor::Supervisor>,
     /// The ops record (`LUCINA_OPS_VAULT_DIR`, crate::ops); `None`: off.
     pub ops: Option<Arc<lucina_ops::Ops>>,
+    /// The Obsidian ingest (`LUCINA_VAULT_INGEST=on`, crate::ops); `None`: off.
+    pub ingest: Option<Arc<lucina_vault_ingest::Ingest>>,
 }
 
 #[derive(Clone)]
@@ -232,6 +234,7 @@ impl AppState {
         };
         let memory = Arc::new(Memory::new(cfg.memory_mode, cfg.honcho.clone())?);
         let ops = ops::open(&cfg.ops, cfg.time_zone, cfg.memory_mode, &cfg.honcho);
+        let ingest = ops::open_ingest(&cfg.ops, cfg.time_zone, ops.as_ref());
         let mut env = ToolEnv::new(&cfg.data_dir, cfg.time_zone);
         env.ops = ops.clone();
         // Messages to Claude, Grok and Lucina Agents (crate::reach); the sink is set below.
@@ -511,6 +514,7 @@ impl AppState {
             )),
             supervisor: Arc::default(),
             ops,
+            ingest,
             hospital_health: Arc::new(Mutex::new(bot_hospital::HospitalHealth {
                 enabled: cfg.hospital.enabled && cfg.hospital.daily_audit_enabled,
                 ..Default::default()
@@ -651,6 +655,9 @@ impl AppState {
             .watch("delivery monitor", delivery_monitor::spawn(self));
         if let Some(h) = ops::spawn(self) {
             self.supervisor.watch("ops record", h);
+        }
+        if let Some(h) = ops::spawn_ingest(self) {
+            self.supervisor.watch("vault ingest", h);
         }
         if self.cfg.scheduler {
             if self.cfg.reminders_writer == WriterKind::Node {

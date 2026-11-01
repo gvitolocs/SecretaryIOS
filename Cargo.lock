@@ -3806,6 +3806,7 @@ dependencies = [
  "lucina-store",
  "lucina-telegram",
  "lucina-tools",
+ "lucina-vault-ingest",
  "pdf-extract 0.10.0",
  "regex",
  "reqwest 0.12.28",
@@ -3910,6 +3911,27 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "wiremock",
+]
+
+[[package]]
+name = "lucina-vault-ingest"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "chrono-tz",
+ "libc",
+ "lucina-ops",
+ "lucina-secrets",
+ "regex",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
  "wiremock",
 ]
 
