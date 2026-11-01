@@ -9478,7 +9478,22 @@
       }
     },
     "New summary" : {},
-    "Next" : {},
+    "Next" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Successiva"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Næste"
+          }
+        }
+      }
+    },
     "Next 7 days" : {
       "localizations" : {
         "da" : {
@@ -10829,7 +10844,22 @@
         }
       }
     },
-    "Previous" : {},
+    "Previous" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Precedente"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Forrige"
+          }
+        }
+      }
+    },
     "Previous · %@" : {
       "localizations" : {
         "da" : {
@@ -15009,7 +15039,22 @@
         }
       }
     },
-    "Waiting" : {},
+    "Waiting" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "In attesa"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Venter"
+          }
+        }
+      }
+    },
     "Waiting for Wi-Fi" : {
       "localizations" : {
         "da" : {
@@ -25822,6 +25867,390 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Det kunne ikke gemmes på iPhonen."
+          }
+        }
+      }
+    },
+    "Can't reach Lucina to open this request." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Non riesco a raggiungere Lucina per aprire questa richiesta."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kan ikke nå Lucina for at åbne denne anmodning."
+          }
+        }
+      }
+    },
+    "%@ replaced. Fingerprint %@." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ sostituito. Impronta %@."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ erstattet. Fingeraftryk %@."
+          }
+        }
+      }
+    },
+    "%@ saved. Fingerprint %@." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ salvato. Impronta %@."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ gemt. Fingeraftryk %@."
+          }
+        }
+      }
+    },
+    "%@: not saved." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@: non salvato."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@: ikke gemt."
+          }
+        }
+      }
+    },
+    "%@: no longer asked." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@: non più richiesto."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@: ikke længere ønsket."
+          }
+        }
+      }
+    },
+    "Secret" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Segreto"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hemmelighed"
+          }
+        }
+      }
+    },
+    "the secret" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "il segreto"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "hemmeligheden"
+          }
+        }
+      }
+    },
+    "Enter a secret" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Inserisci un segreto"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Indtast en hemmelighed"
+          }
+        }
+      }
+    },
+    "Enter the secret for %@" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Inserisci il segreto per %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Indtast hemmeligheden til %@"
+          }
+        }
+      }
+    },
+    "This project has no environment %@." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Questo progetto non ha l'ambiente %@."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dette projekt har ikke miljøet %@."
+          }
+        }
+      }
+    },
+    "%@ already exists there. Replace it?" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ esiste già lì. Lo sostituisco?"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ findes allerede der. Skal den erstattes?"
+          }
+        }
+      }
+    },
+    "%lld more after this one." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Altri %lld dopo questo."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld mere efter denne."
+          }
+        }
+      }
+    },
+    "Lucina holds this value for you. Her model never saw it." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucina tiene questo valore per te. Il suo modello non l'ha mai visto."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucina holder denne værdi for dig. Hendes model har aldrig set den."
+          }
+        }
+      }
+    },
+    "Paste it here" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Incollalo qui"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Indsæt den her"
+          }
+        }
+      }
+    },
+    "Value of %@" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Valore di %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Værdi for %@"
+          }
+        }
+      }
+    },
+    "Environment" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ambiente"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Miljø"
+          }
+        }
+      }
+    },
+    "The project %@ isn't in your Infisical yet." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Il progetto %@ non è ancora nel tuo Infisical."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Projektet %@ er ikke i din Infisical endnu."
+          }
+        }
+      }
+    },
+    "Creating…" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Creazione…"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Opretter…"
+          }
+        }
+      }
+    },
+    "Create project" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Crea progetto"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Opret projekt"
+          }
+        }
+      }
+    },
+    "Replace" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sostituisci"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Erstat"
+          }
+        }
+      }
+    },
+    "Lucina no longer holds that value. Paste it here." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucina non ha più quel valore. Incollalo qui."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucina har ikke længere den værdi. Indsæt den her."
+          }
+        }
+      }
+    },
+    "New Infisical project" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nuovo progetto Infisical"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nyt Infisical-projekt"
+          }
+        }
+      }
+    },
+    "Add secret" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aggiungi segreto"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tilføj hemmelighed"
+          }
+        }
+      }
+    },
+    "Create the Infisical project %@? Agents and services get no access to it until you say so." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Creo il progetto Infisical %@? Agenti e servizi non ci avranno accesso finché non lo dici tu."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Skal jeg oprette Infisical-projektet %@? Agenter og tjenester får ingen adgang, før du siger til."
           }
         }
       }

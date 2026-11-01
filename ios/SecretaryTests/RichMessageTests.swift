@@ -107,4 +107,47 @@ final class RichMessageTests: XCTestCase {
         XCTAssertEqual(Place.fromRoute(path)?.title, "Security and Privacy")
         XCTAssertFalse(RichMessage.isMapRoute("/map/place?title=" + String(repeating: "x", count: 600)))
     }
+
+    // MARK: Secret cards (SecretCard.swift)
+
+    func testASecretActionKeepsNamesAndTheRequestAndDropsValues() throws {
+        let raw = try json("""
+        {"format":"v1","bubbles":["claude-code asks for the secret GBGO_WIFI_PSK"],
+         "actions":[
+          {"id":"secret-request","label":"Add GBGO_WIFI_PSK","kind":"secret","payload":{"mode":"save","name":"GBGO_WIFI_PSK",
+            "project":"lucinaos","environment":"prod","path":"/","target":"lucinaos/prod","request":"sr-abc","value":"must-not-survive"}},
+          {"id":"secret-request-dismiss","label":"Not now","kind":"dismiss","payload":{}},
+          {"id":"bad-mode","label":"x","kind":"secret","payload":{"mode":"reveal"}}
+         ]}
+        """)
+        let m = try XCTUnwrap(RichMessage.parse(raw))
+        XCTAssertEqual(m.actions.map(\.id), ["secret-request", "secret-request-dismiss"])
+        let s = try XCTUnwrap(m.actions[0].secret)
+        XCTAssertEqual(s.request, "sr-abc")
+        XCTAssertEqual(s.name, "GBGO_WIFI_PSK")
+        let encoded = String(decoding: try JSONEncoder().encode(m), as: UTF8.self)
+        XCTAssertFalse(encoded.contains("must-not-survive"))
+        XCTAssertFalse(m.actions[0].sendsMessage)
+    }
+
+    func testAnOldActionReadsItsTargetIntoAPlace() {
+        let e = SecretAction(mode: "save", name: "POKO_KEY", target: "poko/prod/Pokobot/sub", held: "held-1").entry
+        XCTAssertEqual([e.name, e.project, e.environment, e.path], ["POKO_KEY", "poko", "prod", "/Pokobot/sub"])
+        let bare = SecretAction().entry
+        XCTAssertEqual([bare.name, bare.project, bare.environment, bare.path], ["", "", "", "/"])
+    }
+
+    func testProjectsAndFolders() {
+        let p = SecretProject(id: "p-1", name: "LucinaOS kernel", slug: "lucinaos-x1", alias: "los", environments: [])
+        for ref in ["p-1", "los", "LOS", "lucinaos-x1", "lucinaos kernel", "lucinaos"] {
+            XCTAssertEqual(SecretProject.find(ref, in: [p])?.id, "p-1", ref)
+        }
+        XCTAssertNil(SecretProject.find("poko", in: [p]))
+        XCTAssertEqual(SecretFolder.normalize(""), "/")
+        XCTAssertEqual(SecretFolder.normalize("gbgo/wifi/"), "/gbgo/wifi")
+        XCTAssertNil(SecretFolder.normalize("/a/../b"))
+        XCTAssertNil(SecretFolder.normalize("/a b"))
+        XCTAssertTrue(SecretName.isValid("GBGO_WIFI_PSK"))
+        XCTAssertFalse(SecretName.isValid("a b"))
+    }
 }

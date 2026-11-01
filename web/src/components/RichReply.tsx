@@ -15,6 +15,7 @@ import {
 } from "../state/chat";
 import { InlineMarkdown, Markdown } from "./Markdown";
 import { PlaceCard } from "./PlaceCard";
+import { SecretCard } from "./SecretCard";
 
 // Lucina message format v1 in the web chat (docs/lucina-message-format.md):
 // bubbles one by one with a typing pause, then widgets, then buttons. All text
@@ -320,6 +321,9 @@ export function RichReply(props: {
   inferredChoice?: string;
   readOnly?: boolean;
 }) {
+  // A request in the secret queue: the card says it all, and the bubble stays for older clients.
+  const secretAction = () =>
+    props.readOnly ? undefined : props.rich.actions.find((a): a is RichAction & { kind: "secret" } => a.kind === "secret" && !!a.payload.request);
   const total = () => props.rich.bubbles.length;
   const animate = !!props.message.reveal && !prefersReducedMotion() && total() > 1;
   const [shown, setShown] = createSignal(animate ? 1 : total());
@@ -347,15 +351,40 @@ export function RichReply(props: {
   onCleanup(() => timers.forEach(clearTimeout));
 
   return (
+    <Show
+      when={secretAction()}
+      fallback={<RichBody {...props} shown={shown()} typing={typing()} done={done()} animate={animate} />}
+    >
+      {(a) => (
+        <div class="rich-reply" lang={props.rich.lang}>
+          <SecretCard request={a().payload.request!} autoFocus={!!props.message.reveal} fallback={a().payload.name ?? a().label} />
+        </div>
+      )}
+    </Show>
+  );
+}
+
+function RichBody(props: {
+  message: ChatMessage;
+  rich: RichMessage;
+  onBubbleClick?: (e: MouseEvent) => void;
+  inferredChoice?: string;
+  readOnly?: boolean;
+  shown: number;
+  typing: boolean;
+  done: boolean;
+  animate: boolean;
+}) {
+  return (
     <div class="rich-reply" lang={props.rich.lang}>
-      <For each={props.rich.bubbles.slice(0, shown())}>
+      <For each={props.rich.bubbles.slice(0, props.shown)}>
         {(b) => (
           <div class="bubble bubble--rich" onClick={(e) => props.onBubbleClick?.(e)}>
             <Markdown text={tidyDecisionText(b)} class="md--chat" />
           </div>
         )}
       </For>
-      <Show when={typing()}>
+      <Show when={props.typing}>
         <div class="bubble bubble--typing" role="status" aria-label={t("chat.richTyping")}>
           <span class="typing" aria-hidden="true">
             <span />
@@ -364,9 +393,9 @@ export function RichReply(props: {
           </span>
         </div>
       </Show>
-      <Show when={done()}>
+      <Show when={props.done}>
         <Show when={props.rich.blocks.length}>
-          <div class="rich-blocks" classList={{ "rich-in": animate }}>
+          <div class="rich-blocks" classList={{ "rich-in": props.animate }}>
             <For each={props.rich.blocks}>{(b) => <Widget block={b} />}</For>
           </div>
         </Show>

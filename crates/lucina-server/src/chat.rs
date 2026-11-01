@@ -50,6 +50,7 @@ pub mod meshy_turn;
 mod ops_turn;
 pub mod plugin_turn;
 mod reach_turn;
+mod secret_turn;
 pub mod reply;
 mod share_turn;
 mod voice_fast;
@@ -227,6 +228,40 @@ async fn handle_chat_turn(
         }));
     }
     let (text, held) = crate::owner_secrets::mask_message(&st, &text);
+    // "Salva un segreto": before the model. His words are recorded unless they look like they hold
+    // the value (`NAME value`, not token-shaped so not masked above): those go nowhere at all.
+    if let Some(words) = (held.is_empty() && mcp_turn.is_none() && !crate::selftest::is_session(&session))
+        .then(|| crate::owner_secrets::secret_words(&text))
+        .flatten()
+    {
+        let user = (!words.value_suspect)
+            .then(|| {
+                st.timeline.record(lucina_store::timeline::NewItem {
+                    channel: channel.clone(),
+                    role: "user".into(),
+                    text: text.clone(),
+                    client_message_id: (!client_message_id.is_empty()).then(|| client_message_id.clone()),
+                    reply_to: reply_to.clone(),
+                    ..Default::default()
+                })
+            })
+            .flatten();
+        let (reply, lucina_item_id, rich) =
+            crate::owner_secrets::answer_secret_words(&st, &words, crate::owner_secrets::lang_of(&text)).await;
+        let mut out = json!({
+            "reply": reply,
+            "action": "secret_request",
+            "sessionId": session,
+            "clientMessageId": (!client_message_id.is_empty()).then_some(client_message_id),
+            "job": null,
+            "userItemId": user.map(|u| u.id),
+            "lucinaItemId": lucina_item_id,
+        });
+        if let (Some(o), Some(Value::Object(rich))) = (out.as_object_mut(), rich) {
+            o.extend(rich);
+        }
+        return Ok(out);
+    }
     // Voice Learn's `vocab` layer (after the masking: Jev never sees a token): doubtful spans of a spoken
     // sentence, settled by Jev when it is sure.
     let text = if crate::voice::spoken() {
@@ -446,6 +481,15 @@ pub async fn channel_turn(
             vec![],
         )
     };
+    // "Salva un segreto" in a chat app: the card is in the Secretary app; a value is never asked for here.
+    if let Some(words) = (origin.owner && held.is_empty())
+        .then(|| crate::owner_secrets::secret_words(&message))
+        .flatten()
+    {
+        let (mut reply, _, _) = crate::owner_secrets::answer_secret_words(&st, &words, offer_lang).await;
+        reply.push_str(crate::owner_secrets::chat_app_note(offer_lang));
+        return Ok(json!({"reply": reply, "action": "secret_request", "sensitive": true, "job": null}));
+    }
     if let Some(t) = origin.timeline_text.as_mut() {
         *t = lucina_secrets::redactor().redact(t).into_owned();
     }
@@ -1795,6 +1839,11 @@ async fn json_turn(
             return not_run(t, memory, "computer_task").await;
         }
         return computer_task_finish(t, &plan, cmid).await;
+    }
+
+    // "Salvami la password del Wi-Fi": a card in his chat, by name (crate::secret_requests).
+    if let Some(f) = secret_turn::try_turn(t, memory).await {
+        return f;
     }
 
     // The ops record (crate::ops): "what happened with X" from the record; the owner's decisions recorded.

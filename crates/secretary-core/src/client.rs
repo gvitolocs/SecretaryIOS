@@ -107,6 +107,7 @@ impl Call {
         grant: String,
         value: Option<String>,
         held: Option<String>,
+        request: Option<String>,
     ) -> Result<Self> {
         if !grant.starts_with("g1.") || grant.len() > 4096 {
             return Err(Error::Invalid {
@@ -120,6 +121,10 @@ impl Call {
         }
         if let Some(h) = held {
             body["held"] = Value::String(h);
+        }
+        // The queue entry this save answers (names only; see lucina-server `secret_requests`).
+        if let Some(r) = request {
+            body["request"] = Value::String(r);
         }
         Ok(Self::new(Method::POST, &["secrets", "grant"]).with_body(body))
     }
@@ -135,6 +140,22 @@ impl Call {
             });
         }
         Ok(Self::new(Method::POST, &["secrets", "request"]).with_body(body))
+    }
+
+    /// `GET /secrets/requests`: the owner's queue of secret requests, names only.
+    pub fn secret_requests() -> Self {
+        Self::new(Method::GET, &["secrets", "requests"])
+    }
+
+    /// `POST /secrets/requests/<id>/dismiss`: "Not now" on a request's card.
+    pub fn secret_request_dismiss(id: &str) -> Result<Self> {
+        if id.is_empty() || id.len() > 64 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+            return Err(Error::Invalid {
+                field: "id",
+                message: "malformed".into(),
+            });
+        }
+        Ok(Self::new(Method::POST, &["secrets", "requests", id, "dismiss"]).with_body(serde_json::json!({})))
     }
 
     fn new(method: Method, segments: &[&str]) -> Self {

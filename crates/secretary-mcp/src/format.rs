@@ -135,7 +135,9 @@ pub fn secret_request(r: &Value) -> String {
         s(r, "path").unwrap_or("/")
     );
     let head = if s(r, "status") == Some("already_asked") {
-        format!("Already asked: the owner has a card for `{name}` in {place} from the last 10 minutes.")
+        format!("Already asked: the owner has (or just answered) a card for `{name}` in {place}.")
+    } else if s(r, "status") == Some("queued") {
+        format!("Queued: the owner answers one card at a time; the card for `{name}` in {place} follows the one he has open.")
     } else {
         format!("Asked the owner for `{name}` in {place}: a card in his Lucina chat and a push to his phone.")
     };

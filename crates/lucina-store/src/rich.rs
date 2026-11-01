@@ -681,6 +681,8 @@ pub fn normalize_action(raw: &Value, index: usize) -> Option<Value> {
                 ("path", 512),
                 ("held", 64),
                 ("target", 200),
+                // A request in the queue: clients draw its inline card from the request's status.
+                ("request", 64),
             ] {
                 if let Some(v) = p[key].as_str().filter(|v| name_like(v, max)) {
                     payload.insert(key.into(), str_v(v));

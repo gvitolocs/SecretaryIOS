@@ -504,3 +504,42 @@ async fn an_apns_key_needs_the_team_id() {
         .await;
     assert_eq!(s, 200);
 }
+
+#[tokio::test]
+async fn the_queue_routes_are_device_only_and_a_save_names_its_request() {
+    let h = start().await;
+    let dismiss = "/v1/secrets/requests/sr-1/dismiss";
+    for auth in [None, Some(SVC)] {
+        assert_eq!(h.get(auth, "/v1/secrets/requests").await.0, 401, "{auth:?}");
+        assert_eq!(h.post(auth, dismiss, json!({})).await.0, 401, "{auth:?}");
+    }
+    let token = Some(h.token.as_str());
+    // A device reaches Lucina through them (the mock answers not_found for anything but a grant).
+    h.get(token, "/v1/secrets/requests").await;
+    h.post(token, dismiss, json!({})).await;
+    let seen: Vec<String> = h.mock.seen.lock().unwrap().iter().map(|(p, _)| p.clone()).collect();
+    assert!(seen.contains(&"/api/secretary/secrets/requests".to_owned()), "{seen:?}");
+    assert!(seen.contains(&"/api/secretary/secrets/requests/sr-1/dismiss".to_owned()), "{seen:?}");
+    // A bad id doesn't reach Lucina.
+    let n = seen.len();
+    assert_eq!(h.post(token, "/v1/secrets/requests/a%20b/dismiss", json!({})).await.0, 400);
+    assert_eq!(h.mock.seen.lock().unwrap().len(), n);
+
+    let mut body = put_body();
+    body["request"] = json!("sr-abc123");
+    let (s, v) = h.post(token, "/v1/secrets", body).await;
+    assert_eq!(s, 200, "{v}");
+    let grants = h.grants();
+    let last = grants.last().unwrap();
+    assert_eq!(last["request"], "sr-abc123");
+    assert_eq!(last["value"], VALUE);
+    // The grant itself never names the request or holds the value.
+    let p = payload(last["grant"].as_str().unwrap());
+    assert!(p.get("request").is_none() && p.get("value").is_none(), "{p}");
+    // A malformed id is not passed on; the save still works (the names close the request).
+    let mut body = put_body();
+    body["request"] = json!("../evil");
+    let (s, v) = h.post(token, "/v1/secrets", body).await;
+    assert_eq!(s, 200, "{v}");
+    assert!(h.grants().last().unwrap().get("request").is_none());
+}

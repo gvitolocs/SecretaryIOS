@@ -98,6 +98,9 @@ final class ChatStore {
     nonisolated static let choicesKey = "secretary.chat.choices.v1"
 
     @ObservationIgnored private let api: () -> SecretaryAPI
+    /// The owner's queue of secret requests, as the chat's cards draw it (SecretCard.swift).
+    @ObservationIgnored lazy var secretQueue = SecretQueueStore(api: api)
+    var secretsAPI: SecretaryAPI { api() }
     let database: ChatDatabase
     nonisolated static let deviceIdKey = "secretary.chat.deviceId"
     private(set) var deviceId: String?

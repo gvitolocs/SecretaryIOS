@@ -524,6 +524,16 @@ async fn route(
     if resource == Some("computer") && parts.len() <= 4 {
         return crate::computer::computer(method, uri, headers, &parts[1..], body).await;
     }
+    // What the app's secret cards draw, and their "Not now" (crate::secret_requests): names only.
+    if resource == Some("secrets") && id == Some("requests") && parts.len() <= 4 {
+        return match (method.as_str(), extra, fourth) {
+            ("GET", None, None) => Ok(ok(st.secret_requests.list())),
+            ("POST", Some(request), Some("dismiss")) => Ok(ok(st.secret_requests.dismiss(request)?)),
+            (_, None, None) => Err(ApiError::method_not_allowed(&["GET"])),
+            (_, Some(_), Some("dismiss")) => Err(ApiError::method_not_allowed(&["POST"])),
+            _ => Err(ApiError::not_found()),
+        };
+    }
     if extra.is_some() {
         return Err(ApiError::not_found());
     }

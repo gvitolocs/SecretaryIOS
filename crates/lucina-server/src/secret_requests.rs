@@ -1,0 +1,642 @@
+//! The owner's queue of secret requests: "enter the secret for this", paste, OK, saved, next.
+//!
+//! A request (an agent's `secret_request`, Lucina's own tool, or the owner's "salva un segreto")
+//! names a secret and never carries a value. **Only one request is on screen at a time**: the
+//! active one has a card in the owner's timeline, and the next card is posted when the active one
+//! is saved, dismissed or expires. So clients stay simple: each card is one timeline item, and old
+//! clients (the Mac app's bundled sheet) still see a plain `secret` action they can open.
+//!
+//! The queue lives in `<data_dir>/secret-requests.json` (mode 0600, names only), so a restart
+//! loses nothing: the active card is still in the timeline and the queued ones still follow. A
+//! value the owner had pasted but not sent lived only on his device and is not touched by this.
+//!
+//! The status of a card (`GET /api/secretary/secrets/requests`) is what clients draw: an open field
+//! for the active request, "saved" with the name and fingerprint, or "not asked any more".
+//!
+//! A save closes a request by its id (new clients send it) or by its names (old sheets don't).
+//! Old sheets can't report "Not now": the card then stays active until another client dismisses it
+//! or [`REQUEST_TTL`] passes.
+
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use lucina_store::timeline::TimelineStore;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+
+use crate::api::ApiError;
+use crate::bridges::Secretary;
+use crate::owner_secrets::{lucina_item, parse_request, project_known, request_card, rich_meta, SecretRequest};
+
+/// A repeat of a request closed this recently answers with the first card.
+pub const REQUEST_REPEAT: Duration = Duration::from_secs(600);
+/// How long a request stays open (active or queued) with nobody answering.
+pub const REQUEST_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
+/// Open requests at most: an agent in a loop can't fill the owner's queue.
+pub const MAX_OPEN: usize = 30;
+/// Closed requests kept for the cards already in the timeline (the oldest go first).
+pub const MAX_CLOSED: usize = 200;
+const FILE: &str = "secret-requests.json";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Status {
+    Queued,
+    Active,
+    Saved,
+    Dismissed,
+    Expired,
+}
+
+impl Status {
+    fn open(self) -> bool {
+        matches!(self, Status::Queued | Status::Active)
+    }
+}
+
+/// One request: names and what the card says, never a value. `name`, `project` and `environment`
+/// are empty only when the owner asked in words without saying them: his card asks for them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Entry {
+    pub id: String,
+    pub name: String,
+    pub project: String,
+    pub environment: String,
+    pub path: String,
+    pub reason: String,
+    pub who: String,
+    #[serde(default)]
+    pub new_project: bool,
+    pub status: Status,
+    pub asked_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shown_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_id: Option<String>,
+    /// What the bubble says instead of the agent's text (the owner's own request, his language).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bubble: Option<String>,
+    /// After a save: the broker's first 8 hex of the value's sha256, and created / updated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+}
+
+impl Entry {
+    fn request(&self) -> SecretRequest {
+        SecretRequest {
+            name: self.name.clone(),
+            project: self.project.clone(),
+            environment: self.environment.clone(),
+            path: self.path.clone(),
+            reason: self.reason.clone(),
+            who: self.who.clone(),
+            new_project: self.new_project,
+        }
+    }
+
+    fn key(&self) -> String {
+        request_key(&self.request())
+    }
+}
+
+fn request_key(r: &SecretRequest) -> String {
+    format!("{}\n{}\n{}\n{}", r.name, r.project.to_lowercase(), r.environment, r.path)
+}
+
+fn now() -> i64 {
+    chrono::Utc::now().timestamp()
+}
+
+fn random_id() -> String {
+    let mut b = [0u8; 12];
+    getrandom::fill(&mut b).expect("OS random");
+    let hex: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    format!("sr-{hex}")
+}
+
+/// The answer to one request.
+#[derive(Debug, Clone)]
+pub struct Asked {
+    pub entry: Entry,
+    /// `asked` (its card was just posted), `queued` or `already_asked`.
+    pub status: &'static str,
+    pub project_known: Option<bool>,
+    pub create_project: bool,
+    /// Requests ahead of this one.
+    pub ahead: usize,
+    /// The posted card's message (the chat response carries it).
+    pub rich: Option<Value>,
+}
+
+impl Asked {
+    pub fn to_json(&self) -> Value {
+        let e = &self.entry;
+        json!({"status": self.status, "requestId": e.id, "itemId": e.item_id, "name": e.name, "project": e.project,
+               "environment": e.environment, "path": e.path, "projectKnown": self.project_known,
+               "createProject": self.create_project, "ahead": self.ahead})
+    }
+}
+
+pub struct SecretRequests {
+    file: PathBuf,
+    timeline: Arc<TimelineStore>,
+    secretary: Secretary,
+    /// Loaded on first use.
+    entries: Mutex<Option<Vec<Entry>>>,
+}
+
+impl std::fmt::Debug for SecretRequests {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SecretRequests").field("file", &self.file).finish_non_exhaustive()
+    }
+}
+
+/// What a state change leaves to do outside the lock.
+#[derive(Default)]
+struct Next {
+    posted: Option<Entry>,
+}
+
+impl SecretRequests {
+    pub fn new(data_dir: &Path, timeline: Arc<TimelineStore>, secretary: Secretary) -> Self {
+        Self {
+            file: data_dir.join(FILE),
+            timeline,
+            secretary,
+            entries: Mutex::new(None),
+        }
+    }
+
+    fn with<T>(&self, f: impl FnOnce(&mut Vec<Entry>) -> T) -> T {
+        let mut guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let entries = guard.get_or_insert_with(|| self.load());
+        f(entries)
+    }
+
+    fn load(&self) -> Vec<Entry> {
+        match std::fs::read(&self.file) {
+            Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
+                // Said plainly: the cards still in the timeline then read "not asked any more".
+                tracing::warn!(path = %self.file.display(), error = %e, "secret request queue unreadable: starting empty");
+                Vec::new()
+            }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => {
+                tracing::warn!(path = %self.file.display(), error = %e.kind(), "secret request queue unreadable: starting empty");
+                Vec::new()
+            }
+        }
+    }
+
+    /// Whole file through a private temporary: a crash never leaves half a queue.
+    fn persist(&self, entries: &[Entry]) {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let write = || -> std::io::Result<()> {
+            if let Some(dir) = self.file.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            let tmp = self.file.with_extension("json.tmp");
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&tmp)?;
+            f.write_all(&serde_json::to_vec(entries)?)?;
+            f.sync_all()?;
+            std::fs::rename(&tmp, &self.file)
+        };
+        if let Err(e) = write() {
+            tracing::warn!(path = %self.file.display(), error = %e.kind(), "secret request queue not written");
+        }
+    }
+
+    /// Post the card of the oldest queued request when nothing is active.
+    fn advance(&self, entries: &mut [Entry], next: &mut Next) {
+        if entries.iter().any(|e| e.status == Status::Active) {
+            return;
+        }
+        if let Some(e) = entries.iter_mut().find(|e| e.status == Status::Queued) {
+            self.post_card(e);
+            next.posted = Some(e.clone());
+        }
+    }
+
+    fn post_card(&self, e: &mut Entry) -> Option<Value> {
+        let (text, mut actions, _) = request_card(&e.request(), project_known(&e.project));
+        let text = e.bubble.clone().unwrap_or(text);
+        // New clients draw the card from the request's status; old ones just see `secret`.
+        for a in &mut actions {
+            if a["kind"] == "secret" && a["payload"]["mode"] == "save" {
+                a["payload"]["request"] = json!(e.id);
+            }
+        }
+        let meta = rich_meta(vec![text.clone()], actions);
+        // The chat response carries the message at its top level, like any rich reply.
+        let rich = meta.as_ref().and_then(|m| serde_json::to_value(m).ok()).map(|v| {
+            let keep = ["format", "bubbles", "lang", "blocks", "actions"];
+            Value::Object(v.as_object().into_iter().flatten().filter(|(k, _)| keep.contains(&k.as_str())).map(|(k, v)| (k.clone(), v.clone())).collect())
+        });
+        e.item_id = lucina_item(&self.timeline, &text, "secret_request", meta);
+        e.status = Status::Active;
+        e.shown_at = Some(now());
+        tracing::info!(name = %e.name, project = %e.project, environment = %e.environment, who = %e.who,
+                       request = %e.id, "secret request card posted");
+        rich
+    }
+
+    /// Close what waited too long, and forget the oldest closed ones.
+    fn sweep(&self, entries: &mut Vec<Entry>, next: &mut Next) -> bool {
+        let t = now();
+        let ttl = REQUEST_TTL.as_secs() as i64;
+        let mut changed = false;
+        for e in entries.iter_mut().filter(|e| e.status.open()) {
+            if t - e.shown_at.unwrap_or(e.asked_at) >= ttl {
+                e.status = Status::Expired;
+                e.closed_at = Some(t);
+                changed = true;
+            }
+        }
+        let closed = entries.iter().filter(|e| !e.status.open()).count();
+        if closed > MAX_CLOSED {
+            let mut drop = closed - MAX_CLOSED;
+            entries.retain(|e| {
+                if drop > 0 && !e.status.open() {
+                    drop -= 1;
+                    return false;
+                }
+                true
+            });
+            changed = true;
+        }
+        if changed {
+            self.advance(entries, next);
+        }
+        changed
+    }
+
+    /// A card that followed another one: its push goes out on the side, the save doesn't wait.
+    fn notify_later(&self, next: Next) {
+        let Some(e) = next.posted else { return };
+        let secretary = self.secretary.clone();
+        tokio::spawn(async move { notify_card(&secretary, &e).await });
+    }
+
+    /// Ask the owner: a card now, or a place in the queue. `owner`: his own request, which may
+    /// repeat one he closed a moment ago.
+    pub async fn ask(&self, r: SecretRequest, bubble: Option<String>, owner: bool) -> Result<Asked, ApiError> {
+        let known = if r.project.is_empty() { None } else { project_known(&r.project) };
+        let missing = known == Some(false) || (known.is_none() && r.new_project);
+        let key = request_key(&r);
+        let mut next = Next::default();
+        let (out, posted) = self.with(|entries| {
+            let swept = self.sweep(entries, &mut next);
+            let t = now();
+            let repeat = entries.iter().rev().find(|e| {
+                e.key() == key
+                    && (e.status.open()
+                        || (!owner && t - e.closed_at.unwrap_or(0) < REQUEST_REPEAT.as_secs() as i64))
+            });
+            if let Some(e) = repeat {
+                let ahead = ahead_of(entries, &e.id);
+                let a = Asked { entry: e.clone(), status: "already_asked", project_known: known, create_project: false, ahead, rich: None };
+                if swept {
+                    self.persist(entries);
+                }
+                return (Ok(a), false);
+            }
+            if entries.iter().filter(|e| e.status.open()).count() >= MAX_OPEN {
+                if swept {
+                    self.persist(entries);
+                }
+                return (Err(ApiError::new(429, "too_many_requests", "the owner already has too many secret requests open")), false);
+            }
+            let mut e = Entry {
+                id: random_id(),
+                name: r.name.clone(),
+                project: r.project.clone(),
+                environment: r.environment.clone(),
+                path: r.path.clone(),
+                reason: r.reason.clone(),
+                who: r.who.clone(),
+                new_project: r.new_project,
+                status: Status::Queued,
+                asked_at: t,
+                shown_at: None,
+                closed_at: None,
+                item_id: None,
+                bubble,
+                fingerprint: None,
+                action: None,
+            };
+            let free = !entries.iter().any(|x| x.status == Status::Active) && !entries.iter().any(|x| x.status == Status::Queued);
+            let rich = free.then(|| self.post_card(&mut e)).flatten();
+            let ahead = entries.iter().filter(|x| x.status.open()).count();
+            entries.push(e.clone());
+            self.persist(entries);
+            let status = if free { "asked" } else { "queued" };
+            (Ok(Asked { entry: e, status, project_known: known, create_project: missing, ahead, rich }), free)
+        });
+        self.notify_later(next);
+        let out = out?;
+        if posted {
+            notify_card(&self.secretary, &out.entry).await;
+        }
+        Ok(out)
+    }
+
+    /// Every request, oldest first: what the cards draw.
+    pub fn list(&self) -> Value {
+        let mut next = Next::default();
+        let out = self.with(|entries| {
+            if self.sweep(entries, &mut next) {
+                self.persist(entries);
+            }
+            let queued = entries.iter().filter(|e| e.status == Status::Queued).count();
+            let active = entries.iter().find(|e| e.status == Status::Active).map(|e| e.id.clone());
+            json!({"requests": entries, "active": active, "queued": queued})
+        });
+        self.notify_later(next);
+        out
+    }
+
+    /// "Not now". Answering twice is fine; the next card follows.
+    pub fn dismiss(&self, id: &str) -> Result<Value, ApiError> {
+        let mut next = Next::default();
+        let out = self.with(|entries| {
+            let e = entries
+                .iter_mut()
+                .find(|e| e.id == id)
+                .ok_or_else(|| ApiError::new(404, "not_found", "no such secret request"))?;
+            if e.status.open() {
+                e.status = Status::Dismissed;
+                e.closed_at = Some(now());
+                tracing::info!(name = %e.name, request = %id, "secret request dismissed");
+            }
+            let status = e.status;
+            self.advance(entries, &mut next);
+            self.persist(entries);
+            let next_item = next.posted.as_ref().and_then(|n| n.item_id.clone());
+            Ok(json!({"status": status, "nextItemId": next_item}))
+        });
+        self.notify_later(next);
+        out
+    }
+
+    /// A save went through: close its request (by id, else by the names the broker returned) and
+    /// post the next card. `result` is the broker's answer: names and fingerprint, never a value.
+    pub fn saved(&self, request: Option<&str>, result: &Value) -> Option<String> {
+        let key = result["key"].as_str().unwrap_or("");
+        let env = result["environment"].as_str().unwrap_or("");
+        let path = result["path"].as_str().unwrap_or("/");
+        let project_keys: Vec<String> = ["id", "name", "slug", "alias"]
+            .iter()
+            .filter_map(|k| result["project"][*k].as_str())
+            .map(str::to_lowercase)
+            .collect();
+        let mut next = Next::default();
+        let out = self.with(|entries| {
+            let by_id = request.and_then(|id| {
+                entries
+                    .iter()
+                    .position(|e| e.id == id && e.status.open() && (e.name.is_empty() || e.name == key))
+            });
+            let by_names = || {
+                entries.iter().position(|e| {
+                    e.status.open()
+                        && e.name == key
+                        && e.environment == env
+                        && e.path == path
+                        && project_keys.contains(&e.project.to_lowercase())
+                })
+            };
+            let i = by_id.or_else(by_names)?;
+            let e = &mut entries[i];
+            e.status = Status::Saved;
+            e.closed_at = Some(now());
+            e.name = key.to_owned();
+            e.environment = env.to_owned();
+            e.path = path.to_owned();
+            if let Some(n) = result["project"]["name"].as_str() {
+                e.project = n.to_owned();
+            }
+            e.fingerprint = result["fingerprint"].as_str().map(str::to_owned);
+            e.action = result["action"].as_str().map(str::to_owned);
+            self.advance(entries, &mut next);
+            self.persist(entries);
+            next.posted.as_ref().and_then(|n| n.item_id.clone())
+        });
+        self.notify_later(next);
+        out
+    }
+}
+
+fn ahead_of(entries: &[Entry], id: &str) -> usize {
+    entries.iter().take_while(|e| e.id != id).filter(|e| e.status.open()).count()
+}
+
+/// The push for a card: names and the reason.
+async fn notify_card(secretary: &Secretary, e: &Entry) {
+    // The owner's own request: he is in the chat.
+    if e.who.is_empty() {
+        return;
+    }
+    let title = format!("Secret requested: {}", e.name);
+    let body = format!("{} asks for {} in {}/{}: {}", e.who, e.name, e.project, e.environment, e.reason);
+    let mut push = json!({
+        "category": "lucina_message",
+        "title": title,
+        "body": body,
+        "route": "/",
+        "channel": "web",
+        "data": {"kind": "secret_request", "name": e.name, "project": e.project, "environment": e.environment},
+    });
+    if let Some(id) = &e.item_id {
+        // The timeline ingest pushes the same item: one dedup key for both.
+        push["timelineId"] = json!(id);
+        push["dedupKey"] = json!(format!("tl:{id}"));
+    }
+    lucina_secrets::redactor().redact_json(&mut push);
+    let pushed = crate::bridges::notify(secretary, &push).await;
+    if !pushed.ok {
+        tracing::warn!(status = pushed.status, code = %pushed.code, "secret request push failed (the timeline item still notifies)");
+    }
+}
+
+/// `POST /api/secretary/secrets/request`, and Lucina's own tool: a body of names.
+pub async fn ask_body(queue: &SecretRequests, body: &Value) -> Result<Value, ApiError> {
+    let r = parse_request(body)?;
+    Ok(queue.ask(r, None, false).await?.to_json())
+}
+
+#[async_trait::async_trait]
+impl lucina_tools::tools::secret_request::SecretAsker for SecretRequests {
+    async fn ask(&self, session_id: &str, body: Value) -> Result<Value, String> {
+        if crate::selftest::is_session(session_id) {
+            return Err("self-test sessions don't ask the owner for secrets".into());
+        }
+        ask_body(self, &body).await.map_err(|e| e.message)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn queue(dir: &Path) -> SecretRequests {
+        let timeline = Arc::new(TimelineStore::new(dir.join("timeline.jsonl"), 1 << 20, true));
+        let secretary = Secretary { http: reqwest::Client::new(), url: None, token_file: None };
+        SecretRequests::new(dir, timeline, secretary)
+    }
+
+    fn req(name: &str) -> SecretRequest {
+        SecretRequest {
+            name: name.into(),
+            project: "lucinaos".into(),
+            environment: "prod".into(),
+            path: "/".into(),
+            reason: "the image needs it".into(),
+            who: "claude-code".into(),
+            new_project: false,
+        }
+    }
+
+    fn receipt(key: &str) -> Value {
+        json!({"key": key, "project": {"id": "p-1", "name": "LucinaOS"}, "environment": "prod", "path": "/",
+               "action": "created", "fingerprint": "ab12cd34"})
+    }
+
+    fn cards(q: &SecretRequests) -> Vec<Value> {
+        q.timeline
+            .read_all()
+            .unwrap()
+            .iter()
+            .filter_map(|i| serde_json::from_str::<Value>(i.raw_value().get()).ok())
+            .filter(|i| i["meta"]["kind"] == "secret_request")
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn one_card_at_a_time_and_the_next_follows() {
+        let dir = tempfile::tempdir().unwrap();
+        let q = queue(dir.path());
+        let a = q.ask(req("A"), None, false).await.unwrap();
+        let b = q.ask(req("B"), None, false).await.unwrap();
+        let c = q.ask(req("C"), None, false).await.unwrap();
+        assert_eq!((a.status, b.status, c.status), ("asked", "queued", "queued"));
+        assert_eq!((a.ahead, b.ahead, c.ahead), (0, 1, 2));
+        assert_eq!(cards(&q).len(), 1, "only the active one has a card");
+        assert!(a.rich.is_some() && b.rich.is_none());
+        assert_eq!(cards(&q)[0]["meta"]["actions"][0]["payload"]["request"], json!(a.entry.id));
+
+        // Saved by id: the next card appears. Dismissed: the one after it.
+        let next = q.saved(Some(&a.entry.id), &receipt("A")).expect("B's card");
+        assert_eq!(cards(&q).len(), 2);
+        assert_eq!(q.list()["active"], json!(b.entry.id));
+        assert_eq!(q.list()["queued"], 1);
+        assert!(cards(&q).iter().any(|i| i["id"] == json!(next)));
+        let d = q.dismiss(&b.entry.id).unwrap();
+        assert_eq!(d["status"], "dismissed");
+        assert!(d["nextItemId"].is_string());
+        assert_eq!(q.list()["active"], json!(c.entry.id));
+        assert_eq!(q.dismiss(&b.entry.id).unwrap()["status"], "dismissed", "twice is fine");
+        assert_eq!(cards(&q).len(), 3, "and posts nothing more");
+        assert_eq!(q.dismiss("sr-nope").unwrap_err().code, "not_found");
+
+        let list = q.list();
+        let saved = &list["requests"][0];
+        assert_eq!((saved["status"].as_str(), saved["fingerprint"].as_str()), (Some("saved"), Some("ab12cd34")));
+        assert_eq!(saved["project"], "LucinaOS");
+    }
+
+    #[tokio::test]
+    async fn a_restart_keeps_the_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        let q = queue(dir.path());
+        let a = q.ask(req("A"), None, false).await.unwrap();
+        let b = q.ask(req("B"), None, false).await.unwrap();
+        drop(q);
+        let q = queue(dir.path());
+        let list = q.list();
+        assert_eq!(list["active"], json!(a.entry.id));
+        assert_eq!(list["queued"], 1);
+        assert_eq!(cards(&q).len(), 1, "a restart posts nothing");
+        // Repeat protection survives too.
+        assert_eq!(q.ask(req("B"), None, false).await.unwrap().status, "already_asked");
+        q.saved(Some(&a.entry.id), &receipt("A")).expect("B's card");
+        assert_eq!(q.list()["active"], json!(b.entry.id));
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(dir.path().join(FILE)).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        // A broken file says so in the log and starts empty; the save path still works.
+        std::fs::write(dir.path().join(FILE), "not json").unwrap();
+        let q = queue(dir.path());
+        assert_eq!(q.list()["requests"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn repeats_answer_with_the_first_card() {
+        let dir = tempfile::tempdir().unwrap();
+        let q = queue(dir.path());
+        let a = q.ask(req("A"), None, false).await.unwrap();
+        let again = q.ask(req("A"), None, false).await.unwrap();
+        assert_eq!(again.status, "already_asked");
+        assert_eq!(again.entry.item_id, a.entry.item_id);
+        // Closed a moment ago: an agent can't re-ask at once, the owner can.
+        q.dismiss(&a.entry.id).unwrap();
+        assert_eq!(q.ask(req("A"), None, false).await.unwrap().status, "already_asked");
+        assert_eq!(q.ask(req("A"), None, true).await.unwrap().status, "asked");
+        assert_eq!(cards(&q).len(), 2);
+    }
+
+    #[tokio::test]
+    async fn an_old_sheet_closes_the_request_by_its_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let q = queue(dir.path());
+        let a = q.ask(req("A"), None, false).await.unwrap();
+        // Another secret saved from the sheet: the card stays.
+        assert!(q.saved(None, &receipt("OTHER")).is_none());
+        assert_eq!(q.list()["active"], json!(a.entry.id));
+        let mut in_folder = receipt("A");
+        in_folder["path"] = json!("/other");
+        q.saved(None, &in_folder);
+        assert_eq!(q.list()["active"], json!(a.entry.id));
+        // The same names: closed.
+        q.saved(None, &receipt("A"));
+        assert_eq!(q.list()["active"], Value::Null);
+        // A request id naming something else is not believed.
+        let b = q.ask(req("B"), None, false).await.unwrap();
+        q.saved(Some(&b.entry.id), &receipt("WRONG"));
+        assert_eq!(q.list()["active"], json!(b.entry.id));
+    }
+
+    #[tokio::test]
+    async fn what_nobody_answers_expires_and_the_queue_moves_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let q = queue(dir.path());
+        let a = q.ask(req("A"), None, false).await.unwrap();
+        let b = q.ask(req("B"), None, false).await.unwrap();
+        q.with(|entries| entries[0].shown_at = Some(now() - REQUEST_TTL.as_secs() as i64 - 1));
+        let list = q.list();
+        assert_eq!(list["requests"][0]["status"], "expired");
+        assert_eq!(list["active"], json!(b.entry.id));
+        assert_ne!(a.entry.id, b.entry.id);
+    }
+
+    #[tokio::test]
+    async fn the_queue_is_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let q = queue(dir.path());
+        for i in 0..MAX_OPEN {
+            q.ask(req(&format!("N{i}")), None, false).await.unwrap();
+        }
+        assert_eq!(q.ask(req("ONE_MORE"), None, false).await.unwrap_err().code, "too_many_requests");
+    }
+}

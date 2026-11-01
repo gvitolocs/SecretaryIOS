@@ -38,6 +38,8 @@ export interface SecretActionPayload {
   /** A value Lucina holds in memory for the owner (the sheet sends the id). */
   held?: string;
   projectName?: string;
+  /** A request in Lucina's queue: the chat draws its inline paste-and-OK card (SecretCard). */
+  request?: string;
 }
 
 export interface RichMessage {
@@ -289,7 +291,7 @@ function parseAction(v: unknown, index: number): RichAction | null {
       if (p.mode !== "save" && p.mode !== "project") return null;
       const payload: SecretActionPayload = { mode: p.mode };
       const NAME = /^[A-Za-z0-9_.@/-]{1,256}$/;
-      for (const k of ["name", "project", "environment", "path", "target", "held"] as const) {
+      for (const k of ["name", "project", "environment", "path", "target", "held", "request"] as const) {
         const v = p[k];
         if (typeof v === "string" && NAME.test(v)) payload[k] = v;
       }

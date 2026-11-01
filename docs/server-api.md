@@ -2829,6 +2829,17 @@ is `already_asked` with the first card. The owner then saves through `POST /v1/s
 so the value never passes through the agent, the timeline or a log. The sheet matches `project`
 by id, alias, slug or name, never picks another project for it, and puts the cursor in the value.
 
+**The queue and its cards.** A request names a secret, never a value, and waits in Lucina's queue
+(`crates/lucina-server/src/secret_requests.rs`, `<data_dir>/secret-requests.json`, names only): one
+card at a time in the owner's timeline, the next posted when it is saved, dismissed or expires (7
+days). The answer's `status` is `asked`, `queued` (with `ahead`) or `already_asked`. Lucina herself asks
+through the `secret_request` tool or the owner's "salva un segreto [NAME] [project/env]", in words,
+answered before the model. Device-only: `GET /v1/secrets/requests` (`{requests: [{id, name, project,
+environment, path, reason, who, status, fingerprint?, action?, itemId?}], active, queued}`, what the
+cards draw) and `POST /v1/secrets/requests/{id}/dismiss` ("Not now"; `{status, nextItemId}`). `POST
+/v1/secrets` takes an optional `request` id, closes that request and answers with `nextItemId`; a save
+without it closes a request with the same names.
+
 APNs key: a `value` named `APNS_AUTH_KEY_<KEYID>` (10 letters/digits; the whole `.p8` text) is also
 installed as this server's APNs key before it is forwarded, and push to the native app is on at once.
 400 `bad_request` when it is not a P-256 `.p8` (nothing is forwarded) or the server has no

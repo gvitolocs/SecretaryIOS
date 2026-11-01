@@ -41,6 +41,7 @@ pub mod lan;
 pub mod ops;
 pub mod otp;
 pub mod owner_secrets;
+pub mod secret_requests;
 pub mod parity;
 pub mod places;
 pub mod planner;
@@ -127,6 +128,8 @@ pub struct Inner {
     pub client_messages: Mutex<HashMap<String, (Instant, SharedChat)>>,
     /// Values the owner put in chat, waiting for "Save as secret" (memory only).
     pub held_secrets: owner_secrets::HeldSecrets,
+    /// The owner's queue of secret requests: one card at a time.
+    pub secret_requests: Arc<secret_requests::SecretRequests>,
     pub briefings: tokio::sync::Mutex<HashMap<String, api::Briefing>>,
     pub streams: AtomicUsize,
     pub started: Instant,
@@ -449,6 +452,24 @@ impl AppState {
         // MCP turns: no owner-only tools and no delegation, ever.
         let mcp_registry = Arc::new(registry.without(lucina_tools::NO_MCP_TOOLS));
         let trusted_mcp_registry = Arc::new(registry.without(lucina_tools::OWNER_ONLY_TOOLS));
+        // "Enter the secret for this": Lucina's own way to ask, by name. Owner turns only, so added
+        // after the MCP registries (agents have secretary-mcp's `secret_request`).
+        let secret_requests = Arc::new(secret_requests::SecretRequests::new(
+            &cfg.data_dir,
+            timeline.clone(),
+            bridges::Secretary {
+                http: env_http.clone(),
+                url: cfg.secretary_url.clone(),
+                token_file: cfg.secretary_service_token_file.clone(),
+            },
+        ));
+        if cfg.tools.allows("secret_request") {
+            registry
+                .register(Arc::new(lucina_tools::tools::secret_request::SecretRequestTool {
+                    asker: secret_requests.clone(),
+                }))
+                .expect("secret_request registers");
+        }
         // The owner's shared files: owner turns only, so added after the MCP registries.
         let share = crate::share::ShareRuntime::new(&cfg.share);
         for tool in crate::share::tools::all(share.memory.clone()) {
@@ -515,6 +536,7 @@ impl AppState {
             bridge_state: bridges::BridgeState::default(),
             client_messages: Mutex::new(HashMap::new()),
             held_secrets: owner_secrets::HeldSecrets::default(),
+            secret_requests,
             briefings: tokio::sync::Mutex::new(HashMap::new()),
             streams: AtomicUsize::new(0),
             started: Instant::now(),

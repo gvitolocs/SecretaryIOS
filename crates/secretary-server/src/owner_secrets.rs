@@ -25,7 +25,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use axum::extract::{Extension, State};
+use axum::extract::{Extension, Path as UrlPath, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -219,8 +219,9 @@ async fn forward_grant(
     grant: String,
     value: Option<String>,
     held: Option<String>,
+    request: Option<String>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let call = Call::secrets_grant(grant, value, held)?;
+    let call = Call::secrets_grant(grant, value, held, request)?;
     let (status, data) = st.lucina()?.call_with_status::<Value>(&call).await?;
     Ok((
         StatusCode::from_u16(status).unwrap_or(StatusCode::OK),
@@ -252,7 +253,7 @@ async fn catalog(
     Extension(who): Extension<Identity>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let grant = mint(&st, &who, json!({"act": "catalog"}))?;
-    forward_grant(&st, grant, None, None).await
+    forward_grant(&st, grant, None, None, None).await
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -279,7 +280,7 @@ async fn names(
         &who,
         json!({"act": "catalog", "project": project, "environment": environment, "path": path}),
     )?;
-    forward_grant(&st, grant, None, None).await
+    forward_grant(&st, grant, None, None, None).await
 }
 
 const APNS_KEY_PREFIX: &str = "APNS_AUTH_KEY_";
@@ -343,6 +344,8 @@ async fn put_secret(
     let path = normalize_folder(str_field(&body, "path").unwrap_or("/"))
         .ok_or_else(|| bad("path: folders of letters, digits, _ . @ -"))?;
     let overwrite = body.get("overwrite") == Some(&Value::Bool(true));
+    // The queue entry this save answers: its card follows; a bad id is simply not passed on.
+    let request = str_field(&body, "request").filter(|r| id_ok(r, 64)).map(str::to_owned);
     let create_folder = body.get("createFolder") == Some(&Value::Bool(true));
     let mut act = json!({
         "act": "put_secret",
@@ -375,7 +378,7 @@ async fn put_secret(
         _ => false,
     };
     let res = match mint(&st, &who, act) {
-        Ok(grant) => forward_grant(&st, grant, value, held).await,
+        Ok(grant) => forward_grant(&st, grant, value, held, request).await,
         Err(e) => Err(e),
     };
     if !apns_installed {
@@ -394,6 +397,21 @@ async fn put_secret(
             Json(json!({"error": {"code": e.code, "message": e.message}, "apnsInstalled": true})),
         )),
     }
+}
+
+/// `GET /v1/secrets/requests`: the queue the chat's cards draw (names and fingerprints only).
+async fn requests(State(st): State<AppState>) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let (status, data) = st.lucina()?.call_with_status::<Value>(&Call::secret_requests()).await?;
+    Ok((StatusCode::from_u16(status).unwrap_or(StatusCode::OK), Json(data)))
+}
+
+/// `POST /v1/secrets/requests/{id}/dismiss`: "Not now"; the next card follows.
+async fn dismiss_request(
+    State(st): State<AppState>,
+    UrlPath(id): UrlPath<String>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let (status, data) = st.lucina()?.call_with_status::<Value>(&Call::secret_request_dismiss(&id)?).await?;
+    Ok((StatusCode::from_u16(status).unwrap_or(StatusCode::OK), Json(data)))
 }
 
 /// `POST /v1/secrets/projects {name, slug?, confirmed: true}`.
@@ -420,7 +438,7 @@ async fn create_project(
         act["slug"] = json!(slug);
     }
     let grant = mint(&st, &who, act)?;
-    forward_grant(&st, grant, None, None).await
+    forward_grant(&st, grant, None, None, None).await
 }
 
 /// The device-only routes (mounted behind [`crate::auth::require_device`]).
@@ -431,6 +449,8 @@ pub fn routes() -> Router<AppState> {
         .route("/v1/secrets/catalog", get(catalog))
         .route("/v1/secrets/names", get(names))
         .route("/v1/secrets/projects", post(create_project))
+        .route("/v1/secrets/requests", get(requests))
+        .route("/v1/secrets/requests/{id}/dismiss", post(dismiss_request))
 }
 
 fn sha_hex(data: &[u8]) -> String {

@@ -35,6 +35,28 @@ export interface SaveSecret {
   /** Exactly one of value / held. */
   value?: string;
   held?: string;
+  /** The queue entry this save answers (SecretCard). */
+  request?: string;
+}
+
+/** A request in Lucina's queue: names only. Empty name / project: the owner's card asks for them. */
+export interface SecretRequestEntry {
+  id: string;
+  name: string;
+  project: string;
+  environment: string;
+  path: string;
+  reason: string;
+  who: string;
+  status: "queued" | "active" | "saved" | "dismissed" | "expired";
+  fingerprint?: string;
+  action?: "created" | "updated";
+}
+
+export interface SecretQueue {
+  requests: SecretRequestEntry[];
+  active: string | null;
+  queued: number;
 }
 
 export interface SecretReceipt {
@@ -78,6 +100,8 @@ export const secretsApi = {
       `/v1/secrets/names?project=${encodeURIComponent(project)}&environment=${encodeURIComponent(environment)}&path=${encodeURIComponent(path)}`,
     ),
   save: (body: SaveSecret) => request<SecretReceipt>("POST", "/v1/secrets", { body: { ...body, confirmed: true }, timeoutMs: 60_000 }),
+  requests: () => request<SecretQueue>("GET", "/v1/secrets/requests"),
+  dismissRequest: (id: string) => request<{ status: string }>("POST", `/v1/secrets/requests/${encodeURIComponent(id)}/dismiss`, { body: {} }),
   createProject: (name: string) =>
     request<CreatedProject>("POST", "/v1/secrets/projects", { body: { name, confirmed: true }, timeoutMs: 60_000 }),
 };

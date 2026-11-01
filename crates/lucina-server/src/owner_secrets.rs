@@ -24,6 +24,9 @@
 //!   the sheet prefilled; he pastes the value and saves it the usual way (a
 //!   grant). A request that carries a value, or a reason that looks like one,
 //!   is refused: the value never passes through the agent or the timeline.
+//!   Requests wait in [`crate::secret_requests`]: one card at a time.
+//! - **"salva un segreto [NAME] [progetto/ambiente]"** ([`secret_words`]) puts the owner's own
+//!   request in that queue, before the model. A message shaped like `NAME value` is not recorded.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -278,7 +281,7 @@ pub fn receipt_text(r: &Value) -> String {
 }
 
 /// Write a Lucina item; its id (for the chat response, so clients dedupe it).
-fn lucina_item(
+pub(crate) fn lucina_item(
     timeline: &TimelineStore,
     text: &str,
     kind: &str,
@@ -299,7 +302,7 @@ fn lucina_item(
         .map(|i| i.id)
 }
 
-fn rich_meta(bubbles: Vec<String>, actions: Vec<Value>) -> Option<Meta> {
+pub(crate) fn rich_meta(bubbles: Vec<String>, actions: Vec<Value>) -> Option<Meta> {
     let raw = json!({"format": "v1", "bubbles": bubbles, "blocks": [], "actions": actions});
     lucina_store::rich::normalize(&raw)
         .ok()
@@ -364,6 +367,7 @@ pub async fn relay(st: &crate::AppState, mut body: Value) -> Result<Value, ApiEr
         .ok_or_else(|| ApiError::bad_request("grant is required"))?
         .to_owned();
     let held = body["held"].as_str().map(str::to_owned);
+    let request_id = body["request"].as_str().filter(|r| r.len() <= 64).map(str::to_owned);
     let value: Option<SecretValue> = match (body.get("value"), &held) {
         (Some(Value::String(v)), None) => Some(SecretValue::new(v.clone())),
         (None, Some(id)) => Some(st.held_secrets.get(id).ok_or_else(|| {
@@ -410,8 +414,11 @@ pub async fn relay(st: &crate::AppState, mut body: Value) -> Result<Value, ApiEr
         let text = receipt_text(&result);
         let _ = lucina_item(&st.timeline, &format!("✅ {text}"), "secret_receipt", None);
         tracing::info!(name = %name, action = result["action"].as_str().unwrap_or(""), "owner secret saved");
+        // After the receipt: the next request's card comes below it.
+        let next = st.secret_requests.saved(request_id.as_deref(), &result);
         let mut out = result;
         out["receipt"] = json!(text);
+        out["nextItemId"] = json!(next);
         return Ok(out);
     }
     if let Some(p) = result
@@ -489,6 +496,13 @@ struct Texts {
     chars: &'static str,
     project: &'static str,
     chat_app: &'static str,
+    words_named: &'static str,
+    words_noplace: &'static str,
+    words_blank: &'static str,
+    words_value: &'static str,
+    words_more: &'static str,
+    words_waiting: &'static str,
+    words_full: &'static str,
 }
 
 fn texts(lang: &str) -> Texts {
@@ -507,6 +521,13 @@ fn texts(lang: &str) -> Texts {
             chars: "characters",
             project: "Create the Infisical project \"{name}\"? Tap to confirm in the app. It gets no access for agents or services until you say so.",
             chat_app: " The card is in the Secretary app. This chat app keeps your message: delete it there.",
+            words_named: "🔐 The card for `{name}` in {place} is ready: paste the value there. It goes straight to Infisical, never to this chat or my memory.",
+            words_noplace: "🔐 The card for `{name}` is ready: pick the place and paste the value there. It goes straight to Infisical, never to this chat or my memory.",
+            words_blank: "🔐 The card is ready: name, place and value go there. The value goes straight to Infisical, never to this chat or my memory.",
+            words_value: "🔐 I didn't read or store what you wrote after the name: paste the value in the card.",
+            words_more: "{n} more follow, one at a time.",
+            words_waiting: "🔐 Finish the card you have open: this one follows it.",
+            words_full: "🔐 There are too many secret requests open: answer some of those first.",
         },
         "da" => Texts {
             save: "Gem som hemmelighed",
@@ -522,6 +543,13 @@ fn texts(lang: &str) -> Texts {
             chars: "tegn",
             project: "Skal jeg oprette Infisical-projektet \"{name}\"? Bekræft i appen. Agenter og tjenester får ingen adgang, før du siger til.",
             chat_app: " Kortet ligger i Secretary-appen. Denne chat-app gemmer din besked: slet den der.",
+            words_named: "🔐 Kortet til `{name}` i {place} er klar: indsæt værdien der. Den går direkte til Infisical, aldrig til denne chat eller min hukommelse.",
+            words_noplace: "🔐 Kortet til `{name}` er klar: vælg stedet og indsæt værdien der. Den går direkte til Infisical, aldrig til denne chat eller min hukommelse.",
+            words_blank: "🔐 Kortet er klar: navn, sted og værdi skrives der. Værdien går direkte til Infisical, aldrig til denne chat eller min hukommelse.",
+            words_value: "🔐 Jeg har hverken læst eller gemt det, du skrev efter navnet: indsæt værdien i kortet.",
+            words_more: "{n} mere følger, én ad gangen.",
+            words_waiting: "🔐 Gør det åbne kort færdigt først: dette følger bagefter.",
+            words_full: "🔐 Der er for mange åbne anmodninger om hemmeligheder: svar på nogle af dem først.",
         },
         _ => Texts {
             save: "Salva come segreto",
@@ -537,6 +565,13 @@ fn texts(lang: &str) -> Texts {
             chars: "caratteri",
             project: "Creo il progetto Infisical \"{name}\"? Confermalo nell'app. Agenti e servizi non ci avranno accesso finché non lo dici tu.",
             chat_app: " La scheda è nell'app Secretary. Quest'app di chat conserva il tuo messaggio: cancellalo lì.",
+            words_named: "🔐 La scheda per `{name}` in {place} è pronta: incolla lì il valore. Va dritto a Infisical, mai in questa chat o nella mia memoria.",
+            words_noplace: "🔐 La scheda per `{name}` è pronta: scegli il posto e incolla lì il valore. Va dritto a Infisical, mai in questa chat o nella mia memoria.",
+            words_blank: "🔐 La scheda è pronta: nome, posto e valore vanno lì. Il valore va dritto a Infisical, mai in questa chat o nella mia memoria.",
+            words_value: "🔐 Non ho letto né salvato quello che hai scritto dopo il nome: incolla il valore nella scheda.",
+            words_more: "Poi ne seguono altri {n}, uno alla volta.",
+            words_waiting: "🔐 Finisci prima la scheda che hai aperta: questa arriva subito dopo.",
+            words_full: "🔐 Ci sono troppe richieste di segreti aperte: rispondi prima a qualcuna.",
         },
     }
 }
@@ -725,11 +760,6 @@ pub fn answer_project_request(
 /// until one passes; then an agent's request knows whether its project exists.
 static KNOWN_PROJECTS: Mutex<Option<Vec<String>>> = Mutex::new(None);
 
-/// Requests posted in the last [`REQUEST_REPEAT`]: (when, name/project/env/path, card id).
-static RECENT_REQUESTS: Mutex<Vec<(Instant, String, Option<String>)>> = Mutex::new(Vec::new());
-/// A repeat of the same request inside this window answers with the first card.
-const REQUEST_REPEAT: Duration = Duration::from_secs(600);
-
 /// The fields a request may carry. Anything else is refused, above all a value.
 const REQUEST_FIELDS: [&str; 8] = [
     "name",
@@ -759,7 +789,7 @@ fn remember_projects(list: &[Value], catalog: bool) {
 }
 
 /// Whether `project` is in the last catalog; `None` when no catalog passed yet.
-fn project_known(project: &str) -> Option<bool> {
+pub(crate) fn project_known(project: &str) -> Option<bool> {
     let known = KNOWN_PROJECTS.lock().unwrap_or_else(|e| e.into_inner());
     let p = project.to_lowercase();
     known.as_ref().map(|keys| keys.contains(&p))
@@ -888,7 +918,21 @@ pub fn parse_request(body: &Value) -> Result<SecretRequest, ApiError> {
 }
 
 /// The card: Lucina's text and its buttons. `missing`: offer "Create project".
-fn request_card(r: &SecretRequest, known: Option<bool>) -> (String, Vec<Value>, bool) {
+pub(crate) fn request_card(r: &SecretRequest, known: Option<bool>) -> (String, Vec<Value>, bool) {
+    if r.project.is_empty() || r.environment.is_empty() {
+        // The owner's own request without a place: the card (or the sheet) asks for it.
+        let mut payload = json!({"mode": "save"});
+        if !r.name.is_empty() {
+            payload["name"] = json!(r.name);
+        }
+        let label = if r.name.is_empty() { "Add secret".to_owned() } else { format!("Add {}", r.name) };
+        let text = format!("🔐 {label}");
+        let actions = vec![
+            json!({"id": "secret-request", "label": label, "emoji": "🔐", "kind": "secret", "payload": payload}),
+            json!({"id": "secret-request-dismiss", "label": "Not now", "kind": "dismiss", "payload": {}}),
+        ];
+        return (text, actions, false);
+    }
     let place = format!("{} / {} / {}", r.project, r.environment, r.path);
     let missing = known == Some(false) || (known.is_none() && r.new_project);
     let mut text = format!(
@@ -924,51 +968,263 @@ fn request_card(r: &SecretRequest, known: Option<bool>) -> (String, Vec<Value>, 
     (text, actions, missing)
 }
 
-/// `POST /api/secretary/secrets/request`: post the card to the owner's chat and push it.
-pub async fn request(st: &crate::AppState, body: &Value) -> Result<Value, ApiError> {
-    let r = parse_request(body)?;
-    let key = format!("{}\n{}\n{}\n{}", r.name, r.project.to_lowercase(), r.environment, r.path);
-    let known = project_known(&r.project);
-    let answer = |status: &str, id: &Option<String>, missing: bool| {
-        json!({"status": status, "itemId": id, "name": r.name, "project": r.project,
-               "environment": r.environment, "path": r.path, "projectKnown": known,
-               "createProject": missing})
-    };
-    {
-        let mut recent = RECENT_REQUESTS.lock().unwrap_or_else(|e| e.into_inner());
-        recent.retain(|(at, _, _)| at.elapsed() < REQUEST_REPEAT);
-        if let Some((_, _, id)) = recent.iter().find(|(_, k, _)| *k == key) {
-            return Ok(answer("already_asked", id, false));
+// ---------------------------------------------------------------- "salva un segreto"
+
+/// The owner's "salva un segreto" / "add a secret" in words: what he named, nothing else.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SecretWords {
+    pub names: Vec<String>,
+    pub project: Option<String>,
+    pub environment: Option<String>,
+    pub path: Option<String>,
+    /// The words after a name look like a value: this message must not be recorded.
+    pub value_suspect: bool,
+}
+
+/// What may come before the verb.
+const WORDS_LEAD: &[&str] = &[
+    "lucina", "ehi", "hey", "ciao", "ok", "okay", "puoi", "potresti", "riesci", "a", "can", "could", "would", "you",
+    "please", "per", "favore", "piacere", "voglio", "vorrei", "devo", "fammi", "i", "want", "need", "to", "kan", "du",
+    "vil", "gerne", "jeg",
+];
+const WORDS_VERB: &[&str] = &[
+    "salva", "salvare", "salvami", "aggiungi", "aggiungere", "aggiungimi", "inserisci", "inserire", "memorizza",
+    "memorizzare", "conserva", "conservare", "registra", "registrare", "save", "add", "store", "enter", "gem", "tilføj",
+];
+const WORDS_ARTICLE: &[&str] = &[
+    "un", "uno", "una", "il", "lo", "la", "i", "gli", "due", "tre", "nuovo", "mio", "a", "an", "the", "my", "new", "two",
+    "three", "en", "ny", "min",
+];
+const WORDS_NOUN: &[&str] = &["segreto", "segreti", "secret", "secrets", "hemmelighed", "hemmeligheder"];
+/// Words that join the names and the place.
+const WORDS_JOIN: &[&str] = &[
+    "e", "and", "og", "poi", "then", "in", "nel", "nella", "su", "sul", "sulla", "di", "del", "della", "dell", "il", "la",
+    "lo", "l", "a", "al", "alla", "to", "into", "on", "at", "the", "my", "qui", "here", "per", "favore", "please", "i",
+    "dem",
+];
+const WORDS_NAME_MARK: &[&str] = &["chiamato", "chiamata", "nome", "named", "called", "name", "kaldet", "navn"];
+const WORDS_PROJECT_MARK: &[&str] = &["progetto", "project", "projekt"];
+const WORDS_ENV_MARK: &[&str] = &["ambiente", "env", "environment", "miljø"];
+const WORDS_PATH_MARK: &[&str] = &["cartella", "folder", "path", "percorso", "mappe"];
+/// A purpose in free words: "per il wifi di casa", "for the home Wi-Fi".
+const WORDS_FOR: &[&str] = &["per", "for", "til"];
+
+/// A secret's name written as one: `WIFI_PSK`, `API.KEY-2` (at least one capital, no lowercase).
+fn looks_like_name(w: &str) -> bool {
+    slug_ok(w, 256)
+        && w.len() >= 2
+        && w.bytes().any(|b| b.is_ascii_uppercase())
+        && !w.bytes().any(|b| b.is_ascii_lowercase())
+}
+
+/// `project/env[/folder]`.
+fn parse_place(w: &str) -> Option<(String, String, String)> {
+    let mut parts = w.trim_matches('/').splitn(3, '/');
+    let project = parts.next().filter(|p| slug_ok(p, 128))?;
+    let env = parts.next().filter(|e| slug_ok(e, 128))?;
+    let path = request_folder(parts.next().unwrap_or("/"))?;
+    Some((project.to_owned(), env.to_owned(), path))
+}
+
+/// "salva un segreto", "save the secret WIFI_PSK in lucinaos/prod", "aggiungi due segreti A e B
+/// nel progetto lucinaos ambiente prod", "add a secret for the Wi-Fi". `None` for anything else
+/// ("come salvo un segreto?", "add a secret santa to my list"), which goes on to the normal turn.
+pub fn secret_words(text: &str) -> Option<SecretWords> {
+    let raw: Vec<&str> = text
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| ",.;:!?\"'`«»()[]".contains(c)))
+        .filter(|w| !w.is_empty())
+        .collect();
+    if raw.len() > 24 {
+        return None;
+    }
+    let lower: Vec<String> = raw.iter().map(|w| w.to_lowercase()).collect();
+    let is = |list: &[&str], i: usize| lower.get(i).is_some_and(|w| list.contains(&w.as_str()));
+    let mut i = 0;
+    while i < raw.len() && !is(WORDS_VERB, i) {
+        if !is(WORDS_LEAD, i) {
+            return None;
+        }
+        i += 1;
+    }
+    if !is(WORDS_VERB, i) {
+        return None;
+    }
+    i += 1;
+    while is(WORDS_ARTICLE, i) {
+        i += 1;
+    }
+    if !is(WORDS_NOUN, i) {
+        return None;
+    }
+    i += 1;
+    let mut out = SecretWords::default();
+    let mut after_name = false;
+    // The word right after the noun may be a lowercase name: "salva il segreto wifi".
+    let bare_name = i < raw.len()
+        && slug_ok(raw[i], 256)
+        && !is(WORDS_JOIN, i)
+        && !is(WORDS_FOR, i)
+        && !is(WORDS_NAME_MARK, i)
+        && !is(WORDS_PROJECT_MARK, i)
+        && !is(WORDS_ENV_MARK, i)
+        && !is(WORDS_PATH_MARK, i);
+    if bare_name {
+        out.names.push(raw[i].to_owned());
+        after_name = true;
+        i += 1;
+    }
+    while i < raw.len() {
+        let w = raw[i];
+        if is(WORDS_FOR, i) && out.names.is_empty() && !lower[i + 1..].iter().any(|w| WORDS_PROJECT_MARK.contains(&w.as_str())) {
+            // A purpose in his words: the card asks for the name.
+            let place = raw[i + 1..].iter().find_map(|w| parse_place(w));
+            if let Some((p, e, f)) = place {
+                out.project = Some(p);
+                out.environment = Some(e);
+                out.path = Some(f);
+            }
+            return Some(out);
+        }
+        let marked = |list: &[&str]| is(list, i) && raw.get(i + 1).is_some_and(|n| slug_ok(n, 256));
+        if marked(WORDS_NAME_MARK) {
+            out.names.push(raw[i + 1].to_owned());
+            after_name = true;
+            i += 2;
+        } else if marked(WORDS_PROJECT_MARK) {
+            out.project = Some(raw[i + 1].to_owned());
+            after_name = false;
+            i += 2;
+        } else if marked(WORDS_ENV_MARK) {
+            out.environment = Some(raw[i + 1].to_owned());
+            after_name = false;
+            i += 2;
+        } else if is(WORDS_PATH_MARK, i) && raw.get(i + 1).is_some_and(|n| request_folder(n).is_some()) {
+            out.path = request_folder(raw[i + 1]);
+            after_name = false;
+            i += 2;
+        } else if let Some((p, e, f)) = w.contains('/').then(|| parse_place(w)).flatten() {
+            out.project = Some(p);
+            out.environment = Some(e);
+            out.path = Some(f);
+            after_name = false;
+            i += 1;
+        } else if is(WORDS_JOIN, i) {
+            after_name = false;
+            i += 1;
+        } else if looks_like_name(w) {
+            out.names.push(w.to_owned());
+            after_name = true;
+            i += 1;
+        } else if after_name {
+            // `NAME value`: he typed the value in chat.
+            out.value_suspect = true;
+            i += 1;
+        } else {
+            return None;
         }
     }
-    let (text, actions, missing) = request_card(&r, known);
-    let meta = rich_meta(vec![text.clone()], actions);
-    let id = lucina_item(&st.timeline, &text, "secret_request", meta);
-    RECENT_REQUESTS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .push((Instant::now(), key, id.clone()));
-    tracing::info!(name = %r.name, project = %r.project, environment = %r.environment,
-                   who = %r.who, "agent secret request posted");
-    let mut push = json!({
-        "category": "lucina_message",
-        "title": format!("Secret requested: {}", r.name),
-        "body": format!("{} asks for {} in {}/{}: {}", r.who, r.name, r.project, r.environment, r.reason),
-        "route": "/",
-        "channel": "web",
-        "data": {"kind": "secret_request", "name": r.name, "project": r.project, "environment": r.environment},
-    });
-    if let Some(id) = &id {
-        // The timeline ingest pushes the same item: one dedup key for both.
-        push["timelineId"] = json!(id);
-        push["dedupKey"] = json!(format!("tl:{id}"));
+    out.names.dedup();
+    Some(out)
+}
+
+/// Talk about storing a secret in other words than [`secret_words`] ("salvami la password del
+/// Wi-Fi", "ask me for the OpenAI key"): a short tool loop decides what it means (chat `secret_turn`).
+pub fn secret_talk(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let words: Vec<&str> = lower.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    if words.len() > 40 {
+        return false;
     }
-    lucina_secrets::redactor().redact_json(&mut push);
-    let pushed = crate::bridges::notify(&st.secretary, &push).await;
-    if !pushed.ok {
-        tracing::warn!(status = pushed.status, code = %pushed.code, "secret request push failed (the timeline item still notifies)");
+    const NOUNS: &[&str] = &[
+        "password", "passwd", "passphrase", "psk", "chiave", "chiavi", "token", "segreto", "segreti", "secret", "secrets",
+        "credenziali", "credentials", "apikey", "hemmelighed", "adgangskode", "nøgle",
+    ];
+    const VERBS: &[&str] = &[
+        "salva", "salvami", "salvala", "salvalo", "salvarla", "salvarlo", "salvare", "memorizza", "memorizzala", "aggiungi", "inserisci",
+        "conserva", "conservala", "registra", "chiedimi", "save", "store", "add", "gem", "tilføj",
+    ];
+    const PHRASES: &[&str] = &["ti do", "ti passo", "te la do", "te la passo", "ask me for", "give you", "giver dig"];
+    const QUESTION: &[&str] = &["come", "how", "why", "perché", "perche", "cosa", "what", "dove", "where", "quale", "which", "hvordan"];
+    if words.first().is_some_and(|w| QUESTION.contains(w)) {
+        return false;
     }
-    Ok(answer("asked", &id, missing))
+    let joined = words.join(" ");
+    let noun = words.iter().any(|w| NOUNS.contains(w)) || joined.contains("api key");
+    noun && (words.iter().any(|w| VERBS.contains(w)) || PHRASES.iter().any(|p| joined.contains(p)))
+}
+
+/// The owner's request in words: its cards in the queue. The reply, the card's item id, and the
+/// card's message for the chat response. Never asks for the value in a chat.
+pub async fn answer_secret_words(st: &crate::AppState, words: &SecretWords, lang: &str) -> (String, Option<String>, Option<Value>) {
+    let tx = texts(lang);
+    let names: Vec<&str> = if words.names.is_empty() { vec![""] } else { words.names.iter().map(String::as_str).take(10).collect() };
+    let project = words.project.clone().unwrap_or_default();
+    // A project without an environment can't be saved blindly: the card asks for the place.
+    let environment = if project.is_empty() { String::new() } else { words.environment.clone().unwrap_or_default() };
+    let path = words.path.clone().unwrap_or_else(|| "/".to_owned());
+    let place = if project.is_empty() || environment.is_empty() { None } else { Some(format!("{project} / {environment} / {path}")) };
+    let mut first: Option<crate::secret_requests::Asked> = None;
+    let mut waiting = 0;
+    let mut refused = false;
+    for name in &names {
+        let bubble = match (name.is_empty(), &place) {
+            (false, Some(p)) => tx.words_named.replace("{name}", name).replace("{place}", p),
+            (false, None) => tx.words_noplace.replace("{name}", name),
+            _ => tx.words_blank.to_owned(),
+        };
+        let request = SecretRequest {
+            name: (*name).to_owned(),
+            project: project.clone(),
+            environment: environment.clone(),
+            path: path.clone(),
+            // His own request: the card needs no "who" or "why", and his phone no push.
+            reason: String::new(),
+            who: String::new(),
+            new_project: false,
+        };
+        match st.secret_requests.ask(request, Some(bubble.clone()), true).await {
+            Ok(a) => {
+                if a.status != "asked" {
+                    waiting += 1;
+                }
+                if first.is_none() && a.status == "asked" {
+                    first = Some(a);
+                }
+            }
+            Err(e) => {
+                tracing::warn!(code = %e.code, "owner's secret request refused");
+                refused = true;
+            }
+        }
+    }
+    let mut reply = String::new();
+    if words.value_suspect {
+        reply.push_str(tx.words_value);
+        reply.push(' ');
+    }
+    let (item, rich) = match first {
+        Some(a) => {
+            reply.push_str(a.entry.bubble.as_deref().unwrap_or(""));
+            if waiting > 0 {
+                reply.push(' ');
+                reply.push_str(&tx.words_more.replace("{n}", &waiting.to_string()));
+            }
+            (a.entry.item_id, a.rich)
+        }
+        None => {
+            // Nothing new on screen: one plain line, so the reply has its item too.
+            reply.push_str(if refused { tx.words_full } else { tx.words_waiting });
+            (lucina_item(&st.timeline, &reply, "secret_offer", None), None)
+        }
+    };
+    tracing::info!(names = names.len(), value_suspect = words.value_suspect, "owner's secret request answered before the planner");
+    (reply, item, rich)
+}
+
+/// `POST /api/secretary/secrets/request`: a request by name; a card, or a place in the queue.
+pub async fn request(st: &crate::AppState, body: &Value) -> Result<Value, ApiError> {
+    crate::secret_requests::ask_body(&st.secret_requests, body).await
 }
 
 #[cfg(test)]
@@ -1026,6 +1282,51 @@ mod tests {
             "create a project for the gym",
         ] {
             assert_eq!(project_request(no), None, "{no}");
+        }
+    }
+
+    #[test]
+    fn secret_words_shapes() {
+        for yes in ["salva un segreto", "Salva un segreto.", "Lucina, salva un segreto", "puoi aggiungere un segreto?",
+                    "add a secret", "please store a new secret", "can you save a secret", "gem en hemmelighed",
+                    "voglio salvare un segreto", "salva un segreto per il wifi di casa", "add a secret for the Wi-Fi"] {
+            let w = secret_words(yes).unwrap_or_else(|| panic!("{yes}"));
+            assert!(w.names.is_empty() && !w.value_suspect, "{yes}: {w:?}");
+        }
+        for no in ["come salvo un segreto?", "how do I add a secret", "hai un segreto?", "salva questo file", "add a secret santa to my list",
+                   "salva la nota segreta", "perché salva un segreto?", "mi dici un segreto", "non salvare un segreto", "save the file", ""] {
+            assert_eq!(secret_words(no), None, "{no}");
+        }
+        let w = secret_words("salva il segreto GBGO_WIFI_PSK in lucinaos/prod").unwrap();
+        assert_eq!(w, SecretWords { names: vec!["GBGO_WIFI_PSK".into()], project: Some("lucinaos".into()),
+                                    environment: Some("prod".into()), path: Some("/".into()), value_suspect: false });
+        let w = secret_words("aggiungi due segreti A_KEY e B_KEY nel progetto lucinaos ambiente prod cartella gbgo/wifi").unwrap();
+        assert_eq!(w.names, ["A_KEY", "B_KEY"]);
+        assert_eq!((w.project.as_deref(), w.environment.as_deref(), w.path.as_deref()), (Some("lucinaos"), Some("prod"), Some("/gbgo/wifi")));
+        assert_eq!(secret_words("save a secret called wifi_psk").unwrap().names, ["wifi_psk"]);
+        assert_eq!(secret_words("salva il segreto wifi").unwrap().names, ["wifi"]);
+        assert_eq!(secret_words("add a secret for poko in poko/prod/bot").unwrap().path.as_deref(), Some("/bot"));
+    }
+
+    #[test]
+    fn secret_talk_shapes() {
+        for yes in ["salvami la password del wifi nel progetto lucinaos", "ti do la API key di OpenAI", "Chiedimi il token di Discord",
+                    "ask me for the OpenAI key secret", "store my passphrase for the backup", "gem adgangskode til wifi"] {
+            assert!(secret_talk(yes), "{yes}");
+        }
+        for no in ["come salvo una password?", "how do I store a token", "qual è la chiave del successo", "salva la nota", "add milk to the list",
+                   "il token è scaduto", "what is a secret"] {
+            assert!(!secret_talk(no), "{no}");
+        }
+    }
+
+    #[test]
+    fn a_value_after_the_name_is_noticed() {
+        for suspect in ["salva il segreto WIFI_PSK hunter2", "salva il segreto wifi hunter2", "save a secret called wifi hunter2 in home/prod",
+                        "add the secret API_KEY abc123 lucinaos/prod"] {
+            let w = secret_words(suspect).unwrap_or_else(|| panic!("{suspect}"));
+            assert!(w.value_suspect, "{suspect}: {w:?}");
+            assert!(!format!("{w:?}").contains("hunter2") && !format!("{w:?}").contains("abc123"), "{w:?}");
         }
     }
 
