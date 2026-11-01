@@ -9,6 +9,7 @@
 //! - `POST|DELETE /v1/push/subscribe`, `DELETE /v1/push/subscriptions/{id}`
 //! - `POST /v1/push/test {id?}`
 //! - `POST /v1/push/apns {token}` (saved even while APNs is off; `apnsEnabled` says which)
+//! - `POST /v1/push/liveactivity {kind, token, approvalId?}` (the approval Live Activity's tokens)
 //!
 //! Service route (the `svc_` token, Lucina): `POST /v1/notify`.
 
@@ -19,6 +20,7 @@ use axum::{middleware, Extension, Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use super::live::{LiveKind, LiveToken};
 use super::model::{clip, now_ms, Category, NewNotification, Outcome};
 use super::push::{self, Kind, Subscription};
 use super::settings::Settings;
@@ -316,6 +318,48 @@ async fn apns_register(
     Ok((StatusCode::CREATED, Json(view)))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LiveActivityBody {
+    kind: String,
+    token: String,
+    #[serde(default)]
+    approval_id: Option<String>,
+}
+
+/// The approval Live Activity's push-to-start token (`kind: start`) or one activity's update token
+/// (`kind: update` with its `approvalId`). Kept while APNs is off, like `/v1/push/apns`.
+async fn live_activity_register(
+    State(st): State<AppState>,
+    Extension(ident): Extension<Identity>,
+    JsonBody(body): JsonBody<LiveActivityBody>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let token = body.token.trim().to_ascii_lowercase();
+    if !super::apns::valid_device_token(&token) {
+        return Err(bad("token: an APNs push token (hex)"));
+    }
+    let (kind, approval_id) = match (body.kind.as_str(), body.approval_id) {
+        ("start", _) => (LiveKind::Start, None),
+        ("update", Some(id)) if crate::approvals::valid_approval_id(&id) => {
+            (LiveKind::Update, Some(id))
+        }
+        ("update", Some(_)) => return Err(bad("approvalId: an approval id (apr_…)")),
+        ("update", None) => return Err(bad("approvalId: required for kind update")),
+        _ => return Err(bad("kind: start or update")),
+    };
+    tracing::info!(device = %ident.device_id, kind = %body.kind, approval = ?approval_id, "live activity token registered");
+    let t = LiveToken {
+        device_id: ident.device_id.clone(),
+        kind,
+        token,
+        approval_id,
+        created_at: now_ms(),
+    };
+    let n = st.notify.clone();
+    blocking(move || n.live.register(t)).await?;
+    Ok((StatusCode::CREATED, Json(json!({"ok": true}))))
+}
+
 /// `POST /v1/notify` (service token): Lucina pushes a notification.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -424,6 +468,7 @@ pub fn routes() -> Router<AppState> {
         .route("/v1/push/subscriptions/{id}", delete(remove_subscription))
         .route("/v1/push/test", post(test))
         .route("/v1/push/apns", post(apns_register))
+        .route("/v1/push/liveactivity", post(live_activity_register))
 }
 
 /// Behind `require_service`.

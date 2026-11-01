@@ -206,7 +206,7 @@ impl Apns {
         t
     }
 
-    /// One POST to APNs: `(status, Retry-After, reason)`; a dead token's
+    /// One alert POST to APNs: `(status, Retry-After, reason)`; a dead token's
     /// 400 reason is reported as 410 so the caller drops it.
     pub async fn send(
         &self,
@@ -214,24 +214,59 @@ impl Apns {
         payload: &Payload,
         opts: &PushOpts,
     ) -> Result<(u16, Option<Duration>, String), String> {
-        if !valid_device_token(device_token) {
-            return Ok((410, None, "BadDeviceToken".into()));
-        }
-        let url = format!("{}/3/device/{device_token}", self.cfg.origin());
         let expiration = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs())
             + 6 * 3600;
+        let headers = Headers {
+            push_type: "alert",
+            topic: self.cfg.topic.clone(),
+            priority: if opts.urgent { "10" } else { "5" },
+            expiration,
+            collapse_id: opts.topic.clone(),
+        };
+        self.post(device_token, &headers, &apns_body(payload)).await
+    }
+
+    /// A Live Activity push (start or end, see [`super::live`]) to an activity token:
+    /// `apns-push-type: liveactivity` on `<topic>.push-type.liveactivity`, priority 10, kept by APNs until
+    /// `expiration` (seconds). Same answer as [`Self::send`].
+    pub async fn send_live_activity(
+        &self,
+        token: &str,
+        body: &serde_json::Value,
+        expiration: u64,
+    ) -> Result<(u16, Option<Duration>, String), String> {
+        let headers = Headers {
+            push_type: "liveactivity",
+            topic: format!("{}.push-type.liveactivity", self.cfg.topic),
+            priority: "10",
+            expiration,
+            collapse_id: None,
+        };
+        self.post(token, &headers, body).await
+    }
+
+    async fn post(
+        &self,
+        device_token: &str,
+        h: &Headers,
+        body: &serde_json::Value,
+    ) -> Result<(u16, Option<Duration>, String), String> {
+        if !valid_device_token(device_token) {
+            return Ok((410, None, "BadDeviceToken".into()));
+        }
+        let url = format!("{}/3/device/{device_token}", self.cfg.origin());
         let mut req = self
             .http
             .post(url)
             .header("authorization", format!("bearer {}", self.jwt()))
-            .header("apns-topic", &self.cfg.topic)
-            .header("apns-push-type", "alert")
-            .header("apns-priority", if opts.urgent { "10" } else { "5" })
-            .header("apns-expiration", expiration.to_string())
-            .json(&apns_body(payload));
-        if let Some(t) = &opts.topic {
+            .header("apns-topic", &h.topic)
+            .header("apns-push-type", h.push_type)
+            .header("apns-priority", h.priority)
+            .header("apns-expiration", h.expiration.to_string())
+            .json(body);
+        if let Some(t) = &h.collapse_id {
             req = req.header("apns-collapse-id", t);
         }
         let resp = req.send().await.map_err(|e| {
@@ -259,6 +294,15 @@ impl Apns {
         );
         Ok((if dead { 410 } else { status }, retry, reason))
     }
+}
+
+/// The APNs request headers that differ between alert and Live Activity pushes.
+struct Headers {
+    push_type: &'static str,
+    topic: String,
+    priority: &'static str,
+    expiration: u64,
+    collapse_id: Option<String>,
 }
 
 /// Why [`ApnsSlot::install`] refused a key. The texts never carry the key.
@@ -615,6 +659,99 @@ mod tests {
         let slot = ApnsSlot::open(dir.path(), installed_cfg()).unwrap();
         assert!(slot.get().is_none());
         assert!(slot.get().is_none(), "no rescan within 30 s");
+    }
+
+    /// A local APNs stand-in: records each request's path, headers and body, answers `status` + `reason`.
+    async fn mock_apns(
+        status: u16,
+        reason: &'static str,
+    ) -> (
+        String,
+        Arc<Mutex<Vec<(String, axum::http::HeaderMap, serde_json::Value)>>>,
+    ) {
+        use axum::extract::{OriginalUri, State};
+        type Seen = Arc<Mutex<Vec<(String, axum::http::HeaderMap, serde_json::Value)>>>;
+        let seen: Seen = Arc::default();
+        let app = axum::Router::new()
+            .fallback(
+                move |State(seen): State<Seen>,
+                      OriginalUri(uri): OriginalUri,
+                      headers: axum::http::HeaderMap,
+                      axum::Json(body): axum::Json<serde_json::Value>| async move {
+                    seen.lock()
+                        .unwrap()
+                        .push((uri.path().to_owned(), headers, body));
+                    let code = axum::http::StatusCode::from_u16(status).unwrap();
+                    let answer = if reason.is_empty() {
+                        json!({})
+                    } else {
+                        json!({"reason": reason})
+                    };
+                    (code, axum::Json(answer))
+                },
+            )
+            .with_state(seen.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (base, seen)
+    }
+
+    fn apns_at(base: String) -> Apns {
+        Apns::with_key(
+            ApnsConfig {
+                key_file: None,
+                key_id: Some("TEST123456".into()),
+                team_id: "TEAM123456".into(),
+                topic: DEFAULT_TOPIC.into(),
+                sandbox: true,
+                base_url: Some(base),
+            },
+            "TEST123456".into(),
+            test_key(),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn live_activity_pushes_use_the_liveactivity_type_and_topic() {
+        let (base, seen) = mock_apns(200, "").await;
+        let apns = apns_at(base);
+        let token = "ab".repeat(40);
+        let body = super::super::live::end_body("approved", 1_761_048_000);
+        let (status, _, _) = apns
+            .send_live_activity(&token, &body, 1_761_051_600)
+            .await
+            .unwrap();
+        assert_eq!(status, 200);
+        let seen = seen.lock().unwrap();
+        let (path, h, got) = &seen[0];
+        assert_eq!(path, &format!("/3/device/{token}"));
+        let header = |k: &str| h.get(k).unwrap().to_str().unwrap().to_owned();
+        assert_eq!(header("apns-push-type"), "liveactivity");
+        assert_eq!(
+            header("apns-topic"),
+            "tech.getsecretary.app.push-type.liveactivity"
+        );
+        assert_eq!(header("apns-priority"), "10");
+        assert_eq!(header("apns-expiration"), "1761051600");
+        assert!(header("authorization").starts_with("bearer "));
+        assert!(h.get("apns-collapse-id").is_none());
+        assert_eq!(got, &body);
+    }
+
+    #[tokio::test]
+    async fn a_dead_live_activity_token_is_410() {
+        let (base, _) = mock_apns(400, "BadDeviceToken").await;
+        let apns = apns_at(base);
+        let body = json!({"aps": {}});
+        let (status, _, reason) = apns
+            .send_live_activity(&"cd".repeat(40), &body, 0)
+            .await
+            .unwrap();
+        assert_eq!((status, reason.as_str()), (410, "BadDeviceToken"));
+        let (status, _, _) = apns.send_live_activity("not-hex", &body, 0).await.unwrap();
+        assert_eq!(status, 410);
     }
 
     #[test]
