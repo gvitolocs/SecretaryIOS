@@ -524,6 +524,10 @@ async fn serve(cfg: Config) -> anyhow::Result<()> {
                 tracing::error!(error = %e, "background upload listener stopped");
             }
         });
+        tokio::spawn(lucina_media::bgupload::watchdog(
+            lib.clone(),
+            lucina_media::lab_run::LabConfig::from_env().notify,
+        ));
     }
     if cfg.listen == cfg.internal_listen {
         let listener = tokio::net::TcpListener::bind(cfg.listen).await?;

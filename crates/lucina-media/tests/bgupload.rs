@@ -85,6 +85,64 @@ fn path_of(location: &str) -> &str {
 }
 
 #[tokio::test]
+async fn the_watchdog_sees_photos_no_background_upload_delivered() {
+    let (_t, lib, addr) = setup().await;
+    let later = chrono::Utc::now() + chrono::Duration::hours(1);
+    assert!(bgupload::missed_photos(&lib, later).unwrap().is_empty());
+
+    // Came in through the app's own backup, and the extension never sent it.
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("IMG_0002.PNG");
+    std::fs::write(&file, png()).unwrap();
+    let meta = ClientMeta {
+        filename: Some("IMG_0002.PNG".into()),
+        taken_at: Some(now),
+        device: Some("ios-test".into()),
+        asset_id: Some("ASSET-5/L0/001".into()),
+        source: Some("phone-ios".into()),
+        ..Default::default()
+    };
+    let l = lib.clone();
+    tokio::task::spawn_blocking(move || {
+        lucina_media::ingest::ingest_file(&l, &file, None, &meta, None)
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        bgupload::missed_photos(&lib, later).unwrap(),
+        ["IMG_0002.PNG"]
+    );
+    // Still within the time the extension has to send it.
+    assert!(bgupload::missed_photos(&lib, chrono::Utc::now())
+        .unwrap()
+        .is_empty());
+
+    // The extension delivers the same photo (the app was first): nothing is missing any more.
+    let body = png();
+    let enc = {
+        let meta = ClientMeta {
+            filename: Some("IMG_0002.PNG".into()),
+            device: Some("ios-test".into()),
+            asset_id: Some("ASSET-5/L0/001".into()),
+            source: Some("phone-ios".into()),
+            ..Default::default()
+        };
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(&meta).unwrap())
+    };
+    let headers = [("x-lucina-meta", enc), ("upload-complete", "?1".into())];
+    let r = raw(
+        addr,
+        &request("POST", "/v1/media/bgupload", &headers, body.len()),
+        &body,
+    )
+    .await;
+    assert!(r.contains("HTTP/1.1 201"), "{r}");
+    assert!(bgupload::missed_photos(&lib, later).unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn preflight_announces_the_limit() {
     let (_t, _lib, addr) = setup().await;
     let r = raw(addr, &request("OPTIONS", "/v1/media/bgupload", &[], 0), b"").await;

@@ -27,7 +27,13 @@ final class PhotoUploadExtension: PHBackgroundResourceUploadJobExtension {
     func processJobs() async -> PHBackgroundResourceUploadProcessingResult {
         cancelled.store(false, ordering: .releasing)
         DebugEvents.record("bg.task", ["task": "photo_upload_ext", "phase": "start"])
-        defer { DebugEvents.flushSoon() }
+        let result = await run()
+        // Awaited: iOS ends this process right after the return, and the app can't read our container.
+        await DebugEvents.flush()
+        return result
+    }
+
+    private func run() async -> PHBackgroundResourceUploadProcessingResult {
         guard let config = BackgroundUpload.readConfig() else {
             log.info("PhotoUpload no configuration; nothing to do")
             DebugEvents.record("bg.task", ["task": "photo_upload_ext", "phase": "end", "outcome": "not_configured"])
@@ -36,10 +42,11 @@ final class PhotoUploadExtension: PHBackgroundResourceUploadJobExtension {
         let uploader = Uploader(config: config, cancelled: { [unowned self] in self.cancelled.load(ordering: .acquiring) })
         defer { uploader.state.save() }
         do {
-            try await uploader.retryFailed()
-            try await uploader.acknowledgeFinished()
+            // A problem with an old job must not stop the new photos: each step goes on after the other's failure.
+            await uploader.attempt("retry") { try await uploader.retryFailed() }
+            await uploader.attempt("acknowledge") { try await uploader.acknowledgeFinished() }
             let more = try await uploader.createJobs()
-            DebugEvents.record("bg.task", ["task": "photo_upload_ext", "phase": "end", "outcome": more ? "more" : "completed", "jobs": uploader.state.jobs.count])
+            DebugEvents.record("bg.task", ["task": "photo_upload_ext", "phase": "end", "outcome": more ? "more" : "completed", "jobs": uploader.state.jobs.count, "pending": uploader.state.pending.count])
             return more ? .processing : .completed
         } catch PHPhotosError.limitExceeded {
             log.info("PhotoUpload job limit reached; more later")
@@ -69,6 +76,8 @@ private struct UploadState: Codable {
     var jobs: [String: Job] = [:]
     /// Ledger key -> signature of what was uploaded.
     var sent: [String: String] = [:]
+    /// Asset -> runs that could not make a job for it (optional: older state files don't have it).
+    var failures: [String: Int]?
 
     struct Job: Codable {
         var key: String
@@ -133,6 +142,8 @@ private final class Uploader {
     let cancelled: () -> Bool
     var state: UploadState
     private let library = PHPhotoLibrary.shared()
+    /// Runs to keep trying an asset PhotoKit won't make a job for; then it is the app's backup's.
+    private static let maxFailures = 3
 
     private static let iso: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
@@ -161,6 +172,16 @@ private final class Uploader {
         return request
     }
 
+    /// One step of a run: its failure is logged and the run goes on.
+    func attempt(_ step: String, _ body: () async throws -> Void) async {
+        do {
+            try await body()
+        } catch {
+            log.error("PhotoUpload \(step, privacy: .public) failed: \(String(describing: error), privacy: .public)")
+            DebugEvents.record("photo_upload.step_failed", ["step": step, "error": error])
+        }
+    }
+
     /// Failed jobs not retried yet: once more, with the current key.
     func retryFailed() async throws {
         let jobs = PHAssetResourceUploadJob.fetchJobs(action: .retry, options: nil)
@@ -169,6 +190,7 @@ private final class Uploader {
         jobs.enumerateObjects { job, _, _ in
             let fresh = self.state.jobs[job.localIdentifier].flatMap { self.destination(meta: $0.meta) }
             log.info("PhotoUpload retrying \(job.localIdentifier, privacy: .public): \(String(describing: job.error), privacy: .public)")
+            DebugEvents.record("photo_upload.job_retry", ["error": job.error as Any])
             retries.append((job, fresh))
         }
         let work = retries
@@ -190,6 +212,7 @@ private final class Uploader {
             guard job.state == .succeeded else {
                 // The app's backup sends it.
                 log.error("PhotoUpload \(info.key, privacy: .public) failed: \(String(describing: job.error), privacy: .public)")
+                DebugEvents.record("photo_upload.job_failed", ["asset": info.key, "error": job.error as Any])
                 return
             }
             self.state.sent[info.key] = info.signature
@@ -198,6 +221,7 @@ private final class Uploader {
                                                   signature: info.signature, favorite: info.favorite))
             }
             log.info("PhotoUpload sent \(info.key, privacy: .public)")
+            DebugEvents.record("photo_upload.job_done", ["asset": info.key])
         }
         let done = finished
         try await library.performChanges {
@@ -264,7 +288,32 @@ private final class Uploader {
             if let paired, state.sent[key + "#motion"] != BackgroundUpload.signature(paired), !inFlight.contains(key + "#motion") {
                 work.append(Work(key: key + "#motion", asset: asset, resource: paired, motion: true, pairKey: key))
             }
-            for w in work { try await createJob(w) }
+            var failure: Error?
+            for w in work {
+                do {
+                    try await createJob(w)
+                } catch let error as PHPhotosError where error.code == .limitExceeded {
+                    throw error
+                } catch {
+                    failure = error
+                    log.error("PhotoUpload no job for \(w.key, privacy: .public): \(String(describing: error), privacy: .public)")
+                    DebugEvents.record("photo_upload.job_create_failed", [
+                        "asset": w.key, "error": error, "resource_type": w.resource.type.rawValue,
+                        "resources": resources.map { String($0.type.rawValue) }.joined(separator: "-"),
+                        "subtypes": asset.mediaSubtypes.rawValue, "source_type": asset.sourceType.rawValue,
+                    ])
+                }
+            }
+            // One asset PhotoKit refuses must not hold up the ones after it: it stays pending for a few
+            // runs, then it is the app's backup's. `.failure` would also make iOS back off for minutes.
+            if failure != nil {
+                let runs = (state.failures?[key] ?? 0) + 1
+                if runs < Self.maxFailures {
+                    state.failures = (state.failures ?? [:]).merging([key: runs]) { $1 }
+                    continue
+                }
+            }
+            state.failures?[key] = nil
             remaining.remove(key)
             state.pending = Array(remaining)
         }
