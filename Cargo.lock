@@ -3939,6 +3939,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lucina-vocab"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "lzma-rust"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
