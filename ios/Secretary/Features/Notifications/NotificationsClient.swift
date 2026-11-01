@@ -40,10 +40,11 @@ struct NotificationsClient: Sendable {
         return list.reminders.filter { $0.status == "pending" }
     }
 
-    /// APNs device token (only when `APNsAdapter.isEnabled`; the server answers
-    /// 503 `apns_disabled` without a paid team's key).
-    func registerAPNs(token: String, lang: String) async throws {
-        struct Body: Encodable { let token: String; let lang: String }
-        let _: PushTarget = try await client.send("POST", "/v1/push/apns", body: Body(token: token, lang: lang), idempotent: true)
+    /// APNs device token (only when `APNsAdapter.isEnabled`), with what iOS lets this app show
+    /// (`APNsAdapter.settingsReport`), which the server logs: a push can arrive and still show nothing.
+    func registerAPNs(token: String, lang: String, notifications: [String: String]) async throws {
+        struct Body: Encodable { let token: String; let lang: String; let notifications: [String: String] }
+        let body = Body(token: token, lang: lang, notifications: notifications)
+        let _: PushTarget = try await client.send("POST", "/v1/push/apns", body: body, idempotent: true)
     }
 }

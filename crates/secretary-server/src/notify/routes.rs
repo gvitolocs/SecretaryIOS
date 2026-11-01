@@ -259,6 +259,24 @@ struct ApnsBody {
     token: String,
     #[serde(default)]
     lang: Option<String>,
+    /// What iOS lets the app show (`authorization`, `alert`, `lockScreen`,
+    /// `timeSensitive`, ...): logged, since a push can arrive and show nothing.
+    #[serde(default)]
+    notifications: Option<serde_json::Map<String, Value>>,
+}
+
+/// `key=value` pairs of the app's notification settings for the log: short
+/// letter keys and values only, at most 12.
+fn settings_summary(m: &serde_json::Map<String, Value>) -> String {
+    let word = |s: &str, max: usize| (1..=max).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphabetic());
+    m.iter()
+        .filter_map(|(k, v)| {
+            let v = v.as_str()?;
+            (word(k, 24) && word(v, 16)).then(|| format!("{k}={v}"))
+        })
+        .take(12)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 async fn apns_register(
@@ -270,6 +288,8 @@ async fn apns_register(
     if !super::apns::valid_device_token(&token) {
         return Err(bad("token: an APNs device token (hex)"));
     }
+    let settings = body.notifications.as_ref().map(settings_summary).unwrap_or_default();
+    tracing::info!(device = %ident.device_id, settings = %settings, "apns token registered");
     let sub = Subscription {
         id: format!(
             "ps_{}",
@@ -428,5 +448,19 @@ mod tests {
         assert!(!valid_route("https://evil.example"));
         assert!(!valid_route("/a b"));
         assert!(!valid_route("/\\evil"));
+    }
+
+    #[test]
+    fn app_notification_settings_are_logged_as_plain_words() {
+        let m = json!({
+            "authorization": "authorized",
+            "lockScreen": "off",
+            "timeSensitive": "on",
+            "evil\nkey": "on",
+            "alert": "on\nINJECTED",
+            "sound": 1,
+        });
+        let s = settings_summary(m.as_object().unwrap());
+        assert_eq!(s, "authorization=authorized lockScreen=off timeSensitive=on");
     }
 }

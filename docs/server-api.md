@@ -1423,7 +1423,7 @@ hours / DND do not hold it; see [Approvals](#approvals)). Without `title`, clien
 | `DELETE /v1/push/subscribe {endpoint}` | `{removed}`. |
 | `DELETE /v1/push/subscriptions/{id}` | `{removed}`; `404 subscription_not_found`. |
 | `POST /v1/push/test {id?}` | A test push to that subscription (default: the caller's); waits: `{results: [{id, ok, delivery: {result: sent\|gone\|failed, status?, error?}}]}`. |
-| `POST /v1/push/apns {token, lang?}` | Native app device token → `201` subscription view + `apnsEnabled`. The token is kept even while APNs is off; pushes to it start once a key is installed (and do not count as failures until then). |
+| `POST /v1/push/apns {token, lang?, notifications?}` | Native app device token → `201` subscription view + `apnsEnabled`. `notifications`: what iOS lets the app show (`authorization`, `alert`, `lockScreen`, `timeSensitive`, `scheduledDelivery`, …), logged as `apns token registered`. The token is kept even while APNs is off; pushes to it start once a key is installed (and do not count as failures until then). |
 
 Settings:
 
