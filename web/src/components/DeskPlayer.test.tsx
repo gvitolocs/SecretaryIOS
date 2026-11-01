@@ -26,7 +26,7 @@ vi.mock("../lib/desktopFiles", () => ({
   downloadFile: (_s: string, f: { name: string }) => files.downloaded.push(f.name),
 }));
 
-import DeskPlayer from "./DeskPlayer";
+import DeskPlayer, { forgetLeftFocus } from "./DeskPlayer";
 
 // A WebSocket the test drives by hand.
 class FakeWS {
@@ -121,6 +121,7 @@ async function live(ws: FakeWS) {
 }
 
 beforeEach(() => {
+  forgetLeftFocus();
   FakeWS.all = [];
   ticket.mockReset();
   ticket.mockImplementation(async (_s: string, mode: "watch" | "control") => T(mode));
@@ -278,6 +279,42 @@ describe("DeskPlayer", () => {
     } finally {
       delete window.secretaryShell;
       delete (document as { hidden?: boolean }).hidden;
+    }
+  });
+
+  it("after the owner's ✕ a player mounted again (the page re-laid out for the rail) stays out of focus", async () => {
+    const calls: boolean[] = [];
+    let listener: ((on: boolean) => void) | null = null;
+    shellIs({
+      showCode() {},
+      // The shell answers like Secretary Code's main process: every change comes back to the page.
+      setFocusMode: (on: boolean) => {
+        calls.push(on);
+        listener?.(on);
+      },
+      onFocusModeChange: (l: (on: boolean) => void) => {
+        listener = l;
+        return () => (listener = null);
+      },
+    });
+    try {
+      const first = render(() => <DeskPlayer sandbox="workspace" state={idle} onFallback={() => undefined} />);
+      await waitFor(() => expect(calls).toEqual([true]));
+      await waitFor(() => expect(FakeWS.all).toHaveLength(1));
+      await live(FakeWS.all[0]!);
+      fireEvent.click(screen.getByRole("button", { name: "Exit full screen" }));
+      await waitFor(() => expect(calls).toEqual([true, false]));
+      // The rail came back: /computer dropped to its phone layout and mounted a new player.
+      first.unmount();
+      const { container } = render(() => <DeskPlayer sandbox="workspace" state={idle} onFallback={() => undefined} />);
+      await waitFor(() => expect(FakeWS.all.length).toBeGreaterThan(1));
+      expect(calls).toEqual([true, false]);
+      expect(container.querySelector(".ldesk-stage")!.classList.contains("ldesk-stage--focus")).toBe(false);
+      // His Focus button takes it again.
+      fireEvent.click(screen.getByRole("button", { name: "Focus" }));
+      await waitFor(() => expect(calls).toEqual([true, false, true]));
+    } finally {
+      delete window.secretaryShell;
     }
   });
 
