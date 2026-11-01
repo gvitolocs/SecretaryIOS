@@ -20,7 +20,7 @@ import UIKit
         guard let window = windows.first(where: \.isKeyWindow) ?? windows.first,
               let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
         let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
-            _ = window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+            _ = window.drawHierarchy(in: window.bounds, afterScreenUpdates: false)
         }
         try? image.pngData()?.write(to: folder.appendingPathComponent("\(name).png"))
     }
