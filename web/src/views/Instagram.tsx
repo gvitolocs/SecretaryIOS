@@ -1,7 +1,7 @@
 import { A, useNavigate, useParams } from "@solidjs/router";
 import { createEffect, createResource, createSignal, For, on, onCleanup, onMount, Show, type Accessor } from "solid-js";
 import { ApiError } from "../api/client";
-import { instagramApi, type IgHighlight, type IgItem, type IgPage } from "../api/instagram";
+import { instagramApi, type IgHighlight, type IgItem, type IgPage, type IgRecent, type IgWatch } from "../api/instagram";
 import {
   instagramWatched,
   instagramWatchSettings,
@@ -11,22 +11,21 @@ import {
   setInstagramBadges,
   setInstagramWatchSettings,
 } from "../state/instagramBadge";
-import { BackIcon, BellIcon, CheckIcon, ExternalIcon, SearchIcon } from "../components/Icons";
+import { BackIcon, BellIcon, CheckIcon, ExternalIcon, LockIcon, PasteIcon, SearchIcon } from "../components/Icons";
 import {
   Card,
   EmptyState,
-  ListRow,
   LoadingState,
   Page,
   PageGrid,
   PageHeader,
   PrimaryAction,
-  RowList,
   useWide,
 } from "../components/page";
 import InstagramOpened from "../components/InstagramOpened";
 import { PhotoViewer } from "../components/PhotoViewer";
 import { locale, t } from "../i18n";
+import { relativeTime } from "../lib/relativeTime";
 import { formatCount, nextCheckText, parseTyped, slideIndexOf, slidesOf } from "../lib/instagram";
 import { mergeFirstPage, pageCache } from "../lib/pageCache";
 import { rememberScroll } from "../lib/pageScroll";
@@ -181,6 +180,20 @@ function StackBadge() {
   );
 }
 
+/** Asks for the next page while the end of a list comes near (the Load more button stays as the fallback). */
+function MoreSentinel(props: { onNear: () => void }) {
+  let el: HTMLDivElement | undefined;
+  onMount(() => {
+    if (!el || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) props.onNear();
+    }, { rootMargin: "800px 0px" });
+    io.observe(el);
+    onCleanup(() => io.disconnect());
+  });
+  return <div ref={el} class="ig-sentinel" aria-hidden="true" />;
+}
+
 function Tile(props: { item: IgItem; label: string; onOpen: () => void }) {
   const src = () => props.item.thumbUrl ?? (props.item.kind === "image" ? props.item.url : null);
   return (
@@ -248,6 +261,153 @@ function ProfilePicture(props: { url: string | null; username: string }) {
   );
 }
 
+/** A private account: the lock and "Private" (the shared chip) in the profile header, the lock alone in lists. */
+function PrivateMark(props: { chip?: boolean }) {
+  return (
+    <Show
+      when={props.chip}
+      fallback={
+        <span class="ig-lock" role="img" aria-label={t("instagram.privateAccount")} title={t("instagram.privateAccount")}>
+          <LockIcon />
+        </span>
+      }
+    >
+      <span class="chip ig-private" title={t("instagram.private")}>
+        <LockIcon />
+        <span>{t("instagram.privateChip")}</span>
+      </span>
+    </Show>
+  );
+}
+
+/** An empty tab of a private account: why there is nothing (the page system's empty state). */
+function PrivateEmpty() {
+  return <EmptyState class="ig-private-empty" title={t("instagram.privateAccount")} text={t("instagram.privateEmpty")} />;
+}
+
+/**
+ * The clipboard's text, or null when this page may not read it. Secretary Code's shell may offer its own reader;
+ * elsewhere the Clipboard API (Safari shows its Paste callout first; Chromium may ask once).
+ */
+export async function readClipboardText(): Promise<string | null> {
+  const shell = (window as { secretaryShell?: { readClipboardText?: () => Promise<string> } }).secretaryShell;
+  if (typeof shell?.readClipboardText === "function") {
+    try {
+      return String((await shell.readClipboardText()) ?? "");
+    } catch {
+      // fall through to the Clipboard API
+    }
+  }
+  try {
+    const text = await navigator.clipboard?.readText?.();
+    return typeof text === "string" ? text : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether the clipboard can be read without a prompt (to offer what it holds when the field gets focus). */
+async function clipboardReadable(): Promise<boolean> {
+  const shell = (window as { secretaryShell?: { readClipboardText?: unknown } }).secretaryShell;
+  if (typeof shell?.readClipboardText === "function") return true;
+  try {
+    const state = await navigator.permissions?.query?.({ name: "clipboard-read" as PermissionName });
+    return state?.state === "granted";
+  } catch {
+    return false;
+  }
+}
+
+/** One profile tile (watched and recent accounts): picture, name, @name, Private, a new count, a time line. */
+function ProfileTile(props: {
+  username: string;
+  fullName?: string;
+  picUrl?: string | null;
+  verified?: boolean;
+  isPrivate?: boolean;
+  fresh?: number;
+  when: string;
+  /** The button's name in a short form ("@name, 3 new, Private account"); without it the tile's text names it. */
+  shortLabel?: boolean;
+  onOpen: () => void;
+}) {
+  const fresh = () => props.fresh ?? 0;
+  return (
+    <li>
+      <button
+        type="button"
+        class="ig-wtile"
+        aria-label={
+          props.shortLabel
+            ? [fresh() > 0 ? t("instagram.chipLabel", { name: props.username, count: fresh() }) : `@${props.username}`, props.isPrivate ? t("instagram.privateAccount") : ""].filter(Boolean).join(", ")
+            : undefined
+        }
+        onClick={() => props.onOpen()}
+      >
+        <span class="ig-wtile__pic">
+          <Avatar url={props.picUrl ?? null} name={props.username} size="lg" />
+          <Show when={fresh() > 0}>
+            <span class="ig-dot ig-wtile__dot" aria-hidden="true">{fresh()}</span>
+          </Show>
+        </span>
+        <span class="ig-wtile__name">
+          <span>{props.fullName || props.username}</span>
+          <Show when={props.verified}><Verified /></Show>
+        </span>
+        <span class="ig-wtile__user">
+          <span>@{props.username}</span>
+          <Show when={props.isPrivate}><PrivateMark chip /></Show>
+        </span>
+        <span class="ig-wtile__when">{props.when}</span>
+      </button>
+    </li>
+  );
+}
+
+/** Watched accounts as tiles, with the new count and when each was last checked. */
+function WatchedTiles(props: { items: IgWatch[]; onOpen: (username: string) => void }) {
+  return (
+    <ul class="ig-wtiles">
+      <For each={props.items}>
+        {(w) => (
+          <ProfileTile
+            username={w.username}
+            fullName={w.fullName}
+            picUrl={w.picUrl}
+            verified={w.isVerified}
+            isPrivate={!!w.private}
+            fresh={w.newStories + w.newPosts}
+            shortLabel
+            when={w.lastCheck ? t("instagram.checkedAgo", { when: relativeTime(w.lastCheck) }) : t("instagram.notChecked")}
+            onOpen={() => props.onOpen(w.username)}
+          />
+        )}
+      </For>
+    </ul>
+  );
+}
+
+/** Recently opened profiles as the same tiles (owner, 2026-11-01), with when each was opened. */
+function RecentTiles(props: { items: IgRecent[]; onOpen: (username: string) => void }) {
+  return (
+    <ul class="ig-wtiles">
+      <For each={props.items}>
+        {(r) => (
+          <ProfileTile
+            username={r.username}
+            fullName={r.fullName}
+            picUrl={r.picUrl}
+            verified={r.isVerified}
+            isPrivate={!!r.isPrivate}
+            when={t("instagram.openedAgo", { when: relativeTime(r.openedAt) })}
+            onOpen={() => props.onOpen(r.username)}
+          />
+        )}
+      </For>
+    </ul>
+  );
+}
+
 function Verified() {
   return (
     <span class="ig-verified" role="img" aria-label={t("instagram.verified")}>
@@ -266,6 +426,8 @@ interface Opened {
   tiles?: boolean;
   title?: string;
   cover?: string | null;
+  /** Stories and highlights: the full-screen viewer. */
+  story?: boolean;
 }
 
 function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
@@ -425,7 +587,7 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
     const feed = createFeed((c) => instagramApi.highlightItems(id, c), undefined, cacheKey);
     if (feed.loaded() && feed.items().length) {
       setOpening(null);
-      props.open({ feed, start: 0, username: props.username, tiles: true, title, cover });
+      props.open({ feed, start: 0, username: props.username, tiles: true, title, cover, story: true });
       void feed.load();
       return;
     }
@@ -433,7 +595,7 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
     setOpening(null);
     if (feed.error()) setNotice(errorText(feed.error()));
     else if (feed.items().length === 0) setNotice(t("instagram.noHighlights"));
-    else props.open({ feed, start: 0, username: props.username, tiles: true, title, cover });
+    else props.open({ feed, start: 0, username: props.username, tiles: true, title, cover, story: true });
   }
 
   const tabLabel = (tb: Tab) => t(`instagram.${tb}`);
@@ -467,7 +629,10 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
                   <span>{b().profile.fullName || b().profile.username}</span>
                   <Show when={b().profile.isVerified}><Verified /></Show>
                 </h2>
-                <p class="ig-head__user">@{b().profile.username}</p>
+                <p class="ig-head__user">
+                  <span>@{b().profile.username}</span>
+                  <Show when={b().profile.isPrivate}><PrivateMark chip /></Show>
+                </p>
               </div>
               <ul class="ig-stats">
                 <li><strong>{formatCount(b().profile.mediaCount)}</strong> <span>{t("instagram.posts")}</span></li>
@@ -550,7 +715,7 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
               <Show when={tab() === "highlights"}>
                 <Show when={!highlightsLoading()} fallback={<p role="status" class="ig-muted">{t("instagram.loading")}</p>}>
                   <Show when={!highlightsError()} fallback={<p role="alert">{errorText(highlightsError())}</p>}>
-                    <Show when={highlights().length > 0} fallback={<p class="ig-muted">{empty("highlights")}</p>}>
+                    <Show when={highlights().length > 0} fallback={b().profile.isPrivate ? <PrivateEmpty /> : <p class="ig-muted">{empty("highlights")}</p>}>
                       <ul class="ig-highlights">
                         <For each={highlights()}>
                           {(h) => (
@@ -579,6 +744,9 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
                     <Show when={feed()}>
                       {(f) => (
                         <>
+                          <Show when={tb === "posts" && f().items().length > 0 && b().profile.mediaCount > f().items().length}>
+                            <p class="ig-muted ig-count">{t("instagram.loadedOf", { shown: f().items().length, total: formatCount(b().profile.mediaCount) })}</p>
+                          </Show>
                           <Show when={f().items().length > 0}>
                             <div class="ig-grid" classList={{ "ig-grid--tall": tb !== "posts" }}>
                               <For each={f().items()}>
@@ -586,14 +754,16 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
                                   <Tile
                                     item={item}
                                     label={`${tabLabel(tb)} ${i() + 1}${item.caption ? `: ${item.caption.slice(0, 60)}` : ""}`}
-                                    onOpen={() => props.open({ feed: f(), start: slideIndexOf(f().items(), i()), username: props.username, archived: tb === "archive" })}
+                                    onOpen={() => props.open({ feed: f(), start: slideIndexOf(f().items(), i()), username: props.username, archived: tb === "archive", story: tb === "stories" })}
                                   />
                                 )}
                               </For>
                             </div>
                           </Show>
                           <Show when={f().loaded() && f().items().length === 0 && !f().error()}>
-                            <p class="ig-muted">{empty(tb)}</p>
+                            <Show when={b().profile.isPrivate} fallback={<p class="ig-muted">{empty(tb)}</p>}>
+                              <PrivateEmpty />
+                            </Show>
                           </Show>
                           <Show when={f().loading()}>
                             <p class="ig-muted" role="status">{t("instagram.loading")}</p>
@@ -608,7 +778,19 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
                             </div>
                           </Show>
                           <Show when={f().hasMore() && !f().loading() && !f().error()}>
+                            <MoreSentinel onNear={() => void f().more()} />
                             <button type="button" class="ig-btn ig-more" onClick={() => void f().more()}>{t("instagram.loadMore")}</button>
+                          </Show>
+                          {/* The end of the list, said: posts stop at the newest twelve (StoryView ignores the cursor). */}
+                          <Show when={f().loaded() && !f().hasMore() && !f().loading() && !f().error() && f().items().length > 0}>
+                            <p class="ig-muted ig-end" role="status">
+                              {tb === "posts" && b().profile.mediaCount > f().items().length
+                                ? t("instagram.postsCapped", { shown: f().items().length, total: formatCount(b().profile.mediaCount) })
+                                : t("instagram.allLoaded", { count: f().items().length })}
+                            </p>
+                            <Show when={tb === "posts" && b().profile.mediaCount > f().items().length}>
+                              <button type="button" class="ig-btn ig-more" onClick={() => setTab("reels")}>{t("instagram.seeReels")}</button>
+                            </Show>
                           </Show>
                         </>
                       )}
@@ -636,11 +818,18 @@ export default function InstagramView() {
   onMount(() => void refreshInstagramWatched());
   const [recent] = createResource(() => (params.username ? null : true), () => instagramApi.recent().catch(() => []));
 
-  async function openTyped(e?: Event) {
+  async function openTyped(e?: Event, raw = text(), profileFirst = false) {
     e?.preventDefault();
     setProblem("");
-    const typed = parseTyped(text());
+    setSuggestion(null);
+    const typed = parseTyped(raw);
     if (!typed) return setProblem(t("instagram.invalid"));
+    // A pasted post or reel link that names its account opens the account (Paste: "open the profile").
+    if (profileFirst && typed.kind === "post" && typed.username) {
+      setText("");
+      navigate(`/instagram/${encodeURIComponent(typed.username)}`);
+      return;
+    }
     if (typed.kind === "user") {
       setText("");
       navigate(`/instagram/${encodeURIComponent(typed.username)}`);
@@ -662,6 +851,31 @@ export default function InstagramView() {
     }
   }
 
+  // Paste (owner, 2026-11-01): the clipboard's username or link opens at once; ⌘V into the empty field does the same.
+  const [suggestion, setSuggestion] = createSignal<string | null>(null);
+  async function paste() {
+    setProblem("");
+    const raw = await readClipboardText();
+    if (raw === null) return setProblem(t("instagram.pasteBlocked"));
+    if (!parseTyped(raw)) return setProblem(t("instagram.pasteNothing"));
+    void openTyped(undefined, raw, true);
+  }
+  function onPasteIntoField(e: ClipboardEvent & { currentTarget: HTMLInputElement }) {
+    const field = e.currentTarget;
+    const whole = field.value === "" || (field.selectionStart === 0 && field.selectionEnd === field.value.length);
+    const raw = e.clipboardData?.getData("text") ?? "";
+    if (!whole || !parseTyped(raw)) return;
+    e.preventDefault();
+    void openTyped(undefined, raw, true);
+  }
+  async function offerClipboard() {
+    if (text() || !(await clipboardReadable())) return;
+    const raw = await readClipboardText();
+    const typed = raw ? parseTyped(raw) : null;
+    const name = typed?.kind === "user" ? typed.username : typed?.username ?? null;
+    if (name && name !== params.username) setSuggestion(name);
+  }
+
   const findForm = () => (
     <form class="ig-find" onSubmit={openTyped} role="search">
       <label class="media-search">
@@ -675,9 +889,17 @@ export default function InstagramView() {
           autocapitalize="none"
           autocomplete="off"
           spellcheck={false}
-          onInput={(e) => setText(e.currentTarget.value)}
+          onInput={(e) => {
+            setText(e.currentTarget.value);
+            setSuggestion(null);
+          }}
+          onPaste={onPasteIntoField}
+          onFocus={() => void offerClipboard()}
         />
       </label>
+      <button type="button" class="ig-btn ig-paste" aria-label={t("instagram.pasteLabel")} title={t("instagram.pasteLabel")} disabled={busy()} onClick={() => void paste()}>
+        <PasteIcon /> <span>{t("instagram.paste")}</span>
+      </button>
       <Show
         when={wide()}
         fallback={
@@ -690,36 +912,27 @@ export default function InstagramView() {
           {t("instagram.open")}
         </PrimaryAction>
       </Show>
+      <Show when={suggestion()}>
+        {(name) => (
+          <button type="button" class="chip ig-suggest" onClick={() => void openTyped(undefined, name(), true)}>
+            {t("instagram.pasteSuggest", { name: name() })}
+          </button>
+        )}
+      </Show>
     </form>
   );
 
-  const watchedRail = () => (
+  const openProfile = (username: string) => navigate(`/instagram/${encodeURIComponent(username)}`);
+  const watchedTiles = () => (
     <Show when={instagramWatched().length > 0}>
-      <Card list title={t("instagram.watchList")}>
-        <RowList label={t("instagram.watchList")}>
-          <For each={instagramWatched()}>
-            {(w) => {
-              const fresh = () => w.newStories + w.newPosts;
-              return (
-                <ListRow
-                  leading={<Avatar url={w.picUrl ?? null} name={w.username} />}
-                  title={
-                    <button type="button" class="pg-row-name" onClick={() => navigate(`/instagram/${encodeURIComponent(w.username)}`)}>
-                      @{w.username}
-                    </button>
-                  }
-                  badge={fresh() > 0 ? fresh() : undefined}
-                />
-              );
-            }}
-          </For>
-        </RowList>
+      <Card title={t("instagram.watchList")}>
+        <WatchedTiles items={instagramWatched()} onOpen={openProfile} />
       </Card>
     </Show>
   );
 
   const recentMain = () => (
-    <Card list title={t("instagram.recent")}>
+    <Card title={t("instagram.recent")}>
       <Show when={recent.loading}>
         <LoadingState label={t("instagram.loading")} />
       </Show>
@@ -727,22 +940,7 @@ export default function InstagramView() {
         <EmptyState text={t("instagram.recentEmpty")} />
       </Show>
       <Show when={(recent() ?? []).length > 0}>
-        <RowList label={t("instagram.recent")}>
-          <For each={recent()}>
-            {(r) => (
-              <ListRow
-                leading={<Avatar url={r.picUrl} name={r.username} />}
-                title={
-                  <button type="button" class="pg-row-name" onClick={() => navigate(`/instagram/${encodeURIComponent(r.username)}`)}>
-                    {r.fullName || r.username}
-                  </button>
-                }
-                sub={`@${r.username}`}
-                badge={r.isVerified ? <Verified /> : undefined}
-              />
-            )}
-          </For>
-        </RowList>
+        <RecentTiles items={recent() ?? []} onOpen={openProfile} />
       </Show>
     </Card>
   );
@@ -774,31 +972,7 @@ export default function InstagramView() {
                       <h2 id="ig-watched-title" class="media-section">
                         {t("instagram.watchList")}
                       </h2>
-                      <ul class="ig-chips">
-                        <For each={instagramWatched()}>
-                          {(w) => {
-                            const fresh = () => w.newStories + w.newPosts;
-                            return (
-                              <li>
-                                <button
-                                  type="button"
-                                  class="ig-chip"
-                                  aria-label={fresh() > 0 ? t("instagram.chipLabel", { name: w.username, count: fresh() }) : `@${w.username}`}
-                                  onClick={() => navigate(`/instagram/${encodeURIComponent(w.username)}`)}
-                                >
-                                  <Avatar url={w.picUrl ?? null} name={w.username} />
-                                  <span class="ig-chip__name">@{w.username}</span>
-                                  <Show when={fresh() > 0}>
-                                    <span class="ig-dot" aria-hidden="true">
-                                      {fresh()}
-                                    </span>
-                                  </Show>
-                                </button>
-                              </li>
-                            );
-                          }}
-                        </For>
-                      </ul>
+                      <WatchedTiles items={instagramWatched()} onOpen={(u) => navigate(`/instagram/${encodeURIComponent(u)}`)} />
                     </section>
                   </Show>
                   <section class="ig-recent" aria-labelledby="ig-recent-title">
@@ -806,26 +980,7 @@ export default function InstagramView() {
                       {t("instagram.recent")}
                     </h2>
                     <Show when={(recent() ?? []).length > 0} fallback={<p class="ig-muted">{recent.loading ? t("instagram.loading") : t("instagram.recentEmpty")}</p>}>
-                      <ul class="ig-recent__list">
-                        <For each={recent()}>
-                          {(r) => (
-                            <li>
-                              <button type="button" class="ig-person" onClick={() => navigate(`/instagram/${encodeURIComponent(r.username)}`)}>
-                                <Avatar url={r.picUrl} name={r.username} />
-                                <span class="ig-person__text">
-                                  <span class="ig-person__name">
-                                    <span>{r.fullName || r.username}</span>
-                                    <Show when={r.isVerified}>
-                                      <Verified />
-                                    </Show>
-                                  </span>
-                                  <small>@{r.username}</small>
-                                </span>
-                              </button>
-                            </li>
-                          )}
-                        </For>
-                      </ul>
+                      <RecentTiles items={recent() ?? []} onOpen={(u) => navigate(`/instagram/${encodeURIComponent(u)}`)} />
                     </Show>
                     <p class="ig-muted ig-hint">{t("instagram.hint")}</p>
                   </section>
@@ -852,7 +1007,8 @@ export default function InstagramView() {
             keyed
             when={params.username}
             fallback={
-              <PageGrid layout="rail" railLabel={t("instagram.watchList")} rail={watchedRail()}>
+              <PageGrid layout="full">
+                {watchedTiles()}
                 {recentMain()}
               </PageGrid>
             }
@@ -881,6 +1037,7 @@ export default function InstagramView() {
             title={o.title}
             cover={o.cover}
             archived={o.archived}
+            story={o.story}
             hasMore={o.feed.hasMore()}
             loading={o.feed.loading()}
             onClose={() => setOpened(null)}

@@ -26,6 +26,9 @@ export function parseTyped(raw: string): Typed | null {
       return { kind: "post", url: url.toString(), username: owner && USERNAME.test(owner) ? owner : null };
     }
     const first = segments[0]?.toLowerCase();
+    // instagram.com/stories/<user>/<id>/ is that account's story (stories/highlights/<id>/ names nobody).
+    const storyOwner = first === "stories" ? segments[1]?.toLowerCase() : undefined;
+    if (storyOwner && storyOwner !== "highlights" && USERNAME.test(storyOwner)) return { kind: "user", username: storyOwner };
     if (first && !RESERVED.has(first) && USERNAME.test(first)) return { kind: "user", username: first };
     return null;
   }

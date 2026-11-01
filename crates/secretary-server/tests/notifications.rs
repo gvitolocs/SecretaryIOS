@@ -575,6 +575,55 @@ async fn apns_tokens_are_kept_while_apns_is_off() {
 }
 
 #[tokio::test]
+async fn live_activity_tokens_are_validated_and_kept() {
+    let h = harness(false).await;
+    let post = |body: Value| {
+        h.req(reqwest::Method::POST, "/v1/push/liveactivity")
+            .json(&body)
+    };
+    let start = "ab".repeat(40);
+    let update = "cd".repeat(40);
+    let id = "apr_AbCdEfGhIjKlMnOpQrStUv";
+    for bad in [
+        json!({"kind": "start", "token": "not-a-token"}),
+        json!({"kind": "update", "token": update}),
+        json!({"kind": "update", "token": update, "approvalId": "n_123"}),
+        json!({"kind": "later", "token": start}),
+    ] {
+        let (s, b) = h.send(post(bad.clone())).await;
+        assert_eq!((s, code(&b)), (400, "bad_request"), "{bad}");
+    }
+    let (s, b) = h
+        .send(post(
+            json!({"kind": "start", "token": start.to_uppercase()}),
+        ))
+        .await;
+    assert_eq!((s, &b), (201, &json!({"ok": true})));
+    let (s, _) = h
+        .send(post(
+            json!({"kind": "update", "token": update, "approvalId": id}),
+        ))
+        .await;
+    assert_eq!(s, 201);
+    // Again: refreshed, not duplicated.
+    let (s, _) = h.send(post(json!({"kind": "start", "token": start}))).await;
+    assert_eq!(s, 201);
+    let tokens = h.state.notify.live.list();
+    assert_eq!(tokens.len(), 2, "{tokens:?}");
+    assert_eq!(tokens[0].kind, notify::live::LiveKind::Update);
+    assert_eq!(tokens[0].approval_id.as_deref(), Some(id));
+    assert_eq!(tokens[1].token, start);
+    let r = h
+        .http
+        .post(format!("{}/v1/push/liveactivity", h.base))
+        .json(&json!({"kind": "start", "token": start}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 401);
+}
+
+#[tokio::test]
 async fn inbox_settings_and_auth() {
     let h = harness(false).await;
     // Device routes need a device; /v1/notify needs the service token.

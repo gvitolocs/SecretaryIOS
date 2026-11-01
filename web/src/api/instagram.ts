@@ -84,6 +84,8 @@ export interface IgRecent {
   username: string;
   fullName: string;
   isVerified: boolean;
+  /** Private when last opened (absent from older servers: not known). */
+  isPrivate?: boolean;
   picUrl: string | null;
   openedAt: number;
 }

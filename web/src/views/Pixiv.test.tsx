@@ -46,6 +46,27 @@ function renderPixiv(path = "/pixiv") {
 
 describe("Pixiv", () => {
   beforeEach(() => setShowAdult(true));
+
+  it("re-signs expired thumbnails (a list opened from an old copy) instead of showing broken images", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const hex = (u: string) => Array.from(new TextEncoder().encode(u), (b) => b.toString(16).padStart(2, "0")).join("");
+    const token = hex("https://i.pximg.net/c/540x540_70/img-master/img/x/11_p0_master1200.jpg");
+    const expired = `/v1/pixiv/s/${now - 86400}/${token}/0123abcd`;
+    const fresh = `/v1/pixiv/s/${now + 30 * 86400}/${token}/4567cdef`;
+    const calls = serve((c) => {
+      const u = new URL(c.url, "http://x");
+      if (u.pathname === "/v1/pixiv/ranking") return ok({ items: [item("11", { thumbUrl: expired })], page: 1, hasMore: false, total: 1, numPages: 1 });
+      if (u.pathname === "/v1/pixiv/resign") return ok({ urls: { [token]: fresh } });
+      return undefined;
+    });
+    renderPixiv();
+    const card = await screen.findByRole("button", { name: "Open Work 11 by Ann" });
+    await waitFor(() => expect(card.querySelector("img")).toHaveAttribute("src", fresh));
+    expect(calls.filter((c) => c.url === "/v1/pixiv/resign")).toHaveLength(1);
+    // an image that still fails is re-signed once more
+    fireEvent.error(card.querySelector("img")!);
+    await waitFor(() => expect(calls.filter((c) => c.url === "/v1/pixiv/resign")).toHaveLength(2));
+  });
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();

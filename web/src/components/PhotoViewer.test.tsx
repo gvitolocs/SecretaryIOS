@@ -338,4 +338,31 @@ describe("PhotoViewer", () => {
       expect(screen.queryByRole("button", { name: "Full screen" })).toBeNull();
     });
   });
+
+  it("draws an overlay with the controls: a tap hides both and brings both back", async () => {
+    const [index, setIndex] = createSignal(1);
+    render(() => <PhotoViewer items={items} index={index()} onIndex={setIndex} onClose={() => {}} overlay={<p class="story-info">who</p>} />);
+    await placed();
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.querySelector(".pv-overlay")).toHaveTextContent("who");
+    expect(dialog).toHaveClass("pv--chrome");
+    pointer("pointerDown", W * 0.9, H / 2);
+    pointer("pointerUp", W * 0.9, H / 2);
+    await waitFor(() => expect(dialog).not.toHaveClass("pv--chrome"));
+    // A tap on the side is a tap: it does not page.
+    expect(index()).toBe(1);
+    pointer("pointerDown", W / 2, H / 2);
+    pointer("pointerUp", W / 2, H / 2);
+    await waitFor(() => expect(dialog).toHaveClass("pv--chrome"));
+  });
+
+  it("has no overlay unless asked", async () => {
+    const { index } = open({ start: 1 });
+    await placed();
+    pointer("pointerDown", W * 0.9, H / 2);
+    pointer("pointerUp", W * 0.9, H / 2);
+    await new Promise((r) => setTimeout(r, 400));
+    expect(index()).toBe(1);
+    expect(screen.getByRole("dialog").querySelector(".pv-overlay")).toBeNull();
+  });
 });

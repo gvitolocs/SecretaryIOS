@@ -118,6 +118,7 @@ const HIGHLIGHT_ITEMS = (id) => {
 
 /** Profiles the owner opened, newest first. */
 let recent = [
+  { username: "private", fullName: "A private account", isVerified: false, isPrivate: true, picUrl: media("avatar", 3), openedAt: NOW - 600 },
   { username: "nasa", fullName: "NASA", isVerified: true, picUrl: media("avatar", 2), openedAt: NOW - 3600 },
   { username: "natgeo", fullName: "National Geographic", isVerified: true, picUrl: media("avatar", 1), openedAt: NOW - 86400 },
 ];
@@ -233,7 +234,7 @@ export async function handleInstagram(req, res, { path, method, url, send, readJ
   if (rest.startsWith("/profile/") && method === "GET") {
     const p = find("/profile/");
     if (!p) return true;
-    recent = [{ username: p.profile.username, fullName: p.profile.fullName, isVerified: p.profile.isVerified, picUrl: p.profile.picUrl, openedAt: Math.floor(Date.now() / 1000) }, ...recent.filter((r) => r.username !== p.profile.username)].slice(0, 30);
+    recent = [{ username: p.profile.username, fullName: p.profile.fullName, isVerified: p.profile.isVerified, isPrivate: p.profile.isPrivate, picUrl: p.profile.picUrl, openedAt: Math.floor(Date.now() / 1000) }, ...recent.filter((r) => r.username !== p.profile.username)].slice(0, 30);
     return ok({ profile: p.profile, posts: p.posts(null), highlights: p.highlights }), true;
   }
   if (rest === "/_reset" && method === "POST") {

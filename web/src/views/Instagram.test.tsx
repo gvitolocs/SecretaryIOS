@@ -324,7 +324,7 @@ describe("Instagram", () => {
     const calls = serve({ profile: bundle({ isPrivate: true }) });
     renderIg("/instagram/natgeo");
     fireEvent.click(await screen.findByRole("tab", { name: "Highlights" }));
-    expect(screen.getByText("No highlights.")).toBeInTheDocument();
+    expect(screen.getByRole("tabpanel")).toHaveTextContent("Private account");
     expect(calls.some((c) => c.url === "/v1/instagram/highlights/natgeo")).toBe(false);
   });
 
@@ -410,6 +410,21 @@ describe("Instagram", () => {
       expect(await screen.findByRole("dialog", { name: "Best of: all items" })).toBeInTheDocument();
     });
 
+    it("opens a highlight item in the Gallery viewer: no panel under it, its info as an overlay with the controls", async () => {
+      await openHighlight();
+      await waitFor(() => expect(tiles()).toHaveLength(7));
+      fireEvent.click(tiles()[2]!);
+      const viewer = await screen.findByRole("dialog", { name: "3 of 7" });
+      expect(viewer).toHaveClass("ig-story-viewer");
+      expect(viewer.querySelector(".pv-panel")).toBeNull();
+      const overlay = viewer.querySelector(".pv-overlay")!;
+      expect(overlay).toHaveTextContent("@natgeo");
+      expect(overlay).toHaveTextContent("caption h3");
+      // The Gallery viewer's own controls: its Full screen, and no story-only buttons.
+      expect(viewer.querySelector(".ig-pv-sound")).toBeNull();
+      expect(viewer.querySelector(".ig-story__bar")).toBeNull();
+    });
+
     it("moves between tiles with the arrow keys", async () => {
       await openHighlight();
       await waitFor(() => expect(tiles()).toHaveLength(7));
@@ -421,6 +436,15 @@ describe("Instagram", () => {
       fireEvent.keyDown(tiles()[6]!, { key: "ArrowLeft" });
       expect(document.activeElement).toBe(tiles()[5]);
     });
+  });
+
+  it("keeps a post's caption in the panel beside it (only stories use the overlay)", async () => {
+    serve({ profile: bundle() });
+    renderIg("/instagram/natgeo");
+    fireEvent.click(await screen.findByRole("button", { name: /^Posts 1/ }));
+    const viewer = await screen.findByRole("dialog", { name: /^1 of / });
+    expect(viewer).not.toHaveClass("ig-story-viewer");
+    expect(viewer.querySelector(".pv-panel")).toHaveTextContent("caption");
   });
 
   it("opens a story in the viewer, with a grid button to its tiles", async () => {
@@ -454,6 +478,28 @@ describe("Instagram", () => {
     serve({ profile: bundle({ isPrivate: true }) });
     renderIg("/instagram/natgeo");
     expect(await screen.findByText(/This account is private/)).toBeInTheDocument();
+  });
+
+  it("marks a private account at its name, and says why its tabs are empty", async () => {
+    serve({ profile: { ...bundle({ isPrivate: true }), posts: posts([]) }, stories: { items: [], nextCursor: null } });
+    renderIg("/instagram/natgeo");
+    const chip = (await screen.findByText("Private")).closest(".chip")!;
+    expect(chip).toHaveClass("ig-private");
+    expect(chip.closest(".ig-head__user")).toHaveTextContent("@natgeo");
+    expect(chip.querySelector("svg")).not.toBeNull();
+    const panel = screen.getByRole("tabpanel");
+    await waitFor(() => expect(panel).toHaveTextContent("Private account"));
+    expect(panel).toHaveTextContent("Instagram doesn't show this to visitors.");
+    expect(panel).not.toHaveTextContent("No posts to show.");
+    fireEvent.click(screen.getByRole("tab", { name: "Highlights" }));
+    await waitFor(() => expect(screen.getByRole("tabpanel")).toHaveTextContent("Instagram doesn't show this to visitors."));
+  });
+
+  it("shows no Private chip on a public account", async () => {
+    serve({ profile: bundle() });
+    renderIg("/instagram/natgeo");
+    await screen.findByRole("heading", { name: /National Geographic/ });
+    expect(document.querySelector(".ig-private")).toBeNull();
   });
 
   it("says when the account is not found, with no retry button", async () => {
@@ -491,6 +537,38 @@ describe("Instagram", () => {
       expect(within(chip).getByText("3")).toBeInTheDocument();
       const quiet = screen.getByRole("button", { name: "@nasa" });
       expect(quiet.querySelector(".ig-dot")).toBeNull();
+    });
+
+    it("puts a lock on private accounts in the watched and recent lists", async () => {
+      serve({
+        watched: [entry({ username: "kuroasha", private: true, newStories: 0, newPosts: 0 }), entry({ username: "nasa", newStories: 0, newPosts: 0 })],
+        recent: [
+          { username: "kuroasha", fullName: "Manu", isVerified: false, isPrivate: true, picUrl: null, openedAt: 2 },
+          { username: "nasa", fullName: "NASA", isVerified: true, picUrl: null, openedAt: 1 },
+        ],
+      });
+      renderIg();
+      const tile = await screen.findByRole("button", { name: "@kuroasha, Private account" });
+      expect(tile.querySelector(".ig-private")).toHaveTextContent("Private");
+      expect(screen.getByRole("button", { name: "@nasa" }).querySelector(".ig-private")).toBeNull();
+      // Recent profiles are the same tiles (owner, 2026-11-01), with the Private chip.
+      const person = await screen.findByRole("button", { name: /Manu/ });
+      expect(person).toHaveClass("ig-wtile");
+      expect(person.querySelector(".ig-private")).toHaveTextContent("Private");
+      expect(person).toHaveTextContent("@kuroasha");
+      expect(screen.getByRole("button", { name: /^NASA/ }).querySelector(".ig-private")).toBeNull();
+    });
+
+    it("shows each watched account as a tile with its picture, names, count and last check", async () => {
+      vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
+      serve({ watched: [entry({ lastCheck: 1_800_000_000 - 2 * 3600, picUrl: "/v1/instagram/s/9/x/pfp", isVerified: true })] });
+      renderIg();
+      const tile = await screen.findByRole("button", { name: "@natgeo, 3 new" });
+      expect(tile.querySelector(".ig-avatar img")).toHaveAttribute("src", "/v1/instagram/s/9/x/pfp");
+      expect(tile).toHaveTextContent("National Geographic");
+      expect(tile).toHaveTextContent("@natgeo");
+      expect(tile.querySelector(".ig-wtile__dot")).toHaveTextContent("3");
+      expect(tile).toHaveTextContent("Checked 2 hours ago");
     });
 
     it("opens a chip's profile and clears its badge", async () => {
@@ -744,8 +822,12 @@ describe("Instagram desktop", () => {
     expect(screen.getByText("Anonymous: nothing here logs in to Instagram.")).toBeInTheDocument();
     expect(document.querySelectorAll(".pg-cta")).toHaveLength(1);
     expect(screen.getByRole("region", { name: "Recent profiles" })).toBeInTheDocument();
-    expect(screen.getByRole("complementary", { name: "Watched accounts" })).toBeInTheDocument();
-    expect(document.querySelector(".ig-chips")).toBeNull();
+    // Watched accounts are tiles above the recent list (owner, 2026-11-01), not a rail of rows.
+    const watched = await screen.findByRole("region", { name: "Watched accounts" });
+    const tile = within(watched).getByRole("button", { name: "@natgeo, 2 new" });
+    expect(tile).toHaveClass("ig-wtile");
+    expect(tile).toHaveTextContent("Not checked yet");
+    expect(screen.queryByRole("complementary", { name: "Watched accounts" })).toBeNull();
   });
 
   it("shows a back link on a profile", async () => {
@@ -753,5 +835,112 @@ describe("Instagram desktop", () => {
     renderIg("/instagram/natgeo");
     expect(await screen.findByRole("link", { name: "Recent profiles" })).toHaveAttribute("href", "/instagram");
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Instagram");
+  });
+
+  describe("Paste", () => {
+    afterEach(() => {
+      delete (window as { secretaryShell?: unknown }).secretaryShell;
+    });
+    const stubClipboard = (text: string | Error) =>
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: { readText: () => (text instanceof Error ? Promise.reject(text) : Promise.resolve(text)) },
+      });
+
+    it("opens the profile of a pasted username, link or story link", async () => {
+      for (const [text] of [
+        ["@NatGeo", "natgeo"],
+        ["https://www.instagram.com/natgeo/?igsh=abc", "natgeo"],
+        ["https://www.instagram.com/stories/natgeo/3456789012345678901/", "natgeo"],
+        ["https://www.instagram.com/natgeo/p/DeXzbFEl5DG/", "natgeo"],
+      ]) {
+        cleanup();
+        serve({ profile: bundle() });
+        stubClipboard(text!);
+        renderIg();
+        fireEvent.click(await screen.findByRole("button", { name: "Paste a username or Instagram link and open it" }));
+        expect(await screen.findByRole("heading", { name: /National Geographic/ })).toBeInTheDocument();
+      }
+    });
+
+    it("says so when the clipboard holds nothing usable, or cannot be read", async () => {
+      serve({});
+      stubClipboard("hello world, not a name");
+      renderIg();
+      fireEvent.click(await screen.findByRole("button", { name: "Paste a username or Instagram link and open it" }));
+      expect(await screen.findByRole("alert")).toHaveTextContent("The clipboard has no Instagram username or link.");
+      stubClipboard(new Error("NotAllowedError"));
+      fireEvent.click(screen.getByRole("button", { name: "Paste a username or Instagram link and open it" }));
+      await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("paste into the field"));
+    });
+
+    it("reads through the shell when Secretary Code offers it", async () => {
+      (window as { secretaryShell?: unknown }).secretaryShell = { readClipboardText: () => Promise.resolve("instagram.com/natgeo") };
+      serve({ profile: bundle() });
+      stubClipboard(new Error("NotAllowedError"));
+      renderIg();
+      fireEvent.click(await screen.findByRole("button", { name: "Paste a username or Instagram link and open it" }));
+      expect(await screen.findByRole("heading", { name: /National Geographic/ })).toBeInTheDocument();
+    });
+
+    it("opens a link pasted into the empty field at once, and leaves a paste into typed text alone", async () => {
+      serve({ profile: bundle() });
+      renderIg();
+      const field = await screen.findByRole("searchbox");
+      fireEvent.paste(field, { clipboardData: { getData: () => "https://instagram.com/natgeo/" } });
+      expect(await screen.findByRole("heading", { name: /National Geographic/ })).toBeInTheDocument();
+    });
+
+    it("offers what the clipboard holds when the field gets focus, if it can be read without asking", async () => {
+      (window as { secretaryShell?: unknown }).secretaryShell = { readClipboardText: () => Promise.resolve("https://www.instagram.com/nasa/") };
+      serve({ profile: bundle() });
+      renderIg();
+      fireEvent.focus(await screen.findByRole("searchbox"));
+      expect(await screen.findByRole("button", { name: "Open @nasa from the clipboard" })).toBeInTheDocument();
+    });
+  });
+
+  describe("paging", () => {
+    it("says the posts stop at the newest twelve of the profile's count", async () => {
+      serve({ profile: { ...bundle(), posts: posts(["p1", "p2", "p3"], null) } });
+      renderIg("/instagram/natgeo");
+      await screen.findByRole("button", { name: /^Posts 1/ });
+      const panel = screen.getByRole("tabpanel");
+      expect(panel).toHaveTextContent("3 of 32K posts");
+      expect(panel).toHaveTextContent("Showing the newest 3 of 32K posts");
+      expect(within(panel).queryByRole("button", { name: "Load more" })).toBeNull();
+      // The reels page further: one tap there.
+      fireEvent.click(within(panel).getByRole("button", { name: "See the reels" }));
+      expect(await screen.findByRole("tab", { name: "Reels", selected: true })).toBeInTheDocument();
+    });
+
+    it("says all are loaded when the list ends at the profile's count", async () => {
+      const small = bundle();
+      small.profile.mediaCount = 2;
+      serve({ profile: { ...small, posts: posts(["p1", "p2"], null) } });
+      renderIg("/instagram/natgeo");
+      await screen.findByRole("button", { name: /^Posts 1/ });
+      expect(screen.getByRole("tabpanel")).toHaveTextContent("All 2 loaded.");
+    });
+
+    it("loads the next page when the end of the list comes into view", async () => {
+      const seen: IntersectionObserverCallback[] = [];
+      vi.stubGlobal("IntersectionObserver", class {
+        constructor(cb: IntersectionObserverCallback) { seen.push(cb); }
+        observe() {}
+        disconnect() {}
+      });
+      try {
+        const calls = serve({ profile: bundle(), posts: posts(["p3", "p4"], null) });
+        renderIg("/instagram/natgeo");
+        await screen.findByRole("button", { name: /^Posts 1/ });
+        await waitFor(() => expect(seen.length).toBeGreaterThan(0));
+        seen.at(-1)!([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver);
+        await waitFor(() => expect(calls.some((c) => c.url === "/v1/instagram/posts/natgeo?cursor=C2")).toBe(true));
+        await waitFor(() => expect(screen.getAllByRole("button", { name: /^Posts \d/ })).toHaveLength(4));
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
   });
 });

@@ -1423,7 +1423,8 @@ hours / DND do not hold it; see [Approvals](#approvals)). Without `title`, clien
 | `DELETE /v1/push/subscribe {endpoint}` | `{removed}`. |
 | `DELETE /v1/push/subscriptions/{id}` | `{removed}`; `404 subscription_not_found`. |
 | `POST /v1/push/test {id?}` | A test push to that subscription (default: the caller's); waits: `{results: [{id, ok, delivery: {result: sent\|gone\|failed, status?, error?}}]}`. |
-| `POST /v1/push/apns {token, lang?}` | Native app device token → `201` subscription view + `apnsEnabled`. The token is kept even while APNs is off; pushes to it start once a key is installed (and do not count as failures until then). |
+| `POST /v1/push/apns {token, lang?, notifications?}` | Native app device token → `201` subscription view + `apnsEnabled`. `notifications`: what iOS lets the app show (`authorization`, `alert`, `lockScreen`, `timeSensitive`, `scheduledDelivery`, …), logged as `apns token registered`. The token is kept even while APNs is off; pushes to it start once a key is installed (and do not count as failures until then). |
+| `POST /v1/push/liveactivity {kind, token, approvalId?}` | The approval Live Activity's APNs tokens (hex, like device tokens) → `201 {ok: true}`. `kind: start`: the push-to-start token, one per device (replaced on each call). `kind: update`: one activity's token, with its `approvalId` (`apr_…`, required), one per device and approval. `400 bad_request` for a bad token, kind or id. Kept while APNs is off. A new approval request starts the activity on every device with a start token; its decision, withdrawal or expiry ends it through the update tokens, which are then forgotten (`docs/notifications.md`, "Live Activity"). |
 
 Settings:
 

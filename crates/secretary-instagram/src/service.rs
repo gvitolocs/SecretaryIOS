@@ -585,6 +585,7 @@ impl Service {
             full_name: bundle.profile.full_name.clone(),
             pic_cdn: inner_cdn_url(&bundle.profile.profile_pic_url),
             verified: bundle.profile.is_verified,
+            private: bundle.profile.is_private,
             opened_at: chrono::Utc::now().timestamp(),
         });
         let highlights = if bundle.highlights.is_empty() && !bundle.profile.is_private {
@@ -753,6 +754,7 @@ impl Service {
                     "username": e.username,
                     "fullName": e.full_name,
                     "isVerified": e.verified,
+                    "isPrivate": e.private,
                     "picUrl": e.pic_cdn.as_deref().map(|c| self.signer.url_for(c)),
                     "openedAt": e.opened_at,
                 })

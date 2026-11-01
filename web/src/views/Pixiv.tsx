@@ -8,6 +8,7 @@ import { t } from "../i18n";
 import { showAdult } from "../lib/adult";
 import { pageCache } from "../lib/pageCache";
 import { rememberScroll } from "../lib/pageScroll";
+import { createFreshSrc } from "../lib/pixivImages";
 import { createFeed, sortMessage, type Feed } from "../lib/pixivFeed";
 import "../styles/pixiv.css";
 
@@ -47,11 +48,13 @@ export function tierLabel(n: number): string {
 }
 
 function Card(props: { item: PixivItem; onOpen: (item: PixivItem) => void }) {
+  // A cached list may hold expired links: re-signed before they show, and once more if an image fails.
+  const thumb = createFreshSrc(() => props.item.thumbUrl);
   return (
     <button type="button" class="px-card" data-work={props.item.id} data-media-link={pixivWorkUrl(props.item.id)} data-media-name={props.item.title || undefined} aria-label={t("pixiv.openWork", { title: props.item.title, author: props.item.author })} onClick={() => props.onOpen(props.item)}>
       <span class="px-card__thumb">
-        <Show when={props.item.thumbUrl}>
-          <img src={props.item.thumbUrl} alt="" loading="lazy" decoding="async" draggable={false} />
+        <Show when={thumb.src()}>
+          <img src={thumb.src()} alt="" loading="lazy" decoding="async" draggable={false} onError={thumb.onError} />
         </Show>
         <Show when={props.item.pages > 1}>
           <span class="px-badge px-badge--pages">{props.item.pages}</span>

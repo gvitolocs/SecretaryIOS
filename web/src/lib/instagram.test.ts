@@ -21,6 +21,11 @@ describe("parseTyped", () => {
     expect(parseTyped("  @NatGeo ")).toEqual({ kind: "user", username: "natgeo" });
     expect(parseTyped("a.b_c9")).toEqual({ kind: "user", username: "a.b_c9" });
   });
+  it("takes story links as their account, not highlight story links", () => {
+    expect(parseTyped("https://www.instagram.com/stories/NatGeo/3456789012345678901/")).toEqual({ kind: "user", username: "natgeo" });
+    expect(parseTyped("instagram.com/stories/natgeo/")).toEqual({ kind: "user", username: "natgeo" });
+    expect(parseTyped("https://www.instagram.com/stories/highlights/17912345678901234/")).toBeNull();
+  });
   it("takes profile links", () => {
     expect(parseTyped("https://www.instagram.com/natgeo/")).toEqual({ kind: "user", username: "natgeo" });
     expect(parseTyped("instagram.com/NatGeo?igsh=1")).toEqual({ kind: "user", username: "natgeo" });

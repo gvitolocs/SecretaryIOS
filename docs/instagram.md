@@ -50,7 +50,7 @@ Success: `{"ok":true,"data":…}`. Error: `{"ok":false,"error":"<code>"}`; 429 i
 | `GET /highlights/{username}` | `{items:[highlight]}` (a user named `items` is not reachable here) |
 | `GET /highlights/items?id=highlight:…&cursor=` | `{items, nextCursor}` |
 | `GET /resolve?url=<instagram post/reel url>` | `{items, nextCursor}` |
-| `GET /recent` | `{items:[{username, fullName, isVerified, picUrl, openedAt}]}`, newest first, max 30 |
+| `GET /recent` | `{items:[{username, fullName, isVerified, isPrivate, picUrl, openedAt}]}`, newest first, max 30 (`isPrivate`: when last opened; absent on entries from before 2026-11-01) |
 | `POST /save {items:[{url, kind, username, takenAt?, caption?}]}` | `{saved:[{index,itemId,duplicate}], failed:[{index,error}]}` |
 | `GET /s/{exp}/{sig}/{token}` | media bytes (signed, 60-75 min, GET/HEAD, **no gateway header**), Range supported |
 

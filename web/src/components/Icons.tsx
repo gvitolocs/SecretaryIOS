@@ -739,3 +739,21 @@ export function NotebookIcon() {
     </svg>
   );
 }
+
+export function LockIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="5" y="10.5" width="14" height="10" rx="2.2" />
+      <path d="M8.5 10.5V7.8a3.5 3.5 0 0 1 7 0v2.7" />
+    </svg>
+  );
+}
+
+export function PasteIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="6" y="4.5" width="12" height="16" rx="2" />
+      <path d="M9.5 4.5V3.8c0-.7.6-1.3 1.3-1.3h2.4c.7 0 1.3.6 1.3 1.3v.7M9.5 10h5M9.5 13.5h5M9.5 17h3" />
+    </svg>
+  );
+}

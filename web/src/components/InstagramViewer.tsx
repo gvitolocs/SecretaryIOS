@@ -10,6 +10,10 @@ import { PhotoViewer, type ViewerItem } from "./PhotoViewer";
 // The full-size viewer for stories, highlights, posts and reels: the Gallery's PhotoViewer (pinch,
 // ⌘/ctrl + wheel, double tap or click, drag while zoomed, swipe, arrows, Esc, full screen) with
 // "Save to Lucina" on every slide (POST /v1/instagram/save) and the post's caption in its panel.
+//
+// Stories and highlights (`story`) keep the whole viewer for the picture (owner, 2026-11-01: "I like the gallery views
+// more"): no panel under it; who, when and the caption are an overlay that comes and goes with the controls on a tap.
+// Everything else is the Gallery viewer's own (zoom, pinch, swipe, Full screen = the shell's full tab).
 
 type SaveState = "idle" | "saving" | "saved";
 
@@ -32,6 +36,8 @@ export default function InstagramViewer(props: {
   onIndex?: (index: number) => void;
   /** Back to the tiles (the top bar's grid button and G); without it there is no grid button. */
   onGrid?: () => void;
+  /** Stories and highlights: no panel, the info as an overlay with the controls. */
+  story?: boolean;
 }) {
   const [index, setIndex] = createSignal(Math.max(0, Math.min(props.start, props.slides.length - 1)));
   const [saves, setSaves] = createSignal<Record<string, SaveState>>({});
@@ -164,9 +170,24 @@ export default function InstagramViewer(props: {
     </div>
   );
 
+  // A story's info, over the picture with the controls: who and when, the caption.
+  const StoryOverlay = () => (
+    <div class="ig-story">
+      <div class="ig-story__info">
+        <p class="ig-pv-who">
+          @{props.username}
+          <Show when={formatTaken(slide()?.item.takenAt)}>{(d) => <small> · {d()}</small>}</Show>
+        </p>
+        <Show when={slide()?.item.caption}>{(c) => <p class="ig-pv-caption">{c()}</p>}</Show>
+      </div>
+    </div>
+  );
+
   return (
     <>
       <PhotoViewer
+        class={props.story ? "ig-story-viewer" : undefined}
+        overlay={props.story ? <StoryOverlay /> : undefined}
         items={items()}
         index={index()}
         onIndex={setIndex}
@@ -174,7 +195,7 @@ export default function InstagramViewer(props: {
         label={(n, count) => t("instagram.position", { n, total: count })}
         onKeyDown={onKeyDown}
         toolbar={<Toolbar />}
-        panel={hasPanel() ? <Panel /> : undefined}
+        panel={!props.story && hasPanel() ? <Panel /> : undefined}
         renderVideo={({ item, current }) =>
           current ? (
             <video

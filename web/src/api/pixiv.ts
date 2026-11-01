@@ -233,6 +233,15 @@ export const pixivApi = {
   connectFinish(state: string, code: string) { return data(request("POST", `${BASE}/connect/finish`, { body: { state, code } }), parseConnection); },
   disconnect() { return data(request("POST", `${BASE}/disconnect`), parseConnection); },
   settings() { return data(request("GET", `${BASE}/settings`), parseSettings); },
+  /** Fresh signed links for the tokens of old ones (lib/pixivImages): token -> URL ("" when refused). */
+  resign(tokens: string[]): Promise<Record<string, string>> {
+    return data(request("POST", `${BASE}/resign`, { body: { tokens } }), (v) => {
+      const urls = (v as { urls?: unknown })?.urls;
+      const out: Record<string, string> = {};
+      if (urls && typeof urls === "object") for (const [k, u] of Object.entries(urls)) if (typeof u === "string") out[k] = u;
+      return out;
+    });
+  },
   saveSettings(patch: Partial<PixivSettings>) { return data(request("PUT", `${BASE}/settings`, { body: patch }), parseSettings); },
   ranking(mode: RankingMode, page = 1): Promise<PixivListing> {
     const p = new URLSearchParams({ mode, page: String(page) });

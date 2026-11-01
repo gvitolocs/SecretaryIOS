@@ -19,6 +19,7 @@
 
 pub mod apns;
 pub mod ingest;
+pub mod live;
 pub mod model;
 pub mod push;
 pub mod routes;
@@ -108,6 +109,8 @@ pub struct Notifier {
     pub settings: SettingsFile,
     pub state: StateFile,
     pub pusher: Pusher,
+    /// The approval Live Activity's push tokens ([`live`]).
+    pub live: live::LiveTokens,
     presence: Mutex<HashMap<String, Instant>>,
     seen: SeenIds,
     admit_lock: Mutex<()>,
@@ -188,6 +191,7 @@ impl Notifier {
             settings: SettingsFile::open(dir, store::SETTINGS_FILE),
             state: StateFile::open(dir, store::STATE_FILE),
             pusher: Pusher::open(dir, cfg.push.clone())?,
+            live: live::LiveTokens::open(dir),
             presence: Mutex::default(),
             seen: SeenIds::new(4096),
             admit_lock: Mutex::default(),
