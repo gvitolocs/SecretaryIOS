@@ -11,6 +11,7 @@
 //! Runs reference the book's text by (block, span, byte range) instead of copying it, which keeps the
 //! pagination of a 2 MB book to a few MB of memory.
 use crate::font::{Face, Fonts};
+use crate::images::{ImageSize, Images, NoImages};
 use ink_epub::{Block, Book, Chapter, ListMarker, Span, SpanStyle};
 use ink_kindle_hal::Size;
 
@@ -116,7 +117,12 @@ pub struct Run {
 #[derive(Debug, Clone, PartialEq)]
 pub enum LineContent {
     Text(Vec<Run>),
-    Image { block: u32 },
+    /// A picture drawn in a `w × h` pixel box, centred in the column.
+    Image {
+        block: u32,
+        w: u32,
+        h: u32,
+    },
     Rule,
 }
 
@@ -468,14 +474,63 @@ fn spans_of(spans: &[Span]) -> Vec<(u16, &str, SpanStyle)> {
         .collect()
 }
 
-/// Lay out a chapter into lines (no pagination).
+/// Box (pixels) a picture of intrinsic `size` is drawn in, aspect ratio kept. A `full_page` picture (cover,
+/// image-only chapter) fills `measure × max_h`, upscaled if needed; other pictures are shown at twice their
+/// intrinsic size (they are made for ~150 dpi screens, the panel is 300 dpi), shrunk to fit `measure × max_h`.
+/// A zero-sized picture gives `(0, 0)`: unknown, laid out as the placeholder.
+pub fn image_box(size: ImageSize, measure: f32, max_h: i32, full_page: bool) -> (u32, u32) {
+    if size.w == 0 || size.h == 0 {
+        return (0, 0);
+    }
+    let max_w = f64::from(measure).floor().max(1.0);
+    let max_h = f64::from(max_h.max(1));
+    let (w, h) = (f64::from(size.w), f64::from(size.h));
+    let mut s = (max_w / w).min(max_h / h);
+    if !full_page {
+        s = s.min(2.0);
+    }
+    let w = (w * s).round().clamp(1.0, max_w) as u32;
+    let h = (h * s).round().clamp(1.0, max_h) as u32;
+    (w, h)
+}
+
+/// A chapter whose only content is one picture (blank text and rules aside): the picture fills the page.
+fn full_page_picture(chapter: &Chapter) -> bool {
+    let mut images = 0;
+    for b in &chapter.blocks {
+        match b {
+            Block::Image { .. } => images += 1,
+            Block::Rule => {}
+            b if b.text().trim().is_empty() => {}
+            _ => return false,
+        }
+    }
+    images == 1
+}
+
+/// Lay out a chapter into lines (no pagination); pictures are placeholders.
 pub fn layout_chapter(
     fonts: &mut Fonts,
     style: &Style,
     measure: f32,
     chapter: &Chapter,
 ) -> Vec<Line> {
+    layout_chapter_with(fonts, style, measure, 0, chapter, 0, &mut NoImages)
+}
+
+/// Lay out chapter `chapter_index` into lines (no pagination), sizing pictures with `images`. `max_h` is the
+/// page's content height (pictures are never taller).
+pub fn layout_chapter_with(
+    fonts: &mut Fonts,
+    style: &Style,
+    measure: f32,
+    max_h: i32,
+    chapter: &Chapter,
+    chapter_index: u32,
+    images: &mut dyn Images,
+) -> Vec<Line> {
     let mut out = Vec::new();
+    let full_page = full_page_picture(chapter);
     let body_line = (f32::from(style.font_px) * style.line_height).round() as i32;
     let em = f32::from(style.font_px);
     let para_gap = (style.paragraph_spacing * body_line as f32).round() as i32;
@@ -592,19 +647,54 @@ pub fn layout_chapter(
                 );
                 after_heading = true;
             }
-            Block::Image { .. } => {
-                out.push(Line {
-                    content: LineContent::Image { block: bi as u32 },
-                    height: body_line * 4,
-                    ascent: 0,
-                    space_before: base.space_before + body_line / 2,
-                    keep_with_next: false,
-                    start: offset,
-                    end: offset + 1,
-                    width: measure,
-                    justified: false,
-                });
-                extra_space = body_line / 2;
+            Block::Image { src, .. } => {
+                let known = images
+                    .size(chapter_index, src)
+                    .map(|sz| image_box(sz, measure, max_h, full_page))
+                    .filter(|&(w, _)| w > 0);
+                let line = match known {
+                    Some((w, h)) => Line {
+                        content: LineContent::Image {
+                            block: bi as u32,
+                            w,
+                            h,
+                        },
+                        height: h as i32,
+                        ascent: 0,
+                        space_before: if full_page {
+                            0
+                        } else {
+                            base.space_before + body_line / 2
+                        },
+                        keep_with_next: false,
+                        start: offset,
+                        end: offset + 1,
+                        width: w as f32,
+                        justified: false,
+                    },
+                    // Placeholder box: two thirds of the column, four lines high.
+                    None => Line {
+                        content: LineContent::Image {
+                            block: bi as u32,
+                            w: measure as u32 * 2 / 3,
+                            h: (body_line * 4) as u32,
+                        },
+                        height: body_line * 4,
+                        ascent: 0,
+                        space_before: base.space_before + body_line / 2,
+                        keep_with_next: false,
+                        start: offset,
+                        end: offset + 1,
+                        width: measure,
+                        justified: false,
+                    },
+                };
+                extra_space = if full_page && known.is_some() {
+                    0
+                } else {
+                    body_line / 2
+                };
+                out.push(line);
                 after_heading = true;
             }
             Block::Rule => {
@@ -631,13 +721,25 @@ pub fn content_height(size: Size, style: &Style) -> i32 {
     size.h as i32 - style.margins.top as i32 - style.margins.bottom as i32
 }
 
-/// Paginate a whole book.
+/// Paginate a whole book; pictures are placeholders.
 pub fn paginate(fonts: &mut Fonts, style: &Style, size: Size, book: &Book) -> Pagination {
+    paginate_with(fonts, style, size, book, &mut NoImages)
+}
+
+/// Paginate a whole book, sizing pictures with `images`. Anchors mean the same with and without pictures
+/// (a picture covers one offset); only the page boundaries move.
+pub fn paginate_with(
+    fonts: &mut Fonts,
+    style: &Style,
+    size: Size,
+    book: &Book,
+    images: &mut dyn Images,
+) -> Pagination {
     let measure = (size.w - style.margins.left - style.margins.right) as f32;
     let max_h = content_height(size, style);
     let mut pages = Vec::new();
     for (ci, chapter) in book.chapters.iter().enumerate() {
-        let lines = layout_chapter(fonts, style, measure, chapter);
+        let lines = layout_chapter_with(fonts, style, measure, max_h, chapter, ci as u32, images);
         let chapter_len = chapter.char_len();
         let first_page = pages.len();
         let mut page = Page {

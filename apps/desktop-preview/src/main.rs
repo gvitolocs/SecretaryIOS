@@ -495,6 +495,7 @@ fn run() -> Result<i32, String> {
                         layout_ms: 0.0,
                         render_ms: 0.0,
                         update_ms: 0.0,
+                        images: Default::default(),
                     }))
                 }),
                 g if g.starts_with("goto:") => {

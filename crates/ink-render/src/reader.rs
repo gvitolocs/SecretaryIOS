@@ -2,10 +2,11 @@
 //! with a full refresh, and the reading anchor kept across re-pagination.
 use crate::dirty;
 use crate::font::Fonts;
-use crate::layout::{paginate, Anchor, Pagination, Style};
-use crate::render::render_page;
+use crate::images::{ImageRequest, Images, NoImages, PageImages};
+use crate::layout::{paginate_with, Anchor, LineContent, Pagination, Style};
+use crate::render::render_page_with;
 use crate::Result;
-use ink_epub::Book;
+use ink_epub::{Block, Book};
 use ink_kindle_hal::{Direction, Display, Gesture, GrayImage, UpdateRecord, WaveformMode};
 use std::time::Instant;
 
@@ -23,6 +24,8 @@ pub struct StepReport {
     pub render_ms: f64,
     /// Diff + framebuffer copy + update calls, ms.
     pub update_ms: f64,
+    /// How the shown page's pictures came out (default when nothing was rendered).
+    pub images: PageImages,
 }
 
 pub struct Reader<D: Display> {
@@ -42,6 +45,10 @@ pub struct Reader<D: Display> {
     pub turn_mode: WaveformMode,
     /// Most partial updates per page turn.
     pub max_rects: usize,
+    /// The book's pictures (sizes for the layout, pixels, prefetch).
+    images: Box<dyn Images>,
+    /// How the pictures of the page on the panel came out.
+    last_images: PageImages,
 }
 
 fn ms(t: Instant) -> f64 {
@@ -58,14 +65,26 @@ impl<D: Display> Reader<D> {
     /// start) with a full refresh. An anchor past the end of the book lands on the last page.
     pub fn open_at(
         book: Book,
-        mut fonts: Fonts,
+        fonts: Fonts,
         style: Style,
         display: D,
         anchor: Option<Anchor>,
     ) -> Result<(Self, StepReport)> {
+        Self::open_at_with(book, fonts, style, display, anchor, Box::new(NoImages))
+    }
+
+    /// [`Reader::open_at`] with the book's pictures supplied by `images`.
+    pub fn open_at_with(
+        book: Book,
+        mut fonts: Fonts,
+        style: Style,
+        display: D,
+        anchor: Option<Anchor>,
+        mut images: Box<dyn Images>,
+    ) -> Result<(Self, StepReport)> {
         let size = display.size();
         let t = Instant::now();
-        let pagination = paginate(&mut fonts, &style, size, &book);
+        let pagination = paginate_with(&mut fonts, &style, size, &book, images.as_mut());
         let layout_ms = ms(t);
         let anchor = anchor.unwrap_or_default();
         let page = pagination.page_for(anchor);
@@ -81,6 +100,8 @@ impl<D: Display> Reader<D> {
             back: GrayImage::new(size, 0xff),
             turn_mode: WaveformMode::Gl16,
             max_rects: 4,
+            images,
+            last_images: PageImages::default(),
         };
         let mut rep = r.show(true)?;
         rep.layout_ms = layout_ms;
@@ -112,6 +133,55 @@ impl<D: Display> Reader<D> {
     pub fn screen(&self) -> &GrayImage {
         &self.front
     }
+    /// The book's pictures source.
+    pub fn images_mut(&mut self) -> &mut dyn Images {
+        self.images.as_mut()
+    }
+    /// Some picture of the page on the panel was still being prepared: call [`Reader::redraw`] once it is.
+    pub fn pending_images(&self) -> bool {
+        self.last_images.pending > 0
+    }
+
+    /// The pictures of page `page` with the boxes they are drawn in (empty past the end).
+    pub fn page_images(&self, page: usize) -> Vec<ImageRequest> {
+        let Some(p) = self.pagination.pages.get(page) else {
+            return Vec::new();
+        };
+        let chapter = &self.book.chapters[p.chapter as usize];
+        p.lines
+            .iter()
+            .filter_map(|pl| match pl.line.content {
+                LineContent::Image { block, w, h } => match &chapter.blocks[block as usize] {
+                    Block::Image { src, .. } => Some(ImageRequest {
+                        chapter: p.chapter,
+                        block,
+                        src: src.clone(),
+                        w,
+                        h,
+                    }),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Pictures of the pages likely shown next (`page+1`, `page+2`, `page-1`), each once.
+    fn wanted_images(&self) -> Vec<ImageRequest> {
+        let mut pages = vec![self.page + 1, self.page + 2];
+        if let Some(p) = self.page.checked_sub(1) {
+            pages.push(p);
+        }
+        let mut out: Vec<ImageRequest> = Vec::new();
+        for p in pages {
+            for r in self.page_images(p) {
+                if !out.iter().any(|o| o.chapter == r.chapter && o.src == r.src) {
+                    out.push(r);
+                }
+            }
+        }
+        out
+    }
 
     fn report(&self, updates: Vec<UpdateRecord>, render_ms: f64, update_ms: f64) -> StepReport {
         StepReport {
@@ -122,17 +192,19 @@ impl<D: Display> Reader<D> {
             layout_ms: 0.0,
             render_ms,
             update_ms,
+            images: self.last_images,
         }
     }
 
     fn show(&mut self, full: bool) -> Result<StepReport> {
         let t = Instant::now();
-        render_page(
+        self.last_images = render_page_with(
             &mut self.back,
             &mut self.fonts,
             &self.book,
             &self.pagination,
             self.page,
+            self.images.as_mut(),
         );
         let render_ms = ms(t);
         let t = Instant::now();
@@ -156,7 +228,15 @@ impl<D: Display> Reader<D> {
         }
         std::mem::swap(&mut self.front, &mut self.back);
         let update_ms = ms(t);
+        let wanted = self.wanted_images();
+        self.images.prefetch(&wanted);
         Ok(self.report(updates, render_ms, update_ms))
+    }
+
+    /// Re-render the current page and update only the changed regions, keeping page and anchor. For a
+    /// picture that has finished decoding since the page was shown.
+    pub fn redraw(&mut self) -> Result<StepReport> {
+        self.show(false)
     }
 
     /// Redraw the current page with a full-screen GC16 flash, keeping page and anchor. Used after something
@@ -203,11 +283,12 @@ impl<D: Display> Reader<D> {
         let anchor = self.anchor;
         self.style = style;
         let t = Instant::now();
-        self.pagination = paginate(
+        self.pagination = paginate_with(
             &mut self.fonts,
             &self.style,
             self.display.size(),
             &self.book,
+            self.images.as_mut(),
         );
         let layout_ms = ms(t);
         self.page = self.pagination.page_for(anchor);

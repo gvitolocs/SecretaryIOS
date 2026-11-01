@@ -53,7 +53,8 @@ pub enum Block {
     Preformatted {
         text: String,
     },
-    /// Placeholder; image data is not decoded yet.
+    /// A picture. ink-epub only records `src` (as written in the book) and `alt`; the pixels are supplied by
+    /// the app through `ink_render::Images`.
     Image {
         alt: String,
         src: String,

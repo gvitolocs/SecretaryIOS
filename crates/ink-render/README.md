@@ -25,4 +25,21 @@ the regular face.
   are indented 2 em on both sides; list items hang their marker.
 - Headings (h1–h3 scaled 1.6/1.35/1.17×, bold) are kept with the following line. Every chapter starts a page.
 - Preformatted text keeps its line breaks but not its leading indentation (known limitation).
-- Images are placeholders (a framed box with the alt text); image decoding is not implemented yet.
+- Images are sized and drawn through an `Images` source (see below); without one they are placeholders (a framed
+  box with the alt text).
+
+## Pictures
+
+ink-render does no image decoding. ink-epub records each picture's `src` (as written in the book) and `alt`; the app
+implements `Images` and passes it to `paginate_with` / `render_page_with` / `Reader::open_at_with`:
+
+- `size` gives the intrinsic pixel size for the layout. Pictures are shown at 2× (book pictures target ~150 dpi
+  screens), shrunk to fit the text area; a chapter that is only one picture (a cover) fills the text area. Unknown
+  size → placeholder.
+- `draw` paints the pixels into the box the layout chose. `Pending` (still decoding) leaves a light frame; the app
+  calls `Reader::redraw` when the picture is ready (partial update, page and anchor kept). `Missing` → placeholder.
+- `prefetch` is called after every page shown with the pictures of the pages likely next (`page+1`, `page+2`,
+  `page-1`), so they can be decoded before a page turn needs them.
+
+A picture covers one character offset, so reading anchors are the same with and without pictures; only page
+boundaries move. `NoImages` (used by `paginate`, `render_page`, `Reader::open`) keeps the placeholder behaviour.

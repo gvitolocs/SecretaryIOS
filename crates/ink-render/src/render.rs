@@ -1,5 +1,6 @@
 //! Rasterising a laid-out page into an 8-bit grayscale image (255 = white paper, 0 = black ink).
 use crate::font::{Face, Fonts};
+use crate::images::{DrawOutcome, Images, NoImages, PageImages};
 use crate::layout::{span_text, LineContent, Page, Pagination, RunSrc};
 use ink_epub::{Block, Book, ListMarker};
 use ink_kindle_hal::{GrayImage, Rect};
@@ -70,7 +71,8 @@ fn draw_rect_outline(img: &mut GrayImage, r: Rect, v: u8, t: u32) {
     img.fill_rect(Rect::new(r.right().saturating_sub(t), r.y, t, r.h), v);
 }
 
-/// Render page `index` of `pag` (with footer) into `img`, which must be `pag.size`.
+/// Render page `index` of `pag` (with footer) into `img`, which must be `pag.size`. Pictures are
+/// placeholders.
 pub fn render_page(
     img: &mut GrayImage,
     fonts: &mut Fonts,
@@ -78,10 +80,24 @@ pub fn render_page(
     pag: &Pagination,
     index: usize,
 ) {
+    render_page_with(img, fonts, book, pag, index, &mut NoImages);
+}
+
+/// Render page `index` of `pag` (with footer) into `img`, which must be `pag.size`, drawing pictures with
+/// `images`. Returns how the page's pictures came out.
+pub fn render_page_with(
+    img: &mut GrayImage,
+    fonts: &mut Fonts,
+    book: &Book,
+    pag: &Pagination,
+    index: usize,
+    images: &mut dyn Images,
+) -> PageImages {
     img.fill(0xff);
+    let mut out = PageImages::default();
     let style = &pag.style;
     let Some(page) = pag.pages.get(index) else {
-        return;
+        return out;
     };
     let left = style.margins.left as f32;
     let top = style.margins.top as i32;
@@ -113,42 +129,38 @@ pub fn render_page(
                     }
                 }
             }
-            LineContent::Image { block } => {
-                let w = pag.content_width() as u32;
-                let bw = w * 2 / 3;
+            LineContent::Image { block, w, h } => {
+                let cw = pag.content_width() as u32;
                 let r = Rect::new(
-                    style.margins.left + (w - bw) / 2,
+                    style.margins.left + cw.saturating_sub(*w) / 2,
                     y.max(0) as u32,
-                    bw,
-                    line.height as u32,
+                    *w,
+                    *h,
                 );
-                img.fill_rect(r, 0xee);
-                draw_rect_outline(img, r, 0x88, 2);
-                let alt = match &chapter.blocks[*block as usize] {
-                    Block::Image { alt, src } if alt.is_empty() => {
-                        src.rsplit('/').next().unwrap_or("").to_owned()
-                    }
-                    Block::Image { alt, .. } => alt.clone(),
-                    _ => String::new(),
+                let (src, alt) = match &chapter.blocks[*block as usize] {
+                    Block::Image { alt, src } => (src.as_str(), alt.as_str()),
+                    _ => ("", ""),
                 };
-                let px = style.footer_px;
-                let label = fit_text(
-                    fonts,
-                    Face::Italic,
-                    px,
-                    &format!("[image] {alt}"),
-                    bw as f32 - 24.0,
-                );
-                let lw = fonts.measure(Face::Italic, px, &label);
-                draw_text(
-                    img,
-                    fonts,
-                    Face::Italic,
-                    px,
-                    r.x as f32 + (bw as f32 - lw) / 2.0,
-                    y + line.height / 2 + i32::from(px) / 3,
-                    &label,
-                );
+                // A picture of unknown size was laid out as the placeholder; it is drawn as one too.
+                let known = images
+                    .size(page.chapter, src)
+                    .is_some_and(|sz| sz.w > 0 && sz.h > 0);
+                let outcome = if known {
+                    images.draw(page.chapter, src, img, r)
+                } else {
+                    DrawOutcome::Missing
+                };
+                out.add(outcome);
+                match outcome {
+                    DrawOutcome::Drawn => {}
+                    DrawOutcome::Pending => {
+                        img.fill_rect(r, 0xff);
+                        draw_rect_outline(img, r, 0xcc, 2);
+                    }
+                    DrawOutcome::Missing => {
+                        draw_placeholder(img, fonts, style.footer_px, r, src, alt);
+                    }
+                }
             }
             LineContent::Rule => {
                 let w = pag.content_width() as u32;
@@ -165,6 +177,42 @@ pub fn render_page(
         }
     }
     draw_footer(img, fonts, book, pag, page, index);
+    out
+}
+
+/// A picture that cannot be shown: a framed grey box with "[image] alt" (or the file name).
+fn draw_placeholder(
+    img: &mut GrayImage,
+    fonts: &mut Fonts,
+    px: u16,
+    r: Rect,
+    src: &str,
+    alt: &str,
+) {
+    img.fill_rect(r, 0xee);
+    draw_rect_outline(img, r, 0x88, 2);
+    let alt = if alt.is_empty() {
+        src.rsplit('/').next().unwrap_or("")
+    } else {
+        alt
+    };
+    let label = fit_text(
+        fonts,
+        Face::Italic,
+        px,
+        &format!("[image] {alt}"),
+        r.w as f32 - 24.0,
+    );
+    let lw = fonts.measure(Face::Italic, px, &label);
+    draw_text(
+        img,
+        fonts,
+        Face::Italic,
+        px,
+        r.x as f32 + (r.w as f32 - lw) / 2.0,
+        r.y as i32 + r.h as i32 / 2 + i32::from(px) / 3,
+        &label,
+    );
 }
 
 fn draw_footer(
