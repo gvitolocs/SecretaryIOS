@@ -304,10 +304,13 @@ impl Exec {
             }
             let changed: Vec<String> = self.git(&dir, &["diff", "--name-only", &base, &candidate]).unwrap_or_default().lines().map(str::to_string).collect();
             self.say(&format!("{method}: {} file(s) changed", changed.len()));
-            let rules = match self.rules(&base) {
+            let mut rules = match self.rules(&base) {
                 Ok(r) => r,
                 Err(e) => return fail("RULES_INVALID", e),
             };
+            if self.spec.full && rules.merge.cargo == "check" {
+                rules.merge.cargo = "touched".into();
+            }
             let (crates, has_workspace) = self.crates(&dir);
             let range = format!("{base}..{candidate}");
             let gates = repo::plan(&rules, &changed, &crates, has_workspace, &range, &self.spec.allow);
@@ -508,6 +511,7 @@ mod tests {
             note: None,
             allow: vec![],
             force: false,
+            full: false,
         }
     }
 

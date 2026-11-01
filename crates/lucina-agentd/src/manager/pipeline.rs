@@ -3,6 +3,7 @@
 //! the workspace is archived (or kept, starting from the merged commit). Device leases
 //! and the board are here too.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -58,6 +59,9 @@ pub struct MergeRequest {
     pub keep: bool,
     #[serde(default)]
     pub allow: Vec<String>,
+    /// Run the tests too, under `cargo = "check"`.
+    #[serde(default)]
+    pub full: bool,
     #[serde(default)]
     pub requested_by: Option<String>,
 }
@@ -338,6 +342,7 @@ impl Manager {
             note: None,
             allow: req.allow.clone(),
             force: false,
+            full: req.full,
         };
         let job = Job {
             job_id: id.clone(),
@@ -350,6 +355,7 @@ impl Manager {
             branch: Some(branch),
             requested_by: req.requested_by,
             keep: req.keep,
+            priority: false,
             spec,
             created_at: now_iso(),
             started_at: None,
@@ -390,6 +396,7 @@ impl Manager {
             note: req.note,
             allow: Vec::new(),
             force: req.force,
+            full: false,
         };
         let job = Job {
             job_id: id,
@@ -402,6 +409,7 @@ impl Manager {
             branch: None,
             requested_by: req.requested_by,
             keep: false,
+            priority: false,
             spec,
             created_at: now_iso(),
             started_at: None,
@@ -449,6 +457,16 @@ impl Manager {
         Ok(job)
     }
 
+    /// `lagent job next`: this queued job runs before the others of its repo.
+    pub fn prioritize_job(&self, id: &str) -> Result<Job, ManagerError> {
+        if self.job(id)?.state != JobState::Queued {
+            return Err(invalid(format!("{id} is not queued")));
+        }
+        let job = self.pipeline().update_job(id, |j| j.priority = true).ok_or_else(|| ManagerError::NotFound(format!("Job not found: {id}")))?;
+        self.pipeline().wake.notify_one();
+        Ok(job)
+    }
+
     /// Wait until the job is done or `timeout` passes.
     pub async fn wait_job(&self, id: &str, timeout: Duration) -> Result<Job, ManagerError> {
         let until = tokio::time::Instant::now() + timeout;
@@ -476,36 +494,49 @@ impl Manager {
         });
     }
 
-    /// Finish the running job if its executor is done, else start the next queued one.
+    /// Finish the running jobs whose executor is done, then start the next queued job of
+    /// each repo with nothing running: per repo, one job at a time, `lagent job next` first.
     pub async fn pipeline_tick(&self) {
         let active = self.pipeline().active_jobs();
-        if let Some(job) = active.iter().find(|j| j.state == JobState::Running) {
-            let dir = self.pipeline().config.job_dir(&job.job_id);
-            let result = std::fs::read_to_string(dir.join("result.json")).ok().and_then(|s| serde_json::from_str::<Outcome>(&s).ok());
-            match result {
-                Some(outcome) => self.finish_job(job, outcome).await,
-                None if !runner_alive(job.runner.as_deref()).await => {
-                    // It may have written the result just now.
-                    tokio::time::sleep(Duration::from_millis(300)).await;
-                    let outcome = std::fs::read_to_string(dir.join("result.json"))
-                        .ok()
-                        .and_then(|s| serde_json::from_str::<Outcome>(&s).ok())
-                        .unwrap_or_else(|| Outcome { ok: false, code: "EXECUTOR_DIED".into(), message: format!("the job's process ended without a result (lagent job logs {})", job.job_id), ..Outcome::default() });
-                    self.finish_job(job, outcome).await;
-                }
-                None => {}
+        let mut busy = HashSet::new();
+        for job in active.iter().filter(|j| j.state == JobState::Running) {
+            if !self.finish_if_done(job).await {
+                busy.insert(job.repo.clone());
             }
-            return;
         }
-        if let Some(job) = active.iter().find(|j| j.state == JobState::Queued) {
-            self.launch_job(job).await;
+        let mut queued: Vec<&Job> = active.iter().filter(|j| j.state == JobState::Queued).collect();
+        queued.sort_by_key(|j| (!j.priority, j.seq));
+        for job in queued {
+            if busy.insert(job.repo.clone()) {
+                self.launch_job(job).await;
+            }
         }
+    }
+
+    /// Whether the job's executor is done (then the job is finished).
+    async fn finish_if_done(&self, job: &Job) -> bool {
+        let dir = self.pipeline().config.job_dir(&job.job_id);
+        let result = std::fs::read_to_string(dir.join("result.json")).ok().and_then(|s| serde_json::from_str::<Outcome>(&s).ok());
+        match result {
+            Some(outcome) => self.finish_job(job, outcome).await,
+            None if !runner_alive(job.runner.as_deref()).await => {
+                // It may have written the result just now.
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                let outcome = std::fs::read_to_string(dir.join("result.json"))
+                    .ok()
+                    .and_then(|s| serde_json::from_str::<Outcome>(&s).ok())
+                    .unwrap_or_else(|| Outcome { ok: false, code: "EXECUTOR_DIED".into(), message: format!("the job's process ended without a result (lagent job logs {})", job.job_id), ..Outcome::default() });
+                self.finish_job(job, outcome).await;
+            }
+            None => return false,
+        }
+        true
     }
 
     async fn launch_job(&self, job: &Job) {
         let cfg = &self.pipeline().config;
         let dir = cfg.job_dir(&job.job_id);
-        let lock = cfg.lock.clone();
+        let lock = cfg.lock_for(&job.repo, job.kind);
         let written = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(dir.join("job.json"), serde_json::to_vec_pretty(&job.spec).unwrap_or_default()));
         let _ = std::fs::write(dir.join("log"), format!("[{}] {} job {} started; waiting for {}\n", chrono::Utc::now().format("%H:%M:%S"), if job.kind == JobKind::Merge { "merge" } else { "deploy" }, job.job_id, lock.display()));
         let runner = match written {

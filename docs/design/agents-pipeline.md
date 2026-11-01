@@ -38,10 +38,10 @@ a coordinator that sequences merges (a merge queue), a FIFO queue for shared res
 
 ## 2. The merge queue
 
-`lagent merge [<workspace id | path | branch>] [--keep] [--allow rule=reason] [--no-wait]`
+`lagent merge [<workspace id | path | branch>] [--keep] [--full] [--allow rule=reason] [--no-wait]`
 
 - Refuses a dirty workspace (commit first). Queues the workspace's HEAD as a **job**; the same HEAD queued twice is
-  the same job. One FIFO queue, one job at a time, across repos.
+  the same job. One FIFO queue per repo, one job at a time in each.
 - agentd writes `job.json` under `~/.local/share/lucina-agentd/pipeline/jobs/<id>/` and starts
   `flock <repo lock> lagent pipeline-exec <dir>` as a transient systemd user unit (`lagent-job-<id>`), so a job
   survives agentd restarts, including agentd's own deploy. The lock is `/tmp/lucina-merge.lock` for every repo:
@@ -137,12 +137,17 @@ Designed:
   checkout shows: no sweep during a rebase, merge, cherry-pick, revert or bisect, on a detached HEAD, with
   uncommitted changes, with a process whose cwd is inside, or within 30 minutes of git last touching it
   (`LUCINA_AGENTD_SWEEP_IDLE_SECS`). The branch itself must be merged, not HEAD.
-- **One lock**: every repo's jobs hold `/tmp/lucina-merge.lock`. A long hand deploy inside it stalls the queue, so
-  runtimes should get recipes.
+- **One queue and one lock per repo** (it was one for all until a 24-minute kernel merge held up an urgent iPhone fix):
+  SecretaryIOS merges and all deploys hold `/tmp/lucina-merge.lock` (deploy-guard checks it), others
+  `/tmp/lucina-merge-<repo>.lock`. A hand deploy inside SecretaryIOS's lock still stalls that repo's queue. `lagent job next
+  <id>` moves a queued job up its repo's queue.
+- **Fast gates, cheapest first**: diffgate, `cargo check`, then whatever else the repo declares. A merge took 1.5 to 8.5
+  minutes in `cargo test` (24 once), so `cargo = "check"` trusts the session's own test run; the gate catches what the
+  rebase broke at compile time, not behaviour. `lagent merge --full` tests, `cargo = "touched"` restores it per repo.
 - **Local trunks** fast-forward where they are checked out; uncommitted files that don't overlap stay, and an overlap is
   `TRUNK_CHECKOUT_BLOCKED` naming the files. `lagent board` lists main checkouts with uncommitted files or running
   processes. git can't say who wrote a file; the processes named there are the lead.
-- **Flaky tests**: a failed `cargo test` gate runs once more; a pass is reported as flaky, not hidden.
+- **Flaky tests**: a failed `cargo test` gate (`--full`, or `cargo = "touched"`) runs once more; a pass is reported as flaky, not hidden.
 - **Resources**: `lagent top` and the board's RUNNING column show processes and memory per workspace.
 - **Moves**: `lagent project move <prj> --path <new> [--name <n>]` after a checkout moved on disk (move it, and
   `<worktrees>/<old>` to `<worktrees>/<new>`, then `git worktree repair`). Workspaces follow; one whose new directory

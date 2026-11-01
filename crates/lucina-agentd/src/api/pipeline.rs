@@ -10,6 +10,7 @@
 //! | GET | `/pipeline/jobs/{id}` | `?waitMs=` (long-poll until done, up to 120 s) | job |
 //! | GET | `/pipeline/jobs/{id}/log` | `?offset=` | `{offset, text, state}` |
 //! | POST | `/pipeline/jobs/{id}/cancel` | | job |
+//! | POST | `/pipeline/jobs/{id}/next` | | job (ahead of its repo's queue) |
 //! | GET | `/pipeline/board` | | `{workspaces, unmanaged, queue, recentJobs, leases, deploys}` |
 //! | GET | `/devices` | | `{devices: [{device, about, lease}]}` |
 //! | POST | `/devices/{id}/lease` | `{holder, purpose, minutes, workspaceId}` | lease (409 when someone else holds it) |
@@ -43,6 +44,7 @@ pub fn routes() -> Router<Manager> {
         .route("/pipeline/jobs/{id}", get(job))
         .route("/pipeline/jobs/{id}/log", get(log))
         .route("/pipeline/jobs/{id}/cancel", post(cancel))
+        .route("/pipeline/jobs/{id}/next", post(next))
         .route("/pipeline/board", get(board))
         .route("/devices", get(devices))
         .route("/devices/{id}/lease", post(lease))
@@ -124,6 +126,11 @@ async fn log(State(m): State<Manager>, Path(id): Path<String>, Query(q): Query<J
 async fn cancel(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Path(id): Path<String>) -> ApiResult {
     allow(&m, &peer, &headers, true, "cancel a job")?;
     to_json(m.cancel_job(&id).await?)
+}
+
+async fn next(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Path(id): Path<String>) -> ApiResult {
+    allow(&m, &peer, &headers, false, "move a job up the queue")?;
+    to_json(m.prioritize_job(&id)?)
 }
 
 async fn board(State(m): State<Manager>) -> ApiResult {

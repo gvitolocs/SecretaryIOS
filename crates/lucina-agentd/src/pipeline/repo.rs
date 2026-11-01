@@ -6,8 +6,8 @@
 //!
 //! [merge]
 //! diffgate = true                # diffgate over the merged range (default true)
-//! cargo = "touched"              # cargo test for each crate the change touches, then a
-//!                                # workspace cargo check ("off" to skip)
+//! cargo = "check"                # compile only: the session ran the tests in its workspace
+//!                                # (the default "touched" also tests each touched crate; "off")
 //! timeout_min = 45               # per gate
 //! skip = ["firmware/lucinavoice"] # crate dirs the cargo gates leave alone (other toolchains)
 //!
@@ -130,13 +130,22 @@ pub struct Gate {
     pub timeout_min: u64,
 }
 
-/// The gates a change needs, in order: cargo tests of the touched workspace crates, a
-/// workspace check, each touched standalone crate's tests, the declared gates whose paths
-/// it touches, then diffgate over `range`.
+/// The gates a change needs, cheapest first, so a refusal costs seconds, not a test run:
+/// diffgate over `range`, the workspace check, then (`cargo = "touched"`) the tests of the
+/// touched workspace crates, each touched standalone crate (checked, or tested), and the
+/// declared gates whose paths it touches.
 pub fn plan(rules: &Rules, changed: &[String], crates: &[Crate], has_workspace: bool, range: &str, allow: &[String]) -> Vec<Gate> {
     let t = rules.merge.timeout_min;
     let mut gates = Vec::new();
+    if rules.merge.diffgate {
+        let mut run = format!("diffgate --repo . --range {range}");
+        for a in allow {
+            run.push_str(&format!(" --allow {}", shell_quote(a)));
+        }
+        gates.push(Gate { name: "diffgate".into(), run, timeout_min: 10 });
+    }
     if rules.merge.cargo != "off" {
+        let tests = rules.merge.cargo != "check";
         let mut members = BTreeSet::new();
         let mut standalone = BTreeSet::new();
         let mut root_manifest = false;
@@ -155,28 +164,23 @@ pub fn plan(rules: &Rules, changed: &[String], crates: &[Crate], has_workspace: 
                 }
             }
         }
-        if !members.is_empty() {
-            let ps: Vec<String> = members.iter().map(|m| format!("-p {m}")).collect();
-            gates.push(Gate { name: "cargo test (touched crates)".into(), run: format!("cargo test --quiet {}", ps.join(" ")), timeout_min: t });
-        }
         if has_workspace && (root_manifest || !members.is_empty()) {
             gates.push(Gate { name: "cargo check (workspace)".into(), run: "cargo check --quiet --workspace".into(), timeout_min: t });
         }
+        if !members.is_empty() && (tests || !has_workspace) {
+            let ps: Vec<String> = members.iter().map(|m| format!("-p {m}")).collect();
+            let (verb, what) = if tests { ("test", "cargo test (touched crates)") } else { ("check", "cargo check (touched crates)") };
+            gates.push(Gate { name: what.into(), run: format!("cargo {verb} --quiet {}", ps.join(" ")), timeout_min: t });
+        }
+        let verb = if tests { "test" } else { "check" };
         for dir in &standalone {
-            gates.push(Gate { name: format!("cargo test ({dir})"), run: format!("cargo test --quiet --manifest-path {dir}/Cargo.toml"), timeout_min: t });
+            gates.push(Gate { name: format!("cargo {verb} ({dir})"), run: format!("cargo {verb} --quiet --manifest-path {dir}/Cargo.toml"), timeout_min: t });
         }
     }
     for g in &rules.gates {
         if g.paths.is_empty() || changed.iter().any(|p| g.paths.iter().any(|pre| p.starts_with(pre.as_str()))) {
             gates.push(Gate { name: g.name.clone(), run: g.run.clone(), timeout_min: g.timeout_min.unwrap_or(t) });
         }
-    }
-    if rules.merge.diffgate {
-        let mut run = format!("diffgate --repo . --range {range}");
-        for a in allow {
-            run.push_str(&format!(" --allow {}", shell_quote(a)));
-        }
-        gates.push(Gate { name: "diffgate".into(), run, timeout_min: 10 });
     }
     gates
 }
@@ -237,9 +241,9 @@ mod tests {
         // Rust crates: tests of the touched ones, then the workspace check, then diffgate.
         let g = plan(&r, &changed(&["crates/lucina-agentd/src/a.rs", "crates/lucina-agents/src/b.rs"]), &crates(), true, "A..B", &[]);
         let names: Vec<&str> = g.iter().map(|g| g.name.as_str()).collect();
-        assert_eq!(names, ["cargo test (touched crates)", "cargo check (workspace)", "diffgate"]);
-        assert_eq!(g[0].run, "cargo test --quiet -p lucina-agentd -p lucina-agents");
-        assert_eq!(g[2].run, "diffgate --repo . --range A..B");
+        assert_eq!(names, ["diffgate", "cargo check (workspace)", "cargo test (touched crates)"]);
+        assert_eq!(g[2].run, "cargo test --quiet -p lucina-agentd -p lucina-agents");
+        assert_eq!(g[0].run, "diffgate --repo . --range A..B");
         // Docs only: the root crate of a workspace isn't a package to test; diffgate still runs.
         let g = plan(&r, &changed(&["docs/x.md"]), &crates(), true, "A..B", &["todo=docs".into()]);
         assert_eq!(g.len(), 1);
@@ -247,10 +251,16 @@ mod tests {
         // A standalone crate and a declared gate.
         let g = plan(&r, &changed(&["crates/secretary-pixiv/src/x.rs", "web/src/a.ts"]), &crates(), true, "A..B", &[]);
         let names: Vec<&str> = g.iter().map(|g| g.name.as_str()).collect();
-        assert_eq!(names, ["cargo test (crates/secretary-pixiv)", "web", "diffgate"]);
+        assert_eq!(names, ["diffgate", "cargo test (crates/secretary-pixiv)", "web"]);
         // The lock file alone: the workspace check.
         let g = plan(&r, &changed(&["Cargo.lock"]), &crates(), true, "A..B", &[]);
-        assert_eq!(g[0].name, "cargo check (workspace)");
+        assert_eq!(g[1].name, "cargo check (workspace)");
+        // cargo = "check": compile only, whatever it touches.
+        let mut fast = r.clone();
+        fast.merge.cargo = "check".into();
+        let g = plan(&fast, &changed(&["crates/lucina-agentd/src/a.rs", "crates/secretary-pixiv/src/x.rs"]), &crates(), true, "A..B", &[]);
+        assert_eq!(g.iter().map(|g| g.name.as_str()).collect::<Vec<_>>(), ["diffgate", "cargo check (workspace)", "cargo check (crates/secretary-pixiv)"]);
+        assert!(g.iter().all(|g| !g.run.contains("cargo test")));
         // A skipped crate (another toolchain) gets no cargo gate.
         r.merge.skip = vec!["crates/secretary-pixiv/".into()];
         let g = plan(&r, &changed(&["crates/secretary-pixiv/src/x.rs"]), &crates(), true, "A..B", &[]);

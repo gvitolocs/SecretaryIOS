@@ -3,13 +3,14 @@
 trunk = "main"
 
 [merge]
-# diffgate over the merged range, cargo test of every touched workspace crate (and of touched
-# standalone crates under crates/), then `cargo check --workspace`.
+# Fast gates (owner, 2026-11-01): diffgate, then `cargo check --workspace` and the touched standalone
+# crates. The session runs the tests in its workspace before merging; `lagent merge --full` runs them here,
+# and cargo = "touched" makes that the default again.
 diffgate = true
-cargo = "touched"
+cargo = "check"
 timeout_min = 45
-# Standalone crates (tools/*, crates/secretary-{instagram,pixiv}, firmware/lucinavoice-core, ...) get
-# `cargo test --manifest-path` when touched. These use other toolchains and are left alone:
+# Standalone crates (tools/*, crates/secretary-{instagram,pixiv}, firmware/lucinavoice-core, ...) are
+# built through --manifest-path when touched. These use other toolchains and are left alone:
 skip = ["firmware/lucinavoice"]
 
 # `lagent deploy <runtime>`: from main's tip, inside the merge lock, between deploy-guard check and record.

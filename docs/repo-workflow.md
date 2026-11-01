@@ -13,7 +13,7 @@ forwards to nezopt and passes your session id; on nezopt it is `~/.local/bin/lag
 lagent task start "Instagram gallery paging" [--repo ~/Projects/Lucina/lucinaos] [--branch ig-gallery-paging]
 #   -> a fresh worktree from origin/main in ~/Projects/.worktrees/<Repo>/<branch>, registered with your session
 cd <the printed path>; …work…; git commit …           # commit everything that belongs to the task
-lagent merge <workspace id | path | branch>          # queued; Lucina rebases on origin/main, runs the repo's gates
+lagent merge <workspace id | path | branch>          # queued per repo; Lucina rebases on origin/main, runs the gates
                                                      # (.lucina/pipeline.toml), pushes main, archives the workspace
 lagent deploy lucina-agentd --note "what it brings"  # from main's tip: deploy-guard plan/check, install, record
 lagent board                                         # every workspace's state, the queue, leases, recent deploys
@@ -24,10 +24,12 @@ lagent device lease iphone --purpose "owner test"    # devices are leased (iphon
 - **One task, one workspace.** `lagent task start` instead of `wt add` / `git worktree add` (a hook denies those in
   Lucina repos). A worktree you already made by hand: `lagent task adopt <path>`.
 - **Main moves only through the queue.** `lagent merge` instead of `git push origin HEAD:main`, or a `git merge` in a
-  repo's main checkout for repos without a remote (the hook denies those too). One merge at a time, FIFO, under `/tmp/lucina-merge.lock`; the CLI shows the log and exits non-zero on
-  `CONFLICT` (merge `origin/main` into your branch, commit, merge again) or `GATE_FAILED` (`lagent job logs <id>`).
-  The session's worktree is never touched during the merge; afterwards it is archived (worktree and branch go,
-  gitignored outputs too: copy artifacts out first) unless you pass `--keep`.
+  repo's main checkout for repos without a remote (the hook denies those too). Each repo has its own queue and lock: one
+  job at a time per repo, FIFO, and `lagent job next <id>` moves an urgent one up. The gates are fast: diffgate and
+  `cargo check`. **Run your crate's tests in your workspace before you merge**; `lagent merge --full` runs them in the
+  gate too. The CLI shows the log and exits non-zero on `CONFLICT` (merge `origin/main` into your branch, commit, merge
+  again) or `GATE_FAILED` (`lagent job logs <id>`). Your worktree isn't touched during the merge; afterwards it is
+  archived (worktree and branch go, gitignored outputs too: copy artifacts out first) unless you pass `--keep`.
 - **Deploys** go through `lagent deploy <runtime>`: recipes in `.lucina/pipeline.toml` cover `lucina-agentd`, `lucina-rs`,
   `lucina-memo`, `secretary-server`, `secretary-mcp` and `web`. A runtime without one gets `NO_RECIPE`; add it, or deploy by
   hand as in "Deploying" below, always through deploy-guard. A hand deploy holds the merge lock and stalls the queue.
@@ -73,7 +75,7 @@ specified with one `main`. The lines were a drift away from the verified design.
    origin/main` for you and registers the task). Never branch from, or merge, another deploy target's tree. There is
    only `main`.
 2. **Land on `main`** through the merge queue: `lagent merge <workspace>` (rebase or merge onto `origin/main`, the
-   gates, a fast-forward push, all under `/tmp/lucina-merge.lock`). A GitHub PR merged on GitHub is fine too; the
+   gates, a fast-forward push, under `/tmp/lucina-merge.lock` for this repo). A GitHub PR merged on GitHub is fine too; the
    merge sweep then archives the workspace. Never force-push `main`.
 3. **Shared code changes once.** A change to `secretary-core`, `lucina-store` or `web/src/lib` lands once on `main`.
    `deploy-guard plan` then shows every runtime it touches.
