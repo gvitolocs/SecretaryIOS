@@ -530,10 +530,53 @@ impl Call {
         if let Some(r) = req.reply_to.as_deref() {
             validate::timeline_ref("replyTo", r)?;
         }
+        if let Some(m) = req.voice_meta.as_ref() {
+            if !m.is_object() || m.to_string().len() > MAX_VOICE_META_BYTES {
+                return Err(Error::Invalid {
+                    field: "voiceMeta",
+                    message: format!("must be a JSON object up to {MAX_VOICE_META_BYTES} bytes"),
+                });
+            }
+        }
         let body = serde_json::to_value(req).map_err(|e| Error::Decode(e.to_string()))?;
         let mut call = Self::new(Method::POST, &["chat"]).with_body(body);
         call.class = TimeoutClass::Chat;
         Ok(call)
+    }
+
+    /// `GET /voice-learn`: the Voice Learn vocabulary (docs/lucinavoice-protocol.md section 8).
+    pub fn voice_learn_list() -> Self {
+        Self::new(Method::GET, &["voice-learn"])
+    }
+
+    /// `POST /voice-learn {word, soundsLike?, meaning?, lang?}`: add an entry.
+    /// Lucina validates the fields (at most 500 entries, 100 characters each);
+    /// the body here must be an object of at most [`MAX_VOICE_LEARN_BYTES`].
+    pub fn voice_learn_create(body: Value) -> Result<Self> {
+        voice_learn_body(&body)?;
+        Ok(Self::new(Method::POST, &["voice-learn"]).with_body(body))
+    }
+
+    /// `PATCH /voice-learn/{id}`: change fields of an entry.
+    pub fn voice_learn_update(id: &str, body: Value) -> Result<Self> {
+        validate::id("id", id)?;
+        voice_learn_body(&body)?;
+        Ok(Self::new(Method::PATCH, &["voice-learn", id]).with_body(body))
+    }
+
+    /// `DELETE /voice-learn/{id}`.
+    pub fn voice_learn_delete(id: &str) -> Result<Self> {
+        validate::id("id", id)?;
+        Ok(Self::new(Method::DELETE, &["voice-learn", id]))
+    }
+
+    /// `POST /voice-learn/suggest {transcript, corrected}`: candidate entries
+    /// from a transcript edit (the "add to Voice Learn" offer).
+    pub fn voice_learn_suggest(transcript: &str, corrected: &str) -> Result<Self> {
+        validate::text("transcript", transcript, validate::MAX_MESSAGE_CHARS)?;
+        validate::text("corrected", corrected, validate::MAX_MESSAGE_CHARS)?;
+        Ok(Self::new(Method::POST, &["voice-learn", "suggest"])
+            .with_body(serde_json::json!({"transcript": transcript, "corrected": corrected})))
     }
 
     /// `GET /jobs/{id}`.
@@ -1005,6 +1048,22 @@ fn au_coord(field: &'static str, s: &str, min: f64, max: f64) -> Result<String> 
 /// A query parameter that was given and is not blank, trimmed.
 fn present(s: Option<&str>) -> Option<&str> {
     s.map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// Longest `voiceMeta` object of a chat request (bytes of its JSON).
+pub const MAX_VOICE_META_BYTES: usize = 4096;
+/// Longest Voice Learn entry body (bytes of its JSON); Lucina holds the field limits.
+pub const MAX_VOICE_LEARN_BYTES: usize = 4096;
+
+/// A Voice Learn body: a JSON object up to [`MAX_VOICE_LEARN_BYTES`].
+fn voice_learn_body(body: &Value) -> Result<()> {
+    if !body.is_object() || body.to_string().len() > MAX_VOICE_LEARN_BYTES {
+        return Err(Error::Invalid {
+            field: "body",
+            message: format!("must be a JSON object up to {MAX_VOICE_LEARN_BYTES} bytes"),
+        });
+    }
+    Ok(())
 }
 
 /// A contract decision id: `dc-` and 12 lowercase hex digits.
@@ -1777,6 +1836,7 @@ mod tests {
             device: None,
             device_name: None,
             reply_to: None,
+            voice_meta: None,
         })
         .is_err());
         assert!(Call::agenda(&AgendaQuery {
@@ -1799,6 +1859,7 @@ mod tests {
                 device: None,
                 device_name: None,
                 reply_to: None,
+                voice_meta: None,
             })
         };
         assert!(chat("ios").is_ok());
@@ -1812,6 +1873,7 @@ mod tests {
                 device: None,
                 device_name: None,
                 reply_to: Some(id.into()),
+                voice_meta: None,
             })
         };
         assert_eq!(
@@ -1840,11 +1902,54 @@ mod tests {
                 device: None,
                 device_name: None,
                 reply_to: None,
+                voice_meta: None,
             })
             .unwrap()
             .timeout_class(),
             TimeoutClass::Chat
         );
+    }
+
+    #[test]
+    fn voice_learn_calls_and_voice_meta() {
+        let sig = |c: &Call| format!("{} {}", c.method(), c.path());
+        let list = Call::voice_learn_list();
+        assert_eq!(sig(&list), "GET /api/secretary/voice-learn");
+        let add = Call::voice_learn_create(json!({"word": "Skibigårdsvej", "lang": "da"})).unwrap();
+        assert_eq!(sig(&add), "POST /api/secretary/voice-learn");
+        assert_eq!(add.body().unwrap()["word"], "Skibigårdsvej");
+        let edit = Call::voice_learn_update("vl_01-a", json!({"meaning": "home"})).unwrap();
+        assert_eq!(sig(&edit), "PATCH /api/secretary/voice-learn/vl_01-a");
+        let del = Call::voice_learn_delete("vl_01-a").unwrap();
+        assert_eq!(sig(&del), "DELETE /api/secretary/voice-learn/vl_01-a");
+        let sug = Call::voice_learn_suggest("ciao skibi gard vai", "ciao Skibigårdsvej").unwrap();
+        assert_eq!(sig(&sug), "POST /api/secretary/voice-learn/suggest");
+        assert_eq!(sug.body().unwrap()["corrected"], "ciao Skibigårdsvej");
+        // ids cannot walk the path; bodies are objects of bounded size
+        for bad in ["", "a/b", "..", "a b"] {
+            assert!(Call::voice_learn_delete(bad).is_err(), "{bad:?}");
+            assert!(Call::voice_learn_update(bad, json!({})).is_err(), "{bad:?}");
+        }
+        assert!(Call::voice_learn_create(json!(["x"])).is_err());
+        assert!(Call::voice_learn_create(json!({"word": "x".repeat(MAX_VOICE_LEARN_BYTES)})).is_err());
+        assert!(Call::voice_learn_suggest(" ", "x").is_err());
+        assert!(Call::voice_learn_suggest("x", "").is_err());
+
+        // `voice` is a chat channel for the server's own pipeline; voiceMeta is a bounded object
+        let chat = |meta: Option<Value>| {
+            Call::chat(&ChatRequest {
+                message: "hi".into(),
+                channel: Some("voice".into()),
+                voice_meta: meta,
+                ..Default::default()
+            })
+        };
+        let ok = chat(Some(json!({"turnId": "voice-1-ab", "sttMs": 80}))).unwrap();
+        assert_eq!(ok.body().unwrap()["channel"], "voice");
+        assert_eq!(ok.body().unwrap()["voiceMeta"]["sttMs"], 80);
+        assert!(chat(None).unwrap().body().unwrap().get("voiceMeta").is_none());
+        assert!(chat(Some(json!("x"))).is_err());
+        assert!(chat(Some(json!({"x": "y".repeat(MAX_VOICE_META_BYTES)}))).is_err());
     }
 
     #[test]

@@ -53,6 +53,7 @@ pub mod tts;
 pub mod upstream;
 pub mod voice;
 pub mod voice_filler;
+pub mod voice_learn;
 pub mod voice_pipe;
 pub mod voice_split;
 pub mod voice_telemetry;
@@ -161,6 +162,8 @@ pub struct Inner {
     pub voice: voice::Voice,
     /// Cached filler phrases spoken on a slow turn's `ack` (protocol section 6).
     pub fillers: voice_filler::Fillers,
+    /// The Gemini fallback's "Vocabulary:" line from Voice Learn (60 s cache, fails open).
+    pub voice_vocab: voice_learn::VocabCache,
     /// LucinaVoice device telemetry and turn spans (`voice/` in the data dir).
     pub voice_log: voice_telemetry::Store,
     /// Open `/v1/timeline/stream` responses.
@@ -243,6 +246,7 @@ impl AppState {
             tts: tts::Tts::new(&cfg.tts_url, cfg.tts_voices.clone(), cfg.tts_timeout)?,
             voice: voice::Voice::new(cfg.voice_stt_url.clone())?,
             fillers: voice_filler::Fillers::new(),
+            voice_vocab: voice_learn::VocabCache::new(),
             voice_log: voice_telemetry::Store::new(&cfg.data_dir, cfg.timezone),
             streams: timeline::StreamSlots::new(timeline::PER_DEVICE, timeline::TOTAL),
             shutdown: tokio::sync::watch::Sender::new(false),

@@ -20,3 +20,6 @@
 .pg .pg-grid--split .chats-desk-list .pg-row-main { grid-column: 2 / 4; grid-row: 1; }
 .pg .pg-grid--split .chats-desk-list .pg-row-meta { grid-column: 2; grid-row: 2; white-space: normal; }
 .pg .pg-grid--split .chats-desk-list .pg-row > .pg-badge { grid-column: 3; grid-row: 2; }
+.conversation-icon { display: inline-grid; place-items: center; width: 18px; height: 18px; color: var(--accent); }
+.conversation-icon .icon { width: 16px; height: 16px; }
+.pg .chats-desk-avatar .icon { width: 20px; height: 20px; }

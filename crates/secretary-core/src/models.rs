@@ -41,7 +41,7 @@ pub struct Health {
 
 // -- chat / jobs ------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatRequest {
     pub message: String,
@@ -49,7 +49,7 @@ pub struct ChatRequest {
     pub session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_message_id: Option<String>,
-    /// The client surface: `web` or `ios` (see [`crate::validate::CHAT_CHANNELS`]).
+    /// The client surface: `web` or `ios`, or `voice` (set by secretary-server for LucinaVoice turns only; see [`crate::validate::CHAT_CHANNELS`]).
     /// secretary-server always sets it before forwarding.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel: Option<String>,
@@ -62,6 +62,11 @@ pub struct ChatRequest {
     /// answers (`[A-Za-z0-9_-]{1,64}`, see [`crate::validate::timeline_ref`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_to: Option<String>,
+    /// LucinaVoice turns only (secretary-server sets it): the speech-to-text facts of
+    /// the turn for the thread's `meta.voice`: `{turnId, sttMs, corrections?, ambiguous?}`.
+    /// Never audio. A Lucina that does not know the field ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice_meta: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -644,6 +649,8 @@ pub enum Channel {
     Web,
     Ios,
     Alexa,
+    /// The LucinaVoice speaker's shared thread ("Lucina Voice").
+    Voice,
     #[default]
     Other,
     Unknown(String),
@@ -657,6 +664,7 @@ impl From<String> for Channel {
             "web" => Channel::Web,
             "ios" => Channel::Ios,
             "alexa" => Channel::Alexa,
+            "voice" => Channel::Voice,
             "other" => Channel::Other,
             _ => Channel::Unknown(s),
         }
@@ -671,6 +679,7 @@ impl From<Channel> for String {
             Channel::Web => "web".into(),
             Channel::Ios => "ios".into(),
             Channel::Alexa => "alexa".into(),
+            Channel::Voice => "voice".into(),
             Channel::Other => "other".into(),
             Channel::Unknown(s) => s,
         }

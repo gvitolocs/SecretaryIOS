@@ -17,6 +17,6 @@ pub mod models;
 pub mod shopping;
 pub mod validate;
 
-pub use chat_stream::{ChatEvent, ChatStream};
+pub use chat_stream::{ChatEvent, ChatStream, RouteLayer};
 pub use client::{Call, LucinaClient, TimeoutClass, Timeouts};
 pub use error::{Error, Result};

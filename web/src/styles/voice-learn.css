@@ -1,0 +1,84 @@
+/*
+ * Voice Learn (views/VoiceLearn.tsx), on the page system (styles/page.css) and the Voice device page's
+ * variables (styles/voice.css). Errors are text, never colour alone.
+ */
+
+.vl-page .vl-form-card {
+  margin-bottom: var(--pg-gap);
+}
+
+.vl-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 560px;
+}
+
+.vl-hint {
+  font-size: 13px;
+}
+
+.vl-error {
+  margin: 0;
+  color: var(--vd-crit, var(--danger-text));
+  font-size: 14px;
+}
+
+.vl-form-actions,
+.vl-sample-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.vl-sample {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px dashed var(--pg-border);
+  border-radius: var(--pg-radius-control);
+}
+
+.vl-sample .pg-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.vl-sample-status {
+  color: var(--pg-muted);
+  font-size: 13px;
+}
+
+.vl-heard p {
+  margin: 0 0 8px;
+  font-weight: 600;
+}
+
+.vl-sounds,
+.vl-meaning,
+.vl-source {
+  margin-right: 12px;
+}
+
+.vl-source {
+  font-style: italic;
+}
+
+.vl-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.vl-confirm {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.vl-count {
+  margin: 8px 4px 0;
+  font-size: 13px;
+}

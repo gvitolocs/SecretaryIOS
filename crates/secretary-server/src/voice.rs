@@ -34,7 +34,8 @@
 //!    either. An empty local transcript is `422 no_speech` with no Gemini retry.
 //! 2. The transcript goes to Lucina like `POST /v1/chat` but as a stream
 //!    (`Accept: text/event-stream`, `voice: true`; see [`crate::voice_pipe`]):
-//!    `sessionId: "lucinavoice"`, `channel: "web"`, a fresh `clientMessageId`
+//!    `sessionId: "lucinavoice"`, `channel: "voice"` (the shared "Lucina Voice" thread, protocol
+//!    section 7), a fresh `clientMessageId`
 //!    (`voice-<ms>-<rand>`) and the calling device. A Lucina that answers in
 //!    plain JSON works too. A reply Lucina marks `sensitive` is never spoken:
 //!    the device hears a fixed "I'll answer that in the app." instead. An empty
@@ -147,16 +148,17 @@ impl Voice {
         })
     }
 
-    /// Ask the local engine. `Ok(text)` (maybe empty) when it answered 200,
-    /// `Err(reason)` when the turn should fall back (the reason is logged,
-    /// never the audio or the credentials).
+    /// Ask the local engine. `Ok(heard)` (its text maybe empty) when it
+    /// answered 200, `Err(reason)` when the turn should fall back (the reason
+    /// is logged, never the audio or the credentials). The engine's Voice Learn
+    /// facts (`corrections`, `ambiguous`) ride along when it sends them.
     async fn local_stt(
         &self,
         headers: &HeaderMap,
         audio: Bytes,
         content_type: &'static str,
         lang: Option<&str>,
-    ) -> Result<String, String> {
+    ) -> Result<Heard, String> {
         let base = self
             .stt_url
             .as_deref()
@@ -188,7 +190,7 @@ impl Voice {
         let status = resp.status();
         if status == StatusCode::UNPROCESSABLE_ENTITY {
             self.engine_answered();
-            return Ok(String::new()); // no speech, as far as the engine can tell
+            return Ok(Heard::default()); // no speech, as far as the engine can tell
         }
         if !status.is_success() {
             return Err(format!("answered {status}"));
@@ -198,10 +200,14 @@ impl Voice {
             .json()
             .await
             .map_err(|_| "unreadable reply".to_owned())?;
-        v["text"]
+        let text = v["text"]
             .as_str()
             .map(str::to_owned)
-            .ok_or_else(|| "reply without text".to_owned())
+            .ok_or_else(|| "reply without text".to_owned())?;
+        Ok(Heard {
+            text,
+            facts: SttFacts::from_json(&v),
+        })
     }
 
     fn engine_answered(&self) {
@@ -292,8 +298,112 @@ pub enum Audio {
     Pcm(Bytes),
 }
 
+/// A word the speech-to-text engine replaced by a Voice Learn entry's
+/// canonical word (`corrections: [{from, to}]` of lucina-memo's `/v1/memos/stt`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Correction {
+    pub from: String,
+    pub to: String,
+}
+
+/// A stretch of the transcript that might be one of several vocabulary words, left alone by
+/// the engine (`ambiguous: [{heard, candidates}]` of `/v1/memos/stt`). Lucina's `vocab` layer
+/// asks Jev which one the speaker meant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ambiguity {
+    pub heard: String,
+    /// The canonical words it might be, closest first.
+    pub candidates: Vec<String>,
+}
+
+/// What the engine said about Voice Learn for one recording. The counts go to the telemetry
+/// (never the words); the ambiguous spans go to Lucina's `voiceMeta`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SttFacts {
+    pub corrections: Vec<Correction>,
+    /// Matches the engine found too close to call.
+    pub ambiguous: Vec<Ambiguity>,
+}
+
+/// Most corrections kept per turn.
+const MAX_CORRECTIONS: usize = 16;
+/// Most ambiguous spans kept per turn, and candidates per span (Lucina's own caps are 3 and 5).
+const MAX_AMBIGUOUS: usize = 3;
+const MAX_CANDIDATES: usize = 5;
+
+fn clean_word(v: &serde_json::Value) -> String {
+    v.as_str()
+        .unwrap_or("")
+        .chars()
+        .filter(|c| !c.is_control() && !matches!(c, '<' | '>'))
+        .take(100)
+        .collect()
+}
+
+impl SttFacts {
+    /// `corrections` (`[{from, to}]`) and `ambiguous` (`[{heard, candidates}]`) of the
+    /// engine's JSON answer. Untrusted: cleaned and bounded.
+    pub fn from_json(v: &serde_json::Value) -> Self {
+        let corrections = v["corrections"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|c| {
+                let (from, to) = (clean_word(&c["from"]), clean_word(&c["to"]));
+                (!from.is_empty() && !to.is_empty()).then_some(Correction { from, to })
+            })
+            .take(MAX_CORRECTIONS)
+            .collect();
+        let ambiguous = v["ambiguous"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|a| {
+                let heard = clean_word(&a["heard"]);
+                let candidates: Vec<String> = a["candidates"]
+                    .as_array()?
+                    .iter()
+                    .map(clean_word)
+                    .filter(|c| !c.is_empty())
+                    .take(MAX_CANDIDATES)
+                    .collect();
+                (!heard.is_empty() && !candidates.is_empty()).then_some(Ambiguity { heard, candidates })
+            })
+            .take(MAX_AMBIGUOUS)
+            .collect();
+        Self {
+            corrections,
+            ambiguous,
+        }
+    }
+
+    /// `{heard, candidates}` spans as JSON, for `voiceMeta`.
+    pub fn ambiguous_json(&self) -> Vec<serde_json::Value> {
+        self.ambiguous
+            .iter()
+            .map(|a| serde_json::json!({"heard": a.heard, "candidates": a.candidates}))
+            .collect()
+    }
+
+    /// `{from, to}` pairs as JSON, for the sample answer.
+    pub fn corrections_json(&self) -> Vec<serde_json::Value> {
+        self.corrections
+            .iter()
+            .map(|c| serde_json::json!({"from": c.from, "to": c.to}))
+            .collect()
+    }
+}
+
+/// A transcript and the Voice Learn facts that came with it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Heard {
+    pub text: String,
+    pub facts: SttFacts,
+}
+
 /// Speech to text: the local engine first (`caller`'s credentials, `lang`
-/// passed through), Gemini when that fails. The text is trimmed; empty means
+/// passed through), Gemini when that fails (with a "Vocabulary:" line from
+/// Voice Learn, [`crate::voice_learn`]). The text is trimmed; empty means
 /// nobody spoke. The error is the HTTP one (`503 transcription_unavailable`
 /// when Gemini is not set up either).
 pub async fn transcribe(
@@ -301,13 +411,13 @@ pub async fn transcribe(
     caller: &HeaderMap,
     audio: &Audio,
     lang: Option<&str>,
-) -> Result<String, ApiError> {
+) -> Result<Heard, ApiError> {
     let (body, content_type) = match audio {
         Audio::Wav(b) => (b.clone(), "audio/wav"),
         Audio::Pcm(b) => (b.slice(..b.len() & !1), "audio/x-s16le;rate=16000"),
     };
-    let text = match st.voice.local_stt(caller, body, content_type, lang).await {
-        Ok(text) => text,
+    let heard = match st.voice.local_stt(caller, body, content_type, lang).await {
+        Ok(heard) => heard,
         Err(why) => {
             tracing::warn!(%why, "local speech-to-text failed; falling back to Gemini");
             let wav = match audio {
@@ -319,19 +429,33 @@ pub async fn transcribe(
                     wav
                 }
             };
-            crate::calls::transcribe_inline(
+            // Only when Gemini can be asked at all: no point fetching the list otherwise.
+            let vocabulary = if crate::calls::gemini_configured() {
+                st.voice_vocab.line(st).await
+            } else {
+                None
+            };
+            let text = crate::calls::transcribe_inline(
                 "audio/wav",
                 &base64::engine::general_purpose::STANDARD.encode(&wav),
                 crate::calls::Options {
                     diarization: false,
                     timeout: TRANSCRIBE_TIMEOUT,
                 },
+                vocabulary.as_deref(),
             )
             .await?
-            .text
+            .text;
+            Heard {
+                text,
+                facts: SttFacts::default(),
+            }
         }
     };
-    Ok(text.trim().to_owned())
+    Ok(Heard {
+        text: heard.text.trim().to_owned(),
+        facts: heard.facts,
+    })
 }
 
 #[derive(Deserialize)]
@@ -340,7 +464,7 @@ struct VoiceQuery {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Input {
+pub(crate) enum Input {
     Wav,
     Pcm16k,
 }
@@ -353,7 +477,7 @@ fn bad_media() -> ApiError {
     )
 }
 
-fn no_speech() -> ApiError {
+pub(crate) fn no_speech() -> ApiError {
     ApiError::new(
         StatusCode::UNPROCESSABLE_ENTITY,
         "no_speech",
@@ -361,12 +485,12 @@ fn no_speech() -> ApiError {
     )
 }
 
-fn invalid_audio(message: &str) -> ApiError {
+pub(crate) fn invalid_audio(message: &str) -> ApiError {
     ApiError::new(StatusCode::BAD_REQUEST, "invalid_audio", message)
 }
 
 /// The body kind named by `Content-Type`.
-fn input_kind(headers: &HeaderMap) -> Result<Input, ApiError> {
+pub(crate) fn input_kind(headers: &HeaderMap) -> Result<Input, ApiError> {
     let ct = headers
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
@@ -407,7 +531,7 @@ fn wav_header(data_len: usize, rate: u32) -> Vec<u8> {
 
 /// Seconds of audio in a WAV file, or `None` if it is not one. A `data`
 /// size of 0 or past the end of the file (a streamed WAV) means "to the end".
-fn wav_seconds(b: &[u8]) -> Option<f64> {
+pub(crate) fn wav_seconds(b: &[u8]) -> Option<f64> {
     if b.len() < 12 || &b[0..4] != b"RIFF" || &b[8..12] != b"WAVE" {
         return None;
     }
@@ -473,6 +597,22 @@ pub(crate) fn client_message_id() -> Result<String, ApiError> {
     ))
 }
 
+/// The recording of a request body (whole samples of raw PCM, or a PCM WAV
+/// file) and its length in seconds.
+pub(crate) fn audio_of(kind: Input, body: Bytes) -> Result<(Audio, f64), ApiError> {
+    match kind {
+        Input::Wav => {
+            let seconds = wav_seconds(&body).ok_or_else(|| invalid_audio("not a PCM WAV file"))?;
+            Ok((Audio::Wav(body), seconds))
+        }
+        Input::Pcm16k => {
+            let pcm = body.slice(..body.len() & !1); // whole samples only
+            let seconds = pcm.len() as f64 / f64::from(INPUT_RATE * 2);
+            Ok((Audio::Pcm(pcm), seconds))
+        }
+    }
+}
+
 async fn voice(
     State(st): State<AppState>,
     Extension(ident): Extension<Identity>,
@@ -502,17 +642,7 @@ async fn voice(
         return Err(no_speech());
     }
     let up_bytes = body.len() as u64;
-    let (audio, seconds) = match kind {
-        Input::Wav => {
-            let seconds = wav_seconds(&body).ok_or_else(|| invalid_audio("not a PCM WAV file"))?;
-            (Audio::Wav(body), seconds)
-        }
-        Input::Pcm16k => {
-            let pcm = body.slice(..body.len() & !1); // whole samples only
-            let seconds = pcm.len() as f64 / f64::from(INPUT_RATE * 2);
-            (Audio::Pcm(pcm), seconds)
-        }
-    };
+    let (audio, seconds) = audio_of(kind, body)?;
     if seconds < MIN_SECONDS {
         return Err(no_speech());
     }
@@ -524,16 +654,20 @@ async fn voice(
         transcript_chars: 0,
         speech_ms: (seconds * 1000.0) as u64,
         up_bytes,
+        ..TurnInfo::default()
     };
-    let heard = match transcribe(&st, &caller, &audio, lang.as_deref()).await {
-        Ok(h) => h,
-        Err(e) => {
-            info.err = Some("stt_unavailable".into());
-            voice_telemetry::finish_turn(&st, &ident, &shared, info);
-            return Err(e);
-        }
-    };
+    let Heard { text: heard, facts } =
+        match transcribe(&st, &caller, &audio, lang.as_deref()).await {
+            Ok(h) => h,
+            Err(e) => {
+                info.err = Some("stt_unavailable".into());
+                voice_telemetry::finish_turn(&st, &ident, &shared, info);
+                return Err(e);
+            }
+        };
     shared.set_stt(shared.elapsed_ms());
+    info.stt_corrections = facts.corrections.len() as u32;
+    info.stt_ambiguous = facts.ambiguous.len() as u32;
     if heard.is_empty() {
         info.err = Some("no_speech".into());
         voice_telemetry::finish_turn(&st, &ident, &shared, info);
@@ -548,6 +682,7 @@ async fn voice(
         heard: heard.clone(),
         lang,
         ident: ident.clone(),
+        facts,
     };
     let task = tokio::spawn({
         let (st, shared) = (st.clone(), shared.clone());
@@ -633,6 +768,7 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/v1/voice/ws", get(crate::voice_ws::upgrade))
         .merge(crate::voice_telemetry::routes())
+        .merge(crate::voice_learn::routes())
 }
 
 #[cfg(test)]
@@ -706,6 +842,56 @@ mod tests {
         let s = "a".repeat(2000);
         assert_eq!(header_text(&s).len(), 1000);
         assert_eq!(header_text("a\nb"), "a%0Ab");
+    }
+
+    #[test]
+    fn stt_facts_are_cleaned_and_bounded() {
+        let v = serde_json::json!({
+            "text": "x",
+            "corrections": [
+                {"from": "skibi gard", "to": "Skibigårdsvej"},
+                {"from": "", "to": "dropped"},
+                {"from": "a<b>\n", "to": "ok"},
+                "junk"
+            ],
+            "ambiguous": [
+                {"heard": "via", "candidates": ["Skibigårdsvej", "Skibbyvej", "", 7]},
+                {"heard": "x"},
+                {"heard": "", "candidates": ["y"]},
+                {"heard": "mikel", "candidates": ["Mikkel"]}
+            ]
+        });
+        let f = SttFacts::from_json(&v);
+        assert_eq!(
+            f.corrections,
+            vec![
+                Correction { from: "skibi gard".into(), to: "Skibigårdsvej".into() },
+                Correction { from: "ab".into(), to: "ok".into() },
+            ]
+        );
+        // a span needs its words and at least one candidate
+        assert_eq!(
+            f.ambiguous,
+            vec![
+                Ambiguity { heard: "via".into(), candidates: vec!["Skibigårdsvej".into(), "Skibbyvej".into()] },
+                Ambiguity { heard: "mikel".into(), candidates: vec!["Mikkel".into()] },
+            ]
+        );
+        assert_eq!(
+            f.ambiguous_json()[1],
+            serde_json::json!({"heard": "mikel", "candidates": ["Mikkel"]})
+        );
+        // a count or a flag is not the contract; nothing at all; and a flood
+        assert!(SttFacts::from_json(&serde_json::json!({"ambiguous": 3})).ambiguous.is_empty());
+        assert!(SttFacts::from_json(&serde_json::json!({"ambiguous": true})).ambiguous.is_empty());
+        assert_eq!(SttFacts::from_json(&serde_json::json!({"text": "x"})), SttFacts::default());
+        let spans: Vec<_> = (0..10).map(|i| serde_json::json!({"heard": format!("h{i}"), "candidates": ["a", "b", "c", "d", "e", "f", "g"]})).collect();
+        let f = SttFacts::from_json(&serde_json::json!({"ambiguous": spans}));
+        assert_eq!((f.ambiguous.len(), f.ambiguous[0].candidates.len()), (MAX_AMBIGUOUS, MAX_CANDIDATES));
+        let flood: Vec<_> = (0..100).map(|i| serde_json::json!({"from": format!("a{i}"), "to": "b"})).collect();
+        let f = SttFacts::from_json(&serde_json::json!({"corrections": flood}));
+        assert_eq!(f.corrections.len(), MAX_CORRECTIONS);
+        assert_eq!(f.corrections_json()[0], serde_json::json!({"from": "a0", "to": "b"}));
     }
 
     #[test]

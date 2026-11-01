@@ -385,3 +385,80 @@
   justify-content: center;
   margin-top: 12px;
 }
+
+/* ---------- Jev layer chips (device page and the Lucina Voice chat) ---------- */
+
+.vd-layers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.vd-layer {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  max-width: 100%;
+  padding: 1px 8px;
+  border: 1px solid color-mix(in srgb, var(--lu-accent) 45%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--lu-accent) 14%, transparent);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.vd-layer[data-used="false"] {
+  border-style: dashed;
+  border-color: var(--border);
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.vd-layer-name {
+  font-weight: 600;
+}
+
+.vd-layer-verdict {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vd-layer-verdict::before {
+  content: "· ";
+}
+
+.vd-stt-facts {
+  color: var(--pg-muted, var(--text-muted));
+  font-size: 12px;
+}
+
+/* ---------- The Voice Learn link in the device list header ---------- */
+
+.vd-learn-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 0 12px;
+  border-radius: var(--pg-radius-control, 10px);
+  background: var(--pg-fill, color-mix(in srgb, var(--text) 6%, transparent));
+  color: var(--pg-text, var(--text));
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.vd-learn-link:hover {
+  background: var(--pg-fill-hover, color-mix(in srgb, var(--text) 10%, transparent));
+}
+
+.vd-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}

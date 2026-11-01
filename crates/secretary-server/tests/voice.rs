@@ -152,6 +152,10 @@ struct Mock {
     speech: Mutex<Vec<Value>>,
     stt_calls: Mutex<Vec<SttCall>>,
     stt_mode: Mutex<SttMode>,
+    /// `GET /api/secretary/voice-learn` requests seen.
+    learn_gets: Mutex<u32>,
+    /// Lucina's Voice Learn list answers 500.
+    learn_fails: Mutex<bool>,
 }
 
 /// What the mock local speech-to-text does.
@@ -162,6 +166,8 @@ enum SttMode {
     Ok,
     /// 200 with empty text.
     Empty,
+    /// 200 with the script's transcript and Voice Learn facts.
+    Corrected,
     Fail500,
     /// lucina-memo's 503 `stt_unavailable`.
     Unavailable,
@@ -211,6 +217,12 @@ async fn local_stt(
             };
             Json(json!({"text": text, "language": "it", "ms": 5, "mode": "gpu"})).into_response()
         }
+        SttMode::Corrected => Json(json!({
+            "text": transcript(script), "language": "it", "ms": 5, "mode": "gpu",
+            "corrections": [{"from": "stai", "to": "Stay"}, {"from": "oggi", "to": "Oggi"}],
+            "ambiguous": [{"heard": "come", "candidates": ["Kom", "Komme"]}]
+        }))
+        .into_response(),
         SttMode::Fail500 => (AxumStatus::INTERNAL_SERVER_ERROR, "boom").into_response(),
         SttMode::Unavailable => (
             AxumStatus::SERVICE_UNAVAILABLE,
@@ -220,8 +232,24 @@ async fn local_stt(
     }
 }
 
-async fn lucina(State(m): State<Arc<Mock>>, uri: Uri, body: Bytes) -> axum::response::Response {
+async fn lucina(
+    State(m): State<Arc<Mock>>,
+    method: axum::http::Method,
+    uri: Uri,
+    body: Bytes,
+) -> axum::response::Response {
     let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    if uri.path() == "/api/secretary/voice-learn" && method == axum::http::Method::GET {
+        *m.learn_gets.lock().unwrap() += 1;
+        if *m.learn_fails.lock().unwrap() {
+            return (AxumStatus::INTERNAL_SERVER_ERROR, "boom").into_response();
+        }
+        return Json(json!({"ok": true, "data": {"entries": [
+            {"id": "vl_1", "word": "Lucina", "updatedAt": "2026-11-01T10:00:00Z"},
+            {"id": "vl_2", "word": "Skibigårdsvej", "soundsLike": ["skibi gård vej"], "updatedAt": "2026-11-01T11:00:00Z"}
+        ]}}))
+        .into_response();
+    }
     if uri.path() != "/api/secretary/chat" {
         return (AxumStatus::NOT_FOUND, "no").into_response();
     }
@@ -458,7 +486,12 @@ async fn a_chunked_pcm_turn_returns_the_spoken_reply() {
     let chat = &chats[0];
     assert_eq!(chat["message"], transcript(HELLO));
     assert_eq!(chat["sessionId"], "lucinavoice");
-    assert_eq!(chat["channel"], "web");
+    // Every voice turn is the shared "Lucina Voice" thread (protocol section 7), with
+    // the speech-to-text facts for its `meta.voice`: the turn id is the client message id.
+    assert_eq!(chat["channel"], "voice");
+    assert_eq!(chat["voiceMeta"]["turnId"], chat["clientMessageId"]);
+    assert!(chat["voiceMeta"]["ms"]["stt"].is_u64(), "{}", chat["voiceMeta"]);
+    assert!(chat["voiceMeta"].get("ambiguous").is_none());
     assert_eq!(chat["device"], h.device_id.as_str());
     assert_eq!(chat["deviceName"], "Speaker");
     // A streaming, spoken-style turn.
@@ -477,6 +510,62 @@ async fn a_chunked_pcm_turn_returns_the_spoken_reply() {
         .all(|s| s["response_format"] == "pcm" && s["voice"] == "if_sara"));
     assert_eq!(speech[0]["input"], "Sto bene, grazie!");
     assert_eq!(speech[1]["input"], "E tu?");
+}
+
+#[tokio::test]
+async fn the_local_engines_voice_learn_facts_reach_lucina_as_voice_meta() {
+    let h = harness_with(Local::Mock).await;
+    *h.mock.stt_mode.lock().unwrap() = SttMode::Corrected;
+    let r = h.say("", HELLO).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let _ = r.bytes().await.unwrap();
+    let chats = h.mock.chats.lock().unwrap().clone();
+    let meta = &chats[0]["voiceMeta"];
+    // The doubtful spans feed Lucina's vocab layer; the replaced words stay here.
+    assert_eq!(meta["ambiguous"], json!([{"heard": "come", "candidates": ["Kom", "Komme"]}]));
+    assert!(meta.get("corrections").is_none());
+    assert_eq!(chats[0]["channel"], "voice");
+    // The local engine answered: Gemini and the vocabulary list were never asked.
+    assert_eq!(*h.mock.learn_gets.lock().unwrap(), 0);
+    assert!(h.gemini.calls(HELLO, h.nonce).is_empty());
+}
+
+#[tokio::test]
+async fn the_gemini_fallback_gets_a_vocabulary_line_cached_for_a_minute() {
+    let h = harness().await; // no local engine: Gemini
+    for _ in 0..2 {
+        let r = h.say("", HELLO).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let _ = r.bytes().await.unwrap();
+    }
+    let calls = h.gemini.calls(HELLO, h.nonce);
+    assert_eq!(calls.len(), 2);
+    for c in &calls {
+        let parts = c.body["contents"][0]["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 2, "{parts:?}");
+        assert!(parts[0]["inlineData"].is_object());
+        // newest entry first, with what it sounds like
+        assert_eq!(
+            parts[1]["text"],
+            "Vocabulary: Skibigårdsvej (sounds like skibi gård vej); Lucina"
+        );
+    }
+    // Fetched once for both turns (60 s cache), with the server's token.
+    assert_eq!(*h.mock.learn_gets.lock().unwrap(), 1);
+}
+
+#[tokio::test]
+async fn the_gemini_fallback_fails_open_when_the_vocabulary_is_unavailable() {
+    let h = harness().await;
+    *h.mock.learn_fails.lock().unwrap() = true;
+    let r = h.say("", HELLO).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(header(&r, "x-lucina-transcript"), transcript(HELLO));
+    let _ = r.bytes().await.unwrap();
+    let calls = h.gemini.calls(HELLO, h.nonce);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].body["contents"][0]["parts"].as_array().unwrap().len(), 1);
+    assert_eq!(*h.mock.learn_gets.lock().unwrap(), 1);
 }
 
 #[tokio::test]

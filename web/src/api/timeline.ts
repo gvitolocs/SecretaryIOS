@@ -8,7 +8,7 @@ import type { PlaceInfo } from "../lib/mapKit";
 import { parsePlace, parseRich, type RichMessage } from "../lib/rich";
 import { type Model3dBlock, parseModel3dBlocks } from "../lib/model3d";
 
-export const CHANNELS = ["telegram", "discord", "web", "ios", "alexa", "other"] as const;
+export const CHANNELS = ["telegram", "discord", "web", "ios", "alexa", "voice", "other"] as const;
 export type Channel = (typeof CHANNELS)[number];
 
 export interface Attachment {
@@ -63,6 +63,105 @@ export interface ItemMeta {
   intent?: string;
   /** A reply Jev decided (Lucina's yes/no answers): the bubble shows a badge with the latency. */
   jev?: JevBadge;
+  /** Channel "voice" (the Lucina Voice thread): how the turn went, for the timing line. */
+  voice?: VoiceMeta;
+}
+
+/** One Jev layer of a voice turn (docs/lucinavoice-protocol.md section 9). */
+export interface VoiceLayer {
+  /** "intent" | "slots" | "confirm" | "vocab". */
+  layer: string;
+  verdict?: string;
+  /** 0..1. */
+  confidence?: number;
+  ms?: number;
+  /** The verdict was acted on. */
+  used?: boolean;
+}
+
+/** The stages of a voice turn, in milliseconds from the end of speech (`done.ms`). */
+export const VOICE_MS_KEYS = ["stt", "lucina_first", "tts_first", "first_audio", "total", "route", "ack"] as const;
+export type VoiceMsKey = (typeof VOICE_MS_KEYS)[number];
+
+/** `meta.voice` of a voice thread item (protocol section 7): {turnId, ms, route, layers, ...}. All optional. */
+export interface VoiceMeta {
+  turnId?: string;
+  ms?: Partial<Record<VoiceMsKey, number>>;
+  /** The speech-to-text time, when the server only knew that (the other stages follow the reply). */
+  sttMs?: number;
+  route?: { intent?: string; fast?: boolean; source?: string; confidence?: number; jev_ms?: number };
+  layers?: VoiceLayer[];
+  /** Words Voice Learn replaced in the transcript. */
+  corrections?: { from: string; to: string }[];
+  ambiguous?: number;
+}
+
+const ms = (x: unknown) => (typeof x === "number" && Number.isFinite(x) && x >= 0 && x < 3_600_000 ? Math.round(x) : undefined);
+
+export function parseVoiceLayers(v: unknown): VoiceLayer[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const out: VoiceLayer[] = [];
+  for (const l of v.slice(0, 8)) {
+    if (!l || typeof l !== "object") continue;
+    const r = l as Record<string, unknown>;
+    if (typeof r.layer !== "string" || !/^[a-z0-9_.-]{1,32}$/i.test(r.layer)) continue;
+    const layer: VoiceLayer = { layer: r.layer };
+    const verdict = str(typeof r.verdict === "number" || typeof r.verdict === "boolean" ? String(r.verdict) : r.verdict, 64);
+    if (verdict) layer.verdict = verdict;
+    if (typeof r.confidence === "number" && r.confidence >= 0 && r.confidence <= 1) layer.confidence = r.confidence;
+    const m = ms(r.ms);
+    if (m !== undefined) layer.ms = m;
+    if (typeof r.used === "boolean") layer.used = r.used;
+    out.push(layer);
+  }
+  return out.length ? out : undefined;
+}
+
+export function parseVoiceMeta(v: unknown): VoiceMeta | undefined {
+  if (!v || typeof v !== "object") return undefined;
+  const m = v as Record<string, unknown>;
+  const out: VoiceMeta = {};
+  const turnId = str(m.turnId, 80);
+  if (turnId) out.turnId = turnId;
+  if (m.ms && typeof m.ms === "object") {
+    const stages: Partial<Record<VoiceMsKey, number>> = {};
+    for (const k of VOICE_MS_KEYS) {
+      const value = ms((m.ms as Record<string, unknown>)[k]);
+      if (value !== undefined) stages[k] = value;
+    }
+    if (Object.keys(stages).length) out.ms = stages;
+  }
+  const sttMs = ms(m.sttMs);
+  if (sttMs !== undefined) out.sttMs = sttMs;
+  const route = m.route && typeof m.route === "object" ? (m.route as Record<string, unknown>) : undefined;
+  if (route) {
+    const r: NonNullable<VoiceMeta["route"]> = {};
+    const intent = str(route.intent, 64);
+    if (intent) r.intent = intent;
+    if (typeof route.fast === "boolean") r.fast = route.fast;
+    const source = str(route.source, 32);
+    if (source) r.source = source;
+    if (typeof route.confidence === "number" && route.confidence >= 0 && route.confidence <= 1) r.confidence = route.confidence;
+    // Lucina stores the route camelCase (jevMs); the device API says jev_ms.
+    const jev = ms(route.jevMs ?? route.jev_ms);
+    if (jev !== undefined) r.jev_ms = jev;
+    if (Object.keys(r).length) out.route = r;
+  }
+  // The layers ride in route.layers (the route event) or voice.layers (the finished turn).
+  const layers = parseVoiceLayers(m.layers) ?? parseVoiceLayers(route?.layers);
+  if (layers) out.layers = layers;
+  if (Array.isArray(m.corrections)) {
+    const corrections: { from: string; to: string }[] = [];
+    for (const c of m.corrections.slice(0, 16)) {
+      const r = (c && typeof c === "object" ? c : {}) as Record<string, unknown>;
+      const from = str(r.from, 100);
+      const to = str(r.to, 100);
+      if (from && to) corrections.push({ from, to });
+    }
+    if (corrections.length) out.corrections = corrections;
+  }
+  if (typeof m.ambiguous === "number" && Number.isFinite(m.ambiguous) && m.ambiguous > 0) out.ambiguous = Math.min(1000, Math.round(m.ambiguous));
+  return Object.keys(out).length ? out : undefined;
 }
 
 export interface JevBadge {
@@ -243,6 +342,8 @@ function parseMeta(v: unknown): ItemMeta | undefined {
   }
   const jev = parseJevBadge(m.jev);
   if (jev) out.jev = jev;
+  const voice = parseVoiceMeta(m.voice);
+  if (voice) out.voice = voice;
   if (m.format === "v1") {
     const blocks = parseModel3dBlocks(m.blocks);
     if (blocks.length) out.blocks = blocks;
