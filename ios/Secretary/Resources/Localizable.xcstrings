@@ -1373,6 +1373,22 @@
         }
       }
     },
+    "%lld unsaved change(s)" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Modifiche non salvate: %lld"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ikke-gemte ændringer: %lld"
+          }
+        }
+      }
+    },
     "/ %lld" : {
       "localizations" : {
         "it" : {
@@ -4564,6 +4580,22 @@
         }
       }
     },
+    "Carried from earlier periods" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Riportate da periodi precedenti"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Overført fra tidligere perioder"
+          }
+        }
+      }
+    },
     "Casual" : {
       "localizations" : {
         "da" : {
@@ -5110,6 +5142,22 @@
       }
     },
     "Couldn't open the player data: %@" : {},
+    "Couldn't open the sheet" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Impossibile aprire il foglio"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kunne ikke åbne arket"
+          }
+        }
+      }
+    },
     "Couldn't open your gym data: %@" : {
       "localizations" : {
         "da" : {
@@ -5170,6 +5218,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Impossibile ripristinare i dati della palestra su %@."
+          }
+        }
+      }
+    },
+    "Couldn't save" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Salvataggio non riuscito"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kunne ikke gemme"
           }
         }
       }
@@ -5731,6 +5795,22 @@
         }
       }
     },
+    "Difference this month" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Differenza del mese"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Forskel denne måned"
+          }
+        }
+      }
+    },
     "Directions" : {
       "localizations" : {
         "da" : {
@@ -5748,6 +5828,22 @@
       }
     },
     "Discard" : {},
+    "Discard changes" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Annulla modifiche"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kassér ændringer"
+          }
+        }
+      }
+    },
     "Discard this recording?" : {},
     "Discard this workout?" : {
       "localizations" : {
@@ -5777,6 +5873,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Scarta allenamento"
+          }
+        }
+      }
+    },
+    "Discard your changes?" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Annullare le modifiche?"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kassér dine ændringer?"
           }
         }
       }
@@ -6149,6 +6261,22 @@
         }
       }
     },
+    "Edited" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Modificato"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ændret"
+          }
+        }
+      }
+    },
     "Eek! That tickles." : {},
     "Ehehe…" : {},
     "Email" : {
@@ -6163,6 +6291,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Email"
+          }
+        }
+      }
+    },
+    "Empty" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vuoto"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tom"
           }
         }
       }
@@ -6731,6 +6875,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Segue la lingua dell'iPhone, a meno che tu non ne scelga una. Lucina risponde nella lingua in cui scrivi."
+          }
+        }
+      }
+    },
+    "Form" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Modulo"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Formular"
           }
         }
       }
@@ -10901,6 +11061,22 @@
         }
       }
     },
+    "Remarks" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Note"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bemærkninger"
+          }
+        }
+      }
+    },
     "Reminder" : {
       "localizations" : {
         "da" : {
@@ -11368,6 +11544,38 @@
         }
       }
     },
+    "Restore this version?" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ripristinare questa versione?"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gendan denne version?"
+          }
+        }
+      }
+    },
+    "Restore v%lld" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ripristina v%lld"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gendan v%lld"
+          }
+        }
+      }
+    },
     "Resume" : {
       "localizations" : {
         "it" : {
@@ -11542,6 +11750,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Salvato"
+          }
+        }
+      }
+    },
+    "Saved %lld cell(s) · version %lld" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Saved %1$lld cell(s) · version %2$lld"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Celle salvate: %lld · versione %lld"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gemte celler: %lld · version %lld"
           }
         }
       }
@@ -11910,6 +12140,22 @@
         }
       }
     },
+    "Set date" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Imposta data"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Angiv dato"
+          }
+        }
+      }
+    },
     "Sets" : {
       "localizations" : {
         "da" : {
@@ -11971,6 +12217,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Indossa sempre il vestito predefinito."
+          }
+        }
+      }
+    },
+    "Sheets" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fogli"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ark"
           }
         }
       }
@@ -12236,6 +12498,22 @@
       }
     },
     "Stage" : {},
+    "Standard hours" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ore standard"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Normtimer"
+          }
+        }
+      }
+    },
     "Start %@" : {
       "localizations" : {
         "da" : {
@@ -12950,6 +13228,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Impossibile salvare la modifica."
+          }
+        }
+      }
+    },
+    "The current file is kept as a version too, so you can undo this." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Anche il file attuale viene conservato come versione, quindi puoi annullare."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Den aktuelle fil gemmes også som en version, så du kan fortryde."
           }
         }
       }
@@ -13908,6 +14202,22 @@
         }
       }
     },
+    "Total difference this year" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Differenza totale dell'anno"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Samlet forskel i år"
+          }
+        }
+      }
+    },
     "Total volume" : {
       "localizations" : {
         "da" : {
@@ -13920,6 +14230,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Volume totale"
+          }
+        }
+      }
+    },
+    "Totals are computed by Secretary with the template's rules and update after Save. Excel recomputes every formula when the file is opened." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "I totali sono calcolati da Secretary con le regole del modello e si aggiornano dopo il salvataggio. Excel ricalcola tutte le formule all'apertura del file."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Totalerne beregnes af Secretary efter skabelonens regler og opdateres, når du gemmer. Excel genberegner alle formler, når filen åbnes."
           }
         }
       }
@@ -14550,6 +14876,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Versione"
+          }
+        }
+      }
+    },
+    "Versions" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Versioni"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Versioner"
           }
         }
       }
@@ -15217,6 +15559,38 @@
         }
       }
     },
+    "Worked %@" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lavorate %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Arbejdet %@"
+          }
+        }
+      }
+    },
+    "Worked hours" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ore lavorate"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Arbejdede timer"
+          }
+        }
+      }
+    },
     "Workout" : {
       "localizations" : {
         "da" : {
@@ -15589,6 +15963,22 @@
       }
     },
     "forced" : {},
+    "hh:mm" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "hh:mm"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "tt:mm"
+          }
+        }
+      }
+    },
     "https://… or http://localhost:8791" : {
       "shouldTranslate" : false
     },
@@ -16676,6 +17066,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Apri il registratore di memo"
+          }
+        }
+      }
+    },
+    "Opening the sheet…" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apro il foglio…"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Åbner arket…"
           }
         }
       }
@@ -19858,6 +20264,22 @@
         }
       }
     },
+    "This file is read-only on the server." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Questo file è di sola lettura sul server."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Filen er skrivebeskyttet på serveren."
+          }
+        }
+      }
+    },
     "This archive can't be listed" : {
       "localizations" : {
         "it" : {
@@ -19902,6 +20324,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Kun de første %lld elementer vises."
+          }
+        }
+      }
+    },
+    "Only the first 2000 rows and 200 columns are shown." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sono mostrate solo le prime 2000 righe e 200 colonne."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kun de første 2000 rækker og 200 kolonner vises."
           }
         }
       }
@@ -20386,6 +20824,22 @@
         }
       }
     },
+    "or hours" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "o ore"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "eller timer"
+          }
+        }
+      }
+    },
     "for %@" : {
       "localizations" : {
         "it" : {
@@ -20494,6 +20948,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ingen udrulninger eller beslutninger for nylig."
+          }
+        }
+      }
+    },
+    "No earlier versions yet. Every save keeps the previous file here." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ancora nessuna versione precedente. Ogni salvataggio conserva qui il file precedente."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ingen tidligere versioner endnu. Hver gang du gemmer, bevares den forrige fil her."
           }
         }
       }
@@ -22584,6 +23054,22 @@
         }
       }
     },
+    "Earlier versions" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Versioni precedenti"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tidligere versioner"
+          }
+        }
+      }
+    },
     "Edit event" : {
       "localizations" : {
         "it" : {
@@ -24074,6 +24560,22 @@
         }
       }
     },
+    "Reload and keep my edits" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ricarica e conserva le modifiche"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Genindlæs og behold mine ændringer"
+          }
+        }
+      }
+    },
     "Remove filter: %@" : {
       "localizations" : {
         "it" : {
@@ -24460,6 +24962,22 @@
         }
       }
     },
+    "Someone saved this file since you opened it. Reload it, check your edits and save again." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Qualcuno ha salvato questo file da quando l'hai aperto. Ricaricalo, controlla le modifiche e salva di nuovo."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nogen har gemt filen, siden du åbnede den. Genindlæs den, tjek dine ændringer, og gem igen."
+          }
+        }
+      }
+    },
     "Stories" : {
       "localizations" : {
         "it" : {
@@ -24568,6 +25086,38 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sluttidspunktet skal være efter starttidspunktet."
+          }
+        }
+      }
+    },
+    "The file changed" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Il file è cambiato"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Filen er ændret"
+          }
+        }
+      }
+    },
+    "The file changed since you opened it. Reload it and save again." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Il file è cambiato da quando l'hai aperto. Ricaricalo e salva di nuovo."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Filen er ændret, siden du åbnede den. Genindlæs den, og gem igen."
           }
         }
       }
