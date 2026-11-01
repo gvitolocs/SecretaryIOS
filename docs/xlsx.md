@@ -16,6 +16,10 @@ Nothing is uploaded to Google or Microsoft: everything runs on nezopt (lucina-me
 | web | `web/src/views/Sheet*.tsx`, `web/src/api/sheet.ts` | Grid with sheet tabs, input cells highlighted, timesheet form (Mac app bundles it) |
 | iOS | `ios/Secretary/Features/Gallery/Sheet*.swift` | The same grid and form; shared `.xlsx` files arrive through the share extension |
 
+The owner's timesheet is reached through the Drive folder `CraftIT` (`LUCINA_MEDIA_FOLDERS`,
+`/home/nez/Projects/Work/CraftIT/admin`; Lucina's go-ahead `dc-87ceb0ebba36`). A file shared from the iPhone lands in the
+library and opens the same way from the Drive's shares.
+
 ## How a save keeps the workbook intact
 
 The patcher rewrites only what changed:

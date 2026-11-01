@@ -115,6 +115,8 @@ kernel DK3).
     there). `GET items/{id}/pdf`: a PDF, or an Office file converted (503 without LibreOffice).
     `GET items/{id}/archive`: zip, tar, tar.gz and 7z listings (nothing is extracted). `GET items/{id}/original?download=1`:
     `Content-Disposition: attachment` with the real name.
+  - `GET|POST items/{id}/sheet`, `sheet/versions`, `sheet/restore`: `.xlsx` workbooks as sheets, edited in place with a
+    version backup ([`xlsx.md`](xlsx.md)). This is the only route that writes to a Drive file.
 - Devices (2026-10-27: the owner wants one gallery per device, everything in the Lucina cloud):
   `PUT devices/{id} {name, kind}` registers or renames a device (`kind`: iphone, ipad, android, mac, pc, backup,
   camera, other; ids `[A-Za-z0-9._-]{1,64}`, e.g. `ios-<uuid>`, `mac-<uuid>`); an upload whose `meta.device` is unknown
