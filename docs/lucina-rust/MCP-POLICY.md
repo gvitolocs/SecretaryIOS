@@ -35,6 +35,11 @@ caller:
   owner's scope but never as his messages; the memory label says "written by that agent, not by Giuseppe".
   Decisions read only his own words as evidence.
 - Secrets, the owner's plugins (Instagram, Pixiv), Meshy credits and delegation switches stay owner-only.
+- Delegation (trusted owner apps only; 2026-11-01): a delegation regex hit ("research …", "ask Grok …")
+  runs only when Jev reads the message as a request for another agent's work
+  (`jev_route::mcp_delegation`, state = sender + the first 400 characters, P ≥ 0.75); otherwise, or
+  with Jev down, Lucina answers it herself. The request carries the caller, so it never goes back to
+  the agent that sent it (auto choice skips it, a named one is refused as `loop`).
 
 ## Why
 

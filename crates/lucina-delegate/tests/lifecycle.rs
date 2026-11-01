@@ -344,6 +344,30 @@ async fn hard_limits_refuse_before_anything_runs() {
     assert!(audit.contains("refused:mcp_origin") && audit.contains("refused:money"));
 }
 
+/// 2026-11-01: ChatGPT's `ask_lucina` research note went to the auto router, which picked ChatGPT
+/// itself (Grok busy) and failed. The auto choice skips the caller; with only the caller left,
+/// nothing runs.
+#[tokio::test]
+async fn the_auto_choice_never_sends_a_request_back_to_its_caller() {
+    let w = world(
+        |_| {},
+        &[
+            (AgentId::Chatgpt, Duration::ZERO, Ok("chatgpt")),
+            (AgentId::Claude, Duration::ZERO, Ok("claude")),
+        ],
+    );
+    w.judge.push_text(ACT);
+    let mut r = req(Kind::Research, "research on interaction nets");
+    r.caller = Some("chatgpt".into());
+    assert_eq!(finish(w.d.start(r).await).await.agent, AgentId::Claude);
+
+    let w = world(|_| {}, &[(AgentId::Chatgpt, Duration::ZERO, Ok("chatgpt"))]);
+    let mut r = req(Kind::Research, "research on interaction nets");
+    r.caller = Some("chatgpt".into());
+    assert!(matches!(refused(w.d.start(r).await), Refusal::NoAgent(_)));
+    assert!(w.prompts.lock().unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn one_job_per_agent_and_the_router_falls_back() {
     let w = world(
