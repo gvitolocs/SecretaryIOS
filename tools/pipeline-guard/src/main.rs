@@ -1,7 +1,8 @@
 //! `pipeline-guard`: a Claude Code PreToolUse(Bash) hook. In Lucina repos, work starts with
 //! `lagent task start` and lands with `lagent merge` (docs/repo-workflow.md), so this denies:
 //!
-//! - making a worktree by hand: `git worktree add …`, `wt add …`;
+//! - making a worktree by hand: `git worktree add …` (a `--detach` deploy or test tree is fine: it is
+//!   not a task), `wt add …`;
 //! - landing by hand: `git push <remote> <ref>:main` / `git push <remote> main`;
 //! - installing on the owner's iPhone by hand: `devicectl device install|uninstall`, `ios-deploy`,
 //!   `ideviceinstaller`, `pymobiledevice3 apps install`, `xcodebuild test|install` against the phone,
@@ -37,7 +38,8 @@ pub fn verdict(command: &str, cwd: &str) -> Option<String> {
     let wt = Regex::new(r#"(^|[\s;&|('"])(~/\.local/bin/)?wt\s+add\b"#).ok()?;
     let push = Regex::new(r#"\bgit\s+(-C\s+\S+\s+|-c\s+\S+\s+)*push\b([^;&|\n'"]*)"#).ok()?;
     let to_main = Regex::new(r"(^|\s|:|\+)(refs/heads/)?main(\s|$)").ok()?;
-    if worktree.is_match(command) || wt.is_match(command) {
+    let detached = Regex::new(r#"\bworktree\s+add\b[^;&|\n'"]*\s(--detach|-d)\b"#).ok()?;
+    if (worktree.is_match(command) && !detached.is_match(command)) || wt.is_match(command) {
         return Some(
             "Lucina repos: start work with `lagent task start \"<title>\" [--repo <path>] [--branch <name>]` on nezopt \
              (Mac: ~/.local/bin/lagent forwards). It fetches, makes the worktree from origin/main and registers it with \
@@ -243,6 +245,10 @@ mod tests {
         assert!(verdict("ssh nezopt 'cd ~/Projects/Lucina/SecretaryIOS && wt add ig-fix origin/main'", "/Users/g").is_some());
         assert!(verdict("ssh nezopt 'cd ~/Projects/Lucina/lucinaos && git -C . worktree add /tmp/x'", "/Users/g").is_some());
         assert!(verdict("git worktree list", LUCINA).is_none());
+        // A detached tree for a deploy or a test run is not a task.
+        assert!(verdict("git worktree add --detach /tmp/deploy-x origin/main", LUCINA).is_none());
+        assert!(verdict("git -C ~/Projects/Lucina/SecretaryIOS worktree add -q /tmp/x -d abc", "/Users/g").is_none());
+        assert!(verdict("git worktree add -b topic ../x origin/main", LUCINA).is_some());
         assert!(verdict("wt ls", LUCINA).is_none());
         // Outside Lucina: not our business.
         assert!(verdict("git worktree add ../x", "/home/nez/Projects/AI/lane").is_none());
