@@ -713,7 +713,8 @@ impl Manager {
         let root_usage = procs::usage(&roots);
         let mut main_checkouts = Vec::new();
         for (root, used) in roots.iter().zip(&root_usage) {
-            let status = git::read(root, &["status", "--porcelain", "--untracked-files=normal"]).await.unwrap_or_default();
+            // Not trimmed: each line starts with two status columns, the first often a space.
+            let status = git::must(root, &["status", "--porcelain", "--untracked-files=normal"]).await.unwrap_or_default();
             let files: Vec<&str> = status.lines().map(|l| l.get(3..).unwrap_or(l)).collect();
             if files.is_empty() && used.procs == 0 {
                 continue;
