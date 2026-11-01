@@ -564,7 +564,45 @@ pub fn session_routes() -> Router<AppState> {
 /// requests share. No CSRF check: Caddy turns the subrequest into a GET and
 /// gates the real method itself.
 pub fn owner_routes() -> Router<AppState> {
-    Router::new().route("/v1/auth/owner", get(owner_check))
+    Router::new()
+        .route("/v1/auth/owner", get(owner_check))
+        .route("/v1/auth/media", get(media_check))
+}
+
+/// `GET|HEAD /v1/auth/media`: the forward_auth target of `/v1/media` behind
+/// Caddy. 204 for a device session or Lucina's service token, 401 otherwise.
+///
+/// Caddy asks once per media request, and a screen of the Gallery is dozens of
+/// thumbnails: in the app's 60/min bucket, scrolling refused the thumbnails,
+/// the next page and the app's own requests. So it has its own, much larger
+/// bucket (`SECRETARY_MEDIA_AUTH_PER_MINUTE`). No CSRF check: Caddy turns the
+/// subrequest into a GET and gates the real method itself.
+async fn media_check(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    let svc = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split_once(' '))
+        .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
+        .map(|(_, t)| t.trim())
+        .filter(|t| t.starts_with(crate::service::SERVICE_PREFIX));
+    let key = match svc {
+        Some(token) => match &st.service_token {
+            Some(expected) if expected.matches(token) => crate::service::RATE_KEY.to_owned(),
+            _ => return Err(ApiError::unauthorized("unknown service token")),
+        },
+        None => {
+            identify(&st, &headers)?
+                .map_err(ApiError::unauthorized)?
+                .device_id
+        }
+    };
+    st.media_limiter
+        .check(&key)
+        .map_err(ApiError::rate_limited)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn owner_check(

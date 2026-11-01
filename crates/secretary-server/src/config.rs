@@ -22,6 +22,7 @@
 //! | `SECRETARY_CATALOG_DIR` | `/var/lib/secretary/catalog` | `catalog.{it,en,da}.json` for `GET /v1/shopping/catalog` |
 //! | `SECRETARY_DEVICE_EVENTS_PER_MINUTE` | `120` | `POST /v1/device/events` requests per device per minute |
 //! | `SECRETARY_OWNER_AUTH_PER_MINUTE` | `600` | `GET /v1/auth/owner` (Caddy forward_auth for the owner-only plugins) per device per minute, its own bucket |
+//! | `SECRETARY_MEDIA_AUTH_PER_MINUTE` | `6000` | `GET /v1/auth/media` (Caddy forward_auth for `/v1/media`, once per thumbnail) per device per minute, its own bucket |
 //! | `SECRETARY_TTS_VOICES` | `if_sara,af_heart,af_bella,bf_emma` | voices a client may ask for |
 //! | `SECRETARY_NOTIFY_INGEST` | `1` | `0`: no notifications from Lucina's timeline stream |
 //! | `SECRETARY_VAPID_SUBJECT` | `https://getsecretary.tech` | VAPID contact (`mailto:` or `https:`) |
@@ -122,6 +123,8 @@ pub struct Config {
     pub device_events_per_minute: u32,
     /// `GET /v1/auth/owner` requests per device per minute (own bucket).
     pub owner_auth_per_minute: u32,
+    /// `GET /v1/auth/media` requests per device per minute (own bucket).
+    pub media_auth_per_minute: u32,
     /// `POST /v1/session` attempts per client IP per minute.
     pub login_rate_per_minute: u32,
     /// The public origin, no trailing slash (QR sign-in links).
@@ -196,6 +199,7 @@ impl Config {
             rate_limit_per_minute: 60,
             device_events_per_minute: 120,
             owner_auth_per_minute: 600,
+            media_auth_per_minute: 6000,
             login_rate_per_minute: 5,
             public_url: DEFAULT_PUBLIC_URL.into(),
             qr_login_ttl: crate::qr_login::TTL,
@@ -270,6 +274,11 @@ impl Config {
         if let Some(v) = get("SECRETARY_OWNER_AUTH_PER_MINUTE") {
             cfg.owner_auth_per_minute = v.parse().ok().filter(|n| *n > 0).with_context(|| {
                 format!("SECRETARY_OWNER_AUTH_PER_MINUTE={v}: expected a positive integer")
+            })?;
+        }
+        if let Some(v) = get("SECRETARY_MEDIA_AUTH_PER_MINUTE") {
+            cfg.media_auth_per_minute = v.parse().ok().filter(|n| *n > 0).with_context(|| {
+                format!("SECRETARY_MEDIA_AUTH_PER_MINUTE={v}: expected a positive integer")
             })?;
         }
         cfg.trust_proxy = match get("SECRETARY_TRUST_PROXY").as_deref() {

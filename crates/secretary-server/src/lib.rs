@@ -135,6 +135,8 @@ pub struct Inner {
     pub device_limiter: RateLimiter,
     /// `GET /v1/auth/owner` (forward_auth of the owner-only plugins).
     pub owner_limiter: RateLimiter,
+    /// `GET /v1/auth/media` (forward_auth of `/v1/media`).
+    pub media_limiter: RateLimiter,
     /// Recently forwarded device event ids (dedup).
     pub event_ids: device::SeenIds,
     pub health: HealthCache,
@@ -231,6 +233,7 @@ impl AppState {
             qr_limiter: RateLimiter::new(qr_login::POLLS_PER_MINUTE),
             device_limiter: RateLimiter::new(cfg.device_events_per_minute),
             owner_limiter: RateLimiter::new(cfg.owner_auth_per_minute),
+            media_limiter: RateLimiter::new(cfg.media_auth_per_minute),
             event_ids: device::SeenIds::new(device::SEEN_IDS),
             health: HealthCache::new(cfg.health_ttl, cfg.health_timeout),
             upstream,

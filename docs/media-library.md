@@ -565,7 +565,7 @@ command `lucina-media archive-jxl`. Numbers and the decision per type are in the
 
 ## Backup and the device rate limit
 
-Every `/v1/media/*` request outside `/s/` passes p1's forward_auth, which allows 60 requests a minute for each device. The backup therefore:
+Every `/v1/media/*` request outside `/s/` passes p1's forward_auth (`/v1/auth/media`, since 2026-11-01 its own bucket of 6000 requests a minute for each device; it was 60, shared with the app). The backup still paces itself as if it were 60, and therefore:
 - waits 4 s between assets (create, PUT, finish; the JPEG preview only for HEIC), about 36 requests a minute;
 - stops on 429 and comes back after `Retry-After`;
 - pauses the whole pass on network, timeout and 502–504 errors (retries after 120 s), and skips just the asset on anything else.
