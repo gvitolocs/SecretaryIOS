@@ -36,6 +36,7 @@ pub mod approvals_bridge;
 pub mod cli;
 pub mod client;
 pub mod config;
+pub mod devices;
 pub mod external;
 pub mod journal;
 pub mod jsonrpc;

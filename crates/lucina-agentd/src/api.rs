@@ -42,6 +42,7 @@
 //! Rewind and fork (with chat-history context): [`rewind`].
 //! The Homelab service catalog (project tree, health, impact, drift): [`catalog`].
 //! Tasks, the merge and deploy queue, device leases and the board: [`pipeline`].
+//! Installs on leased devices (the iPhone) and test-run grants: [`devices`].
 //!
 //! A process an agent started acts as that agent ([`Caller::Agent`]): its `create`
 //! makes a subagent (depth-limited, supervised), its `send` is a queued agent message,
@@ -77,6 +78,7 @@ use crate::workspaces::WsError;
 
 pub mod terminals;
 mod catalog;
+mod devices;
 mod orch;
 mod pipeline;
 mod rewind;
@@ -160,6 +162,7 @@ pub fn router(manager: Manager) -> Router {
         .merge(rewind::routes())
         .merge(catalog::routes())
         .merge(pipeline::routes())
+        .merge(devices::routes())
         // Last, so it sees every request (`Host: <label>.localhost` goes to that service).
         .layer(axum::middleware::from_fn_with_state(manager.clone(), terminals::host_proxy))
         .with_state(manager)

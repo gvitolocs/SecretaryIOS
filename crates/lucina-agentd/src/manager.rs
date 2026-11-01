@@ -67,6 +67,8 @@ pub struct Options {
     pub workspaces: crate::workspaces::Config,
     pub terminals: crate::terminals::Config,
     pub pipeline: crate::pipeline::Config,
+    /// Installs on leased devices (the owner's iPhone).
+    pub devices: crate::devices::Config,
 }
 
 impl Default for Options {
@@ -79,6 +81,7 @@ impl Default for Options {
             workspaces: crate::workspaces::Config::from_env(),
             terminals: crate::terminals::Config::default(),
             pipeline: crate::pipeline::Config::from_env(&std::env::temp_dir().join("lucina-agentd")),
+            devices: crate::devices::Config::default(),
         }
     }
 }
@@ -424,6 +427,7 @@ struct Inner {
     /// Schedules, subagents and agent messages (phase 6).
     orch: orch::Orch,
     pipeline: crate::pipeline::Pipeline,
+    devices: crate::devices::Devices,
 }
 
 #[derive(Clone)]
@@ -502,12 +506,14 @@ impl Manager {
         let workspaces = Workspaces::open(store.clone(), options.workspaces.clone(), publish)?;
         let orch = orch::Orch::open(&store)?;
         let pipeline = crate::pipeline::Pipeline::open(store.clone(), options.pipeline.clone())?;
+        let devices = crate::devices::Devices::open(options.devices.clone());
         let manager = Manager {
             inner: Arc::new(Inner {
                 workspaces,
                 terminals,
                 orch,
                 pipeline,
+                devices,
                 store,
                 providers,
                 lanes,
@@ -1368,6 +1374,10 @@ impl Manager {
         if n > 0 {
             tracing::info!(agent = %id, terminals = n, "killed the agent's terminals");
         }
+    }
+
+    pub fn devices(&self) -> &crate::devices::Devices {
+        &self.inner.devices
     }
 
     pub fn terminals(&self) -> &crate::terminals::Hub {

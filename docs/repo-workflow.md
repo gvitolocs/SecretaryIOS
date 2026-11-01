@@ -29,8 +29,9 @@ lagent device lease iphone --purpose "owner test"    # devices are leased (iphon
   gitignored outputs too: copy artifacts out first) unless you pass `--keep`.
 - **Deploys** go through `lagent deploy <runtime>` where `.lucina/pipeline.toml` has a recipe (`lucina-agentd`,
   `lucina-rs` so far). Other runtimes still deploy by hand as in "Deploying" below, always through deploy-guard.
-- **Devices**: lease before you touch one; the iPhone installs only through `ios-install` (main's tip, or a test
-  build the owner approved through `lucina_decide`), and owner tests go through the coordinator session.
+- **Devices**: lease before you touch one. The iPhone installs only through `lagent device install iphone`: main's tip,
+  or a test build with your lease and the owner's approval through `lucina_decide`. Owner tests go through the
+  coordinator session.
 - **Exceptions** need the owner's go (`lucina_decide`); then `LAGENT_BYPASS=<reason>` in the command passes the hook
   and is logged.
 - Design and internals: [`docs/design/agents-pipeline.md`](design/agents-pipeline.md).
@@ -107,7 +108,7 @@ row when a crate gains a path dependency.
 | `lucina-otp-relay` | p1 | `crates/lucina-otp-relay` (musl) | `deploy/lucina-otp/deploy.sh` | lucina-rs |
 | `secretary-server`, `secretary-mcp` | p1 | `crates/secretary-{server,mcp,core}` (musl) | `deploy/README.md` | server-live |
 | `web` | p1 | `web/`, `packages/lucina-stage`, `assets/icons` | `deploy/README.md` §4 | web-live |
-| `ios` | iPhone (built on the Mac) | `ios/`, `crates/secretary-{ffi,core,image}`, `design/` | `ios-install` on the Mac (see "iPhone installs") | ios-app |
+| `ios` | iPhone (built on the Mac) | `ios/`, `crates/secretary-{ffi,core,image}`, `design/` | `lagent device install iphone` (see "iPhone installs") | ios-app |
 
 The Mac app (SecretaryCode `bundle-lucina-web.ts`) bundles the newest `deploy/web/*` tag, which is what p1 serves. It
 falls back to `origin/main`. `LUCINA_WEB_REF` still overrides it.
@@ -132,32 +133,47 @@ flock /tmp/lucina-merge.lock bash -c '
 
 ## iPhone installs
 
-Every build reaches the owner's iPhone through **`ios-install`** on the Mac (`~/.local/bin/ios-install`, since
-2026-11-01). On 2026-11-01 sessions installed branch builds over each other with raw `devicectl`: a test build at 09:18
-and an install at 10:38 that dropped the `SecretaryPhotoUpload` extension, and neither reached the deploy ledger.
+The owner's iPhone is a Lucina device, and builds reach it only through **`lagent device`** (since 2026-11-01). On
+2026-11-01 sessions installed branch builds over each other with raw `devicectl`: a test build at 09:18 and an install
+at 10:38 that dropped the `SecretaryPhotoUpload` extension, and neither reached the deploy ledger.
 
-- `ios-install` installs `origin/main`'s tip. It resolves the tip on nezopt, runs `deploy-guard check --runtime ios`,
-  builds Release in its own clean worktree (`~/Library/Caches/ios-install`), takes the device lease and
-  `/tmp/iphone16e.lock`, installs with `devicectl`, and runs `deploy-guard record --runtime ios` (ledger, `deploy/ios/*`
-  tag, ops record). It refuses any other commit.
-- A test build of a branch needs the owner's own go and a lease:
-  1. `ios-install lease acquire --purpose "<what>"`;
-  2. get the go: `lucina-rs decide --impact high …` with a question naming the sha8 or your session id. It must be
-     decided by the owner, not by Lucina, and be at most 24 h old;
-  3. `ios-install --test-build --approval dc-<id> --commit <sha>`.
+```sh
+lagent device ls                                           # who holds each device, what agentd last installed
+lagent device install iphone                               # origin/main's tip
+lagent device lease iphone --purpose "<what>" [--minutes N]
+lagent device install iphone --test --commit <sha> --approval dc-<id>
+lagent device grant iphone --commit <sha> [--approval dc-<id>]   # a phone test run; then on the Mac, in that checkout:
+ios-install exec --grant <id> -- xcodebuild test …
+lagent device history iphone
+lagent device release iphone
+```
 
-  A test build is recorded in the ios-install history and `phone.json`, never in the deploy ledger. When you are done,
-  run `ios-install` to put main back, then `ios-install lease release`.
-- Phone test runs (`xcodebuild test` installs the test host over the app) go through
-  `ios-install exec [--approval dc-<id>] -- xcodebuild test …`. They need your lease, and an approval unless the
-  checkout is `main`'s clean tip.
-- `ios-install status` shows who holds the phone, what is on it, and the last installs. `--dry-run` checks everything
-  without touching the phone.
-- A Claude Code PreToolUse hook (`~/.claude/hooks/ios-install-guard.sh`) blocks raw `devicectl device install|uninstall`,
-  `ios-deploy`, `ideviceinstaller`, `pymobiledevice3 apps install` and `xcodebuild test|install` on the iPhone, also inside
-  scripts a command runs. Don't work around it. If `ios-install` refuses, report why to the coordinator.
-- Only the coordinator or the owner breaks another session's lease (`ios-install lease release --force --reason …`,
-  logged).
+- **A main install** installs `origin/main`'s tip and nothing else.
+  1. agentd fetches the tip into its own clean checkout and runs `deploy-guard check --runtime ios`.
+  2. Someone else's lease refuses the install. Without one, agentd leases the phone to you for the install.
+  3. agentd issues a one-use grant and runs the Mac executor (`ios-install executor`) over SSH (`mac-home`, then
+     `mac-via-cursor`). The executor builds Release in the owner's GUI session, since codesign can't reach the
+     keychain over SSH. It shows the grant back before building and again inside `/tmp/iphone16e.lock`, then
+     installs with `devicectl`.
+  4. agentd runs `deploy-guard record --runtime ios`. The ledger, the `deploy/ios/*` tag and the ops record stay
+     deploy-guard's.
+- **A test build** of a branch needs two things:
+  - your lease;
+  - the owner's own go: `lucina-rs decide --impact high …` (or `lucina_decide`), with a question that names the sha8,
+    your session id or your workspace. Decided by the owner, not by Lucina, at most 24 h old.
+
+  It goes in the device history, never in the deploy ledger. When you are done, put main back with
+  `lagent device install iphone` and release the lease.
+- **A phone test run** replaces the app with its test host (`xcodebuild test`). It needs your lease, plus an
+  approval unless the commit is `main`'s tip. `ios-install exec` on the Mac checks the grant, runs the command
+  under the device lock and reports the run. Without an approval, the checkout must be the clean tip.
+- `--dry-run` checks everything, the executor included, and installs nothing. Add `--build` to build too.
+- The pipeline-guard hook denies raw installs in Lucina work and points at these commands:
+  - `devicectl device install|uninstall`;
+  - `ios-deploy`, `ideviceinstaller`, `pymobiledevice3 apps install`;
+  - `xcodebuild test|install` on the iPhone, also inside scripts a command runs.
+
+  Don't work around it. If `lagent` refuses, report why to the coordinator.
 
 ## Standalone crates
 

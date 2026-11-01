@@ -1,8 +1,9 @@
 # Lucina pipeline: task → workspace → merge → deploy → device
 
 Status (2026-11-01): pieces 1–3 built in `crates/lucina-agentd` (`src/pipeline/`, `src/manager/pipeline.rs`,
-`src/api/pipeline.rs`, `src/cli/pipe.rs`); device leases and the board's API built (pieces 4 and 5); the
-board page in the app, lease-checked installs and the stale question to the owner are designed below.
+`src/api/pipeline.rs`, `src/cli/pipe.rs`); device leases, lease-checked iPhone installs and the board's API
+built (pieces 4 and 5); the board page in the app, installers for the other devices and the stale question to the
+owner are designed below.
 The rules every session follows are in [`docs/repo-workflow.md`](../repo-workflow.md).
 
 ## Why
@@ -84,16 +85,29 @@ Devices: `iphone`, `stick` (Samsung laptop USB stick), `kindle`, `poco`. A lease
 409 with who holds it and until when), renewed by leasing again, at most 240 minutes; forcing someone else's lease
 needs a reason and is logged.
 
-Designed, and being built by the "Enforce iPhone installs only from main" session (workspace `lagent-devices`:
-`crates/lucina-agentd/src/devices.rs`, `/devices/{d}/install|grants|history`, on top of these leases), which owns
-`ios-install` and its hook:
-- `ios-install` keeps its device flock, its main-tip check (deploy-guard on nezopt) and its test-build rule (the
-  owner's go through `lucina_decide`), and takes its exclusive lease from agentd (`lagent device lease iphone`)
-  instead of its local `lease.json`, so the board shows who holds the phone.
-- `lagent device install <device> [--test-build --approval dc-…]` runs the device's installer from the trunk's tip
-  and records it (`deploy-guard record --runtime ios`): `ios-install` on the Mac for the iPhone, the LucinaOS
-  image tools for the stick and the Kindle, the POCO flasher for `poco`. Without a lease held by the caller, or with
-  a non-main build and no approval, it refuses.
+Built for the iPhone (rules `lucina_agents::device`, daemon `src/devices.rs`, routes `src/api/devices.rs`, CLI
+`src/cli/device.rs`, test `tests/devices.rs`):
+- `lagent device install iphone [--commit] [--test --approval dc-…] [--dry-run [--build]]`, `lagent device grant
+  iphone --commit <sha> [--approval]`, `lagent device history iphone`; `POST /devices/{d}/install|grants`,
+  `GET /devices/{d}/grants/{id}`, `POST /devices/{d}/grants/{id}/done`, `GET /devices/{d}/history`. `GET /devices`
+  also shows what agentd last installed.
+- **A main install** is `origin/main`'s tip containing the live build:
+  1. `deploy-guard check --runtime ios` from agentd's own clean checkout (`<state>/devices/iphone-ledger`);
+  2. a lease for the install when nobody holds the phone (another holder's lease refuses it);
+  3. a one-use grant, then the Mac executor `ios-install executor` over SSH (`mac-home`, then `mac-via-cursor`). It
+     builds in the owner's GUI session (a launchd job: codesign can't reach the keychain over SSH) and shows the
+     grant back before building and inside `/tmp/iphone16e.lock`;
+  4. `deploy-guard record --runtime ios`.
+- **A test build** of a branch needs the caller's lease and the owner's own go (`decided_by: owner`, ≤ 24 h, naming the
+  sha8, session or workspace). It is recorded in `<state>/devices/history.jsonl`, never in the deploy ledger.
+- **A phone test run** (`xcodebuild test` replaces the app with its test host) takes a grant (the lease, plus an
+  approval unless the commit is the tip). On the Mac, `ios-install exec --grant <id> -- xcodebuild test …` checks it,
+  runs under the device lock and reports back.
+- pipeline-guard denies raw iPhone installs (devicectl, ios-deploy, ideviceinstaller, pymobiledevice3,
+  `xcodebuild test|install` on the phone, also inside a script the command runs) and points here.
+
+Designed:
+- `lagent device install` for the stick and the Kindle (the LucinaOS image tools) and `poco` (the POCO flasher).
 - Owner tests run through the coordinator session (LucinaWORKparent): it holds the lease while the owner tests.
 
 ## 5. The board

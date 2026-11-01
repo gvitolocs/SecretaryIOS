@@ -13,6 +13,7 @@ use serde_json::{json, Value};
 use crate::client::{Client, ClientError};
 use crate::config::{default_socket, shorten_path};
 
+mod device;
 mod term;
 mod orch;
 mod pipe;
