@@ -19,6 +19,9 @@ struct MapsGeocode: Decodable, Sendable {
 enum PlaceTravelMode: String, CaseIterable, Sendable {
     case transit, walk, bike, drive
 
+    /// On the place card, left to right; the bike comes first and is the default.
+    static let cardOrder: [PlaceTravelMode] = [.bike, .drive, .walk, .transit]
+
     var symbol: String {
         switch self {
         case .transit: return "tram.fill"

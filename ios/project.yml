@@ -38,6 +38,8 @@ targets:
         INAlternativeAppNames:
           - INAlternativeAppName: Lucina
         NSUserActivityTypes: [INSendMessageIntent]
+        # "Open in Google Maps" (Features/Places/ExternalMaps.swift) checks for the Google Maps app
+        LSApplicationQueriesSchemes: [comgooglemaps]
         CFBundleDevelopmentRegion: en
         CFBundleLocalizations: [en, it, da]
         CFBundleShortVersionString: "$(MARKETING_VERSION)"

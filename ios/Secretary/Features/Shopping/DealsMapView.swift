@@ -351,7 +351,9 @@ private struct DealsStoreSheet: View {
                     }
                     .accessibilityIdentifier("dealsDirections")
                     .contextMenu {
-                        OpenInAppleMapsButton(bikeTo: CLLocationCoordinate2D(latitude: store.lat, longitude: store.lng), name: store.place.title)
+                        let coordinate = CLLocationCoordinate2D(latitude: store.lat, longitude: store.lng)
+                        OpenInGoogleMapsButton(to: coordinate, mode: .bike)
+                        OpenInAppleMapsButton(to: coordinate, name: store.place.title, mode: .bike)
                     }
                 }
             }

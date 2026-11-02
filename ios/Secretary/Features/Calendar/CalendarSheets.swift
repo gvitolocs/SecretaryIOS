@@ -467,7 +467,7 @@ struct CalendarDetail: View {
         PlaceLocation.shared.refresh()
         let home = PlaceResolver.shared.home ?? CLLocationCoordinate2D(latitude: 56.19633, longitude: 10.2011)
         guard let origin = PlaceOrigin.current(home: home) else { return nil }
-        guard let route = await BikeRoute.calculate(from: origin.coordinate, to: destination),
+        guard let route = await PlaceRoute.calculate(.bike, from: origin.coordinate, to: destination),
               let minutes = CalendarMath.travelMinutes(seconds: route.seconds) else {
             CalendarDebug.travel(event, via: "none", minutes: nil, mode: nil)
             return nil

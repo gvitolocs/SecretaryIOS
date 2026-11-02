@@ -17483,6 +17483,38 @@
         }
       }
     },
+    "Open in Google Maps" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apri in Google Maps"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Åbn i Google Maps"
+          }
+        }
+      }
+    },
+    "Apple Maps can only give the time for public transport. Open in Google Maps to see the lines." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple Maps dà solo il tempo per i mezzi pubblici. Apri in Google Maps per vedere le linee."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple Maps kan kun give tiden for offentlig transport. Åbn i Google Maps for at se linjerne."
+          }
+        }
+      }
+    },
     "Open in Apple Maps" : {
       "localizations" : {
         "it" : {

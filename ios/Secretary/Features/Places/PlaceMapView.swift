@@ -2,10 +2,10 @@ import MapKit
 import SwiftUI
 
 /// The full map of a place: its pin, the owner's position (both in view when the owner is within
-/// ~50 km) and the bike route (the priority: he lives in Denmark), and a card with the address,
-/// time, distance and travel times from the current position (else from home), the bike's first.
-/// Navigate stays in the app: the camera follows the owner along the bike route with the next
-/// turn; Apple Maps is only a secondary menu item.
+/// ~50 km) and the route in the selected mode (by default the bike: he lives in Denmark), and a card
+/// with the address, time, distance and a tappable travel time per mode from the current position
+/// (else from home). Navigate stays in the app: the camera follows the owner along the route with
+/// the next turn. Google Maps and Apple Maps are explicit actions, in the selected mode.
 struct PlaceMapView: View {
     @Environment(AppModel.self) private var app
     let place: Place
@@ -16,16 +16,17 @@ struct PlaceMapView: View {
     var startsNavigating = false
     @State private var navigating = false
     @State private var startedOnce = false
-    /// The bike route, from where the owner is (else from home).
-    @State private var route: BikeRoute?
-    /// When the route was last loaded (its duration counts from then).
+    /// The routes per mode, from where the owner is (else from home).
+    @State private var routes: [PlaceTravelMode: PlaceRoute] = [:]
+    /// Bike unless the owner taps another mode, for this screen only.
+    @State private var selectedMode: PlaceTravelMode = .bike
+    /// When the routes were last loaded (their durations count from then).
     @State private var routeAt = Date()
     @State private var routeLoading = false
-    /// Car, walk and transit times, after the bike's on the card.
-    @State private var etas: [PlaceETA] = []
     /// An event's place: pinned to the countdown widget.
     @State private var countdownPinned = false
 
+    private var route: PlaceRoute? { routes[selectedMode] }
     private var polyline: [[Double]] { route?.line ?? [] }
 
     /// When to leave for an appointment still ahead.
@@ -34,7 +35,7 @@ struct PlaceMapView: View {
         return when.addingTimeInterval(-route.seconds)
     }
 
-    /// The route reloads when the owner moves ~100 m, every ~1 km while navigating (fewer calls).
+    /// The routes reload when the owner moves ~100 m, every ~1 km while navigating (fewer calls).
     private var routesKey: String? { navigating ? origin.map { String(format: "nav %.2f,%.2f", $0.lat, $0.lng) } : origin?.key }
 
     /// The owner's live position while navigating.
@@ -97,13 +98,17 @@ struct PlaceMapView: View {
             PlaceLocation.shared.refresh()
             await PlaceResolver.shared.loadHome(api: app.api)
         }
-        .task(id: routesKey) { await loadRoute() }
+        .task(id: routesKey) { await loadRoutes() }
         .onAppear {
             if startsNavigating && !startedOnce { startNavigation() }
             startedOnce = true
         }
         .onDisappear { stopNavigation() }
         #if SCREENSHOTS
+        .onChange(of: selectedMode) { _, _ in
+            reportFit()
+            MapSelfTestProbe.shared.leaveAt = leaveAt
+        }
         .onAppear {
             MapSelfTestProbe.shared.mapShown = true
             reportFit()
@@ -136,100 +141,101 @@ struct PlaceMapView: View {
         }
     }
 
-    @ViewBuilder private var bikeTime: some View {
-        if let route {
-            let duration = PlaceFormat.duration(route.seconds)
-            timeItem(route.estimated ? "≈ \(duration)" : duration, symbol: PlaceTravelMode.bike.symbol)
-                .fontWeight(.semibold)
-                .foregroundStyle(Theme.text)
-                .accessibilityLabel(Text(verbatim: "\(route.modeText) \(duration)"))
+    /// A button per mode with its time, the selected one filled: tapping selects it, and the map line,
+    /// Navigate and the other maps apps follow.
+    private var modePicker: some View {
+        HStack(spacing: 4) {
+            ForEach(PlaceTravelMode.cardOrder, id: \.self) { mode in
+                let selected = mode == selectedMode
+                Button {
+                    select(mode)
+                } label: {
+                    VStack(spacing: 4) {
+                        Image(systemName: mode.symbol)
+                        if let route = routes[mode] {
+                            Text(verbatim: route.durationText)
+                                .font(LucinaTokens.Fonts.caption.monospacedDigit().weight(selected ? .semibold : .regular))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.7)
+                        } else if routeLoading {
+                            ProgressView().controlSize(.mini)
+                        } else {
+                            Text(verbatim: "–").font(LucinaTokens.Fonts.caption)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .padding(6)
+                    .foregroundStyle(selected ? Theme.onAccent : Theme.text)
+                    .background(selected ? Theme.accentFill : Theme.field,
+                                in: RoundedRectangle(cornerRadius: LucinaTokens.Radius.field))
+                    .contentShape(RoundedRectangle(cornerRadius: LucinaTokens.Radius.field))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(Text(verbatim: "\(routes[mode]?.modeText ?? mode.title) \(routes[mode]?.durationText ?? "")"))
+                .accessibilityAddTraits(selected ? .isSelected : [])
+                .accessibilityIdentifier("placeMode-\(mode.rawValue)")
+            }
         }
     }
 
-    private var otherTimes: some View {
-        ForEach(etas) { eta in
-            timeItem(PlaceFormat.duration(eta.seconds), symbol: eta.mode.symbol)
-                .accessibilityLabel(Text(verbatim: "\(eta.mode.title) \(PlaceFormat.duration(eta.seconds))"))
-        }
-    }
-
-    private func timeItem(_ time: String, symbol: String) -> some View {
-        HStack(spacing: 3) {
-            Image(systemName: symbol)
-            Text(verbatim: time)
-        }
-        .accessibilityElement(children: .combine)
-    }
-
-    /// The bike's time first, then car, walk and transit. A bike estimate says so; a walking or car
+    /// The modes, then what the selected one needs said. A bike estimate says so; a walking or car
     /// time never stands in for it.
     @ViewBuilder private var travelTimes: some View {
-        if route != nil || !etas.isEmpty {
-            // One row when it fits, else the bike above the others: a time is never cut off.
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 10) {
-                    bikeTime
-                    otherTimes
-                }
-                VStack(alignment: .leading, spacing: 4) {
-                    bikeTime
-                    HStack(spacing: 10) { otherTimes }
-                }
-            }
-            .font(LucinaTokens.Fonts.subheadline.monospacedDigit())
-            .foregroundStyle(Theme.textSecondary)
-            .lineLimit(1)
-            .minimumScaleFactor(0.8)
-            .accessibilityElement(children: .combine)
+        modePicker
+        Group {
             if let route, route.estimated {
-                Label(route.modeText, systemImage: PlaceTravelMode.bike.symbol)
-                    .font(LucinaTokens.Fonts.caption)
-                    .foregroundStyle(Theme.textSecondary)
+                Label(route.modeText, systemImage: route.mode.symbol)
             } else if route == nil, !routeLoading {
-                Text("No bike route found")
-                    .font(LucinaTokens.Fonts.caption)
-                    .foregroundStyle(Theme.textSecondary)
+                selectedMode == .bike ? Text("No bike route found") : Text("No route found")
+            } else if selectedMode == .transit {
+                Text("Apple Maps can only give the time for public transport. Open in Google Maps to see the lines.")
             }
-            if let leaveAt {
-                let time = leaveAt.formatted(date: .omitted, time: .shortened)
-                Text("Leave at \(time) to be on time")
-                    .font(LucinaTokens.Fonts.subheadline.weight(.semibold))
-                    .foregroundStyle(Theme.accent)
-            }
-        } else if routeLoading {
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.small)
-                Text("Travel times…")
-            }
-            .font(LucinaTokens.Fonts.subheadline)
-            .foregroundStyle(Theme.textSecondary)
-        } else {
-            Text("No bike route found")
-                .font(LucinaTokens.Fonts.subheadline)
-                .foregroundStyle(Theme.textSecondary)
+        }
+        .font(LucinaTokens.Fonts.caption)
+        .foregroundStyle(Theme.textSecondary)
+        if let leaveAt {
+            let time = leaveAt.formatted(date: .omitted, time: .shortened)
+            Text("Leave at \(time) to be on time")
+                .font(LucinaTokens.Fonts.subheadline.weight(.semibold))
+                .foregroundStyle(Theme.accent)
         }
     }
 
-    /// Navigate by bike (in the app) and, in a secondary menu, Apple Maps.
+    /// Navigate in the selected mode (in the app), Google Maps next to it, Apple Maps in the menu.
     private var directions: some View {
-        HStack(spacing: 8) {
-            Button(action: startNavigation) {
-                Label("Navigate", systemImage: PlaceTravelMode.bike.symbol)
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                Button(action: startNavigation) {
+                    Label("Navigate", systemImage: selectedMode.symbol)
+                        .font(LucinaTokens.Fonts.subheadline.weight(.semibold))
+                        .foregroundStyle(Theme.onAccent)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 44)
+                        .background(Theme.accentFill, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("placeNavigate")
+                moreMenu
+            }
+            Button {
+                ExternalMaps.openGoogleDirections(to: coordinate, mode: selectedMode)
+            } label: {
+                Label("Open in Google Maps", systemImage: "map.fill")
                     .font(LucinaTokens.Fonts.subheadline.weight(.semibold))
-                    .foregroundStyle(Theme.onAccent)
+                    .foregroundStyle(Theme.text)
                     .frame(maxWidth: .infinity)
                     .frame(height: 44)
-                    .background(Theme.accentFill, in: Capsule())
+                    .background(Theme.field, in: Capsule())
             }
             .buttonStyle(.plain)
-            .accessibilityIdentifier("placeNavigate")
-            moreMenu
+            .accessibilityIdentifier("placeOpenGoogle")
         }
     }
 
     private var moreMenu: some View {
         Menu {
-            OpenInAppleMapsButton(bikeTo: coordinate, name: place.title)
+            OpenInGoogleMapsButton(to: coordinate, mode: selectedMode)
+            OpenInAppleMapsButton(to: coordinate, name: place.title, mode: selectedMode)
         } label: {
             Image(systemName: "ellipsis")
                 .font(LucinaTokens.Fonts.subheadline.weight(.semibold))
@@ -268,7 +274,7 @@ struct PlaceMapView: View {
             }
             if !arrived {
                 HStack(spacing: 6) {
-                    Image(systemName: PlaceTravelMode.bike.symbol)
+                    Image(systemName: selectedMode.symbol)
                     if let route {
                         let time = routeAt.addingTimeInterval(route.seconds).formatted(date: .omitted, time: .shortened)
                         Text("Arrive at \(time)")
@@ -313,7 +319,7 @@ struct PlaceMapView: View {
 
     private func startNavigation() {
         guard !navigating else { return }
-        DebugEvents.record("place.navigate", ["mode": PlaceTravelMode.bike.rawValue, "via": route?.source.rawValue ?? "none"])
+        DebugEvents.record("place.navigate", ["mode": selectedMode.rawValue, "via": route?.source.rawValue ?? "none"])
         PlaceLocation.shared.requestPermission()
         PlaceLocation.shared.startUpdating()
         UIApplication.shared.isIdleTimerDisabled = true
@@ -333,12 +339,17 @@ struct PlaceMapView: View {
         #endif
     }
 
-    private func loadRoute() async {
-        // While navigating the old route stays up until the new one arrives.
-        if !navigating {
-            route = nil
-            etas = []
-        }
+    private func select(_ mode: PlaceTravelMode) {
+        selectedMode = mode
+        DebugEvents.record("ui.tap", ["screen": "place_map", "element": "travel_mode", "mode": mode.rawValue,
+                                      "via": routes[mode]?.source.rawValue ?? "none", "seconds": Int(routes[mode]?.seconds ?? 0),
+                                      "steps": routes[mode]?.steps.count ?? 0])
+    }
+
+    private func loadRoutes() async {
+        // While navigating the old route stays up until the new one arrives, and only that mode
+        // reloads (fewer calls).
+        if !navigating { routes = [:] }
         guard let origin else { return }
         routeLoading = true
         #if SCREENSHOTS
@@ -348,32 +359,30 @@ struct PlaceMapView: View {
         MapSelfTestProbe.shared.fallbackReason = nil
         MapSelfTestProbe.shared.leaveAt = nil
         #endif
-        let found = await BikeRoute.calculate(from: origin.coordinate, to: coordinate)
+        let from = origin.coordinate, to = coordinate, isHome = origin.isHome
+        await withTaskGroup(of: (PlaceTravelMode, PlaceRoute?).self) { group in
+            for mode in navigating ? [selectedMode] : PlaceTravelMode.cardOrder {
+                group.addTask { (mode, await PlaceRoute.calculate(mode, from: from, to: to)) }
+            }
+            for await (mode, found) in group {
+                guard !Task.isCancelled else { return }
+                if found != nil || !navigating { routes[mode] = found }
+                // Free of coordinates and addresses, like every debug event.
+                DebugEvents.record("place.route", ["mode": mode.rawValue, "via": found?.source.rawValue ?? "none",
+                                                   "seconds": Int(found?.seconds ?? 0), "meters": Int(found?.meters ?? 0),
+                                                   "steps": found?.steps.count ?? 0, "navigating": navigating, "from_home": isHome])
+            }
+        }
         guard !Task.isCancelled else { return }
-        if found != nil || !navigating {
-            route = found
-            routeAt = Date()
-        }
+        routeAt = Date()
         routeLoading = false
-        // Free of coordinates and addresses, like every debug event.
-        DebugEvents.record("place.route", ["mode": PlaceTravelMode.bike.rawValue, "via": found?.source.rawValue ?? "none",
-                                           "seconds": Int(found?.seconds ?? 0), "meters": Int(found?.meters ?? 0),
-                                           "steps": found?.steps.count ?? 0, "navigating": navigating, "from_home": origin.isHome])
-        // The card isn't up while navigating: no other times, fewer calls.
-        if !navigating {
-            let others = await PlaceETA.all(from: origin.coordinate, to: coordinate)
-            guard !Task.isCancelled else { return }
-            etas = others
-        }
         #if SCREENSHOTS
-        if let found {
-            MapSelfTestProbe.shared.routesText = PlaceTravelMode.bike.rawValue
-            if found.estimated { MapSelfTestProbe.shared.fallbackReason = found.source.rawValue }
-        }
-        let bikeText = found.map { "\($0.modeText) \(PlaceFormat.duration($0.seconds))" }
-        MapSelfTestProbe.shared.etaText = [bikeText, etas.isEmpty ? nil : PlaceETA.text(etas)].compactMap { $0 }.joined(separator: " · ")
+        let found = PlaceTravelMode.cardOrder.compactMap { routes[ash] }
+        MapSelfTestProbe.shared.routesText = found.isEmpty ? nil : found.map(\.mode.rawValue).joined(separator: ",")
+        MapSelfTestProbe.shared.etaText = found.map { "\(ash.modeText) \(ash.durationText)" }.joined(separator: " · ")
+        if let bike = routes[.bike], bike.estimated { MapSelfTestProbe.shared.fallbackReason = bike.source.rawValue }
         MapSelfTestProbe.shared.leaveAt = leaveAt
-        if navigating { MapSelfTestProbe.shared.navigationSteps = found?.steps.count ?? 0 }
+        if navigating { MapSelfTestProbe.shared.navigationSteps = route?.steps.count ?? 0 }
         reportFit()
         MapSelfTestProbe.shared.etaDone = true
         #endif
@@ -450,7 +459,7 @@ private struct RoutedPlaceView: View {
     }
 }
 
-/// A place the app's map could not find: says so; Apple Maps only from the secondary menu.
+/// A place the app's map could not find: says so; Google Maps and Apple Maps only from the secondary menu.
 struct PlaceNotFound: View {
     let place: Place
 
@@ -460,6 +469,7 @@ struct PlaceNotFound: View {
                 .font(LucinaTokens.Fonts.subheadline)
                 .foregroundStyle(Theme.textSecondary)
             Menu {
+                OpenInGoogleMapsButton(url: ExternalMaps.googleMapsSearchURL(place.searchQuery))
                 OpenInAppleMapsButton(url: ExternalMaps.appleMapsSearchURL(place.searchQuery))
             } label: {
                 Label("More", systemImage: "ellipsis.circle")

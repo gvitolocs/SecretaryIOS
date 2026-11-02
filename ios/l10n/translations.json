@@ -1001,6 +1001,8 @@
   "No event": ["Nessun evento", "Ingen begivenhed"],
   "Here": ["Qui", "Her"],
   "Navigate": ["Naviga", "Naviger"],
+  "Open in Google Maps": ["Apri in Google Maps", "Åbn i Google Maps"],
+  "Apple Maps can only give the time for public transport. Open in Google Maps to see the lines.": ["Apple Maps dà solo il tempo per i mezzi pubblici. Apri in Google Maps per vedere le linee.", "Apple Maps kan kun give tiden for offentlig transport. Åbn i Google Maps for at se linjerne."],
   "Open in Apple Maps": ["Apri in Apple Maps", "Åbn i Apple Maps"],
   "You have arrived": ["Sei a destinazione", "Du er fremme"],
   "Arrive at %@": ["Arrivo alle %@", "Ankomst kl. %@"],
