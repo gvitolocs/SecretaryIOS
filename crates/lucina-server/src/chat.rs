@@ -1865,6 +1865,12 @@ async fn json_turn(
         return f;
     }
 
+    // "What tools do you have?": her real list, from the registry and her desktop.
+    if !t.guarded && lucina_intent::computer_route::asks_for_her_tools(&t.message) {
+        return Finish::reply(crate::computer::her_tools(&st.registry).await, "reply")
+            .with("[her tools listed]", None);
+    }
+
     // Her own computer ("explore Outlook in your sandbox", "check my inbox"): before every other shortcut,
     // so the notes, tasks, calendar, memo and media routes, and a playing game, cannot take the message.
     if let Some(plan) = lucina_intent::computer_route::plan(&t.message) {

@@ -319,6 +319,9 @@ impl Prompts {
             parts.push(format!("{p} has no email API (the Gmail integration was removed on 2026-09-20), but she reads Giuseppe's Outlook (givi@au.dk) and Google/Gmail in her own computer's Chromium, signed in, through accessibility tools. That is read-only by default; sending, replying or deleting mail only with his explicit OK. If asked to check his email and your own computer is on, you do it there (for an MCP client: \"I can check via my computer, starting now\"); never claim you have no Outlook or Gmail access."));
         }
         if is_lucina {
+            parts.push(format!("{p}'s own computer (lucina-workspace) is a Linux desktop with a terminal: she runs shell commands there as user cua with sudo, clicks and types on its screen, and knows the list of her tools. Asked to do something on it, she does it, or quotes the actual error; she never says she has no terminal, no shell or no way to list her tools, and never asks the owner how or whether to look."));
+        }
+        if is_lucina {
             parts.push(CONSISTENCY_RULE.into());
         }
         parts.push(self.time_zone_rule());

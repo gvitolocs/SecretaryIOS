@@ -606,7 +606,7 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
     }
     // An id that names no stored item is ignored (the share is still taken).
     let reply_to = (!reply_to.is_empty()).then_some(reply_to).filter(|id| {
-        match st.timeline.get(id) {
+        match st.timeline_for(&session).get(id) {
             Ok(Some(_)) => true,
             _ => {
                 tracing::debug!(reply_to = %id, "share replyTo names no timeline item; ignored");
@@ -895,16 +895,16 @@ async fn register_in_place(
 }
 
 /// Whether a timeline item exists (in memory; no file read).
-fn has_item(st: &AppState, id: &str) -> bool {
-    st.timeline
+fn has_item(st: &AppState, session: &str, id: &str) -> bool {
+    st.timeline_for(session)
         .read_all()
         .map(|items| items.iter().rev().any(|i| i.id == id))
         .unwrap_or(false)
 }
 fn ensure_user(st: &AppState, job: &Job) -> anyhow::Result<()> {
-    if !has_item(st, &job.user_item.id) {
+    if !has_item(st, &job.session, &job.user_item.id) {
         let item = &job.user_item;
-        st.timeline.append(NewItem {
+        st.timeline_for(&job.session).append(NewItem {
             id: Some(item.id.clone()),
             channel: item.channel.clone(),
             role: "user".into(),
@@ -922,8 +922,8 @@ fn ensure_user(st: &AppState, job: &Job) -> anyhow::Result<()> {
 /// can be far from the end (a "newest N" window answered twice; Stateright
 /// case and Verus `unfixed_window_scan` in docs/verification.md). Items that
 /// don't mention the id are skipped before any JSON parsing.
-fn existing_reply(st: &AppState, user_item: &str) -> Option<(String, String)> {
-    let items = st.timeline.read_all().ok()?;
+fn existing_reply(st: &AppState, session: &str, user_item: &str) -> Option<(String, String)> {
+    let items = st.timeline_for(session).read_all().ok()?;
     items
         .iter()
         .rev()
@@ -1007,7 +1007,7 @@ fn spawn(st: AppState, dir: PathBuf, mut job: Job) {
             job.stage = "error".into();
             job.error = Some(e.to_string());
             let reply = format!("I couldn't finish reading this share: {e}");
-            let item = st.timeline.record(NewItem {
+            let item = st.timeline_for(&job.session).record(NewItem {
                 channel: job.user_item.channel.clone(),
                 role: "lucina".into(),
                 text: reply.clone(),
@@ -1168,7 +1168,7 @@ pub(crate) fn turn_message(note: &str, _device_lang: &str, content: &str) -> Str
 
 async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()> {
     ensure_user(st, job)?;
-    if let Some((id, text)) = existing_reply(st, &job.user_item.id) {
+    if let Some((id, text)) = existing_reply(st, &job.session, &job.user_item.id) {
         job.status = "done".into();
         job.stage = "done".into();
         job.reply = Some(text);
@@ -1310,7 +1310,7 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
             "da" => "Jeg kunne ikke høre dig. Kan du gentage det?",
             _ => "I couldn't hear you. Could you repeat that?",
         };
-        let item = st.timeline.append(NewItem {
+        let item = st.timeline_for(&job.session).append(NewItem {
             channel: job.user_item.channel.clone(),
             role: "lucina".into(),
             text: reply.into(),
@@ -1340,7 +1340,7 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
             "da" => "Gemt i samlingen Shared.",
             _ => "Saved to the Shared library.",
         };
-        let item = st.timeline.append(NewItem {
+        let item = st.timeline_for(&job.session).append(NewItem {
             channel: job.user_item.channel.clone(),
             role: "lucina".into(),
             text: reply.into(),

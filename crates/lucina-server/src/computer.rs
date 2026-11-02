@@ -210,6 +210,51 @@ async fn screen(sb: &Sandbox) -> Result<(Option<(String, String)>, String), ApiE
     Ok((image_of(&r), text_of(&r)))
 }
 
+/// What she can really use, read now: her chat tools, and what her desktop answers.
+pub(crate) async fn her_tools(registry: &lucina_tools::Registry) -> String {
+    let chat = registry.names().join(", ");
+    if !lucina_computer_use::shared_client().ready() {
+        return format!("In this chat: {chat}.\n\nMy own computer is switched off on this runtime.");
+    }
+    let sb = Sandbox::workspace();
+    let system = match sb
+        .bash("uname -sr; if sudo -n true 2>/dev/null; then echo sudo; fi", Some(15))
+        .await
+    {
+        Ok(r) => text_of(&r),
+        Err(e) => {
+            tracing::warn!(error = %e, "her desktop did not answer the tools question");
+            return format!("In this chat: {chat}.\n\nMy computer isn't answering right now ({}), so I can't read its tools.", e.code());
+        }
+    };
+    let driver = sb
+        .tools(None)
+        .await
+        .ok()
+        .and_then(|r| serde_json::from_str::<Value>(&text_of(&r)).ok())
+        .map(|v| driver_tool_names(&v))
+        .unwrap_or_default();
+    let sudo = if system.lines().any(|l| l.trim() == "sudo") {
+        " with sudo"
+    } else {
+        ""
+    };
+    let kernel = system.lines().next().unwrap_or("Linux").trim();
+    format!(
+        "On my computer (lucina-workspace, {kernel}): a terminal, where I run shell commands as user cua{sudo}; whole jobs through my computer-use engine; screenshots; and the desktop driver: {}.\n\nIn this chat: {chat}.",
+        if driver.is_empty() { "its tool list didn't answer just now".to_owned() } else { driver.join(", ") },
+    )
+}
+
+fn driver_tool_names(list: &Value) -> Vec<String> {
+    list["tools"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|t| t["name"].as_str().map(str::to_owned))
+        .collect()
+}
+
 // ---------------------------------------------------------------- jobs
 
 struct Job {

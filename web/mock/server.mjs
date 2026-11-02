@@ -2091,6 +2091,17 @@ async function route(req, res) {
   if (path === "/v1/body/command" && method === "POST") return handleBodyCommand(req, res);
 
   if (path === "/v1/chat" && method === "POST") return handleChat(req, res);
+  // Lucina's computer: nobody drives, and a blank page stands in for the live view.
+  if (path === "/v1/computer/control") {
+    return send(res, 200, {
+      state: { sandbox: "workspace", driver: "none", epoch: 0, owner: null, task: null, lastAgent: null, leaseSecs: 45 },
+      recent: [],
+      viewer: { assets: "0123456789abcdef" },
+    });
+  }
+  if (path === "/v1/computer/view" && method === "POST") {
+    return send(res, 200, { viewId: "mockview", viewUrl: "about:blank#ticket=mock", sandbox: "workspace", mode: "watch", ttlSecs: 600, lan: null });
+  }
 
   if (path === "/v1/tts" && method === "POST") return handleTts(req, res);
   if (path === "/v1/avatar/wardrobe" && method === "GET") return send(res, 200, wardrobeFile());

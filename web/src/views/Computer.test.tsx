@@ -104,6 +104,32 @@ function layoutShot(img: HTMLImageElement) {
   Object.defineProperty(img, "naturalHeight", { configurable: true, value: 800 });
 }
 
+describe("the chat beside the desktop", () => {
+  it("is in the page, can be closed, and keys in it never take over", async () => {
+    stubWide();
+    const calls = stubFetch(async (call: Call) => {
+      if (call.url.includes("/computer/control")) return { body: { driver: "none", owner: null, task: null } };
+      return { body: { items: [], entries: [] } };
+    });
+    renderAt("/computer", () => <Route path="/computer" component={ComputerView} />);
+    const panel = await waitFor(() => {
+      const el = document.querySelector<HTMLElement>(".computer-chat");
+      if (!el) throw new Error("no panel");
+      return el;
+    });
+    const box = within(panel).getByRole("textbox");
+    fireEvent.keyDown(box, { key: "a" });
+    fireEvent.keyDown(panel, { key: "a" });
+    fireEvent.keyDown(panel, { key: "Escape" });
+    expect(calls.some((c) => c.url.includes("/computer/take") || c.url.includes("/computer/input"))).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Chat", pressed: true }));
+    expect(document.querySelector(".computer-chat")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Chat", pressed: false }));
+    expect(document.querySelector(".computer-chat")).not.toBeNull();
+  });
+});
+
 describe("Lucina's computer", () => {
   beforeEach(() => {
     setLocale("en");

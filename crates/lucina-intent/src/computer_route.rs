@@ -27,6 +27,8 @@ pub enum Mode {
     /// The owner also asked for something that writes (send, reply, forward,
     /// delete…): the task may only prepare it and must ask for his explicit OK.
     NeedsConfirmation,
+    /// A job on her own desktop that is not his mail: install, run, open (his request, so it stays done).
+    DesktopJob,
 }
 
 /// The mail account the request is about.
@@ -79,6 +81,12 @@ const MAIL_WEAK: &str = r"\b(?:e-?mails?|mails?|posta|post\s?kasse)\b";
 
 /// Her own computer.
 const COMPUTER: &str = r"(?:\bsandbox\b|\blucina-workspace\b|\bchromium\b|\b(?:your|ur)\s+(?:own\s+)?(?:computer|pc|desktop|browser|machine|workspace|laptop)\b|\b(?:in|on|from|via|using|with|inside)\s+(?:the\s+)?(?:computer|desktop|browser)\s+(?:of\s+)?(?:yours|lucina)\b|\b(?:tuo|tua|tuoi|tue)\s+(?:computer|pc|desktop|browser|sandbox|macchina)\b|\b(?:nel|sul|dal|col)\s+tuo\s+(?:computer|pc|desktop|browser)\b|\b(?:din|dit)\s+(?:egen\s+)?(?:computer|pc|browser|sandbox)\b)";
+
+/// A job for her desktop, with her computer named ("on your pc sandbox install the steam deb").
+const DESKTOP_JOB: &str = r"\b(?:install\w*|uninstall\w*|run|execute|launch|download\w*|update|upgrade|terminal|shell|apt|dpkg|sudo|\.?deb|installa\w*|disinstalla\w*|scarica\w*|esegui|avvia|lancia|install[ée]r\w*|k[øo]r|hent)\b";
+
+/// Added to a desktop job: what she can really do there.
+pub const DESKTOP_SUFFIX: &str = "This is on your own Linux desktop (lucina-workspace), and it is the owner's own request, so do it and leave it done. Use what the job needs: the terminal (space_bash) runs commands as user cua, with passwordless sudo; files are under /home/cua (his downloads in ~/Downloads); get_window_state, click and type_text work on any window. For a package: find the file or the name, install it with sudo apt-get install -y, and check that it is really installed. Never install or launch Firefox or a second browser, and leave the signed-in Chromium sessions alone unless the job is about them. Answer briefly with what you actually ran and how it ended; if something blocks it, say exactly what.";
 
 /// Asking to look at the mailbox.
 const LOOK: &str = r"\b(?:check\w*|explor\w*|open\w*|read\w*|look\w*|see|seen|peek\w*|brows\w*|scan\w*|view\w*|show\w*|find\w*|search\w*|list\w*|go to|visit\w*|review\w*|summari[sz]\w*|tell me|replied|answered|received|arrived|controlla\w*|guarda\w*|apri\w*|leggi\w*|legg\w*|esplora\w*|vedi|vedere|vedi\w*|cerca\w*|mostra\w*|dai un.occhiata|ricevut\w*|risposto|arrivat\w*|tjek\w*|[åa]bn\w*|kig\w*|l[æa]s\w*|find\w*)\b";
@@ -169,7 +177,7 @@ pub fn classify(text: &str) -> Option<Mode> {
         || (computer && re!(AU_SITE, "i").test(t) && re!(LOOK, "i").test(t))
         || caller_lookup(t);
     if !routed {
-        return None;
+        return (computer && re!(DESKTOP_JOB, "i").test(t)).then_some(Mode::DesktopJob);
     }
     Some(if re!(WRITE, "i").test(t) {
         Mode::NeedsConfirmation
@@ -183,10 +191,27 @@ pub fn wants_computer(text: &str) -> bool {
     classify(text).is_some()
 }
 
+/// "What tools do you have?", "its cua check all the tools": a question for her real list, not for chat.
+pub fn asks_for_her_tools(text: &str) -> bool {
+    let t = text.trim();
+    t.chars().count() <= 200
+        && re!(r"\b(?:tools?|toolset|strumenti|v[æa]rkt[øo]j\w*)\b", "i").test(t)
+        && (re!(r"\bcua\b", "i").test(t)
+            || re!(COMPUTER, "i").test(t)
+            || re!(
+                r"\b(?:do|can)\s+you\s+have\b|\byou\s+have\b|\byour\s+(?:own\s+)?tools?\b|\ball\s+(?:the\s+|your\s+)?tools?\b|\bi\s+tuoi\s+strumenti\b|\bdine\s+v[æa]rkt[øo]j\w*\b",
+                "i"
+            )
+            .test(t))
+}
+
 /// The task for the computer-use engine: the corrected request plus the rules.
 pub fn task_text(text: &str, mode: Mode) -> String {
     let fixed = fix_stt(text);
     let fixed = fixed.trim();
+    if mode == Mode::DesktopJob {
+        return format!("{fixed}\n\n{DESKTOP_SUFFIX}");
+    }
     if mode == Mode::ReadOnly && au_site(fixed).is_some() {
         return format!("{fixed}\n\n{AU_WEB_SUFFIX}");
     }
@@ -195,6 +220,7 @@ pub fn task_text(text: &str, mode: Mode) -> String {
     }
     let app = app_of(fixed);
     let suffix = match (mode, app) {
+        (Mode::DesktopJob, _) => DESKTOP_SUFFIX,
         (Mode::NeedsConfirmation, _) => CONFIRM_SUFFIX,
         (Mode::ReadOnly, App::Outlook) => READ_ONLY_SUFFIX,
         (Mode::ReadOnly, App::Gmail) => READ_ONLY_SUFFIX_GMAIL,
@@ -216,6 +242,8 @@ pub fn task_text(text: &str, mode: Mode) -> String {
 pub fn ack(lang: &str, app: App, mode: Mode) -> String {
     let a = app.label();
     match (lang, mode) {
+        ("da", Mode::DesktopJob) => "Ok, det gør jeg på min computer nu.".to_owned(),
+        (_, Mode::DesktopJob) => "On it: I'm doing this on my computer now.".to_owned(),
         ("it", Mode::ReadOnly) => {
             format!("Ok, apro {a} sul mio computer e do un'occhiata — solo lettura.")
         }
@@ -288,6 +316,42 @@ mod tests {
     const EXPLODE: &str = "Explode outlook in your sandbox";
     /// 07:32, mcp:www.
     const MCP_CHECK: &str = "Quick check only: has Giuseppe already SENT an email this morning (28 Oct 2026) from givi@au.dk to Marianne/Arkaitz about CRAFT self-assessment / \"Ecosystem self assessment-tool for replication\"? If you can see Outlook Sent or notes, say yes/no. If you cannot check, say cannot check. One short answer.";
+
+    /// 2 Nov 2026, web: she answered from casual chat that she had no terminal, and no way to list her tools.
+    #[test]
+    fn a_job_on_her_computer_goes_there_and_she_can_list_her_tools() {
+        let p = plan("on your pc sandbox install the steam deb").unwrap();
+        assert_eq!(p["action"], "computer_task");
+        let task = p["task"].as_str().unwrap();
+        assert!(task.starts_with("on your pc sandbox install the steam deb"), "{task}");
+        assert!(task.contains("passwordless sudo"), "{task}");
+        assert_eq!(p["ack"], "On it: I'm doing this on my computer now.");
+        for t in [
+            "run df -h in your terminal on your computer",
+            "installa steam sul tuo pc",
+            "kør denne kommando på din computer",
+        ] {
+            assert_eq!(classify(t), Some(Mode::DesktopJob), "{t}");
+        }
+        // Not jobs: no computer named, a question about it, or the mail routes.
+        for t in [
+            "install steam on my pc",
+            "how do I run this",
+            "what is your computer?",
+            "is your sandbox ok?",
+            "remind me to run the install on your pc tomorrow",
+        ] {
+            assert_eq!(classify(t), None, "{t}");
+        }
+        assert_eq!(classify("check my outlook on your computer"), Some(Mode::ReadOnly));
+
+        for t in ["its cua check all the tools", "what tools do you have?", "list your tools", "which tools are on your computer"] {
+            assert!(asks_for_her_tools(t), "{t}");
+        }
+        for t in ["what tools do I need for a bike?", "toolbox", "the tools are in the garage"] {
+            assert!(!asks_for_her_tools(t), "{t}");
+        }
+    }
 
     #[test]
     fn stt_slips_are_corrected_by_context() {

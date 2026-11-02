@@ -60,6 +60,7 @@ export const barIcons = {
   audio: () => svg("M4 9v6h4l5 4V5L8 9zM16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11"),
   stats: () => svg("M5 20V11M12 20V4M19 20v-7"),
   keyboard: () => svg("M3 6h18v12H3zM7 10h.01M11 10h.01M15 10h.01M7 14h10"),
+  chat: () => svg("M4 5h16v11H9l-5 4z"),
   up: () => svg("M6 15l6-6 6 6"),
   down: () => svg("M6 9l6 6 6-6"),
   pin: () => svg("M12 17v5M8 3h8l-1 7 3 3H6l3-3z"),
