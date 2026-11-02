@@ -470,6 +470,23 @@ impl SecretRequests {
                     .or_else(|| entries.iter().position(same))
             };
             let i = by_id.or_else(by_names).or_else(by_name_alone)?;
+            // Saved outside the project this request named: the save answers every request for that
+            // name, or the same name asked for another project becomes a card for a secret he just saved.
+            let elsewhere = !project_keys.contains(&entries[i].project.to_lowercase());
+            let others: Vec<usize> = if elsewhere {
+                let same = |(j, e): &(usize, &Entry)| *j != i && e.status.open() && e.name == key;
+                entries.iter().enumerate().filter(same).map(|(j, _)| j).collect()
+            } else {
+                Vec::new()
+            };
+            for j in others {
+                let e = &mut entries[j];
+                e.status = Status::Saved;
+                e.closed_at = Some(now());
+                e.fingerprint = result["fingerprint"].as_str().map(str::to_owned);
+                e.action = result["action"].as_str().map(str::to_owned);
+                tracing::info!(request = %e.id, name = %e.name, "secret request closed by a save under another project");
+            }
             let e = &mut entries[i];
             e.status = Status::Saved;
             e.closed_at = Some(now());
@@ -682,6 +699,38 @@ mod tests {
         assert_eq!(list["active"], json!(b.entry.id));
         q.saved(None, &elsewhere);
         assert_eq!(q.list()["active"], json!(b.entry.id));
+    }
+
+    #[tokio::test]
+    async fn a_save_under_another_project_closes_the_same_name_asked_elsewhere() {
+        let dir = tempfile::tempdir().unwrap();
+        let q = queue(dir.path());
+        let a = q.ask(req("A"), None, false).await.unwrap();
+        let mut other = req("A");
+        other.project = "pokoin".into();
+        let same_name = q.ask(other, None, false).await.unwrap();
+        let b = q.ask(req("B"), None, false).await.unwrap();
+        let mut elsewhere = receipt("A");
+        elsewhere["project"] = json!({"id": "p-9", "name": "Lucina"});
+        q.saved(Some(&a.entry.id), &elsewhere);
+        let list = q.list();
+        let found = list["requests"].as_array().unwrap().iter().find(|e| e["id"] == json!(same_name.entry.id)).unwrap().clone();
+        assert_eq!(found["status"].as_str(), Some("saved"));
+        assert_eq!(list["active"], json!(b.entry.id));
+    }
+
+    #[tokio::test]
+    async fn a_save_in_the_named_project_leaves_the_same_name_asked_elsewhere() {
+        let dir = tempfile::tempdir().unwrap();
+        let q = queue(dir.path());
+        let a = q.ask(req("A"), None, false).await.unwrap();
+        let mut other = req("A");
+        other.project = "pokoin".into();
+        let same_name = q.ask(other, None, false).await.unwrap();
+        let mut here = receipt("A");
+        here["project"] = json!({"id": "p-1", "name": "lucinaos"});
+        q.saved(Some(&a.entry.id), &here);
+        assert_eq!(q.list()["active"], json!(same_name.entry.id));
     }
 
     #[tokio::test]
