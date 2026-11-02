@@ -115,6 +115,8 @@ struct Reader {
     image: Option<(String, String)>,
     code: Option<(String, String)>,
     heading: Option<u8>,
+    /// Inside `%%`, which may span lines and blocks.
+    comment: bool,
     table: Option<(Vec<String>, Vec<Vec<Span>>, Vec<Vec<Vec<Span>>>, bool)>,
     row: Vec<Vec<Span>>,
 }
@@ -149,7 +151,7 @@ impl Reader {
 
     fn span(&self, text: &str) -> Span {
         Span {
-            text: text.to_owned(),
+            text: unescaped(text),
             bold: self.style.bold,
             italic: self.style.italic,
             strike: self.style.strike,
@@ -168,12 +170,21 @@ impl Reader {
         let mut rest = t;
         let mut plain = String::new();
         while !rest.is_empty() {
-            if let Some(r) = rest.strip_prefix("%%") {
-                if let Some(e) = r.find("%%") {
-                    self.flush_plain(&mut plain);
-                    rest = &r[e + 2..];
-                    continue;
+            if self.comment {
+                match rest.find("%%") {
+                    Some(e) => {
+                        rest = &rest[e + 2..];
+                        self.comment = false;
+                        continue;
+                    }
+                    None => break,
                 }
+            }
+            if let Some(r) = rest.strip_prefix("%%") {
+                self.flush_plain(&mut plain);
+                self.comment = true;
+                rest = r;
+                continue;
             }
             if let Some(r) = rest.strip_prefix("==") {
                 if let Some(e) = r.find("==").filter(|e| *e > 0) {
@@ -273,13 +284,17 @@ impl Reader {
         match e {
             Event::Text(t) => {
                 if let Some((_, code)) = &mut self.code {
-                    code.push_str(&t);
+                    code.push_str(&as_written(&t));
                 } else {
                     self.text(&t);
                 }
             }
             Event::Code(t) => {
-                let mut s = self.span(&t);
+                if self.comment {
+                    return;
+                }
+                let mut s = self.span("");
+                s.text = as_written(&t);
                 s.code = true;
                 self.spans.push(s);
             }
@@ -481,6 +496,17 @@ impl Reader {
     }
 }
 
+// `\[[x]]` and `\#x` are plain text to Obsidian, but the Markdown parser removes the backslash before
+// we would see it. They cross it as private characters.
+const ESC_BRACKET: &str = "\u{E000}";
+const ESC_HASH: &str = "\u{E001}";
+fn unescaped(s: &str) -> String {
+    s.replace(ESC_BRACKET, "[").replace(ESC_HASH, "#")
+}
+fn as_written(s: &str) -> String {
+    s.replace(ESC_BRACKET, "\\[").replace(ESC_HASH, "\\#")
+}
+
 /// `alpha#Section` shows as `alpha > Section`.
 fn display_of(target: &str) -> String {
     let mut parts = target.split('#');
@@ -548,6 +574,7 @@ fn callout(mut blocks: Vec<Block>) -> Block {
 /// A note's body as blocks; properties are left to `scan`.
 pub fn blocks(text: &str) -> Vec<Block> {
     let (_, body, _) = split_frontmatter(text);
+    let body = body.replace("\\[", ESC_BRACKET).replace("\\#", ESC_HASH);
     let opts = Options::ENABLE_TABLES
         | Options::ENABLE_TASKLISTS
         | Options::ENABLE_STRIKETHROUGH
@@ -561,14 +588,23 @@ pub fn blocks(text: &str) -> Vec<Block> {
         image: None,
         code: None,
         heading: None,
+        comment: false,
         table: None,
         row: Vec::new(),
     };
     // Text events split at each `[`, and a wikilink would be cut in pieces: merge first.
     let mut pending = String::new();
-    for e in Parser::new_ext(body, opts) {
+    for e in Parser::new_ext(&body, opts) {
         match e {
             Event::Text(t) if r.code.is_none() => pending.push_str(&t),
+            // Code in a link's alias: `[[a|b `c`]]` stays one link, as in Obsidian.
+            Event::Code(t)
+                if pending
+                    .rfind("[[")
+                    .is_some_and(|o| pending.rfind("]]").is_none_or(|c| c < o)) =>
+            {
+                pending.push_str(&t)
+            }
             other => {
                 if !pending.is_empty() {
                     let t = std::mem::take(&mut pending);
@@ -622,6 +658,28 @@ mod tests {
         assert!(s.iter().any(|x| x.bold && x.text == "b"));
         assert!(s.iter().any(|x| x.code && x.text == "c"));
         assert!(!s.iter().any(|x| x.text.contains("hidden")));
+    }
+    #[test]
+    fn escapes_and_comments_as_obsidian_reads_them() {
+        let s = para("\\[[Esc]] \\#esc `\\[[c]]` [[Real|a `b` c]]");
+        assert!(s.iter().all(|x| x.tag.is_none()));
+        let links: Vec<_> = s.iter().filter_map(|x| x.link.as_deref()).collect();
+        assert_eq!(links, vec!["Real"]);
+        assert!(s[0].text.starts_with("[[Esc]] #esc"));
+        assert!(s.iter().any(|x| x.code && x.text == "\\[[c]]"));
+        let b =
+            blocks("before %%\nhidden [[x]]\n%% after\n\nnext\n\n%%\nwhole\n\nblocks\n%%\n\nlast");
+        let text: String = b
+            .iter()
+            .map(|x| match x {
+                Block::Paragraph { spans } => {
+                    spans.iter().map(|s| s.text.as_str()).collect::<String>()
+                }
+                _ => String::new(),
+            })
+            .collect::<Vec<_>>()
+            .join("|");
+        assert_eq!(text, "before \n\n after|next|last");
     }
     #[test]
     fn embeds_become_blocks() {

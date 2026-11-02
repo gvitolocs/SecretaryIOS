@@ -30,6 +30,7 @@ extern "C" {
 typedef struct SecretaryGymEngine SecretaryGymEngine;
 typedef struct SecretaryBodyEngine SecretaryBodyEngine;
 typedef struct SecretaryPlayerEngine SecretaryPlayerEngine;
+typedef struct SecretaryVaultEngine SecretaryVaultEngine;
 
 char *secretary_open_error(void);
 void secretary_string_free(char *value);
@@ -48,6 +49,12 @@ void secretary_body_close(SecretaryBodyEngine *handle);
 SecretaryPlayerEngine *secretary_player_open(const char *path);
 char *secretary_player_request(SecretaryPlayerEngine *handle, const char *json);
 void secretary_player_close(SecretaryPlayerEngine *handle);
+
+/* An Obsidian vault as plain files (lucina-vault): `path` is the vault's folder, read-only until {"op":"set_writable","writable":true}.
+   Every answer has "ok"; a failure adds "code" and "error". Operations: docs/lucina-vault.md. */
+SecretaryVaultEngine *secretary_vault_open(const char *path);
+char *secretary_vault_request(SecretaryVaultEngine *handle, const char *json);
+void secretary_vault_close(SecretaryVaultEngine *handle);
 
 /* Image viewer core (secretary-image): ThumbHash placeholders, progressive JPEG XL decoding as
    bytes arrive, zoom/pan. Codes: >= 0 ok (1 = something new), < 0 error (secretary_image_last_error). */

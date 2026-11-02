@@ -5735,6 +5735,7 @@ name = "secretary-ffi"
 version = "0.1.0"
 dependencies = [
  "image",
+ "lucina-vault",
  "secretary-body",
  "secretary-chat",
  "secretary-gym",

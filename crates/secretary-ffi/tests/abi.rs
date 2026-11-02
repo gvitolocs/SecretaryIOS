@@ -46,7 +46,10 @@ fn gym_request_roundtrip_through_the_c_abi() {
     let version: Value =
         serde_json::from_str(&unsafe { take(secretary_ffi::secretary_version()) }).unwrap();
     assert_eq!(version["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(version["modules"], serde_json::json!(["gym", "body", "player", "image", "chat"]));
+    assert_eq!(
+        version["modules"],
+        serde_json::json!(["gym", "body", "player", "image", "chat", "vault"])
+    );
 
     unsafe { secretary_ffi::secretary_gym_close(handle) };
 }
@@ -140,7 +143,9 @@ fn player_queue_and_resume_through_the_c_abi() {
     };
     let json = ask(r#"{"cmd":"queue_set","items":[{"id":"v1","kind":"video","title":"Film"}]}"#);
     assert_eq!(json["queue"]["item"]["id"], "v1");
-    let json = ask(r#"{"cmd":"position","id":"v1","position_ms":120000,"duration_ms":5400000,"playing":false}"#);
+    let json = ask(
+        r#"{"cmd":"position","id":"v1","position_ms":120000,"duration_ms":5400000,"playing":false}"#,
+    );
     assert_eq!(json["sync"], true);
     assert_eq!(ask(r#"{"cmd":"resume","id":"v1"}"#)["position_ms"], 118000);
     unsafe { secretary_ffi::secretary_player_close(handle) };
@@ -155,35 +160,113 @@ fn image_decoder_thumbhash_and_view_through_the_c_abi() {
         .unwrap();
     unsafe {
         let d = secretary_ffi::image::secretary_image_decoder_new();
-        assert_eq!(secretary_ffi::image::secretary_image_decoder_feed(d, png.as_ptr(), 10, false), 0);
-        assert_eq!(secretary_ffi::image::secretary_image_decoder_feed(d, png[10..].as_ptr(), png.len() - 10, true), 1);
+        assert_eq!(
+            secretary_ffi::image::secretary_image_decoder_feed(d, png.as_ptr(), 10, false),
+            0
+        );
+        assert_eq!(
+            secretary_ffi::image::secretary_image_decoder_feed(
+                d,
+                png[10..].as_ptr(),
+                png.len() - 10,
+                true
+            ),
+            1
+        );
         let (mut w, mut h, mut px, mut done) = (0u32, 0u32, std::ptr::null::<u8>(), false);
-        assert_eq!(secretary_ffi::image::secretary_image_decoder_frame(d, &mut w, &mut h, &mut px, &mut done), 1);
+        assert_eq!(
+            secretary_ffi::image::secretary_image_decoder_frame(
+                d, &mut w, &mut h, &mut px, &mut done
+            ),
+            1
+        );
         assert_eq!((w, h, done), (40, 20, true));
         assert!(!px.is_null());
         secretary_ffi::image::secretary_image_decoder_free(d);
         // Null decoder: an error code, never a crash.
-        assert!(secretary_ffi::image::secretary_image_decoder_feed(std::ptr::null_mut(), png.as_ptr(), 1, false) < 0);
+        assert!(
+            secretary_ffi::image::secretary_image_decoder_feed(
+                std::ptr::null_mut(),
+                png.as_ptr(),
+                1,
+                false
+            ) < 0
+        );
         let msg = take(secretary_ffi::image::secretary_image_last_error());
         assert!(msg.contains("null"), "{msg}");
 
         let rgba = vec![200u8; 16 * 8 * 4];
         let hash = thumbhash::rgba_to_thumb_hash(16, 8, &rgba);
         let (mut buf, mut len) = (std::ptr::null_mut::<u8>(), 0usize);
-        assert_eq!(secretary_ffi::image::secretary_image_thumbhash(hash.as_ptr(), hash.len(), &mut w, &mut h, &mut buf, &mut len), 1);
+        assert_eq!(
+            secretary_ffi::image::secretary_image_thumbhash(
+                hash.as_ptr(),
+                hash.len(),
+                &mut w,
+                &mut h,
+                &mut buf,
+                &mut len
+            ),
+            1
+        );
         assert_eq!(len, (w * h * 4) as usize);
         secretary_ffi::image::secretary_image_buffer_free(buf, len);
 
-        let req = CString::new(r#"{"new":[1440,960,390,844],"gesture":{"op":"double_tap","x":195,"y":422}}"#).unwrap();
-        let answer: serde_json::Value = serde_json::from_str(&take(secretary_ffi::image::secretary_image_view(req.as_ptr()))).unwrap();
+        let req = CString::new(
+            r#"{"new":[1440,960,390,844],"gesture":{"op":"double_tap","x":195,"y":422}}"#,
+        )
+        .unwrap();
+        let answer: serde_json::Value = serde_json::from_str(&take(
+            secretary_ffi::image::secretary_image_view(req.as_ptr()),
+        ))
+        .unwrap();
         assert_eq!(answer["ok"], true);
         assert_eq!(answer["view"]["scale"], 2.5);
 
         // Swipe down on a fitted photo: released past 12% of the height closes the viewer.
         let req = CString::new(r#"{"new":[1440,960,390,844],"drag":{"dx":4,"dy":150,"predicted_dy":160,"ended":true}}"#).unwrap();
-        let answer: serde_json::Value = serde_json::from_str(&take(secretary_ffi::image::secretary_image_view(req.as_ptr()))).unwrap();
+        let answer: serde_json::Value = serde_json::from_str(&take(
+            secretary_ffi::image::secretary_image_view(req.as_ptr()),
+        ))
+        .unwrap();
         assert_eq!(answer["drag"]["axis"], "out");
         assert_eq!(answer["drag"]["end"], "dismiss");
         assert!(answer["drag"]["out"]["backdrop"].as_f64().unwrap() < 1.0);
+    }
+}
+
+#[test]
+fn vault_opens_read_only_and_answers_in_its_protocol() {
+    use secretary_ffi::{
+        secretary_string_free, secretary_vault_close, secretary_vault_open, secretary_vault_request,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Alpha.md"), "See [[Beta]].\n").unwrap();
+    std::fs::write(dir.path().join("Beta.md"), "#tag\n").unwrap();
+    let path = std::ffi::CString::new(dir.path().to_str().unwrap()).unwrap();
+    unsafe {
+        let v = secretary_vault_open(path.as_ptr());
+        assert!(!v.is_null());
+        let ask = |q: &str| -> serde_json::Value {
+            let q = std::ffi::CString::new(q).unwrap();
+            let raw = secretary_vault_request(v, q.as_ptr());
+            let out =
+                serde_json::from_str(std::ffi::CStr::from_ptr(raw).to_str().unwrap()).unwrap();
+            secretary_string_free(raw);
+            out
+        };
+        let status = ask(r#"{"op":"status"}"#);
+        assert_eq!(status["counts"]["notes"], 2);
+        assert_eq!(status["writable"], false);
+        let beta = ask(r#"{"op":"note","path":"Beta.md"}"#);
+        assert_eq!(beta["backlinks"][0]["from"], "Alpha.md");
+        let refused = ask(r#"{"op":"create","path":"New.md"}"#);
+        assert_eq!(refused["code"], "read_only");
+        assert!(!dir.path().join("New.md").exists());
+        secretary_vault_close(v);
+    }
+    let missing = std::ffi::CString::new("/nowhere/at/all").unwrap();
+    unsafe {
+        assert!(secretary_vault_open(missing.as_ptr()).is_null());
     }
 }

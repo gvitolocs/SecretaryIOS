@@ -16,4 +16,4 @@ lucina-otp-relay	p1	Cargo.toml Cargo.lock deploy/lucina-otp crates/lucina-otp-re
 secretary-server	p1	Cargo.toml Cargo.lock deploy/secretary-server.service crates/ink-library crates/ink-obsidian crates/ink-sync crates/lucina-vocab crates/secretary-body crates/secretary-calendar crates/secretary-core crates/secretary-gym crates/secretary-server crates/secretary-tasks
 secretary-mcp	p1	Cargo.toml Cargo.lock deploy/secretary-mcp.service crates/lucina-agents crates/secretary-core crates/secretary-mcp
 web	p1	web packages/lucina-stage assets/icons
-ios	iphone	ios design crates/secretary-body crates/secretary-core crates/secretary-ffi crates/secretary-gym crates/secretary-image crates/secretary-player
+ios	iphone	ios design crates/ink-obsidian crates/lucina-vault crates/secretary-body crates/secretary-core crates/secretary-ffi crates/secretary-gym crates/secretary-image crates/secretary-player
