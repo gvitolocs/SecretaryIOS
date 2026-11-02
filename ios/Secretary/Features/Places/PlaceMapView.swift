@@ -136,24 +136,44 @@ struct PlaceMapView: View {
         }
     }
 
+    @ViewBuilder private var bikeTime: some View {
+        if let route {
+            let duration = PlaceFormat.duration(route.seconds)
+            timeItem(route.estimated ? "≈ \(duration)" : duration, symbol: PlaceTravelMode.bike.symbol)
+                .fontWeight(.semibold)
+                .foregroundStyle(Theme.text)
+                .accessibilityLabel(Text(verbatim: "\(route.modeText) \(duration)"))
+        }
+    }
+
+    private var otherTimes: some View {
+        ForEach(etas) { eta in
+            timeItem(PlaceFormat.duration(eta.seconds), symbol: eta.mode.symbol)
+                .accessibilityLabel(Text(verbatim: "\(eta.mode.title) \(PlaceFormat.duration(eta.seconds))"))
+        }
+    }
+
+    private func timeItem(_ time: String, symbol: String) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: symbol)
+            Text(verbatim: time)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
     /// The bike's time first, then car, walk and transit. A bike estimate says so; a walking or car
     /// time never stands in for it.
     @ViewBuilder private var travelTimes: some View {
         if route != nil || !etas.isEmpty {
-            HStack(spacing: 6) {
-                if let route {
-                    let duration = PlaceFormat.duration(route.seconds)
-                    Label(route.estimated ? "≈ \(duration)" : duration, systemImage: PlaceTravelMode.bike.symbol)
-                        .labelStyle(.titleAndIcon)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(Theme.text)
-                        .accessibilityLabel(Text(verbatim: "\(route.modeText) \(duration)"))
+            // One row when it fits, else the bike above the others: a time is never cut off.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) {
+                    bikeTime
+                    otherTimes
                 }
-                ForEach(Array(etas.enumerated()), id: \.element.id) { index, eta in
-                    if index > 0 || route != nil { Text(verbatim: "·").foregroundStyle(Theme.textTertiary) }
-                    Label(PlaceFormat.duration(eta.seconds), systemImage: eta.mode.symbol)
-                        .labelStyle(.titleAndIcon)
-                        .accessibilityLabel(Text(verbatim: "\(eta.mode.title) \(PlaceFormat.duration(eta.seconds))"))
+                VStack(alignment: .leading, spacing: 4) {
+                    bikeTime
+                    HStack(spacing: 10) { otherTimes }
                 }
             }
             .font(LucinaTokens.Fonts.subheadline.monospacedDigit())
