@@ -797,6 +797,7 @@ impl Inner {
                 "grok" | "grok-bot" => "Grok Bot",
                 "cursor" => "Cursor",
                 "codex" => "Codex",
+                "mistral" => "Mistral",
                 _ => meta.caller.as_deref().unwrap_or("mcp"),
             }
             .into(),

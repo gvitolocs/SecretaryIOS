@@ -76,6 +76,7 @@ pub fn builtin() -> Vec<Arc<dyn Tool>> {
         Arc::new(plugins::SaveToGalleryTool),
         Arc::new(reach::MessageClaudeTool),
         Arc::new(reach::MessageGrokTool),
+        Arc::new(reach::MessageMistralTool),
         Arc::new(reach::LucinaAgentsTool),
         Arc::new(reach::ReachThreadsTool),
     ]

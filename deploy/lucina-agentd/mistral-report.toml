@@ -1,0 +1,18 @@
+# VIBE_HOME config of the Mistral report agent (~/.config/mistral-report/config.toml): it answers from the text it is given.
+# No shell, no write, no file reading and no web: a report could carry instructions, and a file it read would go to Mistral.
+# `todo` is there only because an empty list means every tool. No telemetry, no self-updates.
+enable_telemetry = false
+enable_update_checks = false
+enable_auto_update = false
+default_agent = "accept-edits"
+active_model = "report"
+enabled_tools = ["todo"]
+
+[models.report]
+name = "mistral-small-latest"
+provider = "mistral"
+alias = "report"
+input_price = 0.15
+cached_input_price = 0.015
+output_price = 0.6
+max_context_length = 262144

@@ -530,6 +530,7 @@ pub const OWNER_ONLY_TOOLS: &[&str] = &[
     // Messages to Claude, Grok and Lucina Agents (`tools::reach::REACH_TOOLS`).
     "message_claude",
     "message_grok",
+    "message_mistral",
     "lucina_agents",
     "reach_threads",
 ];
@@ -556,6 +557,7 @@ pub const NO_MCP_TOOLS: &[&str] = &[
     "delegate",
     "message_claude",
     "message_grok",
+    "message_mistral",
     "lucina_agents",
     "reach_threads",
     // Root commands (owner approval): never for a guarded MCP caller.

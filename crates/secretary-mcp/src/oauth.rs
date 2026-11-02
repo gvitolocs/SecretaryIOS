@@ -605,6 +605,9 @@ pub fn caller_for_host(host: &str) -> String {
     if is("cursor.com") || is("cursor.sh") {
         return "cursor".into();
     }
+    if is("mistral.ai") {
+        return "mistral".into();
+    }
     let label: String = h
         .split('.')
         .next()

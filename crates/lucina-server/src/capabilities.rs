@@ -193,6 +193,7 @@ impl Capabilities {
         );
         add(self.secretary, "Secretary app chat (web PWA and iOS), one timeline shared with Telegram, Discord and Alexa.".into(), Some("Secretary app chat is off on this runtime."));
         add(self.alexa, "Alexa as a voice input surface.".into(), None);
+        add(self.secretary, "Passing things on: when Giuseppe says to tell, ask or send something to Claude, Grok, Mistral or Lucina Agents, or to send a report to the agent, I do it myself in that turn, with no agent or room to choose. When a report comes up, I say he only has to tell me to send it.".into(), None);
         if self.mcp_trusted {
             add(self.secretary, "Lucina MCP: ChatGPT, Grok, Cursor and Claude Code ask me on Giuseppe's behalf with his token, so I act on their requests as on his own (downloads, project work, delegation, checking his mail on my computer), with my own judgement; secrets and money stay out.".into(), None);
         } else {

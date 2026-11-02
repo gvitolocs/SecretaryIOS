@@ -356,6 +356,9 @@ struct MessageSource: Equatable, Sendable {
         if normalized.hasPrefix("gemini") {
             return MessageSource(label: "Gemini", symbol: "star")
         }
+        if normalized.hasPrefix("mistral") {
+            return MessageSource(label: "Mistral", symbol: "wind")
+        }
         return MessageSource(label: normalized.isEmpty ? "MCP" : "MCP · \(caller ?? "")", symbol: "puzzlepiece.extension")
     }
 }
