@@ -290,10 +290,7 @@ impl OAuth {
             Some(Caller {
                 name: g.caller.clone(),
                 kind: CallerKind::OAuth,
-                scopes: match Scopes::limit_for_caller(&g.caller) {
-                    Some(limit) => t.scopes.intersect(&limit),
-                    None => t.scopes.clone(),
-                },
+                scopes: t.scopes.clone(),
                 id: g.id.clone(),
                 depth: 0,
             })
@@ -1001,10 +998,6 @@ pub async fn authorize_get(
     };
     if scopes.is_empty() {
         scopes = Scopes::default_grant();
-    }
-    // The consent page offers only what this caller may hold.
-    if let Some(limit) = Scopes::limit_for_caller(&client.caller) {
-        scopes = scopes.intersect(&limit);
     }
     let request_id = match random_secret() {
         Ok(id) => id,
