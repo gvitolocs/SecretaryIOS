@@ -193,22 +193,68 @@ pub fn split_into_chunks(text: &str, max: usize) -> Vec<String> {
     out
 }
 
+/// What stood between each chunk of `split_into_chunks` and the one before it in `source`, whitespace
+/// only (the first gap is whatever preceded it). A chunk not found where expected gets a space.
+fn chunk_gaps(source: &str, chunks: &[String]) -> Vec<String> {
+    let mut at = 0;
+    chunks
+        .iter()
+        .map(|c| match source[at..].find(c.as_str()) {
+            Some(found) => {
+                let gap = &source[at..at + found];
+                at += found + c.len();
+                if gap.trim().is_empty() { gap.to_owned() } else { " ".to_owned() }
+            }
+            None => " ".to_owned(),
+        })
+        .collect()
+}
+
+/// Chunks of `source` back as one text, with the line ends between them.
+fn rejoin_chunks(source: &str, chunks: &[String]) -> String {
+    let gaps = chunk_gaps(source, chunks);
+    let mut out = String::new();
+    for (i, c) in chunks.iter().enumerate() {
+        if i > 0 {
+            out.push_str(&gaps[i]);
+        }
+        out.push_str(c);
+    }
+    out
+}
+
 fn normalize_bubbles(v: &Value) -> Result<Vec<String>, String> {
     let Value::Array(items) = v else {
         return Err("bubbles must be an array of strings".into());
     };
-    let mut chunks = Vec::new();
+    // Each chunk with what separated it from the one before, so a tail glued back together keeps
+    // its line ends and lists.
+    let mut chunks: Vec<String> = Vec::new();
+    let mut gaps: Vec<String> = Vec::new();
     for raw in items {
         if !raw.is_string() {
             continue;
         }
         let text = clean(raw, 4000);
         if !text.is_empty() {
-            chunks.extend(split_into_chunks(&text, BUBBLE_SOFT_CHARS));
+            let split = split_into_chunks(&text, BUBBLE_SOFT_CHARS);
+            let mut item_gaps = chunk_gaps(&text, &split);
+            if let Some(first) = item_gaps.first_mut() {
+                *first = "\n\n".to_owned();
+            }
+            gaps.extend(item_gaps);
+            chunks.extend(split);
         }
     }
     if chunks.len() > MAX_BUBBLES {
-        let tail = chunks.split_off(MAX_BUBBLES - 1).join(" ");
+        let mut tail = String::new();
+        for (i, c) in chunks.iter().enumerate().skip(MAX_BUBBLES - 1) {
+            if i > MAX_BUBBLES - 1 {
+                tail.push_str(&gaps[i]);
+            }
+            tail.push_str(c);
+        }
+        chunks.truncate(MAX_BUBBLES - 1);
         chunks.push(tail);
     }
     Ok(chunks.iter().map(|c| clip(c, BUBBLE_HARD_CHARS)).collect())
@@ -1419,7 +1465,7 @@ pub fn from_plain_text(
                     bubbles.extend(chunks);
                 } else if opening && room > 0 {
                     bubbles.push(chunks[0].clone());
-                    let rest = chunks[1..].join(" ");
+                    let rest = rejoin_chunks(p, &chunks[1..]);
                     if !rest.is_empty() {
                         blocks.push(json!({"type": "card", "title": first_sentence(&rest, 70), "body": rest, "tone": "info"}));
                     }
@@ -1571,6 +1617,34 @@ mod tests {
         for b in &m.bubbles[..m.bubbles.len() - 1] {
             assert!(b.chars().count() <= BUBBLE_SOFT_CHARS, "{}", b.len());
         }
+    }
+
+    #[test]
+    fn a_long_opening_paragraph_keeps_its_lines_in_the_card() {
+        let source = "one\n- two\n\nthree";
+        let chunks = vec!["one".to_owned(), "- two".to_owned(), "three".to_owned()];
+        assert_eq!(rejoin_chunks(source, &chunks), source);
+        assert_eq!(rejoin_chunks(source, &chunks[1..]), "- two\n\nthree");
+    }
+
+    #[test]
+    fn bubbles_past_the_limit_keep_their_lines_and_lists() {
+        let para = |tag: &str| format!("{tag} {}", "word ".repeat(45).trim());
+        let list = "Two things:\n- the first\n- the second";
+        let text = format!("{}\n\n{}\n\n{}\n\n{}\n\n{list}\n\n{}", para("a"), para("b"), para("c"), para("d"), para("e"));
+        let (m, _) = normalize(&json!({"bubbles": [text]})).unwrap();
+        assert_eq!(m.bubbles.len(), MAX_BUBBLES);
+        let tail = m.bubbles.last().unwrap();
+        assert!(tail.contains(&format!("{}\n\n{list}\n\n{}", para("d"), para("e"))), "{tail:?}");
+    }
+
+    #[test]
+    fn bubbles_past_the_limit_keep_a_sentence_on_its_line() {
+        let s = |tag: &str| format!("{tag} {}.", "word ".repeat(50).trim());
+        let text = format!("{} {} {} {} {}", s("a"), s("b"), s("c"), s("d"), s("e"));
+        let (m, _) = normalize(&json!({"bubbles": [text]})).unwrap();
+        assert_eq!(m.bubbles.len(), MAX_BUBBLES);
+        assert_eq!(m.bubbles[3], format!("{} {}", s("d"), s("e")));
     }
 
     #[test]
