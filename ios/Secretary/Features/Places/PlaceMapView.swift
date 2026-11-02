@@ -377,9 +377,9 @@ struct PlaceMapView: View {
         routeAt = Date()
         routeLoading = false
         #if SCREENSHOTS
-        let found = PlaceTravelMode.cardOrder.compactMap { routes[ash] }
+        let found = PlaceTravelMode.cardOrder.compactMap { routes[$0] }
         MapSelfTestProbe.shared.routesText = found.isEmpty ? nil : found.map(\.mode.rawValue).joined(separator: ",")
-        MapSelfTestProbe.shared.etaText = found.map { "\(ash.modeText) \(ash.durationText)" }.joined(separator: " · ")
+        MapSelfTestProbe.shared.etaText = found.map { "\($0.modeText) \($0.durationText)" }.joined(separator: " · ")
         if let bike = routes[.bike], bike.estimated { MapSelfTestProbe.shared.fallbackReason = bike.source.rawValue }
         MapSelfTestProbe.shared.leaveAt = leaveAt
         if navigating { MapSelfTestProbe.shared.navigationSteps = route?.steps.count ?? 0 }
