@@ -642,3 +642,12 @@ is upload work and performs the uploads itself, also while the app is closed.
 - Stateright/TLA+ model of the upload protocol.
 - HLS cache eviction.
 - Archive format: TIFF/BMP stay as originals; video preview renditions are recommended in the build report, not built.
+
+## Photos for Lucina and for agents
+
+- Lucina's `media` tool `read` looks at a photo: a 1024 px JPEG rendition through the attachment handlers (OCR, then
+  vision), kept in `attachments.db`. Anyone who can chat with her can ask what a photo shows, MCP clients with `chat` too.
+- `photo_search` and `photo_get` (secretary-mcp, `crates/secretary-mcp/src/photos.rs`): the MCP tools for the pictures
+  themselves, in the explicit-only scope `photos`. Only a token or grant the owner gave it by name has them
+  (`secretary-mcp token add-scope <name> photos`, or the consent page); `read`, `chat` and the default grant never do.
+  A rendition only: no originals, coordinates or links. Every fetch is logged with the caller and the item id.

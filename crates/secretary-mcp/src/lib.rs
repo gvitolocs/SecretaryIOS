@@ -33,6 +33,7 @@ pub mod notebooks;
 pub mod oauth;
 pub mod flaws;
 pub mod ops;
+pub mod photos;
 pub mod ratelimit;
 pub mod reach;
 pub mod scope;

@@ -56,6 +56,16 @@ pub(super) async fn run(t: &Turn<'_>, memory: &str) -> Finish {
         registry
     });
     let asked = !t.share_note.trim().is_empty();
+    // With his request, `media` reads through the attachment handlers, photos included, as in chat.
+    let mut registry = registry;
+    if asked {
+        registry = registry.without(&["media"]);
+        registry
+            .register(Arc::new(lucina_tools::tools::media::MediaTool::with_reader(Arc::new(
+                crate::share::library::LibraryReader(t.st.clone()),
+            ))))
+            .expect("unique tool");
+    }
     let ctx = Ctx::new(t.st.tool_env.clone(), &t.channel, &t.session).with_origin(Origin::Owner);
     // His own request: a calendar create goes straight to his calendar, as in chat.
     let ctx = if asked { ctx.owner_turn() } else { ctx };

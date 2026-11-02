@@ -359,6 +359,56 @@ impl Backend {
         self.call(Method::GET, path, query, None).await
     }
 
+    /// A `/v1/media` route behind Caddy, with the device token. `(bytes, content type)`.
+    pub(crate) async fn media(
+        &self,
+        origin: &str,
+        path: &str,
+        query: &[(&str, String)],
+        max_bytes: usize,
+    ) -> BResult<(Vec<u8>, String)> {
+        let token = self
+            .device_token
+            .as_deref()
+            .ok_or_else(|| BackendError::local("backend_not_configured", "no device token"))?;
+        let transport = |e: reqwest::Error| {
+            if e.is_timeout() {
+                BackendError::local("backend_timeout", "the media library did not answer in time")
+            } else {
+                BackendError::local("backend_unreachable", e.without_url().to_string())
+            }
+        };
+        let resp = self
+            .http
+            .get(format!("{origin}{path}"))
+            .query(query)
+            .timeout(DEFAULT_TIMEOUT)
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(transport)?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(BackendError {
+                status: status.as_u16(),
+                code: "media_error".into(),
+                message: format!("the media library answered HTTP {}", status.as_u16()),
+                retry_after: None,
+            });
+        }
+        let content_type = resp
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("application/octet-stream")
+            .to_owned();
+        let bytes = resp.bytes().await.map_err(transport)?;
+        if bytes.len() > max_bytes {
+            return Err(BackendError::local("backend_bad_response", "the picture is too large"));
+        }
+        Ok((bytes.to_vec(), content_type))
+    }
+
     /// Decision creation has a 60 s server deadline, plus transport headroom.
     pub async fn create_decision(&self, body: &Value) -> BResult<Value> {
         self.send_device(

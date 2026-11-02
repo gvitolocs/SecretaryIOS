@@ -1060,6 +1060,8 @@ pub struct AuthorizeForm {
     scope_agents: Option<String>,
     #[serde(default)]
     scope_notebooks: Option<String>,
+    #[serde(default)]
+    scope_photos: Option<String>,
 }
 
 pub async fn authorize_post(
@@ -1117,6 +1119,7 @@ pub async fn authorize_post(
             (Scope::Computer, &f.scope_computer),
             (Scope::Agents, &f.scope_agents),
             (Scope::Notebooks, &f.scope_notebooks),
+            (Scope::Photos, &f.scope_photos),
         ]
         .into_iter()
         .filter(|(_, v)| v.is_some())

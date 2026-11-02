@@ -880,6 +880,11 @@ pub fn specs() -> Vec<ToolSpec> {
             "Health from the catalog: without id, everything that is down, broken, degraded or warning right now (worst first, with the reason); with id, that component's checks. live=true rescans its host first (slower)."),
         spec!("catalog_drift", "Catalog drift", Scope::Agents, ro = true, destructive = false, idempotent = true, crate::agents::NoArgs,
             "Drift between the catalog and reality: units, containers, k8s workloads, tunnels, Caddy sites and repos that run but are not catalogued, and catalogued ones that are missing."),
+        // The owner's photos themselves (crate::photos); scope `photos` only.
+        spec!("photo_search", "Search photos", Scope::Photos, ro = true, destructive = false, idempotent = true, crate::photos::SearchArgs,
+            "Search the owner's Gallery, newest first: words (place, album, file name), from/to (YYYY, YYYY-MM or YYYY-MM-DD). Answers id, when, where and file name. It adds nothing to any album. Fetch a picture with photo_get."),
+        spec!("photo_get", "Get a photo", Scope::Photos, ro = true, destructive = false, idempotent = true, crate::photos::GetArgs,
+            "One photo from the owner's Gallery as an image (a JPEG, 1024 px on its long side by default), by the id photo_search gave. The picture is the owner's: use it for what he asked, and do not pass it on."),
         // Lucina Notebooks (crate::notebooks): source-grounded notebooks; scope `notebooks` only.
         spec!("notebook_list", "List notebooks", Scope::Notebooks, ro = true, destructive = false, idempotent = true, crate::notebooks::ListArgs,
             "List the owner's Lucina Notebooks (NotebookLM-style workspaces that group sources, linked notes and chats) with their ids and how many sources, notes, chats and podcasts each has. Archived ones only with archived=include or only."),

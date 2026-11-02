@@ -58,6 +58,7 @@ With the `notebooks` scope you can use Lucina Notebooks, the owner's NotebookLM-
 notebook_create and notebook_add_source (a link, text, a file on Lucina's desktop or a note) fill them, notebook_ask answers a question only from the sources \
 with numbered citations (the text cites [source:<source id>-<n>]: keep those markers), notebook_search finds passages without a model, \
 notebook_transform runs a saved prompt on a source and notebook_podcast makes an episode. Sources take a moment to be read after they are added; nothing here deletes anything.\n\n\
+With the `photos` scope you can see the owner's photos: photo_search finds them and photo_get returns the picture.\n\n\
 Times are in the owner's time zone (see lucina_status). Never use these tools to buy things or contact other people; ask the owner first.";
 
 #[derive(Clone)]
@@ -456,6 +457,13 @@ impl ServerHandler for LucinaMcp {
                 caller: &c,
             }
             .au(&name, &args)
+            .await
+        } else if spec.scope == Scope::Photos {
+            Tools {
+                app: &self.app,
+                caller: &c,
+            }
+            .photos(&name, &args)
             .await
         } else if spec.scope == Scope::Agents {
             self.run_agents(&name, &args, &c, &ctx)

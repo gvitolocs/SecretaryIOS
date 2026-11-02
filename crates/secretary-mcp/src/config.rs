@@ -7,6 +7,7 @@
 //! | `SECRETARY_MCP_DATA_DIR` | `/var/lib/secretary-mcp` | `tokens.json`, `oauth.json` (0600) |
 //! | `SECRETARY_MCP_BACKEND_URL` | `http://127.0.0.1:8800` | secretary-server |
 //! | `SECRETARY_MCP_BACKEND_TOKEN_FILE` | unset | a secretary-server device token (`sec_…`), one line |
+//! | `SECRETARY_MCP_MEDIA_URL` | the public URL | where `/v1/media` answers (Caddy's forward_auth takes the device token) |
 //! | `SECRETARY_MCP_SERVICE_TOKEN_FILE` | unset | the secretary-server service token (`svc_…`) for `/v1/insights/summary` |
 //! | `SECRETARY_MCP_AGENTS_TOKEN_FILE` | unset | the secretary-server service token for `/v1/agents/*` (scope `agents.mcp`; the agent tools say "not connected" without it). Never the device token: the server maps it to origin `mcp:…`, which cannot answer permissions |
 //! | `SECRETARY_MCP_AGENTS_MAX_RUNNING` | `4` | running agents one MCP token may have at once |
@@ -52,6 +53,8 @@ pub struct Config {
     pub public_url: String,
     pub data_dir: PathBuf,
     pub backend_url: String,
+    /// `None`: the public URL.
+    pub media_url: Option<String>,
     pub backend_token: Option<String>,
     pub service_token: Option<String>,
     /// Service token for `/v1/agents/*` (`crate::agents`).
@@ -128,6 +131,7 @@ impl Config {
             public_url,
             data_dir: data_dir.into(),
             backend_url: "http://127.0.0.1:8800".into(),
+            media_url: None,
             backend_token: None,
             service_token: None,
             agents_token: None,
@@ -162,6 +166,9 @@ impl Config {
         }
         if let Some(u) = get("SECRETARY_MCP_BACKEND_URL") {
             cfg.backend_url = u.trim_end_matches('/').to_owned();
+        }
+        if let Some(u) = get("SECRETARY_MCP_MEDIA_URL") {
+            cfg.media_url = Some(u.trim_end_matches('/').to_owned());
         }
         if let Some(p) = get("SECRETARY_MCP_BACKEND_TOKEN_FILE") {
             cfg.backend_token = Some(read_secret(&p, "SECRETARY_MCP_BACKEND_TOKEN_FILE")?);

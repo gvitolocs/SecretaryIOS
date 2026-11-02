@@ -23,6 +23,10 @@ use serde::{Deserialize, Serialize};
 ///   notebooks: read them, add sources, ask questions, make insights and podcasts.
 ///   Separate from `read` and `write` because the sources are the owner's documents,
 ///   and never implied: explicit-only, like `agents`.
+///
+/// - `photos`: the owner's photos themselves (`crate::photos`): search the Gallery and fetch a picture.
+///   Separate from `read`, which many connectors hold, because a photo shows far more than a record;
+///   never implied: explicit-only, like `agents` and `notebooks`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Scope {
@@ -32,10 +36,11 @@ pub enum Scope {
     Computer,
     Agents,
     Notebooks,
+    Photos,
 }
 
 impl Scope {
-    pub const ALL: [Scope; 6] = [Scope::Read, Scope::Chat, Scope::Write, Scope::Computer, Scope::Agents, Scope::Notebooks];
+    pub const ALL: [Scope; 7] = [Scope::Read, Scope::Chat, Scope::Write, Scope::Computer, Scope::Agents, Scope::Notebooks, Scope::Photos];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -45,6 +50,7 @@ impl Scope {
             Scope::Computer => "computer",
             Scope::Agents => "agents",
             Scope::Notebooks => "notebooks",
+            Scope::Photos => "photos",
         }
     }
 
@@ -56,13 +62,14 @@ impl Scope {
             "computer" => Some(Scope::Computer),
             "agents" => Some(Scope::Agents),
             "notebooks" => Some(Scope::Notebooks),
+            "photos" => Some(Scope::Photos),
             _ => None,
         }
     }
 
     /// Granted only when asked for by name (OAuth `scope`, `--scopes`, `add-scope`).
     pub fn explicit_only(self) -> bool {
-        matches!(self, Scope::Agents | Scope::Notebooks)
+        matches!(self, Scope::Agents | Scope::Notebooks | Scope::Photos)
     }
 
     pub fn describe(self) -> &'static str {
@@ -75,6 +82,7 @@ impl Scope {
             Scope::Write => "Add to / tick off the shopping list, create and cancel reminders, propose calendar events (you confirm them in the app), save notes, generate library briefs, add and complete tasks",
             Scope::Agents => "Run and steer your coding agents (Lucina Agents on nezopt) in worktrees: start runs, send follow-ups, read logs, diffs and files, stop and archive. It can never answer their permission requests, push or open PRs",
             Scope::Notebooks => "Use your Lucina Notebooks: read notebooks and their sources, add sources (links, text, files from Lucina's desktop, notes), ask questions answered only from the sources with citations, run transformations and make podcasts. It cannot delete anything",
+            Scope::Photos => "See your photos: search the Gallery and fetch the pictures themselves",
         }
     }
 }
@@ -237,7 +245,7 @@ mod tests {
         assert!(!Scopes::parse_list("read,write,chat,computer,agents").unwrap().contains(Scope::Notebooks));
         assert!(!Scopes::default_grant().contains(Scope::Notebooks));
         assert!(Scopes::all().contains(Scope::Notebooks));
-        assert_eq!(Scopes::all().to_string(), "read,chat,write,computer,agents,notebooks");
+        assert_eq!(Scopes::all().to_string(), "read,chat,write,computer,agents,notebooks,photos");
         assert_eq!(Scopes::parse_lenient("openid notebooks agents").to_oauth(), "agents notebooks");
     }
 
