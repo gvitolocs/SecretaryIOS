@@ -236,6 +236,22 @@ async fn long_answers_become_a_note_and_a_summary_and_slow_ones_notify() {
 }
 
 #[tokio::test]
+async fn a_job_someone_else_asked_for_never_pushes() {
+    let w = world(
+        |c| c.inline_wait_secs = 0,
+        &[(AgentId::Claude, Duration::from_millis(300), Ok("Fatto."))],
+    );
+    w.judge.push_text(ACT);
+    let mut r = req(Kind::Analysis, "confronta SQLite e Postgres");
+    r.caller = Some("some-new-provider".into());
+    let job = finish(w.d.start(r).await).await;
+    assert_eq!(job.status, JobStatus::Done);
+    assert_eq!(job.caller.as_deref(), Some("some-new-provider"));
+    assert!(!w.sink.cards.lock().unwrap().is_empty(), "the chat still has it");
+    assert!(w.sink.notified.lock().unwrap().is_empty(), "no push, slow or not");
+}
+
+#[tokio::test]
 async fn self_review_skip_and_revise() {
     let w = world(|_| {}, &[(AgentId::Chatgpt, Duration::ZERO, Ok("ok"))]);
     w.judge.push_text(r#"{"goal":"g","risk":"low","reversible":true,"why":"Non serve: lo so già.","decision":"skip"}"#);
