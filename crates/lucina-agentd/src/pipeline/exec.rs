@@ -13,6 +13,7 @@
 //! `deploy-guard check` (refused: stop), install, health, `deploy-guard record` (ledger,
 //! tag, ops record).
 
+use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -61,6 +62,12 @@ struct Exec {
     spec: Spec,
     log: File,
     path: String,
+    members: Option<Members>,
+}
+
+struct Members {
+    directories: Vec<String>,
+    names: HashSet<String>,
 }
 
 /// `git` output, or its error text.
@@ -72,7 +79,7 @@ impl Exec {
         let home = std::env::var("HOME").unwrap_or_default();
         // The same tools as a login shell: tests call mkfs.fat and friends, which live in sbin.
         let path = format!("{home}/.cargo/bin:{home}/.local/bin:{home}/bin:{}:/usr/sbin:/sbin", std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into()));
-        Ok(Exec { spec, log, path })
+        Ok(Exec { spec, log, path, members: None })
     }
 
     /// Finish cleanup while the executor still holds the job's flock, regardless of outcome.
@@ -82,7 +89,7 @@ impl Exec {
             JobKind::Deploy => self.deploy(),
         };
         let root = self.spec.target_root.clone().unwrap_or_else(|| super::Config::from_env(Path::new(".")).target_root);
-        self.say(&super::sweep::run(Path::new(&self.spec.target_dir), &root));
+        self.say(&super::sweep::run(Path::new(&self.spec.target_dir), &root, self.members.as_ref().map(|m| &m.names)));
         outcome
     }
 
@@ -198,7 +205,7 @@ impl Exec {
         let files = self.git(dir, &["ls-files", "--", "Cargo.toml", "*/Cargo.toml"]).unwrap_or_default();
         let mut crates = Vec::new();
         let mut has_workspace = false;
-        let members = self.members(dir);
+        let members = &self.members;
         for f in files.lines() {
             let Ok(text) = std::fs::read_to_string(dir.join(f)) else { continue };
             let d = f.strip_suffix("Cargo.toml").unwrap_or_default().trim_end_matches('/');
@@ -207,7 +214,7 @@ impl Exec {
             }
             if let Some(mut c) = repo::crate_of(d, &text) {
                 if let Some(m) = &members {
-                    c.standalone = !m.iter().any(|x| x == d);
+                    c.standalone = !m.directories.iter().any(|x| x == d);
                 }
                 crates.push(c);
             }
@@ -215,8 +222,8 @@ impl Exec {
         (crates, has_workspace)
     }
 
-    /// The root workspace's member directories (relative), if cargo can say.
-    fn members(&self, dir: &Path) -> Option<Vec<String>> {
+    /// The job checkout's workspace member directories and normalized package names.
+    fn members(&self, dir: &Path) -> Option<Members> {
         if !dir.join("Cargo.toml").is_file() {
             return None;
         }
@@ -231,13 +238,18 @@ impl Exec {
             .filter(|o| o.status.success())?;
         let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
         let root = std::fs::canonicalize(dir).ok()?;
-        let mut list = Vec::new();
+        let ids = v["workspace_members"].as_array()?;
+        let mut members = Members { directories: Vec::new(), names: HashSet::new() };
         for p in v["packages"].as_array()? {
+            if !ids.contains(&p["id"]) {
+                continue;
+            }
             let manifest = PathBuf::from(p["manifest_path"].as_str()?);
             let d = manifest.parent()?.strip_prefix(&root).ok()?;
-            list.push(d.display().to_string());
+            members.directories.push(d.display().to_string());
+            members.names.insert(p["name"].as_str()?.replace('-', "_"));
         }
-        Some(list)
+        Some(members)
     }
 
     fn run_gates(&mut self, dir: &Path, gates: &[Gate]) -> (Vec<GateResult>, Option<String>) {
@@ -307,6 +319,7 @@ impl Exec {
                 Ok(c) => c,
                 Err(e) => return fail("FAILED", e),
             };
+            self.members = self.members(&dir);
             if candidate == base {
                 return Outcome { ok: true, code: "NOTHING_TO_MERGE".into(), message: format!("every commit of {branch} is already on {}", self.spec.trunk), landed: Some(base), method: Some("already".into()), ..Outcome::default() };
             }
@@ -424,6 +437,7 @@ impl Exec {
             Ok(d) => d,
             Err(e) => return fail("DEPLOY_TREE_FAILED", e),
         };
+        self.members = self.members(&dir);
         self.say(&format!("deploy {runtime} from {} at {}", self.spec.trunk, &tip[..10]));
         let plan = Command::new("deploy-guard").args(["plan", "--runtime", &runtime, "--repo"]).arg(&dir).env("PATH", &self.path).output();
         let plan = plan.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
@@ -621,7 +635,7 @@ mod tests {
                 if !valid {
                     spec.branch = None;
                 }
-                let artifact = Path::new(&spec.target_dir).join("debug/deps/old");
+                let artifact = Path::new(&spec.target_dir).join("debug/incremental/old");
                 std::fs::create_dir_all(artifact.parent().unwrap()).unwrap();
                 std::fs::write(&artifact, "old output").unwrap();
                 let old = std::time::SystemTime::now() - std::time::Duration::from_secs(4 * 60 * 60);
@@ -641,6 +655,24 @@ mod tests {
                 assert_eq!(artifact.exists(), sweep_fails);
             }
         }
+    }
+
+    #[test]
+    fn member_names_are_normalized_and_exclude_external_path_dependencies() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        let dependency = root.path().join("dependency");
+        for dir in [&project, &dependency] {
+            std::fs::create_dir_all(dir.join("src")).unwrap();
+            std::fs::write(dir.join("src/lib.rs"), "").unwrap();
+        }
+        std::fs::write(dependency.join("Cargo.toml"), "[package]\nname = \"stable-dependency\"\nversion = \"0.1.0\"\n[workspace]\n").unwrap();
+        std::fs::write(project.join("Cargo.toml"), "[package]\nname = \"workspace-crate\"\nversion = \"0.1.0\"\n[workspace]\n[dependencies]\nstable-dependency = { path = \"../dependency\" }\n").unwrap();
+        let x = Exec::open(root.path(), spec(root.path(), &project, "b", "abc")).unwrap();
+        let members = x.members(&project).unwrap();
+        assert_eq!(members.names, HashSet::from(["workspace_crate".into()]));
+        assert_eq!(members.directories, vec![""]);
+        assert!(x.members(&dependency.join("missing")).is_none());
     }
 
     #[test]
