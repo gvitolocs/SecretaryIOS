@@ -133,6 +133,12 @@ async fn start(st: &AppState, gpu: bool) -> anyhow::Result<Server> {
             if gpu { "99" } else { "0" },
             "-c",
             "8192",
+            // An image goes to the encoder in one batch, and a landscape picture is more tokens than the
+            // default 512: the server aborts on it (GGML_ASSERT n_ubatch >= n_tokens, 2 Nov 2026).
+            "-b",
+            "4096",
+            "-ub",
+            "4096",
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())

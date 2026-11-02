@@ -33,6 +33,11 @@ fn fresh(record: &memory::Record, modified: Option<&str>) -> bool {
         .is_some_and(|m| m.timestamp_millis() < record.created_at)
 }
 
+/// A picture vision could not look at: not a reading to keep, or the next question would get it too.
+fn saw_nothing(kind: &str, text: &str) -> bool {
+    kind == "image" && text.starts_with("Vision: \n")
+}
+
 fn from_record(r: memory::Record) -> Extracted {
     let kind = router::KINDS
         .iter()
@@ -112,7 +117,7 @@ impl DocumentReader for LibraryReader {
                 .and_then(Result::ok)
                 .flatten()
         }
-        .filter(|r| fresh(r, req.modified));
+        .filter(|r| fresh(r, req.modified) && !saw_nothing(&r.kind, &r.text));
         if let Some(r) = cached {
             return Ok(render(&part, &from_record(r), req.question));
         }
@@ -133,6 +138,9 @@ impl DocumentReader for LibraryReader {
             summary: x.summary.clone(),
             structured: x.structured.clone(),
         };
+        if saw_nothing(x.kind, &x.text) {
+            return Ok(render(&part, &x, req.question));
+        }
         let item = req.item_id.to_owned();
         tokio::spawn(async move {
             match tokio::task::spawn_blocking(move || mem.put(&record)).await {
@@ -155,6 +163,13 @@ mod tests {
         let mut cfg = crate::Config::for_data_dir(dir);
         cfg.share.dir = dir.join("share");
         AppState::build(cfg, None).unwrap()
+    }
+
+    #[test]
+    fn a_failed_look_at_a_picture_is_not_a_reading() {
+        assert!(saw_nothing("image", "Vision: \nOCR text:\ngarbled"));
+        assert!(!saw_nothing("image", "Vision: A cat.\nOCR text:\n"));
+        assert!(!saw_nothing("pdf", "Vision: \n"));
     }
 
     #[tokio::test]
