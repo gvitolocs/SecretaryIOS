@@ -18479,22 +18479,6 @@
         }
       }
     },
-    "About %@ by bike (estimate)" : {
-      "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Circa %@ in bicicletta (stima)"
-          }
-        },
-        "da" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Cirka %@ på cykel (anslået)"
-          }
-        }
-      }
-    },
     "No bike route found" : {
       "localizations" : {
         "it" : {

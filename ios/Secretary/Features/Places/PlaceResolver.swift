@@ -236,3 +236,60 @@ enum PlaceFormat {
         Duration.seconds(max(60, seconds)).formatted(.units(allowed: [.hours, .minutes], width: .abbreviated))
     }
 }
+
+/// One travel time from MKDirections.
+struct PlaceETA: Equatable, Identifiable, Sendable {
+    enum Mode: String, CaseIterable, Sendable {
+        case automobile, walking, transit
+
+        var symbol: String {
+            switch self {
+            case .automobile: return "car.fill"
+            case .walking: return "figure.walk"
+            case .transit: return "tram.fill"
+            }
+        }
+
+        var title: String {
+            switch self {
+            case .automobile: return String(localized: "By car")
+            case .walking: return String(localized: "On foot")
+            case .transit: return String(localized: "By public transport")
+            }
+        }
+
+        var transportType: MKDirectionsTransportType {
+            switch self {
+            case .automobile: return .automobile
+            case .walking: return .walking
+            case .transit: return .transit
+            }
+        }
+    }
+
+    let mode: Mode
+    let seconds: TimeInterval
+    var id: Mode { mode }
+
+    /// The modes that have a route, in car / walk / transit order (empty when none does).
+    static func all(from origin: CLLocationCoordinate2D, to destination: CLLocationCoordinate2D) async -> [PlaceETA] {
+        async let car = eta(.automobile, from: origin, to: destination)
+        async let walk = eta(.walking, from: origin, to: destination)
+        async let transit = eta(.transit, from: origin, to: destination)
+        return [await car, await walk, await transit].compactMap { $0 }
+    }
+
+    private static func eta(_ mode: Mode, from origin: CLLocationCoordinate2D, to destination: CLLocationCoordinate2D) async -> PlaceETA? {
+        let request = MKDirections.Request()
+        request.source = MKMapItem(placemark: MKPlacemark(coordinate: origin))
+        request.destination = MKMapItem(placemark: MKPlacemark(coordinate: destination))
+        request.transportType = mode.transportType
+        guard let response = try? await MKDirections(request: request).calculateETA() else { return nil }
+        return PlaceETA(mode: mode, seconds: response.expectedTravelTime)
+    }
+
+    /// "9 min · 31 min · 14 min" with the modes spelled out (the self-test and VoiceOver).
+    static func text(_ etas: [PlaceETA]) -> String {
+        etas.map { "\($0.mode.title) \(PlaceFormat.duration($0.seconds))" }.joined(separator: " · ")
+    }
+}

@@ -2,10 +2,10 @@ import MapKit
 import SwiftUI
 
 /// The full map of a place: its pin, the owner's position (both in view when the owner is within
-/// ~50 km) and the one route, by bike (owner's choice, he lives in Denmark), and a card with the
-/// address, time, distance and the bike time from the current position (else from home). Navigate
-/// stays in the app: the camera follows the owner along the bike route with the next turn; Apple
-/// Maps is only a secondary menu item.
+/// ~50 km) and the bike route (the priority: he lives in Denmark), and a card with the address,
+/// time, distance and travel times from the current position (else from home), the bike's first.
+/// Navigate stays in the app: the camera follows the owner along the bike route with the next
+/// turn; Apple Maps is only a secondary menu item.
 struct PlaceMapView: View {
     @Environment(AppModel.self) private var app
     let place: Place
@@ -21,6 +21,8 @@ struct PlaceMapView: View {
     /// When the route was last loaded (its duration counts from then).
     @State private var routeAt = Date()
     @State private var routeLoading = false
+    /// Car, walk and transit times, after the bike's on the card.
+    @State private var etas: [PlaceETA] = []
     /// An event's place: pinned to the countdown widget.
     @State private var countdownPinned = false
 
@@ -127,30 +129,47 @@ struct PlaceMapView: View {
                 Label(origin.distanceText(to: coordinate), systemImage: origin.isHome ? "house" : "location.fill")
                     .font(LucinaTokens.Fonts.subheadline.weight(.semibold))
                     .accessibilityIdentifier("placeDistance")
-                bikeTime
+                travelTimes
                     .accessibilityIdentifier("placeETA")
             }
             directions
         }
     }
 
-    /// The one time on the card: the bike's. An estimate says so.
-    @ViewBuilder private var bikeTime: some View {
-        if let route {
-            let duration = PlaceFormat.duration(route.seconds)
-            Label {
-                if route.estimated {
-                    Text("About \(duration) by bike (estimate)")
-                } else {
-                    Text(verbatim: duration)
+    /// The bike's time first, then car, walk and transit. A bike estimate says so; a walking or car
+    /// time never stands in for it.
+    @ViewBuilder private var travelTimes: some View {
+        if route != nil || !etas.isEmpty {
+            HStack(spacing: 6) {
+                if let route {
+                    let duration = PlaceFormat.duration(route.seconds)
+                    Label(route.estimated ? "≈ \(duration)" : duration, systemImage: PlaceTravelMode.bike.symbol)
+                        .labelStyle(.titleAndIcon)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(Theme.text)
+                        .accessibilityLabel(Text(verbatim: "\(route.modeText) \(duration)"))
                 }
-            } icon: {
-                Image(systemName: PlaceTravelMode.bike.symbol)
+                ForEach(Array(etas.enumerated()), id: \.element.id) { index, eta in
+                    if index > 0 || route != nil { Text(verbatim: "·").foregroundStyle(Theme.textTertiary) }
+                    Label(PlaceFormat.duration(eta.seconds), systemImage: eta.mode.symbol)
+                        .labelStyle(.titleAndIcon)
+                        .accessibilityLabel(Text(verbatim: "\(eta.mode.title) \(PlaceFormat.duration(eta.seconds))"))
+                }
             }
             .font(LucinaTokens.Fonts.subheadline.monospacedDigit())
             .foregroundStyle(Theme.textSecondary)
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
             .accessibilityElement(children: .combine)
-            .accessibilityLabel(Text(verbatim: "\(route.modeText) \(duration)"))
+            if let route, route.estimated {
+                Label(route.modeText, systemImage: PlaceTravelMode.bike.symbol)
+                    .font(LucinaTokens.Fonts.caption)
+                    .foregroundStyle(Theme.textSecondary)
+            } else if route == nil, !routeLoading {
+                Text("No bike route found")
+                    .font(LucinaTokens.Fonts.caption)
+                    .foregroundStyle(Theme.textSecondary)
+            }
             if let leaveAt {
                 let time = leaveAt.formatted(date: .omitted, time: .shortened)
                 Text("Leave at \(time) to be on time")
@@ -296,7 +315,10 @@ struct PlaceMapView: View {
 
     private func loadRoute() async {
         // While navigating the old route stays up until the new one arrives.
-        if !navigating { route = nil }
+        if !navigating {
+            route = nil
+            etas = []
+        }
         guard let origin else { return }
         routeLoading = true
         #if SCREENSHOTS
@@ -317,12 +339,19 @@ struct PlaceMapView: View {
         DebugEvents.record("place.route", ["mode": PlaceTravelMode.bike.rawValue, "via": found?.source.rawValue ?? "none",
                                            "seconds": Int(found?.seconds ?? 0), "meters": Int(found?.meters ?? 0),
                                            "steps": found?.steps.count ?? 0, "navigating": navigating, "from_home": origin.isHome])
+        // The card isn't up while navigating: no other times, fewer calls.
+        if !navigating {
+            let others = await PlaceETA.all(from: origin.coordinate, to: coordinate)
+            guard !Task.isCancelled else { return }
+            etas = others
+        }
         #if SCREENSHOTS
         if let found {
             MapSelfTestProbe.shared.routesText = PlaceTravelMode.bike.rawValue
-            MapSelfTestProbe.shared.etaText = "\(found.modeText) \(PlaceFormat.duration(found.seconds))"
             if found.estimated { MapSelfTestProbe.shared.fallbackReason = found.source.rawValue }
         }
+        let bikeText = found.map { "\($0.modeText) \(PlaceFormat.duration($0.seconds))" }
+        MapSelfTestProbe.shared.etaText = [bikeText, etas.isEmpty ? nil : PlaceETA.text(etas)].compactMap { $0 }.joined(separator: " · ")
         MapSelfTestProbe.shared.leaveAt = leaveAt
         if navigating { MapSelfTestProbe.shared.navigationSteps = found?.steps.count ?? 0 }
         reportFit()
