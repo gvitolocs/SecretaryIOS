@@ -145,9 +145,7 @@ pub fn turn_lang() -> String {
 /// The ack of a page read or web search that runs on her computer, in the turn's language.
 pub fn web_read_ack() -> &'static str {
     let line = turn_lang();
-    if line.starts_with("Reply language: Italian") {
-        "Ok, lo apro nel browser del mio computer e ti dico."
-    } else if line.starts_with("Reply language: Danish") {
+    if line.starts_with("Reply language: Danish") {
         "Okay, jeg åbner det i browseren på min computer og vender tilbage."
     } else {
         "Ok, I'm opening it in my computer's browser and will report back."
@@ -158,9 +156,7 @@ pub fn web_read_ack() -> &'static str {
 /// language (English outside a turn).
 pub fn plan_failed_text() -> &'static str {
     let line = turn_lang();
-    if line.starts_with("Reply language: Italian") {
-        "Scusa, mi sono incartata nel capire come gestire questo messaggio. Me lo rimandi?"
-    } else if line.starts_with("Reply language: Danish") {
+    if line.starts_with("Reply language: Danish") {
         "Undskyld, jeg fik viklet mig ind i, hvordan jeg skulle håndtere den besked. Kan du sende den igen?"
     } else {
         "Sorry, I got tangled up working out how to handle that message. Could you send it again?"
@@ -626,23 +622,23 @@ impl Planner {
         Some(match c.intent.as_str() {
             "list_reminders" => json!({"action": "list_reminders", "scope": c.scope}),
             "schedule_reminder" => {
-                json!({"action": "schedule_reminder", "text": "", "dueDate": "", "ack": "Programmo il promemoria adesso."})
+                json!({"action": "schedule_reminder", "text": "", "dueDate": "", "ack": "I will schedule that reminder now."})
             }
             "calendar_event" => json!({"action": "calendar_event"}),
             "model_status" => {
-                json!({"action": "model_status_task", "ack": "Controllo quale modello è caricato adesso."})
+                json!({"action": "model_status_task", "ack": "Checking which model is loaded now."})
             }
             "revive_qwen" => {
-                json!({"action": "revive_qwen_task", "ack": "Riporto Qwen 3.8 sulla GPU adesso."})
+                json!({"action": "revive_qwen_task", "ack": "Bringing Qwen 3.8 back onto the GPU now."})
             }
             "poko_news_scout_retry" | "social_post" => {
-                json!({"action": "poko_news_scout_retry", "ack": "Avvio il Bot Hospital su Poko (peer1) e riprovo lo scout news adesso."})
+                json!({"action": "poko_news_scout_retry", "ack": "Starting the Bot Hospital on Poko (peer1) and retrying the news scout now."})
             }
             "spreadsheet_update" => {
-                json!({"action": "spreadsheet_update_task", "ack": "Controllo il Google Sheet e provo ad aggiornarlo adesso."})
+                json!({"action": "spreadsheet_update_task", "ack": "Checking the Google Sheet and trying to update it now."})
             }
             "cursor_task" => {
-                json!({"action": "cursor_task", "ack": "Avvio Harness con Qwen locale su nezopt per questo task adesso."})
+                json!({"action": "cursor_task", "ack": "Starting Harness with local Qwen on nezopt for this task now."})
             }
             _ => return None,
         })
@@ -920,7 +916,8 @@ mod tests {
         );
         let texts = recent_owner_texts(&recent, "s");
         assert_eq!(texts, vec!["Ho fatto la lavanderia".to_owned()]);
-        assert!(reply_language_line(&recent, "s", "").contains("Reply language: Italian"));
+        // Detected as Italian, answered in English.
+        assert!(reply_language_line(&recent, "s", "").contains("Reply language: English"));
     }
 
     #[tokio::test]

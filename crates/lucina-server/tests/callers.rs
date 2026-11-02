@@ -143,7 +143,7 @@ async fn chat_answers_who_called_with_the_table() {
         d["reply"]
             .as_str()
             .unwrap()
-            .contains("| Numero | Spam | Tipo | Rispondere |"),
+            .contains("| Number | Spam | Kind | Pick up |"),
         "{d}"
     );
 }

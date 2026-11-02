@@ -130,7 +130,7 @@ impl Tool for MeshyTool {
                             channel: ctx.channel.clone(),
                             session_id: ctx.session_id.clone(),
                             reply_to: None,
-                            lang: "it".into(),
+                            lang: "en".into(),
                         },
                     )
                     .await

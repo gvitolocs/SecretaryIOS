@@ -723,10 +723,10 @@ async fn route(
                 .ok_or_else(|| ApiError::bad_request("text is required"))?;
             let recent = body["recent"].as_str().unwrap_or("");
             let lang = match body["lang"].as_str() {
-                Some("it") => "it",
+                // Never Italian (owner rule 2026-11-02): an Italian client or text is answered in English.
                 Some("da") => "da",
                 Some(_) => "en",
-                None => lucina_intent::lang::detect(text).map_or("en", |l| l.code()),
+                None => lucina_intent::lang::detect(text).map_or("en", |l| l.reply().code()),
             };
             let gate_only = body["gateOnly"].as_bool().unwrap_or(false);
             Ok(ok(crate::jev_yesno::preview(st, text, recent, lang, gate_only).await))

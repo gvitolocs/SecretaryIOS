@@ -759,8 +759,9 @@ fn decide(t: &Turn<'_>, outcome: &Outcome) -> (RouteInfo, Option<Plan>) {
 /// The turn's reply language when a template exists for it (`planner::TURN_LANG`, the same detection as
 /// every other reply).
 fn template_lang() -> Option<&'static str> {
+    // Owner rule (2026-11-02): never Italian. The `it` templates below stay for direct callers and tests
+    // but a turn never reaches them (the turn's line never pins Italian).
     match crate::jev_yesno::turn_lang_code() {
-        "it" => Some("it"),
         "en" => Some("en"),
         _ => None,
     }
@@ -1728,7 +1729,7 @@ mod tests {
         );
         assert_eq!(
             shopping_list_reply(&[], "it"),
-            "La lista della spesa è vuota."
+            "Your shopping list is empty."
         );
         let many: Vec<String> = (0..11).map(|i| format!("x{i}")).collect();
         assert_eq!(

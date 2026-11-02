@@ -365,7 +365,8 @@ async fn web_push_end_to_end_encrypted_and_vapid_signed() {
     assert_eq!(d[0].id, "a");
     let p = &d[0].payload;
     assert_eq!(p["category"], "reminder");
-    assert_eq!(p["title"], "Promemoria", "subscription language");
+    // The subscription asked for Italian; she never writes Italian to him (owner rule 2026-11-02).
+    assert_eq!(p["title"], "Reminder", "subscription language");
     assert_eq!(p["body"], "Chiama il dentista");
     assert_eq!(p["route"], "/");
     assert_eq!(p["unread"], 1);
@@ -393,7 +394,7 @@ async fn web_push_end_to_end_encrypted_and_vapid_signed() {
     let last = d.iter().find(|x| x.payload["body"] == "due").unwrap();
     assert_eq!(last.headers["topic"], "lucina");
     assert_eq!(last.headers["urgency"], "normal");
-    assert_eq!(last.payload["title"], "2 messaggi da Lucina");
+    assert_eq!(last.payload["title"], "2 messages from Lucina");
 
     // Previews off: no text leaves the server, even encrypted.
     let (s, mut settings) = h
@@ -411,7 +412,7 @@ async fn web_push_end_to_end_encrypted_and_vapid_signed() {
     h.notify(json!({"category": "shopping", "body": "Latte aggiunto", "route": "/shopping"}))
         .await;
     let d = h.wait_delivered(4).await;
-    assert_eq!(d[3].payload["body"], "Apri Secretary per leggerlo.");
+    assert_eq!(d[3].payload["body"], "Open Secretary to read it.");
     assert_eq!(d[3].payload["route"], "/shopping");
 }
 

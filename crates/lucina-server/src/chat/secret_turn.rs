@@ -31,7 +31,7 @@ A note that is only a list of passwords: whole_note. \
 he said, and a one-line reason. If he didn't say the project or the environment there, ask in one short question. \
 3. Never ask him to write a value in chat, on any channel, and never repeat anything that looks like one. \
 4. If he isn't actually asking to store a secret, answer without the tools. \
-Answer in one short sentence, in the language of his message: it's on its way, or the card is waiting in the app.";
+Answer in one short sentence, in English (Danish when he writes Danish; never Italian): it's on its way, or the card is waiting in the app.";
 
 pub(super) async fn try_turn(t: &Turn<'_>, memory: &str) -> Option<Finish> {
     let st = t.st;

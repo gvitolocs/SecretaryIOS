@@ -1066,10 +1066,9 @@ fn words(lang: &str) -> Words {
     }
 }
 
-/// `en`, `it` or `da` (anything else is English).
+/// `en` or `da` (anything else, Italian included, is English: owner rule of 2026-11-02, never Italian).
 pub fn lang(l: &str) -> &'static str {
     match l.trim().to_ascii_lowercase().get(..2) {
-        Some("it") => "it",
         Some("da") => "da",
         _ => "en",
     }
@@ -2438,7 +2437,7 @@ mod tests {
     #[test]
     fn languages() {
         assert_eq!(lang("da-DK"), "da");
-        assert_eq!(lang("it"), "it");
+        assert_eq!(lang("it"), "en");
         assert_eq!(lang("fr"), "en");
         assert_eq!(kind_name("telemarketing", "da"), "telemarketing");
         assert_eq!(kind_name("delivery", "en"), "unknown");

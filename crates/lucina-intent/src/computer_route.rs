@@ -251,7 +251,7 @@ fn lang_of(text: &str) -> &'static str {
         return "da";
     }
     crate::lang::detect(text)
-        .map(|l| l.code())
+        .map(|l| l.reply().code())
         .unwrap_or_else(|| crate::tasks::guess_lang(text))
 }
 

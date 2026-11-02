@@ -48,8 +48,8 @@ enum ToArg {
 #[derive(Deserialize, JsonSchema)]
 struct AskArgs {
     /// The task, self-contained, with only the details the agent needs (no
-    /// private data beyond that, never passwords or secrets). In Italian or
-    /// English, as fits the task.
+    /// private data beyond that, never passwords or secrets). In English
+    /// (or Danish for a Danish task); the answer comes back in English or Danish.
     task: String,
     /// question (default), research, analysis or code.
     kind: Option<KindArg>,

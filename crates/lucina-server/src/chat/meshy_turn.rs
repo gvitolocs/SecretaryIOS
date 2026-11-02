@@ -68,6 +68,8 @@ pub fn registry(st: &AppState) -> Option<Arc<Registry>> {
     st.meshy_registry.clone()
 }
 
+/// Does the text look Italian? Only for tests: since 2026-11-02 (owner rule) she never answers in Italian.
+#[cfg(test)]
 fn italian(text: &str) -> bool {
     let t = format!(" {} ", text.to_lowercase());
     [
@@ -96,19 +98,18 @@ pub const PENDING_RESULT: &str = "[meshy plan awaiting confirmation]";
 
 /// A reply that asks to confirm a pending Meshy plan: the marker for the
 /// composer, and without rich replies the v1 confirm buttons directly.
-pub(super) fn mark_pending(st: &AppState, f: &mut Finish, message: &str) {
+pub(super) fn mark_pending(st: &AppState, f: &mut Finish, _message: &str) {
     f.action = TOOL.into();
     f.action_result = PENDING_RESULT.into();
     if st.cfg.rich_replies {
         return;
     }
-    let it = italian(message);
-    let actions = model3d::confirm_actions(it);
+    let actions = model3d::confirm_actions(false);
     f.meta = Some(f.meta.take().unwrap_or_default().merge(Meta {
         kind: Some("meshy_plan".into()),
         format: Some(model3d::FORMAT.into()),
         bubbles: Some(vec![f.reply.trim().to_owned()]),
-        lang: Some(if it { "it" } else { "en" }.into()),
+        lang: Some("en".into()),
         actions: Some(actions.clone()),
         ..Meta::default()
     }));
@@ -118,7 +119,7 @@ pub(super) fn mark_pending(st: &AppState, f: &mut Finish, message: &str) {
 }
 
 /// The plan as text for Telegram (buttons are added by the bridge).
-fn plan_text(st: &AppState, p: &PendingAction, it: bool) -> String {
+fn plan_text(st: &AppState, p: &PendingAction) -> String {
     let svc = st.meshy.as_ref();
     let plan = svc.and_then(|s| {
         lucina_meshy::Args::from_value(&p.args)
@@ -126,16 +127,12 @@ fn plan_text(st: &AppState, p: &PendingAction, it: bool) -> String {
             .and_then(|a| s.estimate(&a).ok())
     });
     let body = plan.map(|p| p.text()).unwrap_or_else(|| p.summary.clone());
-    if it {
-        format!("{body}\n\nProcedo? Nessun credito è stato speso finora.")
-    } else {
-        format!("{body}\n\nGood to go? No credits spent so far.")
-    }
+    format!("{body}\n\nGood to go? No credits spent so far.")
 }
 
 /// After an agent run: is a Meshy plan now waiting for the owner's yes? It
 /// also goes to Telegram with buttons.
-pub async fn after_agent(st: &AppState, records: &[ToolRecord], message: &str) -> bool {
+pub async fn after_agent(st: &AppState, records: &[ToolRecord], _message: &str) -> bool {
     let Some(p) = records
         .iter()
         .rev()
@@ -143,10 +140,9 @@ pub async fn after_agent(st: &AppState, records: &[ToolRecord], message: &str) -
     else {
         return false;
     };
-    let it = italian(message);
     if let Some(svc) = st.meshy.as_ref() {
         if svc.telegram.configured() {
-            if let Err(e) = svc.telegram.send_plan(&p.id, &plan_text(st, &p, it)).await {
+            if let Err(e) = svc.telegram.send_plan(&p.id, &plan_text(st, &p)).await {
                 tracing::warn!(error = %e, "meshy plan not sent to telegram");
             }
         }
@@ -217,19 +213,19 @@ pub async fn confirm_by_id(st: &AppState, body: &Value) -> Result<Value, crate::
         (
             true,
             json!({"status": "declined"}),
-            format!("Annullato: {}. Nessun credito speso.", action.summary),
+            format!("Cancelled: {}. No credits spent.", action.summary),
         )
     } else {
         let (ok, output, _) = run_confirmed(st, &action, channel).await;
         let text = if ok {
             format!(
-                "✅ Avviato: {}. Ti avviso quando il modello è pronto.",
+                "✅ Started: {}. I'll tell you when the model is ready.",
                 action.summary
             )
         } else {
             format!(
-                "Non avviato: {}",
-                output["error"].as_str().unwrap_or("errore")
+                "Not started: {}",
+                output["error"].as_str().unwrap_or("error")
             )
         };
         (ok, output, text)
@@ -255,7 +251,6 @@ pub(super) async fn try_turn(t: &Turn<'_>, memory: &str) -> Option<Finish> {
     let st = t.st;
     let reg = registry(st)?;
     let now = chrono::Utc::now();
-    let it = italian(&t.message);
     if let Some(p) = st
         .pending
         .current(&t.session, now)
@@ -278,9 +273,9 @@ pub(super) async fn try_turn(t: &Turn<'_>, memory: &str) -> Option<Finish> {
                 };
                 let reply = st
                     .planner
-                    .generate_skill_reply(&input, "Meshy 3D", &result, "Say in one or two sentences that the 3D job started (or why not), that it runs in the background and that he will be notified. Language of the message.")
+                    .generate_skill_reply(&input, "Meshy 3D", &result, "Say in one or two sentences that the 3D job started (or why not), that it runs in the background and that he will be notified. Reply in English, or in Danish when he writes Danish; never Italian.")
                     .await
-                    .unwrap_or_else(|_| if ok { "Avviato: ti avviso quando il modello 3D è pronto.".into() } else { "Non sono riuscita ad avviarlo.".into() });
+                    .unwrap_or_else(|_| if ok { "Started: I'll tell you when the 3D model is ready.".into() } else { "I couldn't start it.".into() });
                 let mut f = Finish::reply(reply, "meshy");
                 f.action_result = format!("[meshy {}]", if ok { "started" } else { "refused" });
                 if let Some(job) = output["jobId"].as_str() {
@@ -294,11 +289,7 @@ pub(super) async fn try_turn(t: &Turn<'_>, memory: &str) -> Option<Finish> {
             }
             Reply::No => {
                 st.pending.take(&p.id);
-                let text = if it {
-                    "Va bene, annullato. Nessun credito speso."
-                } else {
-                    "OK, cancelled. No credits spent."
-                };
+                let text = "OK, cancelled. No credits spent.";
                 return Some(Finish::reply(text, "meshy"));
             }
             Reply::Other => {}

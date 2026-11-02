@@ -438,19 +438,19 @@ pub fn direct_plan(c: &Classification, text: &str, memory: &str, s: &Settings) -
             json!({"action": "list_reminders", "scope": scope})
         }
         "poko_news_scout_retry" => {
-            json!({"action": "poko_news_scout_retry", "ack": "Avvio il Bot Hospital su Poko (peer1) e riprovo lo scout news adesso."})
+            json!({"action": "poko_news_scout_retry", "ack": "Starting the Bot Hospital on Poko (peer1) and retrying the news scout now."})
         }
         "model_status" => {
-            json!({"action": "model_status_task", "ack": "Controllo quale modello è caricato adesso."})
+            json!({"action": "model_status_task", "ack": "Checking which model is loaded now."})
         }
         "revive_qwen" => {
-            json!({"action": "revive_qwen_task", "ack": "Riporto Qwen 3.8 sulla GPU adesso."})
+            json!({"action": "revive_qwen_task", "ack": "Bringing Qwen 3.8 back onto the GPU now."})
         }
         "oracle_monitor" => {
             if !s.oracle_monitor {
                 return None;
             }
-            json!({"action": "oracle_monitor_task", "ack": "Controllo subito CPU e memoria sulle istanze Oracle configurate."})
+            json!({"action": "oracle_monitor_task", "ack": "Checking CPU and memory on the configured Oracle instances now."})
         }
         "spreadsheet_update" => {
             let prompt = [
@@ -470,19 +470,19 @@ pub fn direct_plan(c: &Classification, text: &str, memory: &str, s: &Settings) -
                 "action": "spreadsheet_update_task",
                 "prompt": prompt,
                 "spreadsheetName": default_spreadsheet_name(&both),
-                "ack": "Controllo il Google Sheet e provo ad aggiornarlo adesso.",
+                "ack": "Checking the Google Sheet and trying to update it now.",
             })
         }
         "social_post" => {
-            json!({"action": "poko_news_scout_retry", "ack": "Chiedo a Poko sul server Oracle di pubblicare sul canale Pokoin News adesso."})
+            json!({"action": "poko_news_scout_retry", "ack": "Asking Poko on the Oracle server to publish to the Pokoin News channel now."})
         }
         "schedule_reminder" => {
-            json!({"action": "schedule_reminder", "text": "", "dueDate": "", "ack": "Programmo il promemoria adesso."})
+            json!({"action": "schedule_reminder", "text": "", "dueDate": "", "ack": "I will schedule that reminder now."})
         }
         // The calendar bridge creates it when it can parse it; otherwise the planner fills it in.
         "calendar_event" => json!({"action": "calendar_event"}),
         "lucina_log_inspect" => {
-            json!({"action": "lucina_log_inspect", "prompt": text.trim(), "ack": "Leggo i log di Lucina (docker + journalctl) adesso."})
+            json!({"action": "lucina_log_inspect", "prompt": text.trim(), "ack": "Reading Lucina's logs (docker + journalctl) now."})
         }
         "cursor_task" => {
             let prompt = [
@@ -495,11 +495,11 @@ pub fn direct_plan(c: &Classification, text: &str, memory: &str, s: &Settings) -
                 &format!("User request:\n{}", text.trim()),
             ]
             .join("\n\n");
-            json!({"action": "cursor_task", "prompt": prompt, "ack": "Avvio Harness con Qwen locale su nezopt per questo task adesso."})
+            json!({"action": "cursor_task", "prompt": prompt, "ack": "Starting Harness with local Qwen on nezopt for this task now."})
         }
         "computer_task" => return crate::computer_route::plan(text),
         "study_focus_reminders" => {
-            json!({"action": "study_focus_reminders", "ack": "Programmo i promemoria studio (focus/dopamina) per la sessione di oggi."})
+            json!({"action": "study_focus_reminders", "ack": "Scheduling the study reminders (focus/dopamine) for today's session."})
         }
         _ => return None,
     })

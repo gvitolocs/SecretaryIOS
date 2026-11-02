@@ -162,7 +162,7 @@ pub fn write_transcripts(
 const SYSTEM: &str = "You write a report on a video for its owner, a software engineer. You \
 get the video's details, the owner's request, a timestamped transcript (merged from Whisper, \
 ZCode and captions), timestamped keyframe notes (vision model + OCR) and ZCode's own visual \
-notes. Write in the language of the owner's request (English if unclear), but keep every \
+notes. Write in English, or in Danish when the owner's request is in Danish (never Italian), but keep every \
 technical term, identifier, command, number and unit exactly as the video says or shows it. \
 Do not invent anything that is not in the material. Answer with JSON: \
 {\"summary\":\"3-6 sentences\",\

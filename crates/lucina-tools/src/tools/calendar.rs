@@ -371,7 +371,7 @@ impl Tool for CalendarTool {
                     "event": c.first(),
                     "link": event["url"],
                     "undo": {"action": "delete", "id": id, "minutes": UNDO_FOR.as_secs() / 60},
-                    "instruction": format!("Done, it is in his calendar (the Calendar tab in Secretary). Reply in the owner's language like: Added to your calendar: {title}, {when} (with the link if there is one). The reply has an Undo button for 10 minutes; if he says undo, call delete with this id."),
+                    "instruction": format!("Done, it is in his calendar (the Calendar tab in Secretary). Reply in English (Danish when he writes Danish; never Italian) like: Added to your calendar: {title}, {when} (with the link if there is one). The reply has an Undo button for 10 minutes; if he says undo, call delete with this id."),
                 }))
             }
             Action::Move => {

@@ -74,7 +74,8 @@ async fn paused_game_and_failed_plans() {
     assert!(system.contains("CHAMPIONS_ROOM"), "kept as information");
     assert!(system.contains("it is paused"));
     assert!(!system.contains("PRIORITY: this live game block outranks"));
-    assert!(system.contains("Reply language: Italian"));
+    assert!(system.contains("Reply language: English"));
+    assert!(!system.contains("Reply language: Italian"));
 
     // 2. A playing run does take the planner; its answer is not JSON twice, so she says so briefly in the
     //    language of the message instead of a tool-less guess (no reply call).

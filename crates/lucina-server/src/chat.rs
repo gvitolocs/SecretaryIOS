@@ -69,7 +69,7 @@ pub const VOICE_SESSION: &str = "lucinavoice";
 /// The source label of a speaker turn in Honcho (the app's turns say `Secretary app`).
 pub const VOICE_LABEL: &str = "LucinaVoice speaker";
 
-pub const SECRETARY_EXTRA_SYSTEM: &str = "This conversation comes from the Secretary app on Giuseppe's iPhone. Reply in the language of the message. Keep it short: usually 1-3 sentences. Plain text only: no markdown tables or headings.";
+pub const SECRETARY_EXTRA_SYSTEM: &str = "This conversation comes from the Secretary app on Giuseppe's iPhone. Reply in English, or in Danish when the message is in Danish; never in Italian. Keep it short: usually 1-3 sentences. Plain text only: no markdown tables or headings.";
 
 /// Validate the body, classify the turn's memory surface (once), dedupe
 /// `clientMessageId` retries, run the turn. `bearer`: the request passed the
@@ -1684,7 +1684,7 @@ async fn compound_blocks(t: &Turn<'_>, domains: &[&'static str], memory: &str) -
 }
 
 /// Queue an async action as a job: the ack now, the result on the timeline when it finishes
-/// (`spawn_job`). `computer_task` carries its own ack in the owner's language (`plan["ack"]`).
+/// (`spawn_job`). `computer_task` carries its own ack in English (Danish when he writes Danish; never Italian) (`plan["ack"]`).
 fn queue_job(t: &Turn<'_>, plan: &Value, action: &str, cmid: Option<&str>) -> Finish {
     let st = t.st;
     let blocker = if action == "generate_image" && st.cfg.image_jobs {
@@ -2651,7 +2651,7 @@ async fn delegated_finish(
     let reply = match &ran.job {
         Some(job) if ran.finished && job.status == lucina_delegate::JobStatus::Done => {
             let instruction = format!(
-                "Relay this answer to Giuseppe in the language of his message: 1-4 short sentences, saying it comes from {}. If it says the full answer is in Notes, say so. Do not add facts that are not in it.",
+                "Relay this answer to Giuseppe in English (Danish when he writes Danish; never Italian): 1-4 short sentences, saying it comes from {}. If it says the full answer is in Notes, say so. Do not add facts that are not in it.",
                 job.agent.label()
             );
             t.st.planner
@@ -3433,7 +3433,7 @@ async fn tools_turn(
     } else if let Some(o) = calendar {
         calendar_finish(o)
     } else if let Some(result) = settled {
-        let reply = st.planner.generate_skill_reply(&t, "pending action", &result, "Tell the owner what happened in one or two sentences, in the language of the message.").await.unwrap_or_else(|_| fallback());
+        let reply = st.planner.generate_skill_reply(&t, "pending action", &result, "Tell the owner what happened in one or two sentences, in English (Danish when he writes Danish; never Italian).").await.unwrap_or_else(|_| fallback());
         effects_to_finish(&ctx.effects(), reply)
     } else {
         let extra = format!(
@@ -3598,13 +3598,21 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_plan_is_said_in_the_turn_language() {
+        let da = crate::planner::TURN_LANG
+            .scope(
+                lucina_intent::lang::language_line(lucina_intent::lang::Lang::Da),
+                async { crate::planner::plan_failed_text() },
+            )
+            .await;
+        assert!(da.starts_with("Undskyld"), "{da}");
+        // An Italian message is answered in English.
         let it = crate::planner::TURN_LANG
             .scope(
                 lucina_intent::lang::language_line(lucina_intent::lang::Lang::It),
                 async { crate::planner::plan_failed_text() },
             )
             .await;
-        assert!(it.starts_with("Scusa"), "{it}");
+        assert!(it.starts_with("Sorry"), "{it}");
         assert!(crate::planner::plan_failed_text().starts_with("Sorry"));
     }
 
@@ -3675,7 +3683,7 @@ mod tests {
             "Ho trovato le slide della lezione 5 di Digital Forensics: è il PDF più recente."
                 .into(),
         );
-        assert_eq!(f.routes[0]["label"], "Apri nel Drive");
+        assert_eq!(f.routes[0]["label"], "Open in Drive");
     }
     use chrono::TimeZone;
 

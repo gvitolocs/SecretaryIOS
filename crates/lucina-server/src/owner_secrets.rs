@@ -480,7 +480,7 @@ pub fn parse_secret_command(text: &str) -> SecretCommand {
     }
 }
 
-/// The language of Lucina's secret cards: the owner's (Italian by default).
+/// The language of Lucina's secret cards: English, or Danish for a Danish message (never Italian: owner rule 2026-11-02).
 pub fn lang_of(text: &str) -> &'static str {
     crate::rich::guess_language(text, text)
 }
@@ -555,28 +555,8 @@ fn texts(lang: &str) -> Texts {
             words_waiting: "🔐 Gør det åbne kort færdigt først: dette følger bagefter.",
             words_full: "🔐 Der er for mange åbne anmodninger om hemmeligheder: svar på nogle af dem først.",
         },
-        _ => Texts {
-            save: "Salva come segreto",
-            add: "Aggiungi segreto",
-            no: "No",
-            save_n: "Salva segreto {n}",
-            create: "Crea progetto",
-            not_now: "Non ora",
-            it_word: "il segreto",
-            held: "🔐 Non l'ho letto né salvato. Tocca \"Salva come segreto\" per scegliere dove va `{name}` (tengo il valore 10 minuti, solo in memoria).",
-            usage: "🔐 Usa /secret NOME VALORE [progetto/ambiente/percorso o alias], oppure apri \"Aggiungi segreto\" nell'app.",
-            offer: "🔐 Nel tuo messaggio c'era qualcosa che sembra un segreto ({what}). L'ho nascosto alla mia memoria e al modello. Lo salvo come segreto?",
-            chars: "caratteri",
-            project: "Creo il progetto Infisical \"{name}\"? Confermalo nell'app. Agenti e servizi non ci avranno accesso finché non lo dici tu.",
-            chat_app: " La scheda è nell'app Secretary. Quest'app di chat conserva il tuo messaggio: cancellalo lì.",
-            words_named: "🔐 La scheda per `{name}` in {place} è pronta: incolla lì il valore. Va dritto a Infisical, mai in questa chat o nella mia memoria.",
-            words_noplace: "🔐 La scheda per `{name}` è pronta: scegli il posto e incolla lì il valore. Va dritto a Infisical, mai in questa chat o nella mia memoria.",
-            words_blank: "🔐 La scheda è pronta: nome, posto e valore vanno lì. Il valore va dritto a Infisical, mai in questa chat o nella mia memoria.",
-            words_value: "🔐 Non ho letto né salvato quello che hai scritto dopo il nome: incolla il valore nella scheda.",
-            words_more: "Poi ne seguono altri {n}, uno alla volta.",
-            words_waiting: "🔐 Finisci prima la scheda che hai aperta: questa arriva subito dopo.",
-            words_full: "🔐 Ci sono troppe richieste di segreti aperte: rispondi prima a qualcuna.",
-        },
+        // Never Italian (owner rule 2026-11-02): anything else is English.
+        _ => texts("en"),
     }
 }
 

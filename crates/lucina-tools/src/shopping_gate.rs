@@ -153,6 +153,8 @@ pub fn questions(idx: &CatalogIndex) -> Vec<(String, Question)> {
 }
 
 fn ask_text(lang: &str, text: &str, suggestion: Option<&str>, chore: bool) -> String {
+    // The question is for the owner: English or Danish, never Italian (owner rule 2026-11-02).
+    let lang = if lang == "da" { "da" } else { "en" };
     if chore {
         return match lang {
             "it" => format!("«{text}» sembra più una cosa da fare che da comprare, quindi non l'ho messo nella lista della spesa. Vuoi un promemoria o un'attività?"),
@@ -303,8 +305,9 @@ mod tests {
             panic!("{g:?}")
         };
         assert_eq!(suggestion.as_deref(), Some("Detersivo per lavatrice"));
-        assert!(question.contains("«Lavatrici»"));
-        assert!(question.contains("«Detersivo per lavatrice»"));
+        // The question is English (owner rule 2026-11-02); the catalogue names stay Italian.
+        assert!(question.contains("“Lavatrici”"), "{question}");
+        assert!(question.contains("“Detersivo per lavatrice”"));
         assert!(g_add_op_is_none());
     }
 
@@ -324,8 +327,8 @@ mod tests {
         let Gate::Ask { question, .. } = decide(&idx(), &d, "Lavatrici", "it") else {
             panic!()
         };
-        assert!(question.contains("cosa da fare"), "{question}");
-        assert!(question.contains("promemoria"));
+        assert!(question.contains("something to do rather than to buy"), "{question}");
+        assert!(question.contains("reminder"));
     }
 
     #[test]

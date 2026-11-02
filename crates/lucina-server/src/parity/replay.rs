@@ -104,8 +104,11 @@ pub fn infer_node_action(reply: &str, meta: &Value, persona: &str) -> &'static s
     {
         return "schedule_reminder";
     }
+    // Node answered in Italian; the Rust Lucina answers in English (owner rule 2026-11-02).
     if reply.starts_with(&format!("{persona}: promemoria "))
         || reply.starts_with(&format!("{persona}: non hai promemoria"))
+        || reply.starts_with(&format!("{persona}: reminders "))
+        || reply.starts_with(&format!("{persona}: you have no "))
     {
         return "list_reminders";
     }

@@ -87,10 +87,10 @@ pub fn voice_meta(turn_id: &str, stt_ms: Option<u64>, facts: &crate::voice::SttF
     m
 }
 
-/// Spoken instead of a sensitive reply: (Italian, English).
+/// Spoken instead of a sensitive reply: (Italian, English). Only the English one is ever spoken.
 pub const SENSITIVE_PHRASE: (&str, &str) =
     ("Ti rispondo nell'app.", "I'll answer that in the app.");
-/// Spoken when Lucina's reply is empty: (Italian, English).
+/// Spoken when Lucina's reply is empty: (Italian, English). Only the English one is ever spoken.
 pub const EMPTY_PHRASE: (&str, &str) = (
     "Scusa, non ho una risposta.",
     "Sorry, I don't have an answer.",
@@ -425,8 +425,8 @@ impl Emitter {
 /// Synthesizes `seg_rx`'s segments in order and sends their PCM frames to `out`.
 async fn tts_worker(
     st: AppState,
-    heard: String,
-    lang: Option<String>,
+    _heard: String,
+    _lang: Option<String>,
     mut seg_rx: mpsc::UnboundedReceiver<Seg>,
     shared: Arc<Shared>,
     muted: Arc<AtomicBool>,
@@ -446,13 +446,10 @@ async fn tts_worker(
                 let voice = shared
                     .voice
                     .get_or_init(|| {
-                        tts::pick_voice(
-                            &st.tts.voices,
-                            None,
-                            lang.as_deref(),
-                            &format!("{heard} {}", seg.text),
-                        )
-                        .unwrap_or_else(|_| tts::ITALIAN_VOICE.to_owned())
+                        // The voice follows what she says, not what he said: an Italian question gets an
+                        // English answer (owner rule 2026-11-02), read in the English voice.
+                        tts::pick_voice(&st.tts.voices, None, None, &seg.text)
+                            .unwrap_or_else(|_| tts::ENGLISH_VOICE.to_owned())
                     })
                     .clone();
                 let (tx, rx) = mpsc::unbounded_channel();
@@ -595,10 +592,9 @@ async fn speak_inner(
         .await
         .map_err(|e| PipeError::Lucina(e.into()))?;
 
-    let italian = match lang.as_deref() {
-        Some(l) => l.to_ascii_lowercase().starts_with("it"),
-        None => tts::looks_italian(&heard),
-    };
+    // Her fixed phrases and fillers are never Italian (owner rule 2026-11-02), whatever he spoke or the
+    // client's `lang` says; the Italian variants stay for the transcription hint only.
+    let italian = false;
     let phrase = |p: (&'static str, &'static str)| (if italian { p.0 } else { p.1 }).to_owned();
 
     let (seg_tx, seg_rx) = mpsc::unbounded_channel::<Seg>();

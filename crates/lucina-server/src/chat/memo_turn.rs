@@ -24,7 +24,7 @@ const GUIDE: &str = "Giuseppe records voice memos in the Secretary app; each has
 reachable with the memos tool. Memos may be linked to calendar events. For last Tuesday's Algorithms lecture, search query Algorithms with from/to = that Tuesday in the owner's time zone. For a question about what he said, search: turn relative days into from/to as YYYY-MM-DD in his \
 time zone (today, yesterday = today minus one day, last week = the last 7 days with days=7) and pass the topic words as query; \
 if nothing matches, search the same days without query and read the summaries. Answer from what he actually said, briefly, \
-in his language, quoting the time in the recording (e.g. \"at 1:05\") and the memo's title. Use read for the full transcript, \
+in English (Danish when he writes Danish; never Italian), quoting the time in the recording (e.g. \"at 1:05\") and the memo's title. Use read for the full transcript, \
 resummarize when he wants a new summary (with his instructions), and the tasks tool (add) when he asks to turn action items \
 into tasks. Never invent content that is not in the memo. If he is not asking about his memos, answer without the tools.";
 

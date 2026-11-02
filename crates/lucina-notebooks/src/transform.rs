@@ -141,8 +141,8 @@ pub async fn run(llm: &dyn Llm, model: Model, t: &Transformation, title: &str, t
         input.push_str("\n\n[… the rest of the source is cut off here]");
     }
     let system = format!(
-        "{}\n\n# FORMAT\nWrite Markdown. Write math as $…$ or $$…$$. Answer in the language of the input unless the \
-         instructions say otherwise. Only the requested output, no preamble.",
+        "{}\n\n# FORMAT\nWrite Markdown. Write math as $…$ or $$…$$. Answer in English, or in Danish when the input is Danish; never in Italian, unless the \
+         instructions explicitly ask for another language. Only the requested output, no preamble.",
         t.prompt
     );
     let user = format!("# INPUT\nTitle: {title}\n\n{input}");

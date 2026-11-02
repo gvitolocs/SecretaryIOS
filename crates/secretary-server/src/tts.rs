@@ -5,8 +5,10 @@
 //! - Voice: an explicit `voice` (from the `SECRETARY_TTS_VOICES` whitelist)
 //!   wins; else `lang` (`it` → `if_sara`, `en` → `af_heart`); else a language
 //!   score (Italian stopwords + accented letters vs English stopwords; a tie
-//!   or no signal is Italian, Lucina mostly speaks Italian). The voice is
-//!   always sent: Kokoro would otherwise pick its own default.
+//!   or no signal is English: Lucina speaks English or Danish to the owner,
+//!   never Italian, since 2026-11-02). The Italian voice stays for reading
+//!   Italian text aloud. The voice is always sent: Kokoro would otherwise
+//!   pick its own default.
 //! - Texts over [`CHUNK_CHARS`] are split on sentence boundaries and
 //!   synthesized one chunk after the other into the same MP3 stream (MP3
 //!   frames concatenate), so playback starts after the first sentence.
@@ -54,8 +56,8 @@ const ENGLISH_STOPWORDS: &[&str] = &[
     "it", "in", "on", "for", "do", "was", "will", "not", "can",
 ];
 
-/// Italian unless English clearly scores higher. Score: Italian stopwords +
-/// accented letters vs English stopwords; a tie or no signal is Italian.
+/// Italian only when Italian clearly scores higher. Score: Italian stopwords +
+/// accented letters vs English stopwords; a tie or no signal is English.
 pub fn looks_italian(text: &str) -> bool {
     let lower = text.to_lowercase();
     let words: Vec<&str> = lower
@@ -72,7 +74,7 @@ pub fn looks_italian(text: &str) -> bool {
         .iter()
         .filter(|w| ENGLISH_STOPWORDS.contains(w))
         .count();
-    it >= en
+    it > en
 }
 
 /// The voice for a request, or a `bad_request` message.
@@ -315,13 +317,15 @@ mod tests {
     }
 
     #[test]
-    fn language_score_ties_go_to_italian() {
+    fn language_score_ties_go_to_english() {
+        // Italian text is still recognised (to read it aloud with the Italian voice)...
         assert!(looks_italian("Ciao Giuseppe, come stai oggi?"));
         assert!(looks_italian("Non è vero"));
         assert!(looks_italian("Perché?"));
         assert!(looks_italian("Ho comprato il latte e la frutta"));
-        assert!(looks_italian("Giuseppe"));
-        assert!(looks_italian(""));
+        // ...but a tie or no signal is English: she never defaults to Italian (owner rule 2026-11-02).
+        assert!(!looks_italian("Giuseppe"));
+        assert!(!looks_italian(""));
         assert!(!looks_italian("Hello, how are you today?"));
         assert!(!looks_italian("Come here and see the new workout plan"));
         assert!(!looks_italian("I'm fine, thanks"));

@@ -123,7 +123,7 @@ async fn an_agenda_is_one_sentence_and_one_card_per_event() {
     let h = lucina(&server, json!({"rules": []}), false).await;
     let d = h.chat("cosa ho in calendario domani?").await;
     assert_eq!(d["action"], "calendar", "{d}");
-    assert_eq!(d["bubbles"], json!(["Domani hai 4 impegni 📅"]));
+    assert_eq!(d["bubbles"], json!(["Tomorrow you have 4 events 📅"]));
     let blocks = d["blocks"].as_array().unwrap();
     let shape: Vec<(&str, &str)> = blocks
         .iter()
@@ -138,7 +138,7 @@ async fn an_agenda_is_one_sentence_and_one_card_per_event() {
             ("place", "Hack Night: Rust meets AI"),
         ]
     );
-    assert_eq!(blocks[0]["subtitle"], "tutto il giorno");
+    assert_eq!(blocks[0]["subtitle"], "all day");
     assert_eq!(
         blocks[2]["subtitle"],
         format!("{}–{}", hm(at(11)), hm(at(12)))
@@ -160,12 +160,12 @@ async fn an_agenda_is_one_sentence_and_one_card_per_event() {
         ),
         (json!(16), json!("bike"), json!(true))
     );
-    // A "Naviga" button per place, to the in-app map.
+    // A "Navigate" button per place, to the in-app map.
     let actions = d["actions"].as_array().unwrap();
     assert_eq!(actions.len(), 2, "{d}");
     for a in actions {
         assert_eq!(a["kind"], "route");
-        assert!(a["label"].as_str().unwrap().starts_with("Naviga · "));
+        assert!(a["label"].as_str().unwrap().starts_with("Navigate · "));
         assert!(a["payload"]["path"]
             .as_str()
             .unwrap()
@@ -179,8 +179,8 @@ async fn an_agenda_is_one_sentence_and_one_card_per_event() {
     assert_eq!(
         d["reply"],
         format!(
-            "Domani hai 4 impegni 📅\n\n\
-             • tutto il giorno Compleanno di Anna\n\
+            "Tomorrow you have 4 events 📅\n\n\
+             • all day Compleanno di Anna\n\
              • {}–{} Security and Privacy — 5789-003B Seminarrum · 🚲 ≈ 16 min\n\
              • {}–{} Standup\n\
              • {}–{} Hack Night: Rust meets AI — Folkehuset Møllestien · 🚲 ≈ 16 min",
@@ -221,7 +221,7 @@ async fn where_and_when_of_the_hack_night_come_from_the_calendar() {
             .chat("Dove si tiene la Hack Night di domani e a che ora?")
             .await;
         let expected = format!(
-            "Hack Night: Rust meets AI è domani alle {}, presso Folkehuset Møllestien.",
+            "Hack Night: Rust meets AI is tomorrow at {}, at Folkehuset Møllestien.",
             hm(at(16))
         );
         assert_eq!(d["action"], "calendar", "tools={tools} {d}");
@@ -232,7 +232,7 @@ async fn where_and_when_of_the_hack_night_come_from_the_calendar() {
             "only the Hack Night: {d}"
         );
         assert_eq!(d["blocks"][0]["eventId"], "iphone:42");
-        assert_eq!(d["actions"][0]["label"], "Naviga");
+        assert_eq!(d["actions"][0]["label"], "Navigate");
         assert!(!d.to_string().contains("Non ho niente"));
         let tomorrow = at(0).format("%Y-%m-%d").to_string();
         let asked = server.received_requests().await.unwrap_or_default();

@@ -166,17 +166,17 @@ async fn a_quick_answer_comes_back_inline_with_a_card_and_an_audit_line() {
     assert_eq!(job.turns, 2);
     let prompt = w.prompts.lock().unwrap()[0].clone();
     assert!(prompt.starts_with("[Lucina delegation · job "), "{prompt}");
-    assert!(prompt.contains("da Lucina") && prompt.contains("ultime notizie su Rust"));
+    assert!(prompt.contains("from Lucina") && prompt.contains("ultime notizie su Rust"));
     let cards = w.sink.cards.lock().unwrap();
     assert_eq!(cards.len(), 1, "fast jobs: only the final card");
     assert!(
         cards[0]
             .plain
-            .starts_with("Ho chiesto a Grok: «ultime notizie su Rust» — ✅ risposta pronta"),
+            .starts_with("I asked Grok: “ultime notizie su Rust” — ✅ answer ready"),
         "{}",
         cards[0].plain
     );
-    assert!(cards[0].plain.contains("Perché: Lo chiedo perché serve."));
+    assert!(cards[0].plain.contains("Why: Lo chiedo perché serve."));
     assert!(cards[0].rich.is_some());
     assert!(
         w.sink.notified.lock().unwrap().is_empty(),
@@ -263,7 +263,7 @@ async fn self_review_skip_and_revise() {
     );
     assert!(w.sink.cards.lock().unwrap()[0]
         .plain
-        .starts_with("Ho deciso di non chiedere a ChatGPT"));
+        .starts_with("I decided not to ask ChatGPT"));
     let status = w.d.status().await;
     assert_eq!(
         status["budget"]["totalCalls"], 0,
@@ -440,7 +440,7 @@ async fn budget_caps_pause_and_tell_the_owner_once() {
     ));
     assert_eq!(w.sink.messages.lock().unwrap().len(), 1, "told once");
     assert_eq!(w.sink.notified.lock().unwrap().len(), 1);
-    assert!(w.sink.messages.lock().unwrap()[0].contains("pausa"));
+    assert!(w.sink.messages.lock().unwrap()[0].contains("paused delegation"));
 }
 
 #[tokio::test]
@@ -456,7 +456,8 @@ async fn the_owner_switches_agents_off_and_on() {
         switch: Switch::Off(Some(AgentId::Grok)),
         lang: "it",
     });
-    assert!(reply.contains("non uso più Grok"));
+    // An Italian intent is answered in English.
+    assert!(reply.contains("I will not use Grok"), "{reply}");
     let mut r = req(Kind::Research, "notizie");
     r.to = Some(AgentId::Grok);
     assert_eq!(

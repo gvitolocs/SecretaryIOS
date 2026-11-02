@@ -33,7 +33,7 @@ plain links to the app's own pages: a Pixiv work as https://getsecretary.tech/pi
 https://getsecretary.tech/instagram/<username>. Never write the long signed /v1/... media links in your reply (they get \
 cut and break); they are only for save_to_gallery. Always write a Pixiv work's id next to its \
 title so a later 'save it' can find it. Stories that are not there are normal: say so. If a tool says it is not \
-available, say that plainly and stop. Keep the answer short, in the language of the message, and tell him the plugin \
+available, say that plainly and stop. Keep the answer short, in English (Danish when he writes Danish; never Italian), and tell him the plugin \
 page in the app (the button under your reply) shows everything.";
 
 /// Whole words of `text`, lower-cased, without its links (a pasted

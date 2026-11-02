@@ -373,7 +373,7 @@ async fn the_speakers_turns_are_in_the_main_chats_recent_context_and_back() {
     let seen = model_text(&h);
     assert!(seen.contains("LucinaVoice speaker"), "{seen}");
     assert!(seen.contains("Giuseppe: che ore sono?"), "{seen}");
-    assert!(seen.contains("Lucina: Sono le "), "the reply too: {seen}");
+    assert!(seen.contains("Lucina: It's "), "the reply too: {seen}");
 
     // And the speaker sees what was said in the app.
     let before = h.fake.requests().len();
@@ -499,7 +499,7 @@ async fn a_risky_action_is_held_for_a_spoken_yes() {
     assert_eq!(confirm["verdict"], "ask");
     assert_eq!(confirm["used"], true);
     let text = s.find("reply")["text"].as_str().unwrap();
-    assert!(text.starts_with("Sei sicuro?"), "{text}");
+    assert!(text.starts_with("Are you sure?"), "{text}");
     assert_eq!(s.find("done")["data"]["action"], "voice_confirm");
     assert_eq!(
         s.find("done")["data"]["voice"]["jevCalls"],
@@ -526,7 +526,7 @@ async fn a_risky_action_is_held_for_a_spoken_yes() {
     let s = stream(&h, voice_body("no")).await;
     assert_eq!(
         s.find("reply")["text"],
-        "Va bene, non lo faccio.",
+        "OK, I won't do it.",
         "in the language of the conversation"
     );
     assert_eq!(

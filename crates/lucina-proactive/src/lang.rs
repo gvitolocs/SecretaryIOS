@@ -1,5 +1,9 @@
-//! The owner's language (Italian by default; it follows his last messages)
+//! The owner's language (English by default; it follows his last messages)
 //! and the few fixed strings: button labels and template fallbacks.
+//!
+//! Owner rule (2026-11-02): everything addressed to him is English, or Danish when he writes Danish, never
+//! Italian. Italian messages are still recognised ([`detect`]) but [`follow_owner`] answers them in English,
+//! and every fixed string falls back to English.
 
 use crate::model::Action;
 
@@ -60,20 +64,20 @@ pub fn follow_owner<'a>(
             .copied()
             .max_by_key(|l| all.iter().filter(|v| *v == l).count()),
     };
-    pick.unwrap_or(if LANGS.contains(&fallback) {
+    // Never Italian: an Italian vote, an Italian fallback or no signal all give English.
+    let chosen = pick.unwrap_or(if LANGS.contains(&fallback) {
         fallback
     } else {
-        "it"
-    })
-    .to_owned()
+        "en"
+    });
+    if chosen == "da" { "da" } else { "en" }.to_owned()
 }
 
 /// The three feedback buttons on every outreach.
 pub fn feedback_actions(lang: &str) -> Vec<Action> {
     let labels = match lang {
-        "en" => ["Useful", "Not now", "Stop these"],
         "da" => ["Nyttigt", "Ikke nu", "Stop med det"],
-        _ => ["Utile", "Non ora", "Basta così"],
+        _ => ["Useful", "Not now", "Stop these"],
     };
     ["useful", "not_now", "stop"]
         .into_iter()
@@ -92,9 +96,8 @@ pub fn open_note_action(lang: &str, slug: &str) -> Action {
     Action {
         id: "open_note".into(),
         label: match lang {
-            "en" => "Open the note",
             "da" => "Åbn noten",
-            _ => "Apri la nota",
+            _ => "Open the note",
         }
         .into(),
         route: Some(format!("/notes/{slug}")),
@@ -106,9 +109,8 @@ pub fn open_calendar_action(lang: &str) -> Action {
     Action {
         id: "open_calendar".into(),
         label: match lang {
-            "en" => "Calendar",
             "da" => "Kalender",
-            _ => "Calendario",
+            _ => "Calendar",
         }
         .into(),
         route: Some("/calendar".into()),
@@ -118,9 +120,8 @@ pub fn open_calendar_action(lang: &str) -> Action {
 
 pub fn telegram_button(lang: &str) -> &'static str {
     match lang {
-        "en" => "Open in Secretary",
         "da" => "Åbn i Secretary",
-        _ => "Apri in Secretary",
+        _ => "Open in Secretary",
     }
 }
 
@@ -134,17 +135,15 @@ pub fn pulse_title(lang: &str) -> &'static str {
 
 pub fn pulse_headers(lang: &str) -> [&'static str; 3] {
     match lang {
-        "en" => ["Today", "Done", "Keep an eye on"],
         "da" => ["I dag", "Klaret", "Hold øje med"],
-        _ => ["Oggi", "Fatto", "Da tenere d'occhio"],
+        _ => ["Today", "Done", "Keep an eye on"],
     }
 }
 
 pub fn notify_title(lang: &str) -> &'static str {
     match lang {
-        "en" => "Lucina reached out",
         "da" => "Lucina skriver",
-        _ => "Lucina ti scrive",
+        _ => "Lucina reached out",
     }
 }
 
@@ -175,8 +174,16 @@ mod tests {
             ),
             "en"
         );
-        assert_eq!(follow_owner(["👍"], "it"), "it");
-        assert_eq!(follow_owner(Vec::<&str>::new(), "xx"), "it");
+        // Italian is understood, never answered: English.
+        assert_eq!(
+            follow_owner(["ciao, puoi controllare se il sito è ancora giù?"], "da"),
+            "en"
+        );
+        assert_eq!(follow_owner(["👍"], "it"), "en");
+        assert_eq!(follow_owner(["👍"], "da"), "da");
+        assert_eq!(follow_owner(Vec::<&str>::new(), "xx"), "en");
+        assert_eq!(notify_title("it"), "Lucina reached out");
+        assert_eq!(pulse_headers("it")[0], "Today");
         assert_eq!(feedback_actions("da")[2].label, "Stop med det");
         assert!(feedback_actions("it").iter().all(|a| a.feedback));
     }

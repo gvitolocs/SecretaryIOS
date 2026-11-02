@@ -438,10 +438,9 @@ pub fn ack(text: &str) {
     let _ = SINK.try_with(|s| s.ack(text));
 }
 
-/// "Un attimo…" in the turn's language (`planner::TURN_LANG`).
+/// "One moment…" in the turn's language (`planner::TURN_LANG`): English or Danish, never Italian.
 pub fn ack_text() -> &'static str {
     match crate::jev_yesno::turn_lang_code() {
-        "it" => "Un attimo…",
         "da" => "Et øjeblik…",
         _ => "One moment…",
     }

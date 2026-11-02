@@ -55,7 +55,7 @@ async fn jev_routes_a_plain_report_into_the_tracker() {
 
     // The owner's sentence, no keyword: it lands in the tracker in his words.
     let d = h.chat("gli emoji sono quadratini").await;
-    assert!(d["reply"].as_str().unwrap().starts_with("Segnato (fl-"), "{d}");
+    assert!(d["reply"].as_str().unwrap().starts_with("Noted (fl-"), "{d}");
     let (_, b) = h.get("/flaws").await;
     assert_eq!(b["data"]["items"][0]["words"], "gli emoji sono quadratini");
     assert_eq!(b["data"]["items"].as_array().unwrap().len(), 1);

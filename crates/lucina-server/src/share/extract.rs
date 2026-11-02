@@ -830,7 +830,10 @@ pub(super) async fn read(
         && x.text.chars().count() > super::structured::SUMMARY_FROM_CHARS
         && x.summary.is_none()
     {
-        match super::structured::summarize(st.model.as_ref(), &x.text, lang).await {
+        // Summaries are for the owner: English or Danish, never Italian (the caption track above still
+        // follows the video's language).
+        let summary_lang = if lang == "it" { "en" } else { lang };
+        match super::structured::summarize(st.model.as_ref(), &x.text, summary_lang).await {
             Ok(s) => x.summary = Some(s),
             Err(e) => x.warnings.push(format!("summary failed: {e}")),
         }

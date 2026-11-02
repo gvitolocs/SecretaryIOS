@@ -636,7 +636,7 @@ pub(crate) mod tests {
         assert!(n.contains("recorded: 2026-10-24T14:31:00+02:00"));
         assert!(n.contains("![[Attachments/2026-10-24 1431 Preventivo cucina Marco.m4a]]"));
         assert!(n.contains(
-            "## Cose da fare\n\n- [ ] Chiamare Marco (tu, entro 2026-10-27, [[#^s001|0:30]])"
+            "## Action items\n\n- [ ] Chiamare Marco (you, due 2026-10-27, [[#^s001|0:30]])"
         ));
         assert!(n.contains("**0:30** Chiamo Marco lunedì. ^s001"));
         assert!(n.contains("  - casa\n"));

@@ -4,6 +4,11 @@
 //! flip the result. No model call: the reply and plan prompts use it to pin
 //! "Reply language: ..." to the latest message instead of the language of
 //! earlier turns.
+//!
+//! Owner rule (2026-11-02): everything addressed to him is in English, or in
+//! Danish when he writes Danish, never Italian. Italian is still detected (the
+//! input must be understood), but [`Lang::reply`] maps it to English, so
+//! [`language_line`] never pins Italian.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lang {
@@ -28,7 +33,19 @@ impl Lang {
             Lang::Da => "Danish",
         }
     }
+
+    /// The language Lucina answers a message in this language with: Danish for
+    /// Danish, English for English and for Italian (never Italian).
+    pub fn reply(self) -> Lang {
+        match self {
+            Lang::Da => Lang::Da,
+            Lang::En | Lang::It => Lang::En,
+        }
+    }
 }
+
+/// The standing language rule for every prompt that produces text for the owner.
+pub const OWNER_LANGUAGE_RULE: &str = "Language: everything you write to the owner (replies, plans, questions, cards, buttons, notifications, spoken text) is in English, or in Danish when he writes Danish. Never Italian, even when his message is in Italian. Italian input is still understood; Italian content (his notes, books, other people's messages) stays as it is.";
 
 // Words that are shared between the languages (a, i, in, me, no, on, for, at,
 // come, per, de, e) are left out on purpose.
@@ -453,12 +470,22 @@ pub fn detect(text: &str) -> Option<Lang> {
     (top > 0 && top > second).then_some(best)
 }
 
-/// The prompt line that pins the reply language.
+/// The prompt line that pins the reply language. An Italian message is
+/// answered in English (see [`Lang::reply`]).
 pub fn language_line(l: Lang) -> String {
-    format!(
-        "Reply language: {n} — the owner's latest message is in {n}; earlier turns in other languages do not change this.",
-        n = l.name()
-    )
+    let r = l.reply();
+    if r == l {
+        format!(
+            "Reply language: {n} — the owner's latest message is in {n}; earlier turns in other languages do not change this.",
+            n = r.name()
+        )
+    } else {
+        format!(
+            "Reply language: {r} — the owner's latest message is in {m}, but he is answered in {r} only, never in {m}; earlier turns in other languages do not change this.",
+            r = r.name(),
+            m = l.name()
+        )
+    }
 }
 
 /// [`language_line`] for the language of `text` (`None` when it is not clear:
@@ -526,6 +553,24 @@ mod tests {
         assert_eq!(detect("ok"), None);
         assert_eq!(detect("📎 voice-20261028.aac"), None);
         assert_eq!(detect("12:30"), None);
+    }
+
+    #[test]
+    fn an_italian_message_is_answered_in_english() {
+        let l = reply_language_line("Di cosa stai parlando?").unwrap();
+        assert!(l.starts_with("Reply language: English"), "{l}");
+        assert!(l.contains("never in Italian"), "{l}");
+        assert!(!l.contains("Reply language: Italian"));
+        assert_eq!(Lang::It.reply(), Lang::En);
+        // Detection is unchanged: Italian input is still recognised.
+        assert_eq!(detect("Di cosa stai parlando?"), Some(Lang::It));
+        let da = reply_language_line("hvad har jeg i kalenderen i morgen").unwrap();
+        assert!(da.starts_with("Reply language: Danish"), "{da}");
+        let en = reply_language_line("what's on my calendar tomorrow?").unwrap();
+        assert!(en.starts_with("Reply language: English"), "{en}");
+        for l in [Lang::En, Lang::It, Lang::Da] {
+            assert!(!language_line(l).starts_with("Reply language: Italian"));
+        }
     }
 
     #[test]

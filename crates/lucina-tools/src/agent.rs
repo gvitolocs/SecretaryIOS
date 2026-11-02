@@ -274,7 +274,7 @@ async fn reask_plain(
     }
     let mut retry = messages.to_vec();
     retry.push(Message::user(
-        "Your last reply was raw tool-call markup, which the owner cannot read. Answer now in plain text, in the owner's language, using only what the tool results above show. Do not call tools.",
+        "Your last reply was raw tool-call markup, which the owner cannot read. Answer now in plain text, in English (Danish when he writes Danish; never Italian), using only what the tool results above show. Do not call tools.",
     ));
     let request = ChatRequest {
         model: cfg.model.clone(),

@@ -931,7 +931,7 @@ mod tests {
         // Unlike a Lucina message it is kept (Paseo: in-app instead of a push).
         assert!(matches!(n.publish(a.clone()).await.unwrap(), Outcome::Created { pushed: 0, .. }));
         assert_eq!(n.publish(a).await.unwrap(), Outcome::Duplicate);
-        assert_eq!(text::agent_title(Some("permission"), "it"), "Un agente chiede il permesso");
+        assert_eq!(text::agent_title(Some("permission"), "it"), "Agent needs permission");
         assert_eq!(text::agent_title(None, "en"), "Agent finished");
         n.settings.update(|s| s.categories.agent = false).unwrap();
         assert_eq!(n.publish(NewNotification::new(Category::Agent, "done")).await.unwrap(), Outcome::Disabled);

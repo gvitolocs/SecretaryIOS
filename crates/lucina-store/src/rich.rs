@@ -1147,7 +1147,7 @@ pub fn place_speech(block: &Value) -> String {
     }
 }
 
-/// `↪︎ rispondi: «sì» · «no»` for the actions a text surface can follow by typing.
+/// `↪︎ reply: «yes» · «no»` for the actions a text surface can follow by typing.
 pub fn action_hint_line(actions: &[Value], lang: &str) -> String {
     let mut typed = Vec::new();
     let mut routes = Vec::new();
@@ -1170,9 +1170,8 @@ pub fn action_hint_line(actions: &[Value], lang: &str) -> String {
         }
     }
     let lead = match lang {
-        "en" => ("reply", "in the app"),
         "da" => ("svar", "i appen"),
-        _ => ("rispondi", "nell'app"),
+        _ => ("reply", "in the app"),
     };
     let mut parts = Vec::new();
     if !typed.is_empty() {
@@ -1190,7 +1189,7 @@ pub fn action_hint_line(actions: &[Value], lang: &str) -> String {
 
 impl RichMessage {
     fn lang(&self) -> &str {
-        self.lang.as_deref().unwrap_or("it")
+        self.lang.as_deref().filter(|l| *l != "it").unwrap_or("en")
     }
 
     /// The plain-text fallback: bubbles, each widget as text, the action hints.
@@ -1514,9 +1513,8 @@ pub fn from_plain_text(
             .map(|b| s(b, "title").to_owned())
             .filter(|t| !t.is_empty());
         bubbles.push(lead.unwrap_or_else(|| match lang {
-            "en" => "Here you go 👇".into(),
             "da" => "Her 👇".into(),
-            _ => "Ecco qui 👇".into(),
+            _ => "Here you go 👇".into(),
         }));
     }
     bubbles.truncate(max_bubbles);
@@ -1672,7 +1670,7 @@ mod tests {
         assert!(text.contains("🥛 Latte — 2 L"), "{text}");
         assert!(text.contains("• Pane"));
         assert!(
-            text.ends_with("↪︎ rispondi: «Dammi i dettagli» · «Ricordami alle 21:30 di …»"),
+            text.ends_with("↪︎ reply: «Dammi i dettagli» · «Ricordami alle 21:30 di …»"),
             "{text}"
         );
         assert_eq!(m.speech_text(), "Ecco la lista 🛒 Vuoi altro?");

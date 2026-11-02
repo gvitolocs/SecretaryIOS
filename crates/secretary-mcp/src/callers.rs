@@ -60,7 +60,8 @@ pub fn body(args: &JsonObject) -> Result<Value, ToolError> {
     }
     let lang = match a.lang.unwrap_or(Lang::En) {
         Lang::En => "en",
-        Lang::It => "it",
+        // Understood, never answered in Italian (owner rule 2026-11-02).
+        Lang::It => "en",
         Lang::Da => "da",
     };
     Ok(json!({"numbers": numbers, "lang": lang}))

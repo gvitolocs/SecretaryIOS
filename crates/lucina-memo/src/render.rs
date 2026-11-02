@@ -10,7 +10,7 @@ use tokio::process::Command;
 
 use crate::model::{clock, Item, Memo, Summary, Transcript};
 
-/// Section names in the memo's language.
+/// Section names: English, or Danish for a Danish memo; never Italian (owner rule 2026-11-02).
 pub struct Labels {
     pub summary: &'static str,
     pub key_points: &'static str,
@@ -28,20 +28,6 @@ pub struct Labels {
 
 pub fn labels(lang: &str) -> Labels {
     match lang {
-        "it" => Labels {
-            summary: "Resoconto",
-            key_points: "Punti chiave",
-            decisions: "Decisioni",
-            action_items: "Cose da fare",
-            transcript: "Trascrizione",
-            recorded: "Registrato",
-            duration: "Durata",
-            language: "Lingua",
-            machine_note: "Trascrizione automatica (Whisper, in locale): nomi e termini tecnici possono essere sbagliati.",
-            owner_me: "tu",
-            due: "entro",
-            listen: "Ascolta nell'app",
-        },
         "da" => Labels {
             summary: "Resumé",
             key_points: "Hovedpunkter",
@@ -321,7 +307,7 @@ mod tests {
             &l,
         );
         assert!(li.contains("&lt;script&gt;"));
-        assert!(li.contains("tu · entro domani · 1:01"));
+        assert!(li.contains("you · due domani · 1:01"));
         let _ = Utc::now();
     }
 }

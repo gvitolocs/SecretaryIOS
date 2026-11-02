@@ -181,10 +181,7 @@ pub struct McpApproval<'a> {
 
 fn denied_text(lang: reveal::Lang) -> &'static str {
     match lang {
-        reveal::Lang::It => {
-            "Giuseppe ha negato il permesso: non condivido informazioni sui segreti tramite MCP."
-        }
-        reveal::Lang::En => {
+        reveal::Lang::En | reveal::Lang::It => {
             "Giuseppe denied the request, so I'm not sharing information about secrets over MCP."
         }
         reveal::Lang::Da => {
@@ -195,16 +192,14 @@ fn denied_text(lang: reveal::Lang) -> &'static str {
 
 fn expired_text(lang: reveal::Lang) -> &'static str {
     match lang {
-        reveal::Lang::It => "Giuseppe non ha risposto in tempo: la richiesta è scaduta e non condivido nulla sui segreti tramite MCP.",
-        reveal::Lang::En => "Giuseppe didn't answer in time: the request expired and I'm not sharing anything about secrets over MCP.",
+        reveal::Lang::En | reveal::Lang::It => "Giuseppe didn't answer in time: the request expired and I'm not sharing anything about secrets over MCP.",
         reveal::Lang::Da => "Giuseppe svarede ikke i tide: anmodningen udløb, og jeg deler ikke noget om hemmeligheder via MCP.",
     }
 }
 
 fn pending_text(lang: reveal::Lang, id: &str) -> String {
     match lang {
-        reveal::Lang::It => format!("Ho chiesto il permesso a Giuseppe (richiesta {id}) ma non ha ancora risposto. Chiedi di nuovo tra poco: se approva, ti rispondo."),
-        reveal::Lang::En => format!("I asked Giuseppe for permission (request {id}) but he hasn't answered yet. Ask again in a moment: if he approves, I'll answer."),
+        reveal::Lang::En | reveal::Lang::It => format!("I asked Giuseppe for permission (request {id}) but he hasn't answered yet. Ask again in a moment: if he approves, I'll answer."),
         reveal::Lang::Da => format!("Jeg har bedt Giuseppe om tilladelse (anmodning {id}), men han har ikke svaret endnu. Spørg igen om lidt: godkender han, svarer jeg."),
     }
 }

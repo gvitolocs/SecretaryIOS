@@ -140,6 +140,7 @@ impl Fillers {
         {
             return self.count(true) + self.count(false);
         }
+        // Both are built; only the English phrases are ever played (owner rule 2026-11-02).
         for italian in [true, false] {
             let voice = voice_for(italian);
             for &phrase in phrases(italian) {

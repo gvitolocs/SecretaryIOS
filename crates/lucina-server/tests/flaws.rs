@@ -106,7 +106,7 @@ async fn an_explicit_report_needs_no_model() {
     let h = harness(chatty(), no_loop).await;
     let d = h.chat("flaw: gli a capo si perdono su Juno").await;
     let reply = d["reply"].as_str().unwrap();
-    assert!(reply.starts_with("Segnato (fl-"), "{reply}");
+    assert!(reply.starts_with("Noted (fl-"), "{reply}");
     assert_eq!(d["action"], "flaw_report");
     let (_, b) = h.get("/flaws").await;
     let f = &b["data"]["items"][0];

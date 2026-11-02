@@ -48,7 +48,7 @@ async fn the_inventario_reply_is_bubbles_widgets_and_buttons() {
     assert_eq!(s, 200, "{b}");
     let d = &b["data"];
     assert_eq!(d["format"], "v1");
-    assert_eq!(d["lang"], "it");
+    assert_eq!(d["lang"], "en");
     let bubbles = d["bubbles"].as_array().unwrap();
     assert!((1..=3).contains(&bubbles.len()), "{bubbles:?}");
     assert!(!d["blocks"].as_array().unwrap().is_empty());
@@ -64,7 +64,7 @@ async fn the_inventario_reply_is_bubbles_widgets_and_buttons() {
     );
     let reply = d["reply"].as_str().unwrap();
     assert!(!reply.contains("Posso anche"), "{reply}");
-    assert!(reply.contains("↪︎ rispondi:"), "{reply}");
+    assert!(reply.contains("↪︎ reply:"), "{reply}");
     // DeepSeek was asked in JSON output mode, with the v1 schema.
     let reqs = h.fake.requests();
     let composer = reqs

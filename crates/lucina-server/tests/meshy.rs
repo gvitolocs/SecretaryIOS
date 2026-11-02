@@ -156,7 +156,7 @@ async fn plan_confirm_and_job_in_the_live_json_planner() {
     assert_eq!(d["format"], "v1");
     assert_eq!(
         d["actions"][0]["payload"],
-        json!({"answer": "yes", "text": "sì"})
+        json!({"answer": "yes", "text": "yes"})
     );
     assert_eq!(
         w.meshy.creates("/openapi/v2/text-to-3d"),

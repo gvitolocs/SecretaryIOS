@@ -302,8 +302,8 @@ impl JobRecord {
     }
 }
 
-/// `it`, `en` or `da` from a text (function words; Italian by default only
-/// when it looks Italian).
+/// `en` or `da` from a text (function words): the language the agent is asked to answer in. Owner rule
+/// (2026-11-02): never Italian, even for an Italian task or when nothing can be read.
 pub fn guess_lang(text: &str) -> &'static str {
     let lower = text.to_lowercase();
     let words: Vec<&str> = lower
@@ -323,12 +323,18 @@ pub fn guess_lang(text: &str) -> &'static str {
         "the", "and", "what", "is", "are", "of", "to", "ask", "about", "latest", "news", "how",
         "please", "can", "you", "on", "in", "with", "why", "which",
     ]);
-    if it > en && it >= da {
-        "it"
-    } else if da > en && da > it {
+    if da > en && da > it {
         "da"
-    } else if en == 0 && it == 0 && da == 0 {
-        "it"
+    } else {
+        "en"
+    }
+}
+
+/// The language an answer is written in for a language tag: Danish for `da`, English for everything else
+/// (including `it`). Owner rule (2026-11-02): never Italian.
+pub fn answer_lang(lang: &str) -> &'static str {
+    if lang == "da" {
+        "da"
     } else {
         "en"
     }
@@ -379,7 +385,9 @@ mod tests {
         assert_eq!(AgentId::parse("gemini"), None);
         assert_eq!(Kind::parse("Ricerca"), Some(Kind::Research));
         assert!(!Kind::Code.read_only());
-        assert_eq!(guess_lang("chiedi a Grok le ultime notizie su Rust"), "it");
+        // Italian tasks are understood, and the answer comes back in English.
+        assert_eq!(guess_lang("chiedi a Grok le ultime notizie su Rust"), "en");
+        assert_eq!(guess_lang(""), "en");
         assert_eq!(guess_lang("ask Grok about the latest news on Rust"), "en");
         assert_eq!(guess_lang("spørg Grok om nyheder på dansk"), "da");
         assert_eq!(clip("abcdef", 4), "abc…");

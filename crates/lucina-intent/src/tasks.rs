@@ -105,8 +105,9 @@ fn patterns() -> &'static Patterns {
 /// `guessLang`: `"it" | "en" | "da"`.
 pub fn guess_lang(text: &str) -> &'static str {
     // Function-word scoring first (`lang::detect`): one stray word ("mine", "lo") must not decide.
+    // Owner rule (2026-11-02): the answer is English or Danish, never Italian.
     if let Some(l) = crate::lang::detect(text) {
-        return l.code();
+        return l.reply().code();
     }
     if re!(
         r"[æøå]|\b(hvad|jeg|opgave|opgaver|lavet|gjort|tilføj|mine)\b",
@@ -116,19 +117,7 @@ pub fn guess_lang(text: &str) -> &'static str {
     {
         return "da";
     }
-    if re!(
-        r"\b(cosa|devo|fatto|finito|aggiungi|attivit[aà]|domani|oggi|sposta|lo|la)\b",
-        "i"
-    )
-    .test(text)
-    {
-        return "it";
-    }
-    if crate::calendar::guess_lang(text) == "it" {
-        "it"
-    } else {
-        "en"
-    }
+    "en"
 }
 
 fn named(re: &Re, t: &str, name: &str) -> Option<Option<String>> {
@@ -575,7 +564,7 @@ mod tests {
     #[test]
     fn parses_like_node() {
         let l = parse_tasks_intent("cosa devo fare oggi?").unwrap();
-        assert_eq!((l.kind, l.lang), (Kind::List, "it"));
+        assert_eq!((l.kind, l.lang), (Kind::List, "en"));
         assert_eq!(kind("what do I need to do today?"), Some("list"));
         let d = parse_tasks_intent("hvad skal jeg nå i dag?").unwrap();
         assert_eq!((d.kind, d.lang), (Kind::List, "da"));

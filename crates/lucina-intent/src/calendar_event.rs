@@ -110,10 +110,8 @@ pub fn parse_event_question(text: &str, now: DateTime<Utc>, tz: Tz) -> Option<Ev
         None if w(NEXT).test(t) && t.split_whitespace().count() <= 6 => (t.to_owned(), false),
         None => return None,
     };
-    let lang = match guess_lang(t) {
-        "en" if w(r"dove|dov['’]|quando|chi|prossim[oaie]|lezion[ei]|riunion[ei]|impegn[oi]|appuntament[oi]|aula").test(t) => "it",
-        l => l,
-    };
+    // Italian cues are understood above; the answer is English or Danish (owner rule 2026-11-02).
+    let lang = guess_lang(t);
     let (day, rest) = match day_of_text(&topic_src, now, tz) {
         Some((ymd, rest)) => (Some(ymd), rest),
         None => (None, topic_src.clone()),
@@ -316,7 +314,7 @@ pub fn answer_sentence(event: &Value, now: DateTime<Utc>, tz: Tz, lang: &str) ->
     }
 }
 
-/// The one sentence above an agenda's cards ("Domani hai 3 impegni 📅", "This week you have
+/// The one sentence above an agenda's cards ("Tomorrow you have 3 events 📅", "This week you have
 /// one event 📅"). `n` > 0.
 pub fn listing_sentence(
     q: &crate::calendar::Question,
@@ -447,14 +445,14 @@ mod tests {
                 from: "2026-10-27".into(),
                 to: "2026-10-27".into(),
                 day_named: true,
-                lang: "it",
+                lang: "en",
             }
         );
         let hits = select(&q, &[lecture(), hack_night()], now(), TZ);
         assert_eq!(hits, vec![hack_night()]);
         assert_eq!(
             answer_sentence(&hits[0], now(), TZ, q.lang),
-            "Hack Night: Rust meets AI è domani alle 17:00, presso Folkehuset Møllestien."
+            "Hack Night: Rust meets AI is tomorrow at 17:00, at Folkehuset Møllestien."
         );
     }
 
@@ -466,14 +464,14 @@ mod tests {
                 "hack night",
                 EventKind::Named,
                 false,
-                "it",
+                "en",
             ),
             (
                 "quando inizia il corso di Security domani?",
                 "corso di security",
                 EventKind::Named,
                 true,
-                "it",
+                "en",
             ),
             (
                 "Where is the hack night tomorrow?",
@@ -494,7 +492,7 @@ mod tests {
                 "lezione",
                 EventKind::Lecture,
                 false,
-                "it",
+                "en",
             ),
             (
                 "hvor er mødet i morgen?",
@@ -508,7 +506,7 @@ mod tests {
                 "hack night",
                 EventKind::Named,
                 false,
-                "it",
+                "en",
             ),
         ];
         for (text, topic, kind, day_named, lang) in cases {
@@ -572,11 +570,11 @@ mod tests {
             crate::calendar::parse_question("cosa ho in calendario domani?", now(), TZ).unwrap();
         assert_eq!(
             listing_sentence(&q, 3, now(), TZ),
-            "Domani hai 3 impegni 📅"
+            "Tomorrow you have 3 events 📅"
         );
         assert_eq!(
             listing_sentence(&q, 1, now(), TZ),
-            "Domani hai un impegno 📅"
+            "Tomorrow you have one event 📅"
         );
         let q =
             crate::calendar::parse_question("what's on my calendar this week?", now(), TZ).unwrap();
@@ -755,7 +753,7 @@ mod tests {
         let q = parse_event_question("Dove la mia prossima lezione?", now(), TZ).unwrap();
         assert_eq!(
             (q.kind, q.lang, q.topic.as_str()),
-            (EventKind::Lecture, "it", "lezione")
+            (EventKind::Lecture, "en", "lezione")
         );
         assert!(!q.day_named);
         let mut past = lecture();

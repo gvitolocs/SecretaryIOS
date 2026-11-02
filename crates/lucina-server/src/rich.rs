@@ -17,10 +17,10 @@ use lucina_store::rich::{self, RichMessage};
 use serde_json::{json, Value};
 
 /// Conversational style for every Lucina prompt (only with rich replies on).
-pub const STYLE_RULES: &str = "How you talk (every channel): like a person texting, warm and conversational, first person. Answer first in one or two short sentences; give details only when asked, and offer them instead of dumping them. No headings in chat. At most 3-5 bullets; if there is more, summarize the rest. Emojis are signposts, not decoration: ✅ done, ⚠️ problem, 📅 dates, 🛒 shopping, 💪 training, 📝 notes. One or two per message at most. Always answer in the language of the owner's latest message (Italian, English or Danish); earlier turns, the device and his location do not change it.";
+pub const STYLE_RULES: &str = "How you talk (every channel): like a person texting, warm and conversational, first person. Answer first in one or two short sentences; give details only when asked, and offer them instead of dumping them. No headings in chat. At most 3-5 bullets; if there is more, summarize the rest. Emojis are signposts, not decoration: ✅ done, ⚠️ problem, 📅 dates, 🛒 shopping, 💪 training, 📝 notes. One or two per message at most. Always answer in English, or in Danish when the owner's latest message is in Danish; never in Italian, even when he writes Italian. Earlier turns, the device and his location do not change it.";
 
 /// The Secretary app's extra system text when the app renders bubbles and widgets.
-pub const SECRETARY_EXTRA_SYSTEM_RICH: &str = "This conversation comes from the Secretary app (web and iPhone), which shows your reply as short chat bubbles plus widgets and buttons. Reply in the language of the message. Lead with the answer in 1-2 short sentences. Inline markdown (bold, italic, links) is fine; no headings and no tables. A short list is fine when the content is a list. If you need a password, key or token from Giuseppe, never ask him to write it in chat: ask him to say \"salva un segreto NOME\" (\"save a secret NAME\"), which opens a card where he pastes it.";
+pub const SECRETARY_EXTRA_SYSTEM_RICH: &str = "This conversation comes from the Secretary app (web and iPhone), which shows your reply as short chat bubbles plus widgets and buttons. Reply in English, or in Danish when the message is in Danish; never in Italian. Lead with the answer in 1-2 short sentences. Inline markdown (bold, italic, links) is fine; no headings and no tables. A short list is fine when the content is a list. If you need a password, key or token from Giuseppe, never ask him to write it in chat: ask him to say \"salva un segreto NOME\" (\"save a secret NAME\"), which opens a card where he pastes it.";
 
 const DANISH_WORDS: [&str; 10] = [
     "jeg", "ikke", "og", "skal", "kan", "har", "det", "til", "hvad", "tak",
@@ -57,9 +57,8 @@ pub fn is_pending_confirmation(action: &str, action_result: &str) -> bool {
 /// Sì / No / Modifica (yes and no send the words the yes/no flow understands).
 pub fn confirm_actions(lang: &str) -> Vec<Value> {
     let (yes, no, edit) = match lang {
-        "en" => (("Yes", "yes"), ("No", "no"), ("Change it", "Change it:")),
         "da" => (("Ja", "ja"), ("Nej", "nej"), ("Ret det", "Ret det:")),
-        _ => (("Sì", "sì"), ("No", "no"), ("Modifica", "Modifica:")),
+        _ => (("Yes", "yes"), ("No", "no"), ("Change it", "Change it:")),
     };
     vec![
         json!({"id": "confirm-yes", "label": yes.0, "emoji": "✅", "kind": "confirm", "payload": {"answer": "yes", "text": yes.1}}),
@@ -71,7 +70,7 @@ pub fn confirm_actions(lang: &str) -> Vec<Value> {
 /// Capability hints as buttons; anything that starts work or posts publicly
 /// only prefills the composer.
 pub fn hint_actions(ids: &[&str], lang: &str) -> Vec<Value> {
-    let en = lang == "en";
+    let en = lang != "it";
     ids.iter()
         .filter_map(|id| {
             let (emoji, it, en_l, prefill) = match *id {
@@ -285,7 +284,11 @@ pub async fn compose(
             }
         }
     }
-    preset.extend(hint_actions(&ids, hint_lang.unwrap_or(lang)));
+    // Never Italian buttons, even for a hint block a model wrote in Italian.
+    preset.extend(hint_actions(
+        &ids,
+        hint_lang.filter(|l| *l != "it").unwrap_or(lang),
+    ));
     let preset: Vec<Value> = preset
         .iter()
         .enumerate()
@@ -441,14 +444,14 @@ mod tests {
             .iter()
             .map(|a| a["label"].as_str().unwrap())
             .collect();
-        assert_eq!(labels, ["Sì", "No", "Modifica"]);
+        assert_eq!(labels, ["Yes", "No", "Change it"]);
         assert_eq!(
             r.actions[0]["payload"],
-            json!({"answer": "yes", "text": "sì"})
+            json!({"answer": "yes", "text": "yes"})
         );
         assert!(r
             .plain_text(true)
-            .ends_with("↪︎ rispondi: «sì» · «no» · «Modifica …»"));
+            .ends_with("↪︎ reply: «yes» · «no» · «Change it …»"));
     }
 
     fn draft(text: &str) -> Draft<'_> {
@@ -508,6 +511,8 @@ mod tests {
             "da"
         );
         assert_eq!(guess_language("Shall I add it to your calendar?", ""), "en");
-        assert_eq!(guess_language("Lo aggiungo?", "aggiungi dentista"), "it");
+        // Owner rule (2026-11-02): Italian is understood but never answered; the fallback is English.
+        assert_eq!(guess_language("Lo aggiungo?", "aggiungi dentista"), "en");
+        assert_eq!(guess_language("", ""), "en");
     }
 }

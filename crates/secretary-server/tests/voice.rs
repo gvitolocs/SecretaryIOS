@@ -274,7 +274,7 @@ async fn lucina(
     } else if msg == transcript(ENGLISH) {
         json!({"reply": "It is **noon**, sir."})
     } else {
-        json!({"reply": "Sto bene, grazie! E tu?"})
+        json!({"reply": "I am fine, thanks! And you?"})
     };
     Json(json!({"ok": true, "data": data})).into_response()
 }
@@ -466,7 +466,8 @@ async fn a_chunked_pcm_turn_returns_the_spoken_reply() {
     let r = h.chunked("", audio.clone()).send().await.unwrap();
     assert_eq!(r.status(), StatusCode::OK);
     assert_eq!(r.headers()["content-type"], "audio/x-s16le;rate=24000");
-    assert_eq!(r.headers()["x-tts-voice"], "if_sara");
+    // The Italian greeting is answered in English, in the English voice (owner rule 2026-11-02).
+    assert_eq!(r.headers()["x-tts-voice"], "af_heart");
     assert_eq!(header(&r, "x-lucina-transcript"), transcript(HELLO));
     // The reply is not known when the headers go out: no X-Lucina-Reply.
     assert!(!r.headers().contains_key("x-lucina-reply"));
@@ -512,14 +513,14 @@ async fn a_chunked_pcm_turn_returns_the_spoken_reply() {
         "{id}"
     );
 
-    // Kokoro: raw PCM, Italian voice, one sentence per request.
+    // Kokoro: raw PCM, English voice, one sentence per request.
     let speech = h.mock.speech.lock().unwrap().clone();
     assert_eq!(speech.len(), 2);
     assert!(speech
         .iter()
-        .all(|s| s["response_format"] == "pcm" && s["voice"] == "if_sara"));
-    assert_eq!(speech[0]["input"], "Sto bene, grazie!");
-    assert_eq!(speech[1]["input"], "E tu?");
+        .all(|s| s["response_format"] == "pcm" && s["voice"] == "af_heart"));
+    assert_eq!(speech[0]["input"], "I am fine, thanks!");
+    assert_eq!(speech[1]["input"], "And you?");
 }
 
 #[tokio::test]
@@ -645,9 +646,11 @@ async fn lang_picks_the_voice() {
     let r = h.say("?lang=en", HELLO).await;
     assert_eq!(r.status(), StatusCode::OK);
     assert_eq!(r.headers()["x-tts-voice"], "af_heart");
+    // `lang=it` no longer gives the Italian voice for her own replies: the voice follows what she says
+    // (English), whatever the client asks (owner rule 2026-11-02).
     let r = h.say("?lang=it-IT", ENGLISH).await;
     assert_eq!(r.status(), StatusCode::OK);
-    assert_eq!(r.headers()["x-tts-voice"], "if_sara");
+    assert_eq!(r.headers()["x-tts-voice"], "af_heart");
     let r = h.say("?lang=fr", HELLO).await;
     assert_eq!(r.status(), StatusCode::BAD_REQUEST);
     assert_eq!(error_code(r).await, "bad_request");
@@ -702,9 +705,9 @@ async fn a_sensitive_reply_is_replaced_by_a_fixed_phrase() {
     assert_eq!(r.status(), StatusCode::OK);
     assert_eq!(r.headers()["x-tts-voice"], "af_heart");
     assert_eq!(r.bytes().await.unwrap().as_ref(), KOKORO_PCM);
-    // Italian transcript, and `lang=it` for an English one.
+    // An Italian transcript, and `lang=it` for an English one: still the English phrase (never Italian).
     let r = h.say("", ITALIAN_SECRET).await;
-    assert_eq!(r.headers()["x-tts-voice"], "if_sara");
+    assert_eq!(r.headers()["x-tts-voice"], "af_heart");
     let _ = r.bytes().await.unwrap();
     let r = h.say("?lang=it", SECRET).await;
     let _ = r.bytes().await.unwrap();
@@ -721,8 +724,8 @@ async fn a_sensitive_reply_is_replaced_by_a_fixed_phrase() {
         spoken,
         [
             "I'll answer that in the app.",
-            "Ti rispondo nell'app.",
-            "Ti rispondo nell'app."
+            "I'll answer that in the app.",
+            "I'll answer that in the app."
         ]
     );
     assert!(spoken.iter().all(|s| !s.contains("482913")));
@@ -748,7 +751,7 @@ async fn an_empty_reply_gets_a_short_fallback() {
         spoken,
         [
             "Sorry, I don't have an answer.",
-            "Scusa, non ho una risposta."
+            "Sorry, I don't have an answer."
         ]
     );
 }

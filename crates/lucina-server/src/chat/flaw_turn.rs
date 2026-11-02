@@ -44,8 +44,6 @@ pub(super) fn try_turn(t: &Turn<'_>, routed_intent: &str, confidence: f64) -> Op
     let lang = crate::rich::guess_language(&t.message, &t.message);
     let same = r.possible_duplicates.first().map(|f| f.id.as_str());
     let reply = match (lang, same) {
-        ("it", None) => format!("Segnato ({id}). Ci penso io e ti dico com'è andata."),
-        ("it", Some(s)) => format!("Segnato ({id}). Somiglia a {s}: controllo. Ti dico com'è andata."),
         ("da", None) => format!("Noteret ({id}). Jeg tager mig af det og fortæller, hvordan det gik."),
         ("da", Some(s)) => format!("Noteret ({id}). Det ligner {s}: jeg tjekker. Jeg fortæller, hvordan det gik."),
         (_, None) => format!("Noted ({id}). I'll take care of it and tell you how it went."),

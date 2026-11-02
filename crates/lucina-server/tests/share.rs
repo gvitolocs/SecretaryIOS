@@ -555,7 +555,9 @@ async fn the_device_locale_never_sets_the_reply_language() {
     assert!(!all.contains("Device language"), "{all}");
     assert!(!all.contains("da-DK"), "{all}");
     assert!(!all.contains("Se hvad jeg har delt"), "{all}");
-    assert!(all.contains("Reply language: Italian"), "{all}");
+    // The notes are Italian; he is answered in English, never Italian.
+    assert!(all.contains("Reply language: English"), "{all}");
+    assert!(!all.contains("Reply language: Italian"), "{all}");
 
     // A bare link: no words of his own, no recent messages, so English; never the device's Danish.
     let before = h.fake.requests().len();
@@ -950,7 +952,7 @@ async fn the_repeat_request_follows_the_language_of_his_caption() {
     let lines = h.timeline_lines();
     assert_eq!(
         lines[1]["text"],
-        "Non sono riuscita a sentirti. Puoi ripetere?"
+        "I couldn't hear you. Could you repeat that?"
     );
 }
 

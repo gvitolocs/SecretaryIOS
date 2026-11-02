@@ -293,13 +293,11 @@ async fn the_time_and_the_date_are_answered_without_a_model() {
     let reply = &s.find("reply").data;
     let text = reply["text"].as_str().unwrap();
     assert!(
-        text.starts_with("Sono le ") || text.starts_with("È "),
+        text.starts_with("It's "),
         "{text}"
     );
-    assert!(
-        text.ends_with('.') && !text.contains(':'),
-        "said, not written: {text}"
-    );
+    // (The English clock reply reads fine aloud with digits; the Italian one used to spell them out.)
+    assert!(text.ends_with('.'), "said, not written: {text}");
     assert_eq!(reply["sensitive"], false);
     assert_eq!(reply["replaces"], true, "nothing was streamed");
     // `done` is the whole non-streaming body, with the same reply.
@@ -328,10 +326,10 @@ async fn the_time_and_the_date_are_answered_without_a_model() {
     assert_eq!(s.names(), ["route", "reply", "done"]);
     let day = rome_now().day();
     let text = s.find("reply").data["text"].as_str().unwrap().to_owned();
-    assert!(text.starts_with("Oggi è "), "{text}");
-    // Midnight may pass between the turn and this check.
+    assert!(text.starts_with("Today is "), "{text}");
+    // Midnight may pass between the turn and this check; the English date has an ordinal ("2nd").
     assert!(
-        text.contains(&format!(" {day} ")) || text.contains(&format!(" {} ", rome_now().day())),
+        text.contains(&format!(" {day}")) || text.contains(&format!(" {}", rome_now().day())),
         "{text}"
     );
 
@@ -350,7 +348,7 @@ async fn the_time_and_the_date_are_answered_without_a_model() {
         "{tl:?}"
     );
     assert_eq!(tl[0], ("user".to_owned(), "che ore sono?".to_owned()));
-    assert!(tl[1].1.starts_with("Sono le ") || tl[1].1.starts_with("È "));
+    assert!(tl[1].1.starts_with("It's "), "{tl:?}");
 }
 
 #[tokio::test]
@@ -482,7 +480,7 @@ async fn reminders_are_read_from_the_store() {
     assert_eq!(s.names(), ["route", "reply", "done"]);
     assert_eq!(s.find("route").data["intent"], "list_reminders");
     assert_eq!(s.find("route").data["fast"], true);
-    assert_eq!(s.find("reply").data["text"], "Non hai promemoria per oggi.");
+    assert_eq!(s.find("reply").data["text"], "You have no reminders for today.");
     assert_eq!(s.find("done").data["data"]["action"], "list_reminders");
 
     // Two reminders, tomorrow 09:00 and 17:30 (never "today", whatever time the test runs).
@@ -518,7 +516,7 @@ async fn reminders_are_read_from_the_store() {
     assert_eq!(s.names(), ["route", "reply", "done"]);
     assert_eq!(
         s.find("reply").data["text"],
-        "Hai due promemoria in programma: domani alle nove, pagare l'affitto; domani alle diciassette e trenta, chiamare Anna."
+        "You have 2 reminders coming up: tomorrow at 9 AM, pagare l'affitto; tomorrow at 5:30 PM, chiamare Anna."
     );
     let (s, _) = stream(&h, chat_body("what reminders do I have?")).await;
     assert_eq!(
@@ -554,7 +552,7 @@ async fn a_reminder_the_parsers_resolve_is_written_through_the_normal_writer() {
     assert_eq!(s.find("route").data["fast"], true);
     assert_eq!(
         s.find("reply").data["text"],
-        "Fatto, ti ricordo domani alle nove: pagare l'affitto."
+        "Okay, I'll remind you tomorrow at 9 AM: pagare l'affitto."
     );
     let done = &s.find("done").data["data"];
     assert_eq!(done["action"], "schedule_reminder");
@@ -564,7 +562,7 @@ async fn a_reminder_the_parsers_resolve_is_written_through_the_normal_writer() {
     assert_eq!(s.names(), ["route", "reply", "done"]);
     let text = s.find("reply").data["text"].as_str().unwrap().to_owned();
     assert!(
-        text.starts_with("Fatto, ti ricordo tra venti minuti: ") && text.contains("forno"),
+        text.starts_with("Okay, I'll remind you in 20 minutes: ") && text.contains("forno"),
         "{text}"
     );
     assert_eq!(model_calls(&h), 0);
@@ -599,13 +597,13 @@ async fn the_route_comes_first_and_the_ack_only_before_a_slow_wait() {
     let (s, _) = stream(&h, chat_body("disegnami un gatto")).await;
     assert_eq!(s.names(), ["route", "ack", "reply", "done"]);
     assert_eq!(s.find("route").data["fast"], false);
-    assert_eq!(s.find("ack").data["text"], "Un attimo…");
+    assert_eq!(s.find("ack").data["text"], "One moment…");
     assert!(s.find("route").at <= s.find("ack").at);
 
     let (s, _) = stream(&h, chat_body("organizza il mio weekend")).await;
     assert_eq!(s.count("ack"), 1, "once: {:?}", s.names());
     assert_eq!(s.names()[..2], ["route", "ack"]);
-    assert_eq!(s.find("ack").data["text"], "Un attimo…");
+    assert_eq!(s.find("ack").data["text"], "One moment…");
     let (s, _) = stream(&h, chat_body("plan my weekend for me")).await;
     assert_eq!(s.names(), ["route", "ack", "reply", "done"]);
     assert_eq!(s.find("ack").data["text"], "One moment…");
@@ -660,7 +658,7 @@ async fn a_spoken_turn_without_the_stream_is_fast_too() {
     assert_eq!(status, 200, "{body}");
     let text = body["data"]["reply"].as_str().unwrap();
     assert!(
-        text.starts_with("Sono le ") || text.starts_with("È "),
+        text.starts_with("It's "),
         "{text}"
     );
     assert_eq!(model_calls(&h), 0);

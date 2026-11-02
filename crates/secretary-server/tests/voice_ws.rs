@@ -271,9 +271,9 @@ async fn lucina(
         ACK_SLOW => sse(
             vec![
                 (0, "route", route("web_crawl", false)),
-                (0, "ack", json!({"text": "Un attimo…"})),
-                (250, "delta", d("Ecco le notizie. ")),
-                (0, "reply", reply("Ecco le notizie.", false, false)),
+                (0, "ack", json!({"text": "One moment…"})),
+                (250, "delta", d("Here is the news. ")),
+                (0, "reply", reply("Here is the news.", false, false)),
                 (0, "done", done()),
             ],
             None,
@@ -283,7 +283,7 @@ async fn lucina(
             vec![
                 (0, "route", route("web_crawl", false)),
                 (0, "delta", d("Prima frase detta. ")),
-                (0, "ack", json!({"text": "Un attimo…"})),
+                (0, "ack", json!({"text": "One moment…"})),
                 (0, "delta", d("Seconda frase.")),
                 (
                     0,
@@ -298,10 +298,10 @@ async fn lucina(
         ACK_TWICE => sse(
             vec![
                 (0, "route", route("computer_task", false)),
-                (0, "ack", json!({"text": "Un attimo…"})),
+                (0, "ack", json!({"text": "One moment…"})),
                 (100, "ack", json!({"text": "Ancora un attimo…"})),
-                (150, "delta", d("Fatto qui. ")),
-                (0, "reply", reply("Fatto qui.", false, false)),
+                (150, "delta", d("Done here. ")),
+                (0, "reply", reply("Done here.", false, false)),
                 (0, "done", done()),
             ],
             None,
@@ -887,7 +887,7 @@ async fn a_sensitive_reply_is_never_spoken() {
     stream_audio(&mut ws, &tone(600)).await;
     send(&mut ws, json!({"type": "end"})).await;
     let out = turn_output(&mut ws).await;
-    assert_eq!(json_of(&out, "reply")["text"], "Ti rispondo nell'app.");
+    assert_eq!(json_of(&out, "reply")["text"], "I'll answer that in the app.");
 }
 
 #[tokio::test]
@@ -1552,7 +1552,7 @@ async fn post_voice_turns_are_recorded_too() {
 
 // -- Jev fast path: route and ack (protocol section 6) ---------------------------
 
-/// The cache holds both languages' phrases (`Un attimo…`, `Vediamo…`, `One moment…`, `Let me see…`).
+/// The cache holds both languages' phrases (`Un attimo…`, `Vediamo…`, `One moment…`, `Let me see…`; only the English ones are played).
 async fn fillers_ready(h: &H) {
     for _ in 0..100 {
         if h.st.fillers.count(true) == 2 && h.st.fillers.count(false) == 2 {
@@ -1604,18 +1604,18 @@ async fn an_ack_plays_the_filler_first_then_the_answer_in_order() {
         "one audio header, then filler and answer as one stream: {out:?}"
     );
     let pcm = audio(&out);
-    let answer = pcm_of("Ecco le notizie.".len());
+    let answer = pcm_of("Here is the news.".len());
     assert_eq!(pcm.len(), 6 + answer.len(), "filler + answer");
     assert!(
-        matches!(first_len(&pcm), 10 | 8),
-        "an Italian filler comes first: {}",
+        first_len(&pcm) == 11,
+        "an English filler comes first: {}",
         first_len(&pcm)
     );
     assert_eq!(pcm[6..], answer[..], "the answer follows, whole");
     // The filler came from memory: Kokoro only heard the answer.
-    assert_eq!(h.mock.spoken(), ["Ecco le notizie."]);
+    assert_eq!(h.mock.spoken(), ["Here is the news."]);
     // The filler is not part of the spoken reply.
-    assert_eq!(json_of(&out, "reply")["text"], "Ecco le notizie.");
+    assert_eq!(json_of(&out, "reply")["text"], "Here is the news.");
 
     let ms = &json_of(&out, "done")["ms"];
     let n = |k: &str| ms[k].as_u64().unwrap_or_else(|| panic!("{k}: {ms}"));
@@ -1686,12 +1686,12 @@ async fn a_second_ack_is_ignored() {
     let pcm = audio(&out);
     assert_eq!(
         pcm.len(),
-        6 + pcm_of("Fatto qui.".len()).len(),
+        6 + pcm_of("Done here.".len()).len(),
         "one filler"
     );
     assert_eq!(
         h.mock.spoken().last().map(String::as_str),
-        Some("Fatto qui.")
+        Some("Done here.")
     );
 }
 
@@ -1859,13 +1859,13 @@ async fn the_cache_is_rebuilt_lazily_after_a_kokoro_failure() {
     assert_eq!(
         audio(&out),
         [
-            pcm_of("Un attimo…".chars().count()),
-            pcm_of("Ecco le notizie.".len())
+            pcm_of("One moment…".chars().count()),
+            pcm_of("Here is the news.".len())
         ]
         .concat(),
         "{out:?}"
     );
-    assert_eq!(json_of(&out, "reply")["text"], "Ecco le notizie.");
+    assert_eq!(json_of(&out, "reply")["text"], "Here is the news.");
     assert!(json_of(&out, "done")["ms"]["ack"].is_u64());
     fillers_ready(&h).await;
 
@@ -1873,9 +1873,9 @@ async fn the_cache_is_rebuilt_lazily_after_a_kokoro_failure() {
     h.mock.speech.lock().unwrap().clear();
     let out = say_ptt(&mut ws, 900).await;
     let pcm = audio(&out);
-    assert!(matches!(first_len(&pcm), 10 | 8), "{}", first_len(&pcm));
-    assert_eq!(pcm.len(), 6 + pcm_of("Ecco le notizie.".len()).len());
-    assert_eq!(h.mock.spoken(), ["Ecco le notizie."]);
+    assert!(first_len(&pcm) == 11, "{}", first_len(&pcm));
+    assert_eq!(pcm.len(), 6 + pcm_of("Here is the news.".len()).len());
+    assert_eq!(h.mock.spoken(), ["Here is the news."]);
 }
 
 #[tokio::test]
@@ -1894,10 +1894,10 @@ async fn post_voice_plays_the_filler_first_too() {
         .await
         .unwrap();
     assert_eq!(r.status(), 200);
-    assert_eq!(r.headers()["x-tts-voice"], "if_sara");
+    assert_eq!(r.headers()["x-tts-voice"], "af_heart");
     let all = r.bytes().await.unwrap();
-    assert!(matches!(first_len(&all), 10 | 8));
-    assert_eq!(all[6..], pcm_of("Ecco le notizie.".len())[..]);
+    assert!(first_len(&all) == 11);
+    assert_eq!(all[6..], pcm_of("Here is the news.".len())[..]);
     let path = format!("/v1/voice/devices/{}/status", h.dev_id);
     let v = h
         .wait_for(&h.token, &path, |v| v["turns"][0]["intent"] == "web_crawl")

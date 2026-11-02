@@ -338,10 +338,12 @@ impl Delegator {
         policy::hard_limits(req, None, self.cfg.max_depth)?;
         let agent = self.choose(req).await?;
         policy::hard_limits(req, Some(agent.id()), self.cfg.max_depth)?;
-        let lang = req
-            .lang
-            .clone()
-            .unwrap_or_else(|| guess_lang(&req.task).to_owned());
+        let lang = crate::types::answer_lang(
+            req.lang
+                .as_deref()
+                .unwrap_or_else(|| guess_lang(&req.task)),
+        )
+        .to_owned();
         Ok((agent.id(), self.self_review(req, agent.id(), &lang).await))
     }
 
@@ -350,10 +352,12 @@ impl Delegator {
     /// Start a delegation. Never asks the owner: hard limits, budget and
     /// Lucina's own judgement decide.
     pub async fn start(self: &Arc<Self>, req: Request) -> StartOutcome {
-        let lang = req
-            .lang
-            .clone()
-            .unwrap_or_else(|| guess_lang(&req.task).to_owned());
+        let lang = crate::types::answer_lang(
+            req.lang
+                .as_deref()
+                .unwrap_or_else(|| guess_lang(&req.task)),
+        )
+        .to_owned();
         let refuse = |agent: Option<AgentId>, r: Refusal| {
             tracing::info!(
                 agent = agent.map(AgentId::as_str),
@@ -717,7 +721,8 @@ impl Delegator {
     /// The owner's switches: the reply text.
     pub fn switch(&self, s: &SwitchIntent) -> String {
         let now = Utc::now();
-        let l = s.lang;
+        // Never Italian (owner rule 2026-11-02): an Italian intent is answered in English.
+        let l = crate::types::answer_lang(s.lang);
         let pick = |it: String, en: String| if l == "it" { it } else { en };
         match s.switch {
             Switch::Off(Some(a)) => {
@@ -798,7 +803,8 @@ impl Delegator {
 
     /// "annulla delega <id>": remove what a job left (its sandbox, its branch).
     pub async fn undo(&self, id: &str, lang: &str) -> String {
-        let it = lang == "it";
+        // Never Italian (owner rule 2026-11-02).
+        let it = crate::types::answer_lang(lang) == "it";
         let Some(mut job) = self.job(id) else {
             return if it {
                 format!("Non trovo una delega {id}.")

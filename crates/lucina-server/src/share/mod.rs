@@ -1306,8 +1306,7 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
             .iter()
             .any(|p| p.attachment.kind == "voice" && p.attachment.transcript.is_none())
     {
-        let reply = match owner_language(st, &job.session, &job.note).code() {
-            "it" => "Non sono riuscita a sentirti. Puoi ripetere?",
+        let reply = match owner_language(st, &job.session, &job.note).reply().code() {
             "da" => "Jeg kunne ikke høre dig. Kan du gentage det?",
             _ => "I couldn't hear you. Could you repeat that?",
         };
@@ -1337,8 +1336,7 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
                 "content":clip(&format!("{}\n{}", job.note, content), 19_000)
             }), &ctx)).await.context("saving shared note timed out")?.map_err(|e| anyhow::anyhow!(e.to_string()))?;
         }
-        let reply = match owner_language(st, &job.session, &job.note).code() {
-            "it" => "Salvato nella raccolta Shared.",
+        let reply = match owner_language(st, &job.session, &job.note).reply().code() {
             "da" => "Gemt i samlingen Shared.",
             _ => "Saved to the Shared library.",
         };
