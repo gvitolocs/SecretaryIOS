@@ -2782,6 +2782,8 @@ fn spawn_job(st: AppState, job: Job, plan: Value, message: String, memory: Strin
             surface,
             origin,
         } = dest;
+        // An agent's job: the agent hears about it, the owner's phone does not ring.
+        let from_agent = turn_meta.as_ref().is_some_and(|m| m.via.is_some());
         let timeline = origin
             .as_ref()
             .map_or_else(|| st.timeline_for(&session), |o| o.timeline.clone());
@@ -2878,7 +2880,7 @@ fn spawn_job(st: AppState, job: Job, plan: Value, message: String, memory: Strin
                     (rich_msg, text)
                 };
                 let item = record(text, rich_msg.as_ref());
-                if action == crate::video::ACTION {
+                if action == crate::video::ACTION && !from_agent {
                     notify_job(
                         &st,
                         &job.id,
@@ -2915,7 +2917,7 @@ fn spawn_job(st: AppState, job: Job, plan: Value, message: String, memory: Strin
                 tracing::error!(job_id = %job.id, %action, error = %reason.chars().take(300).collect::<String>(), "secretary job failed");
                 let text = format!("{} failed: {reason}", jobs::label(&action));
                 let item = record(text.clone(), None);
-                if action == crate::video::ACTION {
+                if action == crate::video::ACTION && !from_agent {
                     notify_job(
                         &st,
                         &job.id,

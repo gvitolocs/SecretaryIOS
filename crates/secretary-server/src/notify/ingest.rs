@@ -8,6 +8,7 @@
 //! | `role: lucina`, `meta.kind: "device_command"` that needs a tap (`meta.command.requiresConfirmation`, else by type) | `device_confirm` |
 //! | `role: lucina`, `meta.kind: "shopping"` (Lucina changed a list) | `shopping` |
 //! | `role: lucina`, `meta.kind: "decision"` | none: Lucina's own `POST /v1/notify` carries the route (`/decisions/<id>`) and the options |
+//! | `role: lucina`, agent chat ([`agent_chat`]) | none: it stays readable in the chat, the owner gets no alert |
 //! | any other `role: lucina` item | `lucina_message` |
 //!
 //! Owner items, backfilled history and items older than
@@ -147,6 +148,15 @@ fn attachment_body(item: &TimelineItem) -> String {
     kinds.join(" ")
 }
 
+/// Lucina talking with an agent, not to the owner: a turn that came in through an agent link
+/// (`meta.via`, whichever provider or caller) or an agent's reply to her message (`meta.kind:
+/// "reach"`). What the text says does not matter: agents name the owner all the time. An agent
+/// that needs him uses `lucina_decide`, an approval, or asks her to tell him (her `notify` tool);
+/// each of those has its own push.
+pub fn agent_chat(meta: &Value) -> bool {
+    meta["via"].as_str().is_some_and(|v| !v.is_empty()) || meta["kind"] == "reach"
+}
+
 /// The notification for a timeline item, if any.
 pub fn classify(item: &TimelineItem, now_ms: i64, stale_ms: i64) -> Option<NewNotification> {
     if item.role != Role::Lucina || item.backfilled == Some(true) {
@@ -187,6 +197,7 @@ pub fn classify(item: &TimelineItem, now_ms: i64, stale_ms: i64) -> Option<NewNo
             Category::Shopping,
             meta.get("listId").map(|l| json!({"listId": l})),
         ),
+        _ if agent_chat(&meta) => return None,
         _ => (Category::LucinaMessage, None),
     };
     if body.is_empty() {
@@ -308,6 +319,34 @@ mod tests {
             Some(1_761_048_000_123)
         );
         assert_eq!(ts_ms(&Scalar::from("ieri")), None);
+    }
+
+    #[test]
+    fn agent_chat_makes_no_notification() {
+        let now = 1_792_654_200_000;
+        let base = json!({"id": "01J", "ts": "2026-10-22T07:30:00.000Z", "channel": "web",
+                          "role": "lucina", "text": "Giuseppe should look at this"});
+        let quiet = |meta: Value| {
+            let mut v = base.clone();
+            v["meta"] = meta;
+            classify(&item(v), now, 3_600_000).is_none()
+        };
+        // Any caller, any link, with or without a conversation; naming him changes nothing.
+        assert!(quiet(json!({"via": "mcp", "caller": "claude-code"})));
+        assert!(quiet(json!({"via": "mcp", "caller": "some-new-provider", "conversation": "report"})));
+        assert!(quiet(json!({"via": "mcp"})));
+        assert!(quiet(json!({"via": "another-link", "caller": "x"})));
+        assert!(quiet(json!({"kind": "tool", "via": "mcp", "caller": "claude"})));
+        assert!(quiet(json!({"kind": "reach", "tool": "reach_agents", "ok": true})));
+
+        // The same words to him, and what he has to act on, still notify.
+        assert!(!quiet(json!({"device": "dev_1", "deviceName": "iPhone"})));
+        assert!(!quiet(json!({"kind": "proactive"})));
+        assert!(!quiet(json!({"via": ""})));
+        // An agent's turn can still make something that is his: a reminder, a tap, a list change.
+        assert!(!quiet(json!({"kind": "reminder", "via": "mcp"})));
+        assert!(!quiet(json!({"kind": "shopping", "via": "mcp", "listId": "L1"})));
+        assert!(!quiet(json!({"kind": "device_command", "via": "mcp", "command": {"id": "c1", "type": "alarm.delete"}})));
     }
 
     #[test]

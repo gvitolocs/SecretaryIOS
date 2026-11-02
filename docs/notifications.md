@@ -26,7 +26,7 @@ private.
 
 | Source | Category | How |
 |---|---|---|
-| Lucina's timeline (any channel) | `lucina_message` | The server keeps one SSE stream open to Lucina (`notify::ingest`) with its own token; every `role: lucina` item becomes a notification unless the owner has the app in front. |
+| Lucina's timeline (any channel) | `lucina_message` | The server keeps one SSE stream open to Lucina (`notify::ingest`) with its own token; every `role: lucina` item becomes a notification unless the owner has the app in front, or it is her chat with an agent (below). |
 | Delivered reminder | `reminder` | Timeline items with `meta.kind: "reminder"`, and Lucina's `POST /v1/notify` when `LUCINA_APP_NOTIFY=true` (deduplicated: same timeline id, or `reminder:<id>`). |
 | Device command that needs a tap | `device_confirm` | Timeline items with `meta.kind: "device_command"` and `meta.command.requiresConfirmation` (else the iOS rule: deletes and calendar changes). |
 | Coding agent finished, needs permission, or the Infisical broker asks | `agent` | lucina-agentd's `POST /v1/notify` (`data: {kind, agentId or permissionId, reason, requestId, actions}`); while an app is in front it stays in the inbox without a push (Paseo's rule). |
@@ -35,6 +35,16 @@ private.
 | Proactive check-in / nudge | `lucina_message` | `POST /v1/notify` from Lucina (`LUCINA_APP_NOTIFY`), per-day dedup key. |
 | Lucina unreachable 5 min / back | `presence` (off by default) | The ingester's connection state. |
 | New device signed in | `system` (off by default) | `POST /v1/auth/device`. |
+
+**Her chats with agents make no alert** (owner, 2026-11-02: "just messages for me"). A timeline item with
+`meta.via` set (a turn through an agent link, any provider or caller) or `meta.kind: "reach"` (an agent's reply
+to her) makes no notification: no push, no inbox entry, nothing on the unread badge, no local alert on iOS. It
+stays readable in the chat. The text does not matter: naming the owner changes nothing. Reminders, device
+commands and shopping changes made in such a turn are still his. A new agent link stays silent by recording
+its turns with `via` and posting nothing to `/v1/notify`. An agent that needs him goes through `lucina_decide`,
+an approval, or asks Lucina to tell him (her `notify` tool); those have their own push. A run that Lucina or
+another agent started (labels `from: lucina`, `lucina.origin`, `lucina.parent-agent-id`) pushes nothing when it
+finishes, and a job or delegation an agent asked for pushes nothing either. Permission requests always do.
 
 **Pipeline** (`Notifier::publish`): dedup (explicit `dedupKey`, or `tl:<timeline id>`)
 → category switch → presence (a Lucina message while any app reported itself in

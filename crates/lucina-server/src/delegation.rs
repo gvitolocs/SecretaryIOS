@@ -84,6 +84,9 @@ impl Sink for ServerSink {
             tool: Some(j.agent.as_str().to_owned()),
             ok: Some(j.status != JobStatus::Error),
             slug: j.note_slug.clone(),
+            // Someone else asked: the card belongs to that agent's conversation, no alert.
+            via: j.caller.as_ref().map(|_| "mcp".to_owned()),
+            caller: j.caller.clone(),
             ..Meta::kind("delegation")
         };
         let meta = match &card.rich {
@@ -396,6 +399,7 @@ mod tests {
             backend: "mock".into(),
             kind: Kind::Research,
             origin: Origin::Owner,
+            caller: None,
             status,
             task: "t".into(),
             lang: "it".into(),

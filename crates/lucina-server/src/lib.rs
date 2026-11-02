@@ -607,7 +607,6 @@ impl AppState {
                 timeline: inner.timeline.clone(),
                 selftest_timeline: inner.selftest_timeline.clone(),
                 recent: inner.recent.clone(),
-                secretary: inner.secretary.clone(),
             }));
         }
         Ok(Self(Arc::new(inner)))

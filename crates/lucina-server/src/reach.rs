@@ -3,9 +3,11 @@
 //! CLI.
 //!
 //! - A reply goes back into the conversation the message came from: the owner's timeline under
-//!   that channel (the self-test timeline for a self-test), the session's recent turns (so her
-//!   next answer knows it), and an app notification. It is shown as information from that
-//!   assistant ("💬 Claude replied …"), never run as an instruction.
+//!   that channel (the self-test timeline for a self-test) and the session's recent turns (so her
+//!   next answer knows it). It is shown as information from that assistant ("💬 Claude replied …"),
+//!   never run as an instruction, and it alerts nobody: the owner's phone rings for messages to
+//!   him, not for her chats with agents (owner, 2026-11-02). An agent that needs him uses
+//!   `lucina_decide`.
 //! - `GET  /api/secretary/reach/threads?to=claude&status=open&limit=20`  the threads, newest first
 //! - `GET  /api/secretary/reach/threads/<id>`                            one thread
 //! - `POST /api/secretary/reach/threads/<id>/reply` `{"from", "text"}`   a reply (≤ 8000 chars)
@@ -30,7 +32,6 @@ pub struct ServerSink {
     pub timeline: Arc<TimelineStore>,
     pub selftest_timeline: Arc<TimelineStore>,
     pub recent: Arc<RecentChat>,
-    pub secretary: crate::bridges::Secretary,
 }
 
 /// What the owner reads for a reply.
@@ -59,7 +60,7 @@ impl ReachSink for ServerSink {
         } else {
             &self.timeline
         };
-        let item = timeline.record(NewItem {
+        timeline.record(NewItem {
             channel,
             role: "lucina".into(),
             text: text.clone(),
@@ -73,27 +74,6 @@ impl ReachSink for ServerSink {
         // Her next turn in that conversation sees the reply as something said to her.
         self.recent
             .append(&t.session, "assistant", &text, chrono::Utc::now());
-        if t.test {
-            return;
-        }
-        let mut body = json!({
-            "category": "lucina_message",
-            "title": format!("{} replied", t.to.label()),
-            "body": lucina_delegate::types::clip(&r.text, 480),
-            "route": "/",
-            "dedupKey": format!("reach:{}:{}", t.id, t.replies.len()),
-        });
-        if let Some(item) = item {
-            body["timelineId"] = json!(item.id);
-        }
-        lucina_secrets::redactor().redact_json(&mut body);
-        let secretary = self.secretary.clone();
-        tokio::spawn(async move {
-            let r = crate::bridges::notify(&secretary, &body).await;
-            if !r.ok {
-                tracing::warn!(status = r.status, "reach: reply notification failed");
-            }
-        });
     }
 }
 

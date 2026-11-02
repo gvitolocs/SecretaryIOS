@@ -138,6 +138,7 @@ final class NotificationCenterStore {
             && now.timeIntervalSince(item.ts) < Self.freshness && !alertedTimeline.contains(item.id) {
             alertedTimeline.append(item.id)
             if item.meta?.isDeviceCommand == true { continue } // the confirmation sheet handles these
+            if item.meta?.isAgentChat == true { continue } // her chats with agents make no alert
             // Her question to the owner: a decision notification (buttons, opens the decision), not a chat line.
             if item.meta?.kind == "decision", item.meta?.via == nil, let id = item.meta?.decisionId,
                let d = await decisionLookup?(id), d.isPending {

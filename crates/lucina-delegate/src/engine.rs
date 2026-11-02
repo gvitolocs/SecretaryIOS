@@ -428,6 +428,7 @@ impl Delegator {
             backend: agent.backend().await.unwrap_or_default(),
             kind: req.kind,
             origin: req.origin,
+            caller: req.caller.clone(),
             status: JobStatus::Running,
             task: clip(&redacted(&req.task), 160),
             lang: lang.clone(),
@@ -643,7 +644,7 @@ impl Delegator {
         job.finished_at = Some(now_iso());
         self.store(&job);
         self.post(&job);
-        if job.duration_ms > inline.as_millis() as u64 {
+        if job.caller.is_none() && job.duration_ms > inline.as_millis() as u64 {
             let body = match job.status {
                 JobStatus::Done => format!(
                     "{} {}: {}",

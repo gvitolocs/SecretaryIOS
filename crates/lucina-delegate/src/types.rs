@@ -251,6 +251,10 @@ pub struct JobRecord {
     pub backend: String,
     pub kind: Kind,
     pub origin: Origin,
+    /// Who asked when it was not the owner (an MCP caller, an agent, her proactive engine). Such a
+    /// job's result goes back to them and stays in the chat: it never alerts the owner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller: Option<String>,
     pub status: JobStatus,
     /// The task, redacted and clipped to 160 characters.
     pub task: String,
