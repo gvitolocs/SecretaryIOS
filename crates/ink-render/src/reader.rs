@@ -197,6 +197,16 @@ impl<D: Display> Reader<D> {
         Ok((r, rep))
     }
 
+    /// The window's chapter store, to open the book again on another display. The reader is done with after this.
+    pub fn take_store(&mut self) -> Option<Box<dyn ChapterStore>> {
+        self.window.take().map(|w| w.store)
+    }
+
+    /// The page's place in what is laid out, as opposed to [`Reader::page`], its place in the book.
+    pub fn window_index(&self) -> usize {
+        self.page
+    }
+
     /// Whether only a window of the book is laid out.
     pub fn is_windowed(&self) -> bool {
         self.window.is_some()
