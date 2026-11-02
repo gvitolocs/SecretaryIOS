@@ -1587,6 +1587,21 @@ mod tests {
         assert_eq!(caller_for_host("chat.mistral.ai"), "mistral");
     }
 
+    /// The owner decides a connector's reach on the consent page: "Keep full access", 2026-11-02.
+    #[test]
+    fn a_mistral_token_holds_what_the_owner_granted() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cfg, o) = oauth_in(dir.path());
+        pending_code(&o, "code-hash");
+        let mut g = grant("grant_a");
+        g.caller = "mistral".into();
+        let scopes = Scopes::of([Scope::Read, Scope::Chat, Scope::Write, Scope::Computer]);
+        let pair = o.redeem_code(&cfg, "code-hash", g, &scopes).expect("tokens");
+        let caller = o.authenticate(&pair.access, "res").unwrap().expect("a caller");
+        assert_eq!(caller.name, "mistral");
+        assert_eq!(caller.scopes, scopes);
+    }
+
     // -- token endpoint races (docs/verification.md, bugs O1 and O2) ---------
 
     fn oauth_in(dir: &std::path::Path) -> (Config, OAuth) {
