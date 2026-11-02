@@ -612,3 +612,63 @@ relation = "fork"
 confidence = "confirmed"
 rely_on = ["gpui-pre platform and scene", "ibis-office-app --export", "gpui-pre-wgpu cosmic_text_system"]
 notes = "LucinaOffice on Juno: upstream commit 1d5dba02 fetched by office/fetch-upstream.sh, built with office/patches and our software GPUI backends. The owner personal OS only; nothing public without asking him."
+
+[[upstream]]
+id = "servo"
+name = "Servo (LucinaNet's engine, one of two)"
+url = "https://github.com/servo/servo"
+source = "github"
+repo = "servo/servo"
+branch = "main"
+track = "commits"
+pin = "2b94d76a6971d2c41b6447b1b6d8251412d6ac72"
+pin_date = "2026-11-01"
+notify = "report"
+ours = [
+  { repo = "/home/nez/Projects/Lucina/LucinaNet", path = "crates/lucinanet-servo" },
+]
+licence_upstream = "MPL-2.0"
+licence_ours = "MPL-2.0"
+relation = "fork"
+confidence = "confirmed"
+rely_on = ["RenderingContext", "WebView embedding API", "components/paint gleam use", "components/fonts/platform/freetype/font_list.rs"]
+notes = "Pinned checkout + patches/servo in LucinaNet: fonts from a directory, swgl options as in Gecko. Compared against Blitz: LucinaOS docs/research/lucinanet.md."
+
+[[upstream]]
+id = "blitz"
+name = "Blitz (LucinaNet's engine, one of two)"
+url = "https://github.com/DioxusLabs/blitz"
+source = "github"
+repo = "DioxusLabs/blitz"
+branch = "main"
+track = "commits"
+pin = "d0f48bd17224130c3697b9c6a2de9c090cfdebc7"
+pin_date = "2026-11-01"
+notify = "report"
+ours = [
+  { repo = "/home/nez/Projects/Lucina/LucinaNet", path = "blitz" },
+]
+licence_upstream = "Apache-2.0 OR MIT"
+licence_ours = "MPL-2.0"
+relation = "fork"
+confidence = "confirmed"
+rely_on = ["blitz-dom Document API", "blitz-paint paint_scene", "anyrender_vello_cpu", "blitz-net Provider"]
+notes = "Pinned checkout + patches/blitz in LucinaNet: rustls with bundled roots, a current user agent."
+
+[[upstream]]
+id = "swgl"
+name = "swgl, WebRender's software GL"
+url = "https://crates.io/crates/swgl"
+source = "manual"
+check_hint = "New swgl and webrender versions on crates.io; they are released together."
+pin = "0.70.0"
+pin_date = "2026-07-10"
+ours = [
+  { repo = "/home/nez/Projects/Lucina/LucinaNet", path = "patches/swgl" },
+]
+licence_upstream = "MPL-2.0"
+licence_ours = "MPL-2.0"
+relation = "vendored"
+confidence = "confirmed"
+rely_on = ["gleam Gl implementation", "shader list without DITHERING"]
+notes = "Copy in ~/Projects/Lucina/LucinaNet-swgl: only names the unknown shader when one is asked for."
