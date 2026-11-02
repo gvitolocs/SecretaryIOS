@@ -49,13 +49,30 @@ final class InAppMapsTests: XCTestCase {
     }
 
     func testOnlyTheExplicitMenuBuildsAppleMapsURLs() throws {
-        let url = try XCTUnwrap(ExternalMaps.appleMapsURL(to: store.coordinate!, name: store.title))
-        XCTAssertTrue(ExternalMaps.isExternal(url))
         XCTAssertTrue(ExternalMaps.isExternal(try XCTUnwrap(ExternalMaps.appleMapsSearchURL("Dokk1"))))
         for external in ["comgooglemaps://?daddr=1,2", "maps://?q=x", "https://www.google.com/maps/dir/?api=1", "https://maps.google.dk/?q=x"] {
             XCTAssertTrue(ExternalMaps.isExternal(try XCTUnwrap(URL(string: external))), external)
         }
         XCTAssertFalse(ExternalMaps.isExternal(WidgetRoute.url("map/place?title=x&address=y")))
+    }
+
+    /// Only Apple's cycling route is the bike's; anything else is marked as an estimate at cycling speed.
+    func testBikeRouteEstimates() throws {
+        let cycling = BikeRoute(source: .cycling, seconds: 773, meters: 3132, steps: [])
+        XCTAssertFalse(cycling.estimated)
+        XCTAssertEqual(cycling.modeText, PlaceTravelMode.bike.title)
+
+        let path = BikeRoute.estimate(.walkingPath, meters: 2750)
+        XCTAssertTrue(path.estimated)
+        XCTAssertEqual(path.seconds, 660, accuracy: 0.01)
+        XCTAssertNotEqual(path.modeText, PlaceTravelMode.bike.title)
+
+        let line = try XCTUnwrap(BikeRoute.straightLine(1000))
+        XCTAssertTrue(line.estimated)
+        XCTAssertEqual(line.meters, 1300, accuracy: 0.01)
+        XCTAssertEqual(line.seconds, 312, accuracy: 0.01)
+        XCTAssertEqual(line.line, [])
+        XCTAssertNil(BikeRoute.straightLine(BikeRoute.estimateLimitMeters + 1))
     }
 
     /// The navigation card's next turn: the step after the one the owner is on, and the metres to it.

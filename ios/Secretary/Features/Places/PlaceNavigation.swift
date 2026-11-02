@@ -2,8 +2,8 @@ import CoreLocation
 import MapKit
 
 // Lucina's own navigation: every place action lands on the app's map (PlaceMapView), and its
-// Navigate button follows the owner along the selected route (the server's routes, MapKit's
-// turn-by-turn steps for walking, cycling and driving). Nothing here opens another app.
+// Navigate button follows the owner along the one route, by bike (MapKit's cycling route and its
+// turn-by-turn steps). Nothing here opens another app.
 
 /// In-app links to a place: `/map/place?…` (`AppModel.open(route:)`, `secretary://open/map/place?…`).
 enum PlaceLinks {
@@ -54,23 +54,66 @@ struct NavigationStep: Equatable, Sendable {
     var start: CLLocationCoordinate2D? { line.first.map { CLLocationCoordinate2D(latitude: $0[0], longitude: $0[1]) } }
 }
 
-enum NavigationGuide {
-    /// Closer than this to the place: arrived.
-    static let arrivalMeters: Double = 30
+/// The one route the app offers: by bike. Apple's cycling route; where Apple has none, a marked
+/// estimate from the distance at cycling speed. A walking or car time is never shown as the bike's.
+struct BikeRoute: Equatable, Sendable {
+    enum Source: String, Sendable {
+        /// MapKit's cycling route.
+        case cycling
+        /// Estimate: the length of MapKit's walking path, whose line and turns stand in for the bike's.
+        case walkingPath
+        /// Estimate: the straight line plus a margin for the roads; no line and no turns.
+        case straightLine
+    }
 
-    /// MapKit's steps for the mode (transit has none: the route card shows the server's legs).
-    static func steps(_ mode: PlaceTravelMode, from origin: CLLocationCoordinate2D,
-                      to destination: CLLocationCoordinate2D) async -> [NavigationStep] {
+    /// Cycling speed for an estimate, in metres a second (15 km/h, about what MapKit gives in Aarhus).
+    static let estimateSpeed: Double = 15 / 3.6
+    /// Roads are about this much longer than the straight line.
+    static let roadFactor: Double = 1.3
+    /// Further than this nobody cycles: no route rather than an estimate.
+    static let estimateLimitMeters: Double = 100_000
+
+    let source: Source
+    let seconds: TimeInterval
+    let meters: Double
+    let steps: [NavigationStep]
+
+    var estimated: Bool { source != .cycling }
+    var line: [[Double]] { steps.flatMap(\.line) }
+    /// "By bike", marked when it is an estimate.
+    var modeText: String { estimated ? String(localized: "By bike (estimate)") : PlaceTravelMode.bike.title }
+
+    /// The estimate for a stretch of road, the walking path's or `straightLine`'s.
+    static func estimate(_ source: Source, meters: Double, steps: [NavigationStep] = []) -> BikeRoute {
+        BikeRoute(source: source, seconds: meters / estimateSpeed, meters: meters, steps: steps)
+    }
+
+    /// The estimate from the straight line; nil past `estimateLimitMeters`.
+    static func straightLine(_ meters: Double) -> BikeRoute? {
+        meters <= estimateLimitMeters ? estimate(.straightLine, meters: meters * roadFactor) : nil
+    }
+
+    static func calculate(from origin: CLLocationCoordinate2D, to destination: CLLocationCoordinate2D) async -> BikeRoute? {
+        if let route = await mapKitRoute(.cycling, from: origin, to: destination) {
+            return BikeRoute(source: .cycling, seconds: route.expectedTravelTime, meters: route.distance, steps: steps(of: route))
+        }
+        if let route = await mapKitRoute(.walking, from: origin, to: destination), route.distance <= estimateLimitMeters {
+            return estimate(.walkingPath, meters: route.distance, steps: steps(of: route))
+        }
+        return straightLine(NavigationGuide.meters(origin, destination))
+    }
+
+    private static func mapKitRoute(_ transport: MKDirectionsTransportType, from origin: CLLocationCoordinate2D,
+                                    to destination: CLLocationCoordinate2D) async -> MKRoute? {
         let request = MKDirections.Request()
         request.source = MKMapItem(placemark: MKPlacemark(coordinate: origin))
         request.destination = MKMapItem(placemark: MKPlacemark(coordinate: destination))
-        switch mode {
-        case .drive: request.transportType = .automobile
-        case .walk, .bike: request.transportType = .walking
-        case .transit: return []
-        }
-        guard let route = try? await MKDirections(request: request).calculate().routes.first else { return [] }
-        return route.steps.map { step in
+        request.transportType = transport
+        return try? await MKDirections(request: request).calculate().routes.first
+    }
+
+    private static func steps(of route: MKRoute) -> [NavigationStep] {
+        route.steps.map { step in
             let polyline = step.polyline
             var coordinates = [CLLocationCoordinate2D](repeating: kCLLocationCoordinate2DInvalid, count: polyline.pointCount)
             polyline.getCoordinates(&coordinates, range: NSRange(location: 0, length: polyline.pointCount))
@@ -78,6 +121,11 @@ enum NavigationGuide {
                                   line: coordinates.filter(CLLocationCoordinate2DIsValid).map { [$0.latitude, $0.longitude] })
         }
     }
+}
+
+enum NavigationGuide {
+    /// Closer than this to the place: arrived.
+    static let arrivalMeters: Double = 30
 
     /// The next instruction from where the owner is, and the metres to where it applies: the owner
     /// is on the step whose line passes nearest, the next one is the following step with words.

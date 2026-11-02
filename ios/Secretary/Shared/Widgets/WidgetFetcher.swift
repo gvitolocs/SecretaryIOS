@@ -81,8 +81,8 @@ struct WidgetFetcher: Sendable {
         return AppointmentSection(fetchedAt: Date(), next: next, then: ordered.dropFirst().first)
     }
 
-    /// Travel time from home to `place` (secretary-maps: Google Routes on the server, cached), the
-    /// quickest of drive, transit and walk. Nil when the server has none (no home, no key: 503).
+    /// Travel time by bike from home to `place` (secretary-maps: Google Routes on the server, cached).
+    /// Nil when the server has none (no home, no key: 503).
     /// The widget has no location of its own, so it starts from home, as the maps API does without one.
     func travel(to place: String, arriveBy: Date) async throws -> (minutes: Int, mode: String?, leaveAt: Date?)? {
         let config: JSONValue = try await client.get("/v1/maps/config", timeout: 10)
@@ -93,7 +93,7 @@ struct WidgetFetcher: Sendable {
         guard let first = found["results"]?.arrayValue?.first, let lat = first["lat"]?.numberValue, let lng = first["lng"]?.numberValue else { return nil }
         let routes: JSONValue = try await client.get("/v1/maps/routes", query: [
             URLQueryItem(name: "from", value: "\(hLat),\(hLng)"), URLQueryItem(name: "to", value: "\(lat),\(lng)"),
-            URLQueryItem(name: "modes", value: "drive,transit,walk"),
+            URLQueryItem(name: "modes", value: "bike"),
             URLQueryItem(name: "arrive", value: ISO8601DateFormatter().string(from: arriveBy)),
         ], timeout: 15)
         let best = (routes["routes"]?.arrayValue ?? []).compactMap { route -> (Double, JSONValue)? in

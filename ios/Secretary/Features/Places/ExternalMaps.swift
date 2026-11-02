@@ -1,4 +1,5 @@
 import CoreLocation
+import MapKit
 import SwiftUI
 import UIKit
 
@@ -8,15 +9,14 @@ import UIKit
 /// (`PlaceLinks`, `PlaceMapView`). InAppMapsTests fails when any other file builds a maps URL.
 @MainActor
 enum ExternalMaps {
-    /// Apple Maps with directions to the coordinate.
-    nonisolated static func appleMapsURL(to coordinate: CLLocationCoordinate2D, name: String) -> URL? {
-        var components = URLComponents()
-        components.scheme = "https"
-        components.host = "maps.apple.com"
-        components.path = "/"
-        components.queryItems = [URLQueryItem(name: "daddr", value: "\(coordinate.latitude),\(coordinate.longitude)"),
-                                 URLQueryItem(name: "q", value: name)]
-        return components.url
+    /// Apple Maps with bike directions to the coordinate.
+    static func openBikeDirections(to coordinate: CLLocationCoordinate2D, name: String) {
+        #if SCREENSHOTS
+        MapSelfTestProbe.shared.externalOpens += 1
+        #endif
+        let item = MKMapItem(placemark: MKPlacemark(coordinate: coordinate))
+        item.name = name
+        item.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeCycling])
     }
 
     /// Apple Maps searching for the text (a place the app's map could not find).
@@ -51,14 +51,25 @@ enum ExternalMaps {
 
 /// "Open in Apple Maps": the secondary, explicit way out of the app's map (inside a Menu).
 struct OpenInAppleMapsButton: View {
-    let url: URL?
+    private let enabled: Bool
+    private let action: @MainActor () -> Void
+
+    /// Opens the URL (a search for a place the app's map could not find).
+    init(url: URL?) {
+        enabled = url != nil
+        action = { ExternalMaps.open(url) }
+    }
+
+    /// Opens bike directions to the coordinate.
+    init(bikeTo coordinate: CLLocationCoordinate2D, name: String) {
+        enabled = true
+        action = { ExternalMaps.openBikeDirections(to: coordinate, name: name) }
+    }
 
     var body: some View {
-        Button {
-            ExternalMaps.open(url)
-        } label: {
+        Button(action: action) {
             Label("Open in Apple Maps", systemImage: "map")
         }
-        .disabled(url == nil)
+        .disabled(!enabled)
     }
 }

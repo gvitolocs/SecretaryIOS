@@ -347,12 +347,11 @@ private struct DealsStoreSheet: View {
                             PlaceMapView(place: store.place, coordinate: coordinate, address: store.street, startsNavigating: true)
                         }
                     } label: {
-                        Label("Navigate", systemImage: "location.north.line.fill")
+                        Label("Navigate", systemImage: PlaceTravelMode.bike.symbol)
                     }
                     .accessibilityIdentifier("dealsDirections")
                     .contextMenu {
-                        OpenInAppleMapsButton(url: ExternalMaps.appleMapsURL(to: CLLocationCoordinate2D(latitude: store.lat, longitude: store.lng),
-                                                                             name: store.place.title))
+                        OpenInAppleMapsButton(bikeTo: CLLocationCoordinate2D(latitude: store.lat, longitude: store.lng), name: store.place.title)
                     }
                 }
             }

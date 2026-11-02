@@ -457,8 +457,7 @@ struct CalendarDetail: View {
         }
     }
 
-    /// The travel time from here (else home) to the place: the server's routes in the remembered mode (else bike past
-    /// 2 km, walking under), else MapKit's ETA.
+    /// The travel time by bike from here (else home) to the place.
     private func travelGuess() async -> TravelGuess? {
         guard let destination = resolved?.coordinate else {
             CalendarDebug.travel(event, via: "none", minutes: nil, mode: nil)
@@ -468,23 +467,13 @@ struct CalendarDetail: View {
         PlaceLocation.shared.refresh()
         let home = PlaceResolver.shared.home ?? CLLocationCoordinate2D(latitude: 56.19633, longitude: 10.2011)
         guard let origin = PlaceOrigin.current(home: home) else { return nil }
-        let far = origin.meters(to: destination) > 2000
-        let preferred = PlaceTravelMode(rawValue: UserDefaults.standard.string(forKey: "placeTravelMode") ?? "") ?? (far ? .bike : .walk)
-        let arrive = event.startDate > Date() ? event.startDate : nil
-        if let routes = try? await app.api.mapsRoutes(from: origin.coordinate, to: destination, arrive: arrive).routes,
-           let route = routes.first(where: { $0.mode == preferred }) ?? routes.first(where: { $0.mode == .bike }) ?? routes.first,
-           let minutes = CalendarMath.travelMinutes(seconds: route.durationS) {
-            CalendarDebug.travel(event, via: "server", minutes: minutes, mode: route.mode.rawValue)
-            return TravelGuess(minutes: minutes, mode: route.mode.title)
-        }
-        let etas = await PlaceETA.all(from: origin.coordinate, to: destination)
-        let eta = etas.first { $0.mode == (far ? .automobile : .walking) } ?? etas.first
-        guard let eta, let minutes = CalendarMath.travelMinutes(seconds: eta.seconds) else {
+        guard let route = await BikeRoute.calculate(from: origin.coordinate, to: destination),
+              let minutes = CalendarMath.travelMinutes(seconds: route.seconds) else {
             CalendarDebug.travel(event, via: "none", minutes: nil, mode: nil)
             return nil
         }
-        CalendarDebug.travel(event, via: "mapkit", minutes: minutes, mode: eta.mode.rawValue)
-        return TravelGuess(minutes: minutes, mode: eta.mode.title)
+        CalendarDebug.travel(event, via: route.source.rawValue, minutes: minutes, mode: PlaceTravelMode.bike.rawValue)
+        return TravelGuess(minutes: minutes, mode: route.modeText)
     }
 }
 

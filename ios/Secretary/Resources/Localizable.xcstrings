@@ -18463,6 +18463,54 @@
         }
       }
     },
+    "By bike (estimate)" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "In bicicletta (stima)"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "På cykel (anslået)"
+          }
+        }
+      }
+    },
+    "About %@ by bike (estimate)" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Circa %@ in bicicletta (stima)"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cirka %@ på cykel (anslået)"
+          }
+        }
+      }
+    },
+    "No bike route found" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nessun percorso in bicicletta trovato"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ingen cykelrute fundet"
+          }
+        }
+      }
+    },
     "By bike" : {
       "localizations" : {
         "it" : {
