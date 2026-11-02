@@ -14,7 +14,7 @@ use crate::{is_denied_name, Ctx, Origin, Registry};
 
 pub const MAX_ROUNDS: usize = 6;
 const MAX_TOOL_OUTPUT_CHARS: usize = 8000;
-const PER_TOOL_TIMEOUT: Duration = Duration::from_secs(30);
+pub const PER_TOOL_TIMEOUT: Duration = Duration::from_secs(30);
 /// The router may take at most this long before the first model call.
 const ROUTER_TIMEOUT: Duration = Duration::from_secs(4);
 
@@ -137,8 +137,9 @@ pub async fn execute(
     if let Err(e) = registry.validate(name, &args) {
         return (false, json!({"error": e}), summary);
     }
+    let limit = tool.time_limit(&args);
     let (ok, mut output) =
-        match tokio::time::timeout(timeout.min(PER_TOOL_TIMEOUT), tool.call(args, ctx)).await {
+        match tokio::time::timeout(timeout.min(limit), tool.call(args, ctx)).await {
             Ok(Ok(v)) => (true, v),
             Ok(Err(e)) => (false, json!({"error": e.0})),
             Err(_) => (false, json!({"error": "tool timed out"})),
@@ -366,6 +367,11 @@ pub async fn run(
         let calls = response.tool_calls().to_vec();
         if calls.is_empty() || last {
             let mut text = response.message.text().trim().to_owned();
+            // The rounds ran out on a tool call: he still gets an answer from what the tools said.
+            if text.is_empty() && !calls.is_empty() {
+                tracing::warn!(round, "the last round had no text; asking for it");
+                text = reask_plain(model, &messages, cfg, deadline).await;
+            }
             if lucina_llm::has_tool_markup(&text) {
                 // Raw tool-call markup (DeepSeek DSML …) is never an answer
                 // for the owner: ask once more for plain text, else no text

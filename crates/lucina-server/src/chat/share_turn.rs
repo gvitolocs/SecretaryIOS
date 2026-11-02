@@ -17,7 +17,9 @@ use super::{Finish, Turn};
 use crate::prompts::Prompts;
 
 /// A share with a request may use her computer (a task runs for minutes): it is a background job.
-const REQUEST_DEADLINE: Duration = Duration::from_secs(300);
+const REQUEST_DEADLINE: Duration = Duration::from_secs(480);
+/// Her calendar, her computer and a few direct steps fit; the focused set keeps its 6.
+const REQUEST_ROUNDS: usize = 12;
 
 /// Never offered next to shared content, which is untrusted: secrets and root commands.
 pub(crate) const NOT_WITH_SHARED_CONTENT: &[&str] = &[
@@ -72,6 +74,7 @@ pub(super) async fn run(t: &Turn<'_>, memory: &str) -> Finish {
     let cfg = if asked {
         AgentConfig {
             deadline: t.st.cfg.turn_deadline.max(REQUEST_DEADLINE),
+            max_rounds: REQUEST_ROUNDS,
             router: crate::jev_route::tool_router(),
             // The router reads what he wrote, not the file's text.
             route_text: Some(t.share_note.clone()),

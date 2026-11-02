@@ -430,6 +430,11 @@ pub trait Tool: Send + Sync {
     fn needs_confirmation(&self, _args: &Value) -> bool {
         self.confirm() || self.side_effect() == SideEffect::External
     }
+    /// Longest one call may run. Cutting a call off does not undo what it started on another
+    /// machine, so a tool whose work takes minutes says so.
+    fn time_limit(&self, _args: &Value) -> std::time::Duration {
+        agent::PER_TOOL_TIMEOUT
+    }
     /// Declared money movement: such a tool is refused by the registry.
     fn moves_money(&self) -> bool {
         false

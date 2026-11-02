@@ -289,6 +289,8 @@ pub(crate) async fn ocr(path: &Path) -> anyhow::Result<String> {
     )
     .await
 }
+/// This much OCR text (a screenshot, a page) is worth answering from at once when the GPU is taken.
+const ENOUGH_OCR_CHARS: usize = 80;
 /// A ≤1536 px JPEG copy for vision and OCR.
 async fn vision_jpeg(path: &Path) -> anyhow::Result<std::path::PathBuf> {
     let jpg = path.with_extension("vision.jpg");
@@ -346,7 +348,7 @@ async fn image(st: &AppState, path: &Path) -> anyhow::Result<Extracted> {
     };
     let description = match tokio::time::timeout(
         st.cfg.share.vision_budget,
-        super::vision::describe(st, &jpg),
+        super::vision::describe(st, &jpg, text.chars().count() < ENOUGH_OCR_CHARS),
     )
     .await
     {
@@ -616,7 +618,7 @@ async fn video(st: &AppState, path: &Path, on_device: Option<&str>) -> anyhow::R
             .push("no frames could be taken from the video".into());
     }
     for (i, frame) in frames.iter().enumerate() {
-        let described = match super::vision::describe(st, frame).await {
+        let described = match super::vision::describe(st, frame, true).await {
             Ok(s) => super::vision::split_category(&s).1,
             Err(e) => format!("could not be read: {e}"),
         };

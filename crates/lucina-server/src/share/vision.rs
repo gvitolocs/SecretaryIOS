@@ -181,7 +181,8 @@ async fn completion(url: &str, path: &Path) -> anyhow::Result<String> {
         .map(str::to_owned)
         .context("vision returned no description")
 }
-pub(crate) async fn describe(st: &AppState, path: &Path) -> anyhow::Result<String> {
+/// `cpu_too`: fall back to the CPU (minutes) when the GPU is taken. Not worth it once OCR has the text.
+pub(crate) async fn describe(st: &AppState, path: &Path, cpu_too: bool) -> anyhow::Result<String> {
     if let Some(url) = &st.cfg.share.vision_url {
         return completion(url, path).await;
     }
@@ -195,8 +196,12 @@ pub(crate) async fn describe(st: &AppState, path: &Path) -> anyhow::Result<Strin
     if slot.is_none() {
         let mut server = start(st, true).await?;
         if let Err(e) = ready(&mut server, GPU_READY_SECS).await {
-            tracing::warn!(error = %e, "vision did not start on the GPU; trying the CPU");
             drop(server);
+            if !cpu_too {
+                tracing::info!(error = %e, "vision did not start on the GPU; the OCR text will do");
+                bail!("the GPU is busy");
+            }
+            tracing::warn!(error = %e, "vision did not start on the GPU; trying the CPU");
             server = start(st, false).await?;
             ready(&mut server, 100).await?;
         }
