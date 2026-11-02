@@ -166,6 +166,50 @@ pub struct Pagination {
     /// Only some chapters are laid out ([`crate::Reader::set_style_quick`]): page numbers are not
     /// the book's, and the footer leaves them out.
     pub partial: bool,
+    /// Only one chapter is laid out and the book's numbers are known ([`crate::Reader::open_windowed`]).
+    pub numbers: Option<PageNumbers>,
+}
+
+/// Where a window of pages sits in the book.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PageNumbers {
+    pub first: u32,
+    pub total: u32,
+}
+
+/// The book's pages at one style, without laying them out: the page each chapter starts on, and how many there are.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct BookMap {
+    pub first_page: Vec<u32>,
+    pub total: u32,
+}
+
+impl BookMap {
+    /// The map of a whole pagination, to keep for the next time the book opens.
+    pub fn of(pagination: &Pagination, chapters: usize) -> BookMap {
+        let mut first_page = vec![u32::MAX; chapters];
+        for (index, page) in pagination.pages.iter().enumerate() {
+            let slot = &mut first_page[page.chapter as usize];
+            *slot = (*slot).min(index as u32);
+        }
+        // A chapter with no pages starts where the next one does.
+        let total = pagination.pages.len() as u32;
+        let mut next = total;
+        for slot in first_page.iter_mut().rev() {
+            if *slot == u32::MAX {
+                *slot = next;
+            }
+            next = *slot;
+        }
+        BookMap { first_page, total }
+    }
+
+    /// The chapter holding page `page`, and the page's place in that chapter.
+    pub fn locate(&self, page: u32) -> (usize, u32) {
+        let page = page.min(self.total.saturating_sub(1));
+        let chapter = self.first_page.partition_point(|&first| first <= page).saturating_sub(1);
+        (chapter, page - self.first_page.get(chapter).copied().unwrap_or(0))
+    }
 }
 
 impl Pagination {
@@ -1161,6 +1205,7 @@ impl Paginator {
             style: self.style,
             pages: self.pages,
             partial: false,
+            numbers: None,
         }
     }
 }

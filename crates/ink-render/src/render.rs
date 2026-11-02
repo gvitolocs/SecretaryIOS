@@ -229,7 +229,10 @@ fn draw_footer(
     let right_edge = (pag.size.w - style.margins.right) as f32;
     // A partial layout's numbers are not the book's: none until the rest is laid out.
     if !pag.partial {
-        let num = format!("{} / {}", index + 1, pag.pages.len());
+        let num = match pag.numbers {
+            Some(n) => format!("{} / {}", n.first as usize + index + 1, n.total),
+            None => format!("{} / {}", index + 1, pag.pages.len()),
+        };
         let nw = fonts.measure(Face::Regular, px, &num);
         draw_text(
             img,

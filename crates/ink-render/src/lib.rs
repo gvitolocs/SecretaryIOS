@@ -17,7 +17,7 @@ pub use layout::{
     image_box, paginate, paginate_chapter_with, paginate_with, Anchor, Margins, Page, Pagination,
     Style, FONT_SIZES,
 };
-pub use reader::{Reader, StepReport};
+pub use reader::{ChapterStore, Reader, StepReport};
 pub use screens::{Background, ScreenKind, ScreenSource, SystemScreens};
 pub use session::{
     AnchorStore, Clock, FileAnchorStore, MemoryAnchorStore, Outcome, ScreenReport, Session,

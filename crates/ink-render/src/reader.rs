@@ -4,11 +4,12 @@ use crate::dirty;
 use crate::font::Fonts;
 use crate::images::{ImageRequest, Images, NoImages, PageImages};
 use crate::layout::{
-    break_of, pages_at, paginate_with, Anchor, LineContent, Pagination, Paginator, Style,
+    break_of, pages_at, paginate_chapter_with, paginate_with, Anchor, BookMap, LineContent, PageNumbers,
+    Pagination, Paginator, Style,
 };
 use crate::render::render_page_with;
 use crate::Result;
-use ink_epub::{Block, Book};
+use ink_epub::{Block, Book, Chapter};
 use ink_kindle_hal::{Direction, Display, Gesture, GrayImage, UpdateRecord, WaveformMode};
 use std::time::Instant;
 
@@ -28,6 +29,23 @@ pub struct StepReport {
     pub update_ms: f64,
     /// How the shown page's pictures came out (default when nothing was rendered).
     pub images: PageImages,
+}
+
+/// A book's chapters, read when they are wanted, for a book too large to keep in memory or to read at once.
+pub trait ChapterStore {
+    fn chapter(&mut self, index: usize) -> Option<Chapter>;
+}
+
+/// How many chapters stay in memory, the one being read among them.
+const LOADED_CHAPTERS: usize = 3;
+
+/// The book as a window: one chapter laid out, and the rest read when reading gets there ([`Reader::open_windowed`]).
+struct Window {
+    store: Box<dyn ChapterStore>,
+    map: Option<BookMap>,
+    chapter: usize,
+    /// The chapters in memory, the last used at the end.
+    loaded: Vec<usize>,
 }
 
 pub struct Reader<D: Display> {
@@ -58,6 +76,7 @@ pub struct Reader<D: Display> {
     numbers_stale: bool,
     /// How long the last pagination of the rest took in all (ms).
     rest_ms: f64,
+    window: Option<Window>,
 }
 
 fn ms(t: Instant) -> f64 {
@@ -114,17 +133,166 @@ impl<D: Display> Reader<D> {
             lazy: None,
             numbers_stale: false,
             rest_ms: 0.0,
+            window: None,
         };
         let mut rep = r.show(true)?;
         rep.layout_ms = layout_ms;
         Ok((r, rep))
     }
 
+    /// Opens a book of which `book` only has to say the chapters' titles and hrefs: the chapter holding `anchor` is read
+    /// from `store` and laid out, and shown with a full refresh, whatever the size of the book. The others follow as reading
+    /// gets there. With `map` the page numbers are the book's at once; without, the footer leaves them out, as
+    /// [`Reader::set_style_quick`] does, until [`Reader::set_map`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_windowed(
+        book: Book,
+        store: Box<dyn ChapterStore>,
+        map: Option<BookMap>,
+        fonts: Fonts,
+        style: Style,
+        display: D,
+        anchor: Option<Anchor>,
+        images: Box<dyn Images>,
+    ) -> Result<(Self, StepReport)> {
+        let size = display.size();
+        let anchor = anchor.unwrap_or_default();
+        let t = Instant::now();
+        let mut r = Self {
+            book,
+            fonts,
+            style,
+            pagination: Pagination {
+                size,
+                style,
+                pages: Vec::new(),
+                partial: true,
+                numbers: None,
+            },
+            page: 0,
+            anchor,
+            display,
+            front: GrayImage::new(size, 0xff),
+            back: GrayImage::new(size, 0xff),
+            turn_mode: WaveformMode::Gl16,
+            max_rects: 4,
+            images,
+            last_images: PageImages::default(),
+            lazy: None,
+            numbers_stale: false,
+            rest_ms: 0.0,
+            window: Some(Window {
+                store,
+                map,
+                chapter: 0,
+                loaded: Vec::new(),
+            }),
+        };
+        let chapter = (anchor.chapter as usize).min(r.book.chapters.len().saturating_sub(1));
+        r.lay_out_chapter(chapter);
+        r.page = r.pagination.page_for(anchor);
+        let layout_ms = ms(t);
+        let mut rep = r.show(true)?;
+        rep.layout_ms = layout_ms;
+        Ok((r, rep))
+    }
+
+    /// Whether only a window of the book is laid out.
+    pub fn is_windowed(&self) -> bool {
+        self.window.is_some()
+    }
+
+    /// The book's page numbers, when they become known. Takes effect at the next drawing.
+    pub fn set_map(&mut self, map: Option<BookMap>) {
+        if let Some(window) = self.window.as_mut() {
+            window.map = map;
+            let chapter = window.chapter;
+            self.pagination.numbers = self.numbers_of(chapter);
+            self.pagination.partial = self.pagination.numbers.is_none();
+        }
+    }
+
+    fn numbers_of(&self, chapter: usize) -> Option<PageNumbers> {
+        let map = self.window.as_ref()?.map.as_ref()?;
+        Some(PageNumbers {
+            first: *map.first_page.get(chapter)?,
+            total: map.total,
+        })
+    }
+
+    /// Reads a chapter if it is not in memory, and lets go of the one not used for longest.
+    fn load_chapter(&mut self, chapter: usize) {
+        let Some(window) = self.window.as_mut() else {
+            return;
+        };
+        window.loaded.retain(|&c| c != chapter);
+        window.loaded.push(chapter);
+        if self.book.chapters[chapter].blocks.is_empty() {
+            if let Some(loaded) = window.store.chapter(chapter) {
+                self.book.chapters[chapter].blocks = loaded.blocks;
+            }
+        }
+        while window.loaded.len() > LOADED_CHAPTERS {
+            let old = window.loaded.remove(0);
+            self.book.chapters[old].blocks = Vec::new();
+        }
+    }
+
+    /// Makes `chapter` the window.
+    fn lay_out_chapter(&mut self, chapter: usize) {
+        self.load_chapter(chapter);
+        let size = self.display.size();
+        let pages = paginate_chapter_with(
+            &mut self.fonts,
+            &self.style,
+            size,
+            &self.book,
+            chapter,
+            self.images.as_mut(),
+        );
+        if let Some(window) = self.window.as_mut() {
+            window.chapter = chapter;
+        }
+        let numbers = self.numbers_of(chapter);
+        self.pagination = Pagination {
+            size,
+            style: self.style,
+            pages,
+            partial: numbers.is_none(),
+            numbers,
+        };
+    }
+
+    /// The next chapter with pages from `chapter` on, going `forward` or back. The window stays as it is if there is none.
+    fn move_window(&mut self, forward: bool) -> bool {
+        let Some(mut chapter) = self.window.as_ref().map(|w| w.chapter) else {
+            return false;
+        };
+        let last = self.book.chapters.len().saturating_sub(1);
+        let current = chapter;
+        loop {
+            if (forward && chapter >= last) || (!forward && chapter == 0) {
+                if chapter != current {
+                    self.lay_out_chapter(current);
+                }
+                return false;
+            }
+            chapter = if forward { chapter + 1 } else { chapter - 1 };
+            self.lay_out_chapter(chapter);
+            if !self.pagination.pages.is_empty() {
+                return true;
+            }
+        }
+    }
+
+    /// The page in the book, when the numbers are known; else in what is laid out.
     pub fn page(&self) -> usize {
-        self.page
+        self.page + self.pagination.numbers.map_or(0, |n| n.first as usize)
     }
     pub fn page_count(&self) -> usize {
-        self.pagination.pages.len()
+        self.pagination
+            .numbers
+            .map_or(self.pagination.pages.len(), |n| n.total as usize)
     }
     pub fn pagination(&self) -> &Pagination {
         &self.pagination
@@ -197,7 +365,7 @@ impl<D: Display> Reader<D> {
 
     fn report(&self, updates: Vec<UpdateRecord>, render_ms: f64, update_ms: f64) -> StepReport {
         StepReport {
-            page: self.page,
+            page: self.page(),
             pages: self.page_count(),
             anchor: self.current_anchor(),
             updates,
@@ -266,7 +434,16 @@ impl<D: Display> Reader<D> {
     /// Go to `page` with a partial (dirty-region) update.
     pub fn goto_page(&mut self, page: usize) -> Result<StepReport> {
         self.complete_layout();
-        self.page = page.min(self.page_count().saturating_sub(1));
+        if let Some(map) = self.window.as_ref().and_then(|w| w.map.as_ref()) {
+            let (chapter, index) = map.locate(page as u32);
+            if self.window.as_ref().map(|w| w.chapter) != Some(chapter) {
+                self.lay_out_chapter(chapter);
+            }
+            self.page = (index as usize).min(self.pagination.pages.len().saturating_sub(1));
+            self.anchor = self.pagination.anchor_of(self.page);
+            return self.show(false);
+        }
+        self.page = page.min(self.pagination.pages.len().saturating_sub(1));
         self.anchor = self.pagination.anchor_of(self.page);
         self.show(false)
     }
@@ -274,6 +451,11 @@ impl<D: Display> Reader<D> {
     /// Jump to a position (e.g. a TOC entry: `Anchor { chapter, offset: 0 }`).
     pub fn goto_anchor(&mut self, a: Anchor) -> Result<StepReport> {
         self.complete_layout();
+        if self.window.as_ref().is_some_and(|w| w.chapter != a.chapter as usize)
+            && (a.chapter as usize) < self.book.chapters.len()
+        {
+            self.lay_out_chapter(a.chapter as usize);
+        }
         self.page = self.pagination.page_for(a);
         self.anchor = a;
         self.show(false)
@@ -281,18 +463,30 @@ impl<D: Display> Reader<D> {
 
     pub fn next_page(&mut self) -> Result<Option<StepReport>> {
         self.complete_layout();
-        if self.page + 1 >= self.page_count() {
-            return Ok(None);
+        if self.page + 1 >= self.pagination.pages.len() {
+            if !self.move_window(true) {
+                return Ok(None);
+            }
+            self.page = 0;
+        } else {
+            self.page += 1;
         }
-        self.goto_page(self.page + 1).map(Some)
+        self.anchor = self.pagination.anchor_of(self.page);
+        self.show(false).map(Some)
     }
 
     pub fn prev_page(&mut self) -> Result<Option<StepReport>> {
         self.complete_layout();
         if self.page == 0 {
-            return Ok(None);
+            if !self.move_window(false) {
+                return Ok(None);
+            }
+            self.page = self.pagination.pages.len().saturating_sub(1);
+        } else {
+            self.page -= 1;
         }
-        self.goto_page(self.page - 1).map(Some)
+        self.anchor = self.pagination.anchor_of(self.page);
+        self.show(false).map(Some)
     }
 
     /// Re-paginate with a new style, keep the reading anchor, show with a full refresh.
@@ -301,6 +495,17 @@ impl<D: Display> Reader<D> {
         self.style = style;
         self.lazy = None;
         let t = Instant::now();
+        if let Some(window) = self.window.as_mut() {
+            // Its numbers were for the other style: the caller knows if it has them for this one.
+            window.map = None;
+            let chapter = window.chapter;
+            self.lay_out_chapter(chapter);
+            let layout_ms = ms(t);
+            self.page = self.pagination.page_for(anchor);
+            let mut rep = self.show(true)?;
+            rep.layout_ms = layout_ms;
+            return Ok(rep);
+        }
         self.pagination = paginate_with(
             &mut self.fonts,
             &self.style,
@@ -324,6 +529,9 @@ impl<D: Display> Reader<D> {
     /// then `page` and `page_count` count those two pages and the footer leaves its number out. A new
     /// style change drops the unfinished pagination.
     pub fn set_style_quick(&mut self, style: Style) -> Result<StepReport> {
+        if self.window.is_some() {
+            return self.set_style(style);
+        }
         let t = Instant::now();
         let size = self.display.size();
         let pages = pages_at(
@@ -345,6 +553,7 @@ impl<D: Display> Reader<D> {
             style,
             pages,
             partial: true,
+            numbers: None,
         };
         self.lazy = Some((lazy, 0.0));
         let layout_ms = ms(t);

@@ -7,7 +7,8 @@ use ink_kindle_hal::sim::{ScriptedInput, SimDisplay};
 use ink_kindle_hal::{GestureConfig, GrayImage, Input, Point, RefreshPolicy, PW3_SIZE};
 use ink_render::layout::{content_height, layout_chapter, LineContent};
 use ink_render::render::render_page;
-use ink_render::{paginate, Anchor, Fonts, Reader, Style, FONT_SIZES};
+use ink_render::layout::BookMap;
+use ink_render::{paginate, Anchor, ChapterStore, Fonts, NoImages, Reader, Style, FONT_SIZES};
 
 const FONT: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -615,4 +616,141 @@ fn a_bad_face_falls_back_to_the_regular_one() {
         .unwrap();
     assert!(f.has_face(ink_render::Face::Italic));
     std::fs::remove_file(&bad).unwrap();
+}
+
+/// A store that hands out a whole book's chapters, and counts them.
+struct CountingStore {
+    book: Book,
+    reads: std::rc::Rc<std::cell::Cell<usize>>,
+}
+
+impl ChapterStore for CountingStore {
+    fn chapter(&mut self, index: usize) -> Option<ink_epub::Chapter> {
+        self.reads.set(self.reads.get() + 1);
+        self.book.chapters.get(index).cloned()
+    }
+}
+
+fn skeleton(book: &Book) -> Book {
+    let mut bare = book.clone();
+    for chapter in &mut bare.chapters {
+        chapter.blocks = Vec::new();
+    }
+    bare
+}
+
+fn windowed(
+    book: &Book,
+    map: Option<BookMap>,
+    anchor: Option<Anchor>,
+) -> (Reader<SimDisplay>, std::rc::Rc<std::cell::Cell<usize>>) {
+    let reads = std::rc::Rc::new(std::cell::Cell::new(0));
+    let store = Box::new(CountingStore { book: book.clone(), reads: reads.clone() });
+    let display = SimDisplay::new(PW3_SIZE, RefreshPolicy::new(u32::MAX));
+    let (reader, _) = Reader::open_windowed(
+        skeleton(book),
+        store,
+        map,
+        fonts(),
+        Style::default(),
+        display,
+        anchor,
+        Box::new(NoImages),
+    )
+    .unwrap();
+    (reader, reads)
+}
+
+fn full(book: &Book) -> Reader<SimDisplay> {
+    let display = SimDisplay::new(PW3_SIZE, RefreshPolicy::new(u32::MAX));
+    Reader::open(book.clone(), fonts(), Style::default(), display).unwrap().0
+}
+
+#[test]
+fn a_window_on_the_book_shows_every_page_as_the_whole_book_does() {
+    let book = sample_book(120);
+    assert!(book.chapters.len() > 2);
+    let mut whole = full(&book);
+    let map = BookMap::of(whole.pagination(), book.chapters.len());
+    assert_eq!(map.total as usize, whole.page_count());
+    let (mut window, _) = windowed(&book, Some(map), None);
+    loop {
+        assert_eq!(window.page(), whole.page());
+        assert_eq!(window.page_count(), whole.page_count());
+        assert_eq!(window.current_anchor(), whole.current_anchor());
+        assert_eq!(hash(window.screen()), hash(whole.screen()), "page {}", whole.page());
+        let (a, b) = (window.next_page().unwrap(), whole.next_page().unwrap());
+        assert_eq!(a.is_some(), b.is_some());
+        if a.is_none() {
+            break;
+        }
+    }
+    loop {
+        let (a, b) = (window.prev_page().unwrap(), whole.prev_page().unwrap());
+        assert_eq!(a.is_some(), b.is_some());
+        if a.is_none() {
+            break;
+        }
+        assert_eq!(hash(window.screen()), hash(whole.screen()), "back to page {}", whole.page());
+    }
+}
+
+#[test]
+fn a_window_opens_at_an_anchor_having_read_one_chapter() {
+    let book = sample_book(120);
+    let mut whole = full(&book);
+    let map = BookMap::of(whole.pagination(), book.chapters.len());
+    let target = whole.page_count() - 2;
+    whole.goto_page(target).unwrap();
+    let anchor = whole.current_anchor();
+    let (window, reads) = windowed(&book, Some(map), Some(anchor));
+    assert_eq!(reads.get(), 1);
+    assert_eq!(window.page(), target);
+    assert_eq!(hash(window.screen()), hash(whole.screen()));
+}
+
+#[test]
+fn a_window_goes_to_any_page_and_keeps_few_chapters_in_memory() {
+    let book = sample_book(120);
+    let mut whole = full(&book);
+    let total = whole.page_count();
+    let map = BookMap::of(whole.pagination(), book.chapters.len());
+    let (mut window, _) = windowed(&book, Some(map), None);
+    for page in [total - 1, 0, total / 2, total / 3, 1, total + 50] {
+        window.goto_page(page).unwrap();
+        whole.goto_page(page).unwrap();
+        assert_eq!(window.page(), whole.page());
+        assert_eq!(hash(window.screen()), hash(whole.screen()), "page {page}");
+        let in_memory = window.book.chapters.iter().filter(|c| !c.blocks.is_empty()).count();
+        assert!(in_memory <= 3, "{in_memory} chapters");
+    }
+    let anchor = Anchor { chapter: book.chapters.len() as u32 - 1, offset: 0 };
+    window.goto_anchor(anchor).unwrap();
+    whole.goto_anchor(anchor).unwrap();
+    assert_eq!(window.page(), whole.page());
+}
+
+#[test]
+fn without_a_map_a_window_has_no_numbers_until_it_gets_one() {
+    let book = sample_book(120);
+    let whole = full(&book);
+    let map = BookMap::of(whole.pagination(), book.chapters.len());
+    let (mut window, _) = windowed(&book, None, None);
+    assert!(window.pagination().partial);
+    assert!(window.page_count() < whole.page_count());
+    window.set_map(Some(map));
+    assert!(!window.pagination().partial);
+    assert_eq!(window.page_count(), whole.page_count());
+    window.redraw().unwrap();
+    assert_eq!(hash(window.screen()), hash(whole.screen()));
+}
+
+#[test]
+fn a_map_finds_pages_with_empty_chapters_in_it() {
+    let map = BookMap { first_page: vec![0, 3, 3, 8], total: 9 };
+    assert_eq!(map.locate(0), (0, 0));
+    assert_eq!(map.locate(2), (0, 2));
+    assert_eq!(map.locate(3), (2, 0));
+    assert_eq!(map.locate(8), (3, 0));
+    assert_eq!(map.locate(100), (3, 0));
 }
