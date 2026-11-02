@@ -3283,9 +3283,11 @@ dependencies = [
  "base64 0.22.1",
  "jni",
  "lucina-phone-core",
+ "lucina-vault",
  "rustls-graviola",
  "serde",
  "serde_json",
+ "tempfile",
  "ureq",
 ]
 

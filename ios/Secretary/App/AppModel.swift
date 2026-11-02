@@ -45,6 +45,8 @@ final class AppModel {
     var showSettings = false
     /// Notes, a plugin (pushed on the Plugins tab).
     var showNotes = false
+    /// The Obsidian vault on this phone, a plugin.
+    var showVault = false
     /// Tasks, a plugin like Notes.
     var showTasks = false
     /// Lucina Agents (the coding agents on nezopt), a plugin pushed on the Plugins tab.
@@ -415,6 +417,7 @@ final class AppModel {
     /// The first chat frame does not wait for any of it: the share retries and the photo backup
     /// start from the tabs' foreground loop (MainTabs), a few seconds after launch.
     func start() async {
+        if !Self.isUnitTestHost { VaultStore.checkOnce() }
         PerfLog.count("app.start")
         guard client.accessKey?.isEmpty == false else {
             phase = .signedOut

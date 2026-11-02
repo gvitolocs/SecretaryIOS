@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Secretary · Lucina 0.7.1: Kotlin shell (src/*.kt) over liblucina_calls.so (crates/lucina-android-calls). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="tech.getsecretary.secretary"
-    android:versionCode="11" android:versionName="0.7.2">
+    android:versionCode="12" android:versionName="0.7.3">
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.CALL_PHONE"/>
     <uses-permission android:name="android.permission.READ_PHONE_STATE"/>
@@ -83,6 +83,7 @@
             <intent-filter><action android:name="android.telecom.InCallService"/></intent-filter>
         </service>
         <activity android:name=".CallerScreenActivity" android:exported="false"/>
+        <activity android:name=".VaultActivity" android:exported="false"/>
         <!-- Lucina Maps: an orderAtMs (Long) extra on each navigation link; senders must hold the ORDER_SIGNAL permission. Used only by the auto-reject guard. -->
         <receiver android:name=".OrderSignalReceiver" android:exported="true"
             android:permission="tech.getsecretary.secretary.permission.ORDER_SIGNAL">

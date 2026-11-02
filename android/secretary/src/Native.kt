@@ -46,6 +46,9 @@ object Native {
     /** The instant, offline verdict for a ringing number: an envelope around `{notify, action, title, text, sub, ...}`. */
     @JvmStatic external fun localVerdict(filesDir: String, number: String, json: String, lang: String): String
 
+    /** An Obsidian vault as plain files: one request of `lucina-vault`'s protocol on the folder [root] (docs/lucina-vault.md). Reads the disk. */
+    @JvmStatic external fun vault(root: String, json: String): String
+
     /** Jev's verdict from the server (about 1.2 s at most), else the rules; same shape. Blocks on the network. */
     @JvmStatic external fun screenCall(filesDir: String, cookie: String, number: String, json: String, lang: String): String
 }
