@@ -74,6 +74,14 @@ fn run_agent(d: &Daemon, prompt: &str) -> String {
     v["agentId"].as_str().expect("agentId").to_string()
 }
 
+/// A run the owner starts from his phone: only such a run alerts him when it finishes.
+fn run_on_device(d: &Daemon, prompt: &str) -> String {
+    let body = json!({"provider": FAST, "cwd": "/tmp", "prompt": prompt});
+    let (status, v) = http(&d.socket(), "POST", "/agents", Some("device:dev_phone"), Some(&body));
+    assert_eq!(status, 200, "{v}");
+    v["id"].as_str().expect("id").to_string()
+}
+
 fn snap(d: &Daemon, id: &str) -> Value {
     http(&d.socket(), "GET", &format!("/agents/{id}"), None, None).1
 }
@@ -211,12 +219,32 @@ fn schedules_run_new_agents_and_complete() {
     assert!(r.stderr.contains("already completed"), "{}", r.stderr);
 }
 
+/// A run a session started through `lagent`, or the MCP, ends without alerting the owner.
+#[test]
+fn only_a_run_from_his_device_pushes_when_it_finishes() {
+    let (url, pushes) = notify_server();
+    let d = Daemon::start_with_env(&[("LUCINA_AGENTD_NOTIFY_URL", url), ("LUCINA_AGENTD_NOTIFY_TOKEN", "svc_test".into())]);
+    let by_session = run_agent(&d, "hello");
+    let body = json!({"provider": FAST, "cwd": "/tmp", "prompt": "hello", "labels": {"lucina.started-on-device": "true"}});
+    let (status, v) = http(&d.socket(), "POST", "/agents", Some("mcp:hermes"), Some(&body));
+    assert_eq!(status, 200, "{v}");
+    let by_mcp = v["id"].as_str().unwrap().to_string();
+    let mine = run_on_device(&d, "hello");
+    assert!(wait_until(Duration::from_secs(15), || !pushes.lock().unwrap().is_empty()), "his own run pushes");
+    d.json(&["wait", &by_session]);
+    d.json(&["wait", &by_mcp]);
+    std::thread::sleep(Duration::from_millis(500));
+    let p = pushes.lock().unwrap().clone();
+    assert_eq!(p.len(), 1, "{p:#?}");
+    assert_eq!(p[0]["data"]["agentId"], mine.as_str());
+}
+
 #[test]
 fn heartbeats_target_the_calling_agent() {
     let (url, pushes) = notify_server();
     let d = Daemon::start_with_env(&[("LUCINA_AGENTD_NOTIFY_URL", url), ("LUCINA_AGENTD_NOTIFY_TOKEN", "svc_test".into())]);
-    let me = run_agent(&d, "hello");
-    let other = run_agent(&d, "hello too");
+    let me = run_on_device(&d, "hello");
+    let other = run_on_device(&d, "hello too");
     assert!(wait_until(Duration::from_secs(15), || pushes.lock().unwrap().len() >= 2), "both agents' finishes push");
     let r = as_agent(&d, &me, &["heartbeat", "create", "--cron", "*/5 * * * *", "--name", "babysit", "check the PR", "--json"]);
     assert_eq!(r.code, 0, "{}", r.stderr);
@@ -254,8 +282,8 @@ fn heartbeats_target_the_calling_agent() {
 fn subagents_depth_limit_and_one_notice() {
     let (url, pushes) = notify_server();
     let d = Daemon::start_with_env(&[("LUCINA_AGENTD_NOTIFY_URL", url), ("LUCINA_AGENTD_NOTIFY_TOKEN", "svc_test".into())]);
-    let parent = run_agent(&d, "hello");
-    let stranger = run_agent(&d, "hello");
+    let parent = run_on_device(&d, "hello");
+    let stranger = run_on_device(&d, "hello");
     assert!(wait_until(Duration::from_secs(15), || pushes.lock().unwrap().len() >= 2));
     let owner_pushes = pushes.lock().unwrap().len();
 
