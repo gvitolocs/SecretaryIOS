@@ -750,7 +750,9 @@ pub async fn register(
         .iter()
         .find(|u| !redirect_allowed(u, &st.cfg.redirect_allow))
     {
-        tracing::warn!(target: "secretary_mcp::audit", event = "oauth_register_refused", "redirect_uri not allowed");
+        // The address only, without its query, cut short: it comes from an unauthenticated client.
+        let refused: String = bad.split('?').next().unwrap_or_default().chars().take(200).collect();
+        tracing::warn!(target: "secretary_mcp::audit", event = "oauth_register_refused", redirect = ?refused, "redirect_uri not allowed");
         return Err(OAuthError::bad(
             "invalid_redirect_uri",
             format!("redirect_uri not allowed (https and an allowed callback only): {bad}"),
