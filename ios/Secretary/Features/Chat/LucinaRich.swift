@@ -260,13 +260,24 @@ enum ChatMarkdown {
 
     static func inline(_ text: String) -> AttributedString {
         if let hit = cache[text] { return hit }
-        let value = NoteText.inline(text)
+        let value = NoteText.inline(listBullets(text))
         cache[text] = value
         order.append(text)
         if order.count > limit {
             cache[order.removeFirst()] = nil
         }
         return value
+    }
+
+    /// Inline markdown keeps line ends but leaves a list's `- ` as typed: draw the bullet the web draws.
+    static func listBullets(_ text: String) -> String {
+        guard text.contains("- ") || text.contains("* ") || text.contains("+ ") else { return text }
+        return text.split(separator: "\n", omittingEmptySubsequences: false).map { line -> String in
+            let indent = line.prefix { $0 == " " || $0 == "\t" }
+            let rest = line.dropFirst(indent.count)
+            guard rest.hasPrefix("- ") || rest.hasPrefix("* ") || rest.hasPrefix("+ ") else { return String(line) }
+            return indent + "• " + rest.dropFirst(2)
+        }.joined(separator: "\n")
     }
 }
 

@@ -193,5 +193,11 @@ final class RichMessageTests: XCTestCase {
         let bare = try JSONDecoder().decode(ServerCard.self, from: Data(#"{"closed":true,"status":"expired"}"#.utf8))
         XCTAssertNil(bare.action)
         XCTAssertTrue(bare.closed)
+
+    /// The bubble of tests/conformance/rich/linebreaks-lists.json as the chat draws it.
+    @MainActor func testChatBubbleKeepsLineBreaksAndDrawsListBullets() {
+        let shown = String(ChatMarkdown.inline("Two things:\n- the first\n- the second\n\nThat is all.").characters)
+        XCTAssertEqual(shown, "Two things:\n• the first\n• the second\n\nThat is all.")
+        XCTAssertEqual(ChatMarkdown.listBullets("  * nested\nnot-a-list - here"), "  • nested\nnot-a-list - here")
     }
 }
