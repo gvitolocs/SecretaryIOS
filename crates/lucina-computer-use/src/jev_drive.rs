@@ -556,6 +556,22 @@ pub fn accounts(screen: &Screen) -> Vec<String> {
 
 // ------------------------------------------------------------------ devices
 
+/// Starts her Chromium on her display, detached from the call. Only when none is running.
+pub(crate) const START_CHROMIUM: &str =
+    "DISPLAY=:1 setsid nohup chromium --no-sandbox >/tmp/lucina-chromium.log 2>&1 </dev/null &";
+
+/// The pid and window id of the Chromium window in a `list_windows` answer.
+fn chromium_in(windows: &Value) -> Option<(i64, i64)> {
+    let win = windows
+        .as_array()?
+        .iter()
+        .find(|w| w["app_name"] == "Chromium" && w["is_on_screen"] != false)?;
+    Some((
+        win["pid"].as_i64().unwrap_or_default(),
+        win["window_id"].as_i64().unwrap_or_default(),
+    ))
+}
+
 struct Device {
     target: Where,
     sandbox: Sandbox,
@@ -580,21 +596,7 @@ impl Device {
         };
         match target {
             Where::Desktop => {
-                let w = d
-                    .sandbox
-                    .call_tool("list_windows", json!({}))
-                    .await
-                    .map_err(|e| e.to_string())?;
-                let win = w["structuredContent"]["windows"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .find(|w| w["app_name"] == "Chromium" && w["is_on_screen"] != false)
-                    .ok_or("Chromium is not open on the desktop")?;
-                d.window = Some((
-                    win["pid"].as_i64().unwrap_or_default(),
-                    win["window_id"].as_i64().unwrap_or_default(),
-                ));
+                d.window = Some(d.chromium_window().await?);
             }
             _ => {
                 let out = d
@@ -613,6 +615,40 @@ impl Device {
             }
         }
         Ok(d)
+    }
+
+    /// Her one Chromium window. When it has been closed she opens it again: its profile is what
+    /// keeps the owner's sessions, and a closed window must not cost a task (2 Nov 2026: Jev gave up
+    /// here and Hermes spent its whole budget on the same thing).
+    async fn chromium_window(&self) -> Result<(i64, i64), String> {
+        if let Some(w) = self.find_chromium().await? {
+            return Ok(w);
+        }
+        // Running with no window listed: another launch would open a second window.
+        let running = self
+            .bash("if pgrep -x chromium >/dev/null; then echo running; else echo none; fi")
+            .await?;
+        if running.contains("running") {
+            return Err("Chromium is running without a window on the desktop".into());
+        }
+        tracing::info!(target: "lucina_jev::drive", "Chromium is closed: opening it");
+        self.bash(START_CHROMIUM).await?;
+        for _ in 0..30 {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            if let Some(w) = self.find_chromium().await? {
+                return Ok(w);
+            }
+        }
+        Err("Chromium did not open on the desktop".into())
+    }
+
+    async fn find_chromium(&self) -> Result<Option<(i64, i64)>, String> {
+        let w = self
+            .sandbox
+            .call_tool("list_windows", json!({}))
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(chromium_in(&w["structuredContent"]["windows"]))
     }
 
     async fn bash(&self, cmd: &str) -> Result<String, String> {

@@ -699,6 +699,8 @@ struct Turn<'a> {
     extra_system: String,
     /// The share pipeline's tool loop.
     share: bool,
+    /// What the owner wrote with the attachment: his request (empty: a bare file).
+    share_note: String,
     /// `None`: the Secretary app.
     origin: Option<Arc<ChannelOrigin>>,
 }
@@ -1002,6 +1004,15 @@ async fn run_turn_scoped(
         (None, None) => (USER_LABEL.to_owned(), base_system.to_owned()),
     };
     let share = normal_share || origin.as_ref().is_some_and(|o| o.share);
+    let share_note = if normal_share {
+        secrets_text.clone().unwrap_or_default()
+    } else {
+        origin
+            .as_ref()
+            .filter(|o| o.share)
+            .and_then(|o| o.timeline_text.clone())
+            .unwrap_or_default()
+    };
     let (timeline_store, turn_meta) = match &origin {
         Some(o) => (o.timeline.clone(), o.timeline_meta.clone()),
         None => (st.timeline_for(&session), Some(turn_meta)),
@@ -1036,6 +1047,7 @@ async fn run_turn_scoped(
         user_label,
         extra_system,
         share,
+        share_note,
         origin,
     };
     // Secrets first, without the model: a fixed refusal for reveal requests
@@ -1925,6 +1937,15 @@ async fn json_turn(
     }
 }
 
+/// What she asks when a message reads like a reminder but neither she nor the planner could place it.
+fn reminder_question(message: &str) -> String {
+    match lucina_intent::calendar::guess_lang(message) {
+        "da" => "Hvornår skal det være? Hvis det er en aftale, så sig navn, dag og tidspunkt, så sætter jeg den i din kalender. Skal jeg minde dig om noget, så sig hvad og hvornår.",
+        _ => "When is that? If it's an appointment, tell me its name, day and time and I'll put it in your calendar. If you want a reminder, tell me what and when.",
+    }
+    .to_owned()
+}
+
 /// The reminder write of a turn: the JSON planner's `schedule_reminder` and the voice fast path
 /// (`voice_fast`) both go through it.
 async fn create_turn_reminder(
@@ -2431,8 +2452,10 @@ async fn json_turn_rest(
             }
             None => None,
         };
+        // Never a dead end: he gets a question he can answer, and the next turn sees this one.
         let Some((text, due)) = resolved else {
-            return Finish::reply("I could not work out when to remind you. Try \"domani mattina di comprare il latte\", \"alle 21:30 di fare la doccia\" or \"28 August 2026 — unsubscribe from Google AI Plus\".".to_owned(), &action);
+            return Finish::reply(reminder_question(&t.message), &action)
+                .with("[reminder unclear: asked when]", None);
         };
         return match create_turn_reminder(t, chat, text, due).await {
             Ok((created, reminder)) => {
@@ -3513,6 +3536,7 @@ async fn tools_turn(
         user_label: USER_LABEL.into(),
         extra_system: String::new(),
         share: false,
+        share_note: String::new(),
         origin: None,
     };
     remember_turn(&st, &t2, &finish.action, &remembered, &finish.action_result);

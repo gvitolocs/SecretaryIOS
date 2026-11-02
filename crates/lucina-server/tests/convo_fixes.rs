@@ -145,3 +145,63 @@ async fn the_computer_route_comes_before_the_planner() {
     let ks = kinds(&h);
     assert!(!ks.contains(&"plan") && !ks.contains(&"reply"), "{ks:?}");
 }
+
+/// 30 Oct 2026, the owner: "Mentor session 6 november at 12:30". She answered that she could not work out
+/// when to remind him and saved nothing. A date, a time and a thing are an event in his own chat.
+#[tokio::test]
+async fn a_plain_event_message_lands_in_the_calendar() {
+    let secretary = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/calendar/events"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "id": "lucina:m1", "title": "Mentor session", "start": "2026-11-06T12:30:00+01:00",
+            "end": "2026-11-06T13:30:00+01:00", "allDay": false, "source": "lucina"
+        })))
+        .mount(&secretary)
+        .await;
+    Mock::given(method("GET")).respond_with(ResponseTemplate::new(200).set_body_json(json!({"events": []})))
+        .mount(&secretary).await;
+    let uri = secretary.uri();
+    let h = harness(
+        script(json!({"rules": [
+            {"kind": "intent", "content": "{\"intent\":\"chat\",\"confidence\":0.5,\"reply_mode\":\"chat\",\"needs_tools\":false}"},
+            {"kind": "plan", "content": "{\"action\":\"reply\",\"text\":\"WRONG: the planner ran\"}"},
+            {"kind": "reply", "content": "x"}
+        ]})),
+        move |c| {
+            c.calendar_enabled = true;
+            c.secretary_url = Some(uri.clone());
+            let f = c.data_dir.join("svc.token");
+            std::fs::write(&f, "svc").unwrap();
+            c.secretary_service_token_file = Some(f);
+        },
+    )
+    .await;
+    let v = h.chat("Mentor session 6 november at 12:30").await;
+    let reply = v["reply"].as_str().unwrap().to_owned();
+    assert!(!reply.contains("could not work out"), "{reply}");
+    let reqs = secretary.received_requests().await.unwrap();
+    let post = reqs.iter().find(|r| r.method.as_str() == "POST" && r.url.path() == "/v1/calendar/events")
+        .unwrap_or_else(|| panic!("no event created: {reply}"));
+    let body: Value = serde_json::from_slice(&post.body).unwrap();
+    assert!(body["title"].as_str().unwrap().contains("Mentor session"), "{body}");
+    assert!(body["start"].as_str().unwrap().contains("T12:30"), "{body}");
+}
+
+/// The dead end itself: a reminder nobody can place becomes a question.
+#[tokio::test]
+async fn a_reminder_nobody_can_place_is_a_question() {
+    let h = harness(
+        script(json!({"rules": [
+            {"kind": "intent", "content": "{\"intent\":\"schedule_reminder\",\"confidence\":0.99,\"reply_mode\":\"direct\",\"needs_tools\":true}"},
+            {"kind": "plan", "content": "{\"action\":\"schedule_reminder\",\"text\":\"the thing\",\"dueDate\":\"\"}"},
+            {"kind": "reply", "content": "x"}
+        ]})),
+        |_| {},
+    )
+    .await;
+    let v = h.chat("remind me about the thing with Therese").await;
+    let reply = v["reply"].as_str().unwrap();
+    assert!(!reply.contains("could not work out"), "{reply}");
+    assert!(reply.contains('?'), "a question: {reply}");
+}

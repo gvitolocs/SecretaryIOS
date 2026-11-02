@@ -165,3 +165,16 @@ fn only_sandbox_hiccups_are_retried() {
     assert!(!transient(&Error::OwnerDriving));
     assert!(!transient(&Error::Sandbox("{\"code\":\"background_unavailable\"} HTTP 503".into())));
 }
+
+#[test]
+fn her_chromium_is_found_among_the_windows_and_may_be_started() {
+    let windows = json!([
+        {"app_name": "Xfdesktop", "pid": 589, "window_id": 1, "is_on_screen": true},
+        {"app_name": "Chromium", "pid": 77, "window_id": 42, "is_on_screen": true},
+    ]);
+    assert_eq!(chromium_in(&windows), Some((77, 42)));
+    assert_eq!(chromium_in(&json!([{"app_name": "Xfce4-panel", "pid": 1, "window_id": 2}])), None);
+    assert_eq!(chromium_in(&json!(null)), None);
+    // The sandbox's browser policy must let this through (Chromium only).
+    assert!(Sandbox::workspace().check_start_allowed(START_CHROMIUM));
+}

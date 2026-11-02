@@ -139,10 +139,14 @@ impl Tool for ComputerTool {
             }
             Action::Tool => {
                 let tool = need(&a.tool, "tool")?;
-                let r = sb
-                    .call_tool(tool, Value::Object(a.arguments.unwrap_or_default()))
-                    .await
-                    .map_err(err)?;
+                let r = lucina_computer_use::input::agent_tool(
+                    &sb,
+                    id,
+                    tool,
+                    Value::Object(a.arguments.unwrap_or_default()),
+                )
+                .await
+                .map_err(err)?;
                 Ok(json!({
                     "sandbox": sb.space(),
                     "result": clip(text_of(&r)),

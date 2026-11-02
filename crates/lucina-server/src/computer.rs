@@ -95,7 +95,7 @@ pub(crate) fn cu_error(e: lucina_computer_use::Error) -> ApiError {
         | "recovery_required"
         | "viewer_unavailable" => 503,
         "bad_request" | "output_limit" => 400,
-        "busy" | "owner_driving" | "not_driving" | "owner_idle" => 409,
+        "focus_unverified" | "busy" | "owner_driving" | "not_driving" | "owner_idle" => 409,
         "quota_exhausted" => 429,
         "deadline_exceeded" => 504,
         _ => 502,
@@ -565,7 +565,9 @@ pub async fn computer(
                 "tool" => {
                     let tool =
                         s("tool").ok_or_else(|| ApiError::bad_request("tool is required"))?;
-                    sb.call_tool(
+                    lucina_computer_use::input::agent_tool(
+                        &sb,
+                        id,
                         tool,
                         v.get("arguments").cloned().unwrap_or_else(|| json!({})),
                     )

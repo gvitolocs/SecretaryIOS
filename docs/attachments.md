@@ -105,6 +105,8 @@ Handler kinds are in backticks; `share/guidance.rs` holds the exact guidance tex
   an optional caption in `note`, and `meta.files[i]` with `index`, `voice: true`, optional
   `transcript`, `durationMs`, and `waveform` (standard base64 of up to 64 levels, 0–255,
   oldest first; at most 88 characters). Only audio accepts the voice flag.
+- Images: OCR runs first, then vision within `LUCINA_VISION_BUDGET_SECS` (default 360: lease wait, a
+  cold model load and the answer). Slow vision costs only the description; the OCR text still arrives.
 - Voice notes use handler `audio`, subtype `voice`, timeline kind `voice`. A non-empty
   on-device transcript is used first; otherwise Whisper reads the first ten minutes.
   Voice notes skip long-document summaries. The transcript remains searchable in attachment memory.

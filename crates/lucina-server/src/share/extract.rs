@@ -335,22 +335,35 @@ async fn vision_jpeg(path: &Path) -> anyhow::Result<std::path::PathBuf> {
 async fn image(st: &AppState, path: &Path) -> anyhow::Result<Extracted> {
     let jpg = vision_jpeg(path).await?;
     let mut x = Extracted::new("image");
-    let description = match super::vision::describe(st, &jpg).await {
-        Ok(s) => {
-            let (category, description) = super::vision::split_category(&s);
-            x.subtype = category;
-            description
-        }
-        Err(e) => {
-            x.warnings
-                .push(format!("vision could not read the image: {e}"));
-            String::new()
-        }
-    };
+    // OCR first, it takes seconds: a busy GPU (a cold vision start, the lease) must not cost the
+    // text. Vision has its own budget inside the read's limit, so a slow one only loses itself.
     let text = match ocr(&jpg).await {
         Ok(s) => s.trim().to_owned(),
         Err(e) => {
             x.warnings.push(format!("OCR failed: {e}"));
+            String::new()
+        }
+    };
+    let description = match tokio::time::timeout(
+        st.cfg.share.vision_budget,
+        super::vision::describe(st, &jpg),
+    )
+    .await
+    {
+        Ok(Ok(s)) => {
+            let (category, description) = super::vision::split_category(&s);
+            x.subtype = category;
+            description
+        }
+        Ok(Err(e)) => {
+            x.warnings
+                .push(format!("vision could not read the image: {e}"));
+            String::new()
+        }
+        Err(_) => {
+            tracing::warn!(seconds = st.cfg.share.vision_budget.as_secs(), "vision took too long; going on with the OCR text");
+            x.warnings
+                .push("vision took too long, so only the OCR text was read".into());
             String::new()
         }
     };

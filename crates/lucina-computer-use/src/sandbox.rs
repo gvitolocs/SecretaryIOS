@@ -319,6 +319,12 @@ impl Sandbox {
             .await
     }
 
+    #[cfg(test)]
+    pub(crate) fn check_start_allowed(&self, command: &str) -> bool {
+        self.check_browser_policy("space_bash", &json!({"command": command}))
+            .is_ok()
+    }
+
     /// Enforce at the lowest shared entry point, including raw `call` users.
     fn check_browser_policy(&self, tool: &str, args: &Value) -> Result<(), Error> {
         if self.space != WORKSPACE_SPACE {

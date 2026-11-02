@@ -1416,3 +1416,96 @@ async fn an_ambiguous_word_in_a_voice_note_goes_to_jev_and_fails_open() {
     let (_, all) = on_device_note(&h, "voice-vocab-0004", text).await;
     assert!(all.contains("Ho parlato con Nicolu."), "{all}");
 }
+
+fn offered_tools(req: &Value) -> Vec<String> {
+    req["tools"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|t| t["function"]["name"].as_str().map(str::to_owned))
+        .collect()
+}
+
+/// 2 Nov 2026: both came with a screenshot, and she answered that her calendar, mail and Lucina Agents
+/// work "only in my normal chat". A request with an image reaches the model with her real tools.
+#[tokio::test]
+async fn a_request_with_an_image_has_her_full_tools() {
+    let services = services().await;
+    let h = setup(&services).await;
+    for (id, note) in [
+        ("share-full-tools-1", "6 november and 13 November are missing events check our chat and university email also"),
+        ("share-full-tools-2", "Tell one agent to fix this"),
+    ] {
+        let before = h.fake.requests().len();
+        let r = submit(&h, Form::new().text("shareId", id).text("note", note).text("text", "from a screenshot")).await;
+        assert_eq!(r.status(), 202);
+        assert_eq!(finished(&h, id).await["status"], "done");
+        let reqs = h.fake.requests();
+        let turn = reqs[before..]
+            .iter()
+            .find(|r| !offered_tools(r).is_empty())
+            .expect("the share turn is a tool loop");
+        let tools = offered_tools(turn);
+        for needed in ["calendar", "notes", "tasks", "reminders"] {
+            assert!(tools.iter().any(|t| t == needed), "{note}: {needed} not in {tools:?}");
+        }
+        assert!(!tools.iter().any(|t| t == "secrets_status"), "{tools:?}");
+        let system = turn["messages"][0]["content"].as_str().unwrap();
+        assert!(system.contains("your one chat with him"), "{system}");
+        assert!(!system.contains("These tools are only the ones for this step"), "{system}");
+    }
+    // A bare file keeps the focused set.
+    let before = h.fake.requests().len();
+    submit(&h, Form::new().text("shareId", "share-full-tools-3").text("text", "just a file")).await;
+    finished(&h, "share-full-tools-3").await;
+    let reqs = h.fake.requests();
+    let tools = offered_tools(reqs[before..].iter().find(|r| !offered_tools(r).is_empty()).unwrap());
+    assert!(tools.iter().any(|t| t == "notes"), "{tools:?}");
+    assert!(!tools.iter().any(|t| t == "calendar"), "{tools:?}");
+}
+
+/// A cold vision start used to eat the whole read: IMG_7759 came back with nothing, OCR included.
+#[tokio::test]
+async fn slow_vision_costs_only_vision() {
+    let services = services().await;
+    services.seen.pause_vision.store(true, std::sync::atomic::Ordering::SeqCst);
+    let h = harness(script(json!({"rules":[
+        {"kind":"intent", "content":"{\"intent\":\"chat\",\"confidence\":0.95,\"reply_mode\":\"chat\",\"needs_tools\":false}"},
+        {"kind":"agent", "content":"I read what I could."}
+    ]})), |c| {
+        c.share.dir = c.data_dir.join("shares");
+        c.share.key_file = Some(c.data_dir.join("share.key"));
+        std::fs::write(c.share.key_file.as_ref().unwrap(), "  gateway-test-secret\n").unwrap();
+        c.share.media_url = services.base.clone();
+        c.share.vision_url = Some(services.base.clone());
+        c.share.vision_budget = Duration::from_millis(200);
+        c.share.test_allow_loopback = true;
+    }).await;
+    let png = h.dir.path().join("green.png");
+    assert!(std::process::Command::new("convert")
+        .args(["-size", "16x16", "xc:green"])
+        .arg(&png)
+        .status()
+        .unwrap()
+        .success());
+    let r = submit(
+        &h,
+        Form::new()
+            .text("shareId", "share-slow-vision")
+            .text("note", "what is this?")
+            .part(
+                "file",
+                Part::bytes(std::fs::read(&png).unwrap())
+                    .file_name("IMG_7759.png")
+                    .mime_str("image/png")
+                    .unwrap(),
+            ),
+    )
+    .await;
+    assert_eq!(r.status(), 202);
+    let done = finished(&h, "share-slow-vision").await;
+    assert_eq!(done["status"], "done", "{done}");
+    assert_eq!(done["attachments"][0]["state"], "read", "the read went on without vision: {done}");
+    let prompts = h.fake.requests().iter().map(|r| r.to_string()).collect::<String>();
+    assert!(prompts.contains("vision took too long"), "the model is told: {prompts}");
+}

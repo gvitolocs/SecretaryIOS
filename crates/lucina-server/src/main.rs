@@ -1390,6 +1390,7 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
         } => ops_cmd(cmd, vault, state, tz).await?,
         Cmd::Serve => {
             let cfg = Config::from_env()?;
+            lucina_server::share::stop_orphans(&cfg.share);
             tracing::info!(config = ?cfg, "lucina starting (shadow mode: scheduler, Telegram and Discord off unless stated)");
             let binds = cfg.binds.clone();
             let state = AppState::build(cfg, None)?;

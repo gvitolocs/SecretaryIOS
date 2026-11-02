@@ -40,3 +40,10 @@ and more. Everything stays private: device data goes only to the owner's own ser
 ## Multi-language
 The app follows the device language by default: iOS `Locale.preferredLanguages`, and on the web `navigator.languages`.
 Italian, English and Danish to start, with an override in Settings. Lucina replies in the language you write in.
+
+## Calendar reach of the snapshot
+
+`POST /v1/device/state` carries EventKit events from 3 days back to 120 days ahead, at most 300, with notes
+only for the next 14 days. The app keeps the body under the route's 256 KB limit by dropping notes, then the
+farthest events. Accepted proposals and events Lucina creates go to her own calendar (`lucina:` ids) in
+Secretary: **they do not reach the iPhone's Calendar app**, which only `calendar.create` device commands write.

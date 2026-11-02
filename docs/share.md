@@ -232,7 +232,10 @@ serializes processing. The status endpoint includes attachments as an additional
 
 Share turns enter the normal chat lifecycle using the existing user item. A focused hook, analogous
 to the media and memo hooks, passes all extracted content to a tool loop even with `LUCINA_PLANNER=json`.
-It exposes notes, shopping, and reminders, avoiding keyword shortcuts over untrusted source text. It
+A bare file gets notes, shopping, and reminders. A share with the owner's own words is his request and
+gets her whole tool set (calendar, computer, tasks, Drive, Claude and Lucina Agents, without secrets and
+root commands), with the router reading only his words, so nothing works "only in her normal chat". Both
+avoid keyword shortcuts over untrusted source text, whose instructions stay source material. It
 writes one final Lucina item and no tool progress items. Chat calls outside this hook retain their
 existing path. Share guidance allows up to eight sentences for document summaries. Library shares
 skip file extraction and the chat model; text/links are saved through the existing notes tool (including

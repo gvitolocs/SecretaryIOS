@@ -59,6 +59,42 @@ impl Drop for Server {
         }
     }
 }
+/// The lease wait (`--wait 90` below) plus a cold load. On 2 Nov 2026 a 120 s limit, counting the 51 s the
+/// lease waited for Qwen to unload, killed a load that needed longer; the slow CPU start then ate the read's
+/// whole limit, and the screenshot "stayed unread".
+const GPU_READY_SECS: u64 = 240;
+
+/// A vision server outlives a restart of lucina-rs: it runs in its own scope (`scoped-llama-server`) and its
+/// `Drop` never ran. It then holds VRAM the lease no longer accounts for. Stop any left over at startup.
+pub fn stop_orphans(cfg: &super::ShareConfig) {
+    if cfg.vision_url.is_some() {
+        return;
+    }
+    let Ok(dir) = std::fs::read_dir("/proc") else {
+        return;
+    };
+    let mmproj = cfg.vision_mmproj.to_string_lossy();
+    for pid in dir.flatten().filter_map(|e| e.file_name().to_str()?.parse::<i32>().ok()) {
+        let Ok(raw) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
+            continue;
+        };
+        let args: Vec<_> = raw.split(|b| *b == 0).map(String::from_utf8_lossy).collect();
+        if is_vision_server(&args, &mmproj) {
+            tracing::info!(pid, "stopping a vision server left by an earlier lucina-rs");
+            // SAFETY: a signal to the process whose command line was just read as ours.
+            unsafe {
+                libc::kill(pid, libc::SIGTERM);
+            }
+        }
+    }
+}
+
+/// Lucina's vision server, and not the `systemd-run` or lease wrappers holding the same arguments.
+fn is_vision_server(args: &[std::borrow::Cow<'_, str>], mmproj: &str) -> bool {
+    args.first().is_some_and(|a| a.ends_with("llama-server"))
+        && args.windows(2).any(|w| w[0] == "--mmproj" && w[1] == mmproj)
+}
+
 async fn start(st: &AppState, gpu: bool) -> anyhow::Result<Server> {
     let cfg = &st.cfg.share;
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
@@ -158,7 +194,8 @@ pub(crate) async fn describe(st: &AppState, path: &Path) -> anyhow::Result<Strin
     }
     if slot.is_none() {
         let mut server = start(st, true).await?;
-        if ready(&mut server, 120).await.is_err() {
+        if let Err(e) = ready(&mut server, GPU_READY_SECS).await {
+            tracing::warn!(error = %e, "vision did not start on the GPU; trying the CPU");
             drop(server);
             server = start(st, false).await?;
             ready(&mut server, 100).await?;
@@ -197,6 +234,22 @@ pub(crate) async fn describe(st: &AppState, path: &Path) -> anyhow::Result<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_vision_server_counts_as_an_orphan() {
+        let cow = |a: &[&'static str]| -> Vec<std::borrow::Cow<'_, str>> {
+            a.iter().map(|s| std::borrow::Cow::Borrowed(*s)).collect()
+        };
+        let m = "/models/mmproj.gguf";
+        assert!(is_vision_server(
+            &cow(&["/home/nez/llama.cpp/build/bin/llama-server", "-m", "x", "--mmproj", m]),
+            m
+        ));
+        // Its scope and lease wrappers carry the same arguments; Qwen has no such mmproj.
+        assert!(!is_vision_server(&cow(&["systemd-run", "--mmproj", m]), m));
+        assert!(!is_vision_server(&cow(&["/bin/llama-server", "-m", "qwen.gguf"]), m));
+        assert!(!is_vision_server(&cow(&["/bin/llama-server", "--mmproj", "other"]), m));
+    }
 
     #[test]
     fn categories() {

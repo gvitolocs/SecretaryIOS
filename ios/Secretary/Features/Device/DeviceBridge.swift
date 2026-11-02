@@ -110,6 +110,31 @@ struct DeviceState: Encodable, Sendable {
     var events: [JSONValue] = []
     var focus: JSONValue = .null
     var ts = Int(Date().timeIntervalSince1970 * 1000)
+
+    /// How far ahead the snapshot reaches, and how far ahead events bring their notes.
+    static let eventDaysAhead: Double = 120
+    static let notesDaysAhead: Double = 14
+    /// Under the route's 256 KB limit (secretary-server `BODY_LIMIT`).
+    static let bodyLimit = 240_000
+
+    /// The JSON to send, within the body limit: a snapshot over it would be refused whole, and the server
+    /// would keep the last one. Notes go first, then the farthest events (the list is sorted by start).
+    func encodedWithinLimit(limit: Int = DeviceState.bodyLimit) throws -> Data {
+        var data = try APIClient.encoder.encode(self)
+        guard data.count > limit else { return data }
+        var trimmed = self
+        trimmed.events = events.map { event in
+            guard case var .object(fields) = event else { return event }
+            fields["notes"] = nil
+            return .object(fields)
+        }
+        data = try APIClient.encoder.encode(trimmed)
+        while data.count > limit, !trimmed.events.isEmpty {
+            trimmed.events.removeLast(max(1, trimmed.events.count / 10))
+            data = try APIClient.encoder.encode(trimmed)
+        }
+        return data
+    }
 }
 
 /// Runs commands with the matching framework. Implemented by `DeviceExecutors`.
@@ -134,7 +159,7 @@ struct DeviceClient: Sendable {
     }
 
     func report(_ state: DeviceState) async throws {
-        _ = try await client.send("POST", "/v1/device/state", body: try APIClient.encoder.encode(state), idempotent: true)
+        _ = try await client.send("POST", "/v1/device/state", body: try state.encodedWithinLimit(), idempotent: true)
     }
 }
 

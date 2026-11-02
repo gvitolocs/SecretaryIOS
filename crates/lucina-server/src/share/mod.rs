@@ -11,6 +11,7 @@ pub mod router;
 mod structured;
 pub mod tools;
 pub(crate) mod vision;
+pub use vision::stop_orphans;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -42,6 +43,9 @@ const MAX_PARTS: usize = 32;
 const TURN_TEXT_BUDGET: usize = 30_000;
 /// Characters one part may show the model.
 const PART_TEXT_MAX: usize = 12_000;
+/// Longest read of one file that is not audio or video: above `vision_budget` (360 s by default), so an
+/// image whose vision is slow still comes back with its OCR text.
+const READ_LIMIT_SECS: u64 = 420;
 
 #[derive(Clone, Debug)]
 pub struct ShareConfig {
@@ -53,6 +57,8 @@ pub struct ShareConfig {
     pub vision_mmproj: PathBuf,
     /// An already managed OpenAI-compatible vision endpoint (also useful in tests).
     pub vision_url: Option<String>,
+    /// How long one image may wait for vision (lease, cold load, the answer) before the read goes on with OCR.
+    pub vision_budget: Duration,
     pub whisper: lucina_memo::transcribe::WhisperConfig,
     /// Only compiled into debug/test builds; never populated from the environment.
     #[cfg(debug_assertions)]
@@ -91,6 +97,11 @@ impl ShareConfig {
                 format!("{home}/models/gemma-4-12b-it-qat/mmproj-gemma-4-12b-it-qat-q4_0.gguf"),
             ),
             vision_url: get("LUCINA_VISION_URL"),
+            vision_budget: Duration::from_secs(
+                get("LUCINA_VISION_BUDGET_SECS")
+                    .and_then(|v| v.trim().parse().ok())
+                    .unwrap_or(360),
+            ),
             whisper,
             #[cfg(debug_assertions)]
             test_allow_loopback: false,
@@ -1113,7 +1124,7 @@ pub(crate) async fn read_local_file(
     let seconds = if ["audio", "video"].contains(&part.attachment.kind.as_str()) {
         1200
     } else {
-        300
+        READ_LIMIT_SECS
     };
     let x = match tokio::time::timeout(
         Duration::from_secs(seconds),
@@ -1181,7 +1192,7 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
             if ["audio", "video", "voice"].contains(&job.parts[i].attachment.kind.as_str()) {
                 1200
             } else {
-                300
+                READ_LIMIT_SECS
             };
         job.parts[i].state = "reading".into();
         save(dir, job).await?;
