@@ -44,6 +44,7 @@ pub mod flaws;
 pub mod ops;
 pub mod otp;
 pub mod owner_secrets;
+pub mod secret_keep;
 pub mod secret_requests;
 pub mod parity;
 pub mod places;
@@ -133,6 +134,8 @@ pub struct Inner {
     pub held_secrets: owner_secrets::HeldSecrets,
     /// The owner's queue of secret requests: one card at a time.
     pub secret_requests: Arc<secret_requests::SecretRequests>,
+    /// Lucina's own moves of a secret to Infisical, through the local model.
+    pub secret_keep: Arc<secret_keep::Keeper>,
     pub briefings: tokio::sync::Mutex<HashMap<String, api::Briefing>>,
     pub streams: AtomicUsize,
     pub started: Instant,
@@ -476,12 +479,30 @@ impl AppState {
                 token_file: cfg.secretary_service_token_file.clone(),
             },
         ));
+        let secret_keep = Arc::new(secret_keep::Keeper::new(
+            &cfg.data_dir,
+            cfg.secret_keep.clone(),
+            timeline.clone(),
+            bridges::Secretary {
+                http: env_http.clone(),
+                url: cfg.secretary_url.clone(),
+                token_file: cfg.secretary_service_token_file.clone(),
+            },
+        ));
         if cfg.tools.allows("secret_request") {
             registry
                 .register(Arc::new(lucina_tools::tools::secret_request::SecretRequestTool {
                     asker: secret_requests.clone(),
                 }))
                 .expect("secret_request registers");
+        }
+        if cfg.secret_keep.enabled && cfg.tools.allows("secret_keep") {
+            registry
+                .register(Arc::new(lucina_tools::tools::secret_keep::SecretKeepTool { keeper: secret_keep.clone() }))
+                .expect("secret_keep registers");
+            registry
+                .register(Arc::new(lucina_tools::tools::secret_keep::SecretScanTool { keeper: secret_keep.clone() }))
+                .expect("secret_scan registers");
         }
         // The owner's shared files: owner turns only, so added after the MCP registries.
         let share = crate::share::ShareRuntime::new(&cfg.share);
@@ -550,6 +571,7 @@ impl AppState {
             client_messages: Mutex::new(HashMap::new()),
             held_secrets: owner_secrets::HeldSecrets::default(),
             secret_requests,
+            secret_keep,
             briefings: tokio::sync::Mutex::new(HashMap::new()),
             streams: AtomicUsize::new(0),
             started: Instant::now(),
@@ -710,6 +732,9 @@ impl AppState {
         }
         if let Some(h) = flaws::spawn(self) {
             self.supervisor.watch("flaw tracker", h);
+        }
+        if let Some(h) = secret_keep::spawn(self) {
+            self.supervisor.watch("secret keep", h);
         }
         if self.cfg.scheduler {
             if self.cfg.reminders_writer == WriterKind::Node {

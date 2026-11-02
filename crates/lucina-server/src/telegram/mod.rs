@@ -796,6 +796,12 @@ impl Bot {
         )
         .await;
         drop(typing);
+        // His message held a secret (masked before anything saw it): Telegram keeps the original.
+        if out.as_ref().is_ok_and(|v| v["secretMasked"] == true) {
+            if let Err(e) = self.api.delete_message(&m.chat_id, m.message_id).await {
+                tracing::warn!(chat_id = %m.chat_id, error = %e, "telegram: message with a secret not deleted");
+            }
+        }
         let reply = match &out {
             Ok(v) => v["reply"].as_str().unwrap_or("").to_owned(),
             Err(e) => {

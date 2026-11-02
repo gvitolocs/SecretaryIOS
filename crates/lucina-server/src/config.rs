@@ -232,6 +232,8 @@ pub struct Config {
     pub otp: crate::otp::OtpConfig,
     /// infisical-brokerd for "Add secret" (`LUCINA_BROKER_*`).
     pub broker: crate::owner_secrets::BrokerConfig,
+    /// Lucina moves a secret to Infisical herself, through the local model (`LUCINA_SECRET_KEEP*`).
+    pub secret_keep: crate::secret_keep::KeepConfig,
     /// Owner approvals (`LUCINA_APPROVAL_*`, `LUCINA_ROOT_*`, `LUCINA_SECRETARY_SERVER_URL`): the secrets
     /// guard for MCP callers and the `root_exec` tool. Off until the pinned grant key file exists.
     pub approvals: lucina_approvals::ApprovalsConfig,
@@ -612,6 +614,7 @@ impl Config {
             delegate_config: get("LUCINA_DELEGATE_CONFIG").map(PathBuf::from),
             otp: crate::otp::OtpConfig::from_lookup(&get),
             broker: crate::owner_secrets::BrokerConfig::from_lookup(&get),
+            secret_keep: crate::secret_keep::KeepConfig::from_lookup(&get, &data_dir),
             approvals: lucina_approvals::ApprovalsConfig::from_lookup(&get),
             hospital,
             delivery_alert_after: Duration::from_secs(

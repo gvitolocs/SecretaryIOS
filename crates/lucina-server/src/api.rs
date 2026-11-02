@@ -602,6 +602,20 @@ async fn route(
             let body = read_json(body, 16 * 1024).await?;
             Ok(ok(crate::owner_secrets::request(st, &body).await?))
         }
+        (Some("secrets"), Some("keep")) => {
+            // Local only: secretary-server forwards no such route. References and names, never a value.
+            only(&["POST"])?;
+            let body = read_json(body, 16 * 1024).await?;
+            if let Some(job) = body["job"].as_str() {
+                let found = st.secret_keep.job(job).ok_or_else(|| ApiError::new(404, "not_found", "no such job"))?;
+                return Ok(ok(found.outcome()));
+            }
+            Ok(ok(st.secret_keep.enqueue(&body)?.outcome()))
+        }
+        (Some("secrets"), Some("scan")) => {
+            only(&["POST"])?;
+            Ok(ok(st.secret_keep.scan(50).await?))
+        }
         (Some("timeline"), None) => {
             only(&["GET"])?;
             timeline_list(st, uri)

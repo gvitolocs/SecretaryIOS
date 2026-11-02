@@ -1411,6 +1411,66 @@ impl TimelineStore {
         Ok(inner.read_entries(&[entry])?.into_iter().next())
     }
 
+    /// Take a secret out of the stored items, in every generation: the value's encodings become
+    /// `replacement`, in string values only. `only`: just these items (a short value, which could
+    /// be part of anything). Live clients get the changed items again under the same ids, so an
+    /// open chat redraws them. Returns how many items changed.
+    pub fn scrub(&self, needles: &[String], replacement: &str, only: Option<&[String]>) -> Result<usize> {
+        let mut inner = self.lock();
+        let _flock = lock_sidecar(&inner.file_path)?;
+        let found = inner.refresh()?;
+        self.publish(found);
+        let mut changed: Vec<String> = Vec::new();
+        for suffix in (0..=inner.keep_rotated).rev() {
+            let path = inner.path_for_gen(inner.current_gen - suffix);
+            let bytes = match fs::read(&path) {
+                Ok(b) => b,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e.into()),
+            };
+            // Never a lossy copy of the timeline: a bad byte fails the clear, which is reported.
+            let text = std::str::from_utf8(&bytes)
+                .map_err(|_| StoreError::Invalid(format!("timeline: {} is not UTF-8", path.display())))?;
+            let mut out = String::with_capacity(text.len());
+            let mut any = false;
+            for line in text.split_inclusive('\n') {
+                let (body, end) = line.strip_suffix('\n').map_or((line, ""), |b| (b, "\n"));
+                let new = crate::scrub::scrub_json_line(body, needles, replacement).filter(|new| {
+                    let id = serde_json::from_str::<serde_json::Value>(new)
+                        .ok()
+                        .and_then(|v| v["id"].as_str().map(str::to_owned))
+                        .unwrap_or_default();
+                    let wanted = only.is_none_or(|ids| ids.contains(&id));
+                    if wanted {
+                        changed.push(id);
+                    }
+                    wanted
+                });
+                match new {
+                    Some(new) => {
+                        any = true;
+                        out.push_str(&new);
+                    }
+                    None => out.push_str(body),
+                }
+                out.push_str(end);
+            }
+            if any {
+                crate::scrub::replace_file(&path, out.as_bytes())?;
+            }
+        }
+        if changed.is_empty() {
+            return Ok(0);
+        }
+        // Offsets moved and the cache holds old lines: read everything again.
+        inner.load_all()?;
+        let entries: Vec<Entry> = changed.iter().filter_map(|id| inner.entry(id).cloned()).collect();
+        let items = inner.read_entries(&entries)?;
+        let n = items.len();
+        self.publish(items);
+        Ok(n)
+    }
+
     /// Every stored item, oldest first.
     pub fn read_all(&self) -> Result<Vec<StoredItem>> {
         let mut inner = self.lock();

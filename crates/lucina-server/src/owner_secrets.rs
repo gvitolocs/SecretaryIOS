@@ -171,6 +171,10 @@ impl HeldSecrets {
 }
 
 /// Zero every string in a JSON value (before dropping a value-bearing one).
+pub(crate) fn wipe_value(v: &mut Value) {
+    wipe(v);
+}
+
 fn wipe(v: &mut Value) {
     match v {
         Value::String(s) => s.zeroize(),
@@ -181,7 +185,7 @@ fn wipe(v: &mut Value) {
 }
 
 /// One request to the broker; `Err((code, message))` for its refusals.
-async fn broker_call(socket: &std::path::Path, mut req: Value) -> Result<Value, (String, String)> {
+pub(crate) async fn broker_call(socket: &std::path::Path, mut req: Value) -> Result<Value, (String, String)> {
     let fut = async {
         let stream = tokio::net::UnixStream::connect(socket).await.map_err(|e| {
             (
@@ -637,21 +641,25 @@ pub fn answer_secret_command(
     out
 }
 
-/// Mask token shapes in a normal message. Returns the masked text and, when
-/// something was masked, the held ids with a short hint (`sk-…`, 51 chars).
-pub fn mask_message(st: &crate::AppState, text: &str) -> (String, Vec<(String, String)>) {
-    let spans = lucina_secrets::redact::detect(text);
-    if spans.is_empty() {
-        return (lucina_secrets::redactor().redact(text).into_owned(), vec![]);
-    }
+/// Mask secrets in a normal message: token shapes always, and with `words` (the owner's own turns)
+/// values said in words ("the password is …"). Returns the masked text and, when something was
+/// masked, the held ids with a short hint (`sk-…`, 51 chars; a value in words shows no characters).
+pub fn mask_message(st: &crate::AppState, text: &str, words: bool) -> (String, Vec<(String, String)>) {
     let mut held = Vec::new();
-    for d in spans.iter().take(3) {
-        let v = &text[d.start..d.end];
+    if words {
+        for f in lucina_secrets::labelled::detect(text).iter().take(3) {
+            let v = &text[f.start..f.end];
+            held.push((st.held_secrets.hold(v), format!("…, {}", v.chars().count())));
+        }
+    }
+    let masked = if words { lucina_secrets::labelled::mask(text) } else { std::borrow::Cow::Borrowed(text) };
+    for d in lucina_secrets::redact::detect(&masked).iter().take(3usize.saturating_sub(held.len())) {
+        let v = &masked[d.start..d.end];
         let prefix: String = v.chars().take(3).collect();
         let hint = format!("{prefix}…, {}", v.chars().count());
         held.push((st.held_secrets.hold(v), hint));
     }
-    (lucina_secrets::redactor().redact(text).into_owned(), held)
+    (lucina_secrets::redactor().redact(&masked).into_owned(), held)
 }
 
 /// After a turn whose message had tokens: Lucina's "Save as secret?" card.
@@ -796,14 +804,14 @@ pub(crate) fn project_known(project: &str) -> Option<bool> {
 }
 
 /// A secret name or a project / environment slug: `[A-Za-z0-9_.@-]`, 1-`max`.
-fn slug_ok(s: &str, max: usize) -> bool {
+pub(crate) fn slug_ok(s: &str, max: usize) -> bool {
     (1..=max).contains(&s.len())
         && s.bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'@' | b'-'))
 }
 
 /// `/`, `/a/b`, `a/b/` -> `/a/b` (segments like names, not `.`/`..`), at most 512 bytes.
-fn request_folder(path: &str) -> Option<String> {
+pub(crate) fn request_folder(path: &str) -> Option<String> {
     let t = path.trim().trim_matches('/');
     if t.is_empty() {
         return Some("/".into());
@@ -1142,7 +1150,8 @@ pub fn secret_talk(text: &str) -> bool {
     ];
     const VERBS: &[&str] = &[
         "salva", "salvami", "salvala", "salvalo", "salvarla", "salvarlo", "salvare", "memorizza", "memorizzala", "aggiungi", "inserisci",
-        "conserva", "conservala", "registra", "chiedimi", "save", "store", "add", "gem", "tilføj",
+        "conserva", "conservala", "registra", "chiedimi", "save", "store", "add", "gem", "tilføj", "move", "sposta", "spostala",
+        "spostalo", "flyt",
     ];
     const PHRASES: &[&str] = &["ti do", "ti passo", "te la do", "te la passo", "ask me for", "give you", "giver dig"];
     const QUESTION: &[&str] = &["come", "how", "why", "perché", "perche", "cosa", "what", "dove", "where", "quale", "which", "hvordan"];

@@ -228,7 +228,8 @@ async fn handle_chat_turn(
             "lucinaItemId": lucina_item_id,
         }));
     }
-    let (text, held) = crate::owner_secrets::mask_message(&st, &text);
+    let (text, held) = crate::owner_secrets::mask_message(&st, &text, mcp_turn.is_none());
+    let keep_context = if held.is_empty() { String::new() } else { text.clone() };
     // "Salva un segreto": before the model. His words are recorded unless they look like they hold
     // the value (`NAME value`, not token-shaped so not masked above): those go nowhere at all.
     if let Some(words) = (held.is_empty() && mcp_turn.is_none() && !crate::selftest::is_session(&session))
@@ -307,6 +308,7 @@ async fn handle_chat_turn(
     let offer_timeline = st.timeline_for(&session);
     let offer_lang = crate::owner_secrets::lang_of(&text);
     let cmid = (!client_message_id.is_empty()).then_some(client_message_id);
+    let (keep_st, keep_session) = (st.clone(), session.clone());
     let Some(cmid_value) = cmid.clone() else {
         let out = run_turn(
             st,
@@ -320,7 +322,7 @@ async fn handle_chat_turn(
             device_meta,
         )
         .await;
-        crate::owner_secrets::offer_held(&offer_timeline, &held, offer_lang);
+        crate::secret_keep::after_turn(&keep_st, &offer_timeline, &held, &keep_context, offer_lang, &keep_session);
         return out;
     };
     let key = format!("{session}:{cmid_value}");
@@ -371,7 +373,7 @@ async fn handle_chat_turn(
         Slot::Fresh(fut) => fut,
     };
     let out = shared.await;
-    crate::owner_secrets::offer_held(&offer_timeline, &held, offer_lang);
+    crate::secret_keep::after_turn(&keep_st, &offer_timeline, &held, &keep_context, offer_lang, &keep_session);
     if out.is_err() {
         st.client_messages
             .lock()
@@ -475,7 +477,7 @@ pub async fn channel_turn(
     }
     let offer_lang = crate::owner_secrets::lang_of(&message);
     let (message, held) = if origin.owner {
-        crate::owner_secrets::mask_message(&st, &message)
+        crate::owner_secrets::mask_message(&st, &message, true)
     } else {
         (
             lucina_secrets::redactor().redact(&message).into_owned(),
@@ -492,8 +494,11 @@ pub async fn channel_turn(
         return Ok(json!({"reply": reply, "action": "secret_request", "sensitive": true, "job": null}));
     }
     if let Some(t) = origin.timeline_text.as_mut() {
-        *t = lucina_secrets::redactor().redact(t).into_owned();
+        let masked = if origin.owner { lucina_secrets::labelled::mask(t).into_owned() } else { t.clone() };
+        *t = lucina_secrets::redactor().redact(&masked).into_owned();
     }
+    let keep_context = if held.is_empty() { String::new() } else { message.clone() };
+    let keep_session = session.clone();
     let out = run_turn_inner(
         st.clone(),
         message,
@@ -508,8 +513,14 @@ pub async fn channel_turn(
         Meta::default(),
     )
     .await;
-    crate::owner_secrets::offer_held(&st.timeline, &held, offer_lang);
-    out
+    crate::secret_keep::after_turn(&st, &st.timeline, &held, &keep_context, offer_lang, &keep_session);
+    // The chat app keeps his message: its handler removes it where it can.
+    out.map(|mut v| {
+        if !held.is_empty() {
+            v["secretMasked"] = json!(true);
+        }
+        v
+    })
 }
 
 /// What the turn answered.

@@ -22,6 +22,7 @@ pub mod presence;
 pub mod reach;
 pub mod reminders;
 pub mod root_exec;
+pub mod secret_keep;
 pub mod secret_request;
 pub mod secrets;
 pub mod shopping;

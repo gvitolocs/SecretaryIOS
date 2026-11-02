@@ -36,6 +36,7 @@
 //! (`default-features = false`).
 
 pub mod cache;
+pub mod labelled;
 pub mod otp;
 pub mod policy;
 pub mod redact;

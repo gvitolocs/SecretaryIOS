@@ -461,7 +461,8 @@ pub async fn notes_context(s: &Secretary, st: &BridgeState, prompt: &str) -> Str
             .call(Method::GET, &format!("/v1/notes/{}", seg(slug)), None)
             .await;
         if r.ok {
-            blocks.push(nt::render_note_context(&r.data, nt::MAX_CONTEXT_CHARS));
+            let block = nt::render_note_context(&r.data, nt::MAX_CONTEXT_CHARS);
+            blocks.push(lucina_secrets::labelled::mask(&block).into_owned());
         }
     }
     if blocks.is_empty() {

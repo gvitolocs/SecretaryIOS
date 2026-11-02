@@ -231,6 +231,12 @@ enum Cmd {
     /// Ask Lucina for a go-ahead through the running server (docs/design/decisions-api.md): she
     /// decides, or pushes the question to the owner's phone and answers `pending`. Prints the
     /// decision as JSON. `decide status <id> [--wait N]` and `decide list` read them back.
+    /// Lucina moves a secret into Infisical herself: `save`, `status`, `scan`. A client of the running
+    /// server; prints references, names and outcomes, never a value.
+    SecretKeep {
+        #[command(subcommand)]
+        cmd: KeepCmd,
+    },
     #[command(args_conflicts_with_subcommands = true)]
     Decide {
         #[command(subcommand)]
@@ -467,6 +473,44 @@ enum UpstreamCmd {
 }
 
 #[derive(Subcommand)]
+enum KeepCmd {
+    /// Queue a move of a secret from a note or a chat message to Infisical, through the local model.
+    Save {
+        /// note:<slug> or chat:<item id>.
+        #[arg(long)]
+        source: String,
+        #[arg(long)]
+        name: String,
+        /// Which secret in that text, in words. Never the value.
+        #[arg(long, default_value = "")]
+        what: String,
+        #[arg(long, default_value = "")]
+        project: String,
+        #[arg(long, default_value = "")]
+        environment: String,
+        #[arg(long, default_value = "")]
+        path: String,
+        /// Store the note's whole text as one secret.
+        #[arg(long)]
+        whole: bool,
+        /// The open request (card) this answers.
+        #[arg(long, default_value = "")]
+        request: String,
+        /// Wait this many seconds for the outcome.
+        #[arg(long, default_value_t = 0)]
+        wait: u64,
+    },
+    /// How a job went.
+    Status {
+        job: String,
+        #[arg(long, default_value_t = 0)]
+        wait: u64,
+    },
+    /// Where a secret may be: references only.
+    Scan,
+}
+
+#[derive(clap::Subcommand)]
 enum DecideCmd {
     /// One decision as JSON (`--wait N`: poll while it is pending).
     Status {
@@ -838,6 +882,35 @@ async fn reach_cmd(cmd: ReachCmd) -> anyhow::Result<()> {
         ReachCmd::Show { id } => cli::show(&id).await?,
         ReachCmd::Reply { id, from, text } => cli::reply(&id, &from, &text).await?,
     };
+    println!("{}", serde_json::to_string_pretty(&out)?);
+    Ok(())
+}
+
+async fn keep_cmd(cmd: KeepCmd) -> anyhow::Result<()> {
+    use lucina_server::decide::cli;
+    let c = cli::Client::from_env()?;
+    let mut wait_for = 0;
+    let mut out = match cmd {
+        KeepCmd::Save { source, name, what, project, environment, path, whole, request, wait } => {
+            wait_for = wait;
+            c.post(
+                "secrets/keep",
+                &serde_json::json!({"source": source, "name": name, "what": what, "project": project,
+                                    "environment": environment, "path": path, "whole": whole, "request": request}),
+            )
+            .await?
+        }
+        KeepCmd::Status { job, wait } => {
+            wait_for = wait;
+            c.post("secrets/keep", &serde_json::json!({"job": job})).await?
+        }
+        KeepCmd::Scan => c.post("secrets/scan", &serde_json::json!({})).await?,
+    };
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(wait_for);
+    while out["state"] == "queued" && std::time::Instant::now() < until {
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        out = c.post("secrets/keep", &serde_json::json!({"job": out["job"]})).await?;
+    }
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
 }
@@ -1230,7 +1303,7 @@ fn main() -> anyhow::Result<()> {
     // `deals`, `decide`, `jev` and `upstream` print their results on stdout, so their logs go to stderr.
     if matches!(
         cmd,
-        Cmd::Deals { .. } | Cmd::Decide { .. } | Cmd::Jev { .. } | Cmd::Upstream { .. }
+        Cmd::Deals { .. } | Cmd::Decide { .. } | Cmd::Jev { .. } | Cmd::Upstream { .. } | Cmd::SecretKeep { .. }
     ) {
         tracing_subscriber::fmt()
             .with_env_filter(filter("warn"))
@@ -1277,6 +1350,7 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
         } => google_auth(&service, code, read_only).await?,
         Cmd::Drive { cmd } => drive_cmd(cmd).await?,
         Cmd::Decide { cmd, ask } => decide_cmd(cmd, ask).await?,
+        Cmd::SecretKeep { cmd } => keep_cmd(cmd).await?,
         Cmd::Flaws { cmd, db } => flaws_cmd(cmd, db)?,
         Cmd::Reach { cmd } => reach_cmd(cmd).await?,
         Cmd::Jev { cmd } => jev_cmd(cmd).await?,
