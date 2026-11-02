@@ -18,6 +18,9 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const VALUE: &str = "sk-proj-Synthetic0123456789AbCdEfGhIjKl";
 const PASTED: &str = "ghp_SyntheticPastedToken0123456789ab";
+/// Saved through the relay, so the process-wide redactor learns it: its own value, or the test of
+/// a pasted token depends on which test runs first.
+const RELAYED: &str = "ghp_SyntheticRelayedToken123456789ab";
 
 /// Raw log capture (no redacting writer): the value must never be logged at all.
 fn logs() -> &'static Arc<Mutex<Vec<u8>>> {
@@ -47,7 +50,7 @@ fn logs() -> &'static Arc<Mutex<Vec<u8>>> {
 }
 
 fn assert_clean(what: &str, text: &str) {
-    for v in [VALUE, PASTED] {
+    for v in [VALUE, PASTED, RELAYED] {
         assert!(!text.contains(v), "{what} holds a value: {text}");
     }
 }
@@ -297,7 +300,7 @@ async fn the_relay_passes_grants_and_writes_a_receipt() {
     );
 
     // A held value (from /secret) is relayed by id, then forgotten.
-    env.chat(&format!("/secret OTHER_KEY {PASTED}")).await;
+    env.chat(&format!("/secret OTHER_KEY {RELAYED}")).await;
     let held = env.offer_actions()[0]["payload"]["held"]
         .as_str()
         .unwrap()
@@ -307,7 +310,7 @@ async fn the_relay_passes_grants_and_writes_a_receipt() {
         .post("/secrets/grant", json!({"grant": "g1.p.s", "held": held}))
         .await;
     assert_eq!(s, 200);
-    assert_eq!(env.broker.seen.lock().unwrap()[1]["value"], PASTED);
+    assert_eq!(env.broker.seen.lock().unwrap()[1]["value"], RELAYED);
     assert!(env.h.state.held_secrets.get(&held).is_none());
     let (s, b) = env
         .h
