@@ -85,7 +85,11 @@ function text(v: unknown, max: number): string {
     .replace(/\r\n?/g, "\n")
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
     .trim();
-  return s.length > max ? `${s.slice(0, max - 1).trimEnd()}…` : s;
+  if (s.length <= max) return s;
+  // Never between the two halves of an emoji: a lone surrogate draws as a box.
+  const lead = s.charCodeAt(max - 2);
+  const end = lead >= 0xd800 && lead <= 0xdbff ? max - 2 : max - 1;
+  return `${s.slice(0, end).trimEnd()}…`;
 }
 
 function line(v: unknown, max: number): string {
