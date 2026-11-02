@@ -13,7 +13,10 @@
 //! The status of a card (`GET /api/secretary/secrets/requests`) is what clients draw: an open field
 //! for the active request, "saved" with the name and fingerprint, or "not asked any more".
 //!
-//! A save closes a request by its id (new clients send it) or by its names (old sheets don't).
+//! A save closes a request by its id (new clients send it), else by its names, else by the name alone:
+//! the owner may save a secret somewhere other than where the request said, and it is still the secret
+//! that was asked for, and the receipt says where it went. At the first look after a start, a receipt
+//! already in the timeline closes what is still open under that name (saves from before this rule).
 //! Old sheets can't report "Not now": the card then stays active until another client dismisses it
 //! or [`REQUEST_TTL`] passes.
 
@@ -149,6 +152,8 @@ pub struct SecretRequests {
     secretary: Secretary,
     /// Loaded on first use.
     entries: Mutex<Option<Vec<Entry>>>,
+    /// Receipts in the timeline are read once per process.
+    receipts_checked: std::sync::atomic::AtomicBool,
 }
 
 impl std::fmt::Debug for SecretRequests {
@@ -170,6 +175,7 @@ impl SecretRequests {
             timeline,
             secretary,
             entries: Mutex::new(None),
+            receipts_checked: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -353,10 +359,49 @@ impl SecretRequests {
     }
 
     /// Every request, oldest first: what the cards draw.
+    /// Open requests whose secret has a receipt in the timeline since they were asked.
+    fn close_from_receipts(&self, entries: &mut [Entry]) -> bool {
+        if !entries.iter().any(|e| e.status.open() && !e.name.is_empty()) {
+            return false;
+        }
+        let Ok(items) = self.timeline.read_all() else { return false };
+        let receipts: Vec<(i64, String)> = items
+            .iter()
+            .filter_map(|i| serde_json::from_str::<Value>(i.raw_value().get()).ok())
+            .filter(|i| i["meta"]["kind"] == "secret_receipt")
+            .filter_map(|i| {
+                let at = chrono::DateTime::parse_from_rfc3339(i["ts"].as_str()?).ok()?.timestamp();
+                Some((at, i["text"].as_str()?.to_owned()))
+            })
+            .collect();
+        let mut changed = false;
+        for e in entries.iter_mut().filter(|e| e.status.open() && !e.name.is_empty()) {
+            let quoted = format!("`{}`", e.name);
+            let Some((at, text)) = receipts.iter().find(|(at, text)| *at >= e.asked_at && text.contains(&quoted)) else {
+                continue;
+            };
+            e.status = Status::Saved;
+            e.closed_at = Some(*at);
+            e.fingerprint = text
+                .rsplit_once("(fingerprint ")
+                .and_then(|(_, f)| f.split(')').next())
+                .map(str::to_owned);
+            e.action = Some(if text.contains("Updated `") { "updated" } else { "created" }.to_owned());
+            tracing::info!(request = %e.id, name = %e.name, "secret request closed by a receipt in the timeline");
+            changed = true;
+        }
+        changed
+    }
+
     pub fn list(&self) -> Value {
         let mut next = Next::default();
         let out = self.with(|entries| {
-            if self.sweep(entries, &mut next) {
+            let healed = !self.receipts_checked.swap(true, std::sync::atomic::Ordering::Relaxed)
+                && self.close_from_receipts(entries);
+            if healed {
+                self.advance(entries, &mut next);
+            }
+            if self.sweep(entries, &mut next) || healed {
                 self.persist(entries);
             }
             let queued = entries.iter().filter(|e| e.status == Status::Queued).count();
@@ -417,7 +462,14 @@ impl SecretRequests {
                         && project_keys.contains(&e.project.to_lowercase())
                 })
             };
-            let i = by_id.or_else(by_names)?;
+            let by_name_alone = || {
+                let same = |e: &Entry| e.status.open() && !e.name.is_empty() && e.name == key;
+                entries
+                    .iter()
+                    .position(|e| same(e) && e.status == Status::Active)
+                    .or_else(|| entries.iter().position(same))
+            };
+            let i = by_id.or_else(by_names).or_else(by_name_alone)?;
             let e = &mut entries[i];
             e.status = Status::Saved;
             e.closed_at = Some(now());
@@ -604,10 +656,6 @@ mod tests {
         // Another secret saved from the sheet: the card stays.
         assert!(q.saved(None, &receipt("OTHER")).is_none());
         assert_eq!(q.list()["active"], json!(a.entry.id));
-        let mut in_folder = receipt("A");
-        in_folder["path"] = json!("/other");
-        q.saved(None, &in_folder);
-        assert_eq!(q.list()["active"], json!(a.entry.id));
         // The same names: closed.
         q.saved(None, &receipt("A"));
         assert_eq!(q.list()["active"], Value::Null);
@@ -615,6 +663,45 @@ mod tests {
         let b = q.ask(req("B"), None, false).await.unwrap();
         q.saved(Some(&b.entry.id), &receipt("WRONG"));
         assert_eq!(q.list()["active"], json!(b.entry.id));
+    }
+
+    #[tokio::test]
+    async fn the_same_name_saved_anywhere_closes_the_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let q = queue(dir.path());
+        q.ask(req("A"), None, false).await.unwrap();
+        let b = q.ask(req("B"), None, false).await.unwrap();
+        let mut elsewhere = receipt("A");
+        elsewhere["project"] = json!({"id": "p-9", "name": "Lucina"});
+        elsewhere["path"] = json!("/other");
+        q.saved(None, &elsewhere);
+        let list = q.list();
+        let a = list["requests"].as_array().unwrap().iter().find(|e| e["name"] == "A").unwrap().clone();
+        assert_eq!((a["status"].as_str(), a["project"].as_str()), (Some("saved"), Some("Lucina")));
+        // The next card follows, and a save of another name leaves it open.
+        assert_eq!(list["active"], json!(b.entry.id));
+        q.saved(None, &elsewhere);
+        assert_eq!(q.list()["active"], json!(b.entry.id));
+    }
+
+    #[tokio::test]
+    async fn a_receipt_from_before_a_start_closes_what_is_still_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let q = queue(dir.path());
+        let a = q.ask(req("A"), None, false).await.unwrap();
+        let b = q.ask(req("B"), None, false).await.unwrap();
+        lucina_item(&q.timeline, "✅ Saved `OTHER` in X / prod / / (fingerprint 00000000)", "secret_receipt", None);
+        lucina_item(&q.timeline, "✅ Saved `A` in Lucina / prod / / (fingerprint 53e709e8)", "secret_receipt", None);
+        // A later process, with the same files.
+        let timeline = Arc::new(TimelineStore::new(dir.path().join("timeline.jsonl"), 1 << 20, true));
+        let again = SecretRequests::new(dir.path(), timeline, Secretary { http: reqwest::Client::new(), url: None, token_file: None });
+        let list = again.list();
+        let found = list["requests"].as_array().unwrap().iter().find(|e| e["id"] == json!(a.entry.id)).unwrap().clone();
+        assert_eq!((found["status"].as_str(), found["fingerprint"].as_str()), (Some("saved"), Some("53e709e8")));
+        assert_eq!(list["active"], json!(b.entry.id));
+        // It stays closed on disk.
+        let third = queue(dir.path());
+        assert_eq!(third.list()["active"], json!(b.entry.id));
     }
 
     #[tokio::test]

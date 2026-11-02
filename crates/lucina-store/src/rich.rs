@@ -123,7 +123,7 @@ pub fn split_into_chunks(text: &str, max: usize) -> Vec<String> {
     while i < chars.len() {
         let c = chars[i];
         if c == '\n' {
-            cur.push(' ');
+            cur.push('\n');
             sentences.push(std::mem::take(&mut cur));
             i += 1;
             continue;
@@ -153,7 +153,9 @@ pub fn split_into_chunks(text: &str, max: usize) -> Vec<String> {
     let mut out = Vec::new();
     let mut current = String::new();
     for sentence in sentences {
+        // The line end after a sentence: bubbles keep their lines and paragraphs.
         if sentence.trim().is_empty() {
+            current.push_str(&sentence);
             continue;
         }
         let joined = format!("{current}{sentence}");
@@ -1559,6 +1561,15 @@ mod tests {
         for b in &m.bubbles[..m.bubbles.len() - 1] {
             assert!(b.chars().count() <= BUBBLE_SOFT_CHARS, "{}", b.len());
         }
+    }
+
+    #[test]
+    fn long_text_keeps_its_lines_when_it_is_split() {
+        let filler = "Parole che riempiono la bolla fino a farla dividere. ".repeat(8);
+        let text = format!("Fine della frase.\nWhy: la riga dopo.\n\n1. Primo\n2. Secondo\n{filler}");
+        let chunks = split_into_chunks(&text, 280);
+        assert!(chunks.len() > 1);
+        assert!(chunks[0].starts_with("Fine della frase.\nWhy: la riga dopo.\n\n1. Primo\n2. Secondo"), "{}", chunks[0]);
     }
 
     #[test]
