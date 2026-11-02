@@ -310,6 +310,72 @@ impl Call {
         Self::new(Method::POST, &["ops", "records"]).with_body(body)
     }
 
+    /// `GET /flaws?q=&state=&platform=&status=&limit=`: Lucina's flaw tracker, worst first.
+    pub fn flaws_list(q: Option<&str>, state: Option<&str>, platform: Option<&str>, status: Option<&str>, limit: Option<u32>) -> Result<Self> {
+        let mut c = Self::new(Method::GET, &["flaws"]);
+        for (field, v, max) in [("q", q, 500), ("state", state, 32), ("platform", platform, 32), ("status", status, 32)] {
+            if let Some(v) = present(v) {
+                if v.chars().count() > max || v.chars().any(char::is_control) {
+                    return Err(Error::Invalid { field, message: format!("must be at most {max} characters") });
+                }
+                c.query.push((field, v.to_owned()));
+            }
+        }
+        if let Some(n) = limit {
+            if !(1..=200).contains(&n) {
+                return Err(Error::Invalid { field: "limit", message: "must be 1..=200".into() });
+            }
+            c.query.push(("limit", n.to_string()));
+        }
+        Ok(c)
+    }
+
+    /// `POST /flaws`: a report (Lucina validates the fields and denies unknown ones).
+    pub fn flaw_report(body: Value) -> Self {
+        Self::new(Method::POST, &["flaws"]).with_body(body)
+    }
+
+    /// `GET /flaws/matrix`: every live flaw against every client.
+    pub fn flaws_matrix() -> Self {
+        Self::new(Method::GET, &["flaws", "matrix"])
+    }
+
+    fn flaw_id(id: &str) -> Result<()> {
+        let ok = id.strip_prefix("fl-").is_some_and(|h| h.len() == 8 && h.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
+        if ok {
+            Ok(())
+        } else {
+            Err(Error::Invalid { field: "id", message: "must be fl- and 8 lowercase hex digits".into() })
+        }
+    }
+
+    /// `GET /flaws/{id}`: one flaw, its targets and history.
+    pub fn flaw_get(id: &str) -> Result<Self> {
+        Self::flaw_id(id)?;
+        Ok(Self::new(Method::GET, &["flaws", id]))
+    }
+
+    /// `PATCH /flaws/{id}`.
+    pub fn flaw_patch(id: &str, body: Value) -> Result<Self> {
+        Self::flaw_id(id)?;
+        Ok(Self::new(Method::PATCH, &["flaws", id]).with_body(body))
+    }
+
+    /// `PUT /flaws/{id}/targets/{platform}`: closing without evidence is refused by Lucina.
+    pub fn flaw_target(id: &str, platform: &str, body: Value) -> Result<Self> {
+        Self::flaw_id(id)?;
+        if platform.is_empty() || platform.len() > 32 || !platform.bytes().all(|b| b.is_ascii_lowercase()) {
+            return Err(Error::Invalid { field: "platform", message: "must be a platform name".into() });
+        }
+        Ok(Self::new(Method::PUT, &["flaws", id, "targets", platform]).with_body(body))
+    }
+
+    /// `POST /flaws/{id}/dispatch`: `{platform}`, start that task now.
+    pub fn flaw_dispatch(id: &str, body: Value) -> Result<Self> {
+        Self::flaw_id(id)?;
+        Ok(Self::new(Method::POST, &["flaws", id, "dispatch"]).with_body(body))
+    }
+
     /// `GET /ops/ingest`: the Obsidian ingest's status (queue depth, last
     /// run, next try, followed repos).
     pub fn ops_ingest_status() -> Self {

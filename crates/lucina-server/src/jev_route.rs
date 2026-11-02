@@ -65,6 +65,7 @@ pub const INTENT_OPTIONS: &[(&str, &str)] = &[
     ("social_post", "Publish something to the Pokoin Telegram news channel."),
     ("cursor_task", "Give a coding task to a coding agent (Cursor, Codex, Claude Code) on a project."),
     ("agent_message", "The owner asks Lucina to pass a message, question or issue report on to another assistant: Claude (the Claude Code coordinator of his projects), Grok Bot, or Lucina Agents (tell Claude that…, report this to Claude, ask Grok…, post it in Lucina agents, use Lucina agents)."),
+    ("flaw_report", "The owner reports a small flaw he noticed in one of his own apps (Lucina's web app, Mac app, Android or iPhone app, or Juno): something that looks or behaves wrong, such as emoji shown as boxes, lost line breaks, a card or button still active after it was used, or a status that differs between clients. Not a question about how to use something, and not a request to pass a message on."),
     ("discord_admin", "Administer the Discord server: channels, roles, members."),
     ("grocery.purchase", "The user reports groceries they bought."),
     ("grocery.consume", "The user reports eating or using up part of a grocery item."),
@@ -159,7 +160,7 @@ pub fn checks_tier0(c: &lucina_intent::tier0::Classification) -> bool {
     !c.intent.starts_with("grocery.")
         && !matches!(
             c.intent.as_str(),
-            "computer_task" | "agent_message" | "lucina_log_inspect" | "study_focus_reminders"
+            "computer_task" | "agent_message" | "flaw_report" | "lucina_log_inspect" | "study_focus_reminders"
         )
         && lucina_jev::shared().available()
 }
@@ -200,6 +201,7 @@ pub fn doubts(tier0: &lucina_intent::tier0::Classification, jev_intent: &str, co
 pub const SIDE_EFFECT_INTENTS: &[&str] = &[
     "cursor_task",
     "agent_message",
+    "flaw_report",
     "computer_task",
     "schedule_reminder",
     "calendar_event",

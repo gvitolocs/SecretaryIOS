@@ -254,6 +254,8 @@ pub struct ToolEnv {
     pub approvals: Option<Arc<lucina_approvals::Approvals>>,
     /// The ops record (`ops`): deploys, incidents, decisions of every project.
     pub ops: Option<Arc<lucina_ops::Ops>>,
+    /// The flaw tracker (`flaw`, `message_claude` with `issue`).
+    pub flaws: Option<Arc<lucina_flaws::Flaws>>,
     /// Messages to Claude, Grok and Lucina Agents (`LUCINA_REACH`); `None`: off.
     pub reach: Option<Arc<tools::reach::Reach>>,
     /// af-server (AU Find) base URL (`LUCINA_AU_URL`); `None`: `LUCINA_AU=off`.
@@ -313,6 +315,7 @@ impl ToolEnv {
             plugins: tools::plugins::Plugins::default(),
             approvals: None,
             ops: None,
+            flaws: None,
             reach: None,
             au_url: None,
             callers: None,
@@ -511,6 +514,8 @@ pub fn name_words(name: &str) -> Vec<String> {
 pub const OWNER_ONLY_TOOLS: &[&str] = &[
     "secrets_status",
     "secrets_audit",
+    // A flaw report can start a coding agent.
+    "flaw",
     // The Instagram / Pixiv plugins (`tools::plugins::NAMES`): owner's chat only.
     "instagram_profile",
     "instagram_stories",
@@ -534,6 +539,7 @@ pub const OWNER_ONLY_TOOLS: &[&str] = &[
 pub const NO_MCP_TOOLS: &[&str] = &[
     "secrets_status",
     "secrets_audit",
+    "flaw",
     "instagram_profile",
     "instagram_stories",
     "instagram_watchlist",

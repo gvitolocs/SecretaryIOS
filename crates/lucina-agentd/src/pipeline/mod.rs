@@ -51,6 +51,13 @@ pub struct Task {
     pub merged_sha: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merged_at: Option<String>,
+    /// The flaw this task fixes (`lagent task start --flaw`): a merge records its commit there,
+    /// a deploy its tag (`lucina-rs flaws`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flaw: Option<String>,
+    /// The platform of that flaw (`--target`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flaw_target: Option<String>,
     /// The stale question sent to Lucina's decide API (`dc-…`), so it is asked once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stale_decision: Option<String>,

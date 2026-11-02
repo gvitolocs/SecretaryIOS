@@ -47,6 +47,7 @@ pub mod drive_turn;
 pub mod media_turn;
 pub mod memo_turn;
 pub mod meshy_turn;
+mod flaw_turn;
 mod ops_turn;
 pub mod plugin_turn;
 mod reach_turn;
@@ -1833,6 +1834,11 @@ async fn json_turn(
     )
     .await
     {
+        return f;
+    }
+
+    // A flaw he noticed ("emoji are boxes"): into the tracker in his words (crate::flaws).
+    if let Some(f) = flaw_turn::try_turn(t, &prepared.classification.intent, prepared.classification.confidence) {
         return f;
     }
 

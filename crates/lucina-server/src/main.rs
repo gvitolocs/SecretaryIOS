@@ -238,6 +238,15 @@ enum Cmd {
         #[command(flatten)]
         ask: DecideArgs,
     },
+    /// The flaw tracker's database, beside the running server: ls, show, report, target,
+    /// duplicate, merged, deployed, matrix.
+    Flaws {
+        #[command(subcommand)]
+        cmd: FlawsCmd,
+        /// The database (default LUCINA_FLAWS_DB, else <LUCINA_DATA_DIR>/flaws/flaws.db).
+        #[arg(long, global = true)]
+        db: Option<PathBuf>,
+    },
     /// Lucina's messages to Claude, Grok and Lucina Agents, through the running server:
     /// `reach inbox [--to claude] [--all]`, `reach show <id>`, `reach reply <id> --from <who> <text>`.
     Reach {
@@ -263,6 +272,73 @@ enum Cmd {
 }
 
 #[derive(Subcommand)]
+enum FlawsCmd {
+    /// Flaws, worst first.
+    Ls {
+        #[arg(long)]
+        q: Option<String>,
+        #[arg(long)]
+        state: Option<String>,
+    },
+    /// One flaw: targets and history.
+    Show { id: String },
+    /// Record a flaw, in the words given.
+    Report {
+        words: String,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long)]
+        severity: Option<String>,
+        /// Clients where it was seen (repeat).
+        #[arg(long)]
+        affected: Vec<String>,
+        #[arg(long)]
+        thread: Option<String>,
+        #[arg(long)]
+        discovered_from: Option<String>,
+        /// irreversible, credentials or payment: its fix waits for the owner's go.
+        #[arg(long)]
+        gate: Option<String>,
+        /// Someone already triaged it: no agent will.
+        #[arg(long)]
+        triaged: bool,
+    },
+    /// Change one client's row. verified and not_affected are refused without closing evidence.
+    Target {
+        id: String,
+        platform: String,
+        #[arg(long)]
+        status: Option<String>,
+        #[arg(long)]
+        layer: Option<String>,
+        #[arg(long)]
+        evidence_kind: Option<String>,
+        #[arg(long)]
+        evidence_ref: Option<String>,
+        #[arg(long)]
+        build: Option<String>,
+        #[arg(long)]
+        workspace: Option<String>,
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long)]
+        commit: Option<String>,
+        #[arg(long)]
+        deploy_tag: Option<String>,
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// Mark it a duplicate of another flaw.
+    Duplicate { id: String, of: String },
+    /// agentd: a task's merge landed.
+    Merged { id: String, platform: String, commit: String },
+    /// agentd: a deploy holds this target's fix; kept if the runtime carries it.
+    Deployed { id: String, platform: String, runtime: String, tag: String },
+    /// Every live flaw against every client.
+    Matrix,
+}
+
+#[derive(Subcommand, Debug)]
 enum ReachCmd {
     /// Messages Lucina sent that wait for an answer (newest first).
     Inbox {
@@ -675,6 +751,78 @@ async fn upstream_cmd(cmd: UpstreamCmd) -> anyhow::Result<()> {
 /// `lucina-rs decide …`: a client of the running server (`/api/secretary/decisions`), so the
 /// decision goes through the same path as `lucina_decide`: evidence, Jev, the owner's push, the
 /// ops record. The API token comes from the unit's env files and is never printed.
+fn flaws_cmd(cmd: FlawsCmd, db: Option<PathBuf>) -> anyhow::Result<()> {
+    use lucina_flaws::{Evidence, EvidenceKind, Gate, Layer, ListQuery, NewFlaw, Platform, Severity, TargetStatus, TargetUpdate};
+    let flaws = lucina_server::flaws::open_cli(db)?;
+    let actor = std::env::var("LAGENT_SESSION")
+        .or_else(|_| std::env::var("LUCINA_FLAWS_ACTOR"))
+        .unwrap_or_else(|_| "lucina-rs-cli".to_owned());
+    let out = match cmd {
+        FlawsCmd::Ls { q, state } => {
+            let state = state.as_deref().map(lucina_flaws::FlawState::parse).transpose()?;
+            serde_json::to_value(flaws.list(&ListQuery { q, state, ..ListQuery::default() })?)?
+        }
+        FlawsCmd::Show { id } => serde_json::to_value(flaws.get(&id)?)?,
+        FlawsCmd::Report { words, title, severity, affected, thread, discovered_from, gate, triaged } => {
+            let new = NewFlaw {
+                words,
+                title,
+                severity: severity.as_deref().map(Severity::parse).transpose()?,
+                affected: affected.iter().map(|p| Platform::parse(p)).collect::<Result<_, _>>()?,
+                thread,
+                discovered_from,
+                gate: gate.as_deref().map(Gate::parse).transpose()?,
+            };
+            let r = flaws.report(new, &actor)?;
+            if triaged {
+                flaws.start_triage(&r.flaw.flaw.id, "manual", true, &actor)?;
+            }
+            serde_json::to_value(r)?
+        }
+        FlawsCmd::Target { id, platform, status, layer, evidence_kind, evidence_ref, build, workspace, session, commit, deploy_tag, note } => {
+            let evidence = match evidence_kind {
+                None => None,
+                Some(k) => Some(Evidence {
+                    kind: EvidenceKind::parse(&k)?,
+                    reference: evidence_ref.unwrap_or_default(),
+                    build: build.clone(),
+                    note: note.clone(),
+                }),
+            };
+            let u = TargetUpdate {
+                status: status.as_deref().map(TargetStatus::parse).transpose()?,
+                layer: layer.as_deref().map(Layer::parse).transpose()?,
+                evidence,
+                workspace,
+                session,
+                commit,
+                deploy_tag,
+                build,
+                note,
+            };
+            serde_json::to_value(flaws.set_target(&id, Platform::parse(&platform)?, u, &actor)?)?
+        }
+        FlawsCmd::Duplicate { id, of } => {
+            let p = lucina_flaws::FlawPatch { duplicate_of: Some(of), ..Default::default() };
+            serde_json::to_value(flaws.patch(&id, p, &actor)?)?
+        }
+        FlawsCmd::Merged { id, platform, commit } => serde_json::to_value(flaws.record_merge(&id, Platform::parse(&platform)?, &commit, "lagent")?)?,
+        FlawsCmd::Deployed { id, platform, runtime, tag } => {
+            let p = Platform::parse(&platform)?;
+            let t = flaws.get(&id)?.targets.into_iter().find(|t| t.platform == p).ok_or(lucina_flaws::FlawError::NotFound)?;
+            let first_for_runtime = !t.deploy_tag.as_deref().is_some_and(|d| d.starts_with(&format!("deploy/{runtime}/")));
+            if lucina_flaws::policy::runtime_serves(p, t.layer, &runtime) && first_for_runtime {
+                serde_json::to_value(flaws.record_deploy(&id, p, &tag, "lagent")?)?
+            } else {
+                serde_json::to_value(t)?
+            }
+        }
+        FlawsCmd::Matrix => flaws.matrix()?,
+    };
+    println!("{}", serde_json::to_string_pretty(&out)?);
+    Ok(())
+}
+
 async fn reach_cmd(cmd: ReachCmd) -> anyhow::Result<()> {
     use lucina_server::reach::cli;
     let out = match cmd {
@@ -1129,6 +1277,7 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
         } => google_auth(&service, code, read_only).await?,
         Cmd::Drive { cmd } => drive_cmd(cmd).await?,
         Cmd::Decide { cmd, ask } => decide_cmd(cmd, ask).await?,
+        Cmd::Flaws { cmd, db } => flaws_cmd(cmd, db)?,
         Cmd::Reach { cmd } => reach_cmd(cmd).await?,
         Cmd::Jev { cmd } => jev_cmd(cmd).await?,
         Cmd::Upstream { cmd } => upstream_cmd(cmd).await?,

@@ -45,6 +45,40 @@ final class RichMessageTests: XCTestCase {
         XCTAssertNil(RichMessage.parse(try json(#"{"format":"v1","bubbles":[]}"#)))
     }
 
+    /// The shared vectors (tests/conformance/rich/*.json, copied into the test bundle by
+    /// project.yml), also run by the server (crates/lucina-store/tests/conformance_rich.rs) and the
+    /// web (richConformance.test.ts).
+    func testConformanceVectors() throws {
+        let dir = try XCTUnwrap(Bundle(for: Self.self).resourceURL).appendingPathComponent("rich")
+        let files = try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "json" }
+        XCTAssertGreaterThanOrEqual(files.count, 4)
+        for file in files {
+            struct Expect: Decodable { let bubbles: [String]; let blocks: [String]; let actions: [String]; let speech: String }
+            struct Vector: Decodable { let name: String; let input: JSONValue; let expect: Expect }
+            let v = try JSONDecoder().decode(Vector.self, from: Data(contentsOf: file))
+            let m = try XCTUnwrap(RichMessage.parse(v.input), v.name)
+            XCTAssertEqual(m.bubbles, v.expect.bubbles, v.name)
+            XCTAssertEqual(m.blocks.map(Self.kind), v.expect.blocks, v.name)
+            XCTAssertEqual(m.actions.map(\.id), v.expect.actions, v.name)
+            XCTAssertEqual(m.speechText, v.expect.speech, v.name)
+        }
+    }
+
+    private static func kind(_ b: RichBlock) -> String {
+        switch b {
+        case .checklist: return "checklist"
+        case .card: return "card"
+        case .stat: return "stat"
+        case .list: return "list"
+        case .table: return "table"
+        case .steps: return "steps"
+        case .quote: return "quote"
+        case .link: return "link_preview"
+        case .place: return "place"
+        }
+    }
+
     func testSpeechReadsOnlyTheBubblesWithoutMarkdown() throws {
         let m = try XCTUnwrap(RichMessage.parse(try json(inventario)))
         XCTAssertEqual(m.speechText, "Ecco l'inventario di ciò che è live ora ✅ In sintesi: approvazioni strutturate e morning brief no ⚠️")

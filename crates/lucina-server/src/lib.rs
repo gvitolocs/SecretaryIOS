@@ -39,6 +39,7 @@ pub mod grocery_turn;
 pub mod jobs;
 pub mod notebooks;
 pub mod lan;
+pub mod flaws;
 pub mod ops;
 pub mod otp;
 pub mod owner_secrets;
@@ -148,6 +149,8 @@ pub struct Inner {
     pub supervisor: Arc<delivery_monitor::Supervisor>,
     /// The ops record (`LUCINA_OPS_VAULT_DIR`, crate::ops); `None`: off.
     pub ops: Option<Arc<lucina_ops::Ops>>,
+    /// The flaw tracker (crate::flaws); `None`: `LUCINA_FLAWS=off`.
+    pub flaws: Option<Arc<lucina_flaws::Flaws>>,
     /// The Obsidian ingest (`LUCINA_VAULT_INGEST=on`, crate::ops); `None`: off.
     pub ingest: Option<Arc<lucina_vault_ingest::Ingest>>,
     /// The Jev client of the voice fast path when the config sets one (tests); `None`: the shared client.
@@ -251,6 +254,8 @@ impl AppState {
         let ingest = ops::open_ingest(&cfg.ops, cfg.time_zone, ops.as_ref());
         let mut env = ToolEnv::new(&cfg.data_dir, cfg.time_zone);
         env.ops = ops.clone();
+        let flaws = flaws::open(&cfg.flaws);
+        env.flaws = flaws.clone();
         // Messages to Claude, Grok and Lucina Agents (crate::reach); the sink is set below.
         env.reach = reach::build(&cfg.data_dir, ops.clone());
         env.reminders = Some(reminders.clone());
@@ -433,6 +438,12 @@ impl AppState {
                 .register(Arc::new(lucina_tools::tools::ops::OpsTool))
                 .expect("ops tool registers");
         }
+        // The flaw tracker: owner's turns only (OWNER_ONLY_TOOLS), since a report can start an agent.
+        if env.flaws.is_some() && cfg.tools.allows("flaw") {
+            registry
+                .register(Arc::new(lucina_tools::tools::flaw::FlawTool))
+                .expect("flaw tool registers");
+        }
         // Root commands after the owner's approval of the exact commands (crate lucina_approvals).
         if approvals.is_some() && cfg.tools.allows("root_exec") {
             registry
@@ -547,6 +558,7 @@ impl AppState {
             )),
             supervisor: Arc::default(),
             ops,
+            flaws,
             ingest,
             voice_jev: cfg.voice_jev.clone().map(|c| Arc::new(lucina_jev::Jev::new(c))),
             vocab: Arc::new(lucina_vocab::Watched::new(cfg.vocab_path.clone())),
@@ -694,6 +706,9 @@ impl AppState {
         }
         if let Some(h) = ops::spawn_ingest(self) {
             self.supervisor.watch("vault ingest", h);
+        }
+        if let Some(h) = flaws::spawn(self) {
+            self.supervisor.watch("flaw tracker", h);
         }
         if self.cfg.scheduler {
             if self.cfg.reminders_writer == WriterKind::Node {

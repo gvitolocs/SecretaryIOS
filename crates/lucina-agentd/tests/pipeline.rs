@@ -7,7 +7,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use lucina_agentd::lane::LaneConfig;
-use lucina_agentd::manager::{AdoptTask, LeaseRequest, Manager, ManagerError, MergeRequest, Options, ReleaseRequest};
+use lucina_agentd::manager::{AdoptTask, LeaseRequest, Manager, ManagerError, MergeRequest, Options, ReleaseRequest, StartTask};
 use lucina_agentd::pipeline::{Config, JobState};
 use lucina_agentd::store::Store;
 
@@ -214,6 +214,43 @@ async fn a_long_gate_holds_up_only_its_own_repo() {
     assert!(matches!(m.prioritize_job(&long.job_id), Err(ManagerError::Invalid(_))), "only a queued job");
     let _ = m.cancel_job(&urgent.job_id).await;
     let _ = m.cancel_job(&waits.job_id).await;
+}
+
+#[tokio::test]
+async fn a_flaw_task_records_its_merge_on_the_flaw() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    // Stands in for `lucina-rs flaws`: what it was called with goes in a file.
+    let calls = root.join("calls.txt");
+    let bin = root.join("fake-lucina-rs");
+    std::fs::write(&bin, format!("#!/bin/sh\necho \"$@\" >> {}\n", calls.display())).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::env::set_var("LUCINA_AGENTD_LUCINA_RS", &bin);
+    let m = manager(&root);
+    let repo = repo_with_gate(&root, "Flawed", "true");
+    let (task, w) = m
+        .start_task(StartTask {
+            title: "Flaw fix".into(),
+            repo: Some(repo.display().to_string()),
+            branch: Some("flaw-fix".into()),
+            flaw: Some("fl-0123abcd".into()),
+            flaw_target: Some("web".into()),
+            ..StartTask::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(task.flaw.as_deref(), Some("fl-0123abcd"));
+    let wt = PathBuf::from(&w.cwd);
+    git(&wt, &["config", "user.email", "t@t"]);
+    git(&wt, &["config", "user.name", "t"]);
+    commit(&wt, "fix.txt", "fixed\n", "the fix");
+    let job = m.queue_merge(MergeRequest { workspace: w.workspace_id.clone(), ..MergeRequest::default() }).await.unwrap();
+    let done = run_until_done(&m, &job.job_id).await;
+    assert_eq!(done.state, JobState::Succeeded, "{:?}", done.outcome);
+    let landed = done.outcome.unwrap().landed.unwrap();
+    let said = std::fs::read_to_string(&calls).unwrap();
+    assert_eq!(said.trim(), format!("flaws merged fl-0123abcd web {landed}"));
 }
 
 #[tokio::test]

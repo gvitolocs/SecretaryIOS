@@ -36,6 +36,11 @@ pub struct StartTask {
     pub owner: Option<String>,
     #[serde(default)]
     pub session: Option<String>,
+    /// The flaw this task fixes, and on which platform.
+    #[serde(default)]
+    pub flaw: Option<String>,
+    #[serde(default)]
+    pub flaw_target: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -223,6 +228,8 @@ impl Manager {
             trunk: repo.trunk,
             owner: req.owner,
             session: req.session,
+            flaw: req.flaw,
+            flaw_target: req.flaw_target,
             via: "start".into(),
             created_at: now_iso(),
             last_job: None,
@@ -266,6 +273,8 @@ impl Manager {
             trunk: repo.trunk,
             owner: req.owner,
             session: req.session,
+            flaw: None,
+            flaw_target: None,
             via: "adopt".into(),
             created_at: now_iso(),
             last_job: None,
@@ -567,6 +576,14 @@ impl Manager {
                 after = Some(self.after_merge(job, ws, landed).await);
             }
         }
+        if job.kind == JobKind::Merge && outcome.ok && outcome.code != "NOTHING_TO_MERGE" {
+            if let (Some(ws), Some(landed)) = (&job.workspace_id, &outcome.landed) {
+                self.note_flaw_merge(ws, landed).await;
+            }
+        }
+        if job.kind == JobKind::Deploy && outcome.code == "DEPLOYED" {
+            self.note_flaw_deploy(job, &outcome).await;
+        }
         if job.kind == JobKind::Deploy && matches!(outcome.code.as_str(), "INSTALL_FAILED" | "UNHEALTHY" | "RECORD_FAILED") {
             if let Some(n) = &self.inner.options.notifier {
                 n.send(crate::notify::Push {
@@ -589,6 +606,31 @@ impl Manager {
         });
         self.bump();
         self.pipeline().wake.notify_one();
+    }
+
+    /// A flaw task landed: its commit goes on the flaw. A failure here never fails the merge.
+    async fn note_flaw_merge(&self, ws: &str, landed: &str) {
+        let Some(t) = self.pipeline().task(ws) else { return };
+        let (Some(flaw), Some(target)) = (&t.flaw, &t.flaw_target) else { return };
+        lucina_flaws_cli(&["flaws", "merged", flaw, target, landed]).await;
+    }
+
+    /// A deploy: every flaw fix on this repo that the deployed commit holds gets the new tag
+    /// (`lucina-rs` keeps only runtimes that carry that target's fix).
+    async fn note_flaw_deploy(&self, job: &Job, outcome: &Outcome) {
+        let (Some(runtime), Some(landed)) = (&job.runtime, &outcome.landed) else { return };
+        let repo = Path::new(&job.repo);
+        let pattern = format!("deploy/{runtime}/*");
+        let Some(tag) = git::read(repo, &["tag", "--list", &pattern, "--points-at", landed, "--sort=-creatordate"]).await.and_then(|o| o.lines().next().map(str::to_owned)) else {
+            tracing::warn!(runtime = %runtime, "no deploy tag at the deployed commit");
+            return;
+        };
+        for t in self.pipeline().tasks().into_iter().filter(|t| t.repo == job.repo) {
+            let (Some(flaw), Some(target), Some(sha)) = (&t.flaw, &t.flaw_target, &t.merged_sha) else { continue };
+            if git::must(repo, &["merge-base", "--is-ancestor", sha, landed]).await.is_ok() {
+                lucina_flaws_cli(&["flaws", "deployed", flaw, target, runtime, &tag]).await;
+            }
+        }
     }
 
     /// After a merge: move the workspace's branch to the merged commit, then archive the
@@ -772,6 +814,19 @@ impl Manager {
             "leases": self.leases(),
             "deploys": deploys,
         })
+    }
+}
+
+/// `lucina-rs flaws …` (`LUCINA_AGENTD_LUCINA_RS`, default `~/.local/bin/lucina-rs`): the tracker's
+/// database belongs to Lucina, and agentd doesn't link it.
+async fn lucina_flaws_cli(args: &[&str]) {
+    let bin = std::env::var_os("LUCINA_AGENTD_LUCINA_RS").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/bin/lucina-rs"));
+    let run = tokio::process::Command::new(&bin).args(args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).kill_on_drop(true).output();
+    match tokio::time::timeout(Duration::from_secs(20), run).await {
+        Ok(Ok(o)) if o.status.success() => {}
+        Ok(Ok(o)) => tracing::warn!(?args, stderr = %String::from_utf8_lossy(&o.stderr), "flaw not updated"),
+        Ok(Err(e)) => tracing::warn!(?args, error = %e, "flaw not updated"),
+        Err(_) => tracing::warn!(?args, "flaw not updated: timed out"),
     }
 }
 

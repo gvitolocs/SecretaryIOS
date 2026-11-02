@@ -24,6 +24,7 @@ lucina-upstream = { path = "../lucina-upstream" }
 lucina-prompter = { path = "../lucina-prompter" }
 lucina-store = { path = "../lucina-store" }
 lucina-memory = { path = "../lucina-memory" }
+lucina-flaws = { path = "../lucina-flaws" }
 lucina-ops = { path = "../lucina-ops" }
 lucina-vault-ingest = { path = "../lucina-vault-ingest" }
 lucina-grocery = { path = "../lucina-grocery" }

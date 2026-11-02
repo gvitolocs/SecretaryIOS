@@ -1169,10 +1169,20 @@ impl RichMessage {
                 .filter(|b| b["type"] == "place")
                 .map(place_speech),
         );
-        strip_inline_markdown(&parts.join(" "))
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
+        // List marks and headings are for the eye: the web and iOS drop them too.
+        let plain: Vec<String> = strip_inline_markdown(&parts.join(" "))
+            .lines()
+            .map(|l| {
+                let t = l.trim_start();
+                let t = t.strip_prefix(['-', '*', '+', '•']).filter(|r| r.starts_with(char::is_whitespace)).unwrap_or(t);
+                let hashes = t.chars().take_while(|c| *c == '#').count();
+                match (1..=6).contains(&hashes) && t[hashes..].starts_with(char::is_whitespace) {
+                    true => t[hashes..].to_owned(),
+                    false => t.to_owned(),
+                }
+            })
+            .collect();
+        plain.join(" ").split_whitespace().collect::<Vec<_>>().join(" ")
     }
 
     /// The timeline meta fields (`format`, `bubbles`, `lang`, `blocks`, `actions`).

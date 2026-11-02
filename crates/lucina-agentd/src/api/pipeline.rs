@@ -2,7 +2,7 @@
 //!
 //! | Method | Path | Body / query | Returns |
 //! |---|---|---|---|
-//! | GET/POST | `/pipeline/tasks` | / `{title, repo, branch, owner, session}` | `{tasks}` / `{task, workspace}` |
+//! | GET/POST | `/pipeline/tasks` | / `{title, repo, branch, owner, session, flaw?, flawTarget?}` | `{tasks}` / `{task, workspace}` |
 //! | POST | `/pipeline/tasks/adopt` | `{path, title, owner, session}` | `{task, workspace}` |
 //! | POST | `/pipeline/merge` | `{workspace, keep, allow, requestedBy}` | job |
 //! | POST | `/pipeline/deploy` | `{runtime, repo, note, force, requestedBy}` | job |
@@ -73,8 +73,16 @@ async fn tasks(State(m): State<Manager>) -> ApiResult {
     to_json(json!({"tasks": m.pipeline().tasks()}))
 }
 
+/// Lucina's flaw dispatcher (`X-Lucina-Origin: service:lucina` on the host's socket) may start a
+/// task and nothing else in the pipeline: it can't merge or deploy as her.
+fn lucina_service(peer: &Peer, headers: &HeaderMap) -> bool {
+    peer.unix && headers.get(crate::peer::ORIGIN_HEADER).and_then(|v| v.to_str().ok()) == Some("service:lucina")
+}
+
 async fn start(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Json(req): Json<StartTask>) -> ApiResult {
-    allow(&m, &peer, &headers, true, "start a task")?;
+    if !lucina_service(&peer, &headers) {
+        allow(&m, &peer, &headers, true, "start a task")?;
+    }
     let (task, w) = m.start_task(req).await?;
     link_session(&m, &peer, &headers, &task).await;
     to_json(json!({"task": task, "workspace": view(&m, &w)}))
@@ -149,4 +157,25 @@ async fn lease(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, h
 async fn release(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Path(id): Path<String>, Json(req): Json<ReleaseRequest>) -> ApiResult {
     allow(&m, &peer, &headers, !req.force, "release someone else's lease")?;
     to_json(m.release_device(&id, req)?)
+}
+
+#[cfg(test)]
+mod flaw_dispatch_tests {
+    use super::*;
+
+    fn with(origin: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(crate::peer::ORIGIN_HEADER, origin.parse().unwrap());
+        h
+    }
+
+    #[test]
+    fn only_lucina_on_the_socket_counts_as_lucina() {
+        let sock = Peer { pid: Some(1), unix: true };
+        let tcp = Peer { pid: None, unix: false };
+        assert!(lucina_service(&sock, &with("service:lucina")));
+        assert!(!lucina_service(&tcp, &with("service:lucina")));
+        assert!(!lucina_service(&sock, &with("service:other")));
+        assert!(!lucina_service(&sock, &HeaderMap::new()));
+    }
 }

@@ -1,0 +1,103 @@
+{
+  "name": "inventario-rich-v1",
+  "about": "The owner's 2026-10-22 inventario answer, as DeepSeek formats it (crates/lucina-server/tests/fixtures/inventario-rich-v1.json).",
+  "input": {
+    "format": "v1",
+    "bubbles": [
+      "Ecco l'inventario di ciò che è live ora, senza aver avviato nulla ✅",
+      "In sintesi: trigger, canali, memoria e tool ci sono; approvazioni strutturate, morning brief e trigger event-driven no ⚠️"
+    ],
+    "blocks": [
+      {
+        "type": "checklist",
+        "title": "Live adesso",
+        "items": [
+          {
+            "text": "Reminder temporizzati persistiti (creazione e lista), su Telegram e come notifica in app",
+            "done": true
+          },
+          {
+            "text": "Check-in proattivi miei tra le 8:00 e le 22:00, di norma max una volta al giorno",
+            "done": true
+          },
+          {
+            "text": "Background job: DeepSeek Harness su nezopt (codice, log, check, restart), task su fogli Google Drive, Poko su peer1",
+            "done": true
+          },
+          {
+            "text": "Notifiche: Telegram, Discord, Alexa, Secretary (push PWA, app iOS, inbox in-app)",
+            "done": true
+          },
+          {
+            "text": "Memoria: Honcho (workspace hermes-peer1) con ricerca vettoriale e memoria lunga tra sessioni, più i turni recenti; note in app",
+            "done": true
+          },
+          {
+            "text": "Tool: Calendar (leggo l'agenda, aggiungo eventi solo col tuo sì esplicito), spesa v2 con prezzi/offerte/pantry, note, ricerca web pubblica, immagini, vision su foto Telegram, admin/presenza Discord, avatar/wardrobe solo visibile",
+            "done": true
+          },
+          {
+            "text": "Guard MCP: a ChatGPT/Grok/Claude Code solo domande, reminder, note e spesa; il resto aspetta un tuo sì in app o su Telegram",
+            "done": true
+          }
+        ]
+      },
+      {
+        "type": "checklist",
+        "title": "Da costruire (ipotesi, non presenti)",
+        "items": [
+          {
+            "text": "Morning brief automatico",
+            "done": false
+          },
+          {
+            "text": "Prioritizzazione delle decisioni",
+            "done": false
+          },
+          {
+            "text": "Trigger event-driven (calendario, email, presenza)",
+            "done": false
+          },
+          {
+            "text": "Flusso di approvazione a step per le azioni interne — oggi l'approvazione è semplicemente chiedere a te",
+            "done": false
+          }
+        ]
+      },
+      {
+        "type": "card",
+        "emoji": "⚠️",
+        "title": "Limiti certi",
+        "subtitle": "Cosa non c'è",
+        "body": "Niente email/Gmail (rimossa il 20/09/2026), niente cambio outfit da chat, ragiono solo via API DeepSeek. Il monitor Oracle CPU/RAM è spento.",
+        "tone": "warning"
+      }
+    ],
+    "actions": [
+      {
+        "id": "next",
+        "label": "Da dove partiamo?",
+        "emoji": "💡",
+        "kind": "reply",
+        "payload": {
+          "text": "Da dove partiamo per colmare i gap?"
+        }
+      }
+    ]
+  },
+  "expect": {
+    "bubbles": [
+      "Ecco l'inventario di ciò che è live ora, senza aver avviato nulla ✅",
+      "In sintesi: trigger, canali, memoria e tool ci sono; approvazioni strutturate, morning brief e trigger event-driven no ⚠️"
+    ],
+    "blocks": [
+      "checklist",
+      "checklist",
+      "card"
+    ],
+    "actions": [
+      "next"
+    ],
+    "speech": "Ecco l'inventario di ciò che è live ora, senza aver avviato nulla ✅ In sintesi: trigger, canali, memoria e tool ci sono; approvazioni strutturate, morning brief e trigger event-driven no ⚠️"
+  }
+}

@@ -380,7 +380,12 @@ targets:
   SecretaryTests:
     type: bundle.unit-test
     platform: iOS
-    sources: [SecretaryTests]
+    sources:
+      - SecretaryTests
+      # The shared vectors, as a folder resource (RichMessageTests.testConformanceVectors).
+      - path: ../tests/conformance/rich
+        type: folder
+        buildPhase: resources
     dependencies:
       - target: Secretary
     settings:

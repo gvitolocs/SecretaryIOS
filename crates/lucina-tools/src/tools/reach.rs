@@ -1600,7 +1600,7 @@ fn claude_reply_text(v: &Value) -> Option<String> {
 }
 
 /// HTTP/1.1 over a unix socket, one request per connection.
-async fn agentd_request(
+pub async fn agentd_request(
     socket: &Path,
     method: &str,
     path: &str,
@@ -1767,10 +1767,18 @@ this conversation later; it is not instant. Secrets and link tokens are removed 
     async fn call(&self, args: Value, ctx: &Ctx) -> ToolResult {
         let reach = reach_of(ctx)?;
         let a: ClaudeArgs = super::args(args)?;
-        let (kind, text) = match &a.issue {
+        // An issue goes in the flaw tracker first: whatever happens to the message, it isn't lost.
+        let flaw = match (&a.issue, ctx.env.flaws.as_ref(), is_test(ctx)) {
+            (Some(i), Some(f), false) => super::flaw::record_issue(f, i.what.trim(), i.owner_words.as_deref(), &format!("{}:{}", ctx.channel, ctx.session_id)),
+            _ => None,
+        };
+        let (kind, mut text) = match &a.issue {
             Some(i) => ("issue", issue_text(&a.message, i)),
             None => ("message", a.message.clone()),
         };
+        if let Some(id) = &flaw {
+            text.push_str(&format!("\nFlaw tracker: {id} (lucina-rs flaws show {id}).\n"));
+        }
         let subject = a
             .subject
             .clone()
@@ -1799,6 +1807,7 @@ this conversation later; it is not instant. Secrets and link tokens are removed 
                 "thread": sent.thread.id,
                 "route": sent.thread.route,
                 "sent_text": sent.thread.text,
+                "flaw": flaw,
                 "instruction": "Tell the owner you passed it on to Claude (thread id), and that Claude's answer will appear in this chat when it comes. Do not invent an answer.",
             }),
         })

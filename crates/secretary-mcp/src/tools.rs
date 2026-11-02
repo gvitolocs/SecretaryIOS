@@ -654,6 +654,7 @@ pub struct ToolSpec {
 pub fn also_allowed(name: &str) -> Option<Scope> {
     (name.starts_with("ops_")
         || name.starts_with("au_")
+        || matches!(name, "flaw_report" | "flaw_search" | "flaw_status" | "flaw_matrix" | "flaw_target")
         || matches!(name, "caller_screen" | "lucina_inbox" | "lucina_reply"))
     .then_some(Scope::Agents)
 }
@@ -751,6 +752,19 @@ pub fn specs() -> Vec<ToolSpec> {
             "Status of Lucina's Obsidian ingest, which turns ops records, commits on the Lucina repos and session reports into Zettelkasten notes in the owner's Raspberry Pi vault (per project folder: Permanent, Events, MOC, hub), drafted by the local Qwen while it is free: queue depth, drafts waiting for the vault, whether the Pi is reachable, the last run and why it waited, the next try, followed repos, items that gave up."),
         spec!("ops_ingest_now", "Ingest into Obsidian now", Scope::Write, ro = false, destructive = false, idempotent = true, crate::ops::IngestNowArgs,
             "Ask Lucina to scan the sources and write pending Obsidian notes now, in the background. It still never preempts another Qwen user: when the GPU is busy it waits and keeps the queue. cold (default true) lets it load the local model when the GPU is entirely free. Check the result with ops_ingest_status."),
+        // Lucina's flaw tracker (crate::flaws): `agents` tokens too, except dispatch.
+        spec!("flaw_report", "Report a flaw to Lucina", Scope::Write, ro = false, destructive = false, idempotent = false, crate::flaws::ReportArgs,
+            "Record a small flaw the owner noticed in his clients (web, Mac, Android, iPhone, Juno), in his exact words. Lucina triages it and starts the fix by herself, and tells him the outcome. Say which clients it was seen on (affected), or leave it empty. discovered_from links a flaw found while fixing another. Set gate only when its fix can't be undone or needs his credentials or a payment."),
+        spec!("flaw_search", "Search Lucina's flaws", Scope::Read, ro = true, destructive = false, idempotent = true, crate::flaws::SearchArgs,
+            "Find flaws by words, state, client or a client's status. Worst first."),
+        spec!("flaw_status", "One flaw", Scope::Read, ro = true, destructive = false, idempotent = true, crate::flaws::StatusArgs,
+            "One flaw: the owner's words, every client's status, layer, evidence, workspace, commit and deploy tag, and its full history."),
+        spec!("flaw_matrix", "Flaws against clients", Scope::Read, ro = true, destructive = false, idempotent = true, crate::flaws::NoArgs,
+            "Every live flaw against every client: untriaged, affected, fixing, fixed, verified, not_affected or blocked."),
+        spec!("flaw_target", "Update a client's row", Scope::Write, ro = false, destructive = false, idempotent = true, crate::flaws::TargetArgs,
+            "Change one client's row of a flaw. verified and not_affected are refused without evidence from an installed build (a harness run naming the build, a debug event or a screenshot): reading code can open a target but never close one. Setting session takes it on by hand, so Lucina won't start a task for it. Setting layer on an affected target starts its fix by itself."),
+        spec!("flaw_dispatch", "Start a flaw's fix now", Scope::Write, ro = false, destructive = false, idempotent = false, crate::flaws::DispatchArgs,
+            "Start the task for one affected client of a flaw now, instead of waiting for Lucina's next round. It obeys the same limit on tasks per repo and the same owner gates."),
         // Lucina's messages to Claude (crate::reach): the mailbox and replies; `agents` tokens too.
         spec!("lucina_inbox", "Lucina's messages to Claude", Scope::Read, ro = true, destructive = false, idempotent = true, crate::reach::InboxArgs,
             "Messages Lucina sent to Claude (or Grok/agents) that wait for an answer: issue reports and requests the owner asked her to pass on. Args: to (default claude), status (default open), limit; optional thread to read one in full. Newest first; answer one with lucina_reply."),

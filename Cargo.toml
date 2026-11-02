@@ -23,6 +23,7 @@ members = [
     "crates/lucina-prompter",
     "crates/lucina-store",
     "crates/lucina-memory",
+    "crates/lucina-flaws",
     "crates/lucina-ops",
     "crates/lucina-vault-ingest",
     "crates/lucina-grocery",

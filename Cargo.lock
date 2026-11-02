@@ -3428,6 +3428,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "lucina-flaws"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "getrandom 0.3.4",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "lucina-grocery"
 version = "0.1.0"
 dependencies = [
@@ -3795,6 +3808,7 @@ dependencies = [
  "lucina-deals",
  "lucina-delegate",
  "lucina-discord",
+ "lucina-flaws",
  "lucina-grocery",
  "lucina-intent",
  "lucina-jev",
@@ -3895,6 +3909,7 @@ dependencies = [
  "lucina-computer-use",
  "lucina-delegate",
  "lucina-discord",
+ "lucina-flaws",
  "lucina-grocery",
  "lucina-jev",
  "lucina-llm",

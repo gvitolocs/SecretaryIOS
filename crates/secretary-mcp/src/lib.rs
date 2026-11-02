@@ -31,6 +31,7 @@ pub mod login;
 pub mod mcp;
 pub mod notebooks;
 pub mod oauth;
+pub mod flaws;
 pub mod ops;
 pub mod ratelimit;
 pub mod reach;

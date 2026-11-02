@@ -2373,6 +2373,27 @@ NewRecord (snake_case; unknown fields are refused): `kind` deploy|incident|decis
 Lucina answers 404 `ops_disabled` when the record is off (`LUCINA_OPS_VAULT_DIR` unset). MCP tools: `ops_record`
 (scope write), `ops_search` and `ops_get` (scope read); `agents` tokens may call all three.
 
+## Flaw tracker
+
+The small flaws the owner notices across his clients (crate `lucina-flaws` in lucina-rs, design
+[`docs/design/flaws.md`](design/flaws.md)). Owner devices only (device token or web session; Lucina's service token is not
+accepted), forwarded to Lucina's `/api/secretary/flaws/*`; the MCP names its client in `X-Secretary-Caller`, which Lucina
+keeps as the reporter.
+
+| Method | Path | Body / query | Answer |
+| --- | --- | --- | --- |
+| GET | `/v1/flaws` | `q, state, platform, status, limit (1-200)` | `{items}`, worst first |
+| POST | `/v1/flaws` | `{words, title?, severity?, affected?, thread?, discovered_from?, gate?}` | 201 `{flaw, possible_duplicates}` |
+| GET | `/v1/flaws/matrix` | | `{platforms, rows: [{id, title, severity, state, cells: {<platform>: {status, layer, evidence, commit, deploy_tag, workspace, agent, session}}}]}` |
+| GET | `/v1/flaws/{id}` | id = `fl-` and 8 lowercase hex | the flaw, its `targets` and `events`; 404 `flaw_not_found` |
+| PATCH | `/v1/flaws/{id}` | `{title?, severity?, duplicate_of?, thread?, gate?, decision_id?, dismissed?}` | the flaw |
+| PUT | `/v1/flaws/{id}/targets/{platform}` | `{status?, layer?, evidence?: {kind, reference, build?, note?}, workspace?, session?, commit?, deploy_tag?, build?, note?}` | the target; 422 `evidence_required`, 409 `bad_transition` |
+| POST | `/v1/flaws/{id}/dispatch` | `{platform}` | 202 the target; 409 `not_claimable`, `needs_owner` or `busy`; 503 `dispatch_failed` |
+
+Platforms: `web`, `mac`, `android`, `ios`, `juno`. `verified` and `not_affected` need evidence of kind `harness_run` (with
+`build`), `debug_event` or `screenshot`; `code_reading` and `owner_report` only open a target. Setting a layer on an
+`affected` target starts its fix on Lucina's next round. 404 `flaws_disabled` when `LUCINA_FLAWS=off`.
+
 ## Lucina's mailbox for Claude (reach)
 
 Lucina can message Claude (issue reports, requests the owner asked her to pass on). With no live Claude channel the message

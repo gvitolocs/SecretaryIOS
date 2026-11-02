@@ -31,6 +31,7 @@ pub const INTENTS: &[&str] = &[
     "cursor_task",
     "computer_task",
     "agent_message",
+    "flaw_report",
     "lucina_log_inspect",
     "grocery.purchase",
     "grocery.consume",
@@ -124,6 +125,7 @@ pub fn default_reply_mode(intent: &str) -> &'static str {
         | "temporal_query"
         | "continue_current_topic"
         | "new_topic"
+        | "flaw_report"
         | "chat" => "chat",
         "list_reminders"
         | "oracle_monitor"
@@ -264,6 +266,10 @@ pub fn classify_tier0(text: &str, memory: &str, s: &Settings) -> Option<Classifi
     // its own route (`crate::reach`), ahead of every rule a link or a plugin word could trigger.
     if crate::reach::is_request(text) {
         return Some(C::t0("agent_message", 0.97, true, true, "direct"));
+    }
+    // "flaw: the card stays active": into the tracker (`crate::flaw`); a plain report is Jev's to route.
+    if crate::flaw::is_report(text) {
+        return Some(C::t0("flaw_report", 0.97, false, true, "chat"));
     }
     if !looks_like_reminder_request(text) && explicit_recall(text) {
         return Some(C::t0("explicit_memory_recall", 0.9, true, false, "chat"));

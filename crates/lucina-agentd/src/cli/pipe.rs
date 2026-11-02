@@ -35,6 +35,12 @@ pub struct StartArgs {
     /// The Claude session or agent working in it (default: $LAGENT_SESSION, $CLAUDE_CODE_HOST_SESSION_ID, $CLAUDE_CODE_SESSION_ID)
     #[arg(long)]
     pub session: Option<String>,
+    /// The flaw this fixes (`fl-…`): the merge records its commit there, the deploy its tag
+    #[arg(long, requires = "target")]
+    pub flaw: Option<String>,
+    /// The flaw's platform: web, mac, android, ios or juno
+    #[arg(long, requires = "flaw")]
+    pub target: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -216,7 +222,7 @@ pub async fn task(client: &Client, cmd: &TaskCommand) -> Result<Output, CmdError
     match cmd {
         TaskCommand::Start(a) => {
             let session = a.session.clone().unwrap_or_else(session);
-            let body = json!({"title": a.title, "repo": a.repo, "branch": a.branch, "owner": a.owner.clone().unwrap_or_else(|| session.clone()), "session": session});
+            let body = json!({"title": a.title, "repo": a.repo, "branch": a.branch, "owner": a.owner.clone().unwrap_or_else(|| session.clone()), "session": session, "flaw": a.flaw, "flawTarget": a.target});
             Ok(started(client.post("/pipeline/tasks", &body).await.map_err(api)?))
         }
         TaskCommand::Adopt(a) => {
