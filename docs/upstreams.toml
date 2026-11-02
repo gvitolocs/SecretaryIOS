@@ -596,3 +596,19 @@ licence_ours = "MIT"
 relation = "reference"
 confidence = "confirmed"
 notes = "Reverse-engineered behaviour only (ReverseEngineering/{aufind-rust,instarust,brightspace-rust,maps-rust}). No feed to poll."
+
+[[upstream]]
+id = "ibis-office"
+name = "ibisOffice"
+url = "https://github.com/ibisjp/ibis-office"
+source = "github"
+repo = "ibisjp/ibis-office"
+track = "releases"
+pin = "v0.8.5"
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "office", base = "main" }]
+licence_upstream = "AGPL-3.0-only"
+licence_ours = "AGPL-3.0-only"
+relation = "fork"
+confidence = "confirmed"
+rely_on = ["gpui-pre platform and scene", "ibis-office-app --export", "gpui-pre-wgpu cosmic_text_system"]
+notes = "LucinaOffice on Juno: upstream commit 1d5dba02 fetched by office/fetch-upstream.sh, built with office/patches and our software GPUI backends. The owner personal OS only; nothing public without asking him."
