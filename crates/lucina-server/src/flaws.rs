@@ -203,6 +203,12 @@ pub trait Hands: Send + Sync {
     async fn ask_owner(&self, flaw: &Flaw, gate: Gate) -> Result<String, String>;
     /// `Some(true)`: go; `Some(false)`: don't; `None`: not answered.
     async fn decision(&self, id: &str) -> Option<bool>;
+    /// The agent's error, if it ended on one.
+    async fn agent_error(&self, id: &str) -> Option<String>;
+    /// Does the agents' lane have quota? Nothing starts while it doesn't.
+    async fn lane_ready(&self, policy: &Policy) -> bool;
+    /// An agent just hit the lane's limit.
+    fn lane_out(&self, why: &str);
     /// Tell him, in his chat and on his phone. `false`: try again next tick.
     async fn tell(&self, text: &str) -> bool;
 }
@@ -249,6 +255,9 @@ pub async fn dispatch_one(flaws: &Flaws, policy: &Policy, hands: &dyn Hands, id:
             return Err(ApiError::new(409, "needs_owner", format!("this fix needs the owner's go first ({g})")));
         }
     }
+    if !hands.lane_ready(policy).await {
+        return Err(ApiError::new(503, "lane_out", "the agents' lane is out of quota; it starts by itself when it is back"));
+    }
     let repo = policy.repo_for(p, layer).display().to_string();
     if running_counts(flaws).get(&repo).copied().unwrap_or(0) >= policy.max_running_per_repo {
         return Err(ApiError::new(409, "busy", format!("{} tasks already run in this repo", policy.max_running_per_repo)));
@@ -272,6 +281,28 @@ fn running_counts(flaws: &Flaws) -> HashMap<String, usize> {
 fn older_than(at: Option<&str>, minutes: i64) -> bool {
     at.and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
         .is_some_and(|t| Utc::now().signed_duration_since(t).num_minutes() >= minutes)
+}
+
+/// An agent's error that means the lane is out, not that the fix failed.
+fn is_limit(error: &str) -> bool {
+    let e = error.to_lowercase();
+    ["limit", "quota", "credits", "429", "billing"].iter().any(|w| e.contains(w))
+}
+
+/// What is known about the lane, for this process: `(ready, until)`.
+static LANE: std::sync::Mutex<Option<(bool, std::time::Instant)>> = std::sync::Mutex::new(None);
+const LANE_READY_FOR: Duration = Duration::from_secs(30 * 60);
+const LANE_OUT_FOR: Duration = Duration::from_secs(60 * 60);
+
+/// `lane probe`, one tiny call. A probe that can't run or read counts as ready: an agent that hits
+/// the limit says so itself.
+async fn probe_lane(lane: &str) -> bool {
+    let bin = home().join(".local/bin/lane");
+    let run = tokio::process::Command::new(bin).args(["probe", "--lane", lane]).stdin(std::process::Stdio::null()).kill_on_drop(true).output();
+    let Ok(Ok(o)) = tokio::time::timeout(Duration::from_secs(120), run).await else { return true };
+    let text = String::from_utf8_lossy(&o.stdout);
+    let outcome = text.lines().rev().find_map(|l| serde_json::from_str::<Value>(l).ok()).and_then(|v| v["outcome"].as_str().map(str::to_owned));
+    !matches!(outcome.as_deref(), Some("quota" | "unavailable"))
 }
 
 fn clip(s: &str, max: usize) -> String {
@@ -318,6 +349,11 @@ async fn reconcile(flaws: &Flaws, policy: &Policy, hands: &dyn Hands) {
             // It ended and nothing was merged: the agent may have changed the target itself, in
             // which case it isn't `fixing` any more and this list didn't include it.
             _ => {
+                if let Some(e) = hands.agent_error(&agent).await.filter(|e| is_limit(e)) {
+                    hands.lane_out(&e);
+                    let _ = flaws.give_back(&flaw.id, p, &e, ACTOR);
+                    continue;
+                }
                 let _ = flaws.release(&flaw.id, p, "the agent ended without a merged commit", policy.max_attempts, ACTOR);
             }
         }
@@ -339,7 +375,15 @@ async fn run_triage(flaws: &Flaws, policy: &Policy, hands: &dyn Hands) {
                 }
             }
             Ok(_) => {
-                let _ = flaws.finish_triage(&flaw.id, "the agent ended", ACTOR);
+                match hands.agent_error(&agent).await.filter(|e| is_limit(e)) {
+                    Some(e) => {
+                        hands.lane_out(&e);
+                        let _ = flaws.reset_triage(&flaw.id, &e, ACTOR);
+                    }
+                    None => {
+                        let _ = flaws.finish_triage(&flaw.id, "the agent ended", ACTOR);
+                    }
+                }
             }
             Err(_) => busy += 1,
         }
@@ -347,7 +391,11 @@ async fn run_triage(flaws: &Flaws, policy: &Policy, hands: &dyn Hands) {
     if !policy.auto_triage {
         return;
     }
-    for flaw in flaws.triage_due().unwrap_or_default() {
+    let due = flaws.triage_due().unwrap_or_default();
+    if due.is_empty() || !hands.lane_ready(policy).await {
+        return;
+    }
+    for flaw in due {
         if busy >= policy.max_running_per_repo {
             break;
         }
@@ -383,6 +431,7 @@ pub async fn tick(flaws: &Flaws, policy: &Policy, hands: &dyn Hands) {
             *running.entry(policy.secretary_repo.display().to_string()).or_insert(0) += triaging;
         }
         let due = flaws.due().unwrap_or_default();
+        let ready = due.is_empty() || hands.lane_ready(policy).await;
         for pick in policy.pick(due, &running) {
             let verdict = match pick.verdict {
                 Verdict::Start => Verdict::Start,
@@ -409,6 +458,9 @@ pub async fn tick(flaws: &Flaws, policy: &Policy, hands: &dyn Hands) {
                 },
             };
             debug_assert_eq!(verdict, Verdict::Start);
+            if !ready {
+                continue;
+            }
             let _ = start_fix(flaws, policy, hands, &pick.flaw, &pick.target, &pick.repo, ACTOR).await;
         }
     }
@@ -527,6 +579,29 @@ impl Hands for StateHands {
         }
     }
 
+    async fn agent_error(&self, id: &str) -> Option<String> {
+        let v = self.agentd("GET", &format!("/agents/{id}"), None).await.ok()?;
+        v["lastError"].as_str().map(str::to_owned)
+    }
+
+    async fn lane_ready(&self, policy: &Policy) -> bool {
+        if let Some((ready, until)) = *LANE.lock().unwrap_or_else(|e| e.into_inner()) {
+            if std::time::Instant::now() < until {
+                return ready;
+            }
+        }
+        let ready = probe_lane(&policy.probe_lane).await;
+        let keep = if ready { LANE_READY_FOR } else { LANE_OUT_FOR };
+        tracing::info!(lane = %policy.probe_lane, ready, "flaws: agents' lane probed");
+        *LANE.lock().unwrap_or_else(|e| e.into_inner()) = Some((ready, std::time::Instant::now() + keep));
+        ready
+    }
+
+    fn lane_out(&self, why: &str) {
+        tracing::warn!(why, "flaws: the agents' lane is out; nothing starts until a probe says it is back");
+        *LANE.lock().unwrap_or_else(|e| e.into_inner()) = Some((false, std::time::Instant::now() + LANE_OUT_FOR));
+    }
+
     async fn tell(&self, text: &str) -> bool {
         let item = self.st.timeline.record(NewItem {
             channel: "other".into(),
@@ -583,6 +658,8 @@ mod tests {
         asked: Mutex<Vec<String>>,
         answer: Mutex<Option<bool>>,
         fail_agent: Mutex<bool>,
+        errors: Mutex<HashMap<String, String>>,
+        out: Mutex<bool>,
     }
 
     #[async_trait::async_trait]
@@ -616,6 +693,15 @@ mod tests {
         }
         async fn decision(&self, _id: &str) -> Option<bool> {
             *self.answer.lock().unwrap()
+        }
+        async fn agent_error(&self, id: &str) -> Option<String> {
+            self.errors.lock().unwrap().get(id).cloned()
+        }
+        async fn lane_ready(&self, _p: &Policy) -> bool {
+            !*self.out.lock().unwrap()
+        }
+        fn lane_out(&self, _why: &str) {
+            *self.out.lock().unwrap() = true;
         }
         async fn tell(&self, text: &str) -> bool {
             self.told.lock().unwrap().push(text.to_owned());
@@ -700,6 +786,39 @@ mod tests {
         assert_eq!(target(&s, &f.id, Platform::Web).status, TargetStatus::Blocked);
         assert_eq!(h.tasks.lock().unwrap().len(), 2, "no third try");
         assert!(h.told.lock().unwrap()[0].contains("couldn't fix it after 2 tries"));
+    }
+
+    #[tokio::test]
+    async fn a_quota_stop_costs_no_try_and_waits_for_the_lane() {
+        let (s, h, p) = (Flaws::in_memory().unwrap(), Fake::default(), policy());
+        let f = due(&s, "emoji", Platform::Web, None);
+        tick(&s, &p, &h).await;
+        // What the Claude CLI really answered on 2026-11-02.
+        h.status.lock().unwrap().insert("ag0".into(), "error".into());
+        h.errors.lock().unwrap().insert("ag0".into(), "You've hit your weekly limit · resets Nov 4, 12pm (UTC)".into());
+        for _ in 0..4 {
+            tick(&s, &p, &h).await;
+        }
+        let t = target(&s, &f.id, Platform::Web);
+        assert_eq!((t.status, t.attempts, t.agent), (TargetStatus::Affected, 0, None));
+        assert_eq!(h.agents.lock().unwrap().len(), 1, "no worktree or agent per tick while it is out");
+        assert!(h.told.lock().unwrap().is_empty(), "he isn't told it couldn't be fixed");
+        assert_eq!(dispatch_one(&s, &p, &h, &f.id, Platform::Web, "t").await.unwrap_err().code, "lane_out");
+        // The lane is back: it starts by itself.
+        *h.out.lock().unwrap() = false;
+        tick(&s, &p, &h).await;
+        assert_eq!(target(&s, &f.id, Platform::Web).status, TargetStatus::Fixing);
+    }
+
+    #[tokio::test]
+    async fn a_real_failure_still_counts() {
+        let (s, h, p) = (Flaws::in_memory().unwrap(), Fake::default(), policy());
+        let f = due(&s, "emoji", Platform::Web, None);
+        tick(&s, &p, &h).await;
+        h.status.lock().unwrap().insert("ag0".into(), "error".into());
+        h.errors.lock().unwrap().insert("ag0".into(), "the provider crashed".into());
+        tick(&s, &p, &h).await;
+        assert_eq!(target(&s, &f.id, Platform::Web).attempts, 2, "released and started again");
     }
 
     #[tokio::test]

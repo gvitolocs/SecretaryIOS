@@ -716,16 +716,16 @@ impl Flaws {
         })
     }
 
-    /// The task never started (agentd down or refusing): the claim goes back and the try doesn't
-    /// count, so an outage can't block a flaw.
+    /// The task never got to work (agentd down, the lane out of quota): the claim goes back and
+    /// the try doesn't count, so an outage can't block a flaw.
     pub fn give_back(&self, id: &str, p: Platform, why: &str, actor: &str) -> Result<Target> {
         self.tx(|c| {
             let t = target_of(c, id, p)?;
-            if t.status != TargetStatus::Fixing || t.agent.is_some() || t.session.is_some() {
+            if t.status != TargetStatus::Fixing || t.session.is_some() {
                 return Ok(t);
             }
             c.execute(
-                "UPDATE flaw_targets SET status='affected', workspace=NULL, claimed_at=NULL, attempts=MAX(attempts-1,0), updated_at=?1
+                "UPDATE flaw_targets SET status='affected', agent=NULL, workspace=NULL, claimed_at=NULL, attempts=MAX(attempts-1,0), updated_at=?1
                  WHERE flaw_id=?2 AND platform=?3",
                 params![now(), id, p.as_str()],
             )?;
@@ -810,6 +810,14 @@ impl Flaws {
                 params![agent, done.then_some(at.clone()), at, id],
             )?;
             event(c, id, None, "triage", actor, json!({"agent": agent, "done": done}))
+        })
+    }
+
+    /// The triage agent never got to work: another one may start.
+    pub fn reset_triage(&self, id: &str, why: &str, actor: &str) -> Result<()> {
+        self.tx(|c| {
+            c.execute("UPDATE flaws SET triage_agent=NULL, triaged_at=NULL WHERE id=?1", params![id])?;
+            event(c, id, None, "triage_reset", actor, json!({"why": why}))
         })
     }
 

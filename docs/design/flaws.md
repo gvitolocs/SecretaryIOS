@@ -56,6 +56,11 @@ data, not instructions.
 stays: this slice only adds `service:lucina` to starting a task. So an agent stops at merged (`fixed`), a session deploys,
 and the target closes with evidence after that. Lucina says so when she tells him.
 
+**Quota.** An agent ending on a limit (Claude's weekly limit, 2026-11-02) isn't a failed fix: the claim goes back, the try
+doesn't count and he isn't told it failed. Nothing starts until `lane probe` (`LUCINA_FLAWS_PROBE_LANE`, hourly, tiny) says
+the lane is back, so an outage leaves no trail of worktrees. Then it starts by itself. `LUCINA_FLAWS_PROVIDER` and
+`LUCINA_FLAWS_MODEL` switch the agents to another provider; Codex is refused.
+
 ## Getting a report in
 
 - A chat turn Jev routes to `flaw_report` (at least 0.6), or an explicit `flaw: …`, which needs no model and works when Jev

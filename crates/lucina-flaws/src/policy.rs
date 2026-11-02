@@ -35,7 +35,10 @@ pub struct Policy {
     pub owner_gates: Vec<Gate>,
     /// Platforms whose visual check is the owner's own eyes.
     pub owner_eyes: Vec<Platform>,
+    /// `LUCINA_FLAWS_PROVIDER`: agentd's provider (never Codex, checked when an agent starts).
     pub provider: String,
+    /// `LUCINA_FLAWS_PROBE_LANE`: the `lane probe` that says whether that provider has quota.
+    pub probe_lane: String,
     pub model: String,
     pub effort: String,
     pub mode: String,
@@ -57,7 +60,8 @@ impl Policy {
             agent_minutes: num("LUCINA_FLAWS_AGENT_MINUTES", DEFAULT_AGENT_MINUTES as u64) as i64,
             owner_gates: Gate::ALL.to_vec(),
             owner_eyes: vec![Platform::Ios],
-            provider: "claude".into(),
+            provider: val("LUCINA_FLAWS_PROVIDER").unwrap_or_else(|| "claude".into()),
+            probe_lane: val("LUCINA_FLAWS_PROBE_LANE").unwrap_or_else(|| "claude-cli".into()),
             model: val("LUCINA_FLAWS_MODEL").unwrap_or_else(|| "claude-opus-5-5".into()),
             effort: val("LUCINA_FLAWS_EFFORT").unwrap_or_else(|| "medium".into()),
             mode: "bypassPermissions".into(),
