@@ -58,6 +58,8 @@ reports (crashes with stacks and attachments) did not fit a free-form step log, 
 | `app.foreground`, `app.background`, `app.terminate` | | `DebugEventsUploader` |
 | `bg.task` | `task` (refresh, photobackup, photo_upload_ext), `phase` (start, end, expired, terminated), `outcome`, `jobs`, `error` | BackgroundRefresh, PhotoBackup, PhotoUploadExtension |
 | `net.request` | `method`, `path` (ids as `{id}`), `status` or `error`, `duration_ms` | `APIClient.send` (every attempt) |
+| `place.route` | `mode` (bike), `via` (cycling, walkingPath, straightLine, none), `seconds`, `meters`, `steps`, `navigating`, `from_home` | `PlaceMapView` |
+| `place.navigate` | `mode` (bike), `via` | `PlaceMapView`, Navigate tapped or opened navigating |
 | `notification.delivered` | `kind` (approval, decision, route, other), `id`, `sensitive`, `via` | AppDelegate (`content-available` push) |
 | `notification.presented` | `kind`, `id`, `sensitive`, `category` | `willPresent` |
 | `notification.action` | `kind`, `id`, `sensitive`, `category`, `action` (the action identifier; `com.apple.UNNotificationDefaultActionIdentifier` is a tap) | `didReceive` |
