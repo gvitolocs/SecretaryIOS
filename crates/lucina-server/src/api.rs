@@ -538,6 +538,18 @@ async fn route(
             _ => Err(ApiError::not_found()),
         };
     }
+    // Which buttons are closed, for every client (crate::card_state).
+    if resource == Some("timeline") && id == Some("cards") && parts.len() <= 3 {
+        return match (method.as_str(), extra) {
+            ("GET", None) => Ok(ok(crate::card_state::cards(&st.cfg.data_dir))),
+            ("POST", Some(item)) => {
+                let body = read_json(body, 4 * 1024).await?;
+                Ok(ok(crate::card_state::choose(&st.cfg.data_dir, item, &body)?))
+            }
+            (_, None) => Err(ApiError::method_not_allowed(&["GET"])),
+            (_, Some(_)) => Err(ApiError::method_not_allowed(&["POST"])),
+        };
+    }
     if extra.is_some() {
         return Err(ApiError::not_found());
     }
@@ -1654,6 +1666,7 @@ fn timeline_stream(st: &AppState, uri: &Uri, headers: &HeaderMap) -> ApiResult {
     // arrive after the connection are live items.
     let _ = store.poll();
     let mut live = store.subscribe();
+    let mut cards = crate::card_state::subscribe();
     tokio::spawn(async move {
         let _guard = guard;
         if tx
@@ -1708,6 +1721,11 @@ fn timeline_stream(st: &AppState, uri: &Uri, headers: &HeaderMap) -> ApiResult {
                 }
                 _ = ping_tick.tick() => {
                     if tx.send(Bytes::from_static(b": ping\n\n")).await.is_err() { return; }
+                    continue;
+                }
+                // No id: `Last-Event-ID` stays the last item. Lagging only means fewer of these.
+                _ = cards.recv() => {
+                    if tx.send(Bytes::from_static(b"event: cards\ndata: {}\n\n")).await.is_err() { return; }
                     continue;
                 }
                 _ = tx.closed() => return,

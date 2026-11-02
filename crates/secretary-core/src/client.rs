@@ -1080,6 +1080,17 @@ impl Call {
         Self::new(Method::GET, &["timeline", "conversations"])
     }
 
+    /// `GET /timeline/cards`: which items' buttons are closed.
+    pub fn timeline_cards() -> Self {
+        Self::new(Method::GET, &["timeline", "cards"])
+    }
+
+    /// `POST /timeline/cards/<item>`: the owner used this button.
+    pub fn timeline_card_choice(item: &str, body: Value) -> Result<Self> {
+        validate::timeline_ref("item", item)?;
+        Ok(Self::new(Method::POST, &["timeline", "cards", item]).with_body(body))
+    }
+
     /// `GET /grocery/deals/map?radiusM=`: Lucina's deals map around home.
     /// The optional radius is in meters, 500..=15 000.
     pub fn deals_map(radius_m: Option<u32>) -> Result<Self> {

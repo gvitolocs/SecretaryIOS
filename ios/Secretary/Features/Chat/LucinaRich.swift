@@ -521,6 +521,7 @@ struct RichActionsView: View {
     }
 
     private var chosen: String? { store.chosenAction(for: item.id) ?? inferredChoice }
+    private var closed: Bool { chosen != nil || store.cardClosed(item.id) }
 
     var body: some View {
         FlowRow(spacing: 8) {
@@ -541,8 +542,8 @@ struct RichActionsView: View {
                     .overlay(Capsule().strokeBorder(isChosen ? Color.green : Theme.accent.opacity(0.4)))
                 }
                 .buttonStyle(.plain)
-                .disabled(chosen != nil)
-                .opacity(chosen != nil && !isChosen ? 0.45 : 1)
+                .disabled(closed)
+                .opacity(closed && !isChosen ? 0.45 : 1)
                 .accessibilityLabel(isChosen ? Text("\(action.label), chosen") : Text(action.label))
                 .accessibilityIdentifier("richAction-\(action.id)")
             }
@@ -553,7 +554,7 @@ struct RichActionsView: View {
     }
 
     private func run(_ action: RichAction) {
-        guard chosen == nil else { return }
+        guard !closed else { return }
         switch action.kind {
         case .reply:
             if action.prefill { store.requestPrefill(action.text ?? "") } else if let t = action.text { Task { await store.send(t) } }

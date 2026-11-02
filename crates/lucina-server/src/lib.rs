@@ -16,6 +16,7 @@ pub mod callers;
 pub mod bot_hospital;
 pub mod bridges;
 pub mod capabilities;
+pub mod card_state;
 pub mod chat;
 pub mod computer;
 pub mod computer_files;

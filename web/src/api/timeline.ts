@@ -431,6 +431,8 @@ export interface StreamHandlers {
   onStatus: (status: StreamStatus) => void;
   /** A brand-new connection opened after the previous one was closed for good: fill the gap. */
   onResync: () => void;
+  /** `event: cards`: which buttons are closed changed; read them again. */
+  onCards?: () => void;
 }
 
 /**
@@ -520,6 +522,9 @@ export class TimelineStream {
         this.handlers.onStatus("reconnecting");
       }
     };
+    es.addEventListener("cards", () => {
+      if (this.es === es) this.handlers.onCards?.();
+    });
     es.addEventListener("item", (ev) => {
       if (this.es !== es) return;
       this.sawItem = true;

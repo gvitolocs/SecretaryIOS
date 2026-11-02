@@ -11,7 +11,9 @@
 import { createSignal } from "solid-js";
 import { createStore, reconcile, unwrap } from "solid-js/store";
 import { toApiError, type ApiError } from "../api/client";
+import { cardsApi, type ServerCard } from "../api/cards";
 import { api, CHAT_MAX_CHARS } from "../api/secretary";
+import { refreshSecretQueue } from "./secretRequests";
 import {
   TimelineStream,
   type Attachment,
@@ -182,10 +184,17 @@ function readChoices(): Record<string, string> {
 }
 
 const [choices, setChoices] = createStore<Record<string, string>>(readChoices());
+// What the server says about each card; it outranks this device's own memory.
+const [serverCards, setServerCards] = createStore<Record<string, ServerCard>>({});
 
 /** The button already used on this message (by item id once known, else its key). */
 export function chosenAction(m: ChatMessage): string | undefined {
-  return (m.itemId && choices[m.itemId]) || choices[m.key];
+  return (m.itemId && (serverCards[m.itemId]?.action ?? choices[m.itemId])) || choices[m.key];
+}
+
+/** The server closed this card (decided, expired, withdrawn, or a button used on another client). */
+export function cardClosed(m: ChatMessage): boolean {
+  return !!m.itemId && serverCards[m.itemId]?.closed === true;
 }
 
 export function chooseAction(m: ChatMessage, actionId: string): void {
@@ -193,6 +202,16 @@ export function chooseAction(m: ChatMessage, actionId: string): void {
   setChoices(id, actionId);
   const all = Object.entries(unwrap(choices));
   writeJSON("local", CHOICES_KEY, Object.fromEntries(all.slice(-CHOICES_LIMIT)));
+  // The other clients hear about it; if this fails only this device remembers.
+  if (m.itemId) cardsApi.choose(m.itemId, actionId).catch(() => {});
+}
+
+export async function refreshCards(): Promise<void> {
+  try {
+    setServerCards(reconcile(await cardsApi.list()));
+  } catch {
+    // Offline or an older server: buttons fall back to this device's memory.
+  }
 }
 
 const replyListeners = new Set<(text: string) => void>();
@@ -443,8 +462,12 @@ export function onTimelineConnected(cb: () => void): () => void {
 }
 const stream = new TimelineStream({
   onItem: receiveItem,
-  onStatus: status => { setStreamStatus(status); if (status === "live") { void loadLatest(); for (const cb of connectedListeners) cb(); } },
+  onStatus: status => { setStreamStatus(status); if (status === "live") { void loadLatest(); void refreshCards(); for (const cb of connectedListeners) cb(); } },
   onResync: () => void loadLatest(),
+  onCards: () => {
+    void refreshCards();
+    void refreshSecretQueue();
+  },
 });
 
 let connections = 0;
@@ -459,6 +482,7 @@ function onVisible(): void {
   if (document.visibilityState !== "visible") return;
   stream.nudge();
   void loadLatest();
+  void refreshCards();
 }
 
 function teardownStream(): void {
@@ -480,6 +504,7 @@ export function connectTimeline(): () => void {
   const epoch = connectionEpoch;
   if (connections === 1) {
     void loadLatest();
+    void refreshCards();
     stream.start();
     if (typeof EventSource === "undefined") {
       fallbackTimer = setInterval(() => void loadLatest(), FALLBACK_POLL_MS);
@@ -906,6 +931,7 @@ function reset(messages: ChatMessage[]): void {
 
 /** Forget the conversation (logout). */
 export function clearChat(): void {
+  setServerCards(reconcile({}));
   reset([]);
   deviceId = undefined;
   setReplyTarget(null);

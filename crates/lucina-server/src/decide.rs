@@ -392,6 +392,11 @@ impl Store {
             Some(x) => *x = d.clone(),
             None => items.push(d.clone()),
         }
+        drop(items);
+        // Its card in the owner's chat just closed (decided, expired, withdrawn).
+        if d.status != "pending" && d.owner_item_id.is_some() {
+            crate::card_state::changed();
+        }
         Ok(())
     }
 

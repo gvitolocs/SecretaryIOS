@@ -6,6 +6,7 @@ import { t } from "../i18n";
 import { LIST_VISIBLE, typingDelay, type RichAction, type RichBlock, type RichMessage } from "../lib/rich";
 import {
   bumpReveal,
+  cardClosed,
   chooseAction,
   chosenAction,
   requestPrefill,
@@ -255,9 +256,10 @@ function sendsMessage(a: RichAction): boolean {
 function Actions(props: { message: ChatMessage; actions: RichAction[]; inferred?: string; readOnly?: boolean }) {
   const navigate = useAppNavigate();
   const chosen = () => chosenAction(props.message) ?? props.inferred;
+  const closed = () => !!chosen() || cardClosed(props.message);
 
   function run(a: RichAction) {
-    if (props.readOnly || chosen() || (sending() && sendsMessage(a))) return;
+    if (props.readOnly || closed() || (sending() && sendsMessage(a))) return;
     switch (a.kind) {
       case "reply":
         if (a.payload.prefill) requestPrefill(a.payload.text);
@@ -291,7 +293,7 @@ function Actions(props: { message: ChatMessage; actions: RichAction[]; inferred?
               class="rich-action"
               classList={{ "rich-action--chosen": isChosen(), [`rich-action--${a.kind}`]: true }}
               data-answer={a.kind === "confirm" ? a.payload.answer : undefined}
-              disabled={props.readOnly || !!chosen() || (sending() && sendsMessage(a))}
+              disabled={props.readOnly || closed() || (sending() && sendsMessage(a))}
               aria-pressed={isChosen() ? "true" : undefined}
               aria-label={isChosen() ? t("chat.richChosen", { label: a.label }) : undefined}
               onClick={() => run(a)}

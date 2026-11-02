@@ -202,6 +202,8 @@ impl SecretRequests {
 
     /// Whole file through a private temporary: a crash never leaves half a queue.
     fn persist(&self, entries: &[Entry]) {
+        // Dismissed, expired or saved elsewhere: no timeline item says so, the cards are told here.
+        crate::card_state::changed();
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
         let write = || -> std::io::Result<()> {

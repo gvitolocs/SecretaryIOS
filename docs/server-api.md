@@ -506,7 +506,8 @@ data: {"id":"tl_0193…","ts":1761048003000,"channel":"web","role":"user","text"
 ```
 
 - `event: item` carries one timeline item as JSON in `data` (the raw
-  Lucina item, same shape as above). Ignore other event names.
+  Lucina item, same shape as above). `event: cards` says the
+  [closed buttons](#get-v1timelinecards-post-v1timelinecardsitem) changed. Ignore other event names.
 - `: ping` is a comment line Lucina sends every 20 s to keep proxies from
   closing the idle connection. EventSource ignores it; hand-written parsers
   must skip lines starting with `:`.
@@ -544,6 +545,19 @@ hold back `text/event-stream` responses to reach `minimum_length`: headers go
 out at once and the body is streamed as written. (Checked against Caddy's
 docs on 2026-10-21.) `X-Accel-Buffering: no` is for nginx, should one ever
 sit in front.
+
+### `GET /v1/timeline/cards`, `POST /v1/timeline/cards/{item}`
+
+Which items' buttons are closed, one answer for every client (lucina-rs `crates/lucina-server/src/card_state.rs`). Items are
+append-only, so this is an overlay on them.
+
+- `GET` answers `{cards: {<item id>: {closed: true, status, action?}}}`. `status` is `chosen` (a button was used), or a
+  decision's `decided`, `expired` or `withdrawn`. `action` is the button to mark as used; a card without one has all its
+  buttons off.
+- `POST` with `{action}` reports a button used and answers that item's card. The first one stays: a second client's different
+  answer gets the first back. `400 bad_request` for a malformed id or action.
+- `event: cards` on [`/v1/timeline/stream`](#get-v1timelinestream), `data: {}` and no `id`: read `GET` again, and the queue of
+  [secret requests](#secrets-add-secret) too. Clients also read it each time the stream connects.
 
 ## Reminders
 

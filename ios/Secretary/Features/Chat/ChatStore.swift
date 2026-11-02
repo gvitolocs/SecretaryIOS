@@ -96,6 +96,8 @@ final class ChatStore {
     }
 
     nonisolated static let choicesKey = "secretary.chat.choices.v1"
+    /// Which cards the server says are closed (`GET /v1/timeline/cards`).
+    private(set) var serverCards: [String: ServerCard] = [:]
 
     @ObservationIgnored private let api: () -> SecretaryAPI
     /// The owner's queue of secret requests, as the chat's cards draw it (SecretCard.swift).
@@ -167,12 +169,23 @@ final class ChatStore {
         prefill = PrefillRequest(text: text)
     }
 
-    func chosenAction(for itemId: String) -> String? { choices[itemId] }
+    /// The button used on this card: what the server says, then this device's memory.
+    func chosenAction(for itemId: String) -> String? { serverCards[itemId]?.action ?? choices[itemId] }
+
+    /// The server closed this card (decided, expired, withdrawn, or a button used on another client).
+    func cardClosed(_ itemId: String) -> Bool { serverCards[itemId]?.closed == true }
 
     func choose(_ actionId: String, for itemId: String) {
         choices[itemId] = actionId
         if choices.count > 200 { choices = Dictionary(uniqueKeysWithValues: choices.suffix(200).map { ($0.key, $0.value) }) }
         defaults.set(choices, forKey: Self.choicesKey)
+        // The other clients hear about it; if this fails only this device remembers.
+        Task { [api] in try? await api().chooseCard(itemId, action: actionId) }
+    }
+
+    func refreshCards() async {
+        // Offline or an older server: buttons fall back to this device's memory.
+        if let cards = try? await api().timelineCards() { serverCards = cards }
     }
 
     /// True once for a rich reply that arrived while the chat was open.
@@ -432,6 +445,7 @@ final class ChatStore {
                 attempt = 0
                 // Fill anything missed while disconnected (in case Last-Event-ID isn't honoured).
                 await refresh()
+                await refreshCards()
                 try await Self.readEvents(bytes) { [weak self] event in
                     self?.handle(event)
                 }
@@ -471,6 +485,13 @@ final class ChatStore {
 
     func handle(_ event: SSEEvent) {
         if let id = event.id { lastEventId = id }
+        if event.event == "cards" {
+            Task {
+                await refreshCards()
+                await secretQueue.refresh()
+            }
+            return
+        }
         guard event.event == "item" || event.event == "message" else { return } // pings and unknown events
         guard let item = try? JSONDecoder().decode(TimelineItem.self, from: Data(event.data.utf8)) else { return }
         if item.role == .lucina, item.rich != nil, !items.contains(where: { $0.id == item.id }) { revealIds.insert(item.id) }
@@ -1208,5 +1229,27 @@ extension ChatStore {
         } catch {
             return false
         }
+    }
+}
+
+/// One closed card (`GET /v1/timeline/cards`).
+struct ServerCard: Decodable, Equatable {
+    let closed: Bool
+    let status: String?
+    let action: String?
+}
+
+extension SecretaryAPI {
+    private struct CardList: Decodable { let cards: [String: ServerCard] }
+    private struct CardChoice: Encodable { let action: String }
+
+    func timelineCards() async throws -> [String: ServerCard] {
+        let list: CardList = try await client.get("/v1/timeline/cards")
+        return list.cards
+    }
+
+    func chooseCard(_ itemId: String, action: String) async throws {
+        let path = "/v1/timeline/cards/\(itemId)"
+        let _: ServerCard = try await client.send("POST", path, body: CardChoice(action: action))
     }
 }

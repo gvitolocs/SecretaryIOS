@@ -184,4 +184,14 @@ final class RichMessageTests: XCTestCase {
         XCTAssertTrue(SecretName.isValid("GBGO_WIFI_PSK"))
         XCTAssertFalse(SecretName.isValid("a b"))
     }
+
+    /// `GET /v1/timeline/cards`: a card with no button still closes.
+    func testServerCardsDecode() throws {
+        let body = #"{"closed":true,"status":"decided","action":"dc-1-2"}"#
+        let card = try JSONDecoder().decode(ServerCard.self, from: Data(body.utf8))
+        XCTAssertEqual(card, ServerCard(closed: true, status: "decided", action: "dc-1-2"))
+        let bare = try JSONDecoder().decode(ServerCard.self, from: Data(#"{"closed":true,"status":"expired"}"#.utf8))
+        XCTAssertNil(bare.action)
+        XCTAssertTrue(bare.closed)
+    }
 }
