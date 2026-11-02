@@ -362,7 +362,10 @@ async fn a_note_goes_to_infisical_and_only_the_value_leaves_it() {
             .contains("KEEP_TELEGRAM_BOT_TOKEN")));
     // The local step used the local model and nothing else.
     assert!(env.h.fake.requests().is_empty(), "a cloud model was called");
-    assert_eq!(env.qwen.received_requests().await.unwrap().len(), 1);
+    let asked = env.qwen.received_requests().await.unwrap();
+    assert_eq!(asked.len(), 1);
+    // A note that is only a value says what it is in its title.
+    assert!(String::from_utf8_lossy(&asked[0].body).contains("TITLE: telegram"));
     // From now on the value is masked at every sink.
     assert!(lucina_secrets::redactor()
         .redact(CANARY)
@@ -515,7 +518,7 @@ async fn a_cloud_address_is_refused_before_anything() {
     };
     assert!(!cfg.is_loopback());
     assert_eq!(
-        lucina_server::secret_keep::local::extract(&reqwest::Client::new(), &cfg, "A", "", CANARY)
+        lucina_server::secret_keep::local::extract(&reqwest::Client::new(), &cfg, "A", "", "", CANARY)
             .await
             .err(),
         Some(lucina_server::secret_keep::local::LocalError::NotLocal)

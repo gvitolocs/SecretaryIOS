@@ -457,7 +457,7 @@ impl Keeper {
                     SecretValue::new(text.trim().to_owned())
                 } else {
                     let text = Zeroizing::new(note_text(&n));
-                    let v = local::extract(&self.http, &self.cfg.local, &job.name, &job.what, &text).await.map_err(local_stop)?;
+                    let v = local::extract(&self.http, &self.cfg.local, &job.name, &job.what, n["title"].as_str().unwrap_or_default(), &text).await.map_err(local_stop)?;
                     check_verbatim(&v, &text)?;
                     v
                 };
@@ -466,7 +466,7 @@ impl Keeper {
             }
             "chat" => {
                 let text = Zeroizing::new(self.read_chat(key)?);
-                let v = local::extract(&self.http, &self.cfg.local, &job.name, &job.what, &text).await.map_err(local_stop)?;
+                let v = local::extract(&self.http, &self.cfg.local, &job.name, &job.what, "", &text).await.map_err(local_stop)?;
                 check_verbatim(&v, &text)?;
                 v
             }
