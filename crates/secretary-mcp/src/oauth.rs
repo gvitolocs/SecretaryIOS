@@ -290,7 +290,10 @@ impl OAuth {
             Some(Caller {
                 name: g.caller.clone(),
                 kind: CallerKind::OAuth,
-                scopes: t.scopes.clone(),
+                scopes: match Scopes::limit_for_caller(&g.caller) {
+                    Some(limit) => t.scopes.intersect(&limit),
+                    None => t.scopes.clone(),
+                },
                 id: g.id.clone(),
                 depth: 0,
             })
@@ -999,6 +1002,10 @@ pub async fn authorize_get(
     if scopes.is_empty() {
         scopes = Scopes::default_grant();
     }
+    // The consent page offers only what this caller may hold.
+    if let Some(limit) = Scopes::limit_for_caller(&client.caller) {
+        scopes = scopes.intersect(&limit);
+    }
     let request_id = match random_secret() {
         Ok(id) => id,
         Err(_) => return fail("server_error", "no randomness"),
@@ -1583,6 +1590,8 @@ mod tests {
         assert_eq!(caller_for_host("example.org"), "example");
         assert_eq!(caller_for_host("www.cursor.com"), "cursor");
         assert_eq!(caller_for_host("cursor.sh"), "cursor");
+        assert_eq!(caller_for_host("callback.mistral.ai"), "mistral");
+        assert_eq!(caller_for_host("chat.mistral.ai"), "mistral");
     }
 
     // -- token endpoint races (docs/verification.md, bugs O1 and O2) ---------

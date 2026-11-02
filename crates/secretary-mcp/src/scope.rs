@@ -95,6 +95,12 @@ impl Scopes {
         Self(Scope::ALL.to_vec())
     }
 
+    /// The most a caller may hold, whatever it asked for and whatever is on its grant. Mistral's connector
+    /// reads and talks to Lucina: no writes and no computers until the owner decides otherwise.
+    pub fn limit_for_caller(caller: &str) -> Option<Self> {
+        (caller == "mistral").then(|| Self::of([Scope::Read, Scope::Chat]))
+    }
+
     /// What an OAuth client gets when it asks for nothing in particular:
     /// every scope except the explicit-only ones (`agents`, `notebooks`).
     pub fn default_grant() -> Self {
@@ -200,6 +206,17 @@ pub fn valid_caller_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mistral_is_limited_to_read_and_chat() {
+        let limit = Scopes::limit_for_caller("mistral").unwrap();
+        let held = Scopes::all().intersect(&limit);
+        assert!(held.contains(Scope::Read) && held.contains(Scope::Chat));
+        for s in [Scope::Write, Scope::Computer, Scope::Agents, Scope::Notebooks] {
+            assert!(!held.contains(s), "{s}");
+        }
+        assert!(Scopes::limit_for_caller("claude").is_none());
+    }
 
     #[test]
     fn parse_and_format() {

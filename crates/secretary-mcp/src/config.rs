@@ -42,6 +42,9 @@ pub const CHATGPT_REDIRECTS: [&str; 2] = [
 /// (`https://chatgpt.com/oauth/client.json`, `…/oauth/{callback_id}/client.json`).
 pub const CHATGPT_CIMD_PREFIX: &str = "https://chatgpt.com/oauth/";
 
+/// Mistral's custom connector callback, read from its registration on 2026-11-02.
+pub const MISTRAL_REDIRECT: &str = "https://callback.mistral.ai/v1/integrations_auth/oauth2_callback";
+
 #[derive(Clone)]
 pub struct Config {
     pub bind: SocketAddr,
@@ -132,7 +135,11 @@ impl Config {
             agents_runs_per_hour: 30,
             timezone: chrono_tz::Europe::Rome,
             trust_proxy: false,
-            redirect_allow: CHATGPT_REDIRECTS.iter().map(|s| (*s).to_owned()).collect(),
+            redirect_allow: CHATGPT_REDIRECTS
+                .iter()
+                .chain([&MISTRAL_REDIRECT])
+                .map(|s| (*s).to_owned())
+                .collect(),
             cimd_prefixes: vec![CHATGPT_CIMD_PREFIX.to_owned()],
             allowed_origins,
             allowed_hosts: vec![host, "localhost".into(), "127.0.0.1".into(), "::1".into()],
