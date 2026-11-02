@@ -672,3 +672,21 @@ relation = "vendored"
 confidence = "confirmed"
 rely_on = ["gleam Gl implementation", "shader list without DITHERING"]
 notes = "Copy in ~/Projects/Lucina/LucinaNet-swgl: only names the unknown shader when one is asked for."
+
+# ───────────────────────── Juno's video decoders ─────────────────────────
+# Used as they are, by Cargo pin (`crates/lucina-app-video`). Measured on the laptop: LucinaOS docs/research/juno-media.md.
+[[upstream]]
+id = "rav1d"
+name = "rav1d (AV1 decoder)"
+url = "https://github.com/memorysafety/rav1d"
+source = "github"
+repo = "memorysafety/rav1d"
+branch = "main"
+track = "commits"
+pin = "2e7216c20ac2a75de204d6c8d7268b75a45959b4"
+notify = "report"
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "crates/lucina-app-video", base = "main" }]
+licence_upstream = "BSD-2-Clause"
+licence_ours = "unknown"
+relation = "vendored"
+notes = "Main, not the published 1.1.0, whose crate leaves out src/arm/asm-offsets.h so its AArch64 assembly does not build. Move to a release when one has it."
