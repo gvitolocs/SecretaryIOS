@@ -90,6 +90,9 @@ impl Default for Options {
 /// Label that links a child agent to its parent (Paseo `paseo.parent-agent-id`).
 pub const PARENT_LABEL: &str = "lucina.parent-agent-id";
 
+/// The owner started this run on one of his devices (set by the API from the caller's origin).
+pub const STARTED_ON_DEVICE_LABEL: &str = "lucina.started-on-device";
+
 #[derive(Debug, thiserror::Error)]
 pub enum ManagerError {
     #[error("No agent found matching: {0}")]

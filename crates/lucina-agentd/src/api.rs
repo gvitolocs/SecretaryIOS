@@ -217,6 +217,11 @@ async fn create(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, 
     }
     // An external agent belongs to the device registering it, never to a body field.
     req.owner_device_id = peer::device(origin, &headers);
+    // Set here from the origin, never from a body field: only such a run alerts him when it finishes.
+    req.labels.remove(crate::manager::STARTED_ON_DEVICE_LABEL);
+    if origin == Origin::OwnerDevice {
+        req.labels.insert(crate::manager::STARTED_ON_DEVICE_LABEL.into(), "true".into());
+    }
     req.prompt = req.prompt.map(quote);
     let caller = who(&m, &peer, &headers);
     let notify = m.prepare_create(&caller, &mut req)? && notify_on_finish.unwrap_or(true);

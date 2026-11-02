@@ -41,10 +41,12 @@ private.
 to her) makes no notification: no push, no inbox entry, nothing on the unread badge, no local alert on iOS. It
 stays readable in the chat. The text does not matter: naming the owner changes nothing. Reminders, device
 commands and shopping changes made in such a turn are still his. A new agent link stays silent by recording
-its turns with `via` and posting nothing to `/v1/notify`. An agent that needs him goes through `lucina_decide`,
-an approval, or asks Lucina to tell him (her `notify` tool); those have their own push. A run that Lucina or
-another agent started (labels `from: lucina`, `lucina.origin`, `lucina.parent-agent-id`) pushes nothing when it
-finishes, and a job or delegation an agent asked for pushes nothing either. Permission requests always do.
+its turns with `via` and posting nothing to `/v1/notify`. An agent that needs him goes through `lucina_decide`
+or an approval, which have their own push; asking her in chat to tell him does not reach him, and she says so.
+A coding agent's finish pushes only for a run he started on one of his devices (label
+`lucina.started-on-device`, set by lucina-agentd from the caller's origin); any other run, whichever provider
+and whoever started it, is quiet. A job or delegation an agent asked for pushes nothing either. Permission
+requests always do.
 
 **Pipeline** (`Notifier::publish`): dedup (explicit `dedupKey`, or `tl:<timeline id>`)
 → category switch → presence (a Lucina message while any app reported itself in

@@ -648,8 +648,9 @@ impl Manager {
         if reason == AttentionReason::Finished && (self.take_quiet_turn(&agent.record.id) || self.parent_hears(&agent.record.id)) {
             return;
         }
-        // So does a run Lucina or another agent started: its answer goes back to them, not to him.
-        if reason == AttentionReason::Finished && started_by_lucina_or_agent(&agent.record.labels) {
+        // So does any run he did not start on one of his devices, whichever provider and whoever
+        // did (Lucina, a session through `lagent`, the MCP, an agent): it is not a message to him.
+        if reason == AttentionReason::Finished && !agent.record.labels.contains_key(super::STARTED_ON_DEVICE_LABEL) {
             return;
         }
         let id = &agent.record.id;
@@ -669,28 +670,5 @@ impl Manager {
             _ => format!("agent:{id}:{}", agent.record.attention_timestamp.clone().unwrap_or_else(now_iso)),
         };
         n.send(Push { category: "agent", title: None, body: body.to_string(), route: format!("/agents/{id}"), dedup_key: dedup, data });
-    }
-}
-
-/// Whether Lucina or another agent started this run (any provider): her `reach` runs are labelled
-/// `from: lucina`, runs started over the MCP or by an agent carry an origin or a parent.
-fn started_by_lucina_or_agent(labels: &std::collections::BTreeMap<String, String>) -> bool {
-    labels.get("from").is_some_and(|f| f == "lucina")
-        || labels.contains_key(super::ORIGIN_LABEL)
-        || labels.contains_key(super::PARENT_LABEL)
-}
-
-#[cfg(test)]
-mod attention_tests {
-    use super::*;
-
-    #[test]
-    fn runs_lucina_or_an_agent_started_are_not_the_owners() {
-        let labels = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-        assert!(started_by_lucina_or_agent(&labels(&[("from", "lucina"), ("reach", "rt-1")])));
-        assert!(started_by_lucina_or_agent(&labels(&[(super::super::ORIGIN_LABEL, "mcp:some-new-provider")])));
-        assert!(started_by_lucina_or_agent(&labels(&[(super::super::PARENT_LABEL, "agent_1")])));
-        assert!(!started_by_lucina_or_agent(&labels(&[])));
-        assert!(!started_by_lucina_or_agent(&labels(&[("project", "lucinaos"), ("task", "ufs")])));
     }
 }

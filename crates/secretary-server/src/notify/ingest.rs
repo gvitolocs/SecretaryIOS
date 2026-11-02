@@ -151,8 +151,7 @@ fn attachment_body(item: &TimelineItem) -> String {
 /// Lucina talking with an agent, not to the owner: a turn that came in through an agent link
 /// (`meta.via`, whichever provider or caller) or an agent's reply to her message (`meta.kind:
 /// "reach"`). What the text says does not matter: agents name the owner all the time. An agent
-/// that needs him uses `lucina_decide`, an approval, or asks her to tell him (her `notify` tool);
-/// each of those has its own push.
+/// that needs him uses `lucina_decide` or an approval; each of those has its own push.
 pub fn agent_chat(meta: &Value) -> bool {
     meta["via"].as_str().is_some_and(|v| !v.is_empty()) || meta["kind"] == "reach"
 }

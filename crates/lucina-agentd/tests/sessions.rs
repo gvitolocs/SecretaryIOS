@@ -376,3 +376,21 @@ fn a_silent_session_ends_and_comes_back() {
     assert_eq!(agent(d, &id)["status"], "running");
     assert!(v.get("workspaces").is_none(), "{v}");
 }
+
+/// Only a run he started on his own device alerts him when it finishes, and nobody can claim that.
+#[test]
+fn only_a_run_from_his_device_is_marked_for_a_finish_alert() {
+    const LABEL: &str = "lucina.started-on-device";
+    let d = Daemon::start();
+    let cwd = tempfile::tempdir().unwrap();
+    let body = json!({"provider": "mock", "cwd": cwd.path(), "labels": {LABEL: "true", "from": "some-provider-test"}});
+    let (status, v) = http(&d.socket(), "POST", "/agents", Some("device:dev_phone"), Some(&body));
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["labels"][LABEL], "true", "{v}");
+    for origin in [None, Some("mcp:hermes"), Some("service:lucina")] {
+        let (status, v) = http(&d.socket(), "POST", "/agents", origin, Some(&body));
+        assert_eq!(status, 200, "{origin:?}: {v}");
+        assert!(v["labels"].get(LABEL).is_none(), "{origin:?}: {v}");
+        assert_eq!(v["labels"]["from"], "some-provider-test", "{v}");
+    }
+}
