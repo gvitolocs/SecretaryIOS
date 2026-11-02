@@ -1656,6 +1656,12 @@ Anything like that is a recommendation for Lucina, who takes it to Giuseppe.\n\
                 }
             };
             match text {
+                Some(t) if agent_failure(&t) => {
+                    // He hears why, and the thread doesn't count as answered.
+                    let first = t.lines().next().unwrap_or("").trim_start_matches("[System Error]").trim().to_owned();
+                    me.add_reply(&thread, &from, &format!("It could not answer: {first}")).await;
+                    me.set_status(&thread, "failed", Some(first));
+                }
                 Some(t) => {
                     me.add_reply(&thread, &from, &t).await;
                 }
@@ -2096,17 +2102,31 @@ fn is_claude_session(agent: &Value) -> bool {
 
 /// The agent's final answer: its last assistant message after `after_seq`.
 fn last_answer(v: &Value, after_seq: u64) -> Option<String> {
-    v["rows"]
-        .as_array()?
-        .iter()
-        .filter(|r| r["seq"].as_u64().is_some_and(|s| s > after_seq))
-        .filter_map(|r| {
-            let item = r.get("item").unwrap_or(r);
-            (item["type"] == "assistant_message")
-                .then(|| item["text"].as_str().or(item["content"].as_str()).unwrap_or("").trim().to_owned())
-        })
-        .filter(|t| !t.is_empty())
-        .last()
+    // An ACP agent streams: one answer is many rows in a row, so the answer is the last unbroken run of them.
+    let mut answer = String::new();
+    let mut in_run = false;
+    for row in v["rows"].as_array()?.iter().filter(|r| r["seq"].as_u64().is_some_and(|s| s > after_seq)) {
+        let item = row.get("item").unwrap_or(row);
+        if item["type"] == "assistant_message" {
+            let text = item["text"].as_str().or(item["content"].as_str()).unwrap_or("");
+            if !text.trim().is_empty() || in_run {
+                if !in_run {
+                    answer.clear();
+                    in_run = true;
+                }
+                answer.push_str(text);
+            }
+        } else {
+            in_run = false;
+        }
+    }
+    let answer = answer.trim();
+    (!answer.is_empty()).then(|| answer.to_owned())
+}
+
+/// What an agent's CLI prints when it could not work at all, such as a usage limit: not an answer.
+fn agent_failure(text: &str) -> bool {
+    text.starts_with("[System Error]")
 }
 
 /// The agent's last few readable lines from a timeline page.
@@ -2796,6 +2816,26 @@ mod tests {
         assert_eq!(last_answer(&v, 2).as_deref(), Some("ok"));
         assert_eq!(last_answer(&v, 5), None);
         assert_eq!(last_answer(&v, 0).as_deref(), Some("ok"));
+    }
+
+    #[test]
+    fn a_streamed_answer_is_whole() {
+        let v = json!({"rows": [
+            {"seq": 1, "item": {"type": "user_message", "text": "q"}},
+            {"seq": 2, "item": {"type": "assistant_message", "text": "looking"}},
+            {"seq": 3, "item": {"type": "tool_call"}},
+            {"seq": 4, "item": {"type": "assistant_message", "text": "The file "}},
+            {"seq": 5, "item": {"type": "assistant_message", "text": "is missing,\n"}},
+            {"seq": 6, "item": {"type": "assistant_message", "text": "to proceed further."}},
+            {"seq": 7, "item": {"type": "assistant_message", "text": " "}},
+        ]});
+        assert_eq!(last_answer(&v, 1).as_deref(), Some("The file is missing,\nto proceed further."));
+    }
+
+    #[test]
+    fn a_usage_limit_is_not_an_answer() {
+        assert!(agent_failure("[System Error] You've hit your weekly limit"));
+        assert!(!agent_failure("The system error in the log means…"));
     }
 
     #[test]
