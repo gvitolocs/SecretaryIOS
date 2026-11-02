@@ -38,10 +38,7 @@ pub fn run(dir: &Path) -> i32 {
             return 2;
         }
     };
-    let outcome = match x.spec.kind {
-        JobKind::Merge => x.merge(),
-        JobKind::Deploy => x.deploy(),
-    };
+    let outcome = x.job();
     x.say(&format!("{}: {}", outcome.code, outcome.message));
     let ok = outcome.ok;
     let json = serde_json::to_string_pretty(&outcome).unwrap_or_default();
@@ -76,6 +73,17 @@ impl Exec {
         // The same tools as a login shell: tests call mkfs.fat and friends, which live in sbin.
         let path = format!("{home}/.cargo/bin:{home}/.local/bin:{home}/bin:{}:/usr/sbin:/sbin", std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into()));
         Ok(Exec { spec, log, path })
+    }
+
+    /// Finish cleanup while the executor still holds the job's flock, regardless of outcome.
+    fn job(&mut self) -> Outcome {
+        let outcome = match self.spec.kind {
+            JobKind::Merge => self.merge(),
+            JobKind::Deploy => self.deploy(),
+        };
+        let root = self.spec.target_root.clone().unwrap_or_else(|| super::Config::from_env(Path::new(".")).target_root);
+        self.say(&super::sweep::run(Path::new(&self.spec.target_dir), &root));
+        outcome
     }
 
     fn say(&mut self, msg: &str) {
@@ -504,6 +512,7 @@ mod tests {
             remote: Some("origin".into()),
             work_root: root.join("wt").display().to_string(),
             target_dir: root.join("target").display().to_string(),
+            target_root: Some(root.to_path_buf()),
             branch: Some(branch.into()),
             head: Some(head.into()),
             title: Some("t".into()),
@@ -591,6 +600,47 @@ mod tests {
         assert!(out.gates[0].flaky);
         assert!(out.message.contains("flaky, passed on retry: t"), "{}", out.message);
         assert_eq!(git(&origin, &["rev-parse", "main"]).len(), 40);
+    }
+
+    #[test]
+    fn sweep_runs_after_jobs_and_failure_preserves_outcome_and_exit_code() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let (_, repo) = setup(root);
+        let head = git(&repo, &["rev-parse", "HEAD"]);
+        for (kind, valid, code, exit) in [
+            (JobKind::Merge, true, "NOTHING_TO_MERGE", 0),
+            (JobKind::Merge, false, "INVALID", 1),
+            (JobKind::Deploy, false, "INVALID", 1),
+        ] {
+            for sweep_fails in [false, true] {
+                let dir = root.join(format!("job-{kind:?}-{valid}-{sweep_fails}"));
+                std::fs::create_dir(&dir).unwrap();
+                let mut spec = spec(root, &repo, "main", &head);
+                spec.kind = kind;
+                if !valid {
+                    spec.branch = None;
+                }
+                let artifact = Path::new(&spec.target_dir).join("debug/deps/old");
+                std::fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+                std::fs::write(&artifact, "old output").unwrap();
+                let old = std::time::SystemTime::now() - std::time::Duration::from_secs(4 * 60 * 60);
+                File::open(&artifact).unwrap().set_times(std::fs::FileTimes::new().set_modified(old)).unwrap();
+                if sweep_fails {
+                    // An existing but wrong boundary fails deterministically, even as root.
+                    spec.target_root = Some(repo.clone());
+                }
+                std::fs::write(dir.join("job.json"), serde_json::to_vec(&spec).unwrap()).unwrap();
+                assert_eq!(run(&dir), exit);
+                let outcome: Outcome = serde_json::from_slice(&std::fs::read(dir.join("result.json")).unwrap()).unwrap();
+                assert_eq!(outcome.code, code);
+                assert_eq!(outcome.ok, exit == 0);
+                let log = std::fs::read_to_string(dir.join("log")).unwrap();
+                assert_eq!(log.matches("target sweep:").count(), 1, "{log}");
+                assert_eq!(log.contains("refusing target outside root"), sweep_fails, "{log}");
+                assert_eq!(artifact.exists(), sweep_fails);
+            }
+        }
     }
 
     #[test]

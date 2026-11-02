@@ -23,6 +23,7 @@ use crate::store::{Store, StoreError};
 
 pub mod exec;
 pub mod repo;
+mod sweep;
 
 /// A registered piece of work: one workspace, one branch, one session.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -119,6 +120,9 @@ pub struct Spec {
     pub work_root: String,
     /// `CARGO_TARGET_DIR` for the gates and builds (shared between jobs of a repo).
     pub target_dir: String,
+    /// The configured boundary for cache cleanup; absent in jobs queued by older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_root: Option<PathBuf>,
     /// Merge: the branch and the commit queued.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
@@ -459,6 +463,7 @@ mod tests {
             remote: Some("origin".into()),
             work_root: "/w".into(),
             target_dir: "/t".into(),
+            target_root: None,
             branch: Some("b".into()),
             head: Some("abc".into()),
             title: None,

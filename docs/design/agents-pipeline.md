@@ -63,6 +63,16 @@ a coordinator that sequences merges (a merge queue), a FIFO queue for shared res
 - The CLI follows the job's log until it ends and exits non-zero with the job's code (`GATE_FAILED`, `CONFLICT`,
   …). `lagent job ls|show|logs [-f]|wait|cancel <id>`. Ctrl-C stops following, not the job.
 
+Every merge and deploy executor sweeps its shared `Spec.target_dir` before exiting, on success
+and failure, while still holding the job's merge lock. It removes artifacts idle for three hours
+from each profile's `incremental/`, `deps/`, `examples/` and `build/` (including target-triple
+profiles), then evicts oldest artifacts above 60 GiB while protecting the last 30 minutes.
+Fingerprints and profile-level binaries stay. Disk usage counts allocated blocks once per inode
+without following symlinks; cleanup requires the resolved target to be strictly inside the job's
+configured target root. A single job-log line records bytes before/after, items removed, elapsed
+seconds and any failure or remaining excess; cleanup never changes the job result. Cargo detects
+missing outputs and rebuilds them on the next job.
+
 ## 3. Deploys
 
 `lagent deploy <runtime> [--note <text>] [--force] [--no-wait]`
