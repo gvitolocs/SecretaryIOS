@@ -377,6 +377,8 @@ async fn health(State(st): State<AppState>) -> Response {
             "botHospital": crate::bot_hospital::health_value(&st.hospital_health),
             "presence": {"context": c.presence_context, "fresh": lucina_discord::store::context_line(&c.presence_dir, c.time_zone, Utc::now(), c.presence_max_age).is_some()},
             "deepseek": {"model": c.deepseek.model, "hasKey": (st.deepseek_has_key)(), "usage": st.usage.as_ref().map(|u| u.snapshot())},
+            "modelProvider": match c.model_provider { crate::ModelProvider::DeepSeek => "deepseek", crate::ModelProvider::Mistral => "mistral" },
+            "mistral": {"model": c.mistral.model, "hasKey": st.named_models.mistral.is_some()},
             "timelineStreams": st.streams.load(Ordering::Relaxed),
             "meshy": st.meshy.as_ref().map(|m| m.health()),
         }),
@@ -703,6 +705,14 @@ async fn route(
             Ok(ok(
                 json!({"verdict": verdict, "jev": jev, "elapsedMs": started.elapsed().as_millis() as u64}),
             ))
+        }
+        // One model call through a named provider (crate::model_try): no turn, no timeline, no tool runs.
+        (Some("models"), Some("try")) => {
+            only(&["POST"])?;
+            let body = read_json(body, MAX_BODY_BYTES).await?;
+            let mut v = crate::model_try::handle(st, &body).await?;
+            lucina_secrets::redactor().redact_json(&mut v);
+            Ok(ok(v))
         }
         // Yes/no questions (crate::jev_yesno): Jev's gate on a text and the answer it would give from
         // the owner's live data. Reads only (no turn, no timeline); not forwarded by secretary-server.

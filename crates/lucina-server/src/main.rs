@@ -238,6 +238,22 @@ enum Cmd {
         cmd: KeepCmd,
     },
     #[command(args_conflicts_with_subcommands = true)]
+    /// One model call through a named provider, on the running server: no turn, no timeline, no tool runs.
+    ModelTry {
+        /// deepseek | mistral.
+        #[arg(long, default_value = "mistral")]
+        provider: String,
+        /// A model id other than the provider's default.
+        #[arg(long)]
+        model: Option<String>,
+        /// Stream, and report the time to the first text.
+        #[arg(long)]
+        stream: bool,
+        /// Offer her real tools (nothing runs; the answer shows what the model called).
+        #[arg(long)]
+        tools: bool,
+        prompt: String,
+    },
     Decide {
         #[command(subcommand)]
         cmd: Option<DecideCmd>,
@@ -1303,7 +1319,7 @@ fn main() -> anyhow::Result<()> {
     // `deals`, `decide`, `jev` and `upstream` print their results on stdout, so their logs go to stderr.
     if matches!(
         cmd,
-        Cmd::Deals { .. } | Cmd::Decide { .. } | Cmd::Jev { .. } | Cmd::Upstream { .. } | Cmd::SecretKeep { .. }
+        Cmd::Deals { .. } | Cmd::Decide { .. } | Cmd::Jev { .. } | Cmd::Upstream { .. } | Cmd::SecretKeep { .. } | Cmd::ModelTry { .. }
     ) {
         tracing_subscriber::fmt()
             .with_env_filter(filter("warn"))
@@ -1350,6 +1366,17 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
         } => google_auth(&service, code, read_only).await?,
         Cmd::Drive { cmd } => drive_cmd(cmd).await?,
         Cmd::Decide { cmd, ask } => decide_cmd(cmd, ask).await?,
+        Cmd::ModelTry { provider, model, stream, tools, prompt } => {
+            let c = lucina_server::decide::cli::Client::from_env()?;
+            let mut body = serde_json::json!({"provider": provider, "prompt": prompt, "stream": stream});
+            if let Some(m) = model {
+                body["model"] = m.into();
+            }
+            if tools {
+                body["tools"] = "registry".into();
+            }
+            println!("{}", serde_json::to_string_pretty(&c.post("models/try", &body).await?)?);
+        }
         Cmd::SecretKeep { cmd } => keep_cmd(cmd).await?,
         Cmd::Flaws { cmd, db } => flaws_cmd(cmd, db)?,
         Cmd::Reach { cmd } => reach_cmd(cmd).await?,

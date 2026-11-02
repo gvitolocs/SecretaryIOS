@@ -125,6 +125,14 @@ pub fn register_bootstrap(cfg: &Config) -> usize {
             lucina_llm::KeySource::None => None,
         },
     );
+    add(
+        "MISTRAL_API_KEY",
+        match &cfg.mistral.key {
+            lucina_llm::KeySource::Inline(k) => Some(k.clone()),
+            lucina_llm::KeySource::File(p) => file_value(p),
+            lucina_llm::KeySource::None => None,
+        },
+    );
     add("HONCHO_API_KEY", Some(cfg.honcho.api_key.clone()));
     add(
         "SECRETARY_SERVICE_TOKEN",

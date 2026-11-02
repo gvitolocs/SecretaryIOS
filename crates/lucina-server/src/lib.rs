@@ -14,6 +14,7 @@ pub mod api;
 pub mod au;
 pub mod callers;
 pub mod bot_hospital;
+pub mod model_try;
 pub mod bridges;
 pub mod capabilities;
 pub mod card_state;
@@ -82,7 +83,7 @@ use lucina_tools::reminder_writer::{LocalWriter, NodeForwarder, ReminderWriter};
 use lucina_tools::{Registry, ToolEnv};
 use serde_json::Value;
 
-pub use config::{Config, PlannerMode, WriterKind};
+pub use config::{Config, ModelProvider, PlannerMode, WriterKind};
 
 pub type SharedChat = futures_util::future::Shared<
     futures_util::future::BoxFuture<'static, Result<Value, api::ApiError>>,
@@ -103,6 +104,8 @@ pub struct Inner {
     pub device: DeviceStore,
     pub memory: Arc<Memory>,
     pub model: Arc<dyn ChatModel>,
+    /// The providers `POST /api/secretary/models/try` can name.
+    pub named_models: Arc<model_try::NamedModels>,
     pub usage: Option<Arc<UsageTotals>>,
     pub deepseek_has_key: KeyProbe,
     pub grocery: Option<Arc<GroceryRepo>>,
@@ -188,20 +191,33 @@ impl Inner {
 }
 
 impl AppState {
-    /// Wire everything from the config. `model: None` uses DeepSeek.
+    /// Wire everything from the config. `model: None` uses the configured provider (DeepSeek by default).
     pub fn build(cfg: Config, model: Option<Arc<dyn ChatModel>>) -> anyhow::Result<Self> {
+        let deepseek = Arc::new(DeepSeek::new(cfg.deepseek.clone())?);
+        let mistral = Some(Arc::new(DeepSeek::new(cfg.mistral.clone())?)).filter(|m| m.has_key());
+        if cfg.model_provider == ModelProvider::Mistral && mistral.is_none() {
+            tracing::error!("LUCINA_MODEL_PROVIDER=mistral but Mistral has no key: DeepSeek answers");
+        }
         let (model, usage, has_key): (Arc<dyn ChatModel>, Option<Arc<UsageTotals>>, KeyProbe) =
-            match model {
-                Some(m) => (m, None, Box::new(|| true)),
-                None => {
-                    let ds = Arc::new(DeepSeek::new(cfg.deepseek.clone())?);
-                    let usage = ds.usage.clone();
-                    let probe = ds.clone();
-                    (ds, Some(usage), Box::new(move || probe.has_key()))
+            match (model, mistral.clone().filter(|_| cfg.model_provider == ModelProvider::Mistral)) {
+                (Some(m), _) => (m, None, Box::new(|| true)),
+                (None, Some(m)) => {
+                    let usage = m.usage.clone();
+                    let probe = m.clone();
+                    (m, Some(usage), Box::new(move || probe.has_key()))
+                }
+                (None, None) => {
+                    let usage = deepseek.usage.clone();
+                    let probe = deepseek.clone();
+                    (deepseek.clone(), Some(usage), Box::new(move || probe.has_key()))
                 }
             };
         // The model is a sink: every prompt and reply goes through the redactor.
         let model: Arc<dyn ChatModel> = Arc::new(secrets::RedactingModel(model));
+        let named_models = model_try::NamedModels {
+            deepseek: Arc::new(secrets::RedactingModel(deepseek)),
+            mistral: mistral.map(|m| Arc::new(secrets::RedactingModel(m)) as Arc<dyn ChatModel>),
+        };
         let known = secrets::register_bootstrap(&cfg);
         tracing::info!(
             known,
@@ -538,6 +554,7 @@ impl AppState {
                 prompts,
             },
             model,
+            named_models: Arc::new(named_models),
             usage,
             deepseek_has_key: has_key,
             grocery,

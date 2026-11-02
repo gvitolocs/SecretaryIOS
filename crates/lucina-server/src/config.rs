@@ -12,6 +12,14 @@ use lucina_tools::{Endpoints, Location, ToolSelection};
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:8790";
 
+/// Who answers her turns (`LUCINA_MODEL_PROVIDER`). DeepSeek unless the owner chooses otherwise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ModelProvider {
+    #[default]
+    DeepSeek,
+    Mistral,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlannerMode {
     /// Node's JSON-action planner, prompts verbatim (parity; default).
@@ -170,6 +178,9 @@ pub struct Config {
     pub deal_watch: lucina_deals::WatchConfig,
     // llm + planner
     pub deepseek: DeepSeekConfig,
+    /// Mistral (`MISTRAL_*`): reached by name (`crate::model_try`) unless [`ModelProvider::Mistral`] is set.
+    pub mistral: DeepSeekConfig,
+    pub model_provider: ModelProvider,
     pub planner: PlannerMode,
     pub tools: ToolSelection,
     pub turn_deadline: Duration,
@@ -577,6 +588,11 @@ impl Config {
             deals: lucina_deals::DealsConfig::from_lookup(&get, &data_dir),
             deal_watch: lucina_deals::WatchConfig::from_lookup(&get, &data_dir),
             deepseek: DeepSeekConfig::from_lookup(&get),
+            mistral: DeepSeekConfig::mistral_from_lookup(&get),
+            model_provider: match get("LUCINA_MODEL_PROVIDER").as_deref().map(str::trim) {
+                Some("mistral") => ModelProvider::Mistral,
+                _ => ModelProvider::DeepSeek,
+            },
             planner: match get("LUCINA_PLANNER").as_deref().map(str::trim) {
                 Some("tools") => PlannerMode::Tools,
                 _ => PlannerMode::Json,
