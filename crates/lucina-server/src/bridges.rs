@@ -462,7 +462,13 @@ pub async fn notes_context(s: &Secretary, st: &BridgeState, prompt: &str) -> Str
             .await;
         if r.ok {
             let block = nt::render_note_context(&r.data, nt::MAX_CONTEXT_CHARS);
-            blocks.push(lucina_secrets::labelled::mask(&block).into_owned());
+            let block = lucina_secrets::labelled::mask(&block).into_owned();
+            // A slug made from a first line that holds a token.
+            blocks.push(if lucina_secrets::labelled::slug_holds_token(slug) {
+                block.replace(slug, r.data["id"].as_str().unwrap_or("note"))
+            } else {
+                block
+            });
         }
     }
     if blocks.is_empty() {

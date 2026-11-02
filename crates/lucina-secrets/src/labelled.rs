@@ -281,6 +281,35 @@ pub fn mask(text: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
+/// A slug is made from a note's first line, so a note that starts with a token has it in its name,
+/// lowercased, wherever the name goes: a segment long enough, with letters and digits mixed.
+pub fn slug_holds_token(slug: &str) -> bool {
+    slug.split('-').any(|seg| {
+        let digits = seg.chars().filter(char::is_ascii_digit).count();
+        let letters = seg.chars().filter(char::is_ascii_alphabetic).count();
+        seg.len() >= 16 && digits >= 2 && letters >= 2
+    })
+}
+
+/// `value` as a slug would hold it.
+pub fn as_slug(value: &str) -> String {
+    let mapped: String = value
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    mapped
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
 /// A note that is nothing but its secret: the title names a credential ("glm api", "Password",
 /// "rustdex password") and the body is one short word-like value. What the sweep offers to move.
 pub fn title_names_secret(title: &str) -> bool {
@@ -300,8 +329,6 @@ pub fn title_names_secret(title: &str) -> bool {
         "token",
         "credenziali",
         "credentials",
-        "segreto",
-        "segreti",
         "adgangskode",
         "kodeord",
     ];
@@ -383,6 +410,25 @@ mod tests {
     }
 
     #[test]
+    fn slugs_that_hold_a_token() {
+        for s in [
+            "gh-token-ab12cd34ef56gh78ij90",
+            "xmrig-o-42shhzuvzbjxtcdjictff6c4",
+        ] {
+            assert!(slug_holds_token(s), "{s}");
+        }
+        for s in [
+            "lista-della-spesa",
+            "craftit-meeting-2026",
+            "internationalization-notes",
+            "",
+        ] {
+            assert!(!slug_holds_token(s), "{s}");
+        }
+        assert_eq!(as_slug("Abc_12.34!"), "abc-12-34");
+    }
+
+    #[test]
     fn titles_that_name_a_secret() {
         for t in [
             "Password",
@@ -393,7 +439,13 @@ mod tests {
         ] {
             assert!(title_names_secret(t), "{t}");
         }
-        for t in ["Spesa", "API design notes", "Lista della spesa", ""] {
+        for t in [
+            "Spesa",
+            "API design notes",
+            "Lista della spesa",
+            "5 segreti sulle ragazze",
+            "",
+        ] {
             assert!(!title_names_secret(t), "{t}");
         }
     }

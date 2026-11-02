@@ -54,6 +54,14 @@ A password with no label in the sentence ("cavolfiore is what I use") isn't seen
 only at the end of the sentence and if it isn't an ordinary word. The local model doesn't gate every message: a GPU slot that
 may be busy for minutes can't stand in front of each chat turn. Deterministic first was the owner's brief.
 
+## A note's name can hold the secret
+
+A slug is made from the note's title, or from its first line when it has none, so a note that starts with a token has that
+token in its name, lowercased. On 2026-11-02 the first scan showed that: a slug with what looks like a real GitHub token. So
+references are always `note:<id>`, the scan and the sweep never print a slug, the `notes` tool gives the model the id instead of a
+slug with a token-shaped segment, and a clear renames a slug that holds part of the value to `kept-<id>`. secretary-server still
+makes such slugs for new notes, and secretary-mcp still shows them to MCP agents.
+
 ## What is cleared, and what can't be
 
 Cleared after a confirmed save (the value's encodings, in string values only, replaced by `[secret:NAME]`):

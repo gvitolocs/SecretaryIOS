@@ -25,6 +25,19 @@ struct Sweep {
     last_offer: i64,
 }
 
+/// A title that may be shown or sent to the cloud model. Never the slug: it is made from the first
+/// line when there is no title, so it can hold the secret itself.
+pub fn safe_title(n: &Value) -> String {
+    let title = n["title"].as_str().unwrap_or_default();
+    let title = lucina_secrets::labelled::mask(title);
+    let title = lucina_secrets::redactor().redact(&title).into_owned();
+    if title.is_empty() {
+        "untitled".to_owned()
+    } else {
+        title
+    }
+}
+
 /// Why a note looks like it holds a secret.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Suspect {
@@ -46,6 +59,12 @@ pub fn note_suspect(n: &Value) -> Option<Suspect> {
     let moved = text.contains("[secret:");
     let named = lucina_secrets::labelled::title_names_secret(title);
     let short = !text.trim().is_empty() && text.split_whitespace().count() <= 2;
+    if lucina_secrets::labelled::slug_holds_token(n["slug"].as_str().unwrap_or_default()) {
+        return Some(Suspect {
+            why: "its first line looks like a token",
+            whole: false,
+        });
+    }
     if !lucina_secrets::redact::detect(text).is_empty() {
         return Some(Suspect {
             why: "a token shape",
@@ -117,10 +136,7 @@ pub async fn run(st: &crate::AppState) {
             }
             if suspects.len() < MAX_OFFER {
                 sweep.offered.insert(id.to_owned(), at.to_owned());
-                suspects.push((
-                    n["slug"].as_str().unwrap_or_default().to_owned(),
-                    n["title"].as_str().unwrap_or_default().to_owned(),
-                ));
+                suspects.push((id.to_owned(), safe_title(n)));
             } else {
                 more_suspects += 1;
             }
@@ -150,20 +166,7 @@ fn save(path: &std::path::Path, sweep: &Sweep) {
 }
 
 fn offer(st: &crate::AppState, notes: &[(String, String)], more: usize) {
-    let mut masked: Vec<(String, String)> = Vec::new();
-    for (slug, title) in notes {
-        let title = lucina_secrets::labelled::mask(title);
-        let title = lucina_secrets::redactor().redact(&title).into_owned();
-        masked.push((
-            slug.clone(),
-            if title.is_empty() {
-                slug.clone()
-            } else {
-                title
-            },
-        ));
-    }
-    let names = masked
+    let names = notes
         .iter()
         .map(|(_, t)| format!("“{t}”"))
         .collect::<Vec<_>>()
@@ -174,14 +177,14 @@ fn offer(st: &crate::AppState, notes: &[(String, String)], more: usize) {
     if more > 0 {
         text.push_str(&format!(" {more} more after these."));
     }
-    let mut actions: Vec<Value> = masked
+    let mut actions: Vec<Value> = notes
         .iter()
         .take(MAX_OFFER)
         .enumerate()
-        .map(|(i, (slug, title))| {
+        .map(|(i, (id, title))| {
             let short: String = title.chars().take(24).collect();
             json!({"id": format!("keep-note-{}", i + 1), "label": format!("Move {short}"), "emoji": "🔐", "kind": "reply",
-                   "payload": {"text": format!("Move the password in note {slug} to Infisical")}})
+                   "payload": {"text": format!("Move the password in note {id} to Infisical")}})
         })
         .collect();
     actions

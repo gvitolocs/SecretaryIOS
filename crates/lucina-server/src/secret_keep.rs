@@ -638,6 +638,11 @@ impl Keeper {
             if let Some(title) = current["title"].as_str().and_then(|t| lucina_store::scrub::scrub_str(t, &needle, placeholder)) {
                 body["title"] = json!(title);
             }
+            // A slug made from a first line that held the value: the name goes too.
+            if slug_holds_value(current["slug"].as_str().unwrap_or_default(), raw) {
+                let id = current["id"].as_str().unwrap_or_default().trim_start_matches("n_");
+                body["slug"] = json!(format!("kept-{}", id.chars().take(10).collect::<String>()));
+            }
             let r = self.secretary.call(Method::PATCH, &path, Some(&body)).await;
             crate::owner_secrets::wipe_value(&mut body);
             if r.ok {
@@ -734,8 +739,9 @@ impl Keeper {
                 if let Some(why) = sweep::note_suspect(n) {
                     let id = n["id"].as_str().unwrap_or_default().to_owned();
                     if seen.insert(id) && notes.len() < limit {
-                        notes.push(json!({"source": format!("note:{}", n["slug"].as_str().unwrap_or_default()),
-                                          "title": n["title"], "why": why.why, "whole": why.whole}));
+                        // By id: a slug is made from the first line, so it can hold the secret itself.
+                        notes.push(json!({"source": format!("note:{}", n["id"].as_str().unwrap_or_default()),
+                                          "title": sweep::safe_title(n), "why": why.why, "whole": why.whole}));
                     }
                 }
             }
@@ -756,6 +762,12 @@ impl Keeper {
         }
         Ok(json!({"notes": notes, "chats": chats, "note": "References only. Move one with secret_keep."}))
     }
+}
+
+/// Part of the value stands in the note's name (slugs are cut at 80 characters and lowercased).
+fn slug_holds_value(slug: &str, raw: &str) -> bool {
+    let value = lucina_secrets::labelled::as_slug(raw);
+    slug.split('-').any(|seg| seg.len() >= 8 && value.contains(seg))
 }
 
 /// The value as it stands inside a JSON string.

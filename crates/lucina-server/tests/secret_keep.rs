@@ -155,7 +155,7 @@ impl Respond for Notes {
                     return ResponseTemplate::new(500)
                         .set_body_json(json!({"error": {"code": "nope"}}));
                 }
-                for k in ["content", "title", "items"] {
+                for k in ["content", "title", "items", "slug"] {
                     if let Some(v) = body.get(k) {
                         note[k] = v.clone();
                     }
@@ -452,7 +452,10 @@ async fn a_list_note_clears_each_item_or_becomes_a_pointer() {
     let j = env.run(&id).await;
     assert_eq!(j.state, State::Saved, "{:?}", j.code);
     let note = env.note.lock().unwrap().clone();
-    assert_eq!(note["items"], json!([{"text": "[secret:KEEP_LIST_WHOLE] (moved to Infisical)"}]));
+    assert_eq!(
+        note["items"],
+        json!([{"text": "[secret:KEEP_LIST_WHOLE] (moved to Infisical)"}])
+    );
 }
 
 #[tokio::test]
@@ -764,9 +767,44 @@ async fn the_scan_returns_references_only() {
     let out = lucina_tools::tools::secret_keep::SecretKeeper::scan(env.keeper(), "test")
         .await
         .unwrap();
-    assert_eq!(out["notes"][0]["source"], "note:telegram");
+    assert_eq!(out["notes"][0]["source"], "note:note1");
     assert_clean("scan", &out.to_string());
     let _ = &env.notes;
+}
+
+#[tokio::test]
+async fn a_name_made_from_the_value_goes_too_and_never_shows() {
+    let env = setup().await;
+    let value = "Zz9Yy8Xx7Ww6Vv5Uu4Tt3-fake";
+    let slug = lucina_secrets::labelled::as_slug(value);
+    {
+        let mut note = env.note.lock().unwrap();
+        note["id"] = json!("n_00112233445566778899");
+        note["slug"] = json!(slug);
+        note["title"] = json!("");
+        note["content"] = json!(format!("{value}\nthe bot"));
+    }
+    // The scan names it by id, and its name isn't in the answer.
+    let out = lucina_tools::tools::secret_keep::SecretKeeper::scan(env.keeper(), "test")
+        .await
+        .unwrap();
+    assert_eq!(out["notes"][0]["source"], "note:n_00112233445566778899", "{out}");
+    assert_eq!(out["notes"][0]["title"], "untitled");
+    assert!(!out.to_string().contains(&slug), "{out}");
+    // The sweep's offer is the same: no slug in the card or its button.
+    lucina_server::secret_keep::sweep::run(&env.h.state).await;
+    let lines = serde_json::to_string(&env.h.timeline_lines()).unwrap();
+    assert!(lines.contains("secret_offer"), "{lines}");
+    assert!(lines.contains("note n_00112233445566778899"), "{lines}");
+    assert!(!lines.contains(&slug), "{lines}");
+    // And saving it renames the note.
+    qwen_says(&env.qwen, json!({"found": true, "value": value})).await;
+    let id = env.job(json!({"source": "note:n_00112233445566778899", "name": "KEEP_SLUG", "project": "personal", "environment": "prod"}));
+    let j = env.run(&id).await;
+    assert_eq!(j.state, State::Saved, "{:?}", j.code);
+    let note = env.note.lock().unwrap().clone();
+    assert_eq!(note["slug"], "kept-0011223344");
+    assert_eq!(note["content"], "[secret:KEEP_SLUG]\nthe bot");
 }
 
 #[tokio::test]
