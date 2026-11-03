@@ -742,3 +742,21 @@ licence_ours = "workspace"
 relation = "reference"
 confidence = "confirmed"
 notes = "Tauri with a JavaScript UI. Facts only, because of the GPL. Not audited beyond a scan, as no code is used."
+
+[[upstream]]
+id = "linux-qdsp6-audio"
+name = "Linux Qualcomm QDSP6 audio (sc7180)"
+url = "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git"
+source = "github"
+repo = "torvalds/linux"
+branch = "master"
+track = "commits"
+pin = "v7.1"
+paths = ["sound/soc/qcom/qdsp6", "sound/soc/qcom/sc7180.c", "sound/soc/codecs/max98357a.c", "drivers/soc/qcom/apr.c", "drivers/soc/qcom/pdr_interface.c"]
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "crates/lucina-q6", base = "main" }]
+licence_upstream = "GPL-2.0"
+licence_ours = "GPL-2.0"
+relation = "port"
+confidence = "confirmed"
+rely_on = ["apr", "q6afe", "q6adm", "q6asm", "stream id in addresses", "command order"]
+notes = "Behaviour port for Juno's speakers. Checklist: LucinaOS docs/research/juno-audio.md section 11. crates/lucina-q6/oracle compiles these files unchanged from a Linux 7.1 tree (nezopt lucinaos-kernel 682ce8f67) and compares every packet. Verdicts in integration-decisions.md."
