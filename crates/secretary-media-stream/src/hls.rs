@@ -62,8 +62,9 @@ pub fn parse_variant(name: &str) -> Option<Plan> {
         match p {
             "hvc1" if !hvc1_tag => hvc1_tag = true,
             "tm" if !tonemap => tonemap = true,
-            // Only the height a client can ask for, and only with a video being re-encoded: the URL chooses no other size.
-            "h720" if max_height.is_none() && video == Stream::H264 => max_height = Some(secretary_player::playback::JUNO_MAX_HEIGHT),
+            // Only the heights Juno is or was given, and only with a video being re-encoded: the URL chooses no other size.
+            "h1080" if max_height.is_none() && video == Stream::H264 => max_height = Some(secretary_player::playback::JUNO_MAX_HEIGHT),
+            "h720" if max_height.is_none() && video == Stream::H264 => max_height = Some(secretary_player::playback::JUNO_OLD_MAX_HEIGHT),
             _ => return None,
         }
     }
@@ -703,9 +704,11 @@ mod tests {
             secretary_player::playback::Client::Juno,
         );
         let name = variant_name(&p);
-        assert_eq!(name, "h264-copy-h720");
+        assert_eq!(name, "h264-copy-h1080");
         assert_eq!(parse_variant(&name), Some(p));
-        for bad in ["h264-copy-h1080", "h264-copy-h0", "copy-copy-h720", "h264-copy-h720-h720", "h264-copy-h720;rm"] {
+        // What Juno was given before eight CPUs may still be cached and asked for.
+        assert_eq!(parse_variant("h264-aac-h720").and_then(|p| p.max_height), Some(720));
+        for bad in ["h264-copy-h2160", "h264-copy-h0", "copy-copy-h1080", "h264-copy-h1080-h720", "h264-copy-h720-h720", "h264-copy-h1080;rm"] {
             assert_eq!(parse_variant(bad), None, "{bad}");
         }
     }
@@ -716,6 +719,9 @@ mod tests {
         let bg = BackgroundConfig::default();
         let a = ffmpeg_args(Path::new("/a.mkv"), &p, Path::new("/o"), Priority::Interactive, 6, &bg, false).join(" ");
         assert!(a.contains("scale=-2:'min(720,ih-mod(ih,2))',format=yuv420p"), "{a}");
+        let now = parse_variant("h264-aac-h1080").unwrap();
+        let n = ffmpeg_args(Path::new("/a.mkv"), &now, Path::new("/o"), Priority::Interactive, 6, &bg, false).join(" ");
+        assert!(n.contains("scale=-2:'min(1080,ih-mod(ih,2))',format=yuv420p"), "{n}");
         assert!(a.contains("-profile:v main -x264-params cabac=0:bframes=0:ref=1:weightp=0:8x8dct=0"), "{a}");
         assert!(!a.contains("-profile:v high"), "{a}");
         // A hardware encoder would ignore all of that.

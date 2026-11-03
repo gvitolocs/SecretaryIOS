@@ -18,15 +18,17 @@ pub enum Client {
     /// Chrome, Edge and other Chromium browsers (MSE via hls.js for HLS).
     WebChrome,
     WebFirefox,
-    /// Juno (LucinaOS on the Galaxy Book Go): one small CPU, decoding in Rust. What it can play in time is measured,
-    /// in LucinaOS `docs/research/juno-media.md`, and depends on the picture's size.
+    /// Juno (LucinaOS on the Galaxy Book Go): eight CPUs (two fast), decoding in Rust, the GPU showing the picture. What it can
+    /// play in time is measured, in LucinaOS `docs/research/juno-media.md`, and depends on the picture's size.
     Juno,
 }
 
-/// Juno decodes up to this height in time, and the server scales anything larger down to it.
-pub const JUNO_MAX_HEIGHT: u32 = 720;
-/// VP9 in Rust takes twice as long as AV1 or H.264 at the same size: up to this height only.
-const JUNO_VP9_MAX_HEIGHT: u32 = 480;
+/// Juno decodes H.264, VP9 and AV1 up to this height in time, and the server scales anything larger down to it. Measured on all
+/// eight CPUs with 24-frame films and animation: 1080 lines played at 23.9 frames a second with none dropped, VP9 using about two
+/// CPUs. Higher frame rates were not measured.
+pub const JUNO_MAX_HEIGHT: u32 = 1080;
+/// What Juno was given before it had eight CPUs. Variants of this height may still be cached and asked for by name.
+pub const JUNO_OLD_MAX_HEIGHT: u32 = 720;
 
 /// What ffprobe found, normalised to ffprobe's codec names
 /// (`h264`, `hevc`, `vp9`, `av1`, `aac`, `mp3`, `opus`, `ac3`, `eac3`, `flac`, `alac`, `pcm_s16le`...).
@@ -120,12 +122,12 @@ fn video_ok(client: Client, codec: &str) -> bool {
 }
 
 /// Whether this client can decode this size in time. An unknown size counts as too large, since a file sent as it is cannot be undone.
-fn size_ok(probe: &Probe, client: Client, codec: &str) -> bool {
+/// Since eight CPUs, every codec Juno decodes has the same limit; `_codec` stays for the next one that does not.
+fn size_ok(probe: &Probe, client: Client, _codec: &str) -> bool {
     if client != Client::Juno {
         return true;
     }
-    let limit = if codec == "vp9" { JUNO_VP9_MAX_HEIGHT } else { JUNO_MAX_HEIGHT };
-    probe.height.is_some_and(|h| h <= limit) && probe.bit_depth.is_none_or(|b| b <= 8)
+    probe.height.is_some_and(|h| h <= JUNO_MAX_HEIGHT) && probe.bit_depth.is_none_or(|b| b <= 8)
 }
 
 fn audio_ok(client: Client, codec: &str) -> bool {
@@ -248,7 +250,14 @@ mod tests {
 
     #[test]
     fn juno_gets_what_it_can_decode_in_time_as_it_is() {
-        for (c, v, h) in [("mov", "h264", 720), ("matroska", "h264", 576), ("mov", "av1", 720), ("webm", "vp9", 480), ("ivf", "av1", 480)] {
+        for (c, v, h) in [
+            ("mov", "h264", 1080),
+            ("matroska", "h264", 576),
+            ("mov", "av1", 1080),
+            ("webm", "vp9", 1080),
+            ("webm", "vp9", 480),
+            ("ivf", "av1", 480),
+        ] {
             let plan = juno(c, v, Some(h), Some(8));
             assert_eq!((plan.mode, plan.video, plan.max_height), (Mode::Direct, Stream::Copy, None), "{c} {v} {h}");
         }
@@ -257,9 +266,9 @@ mod tests {
     #[test]
     fn juno_gets_anything_larger_scaled_down_in_cheap_h264() {
         for (c, v, h, bits) in [
-            ("mov", "h264", Some(1080), Some(8)),
-            ("webm", "vp9", Some(720), Some(8)),
-            ("mov", "av1", Some(1080), Some(8)),
+            ("mov", "h264", Some(1440), Some(8)),
+            ("webm", "vp9", Some(2160), Some(8)),
+            ("mov", "av1", Some(1200), Some(8)),
             ("matroska", "hevc", Some(720), Some(10)),
             ("matroska", "mpeg2video", Some(576), Some(8)),
             ("mov", "h264", Some(720), Some(10)),
