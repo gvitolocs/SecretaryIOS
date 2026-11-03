@@ -280,6 +280,10 @@ pub fn users_of(path: &Path, cfg: &KeepConfig) -> Users {
             // An environment holds other secrets: looked through, wiped, never kept.
             let Ok(raw) = std::fs::read(base.join(name)) else { continue };
             let raw = Zeroizing::new(raw);
+            // The request itself names the path: the CLI, and the shell that started it.
+            if name == "cmdline" && is_the_request(&raw) {
+                continue;
+            }
             if holds(&raw, file_b) || holds_dir(&raw, dir_b) {
                 out.names.push(format!("{label} names it in its {name}"));
                 break;
@@ -306,6 +310,11 @@ pub fn users_of(path: &Path, cfg: &KeepConfig) -> Users {
         }
     }
     out
+}
+
+/// `lucina-rs secret-keep save ...` as arguments, or inside a `sh -c` line.
+fn is_the_request(cmdline: &[u8]) -> bool {
+    holds(cmdline, b"secret-keep\0save") || holds(cmdline, b"secret-keep save")
 }
 
 /// The path as units and scripts write it.
@@ -916,6 +925,14 @@ mod tests {
     fn compose_gives_names_not_defaults() {
         let n = compose_names("a: ${DB_PASSWORD}\nb: ${API_KEY:-canary-default}\nc: $NOT\nd: ${}\ne: ${DB_PASSWORD}\n");
         assert_eq!(n, vec!["DB_PASSWORD", "API_KEY"]);
+    }
+
+    #[test]
+    fn the_request_is_not_a_user() {
+        assert!(is_the_request(b"lucina-rs\0secret-keep\0save\0--source\0file:/a/b\0"));
+        assert!(is_the_request(b"bash\0-c\0lucina-rs secret-keep save --source file:/a/b\0"));
+        assert!(!is_the_request(b"app\0--config\0/home/nez/.config/secret-keep-canary/save\0"));
+        assert!(!is_the_request(b"lucina-rs\0secret-keep\0status\0file:/a/b\0"));
     }
 
     #[test]

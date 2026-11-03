@@ -160,7 +160,7 @@ moved key's lines replaced by `# KEY moved to Infisical: secret://…` and every
 
 Seen using it (reported on every job, clear or not): an open descriptor, a working directory in its folder, the path or folder in a
 process's arguments or environment, in a unit file (`LUCINA_SECRET_KEEP_UNIT_DIRS`, written `%h/`, `$HOME/`, `~/` too), in his crontab, or a compose container
-started from that folder. If the check can't run, the file counts as in use.
+started from that folder. If the check can't run, the file counts as in use. The request's own command line (`secret-keep save`, also inside a `sh -c`) doesn't count.
 
 A clear through the chat tool always takes the owner's answer (`decide::create`, which goes to his phone for anything that handles a credential, in `settle_clears`), because a
 tool call can't prove whether the words were his or came from a page. Only his own choice of "Clear it" clears. At that moment the file is read and deposited again: another

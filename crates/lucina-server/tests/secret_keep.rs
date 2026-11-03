@@ -1282,9 +1282,18 @@ async fn a_file_in_use_is_not_cleared_and_the_receipt_says_what_uses_it() {
     args.kill().unwrap();
     args.wait().unwrap();
 
+    // The request's own command line names the path, and that is not a user.
+    let mut request = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("sleep 30; : lucina-rs secret-keep save --source file:{} --clear", file.display()))
+        .spawn()
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
     // Nothing left: it clears, and with no clear asked the users are still reported.
     let id = env.job(json!({"source": format!("file:{}", file.display()), "name": "KEEP_A", "clear": true}));
     let c = env.run(&id).await.cleared.unwrap();
+    request.kill().unwrap();
+    request.wait().unwrap();
     assert_eq!(c.clear_state.as_deref(), Some("cleared"), "{c:?}");
     env.assert_no_value_anywhere().await;
 }
