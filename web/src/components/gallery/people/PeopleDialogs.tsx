@@ -4,6 +4,7 @@ import { t } from "../../../i18n";
 import { defaultKeeper, personName } from "../../../lib/galleryPeople";
 import { Modal } from "../Modal";
 import { PersonFace } from "./PersonFace";
+import { groupText, useGroupKind } from "../../../lib/galleryGroup";
 
 /** Runs `work`, keeping the dialog busy meanwhile, and shows one error line when it throws. */
 function useAction() {
@@ -24,10 +25,12 @@ function useAction() {
 }
 
 function ErrorLine(props: { show: boolean }) {
+  const kind = useGroupKind();
+  const pt = groupText(kind);
   return (
     <Show when={props.show}>
       <p class="gv-error" role="alert">
-        {t("galleryPeople.actionFailed")}
+        {pt("actionFailed")}
       </p>
     </Show>
   );
@@ -35,6 +38,8 @@ function ErrorLine(props: { show: boolean }) {
 
 /** Pick the person to keep among the chosen ones; the others' faces move to them and the others go. */
 export function MergeDialog(props: { people: Person[]; onMerged: (keep: Person, from: string[]) => void; onCancel: () => void }) {
+  const kind = useGroupKind();
+  const pt = groupText(kind);
   const [keep, setKeep] = createSignal(defaultKeeper(props.people) ?? "");
   const { busy, error, run } = useAction();
   const submit = (e: SubmitEvent) => {
@@ -42,17 +47,17 @@ export function MergeDialog(props: { people: Person[]; onMerged: (keep: Person, 
     const id = keep();
     const others = props.people.filter((p) => p.id !== id).map((p) => p.id);
     if (!id || !others.length) return;
-    void run(async () => props.onMerged(await mergePeople(id, others), others));
+    void run(async () => props.onMerged(await mergePeople(id, others, kind), others));
   };
   return (
     <Modal labelledBy="pp-merge-title" busy={busy()} onClose={props.onCancel}>
       <form onSubmit={submit}>
         <h2 id="pp-merge-title" class="gv-dialog-title">
-          {t("galleryPeople.mergeTitle")}
+          {pt("mergeTitle")}
         </h2>
         <div class="gv-dialog-body">
-          <p>{t("galleryPeople.mergeBody")}</p>
-          <ul class="pp-keep" role="radiogroup" aria-label={t("galleryPeople.mergeKeep")}>
+          <p>{pt("mergeBody")}</p>
+          <ul class="pp-keep" role="radiogroup" aria-label={pt("mergeKeep")}>
             <For each={props.people}>
               {(person) => (
                 <li>
@@ -60,9 +65,9 @@ export function MergeDialog(props: { people: Person[]; onMerged: (keep: Person, 
                     <input type="radio" name="pp-keep" value={person.id} checked={keep() === person.id} disabled={busy()} onChange={() => setKeep(person.id)} />
                     <PersonFace src={person.thumbUrl} class="pp-face--small" />
                     <span class="pp-keep__name">
-                      {t("galleryPeople.mergeKeep")} {personName(person, t("galleryPeople.unnamed"))}
+                      {pt("mergeKeep")} {personName(person, pt("unnamed"))}
                     </span>
-                    <span class="pp-count">{t("galleryPeople.photos", { count: person.itemCount })}</span>
+                    <span class="pp-count">{pt("photos", { count: person.itemCount })}</span>
                   </label>
                 </li>
               )}
@@ -75,7 +80,7 @@ export function MergeDialog(props: { people: Person[]; onMerged: (keep: Person, 
             {t("common.cancel")}
           </button>
           <button type="submit" class="btn btn--primary" disabled={busy() || props.people.length < 2}>
-            {busy() ? t("common.saving") : t("galleryPeople.mergeConfirm", { count: props.people.length })}
+            {busy() ? t("common.saving") : pt("mergeConfirm", { count: props.people.length })}
           </button>
         </div>
       </form>
@@ -85,14 +90,16 @@ export function MergeDialog(props: { people: Person[]; onMerged: (keep: Person, 
 
 /** Deleting face data removes faces, people, names and crops; the photos are never touched. */
 export function DeleteFaceDataDialog(props: { onDeleted: () => void; onCancel: () => void }) {
+  const kind = useGroupKind();
+  const pt = groupText(kind);
   const { busy, error, run } = useAction();
   return (
     <Modal labelledBy="pp-delete-title" busy={busy()} onClose={props.onCancel}>
       <h2 id="pp-delete-title" class="gv-dialog-title">
-        {t("galleryPeople.deleteTitle")}
+        {pt("deleteTitle")}
       </h2>
       <div class="gv-dialog-body">
-        <p>{t("galleryPeople.deleteBody")}</p>
+        <p>{pt("deleteBody")}</p>
         <ErrorLine show={error()} />
       </div>
       <div class="gv-dialog-actions">
@@ -105,12 +112,12 @@ export function DeleteFaceDataDialog(props: { onDeleted: () => void; onCancel: (
           disabled={busy()}
           onClick={() =>
             void run(async () => {
-              await deleteFaceData();
+              await deleteFaceData(kind);
               props.onDeleted();
             })
           }
         >
-          {t("galleryPeople.deleteConfirm")}
+          {pt("deleteConfirm")}
         </button>
       </div>
     </Modal>

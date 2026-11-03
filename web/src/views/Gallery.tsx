@@ -31,7 +31,7 @@ import { createGalleryFeed, SEEK_PAGE } from "../components/gallery/GridFeed";
 import { GridView, type GridCommand, type TileClick } from "../components/gallery/GridView";
 import { SelectionBar } from "../components/gallery/SelectionBar";
 import { ArchiveBoxIcon, PlacesIcon } from "../components/gallery/browse/BrowseIcons";
-import { PeopleIcon } from "../components/gallery/faces/FaceIcons";
+import { PawIcon, PeopleIcon } from "../components/gallery/faces/FaceIcons";
 import { PersonHeader } from "../components/gallery/people/PersonHeader";
 import { MemoriesStrip } from "../components/gallery/browse/MemoriesStrip";
 import { SourceBar } from "../components/gallery/SourceBar";
@@ -46,6 +46,7 @@ import { t } from "../i18n";
 import { ALBUMS_PATH } from "../lib/galleryAlbums";
 import { albumKey } from "../lib/galleryCategories";
 import { PEOPLE_PATH, personName, personPath } from "../lib/galleryPeople";
+import { GroupKindProvider, groupPath, groupText } from "../lib/galleryGroup";
 import { rangeIds, sectionKey, sourceIdOf, toggleId, type GroupBy } from "../lib/galleryLayout";
 import { lookedAt, smartPager, smartReady, usesSmart, withSearch, type SearchMode } from "../lib/gallerySmart";
 import { supportsJxl } from "../lib/jxl";
@@ -84,13 +85,16 @@ function initialOrigin(): string {
   return mac ? `device:${mac.id}` : "all";
 }
 
-export default function GalleryView(props: { trash?: boolean; archive?: boolean; album?: string; person?: string; category?: GalleryCategory; desktop?: boolean }) {
+export default function GalleryView(props: { trash?: boolean; archive?: boolean; album?: string; person?: string; pet?: string; category?: GalleryCategory; desktop?: boolean }) {
   const measured = useWide();
   const wide = () => measured.wide() && (props.desktop ?? !shelf());
   const trash = () => !!props.trash;
   const archive = () => !!props.archive;
   const albumId = () => props.album;
-  const personId = () => props.person;
+  // A pet's page is a person's page over another set of groups.
+  const personId = () => props.person ?? props.pet;
+  const groupKind = props.pet ? "pets" : "people";
+  const pg = groupText(groupKind);
   const categoryId = () => props.category;
   // The shelves, an album and a person list everything of theirs, whatever source the Gallery was last switched to.
   const shelf = () => trash() || archive() || !!albumId() || !!personId() || !!categoryId();
@@ -113,12 +117,13 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
   const [album, { mutate: setAlbum }] = createResource(albumId, (id) => getAlbum(id).catch(() => null));
   const albumGone = () => !!albumId() && !album.loading && !album();
   // A person's page: the same grid over the photos with that person's face (the people API pages them).
-  const [person, { mutate: setPerson, refetch: refetchPerson }] = createResource(personId, (id) => getPerson(id).catch(() => null));
+  const [person, { mutate: setPerson, refetch: refetchPerson }] = createResource(personId, (id) => getPerson(id, groupKind).catch(() => null));
   const personGone = () => !!personId() && !person.loading && !person();
 
   // ---- smart search: the box asks by meaning when the server can, else by words ---------------------------------------
   // A category page searches by words: the smart search routes know nothing of categories.
-  const smartAllowed = () => !trash() && !archive() && !categoryId();
+  // Search by meaning knows people, not pets.
+  const smartAllowed = () => !trash() && !archive() && !categoryId() && !props.pet;
   const [fetchedStatus] = createResource(() => smartAllowed() || undefined, () => getEmbeddingStatus());
   const [latestStatus, setLatestStatus] = createSignal<EmbeddingStatus | null>(null);
   const smartStatus = () => latestStatus() ?? fetchedStatus() ?? null;
@@ -173,7 +178,7 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
       setSimilar(null);
     },
     onStatus: setLatestStatus,
-  }, (request) => (request.category ? listCategoryItems(request.category, request) : request.person ? listPersonItems(request.person, request) : listGallery(request)));
+  }, (request) => (request.category ? listCategoryItems(request.category, request) : request.person ? listPersonItems(request.person, request, groupKind) : listGallery(request)));
   const feed = createGalleryFeed(query, pager);
   const items = feed.items;
   const filtered = () => kind() !== "all" || favorite() || !!from() || !!to() || !!q() || !!bbox() || similarOn();
@@ -586,9 +591,9 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
                 : albumId()
                   ? t("galleryAlbums.emptyAlbum")
                   : personGone()
-                    ? t("galleryPeople.personMissing")
+                    ? pg("personMissing")
                     : personId()
-                      ? t("galleryPeople.emptyPerson")
+                      ? pg("emptyPerson")
                       : categoryId()
                         ? t("galleryCategories.emptyCategory")
                       : t("gallery.empty");
@@ -599,7 +604,7 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
     </button>
   );
 
-  const detailTitle = () => trash() ? t("gallery.trashTitle") : archive() ? t("browse.archiveTitle") : albumId() ? album()?.title || t("galleryAlbums.title") : categoryId() ? t(albumKey(categoryId()!)) : personId() ? (person() ? personName(person()!, t("galleryPeople.unnamed")) : t("galleryPeople.title")) : t("gallery.title");
+  const detailTitle = () => trash() ? t("gallery.trashTitle") : archive() ? t("browse.archiveTitle") : albumId() ? album()?.title || t("galleryAlbums.title") : categoryId() ? t(albumKey(categoryId()!)) : personId() ? (person() ? personName(person()!, pg("unnamed")) : pg("title")) : t("gallery.title");
   const body = () => (<>
       <div class="g-top">
         <Show
@@ -607,13 +612,13 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
           fallback={
             <Dynamic component={wide() ? "div" : "header"} class={wide() ? "g-desktop-tools" : "g-bar"}>
               <Show when={!wide() && shelf()}>
-                <A class="g-back" href={albumId() || categoryId() ? ALBUMS_PATH : personId() ? PEOPLE_PATH : "/gallery"} aria-label={albumId() || categoryId() ? t("galleryAlbums.title") : personId() ? t("galleryPeople.backToPeople") : t("gallery.backToGallery")}>
+                <A class="g-back" href={albumId() || categoryId() ? ALBUMS_PATH : personId() ? groupPath(groupKind) : "/gallery"} aria-label={albumId() || categoryId() ? t("galleryAlbums.title") : personId() ? pg("backToPeople") : t("gallery.backToGallery")}>
                   <BackIcon />
                 </A>
               </Show>
 <Show when={!wide()}>
               <h1 class="g-title" id="gallery-title">
-                {trash() ? t("gallery.trashTitle") : archive() ? t("browse.archiveTitle") : albumId() ? album()?.title || t("galleryAlbums.title") : categoryId() ? t(albumKey(categoryId()!)) : personId() ? (person() ? personName(person()!, t("galleryPeople.unnamed")) : t("galleryPeople.title")) : t("gallery.title")}
+                {trash() ? t("gallery.trashTitle") : archive() ? t("browse.archiveTitle") : albumId() ? album()?.title || t("galleryAlbums.title") : categoryId() ? t(albumKey(categoryId()!)) : personId() ? (person() ? personName(person()!, pg("unnamed")) : pg("title")) : t("gallery.title")}
               </h1>
 </Show>
               <label class="g-search">
@@ -621,7 +626,7 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
                 <input
                   type="search"
                   value={draft()}
-                  placeholder={person() ? (person()!.name ? t("galleryPeople.searchWithin", { name: person()!.name! }) : t("galleryPeople.searchWithinUnnamed")) : t("gallery.searchPlaceholder")}
+                  placeholder={person() ? (person()!.name ? pg("searchWithin", { name: person()!.name! }) : pg("searchWithinUnnamed")) : t("gallery.searchPlaceholder")}
                   aria-label={t("gallery.search")}
                   onInput={(e) => setDraft(e.currentTarget.value)}
                   onKeyDown={(e) => {
@@ -636,6 +641,9 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
                 </A>
                 <A class={wide() ? "pg-icon-btn" : "g-iconbtn"} href={PEOPLE_PATH} aria-label={t("galleryPeople.link")} title={t("galleryPeople.link")}>
                   <PeopleIcon />
+                </A>
+                <A class={wide() ? "pg-icon-btn" : "g-iconbtn"} href={groupPath("pets")} aria-label={t("galleryPets.link")} title={t("galleryPets.link")}>
+                  <PawIcon />
                 </A>
                 <A class={wide() ? "pg-icon-btn" : "g-iconbtn"} href="/gallery/places" aria-label={t("browse.placesLink")} title={t("browse.placesLink")}>
                   <PlacesIcon />
@@ -753,7 +761,7 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
             onClearSimilar={() => setSimilar(null)}
           />
         </Show>
-        <Show when={person()}>{(p) => <PersonHeader person={p()} onChanged={setPerson} />}</Show>
+        <Show when={person()}>{(p) => <GroupKindProvider value={groupKind}><PersonHeader person={p()} onChanged={setPerson} /></GroupKindProvider>}</Show>
         <Show when={trash()}>
           <p class="g-note">{t("gallery.trashNote")}</p>
         </Show>
@@ -853,7 +861,7 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean;
       <Show when={wide()} fallback={body()}>
         <Page class="g-grid-page">
           <GalleryHeader count={album()?.count ?? (person()?.itemCount) ?? (!feed.loading() && !feed.hasMore() && !feed.failed() ? items().length : undefined)} />
-          <Show when={shelf()}><GalleryDetail href={albumId() || categoryId() ? ALBUMS_PATH : personId() ? PEOPLE_PATH : "/gallery"} back={albumId() || categoryId() ? t("galleryAlbums.title") : personId() ? t("galleryPeople.backToPeople") : t("gallery.backToGallery")} title={detailTitle()} /></Show>
+          <Show when={shelf()}><GalleryDetail href={albumId() || categoryId() ? ALBUMS_PATH : personId() ? groupPath(groupKind) : "/gallery"} back={albumId() || categoryId() ? t("galleryAlbums.title") : personId() ? pg("backToPeople") : t("gallery.backToGallery")} title={detailTitle()} /></Show>
           <PageGrid layout="full">{body()}</PageGrid>
         </Page>
       </Show>

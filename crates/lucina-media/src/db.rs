@@ -270,6 +270,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     crate::dedup_review::migrate(conn)?;
     // Faces and people (2026-10-28): opt-in face recognition (`faces.rs`).
     crate::faces::migrate(conn)?;
+    crate::pets::migrate(conn)?;
     // Automatic photo categories (2026-10-28): `categories.rs`.
     crate::categories::migrate(conn)?;
     // Background uploads from the PhotoKit extension (2026-11-01): `bgupload.rs`.
@@ -638,6 +639,9 @@ pub struct ListQuery {
     /// smart search's `person=`), not a parameter of `GET items`.
     #[serde(skip)]
     pub person: Option<String>,
+    /// Only photos with this pet in them (`pets.rs`). Set by the server (`pets/{id}/items`).
+    #[serde(skip)]
+    pub pet: Option<String>,
     /// Only photos in this automatic category (`categories.rs`; `photo` is what no other category claims).
     /// Set by the server (`categories/{cat}/items`), not a parameter of `GET items`.
     #[serde(skip)]
@@ -792,6 +796,14 @@ pub(crate) fn list_filters(q: &ListQuery) -> (Vec<String>, Vec<rusqlite::types::
             &mut wh,
             &mut args,
             "i.id IN (SELECT item_id FROM faces WHERE person_id = ?)",
+            p.clone().into(),
+        );
+    }
+    if let Some(p) = &q.pet {
+        add(
+            &mut wh,
+            &mut args,
+            "i.id IN (SELECT item_id FROM pet_crops WHERE pet_id = ?)",
             p.clone().into(),
         );
     }

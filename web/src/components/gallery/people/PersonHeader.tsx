@@ -1,13 +1,15 @@
 import { createSignal, Show } from "solid-js";
 import { patchPerson, type Person } from "../../../api/gallery";
-import { t } from "../../../i18n";
 import { isBirthDate } from "../../../lib/galleryPeople";
 import { InlineName } from "./InlineName";
 import { PersonFace } from "./PersonFace";
 import "../../../styles/gallery-people.css";
+import { groupText, useGroupKind } from "../../../lib/galleryGroup";
 
 /** The top of a person's page: face, name (a click renames), birth date (optional) and how many photos. */
 export function PersonHeader(props: { person: Person; onChanged: (person: Person) => void }) {
+  const kind = useGroupKind();
+  const pt = groupText(kind);
   const [invalid, setInvalid] = createSignal(false);
   const [failed, setFailed] = createSignal(false);
 
@@ -20,7 +22,7 @@ export function PersonHeader(props: { person: Person; onChanged: (person: Person
     setInvalid(false);
     if ((value || null) === props.person.birthDate) return;
     try {
-      props.onChanged(await patchPerson(props.person.id, { birthDate: value || null }));
+      props.onChanged(await patchPerson(props.person.id, { birthDate: value || null }, kind));
     } catch {
       setFailed(true);
     }
@@ -30,10 +32,10 @@ export function PersonHeader(props: { person: Person; onChanged: (person: Person
     <div class="pp-person">
       <PersonFace src={props.person.thumbUrl} class="pp-face--large" />
       <div class="pp-person__text">
-        <InlineName class="pp-name--large" name={props.person.name} label={t("galleryPeople.rename", { name: props.person.name || t("galleryPeople.unnamed") })} onSave={async (name) => props.onChanged(await patchPerson(props.person.id, { name }))} />
-        <span class="pp-count">{t("galleryPeople.photos", { count: props.person.itemCount })}</span>
+        <InlineName class="pp-name--large" name={props.person.name} label={pt("rename", { name: props.person.name || pt("unnamed") })} onSave={async (name) => props.onChanged(await patchPerson(props.person.id, { name }))} />
+        <span class="pp-count">{pt("photos", { count: props.person.itemCount })}</span>
         <div class="pp-birth">
-          <label for="pp-birth-date">{t("galleryPeople.birthDate")}</label>
+          <label for="pp-birth-date">{pt("birthDate")}</label>
           <input
             id="pp-birth-date"
             class="text-input"
@@ -45,18 +47,18 @@ export function PersonHeader(props: { person: Person; onChanged: (person: Person
           />
           <Show when={props.person.birthDate}>
             <button type="button" class="g-chip" onClick={() => void saveBirth("")}>
-              {t("galleryPeople.birthDateClear")}
+              {pt("birthDateClear")}
             </button>
           </Show>
         </div>
         <Show when={invalid()}>
           <p class="gv-error" role="alert">
-            {t("galleryPeople.birthDateInvalid")}
+            {pt("birthDateInvalid")}
           </p>
         </Show>
         <Show when={failed()}>
           <p class="gv-error" role="alert">
-            {t("galleryPeople.actionFailed")}
+            {pt("actionFailed")}
           </p>
         </Show>
       </div>

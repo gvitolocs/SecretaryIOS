@@ -1308,6 +1308,14 @@ export async function dismissStackSuggestion(ids: string[]): Promise<void> {
 // into people, and a face the owner assigns by hand is never moved by the grouping. Boxes are fractions (0..1) of the picture
 // as the renditions show it, before the rotation the client draws.
 
+/** Faces grouped into people, or cats and dogs grouped into pets: the same pages and routes, two sets of paths. */
+export type GroupKind = "people" | "pets";
+
+const GROUP = {
+  people: { settings: "/v1/media/faces/settings", data: "/v1/media/faces", list: "/v1/media/people", crop: "/v1/media/faces", unassigned: "/v1/media/faces/unassigned", min: "min_faces", member: "person" },
+  pets: { settings: "/v1/media/pet-crops/settings", data: "/v1/media/pet-crops", list: "/v1/media/pets", crop: "/v1/media/pet-crops", unassigned: "/v1/media/pet-crops/unassigned", min: "min_crops", member: "pet" },
+} as const;
+
 export interface FaceSettings {
   enabled: boolean;
   model: string | null;
@@ -1364,7 +1372,7 @@ export type FaceTarget = { personId: string | null } | { newPerson: string };
 export const PERSON_NAME_MAX = 80;
 export const UNASSIGNED_PAGE = 60;
 
-export const faceThumbUrl = (faceId: string): string => `/v1/media/faces/${enc(faceId)}/thumb`;
+export const faceThumbUrl = (faceId: string, kind: GroupKind = "people"): string => `${GROUP[kind].crop}/${enc(faceId)}/thumb`;
 
 export function parseFaceSettings(raw: unknown): FaceSettings {
   const r = obj(raw);
@@ -1374,8 +1382,8 @@ export function parseFaceSettings(raw: unknown): FaceSettings {
     model: str(r.model),
     scanned: count(r.scanned),
     pending: count(r.pending),
-    faces: count(r.faces),
-    people: count(r.people),
+    faces: count(r.faces ?? r.crops),
+    people: count(r.people ?? r.pets),
     running: r.running === true,
     pausedHot: r.paused_hot === true,
     pausedBusy: r.paused_busy === true,
@@ -1393,9 +1401,9 @@ export function parsePerson(raw: unknown): Person | null {
     name: str(r.name),
     hidden: r.hidden === true,
     birthDate: date(r.birth_date),
-    faceCount: Math.max(0, Math.round(num(r.face_count) ?? 0)),
+    faceCount: Math.max(0, Math.round(num(r.face_count ?? r.crop_count) ?? 0)),
     itemCount: Math.max(0, Math.round(num(r.item_count) ?? 0)),
-    coverFaceId: str(r.cover_face_id),
+    coverFaceId: str(r.cover_face_id ?? r.cover_crop_id),
     thumbUrl: sameOriginPath(r.thumb_url) ?? null,
   };
 }
@@ -1420,7 +1428,7 @@ export function parseItemFace(raw: unknown): ItemFace | null {
   const id = str(r.id);
   const box = parseFaceBox(r.box);
   if (!id || !box) return null;
-  const person = obj(r.person);
+  const person = obj(r.person ?? r.pet);
   const personId = str(person.id);
   return {
     id,
@@ -1431,31 +1439,32 @@ export function parseItemFace(raw: unknown): ItemFace | null {
   };
 }
 
-export async function getFaceSettings(): Promise<FaceSettings> {
-  return parseFaceSettings(await request<unknown>("GET", "/v1/media/faces/settings"));
+export async function getFaceSettings(kind: GroupKind = "people"): Promise<FaceSettings> {
+  return parseFaceSettings(await request<unknown>("GET", GROUP[kind].settings));
 }
 
 /** Turn recognition on or off. Off stops the scanning; nothing is deleted. */
-export async function setFacesEnabled(enabled: boolean): Promise<FaceSettings> {
-  return parseFaceSettings(await request<unknown>("PUT", "/v1/media/faces/settings", { body: { enabled } }));
+export async function setFacesEnabled(enabled: boolean, kind: GroupKind = "people"): Promise<FaceSettings> {
+  return parseFaceSettings(await request<unknown>("PUT", GROUP[kind].settings, { body: { enabled } }));
 }
 
 /** Delete every face, person and crop (recognition is turned off too). */
-export async function deleteFaceData(): Promise<void> {
-  await request<unknown>("DELETE", "/v1/media/faces", { timeoutMs: 60_000 });
+export async function deleteFaceData(kind: GroupKind = "people"): Promise<void> {
+  await request<unknown>("DELETE", GROUP[kind].data, { timeoutMs: 60_000 });
 }
 
-export async function listPeople(opts: { minFaces?: number; includeHidden?: boolean } = {}): Promise<Person[]> {
+export async function listPeople(opts: { minFaces?: number; includeHidden?: boolean } = {}, kind: GroupKind = "people"): Promise<Person[]> {
   const params = new URLSearchParams();
-  if (opts.minFaces !== undefined) params.set("min_faces", String(opts.minFaces));
+  if (opts.minFaces !== undefined) params.set(GROUP[kind].min, String(opts.minFaces));
   if (opts.includeHidden) params.set("include_hidden", "true");
   const query = params.toString();
-  const body = obj(await request<unknown>("GET", `/v1/media/people${query ? `?${query}` : ""}`));
-  return (Array.isArray(body.people) ? body.people : []).map(parsePerson).filter((p): p is Person => p !== null);
+  const body = obj(await request<unknown>("GET", `${GROUP[kind].list}${query ? `?${query}` : ""}`));
+  const list = body.people ?? body.pets;
+  return (Array.isArray(list) ? list : []).map(parsePerson).filter((p): p is Person => p !== null);
 }
 
-export async function getPerson(id: string): Promise<Person | null> {
-  return parsePerson(await request<unknown>("GET", `/v1/media/people/${enc(id)}`));
+export async function getPerson(id: string, kind: GroupKind = "people"): Promise<Person | null> {
+  return parsePerson(await request<unknown>("GET", `${GROUP[kind].list}/${enc(id)}`));
 }
 
 export interface PersonEdit {
@@ -1467,27 +1476,27 @@ export interface PersonEdit {
   coverFaceId?: string;
 }
 
-export async function patchPerson(id: string, edit: PersonEdit): Promise<Person> {
+export async function patchPerson(id: string, edit: PersonEdit, kind: GroupKind = "people"): Promise<Person> {
   const body: Raw = {};
   if (edit.name !== undefined) body.name = edit.name === null ? null : edit.name.trim().slice(0, PERSON_NAME_MAX) || null;
   if (edit.hidden !== undefined) body.hidden = edit.hidden;
   if (edit.birthDate !== undefined) body.birth_date = edit.birthDate;
-  if (edit.coverFaceId !== undefined) body.cover_face_id = edit.coverFaceId;
-  const person = parsePerson(await request<unknown>("PATCH", `/v1/media/people/${enc(id)}`, { body }));
+  if (edit.coverFaceId !== undefined) body[kind === "pets" ? "cover_crop_id" : "cover_face_id"] = edit.coverFaceId;
+  const person = parsePerson(await request<unknown>("PATCH", `${GROUP[kind].list}/${enc(id)}`, { body }));
   if (!person) throw new Error("person not updated");
   return person;
 }
 
 /** Move the faces of `from` to `keep` and delete those people. */
-export async function mergePeople(keep: string, from: string[]): Promise<Person> {
-  const person = parsePerson(await request<unknown>("POST", `/v1/media/people/${enc(keep)}/merge`, { body: { from }, timeoutMs: 60_000 }));
+export async function mergePeople(keep: string, from: string[], kind: GroupKind = "people"): Promise<Person> {
+  const person = parsePerson(await request<unknown>("POST", `${GROUP[kind].list}/${enc(keep)}/merge`, { body: { from }, timeoutMs: 60_000 }));
   if (!person) throw new Error("people not merged");
   return person;
 }
 
 /** A page of one person's photos: the listing's own filters and paging, the person's route. */
-export async function listPersonItems(id: string, q: GalleryQuery = {}): Promise<GalleryPage> {
-  const body = obj(await request<unknown>("GET", `/v1/media/people/${enc(id)}/items?${galleryQueryString({ ...q, person: undefined })}`));
+export async function listPersonItems(id: string, q: GalleryQuery = {}, kind: GroupKind = "people"): Promise<GalleryPage> {
+  const body = obj(await request<unknown>("GET", `${GROUP[kind].list}/${enc(id)}/items?${galleryQueryString({ ...q, person: undefined })}`));
   const items = (Array.isArray(body.items) ? body.items : []).map(parseItem).filter((i): i is GalleryItem => i !== null);
   return { items, nextCursor: str(body.next_cursor) };
 }
@@ -1498,21 +1507,23 @@ export async function listItemFaces(itemId: string): Promise<ItemFace[]> {
 }
 
 /** Assign a face (to a person, to nobody, or to a new person). The server marks it as the owner's choice. */
-export async function assignFace(faceId: string, target: FaceTarget): Promise<ItemFace | null> {
-  const body: Raw = "newPerson" in target ? { new_person: target.newPerson.trim().slice(0, PERSON_NAME_MAX) } : { person_id: target.personId };
-  return parseItemFace(await request<unknown>("PUT", `/v1/media/faces/${enc(faceId)}`, { body }));
+export async function assignFace(faceId: string, target: FaceTarget, kind: GroupKind = "people"): Promise<ItemFace | null> {
+  const m = GROUP[kind].member;
+  const body: Raw = "newPerson" in target ? { [`new_${m}`]: target.newPerson.trim().slice(0, PERSON_NAME_MAX) } : { [`${m}_id`]: target.personId };
+  return parseItemFace(await request<unknown>("PUT", `${GROUP[kind].crop}/${enc(faceId)}`, { body }));
 }
 
-export async function listUnassignedFaces(opts: { cursor?: string | null; limit?: number } = {}): Promise<{ faces: UnassignedFace[]; nextCursor: string | null }> {
+export async function listUnassignedFaces(opts: { cursor?: string | null; limit?: number } = {}, kind: GroupKind = "people"): Promise<{ faces: UnassignedFace[]; nextCursor: string | null }> {
   const params = new URLSearchParams({ limit: String(opts.limit ?? UNASSIGNED_PAGE) });
   if (opts.cursor) params.set("cursor", opts.cursor);
-  const body = obj(await request<unknown>("GET", `/v1/media/faces/unassigned?${params}`));
+  const body = obj(await request<unknown>("GET", `${GROUP[kind].unassigned}?${params}`));
   const faces: UnassignedFace[] = [];
-  for (const entry of Array.isArray(body.faces) ? body.faces : []) {
+  const found = body.faces ?? body.crops;
+  for (const entry of Array.isArray(found) ? found : []) {
     const r = obj(entry);
     const id = str(r.id);
     if (!id) continue;
-    faces.push({ id, itemId: str(r.item_id), thumbUrl: sameOriginPath(r.thumb_url) ?? faceThumbUrl(id), score: num(r.score) ?? 0 });
+    faces.push({ id, itemId: str(r.item_id), thumbUrl: sameOriginPath(r.thumb_url) ?? faceThumbUrl(id, kind), score: num(r.score) ?? 0 });
   }
   return { faces, nextCursor: str(body.next_cursor) };
 }

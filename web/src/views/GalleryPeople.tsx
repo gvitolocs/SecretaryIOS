@@ -13,6 +13,8 @@ import { ScanStatus } from "../components/gallery/people/ScanStatus";
 import { UnassignedFaces } from "../components/gallery/people/UnassignedFaces";
 import { BackIcon } from "../components/Icons";
 import { t } from "../i18n";
+import { GroupKindProvider, groupText, useGroupKind } from "../lib/galleryGroup";
+import type { GroupKind } from "../api/gallery";
 import { canMerge, replacePerson, stillScanning, withoutPeople } from "../lib/galleryPeople";
 import "../styles/gallery.css";
 import "../styles/gallery-people.css";
@@ -23,17 +25,35 @@ export const SCAN_POLL_MS = 5000;
 /**
  * /gallery/people: face recognition's own page. While it is off, a card says what it does and lets the owner turn it on.
  * When it is on: the people as round faces with names (a click renames), counts, the scan's progress, hide / show hidden,
- * merging, and the faces still without a person.
+ * merging, and the faces still without a person. /gallery/pets is the same page over cats and dogs (`kind` "pets").
  */
 export default function GalleryPeopleView() {
+  return <GalleryGroupPage kind="people" />;
+}
+
+export function GalleryGroupPage(props: { kind: GroupKind }) {
+  return (
+    <GroupKindProvider value={props.kind}>
+      <GroupPage />
+    </GroupKindProvider>
+  );
+}
+
+function GroupPage() {
+  const kind = useGroupKind();
+  const pt = groupText(kind);
+  // The viewer's face boxes only care about faces.
+  const facesChanged = () => {
+    if (kind === "people") resetFacesAvailable();
+  };
   const { wide, track } = useWide();
-  const [settings, { mutate: setSettings, refetch: refetchSettings }] = createResource(getFaceSettings);
+  const [settings, { mutate: setSettings, refetch: refetchSettings }] = createResource(() => getFaceSettings(kind));
   const [showHidden, setShowHidden] = createSignal(false);
   const current = (): FaceSettings | undefined => (settings.state === "errored" ? undefined : settings.latest);
   const enabled = () => current()?.enabled === true;
   const [people, { mutate: setPeople, refetch: refetchPeople }] = createResource(
     () => (enabled() ? { hidden: showHidden() } : false),
-    (key) => listPeople({ includeHidden: key.hidden }),
+    (key) => listPeople({ includeHidden: key.hidden }, kind),
   );
   const list = createMemo((): Person[] => (people.state === "errored" ? [] : (people.latest ?? [])));
 
@@ -56,7 +76,7 @@ export default function GalleryPeopleView() {
     if (!s || !stillScanning(s)) return;
     const timer = setTimeout(async () => {
       try {
-        const next = await getFaceSettings();
+        const next = await getFaceSettings(kind);
         if (next.people !== s.people || next.faces !== s.faces) void refetchPeople();
         setSettings(next);
       } catch {
@@ -81,44 +101,44 @@ export default function GalleryPeopleView() {
   };
 
   async function turnOn() {
-    const next = await setFacesEnabled(true);
-    resetFacesAvailable();
+    const next = await setFacesEnabled(true, kind);
+    facesChanged();
     setSettings(next);
   }
 
   async function turnOff() {
     try {
-      const next = await setFacesEnabled(false);
-      resetFacesAvailable();
+      const next = await setFacesEnabled(false, kind);
+      facesChanged();
       stopSelecting();
       setSettings(next);
-      say(t("galleryPeople.turnedOff"));
+      say(pt("turnedOff"));
     } catch {
-      say(t("galleryPeople.actionFailed"), true);
+      say(pt("actionFailed"), true);
     }
   }
 
   function dataDeleted() {
-    resetFacesAvailable();
+    facesChanged();
     setDeleting(false);
     stopSelecting();
     setPeople([]);
     void refetchSettings();
-    say(t("galleryPeople.deleted"));
+    say(pt("deleted"));
   }
 
   async function renameSaved(person: Person, name: string | null): Promise<void> {
-    const saved = await patchPerson(person.id, { name });
+    const saved = await patchPerson(person.id, { name }, kind);
     setPeople((now) => replacePerson(now ?? [], saved));
   }
 
   async function hide(person: Person) {
     try {
-      const saved = await patchPerson(person.id, { hidden: !person.hidden });
+      const saved = await patchPerson(person.id, { hidden: !person.hidden }, kind);
       // Hidden people leave the list unless "Show hidden" is on.
       setPeople((now) => (saved.hidden && !showHidden() ? withoutPeople(now ?? [], [saved.id]) : replacePerson(now ?? [], saved)));
     } catch {
-      say(t("galleryPeople.actionFailed"), true);
+      say(pt("actionFailed"), true);
     }
   }
 
@@ -126,28 +146,28 @@ export default function GalleryPeopleView() {
     setPeople((now) => replacePerson(withoutPeople(now ?? [], from), keep));
     setMerging(false);
     stopSelecting();
-    say(t("galleryPeople.merged", { count: from.length + 1 }));
+    say(pt("merged", { count: from.length + 1 }));
     void refetchSettings();
   }
 
   const showHiddenChip = () => (
     <button type="button" class="g-chip" aria-pressed={showHidden()} onClick={() => setShowHidden((v) => !v)}>
-      {t("galleryPeople.showHidden")}
+      {pt("showHidden")}
     </button>
   );
   const selectChip = () => (
     <button type="button" class="g-chip" onClick={() => setSelecting(true)}>
-      {t("galleryPeople.select")}
+      {pt("select")}
     </button>
   );
   const doneChip = () => (
     <button type="button" class="g-chip" onClick={stopSelecting}>
-      {t("galleryPeople.doneSelecting")}
+      {pt("doneSelecting")}
     </button>
   );
   const selCount = () => (
     <span class="pp-selcount" role="status">
-      {t("galleryPeople.selected", { count: selected().size })}
+      {pt("selected", { count: selected().size })}
     </span>
   );
   const retryBox = (retry: () => void) => (
@@ -155,14 +175,14 @@ export default function GalleryPeopleView() {
       when={wide()}
       fallback={
         <p class="pp-empty" role="alert">
-          {t("galleryPeople.loadError")}{" "}
+          {pt("loadError")}{" "}
           <button type="button" class="btn" onClick={retry}>
-            {t("galleryPeople.retry")}
+            {pt("retry")}
           </button>
         </p>
       }
     >
-      <ErrorState message={t("galleryPeople.loadError")} retryLabel={t("galleryPeople.retry")} onRetry={retry} />
+      <ErrorState message={pt("loadError")} retryLabel={pt("retry")} onRetry={retry} />
     </Show>
   );
   const loadingBox = () => (
@@ -184,12 +204,12 @@ export default function GalleryPeopleView() {
               <Show
                 when={list().length > 0}
                 fallback={
-                  <Show when={wide()} fallback={<p class="pp-empty">{t("galleryPeople.empty")}</p>}>
-                    <EmptyState text={t("galleryPeople.empty")} />
+                  <Show when={wide()} fallback={<p class="pp-empty">{pt("empty")}</p>}>
+                    <EmptyState text={pt("empty")} />
                   </Show>
                 }
               >
-                <ul class="pp-grid" aria-label={t("galleryPeople.title")}>
+                <ul class="pp-grid" aria-label={pt("title")}>
                   <For each={list()}>
                     {(person) => (
                       <li>
@@ -230,7 +250,7 @@ export default function GalleryPeopleView() {
               <A class="g-back" href="/gallery" aria-label={t("gallery.backToGallery")}>
                 <BackIcon />
               </A>
-              <h1 class="pp-h1">{t("galleryPeople.title")}</h1>
+              <h1 class="pp-h1">{pt("title")}</h1>
               <Show when={enabled()}>
                 <Show
                   when={selecting()}
@@ -244,7 +264,7 @@ export default function GalleryPeopleView() {
                 >
                   {selCount()}
                   <button type="button" class="btn btn--primary" disabled={!canMerge(selected())} onClick={() => setMerging(true)}>
-                    <MergeIcon /> {t("galleryPeople.merge")}
+                    <MergeIcon /> {pt("merge")}
                   </button>
                   {doneChip()}
                 </Show>
@@ -261,7 +281,7 @@ export default function GalleryPeopleView() {
             action={
               <Show when={enabled() && selecting()}>
                 <PrimaryAction icon={<MergeIcon />} disabled={!canMerge(selected())} onClick={() => setMerging(true)}>
-                  {t("galleryPeople.merge")}
+                  {pt("merge")}
                 </PrimaryAction>
               </Show>
             }
@@ -285,7 +305,7 @@ export default function GalleryPeopleView() {
               </div>
             </Show>
             <Show when={enabled()} fallback={body()}>
-              <Card label={t("galleryPeople.title")}>{body()}</Card>
+              <Card label={pt("title")}>{body()}</Card>
               {unassigned()}
             </Show>
           </PageGrid>

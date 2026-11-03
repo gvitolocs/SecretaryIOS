@@ -1,15 +1,17 @@
 import { createEffect, createSignal, For, on, Show } from "solid-js";
 import { assignFace, listUnassignedFaces, type FaceTarget, type UnassignedFace } from "../../../api/gallery";
-import { t } from "../../../i18n";
 import { Card } from "../../page";
 import { FacePicker } from "../faces/FacePicker";
 import "../../../styles/gallery-people.css";
+import { groupText, useGroupKind } from "../../../lib/galleryGroup";
 
 /**
  * "Faces without a person" at the bottom of the People page: each face can be given to a person (or to a new one) with the
  * same picker as in the viewer. The list is asked for again when `refreshKey` changes (the scan found more).
  */
 export function UnassignedFaces(props: { wide?: boolean; refreshKey: number; onAssigned: () => void }) {
+  const kind = useGroupKind();
+  const pt = groupText(kind);
   const [faces, setFaces] = createSignal<UnassignedFace[]>([]);
   const [cursor, setCursor] = createSignal<string | null>(null);
   const [loading, setLoading] = createSignal(false);
@@ -22,7 +24,7 @@ export function UnassignedFaces(props: { wide?: boolean; refreshKey: number; onA
     setLoading(true);
     setFailed(false);
     try {
-      const page = await listUnassignedFaces({ cursor: more ? cursor() : null });
+      const page = await listUnassignedFaces({ cursor: more ? cursor() : null }, kind);
       if (mine !== generation) return;
       setFaces((prev) => {
         const have = new Set(more ? prev.map((f) => f.id) : []);
@@ -39,7 +41,7 @@ export function UnassignedFaces(props: { wide?: boolean; refreshKey: number; onA
   createEffect(on(() => props.refreshKey, () => void load(false)));
 
   async function assign(face: UnassignedFace, target: FaceTarget): Promise<void> {
-    await assignFace(face.id, target);
+    await assignFace(face.id, target, kind);
     setChoosing(null);
     setFaces((prev) => prev.filter((f) => f.id !== face.id));
     props.onAssigned();
@@ -47,12 +49,12 @@ export function UnassignedFaces(props: { wide?: boolean; refreshKey: number; onA
 
   const content = () => (
     <>
-        <p class="pp-hint">{t("galleryPeople.unassignedHint")}</p>
+        <p class="pp-hint">{pt("unassignedHint")}</p>
         <ul class="pp-faces">
           <For each={faces()}>
             {(face) => (
               <li>
-                <button type="button" class="pp-faces__btn" aria-label={t("galleryPeople.unassignedFace")} onClick={() => setChoosing(face)}>
+                <button type="button" class="pp-faces__btn" aria-label={pt("unassignedFace")} onClick={() => setChoosing(face)}>
                   <img src={face.thumbUrl} alt="" loading="lazy" draggable={false} />
                 </button>
               </li>
@@ -61,15 +63,15 @@ export function UnassignedFaces(props: { wide?: boolean; refreshKey: number; onA
         </ul>
         <Show when={failed()}>
           <p class="gv-error" role="alert">
-            {t("galleryPeople.loadError")}{" "}
+            {pt("loadError")}{" "}
             <button type="button" class={props.wide ? "pg-btn" : "btn"} onClick={() => void load(cursor() !== null && faces().length > 0)}>
-              {t("galleryPeople.retry")}
+              {pt("retry")}
             </button>
           </p>
         </Show>
         <Show when={cursor() && !failed()}>
           <button type="button" class={props.wide ? "pg-btn" : "btn"} disabled={loading()} onClick={() => void load(true)}>
-            {t("galleryPeople.showMore")}
+            {pt("showMore")}
           </button>
         </Show>
     </>
@@ -82,13 +84,13 @@ export function UnassignedFaces(props: { wide?: boolean; refreshKey: number; onA
         fallback={
           <section class="pp-unassigned" aria-labelledby="pp-unassigned-title">
             <h2 id="pp-unassigned-title" class="pp-section">
-              {t("galleryPeople.unassignedTitle")}
+              {pt("unassignedTitle")}
             </h2>
             {content()}
           </section>
         }
       >
-        <Card title={t("galleryPeople.unassignedTitle")} class="pp-unassigned">
+        <Card title={pt("unassignedTitle")} class="pp-unassigned">
           {content()}
         </Card>
       </Show>

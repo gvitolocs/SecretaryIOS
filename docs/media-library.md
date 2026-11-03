@@ -651,3 +651,40 @@ is upload work and performs the uploads itself, also while the app is closed.
   themselves, in the explicit-only scope `photos`. Only a token or grant the owner gave it by name has them
   (`secretary-mcp token add-scope <name> photos`, or the consent page); `read`, `chat` and the default grant never do.
   A rendition only: no originals, coordinates or links. Every fetch is logged with the caller and the item id.
+
+## Pets (2026-11-03)
+
+The Gallery groups the cats and dogs in the photos by animal, on the People page's patterns: `/gallery/pets` (rename,
+hide, show hidden, merge, animals without a pet) and `/gallery/pet/:id` (that pet's photos). Unlike faces it is on by
+default (`pet_settings.enabled` is on until set to `"0"`); the page's menu turns it off and deletes what it found.
+
+- Code: `lucina-media-ml/src/pets.rs` (detector, embedder), `pets_store.rs` (tables `pet_settings`, `pets`,
+  `pet_crops`, `pet_scans`), `lucina-media/src/pets.rs` (scan) and `pets_http.rs` (routes). Web:
+  `views/GalleryPets.tsx`, `GalleryPet.tsx`, and the People components with `lib/galleryGroup.ts`'s kind.
+- Scan: the smart worker's step after faces, same pauses (nice 19, 3 ONNX threads, waits at Tctl ≥ 90 °C or load
+  above 16). Only photos already categorised `pet` or `photo` are looked at; screenshots and documents are skipped.
+- Routes under `/v1/media`: `pet-crops/settings` (GET, PUT `{enabled}`), `pet-crops` (DELETE: all pet data),
+  `pet-crops/unassigned`, `pet-crops/{id}` (PUT `{pet_id}` or `{new_pet}`), `pet-crops/{id}/thumb`, `pets`
+  (`min_crops`, `include_hidden`), `pets/{id}` (GET, PATCH `name`/`hidden`/`birth_date`/`cover_crop_id`),
+  `pets/{id}/merge` `{from}`, `pets/{id}/items`, `pets/{id}/thumb`, `items/{id}/pets`.
+- Grouping: cosine of the crop vectors, a crop joins a pet at ≥ 0.62 and a new pet needs 3 crops (`MATCH`,
+  `MIN_CROPS`). 0.62 is above the best threshold of the proving run (0.58) on purpose: fewer look-alikes merged, the
+  owner merges the rest.
+
+Models (`LUCINA_MEDIA_PETS_MODEL_DIR`, default `~/models/pets`):
+
+| File | Model | Source | Licence | sha256 |
+| --- | --- | --- | --- | --- |
+| `yolox_s.onnx` | YOLOX-s, COCO (cat 15, dog 16), 640×640 | github.com/Megvii-BaseDetection/YOLOX release 0.1.1rc0 | Apache-2.0 | `c5c2d13e…8063` |
+| `dinov2_small.onnx` | DINOv2 ViT-S/14, CLS token (384) | huggingface.co/onnx-community/dinov2-small (Meta DINOv2) | Apache-2.0 | `f22797ea…c20a` |
+
+Proving run (2026-11-03, 708 camera pet photos, 212 YOLOX crops in 185 photos, labelled by hand, read-only):
+
+| Re-ID model | Best cosine | Precision | Recall | Cluster purity | CPU per crop (4 threads) |
+| --- | --- | --- | --- | --- | --- |
+| DINOv2-small | 0.58 | 0.96 | 0.96 | 0.95 | 83 ms |
+| MegaDescriptor-T-224 | 0.33 | 0.63 | 0.76 | 0.86 | 59 ms |
+
+Detection is 129 ms per photo. MegaDescriptor (CC-BY-NC-4.0) lost on every measure and is not shipped. DINOv2's two
+mixed clusters were look-alike pairs (a white-and-tabby cat with a grey kitten, a ginger-and-white cat with a calico).
+EmbeddingGemma's stored photo vectors were tried first and could not tell look-alikes apart.

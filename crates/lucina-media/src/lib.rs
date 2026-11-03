@@ -48,6 +48,8 @@ pub mod lab;
 pub mod lab_http;
 pub mod lab_run;
 pub mod meta;
+pub mod pets;
+pub mod pets_http;
 pub mod phash;
 pub mod protocol;
 pub mod renditions;

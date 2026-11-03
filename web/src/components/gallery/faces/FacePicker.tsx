@@ -4,6 +4,7 @@ import { t } from "../../../i18n";
 import { normalizeName, personName, searchPeople } from "../../../lib/galleryPeople";
 import { Modal } from "../Modal";
 import "../../../styles/gallery-people.css";
+import { groupText, useGroupKind } from "../../../lib/galleryGroup";
 
 export interface FacePickerProps {
   faceId: string;
@@ -19,7 +20,9 @@ export interface FacePickerProps {
  * one. A small dialog over the viewer or the People page; one request at a time.
  */
 export function FacePicker(props: FacePickerProps) {
-  const [people] = createResource(() => listPeople({ minFaces: 1 }));
+  const kind = useGroupKind();
+  const pt = groupText(kind);
+  const [people] = createResource(() => listPeople({ minFaces: 1 }, kind));
   const [query, setQuery] = createSignal("");
   const [name, setName] = createSignal("");
   const [busy, setBusy] = createSignal(false);
@@ -38,7 +41,7 @@ export function FacePicker(props: FacePickerProps) {
     try {
       await props.onAssign(target);
     } catch {
-      setError(t("galleryPeople.assignFailed"));
+      setError(pt("assignFailed"));
       setBusy(false);
     }
   };
@@ -52,12 +55,12 @@ export function FacePicker(props: FacePickerProps) {
   return (
     <Modal labelledBy="gf-pick-title" busy={busy()} onClose={props.onCancel}>
       <h2 id="gf-pick-title" class="gv-dialog-title">
-        {t("galleryPeople.pickerTitle")}
+        {pt("pickerTitle")}
       </h2>
       <div class="gf-pick-head">
-        <img class="gf-pick-face" src={faceThumbUrl(props.faceId)} alt="" draggable={false} />
+        <img class="gf-pick-face" src={faceThumbUrl(props.faceId, kind)} alt="" draggable={false} />
         <Show when={props.current}>
-          {(now) => <p class="gv-dialog-sub">{t("galleryPeople.pickerNow", { name: personName(now(), t("galleryPeople.unnamed")) })}</p>}
+          {(now) => <p class="gv-dialog-sub">{pt("pickerNow", { name: personName(now(), pt("unnamed")) })}</p>}
         </Show>
       </div>
       <div class="gv-dialog-body">
@@ -65,15 +68,15 @@ export function FacePicker(props: FacePickerProps) {
           class="text-input"
           type="search"
           value={query()}
-          placeholder={t("galleryPeople.pickerSearch")}
-          aria-label={t("galleryPeople.pickerSearch")}
+          placeholder={pt("pickerSearch")}
+          aria-label={pt("pickerSearch")}
           disabled={busy()}
           onInput={(e) => setQuery(e.currentTarget.value)}
         />
-        <Show when={!people.loading} fallback={<p class="gv-muted" role="status">{t("galleryPeople.pickerLoading")}</p>}>
-          <Show when={!people.error} fallback={<p class="gv-error" role="alert">{t("galleryPeople.pickerError")}</p>}>
-            <Show when={shown().length} fallback={<p class="gv-muted">{t("galleryPeople.pickerNone")}</p>}>
-              <ul class="gf-people" aria-label={t("galleryPeople.title")}>
+        <Show when={!people.loading} fallback={<p class="gv-muted" role="status">{pt("pickerLoading")}</p>}>
+          <Show when={!people.error} fallback={<p class="gv-error" role="alert">{pt("pickerError")}</p>}>
+            <Show when={shown().length} fallback={<p class="gv-muted">{pt("pickerNone")}</p>}>
+              <ul class="gf-people" aria-label={pt("title")}>
                 <For each={shown()}>{(person) => <PickRow person={person} current={props.current?.id === person.id} busy={busy()} onPick={() => void choose({ personId: person.id })} />}</For>
               </ul>
             </Show>
@@ -81,7 +84,7 @@ export function FacePicker(props: FacePickerProps) {
         </Show>
         <form class="gf-new" onSubmit={create}>
           <label class="field-label" for="gf-new-person">
-            {t("galleryPeople.newPerson")}
+            {pt("newPerson")}
           </label>
           <div class="gf-new__row">
             <input
@@ -89,13 +92,13 @@ export function FacePicker(props: FacePickerProps) {
               class="text-input"
               type="text"
               maxLength={80}
-              placeholder={t("galleryPeople.newPersonName")}
+              placeholder={pt("newPersonName")}
               value={name()}
               disabled={busy()}
               onInput={(e) => setName(e.currentTarget.value)}
             />
             <button type="submit" class="btn btn--primary" disabled={busy() || !normalizeName(name())}>
-              {t("galleryPeople.createPerson")}
+              {pt("createPerson")}
             </button>
           </div>
         </form>
@@ -110,7 +113,7 @@ export function FacePicker(props: FacePickerProps) {
       <div class="gv-dialog-actions">
         <Show when={props.current}>
           <button type="button" class="btn gf-not" disabled={busy()} onClick={() => void choose({ personId: null })}>
-            {t("galleryPeople.notThisPerson")}
+            {pt("notThisPerson")}
           </button>
         </Show>
         <button type="button" class="btn" disabled={busy()} onClick={() => props.onCancel()}>
@@ -122,14 +125,16 @@ export function FacePicker(props: FacePickerProps) {
 }
 
 function PickRow(props: { person: Person; current: boolean; busy: boolean; onPick: () => void }) {
+  const kind = useGroupKind();
+  const pt = groupText(kind);
   return (
     <li>
       <button type="button" class="gf-person" aria-current={props.current ? "true" : undefined} disabled={props.busy || props.current} onClick={props.onPick}>
         <Show when={props.person.thumbUrl} fallback={<span class="gf-person__img gf-person__img--empty" aria-hidden="true" />}>
           {(src) => <img class="gf-person__img" src={src()} alt="" loading="lazy" draggable={false} />}
         </Show>
-        <span class="gf-person__name">{personName(props.person, t("galleryPeople.unnamed"))}</span>
-        <span class="gf-person__count">{t("galleryPeople.photos", { count: props.person.itemCount })}</span>
+        <span class="gf-person__name">{personName(props.person, pt("unnamed"))}</span>
+        <span class="gf-person__count">{pt("photos", { count: props.person.itemCount })}</span>
       </button>
     </li>
   );

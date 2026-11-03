@@ -49,6 +49,8 @@ const GalleryAlbumsView = lazy(() => import("./views/GalleryAlbums"));
 const GalleryAlbumView = lazy(() => import("./views/GalleryAlbum"));
 const GalleryPeopleView = lazy(() => import("./views/GalleryPeople"));
 const GalleryPersonView = lazy(() => import("./views/GalleryPerson"));
+const GalleryPetsView = lazy(() => import("./views/GalleryPets"));
+const GalleryPetView = lazy(() => import("./views/GalleryPet"));
 const GalleryCategoryView = lazy(() => import("./views/GalleryCategory"));
 const GalleryPlaces = lazy(() => import("./views/GalleryPlaces"));
 const GallerySharedLinksView = lazy(() => import("./views/GallerySharedLinks"));
@@ -132,6 +134,8 @@ render(
       <Route path="/gallery/album/:id" component={GalleryAlbumView} />
       <Route path="/gallery/people" component={GalleryPeopleView} />
       <Route path="/gallery/person/:id" component={GalleryPersonView} />
+      <Route path="/gallery/pets" component={GalleryPetsView} />
+      <Route path="/gallery/pet/:id" component={GalleryPetView} />
       <Route path="/gallery/category/:cat" component={GalleryCategoryView} />
       <Route path="/gallery/places" component={GalleryPlaces} />
       <Route path="/gallery/shared" component={GallerySharedLinksView} />

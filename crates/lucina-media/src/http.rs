@@ -133,6 +133,7 @@ pub fn router(lib: Library, extra: Option<Router>) -> Router {
         .merge(crate::lab_http::routes())
         .merge(crate::smart::routes())
         .merge(crate::faces_http::routes())
+        .merge(crate::pets_http::routes())
         .merge(crate::categories_http::routes())
         .merge(crate::sheet::routes())
         .with_state(lib.clone())

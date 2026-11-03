@@ -230,7 +230,7 @@ describe("search within a person", () => {
 });
 
 describe("the Gallery's header", () => {
-  it("links to the People page next to Albums and Places, and the main grid does not ask for people", async () => {
+  it("links to the People and Pets pages next to Albums and Places, and the main grid does not ask for people", async () => {
     const b = peopleBackend({
       extra: (_call, url) => {
         if (url.pathname === "/v1/media/sources") return { body: { sources: [], all: { photos: 1, videos: 0 } } };
@@ -246,9 +246,10 @@ describe("the Gallery's header", () => {
     const header = link.closest("header")!;
     const labels = [...header.querySelectorAll("a.g-iconbtn")].map((a) => a.getAttribute("aria-label"));
     expect(labels.indexOf("People")).toBe(labels.indexOf("Albums") + 1);
-    expect(labels.indexOf("Places")).toBe(labels.indexOf("People") + 1);
+    expect(labels.indexOf("Pets")).toBe(labels.indexOf("People") + 1);
+    expect(labels.indexOf("Places")).toBe(labels.indexOf("Pets") + 1);
     await waitFor(() => expect(shownIds()).toEqual(["m1"]));
-    expect(b.calls.some((c) => c.url.includes("/people") || c.url.includes("/faces"))).toBe(false);
+    expect(b.calls.some((c) => c.url.includes("/people") || c.url.includes("/faces") || c.url.includes("/pet"))).toBe(false);
   });
 });
 

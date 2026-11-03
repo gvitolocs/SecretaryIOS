@@ -43,6 +43,7 @@ import { galleryAlbums } from "./dict/galleryAlbums";
 import { galleryLive } from "./dict/galleryLive";
 import { gallerySmart } from "./dict/gallerySmart";
 import { galleryPeople } from "./dict/galleryPeople";
+import { galleryPets } from "./dict/galleryPets";
 import { galleryDedup } from "./dict/galleryDedup";
 import { galleryCategories } from "./dict/galleryCategories";
 import { weight } from "./dict/weight";
@@ -55,6 +56,6 @@ import { notebooks } from "./dict/notebooks";
 import { voice } from "./dict/voice";
 import { voiceLearn } from "./dict/voiceLearn";
 
-export const dictionaries = { decisions, approvals, calendar, chats, library, common, computer, desk, shell, share, chat, login, weight, gym, wardrobe, notify, links, maps, notes, keep, tasks, studio, models, memos, media, films, drive, sheet, plugins, serverHealth, viewer, secrets, gallery, galleryInfo, nclient, pixiv, instagram, agents, prompter, notebooks, editor, browse, galleryShare, galleryCompare, lab, galleryAlbums, galleryLive, gallerySmart, galleryPeople, galleryDedup, galleryCategories, voice, voiceLearn };
+export const dictionaries = { decisions, approvals, calendar, chats, library, common, computer, desk, shell, share, chat, login, weight, gym, wardrobe, notify, links, maps, notes, keep, tasks, studio, models, memos, media, films, drive, sheet, plugins, serverHealth, viewer, secrets, gallery, galleryInfo, nclient, pixiv, instagram, agents, prompter, notebooks, editor, browse, galleryShare, galleryCompare, lab, galleryAlbums, galleryLive, gallerySmart, galleryPeople, galleryPets, galleryDedup, galleryCategories, voice, voiceLearn };
 
 export type Dictionaries = typeof dictionaries;

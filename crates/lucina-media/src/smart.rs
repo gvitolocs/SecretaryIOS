@@ -534,6 +534,19 @@ fn embed_loop(lib: Library, smart: Arc<Smart>, temp_limit: f32, max_load: f32) {
                         continue;
                     }
                 }
+                match crate::pets::step(&lib) {
+                    Ok(n) if n > 0 => {
+                        set_progress(&smart, |p| p.running = true);
+                        std::thread::sleep(Duration::from_millis(250));
+                        continue;
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::warn!(error = %e, "pet scan step failed");
+                        std::thread::sleep(Duration::from_secs(30));
+                        continue;
+                    }
+                }
                 set_progress(&smart, |p| p.running = false);
                 smart.release_idle(Duration::from_secs(600), true);
                 if last_prune.elapsed() > Duration::from_secs(3600) {
@@ -547,6 +560,9 @@ fn embed_loop(lib: Library, smart: Arc<Smart>, temp_limit: f32, max_load: f32) {
                     }
                     if let Err(e) = crate::faces::prune(&lib) {
                         tracing::warn!(error = %e, "faces: prune failed");
+                    }
+                    if let Err(e) = crate::pets::prune(&lib) {
+                        tracing::warn!(error = %e, "pets: prune failed");
                     }
                     if let Err(e) = crate::categories::prune(&lib) {
                         tracing::warn!(error = %e, "categories: prune failed");
@@ -675,6 +691,8 @@ pub async fn worker(lib: Library, cfg: SmartConfig) {
     );
     // Face recognition rides on this thread; it stays off until the owner turns it on.
     crate::faces::install_real(lib.clone()).await;
+    // Pet grouping rides on it too, on unless the owner turns it off.
+    crate::pets::install_real(lib.clone()).await;
     // Photo categories: JEV decides when the service has a key (`JEV_API_KEY`, `LUCINA_JEV`).
     match lucina_media_ml::categories_jev::JevDecider::from_env() {
         Some(d) => {

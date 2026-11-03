@@ -44,10 +44,19 @@ pub struct Assignment {
     pub created: bool,
 }
 
-#[derive(Default)]
 pub struct Graph {
     index: VectorIndex,
     nodes: HashMap<String, Node>,
+    /// Cosine at or above which two members are neighbours ([`MATCH`] for faces).
+    matching: f32,
+    /// Members a new group needs ([`MIN_FACES`] for faces).
+    min_members: usize,
+}
+
+impl Default for Graph {
+    fn default() -> Self {
+        Self::new(0)
+    }
 }
 
 enum Job {
@@ -59,9 +68,16 @@ enum Job {
 
 impl Graph {
     pub fn new(dim: usize) -> Self {
+        Self::with_rule(dim, MATCH, MIN_FACES)
+    }
+
+    /// A graph for other vectors (pets): its own neighbour cosine and group size.
+    pub fn with_rule(dim: usize, matching: f32, min_members: usize) -> Self {
         Self {
             index: VectorIndex::new(dim),
             nodes: HashMap::new(),
+            matching,
+            min_members,
         }
     }
 
@@ -153,7 +169,7 @@ impl Graph {
             return Vec::new();
         };
         self.index
-            .search(v, NEIGHBOURS_MAX, MATCH, Some(id))
+            .search(v, NEIGHBOURS_MAX, self.matching, Some(id))
             .into_iter()
             .filter_map(|h| {
                 let n = self.nodes.get(&h.id)?;
@@ -196,7 +212,7 @@ impl Graph {
                         .filter(|(id, _, manual)| !manual && self.free(id))
                         .map(|(id, _, _)| id)
                         .collect();
-                    if take.len() + 1 < MIN_FACES {
+                    if take.len() + 1 < self.min_members {
                         continue;
                     }
                     let p = new_person();
