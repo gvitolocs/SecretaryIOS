@@ -74,6 +74,10 @@ pub struct AskArgs {
     pub conversation: Option<String>,
     /// Permit this one message to act on these request kinds; duplicates are removed and kinds sorted.
     pub allow: Option<Vec<AllowArg>>,
+    /// Seconds to wait for her answer before getting an id to follow instead (0-110, default 25). Stay under
+    /// your own client's tool timeout.
+    #[serde(default)]
+    pub wait_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
@@ -207,8 +211,11 @@ impl SecretRequestArgs {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct JobStatusArgs {
-    /// Background job id returned by ask_lucina.
+    /// Background job id, or the `turn_…` id, returned by ask_lucina.
     pub job_id: String,
+    /// For a `turn_…` id: seconds to wait for her answer (0-110, default 25).
+    #[serde(default)]
+    pub wait_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -696,7 +703,7 @@ macro_rules! spec {
 pub fn specs() -> Vec<ToolSpec> {
     vec![
         spec!("ask_lucina", "Ask Lucina", Scope::Chat, ro = false, destructive = false, idempotent = false, AskArgs,
-            "Send a message to Lucina, the owner's personal AI assistant, and get her reply. Lucina knows the owner (long-term memory), their reminders, shopping list, notes and recent conversations on every channel, and recent context. For agent clients this is consult-only: answers, no jobs, computer tasks, reminders, posts or list writes. This chat never alerts the owner's phone, so asking her to tell him does not reach him: if he has to know or decide, use lucina_decide. For a go-ahead use lucina_decide. For actions use reminder_create, shopping_add, note_save, task_add, computer_task or agent_run. The optional allow array lets this one message act on that kind of request. She is told which client is asking. Actions with consequences (purchases, posts, messages to other people) go through Lucina's own confirmation flow. Messages are limited to 12000 characters: do NOT paste long documents, briefings or context here; save them with note_save (and note_append) and then tell Lucina the note's slug. A turn can take up to two minutes; long jobs finish in the background and show up in lucina_timeline."),
+            "Send a message to Lucina, the owner's personal AI assistant, and get her reply. Lucina knows the owner (long-term memory), their reminders, shopping list, notes and recent conversations on every channel, and recent context. For agent clients this is consult-only: answers, no jobs, computer tasks, reminders, posts or list writes. This chat never alerts the owner's phone, so asking her to tell him does not reach him: if he has to know or decide, use lucina_decide. For a go-ahead use lucina_decide. For actions use reminder_create, shopping_add, note_save, task_add, computer_task or agent_run. The optional allow array lets this one message act on that kind of request. She is told which client is asking. Actions with consequences (purchases, posts, messages to other people) go through Lucina's own confirmation flow. Messages are limited to 12000 characters: do NOT paste long documents, briefings or context here; save them with note_save (and note_append) and then tell Lucina the note's slug. She answers within wait_seconds (default 25), or you get a turn id for lucina_job_status while she goes on working; long jobs finish in the background and show up in lucina_timeline."),
         spec!("lucina_decide", "Ask Lucina for a decision", Scope::Chat, ro = false, destructive = false, idempotent = false, DecideArgs,
             "THE way for agents to get a go-ahead: use this instead of asking the owner or using ask_lucina. Lucina decides from the owner's memory, messages and earlier decisions with JEV. She asks the owner on his phone for high impact, irreversible or owner-only requests, conflicting evidence or low confidence. A pending answer means do not act yet; follow it with lucina_decision_status. Optionally wait and poll for up to 100 seconds."),
         spec!("lucina_decision_status", "Lucina decision status", Scope::Chat, ro = true, destructive = false, idempotent = true, DecisionStatusArgs,
@@ -706,7 +713,7 @@ pub fn specs() -> Vec<ToolSpec> {
         spec!("secret_request", "Ask the owner for a secret", Scope::Chat, ro = false, destructive = false, idempotent = true, SecretRequestArgs,
             "Ask the owner for a secret you need (an API key, a Wi-Fi passphrase…) BY NAME. This tool never takes a value and never returns one. Lucina posts a card in his chat (web app, Mac app) and pushes it to his phone; his tap opens \"Add secret\" with the name, project, environment and folder filled in, he pastes the value and it goes straight to Infisical (an owner grant to the broker), never through you, the timeline or a log. Read it afterwards the usual way, with your own broker caller (infisical-broker exec, or the infisical MCP) once the owner has given that caller access. A receipt \"Saved `NAME` in …\" appears in lucina_timeline when he saved it. Never ask the owner to paste a secret into a chat or into ask_lucina; never put a value in reason. The same request repeated within 10 minutes answers with the first card."),
         spec!("lucina_job_status", "Lucina job status", Scope::Chat, ro = true, destructive = false, idempotent = true, JobStatusArgs,
-            "Follow a background job started by Lucina: status, action, result or error, and created, started and finished times. For go-aheads use lucina_decide; ask_lucina is answers-only for agents."),
+            "Follow a background job started by Lucina, or pick up the answer to an ask_lucina that gave you a turn id: status, action, result or error, and created, started and finished times. For go-aheads use lucina_decide; ask_lucina is answers-only for agents."),
         spec!("lucina_timeline", "Lucina timeline", Scope::Read, ro = true, destructive = false, idempotent = true, TimelineArgs,
             "Recent messages between the owner and Lucina on all channels (Telegram, Discord, web app, iOS app, Alexa, MCP), newest first, with time, channel and who spoke. Paginate with `before`."),
         spec!("shopping_list", "Shopping list", Scope::Read, ro = true, destructive = false, idempotent = true, ShoppingListArgs,
@@ -1162,6 +1169,26 @@ pub struct Tools<'a> {
     pub caller: &'a Caller,
 }
 
+fn turn_wait(seconds: Option<u64>) -> std::time::Duration {
+    seconds.map_or(crate::turns::DEFAULT_WAIT, |s| {
+        std::time::Duration::from_secs(s.min(crate::turns::MAX_WAIT_SECS))
+    })
+}
+
+fn turn_answer(id: &str, seen: crate::turns::Seen) -> ToolResult {
+    use crate::turns::Seen;
+    match seen {
+        Seen::Done(Ok(r)) => Ok(format::chat_reply(&r)),
+        // secretary-server gives up on a turn after 120 s; she does not.
+        Seen::Done(Err(e)) if matches!(e.code.as_str(), "backend_timeout" | "lucina_timeout") => Ok(
+            "Lucina has not answered within two minutes. She goes on working, and her reply lands in lucina_timeline.".to_owned(),
+        ),
+        Seen::Done(Err(e)) => Err(e.into()),
+        Seen::Working => Ok(crate::turns::still_working(id)),
+        Seen::Unknown => Err(bad("Unknown turn id: answers are kept for an hour, for the client that asked.")),
+    }
+}
+
 impl Tools<'_> {
     async fn poll_decision(&self, mut response: Value, wait: u32) -> Result<Value, ToolError> {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(wait.into());
@@ -1255,6 +1282,14 @@ impl Tools<'_> {
 
     pub async fn job_status(&self, args: &JsonObject) -> ToolResult {
         let a: JobStatusArgs = parse(args)?;
+        if a.job_id.starts_with(crate::turns::PREFIX) {
+            let seen = self
+                .app
+                .turns
+                .wait(&a.job_id, &self.caller.id, turn_wait(a.wait_seconds))
+                .await;
+            return turn_answer(&a.job_id, seen);
+        }
         secretary_core::Call::job(&a.job_id).map_err(|e| bad(e.to_string()))?;
         let response = self
             .app
@@ -1294,8 +1329,16 @@ impl Tools<'_> {
             // Lucina derives these timeline tags from the session id and message prefix.
             "meta": { "via": "mcp", "caller": self.caller.name },
         });
-        let r = self.app.backend.chat(&body).await?;
-        Ok(format::chat_reply(&r))
+        let wait = turn_wait(a.wait_seconds);
+        // Her turn goes on whatever the client does: on its own task, kept until it is read.
+        let turns = self.app.turns.clone();
+        let id = turns.begin(&self.caller.id);
+        let backend = self.app.backend.clone();
+        let (done, turn) = (turns.clone(), id.clone());
+        tokio::spawn(async move {
+            done.finish(&turn, backend.chat(&body).await);
+        });
+        turn_answer(&id, turns.wait(&id, &self.caller.id, wait).await)
     }
 
     pub async fn timeline(&self, args: &JsonObject) -> ToolResult {

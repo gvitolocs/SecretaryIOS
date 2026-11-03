@@ -600,9 +600,9 @@ fn excerpt_note(x: &Excerpt) -> &'static str {
 struct TempFile(PathBuf);
 impl Drop for TempFile {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        // Its own directory: the handlers leave their copies beside it (a photo's vision JPEG).
         if let Some(dir) = self.0.parent() {
-            let _ = std::fs::remove_dir(dir);
+            let _ = std::fs::remove_dir_all(dir);
         }
     }
 }

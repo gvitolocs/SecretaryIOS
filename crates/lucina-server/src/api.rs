@@ -585,7 +585,13 @@ async fn route(
                     crate::voice::PING_EVERY,
                 ));
             }
-            let mut out = crate::chat::handle_chat(st.clone(), bearer, body).await?;
+            // On its own task: a client that gives up (ZCode's MCP client after 30 s) must not abort the
+            // turn half way, losing her reply and whatever the turn holds. The reply lands on the timeline.
+            let turn = tokio::spawn(crate::chat::handle_chat(st.clone(), bearer, body));
+            let mut out = turn.await.map_err(|e| {
+                tracing::error!(error = %e, "chat turn task failed");
+                ApiError::new(500, "internal", "the turn failed")
+            })??;
             // The reply sink (app, web and Lucina MCP all read it here).
             lucina_secrets::redactor().redact_json(&mut out);
             Ok(ok(out))

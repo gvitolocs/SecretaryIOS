@@ -41,6 +41,7 @@ pub mod status;
 pub mod store;
 pub mod tokens;
 pub mod tools;
+pub mod turns;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -65,6 +66,8 @@ pub struct App {
     pub backend: backend::Backend,
     /// Per-token `agent_run` history (rate limit) for `crate::agents`.
     pub agents: agents::RunLog,
+    /// `ask_lucina` turns still running, or answered after the call returned.
+    pub turns: turns::Turns,
     /// `None` when `SECRETARY_MCP_DIAGNOSTICS_URL` is unset.
     pub diagnostics: Option<diagnostics::Diagnostics>,
 }
@@ -90,6 +93,7 @@ impl App {
             oauth: oauth::OAuth::new(&cfg),
             backend,
             agents: agents::RunLog::default(),
+            turns: turns::Turns::default(),
             cfg,
         }))
     }

@@ -116,6 +116,8 @@ pub struct ShareRuntime {
     worker: Semaphore,
     recovered: AtomicBool,
     vision: Mutex<Option<vision::Server>>,
+    /// One start of the vision server at a time; `vision` itself is only held for a moment.
+    vision_start: Mutex<()>,
     /// What Lucina read from every share (opened on first use).
     pub memory: Arc<memory::Memory>,
 }
@@ -127,6 +129,7 @@ impl ShareRuntime {
             worker: Semaphore::new(1),
             recovered: AtomicBool::new(false),
             vision: Mutex::new(None),
+            vision_start: Mutex::new(()),
             memory: Arc::new(memory::Memory::new(cfg.dir.join("attachments.db"))),
         }
     }

@@ -63,6 +63,8 @@ impl Drop for Server {
 /// lease waited for Qwen to unload, killed a load that needed longer; the slow CPU start then ate the read's
 /// whole limit, and the screenshot "stayed unread".
 const GPU_READY_SECS: u64 = 240;
+/// How long a picture waits for another's start of the server.
+const START_WAIT: Duration = Duration::from_secs(GPU_READY_SECS + 30);
 
 /// A vision server outlives a restart of lucina-rs: it runs in its own scope (`scoped-llama-server`) and its
 /// `Drop` never ran. It then holds VRAM the lease no longer accounts for. Stop any left over at startup.
@@ -187,11 +189,9 @@ async fn completion(url: &str, path: &Path) -> anyhow::Result<String> {
         .map(str::to_owned)
         .context("vision returned no description")
 }
-/// `cpu_too`: fall back to the CPU (minutes) when the GPU is taken. Not worth it once OCR has the text.
-pub(crate) async fn describe(st: &AppState, path: &Path, cpu_too: bool) -> anyhow::Result<String> {
-    if let Some(url) = &st.cfg.share.vision_url {
-        return completion(url, path).await;
-    }
+/// The running server's address, marking it used. The lock is held only for this: a turn that stalls
+/// while starting the server or waiting for an answer must not stop every later picture (2 Nov 2026).
+async fn running(st: &AppState) -> Option<String> {
     let mut slot = st.share.vision.lock().await;
     if slot
         .as_mut()
@@ -199,46 +199,70 @@ pub(crate) async fn describe(st: &AppState, path: &Path, cpu_too: bool) -> anyho
     {
         *slot = None;
     }
-    if slot.is_none() {
-        let mut server = start(st, true).await?;
-        if let Err(e) = ready(&mut server, GPU_READY_SECS).await {
-            drop(server);
-            if !cpu_too {
-                tracing::info!(error = %e, "vision did not start on the GPU; the OCR text will do");
-                bail!("the GPU is busy");
-            }
-            tracing::warn!(error = %e, "vision did not start on the GPU; trying the CPU");
-            server = start(st, false).await?;
-            ready(&mut server, 100).await?;
-        }
-        *slot = Some(server);
-        let weak = std::sync::Arc::downgrade(&st.0);
-        tokio::spawn(async move {
-            loop {
-                let delay = {
-                    let Some(inner) = weak.upgrade() else { return };
-                    let mut slot = inner.share.vision.lock().await;
-                    match slot.as_ref() {
-                        Some(server) => {
-                            let remaining =
-                                Duration::from_secs(300).saturating_sub(server.last_use.elapsed());
-                            if remaining.is_zero() {
-                                slot.take();
-                                return;
-                            }
-                            remaining
-                        }
-                        None => return,
-                    }
-                };
-                tokio::time::sleep(delay).await;
-            }
-        });
+    slot.as_mut().map(|s| {
+        s.last_use = Instant::now();
+        s.url.clone()
+    })
+}
+
+/// The server's address, starting it when none runs. One start at a time; a wait for another's start is bounded.
+async fn server_url(st: &AppState, cpu_too: bool) -> anyhow::Result<String> {
+    if let Some(url) = running(st).await {
+        return Ok(url);
     }
-    let server = slot.as_mut().expect("vision was started");
-    server.last_use = Instant::now();
-    let result = completion(&server.url, path).await;
-    server.last_use = Instant::now();
+    let _start = tokio::time::timeout(START_WAIT, st.share.vision_start.lock())
+        .await
+        .context("another start of the vision server is taking too long")?;
+    if let Some(url) = running(st).await {
+        return Ok(url);
+    }
+    let mut server = start(st, true).await?;
+    if let Err(e) = ready(&mut server, GPU_READY_SECS).await {
+        drop(server);
+        if !cpu_too {
+            tracing::info!(error = %e, "vision did not start on the GPU; the OCR text will do");
+            bail!("the GPU is busy");
+        }
+        tracing::warn!(error = %e, "vision did not start on the GPU; trying the CPU");
+        server = start(st, false).await?;
+        ready(&mut server, 100).await?;
+    }
+    let url = server.url.clone();
+    *st.share.vision.lock().await = Some(server);
+    let weak = std::sync::Arc::downgrade(&st.0);
+    tokio::spawn(async move {
+        loop {
+            let delay = {
+                let Some(inner) = weak.upgrade() else { return };
+                let mut slot = inner.share.vision.lock().await;
+                match slot.as_ref() {
+                    Some(server) => {
+                        let remaining =
+                            Duration::from_secs(300).saturating_sub(server.last_use.elapsed());
+                        if remaining.is_zero() {
+                            slot.take();
+                            return;
+                        }
+                        remaining
+                    }
+                    None => return,
+                }
+            };
+            tokio::time::sleep(delay).await;
+        }
+    });
+    Ok(url)
+}
+
+/// `cpu_too`: fall back to the CPU (minutes) when the GPU is taken. Not worth it once OCR has the text.
+pub(crate) async fn describe(st: &AppState, path: &Path, cpu_too: bool) -> anyhow::Result<String> {
+    if let Some(url) = &st.cfg.share.vision_url {
+        return completion(url, path).await;
+    }
+    let url = server_url(st, cpu_too).await?;
+    let result = completion(&url, path).await;
+    // Its idle time counts from the answer.
+    let _ = running(st).await;
     result
 }
 

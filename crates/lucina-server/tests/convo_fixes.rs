@@ -206,3 +206,33 @@ async fn a_reminder_nobody_can_place_is_a_question() {
     assert!(!reply.contains("could not work out"), "{reply}");
     assert!(reply.contains('?'), "a question: {reply}");
 }
+
+/// 3 Nov 2026: ZCode's MCP client gave up after 30 s and her reply was lost. A turn goes on without its client,
+/// and her answer lands on the timeline.
+#[tokio::test]
+async fn a_turn_outlives_a_client_that_gives_up() {
+    let h = harness(
+        script(json!({"rules": [
+            {"kind": "intent", "content": "{\"intent\":\"chat\",\"confidence\":0.95,\"reply_mode\":\"chat\",\"needs_tools\":false}"},
+            {"kind": "reply", "content": "Here is the answer.", "delayMs": 1500}
+        ]})),
+        |_| {},
+    )
+    .await;
+    let cut_off = h
+        .http
+        .post(format!("{}/api/secretary/chat", h.base))
+        .bearer_auth(common::TOKEN)
+        .timeout(std::time::Duration::from_millis(300))
+        .json(&json!({"message": "are you there, and what do you think?"}))
+        .send()
+        .await;
+    assert!(cut_off.is_err(), "the client gave up before the reply");
+    for _ in 0..60 {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        if h.timeline_lines().iter().any(|l| l["text"] == "Here is the answer.") {
+            return;
+        }
+    }
+    panic!("her reply never reached the timeline");
+}
