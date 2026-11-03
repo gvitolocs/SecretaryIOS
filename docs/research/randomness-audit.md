@@ -30,7 +30,8 @@ Negative tests: `crates/secretary-server/src/links.rs` (`a_failed_random_source_
 | 5 | SecretaryIOS main 6966eeb2 | **Yes:** `secretary-server` deployed 2026-11-03 |
 | 6 | SecretaryIOS main 6966eeb2 | **Not yet, no urgency:** it only matters when a key is created, and the key exists. Comes with `secretary-nclient`'s next deploy |
 | 1, 2, 3 | Hermes main 8ebbb28 | **Yes on peer1** for Poko, restarted 2026-11-03 00:46 UTC. `src/index.js` and `src/lucina-gmail.js` are not copied there: Cityhop is off on peer1 and it has no Lucina Gmail |
-| 2 (dashboard push), 4 | Hermes main 8ebbb28 | **Not yet:** the Vercel projects do not deploy on push (`cityhopdashboard` last deployed 155 days ago). Fix 4's code is idle there anyway. Comes with their next deploy |
+| 4 (`bring-shopping-list`) | Hermes main 8ebbb28 | **Yes:** `flareon-bring-shopping-list` deploys on push to main, and the merge put it in production at 00:42 UTC. The code path is idle there: no database URL is set |
+| 2 (dashboard push), 4 (`cityhopdashboard`) | Hermes main 8ebbb28 | **Not yet:** `cityhopdashboard`'s latest deployment is old, so it does not appear to deploy on push. Comes with its next deploy |
 
 No app needs installing: the iOS, Android and Mac apps did not change.
 
@@ -97,7 +98,7 @@ Checked on peer1 after the restart: `/health` answers, Discord logged in. No tok
 
 ## Seen in passing, not randomness
 
-- `grocery-dashboard/api/grocery.js` has no auth, takes `userId` from the query and calls Hermes with the owner's bearer. It has no Vercel link in the repo; whether it is deployed is unknown.
-- `bring-shopping-list/api/list.js` has no auth on GET and PATCH. It is configured on Vercel with a Hermes API base. Whether that base answers was not tested, and Flareon, which serves `/grocery/`, is not running on nezopt.
+- `grocery-dashboard/api/grocery.js` has no auth, takes `userId` from the query and calls Hermes with the owner's bearer. **Not deployed** (2026-11-03): none of the 23 Vercel projects is that app or has `GROCERY_API_URL`. `grocery-dashboard.vercel.app` answers but is not in our account. `docs/grocery-intelligence.md` in Hermes still says to deploy it, which would open the hole.
+- `bring-shopping-list/api/list.js` has no auth on GET and PATCH, and **is live** at `flareon-bring-shopping-list.vercel.app` with `GROCERY_API_TOKEN`, `HERMES_GROCERY_API_BASE` and `SHOPPING_LIST_USER_ID` set. An unauthenticated GET returned 502 `database_unavailable` and no data on 2026-11-03. The user is fixed on the server, so a caller cannot choose a `userId`. If the upstream answers again, anyone with the URL can read the list and change item status. Left unchanged, for the owner to decide. PATCH was not tried and the base URL was not read.
 - Hermes' docs still describe `hermes-flareon-nez` on nezopt. No such container exists and nothing of Hermes listens on :8788. What runs: `hermes-poko` on peer1, `flareon-honcho-mcp` on nezopt.
 - ZCode Desktop's credential key falls back to a hash of platform, home and username unless `ZCODE_CREDENTIAL_SECRET` is set. Third-party design; an attacker needs the file first.
