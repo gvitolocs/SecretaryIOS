@@ -55,12 +55,18 @@ fn signing_key(path: &PathBuf) -> anyhow::Result<Vec<u8>> {
     }
     let mut k = vec![0u8; 32];
     getrandom::fill(&mut k).map_err(|e| anyhow::anyhow!("getrandom: {e}"))?;
-    std::fs::write(path, &k)?;
+    // Private from its first byte, and a new file: never readable by others, even for a moment.
+    let tmp = path.with_extension(format!("tmp{}", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        use std::os::unix::fs::OpenOptionsExt;
+        o.mode(0o600);
     }
+    std::io::Write::write_all(&mut o.open(&tmp)?, &k)?;
+    std::fs::rename(&tmp, path)?;
     Ok(k)
 }
 
@@ -177,4 +183,40 @@ async fn main() -> anyhow::Result<()> {
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn mode(p: &std::path::Path) -> u32 {
+        std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn a_new_signing_key_is_private_and_a_good_one_stays() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("signing.key");
+        let key = signing_key(&path).unwrap();
+        assert_eq!(key.len(), 32);
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(signing_key(&path).unwrap(), key);
+    }
+
+    #[test]
+    fn a_short_key_open_to_others_is_replaced_not_rewritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("signing.key");
+        std::fs::write(&path, b"short").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        // Someone holding the old file open must not see the new key.
+        let old = std::fs::File::open(&path).unwrap();
+        let key = signing_key(&path).unwrap();
+        assert_eq!(mode(&path), 0o600);
+        let mut seen = Vec::new();
+        std::io::Read::read_to_end(&mut &old, &mut seen).unwrap();
+        assert_eq!(seen, b"short");
+        assert_eq!(std::fs::read(&path).unwrap(), key);
+    }
 }

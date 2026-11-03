@@ -272,10 +272,18 @@ pub fn random_id(prefix: &str) -> String {
     format!("{prefix}{}", URL_SAFE_NO_PAD.encode(b))
 }
 
-fn random_secret() -> String {
+/// An OAuth `state` or PKCE verifier: 256 random bits, or an error. A failed
+/// random source must never give a value anyone could predict.
+pub(crate) fn random_secret() -> Result<String, ApiError> {
+    secret_from(getrandom::fill)
+}
+
+fn secret_from(
+    fill: impl FnOnce(&mut [u8]) -> Result<(), getrandom::Error>,
+) -> Result<String, ApiError> {
     let mut b = [0u8; 32];
-    let _ = getrandom::fill(&mut b);
-    URL_SAFE_NO_PAD.encode(b)
+    fill(&mut b).map_err(|_| ApiError::internal("random source failed"))?;
+    Ok(URL_SAFE_NO_PAD.encode(b))
 }
 
 fn sha(s: &str) -> [u8; 32] {
@@ -1048,8 +1056,8 @@ async fn google_connect(
         Some("ios") => "ios",
         Some(_) => return Err(bad("client: web or ios")),
     };
-    let state = random_secret();
-    let verifier = random_secret();
+    let state = random_secret()?;
+    let verifier = random_secret()?;
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
     {
         let mut p = hub.pending.lock().unwrap_or_else(|e| e.into_inner());
@@ -1537,5 +1545,13 @@ mod tests {
         assert_eq!(by("ai:grok")["status"], "connected");
         assert_eq!(by("ai:old")["status"], "disconnected");
         assert!(ai_cards(None).iter().all(|c| c["status"] == "unknown"));
+    }
+
+    #[test]
+    fn a_failed_random_source_gives_no_secret() {
+        assert!(secret_from(|_| Err(getrandom::Error::UNSUPPORTED)).is_err());
+        let (a, b) = (random_secret().unwrap(), random_secret().unwrap());
+        assert_eq!(a.len(), 43);
+        assert_ne!(a, b);
     }
 }
