@@ -21,6 +21,8 @@ use crate::{schema_for, Ctx, Effect, SideEffect, Tool, ToolError, ToolResult};
 
 const PICKS_ALBUM: &str = "sys-lucina";
 const MAX_LIST: usize = 30;
+/// Up to this many results come with their stored category.
+const LOOKUP_MAX: usize = 3;
 /// The longest route path the apps' chat buttons accept (iOS).
 const MAX_ROUTE_CHARS: usize = 121;
 /// Characters of a document the model sees (the attachment pipeline's long-document threshold).
@@ -747,6 +749,22 @@ async fn read_photo(
         .await
 }
 
+/// A short lookup ("the last photo"): what the library already knows about each result, so no read is needed.
+async fn add_categories(http: &reqwest::Client, base: &str, key: &str, found: &mut [Value]) {
+    if found.len() > LOOKUP_MAX {
+        return;
+    }
+    for f in found.iter_mut() {
+        let id = f["id"].as_str().unwrap_or_default().to_owned();
+        let url = format!("{base}/v1/media/items/{}/details", encode_segment(&id));
+        if let Ok(d) = send(http.get(url), key).await {
+            if let Some(c) = d["category"]["category"].as_str() {
+                f["category"] = json!(c);
+            }
+        }
+    }
+}
+
 /// `read`: the item's content for the model, with the item's name, folder and path.
 async fn read_item(
     http: &reqwest::Client,
@@ -937,9 +955,10 @@ impl Tool for MediaTool {
          Photos found go into the album \"Lucina's picks\" and Drive files get an \"Open in Drive\" button; say what you \
          found (how many, when, where, which file) rather than listing ids. \
          read: item_id (from a search) and question: the document's content (PDF, Word, slides, spreadsheet, text, \
-         code) to answer questions about what it says; search first, then read the right file. A photo too: read \
-         gives you what it shows and the text in it, so to say what is in a picture, look with read (never say you \
-         only get file names). It can take a minute or two. \
+         code) to answer questions about what it says; search first, then read the right file. A photo too, but only \
+         when the question needs what is in it (what it shows, text or numbers on it): read gives you that, one item \
+         at a time, and can take a minute. \"The last photo\" or a date needs no read: search with no query and show=false \
+         gives its name, date, place and category. \
          albums: list albums. create_album / add_to_album: put item ids from a search into an album (by id or title). \
          summary: counts by kind and year, top places."
     }
@@ -1008,10 +1027,12 @@ impl Tool for MediaTool {
                     });
                 }
                 let tz = ctx.env.time_zone;
+                let mut found: Vec<Value> = items.iter().take(MAX_LIST).map(|i| brief(i, tz)).collect();
+                add_categories(http, &b, key, &mut found).await;
                 let mut out = json!({
                     "count": items.len(),
                     "more": page["next_cursor"].is_string(),
-                    "items": items.iter().take(MAX_LIST).map(|i| brief(i, tz)).collect::<Vec<_>>(),
+                    "items": found,
                     "shown_in_gallery": shown && !documents && scope != Scope::Films,
                 });
                 if documents {
@@ -1470,6 +1491,27 @@ mod tests {
                 truncated: false,
             })
         }
+    }
+
+    /// 3 Nov 2026: "the last photo" needs no vision: a short search says what the library knows.
+    #[tokio::test]
+    async fn a_short_lookup_carries_the_stored_category() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/media/items/itm_ph1/details"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"category": {"category": "photo", "confidence": 0.9}})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let http = reqwest::Client::new();
+        let mut found = vec![json!({"id": "itm_ph1"})];
+        add_categories(&http, &server.uri(), "k", &mut found).await;
+        assert_eq!(found[0]["category"], "photo");
+
+        // A long list stays a list: no call per item.
+        let mut many: Vec<Value> = (0..4).map(|i| json!({"id": format!("itm_{i}")})).collect();
+        add_categories(&http, &server.uri(), "k", &mut many).await;
+        assert!(many[0].get("category").is_none());
     }
 
     /// 2 Nov 2026: asked about the last picture, she said she only gets file names.
