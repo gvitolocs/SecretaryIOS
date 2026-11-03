@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use lucina_intent::mcp;
 use lucina_llm::Message;
-use lucina_store::timeline::{Meta, NewItem};
+use lucina_store::timeline::NewItem;
 use lucina_tools::agent::{self, AgentConfig, ToolRecord};
 use lucina_tools::tools::media::MediaTool;
 use lucina_tools::{Ctx, Effect, Origin, Registry};
@@ -281,16 +281,13 @@ pub(super) async fn try_turn(t: &Turn<'_>, memory: &str) -> Option<Finish> {
     };
     let timeline = st.timeline_for(&t.session);
     let channel = t.channel.clone();
+    let mark = t.agent_mark();
     let on_tool = move |r: &ToolRecord| {
         timeline.record(NewItem {
             channel: channel.clone(),
             role: "lucina".into(),
             text: format!("🔧 {} → {}", r.summary, if r.ok { "ok" } else { "error" }),
-            meta: Some(Meta {
-                tool: Some(r.name.clone()),
-                ok: Some(r.ok),
-                ..Meta::kind("tool")
-            }),
+            meta: Some(super::tool_meta(&mark, r)),
             ..Default::default()
         });
     };

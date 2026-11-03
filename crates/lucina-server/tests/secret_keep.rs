@@ -362,7 +362,7 @@ async fn a_note_goes_to_infisical_and_only_the_value_leaves_it() {
     // The outcome is names: this is what the cloud model would get.
     assert_clean("outcome", &j.outcome().to_string());
     let lines = env.h.timeline_lines();
-    assert!(lines.iter().any(|l| l["meta"]["kind"] == "secret_receipt"
+    assert!(lines.iter().any(|l| l["meta"]["kind"] == "secret_receipt" && l["meta"]["via"] == "agent"
         && l["text"]
             .as_str()
             .unwrap()
@@ -706,7 +706,7 @@ async fn a_password_in_a_message_never_reaches_a_sink_and_gets_saved() {
     assert_eq!(saved[0]["value"], CANARY_WORDS);
     let lines = env.h.timeline_lines();
     assert!(
-        lines.iter().any(|l| l["meta"]["kind"] == "secret_receipt"
+        lines.iter().any(|l| l["meta"]["kind"] == "secret_receipt" && l["meta"]["via"].is_null()
             && l["text"]
                 .as_str()
                 .unwrap()
@@ -1128,7 +1128,7 @@ async fn the_google_password_is_never_moved_by_any_route() {
     let e = env.keeper().enqueue(&json!({"source": format!("env:{}", file.display()), "project": "apis", "environment": "dev", "keys": ["API_TOKEN"], "prefix": "GOOGLE_PASSWORD_"})).unwrap_err();
     assert_eq!(e.code, "refused_by_rule");
     assert!(env.deposits().is_empty(), "{:?}", env.deposits().iter().map(|d| d.0.clone()).collect::<Vec<_>>());
-    let (_, listed) = (0, env.keeper().project(&json!({"dir": file.parent().unwrap().display().to_string(), "deposit": true}), "").unwrap());
+    let (_, listed) = (0, env.keeper().project(&json!({"dir": file.parent().unwrap().display().to_string(), "deposit": true}), "", true).unwrap());
     let row = listed["not_in_a_list"].as_array().unwrap();
     assert!(row.iter().all(|r| r["name"] != "GOOGLE_PASSWORD"), "{listed}");
     env.keeper().make_all_due_for_test();
@@ -1382,7 +1382,7 @@ async fn a_project_is_listed_by_names_and_what_is_found_moves() {
         &format!("API_TOKEN={CANARY}\nDB_PASSWORD=changeme\nPORT=3000\nEXTRA_TOKEN={CANARY_FILE}\nGOOGLE_PASSWORD={CANARY_GOOGLE}\n{CANARY_LINE}\n"),
     );
     let dir = side.join("projects/work/app");
-    let out = env.keeper().project(&json!({"dir": dir.display().to_string()}), "").unwrap();
+    let out = env.keeper().project(&json!({"dir": dir.display().to_string()}), "", true).unwrap();
     let text = out.to_string();
     assert_clean("the project's answer", &text);
     let state = |name: &str| out["needs"].as_array().unwrap().iter().find(|r| r["name"] == name).unwrap_or_else(|| panic!("no {name}: {out}"))["state"].clone();
@@ -1397,7 +1397,7 @@ async fn a_project_is_listed_by_names_and_what_is_found_moves() {
     assert_eq!(out["unclear_lines"], json!([{"file": ".env", "lines": [6]}]));
     assert!(env.deposits().is_empty(), "listing moves nothing");
 
-    let out = env.keeper().project(&json!({"dir": dir.display().to_string(), "deposit": true}), "").unwrap();
+    let out = env.keeper().project(&json!({"dir": dir.display().to_string(), "deposit": true}), "", true).unwrap();
     assert_clean("the project's answer", &out.to_string());
     let job = out["jobs"][0]["job"].as_str().unwrap().to_owned();
     let j = env.run(&job).await;
@@ -1421,7 +1421,7 @@ async fn a_project_folder_out_of_bounds_is_refused() {
         "/etc".to_owned(),
         format!("{}/projects", home.display()),
     ] {
-        let e = env.keeper().project(&json!({"dir": dir}), "").unwrap_err();
+        let e = env.keeper().project(&json!({"dir": dir}), "", true).unwrap_err();
         assert_eq!(e.code, "path_refused", "{dir}");
     }
     // A link in a project, to a value outside it: reported by name of the file, never read.
@@ -1429,7 +1429,7 @@ async fn a_project_folder_out_of_bounds_is_refused() {
     let outside = env.plant("outside/x", &format!("API_TOKEN={CANARY}\n"));
     std::fs::create_dir_all(side.join("projects/work/app")).unwrap();
     std::os::unix::fs::symlink(&outside, side.join("projects/work/app/.env")).unwrap();
-    let out = env.keeper().project(&json!({"dir": side.join("projects/work/app").display().to_string()}), "").unwrap();
+    let out = env.keeper().project(&json!({"dir": side.join("projects/work/app").display().to_string()}), "", true).unwrap();
     assert_eq!(out["files_refused"], json!([{"file": ".env", "refused": "path_refused"}]), "{out}");
     assert!(!out.to_string().contains("API_TOKEN"));
 }

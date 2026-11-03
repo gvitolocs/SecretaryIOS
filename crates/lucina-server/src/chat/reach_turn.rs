@@ -109,16 +109,13 @@ pub(super) async fn try_turn(
         None => st.timeline_for(&t.session),
     };
     let channel = t.channel.clone();
+    let mark = t.agent_mark();
     let on_tool = move |rec: &ToolRecord| {
         timeline.record(NewItem {
             channel: channel.clone(),
             role: "lucina".into(),
             text: format!("🔧 {} → {}", rec.summary, if rec.ok { "ok" } else { "error" }),
-            meta: Some(Meta {
-                tool: Some(rec.name.clone()),
-                ok: Some(rec.ok),
-                ..Meta::kind("tool")
-            }),
+            meta: Some(super::tool_meta(&mark, rec)),
             ..Default::default()
         });
     };

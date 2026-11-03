@@ -734,7 +734,7 @@ impl Keeper {
     }
 
     /// What a project needs, what is found, what is missing: names only. `deposit` queues what's found.
-    pub fn project(&self, body: &Value, via: &str) -> Result<Value, ApiError> {
+    pub fn project(&self, body: &Value, via: &str, agent: bool) -> Result<Value, ApiError> {
         if !self.cfg.enabled {
             return Err(ApiError::new(503, "secret_keep_off", "saving secrets locally is not configured"));
         }
@@ -857,6 +857,7 @@ impl Keeper {
                         "path": text("path"),
                     }),
                     via,
+                    agent,
                 )?;
                 jobs.push(job.outcome());
             }

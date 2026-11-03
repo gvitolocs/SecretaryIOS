@@ -250,7 +250,10 @@ final class NotificationCenterStoreTests: XCTestCase {
         var reminder = TimelineMeta()
         reminder.kind = "reminder"
         reminder.via = "mcp"
-        await store.consider(timeline: [item("Tagent", mcp), item("Treach", reach)], chatVisible: false, now: now)
+        var trace = TimelineMeta()
+        trace.kind = "tool"
+        await store.consider(timeline: [item("Tagent", mcp), item("Treach", reach), item("Ttrace", trace)],
+                             chatVisible: false, now: now)
         XCTAssertTrue(fake.added.isEmpty, "agent chat stays in the chat")
         await store.consider(timeline: [item("Tme", nil), item("Trem", reminder)], chatVisible: false, now: now)
         XCTAssertEqual(fake.added.map(\.identifier), ["tl.Tme", "tl.Trem"], "messages to him still alert")

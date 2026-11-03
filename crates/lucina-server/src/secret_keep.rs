@@ -238,6 +238,10 @@ pub struct Job {
     /// The question about a clear.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision: Option<String>,
+    /// An agent asked for it (the CLI, a coordinator, an agent's MCP turn): its receipt alerts
+    /// nobody. The owner's own chat and secrets found in his messages are his.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub agent: bool,
 }
 
 impl Job {
@@ -355,10 +359,10 @@ impl Keeper {
     /// Put a job in the queue, for a caller beside the server (the CLI, a coordinator).
     /// `body`: `{source, name?, project?, environment?, path?, what?, whole?, request?, keys?, prefix?, clear?}`.
     pub fn enqueue(&self, body: &Value) -> Result<Job, ApiError> {
-        self.enqueue_via(body, "")
+        self.enqueue_via(body, "", true)
     }
 
-    fn enqueue_via(&self, body: &Value, via: &str) -> Result<Job, ApiError> {
+    fn enqueue_via(&self, body: &Value, via: &str, agent: bool) -> Result<Job, ApiError> {
         if !self.cfg.enabled {
             return Err(ApiError::new(503, "secret_keep_off", "saving secrets locally is not configured"));
         }
@@ -468,6 +472,7 @@ impl Keeper {
             prefix,
             clear,
             via: via.to_owned(),
+            agent,
             moves: Vec::new(),
             decision: None,
         };
@@ -813,7 +818,7 @@ impl Keeper {
         let place = format!("{} / {} / {}", j.project, j.environment, j.path);
         if j.source.starts_with("file:") || j.source.starts_with("env:") {
             let timeline = self.timeline.clone();
-            let _ = lucina_item(&timeline, &source_receipt(j, &place), "secret_receipt", None);
+            let _ = lucina_item(&timeline, &source_receipt(j, &place), "secret_receipt", agent_mark(j));
             return;
         }
         let mut text = format!("✅ Saved `{}` in Infisical, {place}.", j.name);
@@ -830,7 +835,7 @@ impl Keeper {
             text.push_str(&format!(" {r}."));
         }
         let timeline = self.timeline.clone();
-        let _ = lucina_item(&timeline, &text, "secret_receipt", None);
+        let _ = lucina_item(&timeline, &text, "secret_receipt", agent_mark(j));
         let result = json!({"key": j.name, "environment": j.environment, "path": j.path,
                             "project": {"name": j.project, "slug": j.project, "alias": j.project}});
         st.secret_requests.saved(j.request.as_deref(), &result);
@@ -852,7 +857,7 @@ impl Keeper {
         for r in &c.remains {
             text.push_str(&format!(" {r}."));
         }
-        let _ = lucina_item(&self.timeline, &text, "secret_receipt", None);
+        let _ = lucina_item(&self.timeline, &text, "secret_receipt", agent_mark(j));
     }
 
     fn tell_failed(&self, st: &crate::AppState, j: &Job) {
@@ -868,7 +873,7 @@ impl Keeper {
                 }
                 None => {
                     let text = "🔐 I hid a secret from your message but couldn't save it in time, so it's gone: I don't have it. Send it again, or use \"Add secret\" in the app.";
-                    let _ = lucina_item(&self.timeline, text, "secret_receipt", None);
+                    let _ = lucina_item(&self.timeline, text, "secret_receipt", agent_mark(j));
                 }
             }
             return;
@@ -895,7 +900,7 @@ impl Keeper {
             None => format!("`{}`", j.name),
         };
         let text = format!("⚠️ I didn't save {which}: {why}. Nothing was cleared.");
-        let _ = lucina_item(&self.timeline, &text, "secret_receipt", None);
+        let _ = lucina_item(&self.timeline, &text, "secret_receipt", agent_mark(j));
     }
 
     /// Where a secret may be: references and why, never the text. `limit`: per kind.
@@ -949,6 +954,16 @@ fn slug_holds_value(slug: &str, raw: &str) -> bool {
 fn raw_json(raw: &str) -> String {
     let s = serde_json::to_string(raw).unwrap_or_default();
     s.trim_matches('"').to_owned()
+}
+
+/// A receipt's mark when an agent asked for the save: the chat keeps it, his phone does not ring.
+fn agent_mark(j: &Job) -> Option<lucina_store::timeline::Meta> {
+    j.agent.then(|| lucina_store::timeline::Meta { via: Some("agent".into()), ..Default::default() })
+}
+
+/// An agent's Lucina MCP session (`secretary_mcp-<caller>…`, lucina_intent::mcp::turn_info).
+pub(crate) fn agent_session(session_id: &str) -> bool {
+    session_id.strip_prefix("secretary_").unwrap_or(session_id).starts_with("mcp-")
 }
 
 /// The receipt of a file or env move: names and states.
@@ -1058,6 +1073,7 @@ pub fn after_turn(st: &crate::AppState, timeline: &TimelineStore, held: &[(Strin
             prefix: String::new(),
             clear: false,
             via: String::new(),
+            agent: false,
             moves: Vec::new(),
             decision: None,
         });
@@ -1132,14 +1148,14 @@ impl lucina_tools::tools::secret_keep::SecretKeeper for Keeper {
                 body["name"] = json!(format!("KEPT_{name}"));
             }
         }
-        let job = self.enqueue_via(&body, "chat").map_err(|e| e.message)?;
+        let job = self.enqueue_via(&body, "chat", agent_session(session_id)).map_err(|e| e.message)?;
         Ok(job.outcome())
     }
     async fn project(&self, session_id: &str, body: Value) -> Result<Value, String> {
         if crate::selftest::is_session(session_id) {
             return Err("self-test sessions don't look at projects".into());
         }
-        Keeper::project(self, &body, "chat").map_err(|e| e.message)
+        Keeper::project(self, &body, "chat", agent_session(session_id)).map_err(|e| e.message)
     }
     async fn status(&self, job: &str) -> Result<Value, String> {
         self.job(job).map(|j| j.outcome()).ok_or_else(|| "no such job".to_owned())

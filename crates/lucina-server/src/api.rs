@@ -624,7 +624,7 @@ async fn route(
             // Local only, like `keep`: names and states.
             only(&["POST"])?;
             let body = read_json(body, 16 * 1024).await?;
-            Ok(ok(st.secret_keep.project(&body, "")?))
+            Ok(ok(st.secret_keep.project(&body, "", true)?))
         }
         (Some("secrets"), Some("scan")) => {
             only(&["POST"])?;

@@ -706,6 +706,16 @@ struct Turn<'a> {
 }
 
 impl Turn<'_> {
+    /// The meta that marks this turn's items as an agent's (none for the owner's own turn).
+    fn agent_mark(&self) -> Meta {
+        self.mcp.as_ref().map_or_else(Meta::default, |m| Meta {
+            via: Some("mcp".into()),
+            caller: Some(m.caller.clone()),
+            conversation: m.conversation.clone(),
+            ..Meta::default()
+        })
+    }
+
     fn persona(&self) -> &str {
         &self.st.cfg.persona
     }
@@ -3221,6 +3231,17 @@ fn tool_item_text(r: &ToolRecord) -> String {
     format!("🔧 {} → {}", r.summary, if r.ok { "ok" } else { "error" })
 }
 
+/// A sub-turn's tool-trace line: the turn's agent mark plus the tool. An agent's turn alerts
+/// nobody, its trace lines included (secretary-server `notify::ingest`; 2026-11-03 the photo
+/// searches of an agent's question pushed 19 "🔧 media search" lines to his phone).
+fn tool_meta(mark: &Meta, r: &ToolRecord) -> Meta {
+    mark.clone().merge(Meta {
+        tool: Some(r.name.clone()),
+        ok: Some(r.ok),
+        ..Meta::kind("tool")
+    })
+}
+
 /// `LUCINA_PLANNER=tools`: the native tool loop with the confirmation flow.
 #[allow(clippy::too_many_arguments)]
 async fn tools_turn(
@@ -3578,6 +3599,37 @@ async fn tools_turn(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_agents_tool_lines_carry_its_mark() {
+        let r = ToolRecord {
+            call_id: "c1".into(),
+            name: "media".into(),
+            args: json!({}),
+            ok: true,
+            output: json!({}),
+            summary: "media search Fortuna".into(),
+            pending: None,
+            ms: 1,
+        };
+        let mark = Meta {
+            via: Some("mcp".into()),
+            caller: Some("some-new-provider".into()),
+            conversation: Some("lastphoto".into()),
+            ..Meta::default()
+        };
+        let m = tool_meta(&mark, &r);
+        assert_eq!(
+            (m.kind.as_deref(), m.tool.as_deref(), m.ok, m.via.as_deref(), m.caller.as_deref(), m.conversation.as_deref()),
+            (Some("tool"), Some("media"), Some(true), Some("mcp"), Some("some-new-provider"), Some("lastphoto"))
+        );
+        // His own turn: no mark.
+        let m = tool_meta(&Meta::default(), &r);
+        assert!(m.via.is_none() && m.caller.is_none());
+        assert!(crate::secret_keep::agent_session("secretary_mcp-claude-lastphoto"));
+        assert!(crate::secret_keep::agent_session("mcp-some-new-provider"));
+        assert!(!crate::secret_keep::agent_session("secretary_ios-1"));
+    }
 
     #[test]
     fn a_page_read_runs_read_only_on_her_computer() {

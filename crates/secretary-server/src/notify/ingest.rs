@@ -176,6 +176,9 @@ pub fn classify(item: &TimelineItem, now_ms: i64, stale_ms: i64) -> Option<NewNo
         // A decision: her own push opens it (`/decisions/<id>`, the options as buttons). A notification from the
         // item would win the shared `tl:` key with route `/` (2026-10-28: the owner's tap opened the chat).
         "decision" => return None,
+        // A tool-trace line ("🔧 media search … → ok") is part of a turn, not a message: her reply
+        // to his own turn notifies; an agent's turn notifies nothing (2026-11-03: 19 trace pushes).
+        "tool" => return None,
         "reminder" => (Category::Reminder, None),
         "device_command" => {
             let command = &meta["command"];
@@ -337,9 +340,14 @@ mod tests {
         assert!(quiet(json!({"via": "another-link", "caller": "x"})));
         assert!(quiet(json!({"kind": "tool", "via": "mcp", "caller": "claude"})));
         assert!(quiet(json!({"kind": "reach", "tool": "reach_agents", "ok": true})));
+        // A tool-trace line never notifies, marked or not (the 2026-11-03 photo-search burst had no via).
+        assert!(quiet(json!({"kind": "tool", "tool": "media", "ok": true})));
+        // A save an agent asked for: the receipt stays in the chat.
+        assert!(quiet(json!({"kind": "secret_receipt", "via": "agent"})));
 
         // The same words to him, and what he has to act on, still notify.
         assert!(!quiet(json!({"device": "dev_1", "deviceName": "iPhone"})));
+        assert!(!quiet(json!({"kind": "secret_receipt"})));
         assert!(!quiet(json!({"kind": "proactive"})));
         assert!(!quiet(json!({"via": ""})));
         // An agent's turn can still make something that is his: a reminder, a tap, a list change.
