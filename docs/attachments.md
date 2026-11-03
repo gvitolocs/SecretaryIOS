@@ -153,3 +153,7 @@ text. The reply gets an "Open in Drive" button.
 due date, spreadsheet sums, .ics events, .vcf contacts, archive limits, YouTube caption parsing), the turn
 prompt (the question plus the right guidance plus the extracted numbers), and attachment memory recall.
 Fixtures are in `crates/lucina-server/tests/fixtures/attachments/`.
+
+## Reading photos of screens and pages
+
+A picture is turned upright first when tesseract's orientation check is sure, because upside-down text defeats OCR and makes vision swap labels and miss values. When the picture holds text that doesn't fill it, vision also reads an enlarged crop of the text area, and that close reading goes to the model ahead of OCR.

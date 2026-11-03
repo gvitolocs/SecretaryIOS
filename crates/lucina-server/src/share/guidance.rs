@@ -22,7 +22,7 @@ pub fn for_kind(kind: &str, subtype: Option<&str>) -> &'static str {
         ("image", Some("screenshot_error")) => "Screenshot of an error: quote the exact error text, explain what it means in plain words and give the most likely fix.",
         ("image", Some("screenshot_chat")) => "Screenshot of a chat: say who wrote what as far as readable, and answer the owner's question about it (tone, what to reply, what was agreed).",
         ("image", Some("document_photo")) => "Photo of a document: treat the OCR text as the document; read amounts and dates exactly.",
-        ("image", _) => "Image: use the vision description and the OCR text. Describe only what is there; for screenshots read the visible text.",
+        ("image", _) => "Image: use the vision description and the OCR text. Describe only what is there; for screenshots read the visible text. When there is a close reading of the text, it is the most exact for numbers and labels; OCR of a photo can be noise.",
         ("video", _) => "Video: combine the key-frame descriptions with the audio transcript; say what happens and what is said.",
         ("audio", Some("voice")) => VOICE_SYSTEM,
         ("audio", _) => "Audio or voice: work from the transcript; for a voice memo give the gist and any tasks, dates or names in it.",

@@ -289,6 +289,86 @@ pub(crate) async fn ocr(path: &Path) -> anyhow::Result<String> {
     )
     .await
 }
+/// Below this, tesseract's orientation guess is noise (real pages score about 10).
+const MIN_ORIENTATION_CONFIDENCE: f64 = 3.0;
+
+/// The clockwise turn that puts text upright, from `tesseract --psm 0`.
+fn osd_rotation(out: &str) -> Option<u32> {
+    let field = |name: &str| {
+        out.lines()
+            .find_map(|l| l.strip_prefix(name)?.trim().parse::<f64>().ok())
+    };
+    let rotate = field("Rotate:")? as u32;
+    (matches!(rotate, 90 | 180 | 270) && field("Orientation confidence:")? >= MIN_ORIENTATION_CONFIDENCE)
+        .then_some(rotate)
+}
+
+/// A photo of a screen or a page taken any way up: text the wrong way round defeats OCR, and vision then swaps
+/// labels and misses values (a crash screen photographed upside down, 3 Nov 2026). No text: nothing changes.
+async fn turn_upright(jpg: &Path) {
+    let Some(path) = jpg.to_str() else { return };
+    let Ok(out) = command("tesseract", &[path, "stdout", "--psm", "0"]).await else {
+        return;
+    };
+    if let Some(rotate) = osd_rotation(&out) {
+        tracing::info!(rotate, "turning a picture upright before reading it");
+        if let Err(e) = command("convert", &[path, "-rotate", &rotate.to_string(), "-quality", "90", path]).await {
+            tracing::warn!(error = %e, "could not turn the picture");
+        }
+    }
+}
+
+/// Words needed before a picture counts as having text to read closely.
+const CLOSE_READ_MIN_WORDS: usize = 8;
+/// Text filling more of the picture than this gains nothing from a crop.
+const CLOSE_READ_MAX_AREA: f64 = 0.7;
+
+/// Where the text is, from `tesseract tsv`, with a margin: `(x, y, w, h)` in pixels. `None`: too little text, or
+/// it already fills the picture.
+fn text_box(tsv: &str) -> Option<(i64, i64, i64, i64)> {
+    let (mut page_w, mut page_h) = (0, 0);
+    let (mut x0, mut y0, mut x1, mut y1) = (i64::MAX, i64::MAX, 0, 0);
+    let mut words = 0;
+    for l in tsv.lines().skip(1) {
+        let c: Vec<&str> = l.split('\t').collect();
+        let [level, _, _, _, _, _, left, top, width, height, conf, text] = c[..] else {
+            continue;
+        };
+        let n = |v: &str| v.parse::<i64>().unwrap_or(0);
+        if level == "1" {
+            (page_w, page_h) = (n(width), n(height));
+        } else if level == "5" && conf.parse::<f64>().unwrap_or(0.0) >= 20.0 && text.trim().chars().count() >= 3 {
+            words += 1;
+            x0 = x0.min(n(left));
+            y0 = y0.min(n(top));
+            x1 = x1.max(n(left) + n(width));
+            y1 = y1.max(n(top) + n(height));
+        }
+    }
+    if words < CLOSE_READ_MIN_WORDS || page_w == 0 || page_h == 0 {
+        return None;
+    }
+    let (mx, my) = (page_w * 4 / 100, page_h * 4 / 100);
+    let (x, y) = ((x0 - mx).max(0), (y0 - my).max(0));
+    let (w, h) = ((x1 + mx).min(page_w) - x, (y1 + my).min(page_h) - y);
+    (((w * h) as f64) < CLOSE_READ_MAX_AREA * (page_w * page_h) as f64).then_some((x, y, w, h))
+}
+
+/// A second look at just the text area, enlarged: a photo of a screen gives the model far more pixels per digit.
+async fn close_reading(st: &AppState, jpg: &Path) -> Option<String> {
+    let path = jpg.to_str()?;
+    let tsv = command("tesseract", &[path, "stdout", "-l", "eng", "tsv"]).await.ok()?;
+    let (x, y, w, h) = text_box(&tsv)?;
+    let crop = jpg.with_extension("close.jpg");
+    let geometry = format!("{w}x{h}+{x}+{y}");
+    let out = crop.to_str()?;
+    let args = [path, "-crop", &geometry, "+repage", "-resize", "1536x1536", "-quality", "92", out];
+    command("convert", &args).await.ok()?;
+    let read = super::vision::read_text(st, &crop).await;
+    let _ = tokio::fs::remove_file(&crop).await;
+    read.map_err(|e| tracing::warn!(error = %e, "the close reading failed")).ok()
+}
+
 /// This much OCR text (a screenshot, a page) is worth answering from at once when the GPU is taken.
 const ENOUGH_OCR_CHARS: usize = 80;
 /// A ≤1536 px JPEG copy for vision and OCR.
@@ -336,6 +416,7 @@ async fn vision_jpeg(path: &Path) -> anyhow::Result<std::path::PathBuf> {
 /// Vision description (with the model's category) plus OCR text.
 async fn image(st: &AppState, path: &Path) -> anyhow::Result<Extracted> {
     let jpg = vision_jpeg(path).await?;
+    turn_upright(&jpg).await;
     let mut x = Extracted::new("image");
     // OCR first, it takes seconds: a busy GPU (a cold vision start, the lease) must not cost the
     // text. Vision has its own budget inside the read's limit, so a slow one only loses itself.
@@ -369,7 +450,16 @@ async fn image(st: &AppState, path: &Path) -> anyhow::Result<Extracted> {
             String::new()
         }
     };
-    x.text = format!("Vision: {description}\nOCR text:\n{text}");
+    // Only when vision answered: the server is up, so this costs seconds.
+    let close = if description.is_empty() {
+        None
+    } else {
+        close_reading(st, &jpg).await
+    };
+    x.text = match close {
+        Some(c) => format!("Vision: {description}\nClose reading of the text:\n{c}\nOCR text:\n{text}"),
+        None => format!("Vision: {description}\nOCR text:\n{text}"),
+    };
     let model = st.model.as_ref();
     match x.subtype.as_deref() {
         Some("receipt") => {
@@ -846,6 +936,32 @@ pub(super) async fn read(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_picture_is_turned_only_on_a_sure_reading() {
+        let osd = |r: u32, c: f64| format!("Page number: 0\nOrientation in degrees: {r}\nRotate: {r}\nOrientation confidence: {c}\nScript: Latin\n");
+        assert_eq!(osd_rotation(&osd(180, 10.15)), Some(180));
+        assert_eq!(osd_rotation(&osd(90, 10.66)), Some(90));
+        assert_eq!(osd_rotation(&osd(0, 11.7)), None, "already upright");
+        assert_eq!(osd_rotation(&osd(180, 1.2)), None, "a guess");
+        assert_eq!(osd_rotation(""), None);
+    }
+
+    #[test]
+    fn the_close_reading_crops_to_the_text() {
+        let head = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n";
+        let page = "1\t1\t0\t0\t0\t0\t0\t0\t1000\t1000\t-1\t\n";
+        let word = |x: i64, y: i64, conf: i64, t: &str| format!("5\t1\t1\t1\t1\t1\t{x}\t{y}\t50\t20\t{conf}\t{t}\n");
+        let many = |n: usize| (0..n).map(|i| word(300 + i as i64 * 10, 300, 90, "word")).collect::<String>();
+        let (x, y, w, h) = text_box(&format!("{head}{page}{}", many(10))).unwrap();
+        assert_eq!((x, y), (260, 260), "with a margin");
+        assert!(w < 400 && h < 200, "{w}x{h}");
+        assert_eq!(text_box(&format!("{head}{page}{}", many(3))), None, "too little text");
+        let low: String = (0..10).map(|_| word(300, 300, 5, "zzz")).collect();
+        assert_eq!(text_box(&format!("{head}{page}{low}")), None, "low confidence is not text");
+        let spread = format!("{head}{page}{}{}{}", many(8), word(0, 0, 90, "top"), word(950, 980, 90, "end"));
+        assert_eq!(text_box(&spread), None, "text fills the picture");
+    }
     use std::io::Write;
 
     #[test]

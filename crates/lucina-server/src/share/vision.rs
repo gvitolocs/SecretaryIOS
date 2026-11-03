@@ -23,6 +23,8 @@ pub(super) const CATEGORIES: &[&str] = &[
 ];
 const PROMPT: &str = "First line exactly: CATEGORY: <one of photo, screenshot_chat, screenshot_error, screenshot_other, receipt, document_photo, whiteboard, meme, other>. Then describe this image for an assistant who cannot see it: what it shows, people/objects/places, and transcribe any visible text exactly (for an error screenshot, the full error message; for a chat screenshot, who wrote each message).";
 
+const READ_TEXT_PROMPT: &str = "Transcribe all the text in this image exactly as written, line by line, keeping each label with its value. Digits and letters matter: do not guess, and write [?] for a character you cannot read. Nothing else.";
+
 /// Split the model's answer into (category, description).
 pub(super) fn split_category(answer: &str) -> (Option<String>, String) {
     let trimmed = answer.trim_start();
@@ -174,12 +176,12 @@ async fn ready(server: &mut Server, seconds: u64) -> anyhow::Result<()> {
     }
     bail!("vision startup timeout")
 }
-async fn completion(url: &str, path: &Path) -> anyhow::Result<String> {
+async fn completion(url: &str, path: &Path, prompt: &str) -> anyhow::Result<String> {
     let bytes = tokio::fs::read(path).await?;
     let data = base64::engine::general_purpose::STANDARD.encode(bytes);
     let v: Value = reqwest::Client::new().post(format!("{}/v1/chat/completions", url.trim_end_matches('/')))
         .timeout(Duration::from_secs(120)).json(&json!({"model":"gemma-4", "max_tokens":2048, "chat_template_kwargs":{"enable_thinking":false},
-            "messages":[{"role":"user","content":[{"type":"text","text":PROMPT},{"type":"image_url","image_url":{"url":format!("data:image/jpeg;base64,{data}")}}]}]}))
+            "messages":[{"role":"user","content":[{"type":"text","text":prompt},{"type":"image_url","image_url":{"url":format!("data:image/jpeg;base64,{data}")}}]}]}))
         .send().await?.error_for_status()?.json().await?;
     let message = &v["choices"][0]["message"];
     message["content"]
@@ -257,11 +259,22 @@ async fn server_url(st: &AppState, cpu_too: bool) -> anyhow::Result<String> {
 /// `cpu_too`: fall back to the CPU (minutes) when the GPU is taken. Not worth it once OCR has the text.
 pub(crate) async fn describe(st: &AppState, path: &Path, cpu_too: bool) -> anyhow::Result<String> {
     if let Some(url) = &st.cfg.share.vision_url {
-        return completion(url, path).await;
+        return completion(url, path, PROMPT).await;
     }
     let url = server_url(st, cpu_too).await?;
-    let result = completion(&url, path).await;
+    let result = completion(&url, path, PROMPT).await;
     // Its idle time counts from the answer.
+    let _ = running(st).await;
+    result
+}
+
+/// Every piece of text in a picture, as written. Only with the server already up: it follows a description.
+pub(crate) async fn read_text(st: &AppState, path: &Path) -> anyhow::Result<String> {
+    let url = match &st.cfg.share.vision_url {
+        Some(url) => url.clone(),
+        None => running(st).await.context("the vision server is not running")?,
+    };
+    let result = completion(&url, path, READ_TEXT_PROMPT).await;
     let _ = running(st).await;
     result
 }

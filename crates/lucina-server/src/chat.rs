@@ -2070,7 +2070,10 @@ async fn json_turn_rest(
     // Notes (LUCINA_NOTES=true): save, append, read, list; MCP callers may too.
     if st.cfg.notes_enabled {
         let pending = !st.bridge_state.pending_part(&t.session).is_empty();
-        if let Some(intent) = nt::parse_notes_intent(&t.message, pending) {
+        // "Read this photo and save it as a note" is a photo first: the media turn reads it and saves the reading.
+        let notes = nt::parse_notes_intent(&t.message, pending)
+            .filter(|_| !media_turn::is_media_request(&t.message));
+        if let Some(intent) = notes {
             let read = matches!(
                 intent,
                 nt::NotesIntent::Read { .. } | nt::NotesIntent::List { .. }
