@@ -22,7 +22,11 @@
 //! saved on its own; when the local model can't, the old "Save as secret?" card comes instead. Notes
 //! are swept for secret shapes ([`sweep`]) and offered: a note is the owner's text, so moving one
 //! out starts with his tap.
+//!
+//! Files and `.env` files ([`files`]) go the same way, by plain parsing where that is exact. They
+//! stay where they are unless a clear is asked, because a running service may read them.
 
+pub mod files;
 pub mod local;
 pub mod sweep;
 
@@ -81,6 +85,15 @@ pub struct KeepConfig {
     pub scrub_dirs: Vec<PathBuf>,
     /// `LUCINA_SECRET_KEEP_SWEEP_SECS`, default an hour, 0 off.
     pub sweep: Option<Duration>,
+    /// `HOME`: what `~` means in a source path.
+    pub home: PathBuf,
+    /// `LUCINA_SECRET_KEEP_ROOTS` (`:`): the trees `file:` and `env:` sources may come from.
+    pub source_roots: Vec<PathBuf>,
+    /// `LUCINA_SECRET_KEEP_DENY` (`:`), plus the keeper's token and the broker's socket: more trees
+    /// on top of the fixed deny lists in `lucina_secrets::source_path`, which can't be shortened.
+    pub source_deny: Vec<PathBuf>,
+    /// `LUCINA_SECRET_KEEP_UNIT_DIRS` (`:`): unit files searched for what uses a source.
+    pub unit_dirs: Vec<PathBuf>,
 }
 
 impl KeepConfig {
@@ -100,12 +113,22 @@ impl KeepConfig {
             }
         };
         let sweep = get("LUCINA_SECRET_KEEP_SWEEP_SECS").and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(3600);
+        let home = PathBuf::from(get("HOME").unwrap_or_else(|| "/home/nez".into()));
+        let list = |k: &str| get(k).map(|v| v.split(':').filter(|p| !p.trim().is_empty()).map(|p| PathBuf::from(p.trim())).collect::<Vec<_>>());
+        let socket = get("LUCINA_BROKER_SOCKET")
+            .map(|p| PathBuf::from(p.trim()))
+            .unwrap_or_else(|| PathBuf::from(crate::owner_secrets::DEFAULT_SOCKET));
+        let mut source_deny = list("LUCINA_SECRET_KEEP_DENY").unwrap_or_default();
+        source_deny.extend(token_file.clone());
+        source_deny.extend(socket.parent().map(Path::to_path_buf));
         Self {
             enabled: token_file.is_some() && !off("LUCINA_SECRET_KEEP"),
             token_file,
-            socket: get("LUCINA_BROKER_SOCKET")
-                .map(|p| PathBuf::from(p.trim()))
-                .unwrap_or_else(|| PathBuf::from(crate::owner_secrets::DEFAULT_SOCKET)),
+            socket,
+            source_roots: list("LUCINA_SECRET_KEEP_ROOTS").unwrap_or_else(|| vec![home.join(".config"), home.join("Projects"), home.join("mnt/mybook/Projects")]),
+            source_deny,
+            unit_dirs: list("LUCINA_SECRET_KEEP_UNIT_DIRS").unwrap_or_else(|| vec![home.join(".config/systemd/user"), PathBuf::from("/etc/systemd/system")]),
+            home,
             local: local::LocalConfig::from_lookup(get),
             default_project: project.to_lowercase(),
             default_environment: environment.to_owned(),
@@ -138,6 +161,31 @@ pub struct Cleared {
     pub backups: usize,
     /// Where the value may still be, in words (never the value).
     pub remains: Vec<String>,
+    /// A `file:` or `env:` source was cleared.
+    #[serde(default)]
+    pub source: bool,
+    /// What is seen using a `file:` or `env:` source.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub users: Vec<String>,
+    /// `waiting_owner`, `cleared`, `in_use`, `changed`, `failed` or `left_by_owner`, when one was asked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clear_state: Option<String>,
+}
+
+/// One key of an env file, or the one secret of a file. Names and a state.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyMove {
+    /// The name in the file (`line N` for a line that isn't an assignment).
+    pub key: String,
+    /// The name in Infisical.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    /// `saved` (read-back hash matched), `left`, `empty`, `placeholder`, `reference`, `unclear`,
+    /// `refused_by_rule`, `exists`, `not_allowed`, ...
+    pub state: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reference: String,
 }
 
 /// One job: references and names, never a value.
@@ -145,7 +193,7 @@ pub struct Cleared {
 #[serde(rename_all = "camelCase")]
 pub struct Job {
     pub id: String,
-    /// `note:<slug>`, `chat:<item id>` or `held:<held id>`.
+    /// `note:<slug>`, `chat:<item id>`, `held:<held id>`, `file:<path>` or `env:<path>`.
     pub source: String,
     pub name: String,
     pub project: String,
@@ -173,6 +221,23 @@ pub struct Job {
     pub cleared: Option<Cleared>,
     #[serde(default)]
     pub lang: String,
+    /// `env:`: only these keys. Empty: the ones that look like secrets.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keys: Vec<String>,
+    /// `env:`: what stored names start with.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub prefix: String,
+    /// `file:`, `env:`: clear the source once saved. Never without being asked.
+    #[serde(default)]
+    pub clear: bool,
+    /// `chat`: it came through the chat tool, so a clear takes the owner's answer.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub via: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub moves: Vec<KeyMove>,
+    /// The question about a clear.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<String>,
 }
 
 impl Job {
@@ -192,6 +257,12 @@ impl Job {
         }
         if let Some(c) = &self.cleared {
             v["cleared"] = serde_json::to_value(c).unwrap_or(Value::Null);
+        }
+        if !self.moves.is_empty() {
+            v["keys"] = serde_json::to_value(&self.moves).unwrap_or(Value::Null);
+        }
+        if let Some(d) = &self.decision {
+            v["decision"] = json!(d);
         }
         v
     }
@@ -281,22 +352,41 @@ impl Keeper {
         self.with(|jobs| jobs.iter().find(|j| j.id == id).cloned())
     }
 
-    /// Put a job in the queue. `body`: `{source, name?, project?, environment?, path?, what?, whole?, request?}`.
+    /// Put a job in the queue, for a caller beside the server (the CLI, a coordinator).
+    /// `body`: `{source, name?, project?, environment?, path?, what?, whole?, request?, keys?, prefix?, clear?}`.
     pub fn enqueue(&self, body: &Value) -> Result<Job, ApiError> {
+        self.enqueue_via(body, "")
+    }
+
+    fn enqueue_via(&self, body: &Value, via: &str) -> Result<Job, ApiError> {
         if !self.cfg.enabled {
             return Err(ApiError::new(503, "secret_keep_off", "saving secrets locally is not configured"));
         }
         let bad = |m: &str| ApiError::new(400, "bad_request", m);
         let text = |k: &str| body[k].as_str().map(str::trim).unwrap_or("");
         let source = text("source");
+        let mut stored_source = source.to_owned();
+        let (mut is_file, mut is_env) = (false, false);
         let ok_source = match source.split_once(':') {
             Some(("note", k)) => !k.is_empty() && k.len() <= 128,
             Some(("chat", k)) => lucina_store::ulid::is_timeline_id(k),
+            Some((kind @ ("file" | "env"), k)) => {
+                let path = files::check_asked(k, &self.cfg)?;
+                // A path that holds a token shape would carry it into every record of the job.
+                if !lucina_secrets::redact::detect(k).is_empty() {
+                    return Err(ApiError::new(400, "value_refused", "source: a path, without a value in it"));
+                }
+                stored_source = format!("{kind}:{}", path.display());
+                is_file = kind == "file";
+                is_env = kind == "env";
+                true
+            }
             _ => false,
         };
         if !ok_source {
-            return Err(bad("source: note:<slug> or chat:<item id>"));
+            return Err(bad("source: note:<slug>, chat:<item id>, file:<path> or env:<path>"));
         }
+        let source = stored_source.as_str();
         let what = text("what");
         // The hint is the cloud model's words: a value there would already have left.
         if what.chars().count() > 300 || !lucina_secrets::redact::detect(what).is_empty() || !lucina_secrets::labelled::detect(what).is_empty() {
@@ -316,9 +406,44 @@ impl Keeper {
             "" => "/".to_owned(),
             p => request_folder(p).ok_or_else(|| bad("path: folders of letters, digits, _ . @ -"))?,
         };
-        let name = text("name");
-        if name.is_empty() || !slug_ok(name, 256) {
-            return Err(bad("name: required, letters, digits, _ . @ -"));
+        let default_place = text("project").is_empty();
+        let mut keys = Vec::new();
+        for k in body["keys"].as_array().into_iter().flatten() {
+            let k = k.as_str().map(str::trim).unwrap_or_default();
+            if !lucina_secrets::envfile::plain_name(k) {
+                return Err(bad("keys: names only"));
+            }
+            keys.push(k.to_owned());
+        }
+        if keys.len() > files::MAX_KEYS || (!keys.is_empty() && !is_env) {
+            return Err(bad("keys: only for an env: source, at most 200"));
+        }
+        let mut prefix = text("prefix").to_owned();
+        if !prefix.is_empty() && (!is_env || !slug_ok(&prefix, 128)) {
+            return Err(bad("prefix: only for an env: source, letters, digits, _ . @ -"));
+        }
+        let clear = body["clear"].as_bool().unwrap_or(false);
+        if clear && !(is_file || is_env) {
+            return Err(bad("clear: only for a file: or env: source; a note or a chat is always cleared"));
+        }
+        let name = if is_env {
+            // The default place only takes KEEP_ and KEPT_ names: say whose they are as well.
+            if prefix.is_empty() && default_place {
+                let path = source.split_once(':').map_or("", |(_, p)| p);
+                prefix = files::default_prefix(Path::new(path));
+            }
+            format!("{prefix}*")
+        } else {
+            let name = text("name");
+            if name.is_empty() || !slug_ok(name, 256) {
+                return Err(bad("name: required, letters, digits, _ . @ -"));
+            }
+            name.to_owned()
+        };
+        let name = name.as_str();
+        // GOOGLE_PASSWORD is never moved, under any spelling.
+        if lucina_secrets::source_path::key_refused(name.as_bytes()) {
+            return Err(ApiError::new(403, "refused_by_rule", "this name is never stored"));
         }
         let request = text("request");
         let job = Job {
@@ -339,6 +464,12 @@ impl Keeper {
             retry_at: None,
             cleared: None,
             lang: text("lang").to_owned(),
+            keys,
+            prefix,
+            clear,
+            via: via.to_owned(),
+            moves: Vec::new(),
+            decision: None,
         };
         if job.whole && !job.source.starts_with("note:") {
             return Err(bad("whole: only a note"));
@@ -373,7 +504,10 @@ impl Keeper {
         self.with(|jobs| {
             let j = jobs.iter_mut().find(|j| j.id == id)?;
             f(j);
-            j.what.clear();
+            // A clear reads the source again and may need the words.
+            if !j.clear {
+                j.what.clear();
+            }
             Some(j.clone())
         })
     }
@@ -395,6 +529,9 @@ impl Keeper {
                 tracing::info!(job = %job.id, name = %name, "secret kept");
                 if let Some(j) = done {
                     self.tell_saved(st, &j);
+                    if j.cleared.as_ref().and_then(|c| c.clear_state.as_deref()) == Some("waiting_owner") {
+                        self.ask_clear(st, &j).await;
+                    }
                 }
             }
             Err(s) => {
@@ -431,6 +568,9 @@ impl Keeper {
     /// Everything that touches the value. Returns the name it was saved under.
     async fn process(&self, st: &crate::AppState, job: &Job) -> Result<(String, Cleared), Stop> {
         let (kind, key) = job.source.split_once(':').ok_or(stop("bad_request"))?;
+        if matches!(kind, "file" | "env") {
+            return self.process_source(job, kind, Path::new(key)).await;
+        }
         if !self.cfg.local.is_loopback() {
             return Err(stop("local_model_not_local"));
         }
@@ -671,6 +811,11 @@ impl Keeper {
     fn tell_saved(&self, st: &crate::AppState, j: &Job) {
         let cleared = j.cleared.clone().unwrap_or_default();
         let place = format!("{} / {} / {}", j.project, j.environment, j.path);
+        if j.source.starts_with("file:") || j.source.starts_with("env:") {
+            let timeline = self.timeline.clone();
+            let _ = lucina_item(&timeline, &source_receipt(j, &place), "secret_receipt", None);
+            return;
+        }
         let mut text = format!("✅ Saved `{}` in Infisical, {place}.", j.name);
         if j.source.starts_with("note:") {
             text.push_str(if cleared.note { " I took it out of the note." } else { " The note still holds it: clearing failed." });
@@ -689,6 +834,25 @@ impl Keeper {
         let result = json!({"key": j.name, "environment": j.environment, "path": j.path,
                             "project": {"name": j.project, "slug": j.project, "alias": j.project}});
         st.secret_requests.saved(j.request.as_deref(), &result);
+    }
+
+    /// The answer on a clear has been carried out, or not.
+    fn tell_cleared(&self, j: &Job) {
+        let c = j.cleared.clone().unwrap_or_default();
+        let path = j.source.split_once(':').map_or("", |(_, p)| p);
+        let mut text = match c.clear_state.as_deref() {
+            Some("cleared") => format!("🧹 Cleared the secret from {path}."),
+            Some("in_use") => format!("⚠️ I left {path}: something may use it."),
+            Some("left_by_owner") => format!("{path} stays as it is."),
+            _ => format!("⚠️ I didn't clear {path}."),
+        };
+        for u in &c.users {
+            text.push_str(&format!(" {u}."));
+        }
+        for r in &c.remains {
+            text.push_str(&format!(" {r}."));
+        }
+        let _ = lucina_item(&self.timeline, &text, "secret_receipt", None);
     }
 
     fn tell_failed(&self, st: &crate::AppState, j: &Job) {
@@ -716,10 +880,21 @@ impl Keeper {
             "exists" => "a secret with that name already exists with another value, and I never overwrite one".to_owned(),
             "not_allowed" => "I may only store new secrets in the places you allowed".to_owned(),
             "readback_mismatch" => "Infisical read back something different. The secret may be there: check it".to_owned(),
-            "source_not_found" => "the note or message isn't there".to_owned(),
+            "source_not_found" => "the note, message or file isn't there".to_owned(),
+            "path_refused" | "hard_linked" => "that path is not one I may read".to_owned(),
+            "refused_by_rule" => "that secret is never moved".to_owned(),
+            "not_owner" => "the file isn't yours, so I don't read it".to_owned(),
+            "not_a_file" => "that isn't a plain file".to_owned(),
+            "binary" => "the file isn't text".to_owned(),
+            "too_long" => "the file is too big to be a credential".to_owned(),
+            "not_one_value" => "the file holds more than one line: say which secret".to_owned(),
             other => format!("the step failed ({other})"),
         };
-        let text = format!("⚠️ I didn't save `{}`: {why}. Nothing was cleared.", j.name);
+        let which = match j.source.strip_prefix("env:") {
+            Some(path) => format!("the keys of {path}"),
+            None => format!("`{}`", j.name),
+        };
+        let text = format!("⚠️ I didn't save {which}: {why}. Nothing was cleared.");
         let _ = lucina_item(&self.timeline, &text, "secret_receipt", None);
     }
 
@@ -774,6 +949,31 @@ fn slug_holds_value(slug: &str, raw: &str) -> bool {
 fn raw_json(raw: &str) -> String {
     let s = serde_json::to_string(raw).unwrap_or_default();
     s.trim_matches('"').to_owned()
+}
+
+/// The receipt of a file or env move: names and states.
+fn source_receipt(j: &Job, place: &str) -> String {
+    let saved: Vec<String> = j.moves.iter().filter(|m| m.state == "saved").map(|m| format!("`{}`", m.name)).collect();
+    let mut text = format!("✅ Saved {} in Infisical, {place}, read back with a matching hash.", saved.join(", "));
+    let c = j.cleared.clone().unwrap_or_default();
+    let mut other: Vec<String> = j.moves.iter().filter(|m| m.state != "saved").map(|m| format!("{}: {}", m.key, m.state)).collect();
+    other.sort();
+    if !other.is_empty() {
+        text.push_str(&format!(" Not moved: {}.", other.join(", ")));
+    }
+    let path = j.source.split_once(':').map_or("", |(_, p)| p);
+    match c.clear_state.as_deref() {
+        Some("cleared") => text.push_str(&format!(" Cleared {path}.")),
+        Some("waiting_owner") => text.push_str(" I'll ask you before clearing the file."),
+        _ => {}
+    }
+    for u in &c.users {
+        text.push_str(&format!(" {u}."));
+    }
+    for r in &c.remains {
+        text.push_str(&format!(" {r}."));
+    }
+    text
 }
 
 /// A note's text: its content, or its items for a list note.
@@ -854,6 +1054,12 @@ pub fn after_turn(st: &crate::AppState, timeline: &TimelineStore, held: &[(Strin
             retry_at: None,
             cleared: None,
             lang: lang.to_owned(),
+            keys: Vec::new(),
+            prefix: String::new(),
+            clear: false,
+            via: String::new(),
+            moves: Vec::new(),
+            decision: None,
         });
     }
 }
@@ -870,6 +1076,7 @@ pub fn spawn(st: &crate::AppState) -> Option<tokio::task::JoinHandle<()>> {
         let mut last_sweep = tokio::time::Instant::now() - Duration::from_secs(3300);
         loop {
             while st.secret_keep.run_next(&st).await {}
+            st.secret_keep.settle_clears(&st).await;
             if let Some(every) = st.secret_keep.cfg.sweep {
                 if last_sweep.elapsed() >= every {
                     last_sweep = tokio::time::Instant::now();
@@ -918,14 +1125,21 @@ impl lucina_tools::tools::secret_keep::SecretKeeper for Keeper {
             return Err("self-test sessions don't move secrets".into());
         }
         // A secret with no place goes to the default one, whose names start with KEPT_ or KEEP_.
-        if body["project"].as_str().is_none_or(str::is_empty) {
+        let is_env = body["source"].as_str().is_some_and(|s| s.starts_with("env:"));
+        if !is_env && body["project"].as_str().is_none_or(str::is_empty) {
             let name = body["name"].as_str().unwrap_or("SECRET").to_owned();
             if !name.starts_with("KEPT_") && !name.starts_with("KEEP_") {
                 body["name"] = json!(format!("KEPT_{name}"));
             }
         }
-        let job = self.enqueue(&body).map_err(|e| e.message)?;
+        let job = self.enqueue_via(&body, "chat").map_err(|e| e.message)?;
         Ok(job.outcome())
+    }
+    async fn project(&self, session_id: &str, body: Value) -> Result<Value, String> {
+        if crate::selftest::is_session(session_id) {
+            return Err("self-test sessions don't look at projects".into());
+        }
+        Keeper::project(self, &body, "chat").map_err(|e| e.message)
     }
     async fn status(&self, job: &str) -> Result<Value, String> {
         self.job(job).map(|j| j.outcome()).ok_or_else(|| "no such job".to_owned())

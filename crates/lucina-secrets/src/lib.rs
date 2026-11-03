@@ -36,12 +36,14 @@
 //! (`default-features = false`).
 
 pub mod cache;
+pub mod envfile;
 pub mod labelled;
 pub mod otp;
 pub mod policy;
 pub mod redact;
 pub mod reference;
 pub mod reveal;
+pub mod source_path;
 pub mod value;
 
 #[cfg(feature = "client")]

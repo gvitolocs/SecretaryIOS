@@ -490,13 +490,24 @@ enum UpstreamCmd {
 
 #[derive(Subcommand)]
 enum KeepCmd {
-    /// Queue a move of a secret from a note or a chat message to Infisical, through the local model.
+    /// Queue a move of a secret to Infisical: from a note or a chat message through the local model,
+    /// from a file or a .env file by plain parsing.
     Save {
-        /// note:<slug> or chat:<item id>.
+        /// note:<slug>, chat:<item id>, file:<path> or env:<path>.
         #[arg(long)]
         source: String,
-        #[arg(long)]
+        /// Required, except for env:, where each key keeps its own.
+        #[arg(long, default_value = "")]
         name: String,
+        /// env: only these keys, comma-separated. Default: the keys that look like secrets.
+        #[arg(long, default_value = "")]
+        keys: String,
+        /// env: what stored names start with. Default with no project: KEEP_<FOLDER>_.
+        #[arg(long, default_value = "")]
+        prefix: String,
+        /// file:, env: clear the source after the read-back, if nothing is seen using it.
+        #[arg(long)]
+        clear: bool,
         /// Which secret in that text, in words. Never the value.
         #[arg(long, default_value = "")]
         what: String,
@@ -524,6 +535,21 @@ enum KeepCmd {
     },
     /// Where a secret may be: references only.
     Scan,
+    /// What a project needs, what is found, what is missing: names and states.
+    Project {
+        dir: String,
+        /// Also move what is found to Infisical. The files stay.
+        #[arg(long)]
+        deposit: bool,
+        #[arg(long, default_value = "")]
+        project: String,
+        #[arg(long, default_value = "")]
+        environment: String,
+        #[arg(long, default_value = "")]
+        path: String,
+        #[arg(long, default_value = "")]
+        prefix: String,
+    },
 }
 
 #[derive(clap::Subcommand)]
@@ -907,12 +933,14 @@ async fn keep_cmd(cmd: KeepCmd) -> anyhow::Result<()> {
     let c = cli::Client::from_env()?;
     let mut wait_for = 0;
     let mut out = match cmd {
-        KeepCmd::Save { source, name, what, project, environment, path, whole, request, wait } => {
+        KeepCmd::Save { source, name, keys, prefix, clear, what, project, environment, path, whole, request, wait } => {
             wait_for = wait;
+            let keys: Vec<&str> = keys.split(',').map(str::trim).filter(|k| !k.is_empty()).collect();
             c.post(
                 "secrets/keep",
                 &serde_json::json!({"source": source, "name": name, "what": what, "project": project,
-                                    "environment": environment, "path": path, "whole": whole, "request": request}),
+                                    "environment": environment, "path": path, "whole": whole, "request": request,
+                                    "keys": keys, "prefix": prefix, "clear": clear}),
             )
             .await?
         }
@@ -921,6 +949,14 @@ async fn keep_cmd(cmd: KeepCmd) -> anyhow::Result<()> {
             c.post("secrets/keep", &serde_json::json!({"job": job})).await?
         }
         KeepCmd::Scan => c.post("secrets/scan", &serde_json::json!({})).await?,
+        KeepCmd::Project { dir, deposit, project, environment, path, prefix } => {
+            c.post(
+                "secrets/project",
+                &serde_json::json!({"dir": dir, "deposit": deposit, "project": project, "environment": environment,
+                                    "path": path, "prefix": prefix}),
+            )
+            .await?
+        }
     };
     let until = std::time::Instant::now() + std::time::Duration::from_secs(wait_for);
     while out["state"] == "queued" && std::time::Instant::now() < until {

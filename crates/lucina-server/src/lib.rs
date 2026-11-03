@@ -519,6 +519,9 @@ impl AppState {
             registry
                 .register(Arc::new(lucina_tools::tools::secret_keep::SecretScanTool { keeper: secret_keep.clone() }))
                 .expect("secret_scan registers");
+            registry
+                .register(Arc::new(lucina_tools::tools::secret_keep::SecretProjectTool { keeper: secret_keep.clone() }))
+                .expect("secret_project registers");
         }
         // The owner's shared files: owner turns only, so added after the MCP registries.
         let share = crate::share::ShareRuntime::new(&cfg.share);

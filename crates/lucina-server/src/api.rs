@@ -620,6 +620,12 @@ async fn route(
             }
             Ok(ok(st.secret_keep.enqueue(&body)?.outcome()))
         }
+        (Some("secrets"), Some("project")) => {
+            // Local only, like `keep`: names and states.
+            only(&["POST"])?;
+            let body = read_json(body, 16 * 1024).await?;
+            Ok(ok(st.secret_keep.project(&body, "")?))
+        }
         (Some("secrets"), Some("scan")) => {
             only(&["POST"])?;
             Ok(ok(st.secret_keep.scan(50).await?))

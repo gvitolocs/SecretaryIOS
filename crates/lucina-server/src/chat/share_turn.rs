@@ -28,6 +28,7 @@ pub(crate) const NOT_WITH_SHARED_CONTENT: &[&str] = &[
     "secret_request",
     "secret_keep",
     "secret_scan",
+    "secret_project",
     "root_exec",
 ];
 
