@@ -23,6 +23,23 @@ What was wrong: one fixed OAuth `state`, tokens compared in non-constant time, a
 
 Negative tests: `crates/secretary-server/src/links.rs` (`a_failed_random_source_gives_no_secret`), `crates/secretary-nclient/src/main.rs` (`tests`), Hermes `tests/oauth-state.test.mjs`, `tests/secret-compare.test.mjs`.
 
+## Where each fix runs
+
+| Fix | Code | Live |
+|---|---|---|
+| 5 | SecretaryIOS main 6966eeb2 | **Yes:** `secretary-server` deployed 2026-11-03 |
+| 6 | SecretaryIOS main 6966eeb2 | **Not yet, no urgency:** it only matters when a key is created, and the key exists. Comes with `secretary-nclient`'s next deploy |
+| 1, 2, 3 | Hermes main 8ebbb28 | **Yes on peer1** for Poko, restarted 2026-11-03 00:46 UTC. `src/index.js` and `src/lucina-gmail.js` are not copied there: Cityhop is off on peer1 and it has no Lucina Gmail |
+| 2 (dashboard push), 4 | Hermes main 8ebbb28 | **Not yet:** the Vercel projects do not deploy on push (`cityhopdashboard` last deployed 155 days ago). Fix 4's code is idle there anyway. Comes with their next deploy |
+
+No app needs installing: the iOS, Android and Mac apps did not change.
+
+Checked on peer1 after the restart: `/health` answers, Discord logged in. No token or a wrong token gets 401 on four API routes. The right `POKO_API_TOKEN` is accepted (405 on a GET, read from the env file without showing it). `state=poko` with a code gets 400, and an unsigned X webhook gets 401.
+
+**peer1 runs older code than Hermes `main`.** `scripts/deploy-peer1-poko.sh` would also have shipped undeployed changes to `src/planner-fallback.js` (133 changed lines), `config.js`, `harness-agent.js` and `cursor-agent.js`, so this deploy copied only the 15 files of this fix. All of them matched the merge base on peer1, except `oauth-callback.js`, which lacked the Lucina Gmail flow. Backup: `/opt/hermes-poko/.backups/randomness-audit-20261103.tar.gz`.
+
+**The deploy guard's marker was overridden.** A `poko-news-scout` task marker from 2026-10-30 pointed at the running service, which would have refused a deploy. It was 4 days old, with no child process and no scout log lines in the last 6 hours, so it was treated as hung and the service restarted. The cause of the hang was not looked into.
+
 ## Checked and fine
 
 **Server secrets**, all from the OS generator:
