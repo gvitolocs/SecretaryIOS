@@ -139,6 +139,8 @@ pub struct Inner {
     pub secret_requests: Arc<secret_requests::SecretRequests>,
     /// Lucina's own moves of a secret to Infisical, through the local model.
     pub secret_keep: Arc<secret_keep::Keeper>,
+    /// The owner's own Add secret cards (`secret_tile`), his queue and a self-test one.
+    pub secret_cards: Arc<secret_requests::OwnerCards>,
     pub briefings: tokio::sync::Mutex<HashMap<String, api::Briefing>>,
     pub streams: AtomicUsize,
     pub started: Instant,
@@ -495,6 +497,16 @@ impl AppState {
                 token_file: cfg.secretary_service_token_file.clone(),
             },
         ));
+        let secret_cards = Arc::new(secret_requests::OwnerCards {
+            owner: secret_requests.clone(),
+            selftest: Arc::new(secret_requests::SecretRequests::new(
+                &cfg.data_dir.join("selftest-secret-cards"),
+                selftest_timeline.clone(),
+                bridges::Secretary { http: env_http.clone(), url: None, token_file: None },
+            )),
+            default_project: cfg.secret_keep.default_project.clone(),
+            default_environment: cfg.secret_keep.default_environment.clone(),
+        });
         let secret_keep = Arc::new(secret_keep::Keeper::new(
             &cfg.data_dir,
             cfg.secret_keep.clone(),
@@ -511,6 +523,11 @@ impl AppState {
                     asker: secret_requests.clone(),
                 }))
                 .expect("secret_request registers");
+        }
+        if cfg.tools.allows("secret_tile") {
+            registry
+                .register(Arc::new(lucina_tools::tools::secret_tile::SecretCardTool { opener: secret_cards.clone() }))
+                .expect("secret_tile registers");
         }
         if cfg.secret_keep.enabled && cfg.tools.allows("secret_keep") {
             registry
@@ -591,6 +608,7 @@ impl AppState {
             client_messages: Mutex::new(HashMap::new()),
             held_secrets: owner_secrets::HeldSecrets::default(),
             secret_requests,
+            secret_cards,
             secret_keep,
             briefings: tokio::sync::Mutex::new(HashMap::new()),
             streams: AtomicUsize::new(0),

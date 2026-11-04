@@ -360,6 +360,114 @@ impl SecretRequests {
         Ok(out)
     }
 
+    /// The owner's own "here, take this key": his card shows **now**, at the bottom of his chat.
+    /// An open request for the same secret (by its names, else by its name) is brought down instead
+    /// of asked again; another active card waits behind his (its old card item stays where it was).
+    pub fn show_now(&self, r: SecretRequest, bubble: String) -> Result<Asked, ApiError> {
+        let mut next = Next::default();
+        let out = self.with(|entries| {
+            self.sweep(entries, &mut next);
+            let key = request_key(&r);
+            let name = r.name.to_lowercase();
+            let same = entries
+                .iter()
+                .rposition(|e| e.status.open() && e.key() == key)
+                .or_else(|| entries.iter().rposition(|e| e.status.open() && !name.is_empty() && e.name.to_lowercase() == name));
+            if same.is_none() && entries.iter().filter(|e| e.status.open()).count() >= MAX_OPEN {
+                return Err(ApiError::new(429, "too_many_requests", "there are too many secret requests open"));
+            }
+            for e in entries.iter_mut().filter(|e| e.status == Status::Active) {
+                e.status = Status::Queued;
+            }
+            let (i, status) = match same {
+                Some(i) => (i, "shown"),
+                None => {
+                    entries.push(Entry {
+                        id: random_id(),
+                        name: r.name.clone(),
+                        project: r.project.clone(),
+                        environment: r.environment.clone(),
+                        path: r.path.clone(),
+                        reason: r.reason.clone(),
+                        who: r.who.clone(),
+                        new_project: r.new_project,
+                        status: Status::Queued,
+                        asked_at: now(),
+                        shown_at: None,
+                        closed_at: None,
+                        item_id: None,
+                        bubble: Some(bubble.clone()),
+                        fingerprint: None,
+                        action: None,
+                    });
+                    (entries.len() - 1, "asked")
+                }
+            };
+            let e = &mut entries[i];
+            // An agent's card keeps its own text; his card says what he asked for.
+            if e.who.is_empty() {
+                e.bubble = Some(bubble);
+            }
+            let rich = self.post_card(e);
+            let e = e.clone();
+            let ahead = entries.iter().filter(|x| x.status.open() && x.id != e.id).count();
+            self.persist(entries);
+            tracing::info!(name = %e.name, project = %e.project, environment = %e.environment, status, "owner's secret card shown");
+            Ok(Asked { entry: e, status, project_known: None, create_project: false, ahead, rich })
+        });
+        self.notify_later(next);
+        out
+    }
+
+    /// Where secrets already live, for picking a place: `(project, environment, path)` with the
+    /// names asked or saved there, newest first. Names only.
+    pub fn places(&self) -> Vec<(String, String, String, Vec<String>)> {
+        self.with(|entries| {
+            let mut out: Vec<(String, String, String, Vec<String>)> = Vec::new();
+            for e in entries.iter().rev().filter(|e| !e.project.is_empty() && !e.environment.is_empty()) {
+                let project = e.project.to_lowercase();
+                match out.iter_mut().find(|p| p.0 == project && p.1 == e.environment && p.2 == e.path) {
+                    Some(p) => {
+                        if p.3.len() < 6 && !p.3.contains(&e.name) {
+                            p.3.push(e.name.clone());
+                        }
+                    }
+                    None => out.push((project, e.environment.clone(), e.path.clone(), vec![e.name.clone()])),
+                }
+            }
+            out
+        })
+    }
+
+    /// The open requests: `(name, project, environment, path, status, who)`.
+    pub fn open_requests(&self) -> Vec<(String, String, String, String, &'static str, String)> {
+        self.with(|entries| {
+            entries
+                .iter()
+                .filter(|e| e.status.open())
+                .map(|e| {
+                    let s = if e.status == Status::Active { "active" } else { "queued" };
+                    (e.name.clone(), e.project.clone(), e.environment.clone(), e.path.clone(), s, e.who.clone())
+                })
+                .collect()
+        })
+    }
+
+    /// Where a name lives: an open request for it, else the newest closed one.
+    fn place_of(&self, name: &str) -> Option<(String, String, String)> {
+        let n = name.to_lowercase();
+        self.with(|entries| {
+            let found = |open: bool| {
+                entries
+                    .iter()
+                    .rev()
+                    .find(|e| e.status.open() == open && e.name.to_lowercase() == n && !e.project.is_empty() && !e.environment.is_empty())
+                    .map(|e| (e.project.clone(), e.environment.clone(), e.path.clone()))
+            };
+            found(true).or_else(|| found(false))
+        })
+    }
+
     /// Every request, oldest first: what the cards draw.
     /// Open requests whose secret has a receipt in the timeline since they were asked.
     fn close_from_receipts(&self, entries: &mut [Entry]) -> bool {
@@ -538,6 +646,126 @@ async fn notify_card(secretary: &Secretary, e: &Entry) {
     let pushed = crate::bridges::notify(secretary, &push).await;
     if !pushed.ok {
         tracing::warn!(status = pushed.status, code = %pushed.code, "secret request push failed (the timeline item still notifies)");
+    }
+}
+
+/// Lucina's `secret_tile`: the owner's own cards. A self-test turn gets a queue of its own, which
+/// writes to the self-test conversation, so a test never shows in his chat or moves his cards.
+pub struct OwnerCards {
+    pub owner: Arc<SecretRequests>,
+    pub selftest: Arc<SecretRequests>,
+    /// Where his own secrets go when nothing names a place (`LUCINA_SECRET_KEEP_PLACE`).
+    pub default_project: String,
+    pub default_environment: String,
+}
+
+impl OwnerCards {
+    pub fn queue(&self, session_id: &str) -> &Arc<SecretRequests> {
+        if crate::selftest::is_session(session_id) {
+            &self.selftest
+        } else {
+            &self.owner
+        }
+    }
+
+    /// The names and places Lucina picks from, for her system text. Names only.
+    pub fn guide(&self, session_id: &str) -> String {
+        let q = self.queue(session_id);
+        let mut out = String::new();
+        let open = q.open_requests();
+        if !open.is_empty() {
+            out.push_str("Open secret cards (reuse the name when he means one of these): ");
+            let list: Vec<String> = open
+                .iter()
+                .take(10)
+                .map(|(n, p, e, f, s, who)| {
+                    let by = if who.is_empty() { "him".to_owned() } else { who.clone() };
+                    format!("{n} in {p}/{e}{} ({s}, asked by {by})", if f == "/" { "" } else { f })
+                })
+                .collect();
+            out.push_str(&list.join("; "));
+            out.push_str(". ");
+        }
+        let places = q.places();
+        out.push_str(&format!(
+            "Places in use: {}/{} for his own keys and passwords (the default)",
+            self.default_project, self.default_environment
+        ));
+        for (p, e, f, names) in places.iter().take(8) {
+            out.push_str(&format!("; {p}/{e}{}: {}", if f == "/" { "" } else { f }, names.join(", ")));
+        }
+        out.push('.');
+        out
+    }
+}
+
+/// The card's text, in his language (English unless he wrote Danish).
+fn card_bubble(name: &str, place: &str, danish: bool) -> String {
+    if danish {
+        format!("🔐 Kortet til `{name}` i {place} er klar: indsæt værdien her. Den går direkte til Infisical, aldrig til denne chat eller min hukommelse.")
+    } else {
+        format!("🔐 Paste `{name}` here. It goes straight to Infisical ({place}), never to this chat or my memory.")
+    }
+}
+
+#[async_trait::async_trait]
+impl lucina_tools::tools::secret_tile::SecretCardOpener for OwnerCards {
+    async fn open(&self, session_id: &str, body: Value) -> Result<Value, String> {
+        let text = |k: &str| body[k].as_str().map(str::trim).unwrap_or("").to_owned();
+        let name = text("name");
+        if !crate::owner_secrets::slug_ok(&name, 256) {
+            return Err("name: letters, digits, _ . @ -, e.g. GOOGLE_MAPS_SERVER_KEY".into());
+        }
+        let q = self.queue(session_id);
+        let (mut project, mut environment, mut path) = (text("project").to_lowercase(), text("environment"), text("path"));
+        for (what, v) in [("project", &project), ("environment", &environment)] {
+            if !v.is_empty() && !crate::owner_secrets::slug_ok(v, 128) {
+                return Err(format!("{what}: letters, digits, _ . @ -"));
+            }
+        }
+        if project.is_empty() {
+            match q.place_of(&name) {
+                Some((p, e, f)) => {
+                    project = p.to_lowercase();
+                    environment = e;
+                    if path.is_empty() {
+                        path = f;
+                    }
+                }
+                None => {
+                    project = self.default_project.clone();
+                    environment = self.default_environment.clone();
+                }
+            }
+        } else if environment.is_empty() {
+            environment = q
+                .places()
+                .into_iter()
+                .find(|p| p.0 == project)
+                .map(|p| p.1)
+                .unwrap_or_else(|| "prod".to_owned());
+        }
+        let path = if path.is_empty() {
+            "/".to_owned()
+        } else {
+            crate::owner_secrets::request_folder(&path).ok_or("path: folders of letters, digits, _ . @ -")?
+        };
+        let place = format!("{project} / {environment} / {path}");
+        let danish = body["lang"] == "da";
+        let r = SecretRequest {
+            name: name.clone(),
+            project,
+            environment,
+            path,
+            // His own request: no "who", no "why", and his phone no separate push (the card is in the chat).
+            reason: String::new(),
+            who: String::new(),
+            new_project: false,
+        };
+        let a = q.show_now(r, card_bubble(&name, &place, danish)).map_err(|e| e.message)?;
+        let e = &a.entry;
+        Ok(json!({"status": a.status, "name": e.name, "project": e.project, "environment": e.environment,
+                  "path": e.path, "itemId": e.item_id, "othersWaiting": a.ahead}))
     }
 }
 

@@ -576,8 +576,8 @@ async fn in_his_own_words_lucina_asks_by_name_on_the_json_planner() {
     logs();
     let h = harness(
         script(json!({"rules": [
-            {"kind": "agent", "contains": "password del wifi", "afterTool": false, "toolCalls": [{"name": "secret_request", "arguments": {
-                "name": "GBGO_WIFI_PSK", "project": "lucinaos", "environment": "prod", "reason": "the home Wi-Fi"}}]},
+            {"kind": "agent", "contains": "password del wifi", "afterTool": false, "toolCalls": [{"name": "secret_tile", "arguments": {
+                "name": "GBGO_WIFI_PSK", "project": "lucinaos", "environment": "prod"}}]},
             {"kind": "agent", "contains": "password del wifi", "afterTool": true, "content": "La scheda ti aspetta nell'app."},
             {"kind": "any", "content": "{\"action\":\"reply\",\"text\":\"Ok.\"}"}
         ]})),
@@ -589,5 +589,7 @@ async fn in_his_own_words_lucina_asks_by_name_on_the_json_planner() {
     assert_eq!(b["data"]["action"], "secret_request");
     let (_, q) = h.get("/secrets/requests").await;
     assert_eq!(q["data"]["requests"][0]["name"], "GBGO_WIFI_PSK");
-    assert_eq!(q["data"]["requests"][0]["who"], "Lucina");
+    // His own request now (secret_tile): the card is his, at the bottom of his chat.
+    assert_eq!(q["data"]["requests"][0]["who"], "");
+    assert_eq!(q["data"]["requests"][0]["status"], "active");
 }

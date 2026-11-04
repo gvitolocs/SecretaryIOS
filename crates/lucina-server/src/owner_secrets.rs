@@ -1124,23 +1124,40 @@ pub fn secret_talk(text: &str) -> bool {
     if words.len() > 40 {
         return false;
     }
-    const NOUNS: &[&str] = &[
-        "password", "passwd", "passphrase", "psk", "chiave", "chiavi", "token", "segreto", "segreti", "secret", "secrets",
-        "credenziali", "credentials", "apikey", "hemmelighed", "adgangskode", "nøgle",
+    // Counts with a storing verb or an offer.
+    const STRONG_NOUNS: &[&str] = &[
+        "password", "passwd", "passphrase", "psk", "token", "segreto", "segreti", "secret", "secrets", "credenziali",
+        "credentials", "credential", "apikey", "pwd", "pin", "passcode", "hemmelighed", "adgangskode",
     ];
+    // Counts only with an offer: "add the key points" is not a secret.
+    const WEAK_NOUNS: &[&str] = &["key", "keys", "chiave", "chiavi", "nøgle", "nøglen"];
     const VERBS: &[&str] = &[
-        "salva", "salvami", "salvala", "salvalo", "salvarla", "salvarlo", "salvare", "memorizza", "memorizzala", "aggiungi", "inserisci",
-        "conserva", "conservala", "registra", "chiedimi", "save", "store", "add", "gem", "tilføj", "move", "sposta", "spostala",
-        "spostalo", "flyt",
+        "salva", "salvami", "salvala", "salvalo", "salvarla", "salvarlo", "salvare", "memorizza", "memorizzala", "aggiungi",
+        "inserisci", "conserva", "conservala", "registra", "chiedimi", "save", "store", "add", "gem", "tilføj", "move", "sposta",
+        "spostala", "spostalo", "flyt",
     ];
-    const PHRASES: &[&str] = &["ti do", "ti passo", "te la do", "te la passo", "ask me for", "give you", "giver dig"];
+    // He hands one over (matched on the words joined by spaces, so "here's" is "here s").
+    const OFFERS: &[&str] = &[
+        "give you", "gibe you", "giv you", "send you", "pass you", "let me give", "let me gibe", "let me send", "let me paste",
+        "here is the", "here is my", "here s the", "here s my", "i ll send", "i will send", "i have the", "paste it", "i paste",
+        "so i paste", "ti do", "ti passo", "ti mando", "ti incollo", "te la do", "te la passo", "ask me for", "giver dig", "giv dig",
+        "sender dig",
+    ];
     const QUESTION: &[&str] = &["come", "how", "why", "perché", "perche", "cosa", "what", "dove", "where", "quale", "which", "hvordan"];
-    if words.first().is_some_and(|w| QUESTION.contains(w)) {
+    let joined = words.join(" ");
+    let offer = OFFERS.iter().any(|p| format!(" {joined} ").contains(&format!(" {p} ")));
+    let infisical = words.contains(&"infisical")
+        && words.iter().any(|w| ["paste", "tile", "card", "store", "incolla", "kort", "indsæt"].contains(w));
+    if offer || infisical {
+        let strong = words.iter().any(|w| STRONG_NOUNS.contains(w)) || joined.contains("api key");
+        return strong || infisical || words.iter().any(|w| WEAK_NOUNS.contains(w));
+    }
+    // A question about secrets is answered, not a card.
+    if words.first().is_some_and(|w| QUESTION.contains(w)) || text.trim_end().ends_with('?') {
         return false;
     }
-    let joined = words.join(" ");
-    let noun = words.iter().any(|w| NOUNS.contains(w)) || joined.contains("api key");
-    noun && (words.iter().any(|w| VERBS.contains(w)) || PHRASES.iter().any(|p| joined.contains(p)))
+    let strong = words.iter().any(|w| STRONG_NOUNS.contains(w)) || joined.contains("api key");
+    strong && words.iter().any(|w| VERBS.contains(w))
 }
 
 /// The owner's request in words: its cards in the queue. The reply, the card's item id, and the
@@ -1300,11 +1317,17 @@ mod tests {
     #[test]
     fn secret_talk_shapes() {
         for yes in ["salvami la password del wifi nel progetto lucinaos", "ti do la API key di OpenAI", "Chiedimi il token di Discord",
-                    "ask me for the OpenAI key secret", "store my passphrase for the backup", "gem adgangskode til wifi"] {
+                    "ask me for the OpenAI key secret", "store my passphrase for the backup", "gem adgangskode til wifi",
+                    "let me gibe you the maps apikey", "let me give you the maps api key", "I'll send you the GitHub token",
+                    "here is the openai key", "here's my wifi password", "can you open the card so I paste the Stripe key",
+                    "what? no thats not how that works you open a tile so i paste it and you store that ot infisical",
+                    "giv dig nøglen til kortet", "ti passo la chiave di Google Maps"] {
             assert!(secret_talk(yes), "{yes}");
         }
         for no in ["come salvo una password?", "how do I store a token", "qual è la chiave del successo", "salva la nota", "add milk to the list",
-                   "il token è scaduto", "what is a secret"] {
+                   "il token è scaduto", "what is a secret", "give me the key points of this article", "the key to success is patience",
+                   "what is an api key?", "send me the report", "here is the plan for tomorrow", "where is infisical running?",
+                   "add the key points to my notes", "save this page?"] {
             assert!(!secret_talk(no), "{no}");
         }
     }

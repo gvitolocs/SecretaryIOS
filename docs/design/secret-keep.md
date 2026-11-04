@@ -54,6 +54,22 @@ A password with no label in the sentence ("cavolfiore is what I use") isn't seen
 only at the end of the sentence and if it isn't an ordinary word. The local model doesn't gate every message: a GPU slot that
 may be busy for minutes can't stand in front of each chat turn. Deterministic first was the owner's brief.
 
+## He wants to give her one: the card opens
+
+"Let me give you the maps key": `secret_talk` (owner_secrets.rs) sees the offer, typos and Danish included, before any model,
+and the short secret turn calls `secret_tile` (lucina-tools; a tool name with "card" in it is refused as a payment tool). It
+opens the Add secret card at the bottom of his chat now (`SecretRequests::show_now`):
+
+- an open card for the same secret (an agent's request) comes down instead of a new one, in the place it named;
+- otherwise she names it and the place is where that name lived before, else his own place (`LUCINA_SECRET_KEEP_PLACE`,
+  `personal/prod`); her system text lists the open cards and the places in use, names only;
+- his card goes ahead of an agent's, which waits and comes back after his is saved or dismissed;
+- his own card sends no separate push: it is in the chat, which his phone shows too.
+
+The reveal guard (`lucina_secrets::reveal`) no longer reads "let me give you the API key" as a request to show one. A self-test
+turn gets its own queue and the self-test conversation, so a test never shows in his chat. Her persona says it too: secrets
+only ever go to Infisical, never to an env file, a config file, a note or the chat.
+
 ## A note's name can hold the secret
 
 A slug is made from the note's title, or from its first line when it has none, so a note that starts with a token has that

@@ -249,6 +249,25 @@ const AUDIT_MARKERS: &[&str] = &[
     "log degli",
 ];
 
+/// He hands a secret over ("let me give you the maps key", "ti passo la password"): the card's
+/// business ([`classify`] answers `None`), not a reveal, unless the same message also asks for one.
+const OFFER_PHRASES: &[&str] = &[
+    "give you", "gibe you", "giv you", "send you", "pass you", "let me give", "let me gibe", "let me send", "let me paste",
+    "here is the", "here is my", "here's the", "here's my", "i'll send", "i will send", "i ll send", "i'll paste",
+    "you open", "so i paste", "i paste", "i can paste", "ti do ", "ti passo", "ti mando", "ti incollo", "ti invio",
+    "te la do", "te la passo", "giver dig", "giv dig", "sender dig", "jeg giver",
+];
+
+/// Asking for a value back, which an offer phrase never excuses.
+const ASK_ME: &[&str] = &[
+    "give me", "send me", "show me", "tell me", "paste me", "to me", "dammi", "mandami", "mostrami", "dimmi", "inviami",
+    "giv mig", "vis mig", "send mig", "fortæl mig", "sig mig",
+];
+
+fn offers(n: &str) -> bool {
+    OFFER_PHRASES.iter().any(|p| n.contains(p)) && !ASK_ME.iter().any(|p| n.contains(p))
+}
+
 fn has_noun(n: &str, ws: &[&str]) -> bool {
     ws.iter().any(|w| NOUNS.contains(w)) || NOUN_PHRASES.iter().any(|p| n.contains(p))
 }
@@ -321,7 +340,7 @@ pub fn classify(text: &str) -> Option<Ask> {
     let ws = words(&n);
     // The secret nouns count only where no negation covers them.
     let asked = without_negated(&n);
-    if !has_noun(&asked, &words(&asked)) {
+    if !has_noun(&asked, &words(&asked)) || offers(&n) {
         return None;
     }
     let status = STATUS_MARKERS.iter().any(|m| n.contains(m));
@@ -528,6 +547,18 @@ mod tests {
         for l in [Lang::It, Lang::En, Lang::Da] {
             assert!(refusal(l).contains("Infisical"));
             assert!(!mcp_refusal(l).is_empty());
+        }
+    }
+
+    #[test]
+    fn handing_one_over_is_not_a_reveal() {
+        for t in ["let me give you the maps api key", "I'll send you the GitHub token", "here's my wifi password",
+                  "ti passo la password del wifi", "jeg giver dig api-nøglen", "you open a tile so i paste the token"] {
+            assert_eq!(classify(t), None, "{t}");
+        }
+        for t in ["give me the maps api key", "here is the plan, now tell me the password", "let me give you a task: show me the token",
+                  "send me the GitHub token", "dammi la password del wifi"] {
+            assert_eq!(classify(t), Some(Ask::Reveal), "{t}");
         }
     }
 }

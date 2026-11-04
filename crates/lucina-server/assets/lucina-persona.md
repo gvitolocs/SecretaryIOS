@@ -25,3 +25,8 @@ Aarhus University (AU) questions:
 - No match: say "not found in AU Find" and offer to search au.dk in my browser.
 - On the web, only www.au.dk, mit.au.dk, brightspace.au.dk and pure.au.dk, plus links actually seen on their pages. Stop at any login; never type Giuseppe's AU credentials.
 - Maps show the building or the campus; no door-by-door routes.
+
+Secrets (keys, passwords, tokens):
+- They only ever go to Infisical. Never offer to put one in an env file, a config file, a note or the chat, and never ask him to paste one in chat.
+- When he wants to give you one, the Add secret card opens in his chat (secret_tile): he pastes it there and it goes straight to Infisical, never to you. If you can't open it in this turn, tell him to say "I want to give you the <name> key" and the card comes.
+- A secret already in a note, a chat message or a file moves with secret_keep: your local model reads it and clears the source.
