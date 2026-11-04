@@ -709,6 +709,65 @@ confidence = "confirmed"
 rely_on = ["gleam Gl implementation", "shader list without DITHERING"]
 notes = "Copy in ~/Projects/Lucina/LucinaNet-swgl: only names the unknown shader when one is asked for."
 
+[[upstream]]
+id = "brimstone"
+name = "Brimstone (Rust JavaScript engine under LucinaNet)"
+url = "https://github.com/Hans-Halverson/brimstone"
+source = "github"
+repo = "Hans-Halverson/brimstone"
+branch = "master"
+track = "commits"
+pin = "64d66980ce03f3c9c0a38a16d09e7fa056a1171d"
+pin_date = "2026-10-16"
+notify = "auto"
+ours = [
+  { repo = "/home/nez/Projects/Lucina/LucinaNet-brimstone", path = "src/js", base = "main" },
+]
+licence_upstream = "MIT"
+licence_ours = "MIT"
+relation = "fork"
+confidence = "confirmed"
+rely_on = ["Value NaN-boxing (runtime/value.rs)", "PropertyKey (runtime/property_key.rs)", "semispace GC (gc/garbage_collector.rs)", "VirtualObject", "rust_runtime function registry", "TaskQueue", "ICU4X baked data"]
+notes = "Replaces SpiderMonkey in LucinaNet (owner go 2026-11-04). Verdict adapt: fork with an embedding API (embed/: non-moving host space for DOM objects, natives, proxies, roots), branch host-embedding; ICU data for ICU4X 2.1 (branch icu-2.1). The mozjs_sys boundary encodes values and ids as Brimstone does (LucinaNet-js mozjs-sys/src/boundary, Verus): a change to value.rs or property_key.rs must be ported there and the differential tests rerun. Choice rechecked against Boa, Nova, yavashark, jsse, stator, zuqe: LucinaNet-js docs/brimstone-backend.md. Single author upstream; we carry the fork."
+
+[[upstream]]
+id = "mozjs-sys"
+name = "mozjs_sys (SpiderMonkey C++ API, the original LucinaNet-js reimplements)"
+url = "https://github.com/servo/mozjs"
+source = "manual"
+check_hint = "New mozjs_sys versions on crates.io (Servo bumps them in its Cargo.toml). Rerun tools/gen-jsapi on the new bindgen output: a new C++ function shows up as a stub."
+pin = "153.6.0-1"
+pin_date = "2026-11-02"
+notify = "auto"
+ours = [
+  { repo = "/home/nez/Projects/Lucina/LucinaNet-js", path = "mozjs-sys", base = "main" },
+]
+licence_upstream = "MPL-2.0"
+licence_ours = "MPL-2.0"
+relation = "port"
+confidence = "confirmed"
+rely_on = ["bindgen output jsapi.rs, gluebindings.rs", "jsglue.cpp and jsapi.cpp behaviour", "JS::Value/jsid API in jsval.rs, jsid.rs", "Rooted lists in jsgc.rs"]
+notes = "C++ SpiderMonkey 153.6 API surface implemented in Rust on Brimstone; same crate name and version, selected with [patch.crates-io]. SpiderMonkey is the source of truth for behaviour (porting guidelines 1); its source is in the registry copy mozjs_sys-153.6.0-1/mozjs/js/src."
+
+[[upstream]]
+id = "mozjs"
+name = "mozjs (Rust bindings over mozjs_sys)"
+url = "https://github.com/servo/mozjs"
+source = "manual"
+check_hint = "New mozjs versions on crates.io, as pinned by Servo (js = { package = \"mozjs\", version = \"=...\" })."
+pin = "0.26.13"
+pin_date = "2026-11-02"
+notify = "auto"
+ours = [
+  { repo = "/home/nez/Projects/Lucina/LucinaNet-js", path = "mozjs", base = "main" },
+]
+licence_upstream = "MPL-2.0"
+licence_ours = "MPL-2.0"
+relation = "fork"
+confidence = "confirmed"
+rely_on = ["rust.rs get_object_class/get_object_realm", "error.rs throw_js_error", "gc/ rooting"]
+notes = "Upstream copy with three changes: get_object_class and get_object_realm call mozjs_sys::engine instead of reading SpiderMonkey's object layout, and throw_js_error avoids the C-variadic JS_ReportErrorNumberUTF8."
+
 # ───────────────────────── Juno's video decoders ─────────────────────────
 # Used as they are, by Cargo pin (`crates/lucina-app-video`). Measured on the laptop: LucinaOS docs/research/juno-media.md.
 [[upstream]]
