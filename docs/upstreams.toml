@@ -692,6 +692,28 @@ rely_on = ["blitz-dom Document API", "blitz-paint paint_scene", "anyrender_vello
 notes = "Pinned checkout + patches/blitz in LucinaNet: rustls with bundled roots, a current user agent."
 
 [[upstream]]
+id = "serein"
+name = "Serein (Discord client, Discord on Juno)"
+url = "https://github.com/ViceVerse-cz/Serein"
+source = "github"
+repo = "ViceVerse-cz/Serein"
+branch = "main"
+track = "commits"
+pin = "d57433c723b78fe92819aa885f3db1ff9183769b"
+pin_date = "2026-11-04"
+notify = "report"
+ours = [
+  { repo = "/home/nez/Projects/Lucina/Serein", path = ".", base = "juno" },
+  { repo = "/home/nez/Projects/Lucina/LucinaOS", path = "serein" },
+]
+licence_upstream = "MIT OR Apache-2.0"
+licence_ours = "MIT OR Apache-2.0"
+relation = "fork"
+confidence = "confirmed"
+rely_on = ["crates/discord-gateway", "crates/discord-api", "crates/client-core fingerprint", "apps/desktop sign_in.rs LoginView calls", "eframe 0.36 API", "cpal 0.18 API", "winit Window calls"]
+notes = "Local fork only (nezopt ~/Projects/Lucina/Serein, upstream push disabled; a public fork needs the owner's OK). Audited 2026-11-04: no telemetry; updater, extension catalog, Spotify poller and child programs cut on Juno (nezopt ~/scratch/serein-audit/AUDIT.md). Rust conversion: the JS login web view replaced by native QR sign-in (crates/discord-remote-auth); hCaptcha JS and the updater shell helper rejected; packaging scripts kept as reference. Verus on the pure rules (verification/serein, 50 verified, 25 planted bugs refused). Per-part adopt/adapt/reference/reject: LucinaOS docs/research/juno-serein.md. Uses Discord's user API outside OAuth, against Discord's terms (upstream's own warning). Re-audit at each move: AGENTS.md tells agents to push upstream."
+
+[[upstream]]
 id = "swgl"
 name = "swgl, WebRender's software GL"
 url = "https://crates.io/crates/swgl"
