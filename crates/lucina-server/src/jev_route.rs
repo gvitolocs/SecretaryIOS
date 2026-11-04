@@ -351,9 +351,46 @@ pub struct JevToolRouter {
     pub jev: &'static Jev,
 }
 
+/// Jev's state for a first-tool question: `{"message", ...facts}`. `facts` is an object of facts the
+/// caller knows (the device, the previous turn's calls); anything else is ignored.
+pub fn tool_state(user_text: &str, facts: Value) -> Value {
+    let mut state = serde_json::Map::new();
+    state.insert("message".into(), Value::from(user_text));
+    if let Value::Object(facts) = facts {
+        for (k, v) in facts {
+            if k != "message" {
+                state.insert(k, v);
+            }
+        }
+    }
+    Value::Object(state)
+}
+
+/// Jev's top first tool with its confidence, unthresholded (`"none"` included).
 #[async_trait::async_trait]
-impl lucina_tools::agent::ToolRouter for JevToolRouter {
-    async fn first_tool(&self, user_text: &str, tools: &[(String, String)]) -> Option<String> {
+pub trait TopTool: Send + Sync {
+    /// `facts` join the message in Jev's state ([`tool_state`]); `None`: Jev is off or failed.
+    async fn first_tool_with(
+        &self,
+        user_text: &str,
+        facts: Value,
+        tools: &[(String, String)],
+    ) -> Option<(String, f64)>;
+}
+
+/// The first-tool hint threshold (`LUCINA_JEV_TOOL_MIN`).
+pub fn tool_min() -> f64 {
+    env_f64("LUCINA_JEV_TOOL_MIN", TOOL_HINT_MIN)
+}
+
+#[async_trait::async_trait]
+impl TopTool for JevToolRouter {
+    async fn first_tool_with(
+        &self,
+        user_text: &str,
+        facts: Value,
+        tools: &[(String, String)],
+    ) -> Option<(String, f64)> {
         if !self.jev.available() || tools.len() + 1 > lucina_jev::MAX_OPTIONS {
             return None;
         }
@@ -374,14 +411,28 @@ impl lucina_tools::agent::ToolRouter for JevToolRouter {
         )];
         let d = self
             .jev
-            .decide("tools", json!({"message": user_text}), &q)
+            .decide("tools", tool_state(user_text, facts), &q)
             .await
             .ok()?;
         let (tool, confidence) = d.choice("first_tool")?;
         tracing::info!(target: "lucina_jev::route", tool, confidence, ms = d.elapsed_ms, "jev first tool");
-        (tool != "none" && confidence >= env_f64("LUCINA_JEV_TOOL_MIN", TOOL_HINT_MIN))
-            .then(|| tool.to_owned())
+        Some((tool.to_owned(), confidence))
     }
+}
+
+#[async_trait::async_trait]
+impl lucina_tools::agent::ToolRouter for JevToolRouter {
+    async fn first_tool(&self, user_text: &str, tools: &[(String, String)]) -> Option<String> {
+        let (tool, confidence) = self.first_tool_with(user_text, json!({}), tools).await?;
+        (tool != "none" && confidence >= tool_min()).then_some(tool)
+    }
+}
+
+/// Jev's top-tool router for turns that pass facts (`None` when Jev is not configured).
+pub fn top_tool_router() -> Option<Arc<dyn TopTool>> {
+    let jev = lucina_jev::shared();
+    jev.configured()
+        .then(|| Arc::new(JevToolRouter { jev }) as Arc<dyn TopTool>)
 }
 
 /// The router for the owner's tool turns (`None` when Jev is not configured).
@@ -394,6 +445,16 @@ pub fn tool_router() -> Option<Arc<dyn lucina_tools::agent::ToolRouter>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_state_is_the_message_and_the_facts() {
+        assert_eq!(tool_state("go", json!({})), json!({"message": "go"}));
+        assert_eq!(
+            tool_state("go", json!({"device": "d", "message": "not this"})),
+            json!({"message": "go", "device": "d"})
+        );
+        assert_eq!(tool_state("go", json!("x")), json!({"message": "go"}));
+    }
 
     #[test]
     fn mcp_delegation_state_is_short_facts_only() {

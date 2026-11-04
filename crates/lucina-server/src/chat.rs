@@ -71,7 +71,7 @@ pub const VOICE_SESSION: &str = "lucinavoice";
 pub const VOICE_LABEL: &str = "LucinaVoice speaker";
 
 /// The device fact of a turn from Juno's Chat (session `juno-<device id>`).
-pub const JUNO_SYSTEM: &str = "The owner is writing from Juno, his laptop (Galaxy Book Go, LucinaOS). Actions on the laptop use the juno_* tools (juno_tools lists what it can do); the computer tool is your own sandbox on nezopt, not his laptop.";
+pub const JUNO_SYSTEM: &str = "The owner is writing from Juno, his laptop (Galaxy Book Go, LucinaOS). Actions on the laptop use the juno_* tools (juno_tools lists what it can do); the computer tool is your own sandbox on nezopt, not his laptop. You act on the laptop only through juno_* tool calls made in this turn. Never say you are opening, typing, capturing or changing anything on the laptop unless a juno_* call in this turn did it; otherwise say what you would do and that it has not happened yet.";
 
 /// [`JUNO_SYSTEM`] when `session` is a Juno Chat session, else nothing.
 pub fn juno_system(session: &str) -> &'static str {

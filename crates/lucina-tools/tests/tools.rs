@@ -513,3 +513,44 @@ async fn tool_call_markup_is_never_the_answer() {
     let out = agent::run(&model, &r, vec![lucina_llm::Message::user("cerca su drive")], &ctx, &pending, &AgentConfig::default(), &|_| {}).await.unwrap();
     assert_eq!(out.text, "");
 }
+
+#[tokio::test]
+async fn last_round_note_reaches_only_the_last_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = Ctx::new(Arc::new(env(dir.path(), None)), "web", "secretary_app");
+    let r = Registry::builtin(&ToolSelection::All);
+    let model = ScriptedModel::new();
+    for _ in 0..10 {
+        model.push_calls(&[("time", json!({}))]);
+    }
+    let pending = PendingStore::memory(DEFAULT_TTL);
+    let cfg = AgentConfig {
+        max_rounds: 10,
+        last_round_note: Some("NOTE".into()),
+        ..AgentConfig::default()
+    };
+    let out = agent::run(
+        &model,
+        &r,
+        vec![lucina_llm::Message::user("loop")],
+        &ctx,
+        &pending,
+        &cfg,
+        &|_| {},
+    )
+    .await
+    .unwrap();
+    assert_eq!(out.rounds, 10);
+    assert_eq!(out.stop, Stop::MaxRounds);
+    // The 11th request is the plain re-ask after a last round that still called a tool.
+    assert_eq!(model.request_count(), 11);
+    let reqs = model.requests.lock().unwrap();
+    let note = reqs[9].messages.last().unwrap();
+    assert_eq!((note.role, note.text()), (Role::System, "NOTE"));
+    assert_eq!(reqs[9].tool_choice.as_deref(), Some("none"));
+    assert!(reqs[10].messages.iter().any(|m| m.text() == "NOTE"), "the re-ask keeps it");
+    for req in &reqs[..9] {
+        assert!(!req.messages.iter().any(|m| m.text() == "NOTE"));
+    }
+    assert!(!out.messages.iter().any(|m| m.text() == "NOTE"));
+}

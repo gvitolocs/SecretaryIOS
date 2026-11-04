@@ -44,6 +44,9 @@ pub struct AgentConfig {
     pub router: Option<Arc<dyn ToolRouter>>,
     /// What the router reads (the owner's own words); default: the last user message.
     pub route_text: Option<String>,
+    /// A system note added to the last round's request only (that round runs without tools),
+    /// e.g. "the rounds ran out: say what was and was not done".
+    pub last_round_note: Option<String>,
 }
 
 impl Default for AgentConfig {
@@ -56,6 +59,7 @@ impl Default for AgentConfig {
             max_tool_output_chars: MAX_TOOL_OUTPUT_CHARS,
             router: None,
             route_text: None,
+            last_round_note: None,
         }
     }
 }
@@ -301,6 +305,16 @@ async fn reask_plain(
     }
 }
 
+/// The messages of a round's request: the last round's also end with
+/// [`AgentConfig::last_round_note`].
+fn noted(messages: &[Message], last: bool, cfg: &AgentConfig) -> Vec<Message> {
+    let mut sent = messages.to_vec();
+    if let (true, Some(note)) = (last, &cfg.last_round_note) {
+        sent.push(Message::system(note.clone()));
+    }
+    sent
+}
+
 /// Run the loop. `on_executed` sees every executed (not deferred) tool call
 /// right after it finished (the server appends it to the timeline).
 pub async fn run(
@@ -333,7 +347,7 @@ pub async fn run(
         let last = round + 1 == cfg.max_rounds.max(1);
         let request = ChatRequest {
             model: cfg.model.clone(),
-            messages: messages.clone(),
+            messages: noted(&messages, last, cfg),
             tools: if specs.is_empty() {
                 Vec::new()
             } else {
@@ -370,7 +384,7 @@ pub async fn run(
             // The rounds ran out on a tool call: he still gets an answer from what the tools said.
             if text.is_empty() && !calls.is_empty() {
                 tracing::warn!(round, "the last round had no text; asking for it");
-                text = reask_plain(model, &messages, cfg, deadline).await;
+                text = reask_plain(model, &noted(&messages, last, cfg), cfg, deadline).await;
             }
             if lucina_llm::has_tool_markup(&text) {
                 // Raw tool-call markup (DeepSeek DSML …) is never an answer
