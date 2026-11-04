@@ -30,6 +30,9 @@
 //!   text and the fields together (the text first). A
 //!   screenshot's PNG never reaches the model: the bridge keeps it and the
 //!   reply shows it as an image block ([`Effect::Image`]).
+//! - `juno_call` checks its arguments against the laptop's listed schemas
+//!   (Hermes' `validate_deferred_call_args`, MIT) and sends nothing when a
+//!   needed one is missing; unknown schemas pass.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -625,6 +628,7 @@ async fn guarded(
     }
     if tool == "intents" {
         keep_intents(ctx, &r);
+        keep_intent_schemas(ctx, &r);
     }
     Ok(answer(ctx, tool, &r, empty, &[]))
 }
@@ -793,6 +797,120 @@ fn keep_intents(ctx: &Ctx, r: &Value) {
     entry.intents = Some((Instant::now(), all));
 }
 
+/// One listed schema with when it was listed.
+type SchemaEntry = (Instant, Value);
+/// The laptop's listed schemas per device: `"tool:<name>"` → a `tools`
+/// entry's `inputSchema`, `"intent:<name>"` → an `intents` entry's `args`.
+type SchemaMap = HashMap<String, HashMap<String, SchemaEntry>>;
+
+static SCHEMAS: LazyLock<Mutex<SchemaMap>> = LazyLock::new(Default::default);
+
+fn schemas() -> std::sync::MutexGuard<'static, SchemaMap> {
+    SCHEMAS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Keep the schemas of a `tools` answer (full or filtered): each entry with an
+/// object `inputSchema` is inserted or overwritten.
+fn keep_tool_schemas(ctx: &Ctx, r: &Value) {
+    let mut map = schemas();
+    let entry = map.entry(list_key(ctx)).or_default();
+    for t in r["tools"].as_array().into_iter().flatten() {
+        if let (Some(name), Some(schema)) = (t["name"].as_str(), t["inputSchema"].as_object()) {
+            entry.insert(
+                format!("tool:{name}"),
+                (Instant::now(), Value::Object(schema.clone())),
+            );
+        }
+    }
+}
+
+/// Keep the schemas of an `intents` answer; answers add up like `keep_intents`.
+fn keep_intent_schemas(ctx: &Ctx, r: &Value) {
+    let mut map = schemas();
+    let entry = map.entry(list_key(ctx)).or_default();
+    for i in r["intents"].as_array().into_iter().flatten() {
+        if let (Some(name), Some(schema)) = (i["name"].as_str(), i["args"].as_object()) {
+            entry.insert(
+                format!("intent:{name}"),
+                (Instant::now(), Value::Object(schema.clone())),
+            );
+        }
+    }
+}
+
+/// A fresh schema for `key` (`"tool:<name>"` or `"intent:<name>"`), when listed
+/// within [`LISTS_TTL`].
+fn fresh_schema(ctx: &Ctx, key: &str) -> Option<Value> {
+    let map = schemas();
+    let (at, schema) = map.get(&list_key(ctx))?.get(key)?;
+    (at.elapsed() <= LISTS_TTL).then(|| schema.clone())
+}
+
+/// The schema's compact JSON clipped to 1500 chars ("…" when clipped).
+fn schema_text(schema: &Value) -> String {
+    let json = schema.to_string();
+    match json.char_indices().nth(1500) {
+        Some((i, _)) => format!("{}…", &json[..i]),
+        None => json,
+    }
+}
+
+/// Check `args` against the laptop's listed schema for `tool` before sending
+/// (Hermes' `validate_deferred_call_args`): a missing needed argument or a
+/// schema mismatch refuses the call and nothing is sent. An unknown or
+/// uncompilable schema passes.
+fn check_args(ctx: &Ctx, tool: &str, args: &Value) -> Result<(), ToolError> {
+    let (label, key, checked) = if tool == "intent" {
+        let Some(name) = args["name"].as_str() else {
+            return Ok(());
+        };
+        let checked = args
+            .get("args")
+            .filter(|v| !v.is_null())
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        (format!("intent {name}"), format!("intent:{name}"), checked)
+    } else {
+        (
+            format!("driver tool {tool}"),
+            format!("tool:{tool}"),
+            args.clone(),
+        )
+    };
+    let Some(schema) = fresh_schema(ctx, &key) else {
+        return Ok(());
+    };
+    let Ok(validator) = jsonschema::validator_for(&schema) else {
+        return Ok(());
+    };
+    let takes = schema_text(&schema);
+    let missing: Vec<&str> = schema["required"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|r| !checked.as_object().is_some_and(|m| m.contains_key(*r)))
+        .collect();
+    if !missing.is_empty() {
+        return Err(ToolError::new(clean_text(&format!(
+            "{label} is missing required argument(s): {}. Nothing was sent to Juno. It takes: {takes}. Call juno_call again with them.",
+            missing.join(", ")
+        ))));
+    }
+    let errors: Vec<String> = validator
+        .iter_errors(&checked)
+        .take(2)
+        .map(|e| format!("{e} at {}", e.instance_path()))
+        .collect();
+    if !errors.is_empty() {
+        return Err(ToolError::new(clean_text(&format!(
+            "{label}: arguments do not match its schema: {}. Nothing was sent to Juno. It takes: {takes}.",
+            errors.join("; ")
+        ))));
+    }
+    Ok(())
+}
+
 /// The laptop's tools and intents from its last answers (at most [`LISTS_TTL`]
 /// old) for the session's device, as system text; `None` when neither is kept.
 pub fn known_lists(session: &str) -> Option<String> {
@@ -834,6 +952,7 @@ pub async fn fetch_lists(ctx: &Ctx, limit: Duration) {
         if !tools {
             if let Ok(r) = send(ctx, "tools", json!({"name": null}), limit, &opts).await {
                 keep_tools(ctx, &r);
+                keep_tool_schemas(ctx, &r);
             }
         }
     };
@@ -841,6 +960,7 @@ pub async fn fetch_lists(ctx: &Ctx, limit: Duration) {
         if !intents {
             if let Ok(r) = send(ctx, "intents", json!({}), limit, &opts).await {
                 keep_intents(ctx, &r);
+                keep_intent_schemas(ctx, &r);
             }
         }
     };
@@ -901,6 +1021,7 @@ impl Tool for JunoToolsTool {
         }
         let status = link(ctx)?.status();
         let r = run(ctx, "tools", json!({"name": name}), DEFAULT_LIMIT).await?;
+        keep_tool_schemas(ctx, &r);
         if name.is_none() {
             keep_tools(ctx, &r);
         }
@@ -995,15 +1116,9 @@ impl Tool for JunoCallTool {
                 "`tool` is a driver tool name from juno_tools",
             ));
         }
-        guarded(
-            ctx,
-            tool,
-            model_args(a.arguments),
-            a.decision_id.as_deref(),
-            limit,
-            "done",
-        )
-        .await
+        let args = model_args(a.arguments);
+        check_args(ctx, tool, &args)?;
+        guarded(ctx, tool, args, a.decision_id.as_deref(), limit, "done").await
     }
 }
 
@@ -1969,5 +2084,135 @@ mod tests {
             MAX_TEXT / 2,
             "text first"
         );
+    }
+
+    #[tokio::test]
+    async fn juno_call_refuses_an_intent_without_a_needed_argument() {
+        let session = "secretary_juno-schema1";
+        let f = fake(json!({"text": "1 intent", "intents": [{
+            "app": "notes", "name": "notes.create", "description": "Create a note.", "effect": "write",
+            "args": {"type": "object", "properties": {"title": {"type": "string"}, "body": {"type": "string"}}, "required": ["body"]},
+        }]}));
+        let c = ctx(&f, session);
+        JunoCallTool
+            .call(json!({"tool": "intents"}), &c)
+            .await
+            .unwrap();
+        let e = JunoCallTool
+            .call(
+                json!({"tool": "intent", "arguments": {"name": "notes.create", "args": {"title": "Juno test"}}}),
+                &c,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            e.0.contains("intent notes.create is missing required argument(s): body"),
+            "{e}"
+        );
+        assert!(e.0.contains("Nothing was sent to Juno"), "{e}");
+        assert!(
+            !f.calls.lock().unwrap().iter().any(|c| c.1 == "intent"),
+            "no intent call was sent"
+        );
+        JunoCallTool
+            .call(
+                json!({"tool": "intent", "arguments": {"name": "notes.create", "args": {"title": "t", "body": "b"}}}),
+                &c,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            f.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|c| c.1 == "intent")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn juno_call_checks_driver_tools_from_a_filtered_tools_answer() {
+        let session = "secretary_juno-schema2";
+        let f = fake(json!({"text": "1 tool", "tools": [{
+            "name": "open_app", "description": "Open an app.", "available": true,
+            "inputSchema": {"type": "object", "properties": {"app": {"type": "string"}}, "required": ["app"]},
+        }]}));
+        let c = ctx(&f, session);
+        JunoToolsTool
+            .call(json!({"name": "open"}), &c)
+            .await
+            .unwrap();
+        let e = JunoCallTool
+            .call(json!({"tool": "open_app", "arguments": {}}), &c)
+            .await
+            .unwrap_err();
+        assert!(e.0.contains("app"), "{e}");
+        assert!(e.0.contains("Nothing was sent to Juno"), "{e}");
+        let e = JunoCallTool
+            .call(json!({"tool": "open_app", "arguments": {"app": 3}}), &c)
+            .await
+            .unwrap_err();
+        assert!(e.0.contains("do not match its schema"), "{e}");
+        JunoCallTool
+            .call(
+                json!({"tool": "open_app", "arguments": {"app": "notes"}}),
+                &c,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            f.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|c| c.1 == "open_app")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn juno_call_passes_when_no_schema_is_known() {
+        let f = fake(json!({"text": "ok"}));
+        let c = ctx(&f, "secretary_juno-schema3");
+        JunoCallTool
+            .call(
+                json!({"tool": "intent", "arguments": {"name": "x.y", "args": {}}}),
+                &c,
+            )
+            .await
+            .unwrap();
+        JunoCallTool
+            .call(json!({"tool": "list_apps"}), &c)
+            .await
+            .unwrap();
+        let calls = f.calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].1, "intent");
+        assert_eq!(calls[1].1, "list_apps");
+    }
+
+    #[tokio::test]
+    async fn juno_call_schema_clip() {
+        let session = "secretary_juno-schema4";
+        let big = "x".repeat(2000);
+        let f = fake(json!({"text": "1 tool", "tools": [{
+            "name": "big_tool", "description": "Big.", "available": true,
+            "inputSchema": {"type": "object", "properties": {"app": {"type": "string", "description": big}}, "required": ["app"]},
+        }]}));
+        let c = ctx(&f, session);
+        JunoToolsTool
+            .call(json!({"name": "big"}), &c)
+            .await
+            .unwrap();
+        let e = JunoCallTool
+            .call(json!({"tool": "big_tool", "arguments": {}}), &c)
+            .await
+            .unwrap_err();
+        let takes = e.0.split("It takes: ").nth(1).unwrap_or("");
+        assert!(takes.ends_with("…. Call juno_call again with them."), "{e}");
+        assert!(e.0.chars().count() < 2000, "{}", e.0.chars().count());
     }
 }
