@@ -23,7 +23,11 @@
 //!   [`CallEffect`] winning; `owner_only` is never sent.
 //! - `juno_call` still asks the owner first for a plain `delete_file`,
 //!   `write_file` with `overwrite`, and `wifi_connect`.
-//! - Every text is secret- and OTP-redacted and clipped to [`MAX_TEXT`]. A
+//! - A device result reaches the model as its text and its other fields
+//!   (`action`, `undoable`, `entities`, `value`, `actions`, …), never the
+//!   audit's, the bridge's or the decision flow's ([`NOT_FOR_THE_MODEL`]).
+//! - Every text is secret- and OTP-redacted and clipped to [`MAX_TEXT`], the
+//!   text and the fields together (the text first). A
 //!   screenshot's PNG never reaches the model: the bridge keeps it and the
 //!   reply shows it as an image block ([`Effect::Image`]).
 
@@ -418,9 +422,84 @@ fn link(ctx: &Ctx) -> Result<&Arc<dyn JunoLink>, ToolError> {
         .ok_or_else(|| ToolError::new("the Juno bridge is not running on this server"))
 }
 
-/// What the model reads of a device result: its text and whether it had an
-/// image. A kept screenshot (`image.src`, set by the bridge) goes to the reply.
-fn answer(ctx: &Ctx, tool: &str, r: &Value, empty: &str) -> Value {
+/// A device result's fields the model does not get: the ones [`answer`] sets
+/// itself, the audit's (`target`, `undo`, `effect`, `redacted`), and the
+/// bridge's and the decision flow's.
+const NOT_FOR_THE_MODEL: &[&str] = &[
+    "text",
+    "image",
+    "tool",
+    "target",
+    "undo",
+    "effect",
+    "redacted",
+    "internal",
+    "decisionId",
+    "decision_id",
+    "needs_decision",
+    "call_hash",
+];
+
+/// A field that does not fit the rest of the [`MAX_TEXT`] budget is cut to
+/// its JSON's first characters, when at least this many are left.
+const MIN_CLIPPED: usize = 200;
+
+/// `r`'s structured fields (not [`NOT_FOR_THE_MODEL`], not `skip`), redacted,
+/// into `out`, within what the text left of [`MAX_TEXT`]. A field that does
+/// not fit goes as its clipped JSON text, and the ones after it are named in
+/// `omitted`.
+fn add_fields(out: &mut Value, r: &Value, skip: &[&str]) {
+    let Some(fields) = r.as_object() else {
+        return;
+    };
+    let mut left = MAX_TEXT.saturating_sub(chars(&out["text"]));
+    let mut omitted = Vec::new();
+    for (k, v) in fields {
+        if NOT_FOR_THE_MODEL.contains(&k.as_str()) || skip.contains(&k.as_str()) || v.is_null() {
+            continue;
+        }
+        if !omitted.is_empty() {
+            omitted.push(k.clone());
+            continue;
+        }
+        let mut v = v.clone();
+        clean_json(&mut v);
+        let size = v.to_string().chars().count() + k.chars().count();
+        if size <= left {
+            left -= size;
+            out[k.as_str()] = v;
+        } else if left >= MIN_CLIPPED {
+            // Counted as stored: the JSON text's quotes are escaped once more.
+            let json = v.to_string();
+            let mut n = left;
+            let clipped = loop {
+                let c = json!(format!(
+                    "{}…[clipped]",
+                    json.chars().take(n).collect::<String>()
+                ));
+                let over = (c.to_string().chars().count() + k.chars().count()).saturating_sub(left);
+                if over == 0 || n == 0 {
+                    break c;
+                }
+                n = n.saturating_sub(over);
+            };
+            out[k.as_str()] = clipped;
+            left = 0;
+            omitted.push(String::new());
+        } else {
+            omitted.push(k.clone());
+        }
+    }
+    omitted.retain(|k| !k.is_empty());
+    if !omitted.is_empty() {
+        out["omitted"] = json!(omitted);
+    }
+}
+
+/// What the model reads of a device result: its text, whether it had an
+/// image, and its other fields ([`add_fields`], `skip` aside). A kept
+/// screenshot (`image.src`, set by the bridge) goes to the reply.
+fn answer(ctx: &Ctx, tool: &str, r: &Value, empty: &str, skip: &[&str]) -> Value {
     let text = r["text"]
         .as_str()
         .filter(|t| !t.trim().is_empty())
@@ -433,7 +512,9 @@ fn answer(ctx: &Ctx, tool: &str, r: &Value, empty: &str) -> Value {
             caption: "Juno, the laptop's screen".into(),
         });
     }
-    json!({"tool": tool, "text": clean_text(text), "image": image})
+    let mut out = json!({"tool": tool, "text": clean_text(text), "image": image});
+    add_fields(&mut out, r, skip);
+    out
 }
 
 async fn run(ctx: &Ctx, tool: &str, args: Value, limit: Duration) -> Result<Value, ToolError> {
@@ -542,20 +623,10 @@ async fn guarded(
         };
         return ask_first(ctx, tool, &args, why, device_hash).await;
     }
-    let mut out = answer(ctx, tool, &r, empty);
     if tool == "intents" {
-        // The device's text only counts them: the model needs the names and arguments.
         keep_intents(ctx, &r);
-        let lines: Vec<String> = intent_lines(&r).into_iter().map(|(_, l)| l).collect();
-        if !lines.is_empty() {
-            out["text"] = json!(format!(
-                "{} (* marks a needed argument):\n{}",
-                out["text"].as_str().unwrap_or(""),
-                lines.join("\n")
-            ));
-        }
     }
-    Ok(out)
+    Ok(answer(ctx, tool, &r, empty, &[]))
 }
 
 fn s<'a>(args: &'a Value, key: &str) -> &'a str {
@@ -833,7 +904,9 @@ impl Tool for JunoToolsTool {
         if name.is_none() {
             keep_tools(ctx, &r);
         }
-        let mut out = answer(ctx, "tools", &r, "No tools listed.");
+        // The full list's schemas only when asked for by `name`: its text names them all.
+        let skip: &[&str] = if name.is_none() { &["tools"] } else { &[] };
+        let mut out = answer(ctx, "tools", &r, "No tools listed.", skip);
         if let Some(line) = events_line(&status) {
             out["text"] = json!(format!("{}\n{line}", out["text"].as_str().unwrap_or("")));
         }
@@ -964,7 +1037,7 @@ impl Tool for JunoScreenshotTool {
     async fn call(&self, args: Value, ctx: &Ctx) -> ToolResult {
         let _: NoArgs = super::args(args)?;
         let r = run(ctx, "screenshot", json!({}), DEFAULT_LIMIT).await?;
-        Ok(answer(ctx, "screenshot", &r, "No screen description."))
+        Ok(answer(ctx, "screenshot", &r, "No screen description.", &[]))
     }
 }
 
@@ -1777,8 +1850,8 @@ mod tests {
             .call(json!({"tool": "intents"}), &ctx(&f, session))
             .await
             .unwrap();
+        assert_eq!(out["intents"][0]["name"], "notes.create", "{out}");
         let line = "notes.create(body*, title*) [write]: Create a note.";
-        assert!(out["text"].as_str().unwrap().contains(line), "{out}");
         let known = known_lists(session).unwrap();
         assert!(known.contains(line) && known.contains("ui_tree"), "{known}");
         assert!(known_lists("secretary_juno-other").is_none());
@@ -1802,5 +1875,99 @@ mod tests {
         let calls = f.calls.lock().unwrap();
         assert_eq!(calls.len(), 3, "only intents (none listed) is asked again");
         assert_eq!(calls[2].1, "intents");
+    }
+
+    #[tokio::test]
+    async fn juno_intent_reply_reaches_the_model_with_its_fields() {
+        // 2026-11-04: notes.create ran, but she never saw act_… and "undo it" failed.
+        let f = fake(json!({
+            "text": "Created the note Juno test.",
+            "action": "act_1", "undoable": true,
+            "entities": [{"kind": "note", "id": "n7", "title": "Juno test"}],
+            "value": {"id": "n7", "title": "Juno test"},
+            "target": "notes.create", "undo": "act_1", "effect": "write", "redacted": "",
+            "internal": true, "decisionId": "dc-1", "needs_decision": false, "call_hash": "ab",
+            "image": null,
+        }));
+        let out = JunoCallTool
+            .call(
+                json!({"tool": "intent", "arguments": {"name": "notes.create", "args": {"title": "Juno test", "body": "hello from Lucina"}}}),
+                &ctx(&f, "s"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(out["text"], "Created the note Juno test.");
+        assert_eq!(out["action"], "act_1");
+        assert_eq!(out["undoable"], true);
+        assert_eq!(out["entities"][0]["id"], "n7");
+        assert_eq!(out["value"]["title"], "Juno test");
+        for k in [
+            "target",
+            "undo",
+            "effect",
+            "redacted",
+            "internal",
+            "decisionId",
+            "needs_decision",
+            "call_hash",
+            "omitted",
+        ] {
+            assert!(out.get(k).is_none(), "{k} reached the model: {out}");
+        }
+        assert_eq!(out["tool"], "intent");
+        assert_eq!(out["image"], false);
+    }
+
+    #[tokio::test]
+    async fn juno_undo_reply_keeps_its_list() {
+        let f = fake(json!({"text": "2 actions she can undo", "actions": [
+            {"action": "act_1", "intent": "notes.create", "summary": "note Juno test"},
+            {"action": "act_2", "intent": "player.play", "summary": "rec.ogg"},
+        ]}));
+        let out = JunoCallTool
+            .call(json!({"tool": "undo"}), &ctx(&f, "s"))
+            .await
+            .unwrap();
+        assert_eq!(out["actions"][0]["action"], "act_1");
+        assert_eq!(out["actions"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn juno_huge_reply_fields_are_redacted_and_clipped_within_max_text() {
+        let f = fake(json!({
+            "text": "x".repeat(MAX_TEXT / 2),
+            "code": "Your verification code is 482913",
+            "entries": (0..5000).map(|i| json!({"name": format!("file{i}.txt")})).collect::<Vec<_>>(),
+            "zlast": [1, 2, 3],
+        }));
+        let out = JunoCallTool
+            .call(
+                json!({"tool": "list_dir", "arguments": {"path": "/data/home"}}),
+                &ctx(&f, "s"),
+            )
+            .await
+            .unwrap();
+        assert!(
+            !out["code"].as_str().unwrap().contains("482913"),
+            "{}",
+            out["code"]
+        );
+        let entries = out["entries"].as_str().unwrap();
+        assert!(
+            entries.ends_with("…[clipped]"),
+            "{}",
+            &entries[entries.len() - 40..]
+        );
+        assert_eq!(out["omitted"], json!(["zlast"]));
+        let model_chars: usize = ["text", "code", "entries"]
+            .iter()
+            .map(|k| out[*k].to_string().chars().count() + k.len())
+            .sum();
+        assert!(model_chars <= MAX_TEXT, "{model_chars}");
+        assert_eq!(
+            out["text"].as_str().unwrap().chars().count(),
+            MAX_TEXT / 2,
+            "text first"
+        );
     }
 }
