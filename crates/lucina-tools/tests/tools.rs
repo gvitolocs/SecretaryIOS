@@ -382,6 +382,7 @@ async fn agent_stops_after_six_rounds_and_on_deadline() {
     for _ in 0..6 {
         model.push_calls(&[("time", json!({}))]);
     }
+    model.push_text("done");
     let pending = PendingStore::memory(DEFAULT_TTL);
     let out = agent::run(
         &model,
@@ -394,14 +395,26 @@ async fn agent_stops_after_six_rounds_and_on_deadline() {
     )
     .await
     .unwrap();
-    assert_eq!(out.rounds, 6);
+    assert_eq!(out.rounds, 7);
     assert_eq!(out.stop, Stop::MaxRounds);
-    assert_eq!(model.request_count(), 6);
-    assert_eq!(
-        model.requests.lock().unwrap()[5].tool_choice.as_deref(),
-        Some("none"),
-        "last round forces text"
-    );
+    assert_eq!(model.request_count(), 7);
+    assert_eq!(out.text, "done");
+    assert_eq!(out.records.len(), 6);
+    {
+        let reqs = model.requests.lock().unwrap();
+        for req in &reqs[..6] {
+            assert_eq!(
+                req.tool_choice.as_deref(),
+                Some("auto"),
+                "every budgeted round may call tools"
+            );
+        }
+        assert_eq!(
+            reqs[6].tool_choice.as_deref(),
+            Some("none"),
+            "the summary request forces text"
+        );
+    }
 
     struct Slow;
     #[async_trait::async_trait]
@@ -503,14 +516,37 @@ async fn tool_call_markup_is_never_the_answer() {
     let model = ScriptedModel::new();
     model.push_text(dsml);
     model.push_text("Non ho trovato nulla su Drive.");
-    let out = agent::run(&model, &r, vec![lucina_llm::Message::user("cerca su drive")], &ctx, &pending, &AgentConfig::default(), &|_| {}).await.unwrap();
+    let out = agent::run(
+        &model,
+        &r,
+        vec![lucina_llm::Message::user("cerca su drive")],
+        &ctx,
+        &pending,
+        &AgentConfig::default(),
+        &|_| {},
+    )
+    .await
+    .unwrap();
     assert_eq!(out.text, "Non ho trovato nulla su Drive.");
-    assert!(model.requests.lock().unwrap()[1].tools.is_empty(), "the re-ask has no tools");
+    assert!(
+        model.requests.lock().unwrap()[1].tools.is_empty(),
+        "the re-ask has no tools"
+    );
     // Markup twice: no text at all, so the caller falls back.
     let model = ScriptedModel::new();
     model.push_text(dsml);
     model.push_text(dsml);
-    let out = agent::run(&model, &r, vec![lucina_llm::Message::user("cerca su drive")], &ctx, &pending, &AgentConfig::default(), &|_| {}).await.unwrap();
+    let out = agent::run(
+        &model,
+        &r,
+        vec![lucina_llm::Message::user("cerca su drive")],
+        &ctx,
+        &pending,
+        &AgentConfig::default(),
+        &|_| {},
+    )
+    .await
+    .unwrap();
     assert_eq!(out.text, "");
 }
 
@@ -523,6 +559,9 @@ async fn last_round_note_reaches_only_the_last_request() {
     for _ in 0..10 {
         model.push_calls(&[("time", json!({}))]);
     }
+    // The summary request calls a tool anyway, so the plain re-ask runs.
+    model.push_calls(&[("time", json!({}))]);
+    model.push_text("summary");
     let pending = PendingStore::memory(DEFAULT_TTL);
     let cfg = AgentConfig {
         max_rounds: 10,
@@ -540,17 +579,186 @@ async fn last_round_note_reaches_only_the_last_request() {
     )
     .await
     .unwrap();
-    assert_eq!(out.rounds, 10);
+    assert_eq!(out.rounds, 11);
     assert_eq!(out.stop, Stop::MaxRounds);
-    // The 11th request is the plain re-ask after a last round that still called a tool.
-    assert_eq!(model.request_count(), 11);
+    assert_eq!(out.text, "summary");
+    // 10 tool rounds, the summary request, and the re-ask after it called a tool.
+    assert_eq!(model.request_count(), 12);
     let reqs = model.requests.lock().unwrap();
-    let note = reqs[9].messages.last().unwrap();
+    let note = reqs[10].messages.last().unwrap();
     assert_eq!((note.role, note.text()), (Role::System, "NOTE"));
-    assert_eq!(reqs[9].tool_choice.as_deref(), Some("none"));
-    assert!(reqs[10].messages.iter().any(|m| m.text() == "NOTE"), "the re-ask keeps it");
-    for req in &reqs[..9] {
+    assert_eq!(reqs[10].tool_choice.as_deref(), Some("none"));
+    assert!(
+        reqs[11].messages.iter().any(|m| m.text() == "NOTE"),
+        "the re-ask keeps it"
+    );
+    for req in &reqs[..10] {
         assert!(!req.messages.iter().any(|m| m.text() == "NOTE"));
     }
     assert!(!out.messages.iter().any(|m| m.text() == "NOTE"));
+}
+
+async fn run_scripted(model: &ScriptedModel, cfg: &AgentConfig) -> agent::AgentOutcome {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = Ctx::new(Arc::new(env(dir.path(), None)), "web", "secretary_app");
+    let r = Registry::builtin(&ToolSelection::All);
+    let pending = PendingStore::memory(DEFAULT_TTL);
+    agent::run(
+        model,
+        &r,
+        vec![lucina_llm::Message::user("loop")],
+        &ctx,
+        &pending,
+        cfg,
+        &|_| {},
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn last_budgeted_round_can_still_call_tools() {
+    let model = ScriptedModel::new();
+    model.push_calls(&[("time", json!({}))]);
+    model.push_calls(&[("time", json!({}))]);
+    model.push_text("both times read");
+    let cfg = AgentConfig {
+        max_rounds: 2,
+        ..AgentConfig::default()
+    };
+    let out = run_scripted(&model, &cfg).await;
+    assert_eq!(
+        out.records.iter().filter(|r| r.executed() && r.ok).count(),
+        2
+    );
+    assert_eq!(out.stop, Stop::MaxRounds);
+    assert_eq!(out.text, "both times read");
+    let reqs = model.requests.lock().unwrap();
+    assert_eq!(reqs[1].tool_choice.as_deref(), Some("auto"));
+    let note = reqs[2].messages.last().unwrap();
+    assert_eq!(
+        (note.role, note.text()),
+        (Role::System, agent::SUMMARY_NOTE)
+    );
+    assert!(!out.messages.iter().any(|m| m.text() == agent::SUMMARY_NOTE));
+}
+
+#[tokio::test]
+async fn budget_note_is_added_once_to_the_tool_result() {
+    let model = ScriptedModel::new();
+    for _ in 0..4 {
+        model.push_calls(&[("time", json!({}))]);
+    }
+    model.push_text("done");
+    let cfg = AgentConfig {
+        max_rounds: 4,
+        budget_note_ratio: Some(0.5),
+        ..AgentConfig::default()
+    };
+    let out = run_scripted(&model, &cfg).await;
+    assert_eq!(out.rounds, 5);
+    let reqs = model.requests.lock().unwrap();
+    let has = |m: &lucina_llm::Message| m.text().contains("[Round budget] 2 of 4");
+    assert!(reqs[2]
+        .messages
+        .iter()
+        .any(|m| m.role == Role::Tool && has(m)));
+    assert!(!reqs[1].messages.iter().any(has));
+    let mut noted: Vec<String> = reqs
+        .iter()
+        .filter_map(|req| req.messages.iter().rev().find(|m| m.role == Role::Tool))
+        .filter(|m| m.text().contains("[Round budget]"))
+        .map(|m| m.tool_call_id.clone().unwrap_or_default())
+        .collect();
+    noted.dedup();
+    assert_eq!(noted.len(), 1, "one tool message carries it");
+    assert_eq!(
+        out.messages
+            .iter()
+            .filter(|m| m.text().contains("[Round budget]"))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn budget_note_off_by_default_and_for_bad_ratios() {
+    for ratio in [None, Some(0.0), Some(1.0), Some(f64::NAN)] {
+        let model = ScriptedModel::new();
+        for _ in 0..4 {
+            model.push_calls(&[("time", json!({}))]);
+        }
+        model.push_text("done");
+        let cfg = AgentConfig {
+            max_rounds: 4,
+            budget_note_ratio: ratio,
+            ..AgentConfig::default()
+        };
+        run_scripted(&model, &cfg).await;
+        let reqs = model.requests.lock().unwrap();
+        assert!(
+            !reqs.iter().any(|req| req
+                .messages
+                .iter()
+                .any(|m| m.text().contains("[Round budget]"))),
+            "{ratio:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn unknown_tool_lists_available_and_repairs_names() {
+    let model = ScriptedModel::new();
+    model.push_calls(&[
+        ("functions.time", json!({})),
+        ("Time-tool", json!({})),
+        ("no_such_tool", json!({})),
+        ("", json!({})),
+    ]);
+    model.push_text("ok");
+    let out = run_scripted(&model, &AgentConfig::default()).await;
+    let recs = &out.records;
+    assert_eq!(recs.len(), 4);
+    for rec in &recs[..2] {
+        assert!(rec.ok, "{:?}", rec.output);
+        assert_eq!(rec.name, "time");
+    }
+    let err = |i: usize| recs[i].output["error"].as_str().unwrap().to_owned();
+    assert!(!recs[2].ok);
+    assert!(
+        err(2).contains("Available tools:") && err(2).contains("time"),
+        "{}",
+        err(2)
+    );
+    assert!(!recs[3].ok);
+    assert!(err(3).contains("the tool name was empty"), "{}", err(3));
+}
+
+#[tokio::test]
+async fn missing_required_argument_is_named_with_the_schema() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = Ctx::new(Arc::new(env(dir.path(), None)), "web", "s");
+    let r = Registry::builtin(&ToolSelection::All);
+    let spec = r
+        .specs()
+        .into_iter()
+        .find(|t| t.function.name == "calculator")
+        .unwrap();
+    assert_eq!(spec.function.parameters["required"], json!(["expression"]));
+    let (ok, out) = call(&r, &ctx, "calculator", json!({})).await;
+    assert!(!ok);
+    let error = out["error"].as_str().unwrap();
+    assert!(
+        error.contains("is missing required argument(s): expression"),
+        "{error}"
+    );
+    assert!(error.contains("The tool was NOT run"), "{error}");
+    assert!(out["parameters"].is_object());
+    assert!(out["hint"].is_string());
+    // A wrong type (nothing missing) keeps the validator's own message.
+    let (ok, out) = call(&r, &ctx, "calculator", json!({"expression": 3})).await;
+    assert!(!ok);
+    let error = out["error"].as_str().unwrap();
+    assert!(error.starts_with("invalid arguments"), "{error}");
+    assert!(error.ends_with("The tool was NOT run."), "{error}");
 }
