@@ -8,12 +8,17 @@
 //! - otherwise Jev's first-tool guess over her owner registry decides: when it
 //!   names a `juno_*` tool, a tool loop (at most [`MAX_ROUNDS`]) runs with the
 //!   Juno tools. In a Juno Chat session, or right after a turn that used them
-//!   ([`PREVIOUS_WINDOW`]), Jev's top `juno_*` choice runs at any confidence;
-//!   elsewhere from `LUCINA_JEV_TOOL_MIN`. Jev's state holds facts only: the
+//!   ([`PREVIOUS_WINDOW`]), Jev's top `juno_*` choice runs at any confidence,
+//!   and any other top tool of her owner registry (not "none") runs the loop
+//!   with the Juno tools plus that one (`notes`), so she can pick the right one;
+//!   elsewhere a `juno_*` choice from `LUCINA_JEV_TOOL_MIN`. The loop's system
+//!   text lists the laptop's tools and intents from its last answers. Jev's state holds facts only: the
 //!   device and the previous turn's juno_* calls and how it ended. No message
 //!   text is matched; without Jev the turn goes on as itself, and with no Juno
 //!   device ever seen Jev is not asked at all. An offline laptop's error
 //!   reaches her through the tool, and she says so.
+//! - when no loop runs in such a session, the JSON planner's system text
+//!   (`TURN_SYSTEM`) gets [`JUNO_SYSTEM`] and [`NO_TOOL_RULE`]: no narrated actions.
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -26,7 +31,7 @@ use lucina_llm::Message;
 use lucina_store::timeline::NewItem;
 use lucina_tools::agent::{self, AgentConfig, ToolRecord};
 use lucina_tools::pending::{classify_reply, Reply};
-use lucina_tools::tools::juno::{device_of_session, NAMES};
+use lucina_tools::tools::juno::{device_of_session, fetch_lists, known_lists, NAMES};
 use lucina_tools::{Ctx, Origin, Registry};
 
 use super::{effects_to_finish, Finish, Turn, JUNO_SYSTEM};
@@ -41,7 +46,16 @@ const GUIDE: &str = "You have Juno's tools: juno_tools lists what the laptop can
 const ROUTE_BUDGET: Duration = Duration::from_secs(4);
 
 /// Model calls of one Juno tool loop.
-const MAX_ROUNDS: usize = 10;
+const MAX_ROUNDS: usize = 16;
+
+/// Fetching the laptop's tool and intent lists at the loop's start takes at most this long.
+const LISTS_BUDGET: Duration = Duration::from_secs(6);
+
+/// After the laptop's lists in the loop's system text.
+const LISTS_NOTE: &str = "The laptop's tools and intents are listed above; call juno_tools or intents only if you need a schema that is not shown.";
+
+/// The planner path's rule in a Juno session (or after a juno_* turn) when no tool loop ran.
+pub const NO_TOOL_RULE: &str = "No tool ran in this turn. Do not say you are doing, sending, opening, creating or playing anything now or next; say plainly that nothing was done yet and what you need (for example a go-ahead).";
 
 /// A previous turn with juno_* calls counts for this long.
 const PREVIOUS_WINDOW: chrono::Duration = chrono::Duration::minutes(15);
@@ -104,20 +118,39 @@ fn facts(juno_session: bool, previous: Option<&Previous>) -> Value {
     Value::Object(f)
 }
 
-/// Does Jev's top choice start the Juno loop? `open`: a Juno session, or a
-/// previous juno_* turn; then any confidence will do.
-fn runs(top: Option<(&str, f64)>, open: bool, min: f64) -> bool {
-    top.is_some_and(|(tool, c)| wants_juno(Some(tool)) && (open || c >= min))
+/// The Juno loop Jev's top choice starts.
+#[derive(Debug, Clone, PartialEq)]
+enum Choice {
+    /// The juno_* tools.
+    Juno,
+    /// The juno_* tools and this tool of her owner registry.
+    JunoWith(String),
 }
 
-/// Ask Jev (with the facts) and decide whether the Juno loop runs.
+/// Does Jev's top choice start the Juno loop? `open`: a Juno session, or a
+/// previous juno_* turn; then any confidence will do, and any other tool of
+/// `tools` (not "none") joins the juno_* ones.
+fn runs(
+    top: Option<(&str, f64)>,
+    open: bool,
+    min: f64,
+    tools: &[(String, String)],
+) -> Option<Choice> {
+    let (tool, c) = top?;
+    if wants_juno(Some(tool)) {
+        return (open || c >= min).then_some(Choice::Juno);
+    }
+    (open && tools.iter().any(|(n, _)| n == tool)).then(|| Choice::JunoWith(tool.to_owned()))
+}
+
+/// Ask Jev (with the facts) and decide whether, and with what, the Juno loop runs.
 async fn route(
     router: &dyn TopTool,
     message: &str,
     juno_session: bool,
     previous: Option<&Previous>,
     tools: &[(String, String)],
-) -> bool {
+) -> Option<Choice> {
     let top = tokio::time::timeout(
         ROUTE_BUDGET,
         router.first_tool_with(message, facts(juno_session, previous), tools),
@@ -130,7 +163,27 @@ async fn route(
         top.as_ref().map(|(t, c)| (t.as_str(), *c)),
         open,
         crate::jev_route::tool_min(),
+        tools,
     )
+}
+
+/// The planner path's system text for a session in the Juno window: a Juno
+/// Chat session or one whose last turn used juno_* tools (call before
+/// [`try_turn`], which closes the window when no loop runs). `None` elsewhere.
+pub(super) fn planner_system(session: &str) -> Option<String> {
+    if device_of_session(session).is_some() {
+        return Some(format!("{JUNO_SYSTEM} {NO_TOOL_RULE}"));
+    }
+    previous(session, Utc::now()).map(|_| NO_TOOL_RULE.to_owned())
+}
+
+/// The loop's extra system text: the Juno fact, the guide, and the laptop's
+/// lists from its last answers, when known.
+fn loop_extra(fact: &str, lists: Option<&str>) -> String {
+    match lists {
+        Some(l) => format!("{fact} {GUIDE}\n\n{l}\n\n{LISTS_NOTE}"),
+        None => format!("{fact} {GUIDE}"),
+    }
 }
 
 /// The loop's config: [`MAX_ROUNDS`], and the cap's note on the last round.
@@ -151,11 +204,14 @@ fn ended(stop: agent::Stop) -> &'static str {
     }
 }
 
-/// The Juno tools of her owner registry (`None`: off).
-fn registry(st: &crate::AppState) -> Option<Registry> {
+/// The Juno tools of `owner`, her owner registry (`None`: off), and `with` when it has it.
+fn registry(owner: &Registry, with: Option<&str>) -> Option<Registry> {
     let mut reg = Registry::new();
     for n in NAMES {
-        reg.register(st.registry.get(n)?.clone()).ok()?;
+        reg.register(owner.get(n)?.clone()).ok()?;
+    }
+    if let Some(tool) = with.and_then(|w| owner.get(w)) {
+        reg.register(tool.clone()).ok()?;
     }
     Some(reg)
 }
@@ -180,7 +236,7 @@ pub(super) async fn try_turn(t: &Turn<'_>, memory: &str) -> Option<Finish> {
     if t.guarded || t.consult || t.mcp.is_some() || !st.juno.ever_seen() {
         return None;
     }
-    let reg = registry(st)?;
+    let reg = registry(&st.registry, None)?;
     let now = Utc::now();
     if let Some(p) = st
         .pending
@@ -255,7 +311,7 @@ pub(super) async fn try_turn(t: &Turn<'_>, memory: &str) -> Option<Finish> {
         .collect();
     let juno_session = device_of_session(&t.session).is_some();
     let prev = previous(&t.session, now);
-    if !route(
+    let Some(choice) = route(
         router.as_ref(),
         &t.message,
         juno_session,
@@ -263,10 +319,14 @@ pub(super) async fn try_turn(t: &Turn<'_>, memory: &str) -> Option<Finish> {
         &tools,
     )
     .await
-    {
+    else {
         remember(&t.session, None, now);
         return None;
-    }
+    };
+    let reg = match &choice {
+        Choice::Juno => reg,
+        Choice::JunoWith(tool) => registry(&st.registry, Some(tool))?,
+    };
     let ctx = Ctx::new(st.tool_env.clone(), &t.channel, &t.session)
         .with_origin(Origin::Owner)
         .owner_turn();
@@ -274,7 +334,9 @@ pub(super) async fn try_turn(t: &Turn<'_>, memory: &str) -> Option<Finish> {
         f if f.is_empty() => JUNO_SYSTEM.to_owned(),
         f => f,
     };
-    let extra = crate::capabilities::subloop_extra(&format!("{fact} {GUIDE}"), "");
+    fetch_lists(&ctx, LISTS_BUDGET).await;
+    let lists = known_lists(&t.session);
+    let extra = crate::capabilities::subloop_extra(&loop_extra(&fact, lists.as_deref()), "");
     let system = st.planner.prompts.agent_system(
         PLATFORM_LABEL,
         &t.message,
@@ -378,21 +440,226 @@ mod tests {
         assert!(!wants_juno(None));
     }
 
+    fn owner_tools() -> Vec<(String, String)> {
+        vec![
+            ("juno_call".into(), "Run one driver tool on Juno.".into()),
+            ("notes".into(), "The owner's notes.".into()),
+        ]
+    }
+
     #[test]
     fn open_sessions_take_any_confidence_others_the_minimum() {
-        assert!(runs(Some(("juno_call", 0.1)), true, 0.7));
-        assert!(!runs(Some(("juno_call", 0.69)), false, 0.7));
-        assert!(runs(Some(("juno_call", 0.7)), false, 0.7));
-        assert!(!runs(Some(("none", 0.99)), true, 0.7));
-        assert!(!runs(Some(("computer", 0.99)), true, 0.7));
-        assert!(!runs(None, true, 0.7));
+        let t = owner_tools();
+        assert_eq!(
+            runs(Some(("juno_call", 0.1)), true, 0.7, &t),
+            Some(Choice::Juno)
+        );
+        assert_eq!(runs(Some(("juno_call", 0.69)), false, 0.7, &t), None);
+        assert_eq!(
+            runs(Some(("juno_call", 0.7)), false, 0.7, &t),
+            Some(Choice::Juno)
+        );
+        assert_eq!(runs(Some(("none", 0.99)), true, 0.7, &t), None);
+        assert_eq!(
+            runs(Some(("computer", 0.99)), true, 0.7, &t),
+            None,
+            "not in her registry"
+        );
+        assert_eq!(
+            runs(Some(("notes", 0.99)), false, 0.7, &t),
+            None,
+            "only in the Juno window"
+        );
+        assert_eq!(runs(None, true, 0.7, &t), None);
+    }
+
+    /// A tool of her owner registry by name only.
+    struct Named(&'static str);
+
+    #[async_trait::async_trait]
+    impl lucina_tools::Tool for Named {
+        fn name(&self) -> &'static str {
+            self.0
+        }
+        fn description(&self) -> &'static str {
+            "a test tool"
+        }
+        fn parameters(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn side_effect(&self) -> lucina_tools::SideEffect {
+            lucina_tools::SideEffect::None
+        }
+        async fn call(&self, _: Value, _: &Ctx) -> lucina_tools::ToolResult {
+            Ok(json!({}))
+        }
+    }
+
+    fn owner_registry() -> Registry {
+        let mut reg = Registry::new();
+        for n in NAMES.iter().copied().chain(["notes", "computer"]) {
+            reg.register(Arc::new(Named(n))).unwrap();
+        }
+        reg
+    }
+
+    #[tokio::test]
+    async fn a_juno_session_with_jevs_top_notes_runs_the_loop_with_juno_and_notes() {
+        // 2026-11-04, gen 31: "go ahead, create the note titled Juno test …" → notes at 0.41, no loop.
+        let jev = FakeJev::new("notes", 0.41);
+        let choice = route(
+            &jev,
+            "go ahead, create the note",
+            true,
+            None,
+            &owner_tools(),
+        )
+        .await;
+        assert_eq!(choice, Some(Choice::JunoWith("notes".into())));
+        let reg = registry(&owner_registry(), Some("notes")).unwrap();
+        let mut names: Vec<String> = reg.specs().into_iter().map(|s| s.function.name).collect();
+        names.sort_unstable();
+        let mut want: Vec<&str> = NAMES.iter().copied().chain(["notes"]).collect();
+        want.sort_unstable();
+        assert_eq!(names, want);
+        assert_eq!(
+            registry(&owner_registry(), None).unwrap().specs().len(),
+            NAMES.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_juno_session_with_jevs_top_none_runs_no_loop() {
+        let jev = FakeJev::new("none", 0.9);
+        assert_eq!(
+            route(&jev, "thanks", true, None, &owner_tools()).await,
+            None
+        );
+    }
+
+    #[test]
+    fn juno_planner_rule_is_for_juno_sessions_and_the_juno_window_only() {
+        let juno = planner_system("secretary_juno-dev_K8bGH74HE4k").unwrap();
+        assert!(
+            juno.starts_with(JUNO_SYSTEM) && juno.ends_with(NO_TOOL_RULE),
+            "{juno}"
+        );
+        assert!(planner_system("secretary_web_test_rule").is_none());
+        let now = Utc::now();
+        remember("secretary_web_test_rule", Some(capped(now)), now);
+        assert_eq!(
+            planner_system("secretary_web_test_rule").as_deref(),
+            Some(NO_TOOL_RULE)
+        );
+        remember("secretary_web_test_rule", None, now);
+    }
+
+    #[tokio::test]
+    async fn the_json_planner_gets_the_juno_no_tool_rule_in_a_juno_session_only() {
+        use crate::planner::{Planner, TurnInput, TURN_SYSTEM};
+        let model = Arc::new(lucina_llm::ScriptedModel::new());
+        model.push_text(r#"{"action":"reply","text":"Nothing was done yet."}"#);
+        model.push_text(r#"{"action":"reply","text":"Hi."}"#);
+        let planner = Planner {
+            model: model.clone(),
+            prompts: Prompts::minimal("Lucina"),
+        };
+        let input = TurnInput {
+            user_text: "go ahead, create the note titled Juno test",
+            memory: "",
+            user_label: "Giuseppe",
+            platform: "secretary",
+        };
+        for session in ["secretary_juno-dev_K8bGH74HE4k", "secretary_web_plain"] {
+            match planner_system(session) {
+                Some(rule) => {
+                    TURN_SYSTEM
+                        .scope(
+                            super::super::with_juno_rule(&rule),
+                            planner.plan_response(&input),
+                        )
+                        .await
+                }
+                None => planner.plan_response(&input).await,
+            }
+            .unwrap();
+        }
+        let reqs = model.requests.lock().unwrap().clone();
+        let juno = reqs[0].messages[0].text();
+        let web = reqs[1].messages[0].text();
+        assert!(
+            juno.contains(NO_TOOL_RULE) && juno.contains(JUNO_SYSTEM),
+            "{juno}"
+        );
+        assert!(!web.contains(NO_TOOL_RULE) && !web.contains(JUNO_SYSTEM));
+    }
+
+    /// The bridge's stand-in for the lists: answers `tools` and `intents`.
+    struct Lists;
+
+    #[async_trait::async_trait]
+    impl lucina_tools::tools::juno::JunoLink for Lists {
+        async fn call(
+            &self,
+            _: Option<String>,
+            tool: &str,
+            _: Value,
+            _: Duration,
+            _: &lucina_tools::tools::juno::CallOpts,
+        ) -> Result<Value, String> {
+            Ok(match tool {
+                "tools" => json!({"text": "Tools on this laptop now:", "tools": [
+                    {"name": "intent", "description": "Run an app intent.", "available": true},
+                    {"name": "ui_tree", "description": "The screen's elements.", "available": true},
+                ]}),
+                _ => json!({"text": "0 intents"}),
+            })
+        }
+        fn status(&self) -> Value {
+            json!({"devices": []})
+        }
+        async fn ask(&self, _: lucina_tools::tools::juno::Ask) -> Result<String, String> {
+            Err("no decisions here".into())
+        }
+        fn decided(&self, _: &str, _: &str) -> Result<(), String> {
+            Err("no decisions here".into())
+        }
+        fn events(&self, _: Option<&str>, _: &lucina_tools::tools::juno::EventQuery) -> Value {
+            json!({"events": []})
+        }
+    }
+
+    #[tokio::test]
+    async fn the_juno_loop_text_lists_the_laptops_tools_after_one_tools_answer() {
+        let session = "secretary_juno-dev_loop_lists";
+        assert_eq!(
+            loop_extra(JUNO_SYSTEM, known_lists(session).as_deref()),
+            format!("{JUNO_SYSTEM} {GUIDE}")
+        );
+        let mut env =
+            lucina_tools::ToolEnv::new(std::env::temp_dir(), chrono_tz::Europe::Copenhagen);
+        env.juno = Some(Arc::new(Lists));
+        let ctx = Ctx::new(Arc::new(env), "ios", session);
+        lucina_tools::Tool::call(&lucina_tools::tools::juno::JunoToolsTool, json!({}), &ctx)
+            .await
+            .unwrap();
+        let text = loop_extra(JUNO_SYSTEM, known_lists(session).as_deref());
+        assert!(
+            text.contains("intent: Run an app intent.\nui_tree: The screen's elements."),
+            "{text}"
+        );
+        assert!(text.ends_with(LISTS_NOTE));
+        assert_eq!(text.matches("ui_tree").count(), 1, "listed once");
     }
 
     #[tokio::test]
     async fn a_juno_session_runs_jevs_unsure_juno_choice() {
         // 2026-11-04: "open the gallery app … and take a screenshot" at 0.49.
         let jev = FakeJev::new("juno_call", 0.49);
-        assert!(route(&jev, "open the gallery app", true, None, &tools()).await);
+        assert_eq!(
+            route(&jev, "open the gallery app", true, None, &tools()).await,
+            Some(Choice::Juno)
+        );
         assert_eq!(
             jev.seen.lock().unwrap()[0],
             json!({"message": "open the gallery app", "device": DEVICE_FACT})
@@ -402,7 +669,9 @@ mod tests {
     #[tokio::test]
     async fn elsewhere_without_a_previous_juno_turn_it_does_not() {
         let jev = FakeJev::new("juno_call", 0.49);
-        assert!(!route(&jev, "open the gallery app", false, None, &tools()).await);
+        assert!(route(&jev, "open the gallery app", false, None, &tools())
+            .await
+            .is_none());
         assert_eq!(
             jev.seen.lock().unwrap()[0],
             json!({"message": "open the gallery app"})
@@ -414,8 +683,12 @@ mod tests {
         let now = Utc::now();
         let prev = capped(now);
         let jev = FakeJev::new("juno_call", 0.3);
-        assert!(route(&jev, "go", false, Some(&prev), &tools()).await);
-        assert!(route(&jev, "go", true, Some(&prev), &tools()).await);
+        assert!(route(&jev, "go", false, Some(&prev), &tools())
+            .await
+            .is_some());
+        assert!(route(&jev, "go", true, Some(&prev), &tools())
+            .await
+            .is_some());
         let seen = jev.seen.lock().unwrap();
         let calls = json!([
             {"tool": "juno_tools", "result": "ok"},
@@ -455,9 +728,9 @@ mod tests {
     }
 
     #[test]
-    fn the_loop_has_ten_rounds_and_the_caps_note() {
+    fn the_juno_loop_has_sixteen_rounds_and_the_caps_note() {
         let cfg = loop_config(Duration::from_secs(90));
-        assert_eq!(cfg.max_rounds, 10);
+        assert_eq!(cfg.max_rounds, 16);
         assert_eq!(cfg.last_round_note.as_deref(), Some(ROUND_LIMIT_NOTE));
         assert_eq!(ended(agent::Stop::MaxRounds), "round limit");
         assert_eq!(ended(agent::Stop::Answered), "finished");

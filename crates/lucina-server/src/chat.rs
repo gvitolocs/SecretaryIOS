@@ -2035,8 +2035,6 @@ async fn json_turn_rest(
     prepared: &crate::context::Prepared,
     cmid: Option<&str>,
 ) -> Finish {
-    let st = t.st;
-    let persona = t.persona().to_owned();
     let memory = prepared.memory_context.as_str();
 
     // Meshy 3D (LUCINA_MESHY=true): a pending plan's yes/no, or a 3D request. Not for agents.
@@ -2047,9 +2045,41 @@ async fn json_turn_rest(
     }
 
     // Juno's Chat: a pending laptop action, or Jev's guess names a juno_* tool.
+    // In the Juno window the planner path that follows ran no tool loop: no narrated actions.
+    let juno_rule = juno_turn::planner_system(&t.session);
     if let Some(f) = juno_turn::try_turn(t, memory).await {
         return f;
     }
+    match juno_rule {
+        Some(rule) => {
+            crate::planner::TURN_SYSTEM
+                .scope(
+                    with_juno_rule(&rule),
+                    Box::pin(json_turn_planner(t, prepared, cmid)),
+                )
+                .await
+        }
+        None => json_turn_planner(t, prepared, cmid).await,
+    }
+}
+
+/// The turn's fixed system text (`TURN_SYSTEM`) with the Juno planner rule after it.
+fn with_juno_rule(rule: &str) -> String {
+    let base = crate::planner::TURN_SYSTEM
+        .try_with(|g| g.trim().to_owned())
+        .unwrap_or_default();
+    format!("{base}\n{rule}").trim().to_owned()
+}
+
+/// [`json_turn_rest`] after the Juno turn: the other skills, then the JSON planner.
+async fn json_turn_planner(
+    t: &Turn<'_>,
+    prepared: &crate::context::Prepared,
+    cmid: Option<&str>,
+) -> Finish {
+    let st = t.st;
+    let persona = t.persona().to_owned();
+    let memory = prepared.memory_context.as_str();
 
     // Lucina's own Google Drive (LUCINA_DRIVE=true with a grant), read-only.
     if let Some(f) = drive_turn::try_turn(t, memory).await {

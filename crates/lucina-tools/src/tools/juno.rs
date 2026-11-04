@@ -27,8 +27,9 @@
 //!   screenshot's PNG never reaches the model: the bridge keeps it and the
 //!   reply shows it as an image block ([`Effect::Image`]).
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -541,7 +542,20 @@ async fn guarded(
         };
         return ask_first(ctx, tool, &args, why, device_hash).await;
     }
-    Ok(answer(ctx, tool, &r, empty))
+    let mut out = answer(ctx, tool, &r, empty);
+    if tool == "intents" {
+        // The device's text only counts them: the model needs the names and arguments.
+        keep_intents(ctx, &r);
+        let lines: Vec<String> = intent_lines(&r).into_iter().map(|(_, l)| l).collect();
+        if !lines.is_empty() {
+            out["text"] = json!(format!(
+                "{} (* marks a needed argument):\n{}",
+                out["text"].as_str().unwrap_or(""),
+                lines.join("\n")
+            ));
+        }
+    }
+    Ok(out)
 }
 
 fn s<'a>(args: &'a Value, key: &str) -> &'a str {
@@ -594,6 +608,172 @@ pub fn driver_summary(tool: &str, a: &Value) -> String {
             .find_map(|k| named(k).or_else(|| a[k].as_u64().map(|n| format!(" {n}")))),
     };
     format!("{tool}{}", detail.unwrap_or_default())
+}
+/// How long the laptop's last `tools` and `intents` answers are kept for a turn's system text.
+pub const LISTS_TTL: Duration = Duration::from_secs(10 * 60);
+
+/// One line of a listed tool or intent at most this long.
+const LIST_LINE: usize = 160;
+
+/// The laptop's last full `tools` list and the intents it listed, per device ("" is the bridge's pick).
+#[derive(Default)]
+struct Lists {
+    tools: Option<(Instant, Vec<String>)>,
+    /// Intent name → its line; `intents` lists the shell's and the front app's, so answers add up.
+    intents: Option<(Instant, BTreeMap<String, String>)>,
+}
+
+static LISTS: LazyLock<Mutex<HashMap<String, Lists>>> = LazyLock::new(Default::default);
+
+fn lists() -> std::sync::MutexGuard<'static, HashMap<String, Lists>> {
+    LISTS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn list_key(ctx: &Ctx) -> String {
+    device_of_session(&ctx.session_id).unwrap_or_default()
+}
+
+fn fresh<T>(v: &Option<(Instant, T)>) -> Option<&T> {
+    v.as_ref()
+        .filter(|(at, _)| at.elapsed() <= LISTS_TTL)
+        .map(|(_, t)| t)
+}
+
+/// `text`'s first line, clipped to [`LIST_LINE`] characters.
+fn one_line(text: &str) -> String {
+    let line = clean_text(text.lines().next().unwrap_or("").trim());
+    match line.char_indices().nth(LIST_LINE) {
+        Some((i, _)) => format!("{}…", &line[..i]),
+        None => line,
+    }
+}
+
+/// The available tools of a full `tools` answer, one line each.
+fn tool_lines(r: &Value) -> Vec<String> {
+    r["tools"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|t| t["available"] != json!(false))
+        .filter_map(|t| {
+            let name = t["name"].as_str()?;
+            Some(one_line(&format!(
+                "{name}: {}",
+                t["description"].as_str().unwrap_or("")
+            )))
+        })
+        .collect()
+}
+
+/// An `intents` answer's intents: `notes.create(title*, body*) [write]: …` (`*`: needed).
+fn intent_lines(r: &Value) -> Vec<(String, String)> {
+    r["intents"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|i| {
+            let name = i["name"].as_str()?;
+            let needed: Vec<&str> = i["args"]["required"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect();
+            let args: Vec<String> = i["args"]["properties"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .map(|(k, _)| {
+                    let mark = if needed.contains(&k.as_str()) {
+                        "*"
+                    } else {
+                        ""
+                    };
+                    format!("{k}{mark}")
+                })
+                .collect();
+            let effect = i["effect"].as_str().unwrap_or("");
+            let line = one_line(&format!(
+                "{name}({}) [{effect}]: {}",
+                args.join(", "),
+                i["description"].as_str().unwrap_or("")
+            ));
+            Some((name.to_owned(), line))
+        })
+        .collect()
+}
+
+fn keep_tools(ctx: &Ctx, r: &Value) {
+    let lines = tool_lines(r);
+    if !lines.is_empty() {
+        lists().entry(list_key(ctx)).or_default().tools = Some((Instant::now(), lines));
+    }
+}
+
+fn keep_intents(ctx: &Ctx, r: &Value) {
+    let lines = intent_lines(r);
+    if lines.is_empty() {
+        return;
+    }
+    let mut map = lists();
+    let entry = map.entry(list_key(ctx)).or_default();
+    let mut all = fresh(&entry.intents).cloned().unwrap_or_default();
+    all.extend(lines);
+    entry.intents = Some((Instant::now(), all));
+}
+
+/// The laptop's tools and intents from its last answers (at most [`LISTS_TTL`]
+/// old) for the session's device, as system text; `None` when neither is kept.
+pub fn known_lists(session: &str) -> Option<String> {
+    let map = lists();
+    let l = map.get(&device_of_session(session).unwrap_or_default())?;
+    let mut out = Vec::new();
+    if let Some(tools) = fresh(&l.tools) {
+        out.push(format!(
+            "The laptop's driver tools now (juno_call runs them):\n{}",
+            tools.join("\n")
+        ));
+    }
+    if let Some(intents) = fresh(&l.intents) {
+        let lines: Vec<&str> = intents.values().map(String::as_str).collect();
+        out.push(format!(
+            "Its app intents (juno_call intent {{name, args}}; * marks a needed argument):\n{}",
+            lines.join("\n")
+        ));
+    }
+    (!out.is_empty()).then(|| out.join("\n\n"))
+}
+
+/// Fetch the laptop's tool list and intents (read-only, Lucina's own calls)
+/// when [`known_lists`] has neither fresh; errors leave them unknown.
+pub async fn fetch_lists(ctx: &Ctx, limit: Duration) {
+    let (tools, intents) = {
+        let map = lists();
+        let l = map.get(&list_key(ctx));
+        (
+            l.is_some_and(|l| fresh(&l.tools).is_some()),
+            l.is_some_and(|l| fresh(&l.intents).is_some()),
+        )
+    };
+    let opts = CallOpts {
+        decision_id: None,
+        internal: true,
+    };
+    let get_tools = async {
+        if !tools {
+            if let Ok(r) = send(ctx, "tools", json!({"name": null}), limit, &opts).await {
+                keep_tools(ctx, &r);
+            }
+        }
+    };
+    let get_intents = async {
+        if !intents {
+            if let Ok(r) = send(ctx, "intents", json!({}), limit, &opts).await {
+                keep_intents(ctx, &r);
+            }
+        }
+    };
+    tokio::join!(get_tools, get_intents);
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -650,6 +830,9 @@ impl Tool for JunoToolsTool {
         }
         let status = link(ctx)?.status();
         let r = run(ctx, "tools", json!({"name": name}), DEFAULT_LIMIT).await?;
+        if name.is_none() {
+            keep_tools(ctx, &r);
+        }
         let mut out = answer(ctx, "tools", &r, "No tools listed.");
         if let Some(line) = events_line(&status) {
             out["text"] = json!(format!("{}\n{line}", out["text"].as_str().unwrap_or("")));
@@ -941,7 +1124,6 @@ pub const NAMES: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
 
     /// One recorded call: device, tool, arguments, timeout, options.
     type Sent = (Option<String>, String, Value, Duration, CallOpts);
@@ -1559,5 +1741,66 @@ mod tests {
             assert_eq!(t.side_effect(), SideEffect::Device);
             assert!(t.parameters().to_string().contains("\"type\":\"object\""));
         }
+    }
+
+    #[tokio::test]
+    async fn juno_lists_are_kept_from_the_last_tools_and_intents_answers() {
+        let session = "secretary_juno-lists1";
+        assert!(known_lists(session).is_none());
+        let f = fake(json!({"text": "Tools on this laptop now: …", "tools": [
+            {"name": "ui_tree", "description": "The screen's elements.\nSecond line.", "available": true},
+            {"name": "intent", "description": "Run an app intent.", "available": true},
+            {"name": "ocr", "description": "Read text.", "available": false},
+        ]}));
+        JunoToolsTool
+            .call(json!({"name": "ui"}), &ctx(&f, session))
+            .await
+            .unwrap();
+        assert!(
+            known_lists(session).is_none(),
+            "a filtered list is not kept"
+        );
+        JunoToolsTool
+            .call(json!({}), &ctx(&f, session))
+            .await
+            .unwrap();
+        let known = known_lists(session).unwrap();
+        assert!(known.contains("ui_tree: The screen's elements."), "{known}");
+        assert!(known.contains("intent: Run an app intent."));
+        assert!(!known.contains("Second line") && !known.contains("ocr"));
+
+        let f = fake(json!({"text": "1 intents; notes is in front", "intents": [{
+            "app": "notes", "name": "notes.create", "description": "Create a note.", "effect": "write",
+            "args": {"type": "object", "properties": {"body": {}, "title": {}}, "required": ["title", "body"]},
+        }]}));
+        let out = JunoCallTool
+            .call(json!({"tool": "intents"}), &ctx(&f, session))
+            .await
+            .unwrap();
+        let line = "notes.create(body*, title*) [write]: Create a note.";
+        assert!(out["text"].as_str().unwrap().contains(line), "{out}");
+        let known = known_lists(session).unwrap();
+        assert!(known.contains(line) && known.contains("ui_tree"), "{known}");
+        assert!(known_lists("secretary_juno-other").is_none());
+    }
+
+    #[tokio::test]
+    async fn juno_fetch_lists_asks_only_for_what_is_missing() {
+        let session = "secretary_juno-lists2";
+        let f =
+            fake(json!({"text": "x", "tools": [{"name": "status", "description": "Battery."}]}));
+        fetch_lists(&ctx(&f, session), Duration::from_secs(5)).await;
+        {
+            let calls = f.calls.lock().unwrap();
+            let mut tools: Vec<&str> = calls.iter().map(|c| c.1.as_str()).collect();
+            tools.sort_unstable();
+            assert_eq!(tools, ["intents", "tools"]);
+            assert!(calls.iter().all(|c| c.4.internal));
+        }
+        assert!(known_lists(session).unwrap().contains("status: Battery."));
+        fetch_lists(&ctx(&f, session), Duration::from_secs(5)).await;
+        let calls = f.calls.lock().unwrap();
+        assert_eq!(calls.len(), 3, "only intents (none listed) is asked again");
+        assert_eq!(calls[2].1, "intents");
     }
 }
