@@ -663,7 +663,10 @@ impl AppState {
                 recent: inner.recent.clone(),
             }));
         }
-        Ok(Self(Arc::new(inner)))
+        let app = Self(Arc::new(inner));
+        // Risky Juno calls file decisions with the server.
+        app.juno.attach(Arc::downgrade(&app.0));
+        Ok(app)
     }
 
     /// Replace the deals engine (tests: fixtures and a fixed clock). Only

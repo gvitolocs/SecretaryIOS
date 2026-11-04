@@ -23,7 +23,7 @@ use lucina_secrets::SecretValue;
 use serde_json::{json, Value};
 use zeroize::Zeroizing;
 
-use super::{check_verbatim, local, local_stop, stop, Cleared, Job, Keeper, KeepConfig, KeyMove, State, Stop, MAX_VALUE_BYTES, MIN_VALUE_CHARS};
+use super::{check_verbatim, local, local_stop, stop, wait, Cleared, Job, Keeper, KeepConfig, KeyMove, State, Stop, MAX_VALUE_BYTES, MIN_VALUE_CHARS};
 use crate::api::ApiError;
 
 /// A source bigger than this is not a credential file.
@@ -445,7 +445,73 @@ fn rewrite_env(path: &Path, id: Identity, cfg: &KeepConfig, moved: &[(String, St
     Ok(())
 }
 
+/// The paths a `juno:` source refuses: Lucina's own secretary state on the laptop.
+const JUNO_REFUSED: &[&str] = &["/data/lucina/secretary", "/run/lucina/secretary"];
+
+/// How long the laptop has to send a `juno:` file.
+const JUNO_FETCH: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// A `juno:<path>`: absolute, without `..`, at most 4096 bytes, and not under
+/// [`JUNO_REFUSED`] (the laptop checks its own rules too).
+pub fn check_juno(raw: &str) -> Result<(), ApiError> {
+    let p = raw.trim();
+    let secretary = JUNO_REFUSED
+        .iter()
+        .any(|r| p == *r || p.strip_prefix(r).is_some_and(|rest| rest.starts_with('/')));
+    if !p.starts_with('/')
+        || p.len() > 4096
+        || p.split('/').any(|c| c == ".." || c == ".")
+        || p.contains("//")
+        || p.chars().any(char::is_control)
+        || secretary
+    {
+        return Err(refused());
+    }
+    Ok(())
+}
+
 impl Keeper {
+    /// A `juno:` job: the laptop sends the file through the bridge as an
+    /// internal call (never a tool loop, the timeline, tracing or the ops
+    /// record), then it is read as a `file:` source is. The file stays on Juno.
+    pub(super) async fn process_juno(&self, link: &dyn lucina_tools::tools::juno::JunoLink, job: &Job, path: &str) -> Result<(String, Cleared), Stop> {
+        if check_juno(path).is_err() {
+            return Err(stop("path_refused"));
+        }
+        if source_path::key_refused(job.name.as_bytes()) {
+            return Err(stop("refused_by_rule"));
+        }
+        let opts = lucina_tools::tools::juno::CallOpts { decision_id: None, internal: true };
+        let r = link
+            .call(None, "secret_source", json!({"path": path}), JUNO_FETCH, &opts)
+            .await
+            .map_err(|_| wait("juno_offline"))?;
+        let text = Zeroizing::new(r["text"].as_str().unwrap_or_default().to_owned());
+        drop(r);
+        let value = if single_value(&text) {
+            SecretValue::new(text.trim().to_owned())
+        } else if job.what.is_empty() {
+            return Err(stop("not_one_value"));
+        } else {
+            if !self.cfg.local.is_loopback() {
+                return Err(stop("local_model_not_local"));
+            }
+            let v = local::extract(&self.http, &self.cfg.local, &job.name, &job.what, "", &text).await.map_err(local_stop)?;
+            check_verbatim(&v, &text)?;
+            v
+        };
+        if !usable(value.expose_secret()) {
+            return Err(stop("no_secret"));
+        }
+        let name = self.deposit(job, job.name.clone(), &value).await?;
+        self.remember(&name, &value);
+        let moves = vec![KeyMove { key: String::new(), name: name.clone(), state: "saved".to_owned(), reference: self.reference(job, &name) }];
+        self.note_moves(&job.id, &moves);
+        let mut cleared = Cleared::default();
+        cleared.remains.push("the file stays on Juno".to_owned());
+        Ok((name, cleared))
+    }
+
     /// A file or env job: read, deposit, compare the read-back, maybe clear.
     pub(super) async fn process_source(&self, job: &Job, kind: &str, asked: &Path) -> Result<(String, Cleared), Stop> {
         let stored = self.store_source(job, kind, asked).await?;

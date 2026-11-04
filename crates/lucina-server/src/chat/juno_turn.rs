@@ -1,12 +1,15 @@
-//! Juno's tools on the JSON planner (the live default), for turns from Juno's
-//! Chat (session `juno-<device id>`). In tools mode they are in her registry
-//! like every other tool; the JSON planner does not know them, so:
+//! Juno's tools on the JSON planner (the live default), for every owner turn
+//! (Juno's Chat, the iPhone, web, Mac, S20; not MCP, guarded or consult turns)
+//! once a Juno device has polled since Lucina started. In tools mode they are
+//! in her registry like every other tool; the JSON planner does not know them, so:
 //!
 //! - a pending `juno_*` action (`delete_file`, `write_file` with `overwrite`,
 //!   `wifi_connect`) is settled by this turn: yes runs it, no drops it;
 //! - otherwise Jev's first-tool guess over her owner registry decides: when it
-//!   names a `juno_*` tool, a short tool loop runs with the four Juno tools.
-//!   No message text is matched; without Jev the turn goes on as itself.
+//!   names a `juno_*` tool, a short tool loop runs with the Juno tools. No
+//!   message text is matched; without Jev the turn goes on as itself, and
+//!   with no Juno device ever seen Jev is not asked at all. An offline laptop's
+//!   error reaches her through the tool, and she says so.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,12 +26,12 @@ use crate::api::{PLATFORM_LABEL, USER_LABEL};
 use crate::planner::TurnInput;
 use crate::prompts::Prompts;
 
-const GUIDE: &str = "You have Juno's tools: juno_tools lists what the laptop can do now, juno_screenshot shows its screen, juno_call runs one driver tool (apps, input, files, status, settings) and juno_bash one shell command. Report what the tools actually returned; never invent the laptop's state. If Juno is offline, say so.";
+const GUIDE: &str = "You have Juno's tools: juno_tools lists what the laptop can do now, juno_screenshot shows its screen, juno_call runs one driver tool (apps, input, files, status, settings), juno_bash one shell command and juno_events reads what the laptop reported. A call that answers \"waiting on decision <id>\" has not run: tell the owner it waits for his Go. Report what the tools actually returned; never invent the laptop's state. If Juno is offline, say so.";
 
 /// Jev's guess may take at most this long.
 const ROUTE_BUDGET: Duration = Duration::from_secs(4);
 
-/// The four Juno tools of her owner registry (`None`: off).
+/// The Juno tools of her owner registry (`None`: off).
 fn registry(st: &crate::AppState) -> Option<Registry> {
     let mut reg = Registry::new();
     for n in NAMES {
@@ -54,7 +57,7 @@ fn record_tool(t: &Turn<'_>, r: &ToolRecord) {
 
 pub(super) async fn try_turn(t: &Turn<'_>, memory: &str) -> Option<Finish> {
     let st = t.st;
-    if t.guarded || t.consult || t.mcp.is_some() || super::juno_system(&t.session).is_empty() {
+    if t.guarded || t.consult || t.mcp.is_some() || !st.juno.ever_seen() {
         return None;
     }
     let reg = registry(st)?;
@@ -131,7 +134,11 @@ pub(super) async fn try_turn(t: &Turn<'_>, memory: &str) -> Option<Finish> {
     let ctx = Ctx::new(st.tool_env.clone(), &t.channel, &t.session)
         .with_origin(Origin::Owner)
         .owner_turn();
-    let extra = crate::capabilities::subloop_extra(&format!("{JUNO_SYSTEM} {GUIDE}"), "");
+    let fact = match super::juno_fact(st, &t.session, false) {
+        f if f.is_empty() => JUNO_SYSTEM.to_owned(),
+        f => f,
+    };
+    let extra = crate::capabilities::subloop_extra(&format!("{fact} {GUIDE}"), "");
     let system = st.planner.prompts.agent_system(
         PLATFORM_LABEL,
         &t.message,

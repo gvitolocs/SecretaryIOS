@@ -385,10 +385,19 @@ impl Keeper {
                 is_env = kind == "env";
                 true
             }
+            // A file on Juno, the owner's laptop, fetched through the bridge.
+            Some(("juno", k)) => {
+                files::check_juno(k)?;
+                if !lucina_secrets::redact::detect(k).is_empty() {
+                    return Err(ApiError::new(400, "value_refused", "source: a path, without a value in it"));
+                }
+                stored_source = format!("juno:{}", k.trim());
+                true
+            }
             _ => false,
         };
         if !ok_source {
-            return Err(bad("source: note:<slug>, chat:<item id>, file:<path> or env:<path>"));
+            return Err(bad("source: note:<slug>, chat:<item id>, file:<path>, env:<path> or juno:<path>"));
         }
         let source = stored_source.as_str();
         let what = text("what");
@@ -575,6 +584,9 @@ impl Keeper {
         let (kind, key) = job.source.split_once(':').ok_or(stop("bad_request"))?;
         if matches!(kind, "file" | "env") {
             return self.process_source(job, kind, Path::new(key)).await;
+        }
+        if kind == "juno" {
+            return self.process_juno(st.juno.as_ref(), job, key).await;
         }
         if !self.cfg.local.is_loopback() {
             return Err(stop("local_model_not_local"));

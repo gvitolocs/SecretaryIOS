@@ -82,6 +82,24 @@ pub fn juno_system(session: &str) -> &'static str {
     }
 }
 
+/// The Juno fact of a turn. A Juno Chat session: [`JUNO_SYSTEM`] and the
+/// laptop's sticky state. Another app's owner turn with the juno_* tools on:
+/// whether the laptop is online (polled in the last 40 s) or offline since
+/// when, with its sticky state while online; nothing if it was never seen.
+/// MCP turns: nothing (they do not have the tools).
+pub fn juno_fact(st: &crate::AppState, session: &str, mcp: bool) -> String {
+    if !juno_system(session).is_empty() {
+        return match st.juno.sticky_line() {
+            Some(line) => format!("{JUNO_SYSTEM} On the laptop now: {line}"),
+            None => JUNO_SYSTEM.to_owned(),
+        };
+    }
+    if mcp || !st.cfg.juno_tools {
+        return String::new();
+    }
+    st.juno.device_fact().unwrap_or_default()
+}
+
 pub const SECRETARY_EXTRA_SYSTEM: &str = "This conversation comes from the Secretary app on Giuseppe's iPhone. Reply in English, or in Danish when the message is in Danish; never in Italian. Keep it short: usually 1-3 sentences. Plain text only: no markdown tables or headings.";
 
 /// Validate the body, classify the turn's memory surface (once), dedupe
@@ -1006,7 +1024,8 @@ async fn run_turn_scoped(
         base_system.to_owned()
     };
     // The device the message came from, as in tools mode.
-    let base_system = match juno_system(&session) {
+    let juno = juno_fact(&st, &session, mcp_turn.is_some());
+    let base_system = match juno.as_str() {
         "" => base_system,
         juno => format!("{base_system} {juno}"),
     };
@@ -3310,7 +3329,7 @@ async fn tools_turn(
         voice_system
     };
     // The device the message came from, as a fact of the turn (no message text is matched).
-    let voice_system = format!("{voice_system} {}", juno_system(&session));
+    let voice_system = format!("{voice_system} {}", juno_fact(&st, &session, mcp));
     let turn = TimelineTurn::new(st.timeline_for(&session), &channel, cmid.clone())
         .with_meta(Some(device_meta))
         .with_reply_to(reply_to);

@@ -164,6 +164,21 @@ async fn juno_json_planner_turns_reach_the_laptop() {
         "the confirmed delete ran"
     );
 
+    // From the iPhone too: Jev's guess reaches the laptop, and the turn knows it is online.
+    let (s, b) = h
+        .post(
+            "/chat",
+            json!({"message": "show me the laptop screen", "sessionId": "ios-main", "channel": "ios"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(b["data"]["reply"], "Files is in front.", "{b}");
+    assert!(h
+        .fake
+        .requests()
+        .iter()
+        .any(|r| r.to_string().contains("is online: juno_* tools reach it")));
+
     // Something else from Juno's Chat stays with the planner, with the device fact.
     let d = chat("how are you").await;
     assert!(

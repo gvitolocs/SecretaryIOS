@@ -20,6 +20,12 @@
 //!   posts its answer (body limit [`JUNO_RESULT_BODY_LIMIT`]).
 //! - `GET /v1/juno/screenshots/{id}.png`: a screenshot Juno sent, as the image
 //!   block of Lucina's reply shows it (`image/png`, Lucina keeps it an hour).
+//! - `POST /v1/device/juno/events {events: [≤ 64], lost}` (body limit
+//!   [`JUNO_EVENTS_BODY_LIMIT`]): the laptop's semantic events, each checked
+//!   by [`juno_event`] (a bad one is dropped and counted in `lost`), forwarded
+//!   to Lucina with the device stamped from the token.
+//! - The `juno` routes but the screenshots take only a device whose registered
+//!   name starts with "Juno" (`Juno (Galaxy Book Go)`): others get 403 `not_juno`.
 //!
 //! `POST /v1/device/state` also hands the snapshot's timed events to the
 //! notifier for calendar notifications.
@@ -56,6 +62,15 @@ pub const LUCINA_CHUNK_BYTES: usize = 48 * 1024;
 
 /// Body limit of `POST /v1/device/juno/calls/{id}/result`: a PNG screenshot in base64.
 pub const JUNO_RESULT_BODY_LIMIT: usize = 12 * 1024 * 1024;
+
+/// Body limit of `POST /v1/device/juno/events`.
+pub const JUNO_EVENTS_BODY_LIMIT: usize = 256 * 1024;
+
+/// Most events in one `POST /v1/device/juno/events`.
+pub const JUNO_EVENTS_MAX: usize = 64;
+
+/// Largest `fields` of one Juno event, as JSON.
+const JUNO_EVENT_FIELDS_MAX: usize = 4096;
 
 /// Longest `wait` of `GET /v1/device/juno/next`.
 const JUNO_WAIT_MAX: u64 = 25;
@@ -259,6 +274,7 @@ async fn juno_next(
     Extension(ident): Extension<Identity>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
+    only_juno(&ident)?;
     let wait = match q.get("wait") {
         None => JUNO_WAIT_MAX,
         Some(w) => w
@@ -294,6 +310,7 @@ async fn juno_result(
     Path(id): Path<String>,
     JsonBody(body): JsonBody<JunoResultBody>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
+    only_juno(&ident)?;
     let call = Call::juno_result(&device_ref(&ident), &id, body.ok, body.result, body.error)?;
     forward(&st, &call).await
 }
@@ -322,6 +339,87 @@ async fn juno_screenshot(
         .into_response())
 }
 
+/// 403 `not_juno` unless the token's device is a Juno laptop.
+fn only_juno(ident: &Identity) -> Result<(), ApiError> {
+    if ident.device_name.starts_with("Juno") {
+        return Ok(());
+    }
+    Err(ApiError::new(
+        StatusCode::FORBIDDEN,
+        "not_juno",
+        "Only a Juno device may use the Juno routes",
+    ))
+}
+
+/// `POST /v1/device/juno/events {events, lost}`.
+async fn juno_events(
+    State(st): State<AppState>,
+    Extension(ident): Extension<Identity>,
+    JsonBody(body): JsonBody<Value>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    only_juno(&ident)?;
+    let bad = |m: &str| ApiError::new(StatusCode::BAD_REQUEST, "bad_request", m);
+    let events = body["events"]
+        .as_array()
+        .ok_or_else(|| bad("events must be an array"))?;
+    if events.len() > JUNO_EVENTS_MAX {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "too_many_events",
+            "at most 64 events per batch",
+        ));
+    }
+    let lost = match &body["lost"] {
+        Value::Null => 0,
+        v => v
+            .as_u64()
+            .ok_or_else(|| bad("lost must be a whole number"))?,
+    };
+    let kept: Vec<Value> = events.iter().filter_map(juno_event).collect();
+    let dropped = (events.len() - kept.len()) as u64;
+    let call = Call::juno_events(&device_ref(&ident), kept, lost.saturating_add(dropped))?;
+    forward(&st, &call).await
+}
+
+/// One laptop event as Lucina takes it, or `None` (dropped): `{seq, src,
+/// src_seq, t_ms, kind, app?, subject?, fields}` with `src` ≤ 64 chars,
+/// `t_ms` ≥ 0, `kind` 1-64 of `[a-z0-9._-]`, `app` ≤ 64, `subject` ≤ 200 and
+/// `fields` an object of at most 4096 bytes of JSON. Other keys are dropped.
+pub fn juno_event(v: &Value) -> Option<Value> {
+    let text = |k: &str, max: usize| -> Option<Option<&str>> {
+        match &v[k] {
+            Value::Null => Some(None),
+            Value::String(t) if t.chars().count() <= max => Some(Some(t.as_str())),
+            _ => None,
+        }
+    };
+    let seq = v["seq"].as_u64()?;
+    let src = text("src", 64)??;
+    let src_seq = v["src_seq"].as_u64()?;
+    let t_ms = v["t_ms"].as_i64().filter(|t| *t >= 0)?;
+    let kind = v["kind"].as_str().filter(|k| {
+        (1..=64).contains(&k.len())
+            && k.bytes().all(|b| {
+                b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'-')
+            })
+    })?;
+    let app = text("app", 64)?;
+    let subject = text("subject", 200)?;
+    let fields = match &v["fields"] {
+        Value::Null => json!({}),
+        f @ Value::Object(_) if f.to_string().len() <= JUNO_EVENT_FIELDS_MAX => f.clone(),
+        _ => return None,
+    };
+    let mut out = json!({"seq": seq, "src": src, "src_seq": src_seq, "t_ms": t_ms, "kind": kind, "fields": fields});
+    if let Some(a) = app {
+        out["app"] = json!(a);
+    }
+    if let Some(s) = subject {
+        out["subject"] = json!(s);
+    }
+    Some(out)
+}
+
 /// `POST /v1/device/events`, behind [`crate::auth::require_device_events`].
 pub fn events_routes() -> Router<AppState> {
     Router::new().route(
@@ -339,6 +437,10 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/v1/device/juno/calls/{id}/result",
             post(juno_result).layer(DefaultBodyLimit::max(JUNO_RESULT_BODY_LIMIT)),
+        )
+        .route(
+            "/v1/device/juno/events",
+            post(juno_events).layer(DefaultBodyLimit::max(JUNO_EVENTS_BODY_LIMIT)),
         )
         .route("/v1/juno/screenshots/{file}", get(juno_screenshot))
 }
@@ -397,5 +499,47 @@ mod tests {
         // oversize events still go out, one per chunk
         assert_eq!(chunks(vec![ev(0, 50), ev(1, 50)], 10).len(), 2);
         assert!(chunks(Vec::new(), 10).is_empty());
+    }
+
+    #[test]
+    fn juno_event_validates_and_drops_unknown_keys() {
+        let good = json!({"seq": 7, "src": "devd", "src_seq": 3, "t_ms": 1700, "kind": "app.focused",
+                          "app": "video", "subject": "Video", "fields": {"pid": 12}, "extra": "dropped"});
+        let v = juno_event(&good).unwrap();
+        assert_eq!(
+            v,
+            json!({"seq": 7, "src": "devd", "src_seq": 3, "t_ms": 1700, "kind": "app.focused",
+                   "app": "video", "subject": "Video", "fields": {"pid": 12}})
+        );
+        let bare =
+            juno_event(&json!({"seq": 1, "src": "s", "src_seq": 1, "t_ms": 0, "kind": "net.up"}))
+                .unwrap();
+        assert_eq!(bare["fields"], json!({}));
+        assert!(bare.get("app").is_none());
+        let with = |k: &str, val: Value| {
+            let mut e = good.clone();
+            e[k] = val;
+            juno_event(&e)
+        };
+        for (k, val) in [
+            ("seq", json!(-1)),
+            ("seq", json!("1")),
+            ("src", json!("x".repeat(65))),
+            ("src", Value::Null),
+            ("src_seq", json!(1.5)),
+            ("t_ms", json!(-5)),
+            ("kind", json!("BAD KIND")),
+            ("kind", json!("")),
+            ("kind", json!("k".repeat(65))),
+            ("app", json!("a".repeat(65))),
+            ("app", json!(3)),
+            ("subject", json!("s".repeat(201))),
+            ("fields", json!([1])),
+            ("fields", json!({"big": "x".repeat(4096)})),
+        ] {
+            assert!(with(k, val.clone()).is_none(), "{k} {val}");
+        }
+        assert!(with("subject", json!("s".repeat(200))).is_some());
+        assert!(juno_event(&json!("junk")).is_none());
     }
 }

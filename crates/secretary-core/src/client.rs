@@ -1039,6 +1039,24 @@ impl Call {
         Ok(Self::new(Method::POST, &["device", "juno", "result"]).with_body(body))
     }
 
+    /// `POST /device/juno/events {device, events, lost}`: the laptop's events
+    /// (at most 64, each already checked by secretary-server).
+    pub fn juno_events(device: &DeviceRef, events: Vec<Value>, lost: u64) -> Result<Self> {
+        if events.len() > 64 {
+            return Err(Error::Invalid {
+                field: "events",
+                message: "at most 64 per batch".into(),
+            });
+        }
+        Ok(
+            Self::new(Method::POST, &["device", "juno", "events"]).with_body(serde_json::json!({
+                "device": device,
+                "events": events,
+                "lost": lost,
+            })),
+        )
+    }
+
     /// `POST /device/state`: each list at most 500 objects of at most 8 KiB.
     pub fn device_state(st: &DeviceState) -> Result<Self> {
         for (field, items) in [
@@ -2304,6 +2322,17 @@ mod tests {
         }
         assert!(Call::juno_result(&device, "call-1", false, None, Some("e".repeat(2001))).is_err());
         assert!(Call::juno_result(&device, "call-1", false, None, Some("e".repeat(2000))).is_ok());
+        let ev = Call::juno_events(&device, vec![json!({"seq": 1})], 2).unwrap();
+        assert_eq!(ev.method(), &Method::POST);
+        assert_eq!(ev.path(), "/api/secretary/device/juno/events");
+        assert_eq!(
+            ev.body().unwrap(),
+            &json!({"device": {"id": "dev-1", "name": "Juno"}, "events": [{"seq": 1}], "lost": 2})
+        );
+        match Call::juno_events(&device, vec![json!({}); 65], 0) {
+            Err(Error::Invalid { field, .. }) => assert_eq!(field, "events"),
+            other => panic!("{other:?}"),
+        }
         let shot = Call::juno_screenshot("Ab9_x-1.png").unwrap();
         assert_eq!(shot.method(), &Method::GET);
         assert_eq!(shot.path(), "/api/secretary/juno/screenshots/Ab9_x-1.png");

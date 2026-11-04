@@ -1465,3 +1465,71 @@ async fn the_tool_answers_with_names_and_only_for_his_own_message() {
     assert_clean("the tool's status", &out.to_string());
     env.assert_no_value_anywhere().await;
 }
+
+/// Juno, the owner's laptop: polls once and answers `secret_source` with `text`.
+fn juno_laptop(env: &Env, text: String) -> tokio::task::JoinHandle<Value> {
+    let b = env.h.state.juno.clone();
+    tokio::spawn(async move {
+        let call = b
+            .next("juno1", "Juno (Galaxy Book Go)", Duration::from_secs(5))
+            .await
+            .expect("a call for the laptop");
+        let id = call["id"].as_str().unwrap().to_owned();
+        assert!(b.result("juno1", &id, Ok(json!({ "text": text }))));
+        call
+    })
+}
+
+#[tokio::test]
+async fn a_juno_file_comes_through_the_bridge_as_an_internal_call() {
+    let env = setup().await;
+    let laptop = juno_laptop(&env, format!("{CANARY}\n"));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let id = env.job(json!({"source": "juno:/data/home/.config/app/key", "name": "KEEP_JUNO_APP"}));
+    let j = env.run(&id).await;
+    assert_eq!(j.state, State::Saved, "{:?}", j.code);
+    let call = laptop.await.unwrap();
+    assert_eq!(call["tool"], "secret_source");
+    assert_eq!(call["internal"], true);
+    assert_eq!(call["arguments"], json!({"path": "/data/home/.config/app/key"}));
+    assert_eq!(
+        env.deposits(),
+        vec![("secret://personal/prod#KEEP_JUNO_APP".to_owned(), CANARY.to_owned())]
+    );
+    assert!(env.qwen.received_requests().await.unwrap().is_empty(), "one value: no model read it");
+    assert!(j.cleared.clone().unwrap().remains.iter().any(|r| r.contains("stays on Juno")));
+    assert_clean("the job's outcome", &j.outcome().to_string());
+    env.assert_no_value_anywhere().await;
+}
+
+#[tokio::test]
+async fn a_juno_source_with_juno_offline_waits() {
+    let env = setup().await;
+    let id = env.job(json!({"source": "juno:/data/home/key", "name": "KEEP_JUNO_OFF"}));
+    let j = env.run(&id).await;
+    assert_eq!(j.code.as_deref(), Some("juno_offline"), "{:?}", j.state);
+    assert!(env.deposits().is_empty());
+}
+
+#[tokio::test]
+async fn juno_secretary_paths_are_refused_before_a_job_exists() {
+    let env = setup().await;
+    for source in [
+        "juno:/data/lucina/secretary",
+        "juno:/data/lucina/secretary/device.token",
+        "juno:/run/lucina/secretary/session",
+        "juno:/data/home/../lucina/secretary/x",
+        "juno:/data/home/./x",
+        "juno:relative/key",
+        "juno:",
+    ] {
+        assert!(
+            env.keeper().enqueue(&json!({"source": source, "name": "KEEP_X"})).is_err(),
+            "{source}"
+        );
+    }
+    assert!(env
+        .keeper()
+        .enqueue(&json!({"source": "juno:/data/lucina/secretary-notes/x", "name": "KEEP_X"}))
+        .is_ok());
+}

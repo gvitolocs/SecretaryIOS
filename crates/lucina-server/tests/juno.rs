@@ -27,7 +27,11 @@ async fn juno_routes_need_the_token_and_refuse_unknown_calls() {
             json!({"device": {"id": "dev1", "name": "Juno"}, "waitSecs": 0}),
         )
         .await;
-    assert_eq!((s, &b["data"]), (200, &json!({"call": null})), "{b}");
+    assert_eq!(
+        (s, &b["data"]),
+        (200, &json!({"call": null, "events": []})),
+        "{b}"
+    );
     assert_eq!(h.state.juno.status()["devices"][0]["id"], "dev1");
 
     let (s, b) = h.post("/device/juno/next", json!({"waitSecs": 0})).await;
@@ -194,4 +198,45 @@ async fn juno_device_fact_only_for_juno_sessions() {
     assert!(lucina_server::chat::juno_system("juno-dev1").contains("juno_* tools"));
     assert_eq!(lucina_server::chat::juno_system("secretary_ios"), "");
     assert_eq!(lucina_server::chat::juno_system("secretary_test"), "");
+}
+
+#[tokio::test]
+async fn juno_events_are_kept_and_the_device_fact_follows() {
+    let h = harness(script(json!({"rules": []})), |_| {}).await;
+    let fact = |session: &str, mcp: bool| lucina_server::chat::juno_fact(&h.state, session, mcp);
+    assert_eq!(fact("secretary_ios", false), "", "never seen: nothing");
+    let ev = |seq: u64, kind: &str, subject: &str, fields: Value| json!({"seq": seq, "src": "devd", "src_seq": seq, "t_ms": 1000, "kind": kind, "subject": subject, "fields": fields});
+    let (s, b) = h
+        .post(
+            "/device/juno/events",
+            json!({"device": {"id": "dev1", "name": "Juno (Galaxy Book Go)"}, "lost": 1, "events": [
+                ev(1, "app.focused", "Video", json!({})),
+                ev(2, "power.battery", "", json!({"percent": 64})),
+            ]}),
+        )
+        .await;
+    assert_eq!((s, &b["data"]["stored"]), (200, &json!(2)), "{b}");
+    assert_eq!(
+        fact("secretary_ios", false),
+        "Juno, the owner's laptop, is online: juno_* tools reach it. In front: Video; on battery 64 %."
+    );
+    assert_eq!(
+        fact("secretary_ios", true),
+        "",
+        "MCP turns do not have the tools"
+    );
+    let own = fact("secretary_juno-dev1", false);
+    assert!(own.starts_with(lucina_server::chat::JUNO_SYSTEM), "{own}");
+    assert!(
+        own.ends_with("On the laptop now: In front: Video; on battery 64 %."),
+        "{own}"
+    );
+    assert_eq!(h.state.juno.status()["devices"][0]["newEvents"], 2);
+    let (s, _) = h
+        .post(
+            "/device/juno/events",
+            json!({"device": {"id": "dev1", "name": "Juno"}, "events": vec![json!({"kind": "x"}); 65]}),
+        )
+        .await;
+    assert_eq!(s, 400);
 }

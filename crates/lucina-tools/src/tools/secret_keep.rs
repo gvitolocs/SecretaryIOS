@@ -39,7 +39,8 @@ fn owner_only(ctx: &Ctx) -> Result<(), ToolError> {
 #[serde(deny_unknown_fields)]
 struct KeepArgs {
     /// Where the secret is: note:<slug>, chat:<item id>, file:<path> for a file holding one secret,
-    /// env:<path> for a .env file with several. From secret_scan, or what he named.
+    /// env:<path> for a .env file with several, juno:<path> for a file holding one secret on Juno, his
+    /// laptop. From secret_scan, or what he named.
     #[serde(default)]
     source: Option<String>,
     /// The secret's name, UPPER_SNAKE, e.g. GLM_API_KEY. Without a project it is stored as KEPT_<name>.
