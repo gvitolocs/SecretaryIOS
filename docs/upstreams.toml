@@ -877,3 +877,45 @@ relation = "port"
 confidence = "confirmed"
 rely_on = ["apr", "q6afe", "q6adm", "q6asm", "stream id in addresses", "command order"]
 notes = "Behaviour port for Juno's speakers. Checklist: LucinaOS docs/research/juno-audio.md section 11. crates/lucina-q6/oracle compiles these files unchanged from a Linux 7.1 tree (nezopt lucinaos-kernel 682ce8f67) and compares every packet. Verdicts in integration-decisions.md."
+
+[[upstream]]
+id = "redb"
+name = "redb (LucinaNet profile store, in place of SQLite)"
+url = "https://github.com/cberner/redb"
+source = "github"
+repo = "cberner/redb"
+branch = "master"
+track = "releases"
+pin = "v4.4.0"
+pin_date = "2026-11-04"
+notify = "report"
+ours = [
+  { repo = "/home/nez/Projects/Lucina/LucinaNet-servo", path = "components/profile_store", base = "rust-store" },
+]
+licence_upstream = "MIT OR Apache-2.0"
+licence_ours = "MPL-2.0"
+relation = "vendored"
+confidence = "confirmed"
+rely_on = ["Durability::None then a durable commit", "set_quick_repair / two-phase commit", "StorageBackend trait (power-cut tests)", "bytewise &[u8] key order", "one Database per file per process"]
+notes = "Cargo dependency, unmodified. Adopted over Turso (beta), sled (stalled), fjall (reference): LucinaNet docs/rust-store.md. A release that changes the file format or commit protocol needs the power-cut test (components/profile_store/tests/power_cut.rs) and the QEMU store part of LucinaOS qemu-juno-disk.sh rerun."
+
+[[upstream]]
+id = "ruzstd"
+name = "ruzstd (zstd Content-Encoding in LucinaNet, in place of libzstd)"
+url = "https://github.com/KillingSpark/zstd-rs"
+source = "github"
+repo = "KillingSpark/zstd-rs"
+branch = "master"
+track = "releases"
+pin = "v0.9.1"
+pin_date = "2026-11-04"
+notify = "report"
+ours = [
+  { repo = "/home/nez/Projects/Lucina/LucinaNet-servo", path = "components/zstd", base = "rust-store" },
+]
+licence_upstream = "MIT"
+licence_ours = "MPL-2.0"
+relation = "vendored"
+confidence = "confirmed"
+rely_on = ["FrameDecoder::decode_from_to", "set_max_window_size", "content checksum getters"]
+notes = "Cargo dependency, unmodified, decoding only. Our crate servo-zstd adds the RFC 9659 window rule (Verus-checked, window.rs) and checksum/content-size checks; tests/parity.rs compares with libzstd. Four bit flips libzstd refuses are accepted by ruzstd and decode to the original content: a possible upstream report, draft only without the owner OK."
