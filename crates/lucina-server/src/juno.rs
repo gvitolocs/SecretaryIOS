@@ -8,7 +8,7 @@
 //!   device (its `last_seen`), then waits up to `waitSecs` (≤ 25) for a call
 //!   queued for it: `{"call": {id, tool, arguments, deadlineMs, decisionId?,
 //!   internal?}, "events": []}`, or `{"call": null, "events": []}`. `events`
-//!   is reserved for Lucina → laptop and always empty for now.
+//!   is reserved for Lucina → laptop; nothing on this side fills it.
 //! - `POST /api/secretary/device/juno/result {device, id, ok, result?, error?}`
 //!   (≤ [`MAX_RESULT_BYTES`]): hands the result to the waiting tool call. An
 //!   unknown or expired id, or one queued for another device: 404 `unknown_call`.
@@ -22,7 +22,7 @@
 //! [`JunoBridge::call`] queues a call and waits for it: nobody polled in
 //! [`ONLINE_WINDOW`], or nobody picked it up in [`PICKUP`]: offline. Each call
 //! is logged as `juno_audit` (device, tool, a payload-free summary, ok, ms,
-//! and `target`, `undo`, `effect`, empty for now). An `internal` call (Lucina's
+//! and `target`, `undo`, `effect`, which stay empty until the device reports them). An `internal` call (Lucina's
 //! own step, secret_keep's `juno:` source) is logged without its summary.
 //!
 //! Risky calls wait for a decision ([`JunoLink::ask`]): it is filed with
