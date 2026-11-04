@@ -260,6 +260,9 @@ pub struct Config {
     /// `LUCINA_CALLERS` (default on; `off` disables): screening unknown callers with Jev
     /// (`/api/secretary/callers/*`, the `caller_screen` tool and chat turn).
     pub callers_enabled: bool,
+    /// `LUCINA_JUNO_TOOLS` (default on; `false` disables): the `juno_*` tools on the owner's
+    /// laptop, in the owner's registry only (crate::juno, `lucina_tools::tools::juno`).
+    pub juno_tools: bool,
     /// `LUCINA_CALLERS_PUBLIC_URL` (default `https://www.180.dk`; `off` disables): the public
     /// caller-ID pages read before Jev decides.
     pub callers_public_url: Option<String>,
@@ -666,6 +669,12 @@ impl Config {
                 Some(v) => v.trim().parse().ok().filter(|h: &u32| *h < 24).or(Some(21)),
                 None => Some(21),
             },
+            juno_tools: !get("LUCINA_JUNO_TOOLS").is_some_and(|v| {
+                matches!(
+                    v.trim().to_ascii_lowercase().as_str(),
+                    "off" | "false" | "0" | "no"
+                )
+            }),
             callers_enabled: !get("LUCINA_CALLERS").is_some_and(|v| {
                 matches!(
                     v.trim().to_ascii_lowercase().as_str(),

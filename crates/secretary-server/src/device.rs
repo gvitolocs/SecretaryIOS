@@ -15,6 +15,11 @@
 //! - `POST /v1/device/commands/{id}/result {ok, error?, deviceObjectId?}`
 //!   and `POST /v1/device/state {alarms, timers, reminders, events, focus}`
 //!   are validated and forwarded.
+//! - `GET /v1/device/juno/next?wait=<s>` long-polls Lucina for Juno's next
+//!   call (`wait` clamped to 0..=25) and `POST /v1/device/juno/calls/{id}/result`
+//!   posts its answer (body limit [`JUNO_RESULT_BODY_LIMIT`]).
+//! - `GET /v1/juno/screenshots/{id}.png`: a screenshot Juno sent, as the image
+//!   block of Lucina's reply shows it (`image/png`, Lucina keeps it an hour).
 //!
 //! `POST /v1/device/state` also hands the snapshot's timed events to the
 //! notifier for calendar notifications.
@@ -24,13 +29,16 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Mutex;
+use std::time::Duration;
 
-use axum::extract::{DefaultBodyLimit, Path, State};
-use axum::http::StatusCode;
-use axum::routing::post;
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
+use axum::http::{header, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use secretary_core::models::{CommandResult, DeviceEvent, DeviceEvents, DeviceRef, DeviceState};
 use secretary_core::Call;
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::auth::Identity;
@@ -45,6 +53,12 @@ pub const EVENTS_BODY_LIMIT: usize = 4608 * 1024;
 
 /// Max JSON size of the events in one forward to Lucina.
 pub const LUCINA_CHUNK_BYTES: usize = 48 * 1024;
+
+/// Body limit of `POST /v1/device/juno/calls/{id}/result`: a PNG screenshot in base64.
+pub const JUNO_RESULT_BODY_LIMIT: usize = 12 * 1024 * 1024;
+
+/// Longest `wait` of `GET /v1/device/juno/next`.
+const JUNO_WAIT_MAX: u64 = 25;
 
 /// Split `events` into runs whose JSON stays under `max` bytes (an event
 /// larger than `max` gets a chunk of its own).
@@ -238,6 +252,76 @@ async fn state(
     forward(&st, &call).await
 }
 
+/// `200 {"call": null | {id, tool, arguments, deadlineMs}}`: Lucina's data
+/// for Juno's next call, passed through unchanged.
+async fn juno_next(
+    State(st): State<AppState>,
+    Extension(ident): Extension<Identity>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let wait = match q.get("wait") {
+        None => JUNO_WAIT_MAX,
+        Some(w) => w
+            .parse::<u64>()
+            .map_err(|_| {
+                ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "bad_request",
+                    "wait must be a number of seconds 0..=25",
+                )
+            })?
+            .min(JUNO_WAIT_MAX),
+    };
+    let call = Call::juno_next(&device_ref(&ident), wait)?;
+    let data = st
+        .lucina()?
+        .call_with_timeout::<Value>(&call, Duration::from_secs(wait + 10))
+        .await?;
+    Ok((StatusCode::OK, Json(data)))
+}
+
+/// Juno's answer to one call; extra fields (a client-sent `device`) are ignored.
+#[derive(Deserialize)]
+struct JunoResultBody {
+    ok: bool,
+    result: Option<Value>,
+    error: Option<String>,
+}
+
+async fn juno_result(
+    State(st): State<AppState>,
+    Extension(ident): Extension<Identity>,
+    Path(id): Path<String>,
+    JsonBody(body): JsonBody<JunoResultBody>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let call = Call::juno_result(&device_ref(&ident), &id, body.ok, body.result, body.error)?;
+    forward(&st, &call).await
+}
+
+/// A kept Juno screenshot, relayed as is.
+async fn juno_screenshot(
+    State(st): State<AppState>,
+    Path(file): Path<String>,
+) -> Result<Response, ApiError> {
+    let call = Call::juno_screenshot(&file)?;
+    let (content_type, body) = st.lucina()?.bytes(&call).await?;
+    if !content_type.starts_with("image/png") {
+        return Err(ApiError::new(
+            StatusCode::BAD_GATEWAY,
+            "lucina_error",
+            "Lucina sent a screenshot that is not a PNG",
+        ));
+    }
+    Ok((
+        [
+            (header::CONTENT_TYPE, "image/png".to_owned()),
+            (header::CACHE_CONTROL, "private, max-age=3600".to_owned()),
+        ],
+        body,
+    )
+        .into_response())
+}
+
 /// `POST /v1/device/events`, behind [`crate::auth::require_device_events`].
 pub fn events_routes() -> Router<AppState> {
     Router::new().route(
@@ -251,6 +335,12 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/v1/device/commands/{id}/result", post(command_result))
         .route("/v1/device/state", post(state))
+        .route("/v1/device/juno/next", get(juno_next))
+        .route(
+            "/v1/device/juno/calls/{id}/result",
+            post(juno_result).layer(DefaultBodyLimit::max(JUNO_RESULT_BODY_LIMIT)),
+        )
+        .route("/v1/juno/screenshots/{file}", get(juno_screenshot))
 }
 
 #[cfg(test)]

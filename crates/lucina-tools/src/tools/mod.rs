@@ -15,6 +15,7 @@ pub mod meshy;
 pub mod notes;
 pub mod notify;
 pub mod flaw;
+pub mod juno;
 pub mod ops;
 pub mod places;
 pub mod plugins;

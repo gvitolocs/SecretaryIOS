@@ -24,6 +24,8 @@
 //!   `instagram_stories`, the watchlist tools, `pixiv_search`, `pixiv_ranking`, `save_to_gallery` ([`tools::plugins`]; safe Pixiv only); `drive`
 //!   (Lucina's own Google Drive, read-only, registered by the server when
 //!   `LUCINA_DRIVE=true` and the grant exists, see [`google`]).
+//!   `juno_tools`, `juno_call`, `juno_screenshot`, `juno_bash` (the owner's laptop over
+//!   the server's Juno bridge, owner's registry only; [`tools::juno`]).
 //! - Secrets: a tool reads a secret by setting name through [`Ctx::secret`]
 //!   (`weather.api_key` -> `secret://lucina/prod/lucina#OPEN_METEO_API_KEY`),
 //!   uses the value for its own outbound call only, and every tool result is
@@ -264,6 +266,8 @@ pub struct ToolEnv {
     pub callers: Option<Arc<tools::callers::CallerStore>>,
     /// Public caller-ID pages (`LUCINA_CALLERS_PUBLIC_URL`, default 180.dk); `None`: off.
     pub callers_public_url: Option<String>,
+    /// Juno, the owner's laptop (`juno_*` tools, lucina-server's `JunoBridge`); `None`: off.
+    pub juno: Option<Arc<dyn tools::juno::JunoLink>>,
 }
 
 impl ToolEnv {
@@ -320,6 +324,7 @@ impl ToolEnv {
             au_url: None,
             callers: None,
             callers_public_url: None,
+            juno: None,
         }
     }
 }

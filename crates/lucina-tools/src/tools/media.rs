@@ -707,6 +707,7 @@ async fn read_with_handlers(
 
 /// A photo through the same handlers as a shared picture (vision and OCR): a 1024 px JPEG rendition, since an
 /// original can be a HEIC. So she sees what is in it, not only its name and date.
+#[allow(clippy::too_many_arguments)]
 async fn read_photo(
     http: &reqwest::Client,
     base: &str,

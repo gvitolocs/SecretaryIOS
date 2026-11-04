@@ -487,6 +487,13 @@ async fn route(
     if resource == Some("flaws") && parts.len() <= 4 {
         return crate::flaws::route(st, method, uri, headers, &parts[1..], body).await;
     }
+    // The Juno bridge (crate::juno): the laptop's long poll and results, and the screenshots it sent.
+    if resource == Some("device") && id == Some("juno") && parts.len() == 3 {
+        return crate::juno::device_route(st, method, extra, body).await;
+    }
+    if resource == Some("juno") && id == Some("screenshots") && parts.len() == 3 {
+        return crate::juno::screenshot_route(st, method, extra.unwrap_or(""));
+    }
     if resource == Some("device") {
         if parts.len() > 4 {
             return Err(ApiError::not_found());

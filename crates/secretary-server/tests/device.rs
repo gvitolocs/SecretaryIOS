@@ -55,6 +55,36 @@ async fn mock_handler(
             ok(json!({"acked": true, "ok": body["ok"]}))
         }
         ("POST", "/api/secretary/device/state") => ok(json!({"saved": true})),
+        ("POST", "/api/secretary/device/juno/next") => {
+            if body["waitSecs"] == 7 {
+                ok(
+                    json!({"call": {"id": "call-1", "tool": "screenshot", "arguments": {}, "deadlineMs": 123}}),
+                )
+            } else {
+                ok(json!({"call": null}))
+            }
+        }
+        ("GET", "/api/secretary/juno/screenshots/shot1.png") => (
+            [(axum::http::header::CONTENT_TYPE, "image/png")],
+            b"\x89PNG\r\n\x1a\nscreen".to_vec(),
+        )
+            .into_response(),
+        ("GET", p) if p.starts_with("/api/secretary/juno/screenshots/") => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"ok": false, "error": "screenshot_not_found"})),
+        )
+            .into_response(),
+        ("POST", "/api/secretary/device/juno/result") => {
+            if body["id"] == "gone" {
+                (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({"ok": false, "error": "unknown_call"})),
+                )
+                    .into_response()
+            } else {
+                ok(json!({"delivered": true}))
+            }
+        }
         _ => (
             StatusCode::NOT_FOUND,
             Json(json!({"ok": false, "error": "not_found"})),
@@ -75,8 +105,14 @@ async fn harness(tweak: impl FnOnce(&mut Config)) -> H {
     let mock = Arc::new(Mock::default());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let lucina = format!("http://{}", listener.local_addr().unwrap());
-    // Lucina caps request bodies at 64 KiB.
+    // Lucina caps request bodies at 64 KiB, except the juno result route
+    // (a base64 PNG): big enough for secretary-server's 12 MiB to be the limit.
     let router = Router::new()
+        .route(
+            "/api/secretary/device/juno/result",
+            axum::routing::post(mock_handler)
+                .layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024)),
+        )
         .fallback(mock_handler)
         .layer(axum::extract::DefaultBodyLimit::max(64 * 1024))
         .with_state(mock.clone());
@@ -408,6 +444,144 @@ async fn command_results_and_state_are_forwarded() {
     assert_eq!((s, code(&b)), (400, "bad_request"));
 }
 
+const JUNO_NEXT: &str = "/api/secretary/device/juno/next";
+const JUNO_RESULT: &str = "/api/secretary/device/juno/result";
+
+#[tokio::test]
+async fn juno_device_routes_require_auth() {
+    let h = harness(|_| {}).await;
+    for path in ["/v1/device/juno/next", "/v1/device/juno/calls/c1/result"] {
+        let r = h
+            .http
+            .post(format!("{}{path}", h.base))
+            .json(&json!({"ok": true}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 401, "{path}");
+        let r = h
+            .http
+            .post(format!("{}{path}", h.base))
+            .bearer_auth("not-a-token")
+            .json(&json!({"ok": true}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 401, "{path}");
+    }
+    let r = h
+        .http
+        .get(format!("{}/v1/device/juno/next", h.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 401);
+    assert!(h.mock.seen.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn juno_device_next_forwards_wait_and_device() {
+    let h = harness(|_| {}).await;
+    let get = |q: &str| {
+        h.http
+            .get(format!("{}/v1/device/juno/next{q}", h.base))
+            .bearer_auth(&h.token)
+    };
+    // default wait is 25, 99 clamps to 25, 7 passes through with the call
+    for (q, wait) in [("", 25), ("?wait=99", 25), ("?wait=7", 7)] {
+        let (s, b) = h.send(get(q)).await;
+        assert_eq!(s, 200, "{q}: {b}");
+        let seen = h.seen(JUNO_NEXT);
+        let sent = seen.last().unwrap();
+        assert_eq!(sent["waitSecs"], wait, "{q}");
+        assert_eq!(sent["device"]["name"], "Giuseppe's iPhone");
+        assert_ne!(sent["device"]["id"], "");
+        if wait == 7 {
+            assert_eq!(
+                b["call"]["id"], "call-1",
+                "Lucina's data passes through: {b}"
+            );
+        } else {
+            assert_eq!(b, json!({"call": null}));
+        }
+    }
+    let (s, b) = h.send(get("?wait=soon")).await;
+    assert_eq!((s, code(&b)), (400, "bad_request"));
+}
+
+#[tokio::test]
+async fn juno_device_result_forwards_and_ignores_client_device() {
+    let h = harness(|_| {}).await;
+    let (s, b) = h
+        .send(h.post("/v1/device/juno/calls/call-1/result").json(&json!({
+            "ok": false,
+            "result": {"png": "aGk="},
+            "error": "no screen",
+            "device": {"id": "spoofed", "name": "nope"}
+        })))
+        .await;
+    assert_eq!((s, b), (200, json!({"delivered": true})));
+    let sent = &h.seen(JUNO_RESULT)[0];
+    assert_eq!(sent["id"], "call-1");
+    assert_eq!(sent["ok"], false);
+    assert_eq!(sent["result"], json!({"png": "aGk="}));
+    assert_eq!(sent["error"], "no screen");
+    assert_eq!(sent["device"]["name"], "Giuseppe's iPhone");
+    assert_ne!(sent["device"]["id"], "spoofed");
+
+    let (s, b) = h
+        .send(
+            h.post("/v1/device/juno/calls/call-2/result")
+                .json(&json!({"ok": true})),
+        )
+        .await;
+    assert_eq!(s, 200, "{b}");
+    let sent = &h.seen(JUNO_RESULT)[1];
+    assert!(sent.get("result").is_none() && sent.get("error").is_none());
+}
+
+#[tokio::test]
+async fn juno_device_result_rejects_bad_ids_before_lucina() {
+    let h = harness(|_| {}).await;
+    for id in ["a%2Fb", &"x".repeat(65), "a.b"] {
+        let (s, b) = h
+            .send(
+                h.post(&format!("/v1/device/juno/calls/{id}/result"))
+                    .json(&json!({"ok": true})),
+            )
+            .await;
+        assert_eq!((s, code(&b)), (400, "bad_request"), "{id}: {b}");
+    }
+    assert!(h.seen(JUNO_RESULT).is_empty());
+}
+
+#[tokio::test]
+async fn juno_device_result_unknown_call_is_404() {
+    let h = harness(|_| {}).await;
+    let (s, b) = h
+        .send(
+            h.post("/v1/device/juno/calls/gone/result")
+                .json(&json!({"ok": false, "error": "too late"})),
+        )
+        .await;
+    assert_eq!((s, code(&b)), (404, "unknown_call"), "{b}");
+}
+
+#[tokio::test]
+async fn juno_device_result_body_limit_is_12_mib() {
+    let h = harness(|_| {}).await;
+    let big = |mib: usize| {
+        h.post("/v1/device/juno/calls/call-9/result")
+            .json(&json!({"ok": true, "result": {"png": "x".repeat(mib * 1024 * 1024)}}))
+    };
+    let (s, b) = h.send(big(9)).await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(h.seen(JUNO_RESULT).len(), 1);
+    let (s, b) = h.send(big(13)).await;
+    assert_eq!((s, code(&b)), (413, "payload_too_large"), "{b}");
+    assert_eq!(h.seen(JUNO_RESULT).len(), 1);
+}
+
 #[tokio::test]
 async fn device_routes_need_auth_and_csrf_for_cookies() {
     let h = harness(|_| {}).await;
@@ -457,4 +631,32 @@ async fn device_routes_need_auth_and_csrf_for_cookies() {
         let (s, b) = h.send(rb().header("x-secretary-csrf", "1")).await;
         assert_eq!(s, 200, "{path}: {b}");
     }
+}
+
+#[tokio::test]
+async fn juno_device_screenshot_is_relayed() {
+    let h = harness(|_| {}).await;
+    let get = |name: &str| {
+        h.http
+            .get(format!("{}/v1/juno/screenshots/{name}", h.base))
+            .bearer_auth(&h.token)
+    };
+    let r = get("shot1.png").send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.headers()["content-type"], "image/png");
+    assert_eq!(
+        r.bytes().await.unwrap().as_ref(),
+        b"\x89PNG\r\n\x1a\nscreen"
+    );
+    let (s, b) = h.send(get("gone.png")).await;
+    assert_eq!((s, code(&b)), (404, "screenshot_not_found"), "{b}");
+    let (s, b) = h.send(get("a.b.png")).await;
+    assert_eq!((s, code(&b)), (400, "bad_request"), "{b}");
+    let r = h
+        .http
+        .get(format!("{}/v1/juno/screenshots/shot1.png", h.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 401);
 }

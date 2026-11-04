@@ -44,6 +44,7 @@ use lucina_store::timeline::{Attachment, TimelineStore};
 mod au_turn;
 pub mod callers_turn;
 pub mod drive_turn;
+mod juno_turn;
 pub mod media_turn;
 pub mod memo_turn;
 pub mod meshy_turn;
@@ -68,6 +69,18 @@ pub const VOICE_CHANNEL: &str = "voice";
 pub const VOICE_SESSION: &str = "lucinavoice";
 /// The source label of a speaker turn in Honcho (the app's turns say `Secretary app`).
 pub const VOICE_LABEL: &str = "LucinaVoice speaker";
+
+/// The device fact of a turn from Juno's Chat (session `juno-<device id>`).
+pub const JUNO_SYSTEM: &str = "The owner is writing from Juno, his laptop (Galaxy Book Go, LucinaOS). Actions on the laptop use the juno_* tools (juno_tools lists what it can do); the computer tool is your own sandbox on nezopt, not his laptop.";
+
+/// [`JUNO_SYSTEM`] when `session` is a Juno Chat session, else nothing.
+pub fn juno_system(session: &str) -> &'static str {
+    if lucina_tools::tools::juno::device_of_session(session).is_some() {
+        JUNO_SYSTEM
+    } else {
+        ""
+    }
+}
 
 pub const SECRETARY_EXTRA_SYSTEM: &str = "This conversation comes from the Secretary app on Giuseppe's iPhone. Reply in English, or in Danish when the message is in Danish; never in Italian. Keep it short: usually 1-3 sentences. Plain text only: no markdown tables or headings.";
 
@@ -992,6 +1005,11 @@ async fn run_turn_scoped(
     } else {
         base_system.to_owned()
     };
+    // The device the message came from, as in tools mode.
+    let base_system = match juno_system(&session) {
+        "" => base_system,
+        juno => format!("{base_system} {juno}"),
+    };
     // Agents (every caller but the owner's own assistant apps) consult; they never act as the owner.
     let consult = mcp_turn
         .as_ref()
@@ -1206,8 +1224,10 @@ async fn run_turn_scoped(
     // composer is off or gave none.
     let rich_msg = match rich_msg {
         None if t.origin.is_none()
-            && (finish.action == au_turn::ACTION || finish.action == callers_turn::ACTION)
-            && (!finish.blocks.is_empty() || !finish.routes.is_empty()) =>
+            && (((finish.action == au_turn::ACTION || finish.action == callers_turn::ACTION)
+                && (!finish.blocks.is_empty() || !finish.routes.is_empty()))
+                // A tool's picture (a Juno screenshot).
+                || finish.blocks.iter().any(|b| b["type"] == "image")) =>
         {
             Some(lucina_store::rich::RichMessage {
                 format: "v1".into(),
@@ -2005,6 +2025,11 @@ async fn json_turn_rest(
         if let Some(f) = meshy_turn::try_turn(t, memory).await {
             return f;
         }
+    }
+
+    // Juno's Chat: a pending laptop action, or Jev's guess names a juno_* tool.
+    if let Some(f) = juno_turn::try_turn(t, memory).await {
+        return f;
     }
 
     // Lucina's own Google Drive (LUCINA_DRIVE=true with a grant), read-only.
@@ -3284,6 +3309,8 @@ async fn tools_turn(
     } else {
         voice_system
     };
+    // The device the message came from, as a fact of the turn (no message text is matched).
+    let voice_system = format!("{voice_system} {}", juno_system(&session));
     let turn = TimelineTurn::new(st.timeline_for(&session), &channel, cmid.clone())
         .with_meta(Some(device_meta))
         .with_reply_to(reply_to);
@@ -3546,6 +3573,19 @@ async fn tools_turn(
         mcp,
     )
     .await;
+    // The tools' own blocks and buttons (a Juno screenshot, an AU map), as on the JSON planner: they
+    // need a rich message even when the composer gave none.
+    let rich_msg = match rich_msg {
+        None if !finish.blocks.is_empty() => Some(lucina_store::rich::RichMessage {
+            format: "v1".into(),
+            bubbles: vec![reply.clone()],
+            lang: Some(crate::rich::guess_language(&reply, &message).to_owned()),
+            blocks: Vec::new(),
+            actions: Vec::new(),
+        }),
+        m => m,
+    };
+    let rich_msg = with_blocks(with_routes(rich_msg, &finish.routes), &finish.blocks);
     st.recent
         .append(&session, "assistant", &remembered, Utc::now());
     // MCP turns are remembered with their caller (label and metadata).

@@ -36,6 +36,19 @@ and more. Everything stays private: device data goes only to the owner's own ser
      after 10 minutes. There are no purchases and no messages to third parties.
 4. **Lucina's knowledge of device state:** the phone periodically reports `device_state`: its alarms, timers, upcoming
    reminders and events, and the Focus mode. "Delete my 7:00 alarm" then resolves to the right id.
+5. **Juno, the owner's laptop (Lucina's `juno_*` tools):** `lucina-devd` on the laptop dials out; no port listens there.
+   - `GET /v1/device/juno/next?wait=<s>` (device token, `wait` 0..=25, default 25) long-polls Lucina's
+     `/api/secretary/device/juno/next` for the next call: `{"call": null}` or `{"call": {id, tool, arguments, deadlineMs}}`.
+   - `POST /v1/device/juno/calls/{id}/result {ok, result?, error?}` posts its answer (body up to 12 MiB, a base64 PNG
+     screenshot). An unknown or expired id, or one queued for another device: 404 `unknown_call`.
+   - Both stamp `device: {id, name}` from the token; a body's own `device` is ignored.
+   - `GET /v1/juno/screenshots/{id}.png`: a screenshot she took, as her reply's image block shows it (kept an hour, last 8).
+   - Lucina (`crates/lucina-server/src/juno.rs`) keeps a queue per device: a call nobody picks up in 10 s, or with no
+     poll in the last 40 s, fails as "Juno is offline". A Juno Chat turn (session `juno-<device id>`) targets that
+     laptop, any other turn the one that polled last. `juno_call` asks the owner first for `delete_file`, `write_file`
+     with `overwrite` and `wifi_connect`, and never sends reloads, installs, power or disk tools. The tools are in the
+     owner's registry only (never MCP turns); `LUCINA_JUNO_TOOLS=false` turns them off. Each call is logged as
+     `juno_audit` (device, tool, a summary without payloads, ok, ms).
 
 ## Multi-language
 The app follows the device language by default: iOS `Locale.preferredLanguages`, and on the web `navigator.languages`.

@@ -39,6 +39,7 @@ pub mod jev_samples;
 pub mod jev_yesno;
 pub mod grocery_turn;
 pub mod jobs;
+pub mod juno;
 pub mod notebooks;
 pub mod lan;
 pub mod flaws;
@@ -164,6 +165,8 @@ pub struct Inner {
     pub ingest: Option<Arc<lucina_vault_ingest::Ingest>>,
     /// The Jev client of the voice fast path when the config sets one (tests); `None`: the shared client.
     pub voice_jev: Option<Arc<lucina_jev::Jev>>,
+    /// The `juno_*` tools' bridge to the owner's laptop (crate::juno).
+    pub juno: Arc<juno::JunoBridge>,
     /// Voice Learn (`voice_learn`): the vocabulary file, re-read when it changes.
     pub vocab: Arc<lucina_vocab::Watched>,
     /// Serialises the read-modify-write of the vocabulary file.
@@ -275,6 +278,10 @@ impl AppState {
         let ops = ops::open(&cfg.ops, cfg.time_zone, cfg.memory_mode, &cfg.honcho);
         let ingest = ops::open_ingest(&cfg.ops, cfg.time_zone, ops.as_ref());
         let mut env = ToolEnv::new(&cfg.data_dir, cfg.time_zone);
+        let juno = Arc::new(juno::JunoBridge::new());
+        if cfg.juno_tools {
+            env.juno = Some(juno.clone());
+        }
         env.ops = ops.clone();
         let flaws = flaws::open(&cfg.flaws);
         env.flaws = flaws.clone();
@@ -540,6 +547,14 @@ impl AppState {
                 .register(Arc::new(lucina_tools::tools::secret_keep::SecretProjectTool { keeper: secret_keep.clone() }))
                 .expect("secret_project registers");
         }
+        // Juno, the owner's laptop (LUCINA_JUNO_TOOLS): owner turns only, so added after the MCP registries.
+        if cfg.juno_tools {
+            for tool in lucina_tools::tools::juno::all() {
+                if cfg.tools.allows(tool.name()) {
+                    registry.register(tool).expect("juno tools register");
+                }
+            }
+        }
         // The owner's shared files: owner turns only, so added after the MCP registries.
         let share = crate::share::ShareRuntime::new(&cfg.share);
         for tool in crate::share::tools::all(share.memory.clone()) {
@@ -621,6 +636,7 @@ impl AppState {
             ops,
             flaws,
             ingest,
+            juno,
             voice_jev: cfg.voice_jev.clone().map(|c| Arc::new(lucina_jev::Jev::new(c))),
             vocab: Arc::new(lucina_vocab::Watched::new(cfg.vocab_path.clone())),
             vocab_write: Mutex::new(()),

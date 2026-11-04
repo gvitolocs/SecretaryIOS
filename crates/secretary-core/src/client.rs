@@ -17,10 +17,10 @@ use crate::chat_stream::ChatStream;
 use crate::error::{Error, Result};
 use crate::models::{
     Agenda, AgendaQuery, CancelledReminder, ChatReply, ChatRequest, CommandResult, CreateList,
-    CreateReminder, CreatedReminder, DeviceEvents, DeviceState, Envelope, Health, Job, ListState,
-    OpsBatch, OpsResult, ReminderList, ReminderQuery, ReminderScope, ShoppingItem, ShoppingList,
-    ShoppingListData, ShoppingListsData, ShoppingOp, TimelineConversations, TimelinePage,
-    TimelineQuery, UpdateList,
+    CreateReminder, CreatedReminder, DeviceEvents, DeviceRef, DeviceState, Envelope, Health, Job,
+    ListState, OpsBatch, OpsResult, ReminderList, ReminderQuery, ReminderScope, ShoppingItem,
+    ShoppingList, ShoppingListData, ShoppingListsData, ShoppingOp, TimelineConversations,
+    TimelinePage, TimelineQuery, UpdateList,
 };
 use crate::validate;
 
@@ -985,6 +985,58 @@ impl Call {
         }
         let body = serde_json::to_value(res).map_err(|e| Error::Decode(e.to_string()))?;
         Ok(Self::new(Method::POST, &["device", "commands", id, "result"]).with_body(body))
+    }
+
+    /// `POST /device/juno/next {device, waitSecs}`: Juno's next call to run
+    /// (long-poll; `waitSecs` 0..=25).
+    pub fn juno_next(device: &DeviceRef, wait_secs: u64) -> Result<Self> {
+        if !(0..=25).contains(&wait_secs) {
+            return Err(Error::Invalid {
+                field: "wait",
+                message: "must be 0..=25".into(),
+            });
+        }
+        Ok(
+            Self::new(Method::POST, &["device", "juno", "next"]).with_body(serde_json::json!({
+                "device": device,
+                "waitSecs": wait_secs,
+            })),
+        )
+    }
+
+    /// `GET /juno/screenshots/{id}.png`: a screenshot Juno sent for a reply
+    /// (`id` is `[A-Za-z0-9_-]{1,64}`).
+    pub fn juno_screenshot(file: &str) -> Result<Self> {
+        let id = file.strip_suffix(".png").unwrap_or("");
+        validate::session_id("id", id)?;
+        Ok(Self::new(Method::GET, &["juno", "screenshots", file]))
+    }
+
+    /// `POST /device/juno/result {device, id, ok, result?, error?}`: Juno's
+    /// answer to one call (`id` is `[A-Za-z0-9_-]{1,64}`, `error` ≤ 2000 chars).
+    pub fn juno_result(
+        device: &DeviceRef,
+        id: &str,
+        ok: bool,
+        result: Option<Value>,
+        error: Option<String>,
+    ) -> Result<Self> {
+        validate::session_id("id", id)?;
+        if let Some(e) = error.as_deref() {
+            validate::text("error", e, 2000)?;
+        }
+        let mut body = serde_json::json!({
+            "device": device,
+            "id": id,
+            "ok": ok,
+        });
+        if let Some(r) = result {
+            body["result"] = r;
+        }
+        if let Some(e) = error {
+            body["error"] = Value::String(e);
+        }
+        Ok(Self::new(Method::POST, &["device", "juno", "result"]).with_body(body))
     }
 
     /// `POST /device/state`: each list at most 500 objects of at most 8 KiB.
@@ -2213,6 +2265,51 @@ mod tests {
         assert!(state(json!({"alarms": [{"id": "a1", "time": "07:00"}], "focus": "work"})).is_ok());
         assert!(state(json!({"alarms": ["07:00"]})).is_err());
         assert!(state(json!({"focus": 3})).is_err());
+    }
+
+    #[test]
+    fn juno_calls() {
+        let device = DeviceRef {
+            id: "dev-1".into(),
+            name: "Juno".into(),
+        };
+        let next = Call::juno_next(&device, 25).unwrap();
+        assert_eq!(next.method(), &Method::POST);
+        assert_eq!(next.path(), "/api/secretary/device/juno/next");
+        assert_eq!(
+            next.body().unwrap(),
+            &json!({"device": {"id": "dev-1", "name": "Juno"}, "waitSecs": 25})
+        );
+        assert!(Call::juno_next(&device, 0).is_ok());
+        match Call::juno_next(&device, 26) {
+            Err(Error::Invalid { field, .. }) => assert_eq!(field, "wait"),
+            other => panic!("{other:?}"),
+        }
+
+        let res = Call::juno_result(&device, "call-1", true, Some(json!({"a": 1})), None).unwrap();
+        assert_eq!(res.path(), "/api/secretary/device/juno/result");
+        assert_eq!(
+            res.body().unwrap(),
+            &json!({"device": {"id": "dev-1", "name": "Juno"}, "id": "call-1", "ok": true, "result": {"a": 1}})
+        );
+        let res = Call::juno_result(&device, "call-1", false, None, Some("boom".into())).unwrap();
+        let body = res.body().unwrap();
+        assert_eq!(body["error"], "boom");
+        assert!(body.get("result").is_none());
+        for bad in ["", "a/b", "a.b", &"x".repeat(65)] {
+            assert!(
+                Call::juno_result(&device, bad, true, None, None).is_err(),
+                "{bad}"
+            );
+        }
+        assert!(Call::juno_result(&device, "call-1", false, None, Some("e".repeat(2001))).is_err());
+        assert!(Call::juno_result(&device, "call-1", false, None, Some("e".repeat(2000))).is_ok());
+        let shot = Call::juno_screenshot("Ab9_x-1.png").unwrap();
+        assert_eq!(shot.method(), &Method::GET);
+        assert_eq!(shot.path(), "/api/secretary/juno/screenshots/Ab9_x-1.png");
+        for bad in ["x", ".png", "a.b.png", "../x.png", "x.jpg"] {
+            assert!(Call::juno_screenshot(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]
