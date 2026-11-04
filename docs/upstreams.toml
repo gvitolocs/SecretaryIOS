@@ -212,6 +212,42 @@ confidence = "confirmed"
 rely_on = ["rendezvous protocol", "hbb_common protos", "video codec negotiation", "clipboard", "file transfer"]
 notes = "lucinadesk-core/-gateway speak the RustDesk protocol (hbb_common .proto copied verbatim); host agent 1.4.9 and hbbs/hbbr 1.1.16 run unmodified. Owner-only AGPL (2026-10-27)."
 
+
+[[upstream]]
+id = "voxl"
+name = "voxl"
+url = "https://github.com/tembo/voxl"
+source = "github"
+repo = "tembo/voxl"
+branch = "main"
+track = "releases"
+pin = "v0.3.3"
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "crates/lucina-desk-web", base = "main" }]
+licence_upstream = "MIT"
+licence_ours = "MIT"
+relation = "port"
+confidence = "confirmed"
+rely_on = ["websocket protocol (protocol.ts, video header in video.rs)", "web client bundles", "stripe layout", "wait api", "screenshot api", "login and access checks"]
+notes = "Pinned commit 47bb94ec4d253638c1470eb81906676e1bef4b00 (v0.3.3), audited 2026-11-04: no outbound calls, telemetry, update check or exec (nezopt ~/scratch/voxl-audit/AUDIT.md). nezopt runs it as voxl.service (off by default, 127.0.0.1:6901, voxl-desk start|stop). Juno's lucina-app-desk --host --web speaks its protocol and serves its web client unchanged (vendored bundles); adopt/adapt/reject per piece in LucinaOS docs/research/juno-desk.md. Its binary links x264 (GPL-2.0); Juno does not use x264. A protocol change upstream breaks the vendored bundles: re-check protocol.ts at every move."
+
+[[upstream]]
+id = "filmcraft-h264enc"
+name = "FilmCraft H.264 encoder"
+url = "https://github.com/storytold/filmcraft"
+source = "github"
+repo = "storytold/filmcraft"
+branch = "main"
+track = "commits"
+pin = "68919ed87aa6a097a4d21414ec7c438883f5fe22"
+paths = ["crates/h264enc", "crates/bitstream"]
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "crates/lucina-desk-web", base = "main" }]
+licence_upstream = "MIT OR Apache-2.0"
+licence_ours = "MIT"
+relation = "vendored"
+confidence = "confirmed"
+rely_on = ["Baseline CAVLC encoding", "Annex-B output", "Speed preset", "CRF rate control"]
+notes = "Git dependency at the pin for Juno's browser remote desktop (CPU H.264, one encoder per screen stripe). Same pin as the ArtCraft audit (side note artcraft-audit.md): no telemetry; its decoders lack picture-size caps, but the encoder parses no untrusted input. Pure Rust, no SIMD: about 35-70 ms per whole 1080p frame on nezopt, hence stripes."
+
 [[upstream]]
 id = "opencode"
 name = "OpenCode"
