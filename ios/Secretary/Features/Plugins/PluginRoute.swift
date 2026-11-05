@@ -33,8 +33,10 @@ enum PluginScreenshotHooks {
 
     /// `-SecretaryInstagramTab highlights`: the profile opens on that tab.
     static var instagramTab: IgTab? { value("SecretaryInstagramTab").flatMap(IgTab.init(rawValue:)) }
-    /// `-SecretaryInstagramHighlight first`: the first highlight opens once the list is in.
-    static var opensFirstHighlight: Bool { value("SecretaryInstagramHighlight") == "first" }
+    /// `-SecretaryInstagramHighlight first`: the first highlight opens once the list is in; `story` also opens its first
+    /// item in the viewer.
+    static var opensFirstHighlight: Bool { ["first", "story"].contains(value("SecretaryInstagramHighlight")) }
+    static var opensHighlightStory: Bool { value("SecretaryInstagramHighlight") == "story" }
     /// `-SecretaryPixivOpen first`: the first work of the list opens once it is in.
     static var opensFirstPixivWork: Bool { value("SecretaryPixivOpen") == "first" }
     /// `-SecretaryComputerFullScreen page`: once the stream is live, click Cua's own full-screen button (the path the

@@ -1,5 +1,11 @@
 {
+  "%lld of %@ posts": ["%lld di %@ post", "%lld af %@ opslag"],
+  "All %lld loaded.": ["Caricati tutti (%lld).", "Alle %lld er hentet."],
+  "Checked %@": ["Controllato %@", "Tjekket %@"],
   "Lucina's computer": ["Il computer di Lucina", "Lucinas computer"],
+  "Not checked yet": ["Non ancora controllato", "Ikke tjekket endnu"],
+  "Opened %@": ["Aperto %@", "Åbnet %@"],
+  "Showing the newest %lld of %lld posts: the anonymous source doesn't give older ones (reels go further).": ["Sono i %lld post più recenti su %lld: la fonte anonima non dà quelli più vecchi (i reel vanno più indietro).", "Viser de nyeste %lld af %lld opslag: den anonyme kilde giver ikke ældre (reels går længere tilbage)."],
   "Watch her desktop live, take over": ["Guarda il suo desktop dal vivo, prendi il controllo", "Se hendes skrivebord live, tag over"],
   "Which computer": ["Quale computer", "Hvilken computer"],
   "Desktop": ["Desktop", "Skrivebord"],

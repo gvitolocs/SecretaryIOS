@@ -12,6 +12,9 @@ struct SecretaryApp: App {
         // The approval Live Activity's buttons run in this process too (Deny, Approve).
         ApprovalActivities.install()
         LucinaTabBarAppearance.apply()
+        #if DEBUG || SCREENSHOTS
+        WindowSnapshots.schedule()
+        #endif
     }
 
     var body: some Scene {

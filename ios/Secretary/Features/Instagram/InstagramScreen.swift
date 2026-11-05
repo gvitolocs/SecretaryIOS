@@ -37,15 +37,21 @@ struct InstagramScreen: View {
                             }
                         }
                         if store.watched.isEmpty { Text("No watched accounts yet.").foregroundStyle(Theme.textSecondary) }
-                        ForEach(store.watched) { person in
-                            personRow(store, username: person.username, name: person.fullName, pic: person.picUrl,
-                                      verified: person.isVerified, badge: store.badges.accounts[person.username] ?? 0,
-                                      isPrivate: person.isPrivate == true, gone: person.gone)
+                        // Tiles, not rows (owner, 2026-11-01): picture, names, Private, the new count, the last check.
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 12)], spacing: 12) {
+                            ForEach(store.watched) { person in
+                                watchedTile(store, person, badge: store.badges.accounts[person.username] ?? 0)
+                            }
                         }
                         Text("Recent profiles").font(LucinaTokens.Fonts.headline)
-                        ForEach(store.recent) { person in
-                            personRow(store, username: person.username, name: person.fullName, pic: person.picUrl,
-                                      verified: person.isVerified)
+                        // The same tiles as the watched accounts (owner, 2026-11-01), with when each was opened.
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 12)], spacing: 12) {
+                            ForEach(store.recent) { person in
+                                profileTile(store, username: person.username, fullName: person.fullName, pic: person.picUrl,
+                                            verified: person.isVerified, isPrivate: person.isPrivate) {
+                                    Text("Opened \(Date(timeIntervalSince1970: person.openedAt).formatted(.relative(presentation: .named)))")
+                                }
+                            }
                         }
                         if store.recent.isEmpty && !store.loading.contains("home") {
                             ContentUnavailableView("Open an Instagram profile", systemImage: "person.crop.square",
@@ -100,34 +106,57 @@ struct InstagramScreen: View {
             }
         }
     }
-    private func personRow(_ store: InstagramStore, username name: String, name fullName: String, pic: String?,
-                           verified: Bool, badge: Int = 0, isPrivate: Bool = false, gone: Bool = false) -> some View {
+    private func watchedTile(_ store: InstagramStore, _ person: IgWatch, badge: Int) -> some View {
+        profileTile(store, username: person.username, fullName: person.fullName, pic: person.picUrl, verified: person.isVerified,
+                    isPrivate: person.isPrivate == true, gone: person.gone, badge: badge) {
+            if let last = person.lastCheck {
+                Text("Checked \(Date(timeIntervalSince1970: last).formatted(.relative(presentation: .named)))")
+            } else {
+                Text("Not checked yet")
+            }
+        }
+    }
+    private func profileTile<When: View>(_ store: InstagramStore, username name: String, fullName: String, pic: String?,
+                                         verified: Bool, isPrivate: Bool, gone: Bool = false, badge: Int = 0,
+                                         @ViewBuilder when: () -> When) -> some View {
         Button { username = name } label: {
-            HStack(spacing: 12) {
-                IgPicture(store: store, path: pic).frame(width: 48, height: 48).clipShape(Circle())
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack {
-                        Text(verbatim: fullName.isEmpty ? name : fullName)
-                        if verified { Image(systemName: "checkmark.seal.fill").foregroundStyle(Theme.accent).accessibilityLabel("Verified") }
+            VStack(spacing: 6) {
+                IgPicture(store: store, path: pic).frame(width: 68, height: 68).clipShape(Circle())
+                    .overlay(alignment: .topTrailing) {
+                        if badge > 0 {
+                            Text(verbatim: String(badge)).font(.caption2.bold()).foregroundStyle(.white)
+                                .padding(.horizontal, 6).padding(.vertical, 2).background(Color.red, in: Capsule()).offset(x: 6, y: -2)
+                        }
                     }
-                    Text(verbatim: "@" + name).font(.caption).foregroundStyle(Theme.textSecondary)
-                    if gone { Text("Gone").font(.caption) }
-                    else if isPrivate { Text("Private").font(.caption) }
+                    .padding(.bottom, 4)
+                HStack(spacing: 4) {
+                    Text(verbatim: fullName.isEmpty ? name : fullName)
+                        .font(.subheadline.weight(.semibold)).lineLimit(2).multilineTextAlignment(.center)
+                    if verified { Image(systemName: "checkmark.seal.fill").foregroundStyle(Theme.accent).accessibilityLabel("Verified") }
                 }
-                Spacer()
-                if badge > 0 { Text(verbatim: String(badge)).padding(6).background(Theme.accent, in: Capsule()) }
-            }.padding(12).background(Theme.card, in: RoundedRectangle(cornerRadius: 16))
+                Text(verbatim: "@" + name).font(.caption).foregroundStyle(Theme.textSecondary).lineLimit(1)
+                if gone {
+                    Text("Gone").font(.caption2)
+                } else if isPrivate {
+                    Label("Private", systemImage: "lock.fill").font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 8).padding(.vertical, 3).background(Theme.page, in: Capsule())
+                }
+                when().font(.caption2).foregroundStyle(Theme.textSecondary)
+            }
+            .frame(maxWidth: .infinity).padding(.vertical, 14).padding(.horizontal, 8)
+            .background(Theme.card, in: RoundedRectangle(cornerRadius: 16))
         }
         .buttonStyle(.plain).accessibilityIdentifier("instagram-account-" + name)
-        .contextMenu {
-            Button("Open") { username = name }
-            if let link = InstagramText.profileLink(name) {
-                Button("Copy link") { UIPasteboard.general.url = link; store.notice = String(localized: "Link copied") }
-            }
-            Button(store.entry(name) == nil ? String(localized: "Watch") : String(localized: "Stop watching")) {
-                Task { await store.changeWatch(name) }
-            }.disabled(store.changingWatch)
+        .contextMenu { personMenu(store, name) }
+    }
+    @ViewBuilder private func personMenu(_ store: InstagramStore, _ name: String) -> some View {
+        Button("Open") { username = name }
+        if let link = InstagramText.profileLink(name) {
+            Button("Copy link") { UIPasteboard.general.url = link; store.notice = String(localized: "Link copied") }
         }
+        Button(store.entry(name) == nil ? String(localized: "Watch") : String(localized: "Stop watching")) {
+            Task { await store.changeWatch(name) }
+        }.disabled(store.changingWatch)
     }
 }
 
@@ -151,6 +180,11 @@ private struct InstagramProfileView: View {
                     if tab == .highlights {
                         highlights
                     } else {
+                        // Posts stop at the newest twelve (StoryView ignores the cursor): say it against the profile's count.
+                        if tab == .posts, let total = store.bundle?.profile.mediaCount,
+                           let shown = store.pages[tab.rawValue]?.items.count, shown > 0, total > shown {
+                            Text("\(shown) of \(InstagramText.compact(total)) posts").font(.caption).foregroundStyle(Theme.textSecondary)
+                        }
                         InstagramTileGrid(store: store, items: store.pages[tab.rawValue]?.items ?? [], username: username,
                                           archived: tab == .archive) { index in
                             viewer = IgViewerRequest(items: store.pages[tab.rawValue]?.items ?? [], start: index,
@@ -166,6 +200,18 @@ private struct InstagramProfileView: View {
                         Button("Load more") { Task { await store.load(tab, username: username, more: true) } }
                             .accessibilityIdentifier("instagram-load-more")
                             .onAppear { Task { await store.load(tab, username: username, more: true) } }
+                    } else if tab != .highlights, let page = store.pages[tab.rawValue], !page.items.isEmpty,
+                              !store.loading.contains(tab.rawValue), store.errors[tab.rawValue] == nil {
+                        // The end of the list, said.
+                        Group {
+                            if tab == .posts, let total = store.bundle?.profile.mediaCount, total > page.items.count {
+                                Text("Showing the newest \(page.items.count) of \(total) posts: the anonymous source doesn't give older ones (reels go further).")
+                            } else {
+                                Text("All \(page.items.count) loaded.")
+                            }
+                        }
+                        .font(.caption).foregroundStyle(Theme.textSecondary).multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity).accessibilityIdentifier("instagram-list-end")
                     }
                 }
                 if store.loading.contains("profile") { ProgressView().frame(maxWidth: .infinity) }
@@ -292,7 +338,14 @@ private struct InstagramHighlightView: View {
                 }
             }.padding(.vertical)
         }.lucinaScreen("Highlights")
-            .task { await load() }.refreshable { await load(refresh: true) }
+            .task {
+                await load()
+                let items = store.pages[highlight.id]?.items ?? []
+                if PluginScreenshotHooks.opensHighlightStory, viewer == nil, !items.isEmpty {
+                    viewer = IgViewerRequest(items: items, start: 0, username: username, highlight: highlight)
+                }
+            }
+            .refreshable { await load(refresh: true) }
             .fullScreenCover(item: $viewer) { InstagramViewer(store: store, request: $0) }
             .overlay(alignment: .bottom) { IgNotice(store: store) }
     }
