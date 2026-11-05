@@ -1013,7 +1013,9 @@ impl Call {
     }
 
     /// `POST /device/juno/result {device, id, ok, result?, error?}`: Juno's
-    /// answer to one call (`id` is `[A-Za-z0-9_-]{1,64}`, `error` ≤ 2000 chars).
+    /// answer to one call (`id` is `[A-Za-z0-9_-]{1,64}`). A longer `error` is
+    /// cut to its first 2000 chars: a refusal that carries the screen's tree must
+    /// still reach the waiting call, not fail the whole post.
     pub fn juno_result(
         device: &DeviceRef,
         id: &str,
@@ -1022,6 +1024,13 @@ impl Call {
         error: Option<String>,
     ) -> Result<Self> {
         validate::session_id("id", id)?;
+        let error = error.map(|e| {
+            if e.chars().count() > 2000 {
+                e.chars().take(2000).collect::<String>()
+            } else {
+                e
+            }
+        });
         if let Some(e) = error.as_deref() {
             validate::text("error", e, 2000)?;
         }
@@ -2320,8 +2329,11 @@ mod tests {
                 "{bad}"
             );
         }
-        assert!(Call::juno_result(&device, "call-1", false, None, Some("e".repeat(2001))).is_err());
+        // A refusal carrying a whole screen tree is cut, not refused: the waiting call must get it.
+        let long = Call::juno_result(&device, "call-1", false, None, Some("é".repeat(9000))).unwrap();
+        assert_eq!(long.body().unwrap()["error"].as_str().unwrap().chars().count(), 2000);
         assert!(Call::juno_result(&device, "call-1", false, None, Some("e".repeat(2000))).is_ok());
+        assert!(Call::juno_result(&device, "call-1", false, None, Some("bad\u{0}".into())).is_err());
         let ev = Call::juno_events(&device, vec![json!({"seq": 1})], 2).unwrap();
         assert_eq!(ev.method(), &Method::POST);
         assert_eq!(ev.path(), "/api/secretary/device/juno/events");
