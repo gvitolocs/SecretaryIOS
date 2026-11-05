@@ -22,7 +22,7 @@
 //! [`JunoBridge::call`] queues a call and waits for it: nobody polled in
 //! [`ONLINE_WINDOW`], or nobody picked it up in [`PICKUP`]: offline. Each call
 //! is logged as `juno_audit` (device, tool, a payload-free summary, ok, ms,
-//! and `target`, `undo`, `effect`, which stay empty until the device reports them). An `internal` call (Lucina's
+//! and the `target`, `undo`, `effect` an ok result carries, see [`audit_fields`]). An `internal` call (Lucina's
 //! own step, secret_keep's `juno:` source) is logged without its summary.
 //!
 //! Risky calls wait for a decision ([`JunoLink::ask`]): it is filed with
@@ -234,7 +234,14 @@ impl JunoBridge {
                 Ok(d) => d,
                 Err(e) => {
                     drop(st);
-                    audit(device.unwrap_or(""), tool, &summary, false, started);
+                    audit(
+                        device.unwrap_or(""),
+                        tool,
+                        &summary,
+                        false,
+                        &AuditFields::default(),
+                        started,
+                    );
                     return Err(e);
                 }
             };
@@ -278,7 +285,8 @@ impl JunoBridge {
             }
         }
         let out = out.map(|v| self.keep_image(v));
-        audit(&dev, tool, &summary, out.is_ok(), started);
+        let fields = out.as_ref().map(audit_fields).unwrap_or_default();
+        audit(&dev, tool, &summary, out.is_ok(), &fields, started);
         out
     }
 
@@ -602,16 +610,55 @@ pub fn sticky_state(events: &VecDeque<Value>) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join("; "))
 }
 
-fn audit(device: &str, tool: &str, summary: &str, ok: bool, started: Instant) {
+/// Longest `target`, `undo` or `effect` a `juno_audit` line carries, in chars.
+const AUDIT_FIELD_CHARS: usize = 128;
+
+/// The `target`, `undo` and `effect` of a `juno_audit` line.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct AuditFields {
+    target: String,
+    undo: String,
+    effect: String,
+}
+
+/// The device result's own `target`, `undo` and `effect` strings, without
+/// control characters and cut to [`AUDIT_FIELD_CHARS`]; "" when absent. No
+/// other field of the result is read.
+fn audit_fields(result: &Value) -> AuditFields {
+    let field = |key: &str| {
+        result
+            .get(key)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(AUDIT_FIELD_CHARS)
+            .collect()
+    };
+    AuditFields {
+        target: field("target"),
+        undo: field("undo"),
+        effect: field("effect"),
+    }
+}
+
+fn audit(
+    device: &str,
+    tool: &str,
+    summary: &str,
+    ok: bool,
+    fields: &AuditFields,
+    started: Instant,
+) {
     tracing::info!(
         target: "juno_audit",
         device,
         tool,
         summary,
         ok,
-        target = "",
-        undo = "",
-        effect = "",
+        target = fields.target.as_str(),
+        undo = fields.undo.as_str(),
+        effect = fields.effect.as_str(),
         ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
     );
 }
@@ -872,6 +919,31 @@ mod tests {
         assert!(call["deadlineMs"].as_i64().unwrap() > chrono::Utc::now().timestamp_millis());
         // The result slot is gone: a second delivery is refused.
         assert!(!b.result("dev1", call["id"].as_str().unwrap(), Ok(json!({}))));
+    }
+
+    #[test]
+    fn juno_audit_fields_come_from_the_result() {
+        let f = audit_fields(&json!({
+            "text": "tapped Send",
+            "target": "82dbdc012dbeaece button",
+            "undo": "act_1",
+            "effect": "write",
+        }));
+        assert_eq!(
+            f,
+            AuditFields {
+                target: "82dbdc012dbeaece button".into(),
+                undo: "act_1".into(),
+                effect: "write".into(),
+            }
+        );
+        // Absent or not a string: "". Control characters go, length is cut.
+        let f = audit_fields(&json!({"text": "ok", "undo": 7}));
+        assert_eq!(f, AuditFields::default());
+        let long = format!("a\nb\u{1b}{}", "x".repeat(300));
+        let f = audit_fields(&json!({"target": long}));
+        assert!(f.target.starts_with("abx"));
+        assert_eq!(f.target.chars().count(), AUDIT_FIELD_CHARS);
     }
 
     #[tokio::test]
