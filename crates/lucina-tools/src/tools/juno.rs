@@ -627,6 +627,7 @@ async fn guarded(
         return ask_first(ctx, tool, &args, why, device_hash).await;
     }
     if tool == "intents" {
+        intents_answered(ctx);
         keep_intents(ctx, &r);
         keep_intent_schemas(ctx, &r);
     }
@@ -687,6 +688,14 @@ pub fn driver_summary(tool: &str, a: &Value) -> String {
 /// How long the laptop's last `tools` and `intents` answers are kept for a turn's system text.
 pub const LISTS_TTL: Duration = Duration::from_secs(10 * 60);
 
+/// After an internal `intents` prefetch timed out or failed, [`fetch_lists`]
+/// skips it for this long (the laptop's listing probes every app and can take
+/// a minute, and lucina-devd runs one call at a time).
+pub const INTENTS_BACKOFF: Duration = Duration::from_secs(10 * 60);
+
+/// After the laptop answered "busy" to a prefetch, [`fetch_lists`] sends none for this long.
+pub const BUSY_BACKOFF: Duration = Duration::from_secs(60);
+
 /// One line of a listed tool or intent at most this long.
 const LIST_LINE: usize = 160;
 
@@ -696,6 +705,10 @@ struct Lists {
     tools: Option<(Instant, Vec<String>)>,
     /// Intent name → its line; `intents` lists the shell's and the front app's, so answers add up.
     intents: Option<(Instant, BTreeMap<String, String>)>,
+    /// No internal `intents` prefetch before this (it timed out or failed).
+    intents_skip: Option<Instant>,
+    /// No prefetch at all before this (the laptop said it was busy).
+    paused: Option<Instant>,
 }
 
 static LISTS: LazyLock<Mutex<HashMap<String, Lists>>> = LazyLock::new(Default::default);
@@ -782,6 +795,27 @@ fn keep_tools(ctx: &Ctx, r: &Value) {
     let lines = tool_lines(r);
     if !lines.is_empty() {
         lists().entry(list_key(ctx)).or_default().tools = Some((Instant::now(), lines));
+    }
+}
+
+/// The laptop answered an `intents` call: prefetching it is fine again.
+fn intents_answered(ctx: &Ctx) {
+    if let Some(l) = lists().get_mut(&list_key(ctx)) {
+        l.intents_skip = None;
+    }
+}
+
+/// An internal prefetch of `intents` (or `tools`) failed with `e`: a "busy"
+/// laptop pauses both for [`BUSY_BACKOFF`]; any other failure of `intents`
+/// skips it for [`INTENTS_BACKOFF`].
+fn prefetch_failed(ctx: &Ctx, intents: bool, e: &ToolError) {
+    let now = Instant::now();
+    let mut map = lists();
+    let l = map.entry(list_key(ctx)).or_default();
+    if e.0.to_lowercase().contains("busy") {
+        l.paused = Some(now + BUSY_BACKOFF);
+    } else if intents {
+        l.intents_skip = Some(now + INTENTS_BACKOFF);
     }
 }
 
@@ -934,14 +968,23 @@ pub fn known_lists(session: &str) -> Option<String> {
 }
 
 /// Fetch the laptop's tool list and intents (read-only, Lucina's own calls)
-/// when [`known_lists`] has neither fresh; errors leave them unknown.
+/// when [`known_lists`] has neither fresh; errors leave them unknown. A
+/// laptop that said "busy" gets neither for [`BUSY_BACKOFF`], and `intents`
+/// is not asked for [`INTENTS_BACKOFF`] after it timed out or failed: the
+/// laptop keeps working on a call it stopped waiting for and answers every
+/// later one "busy", so a slow prefetch would block her real calls.
 pub async fn fetch_lists(ctx: &Ctx, limit: Duration) {
-    let (tools, intents) = {
+    let (skip_tools, skip_intents) = {
         let map = lists();
         let l = map.get(&list_key(ctx));
+        let now = Instant::now();
+        let before = |t: Option<Instant>| t.is_some_and(|t| now < t);
+        if l.is_some_and(|l| before(l.paused)) {
+            return;
+        }
         (
             l.is_some_and(|l| fresh(&l.tools).is_some()),
-            l.is_some_and(|l| fresh(&l.intents).is_some()),
+            l.is_some_and(|l| fresh(&l.intents).is_some() || before(l.intents_skip)),
         )
     };
     let opts = CallOpts {
@@ -949,18 +992,25 @@ pub async fn fetch_lists(ctx: &Ctx, limit: Duration) {
         internal: true,
     };
     let get_tools = async {
-        if !tools {
-            if let Ok(r) = send(ctx, "tools", json!({"name": null}), limit, &opts).await {
-                keep_tools(ctx, &r);
-                keep_tool_schemas(ctx, &r);
+        if !skip_tools {
+            match send(ctx, "tools", json!({"name": null}), limit, &opts).await {
+                Ok(r) => {
+                    keep_tools(ctx, &r);
+                    keep_tool_schemas(ctx, &r);
+                }
+                Err(e) => prefetch_failed(ctx, false, &e),
             }
         }
     };
     let get_intents = async {
-        if !intents {
-            if let Ok(r) = send(ctx, "intents", json!({}), limit, &opts).await {
-                keep_intents(ctx, &r);
-                keep_intent_schemas(ctx, &r);
+        if !skip_intents {
+            match send(ctx, "intents", json!({}), limit, &opts).await {
+                Ok(r) => {
+                    intents_answered(ctx);
+                    keep_intents(ctx, &r);
+                    keep_intent_schemas(ctx, &r);
+                }
+                Err(e) => prefetch_failed(ctx, true, &e),
             }
         }
     };
@@ -1323,6 +1373,8 @@ mod tests {
         calls: Mutex<Vec<Sent>>,
         reply: Mutex<Value>,
         fail: Mutex<Option<String>>,
+        /// Tool → its error, before `fail`.
+        fail_tool: Mutex<HashMap<String, String>>,
         asked: Mutex<Vec<Ask>>,
         go: Mutex<Vec<(String, String)>>,
     }
@@ -1341,6 +1393,9 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((device, tool.to_owned(), args, timeout, opts.clone()));
+            if let Some(e) = self.fail_tool.lock().unwrap().get(tool) {
+                return Err(e.clone());
+            }
             match self.fail.lock().unwrap().clone() {
                 Some(e) => Err(e),
                 None => Ok(self.reply.lock().unwrap().clone()),
@@ -1990,6 +2045,98 @@ mod tests {
         let calls = f.calls.lock().unwrap();
         assert_eq!(calls.len(), 3, "only intents (none listed) is asked again");
         assert_eq!(calls[2].1, "intents");
+    }
+
+    /// The tools `fetch_lists` sent from the `from`th call on, sorted.
+    fn sent_from(f: &Fake, from: usize) -> Vec<String> {
+        let mut tools: Vec<String> = f.calls.lock().unwrap()[from..]
+            .iter()
+            .map(|c| c.1.clone())
+            .collect();
+        tools.sort_unstable();
+        tools
+    }
+
+    #[tokio::test]
+    async fn juno_a_timed_out_intents_prefetch_is_skipped_until_intents_answers() {
+        // 2026-11-05: generation 31's `intents` took 5-69 s; lucina-devd kept at it and
+        // answered her next calls "busy".
+        let session = "secretary_juno-lists_slow_intents";
+        let f = fake(json!({"text": "x"}));
+        let c = ctx(&f, session);
+        f.fail_tool
+            .lock()
+            .unwrap()
+            .insert("intents".into(), "Juno did not answer in time".into());
+        fetch_lists(&c, Duration::from_secs(8)).await;
+        assert_eq!(sent_from(&f, 0), ["intents", "tools"]);
+        fetch_lists(&c, Duration::from_secs(8)).await;
+        assert_eq!(
+            sent_from(&f, 2),
+            ["tools"],
+            "intents is skipped for 10 minutes"
+        );
+
+        f.fail_tool.lock().unwrap().clear();
+        JunoCallTool
+            .call(json!({"tool": "intents"}), &c)
+            .await
+            .unwrap();
+        let n = f.calls.lock().unwrap().len();
+        fetch_lists(&c, Duration::from_secs(8)).await;
+        assert_eq!(
+            sent_from(&f, n),
+            ["intents", "tools"],
+            "her answer clears it"
+        );
+
+        // A failed one is skipped too, and the skip ends after INTENTS_BACKOFF.
+        f.fail_tool
+            .lock()
+            .unwrap()
+            .insert("intents".into(), "intents: no such tool".into());
+        fetch_lists(&c, Duration::from_secs(8)).await;
+        let n = f.calls.lock().unwrap().len();
+        fetch_lists(&c, Duration::from_secs(8)).await;
+        assert_eq!(sent_from(&f, n), ["tools"]);
+        lists().get_mut(&list_key(&c)).unwrap().intents_skip = Some(Instant::now());
+        f.fail_tool.lock().unwrap().clear();
+        let n = f.calls.lock().unwrap().len();
+        fetch_lists(&c, Duration::from_secs(8)).await;
+        assert_eq!(sent_from(&f, n), ["intents", "tools"]);
+        let n = f.calls.lock().unwrap().len();
+        fetch_lists(&c, Duration::from_secs(8)).await;
+        assert_eq!(
+            sent_from(&f, n),
+            ["intents", "tools"],
+            "an internal answer clears it"
+        );
+        assert_eq!(INTENTS_BACKOFF, Duration::from_secs(600));
+    }
+
+    #[tokio::test]
+    async fn juno_a_busy_laptop_gets_no_prefetch_for_a_minute() {
+        let session = "secretary_juno-lists_busy";
+        let f = fake(json!({"text": "x"}));
+        let c = ctx(&f, session);
+        *f.fail.lock().unwrap() = Some("Juno is busy with another call".into());
+        fetch_lists(&c, Duration::from_secs(8)).await;
+        assert_eq!(sent_from(&f, 0), ["intents", "tools"]);
+        *f.fail.lock().unwrap() = None;
+        fetch_lists(&c, Duration::from_secs(8)).await;
+        assert_eq!(
+            f.calls.lock().unwrap().len(),
+            2,
+            "nothing is sent while busy"
+        );
+
+        // A paused that has run out (BUSY_BACKOFF later): both again, intents not skipped.
+        let paused = lists().get(&list_key(&c)).unwrap().paused.unwrap();
+        assert!(paused > Instant::now() + BUSY_BACKOFF - Duration::from_secs(5));
+        lists().get_mut(&list_key(&c)).unwrap().paused = Some(Instant::now());
+        fetch_lists(&c, Duration::from_secs(8)).await;
+        assert_eq!(sent_from(&f, 2), ["intents", "tools"]);
+        assert_eq!(BUSY_BACKOFF, Duration::from_secs(60));
     }
 
     #[tokio::test]

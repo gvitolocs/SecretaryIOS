@@ -49,7 +49,7 @@ const ROUTE_BUDGET: Duration = Duration::from_secs(4);
 const MAX_ROUNDS: usize = 16;
 
 /// Fetching the laptop's tool and intent lists at the loop's start takes at most this long.
-const LISTS_BUDGET: Duration = Duration::from_secs(6);
+const LISTS_BUDGET: Duration = Duration::from_secs(8);
 
 /// After the laptop's lists in the loop's system text.
 const LISTS_NOTE: &str = "The laptop's tools and intents are listed above; call juno_tools or intents only if you need a schema that is not shown.";
@@ -725,6 +725,11 @@ mod tests {
         };
         remember(session, Some(empty), now);
         assert!(previous(session, now).is_none());
+    }
+
+    #[test]
+    fn the_lists_prefetch_waits_at_most_eight_seconds() {
+        assert_eq!(LISTS_BUDGET, Duration::from_secs(8));
     }
 
     #[test]
