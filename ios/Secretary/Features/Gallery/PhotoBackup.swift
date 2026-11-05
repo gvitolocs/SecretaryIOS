@@ -67,9 +67,11 @@ final class PhotoBackup {
             if settings.includeVideos, !oldValue.includeVideos { changeToken = nil }
             if settings.enabled { Task { await requestAccessAndRun() } } else { status = .off }
             Self.scheduleProcessing(chargingOnly: settings.chargingOnly)
+            Task { await syncBackgroundUploads() }
         }
     }
     private(set) var status: Status = .off
+    private(set) var backgroundUploads: BackgroundUploads = .off
     private(set) var backedUp = 0
     private(set) var remaining = 0
     private(set) var lastBackup: Date?
@@ -213,7 +215,7 @@ final class PhotoBackup {
     private func libraryChanged() {
         libraryChange?.cancel()
         libraryChange = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(3))
+            try? await Task.sleep(for: .seconds(1))
             guard !Task.isCancelled else { return }
             self?.kick()
         }
@@ -241,6 +243,8 @@ final class PhotoBackup {
 
     /// Between two assets: 3 requests each at most, so a backup uses about 36 of the 60 a minute.
     static let pace: Duration = .seconds(4)
+    /// Assets a pass sends without the pace first (about 15 requests): the photos just taken.
+    static let burst = 5
     @ObservationIgnored private var retryTask: Task<Void, Never>?
 
     private func retry(after delay: Duration) {
@@ -290,6 +294,8 @@ final class PhotoBackup {
 
     private func run() async {
         await ledgerLoad?.value
+        mergeBackgroundSent()
+        await syncBackgroundUploads()
         status = .scanning
         // Off the main thread; only the changes since the last scan unless there is no token yet.
         let known = ledger
@@ -329,8 +335,8 @@ final class PhotoBackup {
                 remaining = work.count - done
                 lastError = nil
                 // Every /v1/media request spends one of the device's 60 a minute (p1's login check):
-                // leave most of them to the app itself.
-                try await Task.sleep(for: Self.pace)
+                // leave most of them to the app itself. The first few go at once (new shots).
+                if done >= Self.burst { try await Task.sleep(for: Self.pace) }
             } catch is CancellationError {
                 break
             } catch let APIError.rateLimited(_, retryAfter, _) {
@@ -463,11 +469,7 @@ final class PhotoBackup {
 
     /// The edited rendering when there is one, else the original.
     nonisolated private static func mainResource(_ asset: PHAsset, _ resources: [PHAssetResource]) -> PHAssetResource? {
-        let order: [PHAssetResourceType] = asset.mediaType == .video ? [.fullSizeVideo, .video] : [.fullSizePhoto, .photo]
-        for t in order {
-            if let r = resources.first(where: { $0.type == t }) { return r }
-        }
-        return resources.first
+        BackgroundUpload.mainResource(asset, resources)
     }
 
     private func send(_ w: Work) async throws {
@@ -617,16 +619,110 @@ final class PhotoBackup {
         }
     }
 
-    private static func mime(forUTI uti: String) -> String? {
-        switch uti {
-        case "public.heic": "image/heic"
-        case "public.jpeg": "image/jpeg"
-        case "public.png": "image/png"
-        case "com.apple.quicktime-movie": "video/quicktime"
-        case "public.mpeg-4": "video/mp4"
-        case "com.adobe.raw-image", "com.adobe.dng": "image/x-adobe-dng"
-        default: nil
+    private static func mime(forUTI uti: String) -> String? { BackgroundUpload.mime(forUTI: uti) }
+
+    // MARK: Background uploads (iOS 27)
+
+    /// Whether iOS uploads new photos while Secretary is closed (Extensions/SecretaryPhotoUpload).
+    enum BackgroundUploads: Equatable {
+        case unavailable
+        case off
+        case needsFullAccess
+        case chargingOnly
+        case on
+        case failed(String)
+    }
+
+    /// Photos the background upload extension sent while the app was closed: into the ledger, so no
+    /// pass sends them again.
+    private func mergeBackgroundSent() {
+        let sent = BackgroundUpload.drainSent()
+        guard !sent.isEmpty else { return }
+        for s in sent {
+            var entry = ledger[s.key] ?? Entry()
+            // An upload of our own still running for it: let it finish (the server dedupes).
+            if entry.uploadId != nil { continue }
+            entry.itemId = s.itemId
+            entry.modified = s.modified
+            entry.signature = s.signature
+            entry.favorite = s.favorite
+            ledger[s.key] = entry
+            pending.remove(s.key)
         }
+        backedUp = ledger.values.filter { $0.itemId != nil }.count
+        lastBackup = Date()
+        saveLedger()
+        log.info("PhotoBackup \(sent.count) photos came in through the background extension")
+    }
+
+    /// Turn the extension on or off to match the settings, and give it the server and key it needs.
+    private func syncBackgroundUploads() async {
+        guard #available(iOS 27.0, *) else {
+            backgroundUploads = .unavailable
+            return
+        }
+        let client = api().client
+        let full = PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized
+        let key = client.accessKey ?? ""
+        let wanted: BackgroundUploads = !settings.enabled || key.isEmpty ? .off
+            : !full ? .needsFullAccess
+            : settings.chargingOnly ? .chargingOnly
+            : .on
+        let wifiOnly = settings.wifiOnly
+        let includeVideos = settings.includeVideos
+        let base = client.baseURL.absoluteString
+        let device = deviceId
+        let result = await Task.detached(priority: .utility) { () -> BackgroundUploads in
+            let library = PHPhotoLibrary.shared()
+            do {
+                guard wanted == .on else {
+                    if library.uploadJobExtensionEnabled { try library.disableUploadJobExtension() }
+                    BackgroundUpload.writeConfig(nil)
+                    return wanted
+                }
+                var config = BackgroundUpload.readConfig()
+                if !library.uploadJobExtensionEnabled || config == nil {
+                    // From now on: earlier photos are this backup's.
+                    let token = try NSKeyedArchiver.archivedData(withRootObject: library.currentChangeToken,
+                                                                 requiringSecureCoding: true)
+                    config = .init(baseURL: base, accessKey: key, deviceId: device, includeVideos: includeVideos,
+                                   generation: UUID().uuidString, startToken: token)
+                }
+                guard var next = config else { return .off }
+                next.baseURL = base
+                next.accessKey = key
+                next.deviceId = device
+                next.includeVideos = includeVideos
+                if next != BackgroundUpload.readConfig() { BackgroundUpload.writeConfig(next) }
+                let options = PHAssetResourceUploadJobOptions()
+                options.preventsExpensiveNetworkAccess = wifiOnly
+                // PhotoKit can get stuck refusing every new job (PHPhotosErrorDomain -1, 2026-11-01), and iOS
+                // keeps a failing extension's backoff (up to an hour) across app updates. Turning it off and
+                // on clears both, and only the app can: when the extension asks, and once per install (its
+                // bundle path changes). The config above stays, so it keeps its place in the library's changes.
+                let installKey = "secretary.photoBackup.uploadExtensionInstall"
+                let install = Bundle.main.bundlePath
+                let asked = BackgroundUpload.takeRestartRequest()
+                let newInstall = UserDefaults.standard.string(forKey: installKey) != install
+                if library.uploadJobExtensionEnabled, asked || newInstall {
+                    try library.disableUploadJobExtension()
+                    log.info("PhotoBackup background uploads restarted (asked: \(asked))")
+                    DebugEvents.record("photo_upload.restart", ["asked": asked, "new_install": newInstall])
+                }
+                UserDefaults.standard.set(install, forKey: installKey)
+                if !library.uploadJobExtensionEnabled {
+                    try library.enableUploadJobExtension(with: options)
+                    log.info("PhotoBackup background uploads on (Wi-Fi only: \(wifiOnly))")
+                } else if library.uploadJobExtensionOptions?.preventsExpensiveNetworkAccess != wifiOnly {
+                    try library.setUploadJobExtensionOptions(options)
+                }
+                return .on
+            } catch {
+                log.error("PhotoBackup background uploads: \(String(describing: error), privacy: .public)")
+                return .failed(error.localizedDescription)
+            }
+        }.value
+        if backgroundUploads != result { backgroundUploads = result }
     }
 }
 

@@ -286,6 +286,9 @@ describe("optimistic sends", () => {
   });
 });
 
+/** The timeline page reads, without the closed-card reads that go with them. */
+const pages = (calls: Call[]) => calls.filter((c) => !c.url.startsWith("/v1/timeline/cards"));
+
 describe("live stream", () => {
   let disconnect: (() => void) | null = null;
   beforeEach(() => reloadChatFromStorage());
@@ -315,14 +318,15 @@ describe("live stream", () => {
     es.open(); // The browser reconnected with Last-Event-ID; no resync needed.
     expect(streamStatus()).toBe("live");
     expect(MockEventSource.instances).toHaveLength(1);
-    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    await vi.waitFor(() => expect(pages(calls)).toHaveLength(1));
   });
 
   it("resyncs when the stream drops before its first item (no Last-Event-ID to resume from)", async () => {
     // Model: verification/models/src/timeline.rs case T5, formal/timeline/Timeline_gap_bug.cfg.
     installEventSource();
     let n = 0;
-    const calls = stubFetch(() => {
+    const calls = stubFetch((c) => {
+      if (c.url.startsWith("/v1/timeline/cards")) return { body: { cards: {} } };
       n++;
       return { body: { items: n === 1 ? page(1, 2) : page(1, 3), nextBefore: null } };
     });
@@ -332,7 +336,7 @@ describe("live stream", () => {
     es.open();
     es.drop(); // dropped before any item: the browser reconnects without Last-Event-ID
     es.open(); // so the server starts fresh; item 3 was written in between
-    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    await vi.waitFor(() => expect(pages(calls)).toHaveLength(2));
     await vi.waitFor(() => expect(ids()).toEqual(["1", "2", "3"]));
     expect(MockEventSource.instances).toHaveLength(1);
   });
@@ -343,7 +347,7 @@ describe("live stream", () => {
     const calls = stubFetch(() => ({ body: { items: page(1, 2), nextBefore: null } }));
     disconnect = connectTimeline();
     await vi.advanceTimersByTimeAsync(0);
-    expect(calls).toHaveLength(1);
+    expect(pages(calls)).toHaveLength(1);
     const first = MockEventSource.latest();
     first.open();
 
@@ -365,7 +369,7 @@ describe("live stream", () => {
     MockEventSource.latest().open();
     expect(streamStatus()).toBe("live");
     await vi.advanceTimersByTimeAsync(0);
-    expect(calls).toHaveLength(3); // Initial open and reopening both sync; the new stream has no Last-Event-ID: fill the gap.
+    expect(pages(calls)).toHaveLength(3); // Initial open and reopening both sync; the new stream has no Last-Event-ID: fill the gap.
     // Events from the abandoned connection are ignored.
     first.emit("item", item(9));
     expect(ids()).toEqual(["1", "2"]);

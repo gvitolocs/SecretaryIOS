@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use lucina_llm::Message;
-use lucina_store::timeline::{Meta, NewItem};
+use lucina_store::timeline::NewItem;
 use lucina_tools::agent::{self, AgentConfig, ToolRecord};
 use lucina_tools::tools::plugins as p;
 use lucina_tools::{Ctx, Effect, Origin, Registry};
@@ -33,7 +33,7 @@ plain links to the app's own pages: a Pixiv work as https://getsecretary.tech/pi
 https://getsecretary.tech/instagram/<username>. Never write the long signed /v1/... media links in your reply (they get \
 cut and break); they are only for save_to_gallery. Always write a Pixiv work's id next to its \
 title so a later 'save it' can find it. Stories that are not there are normal: say so. If a tool says it is not \
-available, say that plainly and stop. Keep the answer short, in the language of the message, and tell him the plugin \
+available, say that plainly and stop. Keep the answer short, in English (Danish when he writes Danish; never Italian), and tell him the plugin \
 page in the app (the button under your reply) shows everything.";
 
 /// Whole words of `text`, lower-cased, without its links (a pasted
@@ -151,16 +151,13 @@ pub(super) async fn try_turn(t: &Turn<'_>, memory: &str) -> Option<Finish> {
     let timeline = st.timeline_for(&t.session);
     let channel = t.channel.clone();
     // The tools' summaries carry no username, query or id.
+    let mark = t.agent_mark();
     let on_tool = move |r: &ToolRecord| {
         timeline.record(NewItem {
             channel: channel.clone(),
             role: "lucina".into(),
             text: format!("🔧 {} → {}", r.summary, if r.ok { "ok" } else { "error" }),
-            meta: Some(Meta {
-                tool: Some(r.name.clone()),
-                ok: Some(r.ok),
-                ..Meta::kind("tool")
-            }),
+            meta: Some(super::tool_meta(&mark, r)),
             ..Default::default()
         });
     };

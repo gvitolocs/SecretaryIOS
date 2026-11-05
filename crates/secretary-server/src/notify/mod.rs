@@ -155,6 +155,39 @@ pub fn calendar_route(e: &CalendarEvent) -> String {
     format!("{}?{}", u.path(), u.query().unwrap_or_default())
 }
 
+/// Which calendar alert is due.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Alert {
+    /// The owner's `calendarLeadMinutes` before the start.
+    Lead,
+    /// One of the event's own alerts (epoch ms).
+    At(i64),
+    /// Time to leave (epoch ms).
+    Leave(i64),
+}
+
+/// How long a missed alert is still sent (the server was down, a tick was late).
+const ALERT_CATCH_UP_MS: i64 = 5 * 60_000;
+
+/// The alert of `e` due at `now`, if any: the leave alert first, then the
+/// latest of its own alerts, else (no alerts of its own) the lead.
+pub fn due_alert(e: &CalendarEvent, lead: i64, now: i64) -> Option<Alert> {
+    let started = now > e.start + 60_000;
+    let fires = |at: i64| at <= now && now <= at + ALERT_CATCH_UP_MS && !started;
+    if let Some(at) = e.leave_at.filter(|at| fires(*at)) {
+        return Some(Alert::Leave(at));
+    }
+    match &e.alerts {
+        None => (e.start - lead <= now && !started).then_some(Alert::Lead),
+        Some(alerts) => alerts
+            .iter()
+            .copied()
+            .filter(|at| fires(*at))
+            .max()
+            .map(Alert::At),
+    }
+}
+
 pub fn calendar_events(state: &DeviceState, now: i64) -> Vec<CalendarEvent> {
     state
         .events
@@ -169,6 +202,8 @@ pub fn calendar_events(state: &DeviceState, now: i64) -> Vec<CalendarEvent> {
                 id: id.to_owned(),
                 title: model::clip(e["title"].as_str().unwrap_or(""), 120),
                 start,
+                alerts: None,
+                leave_at: None,
             })
         })
         .take(200)
@@ -377,6 +412,8 @@ impl Notifier {
                         Some((
                             d["approvalId"].as_str()?.to_owned(),
                             d["sensitive"].as_bool().unwrap_or(false),
+                            d["payloadHash"].as_str().map(str::to_owned),
+                            d["detailsCut"].as_bool().unwrap_or(false),
                         ))
                     })
                     .flatten();
@@ -405,7 +442,7 @@ impl Notifier {
                     unread,
                     digest: false,
                     url: approval.as_ref().map(|_| n.route.clone()),
-                    sensitive: approval.as_ref().map(|(_, s)| *s),
+                    sensitive: approval.as_ref().map(|(_, s, _, _)| *s),
                     // The exact commands, for the lock screen's expanded view; hidden with previews off.
                     detail: approval
                         .as_ref()
@@ -413,7 +450,9 @@ impl Notifier {
                         .and_then(|_| n.data.as_ref()?["details"].as_str())
                         .filter(|d| !d.trim().is_empty())
                         .map(str::to_owned),
-                    approval_id: approval.map(|(id, _)| id),
+                    detail_cut: approval.as_ref().is_some_and(|(_, _, _, cut)| *cut),
+                    payload_hash: approval.as_ref().and_then(|(_, _, h, _)| h.clone()),
+                    approval_id: approval.map(|(id, _, _, _)| id),
                     decision_id: decision.as_ref().map(|(id, _)| id.clone()),
                     decision_options: decision.map(|(_, o)| o).unwrap_or_default(),
                 };
@@ -490,29 +529,37 @@ impl Notifier {
     pub async fn tick(self: &Arc<Self>, now: i64) {
         let settings = self.settings.get();
 
-        // Calendar: `lead` minutes before start (catching up until a minute after).
+        // Calendar: `lead` minutes before start, or at the event's own alerts
+        // (catching up for a few minutes, never after the start).
         if settings.categories.calendar {
             let lead = i64::from(settings.calendar_lead_minutes) * 60_000;
-            let due: Vec<CalendarEvent> = self.state.read(|s: &NotifyState| {
-                let mut v: Vec<CalendarEvent> = s
+            let due: Vec<(CalendarEvent, Alert)> = self.state.read(|s: &NotifyState| {
+                let mut v: Vec<(CalendarEvent, Alert)> = s
                     .calendar
                     .values()
                     .flatten()
-                    .filter(|e| e.start - lead <= now && now <= e.start + 60_000)
-                    .cloned()
+                    .filter_map(|e| due_alert(e, lead, now).map(|a| (e.clone(), a)))
                     .collect();
-                v.sort_by(|a, b| (a.start, &a.id).cmp(&(b.start, &b.id)));
-                v.dedup_by(|a, b| a.id == b.id && a.start == b.start);
+                v.sort_by(|(a, x), (b, y)| (a.start, &a.id, x).cmp(&(b.start, &b.id, y)));
+                v.dedup_by(|(a, x), (b, y)| a.id == b.id && a.start == b.start && x == y);
                 v
             });
-            for e in due {
+            for (e, alert) in due {
                 let body = if e.title.is_empty() {
                     settings.local_hhmm(e.start)
                 } else {
                     format!("{} · {}", e.title, settings.local_hhmm(e.start))
                 };
                 let mut n = NewNotification::new(Category::Calendar, body);
-                n.dedup_key = Some(format!("cal:{}:{}", e.id, e.start));
+                n.dedup_key = Some(match alert {
+                    Alert::Lead => format!("cal:{}:{}", e.id, e.start),
+                    Alert::At(at) => format!("cal:{}:{}:{at}", e.id, e.start),
+                    Alert::Leave(_) => format!("cal:{}:{}:leave", e.id, e.start),
+                });
+                if matches!(alert, Alert::Leave(_)) {
+                    n.title =
+                        Some(text::leave_title(text::lang(Some(&settings.language))).to_owned());
+                }
                 n.route = Some(calendar_route(&e));
                 n.data = Some(json!({"eventId": e.id, "start": e.start}));
                 if let Err(err) = self.publish(n).await {
@@ -589,6 +636,8 @@ impl Notifier {
                 approval_id: None,
                 sensitive: None,
                 detail: None,
+                detail_cut: false,
+                payload_hash: None,
                 decision_id: None,
                 decision_options: Vec::new(),
             };
@@ -629,6 +678,8 @@ impl Notifier {
                     approval_id: None,
                     sensitive: None,
                     detail: None,
+                    detail_cut: false,
+                    payload_hash: None,
                     decision_id: None,
                     decision_options: Vec::new(),
                 };
@@ -798,6 +849,8 @@ mod tests {
             id: "lucina:ev_abc".into(),
             title: "Call Anna".into(),
             start: in5,
+            alerts: None,
+            leave_at: None,
         }])
         .unwrap();
         n.tick(now).await;
@@ -812,6 +865,61 @@ mod tests {
         assert!(n.state.read(|s| !s.calendar.contains_key(OWN_CALENDAR_KEY)));
     }
 
+    #[test]
+    fn own_alerts_replace_the_lead() {
+        let start = 10 * 3_600_000;
+        let min = 60_000;
+        let lead = 15 * min;
+        let mut e = CalendarEvent {
+            id: "lucina:ev_a".into(),
+            title: "x".into(),
+            start,
+            alerts: None,
+            leave_at: None,
+        };
+        assert_eq!(due_alert(&e, lead, start - 20 * min), None);
+        assert_eq!(due_alert(&e, lead, start - 10 * min), Some(Alert::Lead));
+        assert_eq!(due_alert(&e, lead, start + 2 * min), None);
+        // Its own alerts: one hour and one day before; none at the lead.
+        e.alerts = Some(vec![start - 60 * min, start - 1440 * min]);
+        assert_eq!(due_alert(&e, lead, start - 10 * min), None);
+        assert_eq!(
+            due_alert(&e, lead, start - 58 * min),
+            Some(Alert::At(start - 60 * min))
+        );
+        assert_eq!(due_alert(&e, lead, start - 50 * min), None);
+        // "None" chosen: nothing at all.
+        e.alerts = Some(vec![]);
+        assert_eq!(due_alert(&e, lead, start - 10 * min), None);
+        e.leave_at = Some(start - 25 * min);
+        assert_eq!(
+            due_alert(&e, lead, start - 24 * min),
+            Some(Alert::Leave(start - 25 * min))
+        );
+    }
+
+    #[tokio::test]
+    async fn time_to_leave_has_its_own_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let n = notifier(dir.path());
+        let now = model::now_ms();
+        let start = now + 30 * 60_000;
+        n.own_events(vec![CalendarEvent {
+            id: "lucina:ev_l".into(),
+            title: "Kitchen".into(),
+            start,
+            alerts: Some(vec![]),
+            leave_at: Some(now - 60_000),
+        }])
+        .unwrap();
+        n.tick(now).await;
+        let items = n.inbox.page(None, 50, false).items;
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].title.as_deref(), Some("Time to leave"));
+        n.tick(now + 60_000).await;
+        assert_eq!(n.inbox.page(None, 50, false).items.len(), 1);
+    }
+
     #[tokio::test]
     async fn agent_notices_stay_in_the_inbox_while_an_app_is_in_front() {
         let dir = tempfile::tempdir().unwrap();
@@ -823,7 +931,7 @@ mod tests {
         // Unlike a Lucina message it is kept (Paseo: in-app instead of a push).
         assert!(matches!(n.publish(a.clone()).await.unwrap(), Outcome::Created { pushed: 0, .. }));
         assert_eq!(n.publish(a).await.unwrap(), Outcome::Duplicate);
-        assert_eq!(text::agent_title(Some("permission"), "it"), "Un agente chiede il permesso");
+        assert_eq!(text::agent_title(Some("permission"), "it"), "Agent needs permission");
         assert_eq!(text::agent_title(None, "en"), "Agent finished");
         n.settings.update(|s| s.categories.agent = false).unwrap();
         assert_eq!(n.publish(NewNotification::new(Category::Agent, "done")).await.unwrap(), Outcome::Disabled);

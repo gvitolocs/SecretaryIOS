@@ -58,11 +58,17 @@ pub unsafe extern "C" fn secretary_image_decoder_feed(
     done: bool,
 ) -> i32 {
     guarded(|| {
-        let Some(d) = decoder.as_mut() else { return fail(ERR_NULL, "null decoder") };
+        let Some(d) = decoder.as_mut() else {
+            return fail(ERR_NULL, "null decoder");
+        };
         if bytes.is_null() && len > 0 {
             return fail(ERR_NULL, "null bytes");
         }
-        let chunk = if len == 0 { &[][..] } else { std::slice::from_raw_parts(bytes, len) };
+        let chunk = if len == 0 {
+            &[][..]
+        } else {
+            std::slice::from_raw_parts(bytes, len)
+        };
         match d.feed(chunk, done) {
             Ok(better) => better as i32,
             Err(e) => fail(ERR_DECODE, e.to_string()),
@@ -84,7 +90,9 @@ pub unsafe extern "C" fn secretary_image_decoder_frame(
     complete: *mut bool,
 ) -> i32 {
     guarded(|| {
-        let Some(d) = decoder.as_ref() else { return fail(ERR_NULL, "null decoder") };
+        let Some(d) = decoder.as_ref() else {
+            return fail(ERR_NULL, "null decoder");
+        };
         let Some(f) = d.frame() else { return 0 };
         if !width.is_null() {
             *width = f.width;
@@ -107,10 +115,18 @@ pub unsafe extern "C" fn secretary_image_decoder_frame(
 /// # Safety
 /// As `secretary_image_decoder_frame`.
 #[no_mangle]
-pub unsafe extern "C" fn secretary_image_decoder_size(decoder: *const Decoder, width: *mut u32, height: *mut u32) -> i32 {
+pub unsafe extern "C" fn secretary_image_decoder_size(
+    decoder: *const Decoder,
+    width: *mut u32,
+    height: *mut u32,
+) -> i32 {
     guarded(|| {
-        let Some(d) = decoder.as_ref() else { return fail(ERR_NULL, "null decoder") };
-        let Some((w, h)) = d.dimensions() else { return 0 };
+        let Some(d) = decoder.as_ref() else {
+            return fail(ERR_NULL, "null decoder");
+        };
+        let Some((w, h)) = d.dimensions() else {
+            return 0;
+        };
         if !width.is_null() {
             *width = w;
         }
@@ -147,7 +163,12 @@ pub unsafe extern "C" fn secretary_image_thumbhash(
     rgba_len: *mut usize,
 ) -> i32 {
     guarded(|| {
-        if hash.is_null() || width.is_null() || height.is_null() || rgba.is_null() || rgba_len.is_null() {
+        if hash.is_null()
+            || width.is_null()
+            || height.is_null()
+            || rgba.is_null()
+            || rgba_len.is_null()
+        {
             return fail(ERR_NULL, "null argument");
         }
         match secretary_image::placeholder(std::slice::from_raw_parts(hash, len)) {

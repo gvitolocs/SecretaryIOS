@@ -1,0 +1,18 @@
+[package]
+name = "secretary-xlsx"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Open, show and edit existing .xlsx workbooks without losing anything: a minimal OOXML patcher that rewrites only the edited cells"
+
+[dependencies]
+# Unchanged parts are raw-copied (same compressed bytes); only edited parts are re-deflated.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Read-only second opinion on every round trip (docs/xlsx.md "Proof").
+calamine = "0.30"

@@ -1,10 +1,12 @@
 import { createSignal, onCleanup, Show } from "solid-js";
-import { t } from "../../../i18n";
 import { GearIcon } from "../../Icons";
 import "../../../styles/gallery-people.css";
+import { groupText, useGroupKind } from "../../../lib/galleryGroup";
 
 /** The settings menu on the People page: turn recognition off, delete what it found. */
 export function PeopleMenu(props: { wide?: boolean; onTurnOff: () => void; onDelete: () => void }) {
+  const kind = useGroupKind();
+  const pt = groupText(kind);
   const [open, setOpen] = createSignal(false);
   let root: HTMLDivElement | undefined;
   const away = (e: PointerEvent) => {
@@ -18,16 +20,16 @@ export function PeopleMenu(props: { wide?: boolean; onTurnOff: () => void; onDel
   };
   return (
     <div class="pp-menu" ref={root} onKeyDown={(e) => e.key === "Escape" && open() && (e.stopPropagation(), setOpen(false))}>
-      <button type="button" class={props.wide ? "pg-icon-btn" : "g-iconbtn"} aria-label={t("galleryPeople.settings")} title={t("galleryPeople.settings")} aria-haspopup="menu" aria-expanded={open()} onClick={() => setOpen((v) => !v)}>
+      <button type="button" class={props.wide ? "pg-icon-btn" : "g-iconbtn"} aria-label={pt("settings")} title={pt("settings")} aria-haspopup="menu" aria-expanded={open()} onClick={() => setOpen((v) => !v)}>
         <GearIcon />
       </button>
       <Show when={open()}>
         <div class="pp-menu__list" role="menu">
           <button type="button" role="menuitem" class="pp-menu__item" onClick={choose(props.onTurnOff)}>
-            {t("galleryPeople.turnOff")}
+            {pt("turnOff")}
           </button>
           <button type="button" role="menuitem" class="pp-menu__item pp-menu__item--danger" onClick={choose(props.onDelete)}>
-            {t("galleryPeople.deleteData")}
+            {pt("deleteData")}
           </button>
         </div>
       </Show>

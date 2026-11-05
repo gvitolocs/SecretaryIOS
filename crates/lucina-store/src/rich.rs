@@ -123,7 +123,7 @@ pub fn split_into_chunks(text: &str, max: usize) -> Vec<String> {
     while i < chars.len() {
         let c = chars[i];
         if c == '\n' {
-            cur.push(' ');
+            cur.push('\n');
             sentences.push(std::mem::take(&mut cur));
             i += 1;
             continue;
@@ -153,7 +153,9 @@ pub fn split_into_chunks(text: &str, max: usize) -> Vec<String> {
     let mut out = Vec::new();
     let mut current = String::new();
     for sentence in sentences {
+        // The line end after a sentence: bubbles keep their lines and paragraphs.
         if sentence.trim().is_empty() {
+            current.push_str(&sentence);
             continue;
         }
         let joined = format!("{current}{sentence}");
@@ -191,22 +193,68 @@ pub fn split_into_chunks(text: &str, max: usize) -> Vec<String> {
     out
 }
 
+/// What stood between each chunk of `split_into_chunks` and the one before it in `source`, whitespace
+/// only (the first gap is whatever preceded it). A chunk not found where expected gets a space.
+fn chunk_gaps(source: &str, chunks: &[String]) -> Vec<String> {
+    let mut at = 0;
+    chunks
+        .iter()
+        .map(|c| match source[at..].find(c.as_str()) {
+            Some(found) => {
+                let gap = &source[at..at + found];
+                at += found + c.len();
+                if gap.trim().is_empty() { gap.to_owned() } else { " ".to_owned() }
+            }
+            None => " ".to_owned(),
+        })
+        .collect()
+}
+
+/// Chunks of `source` back as one text, with the line ends between them.
+fn rejoin_chunks(source: &str, chunks: &[String]) -> String {
+    let gaps = chunk_gaps(source, chunks);
+    let mut out = String::new();
+    for (i, c) in chunks.iter().enumerate() {
+        if i > 0 {
+            out.push_str(&gaps[i]);
+        }
+        out.push_str(c);
+    }
+    out
+}
+
 fn normalize_bubbles(v: &Value) -> Result<Vec<String>, String> {
     let Value::Array(items) = v else {
         return Err("bubbles must be an array of strings".into());
     };
-    let mut chunks = Vec::new();
+    // Each chunk with what separated it from the one before, so a tail glued back together keeps
+    // its line ends and lists.
+    let mut chunks: Vec<String> = Vec::new();
+    let mut gaps: Vec<String> = Vec::new();
     for raw in items {
         if !raw.is_string() {
             continue;
         }
         let text = clean(raw, 4000);
         if !text.is_empty() {
-            chunks.extend(split_into_chunks(&text, BUBBLE_SOFT_CHARS));
+            let split = split_into_chunks(&text, BUBBLE_SOFT_CHARS);
+            let mut item_gaps = chunk_gaps(&text, &split);
+            if let Some(first) = item_gaps.first_mut() {
+                *first = "\n\n".to_owned();
+            }
+            gaps.extend(item_gaps);
+            chunks.extend(split);
         }
     }
     if chunks.len() > MAX_BUBBLES {
-        let tail = chunks.split_off(MAX_BUBBLES - 1).join(" ");
+        let mut tail = String::new();
+        for (i, c) in chunks.iter().enumerate().skip(MAX_BUBBLES - 1) {
+            if i > MAX_BUBBLES - 1 {
+                tail.push_str(&gaps[i]);
+            }
+            tail.push_str(c);
+        }
+        chunks.truncate(MAX_BUBBLES - 1);
         chunks.push(tail);
     }
     Ok(chunks.iter().map(|c| clip(c, BUBBLE_HARD_CHARS)).collect())
@@ -681,6 +729,8 @@ pub fn normalize_action(raw: &Value, index: usize) -> Option<Value> {
                 ("path", 512),
                 ("held", 64),
                 ("target", 200),
+                // A request in the queue: clients draw its inline card from the request's status.
+                ("request", 64),
             ] {
                 if let Some(v) = p[key].as_str().filter(|v| name_like(v, max)) {
                     payload.insert(key.into(), str_v(v));
@@ -1097,7 +1147,7 @@ pub fn place_speech(block: &Value) -> String {
     }
 }
 
-/// `↪︎ rispondi: «sì» · «no»` for the actions a text surface can follow by typing.
+/// `↪︎ reply: «yes» · «no»` for the actions a text surface can follow by typing.
 pub fn action_hint_line(actions: &[Value], lang: &str) -> String {
     let mut typed = Vec::new();
     let mut routes = Vec::new();
@@ -1120,9 +1170,8 @@ pub fn action_hint_line(actions: &[Value], lang: &str) -> String {
         }
     }
     let lead = match lang {
-        "en" => ("reply", "in the app"),
         "da" => ("svar", "i appen"),
-        _ => ("rispondi", "nell'app"),
+        _ => ("reply", "in the app"),
     };
     let mut parts = Vec::new();
     if !typed.is_empty() {
@@ -1140,7 +1189,7 @@ pub fn action_hint_line(actions: &[Value], lang: &str) -> String {
 
 impl RichMessage {
     fn lang(&self) -> &str {
-        self.lang.as_deref().unwrap_or("it")
+        self.lang.as_deref().filter(|l| *l != "it").unwrap_or("en")
     }
 
     /// The plain-text fallback: bubbles, each widget as text, the action hints.
@@ -1165,10 +1214,20 @@ impl RichMessage {
                 .filter(|b| b["type"] == "place")
                 .map(place_speech),
         );
-        strip_inline_markdown(&parts.join(" "))
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
+        // List marks and headings are for the eye: the web and iOS drop them too.
+        let plain: Vec<String> = strip_inline_markdown(&parts.join(" "))
+            .lines()
+            .map(|l| {
+                let t = l.trim_start();
+                let t = t.strip_prefix(['-', '*', '+', '•']).filter(|r| r.starts_with(char::is_whitespace)).unwrap_or(t);
+                let hashes = t.chars().take_while(|c| *c == '#').count();
+                match (1..=6).contains(&hashes) && t[hashes..].starts_with(char::is_whitespace) {
+                    true => t[hashes..].to_owned(),
+                    false => t.to_owned(),
+                }
+            })
+            .collect();
+        plain.join(" ").split_whitespace().collect::<Vec<_>>().join(" ")
     }
 
     /// The timeline meta fields (`format`, `bubbles`, `lang`, `blocks`, `actions`).
@@ -1405,7 +1464,7 @@ pub fn from_plain_text(
                     bubbles.extend(chunks);
                 } else if opening && room > 0 {
                     bubbles.push(chunks[0].clone());
-                    let rest = chunks[1..].join(" ");
+                    let rest = rejoin_chunks(p, &chunks[1..]);
                     if !rest.is_empty() {
                         blocks.push(json!({"type": "card", "title": first_sentence(&rest, 70), "body": rest, "tone": "info"}));
                     }
@@ -1454,9 +1513,8 @@ pub fn from_plain_text(
             .map(|b| s(b, "title").to_owned())
             .filter(|t| !t.is_empty());
         bubbles.push(lead.unwrap_or_else(|| match lang {
-            "en" => "Here you go 👇".into(),
             "da" => "Her 👇".into(),
-            _ => "Ecco qui 👇".into(),
+            _ => "Here you go 👇".into(),
         }));
     }
     bubbles.truncate(max_bubbles);
@@ -1474,6 +1532,30 @@ pub fn from_plain_text(
             actions: Vec::new(),
         },
     }
+}
+
+fn text_chars(v: &Value) -> usize {
+    match v {
+        Value::String(s) => s.chars().count(),
+        Value::Array(a) => a.iter().map(text_chars).sum(),
+        Value::Object(o) => o.values().map(text_chars).sum(),
+        _ => 0,
+    }
+}
+
+/// Normalizing `raw` into `m` cut text: [`clip`] ends it with "…", the item limits drop the rest.
+pub fn loses_text(raw: &Value, m: &RichMessage) -> bool {
+    let ellipses = |v: &Value| v.to_string().matches('…').count();
+    let text = |v: &Value| text_chars(&v["bubbles"]) + text_chars(&v["blocks"]);
+    let out = m.to_value();
+    ellipses(&out) > ellipses(raw) || text(&out) + 20 < text(raw)
+}
+
+/// Splitting `draft` into `m` cut it (markdown marks may go, so a tenth of the length is allowed).
+pub fn loses_draft(draft: &str, m: &RichMessage) -> bool {
+    let text = m.plain_text(false);
+    text.matches('…').count() > draft.matches('…').count()
+        || text.chars().count() * 10 < draft.chars().count() * 9
 }
 
 /// Already chat-shaped: short, only paragraphs, at most two chunks.
@@ -1536,6 +1618,43 @@ mod tests {
     }
 
     #[test]
+    fn a_long_opening_paragraph_keeps_its_lines_in_the_card() {
+        let source = "one\n- two\n\nthree";
+        let chunks = vec!["one".to_owned(), "- two".to_owned(), "three".to_owned()];
+        assert_eq!(rejoin_chunks(source, &chunks), source);
+        assert_eq!(rejoin_chunks(source, &chunks[1..]), "- two\n\nthree");
+    }
+
+    #[test]
+    fn bubbles_past_the_limit_keep_their_lines_and_lists() {
+        let para = |tag: &str| format!("{tag} {}", "word ".repeat(45).trim());
+        let list = "Two things:\n- the first\n- the second";
+        let text = format!("{}\n\n{}\n\n{}\n\n{}\n\n{list}\n\n{}", para("a"), para("b"), para("c"), para("d"), para("e"));
+        let (m, _) = normalize(&json!({"bubbles": [text]})).unwrap();
+        assert_eq!(m.bubbles.len(), MAX_BUBBLES);
+        let tail = m.bubbles.last().unwrap();
+        assert!(tail.contains(&format!("{}\n\n{list}\n\n{}", para("d"), para("e"))), "{tail:?}");
+    }
+
+    #[test]
+    fn bubbles_past_the_limit_keep_a_sentence_on_its_line() {
+        let s = |tag: &str| format!("{tag} {}.", "word ".repeat(50).trim());
+        let text = format!("{} {} {} {} {}", s("a"), s("b"), s("c"), s("d"), s("e"));
+        let (m, _) = normalize(&json!({"bubbles": [text]})).unwrap();
+        assert_eq!(m.bubbles.len(), MAX_BUBBLES);
+        assert_eq!(m.bubbles[3], format!("{} {}", s("d"), s("e")));
+    }
+
+    #[test]
+    fn long_text_keeps_its_lines_when_it_is_split() {
+        let filler = "Parole che riempiono la bolla fino a farla dividere. ".repeat(8);
+        let text = format!("Fine della frase.\nWhy: la riga dopo.\n\n1. Primo\n2. Secondo\n{filler}");
+        let chunks = split_into_chunks(&text, 280);
+        assert!(chunks.len() > 1);
+        assert!(chunks[0].starts_with("Fine della frase.\nWhy: la riga dopo.\n\n1. Primo\n2. Secondo"), "{}", chunks[0]);
+    }
+
+    #[test]
     fn plain_fallback_and_speech() {
         let (m, _) = normalize(&json!({
             "lang": "it",
@@ -1551,7 +1670,7 @@ mod tests {
         assert!(text.contains("🥛 Latte — 2 L"), "{text}");
         assert!(text.contains("• Pane"));
         assert!(
-            text.ends_with("↪︎ rispondi: «Dammi i dettagli» · «Ricordami alle 21:30 di …»"),
+            text.ends_with("↪︎ reply: «Dammi i dettagli» · «Ricordami alle 21:30 di …»"),
             "{text}"
         );
         assert_eq!(m.speech_text(), "Ecco la lista 🛒 Vuoi altro?");

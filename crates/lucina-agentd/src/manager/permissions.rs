@@ -648,6 +648,11 @@ impl Manager {
         if reason == AttentionReason::Finished && (self.take_quiet_turn(&agent.record.id) || self.parent_hears(&agent.record.id)) {
             return;
         }
+        // So does any run he did not start on one of his devices, whichever provider and whoever
+        // did (Lucina, a session through `lagent`, the MCP, an agent): it is not a message to him.
+        if reason == AttentionReason::Finished && !agent.record.labels.contains_key(super::STARTED_ON_DEVICE_LABEL) {
+            return;
+        }
         let id = &agent.record.id;
         let mut data = json!({"kind": "agent", "agentId": id, "reason": reason, "agentTitle": agent.record.title});
         if let Some(s) = agent.record.labels.get(super::SCHEDULE_LABEL) {

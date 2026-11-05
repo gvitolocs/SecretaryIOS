@@ -115,6 +115,8 @@ kernel DK3).
     there). `GET items/{id}/pdf`: a PDF, or an Office file converted (503 without LibreOffice).
     `GET items/{id}/archive`: zip, tar, tar.gz and 7z listings (nothing is extracted). `GET items/{id}/original?download=1`:
     `Content-Disposition: attachment` with the real name.
+  - `GET|POST items/{id}/sheet`, `sheet/versions`, `sheet/restore`: `.xlsx` workbooks as sheets, edited in place with a
+    version backup ([`xlsx.md`](xlsx.md)). This is the only route that writes to a Drive file.
 - Devices (2026-10-27: the owner wants one gallery per device, everything in the Lucina cloud):
   `PUT devices/{id} {name, kind}` registers or renames a device (`kind`: iphone, ipad, android, mac, pc, backup,
   camera, other; ids `[A-Za-z0-9._-]{1,64}`, e.g. `ios-<uuid>`, `mac-<uuid>`); an upload whose `meta.device` is unknown
@@ -353,6 +355,7 @@ could not be made", route `/gallery/lab`, `dedupKey lab:<job>`), the same path t
     - It sends originals (edited renderings as new versions, both halves of Live Photos) and a JPEG preview, because the server cannot decode HEIC.
     - Transfers go through a background URLSession. A BGProcessingTask and the app-refresh task continue the work.
     - Rules: Wi-Fi only, while charging, include videos. It never deletes on the phone.
+    - While Secretary is closed (iOS 27), iOS uploads new photos itself: see "Background uploads" below.
 - **Lucina** (`lucina-tools` `media` tool, `lucina-server` `chat/media_turn.rs`):
   - Requests about photos, videos or albums run a short tool loop.
   - Results go to "Lucina's picks", and the reply gets a "Show in Gallery" route button (`/gallery/album/<id>`).
@@ -562,12 +565,61 @@ command `lucina-media archive-jxl`. Numbers and the decision per type are in the
 
 ## Backup and the device rate limit
 
-Every `/v1/media/*` request outside `/s/` passes p1's forward_auth, which allows 60 requests a minute for each device. The backup therefore:
+Every `/v1/media/*` request outside `/s/` passes p1's forward_auth (`/v1/auth/media`, since 2026-11-01 its own bucket of 6000 requests a minute for each device; it was 60, shared with the app). The backup still paces itself as if it were 60, and therefore:
 - waits 4 s between assets (create, PUT, finish; the JPEG preview only for HEIC), about 36 requests a minute;
 - stops on 429 and comes back after `Retry-After`;
 - pauses the whole pass on network, timeout and 502–504 errors (retries after 120 s), and skips just the asset on anything else.
 
 An upload whose bytes are gone answers 410 on finish, and the phone starts that asset again. Ingest and the "finished" mark run in one blocking step, because a client hang-up drops the handler.
+
+## Background uploads (2026-11-01)
+
+Before, a photo reached the library only when Secretary ran: under a minute with the app open, 6 to 45 minutes when
+iOS woke it for a BGProcessing or app-refresh task. On iOS 27 the PhotoKit background upload extension
+(`ios/Extensions/SecretaryPhotoUpload`, `com.apple.photos.background-upload`) closes that gap: iOS calls it when there
+is upload work and performs the uploads itself, also while the app is closed.
+
+- **Phone.** The extension makes one upload job per new photo (and Live Photo motion half), with the same asset ids,
+  metadata and edited-rendering rules as `PhotoBackup.swift` (`BackgroundUploadShared.swift`). It only takes photos
+  added after it was turned on, plus edits of photos it sent; the app's backup keeps the backlog. There is no App
+  Group, so the app passes the server, key and device id through the shared keychain group, and the extension
+  passes back each photo it sent (the app's next pass moves them into its ledger). The backup turns it on with
+  `enableUploadJobExtension` (Wi-Fi only = `preventsExpensiveNetworkAccess`), and turns it off while "Only while
+  charging" is on. Photo backup settings show its state. Logs: `log stream --predicate 'category == "PhotoUpload"'`.
+- **Info.plist.** `BackgroundUploadURLBase` must be inside `EXAppExtensionAttributes`: with it only at the top level,
+  as Apple's tutorial shows, assetsd refuses the extension (`com.apple.photos.error` 50207, "missing valid a
+  Info.plist BaseURL key"). `ios/project.yml` sets both.
+- **Server** (`bgupload.rs`, `resumable.rs`; own listener `LUCINA_MEDIA_BG_LISTEN`, 100.107.164.33:8831). iOS speaks
+  the IETF resumable upload draft (interop version 6 seen):
+  - `OPTIONS /v1/media/bgupload`: 200 with `Upload-Limit` (20 GB, p1's cap);
+  - `POST /v1/media/bgupload`: the file, with the metadata in `X-Lucina-Meta` (base64url `ClientMeta` JSON). The server
+    sends `104 Upload Resumption Supported` with the upload's URL, then 201 with `Upload-Offset`, `Upload-Complete`
+    (or the older `Upload-Incomplete`, answered in the client's dialect) and `X-Lucina-Item`;
+  - `HEAD`, `PATCH` (`Upload-Offset`, exact or 409) and `DELETE` on `/v1/media/bgupload/<id>.<token>`.
+  - hyper can't send a 1xx, so this listener hands each request its socket and the handler writes the 104 itself.
+  - The upload URL is a capability (a random token, stored as its blake3), because iOS may resume without the
+    original headers. Unfinished uploads are dropped after a week (`sweep_uploads`).
+  - A completed upload is ingested like the app's own: dedupe by device and asset id, then by hash.
+- **p1 Caddy** (`/etc/caddy/Caddyfile`): the POST needs a `Bearer` device key and passes forward_auth; the preflight and
+  the capability URLs skip device auth, but Caddy still adds the upstream key.
+- **HEIC without the phone's preview.** The extension sends only the original. ffmpeg 8 decodes an iPhone HEIC's tiles
+  but does not join them, so `heif.rs` decodes each tile stream and stitches them (cropped, EXIF-oriented, 2048 px)
+  into `preview.jpg`.
+- **When it stops** (2026-11-01: from 13:01 UTC PhotoKit refused every new job, `PHPhotosErrorDomain -1` with no reason
+  logged, and the run's `.failure` made iOS back off 5, 10, 30, then 60 minutes. It was stuck state, not the photo: the
+  same photos were accepted 0.2 s after the app turned the extension off and on, and two reinstalls alone had not helped):
+  - A refused asset no longer stops a run: it is retried for 3 runs, then left to the app's backup. A failed retry or
+    acknowledge doesn't stop new jobs either. `.failure` is what makes iOS back off, so it is kept for real breakage.
+  - The extension awaits its debug events before returning (`bg.task` `photo_upload_ext`, `photo_upload.*`, `secretary-mcp
+    debug-events`). The app can't read the extension's container.
+  - A refused job makes the extension ask the app (shared keychain) to turn it off and on, at the app's next pass (launch,
+    foreground or background task), and the app also does it once per install. That clears the stuck state and the backoff.
+  - `bgupload::watchdog` tells the owner (at most twice a day) when phone photos stay without a `bg_uploads` row for
+    30 min. Every new photo gets one when the extension works, also one the app sent first.
+  - `ios-install` refuses a build without the appex or its `BackgroundUploadURLBase`.
+  - Reading the phone without USB: `devicectl device copy from --domain-type appDataContainer --domain-identifier
+    tech.getsecretary.app.photoupload` for `Library/Application Support/photo-upload-state.json`, and `devicectl device
+    sysdiagnose` for the unified log (assetsd says "Delaying due to failed attempts").
 
 ## Internal API for other services on nezopt
 
@@ -590,3 +642,49 @@ An upload whose bytes are gone answers 410 on finish, and the phone starts that 
 - Stateright/TLA+ model of the upload protocol.
 - HLS cache eviction.
 - Archive format: TIFF/BMP stay as originals; video preview renditions are recommended in the build report, not built.
+
+## Photos for Lucina and for agents
+
+- Lucina's `media` tool `read` looks at a photo: a 1024 px JPEG rendition through the attachment handlers (OCR, then
+  vision), kept in `attachments.db`. Anyone who can chat with her can ask what a photo shows, MCP clients with `chat` too.
+- `photo_search` and `photo_get` (secretary-mcp, `crates/secretary-mcp/src/photos.rs`): the MCP tools for the pictures
+  themselves, in the explicit-only scope `photos`. Only a token or grant the owner gave it by name has them
+  (`secretary-mcp token add-scope <name> photos`, or the consent page); `read`, `chat` and the default grant never do.
+  A rendition only: no originals, coordinates or links. Every fetch is logged with the caller and the item id.
+
+## Pets (2026-11-03)
+
+The Gallery groups the cats and dogs in the photos by animal, on the People page's patterns: `/gallery/pets` (rename,
+hide, show hidden, merge, animals without a pet) and `/gallery/pet/:id` (that pet's photos). Unlike faces it is on by
+default (`pet_settings.enabled` is on until set to `"0"`); the page's menu turns it off and deletes what it found.
+
+- Code: `lucina-media-ml/src/pets.rs` (detector, embedder), `pets_store.rs` (tables `pet_settings`, `pets`,
+  `pet_crops`, `pet_scans`), `lucina-media/src/pets.rs` (scan) and `pets_http.rs` (routes). Web:
+  `views/GalleryPets.tsx`, `GalleryPet.tsx`, and the People components with `lib/galleryGroup.ts`'s kind.
+- Scan: the smart worker's step after faces, same pauses (nice 19, 3 ONNX threads, waits at Tctl ≥ 90 °C or load
+  above 16). Only photos already categorised `pet` or `photo` are looked at; screenshots and documents are skipped.
+- Routes under `/v1/media`: `pet-crops/settings` (GET, PUT `{enabled}`), `pet-crops` (DELETE: all pet data),
+  `pet-crops/unassigned`, `pet-crops/{id}` (PUT `{pet_id}` or `{new_pet}`), `pet-crops/{id}/thumb`, `pets`
+  (`min_crops`, `include_hidden`), `pets/{id}` (GET, PATCH `name`/`hidden`/`birth_date`/`cover_crop_id`),
+  `pets/{id}/merge` `{from}`, `pets/{id}/items`, `pets/{id}/thumb`, `items/{id}/pets`.
+- Grouping: cosine of the crop vectors, a crop joins a pet at ≥ 0.62 and a new pet needs 3 crops (`MATCH`,
+  `MIN_CROPS`). 0.62 is above the best threshold of the proving run (0.58) on purpose: fewer look-alikes merged, the
+  owner merges the rest.
+
+Models (`LUCINA_MEDIA_PETS_MODEL_DIR`, default `~/models/pets`):
+
+| File | Model | Source | Licence | sha256 |
+| --- | --- | --- | --- | --- |
+| `yolox_s.onnx` | YOLOX-s, COCO (cat 15, dog 16), 640×640 | github.com/Megvii-BaseDetection/YOLOX release 0.1.1rc0 | Apache-2.0 | `c5c2d13e…8063` |
+| `dinov2_small.onnx` | DINOv2 ViT-S/14, CLS token (384) | huggingface.co/onnx-community/dinov2-small (Meta DINOv2) | Apache-2.0 | `f22797ea…c20a` |
+
+Proving run (2026-11-03, 708 camera pet photos, 212 YOLOX crops in 185 photos, labelled by hand, read-only):
+
+| Re-ID model | Best cosine | Precision | Recall | Cluster purity | CPU per crop (4 threads) |
+| --- | --- | --- | --- | --- | --- |
+| DINOv2-small | 0.58 | 0.96 | 0.96 | 0.95 | 83 ms |
+| MegaDescriptor-T-224 | 0.33 | 0.63 | 0.76 | 0.86 | 59 ms |
+
+Detection is 129 ms per photo. MegaDescriptor (CC-BY-NC-4.0) lost on every measure and is not shipped. DINOv2's two
+mixed clusters were look-alike pairs (a white-and-tabby cat with a grey kitten, a ginger-and-white cat with a calico).
+EmbeddingGemma's stored photo vectors were tried first and could not tell look-alikes apart.

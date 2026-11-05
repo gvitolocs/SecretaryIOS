@@ -21,6 +21,9 @@ pub struct Saved {
     pub caption: Option<String>,
     /// Saved by the watcher, not by the owner's tap.
     pub auto: bool,
+    /// The local media copy's key: the copy stays through eviction.
+    #[serde(default)]
+    pub cache_key: Option<String>,
 }
 
 pub struct Archive {
@@ -71,6 +74,15 @@ impl Archive {
             .map_or(0, Vec::len)
     }
 
+    /// The local media copies of everything saved.
+    pub fn cache_keys(&self) -> Vec<String> {
+        let g = self.users.lock().unwrap_or_else(|e| e.into_inner());
+        g.values()
+            .flatten()
+            .filter_map(|s| s.cache_key.clone())
+            .collect()
+    }
+
     /// The saved item with this lucina-media id, for serving it back.
     pub fn find(&self, media_id: &str) -> Option<Saved> {
         let g = self.users.lock().unwrap_or_else(|e| e.into_inner());
@@ -95,6 +107,7 @@ mod tests {
             saved_at: at,
             caption: None,
             auto: true,
+            cache_key: None,
         }
     }
 

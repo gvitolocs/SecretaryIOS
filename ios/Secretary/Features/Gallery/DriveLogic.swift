@@ -289,8 +289,11 @@ enum DriveOpen: Equatable, Sendable {
     case archive
     /// Name, type, size, folder, Download and Share.
     case info
+    /// `SheetScreen`: an .xlsx to view and edit (docs/xlsx.md).
+    case sheet
 
     static func decide(_ item: GalleryItem) -> DriveOpen {
+        if DriveFiles.opensAsSheet(item) { return .sheet }
         let media: DriveOpen? = switch item.kind {
         case "photo", "video": .gallery
         case "audio": .audio
@@ -320,6 +323,13 @@ enum DriveOpen: Equatable, Sendable {
 
 /// Downloaded files and server links.
 enum DriveFiles {
+    /// The workbooks the sheet editor opens (lucina-media `sheet_ext`); .xls, .ods and .numbers keep Quick Look.
+    static let sheetExtensions: Set<String> = ["xlsx", "xlsm", "xltx", "xltm"]
+
+    static func opensAsSheet(_ item: GalleryItem) -> Bool {
+        item.kind == "file" && sheetExtensions.contains(ext(of: item.driveName))
+    }
+
     /// A server link ("/v1/media/items/x/text?a=1") as the path and query `APIClient` takes.
     static func split(_ link: String) -> (path: String, query: [URLQueryItem]) {
         guard let components = URLComponents(string: link), !components.percentEncodedPath.isEmpty else { return (link, []) }

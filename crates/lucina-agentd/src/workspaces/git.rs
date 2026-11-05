@@ -183,6 +183,33 @@ pub async fn ahead_behind(dir: &Path, base: &str) -> Option<(u64, u64)> {
     Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?))
 }
 
+/// What is under way in a checkout (`rebase`, `merge`, `cherry-pick`, `revert`, `bisect`), if
+/// anything: HEAD and the tree don't mean what they usually do until it ends.
+pub async fn in_progress(dir: &Path) -> Option<&'static str> {
+    let git_dir = PathBuf::from(read(dir, &["rev-parse", "--absolute-git-dir"]).await?);
+    [
+        ("rebase-merge", "rebase"),
+        ("rebase-apply", "rebase"),
+        ("MERGE_HEAD", "merge"),
+        ("CHERRY_PICK_HEAD", "cherry-pick"),
+        ("REVERT_HEAD", "revert"),
+        ("BISECT_LOG", "bisect"),
+    ]
+    .iter()
+    .find(|(file, _)| git_dir.join(file).exists())
+    .map(|(_, what)| *what)
+}
+
+/// Seconds since git last changed this checkout (its index or HEAD).
+pub async fn idle_secs(dir: &Path) -> Option<u64> {
+    let git_dir = PathBuf::from(read(dir, &["rev-parse", "--absolute-git-dir"]).await?);
+    ["index", "HEAD"]
+        .iter()
+        .filter_map(|f| std::fs::metadata(git_dir.join(f)).ok()?.modified().ok()?.elapsed().ok())
+        .map(|d| d.as_secs())
+        .min()
+}
+
 /// Every commit of `branch` is already on `base`.
 pub async fn merged_into(dir: &Path, branch: &str, base: &str) -> bool {
     matches!(run(dir, &["merge-base", "--is-ancestor", branch, base]).await, Ok(o) if o.ok)

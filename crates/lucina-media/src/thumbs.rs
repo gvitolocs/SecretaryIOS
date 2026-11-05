@@ -7,7 +7,8 @@
 //!   renditions below are made from it instead of the original while it exists;
 //! - `base.jpg`: the unedited picture at 1600 px, the editor's working copy of an edited photo;
 //! - `preview.jpg`: the rendering the phone sent with the upload, used as the source for formats
-//!   we can't decode here (HEIC: nezopt's libheif has no HEVC plugin);
+//!   we can't decode here (HEIC: nezopt's libheif has no HEVC plugin); for a HEIC that came without
+//!   one, `heif.rs` stitches it from the tiles ffmpeg decodes;
 //! - `g.jxl`: the grid tile, 256 px square (centre crop), JPEG XL d2.5 (about 9 KB);
 //! - `p.jxl`: the full-screen preview, 1440 px long side, progressive JPEG XL d2.5 (about 75 KB),
 //!   which the Rust viewer refines as the bytes arrive (docs/media-library.md, "Renditions");
@@ -99,6 +100,12 @@ pub fn generate(
             if edited.is_file() {
                 Some(edited)
             } else {
+                // A HEIC that came without the phone's rendering (background uploads): make one.
+                if !preview.is_file() && !decodable(original) && crate::heif::is_heif(original) {
+                    if let Err(e) = crate::heif::render_preview(cfg, original, &preview) {
+                        tracing::warn!(item = %item_id, error = %e, "HEIF rendering failed");
+                    }
+                }
                 display_source(&dir, original)
             }
         }

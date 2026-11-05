@@ -752,15 +752,13 @@ pub fn decide_with(kind: Kind, v: &Verdict, min: f64, grounded: f64) -> Decision
 
 // ---------------------------------------------------------------- words
 
-/// The turn's language: it, da or en (`planner::TURN_LANG`).
+/// The turn's language: da or en (`planner::TURN_LANG`; the line never pins Italian, so neither does this).
 pub fn turn_lang_code() -> &'static str {
     lang_code(&crate::planner::turn_lang())
 }
 
 pub fn lang_code(line: &str) -> &'static str {
-    if line.starts_with("Reply language: Italian") {
-        "it"
-    } else if line.starts_with("Reply language: Danish") {
+    if line.starts_with("Reply language: Danish") {
         "da"
     } else {
         "en"

@@ -1,10 +1,11 @@
 import MapKit
 import SwiftUI
 
-/// The full map of a place: its pin and the owner's position (both in view when the owner is within
-/// ~50 km), and a card with the address, time, distance and travel times from the current position
-/// (else from home). Navigate stays in the app: the camera follows the owner along the selected
-/// route with the next turn; Apple Maps is only a secondary menu item.
+/// The full map of a place: its pin, the owner's position (both in view when the owner is within
+/// ~50 km) and the route in the selected mode (by default the bike: he lives in Denmark), and a card
+/// with the address, time, distance and a tappable travel time per mode from the current position
+/// (else from home). Navigate stays in the app: the camera follows the owner along the route with
+/// the next turn. Google Maps and Apple Maps are explicit actions, in the selected mode.
 struct PlaceMapView: View {
     @Environment(AppModel.self) private var app
     let place: Place
@@ -15,34 +16,27 @@ struct PlaceMapView: View {
     var startsNavigating = false
     @State private var navigating = false
     @State private var startedOnce = false
-    /// MapKit's turns for the selected mode while navigating.
-    @State private var steps: [NavigationStep] = []
+    /// The routes per mode, from where the owner is (else from home).
+    @State private var routes: [PlaceTravelMode: PlaceRoute] = [:]
+    /// Bike unless the owner taps another mode, for this screen only.
+    @State private var selectedMode: PlaceTravelMode = .bike
     /// When the routes were last loaded (their durations count from then).
-    @State private var routesAt = Date()
-    @State private var etas: [PlaceETA] = []
-    @State private var etaLoading = false
-    @State private var routes: [MapsRoute] = []
-    @State private var selectedMode: PlaceTravelMode?
-    @AppStorage("placeTravelMode") private var rememberedMode = ""
+    @State private var routeAt = Date()
+    @State private var routeLoading = false
     /// An event's place: pinned to the countdown widget.
     @State private var countdownPinned = false
 
-    private var selectedRoute: MapsRoute? { routes.first { $0.mode == selectedMode } }
-    private var polyline: [[Double]] {
-        if let line = selectedRoute?.polyline, !line.isEmpty { return line }
-        return navigating ? steps.flatMap(\.line) : []
-    }
+    private var route: PlaceRoute? { routes[selectedMode] }
+    private var polyline: [[Double]] { route?.line ?? [] }
 
-    /// The mode the navigation guides in: the selected route's, else by distance.
-    private var navigationMode: PlaceTravelMode {
-        if let selectedMode { return selectedMode }
-        return (origin?.meters(to: coordinate) ?? 0) > 2000 ? .drive : .walk
+    /// When to leave for an appointment still ahead.
+    private var leaveAt: Date? {
+        guard let route, let when = place.when, when > Date() else { return nil }
+        return when.addingTimeInterval(-route.seconds)
     }
 
     /// The routes reload when the owner moves ~100 m, every ~1 km while navigating (fewer calls).
     private var routesKey: String? { navigating ? origin.map { String(format: "nav %.2f,%.2f", $0.lat, $0.lng) } : origin?.key }
-
-    private var stepsKey: String { "\(navigating) \(navigationMode.rawValue) \(routesKey ?? "-")" }
 
     /// The owner's live position while navigating.
     private var here: CLLocationCoordinate2D? {
@@ -104,20 +98,17 @@ struct PlaceMapView: View {
             PlaceLocation.shared.refresh()
             await PlaceResolver.shared.loadHome(api: app.api)
         }
-        .task(id: routesKey) { await loadETAs() }
-        .task(id: stepsKey) { await loadSteps() }
+        .task(id: routesKey) { await loadRoutes() }
         .onAppear {
             if startsNavigating && !startedOnce { startNavigation() }
             startedOnce = true
         }
         .onDisappear { stopNavigation() }
-        .onChange(of: selectedMode) { _, _ in
-            #if SCREENSHOTS
-            reportFit()
-            MapSelfTestProbe.shared.leaveAt = selectedRoute?.leaveAt
-            #endif
-        }
         #if SCREENSHOTS
+        .onChange(of: selectedMode) { _, _ in
+            reportFit()
+            MapSelfTestProbe.shared.leaveAt = leaveAt
+        }
         .onAppear {
             MapSelfTestProbe.shared.mapShown = true
             reportFit()
@@ -150,115 +141,101 @@ struct PlaceMapView: View {
         }
     }
 
-    @ViewBuilder private var travelTimes: some View {
-        if !routes.isEmpty {
-            routePicker
-            if let route = selectedRoute {
-                if place.when != nil, let leaveAt = route.leaveAt {
-                    let time = leaveAt.formatted(date: .omitted, time: .shortened)
-                    Text("Leave at \(time) to be on time")
-                        .font(LucinaTokens.Fonts.subheadline.weight(.semibold))
-                        .foregroundStyle(Theme.accent)
-                }
-                if !route.transit.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(Array(route.transit.enumerated()), id: \.offset) { _, leg in
-                            transitLeg(leg)
-                        }
-                    }
-                }
-            }
-        } else if !etas.isEmpty {
-            HStack(spacing: 6) {
-                ForEach(Array(etas.enumerated()), id: \.element.id) { index, eta in
-                    if index > 0 { Text(verbatim: "·").foregroundStyle(Theme.textTertiary) }
-                    Label(PlaceFormat.duration(eta.seconds), systemImage: eta.mode.symbol)
-                        .labelStyle(.titleAndIcon)
-                        .accessibilityLabel(Text(verbatim: "\(eta.mode.title) \(PlaceFormat.duration(eta.seconds))"))
-                }
-            }
-            .font(LucinaTokens.Fonts.subheadline.monospacedDigit())
-            .foregroundStyle(Theme.textSecondary)
-            .lineLimit(1)
-            .minimumScaleFactor(0.8)
-            .accessibilityElement(children: .combine)
-        } else if etaLoading {
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.small)
-                Text("Travel times…")
-            }
-            .font(LucinaTokens.Fonts.subheadline)
-            .foregroundStyle(Theme.textSecondary)
-        } else {
-            Text("No route found")
-                .font(LucinaTokens.Fonts.subheadline)
-                .foregroundStyle(Theme.textSecondary)
-        }
-    }
-
-    private var routePicker: some View {
-        HStack(alignment: .top, spacing: 4) {
-            ForEach(PlaceTravelMode.allCases, id: \.self) { mode in
-                if let route = routes.first(where: { $0.mode == mode }) {
-                    Button {
-                        rememberedMode = mode.rawValue
-                        selectedMode = mode
-                    } label: {
-                        VStack(spacing: 4) {
-                            Image(systemName: mode.symbol)
+    /// A button per mode with its time, the selected one filled: tapping selects it, and the map line,
+    /// Navigate and the other maps apps follow.
+    private var modePicker: some View {
+        HStack(spacing: 4) {
+            ForEach(PlaceTravelMode.cardOrder, id: \.self) { mode in
+                let selected = mode == selectedMode
+                Button {
+                    select(mode)
+                } label: {
+                    VStack(spacing: 4) {
+                        Image(systemName: mode.symbol)
+                        if let route = routes[mode] {
                             Text(verbatim: route.durationText)
-                                .font(LucinaTokens.Fonts.caption2.monospacedDigit())
-                                .multilineTextAlignment(.center)
+                                .font(LucinaTokens.Fonts.caption.monospacedDigit().weight(selected ? .semibold : .regular))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.7)
+                        } else if routeLoading {
+                            ProgressView().controlSize(.mini)
+                        } else {
+                            Text(verbatim: "–").font(LucinaTokens.Fonts.caption)
                         }
-                        .frame(maxWidth: .infinity, minHeight: 44)
-                        .padding(6)
-                        .foregroundStyle(selectedMode == mode ? Theme.onAccent : Theme.textSecondary)
-                        .background(selectedMode == mode ? Theme.accentFill : Theme.field,
-                                    in: RoundedRectangle(cornerRadius: LucinaTokens.Radius.field))
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(Text(verbatim: "\(mode.title) \(route.durationText)"))
-                    .accessibilityAddTraits(selectedMode == mode ? .isSelected : [])
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .padding(6)
+                    .foregroundStyle(selected ? Theme.onAccent : Theme.text)
+                    .background(selected ? Theme.accentFill : Theme.field,
+                                in: RoundedRectangle(cornerRadius: LucinaTokens.Radius.field))
+                    .contentShape(RoundedRectangle(cornerRadius: LucinaTokens.Radius.field))
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel(Text(verbatim: "\(routes[mode]?.modeText ?? mode.title) \(routes[mode]?.durationText ?? "")"))
+                .accessibilityAddTraits(selected ? .isSelected : [])
+                .accessibilityIdentifier("placeMode-\(mode.rawValue)")
             }
         }
     }
 
-    private func transitLeg(_ leg: MapsRoute.TransitLeg) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Label([leg.line, leg.vehicle].compactMap { $0 }.joined(separator: " · "), systemImage: "tram.fill")
-                .font(LucinaTokens.Fonts.subheadline.weight(.semibold))
-            Text(verbatim: [leg.from, leg.to].compactMap { $0 }.joined(separator: " → "))
-                .font(LucinaTokens.Fonts.caption)
-            if let depart = leg.departAt {
-                Text(verbatim: [depart, leg.arriveAt].compactMap { $0 }
-                    .map { $0.formatted(date: .omitted, time: .shortened) }.joined(separator: " – "))
-                    .font(LucinaTokens.Fonts.caption.monospacedDigit())
+    /// The modes, then what the selected one needs said. A bike estimate says so; a walking or car
+    /// time never stands in for it.
+    @ViewBuilder private var travelTimes: some View {
+        modePicker
+        Group {
+            if let route, route.estimated {
+                Label(route.modeText, systemImage: route.mode.symbol)
+            } else if route == nil, !routeLoading {
+                selectedMode == .bike ? Text("No bike route found") : Text("No route found")
+            } else if selectedMode == .transit {
+                Text("Apple Maps can only give the time for public transport. Open in Google Maps to see the lines.")
             }
         }
+        .font(LucinaTokens.Fonts.caption)
         .foregroundStyle(Theme.textSecondary)
+        if let leaveAt {
+            let time = leaveAt.formatted(date: .omitted, time: .shortened)
+            Text("Leave at \(time) to be on time")
+                .font(LucinaTokens.Fonts.subheadline.weight(.semibold))
+                .foregroundStyle(Theme.accent)
+        }
     }
 
-    /// Navigate (in the app) and, in a secondary menu, Apple Maps.
+    /// Navigate in the selected mode (in the app), Google Maps next to it, Apple Maps in the menu.
     private var directions: some View {
-        HStack(spacing: 8) {
-            Button(action: startNavigation) {
-                Label("Navigate", systemImage: "location.north.line.fill")
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                Button(action: startNavigation) {
+                    Label("Navigate", systemImage: selectedMode.symbol)
+                        .font(LucinaTokens.Fonts.subheadline.weight(.semibold))
+                        .foregroundStyle(Theme.onAccent)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 44)
+                        .background(Theme.accentFill, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("placeNavigate")
+                moreMenu
+            }
+            Button {
+                ExternalMaps.openGoogleDirections(to: coordinate, mode: selectedMode)
+            } label: {
+                Label("Open in Google Maps", systemImage: "map.fill")
                     .font(LucinaTokens.Fonts.subheadline.weight(.semibold))
-                    .foregroundStyle(Theme.onAccent)
+                    .foregroundStyle(Theme.text)
                     .frame(maxWidth: .infinity)
                     .frame(height: 44)
-                    .background(Theme.accentFill, in: Capsule())
+                    .background(Theme.field, in: Capsule())
             }
             .buttonStyle(.plain)
-            .accessibilityIdentifier("placeNavigate")
-            moreMenu
+            .accessibilityIdentifier("placeOpenGoogle")
         }
     }
 
     private var moreMenu: some View {
         Menu {
-            OpenInAppleMapsButton(url: ExternalMaps.appleMapsURL(to: coordinate, name: place.title))
+            OpenInGoogleMapsButton(to: coordinate, mode: selectedMode)
+            OpenInAppleMapsButton(to: coordinate, name: place.title, mode: selectedMode)
         } label: {
             Image(systemName: "ellipsis")
                 .font(LucinaTokens.Fonts.subheadline.weight(.semibold))
@@ -279,7 +256,7 @@ struct PlaceMapView: View {
                 Label("You have arrived", systemImage: "flag.checkered")
                     .font(LucinaTokens.Fonts.headline)
                     .foregroundStyle(Theme.accent)
-            } else if let here, let next = NavigationGuide.next(steps, at: here) {
+            } else if let here, let next = NavigationGuide.next(route?.steps ?? [], at: here) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(verbatim: next.step.instruction)
                         .font(LucinaTokens.Fonts.headline)
@@ -297,13 +274,13 @@ struct PlaceMapView: View {
             }
             if !arrived {
                 HStack(spacing: 6) {
-                    Image(systemName: navigationMode.symbol)
-                    if let route = selectedRoute {
-                        let time = routesAt.addingTimeInterval(route.durationS).formatted(date: .omitted, time: .shortened)
+                    Image(systemName: selectedMode.symbol)
+                    if let route {
+                        let time = routeAt.addingTimeInterval(route.seconds).formatted(date: .omitted, time: .shortened)
                         Text("Arrive at \(time)")
                     }
                     if let here {
-                        if selectedRoute != nil { Text(verbatim: "·").foregroundStyle(Theme.textTertiary) }
+                        if route != nil { Text(verbatim: "·").foregroundStyle(Theme.textTertiary) }
                         let distance = PlaceFormat.distance(NavigationGuide.meters(here, coordinate))
                         Text("\(distance) to go")
                     }
@@ -322,13 +299,6 @@ struct PlaceMapView: View {
                     }
                     .font(LucinaTokens.Fonts.subheadline)
                     .foregroundStyle(Theme.textSecondary)
-                }
-                if let route = selectedRoute, !route.transit.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(Array(route.transit.enumerated()), id: \.offset) { _, leg in
-                            transitLeg(leg)
-                        }
-                    }
                 }
             }
             HStack(spacing: 8) {
@@ -349,6 +319,7 @@ struct PlaceMapView: View {
 
     private func startNavigation() {
         guard !navigating else { return }
+        DebugEvents.record("place.navigate", ["mode": selectedMode.rawValue, "via": route?.source.rawValue ?? "none"])
         PlaceLocation.shared.requestPermission()
         PlaceLocation.shared.startUpdating()
         UIApplication.shared.isIdleTimerDisabled = true
@@ -363,33 +334,24 @@ struct PlaceMapView: View {
         PlaceLocation.shared.stopUpdating()
         UIApplication.shared.isIdleTimerDisabled = false
         navigating = false
-        steps = []
         #if SCREENSHOTS
         MapSelfTestProbe.shared.navigating = false
         #endif
     }
 
-    private func loadSteps() async {
-        guard navigating, let origin, !origin.isHome else {
-            if !navigating { steps = [] }
-            return
-        }
-        let found = await NavigationGuide.steps(navigationMode, from: origin.coordinate, to: coordinate)
-        guard !Task.isCancelled else { return }
-        steps = found
-        #if SCREENSHOTS
-        MapSelfTestProbe.shared.navigationSteps = found.count
-        #endif
+    private func select(_ mode: PlaceTravelMode) {
+        selectedMode = mode
+        DebugEvents.record("ui.tap", ["screen": "place_map", "element": "travel_mode", "mode": mode.rawValue,
+                                      "via": routes[mode]?.source.rawValue ?? "none", "seconds": Int(routes[mode]?.seconds ?? 0),
+                                      "steps": routes[mode]?.steps.count ?? 0])
     }
 
-    private func loadETAs() async {
-        // While navigating the old route stays up until the new one arrives.
-        if !navigating {
-            routes = []
-            etas = []
-        }
+    private func loadRoutes() async {
+        // While navigating the old route stays up until the new one arrives, and only that mode
+        // reloads (fewer calls).
+        if !navigating { routes = [:] }
         guard let origin else { return }
-        etaLoading = true
+        routeLoading = true
         #if SCREENSHOTS
         MapSelfTestProbe.shared.etaDone = false
         MapSelfTestProbe.shared.distanceText = origin.distanceText(to: coordinate)
@@ -397,37 +359,30 @@ struct PlaceMapView: View {
         MapSelfTestProbe.shared.fallbackReason = nil
         MapSelfTestProbe.shared.leaveAt = nil
         #endif
-        let arrive = place.when.flatMap { $0 > Date() ? $0 : nil }
-        do {
-            let response = try await app.api.mapsRoutes(from: origin.coordinate, to: coordinate, arrive: arrive)
-            guard !Task.isCancelled else { return }
-            routes = response.routes
-            routesAt = Date()
-            let preferred = selectedMode ?? PlaceTravelMode(rawValue: rememberedMode)
-                ?? (origin.meters(to: coordinate) > 2000 ? .transit : .walk)
-            selectedMode = routes.first(where: { $0.mode == preferred })?.mode ?? routes.first?.mode
-            #if SCREENSHOTS
-            MapSelfTestProbe.shared.routesText = routes.map { $0.mode.rawValue }.joined(separator: ",")
-            MapSelfTestProbe.shared.leaveAt = selectedRoute?.leaveAt
-            MapSelfTestProbe.shared.etaText = routes.map { "\($0.mode.title) \($0.durationText)" }.joined(separator: " · ")
-            #endif
-        } catch {
-            guard !Task.isCancelled else { return }
-            let found = await PlaceETA.all(from: origin.coordinate, to: coordinate)
-            guard !Task.isCancelled else { return }
-            etas = found
-            #if SCREENSHOTS
-            // Keep the diagnostic free of request URLs, coordinates and addresses.
-            if let error = error as? APIError {
-                MapSelfTestProbe.shared.fallbackReason = "HTTP \(error.status) \(error.code)"
-            } else {
-                MapSelfTestProbe.shared.fallbackReason = "endpoint unavailable"
+        let from = origin.coordinate, to = coordinate, isHome = origin.isHome
+        await withTaskGroup(of: (PlaceTravelMode, PlaceRoute?).self) { group in
+            for mode in navigating ? [selectedMode] : PlaceTravelMode.cardOrder {
+                group.addTask { (mode, await PlaceRoute.calculate(mode, from: from, to: to)) }
             }
-            MapSelfTestProbe.shared.etaText = PlaceETA.text(found)
-            #endif
+            for await (mode, found) in group {
+                guard !Task.isCancelled else { return }
+                if found != nil || !navigating { routes[mode] = found }
+                // Free of coordinates and addresses, like every debug event.
+                DebugEvents.record("place.route", ["mode": mode.rawValue, "via": found?.source.rawValue ?? "none",
+                                                   "seconds": Int(found?.seconds ?? 0), "meters": Int(found?.meters ?? 0),
+                                                   "steps": found?.steps.count ?? 0, "navigating": navigating, "from_home": isHome])
+            }
         }
-        etaLoading = false
+        guard !Task.isCancelled else { return }
+        routeAt = Date()
+        routeLoading = false
         #if SCREENSHOTS
+        let found = PlaceTravelMode.cardOrder.compactMap { routes[$0] }
+        MapSelfTestProbe.shared.routesText = found.isEmpty ? nil : found.map(\.mode.rawValue).joined(separator: ",")
+        MapSelfTestProbe.shared.etaText = found.map { "\($0.modeText) \($0.durationText)" }.joined(separator: " · ")
+        if let bike = routes[.bike], bike.estimated { MapSelfTestProbe.shared.fallbackReason = bike.source.rawValue }
+        MapSelfTestProbe.shared.leaveAt = leaveAt
+        if navigating { MapSelfTestProbe.shared.navigationSteps = route?.steps.count ?? 0 }
         reportFit()
         MapSelfTestProbe.shared.etaDone = true
         #endif
@@ -504,7 +459,7 @@ private struct RoutedPlaceView: View {
     }
 }
 
-/// A place the app's map could not find: says so; Apple Maps only from the secondary menu.
+/// A place the app's map could not find: says so; Google Maps and Apple Maps only from the secondary menu.
 struct PlaceNotFound: View {
     let place: Place
 
@@ -514,6 +469,7 @@ struct PlaceNotFound: View {
                 .font(LucinaTokens.Fonts.subheadline)
                 .foregroundStyle(Theme.textSecondary)
             Menu {
+                OpenInGoogleMapsButton(url: ExternalMaps.googleMapsSearchURL(place.searchQuery))
                 OpenInAppleMapsButton(url: ExternalMaps.appleMapsSearchURL(place.searchQuery))
             } label: {
                 Label("More", systemImage: "ellipsis.circle")

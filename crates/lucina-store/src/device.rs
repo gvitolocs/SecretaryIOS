@@ -714,7 +714,8 @@ fn duration_text(seconds: i64, lang: &str) -> String {
 /// Lucina's confirmation text once the phone reported a result
 /// (`deviceResultText`).
 pub fn result_text(c: &Value) -> String {
-    let lang = c["lang"].as_str().unwrap_or("en");
+    // English or Danish, never Italian, whatever the phone says (owner rule 2026-11-02).
+    let lang = if c["lang"].as_str() == Some("da") { "da" } else { "en" };
     let a = &c["args"];
     let s = |k: &str| a[k].as_str().unwrap_or("").to_owned();
     if c["result"]["ok"] != json!(true) {
@@ -853,7 +854,7 @@ mod tests {
         let (done, dup) = s.record_result(id, true, "", "A1", now).unwrap();
         assert!(!dup);
         assert_eq!(done["status"], "done");
-        assert_eq!(result_text(&done), "Fatto: sveglia delle 07:00 eliminata.");
+        assert_eq!(result_text(&done), "Done: your 07:00 alarm is deleted.");
         assert!(s.record_result(id, true, "", "A1", now).unwrap().1);
         assert_eq!(
             s.record_result(id, false, "x", "", now),

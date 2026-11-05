@@ -14,10 +14,15 @@
 //! | `SECRETARY_PUBLIC_URL` | `https://getsecretary.tech` | this server's public origin (links in QR sign-in codes) |
 //! | `SECRETARY_TRUST_PROXY` | `0` | `1`: take the client IP from `X-Forwarded-For` (Caddy in front) |
 //! | `SECRETARY_PRIVATE_ASSETS_DIR` | `/var/lib/secretary/private-assets` | files for `GET /v1/assets/{name}` (authenticated only) |
-//! | `SECRETARY_TTS_URL` | `http://100.107.164.33:8880` | Kokoro (OpenAI-compatible) for `POST /v1/tts` |
+//! | `SECRETARY_TTS_URL` | `http://100.107.164.33:8880` | Kokoro (OpenAI-compatible) for `POST /v1/tts` (MP3) and `POST /v1/voice` (raw PCM, 24 kHz) |
+//! | `SECRETARY_GEMINI_KEY_FILE` | — | file with the Gemini API key; enables `POST /v1/calls/transcribe` and `POST /v1/voice` |
+//! | `SECRETARY_VOICE_STT_URL` | `http://127.0.0.1:8801/v1/memos/stt` | local speech-to-text tried first by `POST /v1/voice` and `GET /v1/voice/ws`, and warmed by the latter (Caddy's loopback site on p1 → lucina-memo's whisper.cpp); `off` = Gemini only |
+//! | `SECRETARY_TRANSCRIPTION_MODEL` | `gemini-3.5-transcribe` | the transcription model (`gemini-…`) |
+//! | `SECRETARY_TRANSCRIPTION_URL` | `https://generativelanguage.googleapis.com` | transcription API origin (tests point it at a mock) |
 //! | `SECRETARY_CATALOG_DIR` | `/var/lib/secretary/catalog` | `catalog.{it,en,da}.json` for `GET /v1/shopping/catalog` |
 //! | `SECRETARY_DEVICE_EVENTS_PER_MINUTE` | `120` | `POST /v1/device/events` requests per device per minute |
 //! | `SECRETARY_OWNER_AUTH_PER_MINUTE` | `600` | `GET /v1/auth/owner` (Caddy forward_auth for the owner-only plugins) per device per minute, its own bucket |
+//! | `SECRETARY_MEDIA_AUTH_PER_MINUTE` | `6000` | `GET /v1/auth/media` (Caddy forward_auth for `/v1/media`, once per thumbnail) per device per minute, its own bucket |
 //! | `SECRETARY_TTS_VOICES` | `if_sara,af_heart,af_bella,bf_emma` | voices a client may ask for |
 //! | `SECRETARY_NOTIFY_INGEST` | `1` | `0`: no notifications from Lucina's timeline stream |
 //! | `SECRETARY_VAPID_SUBJECT` | `https://getsecretary.tech` | VAPID contact (`mailto:` or `https:`) |
@@ -107,6 +112,8 @@ pub struct Config {
     /// Holds `catalog.{lang}.json` (shopping catalog).
     pub catalog_dir: PathBuf,
     pub tts_url: String,
+    /// Local speech-to-text for `POST /v1/voice` (`None` = Gemini only).
+    pub voice_stt_url: Option<String>,
     pub tts_voices: Vec<String>,
     pub tts_timeout: Duration,
     pub timeouts: Timeouts,
@@ -116,6 +123,8 @@ pub struct Config {
     pub device_events_per_minute: u32,
     /// `GET /v1/auth/owner` requests per device per minute (own bucket).
     pub owner_auth_per_minute: u32,
+    /// `GET /v1/auth/media` requests per device per minute (own bucket).
+    pub media_auth_per_minute: u32,
     /// `POST /v1/session` attempts per client IP per minute.
     pub login_rate_per_minute: u32,
     /// The public origin, no trailing slash (QR sign-in links).
@@ -179,6 +188,7 @@ impl Config {
             private_assets_dir: PathBuf::from(DEFAULT_PRIVATE_ASSETS_DIR),
             catalog_dir: PathBuf::from(DEFAULT_CATALOG_DIR),
             tts_url: crate::tts::DEFAULT_URL.into(),
+            voice_stt_url: Some(crate::voice::DEFAULT_STT_URL.into()),
             tts_voices: crate::tts::DEFAULT_VOICES
                 .split(',')
                 .map(str::to_owned)
@@ -189,6 +199,7 @@ impl Config {
             rate_limit_per_minute: 60,
             device_events_per_minute: 120,
             owner_auth_per_minute: 600,
+            media_auth_per_minute: 6000,
             login_rate_per_minute: 5,
             public_url: DEFAULT_PUBLIC_URL.into(),
             qr_login_ttl: crate::qr_login::TTL,
@@ -240,6 +251,10 @@ impl Config {
         if let Some(u) = get("SECRETARY_TTS_URL") {
             cfg.tts_url = u;
         }
+        if let Some(u) = get("SECRETARY_VOICE_STT_URL") {
+            let u = u.trim();
+            cfg.voice_stt_url = (!u.is_empty() && u != "off").then(|| u.to_owned());
+        }
         if let Some(v) = get("SECRETARY_TTS_VOICES") {
             cfg.tts_voices = v
                 .split(',')
@@ -259,6 +274,11 @@ impl Config {
         if let Some(v) = get("SECRETARY_OWNER_AUTH_PER_MINUTE") {
             cfg.owner_auth_per_minute = v.parse().ok().filter(|n| *n > 0).with_context(|| {
                 format!("SECRETARY_OWNER_AUTH_PER_MINUTE={v}: expected a positive integer")
+            })?;
+        }
+        if let Some(v) = get("SECRETARY_MEDIA_AUTH_PER_MINUTE") {
+            cfg.media_auth_per_minute = v.parse().ok().filter(|n| *n > 0).with_context(|| {
+                format!("SECRETARY_MEDIA_AUTH_PER_MINUTE={v}: expected a positive integer")
             })?;
         }
         cfg.trust_proxy = match get("SECRETARY_TRUST_PROXY").as_deref() {

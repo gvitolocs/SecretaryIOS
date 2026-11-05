@@ -11,6 +11,19 @@ export function PeopleIcon() {
   );
 }
 
+/** A paw: the Pets page's link in the Gallery header (the page icon style). */
+export function PawIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="6" cy="10" r="1.8" />
+      <circle cx="9.8" cy="6" r="1.8" />
+      <circle cx="14.2" cy="6" r="1.8" />
+      <circle cx="18" cy="10" r="1.8" />
+      <path d="M12 11.5c-2.6 0-5 3.2-5 5.6 0 1.6 1.2 2.4 2.6 2.4.9 0 1.6-.5 2.4-.5s1.5.5 2.4.5c1.4 0 2.6-.8 2.6-2.4 0-2.4-2.4-5.6-5-5.6Z" />
+    </svg>
+  );
+}
+
 /** A face in a frame's corners: the viewer's "Faces" toggle. */
 export function FacesIcon() {
   return (

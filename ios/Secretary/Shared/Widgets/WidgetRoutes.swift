@@ -15,6 +15,8 @@ import Foundation
 //   countdowns        the Countdown plugin (pinned events of the countdown widget)
 //   server-health     the Server plugin
 //   chat/compose?text=<encoded>   compose a message with context from a plugin
+//   approvals/<id>    an approval's card (the Live Activity's Details)
+//   approvals/<id>?approve=1&hash=<payloadHash>   the card with its approve step (the activity's Approve, ApprovalLink)
 enum WidgetRoute {
     static let scheme = "secretary"
 
@@ -62,6 +64,7 @@ struct OpenSecretaryIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult {
+        let trace = DebugEvents.intent("open_secretary", ["route": route]); defer { trace.end() }
         if let open = WidgetRouter.open { open(route) } else { WidgetRouter.pending = route }
         return .result()
     }

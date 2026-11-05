@@ -24,6 +24,7 @@
 mod client;
 pub mod jev_drive;
 pub mod control;
+pub mod input;
 mod sandbox;
 pub mod viewer;
 
@@ -135,6 +136,9 @@ pub enum Error {
     /// The Cua stdio MCP proxy failed (daemon down, MCP error, timeout).
     #[error("Lucina's sandbox daemon is unavailable: {0}")]
     Sandbox(String),
+    /// A key or text with no proof of where focus is (`input`): it could land on live shortcuts.
+    #[error("Not typed: focus isn't known, and in the owner's signed-in sessions keys are live shortcuts. Click the field first and check the click worked, or pass its element_token or x and y with this call.")]
+    FocusUnverified,
     /// The owner took over this sandbox from the apps' live view.
     #[error(
         "The owner is driving this computer from the live view; try again once it is given back."
@@ -170,6 +174,7 @@ impl Error {
             Self::UnconfirmedCancel => "unconfirmed_cancel",
             Self::GatewayStopFailed => "gateway_stop_failed",
             Self::Sandbox(_) => "sandbox_unavailable",
+            Self::FocusUnverified => "focus_unverified",
             Self::OwnerDriving => "owner_driving",
             Self::NotDriving => "not_driving",
             Self::OwnerIdle => "owner_idle",

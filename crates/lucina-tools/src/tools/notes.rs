@@ -17,6 +17,28 @@ use serde_json::{json, Value};
 use super::calendar::server_of;
 use crate::{schema_for, Ctx, Effect, SideEffect, Tool, ToolError, ToolResult};
 
+/// A note's name for the model: its id when the slug, made from the first line, holds a token.
+fn model_slug(n: &Value) -> Value {
+    match n["slug"].as_str() {
+        Some(s) if lucina_secrets::labelled::slug_holds_token(s) => n["id"].clone(),
+        _ => n["slug"].clone(),
+    }
+}
+
+/// A note may hold a password in plain words: this text is on its way to the model.
+fn mask_strings(v: &mut Value) {
+    match v {
+        Value::String(s) => {
+            if let std::borrow::Cow::Owned(new) = lucina_secrets::labelled::mask(s) {
+                *s = new;
+            }
+        }
+        Value::Array(a) => a.iter_mut().for_each(mask_strings),
+        Value::Object(o) => o.values_mut().for_each(mask_strings),
+        _ => {}
+    }
+}
+
 const MAX_NOTE_CHARS: usize = 20_000;
 /// Characters of a note's content a `read` returns.
 const READ_CHARS: usize = 12_000;
@@ -534,7 +556,7 @@ fn keep_fields(n: &Value, out: &mut Value) {
     if let Some(r) = reminder_of(n) {
         out["reminder"] = json!(r);
     }
-    if let Some(slug) = n["slug"].as_str() {
+    if let Some(slug) = model_slug(n).as_str() {
         out["cite"] = json!(cite(slug));
     }
 }
@@ -644,7 +666,7 @@ async fn remote(
                 .map(|l| {
                     l.iter()
                         .map(|n| {
-                            hit(n, json!({"title": n["title"], "slug": n["slug"], "modified": n["updatedAt"],
+                            hit(n, json!({"title": n["title"], "slug": model_slug(n), "modified": n["updatedAt"],
                                    "source": n["source"], "pinned": n["pinned"], "tags": n["tags"]}))
                         })
                         .collect()
@@ -668,7 +690,11 @@ async fn remote(
                 .as_array()
                 .map(|l| {
                     l.iter()
-                        .map(|n| hit(n, json!({"title": n["title"], "slug": n["slug"], "lines": [n["excerpt"]]})))
+                        .map(|n| {
+                            let mut h = hit(n, json!({"title": n["title"], "slug": model_slug(n), "lines": [n["excerpt"]]}));
+                            mask_strings(&mut h);
+                            h
+                        })
                         .collect()
                 })
                 .unwrap_or_default();
@@ -715,13 +741,15 @@ async fn remote(
                     v["labels"] = json!(names);
                 }
             }
-            let mut out = json!({"title": v["title"], "slug": v["slug"], "source": v["source"],
+            let mut out = json!({"title": v["title"], "slug": model_slug(&v), "source": v["source"],
                 "updated": v["updatedAt"], "tags": v["tags"], "pinned": v["pinned"], "stored": "secretary"});
             keep_fields(&v, &mut out);
             if let Some(items) = v["items"].as_array() {
-                out["items"] = json!(numbered_items(items));
+                let mut listed = json!(numbered_items(items));
+                mask_strings(&mut listed);
+                out["items"] = listed;
             } else {
-                let text = v["content"].as_str().unwrap_or_default();
+                let text = lucina_secrets::labelled::mask(v["content"].as_str().unwrap_or_default()).into_owned();
                 let total = text.chars().count();
                 out["content"] = json!(text.chars().take(READ_CHARS).collect::<String>());
                 if total > READ_CHARS {
@@ -1229,6 +1257,7 @@ fn local(a: &Args, ctx: &Ctx) -> ToolResult {
             let p = path_for(ctx, &title)?;
             let text = std::fs::read_to_string(&p)
                 .map_err(|_| ToolError::new(format!("no note titled {title:?}")))?;
+            let text = lucina_secrets::labelled::mask(&text).into_owned();
             Ok(json!({"title": title, "content": text.chars().take(8000).collect::<String>()}))
         }
         Action::Create | Action::Append => {

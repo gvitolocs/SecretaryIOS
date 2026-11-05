@@ -23,7 +23,10 @@ members = [
     "crates/lucina-prompter",
     "crates/lucina-store",
     "crates/lucina-memory",
+    "crates/lucina-flaws",
     "crates/lucina-ops",
+    "crates/lucina-vault-ingest",
+    "crates/lucina-vault",
     "crates/lucina-grocery",
     "crates/lucina-deals",
     "crates/lucina-delegate",
@@ -56,9 +59,12 @@ members = [
     "verification/models",
     "crates/secretary-media-stream",
     "crates/lucina-media",
+    "crates/secretary-xlsx",
     "crates/lucina-media-ml",
     "crates/lucina-jev",
+    "crates/lucina-upstream",
     "crates/secretary-image",
+    "crates/lucina-vocab",
 ]
 exclude = [
     # Standalone crates with their own [workspace] and Cargo.lock (docs/repo-workflow.md).

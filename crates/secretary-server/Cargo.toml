@@ -16,6 +16,7 @@ path = "src/main.rs"
 ink-library = { path = "../ink-library" }
 ink-obsidian = { path = "../ink-obsidian" }
 ink-sync = { path = "../ink-sync" }
+lucina-vocab = { path = "../lucina-vocab" }
 secretary-core = { path = "../secretary-core" }
 secretary-gym = { path = "../secretary-gym" }
 secretary-body = { path = "../secretary-body" }
@@ -23,7 +24,7 @@ secretary-calendar = { path = "../secretary-calendar" }
 secretary-tasks = { path = "../secretary-tasks" }
 ring = "0.17"
 chrono-tz = { workspace = true }
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 hyper = "1"
 hyper-util = { version = "0.1", features = ["tokio"] }
 tokio = { workspace = true }

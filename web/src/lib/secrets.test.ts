@@ -3,6 +3,7 @@ import type { SecretProject } from "../api/secrets";
 import {
   commandArgIndex,
   detectSecrets,
+  findProject,
   isSecretCommand,
   maskSecrets,
   normalizeFolder,
@@ -17,6 +18,17 @@ const PROJECTS: SecretProject[] = [
   { id: "p-orch", name: "Orchestra", slug: "orchestra-x1", alias: null, environments: [{ slug: "dev", name: "Dev" }] },
   { id: "p-luc", name: "Lucina", slug: "lucina", alias: "lucina", environments: [{ slug: "prod", name: "Prod" }] },
 ];
+
+describe("findProject (a card's project)", () => {
+  it("matches the id, alias, slug or name exactly and never guesses", () => {
+    expect(findProject("p-orch", PROJECTS)?.id).toBe("p-orch");
+    expect(findProject("POKO", PROJECTS)?.id).toBe("p-poko");
+    expect(findProject("orchestra-x1", PROJECTS)?.id).toBe("p-orch");
+    expect(findProject("Lucina", PROJECTS)?.id).toBe("p-luc");
+    expect(findProject("lucinaos", PROJECTS)).toBeUndefined();
+    expect(findProject("orch", PROJECTS)).toBeUndefined();
+  });
+});
 
 describe("/secret command", () => {
   it("is recognised only as a command", () => {

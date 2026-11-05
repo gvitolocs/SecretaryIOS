@@ -92,6 +92,9 @@ fn setup(with_tools: bool) -> Env {
     cfg.quiet_start = 0;
     cfg.quiet_end = 0;
     cfg.upstream_key = Some(KEY.into());
+    // The scan pauses on a hot or busy box (DK5); nezopt often is both.
+    cfg.prepare_max_load = u32::MAX;
+    cfg.drive_max_temp_c = u32::MAX;
     cfg.folders = vec![
         ("Lezioni".into(), root.clone()),
         ("Film".into(), tmp.path().join("mybook/Film")),

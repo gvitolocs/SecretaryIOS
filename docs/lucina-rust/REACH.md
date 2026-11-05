@@ -13,7 +13,8 @@ Lucina agents", the turn becomes intent `agent_message`:
 |---|---|---|
 | `message_claude` (with an optional `issue`: what, where, the owner's words, links) | the Claude coordinator | a live gbot Claude channel when `LUCINA_REACH_CLAUDE_CHANNEL` names one; otherwise **the mailbox** |
 | `message_grok` | the owner's primary Grok Bot | `gbot send <bot>`, then the bot's thread is read until the reply settles |
-| `lucina_agents` (list, run, send, read) | Lucina Agents | lucina-agentd's socket as `service:lucina`; runs use `opencode` + `opencode/deepseek-v4.1-flash-free` (never Codex, never paid DeepSeek) |
+| `message_mistral` (optional `thread` to write again) | the Mistral report agent | an agent in Lucina Agents (provider `mistral`); it reads and answers only; docs/design/mistral-provider.md |
+| `lucina_agents` (list, run, send, read) | Lucina Agents | lucina-agentd's socket as `service:lucina`; runs use `opencode` + `opencode/deepseek-v4.1-flash-free` (never Codex, never paid DeepSeek). `send` to a Claude session (`kind: "Claude session"`) leaves it a message; it answers on the thread with `lucina_reply` (`docs/design/agents-pipeline.md`, section 6) |
 | `reach_threads` | — | what she sent and the replies |
 
 ## Threads

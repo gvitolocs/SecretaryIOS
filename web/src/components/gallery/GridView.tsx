@@ -463,16 +463,29 @@ export function GridView(props: GridViewProps) {
 
   // ---- measuring and scrolling ------------------------------------------------------------------------------------
 
+  // A Suspense boundary above can take the grid off the page for a moment (a list refreshing). It measures 0 then and
+  // the browser forgets where it was scrolled to: keep the size, and put the position back when it returns.
+  let offPage = false;
   function measure() {
     if (!scroller) return;
-    setSize({ w: scroller.clientWidth, h: scroller.clientHeight });
+    const w = scroller.clientWidth;
+    const h = scroller.clientHeight;
+    if (w === 0 && h === 0) {
+      offPage = true;
+      return;
+    }
+    if (offPage) {
+      offPage = false;
+      scroller.scrollTop = untrack(scrollTop);
+    }
+    setSize({ w, h });
   }
   let frame = 0;
   function onScroll() {
     if (frame) return;
     frame = requestAnimationFrame(() => {
       frame = 0;
-      setScrollTop(scroller.scrollTop);
+      if (!offPage) setScrollTop(scroller.scrollTop);
     });
   }
   onMount(() => {

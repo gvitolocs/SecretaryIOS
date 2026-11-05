@@ -155,6 +155,20 @@ pub struct GetArgs {
     pub id: String,
 }
 
+/// No arguments (`ops_ingest_status`).
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NoArgs {}
+
+/// Arguments of `ops_ingest_now`.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct IngestNowArgs {
+    /// May load the local model when the GPU is entirely free (default true).
+    #[serde(default)]
+    pub cold: Option<bool>,
+}
+
 fn bad(msg: impl Into<String>) -> ToolError {
     ToolError(msg.into())
 }
@@ -429,7 +443,7 @@ impl Tools<'_> {
             .map_err(refusal)
     }
 
-    /// `ops_record`, `ops_search`, `ops_get`.
+    /// `ops_record`, `ops_search`, `ops_get`, `ops_ingest_status`, `ops_ingest_now`.
     pub async fn ops(&self, name: &str, args: &JsonObject) -> ToolResult {
         let tz = self.app.cfg.timezone;
         match name {
@@ -492,9 +506,97 @@ impl Tools<'_> {
                     .await?;
                 Ok(format_record(&v, tz))
             }
+            "ops_ingest_status" => {
+                let _: NoArgs = parse(args)?;
+                let v = self
+                    .ops_req(Method::GET, "/v1/ops/ingest", &[], None)
+                    .await?;
+                Ok(format_ingest(&v, tz))
+            }
+            "ops_ingest_now" => {
+                let a: IngestNowArgs = parse(args)?;
+                let body = serde_json::json!({"cold": a.cold.unwrap_or(true)});
+                let v = self
+                    .ops_req(Method::POST, "/v1/ops/ingest", &[], Some(&body))
+                    .await?;
+                Ok(if v["started"].as_bool() == Some(true) {
+                    "Started: Lucina is scanning the sources and writing pending notes in the background (it waits if the GPU is busy). Check with ops_ingest_status.".into()
+                } else {
+                    format!("Not started: {}.", str_of(&v, "reason"))
+                })
+            }
             _ => Err(bad(format!("unknown tool {name}"))),
         }
     }
+}
+
+fn when(v: &Value, tz: chrono_tz::Tz) -> String {
+    v.as_str()
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|d| d.with_timezone(&tz).format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_else(|| "—".into())
+}
+
+/// The ingest status as text.
+fn format_ingest(v: &Value, tz: chrono_tz::Tz) -> String {
+    let q = &v["queue"];
+    let n = |k: &str| q[k].as_u64().unwrap_or(0);
+    let mut s = format!(
+        "Obsidian ingest: {} queued ({} drafted, not yet in the vault), {} done, {} skipped, {} gave up{}.\nOldest queued: {}. Next try: {}. Model: {}. Vault: {}.",
+        n("pending"),
+        n("planned"),
+        n("done"),
+        n("skipped"),
+        n("failed"),
+        if v["running"].as_bool() == Some(true) { "; running now" } else { "" },
+        when(&v["oldest_pending"], tz),
+        when(&v["next_try"], tz),
+        str_of(v, "model"),
+        str_of(v, "target"),
+    );
+    if v["vault"]["offline_since"].is_string() {
+        s.push_str(&format!(
+            "\nThe vault is unreachable since {} ({}); drafts stay queued, next delivery try {}.",
+            when(&v["vault"]["offline_since"], tz),
+            str_of(&v["vault"], "last_error"),
+            when(&v["deliver_next_try"], tz),
+        ));
+    }
+    let r = &v["last_run"];
+    if r.is_object() {
+        s.push_str(&format!(
+            "\nLast run {}: {} ({} written, {} skipped, {} failed)",
+            when(&r["at"], tz),
+            str_of(r, "outcome"),
+            r["ingested"].as_u64().unwrap_or(0),
+            r["skipped"].as_u64().unwrap_or(0),
+            r["failed"].as_u64().unwrap_or(0),
+        ));
+        if let Some(w) = r["waiting_for"].as_str() {
+            s.push_str(&format!("; waiting for: {w}"));
+        }
+        s.push('.');
+    }
+    for repo in v["repos"].as_array().into_iter().flatten() {
+        s.push_str(&format!(
+            "\nRepo {} ({}): last commit seen {}.",
+            str_of(repo, "name"),
+            str_of(repo, "ref"),
+            repo["cursor"]
+                .as_str()
+                .map(|c| &c[..c.len().min(12)])
+                .unwrap_or("none yet"),
+        ));
+    }
+    for f in v["failed"].as_array().into_iter().flatten() {
+        s.push_str(&format!(
+            "\nGave up: {} ({}): {}",
+            str_of(f, "key"),
+            str_of(f, "title"),
+            str_of(f, "error")
+        ));
+    }
+    s
 }
 
 #[cfg(test)]
@@ -610,6 +712,33 @@ mod tests {
         ] {
             assert!(full.contains(want), "{want} in {full}");
         }
+    }
+
+    #[test]
+    fn ingest_status_reads_well() {
+        let v = json!({"queue": {"pending": 3, "planned": 1, "done": 9, "skipped": 2, "failed": 1},
+            "oldest_pending": "2026-11-01T08:00:00Z", "next_try": "2026-11-01T09:15:00Z", "running": false,
+            "model": "qwen3.8:27b-q4-72k", "target": "ssh:pi-cursor:/home/nes/Obsidian",
+            "vault": {"offline_since": "2026-11-01T08:30:00Z", "last_error": "pi-cursor: No route to host"},
+            "deliver_next_try": "2026-11-01T09:40:00Z",
+            "last_run": {"at": "2026-11-01T09:00:00Z", "outcome": "waiting", "ingested": 0, "skipped": 0,
+                         "failed": 0, "waiting_for": "Qwen is busy (1 running, 0 queued)"},
+            "repos": [{"name": "lucina-rs", "ref": "origin/main", "cursor": "0123456789abcdef0123"}],
+            "failed": [{"key": "git:x:1", "title": "t", "error": "bad JSON"}]});
+        let s = format_ingest(&v, chrono_tz::Europe::Rome);
+        assert!(
+            s.starts_with("Obsidian ingest: 3 queued (1 drafted, not yet in the vault), 9 done, 2 skipped, 1 gave up."),
+            "{s}"
+        );
+        assert!(s.contains("Next try: 2026-11-01 10:15"), "{s}");
+        assert!(s.contains("Vault: ssh:pi-cursor:/home/nes/Obsidian."), "{s}");
+        assert!(s.contains("unreachable since 2026-11-01 09:30 (pi-cursor: No route to host)"), "{s}");
+        assert!(s.contains("waiting for: Qwen is busy"), "{s}");
+        assert!(
+            s.contains("Repo lucina-rs (origin/main): last commit seen 0123456789ab."),
+            "{s}"
+        );
+        assert!(s.contains("Gave up: git:x:1"), "{s}");
     }
 
     #[test]

@@ -44,6 +44,8 @@ struct ApprovalsSettingsSection: View {
             Button {
                 Task {
                     let ok = await store.setUpFaceID()
+                    // A new Face ID key ends the old unlock key: one-tap Approve gets a new one (one more Face ID).
+                    if ok, store.oneTapOn, store.keyStatus == .ready { await store.enrollUnlockKey() }
                     // Face ID is the whole setup. A PIN is the optional fallback.
                     if ok, !store.hasPin { prompts.pinFlow = .choose }
                 }
@@ -59,6 +61,31 @@ struct ApprovalsSettingsSection: View {
             if store.keyStatus == .ready || store.keyStatus == .notRegistered {
                 Button("Remove Face ID", systemImage: "trash", role: .destructive) { prompts.confirmRemoveKey = true }
                     .disabled(store.settingsBusy)
+            }
+            Toggle(isOn: Binding(
+                get: { store.oneTapOn },
+                set: { on in Task { await store.setOneTap(on) } })
+            ) {
+                Label("One-tap Approve from notifications", systemImage: "hand.tap")
+            }
+            .disabled(store.settingsBusy || store.availability == .unsupported || (!store.oneTapOn && !faceIDOn))
+            .accessibilityIdentifier("approvalsOneTap")
+            if store.oneTapOn, !store.oneTapReady, faceIDOn, store.settingsLoaded {
+                Button {
+                    store.setUpOneTap()
+                } label: {
+                    HStack {
+                        Label("Set up one-tap Approve", systemImage: "hand.tap")
+                        Spacer()
+                        if store.settingsBusy { ProgressView() }
+                    }
+                }
+                .disabled(store.settingsBusy || store.availability == .unsupported)
+                .accessibilityIdentifier("approvalsSetUpOneTap")
+                if let failure = store.unlockEnrollFailure {
+                    Label(failure, systemImage: "exclamationmark.triangle.fill")
+                        .font(.footnote).foregroundStyle(Theme.negative)
+                }
             }
 
             Label(store.hasPin ? "PIN: set" : "PIN: not set", systemImage: "number.square")
@@ -83,7 +110,7 @@ struct ApprovalsSettingsSection: View {
         } header: {
             Text("Approvals").task { await store.loadSettings() }
         } footer: {
-            Text("When Lucina needs your OK, the main device gets the prompt first. Your other devices get it after \(store.settings?.escalateAfterSecs ?? 30) seconds. Secrets, root commands, messages and payments need Face ID or the passcode, or your PIN, on the device that approves them.")
+            Text("When Lucina needs your OK, the main device gets the prompt first. Your other devices get it after \(store.settings?.escalateAfterSecs ?? 30) seconds. Secrets, root commands, messages and payments need Face ID or the passcode, or your PIN, on the device that approves them. With one-tap Approve, a notification's Approve needs only this iPhone unlocked, with no second Face ID.")
         }
     }
 

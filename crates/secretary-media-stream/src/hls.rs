@@ -20,7 +20,7 @@ use std::{
 };
 use tokio::{io::AsyncReadExt, process::Command, sync::Semaphore};
 
-/// The variant name in URLs and cache paths: `<video>-<audio>[-hvc1][-tm]`,
+/// The variant name in URLs and cache paths: `<video>-<audio>[-hvc1][-tm][-h<height>]`,
 /// e.g. `copy-aac-hvc1`. Parsed back strictly, so a URL cannot inject flags.
 pub fn variant_name(plan: &Plan) -> String {
     let s = |s: Stream| match s {
@@ -35,6 +35,9 @@ pub fn variant_name(plan: &Plan) -> String {
     }
     if plan.tonemap {
         name.push_str("-tm");
+    }
+    if let Some(h) = plan.max_height {
+        name.push_str(&format!("-h{h}"));
     }
     name
 }
@@ -54,10 +57,14 @@ pub fn parse_variant(name: &str) -> Option<Plan> {
         return None;
     }
     let (mut hvc1_tag, mut tonemap) = (false, false);
+    let mut max_height = None;
     for p in parts {
         match p {
             "hvc1" if !hvc1_tag => hvc1_tag = true,
             "tm" if !tonemap => tonemap = true,
+            // Only the heights Juno is or was given, and only with a video being re-encoded: the URL chooses no other size.
+            "h1080" if max_height.is_none() && video == Stream::H264 => max_height = Some(secretary_player::playback::JUNO_MAX_HEIGHT),
+            "h720" if max_height.is_none() && video == Stream::H264 => max_height = Some(secretary_player::playback::JUNO_OLD_MAX_HEIGHT),
             _ => return None,
         }
     }
@@ -66,7 +73,7 @@ pub fn parse_variant(name: &str) -> Option<Plan> {
     } else {
         secretary_player::playback::Mode::Remux
     };
-    Some(Plan { mode, video, audio, hvc1_tag, tonemap })
+    Some(Plan { mode, video, audio, hvc1_tag, tonemap, max_height })
 }
 
 /// Segment length in seconds. Short, so a resume loads a small segment first
@@ -178,7 +185,7 @@ impl From<&crate::StreamConfig> for BackgroundConfig {
 /// zscale on the CPU, so it stays on libx264 (and so does everything when no
 /// render node is configured, or after a VAAPI failure).
 pub fn uses_vaapi(plan: &Plan, background: &BackgroundConfig, allow: bool) -> bool {
-    allow && plan.video == Stream::H264 && !plan.tonemap && background.vaapi_device.is_some()
+    allow && plan.video == Stream::H264 && !plan.tonemap && plan.max_height.is_none() && background.vaapi_device.is_some()
 }
 
 /// Whether a background job is on the CPU path: libx264 or tone-mapping. Only
@@ -197,7 +204,7 @@ pub fn ffmpeg_args(
     use_vaapi: bool,
 ) -> Vec<String> {
     let is_background = priority == Priority::Background;
-    let vaapi = use_vaapi && is_background && plan.video == Stream::H264 && !plan.tonemap && background.vaapi_device.is_some();
+    let vaapi = use_vaapi && is_background && plan.video == Stream::H264 && !plan.tonemap && plan.max_height.is_none() && background.vaapi_device.is_some();
     let mut a: Vec<String> = ["-hide_banner", "-nostdin", "-loglevel", "error", "-y"].map(String::from).to_vec();
     // Software decode with a small pool: the RX 7900 XTX has no MPEG-2 decoder,
     // and the CPU budget belongs to the rest of the box.
@@ -230,16 +237,30 @@ pub fn ffmpeg_args(
             a.push(format!("expr:gte(t,n_forced*{segment})"));
         }
         Stream::H264 => {
+            // Never taller than this client can decode, and never larger than the picture is.
+            let scale = match plan.max_height {
+                Some(h) => format!("scale=-2:'min({h},ih-mod(ih,2))'"),
+                None => "scale=trunc(iw/2)*2:trunc(ih/2)*2".to_owned(),
+            };
+            a.push("-vf".into());
             if plan.tonemap {
-                a.push("-vf".into());
-                a.push("zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p".into());
+                let shrink = plan.max_height.map_or(String::new(), |_| format!(",{scale}"));
+                a.push(format!("zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p{shrink}"));
             } else {
                 // Even dimensions and 8-bit 4:2:0: what every H.264 decoder takes.
-                a.extend(["-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p"].map(String::from));
+                a.push(format!("{scale},format=yuv420p"));
             }
-            a.extend(
-                ["-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-profile:v", "high", "-level:v", "4.1"].map(String::from),
-            );
+            if plan.max_height.is_some() {
+                // What costs least to decode for its size, measured on the laptop: no CABAC, no B-frames, one reference. It came out the
+                // same size as `-crf 21` with all of them, and decodes in three quarters of the time.
+                a.extend(
+                    ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-profile:v", "main", "-x264-params", "cabac=0:bframes=0:ref=1:weightp=0:8x8dct=0"].map(String::from),
+                );
+            } else {
+                a.extend(
+                    ["-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-profile:v", "high", "-level:v", "4.1"].map(String::from),
+                );
+            }
             if is_background {
                 a.extend(["-threads".to_string(), BACKGROUND_THREADS.to_string()]);
             }
@@ -675,6 +696,43 @@ pub fn valid_segment_name(name: &str) -> bool {
 mod tests {
     use super::*;
     use secretary_player::playback::{plan, Client, Probe};
+
+    #[test]
+    fn a_size_limit_is_part_of_the_variant_and_the_url_can_ask_for_no_other() {
+        let p = secretary_player::playback::plan(
+            &secretary_player::playback::Probe { container: "matroska".into(), video_codec: Some("hevc".into()), audio_codec: Some("aac".into()), height: Some(1080), ..Default::default() },
+            secretary_player::playback::Client::Juno,
+        );
+        let name = variant_name(&p);
+        assert_eq!(name, "h264-copy-h1080");
+        assert_eq!(parse_variant(&name), Some(p));
+        // What Juno was given before eight CPUs may still be cached and asked for.
+        assert_eq!(parse_variant("h264-aac-h720").and_then(|p| p.max_height), Some(720));
+        for bad in ["h264-copy-h2160", "h264-copy-h0", "copy-copy-h1080", "h264-copy-h1080-h720", "h264-copy-h720-h720", "h264-copy-h1080;rm"] {
+            assert_eq!(parse_variant(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_small_client_gets_a_smaller_picture_and_cheap_h264() {
+        let p = parse_variant("h264-aac-h720").unwrap();
+        let bg = BackgroundConfig::default();
+        let a = ffmpeg_args(Path::new("/a.mkv"), &p, Path::new("/o"), Priority::Interactive, 6, &bg, false).join(" ");
+        assert!(a.contains("scale=-2:'min(720,ih-mod(ih,2))',format=yuv420p"), "{a}");
+        let now = parse_variant("h264-aac-h1080").unwrap();
+        let n = ffmpeg_args(Path::new("/a.mkv"), &now, Path::new("/o"), Priority::Interactive, 6, &bg, false).join(" ");
+        assert!(n.contains("scale=-2:'min(1080,ih-mod(ih,2))',format=yuv420p"), "{n}");
+        assert!(a.contains("-profile:v main -x264-params cabac=0:bframes=0:ref=1:weightp=0:8x8dct=0"), "{a}");
+        assert!(!a.contains("-profile:v high"), "{a}");
+        // A hardware encoder would ignore all of that.
+        let vaapi = BackgroundConfig { vaapi_device: Some("/dev/dri/renderD128".into()), ..BackgroundConfig::default() };
+        assert!(!uses_vaapi(&p, &vaapi, true));
+        // Nobody else's encode changes.
+        let other = parse_variant("h264-aac").unwrap();
+        let b = ffmpeg_args(Path::new("/a.mkv"), &other, Path::new("/o"), Priority::Interactive, 6, &bg, false).join(" ");
+        assert!(b.contains("scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p"), "{b}");
+        assert!(b.contains("-crf 21 -profile:v high -level:v 4.1"), "{b}");
+    }
 
     #[test]
     fn variant_names_round_trip_and_reject_junk() {

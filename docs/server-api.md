@@ -208,6 +208,33 @@ call, never for signed `/s/*` media) does not use up the 60 requests a minute
 the app's own routes share. No CSRF check here: Caddy turns the subrequest into
 a GET and gates the real method (`X-Secretary-CSRF: 1` for cookie writes).
 
+### QR sign-in (`/v1/session/qr*`)
+
+A signed-out client shows a QR code (or a 6-digit code) and polls; a device
+that is already signed in approves it. No password is typed. Requests live 120 s
+in the server's memory and are collected once.
+
+| Route | Auth | |
+|---|---|---|
+| `POST /v1/session/qr` | none | Optional body `{"device": {"name": "…"}}`. `200` `{code, shortCode, pollToken, approveUrl, expiresIn}`. Counts as a login attempt of the client IP. |
+| `GET /v1/session/qr/image?c=<code>` | none | The QR of `approveUrl` (SVG). |
+| `GET /v1/session/qr/poll?t=<pollToken>` | none | `{status: "pending" \| "approved" \| "denied" \| "expired"}`. |
+| `GET /v1/session/qr/info?c=<code or shortCode>` | device | For the approve screen: `{kind: "browser" \| "device", deviceName?, ip, userAgent, createdAt, expiresIn}`. |
+| `POST /v1/session/qr/approve {code, approve}` | device | `{status: "approved" \| "denied"}`; `409 qr_already_decided`, `404 qr_not_found`. |
+
+- **Browser** (no body, or no `device`): the poll that sees `approved` sets the
+  `sec_session` cookie and answers `{status: "approved", authenticated: true,
+  deviceId, deviceName}`.
+- **Headless device** (the LucinaVoice speaker, say): send
+  `{"device": {"name": "LucinaVoice"}}`, 1–40 printable characters
+  (else `400 bad_request`; a body that is not JSON is `400 invalid_json`).
+  `info` then says `kind: "device"` and the name, so the approver knows what
+  they are pairing. The poll that sees `approved` registers a device exactly
+  like `POST /v1/auth/device` and answers `{status: "approved", token:
+  "sec_…", deviceId, deviceName}` with **no cookie**. The token is shown once;
+  store it and send it as `Authorization: Bearer`. If the response is lost the
+  device exists but its token is gone: revoke it and pair again.
+
 ## Health
 
 ### `GET /v1/health` (no auth)
@@ -240,7 +267,7 @@ answered with an error).
 | `message` | Required, 1–12000 characters (12100 with a Lucina MCP prefix), not blank, no control characters except newline/tab. For longer documents, save a [note](#notes). |
 | `sessionId` | Optional, `[A-Za-z0-9_-]{1,64}`. Lucina uses Honcho session `secretary_<sessionId>`. |
 | `clientMessageId` | Optional, 1–128 characters of `[A-Za-z0-9_.:-]` (a UUID works). A retry with the same `sessionId` + `clientMessageId` within 10 minutes returns the first answer with `"duplicate": true`. |
-| `channel` | Optional, `web` or `ios`: which client the message came from (it labels the message in the [timeline](#timeline)). |
+| `channel` | Optional, `web` or `ios`: which client the message came from (it labels the message in the [timeline](#timeline)). `voice` is **refused here** (`400 bad_request`, like any unknown value): it is the shared "Lucina Voice" thread, and only the server's own voice pipeline sends it. |
 | `device`, `deviceName` | Optional device stamps. The server always overwrites these from the authenticated identity; client values are ignored. |
 | `replyTo` | Optional, `[A-Za-z0-9_-]{1,64}`: the timeline id of the earlier message this one replies to (swipe to reply, see [Replies](#replies)). Empty = absent. |
 
@@ -427,6 +454,12 @@ timeout 15 s. `200`:
 `device`, `deviceName`, and `caller` are optional; agent conversations can
 include `caller`. Unknown fields on conversations and the response are kept.
 
+The LucinaVoice speakers share **one** conversation, `{"key": "voice", "kind": "voice",
+"title": "Lucina Voice", "channel": "voice", …}` (protocol section 7). Its items have
+channel `voice`; each carries `meta.device` / `meta.deviceName` (which speaker heard it)
+and `meta.voice` (`{turnId, ms, route, layers, …}`, all optional) for the app's timing
+line. `GET /v1/timeline?conversation=voice` reads it like any other conversation.
+
 **Lucina's own endpoints (lucina-server).** `GET /api/secretary/timeline` and
 `GET /api/secretary/timeline/conversations` serve the same data with the same bearer
 authentication, wrapped in the usual envelope (`{"ok":true,"data":{"items":[],"nextBefore":null,"cursor":null,"hasMore":false}}`);
@@ -473,7 +506,8 @@ data: {"id":"tl_0193…","ts":1761048003000,"channel":"web","role":"user","text"
 ```
 
 - `event: item` carries one timeline item as JSON in `data` (the raw
-  Lucina item, same shape as above). Ignore other event names.
+  Lucina item, same shape as above). `event: cards` says the
+  [closed buttons](#get-v1timelinecards-post-v1timelinecardsitem) changed. Ignore other event names.
 - `: ping` is a comment line Lucina sends every 20 s to keep proxies from
   closing the idle connection. EventSource ignores it; hand-written parsers
   must skip lines starting with `:`.
@@ -511,6 +545,19 @@ hold back `text/event-stream` responses to reach `minimum_length`: headers go
 out at once and the body is streamed as written. (Checked against Caddy's
 docs on 2026-10-21.) `X-Accel-Buffering: no` is for nginx, should one ever
 sit in front.
+
+### `GET /v1/timeline/cards`, `POST /v1/timeline/cards/{item}`
+
+Which items' buttons are closed, one answer for every client (lucina-rs `crates/lucina-server/src/card_state.rs`). Items are
+append-only, so this is an overlay on them.
+
+- `GET` answers `{cards: {<item id>: {closed: true, status, action?}}}`. `status` is `chosen` (a button was used), or a
+  decision's `decided`, `expired` or `withdrawn`. `action` is the button to mark as used; a card without one has all its
+  buttons off.
+- `POST` with `{action}` reports a button used and answers that item's card. The first one stays: a second client's different
+  answer gets the first back. `400 bad_request` for a malformed id or action.
+- `event: cards` on [`/v1/timeline/stream`](#get-v1timelinestream), `data: {}` and no `id`: read `GET` again, and the queue of
+  [secret requests](#secrets-add-secret) too. Clients also read it each time the stream connects.
 
 ## Reminders
 
@@ -1268,6 +1315,317 @@ const audio = new Audio(URL.createObjectURL(await r.blob()));
 await audio.play();
 ```
 
+### `POST /v1/voice` (authenticated)
+
+One push-to-talk turn for LucinaVoice, the ESP32 speaker: audio in, Lucina's
+spoken answer out.
+
+Request: the recording as the body, with `Transfer-Encoding: chunked` (the
+device streams it while the button is held) or a `Content-Length`. At most 1 MiB
+(about 32 s).
+
+| `Content-Type` | Body |
+|---|---|
+| `audio/x-s16le;rate=16000` | Raw little-endian signed 16-bit mono PCM at 16 kHz (wrapped into a WAV header by the server). |
+| `audio/wav` | A PCM WAV file (sent to the transcriber as is). |
+
+Optional query `lang=it\|en` (`it-IT` style accepted) picks the Kokoro voice
+and the language of the fixed phrases; without it the voice follows the
+language of the reply text, as for `/v1/tts`.
+
+The server transcribes the audio **locally first**: it posts it to
+`SECRETARY_VOICE_STT_URL` (default `http://127.0.0.1:8801/v1/memos/stt`, Caddy's
+loopback site on p1, which checks the device token and proxies to lucina-memo's
+whisper.cpp on nezopt; `off` disables it), forwarding the caller's own
+`Authorization: Bearer …` unchanged (a cookie caller: its `Cookie` plus
+`X-Secretary-CSRF: 1`), `lang` when given, and the audio as
+`audio/x-s16le;rate=16000` (a WAV body as `audio/wav`), 45 s at most. If that
+fails (no connection, timeout, 5xx including `stt_unavailable`, any other
+error status), it falls back to Gemini (the provider and settings of
+`/v1/calls/transcribe`, as a plain transcript), and answers `503
+transcription_unavailable` when Gemini is not configured. An empty local
+transcript is `422 no_speech` with no Gemini retry. The transcript goes to Lucina
+like `POST /v1/chat` but **streamed** (`Accept: text/event-stream`, `voice: true`;
+`sessionId: "lucinavoice"`, `channel: "voice"` (the shared "Lucina Voice" thread),
+the calling device, and `voiceMeta` (below); a Lucina
+that answers in plain JSON still works). The reply is cut into sentences as it
+is written and each goes to Kokoro as raw PCM, in order, the next one
+requested while the current one streams, so audio starts after the first
+sentence instead of after the whole reply. A reply Lucina marks `sensitive`
+is not spoken: the device hears "I'll answer that in the app." (Italian: "Ti
+rispondo nell'app."). An empty reply becomes "Sorry, I don't have an answer."
+The spoken text has markdown marks dropped and is at most 1200 characters.
+The same pipeline serves the persistent socket, [`GET /v1/voice/ws`](#get-v1voicews-websocket-authenticated).
+
+`200`: `Content-Type: audio/x-s16le;rate=24000`, raw little-endian signed 16-bit
+mono PCM at **24 kHz**, streamed chunked in frames of at most 8 KiB that keep
+sample boundaries. The headers go out with the first audio, so a failure
+before it is an error status; one after it ends the body abnormally.
+**`X-Lucina-Reply` is gone** (the reply is not known yet when the headers are
+sent). Headers:
+
+| Header | Value |
+|---|---|
+| `X-Lucina-Transcript` | What was heard. UTF-8, cut at 1000 bytes on a character boundary, then percent-encoded (everything but `A-Za-z0-9-_.~`). |
+| `X-TTS-Voice` | The voice used: from `lang`, else from the transcript and the first sentence. |
+
+Errors: `400 bad_request` (`lang`), `400 invalid_audio` (a `audio/wav` body
+that is not a PCM WAV), `401`, `413 payload_too_large`, `415
+unsupported_media_type`, `422 no_speech` (empty, under 0.3 s of audio, or an
+empty transcript), `429 rate_limited` (20 turns/minute per device, its own
+bucket), `429 voice_busy` (the device's previous turn is still running), `429
+transcription_provider_refused`, `502 transcription_failed` /
+`lucina_unreachable` / `lucina_error` / `tts_unavailable`, `503
+transcription_unavailable` (local speech-to-text failed and no `SECRETARY_GEMINI_KEY_FILE`), `504`
+`lucina_timeout` / `tts_unavailable`.
+
+```sh
+# 16 kHz mono s16le PCM from a file, streamed chunked, reply as raw PCM
+curl -sS -D - -X POST "$HOST/v1/voice?lang=it" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: audio/x-s16le;rate=16000" \
+  -H "Transfer-Encoding: chunked" --data-binary @speech.s16le -o reply.s16le
+ffplay -f s16le -ar 24000 -ac 1 reply.s16le
+```
+
+### `GET /v1/voice/ws` (WebSocket, authenticated)
+
+The low-latency LucinaVoice channel: one persistent socket per speaker, a
+turn per button press. Contract: `docs/lucinavoice-protocol.md` (section 2);
+code: `voice_ws.rs`, `voice_pipe.rs`, `voice_vad.rs`, `voice_split.rs`.
+
+Auth: the normal device auth on the upgrade request
+(`Authorization: Bearer <device token>`; a cookie session also works). `401`
+without it; a plain `GET` that is not a WebSocket upgrade is `400 bad_request`. A cookie
+caller that sends an `Origin` header must send this server's own origin, else `403
+forbidden_origin` (the cookie is `SameSite=Strict` as well).
+The server pings every 20 s and closes a socket that sent nothing (pongs
+included) for 50 s, and on shutdown. One turn at a time per connection and per
+device (also against `POST /v1/voice`); turns share `POST /v1/voice`'s rate
+limit (20 per minute per device). Messages are at most 64 KiB.
+
+Client → server:
+
+| Message | |
+|---|---|
+| text `{"type":"start","mode":"ptt"\|"vad","lang":"it"\|"en"?}` | A turn begins. `mode` defaults to `ptt`; `lang` as for `POST /v1/voice` (voice, fixed phrases, speech-to-text hint). The server starts warming speech-to-text now (0.5 s of silence to `SECRETARY_VOICE_STT_URL` with the caller's credentials), unless the engine answered in the last 60 s. |
+| binary | s16le mono 16 kHz PCM, any size (an odd split of a sample is stitched). At most 1 MiB per turn (about 32 s), then the server acts as if the turn ended. |
+| text `{"type":"end"}` | The button was released (`ptt`), or the device gives up. |
+| text `{"type":"cancel"}` | Drop the turn at any stage; speech-to-text, chat and speech are aborted at once and the device is free. |
+
+With no turn running, binary frames, `end` and `cancel` are ignored (they may be late). The device's
+`hello` and `telemetry` text frames (protocol section 4) are accepted at any time, stored and never
+answered (see [LucinaVoice device telemetry](#lucinavoice-device-telemetry)).
+
+Server → client:
+
+| Message | |
+|---|---|
+| `{"type":"listening"}` | Answer to a good `start`. |
+| `{"type":"endpoint"}` | The server stopped listening: the VAD found the end of speech (`vad` mode), or the size cap was hit (either mode). The device stops sending. |
+| `{"type":"transcript","text":"…"}` | What was heard. |
+| `{"type":"audio","rate":24000}` | Once per turn, before the first binary audio frame. |
+| binary | s16le mono 24 kHz PCM, at most 8 KiB per frame, even lengths. |
+| `{"type":"reply","text":"…"}` | What was spoken (for logs). A sensitive reply shows the fixed phrase only. |
+| `{"type":"done","ms":{"stt","lucina_first","tts_first","first_audio","total"}}` | Milliseconds since the end of speech (the `end` frame or the endpoint). `stt`: transcript ready; `lucina_first`: first delta (or the reply) from Lucina; `tts_first`: first PCM byte from Kokoro; `first_audio`: first audio frame handed to the socket; `total`: everything sent. With the Jev fast path (protocol section 6) it also has `route` (Lucina's `route` event) and, when a cached filler phrase was played on Lucina's `ack`, `ack` (the filler's audio, which then is also `first_audio`); both are absent otherwise. |
+| `{"type":"error","code","message"}` | The turn ended without (complete) audio, or the message was refused. The socket stays open. |
+
+Error codes: `no_speech` (under 0.3 s of audio after trimming, no speech in
+`vad` mode, or an empty transcript), `stt_unavailable` (local engine and
+Gemini both failed), `lucina_unavailable` (including an SSE `error` event),
+`tts_failed`, `busy` (a turn is already running on this connection or for
+this device), `rate_limited`, `bad_request` (bad `mode`/`lang`, unknown
+`type`, not JSON).
+
+Pipeline per turn:
+
+1. Energy VAD ([`voice_vad`](../crates/secretary-server/src/voice_vad.rs)) over
+   20 ms frames with an adaptive noise floor: speech after 300 ms above
+   `max(200 RMS, 3 × floor)`, end of speech after 700 ms of silence. In `vad`
+   mode the end of speech is the endpoint; in `ptt` mode the VAD only trims
+   trailing silence (keeping 200 ms) and `end` is the endpoint. A `ptt`
+   recording of at least 0.3 s always goes to speech-to-text.
+2. Speech-to-text: the local engine first, Gemini as fallback, as for
+   `POST /v1/voice`.
+3. Streaming chat (`POST {lucina}/api/secretary/chat`, `Accept:
+   text/event-stream`, `voice: true`, `sessionId: "lucinavoice"`, `channel: "voice"`, the device,
+   `voiceMeta`). Events `route` / `ack` / `delta` / `reply{text,sensitive,replaces}` /
+   `done` / `error`; plain JSON from an older Lucina counts as one `reply`.
+4. Sentence splitter: the first segment ends at the first `. ! ? …` (followed
+   by a space) or newline, or at a comma once it is 60 characters long; later
+   segments are one sentence each. `3.5` does not split. If `replaces` is
+   true and nothing was cut into a segment yet, the reply text is spoken
+   instead of the deltas; if something was, the rest is dropped. A `sensitive`
+   reply drops the segments not started yet and speaks the fixed phrase (what
+   already reached the speaker cannot be recalled).
+5. Kokoro (`pcm`): segments are synthesized strictly in order, the next one
+   requested while the current one streams; PCM is forwarded as it arrives.
+   At most 1200 characters are spoken.
+6. After `reply`, the connection to Lucina is read to its end in the
+   background so Lucina finishes the turn (memory, rich reply) after the
+   audio; `cancel` or a closed socket drops it.
+
+The timings are also logged at `info` (`voice turn`: device id and the
+milliseconds; never the transcript, audio or credentials).
+
+#### The thread and what the server tells Lucina
+
+Every `POST /v1/voice` and `/v1/voice/ws` turn is a chat request with `channel: "voice"` and
+a `voiceMeta` object (never audio), which lucina-server's chat route reads:
+
+```json
+{"turnId": "voice-1761048000000-1a2b3c4d", "ms": {"stt": 84},
+ "ambiguous": [{"heard": "via", "candidates": ["Skibigårdsvej", "Skibbyvej"]}]}
+```
+
+`turnId` is the request's `clientMessageId`; `ms.stt` is the speech-to-text time from the end
+of speech (both end up in the thread item's `meta.voice`, next to the route and layers Lucina
+adds); `ambiguous` (at most 3 spans of at most 5 candidates) is what the local engine
+(`/v1/memos/stt`) left alone as too close to call, for Lucina's `vocab` layer, and is absent
+when there is none. The engine's `corrections` are counted here (telemetry), not sent. A Lucina
+that does not know the field ignores it. The WebSocket `done` message carries the layers next
+to `ms`: `{"type":"done","ms":{…},"layers":[…]}` (`layers` only when there are any; `ms` stays
+numbers). The later stages of the turn (LLM, TTS, first audio, total) are known only after the
+thread item is written, so the thread's timing line has the STT time and Lucina's own route and
+layers; the whole `ms` is on the device page.
+
+### Voice Learn (`/v1/voice/learn`)
+
+The shared custom vocabulary of every speech-to-text path (protocol section 8). Lucina owns
+the entries (`{id, word, soundsLike?, meaning?, lang?: "it"|"en"|"da", source, createdAt,
+updatedAt}`, at most 500, 100 characters per field); these routes forward to Lucina's
+`/api/secretary/voice-learn` with the server's token and return its `data` (and its `400`
+validation messages, with its own code) unchanged. Code: `voice_learn.rs`.
+
+| Route | Who |
+|---|---|
+| `GET /v1/voice/learn` | the owner's session, any device token (a LucinaVoice speaker too) |
+| `POST /v1/voice/learn` `{word, soundsLike?, meaning?, lang?}` → `201` | the owner's browser session only |
+| `PATCH /v1/voice/learn/{id}` (any of the fields; `meaning: ""` and `lang: null` clear) | same |
+| `DELETE /v1/voice/learn/{id}` | same |
+| `POST /v1/voice/learn/suggest` `{transcript, corrected}` → candidate entries `{word, soundsLike, meaning?, lang?}` | same |
+| `POST /v1/voice/learn/sample` | same |
+
+The rule is the one of `/v1/voice/devices*`: a device token only ever reads, and only the
+owner's user session (cookie, with `X-Secretary-CSRF: 1` on writes) does the owner things.
+Every write by a device token gets `403 owner_only`, whatever device it is: a speaker, one
+just paired that never connected, the phone app. `401` without credentials; `400 bad_request`
+for a malformed id or body (an unknown field in `suggest`, a body that is not an object, text
+over 12100 characters).
+
+**`POST /v1/voice/learn/sample`** turns a short phone recording into what the speech-to-text
+engine heard, so the app can offer it as `soundsLike`. Body: `Content-Type: audio/wav` (PCM) or
+`audio/x-s16le;rate=16000`, at most 10 seconds (about 330 kB; `413 payload_too_large` above
+that, `400 invalid_audio` for 10.25 s to the size limit or a file that is not a PCM WAV,
+`415` for any other type such as the MediaRecorder's WebM or MP4). The web app decodes the
+clip in the browser and sends a 16 kHz mono WAV. Optional `?lang=it|en|da`. It goes through
+the same path as a voice turn (the local engine with the caller's credentials, Gemini as the
+fallback) and answers `{"heard": "…", "corrections": [{"from","to"}]}`: `heard` is the
+engine's text after its own Voice Learn post-correction, so a word it already fixed shows
+there as a correction whose `from` is what it first heard. `422 no_speech` for silence or
+under 0.3 s, `503 transcription_unavailable` when no engine can answer, `429` at 20 per minute
+per device. Nothing is stored, here or at Lucina.
+
+**Gemini fallback.** When the local engine fails and Gemini is set up, the transcription
+request gets a second part after the audio, `Vocabulary: Skibigårdsvej (sounds like skibi gård
+vej); Lucina` (newest entries first, at most 700 characters), built from the list above. The
+list is fetched with the server's Lucina token, cached for 60 seconds (15 after a failure), and
+fails open: no list, no line, and the turn goes on. Gemini's text then gets the same
+post-correction as the local engine's (`lucina-vocab`'s `Vocab::correct` over those cached
+entries): a close mishearing is replaced by the entry's word ("Skibi gaardsvej" →
+"Skibigårdsvej"), and the spans that are close to several entries are left alone and go to
+Lucina in `voiceMeta.ambiguous`, so both paths answer the same `{text, corrections, ambiguous}`
+(also for `/v1/voice/learn/sample`).
+
+### LucinaVoice device telemetry
+
+The speaker also sends text frames on the socket (protocol sections 4 and 5;
+`voice_telemetry.rs`), never answered:
+
+- `{"type":"hello","now":ms,"specs":{chip,rev,cores,cpu_mhz,flash_bytes,psram_bytes,fw,commit,mac,heap_total,ina,temp_sensor},"boot":{reset,seq}}`
+  first on every connection;
+- `{"type":"telemetry","now":ms,"dropped":n,"events":[{"t":ms,"k":"boot|wifi|link|turn|stats|error",…}]}`.
+
+Untrusted input: frames over 16 KiB and invalid JSON are ignored, at most 32
+events are taken, an event over 1 KiB or of an unknown kind is dropped, only the
+known keys of each kind are kept, numbers are clamped, strings are cut and lose
+control characters and `<` `>`. The turn and the socket are never affected.
+
+Stored under `SECRETARY_DATA_DIR/voice/<device id>/` (directory 0700, files
+0600): `events.jsonl` (the device's events with a wall-time `at`, and the
+server's own `server_turn` records; at 2 MiB it moves to `events.jsonl.1`,
+two files are kept) and `status.json` (specs, last stats, counters, the last 20
+turns; atomic, at most every 5 s per device, and at disconnect). Every turn of
+the socket and of `POST /v1/voice` is recorded (transcript length, never the
+text; spans in ms since the end of speech; audio bytes in and out) and merged
+with the device's own `turn` event (within 30 s). "Today" counters follow
+`SECRETARY_TIMEZONE`.
+
+#### `GET /v1/voice/devices` (authenticated)
+
+`[{id, name, online, last_seen, fw, rssi?, est_mw?}]`; `online` means a voice socket
+is open now.
+
+#### `GET /v1/voice/devices/{id}/status` (authenticated)
+
+```json
+{
+  "id": "dev_…", "name": "Speaker", "online": true,
+  "connected_since": "2026-11-01T10:00:00.000Z", "last_seen": "2026-11-01T10:05:00.000Z",
+  "specs": {"chip": "esp32", "fw": "0.4.1", "...": "..."},
+  "boot": {"reset": "poweron", "seq": 3},
+  "live": {"at": "…", "uptime_ms": 60000, "rssi": -58, "up_bytes": 4000, "power": {"est_mw": 395}},
+  "network": {"today_up_bytes": 4000, "today_down_bytes": 9000, "total_up_bytes": 4000, "total_down_bytes": 9000},
+  "power": {"est_mw": 395, "measured": true, "energy_mwh_today": 6.5},
+  "turns": [{"at": "…", "ok": true, "transcript_chars": 28, "speech_ms": 1000,
+             "spans": {"stt": 150, "lucina_first": 900, "tts_first": 1700, "first_audio": 1720, "total": 4000},
+             "device_first_audio_ms": 1300, "up_bytes": 32000, "down_bytes": 12}]
+}
+```
+
+`turns` is newest first (20 at most); `err` is present on a failed turn;
+`spans` are moments since the end of speech (cumulative), `null` when not reached.
+A turn Lucina routed (protocol section 6) also has `intent`, `confidence`,
+`jev_ms`, `fast` and `source` (no transcript text), and `spans.route` /
+`spans.ack` when those events came.
+
+A turn also has `layers` (protocol section 9: `[{layer, verdict, confidence, ms, used}]`,
+`layer` being `intent`, `slots`, `confirm` or `vocab`; from the `route` event's `layers`,
+completed by the `done` body's `voice.layers` when it arrives while the audio is still being
+made, at most 250 ms after it) and, when Voice Learn changed the transcript, the counts
+`stt_corrections` and `stt_ambiguous` (never the words). All of it is absent for a Lucina
+that sends none. The same keys are in the `server_turn` events.
+
+#### `GET /v1/voice/devices/{id}/events` (authenticated)
+
+Query: `since` (RFC 3339, inclusive), `before` (RFC 3339, exclusive), `kind`
+(`boot|wifi|link|turn|stats|error|server_turn`), `limit` (1–500, default 100).
+Answer `{events: [{at, k, t?, …}], next?}`, newest first; `next` (the `at` of the
+oldest event returned) is present when more remain and is what `before` takes
+for the next page.
+
+Access: only the owner's browser session (cookie) reads all devices. **Every
+device token** (a speaker, one paired but not connected yet, the phone app)
+reads only its own id (`403 owner_only` for any other, even an unknown one). `404 device_not_found` for an id with no voice data, `400 bad_request`
+for a malformed parameter, `401` without credentials.
+
+## Debug events
+
+The apps' step-by-step debug log (taps, intents, notifications, Live Activities, Face ID, approvals, failed
+requests; never secrets or text). Full contract, the never-log list and how to read a phone test:
+[debug-events.md](debug-events.md).
+
+### `POST /v1/debug/events` (device token)
+
+`{events: [{ts, seq, build, process, type, fields}]}`, at most 200 events and 256 KiB; the server sets `device`,
+re-runs the sanitizer (an event with a forbidden field name is refused alone) and appends to
+`debug-events.jsonl` (0600, rotated at 50 MiB, 3 old files kept). Answer `{accepted, refused: [{seq, reason}],
+max_seq}`. `403 devices_only` for the service token, `429` past 30 batches a minute per device.
+
+### `GET /v1/debug/events?device=&since=&until=&type=&limit=` (device or service token)
+
+`device` = id or part of a name, `since` / `until` = RFC 3339, `YYYY-MM-DD` or `30m` / `2h` / `1d`, `type` = prefix,
+`limit` 1–2000 (default 200). Answer `{count, more, events}`, the newest matches, oldest first.
+
 ## Avatar wardrobe
 
 Lucina's 3D avatar has outfits, hairstyles and hair colours. The owner picks
@@ -1616,8 +1974,9 @@ triggers a full resync from 365 days back; recurring events are expanded by
 `secretary-calendar`, DST-correct, with EXDATEs and per-instance
 exceptions), ICS subscriptions, and the iPhone's EventKit events from the
 latest `POST /v1/device/state` snapshot (`events: [{id, title, start, end,
-allDay?, location?, calendar?, notes?}]`, start/end RFC 3339, epoch ms or
-`YYYY-MM-DD`). Auth: device Bearer, cookie (+CSRF on writes), or **Lucina's
+allDay?, location?, calendar?, notes?, url?, alarms?, free?}]`, start/end RFC 3339, epoch ms or
+`YYYY-MM-DD`; `alarms`: minutes before the start; `notes` at most 2000 characters and left out when the
+snapshot would outgrow its body limit; `notes` and `url` stay in the calendar and are not forwarded to Lucina). Auth: device Bearer, cookie (+CSRF on writes), or **Lucina's
 service token** (`svc_…`).
 
 Event:
@@ -1626,8 +1985,29 @@ Event:
 { "id": "google:abc_20261022T070000Z", "source": "google", "sourceId": "abc", "calendar": "Google",
   "title": "Gym", "start": "2026-10-22T07:00:00.000Z", "end": "2026-10-22T08:00:00.000Z", "allDay": false,
   "startMs": 1792652400000, "endMs": 1792656000000, "location": "…", "url": "https://calendar.google.com/…",
-  "conferenceUrl": "https://meet.google.com/…", "addedBy": "Lucina", "recurring": true, "editable": true }
+  "conferenceUrl": "https://meet.google.com/…", "addedBy": "Lucina",
+  "alarms": [60, 1440], "alarmsDefault": false, "free": false, "travelMin": 20, "leaveAlert": true,
+  "recurring": true, "editable": true }
 ```
+
+Event settings (the event sheet's Settings, like Apple Calendar's):
+- `alarms`: alerts in minutes before the start, ascending (at most 5, 0–40320). From Google's
+  `reminders.overrides`, an ICS `VALARM` with a relative `TRIGGER` (absolute and end-related ones are not
+  shown) or the iPhone's EventKit alarms. `alarmsDefault: true`: the calendar's defaults apply (Google
+  `reminders.useDefault`, filled in from `events.list`'s `defaultReminders` once a sync has seen them; a
+  Lucina event without its own alerts gets the owner's `calendarLeadMinutes` "Coming up").
+- `free`: shown as free (Google `transparency: "transparent"`, ICS `TRANSP:TRANSPARENT`, EventKit
+  availability free).
+- `travelMin`: travel time before the start (`extendedProperties.private.travelMin`, ICS
+  `X-APPLE-TRAVEL-DURATION`); `leaveAlert`: a "time to leave" alert at start − `travelMin`
+  (`extendedProperties.private.leaveAlert`). The clients work the travel time out with `/v1/maps/routes`
+  (or MapKit) and send it with the alert.
+- `iphone:` events are read-only here. On the phone the event sheet reads the event itself through EventKit (full
+  notes, alerts, show as) and changes alerts, show as and its calendar there when that calendar is writable; the next
+  snapshot brings the change here. EventKit has no travel time, so on these events "time to leave" is an alert at
+  the worked-out travel time.
+- Lucina's own events notify at their own alerts and at the leave time (title "Time to leave");
+  Google's alerts are Google's (and the iPhone's) to ring.
 
 All-day events have `start`/`end` as `YYYY-MM-DD` (end exclusive) and
 `allDay: true`. Ids: `lucina:<ev_…>` (calendar "Lucina"),
@@ -1642,7 +2022,8 @@ Google events; an `iphone:` event whose id contains `:<google id>@google.com`
 at the same start as a `google:` event is dropped, so nothing shows twice.
 
 "Coming up" notifications cover the iPhone's and Lucina's own timed events
-(the next 35 days, refreshed after each write and every sync); their
+(the next 35 days, refreshed after each write and every sync; Lucina's at their
+own alerts when they have them); their
 `route` is `/calendar?event=<merged id>&at=<start ms>`, which opens the
 Calendar tab on that event.
 
@@ -1652,7 +2033,8 @@ Calendar tab on that event.
 | `GET /v1/calendar/free?from&to&minutes=60&dayStart=9&dayEnd=19&limit=5` | Gaps between timed events inside working hours: `{slots: [{start, end}]}`. All-day events do not block. |
 | `POST /v1/calendar/sync` | Sync now: `{google: {ok, changed?, error?}, ics: [{id, ok, changed?, error?}]}`. `error: "reconnect_needed"` when Google revoked access. |
 | `POST /v1/calendar/events` | `{title, start, end?, allDay?, location?, description?, conferenceUrl?, timeZone?, target?}` → Lucina's own calendar (`target: "google"`: the Google primary calendar instead). `start` RFC 3339 with offset (default end +1 h) or `YYYY-MM-DD` (all-day, default +1 day). `201 {created, event}`. |
-| `PATCH /v1/calendar/events/{id}` | **`confirm: true` required** (`428 confirmation_required` otherwise) + any of the create fields. Moving `start` without `end` keeps the duration; `""`/`null` clears location, notes or `conferenceUrl`. Lucina's and Google events (`422 read_only_source` for ICS/iPhone). |
+| `PATCH /v1/calendar/events/{id}` | **`confirm: true` required** (`428 confirmation_required` otherwise) + any of the create fields. Moving `start` without `end` keeps the duration; `""`/`null` clears location, notes or `conferenceUrl`. Settings: `alarms` (list of minutes; `null`: the calendar's defaults), `free`, `travelMin` (`0`/`null` clears), `leaveAlert`. Lucina's and Google events (`422 read_only_source` for ICS/iPhone). |
+| `POST /v1/calendar/events/{id}/move` | `{target: "lucina"\|"google", confirm: true}`: creates the event in the other calendar (text, times, settings, private properties; a video link goes into Google's notes) and removes it from its own. `{moved, from, event}` (the new id). `422 recurring_event` for repeating events, `400` when it is already there. |
 | `DELETE /v1/calendar/events/{id}?confirm=true` | Same rules. Deleting a recurring instance id cancels that instance only; deleting a Lucina event that is already gone is `200`. |
 | `GET /v1/calendar/proposals` · `POST /v1/calendar/proposals` | Proposals from clients that may not write (the Lucina MCP, agents), and from Lucina when her direct create for the owner failed: body as for create plus `from` and an optional `reason` (≤ 300 characters, why it is not an event yet); validated, kept 7 days, ≤ 50. The owner's own requests to Lucina go straight to `POST /v1/calendar/events`. |
 | `POST /v1/calendar/proposals/{id}/accept` `{confirm: true}` · `DELETE /v1/calendar/proposals/{id}` | The owner accepts (creates the event in Lucina's own calendar, `addedBy` = the proposer) or dismisses it **in the app**; the service token gets `403 owner_only`. |
@@ -2004,6 +2386,27 @@ NewRecord (snake_case; unknown fields are refused): `kind` deploy|incident|decis
 (RFC 3339, when it happened), `dedup_key` (≤ 200). Secrets in every field are redacted before anything is stored.
 Lucina answers 404 `ops_disabled` when the record is off (`LUCINA_OPS_VAULT_DIR` unset). MCP tools: `ops_record`
 (scope write), `ops_search` and `ops_get` (scope read); `agents` tokens may call all three.
+
+## Flaw tracker
+
+The small flaws the owner notices across his clients (crate `lucina-flaws` in lucina-rs, design
+[`docs/design/flaws.md`](design/flaws.md)). Owner devices only (device token or web session; Lucina's service token is not
+accepted), forwarded to Lucina's `/api/secretary/flaws/*`; the MCP names its client in `X-Secretary-Caller`, which Lucina
+keeps as the reporter.
+
+| Method | Path | Body / query | Answer |
+| --- | --- | --- | --- |
+| GET | `/v1/flaws` | `q, state, platform, status, limit (1-200)` | `{items}`, worst first |
+| POST | `/v1/flaws` | `{words, title?, severity?, affected?, thread?, discovered_from?, gate?}` | 201 `{flaw, possible_duplicates}` |
+| GET | `/v1/flaws/matrix` | | `{platforms, rows: [{id, title, severity, state, cells: {<platform>: {status, layer, evidence, commit, deploy_tag, workspace, agent, session}}}]}` |
+| GET | `/v1/flaws/{id}` | id = `fl-` and 8 lowercase hex | the flaw, its `targets` and `events`; 404 `flaw_not_found` |
+| PATCH | `/v1/flaws/{id}` | `{title?, severity?, duplicate_of?, thread?, gate?, decision_id?, dismissed?}` | the flaw |
+| PUT | `/v1/flaws/{id}/targets/{platform}` | `{status?, layer?, evidence?: {kind, reference, build?, note?}, workspace?, session?, commit?, deploy_tag?, build?, note?}` | the target; 422 `evidence_required`, 409 `bad_transition` |
+| POST | `/v1/flaws/{id}/dispatch` | `{platform}` | 202 the target; 409 `not_claimable`, `needs_owner` or `busy`; 503 `dispatch_failed` |
+
+Platforms: `web`, `mac`, `android`, `ios`, `juno`. `verified` and `not_affected` need evidence of kind `harness_run` (with
+`build`), `debug_event` or `screenshot`; `code_reading` and `owner_report` only open a target. Setting a layer on an
+`affected` target starts its fix on Lucina's next round. 404 `flaws_disabled` when `LUCINA_FLAWS=off`.
 
 ## Lucina's mailbox for Claude (reach)
 
@@ -2367,6 +2770,55 @@ location/source and say when progress, sessions or relationships are unknown.
 note as `[obsidian:<vault>/<path>#L<line>]`, stating that mentions are not
 reading evidence and saying plainly when no vault has been indexed.
 
+## Approvals
+
+Owner approvals (the whole contract is the module doc of `crates/secretary-server/src/approvals.rs`).
+A requester (service token or device) asks and long-polls; one of the owner's devices answers. A
+sensitive approve (`root.*`, `secret.*`, `approver.*`, …) needs a proof by one of the deciding
+device's own keys, or the app PIN. Denying never does.
+
+| Route | Auth | |
+|---|---|---|
+| `POST /v1/approvals` | svc or device | create |
+| `GET /v1/approvals/{id}/wait?timeout=` | the requester | long poll (≤ 30 s); the grant once approved |
+| `POST /v1/approvals/{id}/withdraw` | the requester | a pending request becomes `expired` |
+| `GET /v1/approvals/public-key` | public | the grant verification key |
+| `GET /v1/approvals?status=pending\|all&since=&wait=` | device | what this device may decide now |
+| `GET /v1/approvals/{id}` | device | one request, decided or expired too (`decidedVia`, `biometric`, `verifiedBy`) |
+| `POST /v1/approvals/{id}/decide` | device | `{decision, payloadHash, proof?: {keyId, signature}, pin?}` → `{status}` |
+| `GET`, `PUT /v1/approvals/settings` | device | main device; each device's `hasBiometricKey`, `hasUnlockKey` |
+| `POST`, `DELETE /v1/approvals/keys` | device | this device's biometric key |
+| `DELETE /v1/approvals/keys/{deviceId}` | device with a key | revoke another device's key (proof or PIN) |
+| `POST`, `DELETE /v1/approvals/unlock-key` | device | this device's unlock key (below) |
+| `PUT`, `DELETE /v1/approvals/pin` | device | the optional app PIN |
+
+`proof.signature`: base64 DER ECDSA P-256 over `secretary-approval-v1\n{id}\n{payloadHash}\n{decision}`.
+
+**Repeated answers.** The same device sending the same decision (and `payloadHash`) for a request it
+already decided gets `200 {status, repeated: true}`: nothing is recorded or pushed again, no PIN or
+proof is checked. A different decision, or another device, is `409 approval_decided`.
+
+**Unlock key** (optional, one per device). A second Secure Enclave key that the device can use
+whenever it is unlocked, without Face ID at signing time. The iPhone uses it for the notification's
+one-tap Approve: iOS asks Face ID or the passcode to run the action, and the biometric key's own
+prompt can't show from a background action. The trade-off: anyone who can unlock the iPhone can
+approve a root command with one tap, with no second Face ID.
+
+- `POST /v1/approvals/unlock-key {publicKey, proof: {signature}}`: only for a device that has an
+  active biometric key (else `403 biometric_key_required`). `publicKey` is base64 of an uncompressed
+  P-256 point; `proof.signature` is that biometric key's signature over
+  `secretary-unlock-key-v1\n{deviceId}\n{publicKey}` (else `400 proof_invalid`). It replaces any
+  earlier unlock key of the device and answers `{keyId}`. Audit: `unlock_key.enrolled`.
+- `DELETE /v1/approvals/unlock-key` → `{removed}`. Audit: `unlock_key.removed`. Removing, revoking or
+  replacing the device's biometric key also drops it.
+- In `decide`, a proof by the deciding device's unlock key (its `keyId`) verifies like the
+  biometric key, except for `approver.*` actions (adding approvers keeps Face ID / Touch ID:
+  `403 biometric_required`). It is recorded as `verifiedBy: "unlock_key"`, `biometric: false`,
+  `decidedVia: "unlock key (notification/card) on {device}"`. The grant carries
+  `verifiedBy: "unlock_key"` and `biometric: true`: in a grant `biometric` means the owner was
+  verified (it is also true for the PIN), and that is what the root and agentd verifiers check. One
+  device's keys never verify another device's decision.
+
 ## Secrets ("Add secret")
 
 The owner stores secrets and creates projects in Infisical from the apps. **Device login only**
@@ -2395,6 +2847,33 @@ projects), 503 `secrets_unconfigured` / `broker_unavailable`.
 Lucina writes the receipt to the timeline (`meta.kind: secret_receipt`): "Saved `NAME` in project /
 env / path (fingerprint xxxxxxxx)". In chat, `/secret …` never reaches her model, timeline, Honcho
 or replay cache, and token-shaped text is masked before the turn and offered as a held value.
+
+**Secret requests (agents).** `POST /v1/secrets/request` is a device-token route like
+`/v1/decisions` (secretary-mcp `secret_request`), not one of the device-login routes above: it
+asks, it never writes. Body `{name, project, environment, path?, reason, from?, new_project?,
+asking_client}` (≤ 8 KiB) → Lucina `POST /api/secretary/secrets/request`. She refuses any other
+field with 400 (`value_refused` for value-like names: `value`, `secret`, `psk`, `password`,
+`token`, `held`, `…key`) and a `reason`/`from` that holds a token shape or a value she knows. She
+posts one card to the owner's chat (`meta.kind: secret_request`): who asks and why, the button
+"Add NAME" (`kind: secret`, `{mode: save, name, project, environment, path}`) and "Not now"; plus
+"Create project" (`mode: project`) when the last catalog the owner's sheet loaded doesn't list
+`project` (or, before any catalog, when `new_project` is true). A push (`lucina_message`, dedup
+`tl:<item>`) goes with it. Answer `{status: asked | already_asked, itemId, name, project,
+environment, path, projectKnown: bool | null, createProject}`; the same request within 10 minutes
+is `already_asked` with the first card. The owner then saves through `POST /v1/secrets` as usual,
+so the value never passes through the agent, the timeline or a log. The sheet matches `project`
+by id, alias, slug or name, never picks another project for it, and puts the cursor in the value.
+
+**The queue and its cards.** A request names a secret, never a value, and waits in Lucina's queue
+(`crates/lucina-server/src/secret_requests.rs`, `<data_dir>/secret-requests.json`, names only): one
+card at a time in the owner's timeline, the next posted when it is saved, dismissed or expires (7
+days). The answer's `status` is `asked`, `queued` (with `ahead`) or `already_asked`. Lucina herself asks
+through the `secret_request` tool or the owner's "salva un segreto [NAME] [project/env]", in words,
+answered before the model. Device-only: `GET /v1/secrets/requests` (`{requests: [{id, name, project,
+environment, path, reason, who, status, fingerprint?, action?, itemId?}], active, queued}`, what the
+cards draw) and `POST /v1/secrets/requests/{id}/dismiss` ("Not now"; `{status, nextItemId}`). `POST
+/v1/secrets` takes an optional `request` id, closes that request and answers with `nextItemId`; a save
+without it closes a request with the same names.
 
 APNs key: a `value` named `APNS_AUTH_KEY_<KEYID>` (10 letters/digits; the whole `.p8` text) is also
 installed as this server's APNs key before it is forwarded, and push to the native app is on at once.
@@ -2444,8 +2923,8 @@ video?, rigged?}`. Clients build the file URLs from the id on their own origin.
 | 400 | `due_in_past`, `unparseable_reminder`, `invalid_status` | Lucina | See the routes above. |
 | 401 | `unauthorized` | server | No/invalid/revoked device token or session. |
 | 403 | `csrf` | server | Cookie request that changes state without `X-Secretary-CSRF: 1`. |
-| 400 | `proof_invalid` | server | Approvals: key registration without a valid proof of possession. |
-| 403 | `self_approval`, `not_main_device`, `biometric_required`, `pin_wrong` (+ `attemptsLeft`), `pin_auth_required`, `service_cannot_decide` | server | Approvals: see [Approvals](#approvals). |
+| 400 | `proof_invalid` | server | Approvals: key (or unlock key) registration without a valid proof. |
+| 403 | `self_approval`, `not_main_device`, `biometric_required`, `biometric_key_required`, `pin_wrong` (+ `attemptsLeft`), `pin_auth_required`, `service_cannot_decide` | server | Approvals: see [Approvals](#approvals). |
 | 429 | `pin_locked` | server | Approvals: 5 wrong PINs in a row; `Retry-After` is the seconds left of 15 min. |
 | 404 | `approval_not_found` | server | No such approval request (or not yours to wait on). |
 | 409 | `approval_decided`, `payload_mismatch` | server | Approvals. |
@@ -2458,7 +2937,7 @@ video?, rigged?}`. Clients build the file URLs from the id on their own origin.
 | 409 | `conflict` | gym/body engine | Stale `expected_revision` (engine body `{ok:false, code, error}`). |
 | 409 | `conflict` | server | `PATCH /v1/notes/{key}` with a stale `baseUpdatedAt`. |
 | 409 | `slug_taken`, `notes_full` | server | Notes: the slug is used by another note; 2000 live notes. |
-| 413 | `payload_too_large` | server or Lucina | Body over 256 KiB (server; 768 KiB on `/v1/notes*`, 4.5 MiB for `POST /v1/device/events`) / 64 KiB (Lucina). |
+| 413 | `payload_too_large` | server or Lucina | Body over 256 KiB (server; 768 KiB on `/v1/notes*`, 4.5 MiB for `POST /v1/device/events`, 1 MiB for `POST /v1/voice`) / 64 KiB (Lucina). |
 | 413 | `note_too_large` | server | A note would hold more than 256 KiB of text. |
 | 415 | `unsupported_media_type` | server | Body without `Content-Type: application/json`. |
 | 422 | `invalid_command`, `op_id_reused` | gym/body engine | Engine rejected the command (engine body). |
@@ -2469,7 +2948,9 @@ video?, rigged?}`. Clients build the file URLs from the id on their own origin.
 | 500 | `storage_error` | gym/body engine | The server could not write the module file (engine body). |
 | 502 | `lucina_error` | server | Lucina failed (5xx), rejected the server's credentials, has the secretary API disabled, or answered off-contract. |
 | 502 | `lucina_unreachable` | server | Could not connect to Lucina. |
-| 502 | `tts_unavailable` | server | Kokoro unreachable or failed (`POST /v1/tts`). |
+| 502 | `tts_unavailable` | server | Kokoro unreachable or failed (`POST /v1/tts`, `POST /v1/voice`). |
+| 422 | `no_speech` | server | `POST /v1/voice`: empty or under 0.3 s of audio, or an empty transcript (on the socket: an `error` message). |
+| 429 | `voice_busy` | server | `POST /v1/voice`: the device's previous turn is still running. |
 | 503 | `lucina_not_configured` | server | The server has no Lucina token configured. |
 | 503 | `au_unavailable` | server | `/v1/au/*`: Lucina or AU Find is not reachable right now. |
 | 503 | `catalog_unavailable` | server | `catalog.{lang}.json` missing from `SECRETARY_CATALOG_DIR`. |

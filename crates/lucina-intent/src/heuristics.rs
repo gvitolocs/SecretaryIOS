@@ -191,27 +191,41 @@ pub fn looks_like_code_project(text: &str) -> bool {
     re!(r"^(commit|deploy|push|merge)\b.{0,80}$", "i").test(text.trim())
 }
 
+/// Not verbatim: Node's patterns matched inside words and "post" passed both of its checks, so
+/// "composto", "risposta" or "a posto" read as a request to publish (2026-11-01). Whole words only,
+/// and an action needs a place to publish or a post to act on.
 pub fn looks_like_social_post(text: &str) -> bool {
     let text = text.to_lowercase();
     if looks_like_poko_news_scout_retry(&text) || looks_like_manual_social_draft(&text) {
         return false;
     }
-    if re!(r"(add|include|attach|send|post|publish|aggiungi|includi|allega|manda|invia|pubblica).{0,40}(card )?(image|photo|picture|media|immagine|foto)", "i").test(&text) {
+    if re!(r"\b(add|include|attach|send|post|publish|aggiungi|includi|allega|manda|invia|pubblica)\b.{0,40}\b(images?|photos?|pictures?|media|immagine|foto)\b", "i").test(&text) {
         return true;
     }
-    if !re!(
-        r"(telegram|channel|canale|news|pokoin news|post|publish|pubblica|pubblicare)",
+    // Only ever a request. "pubblica" and "post" also name things ("la biblioteca pubblica", "il
+    // post di ieri"), so alone they count only as the opening imperative.
+    if re!(
+        r"\b(publish(es|ed|ing)?|pubblicare|pubblica(lo|la|li|le|mi|ci))\b",
         "i"
     )
     .test(&text)
+        || re!(
+            r"^\s*(please\s+|can you\s+|could you\s+|per favore\s+|puoi\s+|potresti\s+)?(post|pubblica)\b",
+            "i"
+        )
+        .test(&text)
     {
-        return false;
+        return true;
     }
-    re!(
-        r"(post|publish|send|create|write|announce|pubblica|pubblicare|manda|invia|crea|scrivi)",
+    let action = re!(
+        r"\b(send(s|ing)?|creat(e[sd]?|ing)|writ(es?|ing)|announc(e[sd]?|ing)|pubblica|(manda|invia|crea)(re|mi|lo|la|li|le|ci|ne)?|scrivi(mi|lo|la|li|le|ci|ne)?)\b",
         "i"
     )
-    .test(&text)
+    .test(&text);
+    if re!(r"\b(telegram|channels?|canale|news)\b", "i").test(&text) {
+        return action || re!(r"\b(post(s|ed|ing)?|posta(re|lo|la|li|le)?)\b", "i").test(&text);
+    }
+    action && re!(r"\bposts?\b", "i").test(&text)
 }
 
 pub fn looks_like_model_status(text: &str) -> bool {
@@ -705,5 +719,57 @@ mod tests {
         assert!(looks_like_social_post(
             "pubblica sul canale telegram la news"
         ));
+    }
+
+    #[test]
+    fn social_post_requests() {
+        for text in [
+            "pubblica sul canale telegram la news",
+            "pubblica la notizia",
+            "puoi pubblicare la news?",
+            "pubblicalo adesso",
+            "publish this",
+            "post this on telegram",
+            "post this",
+            "posta su telegram la news",
+            "scrivi un post su telegram",
+            "crea un post",
+            "write a post about the launch",
+            "manda la news sul canale",
+            "mandalo sul canale",
+            "send the news to the channel",
+            "announce it on telegram",
+            "add the card image",
+            "allega la foto al post",
+        ] {
+            assert!(looks_like_social_post(text), "{text}");
+        }
+    }
+
+    #[test]
+    fn social_post_ignores_words_that_only_contain_post() {
+        for text in [
+            "tutto a posto, grazie",
+            "mi dai una risposta veloce?",
+            "che ne pensi di questa proposta?",
+            "domani vado in posta",
+            "ho prenotato un posto al ristorante",
+            "ogni cavo è composto da w segmenti e la risposta è 0",
+            "scrivi una risposta",
+            "crea una proposta",
+            "invia la posta",
+            "la biblioteca pubblica è chiusa",
+            "il post di ieri era bello",
+            "manda subito, è immediato",
+            "che tempo fa domani?",
+        ] {
+            assert!(!looks_like_social_post(text), "{text}");
+        }
+        let s = Settings {
+            fast_chat: true,
+            ..Settings::default()
+        };
+        let c = crate::tier0::classify_tier0("tutto a posto, grazie", "", &s).unwrap();
+        assert_eq!(c.intent, "chat");
     }
 }

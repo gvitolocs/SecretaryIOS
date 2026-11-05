@@ -55,6 +55,11 @@ struct InstagramAPI: Sendable {
     func save(_ items: [IgSaveItem]) async throws -> IgSaveResult {
         try await write("POST", "/save", IgSaveBody(items: items))
     }
+    /// A new link for one the service signed that has expired; nil when it did not sign it.
+    func resign(_ url: String) async throws -> String? {
+        let answer: IgResigned = try await write("POST", "/resign", IgResignBody(urls: [url]))
+        return answer.urls[url]
+    }
     static func segment(_ value: String) -> String {
         value.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-._~"))) ?? ""
     }
@@ -255,10 +260,15 @@ struct IgHighlight: Decodable, Equatable, Sendable, Identifiable {
     }
 }
 
+struct IgResignBody: Encodable, Sendable { var urls: [String] }
+struct IgResigned: Decodable, Sendable { var urls: [String: String] = [:] }
+
 struct IgProfileBundle: Decodable, Equatable, Sendable {
     var profile: IgProfile = IgProfile()
     var posts: IgPage = IgPage()
     var highlights: [IgHighlight] = []
+    /// The server answered from its store and is asking the backend behind it: ask again shortly.
+    var refreshing = false
     init(profile: IgProfile = IgProfile(), posts: IgPage = IgPage(), highlights: [IgHighlight] = []) {
         self.profile = profile
         self.posts = posts
@@ -266,6 +276,7 @@ struct IgProfileBundle: Decodable, Equatable, Sendable {
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: IgKey.self)
+        refreshing = c.value("refreshing", false)
         profile = c.value("profile", IgProfile())
         posts = c.value("posts", IgPage())
         highlights = c.value("highlights", [])

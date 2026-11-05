@@ -99,6 +99,7 @@ fn mask(s: &Scopes) -> u8 {
             Scope::Computer => 8,
             Scope::Agents => 16,
             Scope::Notebooks => 32,
+            Scope::Photos => 64,
         })
         .fold(0, |a, b| a | b)
 }
@@ -112,6 +113,7 @@ fn from_mask(m: u8) -> Scopes {
             (8, Scope::Computer),
             (16, Scope::Agents),
             (32, Scope::Notebooks),
+            (64, Scope::Photos),
         ]
             .into_iter()
             .filter(|(b, _)| m & b != 0)
@@ -179,6 +181,7 @@ fn scope_algebra_agrees_with_the_kernel() {
                 (8, Scope::Computer),
                 (16, Scope::Agents),
                 (32, Scope::Notebooks),
+                (64, Scope::Photos),
             ] {
                 assert_eq!(sa.contains(s), a & bit != 0);
             }

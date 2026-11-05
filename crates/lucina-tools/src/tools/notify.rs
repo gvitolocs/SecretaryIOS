@@ -25,7 +25,7 @@ pub const CATEGORIES: [&str; 5] = [
 
 #[derive(Deserialize, JsonSchema)]
 struct Args {
-    /// The notification text (1–500 characters), in the owner's language.
+    /// The notification text (1–500 characters), in English (Danish when he writes Danish; never Italian).
     body: String,
     /// Optional short title (default: by category, e.g. "Lucina").
     title: Option<String>,

@@ -19,35 +19,29 @@ pub fn status_text(lang: Lang, folder: &str, items: &[SecretStatus]) -> String {
     let missing = items.len() - set;
     let mut lines = Vec::new();
     lines.push(match lang {
-        Lang::It => format!("Segreti di Lucina in Infisical ({folder}): {set} impostati, {missing} mancanti. I valori non li vedo e non li mostro."),
-        Lang::En => format!("Lucina's secrets in Infisical ({folder}): {set} set, {missing} missing. I never see or show the values."),
+        Lang::En | Lang::It => format!("Lucina's secrets in Infisical ({folder}): {set} set, {missing} missing. I never see or show the values."),
         Lang::Da => format!("Lucinas hemmeligheder i Infisical ({folder}): {set} sat, {missing} mangler. Værdierne ser og viser jeg aldrig."),
     });
     for s in items {
         let mut parts = vec![match (lang, s.set) {
-            (Lang::It, true) => "impostato".to_owned(),
-            (Lang::It, false) => "mancante".to_owned(),
-            (Lang::En, true) => "set".to_owned(),
-            (Lang::En, false) => "missing".to_owned(),
+            (Lang::En | Lang::It, true) => "set".to_owned(),
+            (Lang::En | Lang::It, false) => "missing".to_owned(),
             (Lang::Da, true) => "sat".to_owned(),
             (Lang::Da, false) => "mangler".to_owned(),
         }];
         if let Some(d) = day(&s.last_rotated) {
             parts.push(match lang {
-                Lang::It => format!("ultima modifica {d}"),
-                Lang::En => format!("last changed {d}"),
+                Lang::En | Lang::It => format!("last changed {d}"),
                 Lang::Da => format!("sidst ændret {d}"),
             });
         }
         match (&s.last_used, &s.last_used_by) {
             (Some(t), Some(by)) => parts.push(match lang {
-                Lang::It => format!("ultimo uso {} ({by})", when(t)),
-                Lang::En => format!("last used {} ({by})", when(t)),
+                Lang::En | Lang::It => format!("last used {} ({by})", when(t)),
                 Lang::Da => format!("sidst brugt {} ({by})", when(t)),
             }),
             _ => parts.push(match lang {
-                Lang::It => "mai usato".into(),
-                Lang::En => "never used".into(),
+                Lang::En | Lang::It => "never used".into(),
                 Lang::Da => "aldrig brugt".into(),
             }),
         }
@@ -56,8 +50,7 @@ pub fn status_text(lang: Lang, folder: &str, items: &[SecretStatus]) -> String {
         }
         if s.refused.is_some() {
             parts.push(match lang {
-                Lang::It => "bloccato dalla policy".into(),
-                Lang::En => "blocked by policy".into(),
+                Lang::En | Lang::It => "blocked by policy".into(),
                 Lang::Da => "blokeret af politikken".into(),
             });
         }
@@ -69,14 +62,12 @@ pub fn status_text(lang: Lang, folder: &str, items: &[SecretStatus]) -> String {
 pub fn audit_text(lang: Lang, entries: &[AuditEntry]) -> String {
     if entries.is_empty() {
         return match lang {
-            Lang::It => "Nessun uso di segreti registrato.".into(),
-            Lang::En => "No secret use recorded.".into(),
+            Lang::En | Lang::It => "No secret use recorded.".into(),
             Lang::Da => "Ingen brug af hemmeligheder registreret.".into(),
         };
     }
     let mut lines = vec![match lang {
-        Lang::It => format!("Ultimi {} usi dei segreti (nessun valore):", entries.len()),
-        Lang::En => format!("Last {} secret uses (no values):", entries.len()),
+        Lang::En | Lang::It => format!("Last {} secret uses (no values):", entries.len()),
         Lang::Da => format!(
             "Seneste {} brug af hemmeligheder (ingen værdier):",
             entries.len()
@@ -102,8 +93,7 @@ pub fn audit_text(lang: Lang, entries: &[AuditEntry]) -> String {
 /// Secrets are not set up on this host.
 pub fn not_configured(lang: Lang) -> &'static str {
     match lang {
-        Lang::It => "I segreti non sono configurati su questo host (manca LUCINA_SECRETS_CONFIG).",
-        Lang::En => "Secrets are not configured on this host (LUCINA_SECRETS_CONFIG is not set).",
+        Lang::En | Lang::It => "Secrets are not configured on this host (LUCINA_SECRETS_CONFIG is not set).",
         Lang::Da => "Hemmeligheder er ikke sat op på denne vært (LUCINA_SECRETS_CONFIG mangler).",
     }
 }
@@ -138,9 +128,11 @@ mod tests {
                 refused: None,
             },
         ];
+        // Never Italian (owner rule 2026-11-02): the Italian variant reads as English.
         let it = status_text(Lang::It, "lucina/prod/lucina", &items);
-        assert!(it.contains("1 impostati, 1 mancanti"), "{it}");
-        assert!(it.contains("OPEN_METEO_API_KEY: impostato, ultima modifica 2026-10-20, ultimo uso 2026-10-22 14:00 (weather)"), "{it}");
+        assert!(it.contains("1 set, 1 missing"), "{it}");
+        assert!(it.contains("OPEN_METEO_API_KEY: set, last changed 2026-10-20, last used 2026-10-22 14:00 (weather)"), "{it}");
+        assert!(!it.contains("impostat"), "{it}");
         let en = status_text(Lang::En, "x", &items);
         assert!(en.contains("TODOIST_TOKEN: missing, never used"), "{en}");
         assert!(status_text(Lang::Da, "x", &items).contains("mangler"));

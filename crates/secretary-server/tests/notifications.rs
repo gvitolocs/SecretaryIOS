@@ -365,7 +365,8 @@ async fn web_push_end_to_end_encrypted_and_vapid_signed() {
     assert_eq!(d[0].id, "a");
     let p = &d[0].payload;
     assert_eq!(p["category"], "reminder");
-    assert_eq!(p["title"], "Promemoria", "subscription language");
+    // The subscription asked for Italian; she never writes Italian to him (owner rule 2026-11-02).
+    assert_eq!(p["title"], "Reminder", "subscription language");
     assert_eq!(p["body"], "Chiama il dentista");
     assert_eq!(p["route"], "/");
     assert_eq!(p["unread"], 1);
@@ -393,7 +394,7 @@ async fn web_push_end_to_end_encrypted_and_vapid_signed() {
     let last = d.iter().find(|x| x.payload["body"] == "due").unwrap();
     assert_eq!(last.headers["topic"], "lucina");
     assert_eq!(last.headers["urgency"], "normal");
-    assert_eq!(last.payload["title"], "2 messaggi da Lucina");
+    assert_eq!(last.payload["title"], "2 messages from Lucina");
 
     // Previews off: no text leaves the server, even encrypted.
     let (s, mut settings) = h
@@ -411,7 +412,7 @@ async fn web_push_end_to_end_encrypted_and_vapid_signed() {
     h.notify(json!({"category": "shopping", "body": "Latte aggiunto", "route": "/shopping"}))
         .await;
     let d = h.wait_delivered(4).await;
-    assert_eq!(d[3].payload["body"], "Apri Secretary per leggerlo.");
+    assert_eq!(d[3].payload["body"], "Open Secretary to read it.");
     assert_eq!(d[3].payload["route"], "/shopping");
 }
 
@@ -822,6 +823,59 @@ async fn cookie_writes_need_csrf() {
     assert_eq!((s, code(&b)), (403, "csrf"));
     let (s, _) = h.send(post(true)).await;
     assert_eq!(s, 200);
+}
+
+/// The owner's rule: Lucina's chats with agents never alert him, messages to him do.
+#[tokio::test]
+async fn agent_chat_makes_no_push_and_messages_to_him_do() {
+    let h = harness(true).await;
+    h.subscribe("phone", 9, "en").await;
+    for _ in 0..100 {
+        if !h.lucina.streams.lock().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let now = chrono_now_iso();
+    let send = |id: &str, text: &str, meta: Value| {
+        h.lucina
+            .items
+            .send(json!({"id": id, "ts": now, "channel": "web", "role": "lucina", "text": text, "meta": meta}))
+            .unwrap();
+    };
+    // Agent traffic, whichever provider, also when it names him.
+    send("01JB0000000000000000000001", "Build done.", json!({"via": "mcp", "caller": "claude-code"}));
+    send("01JB0000000000000000000002", "Giuseppe should see this", json!({"via": "mcp", "caller": "some-new-provider"}));
+    send("01JB0000000000000000000003", "💬 Claude replied", json!({"kind": "reach", "tool": "reach_claude"}));
+    // A message to him, after them: its push is the first one, so nothing above got through.
+    send("01JB0000000000000000000004", "Ciao Giuseppe", json!({"device": "dev_1"}));
+    let d = h.wait_delivered(1).await;
+    assert_eq!(d[0].payload["body"], "Ciao Giuseppe");
+    let b = h.inbox().await;
+    assert_eq!(b["items"].as_array().unwrap().len(), 1, "agent chat is not in the inbox: {b}");
+    assert_eq!(b["unread"], 1, "and not on the badge");
+
+    // An agent's question reaches him through its decision push, even with its turn silent.
+    send("01JB0000000000000000000005", "Decision needed", json!({"kind": "decision", "decisionId": "dc-1", "via": "mcp", "caller": "claude-code"}));
+    let (s, r) = h
+        .notify(json!({"category": "lucina_message", "title": "Decision needed: claude-code", "body": "Deploy?",
+                       "route": "/decisions/dc-1", "dedupKey": "decision:dc-1", "timelineId": "01JB0000000000000000000005"}))
+        .await;
+    assert_eq!(s, 201, "{r}");
+    let d = h.wait_delivered(2).await;
+    assert!(d.iter().any(|x| x.payload["route"] == "/decisions/dc-1"), "{d:?}");
+
+    // So does an approval, and Lucina telling him herself during an agent's turn.
+    let approval = notify::NewNotification::new(notify::Category::Approval, "claude-code asks to run a command");
+    assert_eq!(h.state.notify.publish(approval).await.unwrap().status(), "created");
+    let (s, r) = h
+        .notify(json!({"category": "lucina_message", "body": "The agent asks you to look at the build", "channel": "web"}))
+        .await;
+    assert_eq!(s, 201, "{r}");
+    let d = h.wait_delivered(4).await;
+    let cats: Vec<&str> = d.iter().map(|x| x.payload["category"].as_str().unwrap()).collect();
+    assert!(cats.contains(&"approval"), "{cats:?}");
+    assert!(d.iter().any(|x| x.payload["body"] == "The agent asks you to look at the build"), "{d:?}");
 }
 
 #[tokio::test]

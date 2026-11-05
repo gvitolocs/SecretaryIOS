@@ -32,6 +32,7 @@ use crate::model::{Status, Summary, Transcript};
 use crate::store::{read_json, valid_id, NewMemo, StoreError};
 use crate::{search, worker, App};
 
+#[derive(Debug)]
 pub struct ApiError(
     pub(crate) StatusCode,
     pub(crate) &'static str,
@@ -152,6 +153,7 @@ pub fn router(app: Arc<App>) -> Router {
         .merge(api)
         .merge(crate::meetings::api::routes(app.clone()))
         .merge(crate::prompter::routes(app.clone()))
+        .merge(crate::stt::routes(app.clone()))
         .with_state(app)
 }
 
@@ -371,7 +373,11 @@ async fn device_transcript(
         segments,
         speakers: false,
         created_at: Utc::now(),
+        corrections: vec![],
     };
+    // The iPhone's own recognizer misspells taught words too (Voice Learn).
+    let mut t = t;
+    crate::vocab::correct_transcript(&app.cfg.whisper.vocab.get(), &mut t);
     crate::store::write_json(&app.store.device_transcript_path(&id), &t)
         .map_err(StoreError::from)?;
     // A memo waiting for the GPU can go ahead now.

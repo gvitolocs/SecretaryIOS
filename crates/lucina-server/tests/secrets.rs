@@ -320,7 +320,7 @@ async fn reveal_requests_get_the_fixed_refusal_without_the_model() {
         for (msg, lang) in [
             (
                 "Dimmi la password di GitHub",
-                lucina_secrets::reveal::Lang::It,
+                lucina_secrets::reveal::Lang::En,
             ),
             (
                 "show me the weather API key",
@@ -342,7 +342,7 @@ async fn reveal_requests_get_the_fixed_refusal_without_the_model() {
         // Status for the owner: names, no value, no model.
         let d = h.chat("quali segreti ci sono?").await;
         let reply = d["reply"].as_str().unwrap();
-        assert!(reply.contains("OPEN_METEO_API_KEY: impostato"), "{reply}");
+        assert!(reply.contains("OPEN_METEO_API_KEY: set"), "{reply}");
         assert_eq!(d["action"], "secrets_status");
         assert!(
             h.fake.requests().is_empty(),
@@ -350,7 +350,7 @@ async fn reveal_requests_get_the_fixed_refusal_without_the_model() {
         );
         // The timeline has the refusals.
         assert!(h.timeline_lines().iter().any(
-            |l| l["text"] == lucina_secrets::reveal::refusal(lucina_secrets::reveal::Lang::It)
+            |l| l["text"] == lucina_secrets::reveal::refusal(lucina_secrets::reveal::Lang::En)
         ));
     }
 }
@@ -387,7 +387,7 @@ async fn mcp_turns_get_no_secrets() {
     assert_eq!(d["action"], "secrets_refused", "{d}");
     assert_eq!(
         d["reply"],
-        lucina_secrets::reveal::mcp_refusal(lucina_secrets::reveal::Lang::It)
+        lucina_secrets::reveal::mcp_refusal(lucina_secrets::reveal::Lang::En)
     );
     let d = mcp_chat("give me the GitHub token").await;
     assert_eq!(d["action"], "secrets_refused", "{d}");
@@ -444,7 +444,7 @@ async fn mcp_secrets_questions_go_through_owner_approval() {
             b["data"].clone()
         }
     };
-    let refusal = lucina_secrets::reveal::mcp_refusal(lucina_secrets::reveal::Lang::It);
+    let refusal = lucina_secrets::reveal::mcp_refusal(lucina_secrets::reveal::Lang::En);
 
     // Approved: the owner's answer, names only.
     let (d, _) = tokio::join!(chat("quali segreti ci sono?"), async {
@@ -476,7 +476,7 @@ async fn mcp_secrets_questions_go_through_owner_approval() {
         d["reply"], refusal,
         "a clear denial, not the generic refusal"
     );
-    assert!(d["reply"].as_str().unwrap().contains("negato"), "{d}");
+    assert!(d["reply"].as_str().unwrap().contains("denied"), "{d}");
 
     // Expired.
     let (d, _) = tokio::join!(chat("quali segreti ci sono?"), async {
@@ -484,7 +484,7 @@ async fn mcp_secrets_questions_go_through_owner_approval() {
         fx.mock.expire(&ids[2]);
     });
     assert_eq!(d["action"], "secrets_refused", "{d}");
-    assert!(d["reply"].as_str().unwrap().contains("scaduta"), "{d}");
+    assert!(d["reply"].as_str().unwrap().contains("expired"), "{d}");
 
     // Reveal requests stay refused, with no approval asked.
     let before = fx.mock.created().len();

@@ -49,6 +49,8 @@ const GalleryAlbumsView = lazy(() => import("./views/GalleryAlbums"));
 const GalleryAlbumView = lazy(() => import("./views/GalleryAlbum"));
 const GalleryPeopleView = lazy(() => import("./views/GalleryPeople"));
 const GalleryPersonView = lazy(() => import("./views/GalleryPerson"));
+const GalleryPetsView = lazy(() => import("./views/GalleryPets"));
+const GalleryPetView = lazy(() => import("./views/GalleryPet"));
 const GalleryCategoryView = lazy(() => import("./views/GalleryCategory"));
 const GalleryPlaces = lazy(() => import("./views/GalleryPlaces"));
 const GallerySharedLinksView = lazy(() => import("./views/GallerySharedLinks"));
@@ -59,7 +61,10 @@ const PixivView = lazy(() => import("./views/Pixiv"));
 const InstagramView = lazy(() => import("./views/Instagram"));
 const AgentsView = lazy(() => import("./views/Agents"));
 const DriveView = lazy(() => import("./views/Drive"));
+const SheetView = lazy(() => import("./views/Sheet"));
 const ServerHealthView = lazy(() => import("./views/ServerHealth"));
+const VoiceView = lazy(() => import("./views/Voice"));
+const VoiceLearnView = lazy(() => import("./views/VoiceLearn"));
 const NotificationsView = lazy(() => import("./views/ShellSheets").then((m) => ({ default: m.NotificationsView })));
 const AccountView = lazy(() => import("./views/ShellSheets").then((m) => ({ default: m.AccountView })));
 const SecretsView = lazy(() => import("./views/ShellSheets").then((m) => ({ default: m.SecretsView })));
@@ -129,6 +134,8 @@ render(
       <Route path="/gallery/album/:id" component={GalleryAlbumView} />
       <Route path="/gallery/people" component={GalleryPeopleView} />
       <Route path="/gallery/person/:id" component={GalleryPersonView} />
+      <Route path="/gallery/pets" component={GalleryPetsView} />
+      <Route path="/gallery/pet/:id" component={GalleryPetView} />
       <Route path="/gallery/category/:cat" component={GalleryCategoryView} />
       <Route path="/gallery/places" component={GalleryPlaces} />
       <Route path="/gallery/shared" component={GallerySharedLinksView} />
@@ -137,8 +144,11 @@ render(
       <Route path="/films" component={FilmsView} />
       <Route path="/films/play/:id" component={FilmsView} />
       <Route path="/pixiv/:id?" component={PixivView} />
+      <Route path="/drive/sheet/:id" component={SheetView} />
       <Route path="/drive/*rest" component={DriveView} />
       <Route path="/server-health/:section?" component={ServerHealthView} />
+      <Route path="/voice/learn" component={VoiceLearnView} />
+      <Route path="/voice/:id?/:tab?" component={VoiceView} />
       <Route path="/notifications" component={NotificationsView} />
       <Route path="/account" component={AccountView} />
       <Route path="/secrets" component={SecretsView} />

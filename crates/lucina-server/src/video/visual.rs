@@ -875,7 +875,7 @@ async fn describe_batch(
         if !allowed {
             continue;
         }
-        match crate::share::vision::describe(st, &p.file).await {
+        match crate::share::vision::describe(st, &p.file, true).await {
             Ok(a) => {
                 let d = local_answer(&a);
                 if !d.description.is_empty() {

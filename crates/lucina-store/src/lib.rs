@@ -21,6 +21,7 @@ pub mod recent;
 pub mod reminders;
 pub mod rich;
 pub mod scheduler;
+pub mod scrub;
 pub mod timeline;
 pub mod timeutil;
 pub mod ulid;

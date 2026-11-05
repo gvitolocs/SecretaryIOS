@@ -408,16 +408,15 @@ async fn login(State(st): State<AppState>, req: Request) -> Result<Response, Api
     new_session(&st, ident).await
 }
 
-/// `POST /v1/auth/device {email, password, deviceName}`: native apps trade
-/// the owner's password for a new device token (shown once).
-async fn device_login(State(st): State<AppState>, req: Request) -> Result<Response, ApiError> {
-    login_ip_check(&st, &req)?;
-    let JsonBody(body) =
-        <JsonBody<DeviceLoginBody> as axum::extract::FromRequest<AppState>>::from_request(req, &st)
-            .await?;
-    check_password(&st, body.email, body.password).await?;
+/// Register a new device and return it with its token (shown once). A bad
+/// name is a 400 (`deviceName: …`). Also raises the `system` notification
+/// (off by default) that a new device signed in. Used by `POST
+/// /v1/auth/device` and by the QR sign-in of a headless device.
+pub(crate) async fn mint_device(
+    st: &AppState,
+    name: String,
+) -> Result<(crate::devices::Device, String), ApiError> {
     let devices = st.devices.store().clone();
-    let name = body.device_name;
     let issued = tokio::task::spawn_blocking(move || devices.issue(&name))
         .await
         .map_err(|_| ApiError::internal("device store failed"))?;
@@ -432,7 +431,6 @@ async fn device_login(State(st): State<AppState>, req: Request) -> Result<Respon
         }
         Err(e) => return Err(registry_error(&e)),
     };
-    // `system` notification (off by default): a new device signed in.
     let notifier = st.notify.clone();
     let lang = notifier.settings.read(|s| s.language.clone());
     let notice = crate::notify::NewNotification::new(
@@ -442,6 +440,18 @@ async fn device_login(State(st): State<AppState>, req: Request) -> Result<Respon
     tokio::spawn(async move {
         let _ = notifier.publish(notice).await;
     });
+    Ok((dev, token))
+}
+
+/// `POST /v1/auth/device {email, password, deviceName}`: native apps trade
+/// the owner's password for a new device token (shown once).
+async fn device_login(State(st): State<AppState>, req: Request) -> Result<Response, ApiError> {
+    login_ip_check(&st, &req)?;
+    let JsonBody(body) =
+        <JsonBody<DeviceLoginBody> as axum::extract::FromRequest<AppState>>::from_request(req, &st)
+            .await?;
+    check_password(&st, body.email, body.password).await?;
+    let (dev, token) = mint_device(&st, body.device_name).await?;
     let mut resp = (
         StatusCode::CREATED,
         Json(json!({"token": token, "deviceId": dev.id, "deviceName": dev.name})),
@@ -554,7 +564,45 @@ pub fn session_routes() -> Router<AppState> {
 /// requests share. No CSRF check: Caddy turns the subrequest into a GET and
 /// gates the real method itself.
 pub fn owner_routes() -> Router<AppState> {
-    Router::new().route("/v1/auth/owner", get(owner_check))
+    Router::new()
+        .route("/v1/auth/owner", get(owner_check))
+        .route("/v1/auth/media", get(media_check))
+}
+
+/// `GET|HEAD /v1/auth/media`: the forward_auth target of `/v1/media` behind
+/// Caddy. 204 for a device session or Lucina's service token, 401 otherwise.
+///
+/// Caddy asks once per media request, and a screen of the Gallery is dozens of
+/// thumbnails: in the app's 60/min bucket, scrolling refused the thumbnails,
+/// the next page and the app's own requests. So it has its own, much larger
+/// bucket (`SECRETARY_MEDIA_AUTH_PER_MINUTE`). No CSRF check: Caddy turns the
+/// subrequest into a GET and gates the real method itself.
+async fn media_check(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    let svc = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split_once(' '))
+        .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
+        .map(|(_, t)| t.trim())
+        .filter(|t| t.starts_with(crate::service::SERVICE_PREFIX));
+    let key = match svc {
+        Some(token) => match &st.service_token {
+            Some(expected) if expected.matches(token) => crate::service::RATE_KEY.to_owned(),
+            _ => return Err(ApiError::unauthorized("unknown service token")),
+        },
+        None => {
+            identify(&st, &headers)?
+                .map_err(ApiError::unauthorized)?
+                .device_id
+        }
+    };
+    st.media_limiter
+        .check(&key)
+        .map_err(ApiError::rate_limited)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn owner_check(

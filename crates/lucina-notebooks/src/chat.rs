@@ -82,7 +82,7 @@ pub fn system_prompt(notebook: &str, description: &str, passages: &[Passage]) ->
            anything that is not listed below.\n\
          - If the passages don't answer the question, say so plainly. You may add general knowledge only when it \
            clearly helps, and then say that it is not from his sources (and cite nothing for it).\n\
-         - Answer in the language of the question. Be clear and complete but not padded; use Markdown (lists, \
+         - Answer in English, or in Danish when the question is in Danish; never in Italian. Be clear and complete but not padded; use Markdown (lists, \
            bold, tables) when it helps, and $…$ / $$…$$ for math.\n\n",
         if description.trim().is_empty() { String::new() } else { format!(" It is about: {}.", description.trim()) }
     );

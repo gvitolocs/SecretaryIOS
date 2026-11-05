@@ -12,6 +12,14 @@ use lucina_tools::{Endpoints, Location, ToolSelection};
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:8790";
 
+/// Who answers her turns (`LUCINA_MODEL_PROVIDER`). DeepSeek unless the owner chooses otherwise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ModelProvider {
+    #[default]
+    DeepSeek,
+    Mistral,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlannerMode {
     /// Node's JSON-action planner, prompts verbatim (parity; default).
@@ -68,6 +76,29 @@ pub struct Config {
     pub mcp_owner_clients: Vec<String>,
     /// `LUCINA_RICH_COMPOSE_TIMEOUT_MS` (25000): one JSON-mode compose call.
     pub rich_compose_timeout: Duration,
+    /// `LUCINA_VOICE_FAST_MIN` (0.85): Jev's confidence from which a voice turn takes a fast intent
+    /// (`chat::voice_fast`, docs/lucinavoice-protocol.md section 6).
+    pub voice_fast_min: f64,
+    /// `LUCINA_VOICE_JEV_CAP_MS` (400): how long a voice turn waits for Jev's route; a slower answer
+    /// leaves the turn on the normal path.
+    pub voice_jev_cap: Duration,
+    /// Test seam: the Jev client for voice routing. `None` (always, in production): the process-wide
+    /// client (`lucina_jev::shared`).
+    pub voice_jev: Option<lucina_jev::Config>,
+    /// `LUCINA_VOICE_LAYERS` (default on; `false`/`off` turns the `slots`, `confirm` and `vocab` Jev layers of a
+    /// spoken turn off, leaving the `intent` layer): docs/lucinavoice-protocol.md section 9.
+    pub voice_layers: bool,
+    /// `LUCINA_VOICE_CONFIRM_MIN` (0.6): P(yes) of the `confirm` layer's question from which a risky spoken
+    /// action is held for a spoken "sei sicuro?".
+    pub voice_confirm_min: f64,
+    /// `LUCINA_VOICE_SLOTS_MIN` (0.7): how sure the `slots` layer must be to change a quick command (split a
+    /// shopping list, hand an unsure reminder to the planner).
+    pub voice_slots_min: f64,
+    /// `LUCINA_VOICE_VOCAB_MIN` (0.8): how sure the `vocab` layer must be to apply its pick.
+    pub voice_vocab_min: f64,
+    /// `LUCINA_VOICE_LEARN_FILE` (else `lucina_vocab::default_path()`): the Voice Learn vocabulary, the file
+    /// the memo STT paths read too.
+    pub vocab_path: std::path::PathBuf,
     /// `LUCINA_MAPS_GEOCODE_URL` (+ `LUCINA_MAPS_UPSTREAM_KEY_FILE`): fill the
     /// coordinates of place blocks from the map server; unset = off.
     pub maps_geocode: Option<crate::geocode::GeocodeConfig>,
@@ -95,6 +126,8 @@ pub struct Config {
     pub pokoin_handoff_path: PathBuf,
     /// The ops record (`LUCINA_OPS_*`, crate::ops).
     pub ops: crate::ops::OpsSettings,
+    /// The flaw tracker (`LUCINA_FLAWS*`, crate::flaws).
+    pub flaws: crate::flaws::FlawSettings,
     pub data_dir: PathBuf,
     pub persona: String,
     pub host_label: String,
@@ -145,6 +178,9 @@ pub struct Config {
     pub deal_watch: lucina_deals::WatchConfig,
     // llm + planner
     pub deepseek: DeepSeekConfig,
+    /// Mistral (`MISTRAL_*`): reached by name (`crate::model_try`) unless [`ModelProvider::Mistral`] is set.
+    pub mistral: DeepSeekConfig,
+    pub model_provider: ModelProvider,
     pub planner: PlannerMode,
     pub tools: ToolSelection,
     pub turn_deadline: Duration,
@@ -207,6 +243,8 @@ pub struct Config {
     pub otp: crate::otp::OtpConfig,
     /// infisical-brokerd for "Add secret" (`LUCINA_BROKER_*`).
     pub broker: crate::owner_secrets::BrokerConfig,
+    /// Lucina moves a secret to Infisical herself, through the local model (`LUCINA_SECRET_KEEP*`).
+    pub secret_keep: crate::secret_keep::KeepConfig,
     /// Owner approvals (`LUCINA_APPROVAL_*`, `LUCINA_ROOT_*`, `LUCINA_SECRETARY_SERVER_URL`): the secrets
     /// guard for MCP callers and the `root_exec` tool. Off until the pinned grant key file exists.
     pub approvals: lucina_approvals::ApprovalsConfig,
@@ -222,6 +260,9 @@ pub struct Config {
     /// `LUCINA_CALLERS` (default on; `off` disables): screening unknown callers with Jev
     /// (`/api/secretary/callers/*`, the `caller_screen` tool and chat turn).
     pub callers_enabled: bool,
+    /// `LUCINA_JUNO_TOOLS` (default on; `false` disables): the `juno_*` tools on the owner's
+    /// laptop, in the owner's registry only (crate::juno, `lucina_tools::tools::juno`).
+    pub juno_tools: bool,
     /// `LUCINA_CALLERS_PUBLIC_URL` (default `https://www.180.dk`; `off` disables): the public
     /// caller-ID pages read before Jev decides.
     pub callers_public_url: Option<String>,
@@ -314,8 +355,11 @@ impl Config {
     /// Everything relative to `data_dir`, as if no variable was set.
     pub fn for_data_dir(data_dir: &Path) -> Self {
         let dir = data_dir.to_string_lossy().into_owned();
-        Self::from_lookup(move |k| (k == "LUCINA_DATA_DIR").then(|| dir.clone()))
-            .expect("defaults are valid")
+        let mut cfg = Self::from_lookup(move |k| (k == "LUCINA_DATA_DIR").then(|| dir.clone()))
+            .expect("defaults are valid");
+        // Hermetic: a test config never reads or writes the owner's real vocabulary.
+        cfg.vocab_path = data_dir.join("voice-learn.json");
+        cfg
     }
 
     pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> anyhow::Result<Self> {
@@ -445,6 +489,31 @@ impl Config {
             rich_compose_timeout: Duration::from_millis(
                 num("LUCINA_RICH_COMPOSE_TIMEOUT_MS", 25_000).max(1000),
             ),
+            voice_fast_min: get("LUCINA_VOICE_FAST_MIN")
+                .and_then(|v| v.trim().parse::<f64>().ok())
+                .filter(|v| (0.0..=1.0).contains(v))
+                .unwrap_or(0.85),
+            voice_jev_cap: Duration::from_millis(num("LUCINA_VOICE_JEV_CAP_MS", 400).max(1)),
+            voice_jev: None,
+            voice_layers: !get("LUCINA_VOICE_LAYERS").is_some_and(|v| {
+                matches!(v.trim().to_ascii_lowercase().as_str(), "off" | "false" | "0" | "no")
+            }),
+            voice_confirm_min: get("LUCINA_VOICE_CONFIRM_MIN")
+                .and_then(|v| v.trim().parse::<f64>().ok())
+                .filter(|v| (0.0..=1.0).contains(v))
+                .unwrap_or(0.6),
+            voice_slots_min: get("LUCINA_VOICE_SLOTS_MIN")
+                .and_then(|v| v.trim().parse::<f64>().ok())
+                .filter(|v| (0.0..=1.0).contains(v))
+                .unwrap_or(0.7),
+            voice_vocab_min: get("LUCINA_VOICE_VOCAB_MIN")
+                .and_then(|v| v.trim().parse::<f64>().ok())
+                .filter(|v| (0.0..=1.0).contains(v))
+                .unwrap_or(0.8),
+            vocab_path: get("LUCINA_VOICE_LEARN_FILE")
+                .filter(|p| !p.trim().is_empty())
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(lucina_vocab::default_path),
             maps_geocode: crate::geocode::GeocodeConfig::from_lookup(&get),
             notes_enabled: flag("LUCINA_NOTES", false),
             calendar_enabled: flag("LUCINA_CALENDAR", false),
@@ -522,6 +591,11 @@ impl Config {
             deals: lucina_deals::DealsConfig::from_lookup(&get, &data_dir),
             deal_watch: lucina_deals::WatchConfig::from_lookup(&get, &data_dir),
             deepseek: DeepSeekConfig::from_lookup(&get),
+            mistral: DeepSeekConfig::mistral_from_lookup(&get),
+            model_provider: match get("LUCINA_MODEL_PROVIDER").as_deref().map(str::trim) {
+                Some("mistral") => ModelProvider::Mistral,
+                _ => ModelProvider::DeepSeek,
+            },
             planner: match get("LUCINA_PLANNER").as_deref().map(str::trim) {
                 Some("tools") => PlannerMode::Tools,
                 _ => PlannerMode::Json,
@@ -559,6 +633,7 @@ impl Config {
             delegate_config: get("LUCINA_DELEGATE_CONFIG").map(PathBuf::from),
             otp: crate::otp::OtpConfig::from_lookup(&get),
             broker: crate::owner_secrets::BrokerConfig::from_lookup(&get),
+            secret_keep: crate::secret_keep::KeepConfig::from_lookup(&get, &data_dir),
             approvals: lucina_approvals::ApprovalsConfig::from_lookup(&get),
             hospital,
             delivery_alert_after: Duration::from_secs(
@@ -594,6 +669,12 @@ impl Config {
                 Some(v) => v.trim().parse().ok().filter(|h: &u32| *h < 24).or(Some(21)),
                 None => Some(21),
             },
+            juno_tools: !get("LUCINA_JUNO_TOOLS").is_some_and(|v| {
+                matches!(
+                    v.trim().to_ascii_lowercase().as_str(),
+                    "off" | "false" | "0" | "no"
+                )
+            }),
             callers_enabled: !get("LUCINA_CALLERS").is_some_and(|v| {
                 matches!(
                     v.trim().to_ascii_lowercase().as_str(),
@@ -628,6 +709,7 @@ impl Config {
             discord: crate::discord::DiscordConfig::from_lookup(&get, &data_dir),
             discord_token: crate::discord::token_from_lookup(&get),
             ops: crate::ops::OpsSettings::from_lookup(&get, &data_dir),
+            flaws: crate::flaws::FlawSettings::from_lookup(&get, &data_dir),
             data_dir,
         })
     }

@@ -49,6 +49,8 @@ struct Plugin: Identifiable {
             Plugin(id: "qrSignIn", icon: "qrcode.viewfinder", title: "Scan QR code",
                    detail: String(localized: "Sign in another device")) { app.showQrSignIn = true },
             Plugin(id: "notes", icon: "doc.text", title: "Notes") { app.showNotes = true },
+            Plugin(id: "vault", icon: "books.vertical", title: "Vault",
+                   detail: String(localized: "Obsidian notes, on this phone")) { app.showVault = true },
             Plugin(id: "tasks", icon: "checkmark.circle", title: "Tasks") { app.showTasks = true },
             Plugin(id: "agents", icon: "terminal", title: "Agents",
                    detail: agentsDetail(app)) { app.showAgents = true },
@@ -96,6 +98,7 @@ struct PluginsView: View {
         .navigationDestination(isPresented: $app.showMemos) { MemosView().environment(app.memos) }
         .navigationDestination(isPresented: $app.showMedia) { FilmsView() }
         .navigationDestination(isPresented: $app.showNotes) { NotesView() }
+        .navigationDestination(isPresented: $app.showVault) { VaultView() }
         .navigationDestination(isPresented: $app.showTasks) { TasksView() }
         .navigationDestination(isPresented: $app.showAgents) { AgentsView() }
         .navigationDestination(isPresented: $app.showServer) { ServerView() }

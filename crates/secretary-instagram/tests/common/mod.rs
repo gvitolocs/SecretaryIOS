@@ -164,6 +164,18 @@ pub async fn get(app: &axum::Router, uri: &str) -> Resp {
     send(app, "GET", uri, Some(SECRET), None, &[]).await
 }
 
+/// The profile once the refresh behind its answer has finished.
+pub async fn settled(app: &axum::Router, user: &str) -> Resp {
+    for _ in 0..300 {
+        let r = get(app, &format!("/v1/instagram/profile/{user}")).await;
+        if r.json["data"]["refreshing"] != true {
+            return r;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the refresh did not finish");
+}
+
 // ---- fixtures -------------------------------------------------------------------------------
 
 pub fn cdn(file: &str) -> String {

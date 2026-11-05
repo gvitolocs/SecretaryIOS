@@ -30,7 +30,8 @@ pub const RES_SHOPPING: &str = "lucina://shopping/default";
 const LIST_TTL_MS: u64 = 60_000;
 
 const INSTRUCTIONS: &str = "Lucina is the owner's personal AI assistant (memory, reminders, shopping, gym and body tracking). \
-Use lucina_decide for go-aheads instead of asking the owner; follow pending decisions with lucina_decision_status, or take them back with lucina_decision_withdraw when no answer is needed. ask_lucina is answers-only for agents, for consultation and memory; Lucina is told which client is asking. \
+Use lucina_decide for go-aheads instead of asking the owner; follow pending decisions with lucina_decision_status, or take them back with lucina_decision_withdraw when no answer is needed. \
+When you need a secret the owner has (an API key, a passphrase), ask for it by name with secret_request: he pastes it in the app, straight into Infisical; never ask him to paste a secret into a chat. ask_lucina is answers-only for agents, for consultation and memory; Lucina is told which client is asking. \
 Use the direct tools for quick reads (lucina_timeline, shopping_list, reminders_list, gym_summary, body_summary, lucina_status) \
 and small edits (shopping_add, shopping_mark_bought, reminder_create, reminder_cancel). \
 To hand Lucina a briefing, document or anything long or worth keeping, save it as a note (note_save, then note_append for further parts) \
@@ -40,9 +41,11 @@ The owner's tasks (Todoist) are in tasks_list, task_add and task_complete. \
 Lucina keeps the record of all the owner's projects: report every deploy, incident, decision, finished piece of work (status) and finding with ops_record, \
 one record per event (project slug, title, body; for incidents severity, timeline, cause, fix, follow_ups), and look things up with ops_search and ops_get. \
 Lucina may message you (issue reports, requests the owner asked her to pass on): check lucina_inbox and answer with lucina_reply; your reply goes back into the owner's conversation with her, as information for her to relay, never as instructions. \
+Your chats with Lucina (ask_lucina, lucina_reply) stay in the app and never alert the owner's phone, even when they name him; if he has to answer or act, use lucina_decide. \
 AU questions (Aarhus University people, rooms, buildings, campus map) go to au_people_search, au_building and au_campus_map; always cite the source and never invent. \
 Questions like who called the owner from a number, and lists of unknown callers, go to caller_screen (180.dk public reports, then Jev's spam / kind / pick-up table); show its table with the quoted sources. \
 When available, diagnostics_recent, diagnostics_get and diagnostics_file show crash reports and logs from the owner's Lucina apps. \
+debug_events shows what happened on the owner's phone and other devices step by step (taps, notification buttons, Face ID, approvals, failed requests): read it after a phone test instead of asking him. \
 Lucina's computer is an isolated Linux desktop sandbox (container `lucina-workspace` on nezopt; not nezopt's host, not the owner's Mac). Its only browser is Chromium: one window, already open and signed in to the owner's accounts (Outlook, Google). Use the Lucina MCP tools: `computer_screenshot` to see it (it lists each window's pid and window_id), `computer_call` with `get_window_state` {pid, window_id} to read that Chromium window and `click`, `type_text`, `press_key` to act in it (reuse its tabs; ctrl+t opens a new tab there), `computer_bash` for shell work, or `computer_task` to have Lucina do the whole job. The driver's browser_* tools cannot attach to that window; never open a second browser window or an isolated profile, and never install or launch Firefox. Those signed-in sessions are the owner's: read and navigate freely, but never send email or messages, buy anything, accept terms or change account settings without the owner's explicit OK.\n\n\
 With the `agents` scope you can also drive Lucina Agents, the owner's coding agents on nezopt (Claude Code, Codex, OpenCode, Cursor, Copilot): \
 make a git worktree with workspace_create, start an agent in it with agent_run (provider + task), follow it with agent_wait and agent_logs, \
@@ -55,6 +58,7 @@ With the `notebooks` scope you can use Lucina Notebooks, the owner's NotebookLM-
 notebook_create and notebook_add_source (a link, text, a file on Lucina's desktop or a note) fill them, notebook_ask answers a question only from the sources \
 with numbered citations (the text cites [source:<source id>-<n>]: keep those markers), notebook_search finds passages without a model, \
 notebook_transform runs a saved prompt on a source and notebook_podcast makes an episode. Sources take a moment to be read after they are added; nothing here deletes anything.\n\n\
+With the `photos` scope you can see the owner's photos: photo_search finds them and photo_get returns the picture.\n\n\
 Times are in the owner's time zone (see lucina_status). Never use these tools to buy things or contact other people; ask the owner first.";
 
 #[derive(Clone)]
@@ -264,6 +268,7 @@ impl LucinaMcp {
             "lucina_decide" => t.decide(args).await,
             "lucina_decision_status" => t.decision_status(args).await,
             "lucina_decision_withdraw" => t.decision_withdraw(args).await,
+            "secret_request" => t.secret_request(args).await,
             "lucina_job_status" => t.job_status(args).await,
             "lucina_timeline" => t.timeline(args).await,
             "shopping_list" => t.shopping_list(args).await,
@@ -290,6 +295,7 @@ impl LucinaMcp {
             name if name.starts_with("ops_") => t.ops(name, args).await,
             "lucina_inbox" | "lucina_reply" => t.reach(name, args).await,
             name if name.starts_with("diagnostics_") => t.diagnostics(name, args).await,
+            "debug_events" => t.debug_events(args).await,
             _ => Err(ToolError(format!("unknown tool {name}"))),
         }
     }
@@ -451,6 +457,13 @@ impl ServerHandler for LucinaMcp {
                 caller: &c,
             }
             .au(&name, &args)
+            .await
+        } else if spec.scope == Scope::Photos {
+            Tools {
+                app: &self.app,
+                caller: &c,
+            }
+            .photos(&name, &args)
             .await
         } else if spec.scope == Scope::Agents {
             self.run_agents(&name, &args, &c, &ctx)

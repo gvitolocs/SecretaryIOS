@@ -65,6 +65,7 @@ pub const INTENT_OPTIONS: &[(&str, &str)] = &[
     ("social_post", "Publish something to the Pokoin Telegram news channel."),
     ("cursor_task", "Give a coding task to a coding agent (Cursor, Codex, Claude Code) on a project."),
     ("agent_message", "The owner asks Lucina to pass a message, question or issue report on to another assistant: Claude (the Claude Code coordinator of his projects), Grok Bot, or Lucina Agents (tell Claude that…, report this to Claude, ask Grok…, post it in Lucina agents, use Lucina agents)."),
+    ("flaw_report", "The owner reports a small flaw he noticed in one of his own apps (Lucina's web app, Mac app, Android or iPhone app, or Juno): something that looks or behaves wrong, such as emoji shown as boxes, lost line breaks, a card or button still active after it was used, or a status that differs between clients. Not a question about how to use something, and not a request to pass a message on."),
     ("discord_admin", "Administer the Discord server: channels, roles, members."),
     ("grocery.purchase", "The user reports groceries they bought."),
     ("grocery.consume", "The user reports eating or using up part of a grocery item."),
@@ -80,7 +81,7 @@ pub const INTENT_OPTIONS: &[(&str, &str)] = &[
     ("unknown", "None of the above fits, or the message cannot be understood."),
 ];
 
-fn intent_questions() -> Vec<(&'static str, Question)> {
+pub(crate) fn intent_questions() -> Vec<(&'static str, Question)> {
     vec![
         (
             "intent",
@@ -121,12 +122,19 @@ pub async fn classify_intent(jev: &Jev, t: &TurnInput<'_>) -> Option<(Value, f64
         "message": t.user_text,
     });
     let d = jev.decide("intent", state, &intent_questions()).await.ok()?;
+    intent_json(&d)
+}
+
+/// The intent decision as the DeepSeek classifier's JSON plus Jev's confidence in it (the reply mode follows
+/// from the intent: a tool intent answered as "chat" would skip its tool; only a conversational intent may
+/// still need one). A spoken turn's own Jev call (`chat::voice_fast`) answers the same questions and is
+/// shared with the classifier through this.
+pub fn intent_json(d: &lucina_jev::Decision) -> Option<(Value, f64)> {
     let (intent, confidence) = d.choice("intent")?;
-    // The reply mode follows from the intent (a tool intent answered as "chat"
-    // would skip its tool); only a conversational intent may still need one.
     let mode = lucina_intent::tier0::default_reply_mode(intent);
     let v = json!({
         "intent": intent,
+        "model": d.model,
         "confidence": confidence,
         "reply_mode": mode,
         "scope": d.choice("scope").map(|c| c.0),
@@ -152,7 +160,7 @@ pub fn checks_tier0(c: &lucina_intent::tier0::Classification) -> bool {
     !c.intent.starts_with("grocery.")
         && !matches!(
             c.intent.as_str(),
-            "computer_task" | "agent_message" | "lucina_log_inspect" | "study_focus_reminders"
+            "computer_task" | "agent_message" | "flaw_report" | "lucina_log_inspect" | "study_focus_reminders"
         )
         && lucina_jev::shared().available()
 }
@@ -193,6 +201,7 @@ pub fn doubts(tier0: &lucina_intent::tier0::Classification, jev_intent: &str, co
 pub const SIDE_EFFECT_INTENTS: &[&str] = &[
     "cursor_task",
     "agent_message",
+    "flaw_report",
     "computer_task",
     "schedule_reminder",
     "calendar_event",
@@ -213,6 +222,41 @@ pub const SIDE_EFFECT_INTENTS: &[&str] = &[
 /// sentence, the cost of a wrong job is a Harness run or a reminder nobody asked for.
 pub fn mcp_falls_back_to_chat(tier0: &lucina_intent::tier0::Classification, jev_intent: &str) -> bool {
     SIDE_EFFECT_INTENTS.contains(&tier0.intent.as_str()) && jev_intent != tier0.intent
+}
+
+/// An MCP turn's delegation regex hit runs only from this P(yes) up ([`mcp_delegation`]).
+pub const MCP_DELEGATION_MIN: f64 = 0.75;
+
+/// Jev's state for [`mcp_delegation`]: who sent it and how the message opens. Facts only, short:
+/// the opening says whether it asks for work or reports something.
+pub fn mcp_delegation_state(caller: &str, message: &str) -> Value {
+    json!({
+        "sender": caller,
+        "message_start": message.trim().chars().take(400).collect::<String>(),
+    })
+}
+
+/// On an MCP turn, the owner's delegation regexes ("research …", "ask Grok …") also match an agent's
+/// relayed report (2026-11-01: ChatGPT's "Research follow-up requested by Giuseppe on …, please
+/// retain this" became a research job that failed). The hit runs only when Jev reads the message as a
+/// request to get work done by another AI agent; unsure, down or over quota → plain chat.
+pub async fn mcp_delegation(jev: &Jev, caller: &str, message: &str) -> (bool, Option<f64>) {
+    if !jev.available() {
+        return (false, None);
+    }
+    let q = Question::noul_with(
+        "Does the message ask Lucina to get a task done now by another AI agent (Grok, Claude, ChatGPT, Cursor) or to run a web research job, and wait for its answer?",
+        "A request for work, e.g. 'Ask Grok what is trending on X about Rust', 'Do some research on flights to Rome next week', 'Have Claude review this plan'.",
+        "Not one: a report, an update, an idea or findings shared with her, or a request to remember, acknowledge or answer it herself.",
+    );
+    let p = match jev
+        .decide("mcp_delegation", mcp_delegation_state(caller, message), &[("delegate", q)])
+        .await
+    {
+        Ok(d) => d.yes("delegate"),
+        Err(_) => None,
+    };
+    (p.is_some_and(|p| p >= MCP_DELEGATION_MIN), p)
 }
 
 /// `LUCINA_JEV_FIRST` (off until calibrated): Jev routes every turn it is sure of, before the
@@ -251,6 +295,14 @@ pub fn jev_first_min_from(intent: &str, global: Option<&str>, per_intent: Option
 /// groceries, the log inspector, study focus): they keep precedence over JEV-first.
 pub fn deterministic_rule(c: &lucina_intent::tier0::Classification) -> bool {
     deterministic_intent(&c.intent)
+}
+
+/// A turn Jev was not sure of, or could not answer, with JEV-first on: only a deterministic route
+/// still runs. No other regex rule and no model call picks an intent, so the turn is plain chat.
+pub fn rule_when_jev_unsure(
+    rule: Option<lucina_intent::tier0::Classification>,
+) -> Option<lucina_intent::tier0::Classification> {
+    rule.filter(deterministic_rule)
 }
 
 /// [`deterministic_rule`] by the rule's intent name (the drift report's replay).
@@ -299,9 +351,46 @@ pub struct JevToolRouter {
     pub jev: &'static Jev,
 }
 
+/// Jev's state for a first-tool question: `{"message", ...facts}`. `facts` is an object of facts the
+/// caller knows (the device, the previous turn's calls); anything else is ignored.
+pub fn tool_state(user_text: &str, facts: Value) -> Value {
+    let mut state = serde_json::Map::new();
+    state.insert("message".into(), Value::from(user_text));
+    if let Value::Object(facts) = facts {
+        for (k, v) in facts {
+            if k != "message" {
+                state.insert(k, v);
+            }
+        }
+    }
+    Value::Object(state)
+}
+
+/// Jev's top first tool with its confidence, unthresholded (`"none"` included).
 #[async_trait::async_trait]
-impl lucina_tools::agent::ToolRouter for JevToolRouter {
-    async fn first_tool(&self, user_text: &str, tools: &[(String, String)]) -> Option<String> {
+pub trait TopTool: Send + Sync {
+    /// `facts` join the message in Jev's state ([`tool_state`]); `None`: Jev is off or failed.
+    async fn first_tool_with(
+        &self,
+        user_text: &str,
+        facts: Value,
+        tools: &[(String, String)],
+    ) -> Option<(String, f64)>;
+}
+
+/// The first-tool hint threshold (`LUCINA_JEV_TOOL_MIN`).
+pub fn tool_min() -> f64 {
+    env_f64("LUCINA_JEV_TOOL_MIN", TOOL_HINT_MIN)
+}
+
+#[async_trait::async_trait]
+impl TopTool for JevToolRouter {
+    async fn first_tool_with(
+        &self,
+        user_text: &str,
+        facts: Value,
+        tools: &[(String, String)],
+    ) -> Option<(String, f64)> {
         if !self.jev.available() || tools.len() + 1 > lucina_jev::MAX_OPTIONS {
             return None;
         }
@@ -322,14 +411,28 @@ impl lucina_tools::agent::ToolRouter for JevToolRouter {
         )];
         let d = self
             .jev
-            .decide("tools", json!({"message": user_text}), &q)
+            .decide("tools", tool_state(user_text, facts), &q)
             .await
             .ok()?;
         let (tool, confidence) = d.choice("first_tool")?;
         tracing::info!(target: "lucina_jev::route", tool, confidence, ms = d.elapsed_ms, "jev first tool");
-        (tool != "none" && confidence >= env_f64("LUCINA_JEV_TOOL_MIN", TOOL_HINT_MIN))
-            .then(|| tool.to_owned())
+        Some((tool.to_owned(), confidence))
     }
+}
+
+#[async_trait::async_trait]
+impl lucina_tools::agent::ToolRouter for JevToolRouter {
+    async fn first_tool(&self, user_text: &str, tools: &[(String, String)]) -> Option<String> {
+        let (tool, confidence) = self.first_tool_with(user_text, json!({}), tools).await?;
+        (tool != "none" && confidence >= tool_min()).then_some(tool)
+    }
+}
+
+/// Jev's top-tool router for turns that pass facts (`None` when Jev is not configured).
+pub fn top_tool_router() -> Option<Arc<dyn TopTool>> {
+    let jev = lucina_jev::shared();
+    jev.configured()
+        .then(|| Arc::new(JevToolRouter { jev }) as Arc<dyn TopTool>)
 }
 
 /// The router for the owner's tool turns (`None` when Jev is not configured).
@@ -342,6 +445,42 @@ pub fn tool_router() -> Option<Arc<dyn lucina_tools::agent::ToolRouter>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_state_is_the_message_and_the_facts() {
+        assert_eq!(tool_state("go", json!({})), json!({"message": "go"}));
+        assert_eq!(
+            tool_state("go", json!({"device": "d", "message": "not this"})),
+            json!({"message": "go", "device": "d"})
+        );
+        assert_eq!(tool_state("go", json!("x")), json!({"message": "go"}));
+    }
+
+    #[test]
+    fn mcp_delegation_state_is_short_facts_only() {
+        let long = format!("Research follow-up requested by Giuseppe on {}", "x".repeat(2000));
+        let s = mcp_delegation_state("chatgpt", &format!("  {long}"));
+        assert_eq!(s.as_object().unwrap().len(), 2);
+        assert_eq!(s["sender"], "chatgpt");
+        let start = s["message_start"].as_str().unwrap();
+        assert_eq!(start.chars().count(), 400);
+        assert!(start.starts_with("Research follow-up"));
+    }
+
+    #[tokio::test]
+    async fn mcp_delegation_without_jev_is_plain_chat() {
+        let jev = Jev::new(lucina_jev::Config {
+            url: "http://127.0.0.1:9/v1/systemone".into(),
+            model: "jev-1.14.0".into(),
+            key: None,
+            timeout: std::time::Duration::from_secs(1),
+            enabled: true,
+        });
+        assert_eq!(
+            mcp_delegation(&jev, "chatgpt", "Ask Grok what is trending").await,
+            (false, None)
+        );
+    }
 
     #[test]
     fn every_intent_option_is_one_lucina_knows() {
@@ -395,6 +534,20 @@ mod tests {
         assert_eq!(jev_first(Some(("unknown", 0.28)), Some(&rule("cursor_task"))), Err("jev_unknown"));
         assert_eq!(jev_first(Some(("computer_task", 0.49)), Some(&rule("schedule_reminder"))), Err("below_threshold"));
         assert_eq!(jev_first(Some(("chat", 0.8)), Some(&rule("schedule_reminder"))), Ok(()));
+    }
+
+    #[test]
+    fn only_deterministic_rules_survive_an_unsure_jev() {
+        let s = lucina_intent::heuristics::Settings::default();
+        let rule = |intent: &str| lucina_intent::tier0::from_model_json(
+            &json!({"intent": intent, "confidence": 1.0, "needs_tools": true}), "x", "", &s);
+        for intent in ["computer_task", "grocery.shopping_list.add"] {
+            assert_eq!(rule_when_jev_unsure(Some(rule(intent))).map(|c| c.intent).as_deref(), Some(intent));
+        }
+        for intent in ["social_post", "cursor_task", "schedule_reminder", "list_reminders", "chat"] {
+            assert!(rule_when_jev_unsure(Some(rule(intent))).is_none(), "{intent}");
+        }
+        assert!(rule_when_jev_unsure(None).is_none());
     }
 
     #[test]

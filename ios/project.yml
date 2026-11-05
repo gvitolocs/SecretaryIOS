@@ -38,6 +38,8 @@ targets:
         INAlternativeAppNames:
           - INAlternativeAppName: Lucina
         NSUserActivityTypes: [INSendMessageIntent]
+        # "Open in Google Maps" (Features/Places/ExternalMaps.swift) checks for the Google Maps app
+        LSApplicationQueriesSchemes: [comgooglemaps]
         CFBundleDevelopmentRegion: en
         CFBundleLocalizations: [en, it, da]
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
@@ -90,12 +92,16 @@ targets:
         UIBackgroundModes: [fetch, audio, processing, remote-notification]
         BGTaskSchedulerPermittedIdentifiers: [tech.getsecretary.app.refresh, tech.getsecretary.app.photobackup]
         SecretaryAPNsEnabled: true
+        # The git commit of this build, for the debug event log (Core/DebugEvents.swift); the "Stamp build
+        # commit" phase below replaces it. Extensions read the app's.
+        SecretaryBuildCommit: unknown
     dependencies:
       - sdk: libsqlite3.tbd
       # Built by scripts/build-ios-core.sh (gitignored): the Rust gym/body engines.
       - framework: Frameworks/SecretaryCore.xcframework
         embed: false
       - target: SecretaryShare
+      - target: SecretaryPhotoUpload
       - sdk: Intents.framework
       - target: SecretarySafari
       - target: SecretaryScreenTimeReport
@@ -116,6 +122,22 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         SWIFT_EMIT_LOC_STRINGS: YES
+        # The build-commit stamp runs git on the checkout, which the script sandbox does not allow.
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+    postBuildScripts:
+      # docs/debug-events.md: every debug event carries the commit it was built from. SECRETARY_BUILD_COMMIT
+      # overrides git (e.g. from ios-install); "-dirty" marks uncommitted changes. Runs before code signing.
+      - name: Stamp build commit
+        basedOnDependencyAnalysis: false
+        script: |
+          commit="${SECRETARY_BUILD_COMMIT:-}"
+          if [ -z "$commit" ]; then
+            commit="$(git -C "$SRCROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+            if [ "$commit" != unknown ] && ! git -C "$SRCROOT" diff --quiet HEAD -- 2>/dev/null; then commit="$commit-dirty"; fi
+          fi
+          plist="$TARGET_BUILD_DIR/$INFOPLIST_PATH"
+          /usr/libexec/PlistBuddy -c "Set :SecretaryBuildCommit $commit" "$plist" 2>/dev/null \
+            || /usr/libexec/PlistBuddy -c "Add :SecretaryBuildCommit string $commit" "$plist"
   SecretaryShare:
     type: app-extension
     platform: iOS
@@ -124,6 +146,7 @@ targets:
         excludes: ["Info.plist"]
       - path: Extensions/ShareShared
       - path: Secretary/Core/Keychain.swift
+      - path: Secretary/Core/DebugEvents.swift
       - path: Secretary/Shared/LucinaTokens.swift
       - path: Secretary/Features/Share/LucinaDonations.swift
       - path: Secretary/Features/Share/ShareUploads.swift
@@ -159,6 +182,38 @@ targets:
         CODE_SIGN_ENTITLEMENTS: Extensions/SecretaryShare/SecretaryShare.entitlements
         APPLICATION_EXTENSION_API_ONLY: YES
         SWIFT_EMIT_LOC_STRINGS: YES
+  # Photo backup while Secretary is closed (iOS 27): iOS uploads new photos itself
+  # (Extensions/SecretaryPhotoUpload, crates/lucina-media/src/bgupload.rs). An ExtensionKit extension.
+  SecretaryPhotoUpload:
+    type: extensionkit-extension
+    platform: iOS
+    deploymentTarget: "27.0"
+    sources:
+      - path: Extensions/SecretaryPhotoUpload
+        excludes: ["Info.plist", "*.entitlements"]
+      - path: Secretary/Core/Keychain.swift
+      - path: Secretary/Core/DebugEvents.swift
+      - path: Secretary/Features/Gallery/BackgroundUploadShared.swift
+    info:
+      path: Extensions/SecretaryPhotoUpload/Info.plist
+      properties:
+        CFBundleDisplayName: Secretary Photo Backup
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        SecretaryKeychainGroup: "$(AppIdentifierPrefix)tech.getsecretary.shared"
+        # The server iOS sends the uploads to (ServerConfig.production).
+        BackgroundUploadURLBase: https://getsecretary.tech
+        EXAppExtensionAttributes:
+          EXExtensionPointIdentifier: com.apple.photos.background-upload
+          BackgroundUploadURLBase: https://getsecretary.tech
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: tech.getsecretary.app.photoupload
+        PRODUCT_NAME: SecretaryPhotoUpload
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        CODE_SIGN_ENTITLEMENTS: Extensions/SecretaryPhotoUpload/SecretaryPhotoUpload.entitlements
+        APPLICATION_EXTENSION_API_ONLY: YES
   SecretarySafari:
     type: app-extension
     platform: iOS
@@ -257,6 +312,7 @@ targets:
       - path: Extensions/SecretaryWidgets
         excludes: ["Info.plist", "*.entitlements"]
       - path: Secretary/Shared/MemoRecordingActivity.swift
+      - path: Secretary/Shared/ApprovalActivity.swift
       - path: Secretary/Shared/LucinaTokens.swift
       # Home Screen / Lock Screen widgets: sections, store, fetcher, routes, and the API client they use.
       - path: Secretary/Shared/Widgets
@@ -266,6 +322,7 @@ targets:
       - path: Secretary/Core/APIError.swift
       - path: Secretary/Core/JSONValue.swift
       - path: Secretary/Core/Keychain.swift
+      - path: Secretary/Core/DebugEvents.swift
       - path: Secretary/Resources/Localizable.xcstrings
     dependencies:
       - sdk: WidgetKit.framework
@@ -325,7 +382,12 @@ targets:
   SecretaryTests:
     type: bundle.unit-test
     platform: iOS
-    sources: [SecretaryTests]
+    sources:
+      - SecretaryTests
+      # The shared vectors, as a folder resource (RichMessageTests.testConformanceVectors).
+      - path: ../tests/conformance/rich
+        type: folder
+        buildPhase: resources
     dependencies:
       - target: Secretary
     settings:

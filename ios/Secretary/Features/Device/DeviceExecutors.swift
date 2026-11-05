@@ -273,9 +273,18 @@ final class DeviceExecutors: DeviceCommandExecuting {
         if access.isOn(.calendar), EKEventStore.authorizationStatus(for: .event) == .fullAccess {
             // From three days back: a memo can reach the server hours or days after the lecture it was
             // recorded in, and lucina-memo links it to the event it overlaps (docs/memos.md, step 1b).
-            let predicate = eventStore.predicateForEvents(withStart: Date().addingTimeInterval(-3 * 86_400), end: Date().addingTimeInterval(7 * 86_400), calendars: nil)
+            // Up to a term ahead: his calendar on the web and the Mac, and Lucina, know only what this sends, and
+            // "what's on 13 November" must not depend on being within a week of it.
+            let predicate = eventStore.predicateForEvents(withStart: Date().addingTimeInterval(-3 * 86_400), end: Date().addingTimeInterval(DeviceState.eventDaysAhead * 86_400), calendars: nil)
+            // Notes for the calendar on the web and the Mac, for near events and within the route's body limit (256 KB):
+            // what doesn't fit is only on the phone, whose event detail reads the event itself.
+            var notesBudget = 60_000
+            let notesUntil = Date().addingTimeInterval(DeviceState.notesDaysAhead * 86_400)
             state.events = eventStore.events(matching: predicate).sorted { $0.startDate < $1.startDate }.prefix(300).map { event in
-                .object([
+                // Alerts as minutes before the start (relative ones only), and "show as free".
+                let alarms = (event.alarms ?? []).filter { $0.absoluteDate == nil && $0.relativeOffset <= 0 }
+                    .map { JSONValue.number(Double(Int((-$0.relativeOffset / 60).rounded()))) }
+                var entry: [String: JSONValue] = [
                     "id": .string(event.eventIdentifier ?? ""),
                     "title": .string(event.title ?? ""),
                     "start": .string(iso.string(from: event.startDate)),
@@ -283,7 +292,17 @@ final class DeviceExecutors: DeviceCommandExecuting {
                     "allDay": .bool(event.isAllDay),
                     "calendar": .string(event.calendar?.title ?? ""),
                     "location": .string(event.location ?? ""),
-                ])
+                    "alarms": .array(Array(alarms.prefix(5))),
+                    "free": .bool(event.availability == .free),
+                ]
+                if event.startDate < notesUntil, let notes = event.notes?.prefix(2000), !notes.isEmpty, notes.utf8.count <= notesBudget {
+                    notesBudget -= notes.utf8.count
+                    entry["notes"] = .string(String(notes))
+                }
+                if let url = event.url, ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
+                    entry["url"] = .string(String(url.absoluteString.prefix(500)))
+                }
+                return .object(entry)
             }
         }
         if access.isOn(.focus), let focus = UserDefaults.standard.string(forKey: FocusRecorder.currentKey) {

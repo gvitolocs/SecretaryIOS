@@ -26,7 +26,7 @@ private.
 
 | Source | Category | How |
 |---|---|---|
-| Lucina's timeline (any channel) | `lucina_message` | The server keeps one SSE stream open to Lucina (`notify::ingest`) with its own token; every `role: lucina` item becomes a notification unless the owner has the app in front. |
+| Lucina's timeline (any channel) | `lucina_message` | The server keeps one SSE stream open to Lucina (`notify::ingest`) with its own token; every `role: lucina` item becomes a notification unless the owner has the app in front, or it is her chat with an agent (below). |
 | Delivered reminder | `reminder` | Timeline items with `meta.kind: "reminder"`, and Lucina's `POST /v1/notify` when `LUCINA_APP_NOTIFY=true` (deduplicated: same timeline id, or `reminder:<id>`). |
 | Device command that needs a tap | `device_confirm` | Timeline items with `meta.kind: "device_command"` and `meta.command.requiresConfirmation` (else the iOS rule: deletes and calendar changes). |
 | Coding agent finished, needs permission, or the Infisical broker asks | `agent` | lucina-agentd's `POST /v1/notify` (`data: {kind, agentId or permissionId, reason, requestId, actions}`); while an app is in front it stays in the inbox without a push (Paseo's rule). |
@@ -35,6 +35,18 @@ private.
 | Proactive check-in / nudge | `lucina_message` | `POST /v1/notify` from Lucina (`LUCINA_APP_NOTIFY`), per-day dedup key. |
 | Lucina unreachable 5 min / back | `presence` (off by default) | The ingester's connection state. |
 | New device signed in | `system` (off by default) | `POST /v1/auth/device`. |
+
+**Her chats with agents make no alert** (owner, 2026-11-02: "just messages for me"). A timeline item with
+`meta.via` set (a turn through an agent link, any provider or caller) or `meta.kind: "reach"` (an agent's reply
+to her) makes no notification: no push, no inbox entry, nothing on the unread badge, no local alert on iOS. It
+stays readable in the chat. The text does not matter: naming the owner changes nothing. Reminders, device
+commands and shopping changes made in such a turn are still his. A new agent link stays silent by recording
+its turns with `via` and posting nothing to `/v1/notify`. An agent that needs him goes through `lucina_decide`
+or an approval, which have their own push; asking her in chat to tell him does not reach him, and she says so.
+A coding agent's finish pushes only for a run he started on one of his devices (label
+`lucina.started-on-device`, set by lucina-agentd from the caller's origin); any other run, whichever provider
+and whoever started it, is quiet. A job or delegation an agent asked for pushes nothing either. Permission
+requests always do.
 
 **Pipeline** (`Notifier::publish`): dedup (explicit `dedupKey`, or `tl:<timeline id>`)
 → category switch → presence (a Lucina message while any app reported itself in
@@ -132,15 +144,84 @@ owner's iPhone (push-to-start, also with the app closed); the time-sensitive
 notification stays as it is. The lock screen shows who asks, the reason, the
 first 3 command lines (monospace, "+N more"), the time left, **Deny** and
 **Approve** side by side, and a **Details** link that opens the approval card.
-The Dynamic Island shows the same, compact.
+The Dynamic Island shows the same, compact. While the iPhone is locked the
+reason and the commands are redacted (who asks, the time left and the buttons
+stay); with notification previews off, an activity the app starts itself says
+only "Open Secretary to see what it is."
 
-- **Deny** works without unlocking (like the widget).
-- **Approve** of a plain request needs the iPhone unlocked (Face ID or the
-  passcode), then answers from the lock screen.
-- **Approve** of a sensitive request (root plans) opens the app on that card
-  and starts the approve step at once: the Face ID prompt (or the PIN pad)
-  appears over the card that shows the exact commands. Cancelling leaves the
-  card open. The Face ID signature or the PIN is still required.
+- **Deny** works without unlocking (like the widget)
+  (`DenyApprovalActivityIntent`, unchanged).
+- **Approve** is an intent button too (`ApproveApprovalActivityIntent`,
+  `requiresLocalDeviceAuthentication`): iOS asks Face ID or the passcode on the
+  Lock Screen before it runs. The app then fetches the request and does nothing
+  more if it is decided (by this tap too: a repeat is a no-op) or expired. If its
+  `payloadHash` differs from the card's, the app opens on the new request
+  without asking. With **one-tap Approve** ready (below) it signs with the
+  unlock key and answers in the background: nothing opens, the card ends
+  "Approved". A plain request without the unlock key is answered unsigned, as
+  the notification's Approve does. Otherwise (no unlock key or switched off, an
+  approver change, or the unlock key's answer failing) the app comes to the
+  front on the card and asks Face ID there (`continueInForeground`, iOS 26
+  `.foreground(.dynamic)`). If it can't come to the front, "Open Secretary to
+  approve" is posted. A second tap while one is on its way does nothing.
+- **Tap log:** each card intent logs `card tap intent=<Deny|Approve> id=<id>`
+  first thing, and each notification action `notification action=<id> id=<id>`
+  (subsystem `tech.getsecretary.app`, category `ApprovalActivity`). The outcome
+  follows as `tap outcome id=<id>: …` (`decided approve via unlock key`,
+  `decided deny`, `opened card …`, `refused: <why>`; categories `Approvals` and
+  `ApprovalActivity`). A tap that reaches the wrong intent shows here.
+  On iOS 27.2 an earlier two-button card looked like Deny ran Approve, which is
+  why the card briefly had an Approve link. Those were deliberate Approve taps.
+  Cards from then still carry `secretary://open/approvals/<id>?approve=1&hash=…`,
+  and the app still opens those on the card with its approve step.
+- Every root approval is a real Face ID (or passcode) prompt. An earlier build
+  reused the Face ID unlock of the iPhone instead; the Secure Enclave key
+  refuses such a context (CryptoTokenKit -5), so that is gone, and so is the
+  "Require Face ID or passcode for root approvals" setting.
+
+**The notification** follows the same rule. Deny answers in place, without
+unlocking. A root plan whose push body carries every command uncut (category
+`APPROVAL_SENSITIVE_INLINE`; the expanded notification, where the buttons are,
+shows the whole body) has **Approve** (Face ID icon): it unlocks, brings the
+app to the front on the card and asks Face ID at once, provided the request is
+still pending, unexpired and has the push's `payloadHash`; otherwise the card
+opens without asking. A plan that does not fit (over 2400 bytes, or cut in the
+inbox), or previews off, keeps `APPROVAL_SENSITIVE`, whose "Review and
+approve" opens the card for the owner to read and tap Approve there.
+
+**One-tap Approve** (Settings → Approvals → "One-tap Approve from
+notifications", on by default). With it, that `APPROVAL_SENSITIVE_INLINE`
+Approve (`APPROVAL_APPROVE_IN_PLACE`, checkmark icon) finishes in place. iOS
+asks Face ID or the passcode to run it, no app opens, and there is no second
+prompt. This takes a second Secure Enclave key, the **unlock key**
+(`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`, `.privateKeyUsage` only), which
+signs whenever the iPhone is unlocked. The Face ID key
+(`.privateKeyUsage, .userPresence`) can't be used from there: iOS can't show its
+prompt from a background action, and the Secure Enclave refused a reused unlock
+(CryptoTokenKit -5).
+- **The trade-off**, accepted by the owner: anyone who can unlock the iPhone can
+  approve a root command from the notification with one tap.
+- **Enrollment:** the app makes the unlock key and the Face ID key signs it once
+  ("Allow one-tap Approve"). This happens when the switch is turned on, the
+  first time the app is in front with a Face ID key and no unlock key, and after
+  "Set up Face ID again". The server then accepts it
+  (`POST /v1/approvals/unlock-key`, see docs/server-api.md).
+- **Turning it off** deletes the key on the server, then on the iPhone.
+- **Who refuses it:** the server never accepts it for adding approver devices,
+  and drops it when the Face ID key is removed, revoked or replaced. The app
+  then deletes its copy too, and the notification goes back to the card's
+  Approve.
+- **The tap itself:** the app fetches the request and signs it with the unlock
+  key only (never the Face ID key). Nothing happens if the request is decided or
+  expired. A request that changed since the notification, or one-tap not being
+  ready, gets "Open Secretary to approve". A signing or server failure gets
+  "Your answer didn't go through". The server records it as
+  `verifiedBy: unlock_key`, `biometric: false`,
+  "unlock key (notification/card) on iPhone".
+- **Repeats:** a repeated answer from the same iPhone is a 200 (`repeated`), so
+  an action iOS runs twice succeeds without a second prompt.
+- **Unchanged:** `APPROVAL` (plain) and `APPROVAL_SENSITIVE` are unchanged. The
+  Live Activity card's Approve uses the same unlock key (above).
 
 When the request is answered anywhere, withdrawn or expires, the server ends
 the activity (an `end` push to its update token); the app also ends any

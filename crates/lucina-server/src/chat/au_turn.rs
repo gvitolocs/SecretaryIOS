@@ -656,8 +656,8 @@ fn status_line(status: Status) -> &'static str {
     match status {
         Status::Found => "One match: give the person's details with their sources.",
         Status::Ambiguous => "Several matches: list the top 3 numbered with position and building-room, say how many more there are, and ask which one. Never pick one.",
-        Status::NotFound => "No match: say \"not found in AU Find\" in the owner's language, list the searches tried, and offer to search au.dk in your browser.",
-        Status::Unavailable => "AU Find is unreachable right now: say so in the owner's language and do not guess any detail.",
+        Status::NotFound => "No match: say \"not found in AU Find\" in English (Danish when he writes Danish; never Italian), list the searches tried, and offer to search au.dk in your browser.",
+        Status::Unavailable => "AU Find is unreachable right now: say so in English (Danish when he writes Danish; never Italian) and do not guess any detail.",
     }
 }
 

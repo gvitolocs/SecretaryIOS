@@ -13,13 +13,14 @@ use reqwest::{Method, Url};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+use crate::chat_stream::ChatStream;
 use crate::error::{Error, Result};
 use crate::models::{
     Agenda, AgendaQuery, CancelledReminder, ChatReply, ChatRequest, CommandResult, CreateList,
-    CreateReminder, CreatedReminder, DeviceEvents, DeviceState, Envelope, Health, Job, ListState,
-    OpsBatch, OpsResult, ReminderList, ReminderQuery, ReminderScope, ShoppingItem, ShoppingList,
-    ShoppingListData, ShoppingListsData, ShoppingOp, TimelineConversations, TimelinePage,
-    TimelineQuery, UpdateList,
+    CreateReminder, CreatedReminder, DeviceEvents, DeviceRef, DeviceState, Envelope, Health, Job,
+    ListState, OpsBatch, OpsResult, ReminderList, ReminderQuery, ReminderScope, ShoppingItem,
+    ShoppingList, ShoppingListData, ShoppingListsData, ShoppingOp, TimelineConversations,
+    TimelinePage, TimelineQuery, UpdateList,
 };
 use crate::validate;
 
@@ -106,6 +107,7 @@ impl Call {
         grant: String,
         value: Option<String>,
         held: Option<String>,
+        request: Option<String>,
     ) -> Result<Self> {
         if !grant.starts_with("g1.") || grant.len() > 4096 {
             return Err(Error::Invalid {
@@ -120,7 +122,40 @@ impl Call {
         if let Some(h) = held {
             body["held"] = Value::String(h);
         }
+        // The queue entry this save answers (names only; see lucina-server `secret_requests`).
+        if let Some(r) = request {
+            body["request"] = Value::String(r);
+        }
         Ok(Self::new(Method::POST, &["secrets", "grant"]).with_body(body))
+    }
+
+    /// `POST /secrets/request {name, project, environment, path?, reason, from?, new_project?}`:
+    /// an agent asks the owner for a secret by name (Lucina checks the fields and refuses a
+    /// value). A JSON object up to 8 KiB.
+    pub fn secret_request(body: Value) -> Result<Self> {
+        if !body.is_object() || body.to_string().len() > 8 * 1024 {
+            return Err(Error::Invalid {
+                field: "body",
+                message: "must be a JSON object up to 8 KB".into(),
+            });
+        }
+        Ok(Self::new(Method::POST, &["secrets", "request"]).with_body(body))
+    }
+
+    /// `GET /secrets/requests`: the owner's queue of secret requests, names only.
+    pub fn secret_requests() -> Self {
+        Self::new(Method::GET, &["secrets", "requests"])
+    }
+
+    /// `POST /secrets/requests/<id>/dismiss`: "Not now" on a request's card.
+    pub fn secret_request_dismiss(id: &str) -> Result<Self> {
+        if id.is_empty() || id.len() > 64 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+            return Err(Error::Invalid {
+                field: "id",
+                message: "malformed".into(),
+            });
+        }
+        Ok(Self::new(Method::POST, &["secrets", "requests", id, "dismiss"]).with_body(serde_json::json!({})))
     }
 
     fn new(method: Method, segments: &[&str]) -> Self {
@@ -273,6 +308,84 @@ impl Call {
     /// send it with [`LucinaClient::call_with_status`].
     pub fn ops_record(body: Value) -> Self {
         Self::new(Method::POST, &["ops", "records"]).with_body(body)
+    }
+
+    /// `GET /flaws?q=&state=&platform=&status=&limit=`: Lucina's flaw tracker, worst first.
+    pub fn flaws_list(q: Option<&str>, state: Option<&str>, platform: Option<&str>, status: Option<&str>, limit: Option<u32>) -> Result<Self> {
+        let mut c = Self::new(Method::GET, &["flaws"]);
+        for (field, v, max) in [("q", q, 500), ("state", state, 32), ("platform", platform, 32), ("status", status, 32)] {
+            if let Some(v) = present(v) {
+                if v.chars().count() > max || v.chars().any(char::is_control) {
+                    return Err(Error::Invalid { field, message: format!("must be at most {max} characters") });
+                }
+                c.query.push((field, v.to_owned()));
+            }
+        }
+        if let Some(n) = limit {
+            if !(1..=200).contains(&n) {
+                return Err(Error::Invalid { field: "limit", message: "must be 1..=200".into() });
+            }
+            c.query.push(("limit", n.to_string()));
+        }
+        Ok(c)
+    }
+
+    /// `POST /flaws`: a report (Lucina validates the fields and denies unknown ones).
+    pub fn flaw_report(body: Value) -> Self {
+        Self::new(Method::POST, &["flaws"]).with_body(body)
+    }
+
+    /// `GET /flaws/matrix`: every live flaw against every client.
+    pub fn flaws_matrix() -> Self {
+        Self::new(Method::GET, &["flaws", "matrix"])
+    }
+
+    fn flaw_id(id: &str) -> Result<()> {
+        let ok = id.strip_prefix("fl-").is_some_and(|h| h.len() == 8 && h.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
+        if ok {
+            Ok(())
+        } else {
+            Err(Error::Invalid { field: "id", message: "must be fl- and 8 lowercase hex digits".into() })
+        }
+    }
+
+    /// `GET /flaws/{id}`: one flaw, its targets and history.
+    pub fn flaw_get(id: &str) -> Result<Self> {
+        Self::flaw_id(id)?;
+        Ok(Self::new(Method::GET, &["flaws", id]))
+    }
+
+    /// `PATCH /flaws/{id}`.
+    pub fn flaw_patch(id: &str, body: Value) -> Result<Self> {
+        Self::flaw_id(id)?;
+        Ok(Self::new(Method::PATCH, &["flaws", id]).with_body(body))
+    }
+
+    /// `PUT /flaws/{id}/targets/{platform}`: closing without evidence is refused by Lucina.
+    pub fn flaw_target(id: &str, platform: &str, body: Value) -> Result<Self> {
+        Self::flaw_id(id)?;
+        if platform.is_empty() || platform.len() > 32 || !platform.bytes().all(|b| b.is_ascii_lowercase()) {
+            return Err(Error::Invalid { field: "platform", message: "must be a platform name".into() });
+        }
+        Ok(Self::new(Method::PUT, &["flaws", id, "targets", platform]).with_body(body))
+    }
+
+    /// `POST /flaws/{id}/dispatch`: `{platform}`, start that task now.
+    pub fn flaw_dispatch(id: &str, body: Value) -> Result<Self> {
+        Self::flaw_id(id)?;
+        Ok(Self::new(Method::POST, &["flaws", id, "dispatch"]).with_body(body))
+    }
+
+    /// `GET /ops/ingest`: the Obsidian ingest's status (queue depth, last
+    /// run, next try, followed repos).
+    pub fn ops_ingest_status() -> Self {
+        Self::new(Method::GET, &["ops", "ingest"])
+    }
+
+    /// `POST /ops/ingest {cold}`: ingest now (in the background; `cold`: it
+    /// may load the local model when the GPU is free).
+    pub fn ops_ingest_run(cold: bool) -> Self {
+        Self::new(Method::POST, &["ops", "ingest"]).with_body(serde_json::json!({ "cold": cold }))
     }
 
     /// `GET /ops/records/{id}`: one record (id = 16 lowercase hex).
@@ -517,10 +630,53 @@ impl Call {
         if let Some(r) = req.reply_to.as_deref() {
             validate::timeline_ref("replyTo", r)?;
         }
+        if let Some(m) = req.voice_meta.as_ref() {
+            if !m.is_object() || m.to_string().len() > MAX_VOICE_META_BYTES {
+                return Err(Error::Invalid {
+                    field: "voiceMeta",
+                    message: format!("must be a JSON object up to {MAX_VOICE_META_BYTES} bytes"),
+                });
+            }
+        }
         let body = serde_json::to_value(req).map_err(|e| Error::Decode(e.to_string()))?;
         let mut call = Self::new(Method::POST, &["chat"]).with_body(body);
         call.class = TimeoutClass::Chat;
         Ok(call)
+    }
+
+    /// `GET /voice-learn`: the Voice Learn vocabulary (docs/lucinavoice-protocol.md section 8).
+    pub fn voice_learn_list() -> Self {
+        Self::new(Method::GET, &["voice-learn"])
+    }
+
+    /// `POST /voice-learn {word, soundsLike?, meaning?, lang?}`: add an entry.
+    /// Lucina validates the fields (at most 500 entries, 100 characters each);
+    /// the body here must be an object of at most [`MAX_VOICE_LEARN_BYTES`].
+    pub fn voice_learn_create(body: Value) -> Result<Self> {
+        voice_learn_body(&body)?;
+        Ok(Self::new(Method::POST, &["voice-learn"]).with_body(body))
+    }
+
+    /// `PATCH /voice-learn/{id}`: change fields of an entry.
+    pub fn voice_learn_update(id: &str, body: Value) -> Result<Self> {
+        validate::id("id", id)?;
+        voice_learn_body(&body)?;
+        Ok(Self::new(Method::PATCH, &["voice-learn", id]).with_body(body))
+    }
+
+    /// `DELETE /voice-learn/{id}`.
+    pub fn voice_learn_delete(id: &str) -> Result<Self> {
+        validate::id("id", id)?;
+        Ok(Self::new(Method::DELETE, &["voice-learn", id]))
+    }
+
+    /// `POST /voice-learn/suggest {transcript, corrected}`: candidate entries
+    /// from a transcript edit (the "add to Voice Learn" offer).
+    pub fn voice_learn_suggest(transcript: &str, corrected: &str) -> Result<Self> {
+        validate::text("transcript", transcript, validate::MAX_MESSAGE_CHARS)?;
+        validate::text("corrected", corrected, validate::MAX_MESSAGE_CHARS)?;
+        Ok(Self::new(Method::POST, &["voice-learn", "suggest"])
+            .with_body(serde_json::json!({"transcript": transcript, "corrected": corrected})))
     }
 
     /// `GET /jobs/{id}`.
@@ -831,6 +987,76 @@ impl Call {
         Ok(Self::new(Method::POST, &["device", "commands", id, "result"]).with_body(body))
     }
 
+    /// `POST /device/juno/next {device, waitSecs}`: Juno's next call to run
+    /// (long-poll; `waitSecs` 0..=25).
+    pub fn juno_next(device: &DeviceRef, wait_secs: u64) -> Result<Self> {
+        if !(0..=25).contains(&wait_secs) {
+            return Err(Error::Invalid {
+                field: "wait",
+                message: "must be 0..=25".into(),
+            });
+        }
+        Ok(
+            Self::new(Method::POST, &["device", "juno", "next"]).with_body(serde_json::json!({
+                "device": device,
+                "waitSecs": wait_secs,
+            })),
+        )
+    }
+
+    /// `GET /juno/screenshots/{id}.png`: a screenshot Juno sent for a reply
+    /// (`id` is `[A-Za-z0-9_-]{1,64}`).
+    pub fn juno_screenshot(file: &str) -> Result<Self> {
+        let id = file.strip_suffix(".png").unwrap_or("");
+        validate::session_id("id", id)?;
+        Ok(Self::new(Method::GET, &["juno", "screenshots", file]))
+    }
+
+    /// `POST /device/juno/result {device, id, ok, result?, error?}`: Juno's
+    /// answer to one call (`id` is `[A-Za-z0-9_-]{1,64}`, `error` ≤ 2000 chars).
+    pub fn juno_result(
+        device: &DeviceRef,
+        id: &str,
+        ok: bool,
+        result: Option<Value>,
+        error: Option<String>,
+    ) -> Result<Self> {
+        validate::session_id("id", id)?;
+        if let Some(e) = error.as_deref() {
+            validate::text("error", e, 2000)?;
+        }
+        let mut body = serde_json::json!({
+            "device": device,
+            "id": id,
+            "ok": ok,
+        });
+        if let Some(r) = result {
+            body["result"] = r;
+        }
+        if let Some(e) = error {
+            body["error"] = Value::String(e);
+        }
+        Ok(Self::new(Method::POST, &["device", "juno", "result"]).with_body(body))
+    }
+
+    /// `POST /device/juno/events {device, events, lost}`: the laptop's events
+    /// (at most 64, each already checked by secretary-server).
+    pub fn juno_events(device: &DeviceRef, events: Vec<Value>, lost: u64) -> Result<Self> {
+        if events.len() > 64 {
+            return Err(Error::Invalid {
+                field: "events",
+                message: "at most 64 per batch".into(),
+            });
+        }
+        Ok(
+            Self::new(Method::POST, &["device", "juno", "events"]).with_body(serde_json::json!({
+                "device": device,
+                "events": events,
+                "lost": lost,
+            })),
+        )
+    }
+
     /// `POST /device/state`: each list at most 500 objects of at most 8 KiB.
     pub fn device_state(st: &DeviceState) -> Result<Self> {
         for (field, items) in [
@@ -924,6 +1150,17 @@ impl Call {
         Self::new(Method::GET, &["timeline", "conversations"])
     }
 
+    /// `GET /timeline/cards`: which items' buttons are closed.
+    pub fn timeline_cards() -> Self {
+        Self::new(Method::GET, &["timeline", "cards"])
+    }
+
+    /// `POST /timeline/cards/<item>`: the owner used this button.
+    pub fn timeline_card_choice(item: &str, body: Value) -> Result<Self> {
+        validate::timeline_ref("item", item)?;
+        Ok(Self::new(Method::POST, &["timeline", "cards", item]).with_body(body))
+    }
+
     /// `GET /grocery/deals/map?radiusM=`: Lucina's deals map around home.
     /// The optional radius is in meters, 500..=15 000.
     pub fn deals_map(radius_m: Option<u32>) -> Result<Self> {
@@ -992,6 +1229,22 @@ fn au_coord(field: &'static str, s: &str, min: f64, max: f64) -> Result<String> 
 /// A query parameter that was given and is not blank, trimmed.
 fn present(s: Option<&str>) -> Option<&str> {
     s.map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// Longest `voiceMeta` object of a chat request (bytes of its JSON).
+pub const MAX_VOICE_META_BYTES: usize = 4096;
+/// Longest Voice Learn entry body (bytes of its JSON); Lucina holds the field limits.
+pub const MAX_VOICE_LEARN_BYTES: usize = 4096;
+
+/// A Voice Learn body: a JSON object up to [`MAX_VOICE_LEARN_BYTES`].
+fn voice_learn_body(body: &Value) -> Result<()> {
+    if !body.is_object() || body.to_string().len() > MAX_VOICE_LEARN_BYTES {
+        return Err(Error::Invalid {
+            field: "body",
+            message: format!("must be a JSON object up to {MAX_VOICE_LEARN_BYTES} bytes"),
+        });
+    }
+    Ok(())
 }
 
 /// A contract decision id: `dc-` and 12 lowercase hex digits.
@@ -1319,6 +1572,46 @@ impl LucinaClient {
         self.call(&Call::chat(req)?).await
     }
 
+    /// `POST /chat` as a stream of events (`Accept: text/event-stream`). With
+    /// `voice`, the body carries `"voice": true` and Lucina writes a short,
+    /// speakable answer. A Lucina without streaming answers with its plain
+    /// JSON; the stream then holds one `Reply` and the `Done`.
+    ///
+    /// One deadline of [`Timeouts::chat`] covers the whole turn; the connection
+    /// also fails when Lucina is silent (not even its `: ping`) for
+    /// [`Timeouts::stream_idle`]. Errors before the first event (a non-2xx
+    /// answer, unreachable, timeout) are returned here; later ones by
+    /// [`ChatStream::next`].
+    pub async fn chat_stream(&self, req: &ChatRequest, voice: bool) -> Result<ChatStream> {
+        let call = Call::chat(req)?;
+        let mut body = call.body.clone().unwrap_or(Value::Null);
+        if voice {
+            body["voice"] = Value::Bool(true);
+        }
+        let resp = self
+            .stream_http
+            .post(self.url(&call))
+            .bearer_auth(&self.token)
+            .header(reqwest::header::ACCEPT, "text/event-stream")
+            .header(reqwest::header::CACHE_CONTROL, "no-cache")
+            .timeout(self.timeouts.chat)
+            .json(&body)
+            .send()
+            .await
+            .map_err(Error::from_reqwest)?;
+        let status = resp.status().as_u16();
+        let is_sse = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.trim_start().starts_with("text/event-stream"));
+        if is_sse && (200..300).contains(&status) {
+            return Ok(ChatStream::sse(resp));
+        }
+        let bytes = resp.bytes().await.map_err(Error::from_reqwest)?;
+        Ok(ChatStream::json(decode_response::<Value>(status, &bytes)?))
+    }
+
     pub async fn job(&self, id: &str) -> Result<Job> {
         self.call(&Call::job(id)?).await
     }
@@ -1534,6 +1827,13 @@ mod tests {
         assert_eq!(c.url(&rec).as_str(), "http://h:1/api/secretary/ops/records");
         assert_eq!(rec.body().unwrap()["kind"], "deploy");
         assert_eq!(rec.caller.as_deref(), Some("mcp:claude"));
+        assert_eq!(
+            c.url(&Call::ops_ingest_status()).as_str(),
+            "http://h:1/api/secretary/ops/ingest"
+        );
+        let run = Call::ops_ingest_run(false);
+        assert_eq!(run.method(), &Method::POST);
+        assert_eq!(run.body().unwrap()["cold"], false);
 
         assert_eq!(
             c.url(&Call::ops_record_get("0123456789abcdef").unwrap())
@@ -1717,6 +2017,7 @@ mod tests {
             device: None,
             device_name: None,
             reply_to: None,
+            voice_meta: None,
         })
         .is_err());
         assert!(Call::agenda(&AgendaQuery {
@@ -1739,6 +2040,7 @@ mod tests {
                 device: None,
                 device_name: None,
                 reply_to: None,
+                voice_meta: None,
             })
         };
         assert!(chat("ios").is_ok());
@@ -1752,6 +2054,7 @@ mod tests {
                 device: None,
                 device_name: None,
                 reply_to: Some(id.into()),
+                voice_meta: None,
             })
         };
         assert_eq!(
@@ -1780,11 +2083,54 @@ mod tests {
                 device: None,
                 device_name: None,
                 reply_to: None,
+                voice_meta: None,
             })
             .unwrap()
             .timeout_class(),
             TimeoutClass::Chat
         );
+    }
+
+    #[test]
+    fn voice_learn_calls_and_voice_meta() {
+        let sig = |c: &Call| format!("{} {}", c.method(), c.path());
+        let list = Call::voice_learn_list();
+        assert_eq!(sig(&list), "GET /api/secretary/voice-learn");
+        let add = Call::voice_learn_create(json!({"word": "Skibigårdsvej", "lang": "da"})).unwrap();
+        assert_eq!(sig(&add), "POST /api/secretary/voice-learn");
+        assert_eq!(add.body().unwrap()["word"], "Skibigårdsvej");
+        let edit = Call::voice_learn_update("vl_01-a", json!({"meaning": "home"})).unwrap();
+        assert_eq!(sig(&edit), "PATCH /api/secretary/voice-learn/vl_01-a");
+        let del = Call::voice_learn_delete("vl_01-a").unwrap();
+        assert_eq!(sig(&del), "DELETE /api/secretary/voice-learn/vl_01-a");
+        let sug = Call::voice_learn_suggest("ciao skibi gard vai", "ciao Skibigårdsvej").unwrap();
+        assert_eq!(sig(&sug), "POST /api/secretary/voice-learn/suggest");
+        assert_eq!(sug.body().unwrap()["corrected"], "ciao Skibigårdsvej");
+        // ids cannot walk the path; bodies are objects of bounded size
+        for bad in ["", "a/b", "..", "a b"] {
+            assert!(Call::voice_learn_delete(bad).is_err(), "{bad:?}");
+            assert!(Call::voice_learn_update(bad, json!({})).is_err(), "{bad:?}");
+        }
+        assert!(Call::voice_learn_create(json!(["x"])).is_err());
+        assert!(Call::voice_learn_create(json!({"word": "x".repeat(MAX_VOICE_LEARN_BYTES)})).is_err());
+        assert!(Call::voice_learn_suggest(" ", "x").is_err());
+        assert!(Call::voice_learn_suggest("x", "").is_err());
+
+        // `voice` is a chat channel for the server's own pipeline; voiceMeta is a bounded object
+        let chat = |meta: Option<Value>| {
+            Call::chat(&ChatRequest {
+                message: "hi".into(),
+                channel: Some("voice".into()),
+                voice_meta: meta,
+                ..Default::default()
+            })
+        };
+        let ok = chat(Some(json!({"turnId": "voice-1-ab", "sttMs": 80}))).unwrap();
+        assert_eq!(ok.body().unwrap()["channel"], "voice");
+        assert_eq!(ok.body().unwrap()["voiceMeta"]["sttMs"], 80);
+        assert!(chat(None).unwrap().body().unwrap().get("voiceMeta").is_none());
+        assert!(chat(Some(json!("x"))).is_err());
+        assert!(chat(Some(json!({"x": "y".repeat(MAX_VOICE_META_BYTES)}))).is_err());
     }
 
     #[test]
@@ -1937,6 +2283,62 @@ mod tests {
         assert!(state(json!({"alarms": [{"id": "a1", "time": "07:00"}], "focus": "work"})).is_ok());
         assert!(state(json!({"alarms": ["07:00"]})).is_err());
         assert!(state(json!({"focus": 3})).is_err());
+    }
+
+    #[test]
+    fn juno_calls() {
+        let device = DeviceRef {
+            id: "dev-1".into(),
+            name: "Juno".into(),
+        };
+        let next = Call::juno_next(&device, 25).unwrap();
+        assert_eq!(next.method(), &Method::POST);
+        assert_eq!(next.path(), "/api/secretary/device/juno/next");
+        assert_eq!(
+            next.body().unwrap(),
+            &json!({"device": {"id": "dev-1", "name": "Juno"}, "waitSecs": 25})
+        );
+        assert!(Call::juno_next(&device, 0).is_ok());
+        match Call::juno_next(&device, 26) {
+            Err(Error::Invalid { field, .. }) => assert_eq!(field, "wait"),
+            other => panic!("{other:?}"),
+        }
+
+        let res = Call::juno_result(&device, "call-1", true, Some(json!({"a": 1})), None).unwrap();
+        assert_eq!(res.path(), "/api/secretary/device/juno/result");
+        assert_eq!(
+            res.body().unwrap(),
+            &json!({"device": {"id": "dev-1", "name": "Juno"}, "id": "call-1", "ok": true, "result": {"a": 1}})
+        );
+        let res = Call::juno_result(&device, "call-1", false, None, Some("boom".into())).unwrap();
+        let body = res.body().unwrap();
+        assert_eq!(body["error"], "boom");
+        assert!(body.get("result").is_none());
+        for bad in ["", "a/b", "a.b", &"x".repeat(65)] {
+            assert!(
+                Call::juno_result(&device, bad, true, None, None).is_err(),
+                "{bad}"
+            );
+        }
+        assert!(Call::juno_result(&device, "call-1", false, None, Some("e".repeat(2001))).is_err());
+        assert!(Call::juno_result(&device, "call-1", false, None, Some("e".repeat(2000))).is_ok());
+        let ev = Call::juno_events(&device, vec![json!({"seq": 1})], 2).unwrap();
+        assert_eq!(ev.method(), &Method::POST);
+        assert_eq!(ev.path(), "/api/secretary/device/juno/events");
+        assert_eq!(
+            ev.body().unwrap(),
+            &json!({"device": {"id": "dev-1", "name": "Juno"}, "events": [{"seq": 1}], "lost": 2})
+        );
+        match Call::juno_events(&device, vec![json!({}); 65], 0) {
+            Err(Error::Invalid { field, .. }) => assert_eq!(field, "events"),
+            other => panic!("{other:?}"),
+        }
+        let shot = Call::juno_screenshot("Ab9_x-1.png").unwrap();
+        assert_eq!(shot.method(), &Method::GET);
+        assert_eq!(shot.path(), "/api/secretary/juno/screenshots/Ab9_x-1.png");
+        for bad in ["x", ".png", "a.b.png", "../x.png", "x.jpg"] {
+            assert!(Call::juno_screenshot(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

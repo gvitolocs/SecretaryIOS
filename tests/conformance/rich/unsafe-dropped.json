@@ -1,0 +1,24 @@
+{
+  "name": "unsafe-dropped",
+  "about": "What doesn't fit is dropped the same way everywhere: an unsafe link, an unknown block, routes off the app.",
+  "input": {
+    "format": "v1",
+    "bubbles": ["Here you go"],
+    "blocks": [
+      { "type": "card", "title": "Kept", "tone": "info" },
+      { "type": "link_preview", "url": "javascript:alert(1)", "title": "evil" },
+      { "type": "iframe", "src": "x" }
+    ],
+    "actions": [
+      { "id": "notes", "label": "Notes", "kind": "route", "payload": { "path": "/notes" } },
+      { "id": "out", "label": "Out", "kind": "route", "payload": { "path": "https://evil.example" } },
+      { "id": "up", "label": "Up", "kind": "route", "payload": { "path": "/../x" } }
+    ]
+  },
+  "expect": {
+    "bubbles": ["Here you go"],
+    "blocks": ["card"],
+    "actions": ["notes"],
+    "speech": "Here you go"
+  }
+}

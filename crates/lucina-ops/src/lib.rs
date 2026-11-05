@@ -247,6 +247,12 @@ impl Ops {
         Ok(v)
     }
 
+    /// Every record in the store (the vault-ingest worker's ops source).
+    pub fn records(&self) -> Result<Vec<StoredRecord>, OpsError> {
+        self.store.refresh()?;
+        Ok(self.store.all())
+    }
+
     pub fn get(&self, id: &str) -> Result<Option<StoredRecord>, OpsError> {
         if !record::is_record_id(id) {
             return Ok(None);

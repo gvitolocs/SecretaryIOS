@@ -158,6 +158,7 @@ mod tests {
             segments: vec![seg(0.0, 3.0), seg(3.0, 6.0), seg(6.5, 7.0), seg(7.0, 9.0)],
             speakers: false,
             created_at: Utc::now(),
+            corrections: vec![],
         };
         let d = Diarization {
             turns: vec![

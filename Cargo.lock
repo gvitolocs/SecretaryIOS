@@ -3283,9 +3283,11 @@ dependencies = [
  "base64 0.22.1",
  "jni",
  "lucina-phone-core",
+ "lucina-vault",
  "rustls-graviola",
  "serde",
  "serde_json",
+ "tempfile",
  "ureq",
 ]
 
@@ -3428,6 +3430,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "lucina-flaws"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "getrandom 0.3.4",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "lucina-grocery"
 version = "0.1.0"
 dependencies = [
@@ -3501,6 +3516,8 @@ dependencies = [
  "futures-util",
  "getrandom 0.3.4",
  "http-body-util",
+ "hyper",
+ "hyper-util",
  "image",
  "jpegxl-rs",
  "jpegxl-sys",
@@ -3515,6 +3532,7 @@ dependencies = [
  "rusqlite",
  "secretary-image",
  "secretary-media-stream",
+ "secretary-xlsx",
  "serde",
  "serde_json",
  "sevenz-rust",
@@ -3573,6 +3591,7 @@ dependencies = [
  "lucina-llm",
  "lucina-memory",
  "lucina-prompter",
+ "lucina-vocab",
  "ort",
  "realfft",
  "reqwest 0.12.28",
@@ -3791,6 +3810,7 @@ dependencies = [
  "lucina-deals",
  "lucina-delegate",
  "lucina-discord",
+ "lucina-flaws",
  "lucina-grocery",
  "lucina-intent",
  "lucina-jev",
@@ -3806,6 +3826,9 @@ dependencies = [
  "lucina-store",
  "lucina-telegram",
  "lucina-tools",
+ "lucina-upstream",
+ "lucina-vault-ingest",
+ "lucina-vocab",
  "pdf-extract 0.10.0",
  "regex",
  "reqwest 0.12.28",
@@ -3888,6 +3911,7 @@ dependencies = [
  "lucina-computer-use",
  "lucina-delegate",
  "lucina-discord",
+ "lucina-flaws",
  "lucina-grocery",
  "lucina-jev",
  "lucina-llm",
@@ -3911,6 +3935,64 @@ dependencies = [
  "tracing",
  "uuid",
  "wiremock",
+]
+
+[[package]]
+name = "lucina-upstream"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "lucina-jev",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "toml 1.1.6+spec-1.1.0",
+]
+
+[[package]]
+name = "lucina-vault"
+version = "0.1.0"
+dependencies = [
+ "ink-obsidian",
+ "pulldown-cmark",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "lucina-vault-ingest"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "chrono-tz",
+ "libc",
+ "lucina-ops",
+ "lucina-secrets",
+ "regex",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "wiremock",
+]
+
+[[package]]
+name = "lucina-vocab"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -4852,6 +4934,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "pulldown-cmark"
+version = "0.13.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3db2be46835f013dd3f4fa7f5f7402c537787b54ebb6fe2b94bbdd7e2669bb7b"
+dependencies = [
+ "bitflags 2.13.2",
+ "memchr",
+ "unicase",
+]
+
+[[package]]
 name = "pxfm"
 version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5644,6 +5737,7 @@ name = "secretary-ffi"
 version = "0.1.0"
 dependencies = [
  "image",
+ "lucina-vault",
  "secretary-body",
  "secretary-chat",
  "secretary-gym",
@@ -5823,6 +5917,7 @@ dependencies = [
  "ink-obsidian",
  "ink-sync",
  "lucina-agentd",
+ "lucina-vocab",
  "mime",
  "p256",
  "proptest",
@@ -5863,6 +5958,18 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "uuid",
+]
+
+[[package]]
+name = "secretary-xlsx"
+version = "0.1.0"
+dependencies = [
+ "calamine",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "zip 2.6.1",
 ]
 
 [[package]]

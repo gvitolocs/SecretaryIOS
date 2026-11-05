@@ -1,5 +1,5 @@
 import { A, useNavigate, useParams } from "@solidjs/router";
-import { createEffect, createResource, createSignal, For, on, onCleanup, onMount, Show, type Accessor } from "solid-js";
+import { createEffect, createMemo, createResource, createSignal, For, getOwner, on, onCleanup, onMount, Show, type Accessor } from "solid-js";
 import { ApiError } from "../api/client";
 import { instagramApi, type IgHighlight, type IgItem, type IgPage, type IgRecent, type IgWatch } from "../api/instagram";
 import {
@@ -22,11 +22,13 @@ import {
   PrimaryAction,
   useWide,
 } from "../components/page";
+import { IgImage } from "../components/IgImage";
 import InstagramOpened from "../components/InstagramOpened";
 import { PhotoViewer } from "../components/PhotoViewer";
 import { locale, t } from "../i18n";
 import { relativeTime } from "../lib/relativeTime";
 import { formatCount, nextCheckText, parseTyped, slideIndexOf, slidesOf } from "../lib/instagram";
+import { keepSigned } from "../lib/instagramImages";
 import { mergeFirstPage, pageCache } from "../lib/pageCache";
 import { rememberScroll } from "../lib/pageScroll";
 import { createCached } from "../lib/swr";
@@ -62,7 +64,13 @@ interface Feed {
   more: () => Promise<void>;
   /** A first page that came with something else (the profile bundle's posts), merged like a refresh. */
   absorb: (page: IgPage) => void;
+  /** A picture keeps failing: ask for the first page again, quietly. */
+  reask: () => void;
 }
+
+/** How often and how long a page asks again while the server is refreshing behind its answer. */
+const POLL_MS = 3_000;
+const MAX_POLLS = 30;
 
 /** What a feed keeps in lib/pageCache: the items loaded so far and where the next page starts. */
 interface FeedCopy {
@@ -85,11 +93,12 @@ function createFeed(fetchPage: (cursor: string | null) => Promise<IgPage>, initi
   const [loaded, setLoaded] = createSignal(!!copy || !!initial);
   const revision = pageCache.revision("instagram");
   const current = () => revision === pageCache.revision("instagram");
+  let lastReask = 0;
   function store() {
     if (cacheKey && current()) void pageCache.put(cacheKey, "instagram", { items: items().slice(0, 300), nextCursor: cursor() } satisfies FeedCopy);
   }
   function absorb(page: IgPage) {
-    if (loaded()) setItems((old) => mergeFirstPage(old, page.items));
+    if (loaded()) setItems((old) => mergeFirstPage(old, keepSigned(old, page.items)));
     else {
       setItems(page.items);
       setCursor(page.exhausted ? null : page.nextCursor);
@@ -104,6 +113,23 @@ function createFeed(fetchPage: (cursor: string | null) => Promise<IgPage>, initi
       setItems((now) => mergeFirstPage(stored.value.items, now));
       setCursor(stored.value.nextCursor);
     });
+  }
+  // The server answered from its store and is asking the backend behind it: what that finds is merged in as it lands,
+  // with nothing on screen saying so.
+  let polls = 0;
+  let pollTimer: ReturnType<typeof setTimeout> | undefined;
+  if (getOwner()) onCleanup(() => clearTimeout(pollTimer));
+  function pollWhileRefreshing(page: IgPage) {
+    clearTimeout(pollTimer);
+    if (!page.refreshing || polls >= MAX_POLLS) return;
+    polls += 1;
+    pollTimer = setTimeout(() => {
+      void fetchPage(null).then((next) => {
+        if (!current()) return;
+        absorb(next);
+        pollWhileRefreshing(next);
+      }, () => {});
+    }, POLL_MS);
   }
   async function run(from: string | null, append: boolean) {
     if (loading() || updating()) return;
@@ -139,6 +165,7 @@ function createFeed(fetchPage: (cursor: string | null) => Promise<IgPage>, initi
         setLoaded(true);
         store();
       }
+      if (!append) pollWhileRefreshing(result.page);
     } catch (e) {
       // A failed refresh keeps the copy on screen; a failed first or next page says so.
       if (!refreshing) setError(e);
@@ -160,6 +187,15 @@ function createFeed(fetchPage: (cursor: string | null) => Promise<IgPage>, initi
       return c ? run(c, true) : Promise.resolve();
     },
     absorb,
+    reask() {
+      // A picture of this list keeps failing: ask for newer links, at most once a minute.
+      const now = Date.now();
+      if (now - lastReask < 60_000) return;
+      lastReask = now;
+      void fetchPage(null).then((page) => {
+        if (current()) absorb(page);
+      }, () => {});
+    },
   };
 }
 
@@ -194,7 +230,7 @@ function MoreSentinel(props: { onNear: () => void }) {
   return <div ref={el} class="ig-sentinel" aria-hidden="true" />;
 }
 
-function Tile(props: { item: IgItem; label: string; onOpen: () => void }) {
+function Tile(props: { item: IgItem; label: string; onOpen: () => void; onGiveUp?: () => void }) {
   const src = () => props.item.thumbUrl ?? (props.item.kind === "image" ? props.item.url : null);
   return (
     <button
@@ -207,10 +243,13 @@ function Tile(props: { item: IgItem; label: string; onOpen: () => void }) {
       onClick={props.onOpen}
     >
       <Show when={src()} fallback={<span class="ig-tile__blank" />}>
-        {(url) => <img src={url()} alt="" loading="lazy" referrerpolicy="no-referrer" />}
+        {(url) => <IgImage url={url()} lazy onGiveUp={props.onGiveUp} />}
       </Show>
       <Show when={props.item.kind !== "image"}>
         <span class="ig-tile__badge">{props.item.kind === "video" ? <PlayBadge /> : <StackBadge />}</span>
+      </Show>
+      <Show when={props.item.expired}>
+        <span class="ig-expired">{t("instagram.storyExpired")}</span>
       </Show>
     </button>
   );
@@ -220,7 +259,7 @@ function Avatar(props: { url: string | null; name: string; size?: "lg" }) {
   return (
     <span class="ig-avatar" classList={{ "ig-avatar--lg": props.size === "lg" }} aria-hidden="true">
       <Show when={props.url} fallback={<span>{props.name.slice(0, 1).toUpperCase()}</span>}>
-        {(url) => <img src={url()} alt="" referrerpolicy="no-referrer" />}
+        {(url) => <IgImage url={url()} quiet />}
       </Show>
     </span>
   );
@@ -440,6 +479,33 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
   const loadError = profile.error;
   const fetching = () => profile.loading() || profile.updating();
   const refetch = () => profile.refresh();
+  // The server answers from its store and refreshes behind it; what it finds comes in here, with nothing on screen
+  // saying so (the "Updating…" pill is only for the request itself, which takes milliseconds).
+  let profilePolls = 0;
+  createEffect(
+    on(bundle, (b) => {
+      if (!b?.refreshing) return;
+      // Only a copy that differs goes on screen: each one repaints the page and its media.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let stopped = false;
+      const poll = () => {
+        if (stopped || profilePolls >= MAX_POLLS) return;
+        profilePolls += 1;
+        timer = setTimeout(() => {
+          void instagramApi.profile(props.username).then((fresh) => {
+            if (stopped) return;
+            if (fresh.refreshing && JSON.stringify(fresh) === JSON.stringify(bundle())) poll();
+            else profile.set(fresh);
+          }, () => {});
+        }, POLL_MS);
+      };
+      poll();
+      onCleanup(() => {
+        stopped = true;
+        clearTimeout(timer);
+      });
+    }),
+  );
   const [highlights, setHighlights] = createSignal<IgHighlight[]>(pageCache.peek<IgHighlight[]>(trayKey)?.value ?? []);
   const [highlightsLoading, setHighlightsLoading] = createSignal(false);
   const [highlightsError, setHighlightsError] = createSignal<unknown>(null);
@@ -503,10 +569,11 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
     }),
   );
 
-  // Opening a watched account clears its red dot.
+  // Opening a watched account clears its red dot. A memo, so a newer copy of the same profile doesn't count as opening it.
+  const profileName = createMemo(() => bundle()?.profile.username);
   createEffect(
     on(
-      () => bundle()?.profile.username,
+      profileName,
       async (name) => {
         if (!name) return;
         await refreshInstagramWatched();
@@ -549,7 +616,7 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
 
   const feedKey = (tb: Tab) => `instagram:feed:${props.username}:${tb}`;
   const reels = createFeed((c) => instagramApi.reels(props.username, c), undefined, feedKey("reels"));
-  const stories = createFeed(() => instagramApi.stories(props.username), undefined, feedKey("stories"));
+  const stories = createFeed((c) => instagramApi.stories(props.username, c), undefined, feedKey("stories"));
   const archive = createFeed((c) => instagramApi.archive(props.username, c), undefined, feedKey("archive"));
   const postsFeed = () => (posts ??= createFeed((c) => instagramApi.posts(props.username, c), bundle()?.posts, feedKey("posts")));
 
@@ -696,6 +763,9 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
             <Show when={b().profile.isPrivate}>
               <p class="ig-note">{t("instagram.private")}</p>
             </Show>
+            <Show when={b().gone && !watchEntry()}>
+              <p class="ig-note" role="status">{t("instagram.gone")}</p>
+            </Show>
 
             <div class="ig-tabs" role="tablist" aria-label={t("instagram.tabs")}>
               <For each={TABS}>
@@ -755,6 +825,7 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
                                     item={item}
                                     label={`${tabLabel(tb)} ${i() + 1}${item.caption ? `: ${item.caption.slice(0, 60)}` : ""}`}
                                     onOpen={() => props.open({ feed: f(), start: slideIndexOf(f().items(), i()), username: props.username, archived: tb === "archive", story: tb === "stories" })}
+                                    onGiveUp={f().reask}
                                   />
                                 )}
                               </For>

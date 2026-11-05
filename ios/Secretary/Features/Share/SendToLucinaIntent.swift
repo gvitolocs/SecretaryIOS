@@ -24,6 +24,7 @@ struct SendToLucinaIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
+        let trace = DebugEvents.intent("send_to_lucina"); defer { trace.end() }
         AppModel.shared.device.syncCredentials()
         guard let credentials = BridgeCredentials.read() else { throw ShareFailure.signIn }
         let directory = try ShareRequestBuilder.directory()

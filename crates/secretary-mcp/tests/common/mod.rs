@@ -287,6 +287,16 @@ async fn handle(
         (m, ["v1", "notebooks", rest @ ..]) => notebooks::route(&mut st, m, rest, &query, &headers, &body),
         // Lucina's mailbox for Claude (crate::reach), forwarded to Lucina by the real server.
         (m, ["v1", "lucina", "reach", rest @ ..]) => reach::route(m, rest, &query, &headers),
+        // The apps' debug event log (crate::debug_events).
+        ("GET", ["v1", "debug", "events"]) if device_ok(&headers) => Json(json!({"count": 2, "more": false, "events": [
+            {"ts": "2026-11-01T09:00:00.250Z", "seq": 41, "device": "dev_phone", "device_name": "Giuseppe's iPhone",
+             "build": "adfd5fe", "process": "app", "type": "notification.action",
+             "fields": {"action": "approve", "id": "ap_1"}, "received_at": "2026-11-01T09:00:02.000Z"},
+            {"ts": "2026-11-01T09:00:01.000Z", "seq": 42, "device": "dev_phone", "device_name": "Giuseppe's iPhone",
+             "build": "adfd5fe", "process": "app", "type": "net.request",
+             "fields": {"method": "POST", "path": "/v1/approvals/{id}/decide", "status": 409, "duration_ms": 210},
+             "received_at": "2026-11-01T09:00:02.000Z"}]}))
+        .into_response(),
         // Lucina's computer (crate::computer): a job that finishes on the first poll.
         ("POST", ["v1", "computer", "task"]) if device_ok(&headers) => (
             StatusCode::ACCEPTED,
@@ -370,6 +380,8 @@ async fn handle(
         ("POST", ["v1", "decisions"]) => Json(json!({"decision_id":"dc-012345abcdef", "status":"pending"})).into_response(),
         ("GET", ["v1", "decisions", id]) => Json(json!({"decision_id":id, "status":"decided", "decision":"go", "chosen_option":"Ship", "reason":"Small fix", "decided_by":"lucina", "confidence":0.86})).into_response(),
         ("DELETE", ["v1", "decisions", id]) => Json(json!({"decision_id":id, "status":"withdrawn", "reason":"Withdrawn by the asker: settled elsewhere"})).into_response(),
+        ("POST", ["v1", "secrets", "request"]) => Json(json!({"status":"asked", "itemId":"tl_1", "name": body["name"], "project": body["project"],
+            "environment": body["environment"], "path": "/", "projectKnown": null, "createProject": body["new_project"] == json!(true)})).into_response(),
         ("GET", ["v1", "jobs", id]) => Json(json!({"id":id,"status":"done","action":"research","result":"Found it","error":null,"createdAt":"t0","startedAt":"t1","finishedAt":"t2"})).into_response(),
         ("POST", ["v1", "chat"]) => {
             let msg = body["message"].as_str().unwrap_or("");

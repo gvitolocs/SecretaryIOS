@@ -178,6 +178,11 @@ struct TimelineMeta: Codable, Equatable, Hashable, Sendable {
             && id.dropFirst(3).allSatisfy { ("0"..."9").contains($0) || ("A"..."Z").contains($0) && !"ILOU".contains($0) }
     }
     var isDeviceCommand: Bool { kind == "device_command" }
+    /// Lucina talking with an agent, not to the owner: it stays in the chat and alerts nobody
+    /// (same rule as secretary-server's `notify::ingest::agent_chat`).
+    var isAgentChat: Bool { !isReminder && (via?.isEmpty == false || kind == "reach") }
+    /// A tool-trace line ("🔧 media search … → ok"): part of a turn, never an alert of its own.
+    var isToolTrace: Bool { kind == "tool" }
     var isShare: Bool { kind == "share" && shareId?.isEmpty == false }
 
     init(chatTitle: String? = nil, guildName: String? = nil, channelName: String? = nil, isDm: Bool? = nil, kind: String? = nil) {
@@ -352,6 +357,9 @@ struct MessageSource: Equatable, Sendable {
         }
         if normalized.hasPrefix("gemini") {
             return MessageSource(label: "Gemini", symbol: "star")
+        }
+        if normalized.hasPrefix("mistral") {
+            return MessageSource(label: "Mistral", symbol: "wind")
         }
         return MessageSource(label: normalized.isEmpty ? "MCP" : "MCP · \(caller ?? "")", symbol: "puzzlepiece.extension")
     }

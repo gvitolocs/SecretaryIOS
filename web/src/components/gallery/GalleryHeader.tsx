@@ -11,6 +11,7 @@ export function GalleryHeader(props: { count?: number; context?: JSX.Element; ac
     const path = location.pathname;
     if (/^\/gallery\/albums?(\/|$)/.test(path)) return "albums";
     if (/^\/gallery\/(people|person)(\/|$)/.test(path)) return "people";
+    if (/^\/gallery\/pets?(\/|$)/.test(path)) return "pets";
     if (path.startsWith("/gallery/places")) return "places";
     if (path.startsWith("/gallery/shared")) return "shared";
     return "photos";
@@ -21,6 +22,7 @@ export function GalleryHeader(props: { count?: number; context?: JSX.Element; ac
       { href: "/gallery", label: t("gallery.typePhotos"), current: current() === "photos" },
       { href: "/gallery/albums", label: t("galleryAlbums.title"), current: current() === "albums" },
       { href: "/gallery/people", label: t("galleryPeople.title"), current: current() === "people" },
+      { href: "/gallery/pets", label: t("galleryPets.title"), current: current() === "pets" },
       { href: "/gallery/places", label: t("browse.placesTitle"), current: current() === "places" },
       { href: "/gallery/shared", label: t("gallery.sharedSection"), current: current() === "shared" },
     ]} />} action={props.action} />;

@@ -229,6 +229,7 @@ mod tests {
             backend: "xai-api".into(),
             kind: Kind::Research,
             origin: Origin::Owner,
+            caller: None,
             status: JobStatus::Done,
             task: "ultime notizie su Rust".into(),
             lang: "it".into(),

@@ -5,11 +5,12 @@ mod common;
 use common::*;
 use serde_json::{json, Value};
 
-const ALL_TOOLS: [&str; 45] = [
+const ALL_TOOLS: [&str; 55] = [
     "ask_lucina",
     "lucina_decide",
     "lucina_decision_status",
     "lucina_decision_withdraw",
+    "secret_request",
     "lucina_job_status",
     "lucina_timeline",
     "shopping_list",
@@ -31,6 +32,14 @@ const ALL_TOOLS: [&str; 45] = [
     "ops_record",
     "ops_search",
     "ops_get",
+    "ops_ingest_status",
+    "ops_ingest_now",
+    "flaw_report",
+    "flaw_search",
+    "flaw_status",
+    "flaw_matrix",
+    "flaw_target",
+    "flaw_dispatch",
     "lucina_inbox",
     "lucina_reply",
     "au_people_search",
@@ -51,6 +60,7 @@ const ALL_TOOLS: [&str; 45] = [
     "library_find_related_notes",
     "library_sync_status",
     "library_generate_brief",
+    "debug_events",
 ];
 
 #[tokio::test]
@@ -257,6 +267,7 @@ async fn scopes_are_enforced() {
             "lucina_decide".to_string(),
             "lucina_decision_status".to_string(),
             "lucina_decision_withdraw".to_string(),
+            "secret_request".to_string(),
             "lucina_job_status".to_string()
         ]
     );
@@ -1885,6 +1896,55 @@ async fn au_find_tools() {
 }
 
 #[tokio::test]
+async fn secret_requests_send_names_and_never_a_value() {
+    let h = start().await;
+    let t = h.issue("claude-code", "chat");
+    let r = h.rpc(&t, "tools/list", json!({})).await;
+    let tools = r["tools"].as_array().unwrap();
+    let tool = tools.iter().find(|t| t["name"] == "secret_request").unwrap();
+    assert_eq!(tool["inputSchema"]["additionalProperties"], false);
+    assert_eq!(tool["inputSchema"]["required"], json!(["name", "project", "environment", "reason"]));
+    assert!(tool["inputSchema"]["properties"].get("value").is_none());
+    assert!(tool["inputSchema"]["properties"].get("asking_client").is_none());
+    assert!(tool["description"].as_str().unwrap().contains("never takes a value"));
+    let base = json!({"name":"GBGO_WIFI_PSK","project":"lucinaos","environment":"prod",
+                      "reason":"The laptop image joins the home Wi-Fi","from":"gbgo-wifi"});
+    for (field, value) in [
+        ("value", json!("hunter2-hunter2")),
+        ("secret", json!("x")),
+        ("asking_client", json!("spoof")),
+        ("name", json!("A B")),
+        ("project", json!("")),
+        ("environment", json!("prod/x")),
+        ("reason", json!(" ")),
+        ("reason", json!("x".repeat(501))),
+        ("from", json!("x".repeat(121))),
+    ] {
+        let mut args = base.clone();
+        args[field] = value;
+        assert!(h.call(&t, "secret_request", args).await.0, "{field}");
+    }
+    assert!(h.mock.requests("/v1/secrets/request").is_empty());
+    let (err, text) = h.call(&t, "secret_request", base.clone()).await;
+    assert!(!err, "{text}");
+    assert!(text.starts_with("Asked the owner for `GBGO_WIFI_PSK` in lucinaos / prod / /"), "{text}");
+    assert!(text.contains("never comes back here"), "{text}");
+    let sent = &h.mock.requests("/v1/secrets/request")[0];
+    assert_eq!(sent.body["asking_client"], "claude-code");
+    assert_eq!(sent.body["from"], "gbgo-wifi");
+    assert!(sent.body.get("path").is_none() && sent.body.get("new_project").is_none());
+    assert_eq!(sent.headers["authorization"], format!("Bearer {DEVICE_TOKEN}"));
+    let mut args = base.clone();
+    args["new_project"] = json!(true);
+    let (err, text) = h.call(&t, "secret_request", args).await;
+    assert!(!err && text.contains("create the project"), "{text}");
+    // Needs the chat scope.
+    let read = h.issue("reader", "read");
+    let (err, text) = h.call(&read, "secret_request", base).await;
+    assert!(err && text.contains("`chat` scope"), "{text}");
+}
+
+#[tokio::test]
 async fn decisions_validate_forward_and_stop_polling() {
     let h = start().await;
     let t = h.issue("claude-code", "chat");
@@ -2001,4 +2061,25 @@ async fn ask_allow_is_encoded_in_prefix() {
         h.mock.requests("/v1/chat")[0].body["message"],
         "[via Lucina MCP, from claude-code; allow=notes,tasks] Hi"
     );
+}
+
+#[tokio::test]
+async fn debug_events_lists_the_phone_steps_with_filters() {
+    let h = start().await;
+    let t = h.issue("claude-code", "read");
+    let (err, text) = h
+        .call(&t, "debug_events", json!({"device": "iphone", "since": "1h", "type": "net", "limit": 50}))
+        .await;
+    assert!(!err, "{text}");
+    assert!(text.starts_with("2 debug event(s) (device iphone, type net*, since 1h)"), "{text}");
+    assert!(text.contains("[Giuseppe's iPhone/app] notification.action action=approve id=ap_1  (seq 41, build adfd5fe)"), "{text}");
+    assert!(text.contains("net.request duration_ms=210 method=POST path=/v1/approvals/{id}/decide status=409"), "{text}");
+    let q = &h.mock.requests("/v1/debug/events")[0].query;
+    for (k, v) in [("device", "iphone"), ("since", "1h"), ("type", "net"), ("limit", "50")] {
+        assert_eq!(query_param(&format!("http://x/?{q}"), k).as_deref(), Some(v), "{q}");
+    }
+    let (err, text) = h.call(&t, "debug_events", json!({"limit": 0})).await;
+    assert!(err && text.contains("limit"), "{text}");
+    let (err, _) = h.call(&t, "debug_events", json!({"nope": 1})).await;
+    assert!(err);
 }

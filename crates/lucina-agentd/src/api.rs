@@ -41,6 +41,8 @@
 //! Schedules, heartbeats, search, prompts, detach and usage: [`orch`].
 //! Rewind and fork (with chat-history context): [`rewind`].
 //! The Homelab service catalog (project tree, health, impact, drift): [`catalog`].
+//! Tasks, the merge and deploy queue, device leases and the board: [`pipeline`].
+//! Installs on leased devices (the iPhone) and test-run grants: [`devices`].
 //!
 //! A process an agent started acts as that agent ([`Caller::Agent`]): its `create`
 //! makes a subagent (depth-limited, supervised), its `send` is a queued agent message,
@@ -76,8 +78,11 @@ use crate::workspaces::WsError;
 
 pub mod terminals;
 mod catalog;
+mod devices;
 mod orch;
+mod pipeline;
 mod rewind;
+mod sessions;
 mod workspaces;
 
 pub struct ApiError(StatusCode, String, String);
@@ -153,10 +158,13 @@ pub fn router(manager: Manager) -> Router {
         .route("/permissions/{id}", get(permission).post(answer_permission))
         .route("/stream", get(stream))
         .merge(workspaces::routes())
+        .merge(sessions::routes())
         .merge(terminals::routes())
         .merge(orch::routes())
         .merge(rewind::routes())
         .merge(catalog::routes())
+        .merge(pipeline::routes())
+        .merge(devices::routes())
         // Last, so it sees every request (`Host: <label>.localhost` goes to that service).
         .layer(axum::middleware::from_fn_with_state(manager.clone(), terminals::host_proxy))
         .with_state(manager)
@@ -209,6 +217,11 @@ async fn create(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, 
     }
     // An external agent belongs to the device registering it, never to a body field.
     req.owner_device_id = peer::device(origin, &headers);
+    // Set here from the origin, never from a body field: only such a run alerts him when it finishes.
+    req.labels.remove(crate::manager::STARTED_ON_DEVICE_LABEL);
+    if origin == Origin::OwnerDevice {
+        req.labels.insert(crate::manager::STARTED_ON_DEVICE_LABEL.into(), "true".into());
+    }
     req.prompt = req.prompt.map(quote);
     let caller = who(&m, &peer, &headers);
     let notify = m.prepare_create(&caller, &mut req)? && notify_on_finish.unwrap_or(true);

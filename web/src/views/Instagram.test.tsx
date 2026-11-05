@@ -584,6 +584,20 @@ describe("Instagram", () => {
       expect(calls.find((c) => c.url.endsWith("/opened"))!.headers["x-secretary-csrf"]).toBe("1");
     });
 
+    it("marks a watched profile opened once while it keeps asking for a refresh", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        const calls = serve({ watched: [entry()], profile: { ...bundle(), refreshing: true } });
+        renderIg("/instagram/natgeo");
+        await waitFor(() => expect(calls.some((c) => c.url.endsWith("/opened"))).toBe(true));
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(calls.filter((c) => c.url.endsWith("/opened"))).toHaveLength(1);
+        expect(calls.filter((c) => c.url.startsWith("/v1/instagram/profile/")).length).toBeGreaterThan(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("does not call opened for an account that is not watched", async () => {
       const calls = serve({ profile: bundle() });
       renderIg("/instagram/natgeo");

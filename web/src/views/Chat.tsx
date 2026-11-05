@@ -17,6 +17,7 @@ import {
   DotsIcon,
   GamepadIcon,
   GlobeIcon,
+  MicIcon,
   PhoneIcon,
   SendIcon,
   SparkleIcon,
@@ -374,6 +375,9 @@ function ChannelGlyph(props: { channel: Channel }) {
       </Match>
       <Match when={props.channel === "alexa"}>
         <SpeakerIcon />
+      </Match>
+      <Match when={props.channel === "voice"}>
+        <MicIcon />
       </Match>
     </Switch>
   );

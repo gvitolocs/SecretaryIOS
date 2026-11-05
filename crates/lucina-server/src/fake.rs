@@ -15,13 +15,17 @@
 //! `agent` (requests that carry tools), `reply` (everything else) or `any`.
 //! `contains` is matched (case-insensitively) against the last user message;
 //! `afterTool` matches only when the last message is a tool result. Rules are
-//! tried in order; `once: true` rules are used at most once.
+//! tried in order; `once: true` rules are used at most once. `delayMs` holds the answer back (a slow
+//! model). A request with `"stream": true` is answered as SSE `chat.completion.chunk` events, the
+//! content cut into words (`chunkDelayMs` between them), so the streaming client can be tested.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use axum::body::Body;
 use axum::extract::State;
+use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
 use serde::Deserialize;
@@ -42,6 +46,12 @@ pub struct Rule {
     pub tool_calls: Option<Vec<FakeCall>>,
     #[serde(default)]
     pub once: bool,
+    /// Wait this long before answering.
+    #[serde(default)]
+    pub delay_ms: Option<u64>,
+    /// A streamed answer waits this long between two chunks.
+    #[serde(default)]
+    pub chunk_delay_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -143,7 +153,39 @@ fn completion(rule: Option<&Rule>, n: usize) -> Value {
     })
 }
 
-async fn chat(State(st): State<Arc<FakeState>>, Json(req): Json<Value>) -> Json<Value> {
+/// The completion as SSE chunks: the content word by word, the tool calls in one chunk, then the usage.
+fn sse_chunks(completion: &Value) -> Vec<String> {
+    let message = &completion["choices"][0]["message"];
+    let finish = completion["choices"][0]["finish_reason"].clone();
+    let chunk = |delta: Value, finish: Value| {
+        let c = json!({"id": completion["id"], "object": "chat.completion.chunk", "model": completion["model"],
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]});
+        format!("data: {c}\n\n")
+    };
+    let mut out = Vec::new();
+    if let Some(text) = message["content"].as_str().filter(|t| !t.is_empty()) {
+        for word in text.split_inclusive(' ') {
+            out.push(chunk(json!({"content": word}), Value::Null));
+        }
+    }
+    if let Some(calls) = message["tool_calls"].as_array() {
+        let calls: Vec<Value> = calls
+            .iter()
+            .enumerate()
+            .map(|(i, c)| json!({"index": i, "id": c["id"], "type": "function", "function": c["function"]}))
+            .collect();
+        out.push(chunk(json!({"tool_calls": calls}), Value::Null));
+    }
+    out.push(chunk(json!({}), finish));
+    out.push(format!(
+        "data: {}\n\n",
+        json!({"choices": [], "usage": completion["usage"]})
+    ));
+    out.push("data: [DONE]\n\n".into());
+    out
+}
+
+async fn chat(State(st): State<Arc<FakeState>>, Json(req): Json<Value>) -> Response {
     let n = {
         let mut r = st.requests.lock().unwrap();
         r.push(req.clone());
@@ -170,7 +212,29 @@ async fn chat(State(st): State<Arc<FakeState>>, Json(req): Json<Value>) -> Json<
             r.clone()
         })
     };
-    Json(completion(rule.as_ref().or(st.default.as_ref()), n))
+    let rule = rule.as_ref().or(st.default.as_ref());
+    if let Some(ms) = rule.and_then(|r| r.delay_ms) {
+        tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+    }
+    let done = completion(rule, n);
+    if req["stream"] != true {
+        return Json(done).into_response();
+    }
+    let chunk_delay = rule.and_then(|r| r.chunk_delay_ms).unwrap_or(0);
+    let chunks = sse_chunks(&done);
+    let stream = futures_util::stream::unfold(chunks.into_iter(), move |mut it| async move {
+        let next = it.next()?;
+        if chunk_delay > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(chunk_delay)).await;
+        }
+        Some((Ok::<_, std::convert::Infallible>(next), it))
+    });
+    let mut resp = Response::new(Body::from_stream(stream));
+    resp.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("text/event-stream"),
+    );
+    resp
 }
 
 /// A running fake: its base URL (`.../v1`) and recorded requests.

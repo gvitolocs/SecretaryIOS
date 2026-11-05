@@ -232,6 +232,33 @@ final class NotificationCenterStoreTests: XCTestCase {
         XCTAssertEqual(fake.added.count, 1, "both were already shown from the stream")
     }
 
+    func testLucinasChatsWithAgentsMakeNoLocalAlert() async throws {
+        let fake = FakeScheduler()
+        let store = NotificationCenterStore(api: { NotificationsClient(client: StubURLProtocol.makeClient()) },
+                                            notifier: LocalNotifier(center: fake), defaults: defaults)
+        let now = Date()
+        func item(_ id: String, _ meta: TimelineMeta?) -> TimelineItem {
+            var i = TimelineItem(id: id, ts: now, channel: .web, role: .lucina, text: "Giuseppe should look at this")
+            i.meta = meta
+            return i
+        }
+        var mcp = TimelineMeta()
+        mcp.via = "mcp"
+        mcp.caller = "some-new-provider"
+        var reach = TimelineMeta()
+        reach.kind = "reach"
+        var reminder = TimelineMeta()
+        reminder.kind = "reminder"
+        reminder.via = "mcp"
+        var trace = TimelineMeta()
+        trace.kind = "tool"
+        await store.consider(timeline: [item("Tagent", mcp), item("Treach", reach), item("Ttrace", trace)],
+                             chatVisible: false, now: now)
+        XCTAssertTrue(fake.added.isEmpty, "agent chat stays in the chat")
+        await store.consider(timeline: [item("Tme", nil), item("Trem", reminder)], chatVisible: false, now: now)
+        XCTAssertEqual(fake.added.map(\.identifier), ["tl.Tme", "tl.Trem"], "messages to him still alert")
+    }
+
     func testMarkReadSendsIdsAndTakesTheServerCount() async throws {
         StubURLProtocol.handler = { request in
             if request.url?.path == "/v1/notifications/read" { return .init(body: #"{"updated":1,"unread":0}"#) }

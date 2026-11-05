@@ -10,6 +10,7 @@ const CHANNEL_KEYS: Record<Channel, MessageKey> = {
   telegram: "chat.channelTelegram",
   discord: "chat.channelDiscord",
   alexa: "chat.channelAlexa",
+  voice: "chat.channelVoice",
   other: "chat.channelOther",
 };
 
@@ -41,16 +42,18 @@ export function mcpSource(
   else if (name.startsWith("codex")) label = "Codex";
   else if (name.startsWith("cursor") || name === "www") label = "Cursor";
   else if (name.startsWith("gemini")) label = "Gemini";
+  else if (name.startsWith("mistral")) label = "Mistral";
   else if (name) label = `MCP · ${caller}`;
   return { caller, label, text };
 }
 
-export type SourceFilter = "all" | "app" | "mcp" | "telegram" | "discord" | "alexa";
+export type SourceFilter = "all" | "app" | "mcp" | "mistral" | "telegram" | "discord" | "alexa";
 
 export const SOURCE_FILTERS: { id: SourceFilter; label: MessageKey }[] = [
   { id: "all", label: "chat.filterAll" },
   { id: "app", label: "chat.filterApp" },
   { id: "mcp", label: "chat.filterMcp" },
+  { id: "mistral", label: "chat.filterMistral" },
   { id: "telegram", label: "chat.channelTelegram" },
   { id: "discord", label: "chat.channelDiscord" },
   { id: "alexa", label: "chat.channelAlexa" },
@@ -61,6 +64,7 @@ export function matchesFilter(item: Pick<TimelineItem, "channel" | "role" | "tex
   if (filter === "all") return true;
   const isMcp = mcpSource(item.role, item.text, item.meta) !== null;
   if (filter === "mcp") return isMcp;
+  if (filter === "mistral") return isMcp && item.meta?.caller?.trim().toLowerCase().startsWith("mistral") === true;
   if (filter === "app") {
     return !isMcp && (item.channel === "web" || item.channel === "ios" || item.meta?.kind === "proactive");
   }

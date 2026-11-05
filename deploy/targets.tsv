@@ -2,18 +2,18 @@
 # `deploy-guard plan` reports, per runtime, how many commits on main touched these paths since the live commit.
 # Rust closures are `cargo tree -e normal,build` path deps (2026-10-30); regenerate when a crate gains a path dep.
 # Every runtime is built from `main` (docs/repo-workflow.md).
-lucina-rs	nezopt	Cargo.toml Cargo.lock deploy/lucina-rs deploy/lucina-rs.service crates/lucina-approvals crates/lucina-computer-use crates/lucina-deals crates/lucina-delegate crates/lucina-discord crates/lucina-grocery crates/lucina-intent crates/lucina-jev crates/lucina-llm crates/lucina-memo crates/lucina-memory crates/lucina-meshy crates/lucina-notebooks crates/lucina-ops crates/lucina-phone-core crates/lucina-prompter crates/lucina-secrets crates/lucina-server crates/lucina-store crates/lucina-telegram crates/lucina-tools
+lucina-rs	nezopt	Cargo.toml Cargo.lock deploy/lucina-rs deploy/lucina-rs.service crates/lucina-approvals crates/lucina-computer-use crates/lucina-deals crates/lucina-delegate crates/lucina-discord crates/lucina-flaws crates/lucina-grocery crates/lucina-intent crates/lucina-jev crates/lucina-llm crates/lucina-memo crates/lucina-memory crates/lucina-meshy crates/lucina-notebooks crates/lucina-ops crates/lucina-phone-core crates/lucina-prompter crates/lucina-secrets crates/lucina-server crates/lucina-store crates/lucina-telegram crates/lucina-tools crates/lucina-vault-ingest crates/lucina-vocab crates/lucina-upstream
 lucina-agentd	nezopt	Cargo.toml Cargo.lock deploy/lucina-agentd.service crates/lucina-agentd crates/lucina-agents crates/lucina-approvals
-lucina-memo	nezopt	Cargo.toml Cargo.lock deploy/lucina-memo crates/lucina-jev crates/lucina-llm crates/lucina-memo crates/lucina-memory crates/lucina-phone-core crates/lucina-prompter crates/lucina-secrets
+lucina-memo	nezopt	Cargo.toml Cargo.lock deploy/lucina-memo crates/lucina-jev crates/lucina-llm crates/lucina-memo crates/lucina-memory crates/lucina-phone-core crates/lucina-prompter crates/lucina-secrets crates/lucina-vocab
 lucina-proactive	nezopt	Cargo.toml Cargo.lock crates/lucina-llm crates/lucina-memory crates/lucina-phone-core crates/lucina-proactive crates/lucina-secrets crates/lucina-store
-lucina-media	nezopt	Cargo.toml Cargo.lock deploy/lucina-media.service crates/lucina-jev crates/lucina-media crates/lucina-media-ml crates/secretary-image crates/secretary-media-stream crates/secretary-player
+lucina-media	nezopt	Cargo.toml Cargo.lock deploy/lucina-media.service crates/lucina-jev crates/lucina-media crates/secretary-xlsx crates/lucina-media-ml crates/secretary-image crates/secretary-media-stream crates/secretary-player
 secretary-nclient	nezopt	Cargo.toml Cargo.lock deploy/secretary-nclient crates/nclient-core crates/secretary-nclient
 secretary-maps	nezopt	Cargo.toml Cargo.lock deploy/secretary-maps deploy/secretary-maps.service crates/secretary-maps
 lucina-com3d2	nezopt	Cargo.toml Cargo.lock deploy/lucina-com3d2 deploy/lucina-com3d2.service crates/secretary-avatar-com3d2
 secretary-instagram	nezopt	deploy/secretary-instagram crates/secretary-instagram
 secretary-pixiv	nezopt	deploy/secretary-pixiv crates/secretary-pixiv
 lucina-otp-relay	p1	Cargo.toml Cargo.lock deploy/lucina-otp crates/lucina-otp-relay crates/lucina-phone-core
-secretary-server	p1	Cargo.toml Cargo.lock deploy/secretary-server.service crates/ink-library crates/ink-obsidian crates/ink-sync crates/secretary-body crates/secretary-calendar crates/secretary-core crates/secretary-gym crates/secretary-server crates/secretary-tasks
+secretary-server	p1	Cargo.toml Cargo.lock deploy/secretary-server.service crates/ink-library crates/ink-obsidian crates/ink-sync crates/lucina-vocab crates/secretary-body crates/secretary-calendar crates/secretary-core crates/secretary-gym crates/secretary-server crates/secretary-tasks
 secretary-mcp	p1	Cargo.toml Cargo.lock deploy/secretary-mcp.service crates/lucina-agents crates/secretary-core crates/secretary-mcp
 web	p1	web packages/lucina-stage assets/icons
-ios	iphone	ios design crates/secretary-body crates/secretary-core crates/secretary-ffi crates/secretary-gym crates/secretary-image crates/secretary-player
+ios	iphone	ios design crates/ink-obsidian crates/lucina-vault crates/secretary-body crates/secretary-core crates/secretary-ffi crates/secretary-gym crates/secretary-image crates/secretary-player

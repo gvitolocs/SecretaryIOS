@@ -47,4 +47,12 @@ struct NotificationsClient: Sendable {
         let body = Body(token: token, lang: lang, notifications: notifications)
         let _: PushTarget = try await client.send("POST", "/v1/push/apns", body: body, idempotent: true)
     }
+
+    /// The approval Live Activity's APNs tokens: `start` (push-to-start, one per device) or `update` (one activity's,
+    /// with its approval id). The server starts and ends the activities with them.
+    func registerLiveActivity(kind: String, token: String, approvalId: String?) async throws {
+        struct Body: Encodable { let kind: String; let token: String; let approvalId: String? }
+        let _: JSONValue = try await client.send("POST", "/v1/push/liveactivity",
+                                                 body: Body(kind: kind, token: token, approvalId: approvalId), idempotent: true)
+    }
 }

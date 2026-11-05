@@ -104,6 +104,32 @@ function layoutShot(img: HTMLImageElement) {
   Object.defineProperty(img, "naturalHeight", { configurable: true, value: 800 });
 }
 
+describe("the chat beside the desktop", () => {
+  it("is in the page, can be closed, and keys in it never take over", async () => {
+    stubWide();
+    const calls = stubFetch(async (call: Call) => {
+      if (call.url.includes("/computer/control")) return { body: { driver: "none", owner: null, task: null } };
+      return { body: { items: [], entries: [] } };
+    });
+    renderAt("/computer", () => <Route path="/computer" component={ComputerView} />);
+    const panel = await waitFor(() => {
+      const el = document.querySelector<HTMLElement>(".computer-chat");
+      if (!el) throw new Error("no panel");
+      return el;
+    });
+    const box = within(panel).getByRole("textbox");
+    fireEvent.keyDown(box, { key: "a" });
+    fireEvent.keyDown(panel, { key: "a" });
+    fireEvent.keyDown(panel, { key: "Escape" });
+    expect(calls.some((c) => c.url.includes("/computer/take") || c.url.includes("/computer/input"))).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Chat", pressed: true }));
+    expect(document.querySelector(".computer-chat")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Chat", pressed: false }));
+    expect(document.querySelector(".computer-chat")).not.toBeNull();
+  });
+});
+
 describe("Lucina's computer", () => {
   beforeEach(() => {
     setLocale("en");
@@ -1168,6 +1194,44 @@ describe("ComputerView with LucinaDesk", () => {
     expect(screen.queryByTitle("Lucina's screen")).toBeNull();
     expect(screen.queryByRole("button", { name: "Take over" })).toBeNull();
     expect(screen.queryByText("You are watching. Take over to use the mouse and keyboard.")).toBeNull();
+  });
+
+  it("keeps one player when the page crosses its wide breakpoint (the shell's rail coming and going)", async () => {
+    let width = 1200;
+    const observers = new Set<{ cb: ResizeObserverCallback; self: ResizeObserver }>();
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(cb: ResizeObserverCallback) {
+          observers.add({ cb, self: this as unknown as ResizeObserver });
+        }
+        observe() {
+          for (const o of observers) o.cb([{ contentRect: { width } } as ResizeObserverEntry], o.self);
+        }
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    const resize = (w: number) => {
+      width = w;
+      for (const o of [...observers]) o.cb([{ contentRect: { width } } as ResizeObserverEntry], o.self);
+    };
+    try {
+      fakeLucina(state(), undefined, true);
+      renderComputer();
+      const canvas = await screen.findByRole("img", { name: "Lucina's screen" });
+      await waitFor(() => expect(sockets).toHaveLength(1));
+      expect(document.querySelector(".computer-desktop")).not.toBeNull();
+      resize(700);
+      await waitFor(() => expect(document.querySelector(".computer-page")).not.toBeNull());
+      expect(screen.getByRole("img", { name: "Lucina's screen" })).toBe(canvas);
+      resize(1200);
+      await waitFor(() => expect(document.querySelector(".computer-desktop")).not.toBeNull());
+      expect(screen.getByRole("img", { name: "Lucina's screen" })).toBe(canvas);
+      expect(sockets).toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("the player's own full screen does not switch on the page's classic full-screen layout", async () => {

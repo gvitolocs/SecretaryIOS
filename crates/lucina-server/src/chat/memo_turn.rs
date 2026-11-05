@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use lucina_intent::mcp;
 use lucina_llm::Message;
-use lucina_store::timeline::{Meta, NewItem};
+use lucina_store::timeline::NewItem;
 use lucina_tools::agent::{self, AgentConfig, ToolRecord};
 use lucina_tools::tools::{memos::MemosTool, tasks::TasksTool};
 use lucina_tools::{Ctx, Origin, Registry};
@@ -24,7 +24,7 @@ const GUIDE: &str = "Giuseppe records voice memos in the Secretary app; each has
 reachable with the memos tool. Memos may be linked to calendar events. For last Tuesday's Algorithms lecture, search query Algorithms with from/to = that Tuesday in the owner's time zone. For a question about what he said, search: turn relative days into from/to as YYYY-MM-DD in his \
 time zone (today, yesterday = today minus one day, last week = the last 7 days with days=7) and pass the topic words as query; \
 if nothing matches, search the same days without query and read the summaries. Answer from what he actually said, briefly, \
-in his language, quoting the time in the recording (e.g. \"at 1:05\") and the memo's title. Use read for the full transcript, \
+in English (Danish when he writes Danish; never Italian), quoting the time in the recording (e.g. \"at 1:05\") and the memo's title. Use read for the full transcript, \
 resummarize when he wants a new summary (with his instructions), and the tasks tool (add) when he asks to turn action items \
 into tasks. Never invent content that is not in the memo. If he is not asking about his memos, answer without the tools.";
 
@@ -88,16 +88,13 @@ pub(super) async fn try_turn(t: &Turn<'_>, memory: &str) -> Option<Finish> {
     };
     let timeline = st.timeline_for(&t.session);
     let channel = t.channel.clone();
+    let mark = t.agent_mark();
     let on_tool = move |r: &ToolRecord| {
         timeline.record(NewItem {
             channel: channel.clone(),
             role: "lucina".into(),
             text: format!("🔧 {} → {}", r.summary, if r.ok { "ok" } else { "error" }),
-            meta: Some(Meta {
-                tool: Some(r.name.clone()),
-                ok: Some(r.ok),
-                ..Meta::kind("tool")
-            }),
+            meta: Some(super::tool_meta(&mark, r)),
             ..Default::default()
         });
     };

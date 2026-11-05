@@ -392,14 +392,6 @@ export default function WeightView(props: { compact?: boolean } = {}) {
           })),
           class: "chart-line--primary",
         },
-        {
-          key: "avg7",
-          points: points.map((p) => ({
-            x: p.measured_ms,
-            y: weightValue(p.avg7_grams, u),
-          })),
-          class: "chart-line--secondary",
-        },
       ];
       const first = points[0];
       const last = points[points.length - 1];
@@ -730,6 +722,7 @@ export default function WeightView(props: { compact?: boolean } = {}) {
                         series={chartData().series}
                         xLabels={chartData().labels}
                         ariaLabel={t("weight.chartLabel")}
+                        marks={7}
                         height={180}
                         formatY={(value) => String(Math.round(value * 10) / 10)}
                       />
@@ -875,6 +868,7 @@ export default function WeightView(props: { compact?: boolean } = {}) {
                       series={chartData().series}
                       xLabels={chartData().labels}
                       ariaLabel={t("weight.chartLabel")}
+                      marks={7}
                       height={180}
                       formatY={(value) => String(Math.round(value * 10) / 10)}
                     />

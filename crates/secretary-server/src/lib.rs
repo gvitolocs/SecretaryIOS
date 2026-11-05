@@ -18,6 +18,7 @@ pub mod cli;
 pub mod computer;
 pub mod desk;
 pub mod config;
+pub mod debug_events;
 pub mod device;
 pub mod devices;
 pub mod engines;
@@ -32,6 +33,7 @@ pub mod models;
 pub mod notebooks;
 pub mod notes;
 pub mod notify;
+pub mod flaws;
 pub mod ops;
 pub mod reach;
 pub mod owner;
@@ -51,6 +53,14 @@ pub mod timeline;
 pub mod todoist;
 pub mod tts;
 pub mod upstream;
+pub mod voice;
+pub mod voice_filler;
+pub mod voice_learn;
+pub mod voice_pipe;
+pub mod voice_split;
+pub mod voice_telemetry;
+pub mod voice_vad;
+pub mod voice_ws;
 pub mod web;
 
 use std::net::SocketAddr;
@@ -126,6 +136,8 @@ pub struct Inner {
     pub device_limiter: RateLimiter,
     /// `GET /v1/auth/owner` (forward_auth of the owner-only plugins).
     pub owner_limiter: RateLimiter,
+    /// `GET /v1/auth/media` (forward_auth of `/v1/media`).
+    pub media_limiter: RateLimiter,
     /// Recently forwarded device event ids (dedup).
     pub event_ids: device::SeenIds,
     pub health: HealthCache,
@@ -150,6 +162,14 @@ pub struct Inner {
     /// Client-side Google Maps keys (`GET /v1/grocery/deals/map`).
     pub maps: config::MapsKeys,
     pub tts: tts::Tts,
+    /// `POST /v1/voice`: rate limit and one turn at a time per device.
+    pub voice: voice::Voice,
+    /// Cached filler phrases spoken on a slow turn's `ack` (protocol section 6).
+    pub fillers: voice_filler::Fillers,
+    /// The Gemini fallback's "Vocabulary:" line from Voice Learn (60 s cache, fails open).
+    pub voice_vocab: voice_learn::VocabCache,
+    /// LucinaVoice device telemetry and turn spans (`voice/` in the data dir).
+    pub voice_log: voice_telemetry::Store,
     /// Open `/v1/timeline/stream` responses.
     pub streams: timeline::StreamSlots,
     /// Flipped to `true` on shutdown; open streams end when it is.
@@ -170,6 +190,8 @@ pub struct Inner {
     pub grant_signer: owner_secrets::GrantSigner,
     /// Owner approvals: requests, grants, audit (`/v1/approvals*`).
     pub approvals: Arc<approvals::Approvals>,
+    /// Debug event log of the owner's apps (`debug-events.jsonl`).
+    pub debug_events: Arc<debug_events::Store>,
 }
 
 #[derive(Clone)]
@@ -212,6 +234,7 @@ impl AppState {
             qr_limiter: RateLimiter::new(qr_login::POLLS_PER_MINUTE),
             device_limiter: RateLimiter::new(cfg.device_events_per_minute),
             owner_limiter: RateLimiter::new(cfg.owner_auth_per_minute),
+            media_limiter: RateLimiter::new(cfg.media_auth_per_minute),
             event_ids: device::SeenIds::new(device::SEEN_IDS),
             health: HealthCache::new(cfg.health_ttl, cfg.health_timeout),
             upstream,
@@ -228,6 +251,10 @@ impl AppState {
             catalog_dir: cfg.catalog_dir.clone(),
             maps: cfg.maps.clone(),
             tts: tts::Tts::new(&cfg.tts_url, cfg.tts_voices.clone(), cfg.tts_timeout)?,
+            voice: voice::Voice::new(cfg.voice_stt_url.clone())?,
+            fillers: voice_filler::Fillers::new(),
+            voice_vocab: voice_learn::VocabCache::new(),
+            voice_log: voice_telemetry::Store::new(&cfg.data_dir, cfg.timezone),
             streams: timeline::StreamSlots::new(timeline::PER_DEVICE, timeline::TOTAL),
             shutdown: tokio::sync::watch::Sender::new(false),
             notify: Arc::new(notify::Notifier::open(&cfg.data_dir, cfg.notify.clone())?),
@@ -241,6 +268,7 @@ impl AppState {
                 &cfg.data_dir,
                 cfg.approvals.clone(),
             )?),
+            debug_events: Arc::new(debug_events::Store::new(&cfg.data_dir)),
         })))
     }
 
@@ -309,6 +337,7 @@ pub fn app(state: AppState) -> Router {
         .merge(qr_login::routes())
         .merge(assets::routes())
         .merge(tts::routes())
+        .merge(voice::routes())
         .merge(calls::routes())
         .merge(timeline::routes())
         .merge(shopping::routes())
@@ -321,6 +350,7 @@ pub fn app(state: AppState) -> Router {
         .merge(system_overview::routes())
         .merge(computer::routes())
         .merge(ops::routes())
+        .merge(flaws::routes())
         .merge(reach::routes())
         .merge(au::routes())
         .merge(callers::routes())
@@ -341,6 +371,11 @@ pub fn app(state: AppState) -> Router {
 
     let approvals = approvals::routes(state.clone());
 
+    let debug_events = debug_events::routes().route_layer(middleware::from_fn_with_state(
+        state.clone(),
+        auth::require_device_or_service,
+    ));
+
     let device_events = device::events_routes().route_layer(middleware::from_fn_with_state(
         state.clone(),
         auth::require_device_events,
@@ -353,6 +388,7 @@ pub fn app(state: AppState) -> Router {
         .merge(tasks::routes(state.clone()))
         .merge(calendar)
         .merge(device_events)
+        .merge(debug_events)
         .merge(auth::session_routes())
         .merge(auth::owner_routes())
         .merge(qr_login::public_routes())
@@ -465,6 +501,8 @@ pub async fn serve(cfg: Config) -> anyhow::Result<()> {
     );
     notify::spawn_workers(&state);
     approvals::spawn_sweeper(&state);
+    voice_telemetry::spawn_flusher(&state);
+    voice_filler::spawn_prewarm(&state);
     if !cfg.calendar_sync_every.is_zero() {
         calendar::spawn_sync_loop(state.clone(), cfg.calendar_sync_every);
     }

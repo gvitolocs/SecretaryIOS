@@ -221,3 +221,51 @@ html.computer-fullscreen body {
 }
 .computer-files span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .computer-files-close { background: none; border: 0; color: var(--text-muted); font: inherit; cursor: pointer; padding: 4px 6px; }
+
+/* The chat beside the desktop: his one conversation with her, while he watches. Keys typed here stay here. */
+.computer-desktop, .computer-page { --computer-chat-w: 380px; }
+.computer-desktop[data-chat="yes"] .computer-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--computer-chat-w);
+  gap: 12px;
+  align-items: start;
+}
+.computer-chat {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--lu-chat-bg);
+}
+.computer-desktop .computer-chat {
+  position: sticky;
+  top: 8px;
+  height: calc(100dvh - 136px);
+}
+.computer-page .computer-chat { height: 60dvh; margin-top: 10px; }
+.computer-chat-toggle[aria-pressed="true"] { border-color: var(--accent, currentColor); }
+.computer-chat .chat-bar { flex-wrap: wrap; }
+
+/* Full screen on a wide window: the desktop takes what the chat leaves. */
+.computer-desktop[data-chat="yes"][data-full="yes"] .computer-screen,
+.computer-desktop[data-chat="yes"] .computer-screen--full,
+.computer-desktop[data-chat="yes"] .ldesk-stage--focus {
+  right: var(--computer-chat-w);
+  width: calc(100vw - var(--computer-chat-w));
+}
+.computer-desktop[data-chat="yes"][data-full="yes"] .computer-chat,
+.computer-desktop[data-chat="yes"]:has(.ldesk-stage--focus) .computer-chat {
+  position: fixed;
+  top: var(--desk-top, 0px);
+  right: 0;
+  bottom: 0;
+  width: var(--computer-chat-w);
+  height: auto;
+  border-radius: 0;
+  z-index: 1005;
+}
+
+/* With the chat open on a wide window, it takes the avatar's place on this page only. */
+.shell-body:has(.computer-desktop[data-chat="yes"], .computer-page[data-chat="yes"]) > .dock--side { display: none; }

@@ -166,17 +166,17 @@ async fn a_quick_answer_comes_back_inline_with_a_card_and_an_audit_line() {
     assert_eq!(job.turns, 2);
     let prompt = w.prompts.lock().unwrap()[0].clone();
     assert!(prompt.starts_with("[Lucina delegation · job "), "{prompt}");
-    assert!(prompt.contains("da Lucina") && prompt.contains("ultime notizie su Rust"));
+    assert!(prompt.contains("from Lucina") && prompt.contains("ultime notizie su Rust"));
     let cards = w.sink.cards.lock().unwrap();
     assert_eq!(cards.len(), 1, "fast jobs: only the final card");
     assert!(
         cards[0]
             .plain
-            .starts_with("Ho chiesto a Grok: «ultime notizie su Rust» — ✅ risposta pronta"),
+            .starts_with("I asked Grok: “ultime notizie su Rust” — ✅ answer ready"),
         "{}",
         cards[0].plain
     );
-    assert!(cards[0].plain.contains("Perché: Lo chiedo perché serve."));
+    assert!(cards[0].plain.contains("Why: Lo chiedo perché serve."));
     assert!(cards[0].rich.is_some());
     assert!(
         w.sink.notified.lock().unwrap().is_empty(),
@@ -236,6 +236,22 @@ async fn long_answers_become_a_note_and_a_summary_and_slow_ones_notify() {
 }
 
 #[tokio::test]
+async fn a_job_someone_else_asked_for_never_pushes() {
+    let w = world(
+        |c| c.inline_wait_secs = 0,
+        &[(AgentId::Claude, Duration::from_millis(300), Ok("Fatto."))],
+    );
+    w.judge.push_text(ACT);
+    let mut r = req(Kind::Analysis, "confronta SQLite e Postgres");
+    r.caller = Some("some-new-provider".into());
+    let job = finish(w.d.start(r).await).await;
+    assert_eq!(job.status, JobStatus::Done);
+    assert_eq!(job.caller.as_deref(), Some("some-new-provider"));
+    assert!(!w.sink.cards.lock().unwrap().is_empty(), "the chat still has it");
+    assert!(w.sink.notified.lock().unwrap().is_empty(), "no push, slow or not");
+}
+
+#[tokio::test]
 async fn self_review_skip_and_revise() {
     let w = world(|_| {}, &[(AgentId::Chatgpt, Duration::ZERO, Ok("ok"))]);
     w.judge.push_text(r#"{"goal":"g","risk":"low","reversible":true,"why":"Non serve: lo so già.","decision":"skip"}"#);
@@ -247,7 +263,7 @@ async fn self_review_skip_and_revise() {
     );
     assert!(w.sink.cards.lock().unwrap()[0]
         .plain
-        .starts_with("Ho deciso di non chiedere a ChatGPT"));
+        .starts_with("I decided not to ask ChatGPT"));
     let status = w.d.status().await;
     assert_eq!(
         status["budget"]["totalCalls"], 0,
@@ -344,6 +360,30 @@ async fn hard_limits_refuse_before_anything_runs() {
     assert!(audit.contains("refused:mcp_origin") && audit.contains("refused:money"));
 }
 
+/// 2026-11-01: ChatGPT's `ask_lucina` research note went to the auto router, which picked ChatGPT
+/// itself (Grok busy) and failed. The auto choice skips the caller; with only the caller left,
+/// nothing runs.
+#[tokio::test]
+async fn the_auto_choice_never_sends_a_request_back_to_its_caller() {
+    let w = world(
+        |_| {},
+        &[
+            (AgentId::Chatgpt, Duration::ZERO, Ok("chatgpt")),
+            (AgentId::Claude, Duration::ZERO, Ok("claude")),
+        ],
+    );
+    w.judge.push_text(ACT);
+    let mut r = req(Kind::Research, "research on interaction nets");
+    r.caller = Some("chatgpt".into());
+    assert_eq!(finish(w.d.start(r).await).await.agent, AgentId::Claude);
+
+    let w = world(|_| {}, &[(AgentId::Chatgpt, Duration::ZERO, Ok("chatgpt"))]);
+    let mut r = req(Kind::Research, "research on interaction nets");
+    r.caller = Some("chatgpt".into());
+    assert!(matches!(refused(w.d.start(r).await), Refusal::NoAgent(_)));
+    assert!(w.prompts.lock().unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn one_job_per_agent_and_the_router_falls_back() {
     let w = world(
@@ -400,7 +440,7 @@ async fn budget_caps_pause_and_tell_the_owner_once() {
     ));
     assert_eq!(w.sink.messages.lock().unwrap().len(), 1, "told once");
     assert_eq!(w.sink.notified.lock().unwrap().len(), 1);
-    assert!(w.sink.messages.lock().unwrap()[0].contains("pausa"));
+    assert!(w.sink.messages.lock().unwrap()[0].contains("paused delegation"));
 }
 
 #[tokio::test]
@@ -416,7 +456,8 @@ async fn the_owner_switches_agents_off_and_on() {
         switch: Switch::Off(Some(AgentId::Grok)),
         lang: "it",
     });
-    assert!(reply.contains("non uso più Grok"));
+    // An Italian intent is answered in English.
+    assert!(reply.contains("I will not use Grok"), "{reply}");
     let mut r = req(Kind::Research, "notizie");
     r.to = Some(AgentId::Grok);
     assert_eq!(

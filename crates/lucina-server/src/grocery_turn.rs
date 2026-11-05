@@ -41,7 +41,10 @@ fn store(r: &StoreRow) -> Store {
 }
 
 /// Shopping-list replies in the language of the owner's message (Node `SHOPPING_REPLIES`).
-fn shopping_reply(lang: &str, kind: &str, name: &str) -> String {
+pub(crate) fn shopping_reply(lang: &str, kind: &str, name: &str) -> String {
+    // The item names follow the message's language, the reply is English or Danish, never Italian
+    // (owner rule 2026-11-02).
+    let lang = if lang == "da" { "da" } else { "en" };
     match (lang, kind) {
         ("it", "added") => format!("Ho aggiunto {name} alla lista della spesa."),
         ("it", "already") => format!("{name} è già nella lista della spesa."),

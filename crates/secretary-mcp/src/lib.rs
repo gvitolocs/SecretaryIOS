@@ -13,6 +13,7 @@
 //! - [`mcp`] / [`tools`]: the MCP handler and its tools.
 //! - [`backend`]: the secretary-server client.
 //! - [`diagnostics`]: crash reports from lucina-diagnostics (optional).
+//! - [`debug_events`]: the apps' debug event log (secretary-server).
 
 pub mod agents;
 pub mod au;
@@ -22,6 +23,7 @@ pub mod backend;
 pub mod cli;
 pub mod computer;
 pub mod config;
+pub mod debug_events;
 pub mod diagnostics;
 pub mod format;
 pub mod keep;
@@ -29,7 +31,9 @@ pub mod login;
 pub mod mcp;
 pub mod notebooks;
 pub mod oauth;
+pub mod flaws;
 pub mod ops;
+pub mod photos;
 pub mod ratelimit;
 pub mod reach;
 pub mod scope;
@@ -37,6 +41,7 @@ pub mod status;
 pub mod store;
 pub mod tokens;
 pub mod tools;
+pub mod turns;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -61,6 +66,8 @@ pub struct App {
     pub backend: backend::Backend,
     /// Per-token `agent_run` history (rate limit) for `crate::agents`.
     pub agents: agents::RunLog,
+    /// `ask_lucina` turns still running, or answered after the call returned.
+    pub turns: turns::Turns,
     /// `None` when `SECRETARY_MCP_DIAGNOSTICS_URL` is unset.
     pub diagnostics: Option<diagnostics::Diagnostics>,
 }
@@ -86,6 +93,7 @@ impl App {
             oauth: oauth::OAuth::new(&cfg),
             backend,
             agents: agents::RunLog::default(),
+            turns: turns::Turns::default(),
             cfg,
         }))
     }

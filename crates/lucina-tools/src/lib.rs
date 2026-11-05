@@ -24,6 +24,8 @@
 //!   `instagram_stories`, the watchlist tools, `pixiv_search`, `pixiv_ranking`, `save_to_gallery` ([`tools::plugins`]; safe Pixiv only); `drive`
 //!   (Lucina's own Google Drive, read-only, registered by the server when
 //!   `LUCINA_DRIVE=true` and the grant exists, see [`google`]).
+//!   `juno_tools`, `juno_call`, `juno_screenshot`, `juno_bash` (the owner's laptop over
+//!   the server's Juno bridge, owner's registry only; [`tools::juno`]).
 //! - Secrets: a tool reads a secret by setting name through [`Ctx::secret`]
 //!   (`weather.api_key` -> `secret://lucina/prod/lucina#OPEN_METEO_API_KEY`),
 //!   uses the value for its own outbound call only, and every tool result is
@@ -254,6 +256,8 @@ pub struct ToolEnv {
     pub approvals: Option<Arc<lucina_approvals::Approvals>>,
     /// The ops record (`ops`): deploys, incidents, decisions of every project.
     pub ops: Option<Arc<lucina_ops::Ops>>,
+    /// The flaw tracker (`flaw`, `message_claude` with `issue`).
+    pub flaws: Option<Arc<lucina_flaws::Flaws>>,
     /// Messages to Claude, Grok and Lucina Agents (`LUCINA_REACH`); `None`: off.
     pub reach: Option<Arc<tools::reach::Reach>>,
     /// af-server (AU Find) base URL (`LUCINA_AU_URL`); `None`: `LUCINA_AU=off`.
@@ -262,6 +266,8 @@ pub struct ToolEnv {
     pub callers: Option<Arc<tools::callers::CallerStore>>,
     /// Public caller-ID pages (`LUCINA_CALLERS_PUBLIC_URL`, default 180.dk); `None`: off.
     pub callers_public_url: Option<String>,
+    /// Juno, the owner's laptop (`juno_*` tools, lucina-server's `JunoBridge`); `None`: off.
+    pub juno: Option<Arc<dyn tools::juno::JunoLink>>,
 }
 
 impl ToolEnv {
@@ -313,10 +319,12 @@ impl ToolEnv {
             plugins: tools::plugins::Plugins::default(),
             approvals: None,
             ops: None,
+            flaws: None,
             reach: None,
             au_url: None,
             callers: None,
             callers_public_url: None,
+            juno: None,
         }
     }
 }
@@ -427,6 +435,11 @@ pub trait Tool: Send + Sync {
     fn needs_confirmation(&self, _args: &Value) -> bool {
         self.confirm() || self.side_effect() == SideEffect::External
     }
+    /// Longest one call may run. Cutting a call off does not undo what it started on another
+    /// machine, so a tool whose work takes minutes says so.
+    fn time_limit(&self, _args: &Value) -> std::time::Duration {
+        agent::PER_TOOL_TIMEOUT
+    }
     /// Declared money movement: such a tool is refused by the registry.
     fn moves_money(&self) -> bool {
         false
@@ -511,6 +524,8 @@ pub fn name_words(name: &str) -> Vec<String> {
 pub const OWNER_ONLY_TOOLS: &[&str] = &[
     "secrets_status",
     "secrets_audit",
+    // A flaw report can start a coding agent.
+    "flaw",
     // The Instagram / Pixiv plugins (`tools::plugins::NAMES`): owner's chat only.
     "instagram_profile",
     "instagram_stories",
@@ -525,6 +540,7 @@ pub const OWNER_ONLY_TOOLS: &[&str] = &[
     // Messages to Claude, Grok and Lucina Agents (`tools::reach::REACH_TOOLS`).
     "message_claude",
     "message_grok",
+    "message_mistral",
     "lucina_agents",
     "reach_threads",
 ];
@@ -534,6 +550,7 @@ pub const OWNER_ONLY_TOOLS: &[&str] = &[
 pub const NO_MCP_TOOLS: &[&str] = &[
     "secrets_status",
     "secrets_audit",
+    "flaw",
     "instagram_profile",
     "instagram_stories",
     "instagram_watchlist",
@@ -550,6 +567,7 @@ pub const NO_MCP_TOOLS: &[&str] = &[
     "delegate",
     "message_claude",
     "message_grok",
+    "message_mistral",
     "lucina_agents",
     "reach_threads",
     // Root commands (owner approval): never for a guarded MCP caller.

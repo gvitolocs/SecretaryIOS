@@ -164,6 +164,7 @@ struct MainTabs: View {
         }
         // The timeline stream runs only in the foreground; it pauses in the background.
         .onChange(of: scenePhase, initial: true) { _, phase in
+            app.approvals.sceneActiveChanged(phase == .active)
             if phase == .inactive, app.approvals.working != nil { return } // an approval's passcode prompt (above)
             if phase == .active {
                 PerfLog.foregrounded()
@@ -175,6 +176,7 @@ struct MainTabs: View {
             app.isForeground = phase == .active
             if phase == .background {
                 PerfLog.backgrounded()
+                app.approvals.sceneBackgrounded()
                 app.publishWidgets()
                 BackgroundRefresh.schedule()
                 if app.backup.settings.enabled { PhotoBackup.scheduleProcessing(chargingOnly: app.backup.settings.chargingOnly) }
@@ -186,6 +188,15 @@ struct MainTabs: View {
         .task(id: foreground) {
             guard foreground else { return }
             await app.approvals.foregroundLoop()
+        }
+        // One-tap Approve is on by default: in front with a Face ID key and no unlock key yet, one Face ID enrolls it.
+        // A moment after the launch, so a waiting request's card goes first. The enrollment runs in the store's own
+        // task: its Face ID sheet ends this one (the scene goes inactive) without cancelling it.
+        .task(id: foreground) {
+            guard foreground else { return }
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled else { return }
+            await app.approvals.ensureUnlockKey()
         }
         .task(id: foreground) {
             guard foreground else { return }

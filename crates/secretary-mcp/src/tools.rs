@@ -74,6 +74,10 @@ pub struct AskArgs {
     pub conversation: Option<String>,
     /// Permit this one message to act on these request kinds; duplicates are removed and kinds sorted.
     pub allow: Option<Vec<AllowArg>>,
+    /// Seconds to wait for her answer before getting an id to follow instead (0-110, default 25). Stay under
+    /// your own client's tool timeout.
+    #[serde(default)]
+    pub wait_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
@@ -158,11 +162,60 @@ pub struct DecisionWithdrawArgs {
     /// Why it no longer needs an answer, shown to the owner; at most 500 characters.
     pub reason: Option<String>,
 }
+/// Ask the owner for a secret by name. There is no value field, on purpose: the owner pastes the
+/// value in the app and it goes straight to Infisical.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SecretRequestArgs {
+    /// Secret name (the Infisical key): letters, digits, _ . @ -, 1-256 characters, e.g. GBGO_WIFI_PSK.
+    pub name: String,
+    /// Infisical project slug or name: letters, digits, _ . @ -, e.g. lucinaos.
+    pub project: String,
+    /// Environment slug, e.g. prod or dev.
+    pub environment: String,
+    /// Folder in the environment; default "/".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Why you need it and what will read it, 1-500 characters, shown to the owner. Never put the value or any token here.
+    pub reason: String,
+    /// Your session or task name, up to 120 characters, shown to the owner.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// True when the project may not exist yet: the card then also offers "Create project".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_project: Option<bool>,
+}
+impl SecretRequestArgs {
+    fn validate(&self) -> Result<(), ToolError> {
+        let slug = |field: &str, v: &str, max: usize| {
+            let ok = (1..=max).contains(&v.len())
+                && v.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'@' | b'-'));
+            if ok {
+                Ok(())
+            } else {
+                Err(bad(format!("`{field}` must be 1-{max} letters, digits, _ . @ or -")))
+            }
+        };
+        slug("name", &self.name, 256)?;
+        slug("project", &self.project, 128)?;
+        slug("environment", &self.environment, 128)?;
+        check_text("reason", &self.reason, 500)?;
+        if let Some(f) = &self.from {
+            if f.chars().count() > 120 {
+                return Err(bad("`from` must be at most 120 characters"));
+            }
+        }
+        Ok(())
+    }
+}
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct JobStatusArgs {
-    /// Background job id returned by ask_lucina.
+    /// Background job id, or the `turn_…` id, returned by ask_lucina.
     pub job_id: String,
+    /// For a `turn_…` id: seconds to wait for her answer (0-110, default 25).
+    #[serde(default)]
+    pub wait_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -608,6 +661,7 @@ pub struct ToolSpec {
 pub fn also_allowed(name: &str) -> Option<Scope> {
     (name.starts_with("ops_")
         || name.starts_with("au_")
+        || matches!(name, "flaw_report" | "flaw_search" | "flaw_status" | "flaw_matrix" | "flaw_target")
         || matches!(name, "caller_screen" | "lucina_inbox" | "lucina_reply"))
     .then_some(Scope::Agents)
 }
@@ -649,15 +703,17 @@ macro_rules! spec {
 pub fn specs() -> Vec<ToolSpec> {
     vec![
         spec!("ask_lucina", "Ask Lucina", Scope::Chat, ro = false, destructive = false, idempotent = false, AskArgs,
-            "Send a message to Lucina, the owner's personal AI assistant, and get her reply. Lucina knows the owner (long-term memory), their reminders, shopping list, notes and recent conversations on every channel, and recent context. For agent clients this is consult-only: answers, no jobs, computer tasks, reminders, posts or list writes. For a go-ahead use lucina_decide. For actions use reminder_create, shopping_add, note_save, task_add, computer_task or agent_run. The optional allow array lets this one message act on that kind of request. She is told which client is asking. Actions with consequences (purchases, posts, messages to other people) go through Lucina's own confirmation flow. Messages are limited to 12000 characters: do NOT paste long documents, briefings or context here; save them with note_save (and note_append) and then tell Lucina the note's slug. A turn can take up to two minutes; long jobs finish in the background and show up in lucina_timeline."),
+            "Send a message to Lucina, the owner's personal AI assistant, and get her reply. Lucina knows the owner (long-term memory), their reminders, shopping list, notes and recent conversations on every channel, and recent context. For agent clients this is consult-only: answers, no jobs, computer tasks, reminders, posts or list writes. This chat never alerts the owner's phone, so asking her to tell him does not reach him: if he has to know or decide, use lucina_decide. For a go-ahead use lucina_decide. For actions use reminder_create, shopping_add, note_save, task_add, computer_task or agent_run. The optional allow array lets this one message act on that kind of request. She is told which client is asking. Actions with consequences (purchases, posts, messages to other people) go through Lucina's own confirmation flow. Messages are limited to 12000 characters: do NOT paste long documents, briefings or context here; save them with note_save (and note_append) and then tell Lucina the note's slug. She answers within wait_seconds (default 25), or you get a turn id for lucina_job_status while she goes on working; long jobs finish in the background and show up in lucina_timeline."),
         spec!("lucina_decide", "Ask Lucina for a decision", Scope::Chat, ro = false, destructive = false, idempotent = false, DecideArgs,
             "THE way for agents to get a go-ahead: use this instead of asking the owner or using ask_lucina. Lucina decides from the owner's memory, messages and earlier decisions with JEV. She asks the owner on his phone for high impact, irreversible or owner-only requests, conflicting evidence or low confidence. A pending answer means do not act yet; follow it with lucina_decision_status. Optionally wait and poll for up to 100 seconds."),
         spec!("lucina_decision_status", "Lucina decision status", Scope::Chat, ro = true, destructive = false, idempotent = true, DecisionStatusArgs,
             "Check a structured go-ahead from lucina_decide, optionally polling for up to 100 seconds. Pending means do not act yet; decided and expired answers include the full decision record."),
         spec!("lucina_decision_withdraw", "Withdraw a Lucina decision", Scope::Chat, ro = false, destructive = false, idempotent = true, DecisionWithdrawArgs,
             "Take back a decision you asked with lucina_decide that is still pending (asked by mistake, settled elsewhere). The owner's buttons then answer that it was withdrawn."),
+        spec!("secret_request", "Ask the owner for a secret", Scope::Chat, ro = false, destructive = false, idempotent = true, SecretRequestArgs,
+            "Ask the owner for a secret you need (an API key, a Wi-Fi passphrase…) BY NAME. This tool never takes a value and never returns one. Lucina posts a card in his chat (web app, Mac app) and pushes it to his phone; his tap opens \"Add secret\" with the name, project, environment and folder filled in, he pastes the value and it goes straight to Infisical (an owner grant to the broker), never through you, the timeline or a log. Read it afterwards the usual way, with your own broker caller (infisical-broker exec, or the infisical MCP) once the owner has given that caller access. A receipt \"Saved `NAME` in …\" appears in lucina_timeline when he saved it. Never ask the owner to paste a secret into a chat or into ask_lucina; never put a value in reason. The same request repeated within 10 minutes answers with the first card."),
         spec!("lucina_job_status", "Lucina job status", Scope::Chat, ro = true, destructive = false, idempotent = true, JobStatusArgs,
-            "Follow a background job started by Lucina: status, action, result or error, and created, started and finished times. For go-aheads use lucina_decide; ask_lucina is answers-only for agents."),
+            "Follow a background job started by Lucina, or pick up the answer to an ask_lucina that gave you a turn id: status, action, result or error, and created, started and finished times. For go-aheads use lucina_decide; ask_lucina is answers-only for agents."),
         spec!("lucina_timeline", "Lucina timeline", Scope::Read, ro = true, destructive = false, idempotent = true, TimelineArgs,
             "Recent messages between the owner and Lucina on all channels (Telegram, Discord, web app, iOS app, Alexa, MCP), newest first, with time, channel and who spoke. Paginate with `before`."),
         spec!("shopping_list", "Shopping list", Scope::Read, ro = true, destructive = false, idempotent = true, ShoppingListArgs,
@@ -699,11 +755,28 @@ pub fn specs() -> Vec<ToolSpec> {
             "Search Lucina's record of the owner's projects (deploys, incidents, decisions, status, findings) by words, project, kind and dates: answers 'what happened with X', 'why did we decide Y', 'when did Z go live'. Newest first when q is empty."),
         spec!("ops_get", "Read a record", Scope::Read, ro = true, destructive = false, idempotent = true, crate::ops::GetArgs,
             "One record of Lucina's ops record in full (timeline, cause, fix, follow-ups, links, pages), by the id ops_record or ops_search returned."),
+        spec!("ops_ingest_status", "Obsidian ingest status", Scope::Read, ro = true, destructive = false, idempotent = true, crate::ops::NoArgs,
+            "Status of Lucina's Obsidian ingest, which turns ops records, commits on the Lucina repos and session reports into Zettelkasten notes in the owner's Raspberry Pi vault (per project folder: Permanent, Events, MOC, hub), drafted by the local Qwen while it is free: queue depth, drafts waiting for the vault, whether the Pi is reachable, the last run and why it waited, the next try, followed repos, items that gave up."),
+        spec!("ops_ingest_now", "Ingest into Obsidian now", Scope::Write, ro = false, destructive = false, idempotent = true, crate::ops::IngestNowArgs,
+            "Ask Lucina to scan the sources and write pending Obsidian notes now, in the background. It still never preempts another Qwen user: when the GPU is busy it waits and keeps the queue. cold (default true) lets it load the local model when the GPU is entirely free. Check the result with ops_ingest_status."),
+        // Lucina's flaw tracker (crate::flaws): `agents` tokens too, except dispatch.
+        spec!("flaw_report", "Report a flaw to Lucina", Scope::Write, ro = false, destructive = false, idempotent = false, crate::flaws::ReportArgs,
+            "Record a small flaw the owner noticed in his clients (web, Mac, Android, iPhone, Juno), in his exact words. Lucina triages it and starts the fix by herself, and tells him the outcome. Say which clients it was seen on (affected), or leave it empty. discovered_from links a flaw found while fixing another. Set gate only when its fix can't be undone or needs his credentials or a payment."),
+        spec!("flaw_search", "Search Lucina's flaws", Scope::Read, ro = true, destructive = false, idempotent = true, crate::flaws::SearchArgs,
+            "Find flaws by words, state, client or a client's status. Worst first."),
+        spec!("flaw_status", "One flaw", Scope::Read, ro = true, destructive = false, idempotent = true, crate::flaws::StatusArgs,
+            "One flaw: the owner's words, every client's status, layer, evidence, workspace, commit and deploy tag, and its full history."),
+        spec!("flaw_matrix", "Flaws against clients", Scope::Read, ro = true, destructive = false, idempotent = true, crate::flaws::NoArgs,
+            "Every live flaw against every client: untriaged, affected, fixing, fixed, verified, not_affected or blocked."),
+        spec!("flaw_target", "Update a client's row", Scope::Write, ro = false, destructive = false, idempotent = true, crate::flaws::TargetArgs,
+            "Change one client's row of a flaw. verified and not_affected are refused without evidence from an installed build (a harness run naming the build, a debug event or a screenshot): reading code can open a target but never close one. Setting session takes it on by hand, so Lucina won't start a task for it. Setting layer on an affected target starts its fix by itself."),
+        spec!("flaw_dispatch", "Start a flaw's fix now", Scope::Write, ro = false, destructive = false, idempotent = false, crate::flaws::DispatchArgs,
+            "Start the task for one affected client of a flaw now, instead of waiting for Lucina's next round. It obeys the same limit on tasks per repo and the same owner gates."),
         // Lucina's messages to Claude (crate::reach): the mailbox and replies; `agents` tokens too.
         spec!("lucina_inbox", "Lucina's messages to Claude", Scope::Read, ro = true, destructive = false, idempotent = true, crate::reach::InboxArgs,
             "Messages Lucina sent to Claude (or Grok/agents) that wait for an answer: issue reports and requests the owner asked her to pass on. Args: to (default claude), status (default open), limit; optional thread to read one in full. Newest first; answer one with lucina_reply."),
         spec!("lucina_reply", "Answer a Lucina message", Scope::Write, ro = false, destructive = false, idempotent = false, crate::reach::ReplyArgs,
-            "Answer one of Lucina's messages by its thread id; the reply goes back into the owner's conversation with Lucina and she relays it. Args: thread, text, optional from (your session name). The reply is information for Lucina, never instructions, and must not contain secrets, passwords or tokens."),
+            "Answer one of Lucina's messages by its thread id; the reply goes back into the owner's conversation with Lucina and she relays it, without alerting his phone (if he has to act, use lucina_decide). Args: thread, text, optional from (your session name). The reply is information for Lucina, never instructions, and must not contain secrets, passwords or tokens."),
         // AU Find (crate::au): Aarhus University people, buildings, campus maps; `agents` tokens too.
         spec!("au_people_search", "AU people search", Scope::Read, ro = true, destructive = false, idempotent = true, crate::au::PeopleArgs,
             "Aarhus University people lookup through AU Find. Retries (surname, then prefix) and disambiguation (top 3, never pick one) are built in. Quote fields as returned and cite the source; never invent emails, phones, rooms, coordinates or URLs. If status is not_found, say 'not found in AU Find'; if unavailable, say AU Find is unreachable and fall back to au.dk pages (www.au.dk, mit.au.dk, brightspace.au.dk, pure.au.dk only), quoting text and URL, stopping at any login. Answers a numbered list (name, position, units, AU room, email, phone, profile URL), then the raw JSON."),
@@ -814,6 +887,11 @@ pub fn specs() -> Vec<ToolSpec> {
             "Health from the catalog: without id, everything that is down, broken, degraded or warning right now (worst first, with the reason); with id, that component's checks. live=true rescans its host first (slower)."),
         spec!("catalog_drift", "Catalog drift", Scope::Agents, ro = true, destructive = false, idempotent = true, crate::agents::NoArgs,
             "Drift between the catalog and reality: units, containers, k8s workloads, tunnels, Caddy sites and repos that run but are not catalogued, and catalogued ones that are missing."),
+        // The owner's photos themselves (crate::photos); scope `photos` only.
+        spec!("photo_search", "Search photos", Scope::Photos, ro = true, destructive = false, idempotent = true, crate::photos::SearchArgs,
+            "Search the owner's Gallery, newest first: words (place, album, file name), from/to (YYYY, YYYY-MM or YYYY-MM-DD). Answers id, when, where and file name. It adds nothing to any album. Fetch a picture with photo_get."),
+        spec!("photo_get", "Get a photo", Scope::Photos, ro = true, destructive = false, idempotent = true, crate::photos::GetArgs,
+            "One photo from the owner's Gallery as an image (a JPEG, 1024 px on its long side by default), by the id photo_search gave. The picture is the owner's: use it for what he asked, and do not pass it on."),
         // Lucina Notebooks (crate::notebooks): source-grounded notebooks; scope `notebooks` only.
         spec!("notebook_list", "List notebooks", Scope::Notebooks, ro = true, destructive = false, idempotent = true, crate::notebooks::ListArgs,
             "List the owner's Lucina Notebooks (NotebookLM-style workspaces that group sources, linked notes and chats) with their ids and how many sources, notes, chats and podcasts each has. Archived ones only with archived=include or only."),
@@ -837,6 +915,8 @@ pub fn specs() -> Vec<ToolSpec> {
             "One crash report by id: message, stack, context (window, route, engine version, ...), how often and where it repeated, its attachments, and the end of its main log, so you can explain to the owner what happened and why (e.g. \"Secretary Code crashed at 19:44: the background service timed out\"). Secrets were scrubbed before storage."),
         spec!("diagnostics_file", "Crash report attachment", Scope::Read, ro = true, destructive = false, idempotent = true, crate::diagnostics::FileArgs,
             "Read a text attachment of a crash report (a log, a JSON dump), by default its end, up to 60000 characters per call. Binary attachments such as minidumps are not readable here."),
+        spec!("debug_events", "App debug events", Scope::Read, ro = true, destructive = false, idempotent = true, crate::debug_events::Args,
+            "What happened on the owner's devices, step by step, from the apps' debug event log: in-app taps, notification and Live Activity buttons, card intents, Face ID / passcode prompts and results, approval decisions, unlock-key enrollment, app launch / foreground / background, background tasks and every server request (method, path with ids as {id}, status, error code, duration). Oldest first with times in the owner's time zone, device, process (app, widgets, share …), type, fields, seq and build commit. Filter by device (\"iphone\"), since (\"30m\", \"2h\", a date), until, type prefix (\"net\", \"auth\", \"notification.action\") and limit. Use it to see what the owner did in a phone test and what failed, without asking him. Never holds secrets or message, note or command text."),
 
     ]
 }
@@ -1089,6 +1169,26 @@ pub struct Tools<'a> {
     pub caller: &'a Caller,
 }
 
+fn turn_wait(seconds: Option<u64>) -> std::time::Duration {
+    seconds.map_or(crate::turns::DEFAULT_WAIT, |s| {
+        std::time::Duration::from_secs(s.min(crate::turns::MAX_WAIT_SECS))
+    })
+}
+
+fn turn_answer(id: &str, seen: crate::turns::Seen) -> ToolResult {
+    use crate::turns::Seen;
+    match seen {
+        Seen::Done(Ok(r)) => Ok(format::chat_reply(&r)),
+        // secretary-server gives up on a turn after 120 s; she does not.
+        Seen::Done(Err(e)) if matches!(e.code.as_str(), "backend_timeout" | "lucina_timeout") => Ok(
+            "Lucina has not answered within two minutes. She goes on working, and her reply lands in lucina_timeline.".to_owned(),
+        ),
+        Seen::Done(Err(e)) => Err(e.into()),
+        Seen::Working => Ok(crate::turns::still_working(id)),
+        Seen::Unknown => Err(bad("Unknown turn id: answers are kept for an hour, for the client that asked.")),
+    }
+}
+
 impl Tools<'_> {
     async fn poll_decision(&self, mut response: Value, wait: u32) -> Result<Value, ToolError> {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(wait.into());
@@ -1161,8 +1261,35 @@ impl Tools<'_> {
         Ok(format::decision(&response))
     }
 
+    pub async fn secret_request(&self, args: &JsonObject) -> ToolResult {
+        let a: SecretRequestArgs = parse(args)?;
+        a.validate()?;
+        let mut body = serde_json::to_value(&a).map_err(|e| bad(e.to_string()))?;
+        body["asking_client"] = json!(self.caller.name);
+        let response = self
+            .app
+            .backend
+            .send_device(
+                reqwest::Method::POST,
+                "/v1/secrets/request",
+                Some(&body),
+                std::time::Duration::from_secs(30),
+                reqwest::header::HeaderMap::new(),
+            )
+            .await?;
+        Ok(format::secret_request(&response))
+    }
+
     pub async fn job_status(&self, args: &JsonObject) -> ToolResult {
         let a: JobStatusArgs = parse(args)?;
+        if a.job_id.starts_with(crate::turns::PREFIX) {
+            let seen = self
+                .app
+                .turns
+                .wait(&a.job_id, &self.caller.id, turn_wait(a.wait_seconds))
+                .await;
+            return turn_answer(&a.job_id, seen);
+        }
         secretary_core::Call::job(&a.job_id).map_err(|e| bad(e.to_string()))?;
         let response = self
             .app
@@ -1202,8 +1329,16 @@ impl Tools<'_> {
             // Lucina derives these timeline tags from the session id and message prefix.
             "meta": { "via": "mcp", "caller": self.caller.name },
         });
-        let r = self.app.backend.chat(&body).await?;
-        Ok(format::chat_reply(&r))
+        let wait = turn_wait(a.wait_seconds);
+        // Her turn goes on whatever the client does: on its own task, kept until it is read.
+        let turns = self.app.turns.clone();
+        let id = turns.begin(&self.caller.id);
+        let backend = self.app.backend.clone();
+        let (done, turn) = (turns.clone(), id.clone());
+        tokio::spawn(async move {
+            done.finish(&turn, backend.chat(&body).await);
+        });
+        turn_answer(&id, turns.wait(&id, &self.caller.id, wait).await)
     }
 
     pub async fn timeline(&self, args: &JsonObject) -> ToolResult {
@@ -2378,6 +2513,11 @@ impl Tools<'_> {
             "diagnostics_file" => d.file(parse(args)?).await,
             _ => Err(bad(format!("unknown tool {name}"))),
         }
+    }
+
+    /// `debug_events`.
+    pub async fn debug_events(&self, args: &JsonObject) -> ToolResult {
+        crate::debug_events::query(&self.app.backend, parse(args)?, self.app.cfg.timezone).await
     }
 
     pub async fn status(&self) -> ToolResult {

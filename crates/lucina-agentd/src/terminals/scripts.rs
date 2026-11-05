@@ -511,10 +511,10 @@ mod tests {
         assert!(port_in_range((p, p), &HashSet::new()).is_err());
         let a = port_in_range((4100, 4999), &HashSet::new()).unwrap();
         assert!((4100..=4999).contains(&a));
-        let all: HashSet<u16> = (4100..=4999).filter(|x| *x != 4321).collect();
-        if free(4321) {
-            assert_eq!(port_in_range((4100, 4999), &all).unwrap(), 4321);
-        }
+        // Reserved ports are skipped. An ephemeral port, because other tests probe 4100-4999.
+        let open = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let next = open.saturating_sub(1);
+        assert_eq!(port_in_range((next, open), &HashSet::from([next])).unwrap(), open);
     }
 
     #[test]

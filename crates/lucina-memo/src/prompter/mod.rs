@@ -153,7 +153,7 @@ the language asked for, or in the language of the topic. No title, no introducti
 const SUMMARY_SYSTEM: &str = "You review one recorded take for the speaker, who talked from a list of \
 talking points. Using the coverage report and the transcript, say in Markdown: what he covered well, \
 what he missed or rushed, whether the order worked, and two or three concrete suggestions for the next \
-take. Under 200 words, second person, in the language of the transcript. No heading.";
+take. Under 200 words, second person, in English (Danish when the transcript is Danish; never Italian). No heading.";
 
 const MAX_DOC_CHARS: usize = 40_000;
 

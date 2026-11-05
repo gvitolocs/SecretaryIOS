@@ -37,6 +37,8 @@ pub struct EngineConfig {
     pub gpu_mb: u32,
     pub threads: u32,
     pub cpu_quota: String,
+    /// Voice Learn words, shared with [`crate::transcribe::WhisperConfig`].
+    pub vocab: Arc<lucina_vocab::Watched>,
 }
 
 impl EngineConfig {
@@ -59,6 +61,7 @@ impl EngineConfig {
             gpu_mb: num("LUCINA_PROMPTER_GPU_MB", 1200),
             threads: num("LUCINA_PROMPTER_THREADS", 4),
             cpu_quota: get("LUCINA_PROMPTER_CPU_QUOTA").unwrap_or_else(|| "400%".into()),
+            vocab: whisper.vocab.clone(),
         }
     }
 }
@@ -73,9 +76,14 @@ pub enum Mode {
 /// One transcription.
 #[derive(Debug, Clone, Default)]
 pub struct SttOut {
+    /// The text with Voice Learn's corrections applied.
     pub text: String,
     pub language: String,
     pub ms: u64,
+    /// `(heard, canonical word)` for each replacement.
+    pub corrections: Vec<(String, String)>,
+    /// Matches too close to call, left unchanged.
+    pub ambiguous: Vec<lucina_vocab::Ambiguity>,
 }
 
 struct Running {
@@ -287,7 +295,8 @@ impl Engine {
         }
     }
 
-    /// Transcribe one window. `language` is `auto` or a code; `prompt` biases spelling.
+    /// Transcribe one window. `language` is `auto` or a code; `prompt` biases spelling
+    /// (the Voice Learn words are added after it, and the text is corrected).
     pub async fn transcribe(
         &self,
         pcm: &[i16],
@@ -295,6 +304,9 @@ impl Engine {
         prompt: &str,
     ) -> Result<SttOut, String> {
         let started = Instant::now();
+        let vocab = self.cfg.vocab.get();
+        let prompt = crate::vocab::prompt(&vocab, prompt);
+        let prompt = prompt.as_str();
         let boundary = format!(
             "prompter{:016x}",
             started.elapsed().as_nanos() as u64 ^ pcm.len() as u64
@@ -334,10 +346,13 @@ impl Engine {
             return Err(format!("whisper-server answered {}", r.status()));
         }
         let v: Value = r.json().await.map_err(|e| e.without_url().to_string())?;
+        let fixed = vocab.correct(&clean(v["text"].as_str().unwrap_or_default()));
         Ok(SttOut {
-            text: clean(v["text"].as_str().unwrap_or_default()),
+            text: fixed.text,
             language: v["language"].as_str().unwrap_or_default().to_owned(),
             ms: started.elapsed().as_millis() as u64,
+            corrections: fixed.corrections,
+            ambiguous: fixed.ambiguous,
         })
     }
 }

@@ -14,8 +14,10 @@ pub mod api;
 pub mod au;
 pub mod callers;
 pub mod bot_hospital;
+pub mod model_try;
 pub mod bridges;
 pub mod capabilities;
+pub mod card_state;
 pub mod chat;
 pub mod computer;
 pub mod computer_files;
@@ -33,14 +35,19 @@ pub mod fake;
 pub mod geocode;
 pub mod jev_drift;
 pub mod jev_route;
+pub mod jev_samples;
 pub mod jev_yesno;
 pub mod grocery_turn;
 pub mod jobs;
+pub mod juno;
 pub mod notebooks;
 pub mod lan;
+pub mod flaws;
 pub mod ops;
 pub mod otp;
 pub mod owner_secrets;
+pub mod secret_keep;
+pub mod secret_requests;
 pub mod parity;
 pub mod places;
 pub mod planner;
@@ -55,7 +62,11 @@ pub mod share;
 pub mod shopping_mcp_gate;
 pub mod surface;
 pub mod telegram;
+pub mod upstream;
 pub mod video;
+pub mod voice;
+pub mod voice_learn;
+pub mod voice_thread;
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicUsize;
@@ -73,7 +84,7 @@ use lucina_tools::reminder_writer::{LocalWriter, NodeForwarder, ReminderWriter};
 use lucina_tools::{Registry, ToolEnv};
 use serde_json::Value;
 
-pub use config::{Config, PlannerMode, WriterKind};
+pub use config::{Config, ModelProvider, PlannerMode, WriterKind};
 
 pub type SharedChat = futures_util::future::Shared<
     futures_util::future::BoxFuture<'static, Result<Value, api::ApiError>>,
@@ -94,6 +105,8 @@ pub struct Inner {
     pub device: DeviceStore,
     pub memory: Arc<Memory>,
     pub model: Arc<dyn ChatModel>,
+    /// The providers `POST /api/secretary/models/try` can name.
+    pub named_models: Arc<model_try::NamedModels>,
     pub usage: Option<Arc<UsageTotals>>,
     pub deepseek_has_key: KeyProbe,
     pub grocery: Option<Arc<GroceryRepo>>,
@@ -123,6 +136,12 @@ pub struct Inner {
     pub client_messages: Mutex<HashMap<String, (Instant, SharedChat)>>,
     /// Values the owner put in chat, waiting for "Save as secret" (memory only).
     pub held_secrets: owner_secrets::HeldSecrets,
+    /// The owner's queue of secret requests: one card at a time.
+    pub secret_requests: Arc<secret_requests::SecretRequests>,
+    /// Lucina's own moves of a secret to Infisical, through the local model.
+    pub secret_keep: Arc<secret_keep::Keeper>,
+    /// The owner's own Add secret cards (`secret_tile`), his queue and a self-test one.
+    pub secret_cards: Arc<secret_requests::OwnerCards>,
     pub briefings: tokio::sync::Mutex<HashMap<String, api::Briefing>>,
     pub streams: AtomicUsize,
     pub started: Instant,
@@ -140,6 +159,18 @@ pub struct Inner {
     pub supervisor: Arc<delivery_monitor::Supervisor>,
     /// The ops record (`LUCINA_OPS_VAULT_DIR`, crate::ops); `None`: off.
     pub ops: Option<Arc<lucina_ops::Ops>>,
+    /// The flaw tracker (crate::flaws); `None`: `LUCINA_FLAWS=off`.
+    pub flaws: Option<Arc<lucina_flaws::Flaws>>,
+    /// The Obsidian ingest (`LUCINA_VAULT_INGEST=on`, crate::ops); `None`: off.
+    pub ingest: Option<Arc<lucina_vault_ingest::Ingest>>,
+    /// The Jev client of the voice fast path when the config sets one (tests); `None`: the shared client.
+    pub voice_jev: Option<Arc<lucina_jev::Jev>>,
+    /// The `juno_*` tools' bridge to the owner's laptop (crate::juno).
+    pub juno: Arc<juno::JunoBridge>,
+    /// Voice Learn (`voice_learn`): the vocabulary file, re-read when it changes.
+    pub vocab: Arc<lucina_vocab::Watched>,
+    /// Serialises the read-modify-write of the vocabulary file.
+    pub vocab_write: Mutex<()>,
 }
 
 #[derive(Clone)]
@@ -165,20 +196,33 @@ impl Inner {
 }
 
 impl AppState {
-    /// Wire everything from the config. `model: None` uses DeepSeek.
+    /// Wire everything from the config. `model: None` uses the configured provider (DeepSeek by default).
     pub fn build(cfg: Config, model: Option<Arc<dyn ChatModel>>) -> anyhow::Result<Self> {
+        let deepseek = Arc::new(DeepSeek::new(cfg.deepseek.clone())?);
+        let mistral = Some(Arc::new(DeepSeek::new(cfg.mistral.clone())?)).filter(|m| m.has_key());
+        if cfg.model_provider == ModelProvider::Mistral && mistral.is_none() {
+            tracing::error!("LUCINA_MODEL_PROVIDER=mistral but Mistral has no key: DeepSeek answers");
+        }
         let (model, usage, has_key): (Arc<dyn ChatModel>, Option<Arc<UsageTotals>>, KeyProbe) =
-            match model {
-                Some(m) => (m, None, Box::new(|| true)),
-                None => {
-                    let ds = Arc::new(DeepSeek::new(cfg.deepseek.clone())?);
-                    let usage = ds.usage.clone();
-                    let probe = ds.clone();
-                    (ds, Some(usage), Box::new(move || probe.has_key()))
+            match (model, mistral.clone().filter(|_| cfg.model_provider == ModelProvider::Mistral)) {
+                (Some(m), _) => (m, None, Box::new(|| true)),
+                (None, Some(m)) => {
+                    let usage = m.usage.clone();
+                    let probe = m.clone();
+                    (m, Some(usage), Box::new(move || probe.has_key()))
+                }
+                (None, None) => {
+                    let usage = deepseek.usage.clone();
+                    let probe = deepseek.clone();
+                    (deepseek.clone(), Some(usage), Box::new(move || probe.has_key()))
                 }
             };
         // The model is a sink: every prompt and reply goes through the redactor.
         let model: Arc<dyn ChatModel> = Arc::new(secrets::RedactingModel(model));
+        let named_models = model_try::NamedModels {
+            deepseek: Arc::new(secrets::RedactingModel(deepseek)),
+            mistral: mistral.map(|m| Arc::new(secrets::RedactingModel(m)) as Arc<dyn ChatModel>),
+        };
         let known = secrets::register_bootstrap(&cfg);
         tracing::info!(
             known,
@@ -232,8 +276,15 @@ impl AppState {
         };
         let memory = Arc::new(Memory::new(cfg.memory_mode, cfg.honcho.clone())?);
         let ops = ops::open(&cfg.ops, cfg.time_zone, cfg.memory_mode, &cfg.honcho);
+        let ingest = ops::open_ingest(&cfg.ops, cfg.time_zone, ops.as_ref());
         let mut env = ToolEnv::new(&cfg.data_dir, cfg.time_zone);
+        let juno = Arc::new(juno::JunoBridge::new());
+        if cfg.juno_tools {
+            env.juno = Some(juno.clone());
+        }
         env.ops = ops.clone();
+        let flaws = flaws::open(&cfg.flaws);
+        env.flaws = flaws.clone();
         // Messages to Claude, Grok and Lucina Agents (crate::reach); the sink is set below.
         env.reach = reach::build(&cfg.data_dir, ops.clone());
         env.reminders = Some(reminders.clone());
@@ -416,6 +467,12 @@ impl AppState {
                 .register(Arc::new(lucina_tools::tools::ops::OpsTool))
                 .expect("ops tool registers");
         }
+        // The flaw tracker: owner's turns only (OWNER_ONLY_TOOLS), since a report can start an agent.
+        if env.flaws.is_some() && cfg.tools.allows("flaw") {
+            registry
+                .register(Arc::new(lucina_tools::tools::flaw::FlawTool))
+                .expect("flaw tool registers");
+        }
         // Root commands after the owner's approval of the exact commands (crate lucina_approvals).
         if approvals.is_some() && cfg.tools.allows("root_exec") {
             registry
@@ -436,6 +493,68 @@ impl AppState {
         // MCP turns: no owner-only tools and no delegation, ever.
         let mcp_registry = Arc::new(registry.without(lucina_tools::NO_MCP_TOOLS));
         let trusted_mcp_registry = Arc::new(registry.without(lucina_tools::OWNER_ONLY_TOOLS));
+        // "Enter the secret for this": Lucina's own way to ask, by name. Owner turns only, so added
+        // after the MCP registries (agents have secretary-mcp's `secret_request`).
+        let secret_requests = Arc::new(secret_requests::SecretRequests::new(
+            &cfg.data_dir,
+            timeline.clone(),
+            bridges::Secretary {
+                http: env_http.clone(),
+                url: cfg.secretary_url.clone(),
+                token_file: cfg.secretary_service_token_file.clone(),
+            },
+        ));
+        let secret_cards = Arc::new(secret_requests::OwnerCards {
+            owner: secret_requests.clone(),
+            selftest: Arc::new(secret_requests::SecretRequests::new(
+                &cfg.data_dir.join("selftest-secret-cards"),
+                selftest_timeline.clone(),
+                bridges::Secretary { http: env_http.clone(), url: None, token_file: None },
+            )),
+            default_project: cfg.secret_keep.default_project.clone(),
+            default_environment: cfg.secret_keep.default_environment.clone(),
+        });
+        let secret_keep = Arc::new(secret_keep::Keeper::new(
+            &cfg.data_dir,
+            cfg.secret_keep.clone(),
+            timeline.clone(),
+            bridges::Secretary {
+                http: env_http.clone(),
+                url: cfg.secretary_url.clone(),
+                token_file: cfg.secretary_service_token_file.clone(),
+            },
+        ));
+        if cfg.tools.allows("secret_request") {
+            registry
+                .register(Arc::new(lucina_tools::tools::secret_request::SecretRequestTool {
+                    asker: secret_requests.clone(),
+                }))
+                .expect("secret_request registers");
+        }
+        if cfg.tools.allows("secret_tile") {
+            registry
+                .register(Arc::new(lucina_tools::tools::secret_tile::SecretCardTool { opener: secret_cards.clone() }))
+                .expect("secret_tile registers");
+        }
+        if cfg.secret_keep.enabled && cfg.tools.allows("secret_keep") {
+            registry
+                .register(Arc::new(lucina_tools::tools::secret_keep::SecretKeepTool { keeper: secret_keep.clone() }))
+                .expect("secret_keep registers");
+            registry
+                .register(Arc::new(lucina_tools::tools::secret_keep::SecretScanTool { keeper: secret_keep.clone() }))
+                .expect("secret_scan registers");
+            registry
+                .register(Arc::new(lucina_tools::tools::secret_keep::SecretProjectTool { keeper: secret_keep.clone() }))
+                .expect("secret_project registers");
+        }
+        // Juno, the owner's laptop (LUCINA_JUNO_TOOLS): owner turns only, so added after the MCP registries.
+        if cfg.juno_tools {
+            for tool in lucina_tools::tools::juno::all() {
+                if cfg.tools.allows(tool.name()) {
+                    registry.register(tool).expect("juno tools register");
+                }
+            }
+        }
         // The owner's shared files: owner turns only, so added after the MCP registries.
         let share = crate::share::ShareRuntime::new(&cfg.share);
         for tool in crate::share::tools::all(share.memory.clone()) {
@@ -470,6 +589,7 @@ impl AppState {
                 prompts,
             },
             model,
+            named_models: Arc::new(named_models),
             usage,
             deepseek_has_key: has_key,
             grocery,
@@ -502,6 +622,9 @@ impl AppState {
             bridge_state: bridges::BridgeState::default(),
             client_messages: Mutex::new(HashMap::new()),
             held_secrets: owner_secrets::HeldSecrets::default(),
+            secret_requests,
+            secret_cards,
+            secret_keep,
             briefings: tokio::sync::Mutex::new(HashMap::new()),
             streams: AtomicUsize::new(0),
             started: Instant::now(),
@@ -511,6 +634,12 @@ impl AppState {
             )),
             supervisor: Arc::default(),
             ops,
+            flaws,
+            ingest,
+            juno,
+            voice_jev: cfg.voice_jev.clone().map(|c| Arc::new(lucina_jev::Jev::new(c))),
+            vocab: Arc::new(lucina_vocab::Watched::new(cfg.vocab_path.clone())),
+            vocab_write: Mutex::new(()),
             hospital_health: Arc::new(Mutex::new(bot_hospital::HospitalHealth {
                 enabled: cfg.hospital.enabled && cfg.hospital.daily_audit_enabled,
                 ..Default::default()
@@ -532,10 +661,12 @@ impl AppState {
                 timeline: inner.timeline.clone(),
                 selftest_timeline: inner.selftest_timeline.clone(),
                 recent: inner.recent.clone(),
-                secretary: inner.secretary.clone(),
             }));
         }
-        Ok(Self(Arc::new(inner)))
+        let app = Self(Arc::new(inner));
+        // Risky Juno calls file decisions with the server.
+        app.juno.attach(Arc::downgrade(&app.0));
+        Ok(app)
     }
 
     /// Replace the deals engine (tests: fixtures and a fixed clock). Only
@@ -651,6 +782,15 @@ impl AppState {
             .watch("delivery monitor", delivery_monitor::spawn(self));
         if let Some(h) = ops::spawn(self) {
             self.supervisor.watch("ops record", h);
+        }
+        if let Some(h) = ops::spawn_ingest(self) {
+            self.supervisor.watch("vault ingest", h);
+        }
+        if let Some(h) = flaws::spawn(self) {
+            self.supervisor.watch("flaw tracker", h);
+        }
+        if let Some(h) = secret_keep::spawn(self) {
+            self.supervisor.watch("secret keep", h);
         }
         if self.cfg.scheduler {
             if self.cfg.reminders_writer == WriterKind::Node {

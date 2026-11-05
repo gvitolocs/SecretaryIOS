@@ -89,6 +89,15 @@ impl Tool for ComputerTool {
         SideEffect::Local
     }
 
+    /// A whole task runs the Jev engine, then Hermes for up to 200 s; a shell command can install something.
+    fn time_limit(&self, args: &Value) -> std::time::Duration {
+        match args.get("action").and_then(Value::as_str) {
+            Some("task") => std::time::Duration::from_secs(330),
+            Some("bash") => std::time::Duration::from_secs(120),
+            _ => crate::agent::PER_TOOL_TIMEOUT,
+        }
+    }
+
     fn summarize(&self, args: &Value) -> String {
         let s = |k: &str| args.get(k).and_then(Value::as_str).unwrap_or("");
         let what = [s("task"), s("command"), s("tool")]
@@ -139,10 +148,14 @@ impl Tool for ComputerTool {
             }
             Action::Tool => {
                 let tool = need(&a.tool, "tool")?;
-                let r = sb
-                    .call_tool(tool, Value::Object(a.arguments.unwrap_or_default()))
-                    .await
-                    .map_err(err)?;
+                let r = lucina_computer_use::input::agent_tool(
+                    &sb,
+                    id,
+                    tool,
+                    Value::Object(a.arguments.unwrap_or_default()),
+                )
+                .await
+                .map_err(err)?;
                 Ok(json!({
                     "sandbox": sb.space(),
                     "result": clip(text_of(&r)),
@@ -156,6 +169,15 @@ impl Tool for ComputerTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 2 Nov 2026: a 30 s cap cut her task off from the chat while Hermes went on driving her desktop.
+    #[test]
+    fn a_whole_task_gets_its_real_time() {
+        let limit = |action: &str| ComputerTool.time_limit(&json!({"action": action}));
+        assert!(limit("task").as_secs() > 200 + 60, "Hermes' own 200 s and the Jev try");
+        assert!(limit("bash").as_secs() >= 90, "the sandbox call's own limit");
+        assert_eq!(limit("screenshot"), crate::agent::PER_TOOL_TIMEOUT);
+    }
 
     #[test]
     fn schema_lists_every_action() {

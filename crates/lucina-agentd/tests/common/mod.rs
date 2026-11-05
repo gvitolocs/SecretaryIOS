@@ -104,6 +104,7 @@ pub fn spawn_daemon_env(dir: &Path, env: &[(&str, String)]) -> Guard {
         .args(["--state-dir", &dir.join("state").display().to_string(), "--socket", &socket.display().to_string()])
         .arg("--no-real-providers")
         .env("LUCINA_AGENTD_DEV", "1")
+        .env("LUCINA_AGENTD_SWEEP_IDLE_SECS", "0")
         .env("RUST_LOG", "warn")
         .stdin(Stdio::null())
         .stdout(Stdio::null())

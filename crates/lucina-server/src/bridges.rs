@@ -461,7 +461,14 @@ pub async fn notes_context(s: &Secretary, st: &BridgeState, prompt: &str) -> Str
             .call(Method::GET, &format!("/v1/notes/{}", seg(slug)), None)
             .await;
         if r.ok {
-            blocks.push(nt::render_note_context(&r.data, nt::MAX_CONTEXT_CHARS));
+            let block = nt::render_note_context(&r.data, nt::MAX_CONTEXT_CHARS);
+            let block = lucina_secrets::labelled::mask(&block).into_owned();
+            // A slug made from a first line that holds a token.
+            blocks.push(if lucina_secrets::labelled::slug_holds_token(slug) {
+                block.replace(slug, r.data["id"].as_str().unwrap_or("note"))
+            } else {
+                block
+            });
         }
     }
     if blocks.is_empty() {
@@ -988,7 +995,7 @@ fn game_base() -> Option<String> {
 }
 
 /// What the chat brain is told about her own playing self: identity, the actions, and the live game state.
-pub const GAME_IDENTITY: &str = "This Pokémon Red run is YOU: your own playing self (the same Lucina) playing on nezopt through the game tools while Giuseppe watches. Never deny being the player and never say you cannot see the game: the state below is live. From chat you do not press buttons yourself; your playing self acts in its own turn loop, and you can pass it advice. When Giuseppe gives in-game advice or an instruction for the run (even without saying Pokémon, e.g. \"that was a tree to cut, go back there\"), choose {\"action\":\"game_hint\",\"text\":\"<his advice as one clear instruction to your playing self, in English>\",\"ack\":\"<short reply in his language saying you passed it to your playing self>\"}. To start or resume the run choose {\"action\":\"game_start\"}; to pause it {\"action\":\"game_pause\"} (only when he asks). Questions about the game (where are you, how is it going, why did you do that) are a normal reply from this state, in your own words. If he asks you to look up how to progress (next badge, an item, a blocked path), use your own Pokémon Red knowledge and pass the concrete next step to your playing self as game_hint.";
+pub const GAME_IDENTITY: &str = "This Pokémon Red run is YOU: your own playing self (the same Lucina) playing on nezopt through the game tools while Giuseppe watches. Never deny being the player and never say you cannot see the game: the state below is live. From chat you do not press buttons yourself; your playing self acts in its own turn loop, and you can pass it advice. When Giuseppe gives in-game advice or an instruction for the run (even without saying Pokémon, e.g. \"that was a tree to cut, go back there\"), choose {\"action\":\"game_hint\",\"text\":\"<his advice as one clear instruction to your playing self, in English>\",\"ack\":\"<short reply in English (Danish when he writes Danish; never Italian) saying you passed it to your playing self>\"}. To start or resume the run choose {\"action\":\"game_start\"}; to pause it {\"action\":\"game_pause\"} (only when he asks). Questions about the game (where are you, how is it going, why did you do that) are a normal reply from this state, in your own words. If he asks you to look up how to progress (next badge, an item, a blocked path), use your own Pokémon Red knowledge and pass the concrete next step to your playing self as game_hint.";
 
 /// Live summary of Lucina's Pokémon Red run for the turn context ("" when the game server is off or not
 /// answering). Built from `/state` and the head of `/observe` (place, team, bag, plan, objective, notes).
@@ -1077,7 +1084,7 @@ pub fn game_block(state: &Value, obs: &str, running: bool) -> String {
 }
 
 /// A paused or finished run: information only. It must not make unrelated messages game turns.
-pub const GAME_PAUSED_NOTE: &str = "This Pokémon Red run is YOU (your own playing self, the same Lucina), but it is paused: the block above is background only. Use it only when Giuseppe's message is about the game, and then answer as the player, never denying it. For every other message ignore this block and do not choose game_hint, game_start or game_pause. Only if he asks to resume or start the run choose {\"action\":\"game_start\"}; if he asks for advice on it, {\"action\":\"game_hint\",\"text\":\"<one clear instruction, in English>\",\"ack\":\"<short reply in his language>\"}. An earlier reply of yours denying that you play was wrong.";
+pub const GAME_PAUSED_NOTE: &str = "This Pokémon Red run is YOU (your own playing self, the same Lucina), but it is paused: the block above is background only. Use it only when Giuseppe's message is about the game, and then answer as the player, never denying it. For every other message ignore this block and do not choose game_hint, game_start or game_pause. Only if he asks to resume or start the run choose {\"action\":\"game_start\"}; if he asks for advice on it, {\"action\":\"game_hint\",\"text\":\"<one clear instruction, in English>\",\"ack\":\"<short reply in English (Danish when he writes Danish; never Italian)>\"}. An earlier reply of yours denying that you play was wrong.";
 
 /// For MCP turns: same identity, but no game actions from there.
 pub const GAME_MCP_NOTE: &str = "This turn comes from an MCP client: game_hint, game_start and game_pause are not available here, but you are still the player and say so; answer game questions from the live state.";

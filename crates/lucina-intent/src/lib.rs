@@ -21,6 +21,7 @@ pub mod calendar;
 pub mod calendar_event;
 pub mod computer_route;
 pub mod domains;
+pub mod flaw;
 pub mod game;
 pub mod grocery;
 pub mod heuristics;

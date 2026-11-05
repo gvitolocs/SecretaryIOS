@@ -13,6 +13,7 @@ struct AskLucinaIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ReturnsValue<String> & ProvidesDialog {
+        let trace = DebugEvents.intent("ask_lucina"); defer { trace.end() }
         let app = AppModel.shared
         guard app.phase != .signedOut, app.client.accessKey?.isEmpty == false else {
             throw IntentFailure.message(String(localized: "Open Secretary and sign in first."))
@@ -33,6 +34,7 @@ struct AddToShoppingIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
+        let trace = DebugEvents.intent("add_to_shopping"); defer { trace.end() }
         let app = AppModel.shared
         guard app.client.accessKey?.isEmpty == false else { throw IntentFailure.message(String(localized: "Open Secretary and sign in first.")) }
         let store = app.shoppingV2
@@ -54,6 +56,7 @@ struct StartWorkoutIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult {
+        let trace = DebugEvents.intent("start_workout"); defer { trace.end() }
         let app = AppModel.shared
         app.selectedTab = .fitness
         if app.gym.view == nil { await app.gym.refresh() }
@@ -74,6 +77,7 @@ struct LogWeightIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
+        let trace = DebugEvents.intent("log_weight"); defer { trace.end() }
         let app = AppModel.shared
         guard app.client.accessKey?.isEmpty == false else { throw IntentFailure.message(String(localized: "Open Secretary and sign in first.")) }
         if app.weight.view == nil { await app.weight.refresh() }
@@ -93,6 +97,7 @@ struct NextAppointmentIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ReturnsValue<String> & ProvidesDialog {
+        let trace = DebugEvents.intent("next_appointment"); defer { trace.end() }
         let app = AppModel.shared
         guard app.client.accessKey?.isEmpty == false else { throw IntentFailure.message(String(localized: "Open Secretary and sign in first.")) }
         let section = try await WidgetFetcher(client: app.client, mediaClient: app.mediaClient).appointment()
@@ -120,6 +125,7 @@ struct NavigateToAppointmentIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
+        let trace = DebugEvents.intent("navigate_to_appointment"); defer { trace.end() }
         let app = AppModel.shared
         guard app.client.accessKey?.isEmpty == false else { throw IntentFailure.message(String(localized: "Open Secretary and sign in first.")) }
         let section = try await WidgetFetcher(client: app.client, mediaClient: app.mediaClient).appointment()
@@ -142,6 +148,7 @@ struct ShoppingListIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ReturnsValue<[String]> & ProvidesDialog {
+        let trace = DebugEvents.intent("shopping_list"); defer { trace.end() }
         let app = AppModel.shared
         guard app.client.accessKey?.isEmpty == false else { throw IntentFailure.message(String(localized: "Open Secretary and sign in first.")) }
         let section = try await WidgetFetcher(client: app.client, mediaClient: app.mediaClient)
@@ -161,6 +168,7 @@ struct TodayTasksIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ReturnsValue<[String]> & ProvidesDialog {
+        let trace = DebugEvents.intent("today_tasks"); defer { trace.end() }
         let app = AppModel.shared
         guard app.client.accessKey?.isEmpty == false else { throw IntentFailure.message(String(localized: "Open Secretary and sign in first.")) }
         let section = try await WidgetFetcher(client: app.client, mediaClient: app.mediaClient).tasks()
@@ -189,6 +197,7 @@ struct RecordMemoIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult {
+        let trace = DebugEvents.intent("record_memo"); defer { trace.end() }
         let app = AppModel.shared
         guard app.client.accessKey?.isEmpty == false else { throw IntentFailure.message(String(localized: "Open Secretary and sign in first.")) }
         app.openMemo(nil)
@@ -239,6 +248,7 @@ struct LucinaFocusFilter: SetFocusFilterIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult {
+        let trace = DebugEvents.intent("focus_filter"); defer { trace.end() }
         // When the Focus ends the system calls this with the filter off; `current` is then empty.
         let active = (try? await Self.current)?.mode
         FocusRecorder.record(mode: (active?.isEmpty == false) ? active : nil)

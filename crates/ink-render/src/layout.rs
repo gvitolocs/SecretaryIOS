@@ -11,6 +11,7 @@
 //! Runs reference the book's text by (block, span, byte range) instead of copying it, which keeps the
 //! pagination of a 2 MB book to a few MB of memory.
 use crate::font::{Face, Fonts};
+use crate::images::{ImageSize, Images, NoImages};
 use ink_epub::{Block, Book, Chapter, ListMarker, Span, SpanStyle};
 use ink_kindle_hal::Size;
 
@@ -116,7 +117,12 @@ pub struct Run {
 #[derive(Debug, Clone, PartialEq)]
 pub enum LineContent {
     Text(Vec<Run>),
-    Image { block: u32 },
+    /// A picture drawn in a `w × h` pixel box, centred in the column.
+    Image {
+        block: u32,
+        w: u32,
+        h: u32,
+    },
     Rule,
 }
 
@@ -157,6 +163,53 @@ pub struct Pagination {
     pub size: Size,
     pub style: Style,
     pub pages: Vec<Page>,
+    /// Only some chapters are laid out ([`crate::Reader::set_style_quick`]): page numbers are not
+    /// the book's, and the footer leaves them out.
+    pub partial: bool,
+    /// Only one chapter is laid out and the book's numbers are known ([`crate::Reader::open_windowed`]).
+    pub numbers: Option<PageNumbers>,
+}
+
+/// Where a window of pages sits in the book.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PageNumbers {
+    pub first: u32,
+    pub total: u32,
+}
+
+/// The book's pages at one style, without laying them out: the page each chapter starts on, and how many there are.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct BookMap {
+    pub first_page: Vec<u32>,
+    pub total: u32,
+}
+
+impl BookMap {
+    /// The map of a whole pagination, to keep for the next time the book opens.
+    pub fn of(pagination: &Pagination, chapters: usize) -> BookMap {
+        let mut first_page = vec![u32::MAX; chapters];
+        for (index, page) in pagination.pages.iter().enumerate() {
+            let slot = &mut first_page[page.chapter as usize];
+            *slot = (*slot).min(index as u32);
+        }
+        // A chapter with no pages starts where the next one does.
+        let total = pagination.pages.len() as u32;
+        let mut next = total;
+        for slot in first_page.iter_mut().rev() {
+            if *slot == u32::MAX {
+                *slot = next;
+            }
+            next = *slot;
+        }
+        BookMap { first_page, total }
+    }
+
+    /// The chapter holding page `page`, and the page's place in that chapter.
+    pub fn locate(&self, page: u32) -> (usize, u32) {
+        let page = page.min(self.total.saturating_sub(1));
+        let chapter = self.first_page.partition_point(|&first| first <= page).saturating_sub(1);
+        (chapter, page - self.first_page.get(chapter).copied().unwrap_or(0))
+    }
 }
 
 impl Pagination {
@@ -468,35 +521,190 @@ fn spans_of(spans: &[Span]) -> Vec<(u16, &str, SpanStyle)> {
         .collect()
 }
 
-/// Lay out a chapter into lines (no pagination).
+/// Box (pixels) a picture of intrinsic `size` is drawn in, aspect ratio kept. A `full_page` picture (cover,
+/// image-only chapter) fills `measure × max_h`, upscaled if needed; other pictures are shown at twice their
+/// intrinsic size (they are made for ~150 dpi screens, the panel is 300 dpi), shrunk to fit `measure × max_h`.
+/// A zero-sized picture gives `(0, 0)`: unknown, laid out as the placeholder.
+pub fn image_box(size: ImageSize, measure: f32, max_h: i32, full_page: bool) -> (u32, u32) {
+    if size.w == 0 || size.h == 0 {
+        return (0, 0);
+    }
+    let max_w = f64::from(measure).floor().max(1.0);
+    let max_h = f64::from(max_h.max(1));
+    let (w, h) = (f64::from(size.w), f64::from(size.h));
+    let mut s = (max_w / w).min(max_h / h);
+    if !full_page {
+        s = s.min(2.0);
+    }
+    let w = (w * s).round().clamp(1.0, max_w) as u32;
+    let h = (h * s).round().clamp(1.0, max_h) as u32;
+    (w, h)
+}
+
+/// A chapter whose only content is one picture (blank text and rules aside): the picture fills the page.
+fn full_page_picture(chapter: &Chapter) -> bool {
+    let mut images = 0;
+    for b in &chapter.blocks {
+        match b {
+            Block::Image { .. } => images += 1,
+            Block::Rule => {}
+            b if b.text().trim().is_empty() => {}
+            _ => return false,
+        }
+    }
+    images == 1
+}
+
+/// Lay out a chapter into lines (no pagination); pictures are placeholders.
 pub fn layout_chapter(
     fonts: &mut Fonts,
     style: &Style,
     measure: f32,
     chapter: &Chapter,
 ) -> Vec<Line> {
+    layout_chapter_with(fonts, style, measure, 0, chapter, 0, &mut NoImages)
+}
+
+/// Lay out chapter `chapter_index` into lines (no pagination), sizing pictures with `images`. `max_h` is the
+/// page's content height (pictures are never taller).
+pub fn layout_chapter_with(
+    fonts: &mut Fonts,
+    style: &Style,
+    measure: f32,
+    max_h: i32,
+    chapter: &Chapter,
+    chapter_index: u32,
+    images: &mut dyn Images,
+) -> Vec<Line> {
     let mut out = Vec::new();
-    let body_line = (f32::from(style.font_px) * style.line_height).round() as i32;
-    let em = f32::from(style.font_px);
-    let para_gap = (style.paragraph_spacing * body_line as f32).round() as i32;
-    let starts = chapter.block_starts();
-    let mut after_heading = true; // chapter start counts as "after a heading": no indent
-    let mut extra_space = 0;
-    let mut prev_group: Option<u8> = None;
-    for (bi, block) in chapter.blocks.iter().enumerate() {
-        let offset = starts[bi];
-        // Blank space where body text, quotes, lists and preformatted text meet.
-        let group = match block {
-            Block::Paragraph { quote: false, .. } => Some(0u8),
-            Block::Paragraph { quote: true, .. } => Some(1),
-            Block::ListItem { .. } => Some(2),
-            Block::Preformatted { .. } => Some(3),
-            _ => None,
-        };
-        if group.is_some() && prev_group.is_some() && group != prev_group {
-            extra_space += body_line / 3;
+    let mut lay = ChapterLayout::new(style, measure, max_h, chapter, chapter_index);
+    for bi in 0..chapter.blocks.len() {
+        lay.block(fonts, images, bi, &mut out);
+    }
+    out
+}
+
+/// Which spacing group a block is in (blank space where body text, quotes, lists and preformatted
+/// text meet).
+fn group_of(block: &Block) -> Option<u8> {
+    match block {
+        Block::Paragraph { quote: false, .. } => Some(0u8),
+        Block::Paragraph { quote: true, .. } => Some(1),
+        Block::ListItem { .. } => Some(2),
+        Block::Preformatted { .. } => Some(3),
+        _ => None,
+    }
+}
+
+/// Whether a block gives at least one line (a text block of blanks gives none).
+fn has_lines(block: &Block) -> bool {
+    match block {
+        Block::Image { .. } | Block::Rule => true,
+        Block::Preformatted { text } => text.chars().any(|c| !c.is_whitespace() || c == '\u{a0}'),
+        b => b
+            .spans()
+            .iter()
+            .any(|s| s.text.chars().any(|c| !c.is_whitespace() || c == '\u{a0}')),
+    }
+}
+
+/// What laying out a block takes from the blocks before it. It follows from the block just before
+/// (and whether any block before gave a line), so a chapter can be laid out from any block on and give
+/// exactly the lines a layout from its start gives ([`ChapterLayout::start_at_block`]).
+#[derive(Debug, Clone, Copy)]
+struct Flow {
+    after_heading: bool,
+    extra_space: i32,
+    prev_group: Option<u8>,
+    any_lines: bool,
+}
+
+/// One chapter being laid out a block at a time.
+struct ChapterLayout<'a> {
+    style: &'a Style,
+    measure: f32,
+    max_h: i32,
+    chapter: &'a Chapter,
+    index: u32,
+    full_page: bool,
+    body_line: i32,
+    em: f32,
+    para_gap: i32,
+    starts: Vec<u32>,
+    flow: Flow,
+}
+
+impl<'a> ChapterLayout<'a> {
+    fn new(style: &'a Style, measure: f32, max_h: i32, chapter: &'a Chapter, index: u32) -> Self {
+        let body_line = (f32::from(style.font_px) * style.line_height).round() as i32;
+        Self {
+            style,
+            measure,
+            max_h,
+            chapter,
+            index,
+            full_page: full_page_picture(chapter),
+            body_line,
+            em: f32::from(style.font_px),
+            para_gap: (style.paragraph_spacing * body_line as f32).round() as i32,
+            starts: chapter.block_starts(),
+            // The chapter start counts as "after a heading": no indent.
+            flow: Flow {
+                after_heading: true,
+                extra_space: 0,
+                prev_group: None,
+                any_lines: false,
+            },
         }
-        prev_group = group;
+    }
+
+    /// Ready to lay out block `bi` without laying out the blocks before it.
+    fn start_at_block(&mut self, images: &mut dyn Images, bi: usize) {
+        let Some(prev) = bi.checked_sub(1).map(|k| &self.chapter.blocks[k]) else {
+            return;
+        };
+        let extra_space = match prev {
+            Block::Heading { .. } => self.body_line / 2,
+            Block::Image { src, .. } => {
+                let known = images
+                    .size(self.index, src)
+                    .map(|sz| image_box(sz, self.measure, self.max_h, self.full_page))
+                    .is_some_and(|(w, _)| w > 0);
+                if self.full_page && known {
+                    0
+                } else {
+                    self.body_line / 2
+                }
+            }
+            _ => 0,
+        };
+        self.flow = Flow {
+            after_heading: !matches!(prev, Block::Paragraph { .. } | Block::ListItem { .. }),
+            extra_space,
+            prev_group: group_of(prev),
+            any_lines: self.chapter.blocks[..bi].iter().any(has_lines),
+        };
+    }
+
+    /// Lay out block `bi` into `out`.
+    fn block(
+        &mut self,
+        fonts: &mut Fonts,
+        images: &mut dyn Images,
+        bi: usize,
+        out: &mut Vec<Line>,
+    ) {
+        let (style, measure, chapter) = (self.style, self.measure, self.chapter);
+        let (body_line, em) = (self.body_line, self.em);
+        let block = &chapter.blocks[bi];
+        let offset = self.starts[bi];
+        let before = out.len();
+        let f = &mut self.flow;
+        let group = group_of(block);
+        if group.is_some() && f.prev_group.is_some() && group != f.prev_group {
+            f.extra_space += body_line / 3;
+        }
+        f.prev_group = group;
         let base = Para {
             block: bi as u32,
             spans: Vec::new(),
@@ -507,10 +715,10 @@ pub fn layout_chapter(
             first_indent: 0.0,
             justify: style.justify,
             marker: None,
-            space_before: para_gap + extra_space,
+            space_before: self.para_gap + f.extra_space,
             keep_with_next: false,
         };
-        extra_space = 0;
+        f.extra_space = 0;
         match block {
             Block::Heading { level, spans } => {
                 let px = style.heading_px(*level);
@@ -524,14 +732,14 @@ pub fn layout_chapter(
                         px,
                         bold: true,
                         justify: false,
-                        space_before: if out.is_empty() { 0 } else { body_line },
+                        space_before: if f.any_lines { body_line } else { 0 },
                         keep_with_next: true,
                         ..base
                     },
-                    &mut out,
+                    out,
                 );
-                extra_space = body_line / 2;
-                after_heading = true;
+                f.extra_space = body_line / 2;
+                f.after_heading = true;
             }
             Block::Paragraph { spans, quote } => {
                 let left = if *quote { 2.0 * em } else { 0.0 };
@@ -543,16 +751,16 @@ pub fn layout_chapter(
                     Para {
                         spans: spans_of(spans),
                         left,
-                        first_indent: if after_heading || *quote {
+                        first_indent: if f.after_heading || *quote {
                             0.0
                         } else {
                             style.indent_em * em
                         },
                         ..base
                     },
-                    &mut out,
+                    out,
                 );
-                after_heading = false;
+                f.after_heading = false;
             }
             Block::ListItem {
                 marker,
@@ -571,9 +779,9 @@ pub fn layout_chapter(
                         justify: false,
                         ..base
                     },
-                    &mut out,
+                    out,
                 );
-                after_heading = false;
+                f.after_heading = false;
             }
             Block::Preformatted { text } => {
                 layout_para(
@@ -588,24 +796,59 @@ pub fn layout_chapter(
                         justify: false,
                         ..base
                     },
-                    &mut out,
+                    out,
                 );
-                after_heading = true;
+                f.after_heading = true;
             }
-            Block::Image { .. } => {
-                out.push(Line {
-                    content: LineContent::Image { block: bi as u32 },
-                    height: body_line * 4,
-                    ascent: 0,
-                    space_before: base.space_before + body_line / 2,
-                    keep_with_next: false,
-                    start: offset,
-                    end: offset + 1,
-                    width: measure,
-                    justified: false,
-                });
-                extra_space = body_line / 2;
-                after_heading = true;
+            Block::Image { src, .. } => {
+                let known = images
+                    .size(self.index, src)
+                    .map(|sz| image_box(sz, measure, self.max_h, self.full_page))
+                    .filter(|&(w, _)| w > 0);
+                let line = match known {
+                    Some((w, h)) => Line {
+                        content: LineContent::Image {
+                            block: bi as u32,
+                            w,
+                            h,
+                        },
+                        height: h as i32,
+                        ascent: 0,
+                        space_before: if self.full_page {
+                            0
+                        } else {
+                            base.space_before + body_line / 2
+                        },
+                        keep_with_next: false,
+                        start: offset,
+                        end: offset + 1,
+                        width: w as f32,
+                        justified: false,
+                    },
+                    // Placeholder box: two thirds of the column, four lines high.
+                    None => Line {
+                        content: LineContent::Image {
+                            block: bi as u32,
+                            w: measure as u32 * 2 / 3,
+                            h: (body_line * 4) as u32,
+                        },
+                        height: body_line * 4,
+                        ascent: 0,
+                        space_before: base.space_before + body_line / 2,
+                        keep_with_next: false,
+                        start: offset,
+                        end: offset + 1,
+                        width: measure,
+                        justified: false,
+                    },
+                };
+                f.extra_space = if self.full_page && known.is_some() {
+                    0
+                } else {
+                    body_line / 2
+                };
+                out.push(line);
+                f.after_heading = true;
             }
             Block::Rule => {
                 out.push(Line {
@@ -619,11 +862,11 @@ pub fn layout_chapter(
                     width: measure,
                     justified: false,
                 });
-                after_heading = true;
+                f.after_heading = true;
             }
         }
+        f.any_lines |= out.len() > before;
     }
-    out
 }
 
 /// Height available for lines (between the top margin and the footer).
@@ -631,67 +874,338 @@ pub fn content_height(size: Size, style: &Style) -> i32 {
     size.h as i32 - style.margins.top as i32 - style.margins.bottom as i32
 }
 
-/// Paginate a whole book.
+/// Paginate a whole book; pictures are placeholders.
 pub fn paginate(fonts: &mut Fonts, style: &Style, size: Size, book: &Book) -> Pagination {
+    paginate_with(fonts, style, size, book, &mut NoImages)
+}
+
+/// Paginate a whole book, sizing pictures with `images`. Anchors mean the same with and without pictures
+/// (a picture covers one offset); only the page boundaries move.
+pub fn paginate_with(
+    fonts: &mut Fonts,
+    style: &Style,
+    size: Size,
+    book: &Book,
+    images: &mut dyn Images,
+) -> Pagination {
+    let mut p = Paginator::new(*style, size, None);
+    p.step(fonts, book, images, None);
+    p.into_pagination()
+}
+
+/// The pages of chapter `ci` alone. Chapters are laid out independently, so these are exactly that
+/// chapter's pages in [`paginate_with`]'s result (which is every chapter's, in order).
+pub fn paginate_chapter_with(
+    fonts: &mut Fonts,
+    style: &Style,
+    size: Size,
+    book: &Book,
+    ci: usize,
+    images: &mut dyn Images,
+) -> Vec<Page> {
     let measure = (size.w - style.margins.left - style.margins.right) as f32;
     let max_h = content_height(size, style);
-    let mut pages = Vec::new();
-    for (ci, chapter) in book.chapters.iter().enumerate() {
-        let lines = layout_chapter(fonts, style, measure, chapter);
-        let chapter_len = chapter.char_len();
-        let first_page = pages.len();
-        let mut page = Page {
-            chapter: ci as u32,
-            start: 0,
-            end: chapter_len,
-            lines: Vec::new(),
-        };
-        let mut y = 0;
-        let mut it = lines.into_iter().peekable();
-        while let Some(line) = it.next() {
-            let sb = if page.lines.is_empty() {
-                0
-            } else {
-                line.space_before
-            };
-            let mut need = sb + line.height;
-            if line.keep_with_next {
-                if let Some(n) = it.peek() {
-                    need += n.space_before + n.height;
-                }
-            }
-            if !page.lines.is_empty() && y + need > max_h {
-                let next = Page {
-                    chapter: ci as u32,
-                    start: line.start,
-                    end: chapter_len,
-                    lines: Vec::new(),
-                };
-                pages.push(std::mem::replace(&mut page, next));
-                y = 0;
-            }
-            let sb = if page.lines.is_empty() {
-                0
-            } else {
-                line.space_before
-            };
-            y += sb;
-            let h = line.height;
-            page.lines.push(PlacedLine { y, line });
-            y += h;
-        }
-        pages.push(page);
-        // Each page ends where the next one starts.
-        for k in first_page..pages.len().saturating_sub(1) {
-            pages[k].end = pages[k + 1].start;
-        }
-        if let Some(p) = pages.get_mut(first_page) {
-            p.start = 0;
+    let chapter = &book.chapters[ci];
+    let lines = layout_chapter_with(fonts, style, measure, max_h, chapter, ci as u32, images);
+    let mut placer = Placer::new(ci as u32, chapter.char_len(), max_h, 0, None);
+    let mut it = lines.into_iter().peekable();
+    while let Some(line) = it.next() {
+        placer.place(line, it.peek());
+    }
+    placer.finish(true)
+}
+
+/// Fills pages with lines, one chapter at a time: a page ends when the next line (with the one it keeps
+/// with) does not fit, or at the line starting at `break_at.0` (the shown page of a quick style change,
+/// [`pages_at`]; that page starts at `break_at.1`). The space above a line is dropped at the top of a
+/// page.
+struct Placer {
+    chapter: u32,
+    chapter_len: u32,
+    max_h: i32,
+    break_at: Option<(u32, u32)>,
+    page: Page,
+    y: i32,
+    pages: Vec<Page>,
+}
+
+impl Placer {
+    fn new(
+        chapter: u32,
+        chapter_len: u32,
+        max_h: i32,
+        start: u32,
+        break_at: Option<(u32, u32)>,
+    ) -> Self {
+        Self {
+            chapter,
+            chapter_len,
+            max_h,
+            break_at,
+            page: Page {
+                chapter,
+                start,
+                end: chapter_len,
+                lines: Vec::new(),
+            },
+            y: 0,
+            pages: Vec::new(),
         }
     }
-    Pagination {
-        size,
-        style: *style,
-        pages,
+
+    /// Place `line`; `next` is the line after it (a heading keeps with it).
+    fn place(&mut self, line: Line, next: Option<&Line>) {
+        let sb = if self.page.lines.is_empty() {
+            0
+        } else {
+            line.space_before
+        };
+        let mut need = sb + line.height;
+        if line.keep_with_next {
+            if let Some(n) = next {
+                need += n.space_before + n.height;
+            }
+        }
+        let forced = self.break_at.filter(|&(at, _)| at == line.start);
+        if !self.page.lines.is_empty() && (self.y + need > self.max_h || forced.is_some()) {
+            let next_page = Page {
+                chapter: self.chapter,
+                start: forced.map_or(line.start, |(_, page_start)| page_start),
+                end: self.chapter_len,
+                lines: Vec::new(),
+            };
+            self.pages
+                .push(std::mem::replace(&mut self.page, next_page));
+            self.y = 0;
+        }
+        let sb = if self.page.lines.is_empty() {
+            0
+        } else {
+            line.space_before
+        };
+        self.y += sb;
+        let h = line.height;
+        self.page.lines.push(PlacedLine { y: self.y, line });
+        self.y += h;
+    }
+
+    /// The pages closed so far.
+    fn closed(&self) -> usize {
+        self.pages.len()
+    }
+
+    /// The chapter's pages (with the one being filled); each ends where the next starts, and the first
+    /// starts at 0 when `chapter_start`.
+    fn finish(mut self, chapter_start: bool) -> Vec<Page> {
+        self.pages.push(self.page);
+        let mut pages = self.pages;
+        for k in 0..pages.len().saturating_sub(1) {
+            pages[k].end = pages[k + 1].start;
+        }
+        if chapter_start {
+            if let Some(p) = pages.first_mut() {
+                p.start = 0;
+            }
+        }
+        pages
+    }
+
+    /// The first `n` closed pages, each ending where the next starts.
+    fn first_closed(self, n: usize) -> Vec<Page> {
+        let mut pages = self.pages;
+        pages.push(self.page);
+        for k in 0..pages.len().saturating_sub(1) {
+            pages[k].end = pages[k + 1].start;
+        }
+        pages.truncate(n);
+        pages
+    }
+}
+
+/// The page on screen after a style change, KindleOS-style: it starts at the line holding `anchor` (or
+/// the first line after it), and `n` pages from there, laid out from the anchor's paragraph only, not
+/// from the chapter's start. These are exactly the pages a [`Paginator`] given [`break_of`] the first
+/// one gives; the pages before it are left to the paginator (the one just before may be short). Within
+/// the anchor's chapter only (fewer pages at its end).
+pub fn pages_at(
+    fonts: &mut Fonts,
+    style: &Style,
+    size: Size,
+    book: &Book,
+    anchor: Anchor,
+    images: &mut dyn Images,
+    n: usize,
+) -> Vec<Page> {
+    let measure = (size.w - style.margins.left - style.margins.right) as f32;
+    let max_h = content_height(size, style);
+    let ci = (anchor.chapter as usize).min(book.chapters.len().saturating_sub(1));
+    let Some(chapter) = book.chapters.get(ci) else {
+        return Vec::new();
+    };
+    let starts = chapter.block_starts();
+    let nblocks = chapter.blocks.len();
+    // The block holding the anchor (an offset past the end: the last block).
+    let first = starts[..nblocks]
+        .partition_point(|&o| o <= anchor.offset)
+        .saturating_sub(1);
+    let mut lay = ChapterLayout::new(style, measure, max_h, chapter, ci as u32);
+    lay.start_at_block(images, first);
+    let lines_before = lay.flow.any_lines;
+    let mut lines: Vec<Line> = Vec::new();
+    let mut bi = first;
+    // Lay out blocks until the line holding the anchor is there.
+    let mut at = None;
+    while at.is_none() && bi < nblocks {
+        lay.block(fonts, images, bi, &mut lines);
+        bi += 1;
+        at = lines.iter().position(|l| l.end > anchor.offset);
+    }
+    // Past the end: the chapter's last line (laid out from its block).
+    let at = match at {
+        Some(i) => i,
+        None if lines.is_empty() => {
+            return paginate_chapter_with(fonts, style, size, book, ci, images)
+                .into_iter()
+                .rev()
+                .take(1)
+                .collect();
+        }
+        None => lines.len() - 1,
+    };
+    let chapter_start = !lines_before && at == 0;
+    // The page holds the anchor even when it falls in the blank before the line.
+    let start = if chapter_start {
+        0
+    } else {
+        lines[at].start.min(anchor.offset)
+    };
+    let mut placer = Placer::new(ci as u32, chapter.char_len(), max_h, start, None);
+    let mut i = at;
+    loop {
+        // One line ahead for keep-with-next, laying out more blocks as they are needed.
+        while i + 1 >= lines.len() && bi < nblocks {
+            lay.block(fonts, images, bi, &mut lines);
+            bi += 1;
+        }
+        if i >= lines.len() {
+            return placer.finish(false).into_iter().take(n).collect();
+        }
+        let line = lines[i].clone();
+        placer.place(line, lines.get(i + 1));
+        if placer.closed() >= n {
+            return placer.first_closed(n);
+        }
+        i += 1;
+    }
+}
+
+/// Where [`pages_at`]'s first page breaks the chapter: (chapter, its first line's start, its start).
+pub fn break_of(page: &Page) -> Option<(u32, u32, u32)> {
+    page.lines
+        .first()
+        .map(|l| (page.chapter, l.line.start, page.start))
+}
+
+/// Paginates a book a little at a time ([`Paginator::step`] until a deadline), so the pages a quick
+/// style change did not lay out are counted while the reader is idle, and a new style change simply
+/// drops it. With `break_at` ([`break_of`]) a page starts at that line, as [`pages_at`] laid it out;
+/// without, it is [`paginate_with`].
+pub struct Paginator {
+    style: Style,
+    size: Size,
+    measure: f32,
+    max_h: i32,
+    break_at: Option<(u32, u32, u32)>,
+    /// The chapter being laid out, its next block and its lines not placed yet.
+    chapter: usize,
+    block: usize,
+    flow: Option<Flow>,
+    lines: std::collections::VecDeque<Line>,
+    placer: Option<Placer>,
+    pages: Vec<Page>,
+}
+
+impl Paginator {
+    pub fn new(style: Style, size: Size, break_at: Option<(u32, u32, u32)>) -> Self {
+        Self {
+            style,
+            size,
+            measure: (size.w - style.margins.left - style.margins.right) as f32,
+            max_h: content_height(size, &style),
+            break_at,
+            chapter: 0,
+            block: 0,
+            flow: None,
+            lines: std::collections::VecDeque::new(),
+            placer: None,
+            pages: Vec::new(),
+        }
+    }
+
+    /// Lay out until `deadline` (checked after each block) or the end of `book`; true when done.
+    pub fn step(
+        &mut self,
+        fonts: &mut Fonts,
+        book: &Book,
+        images: &mut dyn Images,
+        deadline: Option<std::time::Instant>,
+    ) -> bool {
+        while self.chapter < book.chapters.len() {
+            let ci = self.chapter;
+            let chapter = &book.chapters[ci];
+            let style = self.style;
+            let mut lay = ChapterLayout::new(&style, self.measure, self.max_h, chapter, ci as u32);
+            if let Some(f) = self.flow {
+                lay.flow = f;
+            }
+            let break_at = self
+                .break_at
+                .filter(|&(c, _, _)| c as usize == ci)
+                .map(|(_, line, page)| (line, page));
+            let max_h = self.max_h;
+            let placer = self.placer.get_or_insert_with(|| {
+                Placer::new(ci as u32, chapter.char_len(), max_h, 0, break_at)
+            });
+            while self.block < chapter.blocks.len() {
+                let mut out = Vec::new();
+                lay.block(fonts, images, self.block, &mut out);
+                self.block += 1;
+                self.lines.extend(out);
+                // Keep one line back: it may keep with the next.
+                while self.lines.len() > 1 {
+                    let line = self.lines.pop_front().expect("two lines");
+                    placer.place(line, self.lines.front());
+                }
+                if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+                    self.flow = Some(lay.flow);
+                    return false;
+                }
+            }
+            while let Some(line) = self.lines.pop_front() {
+                placer.place(line, self.lines.front());
+            }
+            let placer = self.placer.take().expect("the chapter's placer");
+            self.pages.extend(placer.finish(true));
+            self.chapter += 1;
+            self.block = 0;
+            self.flow = None;
+        }
+        true
+    }
+
+    /// Whether every chapter is laid out.
+    pub fn done(&self, book: &Book) -> bool {
+        self.chapter >= book.chapters.len()
+    }
+
+    /// The pages (call when [`Paginator::step`] returned true).
+    pub fn into_pagination(self) -> Pagination {
+        Pagination {
+            size: self.size,
+            style: self.style,
+            pages: self.pages,
+            partial: false,
+            numbers: None,
+        }
     }
 }

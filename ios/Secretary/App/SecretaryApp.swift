@@ -9,6 +9,8 @@ struct SecretaryApp: App {
         // A Lock Screen / Action button recording may be all this launch is for: only the
         // recorder is set up here; AppModel waits for a window (AppWindow) or the stop.
         MemoRecordingCenter.install()
+        // The approval Live Activity's buttons run in this process too (Deny, Approve).
+        ApprovalActivities.install()
         LucinaTabBarAppearance.apply()
         #if DEBUG || SCREENSHOTS
         WindowSnapshots.schedule()

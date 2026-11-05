@@ -349,3 +349,8 @@
 .pg .ag-ring {
   flex: none;
 }
+
+/* Pipeline (/agents/pipeline): rows like the agent list, without the link; their details may wrap. */
+.ag-pl-group { margin: var(--lu-space-xs) 0 0; color: var(--lu-text-secondary); font-size: var(--lu-type-footnote); font-weight: 600; }
+.ag-pl-row .ag-row-link__title { white-space: normal; overflow-wrap: anywhere; }
+.ag-pl-row .ag-row-link__meta { white-space: normal; overflow-wrap: anywhere; }

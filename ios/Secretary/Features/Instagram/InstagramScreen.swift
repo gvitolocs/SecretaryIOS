@@ -445,19 +445,46 @@ struct IgNotice: View {
         return await SignedImageLoader.shared.image(url)
     }
 }
+/// A picture that says when it can't load, and keeps asking: an expired link is signed again first.
 struct IgPicture: View {
     let store: InstagramStore
     let path: String?
     @State private var image: UIImage?
+    @State private var failed = false
     var body: some View {
         Group {
-            if path?.hasPrefix("/v1/media/") == true {
-                if let image { Image(uiImage: image).resizable().scaledToFill() }
-                else { SignedImagePlaceholder() }
-            } else { SignedImage(url: store.absolute(path)) }
+            if let image { Image(uiImage: image).resizable().scaledToFill() }
+            else if failed {
+                ZStack {
+                    Rectangle().fill(Theme.field)
+                    VStack(spacing: 4) {
+                        Image(systemName: "arrow.clockwise")
+                        Text("Can't load. Trying again…").font(.caption2).multilineTextAlignment(.center)
+                    }
+                    .foregroundStyle(Theme.textTertiary).padding(4)
+                }
+                .accessibilityIdentifier("instagram-picture-failed")
+            } else { SignedImagePlaceholder() }
         }
         .task(id: path) {
-            if path?.hasPrefix("/v1/media/") == true { image = await InstagramPictureLoader.image(store: store, path: path) }
+            image = nil; failed = false
+            var current = path
+            for delay in [3, 15, 60, 60, 60, 60] {
+                if let loaded = await InstagramPictureLoader.image(store: store, path: current) {
+                    image = loaded; failed = false
+                    return
+                }
+                if let path, let fresh = await store.resigned(path), fresh != current {
+                    current = fresh
+                    if let loaded = await InstagramPictureLoader.image(store: store, path: fresh) {
+                        image = loaded; failed = false
+                        return
+                    }
+                }
+                failed = delay > 3
+                try? await Task.sleep(for: .seconds(delay))
+                if Task.isCancelled { return }
+            }
         }
     }
 }

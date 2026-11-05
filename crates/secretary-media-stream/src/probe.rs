@@ -138,6 +138,7 @@ pub fn parse(json: &Value, path: &Path) -> Info {
         codec_tag: video.and_then(|v| s(&v["codec_tag_string"])).filter(|t| t.chars().all(|c| c.is_ascii_alphanumeric())),
         hdr,
         bit_depth,
+        height: video.and_then(|v| v["height"].as_u64()).map(|h| h as u32),
     };
     let start = |st: Option<&Value>| st.and_then(|st| st["start_time"].as_str()?.parse::<f64>().ok());
     let audio_lead_ms = match (start(video), start(audio)) {

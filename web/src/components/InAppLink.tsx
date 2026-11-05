@@ -11,12 +11,13 @@ function optionalNavigate(): ((to: string) => void) | undefined {
 }
 
 /** A link into the app: a plain <a href> (so it opens anywhere), moved by the router on a normal click. */
-export function InAppLink(props: { href: string; class?: string; children: JSX.Element }) {
+export function InAppLink(props: { href: string; class?: string; "aria-label"?: string; children: JSX.Element }) {
   const navigate = optionalNavigate();
   return (
     <a
       href={props.href}
       class={props.class}
+      aria-label={props["aria-label"]}
       onClick={(e) => {
         if (!navigate || e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
         e.preventDefault();

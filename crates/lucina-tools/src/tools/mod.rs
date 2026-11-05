@@ -14,6 +14,8 @@ pub mod memos;
 pub mod meshy;
 pub mod notes;
 pub mod notify;
+pub mod flaw;
+pub mod juno;
 pub mod ops;
 pub mod places;
 pub mod plugins;
@@ -21,6 +23,9 @@ pub mod presence;
 pub mod reach;
 pub mod reminders;
 pub mod root_exec;
+pub mod secret_tile;
+pub mod secret_keep;
+pub mod secret_request;
 pub mod secrets;
 pub mod shopping;
 pub mod tasks;
@@ -73,6 +78,7 @@ pub fn builtin() -> Vec<Arc<dyn Tool>> {
         Arc::new(plugins::SaveToGalleryTool),
         Arc::new(reach::MessageClaudeTool),
         Arc::new(reach::MessageGrokTool),
+        Arc::new(reach::MessageMistralTool),
         Arc::new(reach::LucinaAgentsTool),
         Arc::new(reach::ReachThreadsTool),
     ]

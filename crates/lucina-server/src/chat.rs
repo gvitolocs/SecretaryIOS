@@ -7,6 +7,9 @@
 //! planner → MCP guard → reminders / jobs / reply → recent turns, Honcho
 //! (`readwrite` only), the Lucina item.
 //!
+//! LucinaVoice (`crate::voice`): `"voice": true` makes the turn spoken-style; inside `voice::scope` the turn
+//! also streams its reply (`generate_reply` deltas) and reports it once settled, before the post-processing.
+//!
 //! `LUCINA_PLANNER=tools` is the native tool loop (Rust tools, confirmation
 //! flow); it is not part of the Node parity surface.
 
@@ -41,14 +44,18 @@ use lucina_store::timeline::{Attachment, TimelineStore};
 mod au_turn;
 pub mod callers_turn;
 pub mod drive_turn;
+mod juno_turn;
 pub mod media_turn;
 pub mod memo_turn;
 pub mod meshy_turn;
+mod flaw_turn;
 mod ops_turn;
 pub mod plugin_turn;
 mod reach_turn;
+mod secret_turn;
 pub mod reply;
 mod share_turn;
+mod voice_fast;
 mod youtube_turn;
 
 /// Counted after the MCP prefix (which may add up to 100 more on the wire).
@@ -56,12 +63,95 @@ pub const MAX_MESSAGE_CHARS: usize = 12_000;
 const CLIENT_MESSAGE_TTL: Duration = Duration::from_secs(600);
 const CLIENT_MESSAGE_KEEP: usize = 200;
 pub const PLANNER_PLATFORM: &str = "secretary";
-pub const SECRETARY_EXTRA_SYSTEM: &str = "This conversation comes from the Secretary app on Giuseppe's iPhone. Reply in the language of the message. Keep it short: usually 1-3 sentences. Plain text only: no markdown tables or headings.";
+/// The LucinaVoice speakers' timeline channel and conversation (docs/lucinavoice-protocol.md section 7).
+pub const VOICE_CHANNEL: &str = "voice";
+/// The session of the Lucina Voice thread when the sender names none.
+pub const VOICE_SESSION: &str = "lucinavoice";
+/// The source label of a speaker turn in Honcho (the app's turns say `Secretary app`).
+pub const VOICE_LABEL: &str = "LucinaVoice speaker";
+
+/// The device fact of a turn from Juno's Chat (session `juno-<device id>`).
+pub const JUNO_SYSTEM: &str = "The owner is writing from Juno, his laptop (Galaxy Book Go, LucinaOS). Actions on the laptop use the juno_* tools (juno_tools lists what it can do); the computer tool is your own sandbox on nezopt, not his laptop. You act on the laptop only through juno_* tool calls made in this turn. Never say you are opening, typing, capturing or changing anything on the laptop unless a juno_* call in this turn did it; otherwise say what you would do and that it has not happened yet.";
+
+/// [`JUNO_SYSTEM`] when `session` is a Juno Chat session, else nothing.
+pub fn juno_system(session: &str) -> &'static str {
+    if lucina_tools::tools::juno::device_of_session(session).is_some() {
+        JUNO_SYSTEM
+    } else {
+        ""
+    }
+}
+
+/// The Juno fact of a turn. A Juno Chat session: [`JUNO_SYSTEM`] and the
+/// laptop's sticky state. Another app's owner turn with the juno_* tools on:
+/// whether the laptop is online (polled in the last 40 s) or offline since
+/// when, with its sticky state while online; nothing if it was never seen.
+/// MCP turns: nothing (they do not have the tools).
+pub fn juno_fact(st: &crate::AppState, session: &str, mcp: bool) -> String {
+    if !juno_system(session).is_empty() {
+        return match st.juno.sticky_line() {
+            Some(line) => format!("{JUNO_SYSTEM} On the laptop now: {line}"),
+            None => JUNO_SYSTEM.to_owned(),
+        };
+    }
+    if mcp || !st.cfg.juno_tools {
+        return String::new();
+    }
+    st.juno.device_fact().unwrap_or_default()
+}
+
+pub const SECRETARY_EXTRA_SYSTEM: &str = "This conversation comes from the Secretary app on Giuseppe's iPhone. Reply in English, or in Danish when the message is in Danish; never in Italian. Keep it short: usually 1-3 sentences. Plain text only: no markdown tables or headings.";
 
 /// Validate the body, classify the turn's memory surface (once), dedupe
 /// `clientMessageId` retries, run the turn. `bearer`: the request passed the
 /// Secretary bearer check.
+///
+/// LucinaVoice (`crate::voice`): `"voice": true` marks the turn as spoken aloud (a spoken-style rule joins
+/// its system text); when the caller runs this inside [`crate::voice::scope`], the turn also reports its
+/// reply text as it is written (`generate_reply` deltas) and once settled (`run_turn_scoped`).
 pub async fn handle_chat(
+    st: AppState,
+    bearer: BearerVerified,
+    body: Value,
+) -> Result<Value, ApiError> {
+    let spoken = body["voice"].as_bool().unwrap_or(false);
+    // A spoken turn keeps a trace of its Jev layers (protocol section 9); the `done` body reports it.
+    let trace = spoken.then(|| Arc::new(crate::voice::Trace::default()));
+    let out = crate::voice::SPOKEN
+        .scope(
+            spoken,
+            // Boxed: a debug build moves a future by value through each wrapper, and this one is huge.
+            crate::voice::with_trace(trace.clone(), Box::pin(handle_chat_turn(st, bearer, body))),
+        )
+        .await;
+    match (out, trace) {
+        (Ok(mut out), Some(trace)) if !trace.is_empty() && out["duplicate"] != json!(true) => {
+            out["voice"] = trace.json();
+            Ok(out)
+        }
+        (out, _) => out,
+    }
+}
+
+/// The `voiceMeta` a voice turn's sender attaches (secretary-server: its STT timing and the vocabulary's
+/// doubtful words): `{turnId?, ms?: {..}, ambiguous?: [{heard, candidates}]}`. `base` is what goes on the
+/// timeline items (`turnId`, `ms`), cut to size here and checked again by the store.
+fn voice_base(body: &Value) -> Option<Value> {
+    let m = body.get("voiceMeta")?.as_object()?;
+    let mut out = serde_json::Map::new();
+    if let Some(id) = m.get("turnId").and_then(Value::as_str) {
+        out.insert("turnId".into(), json!(id.chars().take(64).collect::<String>()));
+    }
+    if let Some(ms) = m.get("ms").and_then(Value::as_object) {
+        out.insert(
+            "ms".into(),
+            Value::Object(ms.iter().take(16).map(|(k, v)| (k.clone(), v.clone())).collect()),
+        );
+    }
+    (!out.is_empty()).then_some(Value::Object(out))
+}
+
+async fn handle_chat_turn(
     st: AppState,
     bearer: BearerVerified,
     body: Value,
@@ -95,9 +185,15 @@ pub async fn handle_chat(
     } else {
         channel
     };
-    if channel != "web" && channel != "ios" {
-        return Err(ApiError::bad_request("channel must be web or ios"));
+    if channel != "web" && channel != "ios" && channel != VOICE_CHANNEL {
+        return Err(ApiError::bad_request("channel must be web, ios or voice"));
     }
+    // The speaker's own thread has its own session unless the sender names one.
+    let requested = if requested.is_empty() && channel == VOICE_CHANNEL {
+        VOICE_SESSION.to_owned()
+    } else {
+        requested
+    };
     // Swipe to reply: the earlier timeline item this message answers.
     let reply_to = optional_string(&body, "replyTo", 64)?;
     if !reply_to.is_empty() && !reply::valid_id(&reply_to) {
@@ -163,7 +259,49 @@ pub async fn handle_chat(
             "lucinaItemId": lucina_item_id,
         }));
     }
-    let (text, held) = crate::owner_secrets::mask_message(&st, &text);
+    let (text, held) = crate::owner_secrets::mask_message(&st, &text, mcp_turn.is_none());
+    let keep_context = if held.is_empty() { String::new() } else { text.clone() };
+    // "Salva un segreto": before the model. His words are recorded unless they look like they hold
+    // the value (`NAME value`, not token-shaped so not masked above): those go nowhere at all.
+    if let Some(words) = (held.is_empty() && mcp_turn.is_none() && !crate::selftest::is_session(&session))
+        .then(|| crate::owner_secrets::secret_words(&text))
+        .flatten()
+    {
+        let user = (!words.value_suspect)
+            .then(|| {
+                st.timeline.record(lucina_store::timeline::NewItem {
+                    channel: channel.clone(),
+                    role: "user".into(),
+                    text: text.clone(),
+                    client_message_id: (!client_message_id.is_empty()).then(|| client_message_id.clone()),
+                    reply_to: reply_to.clone(),
+                    ..Default::default()
+                })
+            })
+            .flatten();
+        let (reply, lucina_item_id, rich) =
+            crate::owner_secrets::answer_secret_words(&st, &words, crate::owner_secrets::lang_of(&text)).await;
+        let mut out = json!({
+            "reply": reply,
+            "action": "secret_request",
+            "sessionId": session,
+            "clientMessageId": (!client_message_id.is_empty()).then_some(client_message_id),
+            "job": null,
+            "userItemId": user.map(|u| u.id),
+            "lucinaItemId": lucina_item_id,
+        });
+        if let (Some(o), Some(Value::Object(rich))) = (out.as_object_mut(), rich) {
+            o.extend(rich);
+        }
+        return Ok(out);
+    }
+    // Voice Learn's `vocab` layer (after the masking: Jev never sees a token): doubtful spans of a spoken
+    // sentence, settled by Jev when it is sure.
+    let text = if crate::voice::spoken() {
+        Box::pin(crate::voice_learn::apply_ambiguity(&st, text, &body)).await
+    } else {
+        text
+    };
     if let Some(name) = (held.is_empty() && mcp_turn.is_none())
         .then(|| crate::owner_secrets::project_request(&text))
         .flatten()
@@ -195,11 +333,13 @@ pub async fn handle_chat(
     let device_meta = Meta {
         device: body["device"].as_str().map(str::to_owned),
         device_name: body["deviceName"].as_str().map(str::to_owned),
+        voice: voice_base(&body).filter(|_| channel == VOICE_CHANNEL),
         ..Meta::default()
     };
     let offer_timeline = st.timeline_for(&session);
     let offer_lang = crate::owner_secrets::lang_of(&text);
     let cmid = (!client_message_id.is_empty()).then_some(client_message_id);
+    let (keep_st, keep_session) = (st.clone(), session.clone());
     let Some(cmid_value) = cmid.clone() else {
         let out = run_turn(
             st,
@@ -213,7 +353,7 @@ pub async fn handle_chat(
             device_meta,
         )
         .await;
-        crate::owner_secrets::offer_held(&offer_timeline, &held, offer_lang);
+        crate::secret_keep::after_turn(&keep_st, &offer_timeline, &held, &keep_context, offer_lang, &keep_session);
         return out;
     };
     let key = format!("{session}:{cmid_value}");
@@ -264,7 +404,7 @@ pub async fn handle_chat(
         Slot::Fresh(fut) => fut,
     };
     let out = shared.await;
-    crate::owner_secrets::offer_held(&offer_timeline, &held, offer_lang);
+    crate::secret_keep::after_turn(&keep_st, &offer_timeline, &held, &keep_context, offer_lang, &keep_session);
     if out.is_err() {
         st.client_messages
             .lock()
@@ -368,16 +508,28 @@ pub async fn channel_turn(
     }
     let offer_lang = crate::owner_secrets::lang_of(&message);
     let (message, held) = if origin.owner {
-        crate::owner_secrets::mask_message(&st, &message)
+        crate::owner_secrets::mask_message(&st, &message, true)
     } else {
         (
             lucina_secrets::redactor().redact(&message).into_owned(),
             vec![],
         )
     };
-    if let Some(t) = origin.timeline_text.as_mut() {
-        *t = lucina_secrets::redactor().redact(t).into_owned();
+    // "Salva un segreto" in a chat app: the card is in the Secretary app; a value is never asked for here.
+    if let Some(words) = (origin.owner && held.is_empty())
+        .then(|| crate::owner_secrets::secret_words(&message))
+        .flatten()
+    {
+        let (mut reply, _, _) = crate::owner_secrets::answer_secret_words(&st, &words, offer_lang).await;
+        reply.push_str(crate::owner_secrets::chat_app_note(offer_lang));
+        return Ok(json!({"reply": reply, "action": "secret_request", "sensitive": true, "job": null}));
     }
+    if let Some(t) = origin.timeline_text.as_mut() {
+        let masked = if origin.owner { lucina_secrets::labelled::mask(t).into_owned() } else { t.clone() };
+        *t = lucina_secrets::redactor().redact(&masked).into_owned();
+    }
+    let keep_context = if held.is_empty() { String::new() } else { message.clone() };
+    let keep_session = session.clone();
     let out = run_turn_inner(
         st.clone(),
         message,
@@ -392,8 +544,14 @@ pub async fn channel_turn(
         Meta::default(),
     )
     .await;
-    crate::owner_secrets::offer_held(&st.timeline, &held, offer_lang);
-    out
+    crate::secret_keep::after_turn(&st, &st.timeline, &held, &keep_context, offer_lang, &keep_session);
+    // The chat app keeps his message: its handler removes it where it can.
+    out.map(|mut v| {
+        if !held.is_empty() {
+            v["secretMasked"] = json!(true);
+        }
+        v
+    })
 }
 
 /// What the turn answered.
@@ -572,11 +730,23 @@ struct Turn<'a> {
     extra_system: String,
     /// The share pipeline's tool loop.
     share: bool,
+    /// What the owner wrote with the attachment: his request (empty: a bare file).
+    share_note: String,
     /// `None`: the Secretary app.
     origin: Option<Arc<ChannelOrigin>>,
 }
 
 impl Turn<'_> {
+    /// The meta that marks this turn's items as an agent's (none for the owner's own turn).
+    fn agent_mark(&self) -> Meta {
+        self.mcp.as_ref().map_or_else(Meta::default, |m| Meta {
+            via: Some("mcp".into()),
+            caller: Some(m.caller.clone()),
+            conversation: m.conversation.clone(),
+            ..Meta::default()
+        })
+    }
+
     fn persona(&self) -> &str {
         &self.st.cfg.persona
     }
@@ -772,6 +942,32 @@ async fn run_turn_scoped(
     reply_to: Option<String>,
     device_meta: Meta,
 ) -> Result<Value, ApiError> {
+    // What was said, for the timeline and the recent turns (a confirmed request below runs as the held text).
+    let heard = message.clone();
+    let is_mcp = mcp_turn.is_some();
+    let voice_eligible = crate::voice::spoken()
+        && existing.is_none()
+        && origin.is_none()
+        && mcp_turn.is_none()
+        && st.cfg.planner == PlannerMode::Json
+        && !crate::selftest::is_session(&session);
+    // A pending "sei sicuro?" (the confirm layer, section 9) is settled by this turn: a yes runs the request
+    // that was held, a no cancels it, anything else drops it and the turn goes on as itself.
+    let (message, confirmed, cancelled) = if voice_eligible {
+        match voice_fast::settle_confirmation(&st, &session, &message) {
+            voice_fast::Held::Run(original) => (original, true, None),
+            voice_fast::Held::Cancel(text) => (message, false, Some(text)),
+            voice_fast::Held::None => (message, false, None),
+        }
+    } else {
+        (message, false, None)
+    };
+    // LucinaVoice, Jev fast path (docs/lucinavoice-protocol.md section 6): a spoken turn of the owner starts
+    // Jev's intent call first of all, so it runs while the rest of the turn is prepared.
+    let voice_route = (voice_eligible && cancelled.is_none()).then(|| voice_fast::start(&st, &message));
+    // A routed spoken turn writes its owner item once the route is known, so that the item carries it.
+    let defer_user_item = voice_route.is_some();
+
     let normal_share = existing.as_ref().is_some_and(|s| !s.voice_only);
     let secrets_text = existing.as_ref().map(|s| s.owner_text.clone());
     let voice_only = existing.as_ref().is_some_and(|s| s.voice_only);
@@ -827,6 +1023,12 @@ async fn run_turn_scoped(
     } else {
         base_system.to_owned()
     };
+    // The device the message came from, as in tools mode.
+    let juno = juno_fact(&st, &session, mcp_turn.is_some());
+    let base_system = match juno.as_str() {
+        "" => base_system,
+        juno => format!("{base_system} {juno}"),
+    };
     // Agents (every caller but the owner's own assistant apps) consult; they never act as the owner.
     let consult = mcp_turn
         .as_ref()
@@ -849,6 +1051,15 @@ async fn run_turn_scoped(
         (None, None) => (USER_LABEL.to_owned(), base_system.to_owned()),
     };
     let share = normal_share || origin.as_ref().is_some_and(|o| o.share);
+    let share_note = if normal_share {
+        secrets_text.clone().unwrap_or_default()
+    } else {
+        origin
+            .as_ref()
+            .filter(|o| o.share)
+            .and_then(|o| o.timeline_text.clone())
+            .unwrap_or_default()
+    };
     let (timeline_store, turn_meta) = match &origin {
         Some(o) => (o.timeline.clone(), o.timeline_meta.clone()),
         None => (st.timeline_for(&session), Some(turn_meta)),
@@ -856,17 +1067,18 @@ async fn run_turn_scoped(
     let timeline = TimelineTurn::new(timeline_store, &channel, cmid.clone())
         .with_meta(turn_meta.clone())
         .with_reply_to(reply_to);
-    let timeline = if let Some(item) = existing {
+    let mut timeline = if let Some(item) = existing {
         timeline.with_user_item(item.item)
     } else {
         timeline
     };
-    let user_item = match &origin {
+    let mut user_item = match &origin {
         Some(o) => timeline.record_user(
-            o.timeline_text.as_deref().unwrap_or(&message),
+            o.timeline_text.as_deref().unwrap_or(&heard),
             o.user_attachments.clone(),
         ),
-        None => timeline.record_user(&message, Vec::new()),
+        None if defer_user_item => None,
+        None => timeline.record_user(&heard, Vec::new()),
     };
     let guarded = (mcp_turn.is_some() && (!st.cfg.mcp_trusted || consult))
         || origin.as_ref().is_some_and(|o| !o.owner);
@@ -882,26 +1094,34 @@ async fn run_turn_scoped(
         user_label,
         extra_system,
         share,
+        share_note,
         origin,
     };
     // Secrets first, without the model: a fixed refusal for reveal requests
     // (MCP included), status and audit for the owner.
     let not_owner = t.mcp.is_some() || t.origin.as_ref().is_some_and(|o| !o.owner);
-    let (finish, prepared) = match secrets_finish(
-        &st,
-        secrets_text.as_deref().unwrap_or(&t.message),
-        not_owner,
-        t.mcp.as_ref().map(|m| m.caller.as_str()),
-    )
-    .await
-    {
+    // A fast voice turn (voice_fast) is answered without the model: no rich-reply composer either.
+    let mut voice_fast_turn = cancelled.is_some();
+    let early = match cancelled {
+        Some(text) => Some(Finish::reply(text, voice_fast::CONFIRM_ACTION)),
+        None => {
+            secrets_finish(
+                &st,
+                secrets_text.as_deref().unwrap_or(&t.message),
+                not_owner,
+                t.mcp.as_ref().map(|m| m.caller.as_str()),
+            )
+            .await
+        }
+    };
+    let (finish, prepared) = match early {
         Some(f) => {
             t.recent()
-                .append(t.recent_key(), "user", &t.message, Utc::now());
+                .append(t.recent_key(), "user", &heard, Utc::now());
             (f, None)
         }
         None => {
-            let prepared = crate::context::prepare_keyed(
+            let prepare = crate::context::prepare_keyed(
                 &st,
                 &t.surface,
                 &t.session,
@@ -909,35 +1129,91 @@ async fn run_turn_scoped(
                     recent: t.recent(),
                     recent_key: t.recent_key(),
                     peer: t.peer(),
+                    voice: t.channel == VOICE_CHANNEL,
                 },
                 &t.message,
                 &t.user_label,
                 t.planner_platform(),
                 false,
-            )
-            .await;
-            t.recent()
-                .append(t.recent_key(), "user", &t.message, Utc::now());
-            let game_system = if prepared.game.is_empty() || !t.guarded {
-                prepared.game.clone()
+            );
+            // Voice: Jev's route and the context building run together (the building holds its
+            // model calls until the route is known, and takes the route's intent verdict instead of
+            // asking Jev again); a fast intent answers the turn here and drops it.
+            let (open, gate) = crate::voice::gate();
+            let prepare = crate::voice::with_intent(
+                voice_route.as_ref().map(voice_fast::Started::intent_rx),
+                Box::pin(crate::voice::gated(gate, prepare)),
+            );
+            let mut prepare = std::pin::pin!(prepare);
+            let mut early = None;
+            let mut fast = None;
+            if let Some(started) = voice_route {
+                let (outcome, announce, done) = started.verdict(prepare.as_mut()).await;
+                early = done;
+                fast = Box::pin(voice_fast::route(&t, outcome, announce, confirmed)).await;
+                // The route is known: the owner item carries it, and the Lucina item after it.
+                if let Some(trace) = crate::voice::trace() {
+                    let mut meta = turn_meta.clone().unwrap_or_default();
+                    meta.voice = Some(trace.meta(meta.voice.as_ref()));
+                    timeline.set_meta(Some(meta));
+                }
+                user_item = timeline.record_user(&heard, Vec::new());
+            }
+            let _ = open.send(true);
+            if let Some(finish) = fast {
+                voice_fast_turn = true;
+                t.recent()
+                    .append(t.recent_key(), "user", &heard, Utc::now());
+                (finish, None)
             } else {
-                format!("{}\n{}", prepared.game, crate::bridges::GAME_MCP_NOTE)
-            };
-            let game_system = if voice_only {
-                format!("{game_system}\n{}", crate::share::guidance::VOICE_SYSTEM)
-            } else {
-                game_system
-            };
-            let finish = crate::planner::TURN_REPLY
-                .scope(
-                    reply_block,
-                    crate::planner::TURN_SYSTEM
-                        .scope(game_system, json_turn(&t, &prepared, cmid.as_deref())),
-                )
-                .await;
-            (finish, Some(prepared))
+                let prepared = match early {
+                    Some(p) => p,
+                    None => prepare.await,
+                };
+                t.recent()
+                    .append(t.recent_key(), "user", &heard, Utc::now());
+                let game_system = if prepared.game.is_empty() || !t.guarded {
+                    prepared.game.clone()
+                } else {
+                    format!("{}\n{}", prepared.game, crate::bridges::GAME_MCP_NOTE)
+                };
+                let game_system = if voice_only {
+                    format!("{game_system}\n{}", crate::share::guidance::VOICE_SYSTEM)
+                } else {
+                    game_system
+                };
+                // `"voice": true`: every model call of the turn (the plan, the replies) is told it is spoken.
+                let game_system = if crate::voice::spoken() {
+                    format!("{game_system}\n{}", crate::voice::SPOKEN_RULE)
+                        .trim()
+                        .to_owned()
+                } else {
+                    game_system
+                };
+                // The Lucina Voice thread is an owner device, not an outside platform.
+                let game_system = if t.channel == VOICE_CHANNEL {
+                    format!("{game_system}\n{}", crate::prompts::VOICE_SURFACE_RULE)
+                        .trim()
+                        .to_owned()
+                } else {
+                    game_system
+                };
+                let finish = crate::planner::TURN_REPLY
+                    .scope(
+                        reply_block,
+                        crate::planner::TURN_SYSTEM
+                            .scope(game_system, json_turn(&t, &prepared, cmid.as_deref())),
+                    )
+                    .await;
+                (finish, Some(prepared))
+            }
         }
     };
+
+    // LucinaVoice: the reply text is settled here, before rich-reply, Honcho, memory and the timeline.
+    if !finish.reply.trim().is_empty() {
+        crate::voice::settle(finish.reply.trim(), false);
+    }
 
     // Finish: recent turns, Honcho, the Lucina item.
     let (rich_msg, reply, remembered) = if t.origin.is_some() {
@@ -952,12 +1228,14 @@ async fn run_turn_scoped(
             &finish.action,
             &finish.action_result,
             // Secrets replies are fixed texts, AU Find, caller and Jev yes/no answers keep their wording: no model rewrite.
-            !finish.action.starts_with("secrets_")
+            !voice_fast_turn
+                && !finish.action.starts_with("secrets_")
                 && finish.action != au_turn::ACTION
                 && finish.action != callers_turn::ACTION
                 && finish.action != crate::jev_yesno::ACTION,
             &finish.calendar_events,
             finish.agenda.as_ref(),
+            is_mcp,
         )
         .await
     };
@@ -965,8 +1243,10 @@ async fn run_turn_scoped(
     // composer is off or gave none.
     let rich_msg = match rich_msg {
         None if t.origin.is_none()
-            && (finish.action == au_turn::ACTION || finish.action == callers_turn::ACTION)
-            && (!finish.blocks.is_empty() || !finish.routes.is_empty()) =>
+            && (((finish.action == au_turn::ACTION || finish.action == callers_turn::ACTION)
+                && (!finish.blocks.is_empty() || !finish.routes.is_empty()))
+                // A tool's picture (a Juno screenshot).
+                || finish.blocks.iter().any(|b| b["type"] == "image")) =>
         {
             Some(lucina_store::rich::RichMessage {
                 format: "v1".into(),
@@ -993,6 +1273,10 @@ async fn run_turn_scoped(
     let meta = reply_meta
         .map(|m| meta.clone().unwrap_or_default().merge(m))
         .or(meta);
+    // A spoken turn that never reached the route (a secrets answer) writes its owner item now.
+    if user_item.is_none() {
+        user_item = timeline.record_user(&heard, Vec::new());
+    }
     let lucina_item = timeline.record_lucina(&reply, Vec::new(), meta);
     // Node queues the job's result after the ack on the turn's timeline chain.
     if let (Some(job), Some(plan)) = (&finish.job, &finish.job_plan) {
@@ -1147,8 +1431,10 @@ async fn rich_reply(
     use_model: bool,
     calendar_events: &[Value],
     agenda: Option<&crate::agenda::Agenda>,
+    mcp: bool,
 ) -> (Option<lucina_store::rich::RichMessage>, String, String) {
-    if !st.cfg.rich_replies {
+    // An MCP client is an agent reading text: no bubbles, no buttons, nothing cut.
+    if !st.cfg.rich_replies || mcp {
         return (None, reply.to_owned(), reply.to_owned());
     }
     // An agenda: one sentence and the event cards, no model rewrite, no wall of text.
@@ -1279,6 +1565,7 @@ fn remember_turn(st: &AppState, t: &Turn<'_>, action: &str, reply: &str, action_
             m.label(),
             t.message
         ),
+        None if t.channel == VOICE_CHANNEL => format!("[{VOICE_LABEL}] {}", t.message),
         None => format!("[{PLATFORM_LABEL}] {}", t.message),
     };
     let assistant = [
@@ -1446,7 +1733,7 @@ async fn compound_blocks(t: &Turn<'_>, domains: &[&'static str], memory: &str) -
 }
 
 /// Queue an async action as a job: the ack now, the result on the timeline when it finishes
-/// (`spawn_job`). `computer_task` carries its own ack in the owner's language (`plan["ack"]`).
+/// (`spawn_job`). `computer_task` carries its own ack in English (Danish when he writes Danish; never Italian) (`plan["ack"]`).
 fn queue_job(t: &Turn<'_>, plan: &Value, action: &str, cmid: Option<&str>) -> Finish {
     let st = t.st;
     let blocker = if action == "generate_image" && st.cfg.image_jobs {
@@ -1622,6 +1909,17 @@ async fn json_turn(
         return f;
     }
 
+    // A flaw he noticed ("emoji are boxes"): into the tracker in his words (crate::flaws).
+    if let Some(f) = flaw_turn::try_turn(t, &prepared.classification.intent, prepared.classification.confidence) {
+        return f;
+    }
+
+    // "What tools do you have?": her real list, from the registry and her desktop.
+    if !t.guarded && lucina_intent::computer_route::asks_for_her_tools(&t.message) {
+        return Finish::reply(crate::computer::her_tools(&st.registry).await, "reply")
+            .with("[her tools listed]", None);
+    }
+
     // Her own computer ("explore Outlook in your sandbox", "check my inbox"): before every other shortcut,
     // so the notes, tasks, calendar, memo and media routes, and a playing game, cannot take the message.
     if let Some(plan) = lucina_intent::computer_route::plan(&t.message) {
@@ -1629,6 +1927,11 @@ async fn json_turn(
             return not_run(t, memory, "computer_task").await;
         }
         return computer_task_finish(t, &plan, cmid).await;
+    }
+
+    // "Salvami la password del Wi-Fi": a card in his chat, by name (crate::secret_requests).
+    if let Some(f) = secret_turn::try_turn(t, memory).await {
+        return f;
     }
 
     // The ops record (crate::ops): "what happened with X" from the record; the owner's decisions recorded.
@@ -1689,6 +1992,42 @@ async fn json_turn(
     }
 }
 
+/// What she asks when a message reads like a reminder but neither she nor the planner could place it.
+fn reminder_question(message: &str) -> String {
+    match lucina_intent::calendar::guess_lang(message) {
+        "da" => "Hvornår skal det være? Hvis det er en aftale, så sig navn, dag og tidspunkt, så sætter jeg den i din kalender. Skal jeg minde dig om noget, så sig hvad og hvornår.",
+        _ => "When is that? If it's an appointment, tell me its name, day and time and I'll put it in your calendar. If you want a reminder, tell me what and when.",
+    }
+    .to_owned()
+}
+
+/// The reminder write of a turn: the JSON planner's `schedule_reminder` and the voice fast path
+/// (`voice_fast`) both go through it.
+async fn create_turn_reminder(
+    t: &Turn<'_>,
+    chat: String,
+    text: String,
+    due: String,
+) -> Result<(bool, lucina_store::reminders::Reminder), lucina_tools::reminder_writer::WriteError> {
+    t.st.writer
+        .create(CreateReminder {
+            text,
+            due_at: due,
+            chat_id: chat,
+            user_peer_id: t.peer().to_owned(),
+            user_label: t.user_label.clone(),
+            persona: t.persona().to_owned(),
+            time_zone: t.st.cfg.time_zone.name().into(),
+            dedupe_key: None,
+            source: t
+                .origin
+                .as_ref()
+                .map_or("secretary", |o| o.reminder_source)
+                .into(),
+        })
+        .await
+}
+
 /// The JSON turn after the read-only shortcuts that come before yes/no questions (decisions, YouTube,
 /// shares, her computer, the ops record, AU Find, caller screening).
 async fn json_turn_rest(
@@ -1696,8 +2035,6 @@ async fn json_turn_rest(
     prepared: &crate::context::Prepared,
     cmid: Option<&str>,
 ) -> Finish {
-    let st = t.st;
-    let persona = t.persona().to_owned();
     let memory = prepared.memory_context.as_str();
 
     // Meshy 3D (LUCINA_MESHY=true): a pending plan's yes/no, or a 3D request. Not for agents.
@@ -1706,6 +2043,43 @@ async fn json_turn_rest(
             return f;
         }
     }
+
+    // Juno's Chat: a pending laptop action, or Jev's guess names a juno_* tool.
+    // In the Juno window the planner path that follows ran no tool loop: no narrated actions.
+    let juno_rule = juno_turn::planner_system(&t.session);
+    if let Some(f) = juno_turn::try_turn(t, memory).await {
+        return f;
+    }
+    match juno_rule {
+        Some(rule) => {
+            crate::planner::TURN_SYSTEM
+                .scope(
+                    with_juno_rule(&rule),
+                    Box::pin(json_turn_planner(t, prepared, cmid)),
+                )
+                .await
+        }
+        None => json_turn_planner(t, prepared, cmid).await,
+    }
+}
+
+/// The turn's fixed system text (`TURN_SYSTEM`) with the Juno planner rule after it.
+fn with_juno_rule(rule: &str) -> String {
+    let base = crate::planner::TURN_SYSTEM
+        .try_with(|g| g.trim().to_owned())
+        .unwrap_or_default();
+    format!("{base}\n{rule}").trim().to_owned()
+}
+
+/// [`json_turn_rest`] after the Juno turn: the other skills, then the JSON planner.
+async fn json_turn_planner(
+    t: &Turn<'_>,
+    prepared: &crate::context::Prepared,
+    cmid: Option<&str>,
+) -> Finish {
+    let st = t.st;
+    let persona = t.persona().to_owned();
+    let memory = prepared.memory_context.as_str();
 
     // Lucina's own Google Drive (LUCINA_DRIVE=true with a grant), read-only.
     if let Some(f) = drive_turn::try_turn(t, memory).await {
@@ -1780,7 +2154,10 @@ async fn json_turn_rest(
     // Notes (LUCINA_NOTES=true): save, append, read, list; MCP callers may too.
     if st.cfg.notes_enabled {
         let pending = !st.bridge_state.pending_part(&t.session).is_empty();
-        if let Some(intent) = nt::parse_notes_intent(&t.message, pending) {
+        // "Read this photo and save it as a note" is a photo first: the media turn reads it and saves the reading.
+        let notes = nt::parse_notes_intent(&t.message, pending)
+            .filter(|_| !media_turn::is_media_request(&t.message));
+        if let Some(intent) = notes {
             let read = matches!(
                 intent,
                 nt::NotesIntent::Read { .. } | nt::NotesIntent::List { .. }
@@ -2168,28 +2545,12 @@ async fn json_turn_rest(
             }
             None => None,
         };
+        // Never a dead end: he gets a question he can answer, and the next turn sees this one.
         let Some((text, due)) = resolved else {
-            return Finish::reply("I could not work out when to remind you. Try \"domani mattina di comprare il latte\", \"alle 21:30 di fare la doccia\" or \"28 August 2026 — unsubscribe from Google AI Plus\".".to_owned(), &action);
+            return Finish::reply(reminder_question(&t.message), &action)
+                .with("[reminder unclear: asked when]", None);
         };
-        return match st
-            .writer
-            .create(CreateReminder {
-                text,
-                due_at: due,
-                chat_id: chat,
-                user_peer_id: t.peer().to_owned(),
-                user_label: t.user_label.clone(),
-                persona: persona.clone(),
-                time_zone: tz.name().into(),
-                dedupe_key: None,
-                source: t
-                    .origin
-                    .as_ref()
-                    .map_or("secretary", |o| o.reminder_source)
-                    .into(),
-            })
-            .await
-        {
+        return match create_turn_reminder(t, chat, text, due).await {
             Ok((created, reminder)) => {
                 let prefix = if created {
                     ""
@@ -2282,7 +2643,8 @@ async fn json_turn_rest(
     Finish::reply(text, "reply")
 }
 
-/// A delegation request from the owner's own turn.
+/// A delegation request from the owner's own turn. On an MCP turn the caller (ChatGPT, Grok, …) is
+/// set, so the request never goes back to the agent that sent it.
 fn owner_request(
     t: &Turn<'_>,
     to: Option<lucina_delegate::AgentId>,
@@ -2297,7 +2659,7 @@ fn owner_request(
         workspace,
         origin: lucina_delegate::Origin::Owner,
         depth: 0,
-        caller: None,
+        caller: t.mcp.as_ref().map(|m| m.caller.clone()),
         session_id: t.session.clone(),
         channel: t.channel.clone(),
         lang: None,
@@ -2354,6 +2716,15 @@ async fn delegation_hook(
         tracing::warn!(session_id = %t.session, "secretary mcp turn refused: delegation");
         return Some(delegation_refused(i.lang));
     }
+    // A trusted MCP turn relays the owner, but the regexes also match an agent's report: Jev checks.
+    if let Some(m) = &t.mcp {
+        let (yes, p) =
+            crate::jev_route::mcp_delegation(lucina_jev::shared(), &m.caller, &t.message).await;
+        tracing::info!(event = "mcp_delegation", caller = %m.caller, p = ?p, delegate = yes, "mcp delegation check");
+        if !yes {
+            return None;
+        }
+    }
     let req = owner_request(t, i.to, i.kind, i.task, i.workspace);
     Some(delegated_finish(t, d, req, memory).await)
 }
@@ -2373,7 +2744,7 @@ async fn delegated_finish(
     let reply = match &ran.job {
         Some(job) if ran.finished && job.status == lucina_delegate::JobStatus::Done => {
             let instruction = format!(
-                "Relay this answer to Giuseppe in the language of his message: 1-4 short sentences, saying it comes from {}. If it says the full answer is in Notes, say so. Do not add facts that are not in it.",
+                "Relay this answer to Giuseppe in English (Danish when he writes Danish; never Italian): 1-4 short sentences, saying it comes from {}. If it says the full answer is in Notes, say so. Do not add facts that are not in it.",
                 job.agent.label()
             );
             t.st.planner
@@ -2527,6 +2898,8 @@ fn spawn_job(st: AppState, job: Job, plan: Value, message: String, memory: Strin
             surface,
             origin,
         } = dest;
+        // An agent's job: the agent hears about it, the owner's phone does not ring.
+        let from_agent = turn_meta.as_ref().is_some_and(|m| m.via.is_some());
         let timeline = origin
             .as_ref()
             .map_or_else(|| st.timeline_for(&session), |o| o.timeline.clone());
@@ -2619,11 +2992,11 @@ fn spawn_job(st: AppState, job: Job, plan: Value, message: String, memory: Strin
                     (None, result.clone())
                 } else {
                     let (rich_msg, text, _) =
-                        rich_reply(&st, &result, &message, &action, "", false, &[], None).await;
+                        rich_reply(&st, &result, &message, &action, "", false, &[], None, false).await;
                     (rich_msg, text)
                 };
                 let item = record(text, rich_msg.as_ref());
-                if action == crate::video::ACTION {
+                if action == crate::video::ACTION && !from_agent {
                     notify_job(
                         &st,
                         &job.id,
@@ -2660,7 +3033,7 @@ fn spawn_job(st: AppState, job: Job, plan: Value, message: String, memory: Strin
                 tracing::error!(job_id = %job.id, %action, error = %reason.chars().take(300).collect::<String>(), "secretary job failed");
                 let text = format!("{} failed: {reason}", jobs::label(&action));
                 let item = record(text.clone(), None);
-                if action == crate::video::ACTION {
+                if action == crate::video::ACTION && !from_agent {
                     notify_job(
                         &st,
                         &job.id,
@@ -2932,6 +3305,17 @@ fn tool_item_text(r: &ToolRecord) -> String {
     format!("🔧 {} → {}", r.summary, if r.ok { "ok" } else { "error" })
 }
 
+/// A sub-turn's tool-trace line: the turn's agent mark plus the tool. An agent's turn alerts
+/// nobody, its trace lines included (secretary-server `notify::ingest`; 2026-11-03 the photo
+/// searches of an agent's question pushed 19 "🔧 media search" lines to his phone).
+fn tool_meta(mark: &Meta, r: &ToolRecord) -> Meta {
+    mark.clone().merge(Meta {
+        tool: Some(r.name.clone()),
+        ok: Some(r.ok),
+        ..Meta::kind("tool")
+    })
+}
+
 /// `LUCINA_PLANNER=tools`: the native tool loop with the confirmation flow.
 #[allow(clippy::too_many_arguments)]
 async fn tools_turn(
@@ -2960,10 +3344,22 @@ async fn tools_turn(
     let reply_meta = existing.as_ref().map(|s| s.reply_meta.clone());
     let secrets_text = existing.as_ref().map(|s| s.owner_text.clone());
     let voice_system = if existing.is_some() {
-        crate::share::guidance::VOICE_SYSTEM
+        crate::share::guidance::VOICE_SYSTEM.to_owned()
     } else {
-        ""
+        String::new()
     };
+    let voice_system = if crate::voice::spoken() {
+        format!("{voice_system} {}", crate::voice::SPOKEN_RULE)
+    } else {
+        voice_system
+    };
+    let voice_system = if channel == VOICE_CHANNEL {
+        format!("{voice_system} {}", crate::prompts::VOICE_SURFACE_RULE)
+    } else {
+        voice_system
+    };
+    // The device the message came from, as a fact of the turn (no message text is matched).
+    let voice_system = format!("{voice_system} {}", juno_fact(&st, &session, mcp));
     let turn = TimelineTurn::new(st.timeline_for(&session), &channel, cmid.clone())
         .with_meta(Some(device_meta))
         .with_reply_to(reply_to);
@@ -2992,10 +3388,16 @@ async fn tools_turn(
     let (memory_context, game_system) = if secrets.is_some() {
         (String::new(), String::new())
     } else {
-        let p = crate::context::prepare_with(
+        let p = crate::context::prepare_keyed(
             &st,
             &surface,
             &session,
+            crate::context::Keys {
+                recent: &st.recent,
+                recent_key: &session,
+                peer: &st.cfg.owner_peer_id,
+                voice: channel == VOICE_CHANNEL,
+            },
             &message,
             USER_LABEL,
             PLANNER_PLATFORM,
@@ -3137,7 +3539,7 @@ async fn tools_turn(
     } else if let Some(o) = calendar {
         calendar_finish(o)
     } else if let Some(result) = settled {
-        let reply = st.planner.generate_skill_reply(&t, "pending action", &result, "Tell the owner what happened in one or two sentences, in the language of the message.").await.unwrap_or_else(|_| fallback());
+        let reply = st.planner.generate_skill_reply(&t, "pending action", &result, "Tell the owner what happened in one or two sentences, in English (Danish when he writes Danish; never Italian).").await.unwrap_or_else(|_| fallback());
         effects_to_finish(&ctx.effects(), reply)
     } else {
         let extra = format!(
@@ -3202,6 +3604,8 @@ async fn tools_turn(
     } else {
         finish.reply.trim().to_owned()
     };
+    // LucinaVoice: settled before rich-reply (see run_turn_scoped).
+    crate::voice::settle(&reply, false);
     let (rich_msg, reply, remembered) = rich_reply(
         &st,
         &reply,
@@ -3215,8 +3619,22 @@ async fn tools_turn(
             && finish.action != crate::jev_yesno::ACTION,
         &finish.calendar_events,
         finish.agenda.as_ref(),
+        mcp,
     )
     .await;
+    // The tools' own blocks and buttons (a Juno screenshot, an AU map), as on the JSON planner: they
+    // need a rich message even when the composer gave none.
+    let rich_msg = match rich_msg {
+        None if !finish.blocks.is_empty() => Some(lucina_store::rich::RichMessage {
+            format: "v1".into(),
+            bubbles: vec![reply.clone()],
+            lang: Some(crate::rich::guess_language(&reply, &message).to_owned()),
+            blocks: Vec::new(),
+            actions: Vec::new(),
+        }),
+        m => m,
+    };
+    let rich_msg = with_blocks(with_routes(rich_msg, &finish.routes), &finish.blocks);
     st.recent
         .append(&session, "assistant", &remembered, Utc::now());
     // MCP turns are remembered with their caller (label and metadata).
@@ -3237,6 +3655,7 @@ async fn tools_turn(
         user_label: USER_LABEL.into(),
         extra_system: String::new(),
         share: false,
+        share_note: String::new(),
         origin: None,
     };
     remember_turn(&st, &t2, &finish.action, &remembered, &finish.action_result);
@@ -3271,6 +3690,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_agents_tool_lines_carry_its_mark() {
+        let r = ToolRecord {
+            call_id: "c1".into(),
+            name: "media".into(),
+            args: json!({}),
+            ok: true,
+            output: json!({}),
+            summary: "media search Fortuna".into(),
+            pending: None,
+            ms: 1,
+        };
+        let mark = Meta {
+            via: Some("mcp".into()),
+            caller: Some("some-new-provider".into()),
+            conversation: Some("lastphoto".into()),
+            ..Meta::default()
+        };
+        let m = tool_meta(&mark, &r);
+        assert_eq!(
+            (m.kind.as_deref(), m.tool.as_deref(), m.ok, m.via.as_deref(), m.caller.as_deref(), m.conversation.as_deref()),
+            (Some("tool"), Some("media"), Some(true), Some("mcp"), Some("some-new-provider"), Some("lastphoto"))
+        );
+        // His own turn: no mark.
+        let m = tool_meta(&Meta::default(), &r);
+        assert!(m.via.is_none() && m.caller.is_none());
+        assert!(crate::secret_keep::agent_session("secretary_mcp-claude-lastphoto"));
+        assert!(crate::secret_keep::agent_session("mcp-some-new-provider"));
+        assert!(!crate::secret_keep::agent_session("secretary_ios-1"));
+    }
+
+    #[test]
     fn a_page_read_runs_read_only_on_her_computer() {
         let p = web_crawl_as_computer_task(
             &json!({"action": "web_crawl_task", "url": "https://example.com", "query": "the page title"}),
@@ -3298,13 +3748,21 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_plan_is_said_in_the_turn_language() {
+        let da = crate::planner::TURN_LANG
+            .scope(
+                lucina_intent::lang::language_line(lucina_intent::lang::Lang::Da),
+                async { crate::planner::plan_failed_text() },
+            )
+            .await;
+        assert!(da.starts_with("Undskyld"), "{da}");
+        // An Italian message is answered in English.
         let it = crate::planner::TURN_LANG
             .scope(
                 lucina_intent::lang::language_line(lucina_intent::lang::Lang::It),
                 async { crate::planner::plan_failed_text() },
             )
             .await;
-        assert!(it.starts_with("Scusa"), "{it}");
+        assert!(it.starts_with("Sorry"), "{it}");
         assert!(crate::planner::plan_failed_text().starts_with("Sorry"));
     }
 
@@ -3375,7 +3833,7 @@ mod tests {
             "Ho trovato le slide della lezione 5 di Digital Forensics: è il PDF più recente."
                 .into(),
         );
-        assert_eq!(f.routes[0]["label"], "Apri nel Drive");
+        assert_eq!(f.routes[0]["label"], "Open in Drive");
     }
     use chrono::TimeZone;
 

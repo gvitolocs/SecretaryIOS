@@ -11,9 +11,12 @@ import { olderScope, syncScope, type Conversation } from "../lib/chatSync";
 import { chatDevice, fromItem, onTimelineConnected, onTimelineItem, setReplyTarget } from "../state/chat";
 import { ToolSteps } from "../components/ToolSteps";
 import { chatRows, isToolRun } from "../lib/toolSteps";
+import { MicIcon } from "../components/Icons";
+import { VoiceExtras } from "../components/voice/VoiceThread";
 import { MessageItem } from "./Chat";
 import "../styles/chats.css";
 import "../styles/tool-steps.css";
+import "../styles/voice-thread.css";
 
 // All chats (Plugins → All chats): every conversation Lucina has, across devices (this browser,
 // the iPhone, the Mac), MCP agents (ChatGPT, Claude, Grok Bot, Cursor, Codex) and bots
@@ -32,8 +35,12 @@ function routeKey(raw: string | undefined): string | undefined {
   }
 }
 
+/** The shared LucinaVoice thread (docs/lucinavoice-protocol.md section 7): key "voice", titled "Lucina Voice". */
+const VOICE_KEY = "voice";
+const isVoice = (c: Pick<Conversation, "key" | "kind" | "channel">) => c.key === VOICE_KEY || c.kind === "voice" || c.channel === "voice";
+
 const kindLabel = (c: Conversation) =>
-  t(c.kind === "device" || c.kind === "legacy" ? "chats.device" : c.kind === "agent" ? "chats.agent" : "chats.bot");
+  t(isVoice(c) ? "chats.voice" : c.kind === "device" || c.kind === "legacy" ? "chats.device" : c.kind === "agent" ? "chats.agent" : "chats.bot");
 
 export default function ChatsView() {
   const { wide, track } = useWide();
@@ -58,10 +65,23 @@ export default function ChatsView() {
   const key = () => routeKey(params.key);
   const selected = () => conversations().find((c) => c.key === key());
   const own = (c: Conversation) => !!chatDevice() && c.key === `device:${chatDevice()}`;
+  // A message keeps its identity while it does not change, so a row's own state (an open "Edit transcript"
+  // form, an expanded timing line) survives the next sync or a new message arriving.
+  const sameItem = (a: TimelineItem, b: TimelineItem) =>
+    a.ts === b.ts && a.text === b.text && JSON.stringify(a.meta) === JSON.stringify(b.meta) && JSON.stringify(a.attachments) === JSON.stringify(b.attachments);
+  const messages = new WeakMap<TimelineItem, ReturnType<typeof fromItem>>();
+  const messageOf = (item: TimelineItem) => {
+    let m = messages.get(item);
+    if (!m) messages.set(item, (m = fromItem(item)));
+    return m;
+  };
   const merge = (received: TimelineItem[], reset = false) =>
     setItems((old) => {
       const map = new Map((reset ? [] : old).map((i) => [i.id, i]));
-      for (const i of received) map.set(i.id, i);
+      for (const i of received) {
+        const prev = map.get(i.id);
+        if (!prev || !sameItem(prev, i)) map.set(i.id, i);
+      }
       return [...map.values()].sort((a, b) => a.ts - b.ts || a.id.localeCompare(b.id, undefined, { numeric: true }));
     });
 
@@ -175,18 +195,42 @@ export default function ChatsView() {
                   {t("chat.loadEarlier")}
                 </button>
               </Show>
-              <fieldset disabled class="readonly-messages" aria-label={t("chat.conversation")}>
-                <For each={chatRows(items().map(fromItem))}>
-                  {(row) => (isToolRun(row) ? <ToolSteps steps={row.steps} /> : <MessageItem readOnly message={row} />)}
-                </For>
-              </fieldset>
+              <Show
+                when={key() === VOICE_KEY}
+                fallback={
+                  <fieldset disabled class="readonly-messages" aria-label={t("chat.conversation")}>
+                    <For each={chatRows(items().map(messageOf))}>
+                      {(row) => (isToolRun(row) ? <ToolSteps steps={row.steps} /> : <MessageItem readOnly message={row} />)}
+                    </For>
+                  </fieldset>
+                }
+              >
+                {/* Read-only too, but each turn carries its timing line and "Edit transcript": those must stay clickable,
+                    so the messages are disabled one by one instead of the whole thread. */}
+                <div class="readonly-messages" role="group" aria-label={t("chat.conversation")}>
+                  <For each={chatRows(items().map(messageOf))}>
+                    {(row) =>
+                      isToolRun(row) ? (
+                        <ToolSteps steps={row.steps} />
+                      ) : (
+                        <div class="vt-row">
+                          <fieldset disabled class="readonly-messages">
+                            <MessageItem readOnly message={row} />
+                          </fieldset>
+                          <VoiceExtras message={row} />
+                        </div>
+                      )
+                    }
+                  </For>
+                </div>
+              </Show>
             </div>
             <Show when={wide() && !loading() && !items().length && !error()}><EmptyState text={t("chats.emptyConversation")} /></Show>
           </>);
   const list = () => <Card list class="chats-desk-list" label={t("chats.title")}>
     <Show when={conversations().length} fallback={<Show when={!loading() && !error()}><EmptyState text={t("chats.empty")} /></Show>}>
       <RowList label={t("chats.title")}><For each={conversations()}>{c => <ListRow
-        leading={<span class="chats-desk-avatar" aria-hidden="true">{c.title.trim()[0] ?? "?"}</span>}
+        leading={<span class="chats-desk-avatar" aria-hidden="true">{isVoice(c) ? <MicIcon /> : (c.title.trim()[0] ?? "?")}</span>}
         title={<a class="pg-row-name pg-row-link" href={own(c) ? "/" : `/chats/${encodeURIComponent(c.key)}`} aria-current={c.key === key() ? "page" : undefined}>{c.title}</a>}
         badge={kindLabel(c)} sub={<>{own(c) ? `${t("chats.thisDevice")} · ` : ""}{decisionSummary(c.lastText)}</>}
         meta={<time>{relativeTime(c.lastTs)}</time>}
@@ -219,6 +263,11 @@ export default function ChatsView() {
           <For each={conversations()}>
             {(c) => (
               <button class="conversation-row" onClick={() => navigate(own(c) ? "/" : `/chats/${encodeURIComponent(c.key)}`)}>
+                <Show when={isVoice(c)}>
+                  <span class="conversation-icon" aria-hidden="true">
+                    <MicIcon />
+                  </span>
+                </Show>
                 <strong>{c.title}</strong>
                 <span class="conversation-kind">{kindLabel(c)}</span>
                 <Show when={own(c)}>

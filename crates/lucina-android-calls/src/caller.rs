@@ -909,7 +909,8 @@ mod tests {
         assert_eq!(da.title, "Ukendt opkald");
         assert!(da.text.contains("hurtigt gæt"));
         let it = local(&s, "+39 333 1234567", &Input::default(), "it", NOW);
-        assert!(it.text.contains("stima rapida"), "{}", it.text);
+        // Never Italian (owner rule 2026-11-02): an Italian client gets English.
+        assert!(it.text.contains("quick guess"), "{}", it.text);
         // Nothing was saved: only a screened call is "the last".
         assert_eq!(s.last(), None);
     }

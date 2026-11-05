@@ -1,0 +1,68 @@
+{
+  "notes": {
+    "00 Home.md": "---\naliases:\n  - Start\n  - Home page\ntags:\n  - hub\n  - Method/Zettel\nup: \"[[Renamed Alpha]]\"\nrelated:\n  - \"[[Folder A/Dup]]\"\n  - plain\ncssclasses: wide\n---\n# The home title\n\n[[Renamed Alpha]] and [[Renamed Alpha#Section One]] and [[Renamed Alpha|shown]] and [[Renamed Alpha#^block-1|block]].\nAlias [[Start]] and [[Beta Alias]] and missing [[Missing note]] and [[Missing/Deep note]].\nPaths [[Moved Dup]] [[Dup]] [[Folder B/Sub/Deep]] [[Sub/Deep]] [[Deep.md]] [[deep.MD]].\nTwins [[Twin]] [[Inner/Twin]] [[Folder B/Twin]].\nOdd [[Renamed Alpha]] [[Renamed Alpha]] [[Renamed Alpha]] [[Folder A/]] [[Renamed Alpha]] [[note.with.dots]] [[Café]] [[Spaces  twice]].\nFiles [[pic]] [[photo.png]] [[report.pdf#page=3]] ![[photo.png]] ![[photo.png|200]] ![[Renamed Alpha]] ![[Renamed Alpha#Section One]] ![[photo.png]].\nLocal [[#The home title]] [[#^local]] [[]] [[ ]] [[a|b|c]] [[a [[Folder A/Dup]] [[Renamed Alpha#Section One#Sub]].\nMarkdown [md](Renamed%20Alpha.md) [md2](Moved%20Dup.md) [md3](<Moved Dup.md>) [md4](Renamed%20Alpha.md) [md5](Renamed%20Alpha.md) [md6](Folder%20A/Dup.md#Heading) ![img](photo.png) [ext](https://example.com/Alpha.md) [mail](mailto:a@b.c) [[https://example.com]].\nCode `[[InCode]]` and `#incode` and ``[[Double]]``.\nEscaped \\[[Esc]] and \\#esc and %%[[Hidden]] #hidden%% and <!-- [[HtmlHidden]] #htmlhidden -->.\n\n| a | b |\n|---|---|\n| [[Renamed Alpha\\|tbl]] | [[Folder A/Dup]] #intable |\n\n- [ ] task with [[Folder A/Dup]]\n- [x] done #tasktag ^local\n\n> [!note] Callout title with [[Renamed Alpha]]\n> body #incallout\n\n```rust\n[[Fenced]] #fenced\n```\n\n~~~\n[[Tilde]]\n~~~\n\n    [[Indented]] #indented\n\nMulti %%\n[[HiddenLine]]\n%% after\n\nTags #tag #Tag/Sub #123 #a1 #-dash #under_score not#tag (#paren) #comma, #dot. #ünï ##nottag # nothead #tag/ #/lead #a/b/c #emoji😀 #q? #end\n",
+    "Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/Five.md": "x\n",
+    "B/C/D/Six.md": "x\n",
+    "B/C/Five.md": "x\n",
+    "B/C/Src2.md": "[[Six]] [[Five]] [[Dup]]\n",
+    "B/Src.md": "[[Five]] [[Tri]] [[Six]] [[Twin]]\n",
+    "BOM.md": "---\ntags: bom\n---\nBOM note #bombody\n",
+    "Bad yaml 2.md": "---\ntags: [badtwo]\ntitle: a: b\n---\nx [[Renamed Alpha]]\n",
+    "Bad yaml 3.md": "---\ntags: [badthree]\nnotakey\n---\nx\n",
+    "Bad yaml 4.md": "---\ntags: [badfour]\nsource: [[Alpha]]/tail\n---\nx\n",
+    "Bad yaml 5.md": "---\ntags: [badfive]\nq: \"open\n---\nx\n",
+    "Bad yaml.md": "---\nbad: [unclosed\n---\nBad YAML. #afterbad [[Renamed Alpha]]\n",
+    "CRLF.md": "CRLF note.\r\n\r\n[[Renamed Alpha]] #crlf\r\n",
+    "Café.md": "café\n",
+    "Dup.md": "Root Dup. [[Dup]] [[Twin]]\n",
+    "Edge cases.md": "Math $[[InMath]] #inmath$ and $$[[InMath2]]$$.\n\n$$\n[[InMathBlock]] #inmathblock\n$$\n\n<div>[[InHtml]] #inhtml</div>\n\n<div>\n[[InHtmlBlock]] #inhtmlblock\n</div>\n\nFootnote[^1] and inline ^[[[InInlineNote]]].\n\n[^1]: Note text [[InFootnote]] #infootnote\n\nLink text [#intext](Renamed%20Alpha.md) and [[[Alpha]]](Beta.md) and [a [[Folder A/Dup]] b](Renamed%20Alpha.md).\nUrl http://a.b/#frag and http://a.b/[[InUrl]] and <http://a.b/#auto>.\nScheme [x](obsidian://open?vault=a) [y](#Heading) [z](Renamed%20Alpha.md \"A title\") [w](Renamed%20Alpha.md 'T') [sp](Folder A/Dup.md) [paren](Another%20claim.md) [q](Alpha.md?x=1) [e]() [pdf](Evidence/report.pdf) [nolink](missing.md)\nReference [ref][1] and ![refimg][2].\n\n[1]: Alpha.md\n[2]: Evidence/pic.png\n\nBefore tags , #afterspace ,#aftercomma \"#quote\" [#bracket] *#star* **#bold** _#under_ ~#tilde ==#mark== :#colon ;#semi /#slash\nTag shapes #1a #1/2 #2026-11 #a.b #a_b-c #中文 #ÆØÅ #a&b #a+b #a=b #a'b #a\"b\n# Heading with [[InHeading]] #inheading\n## Closed heading ##\nSetext [[InSetext]]\n===\nBold **[[InBold]]** _[[InItalic]]_ ~~[[InStrike]]~~ ==[[InMark]]==\n> quote [[InQuote]]\n\n- list [[InList]]\n    - nested [[InNested]]\n\n        deep code? [[InListIndent]]\n1. ordered [[InOrdered]]\n\nText then\n    indented after text [[LazyIndent]] #lazyindent\n\n\ttab indented [[TabIndent]] #tabindent\n\n````\n```\n[[InLongFence]]\n```\n````\n\n ```\n[[SpaceFence]]\n```\n\n- ```\n  [[FenceInList]]\n  ```\n\n`unclosed [[AfterTick]]\nBlock id ^abc-1\n\n^solo-id\n\nLine with ^not_id here\n\n---\n---\nCase [[Renamed Alpha]] [[Renamed Alpha]] nfd [[Café]]\n[[Renamed Alpha| spaced alias]] [[Renamed Alpha]] [[Alpha #Section One]] [[Renamed Alpha# Section One]]\n![[photo.png]] !  [[Folder A/Dup]] ! [[Folder A/Dup]]\n[[Tri]] [[Five]] [[Six]]\n",
+    "Empty.md": "",
+    "Folder A/Dup.md": "---\naliases:\n  - Beta Alias\n  - \"beta two\"\ntags:\n  - x\n  - \"#y\"\n  - Z/Nested\ntag: single\n---\n## Heading\n\n[[Renamed Alpha]] [[Renamed Alpha]] [[Renamed Alpha]]\n",
+    "Folder A/Inner/Twin.md": "---\ntags: space separated words\n---\nInner Twin. [[Twin]] [[Moved Dup]] [rel](Moved%20Dup.md) [root](/Dup.md)\n",
+    "Folder A/Twin.md": "---\ntags: a, b\n---\nA Twin. [[Twin]]\n",
+    "Folder B/Dup.md": "B Dup. [[Dup]] [[Twin]]\n",
+    "Folder B/Sub/Deep.md": "Deep. [[Dup]] [[Twin]] [up](../Dup.md) [sib](Deep.md) ![p](photo.png) ![[photo.png]]\n",
+    "Folder B/Twin.md": "---\ntag: [solo, \"two words\"]\n---\nB Twin. [[Twin]]\n",
+    "Folder C/Moved Dup.md": "A Dup. [[Dup]] [[Folder A/Twin]] [[Deep]]\n",
+    "Good yaml.md": "---\ntags:\n  - goodsix\nnested:\n  a: 1\n  b:\n    - x\n    - y\nlong: |\n  folded: text [here\nurl: http://a.b/c#d\ntime: 12:30\nsource:\n  - - Alpha\nlist:\n  - \"[[Folder A/Dup]]\"\n  - plain\n---\nx\n",
+    "Long folder name here/Tri.md": "tie\n",
+    "No close.md": "---\nno close #tagnot [[Renamed Alpha]]\n\nstill body #stillbody\n",
+    "Project/00 Project hub.md": "---\ntags: [hub]\n---\n# Project hub\n\n[[Project/Permanent/A claim stated as a full sentence.]] [[MOC map]] [[2026-11-02 Event]]\n",
+    "Project/Events/2026-11-02 Event.md": "---\ndate: 2026-11-02\n---\n[[00 Project hub]] ![[photo.png]]\n",
+    "Project/MOC/MOC map.md": "[[A claim stated as a full sentence.]]\n[[Another claim]]\n",
+    "Project/Permanent/A claim stated as a full sentence..md": "## Project files\nNone.\n\n## Connects to\n- [[Another claim]]\n\n## Enables\n- [[00 Project hub]]\n\n## Index\n- [[MOC map]]\n",
+    "Project/Permanent/Another claim.md": "[[A claim stated as a full sentence.]] #claim\n",
+    "Renamed Alpha.md": "Intro with no heading first. #Alpha-tag\n\n# Section One\n\nParagraph with a block. ^block-1\n\n## Sub\n\nBack to [[00 Home]] and [[Home page]] and [[Start|start alias]].\n\nSection One again, a second heading:\n\n# Section One\n",
+    "Spaces  twice.md": "spaces\n",
+    "Tables.md": "Cell | test\n--- | ---\n[[Alpha|broken]] | [[Folder A/Dup\\|fine]]\n#celltag `a|b` | [x](Renamed%20Alpha.md)\nnopipe [[Folder A/Dup]]\n\n| [[Alpha#H|two]] |\n|-|\n| [[Beta|three]] four |\n\nnot | a table [[Renamed Alpha|whole]]\n",
+    "Tag values.md": "---\ntags: [2026, \"a.b\", ok1, \"two words\", \"#hash\", ok/nested, ok-dash]\n---\nx\n",
+    "Templates/Day.md": "---\ntags: template\n---\n{{date}} [[Should still count]]\n",
+    "Upper.MD": "upper ext [[Renamed Alpha]]\n",
+    "Y/Six.md": "x\n",
+    "Zz/Tri.md": "tie\n",
+    "note.with.dots.md": "dots [[Renamed Alpha]]\n"
+  },
+  "obsidian": "1.15.0",
+  "steps": [
+    [
+      "Alpha.md",
+      "Renamed Alpha.md"
+    ],
+    [
+      "Folder A/Dup.md",
+      "Folder C/Moved Dup.md"
+    ],
+    [
+      "Evidence/pic.png",
+      "Evidence/photo.png"
+    ],
+    [
+      "Project/Permanent/Another claim, with a comma and (brackets).md",
+      "Project/Permanent/Another claim.md"
+    ],
+    [
+      "Beta.md",
+      "Folder A/Dup.md"
+    ]
+  ]
+}

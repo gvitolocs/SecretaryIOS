@@ -105,6 +105,8 @@ Handler kinds are in backticks; `share/guidance.rs` holds the exact guidance tex
   an optional caption in `note`, and `meta.files[i]` with `index`, `voice: true`, optional
   `transcript`, `durationMs`, and `waveform` (standard base64 of up to 64 levels, 0–255,
   oldest first; at most 88 characters). Only audio accepts the voice flag.
+- Images: OCR runs first, then vision within `LUCINA_VISION_BUDGET_SECS` (default 360: lease wait, a
+  cold model load and the answer). Slow vision costs only the description; the OCR text still arrives.
 - Voice notes use handler `audio`, subtype `voice`, timeline kind `voice`. A non-empty
   on-device transcript is used first; otherwise Whisper reads the first ten minutes.
   Voice notes skip long-document summaries. The transcript remains searchable in attachment memory.
@@ -151,3 +153,7 @@ text. The reply gets an "Open in Drive" button.
 due date, spreadsheet sums, .ics events, .vcf contacts, archive limits, YouTube caption parsing), the turn
 prompt (the question plus the right guidance plus the extracted numbers), and attachment memory recall.
 Fixtures are in `crates/lucina-server/tests/fixtures/attachments/`.
+
+## Reading photos of screens and pages
+
+A picture is turned upright first when tesseract's orientation check is sure, because upside-down text defeats OCR and makes vision swap labels and miss values. When the picture holds text that doesn't fill it, vision also reads an enlarged crop of the text area, and that close reading goes to the model ahead of OCR.

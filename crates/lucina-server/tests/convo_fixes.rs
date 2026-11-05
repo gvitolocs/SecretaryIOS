@@ -74,7 +74,8 @@ async fn paused_game_and_failed_plans() {
     assert!(system.contains("CHAMPIONS_ROOM"), "kept as information");
     assert!(system.contains("it is paused"));
     assert!(!system.contains("PRIORITY: this live game block outranks"));
-    assert!(system.contains("Reply language: Italian"));
+    assert!(system.contains("Reply language: English"));
+    assert!(!system.contains("Reply language: Italian"));
 
     // 2. A playing run does take the planner; its answer is not JSON twice, so she says so briefly in the
     //    language of the message instead of a tool-less guess (no reply call).
@@ -144,4 +145,94 @@ async fn the_computer_route_comes_before_the_planner() {
     assert!(d["reply"].as_str().unwrap().contains("switched off"), "{d}");
     let ks = kinds(&h);
     assert!(!ks.contains(&"plan") && !ks.contains(&"reply"), "{ks:?}");
+}
+
+/// 30 Oct 2026, the owner: "Mentor session 6 november at 12:30". She answered that she could not work out
+/// when to remind him and saved nothing. A date, a time and a thing are an event in his own chat.
+#[tokio::test]
+async fn a_plain_event_message_lands_in_the_calendar() {
+    let secretary = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/calendar/events"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "id": "lucina:m1", "title": "Mentor session", "start": "2026-11-06T12:30:00+01:00",
+            "end": "2026-11-06T13:30:00+01:00", "allDay": false, "source": "lucina"
+        })))
+        .mount(&secretary)
+        .await;
+    Mock::given(method("GET")).respond_with(ResponseTemplate::new(200).set_body_json(json!({"events": []})))
+        .mount(&secretary).await;
+    let uri = secretary.uri();
+    let h = harness(
+        script(json!({"rules": [
+            {"kind": "intent", "content": "{\"intent\":\"chat\",\"confidence\":0.5,\"reply_mode\":\"chat\",\"needs_tools\":false}"},
+            {"kind": "plan", "content": "{\"action\":\"reply\",\"text\":\"WRONG: the planner ran\"}"},
+            {"kind": "reply", "content": "x"}
+        ]})),
+        move |c| {
+            c.calendar_enabled = true;
+            c.secretary_url = Some(uri.clone());
+            let f = c.data_dir.join("svc.token");
+            std::fs::write(&f, "svc").unwrap();
+            c.secretary_service_token_file = Some(f);
+        },
+    )
+    .await;
+    let v = h.chat("Mentor session 6 november at 12:30").await;
+    let reply = v["reply"].as_str().unwrap().to_owned();
+    assert!(!reply.contains("could not work out"), "{reply}");
+    let reqs = secretary.received_requests().await.unwrap();
+    let post = reqs.iter().find(|r| r.method.as_str() == "POST" && r.url.path() == "/v1/calendar/events")
+        .unwrap_or_else(|| panic!("no event created: {reply}"));
+    let body: Value = serde_json::from_slice(&post.body).unwrap();
+    assert!(body["title"].as_str().unwrap().contains("Mentor session"), "{body}");
+    assert!(body["start"].as_str().unwrap().contains("T12:30"), "{body}");
+}
+
+/// The dead end itself: a reminder nobody can place becomes a question.
+#[tokio::test]
+async fn a_reminder_nobody_can_place_is_a_question() {
+    let h = harness(
+        script(json!({"rules": [
+            {"kind": "intent", "content": "{\"intent\":\"schedule_reminder\",\"confidence\":0.99,\"reply_mode\":\"direct\",\"needs_tools\":true}"},
+            {"kind": "plan", "content": "{\"action\":\"schedule_reminder\",\"text\":\"the thing\",\"dueDate\":\"\"}"},
+            {"kind": "reply", "content": "x"}
+        ]})),
+        |_| {},
+    )
+    .await;
+    let v = h.chat("remind me about the thing with Therese").await;
+    let reply = v["reply"].as_str().unwrap();
+    assert!(!reply.contains("could not work out"), "{reply}");
+    assert!(reply.contains('?'), "a question: {reply}");
+}
+
+/// 3 Nov 2026: ZCode's MCP client gave up after 30 s and her reply was lost. A turn goes on without its client,
+/// and her answer lands on the timeline.
+#[tokio::test]
+async fn a_turn_outlives_a_client_that_gives_up() {
+    let h = harness(
+        script(json!({"rules": [
+            {"kind": "intent", "content": "{\"intent\":\"chat\",\"confidence\":0.95,\"reply_mode\":\"chat\",\"needs_tools\":false}"},
+            {"kind": "reply", "content": "Here is the answer.", "delayMs": 1500}
+        ]})),
+        |_| {},
+    )
+    .await;
+    let cut_off = h
+        .http
+        .post(format!("{}/api/secretary/chat", h.base))
+        .bearer_auth(common::TOKEN)
+        .timeout(std::time::Duration::from_millis(300))
+        .json(&json!({"message": "are you there, and what do you think?"}))
+        .send()
+        .await;
+    assert!(cut_off.is_err(), "the client gave up before the reply");
+    for _ in 0..60 {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        if h.timeline_lines().iter().any(|l| l["text"] == "Here is the answer.") {
+            return;
+        }
+    }
+    panic!("her reply never reached the timeline");
 }

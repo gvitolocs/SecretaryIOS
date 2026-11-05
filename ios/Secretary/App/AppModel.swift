@@ -45,6 +45,8 @@ final class AppModel {
     var showSettings = false
     /// Notes, a plugin (pushed on the Plugins tab).
     var showNotes = false
+    /// The Obsidian vault on this phone, a plugin.
+    var showVault = false
     /// Tasks, a plugin like Notes.
     var showTasks = false
     /// Lucina Agents (the coding agents on nezopt), a plugin pushed on the Plugins tab.
@@ -219,9 +221,12 @@ final class AppModel {
         device = PerfLog.measure("device") { DeviceHub(client: client, weight: weight) }
         notifications = PerfLog.measure("notifications") { NotificationCenterStore(api: { NotificationsClient(client: client) }) }
         let notificationStore = notifications
+        // One alert per request: no notification of its own while the request's Live Activity card is up.
+        let approvalNotifier = ApprovalNotifier()
+        approvalNotifier.cardShown = { id in ApprovalActivities.shared.hasCard(id) }
         approvals = PerfLog.measure("approvals") {
             ApprovalsStore(api: { client.accessKey?.isEmpty == false ? ApprovalsAPI(client: client) : nil },
-                           signer: SecureEnclaveApprovalSigner(), notifier: ApprovalNotifier(),
+                           signer: SecureEnclaveApprovalSigner(), unlockSigner: UnlockApprovalSigner(), notifier: approvalNotifier,
                            previews: { notificationStore.rules.settings.previews },
                            deviceLabel: { UIDevice.current.name })
         }
@@ -371,6 +376,17 @@ final class AppModel {
         gym.onFinished = { start, end in Task { await device.health.exportWorkout(start: start, end: end) } }
         approvals.onTransportError = onError
         approvals.onPendingChanged = { items in AppModel.publishApprovals(items) }
+        // The approval Live Activity: tokens to the server, stale activities ended, a missing one started in front.
+        approvals.onPendingLearned = { [weak self] items in
+            ApprovalActivities.shared.sync(pending: items, foreground: self?.isForeground ?? false)
+        }
+        approvals.onSettled = { id, outcome in ApprovalActivities.shared.settled(id, outcome) }
+        // One-tap Approve on or off: the inline category's Approve changes with it.
+        approvals.onOneTapChanged = { ready in ApprovalNotifier.registerCategories(oneTap: ready) }
+        let approvalStore = approvals
+        ApprovalActivities.shared.previews = { notifications.rules.settings.previews }
+        ApprovalActivities.shared.notifier = approvalNotifier
+        ApprovalActivities.shared.start(client: client, status: { id in await approvalStore.status(of: id) })
         agents.onTransportError = onError
         server.onTransportError = onError
         callers.onTransportError = onError
@@ -401,6 +417,7 @@ final class AppModel {
     /// The first chat frame does not wait for any of it: the share retries and the photo backup
     /// start from the tabs' foreground loop (MainTabs), a few seconds after launch.
     func start() async {
+        if !Self.isUnitTestHost { VaultStore.checkOnce() }
         PerfLog.count("app.start")
         guard client.accessKey?.isEmpty == false else {
             phase = .signedOut
@@ -494,6 +511,7 @@ final class AppModel {
         weight.reset()
         notifications.reset()
         approvals.reset()
+        ApprovalActivities.shared.reset()
         agents.reset()
         showAgents = false
         server.reset()

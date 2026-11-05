@@ -29,9 +29,6 @@ fn game_lang(t: &str) -> &'static str {
     {
         return "da";
     }
-    if re!(r"\b(come|va|riprendi|ricomincia|metti|pausa|partita|gioco|gioca|giocare|ferma|sospendi|dove|sei)\b", "iu").test(t) {
-        return "it";
-    }
     crate::tasks::guess_lang(t)
 }
 
@@ -210,7 +207,7 @@ mod tests {
         let k = |t: &str| parse_game_intent(t).map(|i| (i.kind, i.lang));
         assert_eq!(
             k("come va la partita a Pokémon?"),
-            Some((Kind::Status, "it"))
+            Some((Kind::Status, "en"))
         );
         assert_eq!(
             k("how is your Pokémon Red game going?"),
@@ -220,9 +217,9 @@ mod tests {
             k("hvordan går Pokémon-spillet?"),
             Some((Kind::Status, "da"))
         );
-        assert_eq!(k("metti in pausa Pokémon"), Some((Kind::Pause, "it")));
+        assert_eq!(k("metti in pausa Pokémon"), Some((Kind::Pause, "en")));
         assert_eq!(k("pause the Pokémon game").map(|x| x.0), Some(Kind::Pause));
-        assert_eq!(k("riprendi a giocare a Pokémon"), Some((Kind::Start, "it")));
+        assert_eq!(k("riprendi a giocare a Pokémon"), Some((Kind::Start, "en")));
         assert_eq!(k("play Pokémon").map(|x| x.0), Some(Kind::Start));
         assert_eq!(k("what is the price of this Pokémon card?"), None);
         assert_eq!(k("quanto vale la carta Pokémon Charizard?"), None);

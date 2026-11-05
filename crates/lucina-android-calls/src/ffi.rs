@@ -15,6 +15,7 @@
 //! | `callerSettings(filesDir: String, json: String): String` | Envelope: patch `{label?, silence?, reject?}`, then the new state. |
 //! | `localVerdict(filesDir: String, number: String, json: String, lang: String): String` | Envelope around [`crate::caller::Screen`], no network. `json` is `{contact?}`. |
 //! | `screenCall(filesDir: String, cookie: String, number: String, json: String, lang: String): String` | The same, from the server (about 1.2 s at most), else the rules. Blocks on the network. |
+//! | `vault(root: String, json: String): String` | The answer of `lucina_vault::protocol`, unwrapped: docs/lucina-vault.md. Reads the disk. |
 //!
 //! For envelope-returning calls, the envelope is `{"ok": true, "data": …}` or `{"ok": false, "error": "…"}`.
 //! Every entry point catches panics, so Rust never unwinds into the JVM.
@@ -166,6 +167,49 @@ pub extern "system" fn Java_tech_getsecretary_secretary_Native_transcribe<'l>(
             .map_err(|_| "Recording unavailable.")?;
         net::transcribe(&journal, &Https::new(&cookie), &v, &bytes)
     })
+}
+
+/// The one open vault, by folder. Opened on first use, read-only until asked otherwise.
+static VAULT: std::sync::Mutex<Option<(String, lucina_vault::protocol::Session)>> = std::sync::Mutex::new(None);
+
+/// One request of `lucina-vault`'s protocol on the folder `root`. Its answer has its own `ok`, so no envelope; a note's
+/// text may be larger than `MAX_JSON_BYTES`. Reads the disk: not on the main thread.
+fn vault_request(root: &str, request: &str) -> String {
+    let fail = |code: &str, error: String| json!({ "ok": false, "code": code, "error": error }).to_string();
+    let Ok(mut open) = VAULT.lock() else {
+        return fail("bridge", "The vault is unavailable.".into());
+    };
+    if open.as_ref().is_none_or(|(r, _)| r != root) {
+        match lucina_vault::protocol::Session::open(root) {
+            Ok(s) => *open = Some((root.to_owned(), s)),
+            Err(e) => return fail("not_open", e.to_string()),
+        }
+    }
+    match open.as_mut() {
+        Some((_, s)) => s.request(request),
+        None => fail("not_open", "The vault did not open.".into()),
+    }
+}
+
+/// `Native.vault`: an Obsidian vault as plain files (docs/lucina-vault.md).
+#[no_mangle]
+pub extern "system" fn Java_tech_getsecretary_secretary_Native_vault<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    root: JString<'l>,
+    request: JString<'l>,
+) -> jstring {
+    let answer = catch_unwind(AssertUnwindSafe(|| -> Result<String> {
+        let root = string(&mut env, &root, "Storage unavailable.")?;
+        let request = string(&mut env, &request, "Invalid request.")?;
+        Ok(vault_request(&root, &request))
+    }));
+    let text = match answer {
+        Ok(Ok(t)) => t,
+        Ok(Err(e)) => json!({ "ok": false, "code": "bridge", "error": e }).to_string(),
+        Err(_) => json!({ "ok": false, "code": "bridge", "error": "The vault failed." }).to_string(),
+    };
+    give(&mut env, text)
 }
 
 /// `Native.ui`: `callView`, `dtmf`, `route`.
@@ -345,5 +389,25 @@ mod tests {
         assert_eq!(ok, json!({"ok": true, "data": {"id": "a"}}));
         let err: Value = serde_json::from_str(&envelope(Err("Call not found.".into()))).unwrap();
         assert_eq!(err, json!({"ok": false, "error": "Call not found."}));
+    }
+}
+
+#[cfg(test)]
+mod vault_tests {
+    #[test]
+    fn a_vault_opens_once_and_answers_in_its_protocol() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Alpha.md"), "See [[Beta]].\n").unwrap();
+        std::fs::write(dir.path().join("Beta.md"), "x\n").unwrap();
+        let root = dir.path().to_str().unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&super::vault_request(root, r#"{"op":"note","path":"Beta.md"}"#)).unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["backlinks"][0]["from"], "Alpha.md");
+        let w: serde_json::Value =
+            serde_json::from_str(&super::vault_request(root, r#"{"op":"create","path":"New.md"}"#)).unwrap();
+        assert_eq!(w["code"], "read_only");
+        let gone: serde_json::Value = serde_json::from_str(&super::vault_request("/nowhere/at/all", "{}")).unwrap();
+        assert_eq!(gone["code"], "not_open");
     }
 }

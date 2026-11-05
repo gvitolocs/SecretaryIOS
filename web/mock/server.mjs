@@ -1394,7 +1394,7 @@ async function handleBodyCommand(req, res) {
 
 // ---------- Timeline ----------
 
-const TIMELINE_CHANNELS = ["telegram", "discord", "web", "ios", "alexa", "other"];
+const TIMELINE_CHANNELS = ["telegram", "discord", "web", "ios", "alexa", "voice", "other"];
 const TIMELINE_MAX_LIMIT = 100;
 const SSE_PING_MS = 15_000;
 const MOCK_DEVICE = "mock-web";
@@ -1449,6 +1449,42 @@ function seedChatHistory(n, now) {
   }
 }
 
+function voiceSeed() {
+  const who = { device: "lucinavoice-dab8", deviceName: "Kitchen speaker" };
+  const turn = (ago, said, replied, voice) => [
+    [ago + 4_000, { channel: "voice", role: "user", text: said, meta: { ...who, voice: { turnId: voice.turnId, ms: { stt: voice.ms.stt } } } }],
+    [ago, { channel: "voice", role: "lucina", text: replied, meta: { ...who, voice } }],
+  ];
+  return [
+    ...turn(2 * 3_600_000, "Che ore sono?", "Sono le dieci e dieci.", {
+      turnId: "voice-2h-a1",
+      // As lucina-server stores it today: the speech-to-text time, then the route (camelCase) and its layers.
+      ms: { stt: 380 },
+      route: { intent: "temporal_query", fast: true, source: "jev", confidence: 0.96, jevMs: 190 },
+      layers: [{ layer: "intent", verdict: "temporal_query", confidence: 0.96, ms: 190, used: true }],
+    }),
+    ...turn(90 * 60_000, "Come si dice la mia via, Skibi gard vai?", "Si dice Skibigårdsvej: «skibi-gor-vai».", {
+      turnId: "voice-90m-a1",
+      ms: { stt: 410, route: 300, ack: 320, lucina_first: 2400, tts_first: 2800, first_audio: 330, total: 5200 },
+      route: { intent: "chat", fast: false, source: "jev", confidence: 0.88, jevMs: 214 },
+      layers: [
+        { layer: "intent", verdict: "chat", confidence: 0.88, ms: 214, used: true },
+        { layer: "vocab", verdict: "Skibigårdsvej", confidence: 0.71, ms: 132, used: true },
+      ],
+      corrections: [{ from: "skibi gard", to: "Skibigårdsvej" }],
+    }),
+    ...turn(30 * 60_000, "Ricordami di chiamare Mikkel domani alle nove", "Va bene, ti ricordo di chiamare Mikkel domani alle nove.", {
+      turnId: "voice-30m-a1",
+      ms: { stt: 350, lucina_first: 1800, tts_first: 2100, first_audio: 2150, total: 4100 },
+      route: { intent: "schedule_reminder", fast: false, source: "jev", confidence: 0.9, jevMs: 201 },
+      layers: [
+        { layer: "intent", verdict: "schedule_reminder", confidence: 0.9, ms: 201, used: true },
+        { layer: "slots", verdict: "unsure", confidence: 0.55, ms: 150, used: false },
+      ],
+    }),
+  ];
+}
+
 function seedTimeline() {
   const now = Date.now();
   const H = 3_600_000;
@@ -1496,6 +1532,8 @@ function seedTimeline() {
     [5 * H, { channel: "other", role: "lucina", text: "Water the plants.", meta: { kind: "reminder" } }],
     [3 * H, { channel: "telegram", role: "user", text: "", attachments: [{ kind: "voice" }], meta: tg }],
     [3 * H - 20_000, { channel: "telegram", role: "lucina", text: "I listened to your voice note: bread and eggs, added.", meta: tg }],
+    // The LucinaVoice thread: one shared conversation, each turn's timing and Jev layers in meta.voice.
+    ...voiceSeed(),
     [H, { channel: "web", role: "user", text: "Hello Lucina, any news?" }],
     [H - 30_000, { channel: "web", role: "lucina", text: "All quiet. Details: https://example.com/status" }],
   ];
@@ -1515,6 +1553,7 @@ seedTimeline();
 
 function conversationKey(it) {
   if (it.meta?.via === "mcp") return `agent:${(it.meta.caller ?? "").toLowerCase().replace(/[^a-z0-9_-]/g, "") || "mcp"}`;
+  if (it.channel === "voice") return "voice";
   if (["web", "ios"].includes(it.channel)) return it.meta?.device ? `device:${it.meta.device}` : `legacy:${it.channel}`;
   return ["telegram", "discord", "alexa"].includes(it.channel) ? it.channel : "lucina";
 }
@@ -1523,7 +1562,7 @@ function handleConversations(res) {
   for (const it of timeline) {
     const key = conversationKey(it), previous = groups.get(key);
     const kind = key.includes(":") ? key.split(":")[0] : key;
-    groups.set(key, { key, kind, title: it.meta?.deviceName ?? it.meta?.caller ?? it.meta?.chatTitle ?? key,
+    groups.set(key, { key, kind, title: key === "voice" ? "Lucina Voice" : (it.meta?.deviceName ?? it.meta?.caller ?? it.meta?.chatTitle ?? key),
       channel: it.channel, device: it.meta?.device, deviceName: it.meta?.deviceName, caller: it.meta?.caller,
       count: (previous?.count ?? 0) + 1, lastId: it.id, lastTs: it.ts, lastRole: it.role, lastText: it.text });
   }
@@ -2027,6 +2066,7 @@ async function route(req, res) {
   if (await (await import("./agents.mjs")).handleAgents(req, res, { path, method, url, send, fail, readJson })) return;
   if (await (await import("./systemHealth.mjs")).handleSystemHealth(req, res, { path, method, send })) return;
   if (await (await import("./systemOverview.mjs")).handleSystemOverview(req, res, { path, method, send })) return;
+  if (await (await import("./voice.mjs")).handleVoice(req, res, { path, method, url, send, fail, readJson })) return;
 
   if (mockServerDown && (path.startsWith("/v1/gym/") || path.startsWith("/v1/body/"))) {
     res.writeHead(502, { "Cache-Control": "no-store" });
@@ -2051,6 +2091,17 @@ async function route(req, res) {
   if (path === "/v1/body/command" && method === "POST") return handleBodyCommand(req, res);
 
   if (path === "/v1/chat" && method === "POST") return handleChat(req, res);
+  // Lucina's computer: nobody drives, and a blank page stands in for the live view.
+  if (path === "/v1/computer/control") {
+    return send(res, 200, {
+      state: { sandbox: "workspace", driver: "none", epoch: 0, owner: null, task: null, lastAgent: null, leaseSecs: 45 },
+      recent: [],
+      viewer: { assets: "0123456789abcdef" },
+    });
+  }
+  if (path === "/v1/computer/view" && method === "POST") {
+    return send(res, 200, { viewId: "mockview", viewUrl: "about:blank#ticket=mock", sandbox: "workspace", mode: "watch", ttlSecs: 600, lan: null });
+  }
 
   if (path === "/v1/tts" && method === "POST") return handleTts(req, res);
   if (path === "/v1/avatar/wardrobe" && method === "GET") return send(res, 200, wardrobeFile());

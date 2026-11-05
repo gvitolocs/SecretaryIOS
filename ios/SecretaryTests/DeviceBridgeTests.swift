@@ -154,4 +154,33 @@ final class DeviceBridgeTests: XCTestCase {
         XCTAssertEqual(events.first?["source"] as? String, "ios")
         XCTAssertNotNil(events.first?["ts"] as? Int)
     }
+
+    /// A term of events must reach the server: a body over its limit would lose the whole snapshot.
+    func testASnapshotStaysWithinTheBodyLimit() throws {
+        func event(_ i: Int, notes: Int) -> JSONValue {
+            .object([
+                "id": .string("CAL:\(String(repeating: "x", count: 100))@\(i)"),
+                "title": .string("Software Security \(i)"),
+                "location": .string("5220-014 Seminarlokale"),
+                "notes": .string(String(repeating: "n", count: notes)),
+            ])
+        }
+        var state = DeviceState()
+        state.events = (0..<300).map { event($0, notes: 100) }
+        let small = try state.encodedWithinLimit()
+        XCTAssertTrue(String(decoding: small, as: UTF8.self).contains("nnnn"), "fits: notes stay")
+
+        state.events = (0..<300).map { event($0, notes: 1000) }
+        let noNotes = try state.encodedWithinLimit()
+        XCTAssertLessThanOrEqual(noNotes.count, DeviceState.bodyLimit)
+        XCTAssertFalse(String(decoding: noNotes, as: UTF8.self).contains("nnnn"), "notes go first")
+        XCTAssertTrue(String(decoding: noNotes, as: UTF8.self).contains("Software Security 299"), "every event stays")
+
+        state.events = (0..<300).map { event($0, notes: 0) }
+        let few = try state.encodedWithinLimit(limit: 20_000)
+        XCTAssertLessThanOrEqual(few.count, 20_000)
+        let text = String(decoding: few, as: UTF8.self)
+        XCTAssertTrue(text.contains("Software Security 0\""), "the nearest stay")
+        XCTAssertFalse(text.contains("Software Security 299"), "the farthest go")
+    }
 }

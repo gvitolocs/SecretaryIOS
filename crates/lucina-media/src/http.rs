@@ -133,7 +133,9 @@ pub fn router(lib: Library, extra: Option<Router>) -> Router {
         .merge(crate::lab_http::routes())
         .merge(crate::smart::routes())
         .merge(crate::faces_http::routes())
+        .merge(crate::pets_http::routes())
         .merge(crate::categories_http::routes())
+        .merge(crate::sheet::routes())
         .with_state(lib.clone())
         .merge(extra.unwrap_or_default())
         .layer(middleware::from_fn_with_state(lib, upstream_guard))
@@ -693,7 +695,7 @@ pub(crate) fn valid_item_id(id: &str) -> bool {
 }
 
 /// An item, its Drive info, its document type, its name and its original's path.
-async fn doc_item(
+pub(crate) async fn doc_item(
     lib: &Library,
     id: &str,
 ) -> ApiResult<(Item, Option<DriveInfo>, DocType, String, PathBuf)> {
@@ -1742,7 +1744,7 @@ async fn finish_upload(
 
 /// What the library holds for one phone, so a reinstalled app can skip assets already backed up.
 /// `[A-Za-z0-9._-]{1,64}`: what the apps send (`ios-<uuid>`, `mac-<uuid>`).
-fn device_id_ok(id: &str) -> bool {
+pub(crate) fn device_id_ok(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 64
         && id

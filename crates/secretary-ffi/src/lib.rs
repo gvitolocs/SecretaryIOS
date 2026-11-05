@@ -188,8 +188,30 @@ fn chat_error(error: &str) -> String {
     serde_json::json!({ "error": error }).to_string()
 }
 
+/// An Obsidian vault (lucina-vault): `path` is the vault's folder. Requests and answers are its protocol: docs/lucina-vault.md.
+/// Opens read-only; `{"op":"set_writable","writable":true}` says otherwise.
+pub struct VaultEngine(lucina_vault::protocol::Session);
+
+impl VaultEngine {
+    fn open(path: &str) -> std::result::Result<Self, String> {
+        lucina_vault::protocol::Session::open(path)
+            .map(VaultEngine)
+            .map_err(|e| e.to_string())
+    }
+    fn handle(&mut self, json: &str) -> serde_json::Value {
+        serde_json::from_str(&self.0.request(json)).unwrap_or(serde_json::Value::Null)
+    }
+}
+
+module!(
+    VaultEngine,
+    secretary_vault_open,
+    secretary_vault_request,
+    secretary_vault_close
+);
+
 /// Module names reported by `secretary_version`.
-pub const MODULES: &[&str] = &["gym", "body", "player", "image", "chat"];
+pub const MODULES: &[&str] = &["gym", "body", "player", "image", "chat", "vault"];
 
 module!(
     secretary_gym::Engine,

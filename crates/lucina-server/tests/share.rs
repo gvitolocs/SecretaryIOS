@@ -555,7 +555,9 @@ async fn the_device_locale_never_sets_the_reply_language() {
     assert!(!all.contains("Device language"), "{all}");
     assert!(!all.contains("da-DK"), "{all}");
     assert!(!all.contains("Se hvad jeg har delt"), "{all}");
-    assert!(all.contains("Reply language: Italian"), "{all}");
+    // The notes are Italian; he is answered in English, never Italian.
+    assert!(all.contains("Reply language: English"), "{all}");
+    assert!(!all.contains("Reply language: Italian"), "{all}");
 
     // A bare link: no words of his own, no recent messages, so English; never the device's Danish.
     let before = h.fake.requests().len();
@@ -748,6 +750,15 @@ fn voice_form(id: &str, bytes: Vec<u8>, transcript: Option<&str>, caption: &str)
 }
 
 async fn voice_setup(services: &Services, tools: bool, whisper_text: &str) -> H {
+    voice_setup_with(services, tools, whisper_text, |_| {}).await
+}
+
+async fn voice_setup_with(
+    services: &Services,
+    tools: bool,
+    whisper_text: &str,
+    tweak: impl FnOnce(&mut lucina_server::Config),
+) -> H {
     let whisper_json = json!({"result":{"language":"it"},"transcription":[
         {"offsets":{"from":0,"to":1000},"text":whisper_text}]})
     .to_string();
@@ -774,6 +785,7 @@ async fn voice_setup(services: &Services, tools: bool, whisper_text: &str) -> H 
         c.share.whisper.model = c.data_dir.join("test-model");
         std::fs::write(&c.share.whisper.model, "test").unwrap();
         c.share.whisper.vad_model = None;
+        tweak(c);
     }).await
 }
 
@@ -940,7 +952,7 @@ async fn the_repeat_request_follows_the_language_of_his_caption() {
     let lines = h.timeline_lines();
     assert_eq!(
         lines[1]["text"],
-        "Non sono riuscita a sentirti. Puoi ripetere?"
+        "I couldn't hear you. Could you repeat that?"
     );
 }
 
@@ -1242,4 +1254,260 @@ async fn shared_text_about_secrets_is_not_the_owner_asking() {
         done["reply"], "I read your shared text, article and image.",
         "{done}"
     );
+}
+
+/// A Jev that answers the vocab layer's `span0` question with `pick` at 0.95 (or fails with a 500).
+struct VocabJev {
+    pick: Option<&'static str>,
+    calls: Arc<Mutex<usize>>,
+}
+
+impl wiremock::Respond for VocabJev {
+    fn respond(&self, req: &wiremock::Request) -> wiremock::ResponseTemplate {
+        *self.calls.lock().unwrap() += 1;
+        let body: Value = serde_json::from_slice(&req.body).unwrap();
+        assert!(
+            body["questions"].get("span0").is_some(),
+            "only the vocab layer asks here"
+        );
+        let Some(c) = self.pick else {
+            return wiremock::ResponseTemplate::new(500);
+        };
+        let other = if c == "none" { "c1" } else { "none" };
+        wiremock::ResponseTemplate::new(200).set_body_json(json!({
+            "model": "jev-1.14.0", "usage": {"input_tokens": 10, "output_tokens": 1},
+            "answers": {"span0": {"type": "choice", "choice": c, "confidence": 0.95,
+                "probabilities": {c: 0.95, other: 0.05}}}}))
+    }
+}
+
+async fn vocab_jev(pick: Option<&'static str>) -> (wiremock::MockServer, Arc<Mutex<usize>>) {
+    let server = wiremock::MockServer::start().await;
+    let calls = Arc::new(Mutex::new(0));
+    wiremock::Mock::given(wiremock::matchers::any())
+        .respond_with(VocabJev {
+            pick,
+            calls: calls.clone(),
+        })
+        .mount(&server)
+        .await;
+    (server, calls)
+}
+
+fn with_vocab_jev(server: &wiremock::MockServer) -> impl FnOnce(&mut lucina_server::Config) + '_ {
+    let url = format!("{}/v1/systemone", server.uri());
+    move |c| {
+        c.voice_jev = Some(lucina_jev::Config {
+            url,
+            model: "jev-1.14.0".into(),
+            key: Some("test-key".into()),
+            timeout: Duration::from_secs(5),
+            enabled: true,
+        });
+        c.voice_jev_cap = Duration::from_secs(3);
+    }
+}
+
+fn write_vocab(h: &H, entries: &[(&str, &[&str], Option<&str>)]) {
+    let mut v = lucina_vocab::Vocab::default();
+    for (i, (word, sounds, meaning)) in entries.iter().enumerate() {
+        let mut e = lucina_vocab::Entry::new(*word);
+        e.id = format!("vl_t{i}");
+        e.sounds_like = sounds.iter().map(|s| s.to_string()).collect();
+        e.meaning = meaning.map(str::to_owned);
+        v.entries.push(e);
+    }
+    v.save(h.state.vocab.path()).unwrap();
+}
+
+/// Sends an on-device transcript as a voice note and returns what the share saw of it.
+async fn on_device_note(h: &H, id: &str, transcript: &str) -> (Value, String) {
+    let bytes = voice_bytes(h).await;
+    let ack = submit(h, voice_form(id, bytes, Some(transcript), "  ")).await;
+    assert_eq!(ack.status(), 202);
+    let done = finished(h, id).await;
+    assert_eq!(done["status"], "done", "{done}");
+    let all = h
+        .fake
+        .requests()
+        .iter()
+        .map(Value::to_string)
+        .collect::<String>();
+    (done, all)
+}
+
+#[tokio::test]
+async fn an_on_device_voice_note_gets_the_vocabulary_and_its_meanings() {
+    let services = services().await;
+    let h = voice_setup(&services, false, "unused").await;
+    write_vocab(
+        &h,
+        &[(
+            "Skibigårdsvej",
+            &["Skibi gaardsvej"],
+            Some("the owner's home street"),
+        )],
+    );
+    let (done, all) =
+        on_device_note(&h, "voice-vocab-0001", "porta il pacco a Skibi gaardsvej").await;
+    // The turn and the memory record read the corrected words, and the meaning joins the context.
+    assert!(all.contains("porta il pacco a Skibigårdsvej"), "{all}");
+    assert!(!all.contains("Skibi gaardsvej"), "{all}");
+    assert!(
+        all.contains("Vocabulary: Skibigårdsvej = the owner's home street"),
+        "{all}"
+    );
+    let records = h.state.share.memory.recent(0, 10).unwrap();
+    assert_eq!(records[0].text, "porta il pacco a Skibigårdsvej");
+    assert_eq!(done["status"], "done");
+    // The phone's own transcript stays on the owner's item as the phone made it.
+    assert_eq!(
+        h.timeline_lines()[0]["attachments"][0]["transcript"],
+        "porta il pacco a Skibi gaardsvej"
+    );
+    assert!(
+        !h.dir.path().join("whisper-test.calls").exists(),
+        "Whisper stayed out of it"
+    );
+}
+
+#[tokio::test]
+async fn an_ambiguous_word_in_a_voice_note_goes_to_jev_and_fails_open() {
+    let entries: &[(&str, &[&str], Option<&str>)] = &[("Nicola", &[], None), ("Nicolò", &[], None)];
+    let text = "Ho parlato con Nicolu.";
+    let first = lucina_vocab::Vocab {
+        entries: entries
+            .iter()
+            .enumerate()
+            .map(|(i, (w, _, _))| {
+                let mut e = lucina_vocab::Entry::new(*w);
+                e.id = format!("vl_t{i}");
+                e
+            })
+            .collect(),
+    }
+    .correct(text)
+    .ambiguous[0]
+        .candidates[0]
+        .clone();
+
+    // Jev picks the first candidate: the note says it.
+    let (jev, calls) = vocab_jev(Some("c1")).await;
+    let svc = services().await;
+    let h = voice_setup_with(&svc, false, "unused", with_vocab_jev(&jev)).await;
+    write_vocab(&h, entries);
+    let (_, all) = on_device_note(&h, "voice-vocab-0002", text).await;
+    assert_eq!(*calls.lock().unwrap(), 1);
+    assert!(all.contains(&format!("Ho parlato con {first}.")), "{all}");
+    assert!(!all.contains("Nicolu"), "{all}");
+
+    // "none", a Jev error and no Jev at all leave the words as the phone heard them.
+    for pick in [Some("none"), None] {
+        let (jev, calls) = vocab_jev(pick).await;
+        let svc = services().await;
+        let h = voice_setup_with(&svc, false, "unused", with_vocab_jev(&jev)).await;
+        write_vocab(&h, entries);
+        let (done, all) = on_device_note(&h, "voice-vocab-0003", text).await;
+        assert_eq!(*calls.lock().unwrap(), 1, "{pick:?}");
+        assert!(all.contains("Ho parlato con Nicolu."), "{all}");
+        assert_eq!(done["status"], "done", "the note is still answered");
+    }
+    let svc = services().await;
+    let h = voice_setup(&svc, false, "unused").await;
+    write_vocab(&h, entries);
+    let (_, all) = on_device_note(&h, "voice-vocab-0004", text).await;
+    assert!(all.contains("Ho parlato con Nicolu."), "{all}");
+}
+
+fn offered_tools(req: &Value) -> Vec<String> {
+    req["tools"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|t| t["function"]["name"].as_str().map(str::to_owned))
+        .collect()
+}
+
+/// 2 Nov 2026: both came with a screenshot, and she answered that her calendar, mail and Lucina Agents
+/// work "only in my normal chat". A request with an image reaches the model with her real tools.
+#[tokio::test]
+async fn a_request_with_an_image_has_her_full_tools() {
+    let services = services().await;
+    let h = setup(&services).await;
+    for (id, note) in [
+        ("share-full-tools-1", "6 november and 13 November are missing events check our chat and university email also"),
+        ("share-full-tools-2", "Tell one agent to fix this"),
+    ] {
+        let before = h.fake.requests().len();
+        let r = submit(&h, Form::new().text("shareId", id).text("note", note).text("text", "from a screenshot")).await;
+        assert_eq!(r.status(), 202);
+        assert_eq!(finished(&h, id).await["status"], "done");
+        let reqs = h.fake.requests();
+        let turn = reqs[before..]
+            .iter()
+            .find(|r| !offered_tools(r).is_empty())
+            .expect("the share turn is a tool loop");
+        let tools = offered_tools(turn);
+        for needed in ["calendar", "notes", "tasks", "reminders"] {
+            assert!(tools.iter().any(|t| t == needed), "{note}: {needed} not in {tools:?}");
+        }
+        assert!(!tools.iter().any(|t| t == "secrets_status"), "{tools:?}");
+        let system = turn["messages"][0]["content"].as_str().unwrap();
+        assert!(system.contains("your one chat with him"), "{system}");
+        assert!(!system.contains("These tools are only the ones for this step"), "{system}");
+    }
+    // A bare file keeps the focused set.
+    let before = h.fake.requests().len();
+    submit(&h, Form::new().text("shareId", "share-full-tools-3").text("text", "just a file")).await;
+    finished(&h, "share-full-tools-3").await;
+    let reqs = h.fake.requests();
+    let tools = offered_tools(reqs[before..].iter().find(|r| !offered_tools(r).is_empty()).unwrap());
+    assert!(tools.iter().any(|t| t == "notes"), "{tools:?}");
+    assert!(!tools.iter().any(|t| t == "calendar"), "{tools:?}");
+}
+
+/// A cold vision start used to eat the whole read: IMG_7759 came back with nothing, OCR included.
+#[tokio::test]
+async fn slow_vision_costs_only_vision() {
+    let services = services().await;
+    services.seen.pause_vision.store(true, std::sync::atomic::Ordering::SeqCst);
+    let h = harness(script(json!({"rules":[
+        {"kind":"intent", "content":"{\"intent\":\"chat\",\"confidence\":0.95,\"reply_mode\":\"chat\",\"needs_tools\":false}"},
+        {"kind":"agent", "content":"I read what I could."}
+    ]})), |c| {
+        c.share.dir = c.data_dir.join("shares");
+        c.share.key_file = Some(c.data_dir.join("share.key"));
+        std::fs::write(c.share.key_file.as_ref().unwrap(), "  gateway-test-secret\n").unwrap();
+        c.share.media_url = services.base.clone();
+        c.share.vision_url = Some(services.base.clone());
+        c.share.vision_budget = Duration::from_millis(200);
+        c.share.test_allow_loopback = true;
+    }).await;
+    let png = h.dir.path().join("green.png");
+    assert!(std::process::Command::new("convert")
+        .args(["-size", "16x16", "xc:green"])
+        .arg(&png)
+        .status()
+        .unwrap()
+        .success());
+    let r = submit(
+        &h,
+        Form::new()
+            .text("shareId", "share-slow-vision")
+            .text("note", "what is this?")
+            .part(
+                "file",
+                Part::bytes(std::fs::read(&png).unwrap())
+                    .file_name("IMG_7759.png")
+                    .mime_str("image/png")
+                    .unwrap(),
+            ),
+    )
+    .await;
+    assert_eq!(r.status(), 202);
+    let done = finished(&h, "share-slow-vision").await;
+    assert_eq!(done["status"], "done", "{done}");
+    assert_eq!(done["attachments"][0]["state"], "read", "the read went on without vision: {done}");
+    let prompts = h.fake.requests().iter().map(|r| r.to_string()).collect::<String>();
+    assert!(prompts.contains("vision took too long"), "the model is told: {prompts}");
 }

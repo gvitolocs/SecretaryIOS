@@ -1,8 +1,8 @@
 import { createSignal, onMount, Show } from "solid-js";
 import { PERSON_NAME_MAX } from "../../../api/gallery";
-import { t } from "../../../i18n";
 import { normalizeName } from "../../../lib/galleryPeople";
 import "../../../styles/gallery-people.css";
+import { groupText, useGroupKind } from "../../../lib/galleryGroup";
 
 export interface InlineNameProps {
   /** The name now (null: none yet, the button says "Add a name"). */
@@ -18,6 +18,8 @@ export interface InlineNameProps {
 
 /** A name that is a button; a click turns it into a field. Enter saves, Escape or a click away leaves it as it was. */
 export function InlineName(props: InlineNameProps) {
+  const kind = useGroupKind();
+  const pt = groupText(kind);
   const [editing, setEditing] = createSignal(false);
   const [draft, setDraft] = createSignal("");
   const [busy, setBusy] = createSignal(false);
@@ -53,7 +55,7 @@ export function InlineName(props: InlineNameProps) {
       when={editing()}
       fallback={
         <button type="button" class={`pp-name ${props.class ?? ""}`} classList={{ "pp-name--empty": !props.name }} aria-label={props.label} onClick={open}>
-          {props.name || props.empty || t("galleryPeople.addName")}
+          {props.name || props.empty || pt("addName")}
         </button>
       }
     >
@@ -70,9 +72,9 @@ export function InlineName(props: InlineNameProps) {
           maxLength={PERSON_NAME_MAX}
           value={draft()}
           disabled={busy()}
-          aria-label={t("galleryPeople.renameLabel")}
+          aria-label={pt("renameLabel")}
           aria-invalid={failed() ? "true" : undefined}
-          placeholder={t("galleryPeople.renamePlaceholder")}
+          placeholder={pt("renamePlaceholder")}
           ref={(el) => onMount(() => el.focus())}
           onInput={(e) => setDraft(e.currentTarget.value)}
           onKeyDown={(e) => {
@@ -89,7 +91,7 @@ export function InlineName(props: InlineNameProps) {
         />
         <Show when={failed()}>
           <span class="pp-rename__error" role="alert">
-            {t("galleryPeople.actionFailed")}
+            {pt("actionFailed")}
           </span>
         </Show>
       </form>

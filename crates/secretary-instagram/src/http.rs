@@ -103,8 +103,15 @@ async fn access_log(req: Request, next: Next) -> Response {
         .map(|p| p.as_str().to_owned())
         .unwrap_or_else(|| "<unmatched>".into());
     let method = req.method().clone();
+    let started = std::time::Instant::now();
     let resp = next.run(req).await;
-    tracing::info!(method = %method, route = %route, status = resp.status().as_u16(), "request");
+    tracing::info!(
+        method = %method,
+        route = %route,
+        status = resp.status().as_u16(),
+        ms = started.elapsed().as_millis() as u64,
+        "request"
+    );
     resp
 }
 
@@ -120,6 +127,7 @@ pub fn router(st: St) -> Router {
         .route("/resolve", get(resolve))
         .route("/recent", get(recent))
         .route("/save", post(save))
+        .route("/resign", post(resign))
         .route("/watch", get(watch_list))
         // Not `/watch/settings`: that is `/watch/{username}` for an account named `settings`.
         .route(
@@ -240,6 +248,21 @@ async fn save(State(st): State<St>, body: Bytes) -> Response {
         return err(StatusCode::BAD_REQUEST, "bad_request");
     };
     match st.service.save(b.items).await {
+        Ok(v) => ok(v),
+        Err(e) => e.into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct ResignBody {
+    urls: Vec<String>,
+}
+
+async fn resign(State(st): State<St>, body: Bytes) -> Response {
+    let Ok(b) = serde_json::from_slice::<ResignBody>(&body) else {
+        return err(StatusCode::BAD_REQUEST, "bad_request");
+    };
+    match st.service.resign(&b.urls) {
         Ok(v) => ok(v),
         Err(e) => e.into_response(),
     }
@@ -384,7 +407,16 @@ async fn media(
     };
     let file = match st.service.signed_media(exp, &sig, &token).await {
         Ok(f) => f,
-        Err(SignedError::Sign(_)) => return err(StatusCode::FORBIDDEN, "forbidden"),
+        Err(SignedError::Sign(e)) => {
+            // Why a client got a 403 (no URL in the line): an expired link is a client showing an
+            // old copy; a bad signature is a voided key or a tampered link.
+            tracing::info!(
+                reason = ?e,
+                expired_secs = chrono::Utc::now().timestamp() - exp,
+                "instagram media refused"
+            );
+            return err(StatusCode::FORBIDDEN, "forbidden");
+        }
         Err(SignedError::Service(e)) => return e.into_response(),
     };
     serve_file(file, &headers).await

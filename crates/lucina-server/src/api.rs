@@ -377,6 +377,8 @@ async fn health(State(st): State<AppState>) -> Response {
             "botHospital": crate::bot_hospital::health_value(&st.hospital_health),
             "presence": {"context": c.presence_context, "fresh": lucina_discord::store::context_line(&c.presence_dir, c.time_zone, Utc::now(), c.presence_max_age).is_some()},
             "deepseek": {"model": c.deepseek.model, "hasKey": (st.deepseek_has_key)(), "usage": st.usage.as_ref().map(|u| u.snapshot())},
+            "modelProvider": match c.model_provider { crate::ModelProvider::DeepSeek => "deepseek", crate::ModelProvider::Mistral => "mistral" },
+            "mistral": {"model": c.mistral.model, "hasKey": st.named_models.mistral.is_some()},
             "timelineStreams": st.streams.load(Ordering::Relaxed),
             "meshy": st.meshy.as_ref().map(|m| m.health()),
         }),
@@ -453,6 +455,10 @@ async fn route(
     if resource == Some("agentd") {
         return Ok(crate::agentd::forward(method, uri, headers, body).await);
     }
+    // Voice Learn (crate::voice_learn): the owner's vocabulary for every speech-to-text path.
+    if resource == Some("voice-learn") && parts.len() <= 2 {
+        return crate::voice_learn::route(st, method, uri, &parts[1..], body).await;
+    }
     // Lucina Notebooks (crate::notebooks): the lucina-notebooks router.
     if resource == Some("notebooks") {
         return Ok(crate::notebooks::route(st, method, uri, headers, body).await);
@@ -476,6 +482,17 @@ async fn route(
     // The ops record (crate::ops): records, search, Map/ pages.
     if resource == Some("ops") && parts.len() <= 3 {
         return crate::ops::route(st, method, uri, headers, &parts[1..], body).await;
+    }
+    // The flaw tracker (crate::flaws): reports, the matrix, targets, dispatch.
+    if resource == Some("flaws") && parts.len() <= 4 {
+        return crate::flaws::route(st, method, uri, headers, &parts[1..], body).await;
+    }
+    // The Juno bridge (crate::juno): the laptop's long poll and results, and the screenshots it sent.
+    if resource == Some("device") && id == Some("juno") && parts.len() == 3 {
+        return crate::juno::device_route(st, method, extra, body).await;
+    }
+    if resource == Some("juno") && id == Some("screenshots") && parts.len() == 3 {
+        return crate::juno::screenshot_route(st, method, extra.unwrap_or(""));
     }
     if resource == Some("device") {
         if parts.len() > 4 {
@@ -520,6 +537,28 @@ async fn route(
     if resource == Some("computer") && parts.len() <= 4 {
         return crate::computer::computer(method, uri, headers, &parts[1..], body).await;
     }
+    // What the app's secret cards draw, and their "Not now" (crate::secret_requests): names only.
+    if resource == Some("secrets") && id == Some("requests") && parts.len() <= 4 {
+        return match (method.as_str(), extra, fourth) {
+            ("GET", None, None) => Ok(ok(st.secret_requests.list())),
+            ("POST", Some(request), Some("dismiss")) => Ok(ok(st.secret_requests.dismiss(request)?)),
+            (_, None, None) => Err(ApiError::method_not_allowed(&["GET"])),
+            (_, Some(_), Some("dismiss")) => Err(ApiError::method_not_allowed(&["POST"])),
+            _ => Err(ApiError::not_found()),
+        };
+    }
+    // Which buttons are closed, for every client (crate::card_state).
+    if resource == Some("timeline") && id == Some("cards") && parts.len() <= 3 {
+        return match (method.as_str(), extra) {
+            ("GET", None) => Ok(ok(crate::card_state::cards(&st.cfg.data_dir))),
+            ("POST", Some(item)) => {
+                let body = read_json(body, 4 * 1024).await?;
+                Ok(ok(crate::card_state::choose(&st.cfg.data_dir, item, &body)?))
+            }
+            (_, None) => Err(ApiError::method_not_allowed(&["GET"])),
+            (_, Some(_)) => Err(ApiError::method_not_allowed(&["POST"])),
+        };
+    }
     if extra.is_some() {
         return Err(ApiError::not_found());
     }
@@ -544,7 +583,22 @@ async fn route(
         (Some("chat"), None) => {
             only(&["POST"])?;
             let body = read_json(body, MAX_BODY_BYTES).await?;
-            let mut out = crate::chat::handle_chat(st.clone(), bearer, body).await?;
+            // LucinaVoice: the same turn as an event stream (crate::voice), for a device that speaks as it goes.
+            if crate::voice::wants_stream(headers) {
+                return Ok(crate::voice::respond(
+                    st.clone(),
+                    bearer,
+                    body,
+                    crate::voice::PING_EVERY,
+                ));
+            }
+            // On its own task: a client that gives up (ZCode's MCP client after 30 s) must not abort the
+            // turn half way, losing her reply and whatever the turn holds. The reply lands on the timeline.
+            let turn = tokio::spawn(crate::chat::handle_chat(st.clone(), bearer, body));
+            let mut out = turn.await.map_err(|e| {
+                tracing::error!(error = %e, "chat turn task failed");
+                ApiError::new(500, "internal", "the turn failed")
+            })??;
             // The reply sink (app, web and Lucina MCP all read it here).
             lucina_secrets::redactor().redact_json(&mut out);
             Ok(ok(out))
@@ -556,6 +610,32 @@ async fn route(
             let mut v = crate::owner_secrets::relay(st, body).await?;
             lucina_secrets::redactor().redact_json(&mut v);
             Ok(ok(v))
+        }
+        (Some("secrets"), Some("request")) => {
+            // An agent asks the owner for a secret by name (a card in his chat; never a value).
+            only(&["POST"])?;
+            let body = read_json(body, 16 * 1024).await?;
+            Ok(ok(crate::owner_secrets::request(st, &body).await?))
+        }
+        (Some("secrets"), Some("keep")) => {
+            // Local only: secretary-server forwards no such route. References and names, never a value.
+            only(&["POST"])?;
+            let body = read_json(body, 16 * 1024).await?;
+            if let Some(job) = body["job"].as_str() {
+                let found = st.secret_keep.job(job).ok_or_else(|| ApiError::new(404, "not_found", "no such job"))?;
+                return Ok(ok(found.outcome()));
+            }
+            Ok(ok(st.secret_keep.enqueue(&body)?.outcome()))
+        }
+        (Some("secrets"), Some("project")) => {
+            // Local only, like `keep`: names and states.
+            only(&["POST"])?;
+            let body = read_json(body, 16 * 1024).await?;
+            Ok(ok(st.secret_keep.project(&body, "", true)?))
+        }
+        (Some("secrets"), Some("scan")) => {
+            only(&["POST"])?;
+            Ok(ok(st.secret_keep.scan(50).await?))
         }
         (Some("timeline"), None) => {
             only(&["GET"])?;
@@ -598,7 +678,7 @@ async fn route(
             let rule = lucina_intent::tier0::classify_tier0(text, recent, &st.cfg.intent);
             let t = crate::planner::TurnInput { user_text: text, memory: recent, user_label: USER_LABEL, platform };
             let jev = crate::jev_route::classify_intent(lucina_jev::shared(), &t).await;
-            let routed = crate::context::classify(st, text, recent, USER_LABEL, platform, mcp).await;
+            let routed = crate::context::classify(st, text, recent, USER_LABEL, platform, mcp, false).await;
             Ok(ok(json!({
                 "tier0": rule.as_ref().map(|c| c.intent.clone()),
                 "tier0Confidence": rule.as_ref().map(|c| c.confidence),
@@ -609,6 +689,50 @@ async fn route(
                            "replyMode": routed.reply_mode, "tier0": routed.tier0()},
             })))
         }
+        // Upstream watch (lucina-upstream, docs/upstream-watch.md): Jev's verdict on what an upstream
+        // released since our pin, asked by `lucina-rs upstream check`. Diagnostics-like: reads only (no
+        // turn, no timeline, no memory); not forwarded by secretary-server.
+        (Some("jev"), Some("upstream")) => {
+            only(&["POST"])?;
+            let body = read_json(body, MAX_BODY_BYTES).await?;
+            let field = |k: &str| {
+                body.get(k)
+                    .cloned()
+                    .ok_or_else(|| ApiError::bad_request(format!("{k} is required")))
+            };
+            let up: lucina_upstream::registry::Upstream =
+                serde_json::from_value(field("upstream")?)
+                    .map_err(|e| ApiError::bad_request(format!("upstream: {e}")))?;
+            let cs: lucina_upstream::fetch::ChangeSet =
+                serde_json::from_value(field("changes")?)
+                    .map_err(|e| ApiError::bad_request(format!("changes: {e}")))?;
+            let summary: lucina_upstream::summary::Summary =
+                serde_json::from_value(field("summary")?)
+                    .map_err(|e| ApiError::bad_request(format!("summary: {e}")))?;
+            let state = lucina_upstream::judge::state(&up, &cs, &summary);
+            let started = std::time::Instant::now();
+            let d = lucina_jev::shared()
+                .decide("upstream", state, &lucina_upstream::judge::questions())
+                .await;
+            let (verdict, jev) = match &d {
+                Ok(d) => match lucina_upstream::judge::verdict(d) {
+                    Some(v) => (Some(v), "ok"),
+                    None => (None, "malformed"),
+                },
+                Err(e) => (None, e.code()),
+            };
+            Ok(ok(
+                json!({"verdict": verdict, "jev": jev, "elapsedMs": started.elapsed().as_millis() as u64}),
+            ))
+        }
+        // One model call through a named provider (crate::model_try): no turn, no timeline, no tool runs.
+        (Some("models"), Some("try")) => {
+            only(&["POST"])?;
+            let body = read_json(body, MAX_BODY_BYTES).await?;
+            let mut v = crate::model_try::handle(st, &body).await?;
+            lucina_secrets::redactor().redact_json(&mut v);
+            Ok(ok(v))
+        }
         // Yes/no questions (crate::jev_yesno): Jev's gate on a text and the answer it would give from
         // the owner's live data. Reads only (no turn, no timeline); not forwarded by secretary-server.
         (Some("jev"), Some("yesno")) => {
@@ -618,10 +742,10 @@ async fn route(
                 .ok_or_else(|| ApiError::bad_request("text is required"))?;
             let recent = body["recent"].as_str().unwrap_or("");
             let lang = match body["lang"].as_str() {
-                Some("it") => "it",
+                // Never Italian (owner rule 2026-11-02): an Italian client or text is answered in English.
                 Some("da") => "da",
                 Some(_) => "en",
-                None => lucina_intent::lang::detect(text).map_or("en", |l| l.code()),
+                None => lucina_intent::lang::detect(text).map_or("en", |l| l.reply().code()),
             };
             let gate_only = body["gateOnly"].as_bool().unwrap_or(false);
             Ok(ok(crate::jev_yesno::preview(st, text, recent, lang, gate_only).await))
@@ -1585,6 +1709,7 @@ fn timeline_stream(st: &AppState, uri: &Uri, headers: &HeaderMap) -> ApiResult {
     // arrive after the connection are live items.
     let _ = store.poll();
     let mut live = store.subscribe();
+    let mut cards = crate::card_state::subscribe();
     tokio::spawn(async move {
         let _guard = guard;
         if tx
@@ -1639,6 +1764,11 @@ fn timeline_stream(st: &AppState, uri: &Uri, headers: &HeaderMap) -> ApiResult {
                 }
                 _ = ping_tick.tick() => {
                     if tx.send(Bytes::from_static(b": ping\n\n")).await.is_err() { return; }
+                    continue;
+                }
+                // No id: `Last-Event-ID` stays the last item. Lagging only means fewer of these.
+                _ = cards.recv() => {
+                    if tx.send(Bytes::from_static(b"event: cards\ndata: {}\n\n")).await.is_err() { return; }
                     continue;
                 }
                 _ = tx.closed() => return,

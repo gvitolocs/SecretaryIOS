@@ -28,7 +28,9 @@ use crate::timeutil::{clip_utf16, iso_ms, js_trim, now_ms, parse_js_date};
 use crate::ulid::{is_timeline_id, new_id};
 use crate::{Result, StoreError};
 
-pub const CHANNELS: [&str; 6] = ["telegram", "discord", "web", "ios", "alexa", "other"];
+pub const CHANNELS: [&str; 7] = [
+    "telegram", "discord", "web", "ios", "alexa", "voice", "other",
+];
 pub const ROLES: [&str; 2] = ["user", "lucina"];
 pub const MAX_TEXT_CHARS: usize = 8000;
 pub const MAX_LIST_LIMIT: usize = 200;
@@ -160,6 +162,11 @@ pub struct Meta {
     /// A reply Jev decided (the bubble's badge): `{"feature": "yesno", "answer", "p", "ms", "model"}`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jev: Option<serde_json::Value>,
+    /// On the "Lucina Voice" thread (channel `voice`): `{turnId, ms: {..}, route: {intent, fast, ..,
+    /// layers: [{layer, verdict, confidence, ms, used}]}}` (docs/lucinavoice-protocol.md sections 7 and 9).
+    /// Numbers and short words only: it never holds text of the exchange.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<serde_json::Value>,
 }
 
 impl Meta {
@@ -197,6 +204,7 @@ impl Meta {
             && self.tool.is_none()
             && self.format.is_none()
             && self.jev.is_none()
+            && self.voice.is_none()
     }
 
     /// The meta of a rich reply (merged onto the turn's own meta).
@@ -246,7 +254,8 @@ impl Meta {
             lang,
             blocks,
             actions,
-            jev
+            jev,
+            voice
         );
         self
     }
@@ -280,7 +289,8 @@ pub fn conversation_key(channel: &str, meta: Option<&Meta>) -> String {
             Some(device) => format!("device:{device}"),
             None => format!("legacy:{channel}"),
         },
-        "telegram" | "discord" | "alexa" => channel.to_owned(),
+        // The one shared "Lucina Voice" thread: every LucinaVoice speaker, whatever the device.
+        "telegram" | "discord" | "alexa" | "voice" => channel.to_owned(),
         _ => "lucina".into(),
     }
 }
@@ -472,6 +482,90 @@ fn normalize_jev(v: serde_json::Value) -> Option<serde_json::Value> {
     Some(out)
 }
 
+/// A short word for the voice meta: letters, digits and `_ . - :`.
+fn voice_word(v: &serde_json::Value, max: usize) -> Option<String> {
+    v.as_str()
+        .filter(|s| !s.is_empty() && s.len() <= max)
+        .filter(|s| s.bytes().all(|b| b.is_ascii_alphanumeric() || b"_.-:".contains(&b)))
+        .map(str::to_owned)
+}
+
+/// A non-negative number below ten minutes' worth of milliseconds, or a probability.
+fn voice_num(v: &serde_json::Value, max: f64) -> Option<serde_json::Value> {
+    let n = v.as_f64().filter(|n| n.is_finite() && (0.0..=max).contains(n))?;
+    Some(if n.fract() == 0.0 {
+        serde_json::json!(n as u64)
+    } else {
+        serde_json::json!((n * 1000.0).round() / 1000.0)
+    })
+}
+
+/// The meta of a voice turn's item: `turnId`, `ms` (the spans, a map of word to milliseconds) and
+/// `route` (`intent`, `fast`, `source`, `confidence`, `jevMs`, `layers`). Anything else is dropped.
+fn normalize_voice(v: serde_json::Value) -> Option<serde_json::Value> {
+    use serde_json::{json, Map, Value};
+    let mut out = Map::new();
+    if let Some(id) = voice_word(&v["turnId"], 64) {
+        out.insert("turnId".into(), json!(id));
+    }
+    if let Some(ms) = v["ms"].as_object() {
+        let spans: Map<String, Value> = ms
+            .iter()
+            .filter_map(|(k, n)| Some((voice_word(&json!(k), 32)?, voice_num(n, 3_600_000.0)?)))
+            .take(16)
+            .collect();
+        if !spans.is_empty() {
+            out.insert("ms".into(), Value::Object(spans));
+        }
+    }
+    let r = &v["route"];
+    if r.is_object() {
+        let mut route = Map::new();
+        if let Some(w) = voice_word(&r["intent"], 64) {
+            route.insert("intent".into(), json!(w));
+        }
+        if let Some(w) = voice_word(&r["source"], 16) {
+            route.insert("source".into(), json!(w));
+        }
+        if let Some(b) = r["fast"].as_bool() {
+            route.insert("fast".into(), json!(b));
+        }
+        for (key, max) in [("confidence", 1.0), ("jevMs", 600_000.0)] {
+            if let Some(n) = voice_num(&r[key], max) {
+                route.insert(key.into(), n);
+            }
+        }
+        let layers: Vec<Value> = r["layers"]
+            .as_array()
+            .map(|a| a.iter().filter_map(normalize_layer).take(8).collect())
+            .unwrap_or_default();
+        if !layers.is_empty() {
+            route.insert("layers".into(), Value::Array(layers));
+        }
+        if !route.is_empty() {
+            out.insert("route".into(), Value::Object(route));
+        }
+    }
+    (!out.is_empty()).then_some(Value::Object(out))
+}
+
+/// One Jev layer of a voice turn: `{layer, verdict, confidence, ms, used}`.
+fn normalize_layer(l: &serde_json::Value) -> Option<serde_json::Value> {
+    use serde_json::json;
+    let layer = voice_word(&l["layer"], 16)?;
+    let mut out = json!({ "layer": layer, "used": l["used"].as_bool().unwrap_or(false) });
+    if let Some(w) = voice_word(&l["verdict"], 64) {
+        out["verdict"] = json!(w);
+    }
+    if let Some(n) = voice_num(&l["confidence"], 1.0) {
+        out["confidence"] = n;
+    }
+    if let Some(n) = voice_num(&l["ms"], 600_000.0) {
+        out["ms"] = n;
+    }
+    Some(out)
+}
+
 fn normalize_meta(meta: Option<Meta>) -> Option<Meta> {
     let m = meta?;
     let s = |v: Option<String>| clean_string(v.as_deref(), MAX_META_STRING_CHARS);
@@ -504,6 +598,7 @@ fn normalize_meta(meta: Option<Meta>) -> Option<Meta> {
         command: m.command.as_deref().and_then(normalize_command),
         tool: s(m.tool),
         jev: m.jev.and_then(normalize_jev),
+        voice: m.voice.and_then(normalize_voice),
         ..Meta::default()
     };
     // Rich reply parts: validated again here, the timeline is what the apps render.
@@ -702,12 +797,14 @@ impl Inner {
                 "grok" | "grok-bot" => "Grok Bot",
                 "cursor" => "Cursor",
                 "codex" => "Codex",
+                "mistral" => "Mistral",
                 _ => meta.caller.as_deref().unwrap_or("mcp"),
             }
             .into(),
             "telegram" => "Telegram".into(),
             "discord" => "Discord".into(),
             "alexa" => "Alexa".into(),
+            "voice" => "Lucina Voice".into(),
             _ => "Lucina".into(),
         };
         let index = *self.keys.entry(key.clone()).or_insert_with(|| {
@@ -717,7 +814,8 @@ impl Inner {
                 kind: kind.into(),
                 title: title.clone(),
                 channel: item.channel.clone(),
-                device: meta.device.clone(),
+                // The voice thread is shared by every speaker: no single device owns it.
+                device: meta.device.clone().filter(|_| kind != "voice"),
                 device_name: None,
                 caller: meta.caller.clone(),
                 count: 0,
@@ -1314,6 +1412,66 @@ impl TimelineStore {
         Ok(inner.read_entries(&[entry])?.into_iter().next())
     }
 
+    /// Take a secret out of the stored items, in every generation: the value's encodings become
+    /// `replacement`, in string values only. `only`: just these items (a short value, which could
+    /// be part of anything). Live clients get the changed items again under the same ids, so an
+    /// open chat redraws them. Returns how many items changed.
+    pub fn scrub(&self, needles: &[String], replacement: &str, only: Option<&[String]>) -> Result<usize> {
+        let mut inner = self.lock();
+        let _flock = lock_sidecar(&inner.file_path)?;
+        let found = inner.refresh()?;
+        self.publish(found);
+        let mut changed: Vec<String> = Vec::new();
+        for suffix in (0..=inner.keep_rotated).rev() {
+            let path = inner.path_for_gen(inner.current_gen - suffix);
+            let bytes = match fs::read(&path) {
+                Ok(b) => b,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e.into()),
+            };
+            // Never a lossy copy of the timeline: a bad byte fails the clear, which is reported.
+            let text = std::str::from_utf8(&bytes)
+                .map_err(|_| StoreError::Invalid(format!("timeline: {} is not UTF-8", path.display())))?;
+            let mut out = String::with_capacity(text.len());
+            let mut any = false;
+            for line in text.split_inclusive('\n') {
+                let (body, end) = line.strip_suffix('\n').map_or((line, ""), |b| (b, "\n"));
+                let new = crate::scrub::scrub_json_line(body, needles, replacement).filter(|new| {
+                    let id = serde_json::from_str::<serde_json::Value>(new)
+                        .ok()
+                        .and_then(|v| v["id"].as_str().map(str::to_owned))
+                        .unwrap_or_default();
+                    let wanted = only.is_none_or(|ids| ids.contains(&id));
+                    if wanted {
+                        changed.push(id);
+                    }
+                    wanted
+                });
+                match new {
+                    Some(new) => {
+                        any = true;
+                        out.push_str(&new);
+                    }
+                    None => out.push_str(body),
+                }
+                out.push_str(end);
+            }
+            if any {
+                crate::scrub::replace_file(&path, out.as_bytes())?;
+            }
+        }
+        if changed.is_empty() {
+            return Ok(0);
+        }
+        // Offsets moved and the cache holds old lines: read everything again.
+        inner.load_all()?;
+        let entries: Vec<Entry> = changed.iter().filter_map(|id| inner.entry(id).cloned()).collect();
+        let items = inner.read_entries(&entries)?;
+        let n = items.len();
+        self.publish(items);
+        Ok(n)
+    }
+
     /// Every stored item, oldest first.
     pub fn read_all(&self) -> Result<Vec<StoredItem>> {
         let mut inner = self.lock();
@@ -1396,6 +1554,11 @@ impl TimelineTurn {
     pub fn with_meta(mut self, meta: Option<Meta>) -> Self {
         self.meta = meta;
         self
+    }
+
+    /// Replace the meta of the items not written yet (a spoken turn's route is known after it started).
+    pub fn set_meta(&mut self, meta: Option<Meta>) {
+        self.meta = meta;
     }
 
     /// Resume a turn whose user item was durably written during share ingestion.

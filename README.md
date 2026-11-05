@@ -92,7 +92,7 @@ web/                       SolidJS frontend
   /v1/reminders/{id}`, `GET /v1/agenda`, `GET|POST /v1/shopping`, `PATCH
   /v1/shopping/{id}`, `GET /v1/gym/state|clock`, `POST /v1/gym/command`,
   `GET /v1/body/state`, `POST /v1/body/command`, `GET /v1/insights/summary`,
-  `GET /v1/assets/{name}`, `POST /v1/tts`, `GET|POST|DELETE /v1/session`,
+  `GET /v1/assets/{name}`, `POST /v1/tts`, `POST /v1/voice`, `GET|POST|DELETE /v1/session`,
   `POST /v1/session/password`, `POST /v1/auth/device`, and, when
   configured, the old shopping upstream routes under `/v1/upstream/`.
 - **Errors:** `{"error":{"code","message"}}`; the module routes answer with

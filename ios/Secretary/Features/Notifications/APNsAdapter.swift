@@ -78,18 +78,22 @@ enum BackgroundRefresh {
 /// APNs callbacks.
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        DebugEventsUploader.install(launchOptions: launchOptions)
         UNUserNotificationCenter.current().delegate = self
-        ApprovalNotifier.registerCategories()
+        // One-tap Approve as this iPhone last left it (the store registers them again when it changes).
+        ApprovalNotifier.registerCategories(oneTap: ApprovalsStore.oneTapReady(unlockKeyId: UnlockApprovalSigner().keyId))
         Task { @MainActor in APNsAdapter.registerIfEnabled() }
         // Photo backup: longer passes when iOS grants processing time (Wi-Fi, often charging).
         BGTaskScheduler.shared.register(forTaskWithIdentifier: PhotoBackup.processingIdentifier, using: nil) { task in
+            DebugEvents.record("bg.task", ["task": "photobackup", "phase": "start"])
             let work = Task { @MainActor in
                 let backup = AppModel.shared.backup
                 await backup.runInBackground(budget: nil)
                 PhotoBackup.scheduleProcessing(chargingOnly: backup.settings.chargingOnly)
+                DebugEvents.record("bg.task", ["task": "photobackup", "phase": "end"])
                 task.setTaskCompleted(success: true)
             }
-            task.expirationHandler = { work.cancel() }
+            task.expirationHandler = { DebugEvents.record("bg.task", ["task": "photobackup", "phase": "expired"]); work.cancel() }
         }
         return true
     }
@@ -121,12 +125,14 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     }
 
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        DebugEvents.record("apns.register", ["ok": false, "error": error])
         // Local notifications keep working.
     }
 
     /// An approval push woke the app (`content-available`): refresh the approvals and the widget. The push's own
     /// banner is already showing, so the request is not posted again.
     func application(_ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any]) async -> UIBackgroundFetchResult {
+        DebugEvents.record("notification.delivered", Self.debugFields(userInfo, via: "push"))
         // A decision push: swap in the notification with the options' own buttons.
         if let decisionId = userInfo[DecisionNotifier.idKey] as? String {
             let options = userInfo[DecisionNotifier.optionsKey] as? [String] ?? []
@@ -144,25 +150,72 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             guard app.phase == .signedIn else { return UIBackgroundFetchResult.noData }
             app.approvals.markNotified(approvalId)
             await app.approvals.poll()
+            // The push may land after the request's Live Activity card: the card carries it.
+            if ApprovalActivities.shared.hasCard(approvalId) {
+                await ApprovalActivities.shared.replaceNotifications([approvalId])
+            }
             return .newData
         }.value
     }
 
     /// Show banners while the app is open (the store only posts what the owner isn't looking at).
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
-        // An approval is already on screen as the prompt while the app is open: no banner on top of it.
-        if notification.request.content.userInfo[ApprovalNotifier.idKey] != nil { return [.list] }
+        DebugEvents.record("notification.presented", Self.debugFields(notification.request.content.userInfo,
+                                                                     category: notification.request.content.categoryIdentifier))
+        // An approval is already on screen as the prompt while the app is open: no banner on top of it; and none at all
+        // while its Live Activity card is up (one alert per request).
+        if let id = notification.request.content.userInfo[ApprovalNotifier.idKey] as? String {
+            let card = await MainActor.run { ApprovalActivities.shared.hasCard(id) }
+            return card && !notification.request.identifier.hasPrefix("approval.failed.") ? [] : [.list]
+        }
         return [.banner, .list, .sound]
+    }
+
+    /// What the debug log keeps of a notification: its kind, id and category, never its text.
+    static func debugFields(_ info: [AnyHashable: Any], category: String? = nil, via: String? = nil) -> [String: Any] {
+        var fields: [String: Any] = [:]
+        if let id = info[ApprovalNotifier.idKey] as? String {
+            fields["kind"] = "approval"
+            fields["id"] = id
+            if let sensitive = info[ApprovalNotifier.sensitiveKey] as? Bool ?? info["sensitive"] as? Bool { fields["sensitive"] = sensitive }
+        } else if let id = info[DecisionNotifier.idKey] as? String {
+            fields["kind"] = "decision"
+            fields["id"] = id
+        } else {
+            fields["kind"] = (info[LocalNotifier.routeKey] as? String).map { _ in "route" } ?? "other"
+        }
+        if let category, !category.isEmpty { fields["category"] = category }
+        if let via { fields["via"] = via }
+        return fields
+    }
+
+    /// The trigger of a notification answer: only the notification's own Approve actions approve (the card one and
+    /// the one-tap one); a tap, Deny or any other action carries none.
+    static func approvalTrigger(forAction actionIdentifier: String) -> ApprovalTrigger? {
+        actionIdentifier == ApprovalNotifier.approveAction || actionIdentifier == ApprovalNotifier.approveInPlaceAction
+            ? .notificationApproveAction : nil
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
         let info = response.notification.request.content.userInfo
+        var debug = Self.debugFields(info, category: response.notification.request.content.categoryIdentifier)
+        debug["action"] = response.actionIdentifier
+        DebugEvents.record("notification.action", debug)
+        defer { Task { @MainActor in DebugEventsUploader.flushInBackground("notification_action") } }
         // An approval: Approve / Deny from the notification, or its tap opens the prompt.
         if let approvalId = info[ApprovalNotifier.idKey] as? String {
             // Local notifications say `approvalSensitive`, older server pushes only `sensitive`; unknown = sensitive.
             let sensitive = info[ApprovalNotifier.sensitiveKey] as? Bool ?? info["sensitive"] as? Bool ?? true
             let action = response.actionIdentifier
-            await AppModel.shared.approvals.handleNotification(actionIdentifier: action, approvalId: approvalId, sensitive: sensitive)
+            ApprovalActivityCommands.log.info("notification action=\(action, privacy: .public) id=\(approvalId, privacy: .public)")
+            // The owner tapped the notification's Approve: the only place this trigger is made.
+            let trigger = Self.approvalTrigger(forAction: action)
+            // A root plan whose notification showed every command, and the hash of what it showed.
+            let inline = response.notification.request.content.categoryIdentifier == ApprovalNotifier.sensitiveInlineCategory
+            let shownHash = ApprovalNotifier.payloadHash(in: info)
+            await AppModel.shared.approvals.handleNotification(actionIdentifier: action, approvalId: approvalId,
+                                                               sensitive: sensitive, inline: inline, shownHash: shownHash,
+                                                               trigger: trigger)
             return
         }
         // A decision: an option or the owner's words from the notification, or its tap opens it.
@@ -208,9 +261,12 @@ extension BackgroundRefresh {
     static func run() async {
         let app = AppModel.shared
         guard app.client.accessKey?.isEmpty == false else { return }
+        DebugEvents.record("bg.task", ["task": "refresh", "phase": "start"])
         await app.notifications.backgroundRefresh()
         await app.approvals.poll()
         app.memos.queue.kick()
+        DebugEvents.record("bg.task", ["task": "refresh", "phase": "end"])
+        await DebugEvents.flush()
     }
 }
 

@@ -28,6 +28,8 @@ pub mod faces;
 pub mod faces_store;
 pub mod gemma;
 pub mod index;
+pub mod pets;
+pub mod pets_store;
 pub(crate) mod runtime;
 pub mod siglip;
 pub mod store;

@@ -43,9 +43,8 @@ pub trait Composer: Send + Sync {
 
 fn lang_name(l: &str) -> &'static str {
     match l {
-        "en" => "English",
         "da" => "Danish",
-        _ => "Italian",
+        _ => "English",
     }
 }
 
@@ -74,10 +73,10 @@ fn bullets(items: &Value) -> Vec<String> {
 pub fn template(req: &ComposeRequest) -> Composed {
     let f = &req.facts;
     let l = req.language.as_str();
-    let pick = |it: String, en: String, da: String| match l {
-        "en" => en,
+    // Owner rule (2026-11-02): English or Danish, never Italian; the Italian wording is not used.
+    let pick = |_it: String, en: String, da: String| match l {
         "da" => da,
-        _ => it,
+        _ => en,
     };
     let title = s(f, "/event/title");
     let mins = f
@@ -261,7 +260,7 @@ pub fn localize_times(v: &Value, tz: chrono_tz::Tz) -> Value {
 const RULES: &str = "You are writing a PROACTIVE message: Lucina reaches out to Giuseppe on her own, before he asks, \
 because something is worth his attention now.\n\
 Rules:\n\
-- Language: {LANG}. Short: at most 3 sentences. Warm, direct, no filler, no generic greeting formula.\n\
+- Language: {LANG}, never Italian. Short: at most 3 sentences. Warm, direct, no filler, no generic greeting formula.\n\
 - Use ONLY the facts in the JSON. Never invent times, names, numbers, causes or outcomes. If a fact is uncertain, \
 say it looks so.\n\
 - Never claim you did something (sent, booked, bought, deleted, fixed, changed) and do not talk about what you did \
@@ -272,7 +271,7 @@ mention it.\n\
 - Plain text, no markdown headings, at most one emoji. Do not mention scores, priorities, rules, signals or that \
 this is automatic.\n\
 - Times: every clock time in the facts is already in the owner's local time zone ({TZ}), as is the local time now: {NOW}. \
-State clock times exactly as given, in local time, and never write UTC, GMT or a trailing Z. Prefer relative times (\"tra un'ora\").\n\
+State clock times exactly as given, in local time, and never write UTC, GMT or a trailing Z. Prefer relative times (\"in an hour\").\n\
 Answer in exactly this format:\n\
 MESSAGE:\n<the message>\n\
 PREP:\n<only when facts.wantPrep is true: a concise markdown summary to read before the meeting, at most 12 lines, \
@@ -280,7 +279,7 @@ built only from facts.notes, facts.memory and facts.mentions, in the same langua
 
 const PULSE_RULES: &str = "You are writing Lucina's DAILY PULSE for Giuseppe: one short morning message.\n\
 Rules:\n\
-- Language: {LANG}. A one-line opener, then up to three short sections with bullets, ONLY for the sections that have \
+- Language: {LANG}, never Italian. A one-line opener, then up to three short sections with bullets, ONLY for the sections that have \
 items in the JSON: important today (facts.important), completed (facts.completed), keep an eye on (facts.watch). \
 At most 3 bullets per section, one line each.\n\
 - Use ONLY the facts. Never invent anything. No actions taken by you.\n\
@@ -502,8 +501,9 @@ mod tests {
     #[test]
     fn templates_in_three_languages() {
         let f = json!({"event": {"title": "CRAFT-IT4SD", "start": "2026-10-22T12:00:00Z", "startsInMinutes": 55}, "notes": [{"slug": "craftit-meeting", "title": "CRAFT", "content": "x"}]});
+        // "it" is no longer a language we write in: it reads as English.
         let it = template(&req(Kind::MeetingPrep, "it", f.clone()));
-        assert!(it.message.starts_with("Tra 55 minuti"));
+        assert!(it.message.contains("starts in 55"));
         assert!(it
             .prep
             .as_deref()
@@ -521,9 +521,9 @@ mod tests {
             json!({"important": [{"line": "a"}], "completed": [], "watch": [{"line": "b"}]}),
         ));
         assert!(
-            p.message.contains("Oggi\n• a")
-                && p.message.contains("Da tenere d'occhio\n• b")
-                && !p.message.contains("Fatto")
+            p.message.contains("Today\n• a")
+                && p.message.contains("Keep an eye on\n• b")
+                && !p.message.contains("Done")
         );
     }
 

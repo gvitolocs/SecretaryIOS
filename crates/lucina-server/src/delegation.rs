@@ -84,6 +84,9 @@ impl Sink for ServerSink {
             tool: Some(j.agent.as_str().to_owned()),
             ok: Some(j.status != JobStatus::Error),
             slug: j.note_slug.clone(),
+            // Someone else asked: the card belongs to that agent's conversation, no alert.
+            via: j.caller.as_ref().map(|_| "mcp".to_owned()),
+            caller: j.caller.clone(),
             ..Meta::kind("delegation")
         };
         let meta = match &card.rich {
@@ -183,7 +186,7 @@ pub async fn run(d: &Arc<Delegator>, req: Request) -> Ran {
         .lang
         .as_deref()
         .map(|l| match l {
-            "it" => "it",
+            // Never Italian (owner rule 2026-11-02).
             "da" => "da",
             _ => "en",
         })
@@ -240,7 +243,6 @@ pub fn answer_text(job: &JobRecord) -> String {
 /// The reply without a model call (running, skipped, refused, failed, and
 /// the fallback for done).
 pub fn plain_reply(r: &Ran) -> String {
-    let it = r.lang == "it";
     if let Some(x) = &r.refusal {
         return x.message(r.lang);
     }
@@ -255,34 +257,18 @@ pub fn plain_reply(r: &Ran) -> String {
         .unwrap_or_default();
     match (j.status, r.finished) {
         (JobStatus::Skipped, _) => {
-            if it {
-                format!("Ci ho pensato e ho deciso di non chiederlo a {a}: {why}")
-            } else {
-                format!("I thought about it and decided not to ask {a}: {why}")
-            }
+            format!("I thought about it and decided not to ask {a}: {why}")
         }
         (JobStatus::Done, true) => {
             let answer = answer_text(j);
-            if it {
-                format!("{a} dice: {answer}")
-            } else {
-                format!("{a} says: {answer}")
-            }
+            format!("{a} says: {answer}")
         }
         (JobStatus::Error, true) => {
             let e = j.error.clone().unwrap_or_default();
-            if it {
-                format!("{a} non è riuscito a rispondere ({e}).")
-            } else {
-                format!("{a} could not answer ({e}).")
-            }
+            format!("{a} could not answer ({e}).")
         }
         _ => {
-            if it {
-                format!("Ho chiesto a {a}: ti scrivo qui appena risponde.")
-            } else {
-                format!("I asked {a}: I will post the answer here as soon as it replies.")
-            }
+            format!("I asked {a}: I will post the answer here as soon as it replies.")
         }
     }
 }
@@ -396,6 +382,7 @@ mod tests {
             backend: "mock".into(),
             kind: Kind::Research,
             origin: Origin::Owner,
+            caller: None,
             status,
             task: "t".into(),
             lang: "it".into(),
@@ -429,21 +416,21 @@ mod tests {
     #[test]
     fn replies() {
         let r = |s, finished| Ran {
-            lang: "it",
+            lang: "en",
             job: Some(job(s)),
             refusal: None,
             finished,
         };
         assert!(
-            plain_reply(&r(JobStatus::Done, true)).starts_with("Grok dice: Rust 1.95 è uscito.")
+            plain_reply(&r(JobStatus::Done, true)).starts_with("Grok says: Rust 1.95 è uscito.")
         );
         assert!(plain_reply(&r(JobStatus::Done, true)).contains("Notes: grok-rust"));
         assert_eq!(
             plain_reply(&r(JobStatus::Running, false)),
-            "Ho chiesto a Grok: ti scrivo qui appena risponde."
+            "I asked Grok: I will post the answer here as soon as it replies."
         );
         assert!(
-            plain_reply(&r(JobStatus::Skipped, true)).contains("non chiederlo a Grok: non serve.")
+            plain_reply(&r(JobStatus::Skipped, true)).contains("decided not to ask Grok: non serve.")
         );
         assert!(plain_reply(&r(JobStatus::Error, true)).contains("(timeout)"));
         assert_eq!(

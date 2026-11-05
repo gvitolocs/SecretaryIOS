@@ -52,7 +52,7 @@ impl Default for Config {
             time_zone: "Europe/Copenhagen".into(),
             dry_run: true,
             tick_seconds: 60,
-            language: "it".into(),
+            language: "en".into(),
             paths: Paths::default(),
             weights: Weights::default(),
             thresholds: Thresholds::default(),

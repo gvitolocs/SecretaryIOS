@@ -38,7 +38,8 @@
 //! [`STREAMS_TOTAL`] in all; each ends on shutdown, when Lucina goes quiet for
 //! [`STREAM_IDLE`] (the daemon sends a keep-alive every 15 s), or when it ends. The
 //! client reconnects with `Last-Event-ID` (header, or `?lastEventId=` for a new
-//! EventSource), which the daemon replays from.
+//! EventSource), which the daemon replays from. A stream opens with [`STREAM_OPEN`], so
+//! a client knows at once that it is connected.
 
 use std::time::Duration;
 
@@ -72,11 +73,16 @@ pub const BODY_LIMIT: usize = 1024 * 1024;
 pub const STREAMS_PER_CALLER: usize = 4;
 pub const STREAMS_TOTAL: usize = 40;
 pub const STREAM_IDLE: Duration = Duration::from_secs(90);
+/// The first bytes of every stream, a comment that SSE clients ignore. Caddy's `encode` holds
+/// the response headers until the first write when the client accepts compression, as browsers
+/// do, so a quiet stream looked unopened until the daemon's first keep-alive, 15 s later. This
+/// write also keeps a large first frame from turning on compression for the whole stream.
+pub const STREAM_OPEN: &[u8] = b": connected\n\n";
 /// `wait` and permission long-polls.
 const LONG_POLL: Duration = Duration::from_secs(15 * 60);
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 /// The daemon's top-level routes.
-const TOP: [&str; 13] = ["permissions", "workspaces", "projects", "clone", "providers", "stream", "commands", "files", "health", "schedules", "usage", "terminals", "catalog"];
+const TOP: [&str; 15] = ["permissions", "workspaces", "projects", "clone", "providers", "stream", "commands", "files", "health", "schedules", "usage", "terminals", "catalog", "pipeline", "devices"];
 const PASS: [HeaderName; 3] = [header::CONTENT_TYPE, header::ACCEPT, HeaderName::from_static("last-event-id")];
 /// Also passed on to a workspace service (the dev server an agent started).
 const PASS_SERVICE: [&str; 5] = ["accept-language", "if-none-match", "if-modified-since", "range", "x-requested-with"];
@@ -411,8 +417,8 @@ async fn handle(State(st): State<AppState>, method: Method, uri: Uri, headers: H
     let back: Vec<(HeaderName, HeaderValue)> = PASS_BACK.iter().filter_map(|n| Some((n.clone(), up.headers().get(n)?.clone()))).collect();
     let mut resp = if stream && status.is_success() {
         let mut shutdown = st.shutdown.subscribe();
-        let body = up
-            .bytes_stream()
+        let body = futures_util::stream::once(std::future::ready(Ok(Bytes::from_static(STREAM_OPEN))))
+            .chain(up.bytes_stream())
             .take_while(|chunk| std::future::ready(chunk.is_ok()))
             .take_until(async move {
                 let _ = shutdown.wait_for(|stop| *stop).await;
@@ -469,6 +475,8 @@ mod tests {
             ("/v1/agents/workspaces/wks_1/diff", "/workspaces/wks_1/diff"),
             ("/v1/agents/projects", "/projects"),
             ("/v1/agents/clone", "/clone"),
+            ("/v1/agents/pipeline/board", "/pipeline/board"),
+            ("/v1/agents/devices", "/devices"),
             ("/v1/agents/providers", "/providers"),
             ("/v1/agents/stream", "/stream"),
             ("/v1/agents/commands", "/commands"),

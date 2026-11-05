@@ -223,7 +223,7 @@ mod tests {
         assert_eq!(r["text"], "lavatrici");
         assert_eq!(r["suggestion"], "Detersivo per lavatrice");
         let q = r["question"].as_str().unwrap();
-        assert!(q.contains("Intendevi «Detersivo per lavatrice»?"), "{q}");
+        assert!(q.contains("Did you mean “Detersivo per lavatrice”?"), "{q}");
 
         let ids: Vec<&str> = kept.iter().map(|o| o["opId"].as_str().unwrap()).collect();
         assert_eq!(ids, [BOUND, FALLBACK, PURCHASE, EXPLICIT]);

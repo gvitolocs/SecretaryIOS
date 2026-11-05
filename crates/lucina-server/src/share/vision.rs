@@ -23,6 +23,8 @@ pub(super) const CATEGORIES: &[&str] = &[
 ];
 const PROMPT: &str = "First line exactly: CATEGORY: <one of photo, screenshot_chat, screenshot_error, screenshot_other, receipt, document_photo, whiteboard, meme, other>. Then describe this image for an assistant who cannot see it: what it shows, people/objects/places, and transcribe any visible text exactly (for an error screenshot, the full error message; for a chat screenshot, who wrote each message).";
 
+const READ_TEXT_PROMPT: &str = "Transcribe all the text in this image exactly as written, line by line, keeping each label with its value. Digits and letters matter: do not guess, and write [?] for a character you cannot read. Nothing else.";
+
 /// Split the model's answer into (category, description).
 pub(super) fn split_category(answer: &str) -> (Option<String>, String) {
     let trimmed = answer.trim_start();
@@ -59,6 +61,44 @@ impl Drop for Server {
         }
     }
 }
+/// The lease wait (`--wait 90` below) plus a cold load. On 2 Nov 2026 a 120 s limit, counting the 51 s the
+/// lease waited for Qwen to unload, killed a load that needed longer; the slow CPU start then ate the read's
+/// whole limit, and the screenshot "stayed unread".
+const GPU_READY_SECS: u64 = 240;
+/// How long a picture waits for another's start of the server.
+const START_WAIT: Duration = Duration::from_secs(GPU_READY_SECS + 30);
+
+/// A vision server outlives a restart of lucina-rs: it runs in its own scope (`scoped-llama-server`) and its
+/// `Drop` never ran. It then holds VRAM the lease no longer accounts for. Stop any left over at startup.
+pub fn stop_orphans(cfg: &super::ShareConfig) {
+    if cfg.vision_url.is_some() {
+        return;
+    }
+    let Ok(dir) = std::fs::read_dir("/proc") else {
+        return;
+    };
+    let mmproj = cfg.vision_mmproj.to_string_lossy();
+    for pid in dir.flatten().filter_map(|e| e.file_name().to_str()?.parse::<i32>().ok()) {
+        let Ok(raw) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
+            continue;
+        };
+        let args: Vec<_> = raw.split(|b| *b == 0).map(String::from_utf8_lossy).collect();
+        if is_vision_server(&args, &mmproj) {
+            tracing::info!(pid, "stopping a vision server left by an earlier lucina-rs");
+            // SAFETY: a signal to the process whose command line was just read as ours.
+            unsafe {
+                libc::kill(pid, libc::SIGTERM);
+            }
+        }
+    }
+}
+
+/// Lucina's vision server, and not the `systemd-run` or lease wrappers holding the same arguments.
+fn is_vision_server(args: &[std::borrow::Cow<'_, str>], mmproj: &str) -> bool {
+    args.first().is_some_and(|a| a.ends_with("llama-server"))
+        && args.windows(2).any(|w| w[0] == "--mmproj" && w[1] == mmproj)
+}
+
 async fn start(st: &AppState, gpu: bool) -> anyhow::Result<Server> {
     let cfg = &st.cfg.share;
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
@@ -97,6 +137,12 @@ async fn start(st: &AppState, gpu: bool) -> anyhow::Result<Server> {
             if gpu { "99" } else { "0" },
             "-c",
             "8192",
+            // An image goes to the encoder in one batch, and a landscape picture is more tokens than the
+            // default 512: the server aborts on it (GGML_ASSERT n_ubatch >= n_tokens, 2 Nov 2026).
+            "-b",
+            "4096",
+            "-ub",
+            "4096",
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -130,12 +176,12 @@ async fn ready(server: &mut Server, seconds: u64) -> anyhow::Result<()> {
     }
     bail!("vision startup timeout")
 }
-async fn completion(url: &str, path: &Path) -> anyhow::Result<String> {
+async fn completion(url: &str, path: &Path, prompt: &str) -> anyhow::Result<String> {
     let bytes = tokio::fs::read(path).await?;
     let data = base64::engine::general_purpose::STANDARD.encode(bytes);
     let v: Value = reqwest::Client::new().post(format!("{}/v1/chat/completions", url.trim_end_matches('/')))
         .timeout(Duration::from_secs(120)).json(&json!({"model":"gemma-4", "max_tokens":2048, "chat_template_kwargs":{"enable_thinking":false},
-            "messages":[{"role":"user","content":[{"type":"text","text":PROMPT},{"type":"image_url","image_url":{"url":format!("data:image/jpeg;base64,{data}")}}]}]}))
+            "messages":[{"role":"user","content":[{"type":"text","text":prompt},{"type":"image_url","image_url":{"url":format!("data:image/jpeg;base64,{data}")}}]}]}))
         .send().await?.error_for_status()?.json().await?;
     let message = &v["choices"][0]["message"];
     message["content"]
@@ -145,10 +191,9 @@ async fn completion(url: &str, path: &Path) -> anyhow::Result<String> {
         .map(str::to_owned)
         .context("vision returned no description")
 }
-pub(crate) async fn describe(st: &AppState, path: &Path) -> anyhow::Result<String> {
-    if let Some(url) = &st.cfg.share.vision_url {
-        return completion(url, path).await;
-    }
+/// The running server's address, marking it used. The lock is held only for this: a turn that stalls
+/// while starting the server or waiting for an answer must not stop every later picture (2 Nov 2026).
+async fn running(st: &AppState) -> Option<String> {
     let mut slot = st.share.vision.lock().await;
     if slot
         .as_mut()
@@ -156,47 +201,103 @@ pub(crate) async fn describe(st: &AppState, path: &Path) -> anyhow::Result<Strin
     {
         *slot = None;
     }
-    if slot.is_none() {
-        let mut server = start(st, true).await?;
-        if ready(&mut server, 120).await.is_err() {
-            drop(server);
-            server = start(st, false).await?;
-            ready(&mut server, 100).await?;
-        }
-        *slot = Some(server);
-        let weak = std::sync::Arc::downgrade(&st.0);
-        tokio::spawn(async move {
-            loop {
-                let delay = {
-                    let Some(inner) = weak.upgrade() else { return };
-                    let mut slot = inner.share.vision.lock().await;
-                    match slot.as_ref() {
-                        Some(server) => {
-                            let remaining =
-                                Duration::from_secs(300).saturating_sub(server.last_use.elapsed());
-                            if remaining.is_zero() {
-                                slot.take();
-                                return;
-                            }
-                            remaining
-                        }
-                        None => return,
-                    }
-                };
-                tokio::time::sleep(delay).await;
-            }
-        });
+    slot.as_mut().map(|s| {
+        s.last_use = Instant::now();
+        s.url.clone()
+    })
+}
+
+/// The server's address, starting it when none runs. One start at a time; a wait for another's start is bounded.
+async fn server_url(st: &AppState, cpu_too: bool) -> anyhow::Result<String> {
+    if let Some(url) = running(st).await {
+        return Ok(url);
     }
-    let server = slot.as_mut().expect("vision was started");
-    server.last_use = Instant::now();
-    let result = completion(&server.url, path).await;
-    server.last_use = Instant::now();
+    let _start = tokio::time::timeout(START_WAIT, st.share.vision_start.lock())
+        .await
+        .context("another start of the vision server is taking too long")?;
+    if let Some(url) = running(st).await {
+        return Ok(url);
+    }
+    let mut server = start(st, true).await?;
+    if let Err(e) = ready(&mut server, GPU_READY_SECS).await {
+        drop(server);
+        if !cpu_too {
+            tracing::info!(error = %e, "vision did not start on the GPU; the OCR text will do");
+            bail!("the GPU is busy");
+        }
+        tracing::warn!(error = %e, "vision did not start on the GPU; trying the CPU");
+        server = start(st, false).await?;
+        ready(&mut server, 100).await?;
+    }
+    let url = server.url.clone();
+    *st.share.vision.lock().await = Some(server);
+    let weak = std::sync::Arc::downgrade(&st.0);
+    tokio::spawn(async move {
+        loop {
+            let delay = {
+                let Some(inner) = weak.upgrade() else { return };
+                let mut slot = inner.share.vision.lock().await;
+                match slot.as_ref() {
+                    Some(server) => {
+                        let remaining =
+                            Duration::from_secs(300).saturating_sub(server.last_use.elapsed());
+                        if remaining.is_zero() {
+                            slot.take();
+                            return;
+                        }
+                        remaining
+                    }
+                    None => return,
+                }
+            };
+            tokio::time::sleep(delay).await;
+        }
+    });
+    Ok(url)
+}
+
+/// `cpu_too`: fall back to the CPU (minutes) when the GPU is taken. Not worth it once OCR has the text.
+pub(crate) async fn describe(st: &AppState, path: &Path, cpu_too: bool) -> anyhow::Result<String> {
+    if let Some(url) = &st.cfg.share.vision_url {
+        return completion(url, path, PROMPT).await;
+    }
+    let url = server_url(st, cpu_too).await?;
+    let result = completion(&url, path, PROMPT).await;
+    // Its idle time counts from the answer.
+    let _ = running(st).await;
+    result
+}
+
+/// Every piece of text in a picture, as written. Only with the server already up: it follows a description.
+pub(crate) async fn read_text(st: &AppState, path: &Path) -> anyhow::Result<String> {
+    let url = match &st.cfg.share.vision_url {
+        Some(url) => url.clone(),
+        None => running(st).await.context("the vision server is not running")?,
+    };
+    let result = completion(&url, path, READ_TEXT_PROMPT).await;
+    let _ = running(st).await;
     result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_vision_server_counts_as_an_orphan() {
+        let cow = |a: &[&'static str]| -> Vec<std::borrow::Cow<'_, str>> {
+            a.iter().map(|s| std::borrow::Cow::Borrowed(*s)).collect()
+        };
+        let m = "/models/mmproj.gguf";
+        assert!(is_vision_server(
+            &cow(&["/home/nez/llama.cpp/build/bin/llama-server", "-m", "x", "--mmproj", m]),
+            m
+        ));
+        // Its scope and lease wrappers carry the same arguments; Qwen has no such mmproj.
+        assert!(!is_vision_server(&cow(&["systemd-run", "--mmproj", m]), m));
+        assert!(!is_vision_server(&cow(&["/bin/llama-server", "-m", "qwen.gguf"]), m));
+        assert!(!is_vision_server(&cow(&["/bin/llama-server", "--mmproj", "other"]), m));
+    }
 
     #[test]
     fn categories() {

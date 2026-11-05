@@ -167,12 +167,11 @@ pub(super) async fn try_turn(t: &Turn<'_>, _memory: &str) -> Option<Finish> {
     }
     let text = t.message.as_str();
     if let Some(n) = allow_request(text) {
-        // The verb says the language ("allow" / "tillad" / "consenti"); short commands fool the detector.
+        // The verb says the language ("allow" / "tillad"); short commands fool the detector. An Italian
+        // "consenti" is understood by `allow_request` and answered in English (owner rule 2026-11-02).
         let verb = text.trim_start().to_lowercase();
         let lang = if verb.starts_with("tillad") || verb.starts_with("fjern") {
             "da"
-        } else if ["consenti", "permetti", "sblocca"].iter().any(|v| verb.starts_with(v)) {
-            "it"
         } else {
             "en"
         };

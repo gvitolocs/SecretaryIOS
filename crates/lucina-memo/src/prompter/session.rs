@@ -65,7 +65,7 @@ fn yes() -> bool {
 }
 
 /// `english` (whisper-server's verbose_json) → `en`, for the three languages he speaks.
-fn lang_code(name: &str) -> Option<&'static str> {
+pub(crate) fn lang_code(name: &str) -> Option<&'static str> {
     match name.trim().to_ascii_lowercase().as_str() {
         "en" | "english" => Some("en"),
         "it" | "italian" => Some("it"),

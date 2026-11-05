@@ -159,14 +159,21 @@ impl Signer {
 
     /// The CDN URL behind a signed path's parts, or why it is refused.
     pub fn verify(&self, exp: i64, sig: &str, token: &str) -> Result<String, SignError> {
+        let cdn = self.verify_any_age(exp, sig, token);
+        if cdn.is_ok() && exp < chrono::Utc::now().timestamp() {
+            return Err(SignError::Expired);
+        }
+        cdn
+    }
+
+    /// [`Signer::verify`] without the expiry. Only for callers behind the owner's check: an expired
+    /// link in a cached page is still one this service handed out.
+    fn verify_any_age(&self, exp: i64, sig: &str, token: &str) -> Result<String, SignError> {
         let expected = self.mac(&format!("{exp}/{token}"));
         let ok =
             sig.len() == expected.len() && bool::from(sig.as_bytes().ct_eq(expected.as_bytes()));
         if !ok {
             return Err(SignError::BadSignature);
-        }
-        if exp < chrono::Utc::now().timestamp() {
-            return Err(SignError::Expired);
         }
         let bytes = URL_SAFE_NO_PAD
             .decode(token)
@@ -203,23 +210,51 @@ impl Signer {
     /// Verify a signed URL as a client sends it back (`/v1/instagram/s/…`, optionally with a
     /// scheme and host in front).
     pub fn verify_url(&self, url: &str) -> Result<String, SignError> {
-        let path = match Url::parse(url) {
-            Ok(u) => u.path().to_string(),
-            Err(_) => url.split(['?', '#']).next().unwrap_or("").to_string(),
-        };
-        let rest = path
-            .strip_prefix(PREFIX)
-            .and_then(|r| r.strip_prefix("/s/"))
-            .ok_or(SignError::BadToken)?;
-        let mut parts = rest.split('/');
-        let (Some(exp), Some(sig), Some(token), None) =
-            (parts.next(), parts.next(), parts.next(), parts.next())
-        else {
-            return Err(SignError::BadToken);
-        };
-        let exp: i64 = exp.parse().map_err(|_| SignError::BadToken)?;
-        self.verify(exp, sig, token)
+        let (exp, sig, token) = url_parts(url, "/s/")?;
+        self.verify(exp, &sig, &token)
     }
+
+    /// [`Signer::verify_url`] without the expiry, for requests already behind the owner's check
+    /// (saving an item from a page opened over an hour ago).
+    pub fn verify_url_any_age(&self, url: &str) -> Result<String, SignError> {
+        let (exp, sig, token) = url_parts(url, "/s/")?;
+        self.verify_any_age(exp, &sig, &token)
+    }
+
+    /// A new link for one this service signed, however old (`/s/` or `/a/`), so a cached page never
+    /// shows an expired one. `None` for anything else: the owner cannot get a URL signed that the
+    /// service did not hand out, and rotating the key voids old links for good.
+    pub fn resign(&self, url: &str) -> Option<String> {
+        if let Ok((exp, sig, id)) = url_parts(url, "/a/") {
+            let expected = self.mac(&format!("a/{exp}/{id}"));
+            let ok = sig.len() == expected.len()
+                && bool::from(sig.as_bytes().ct_eq(expected.as_bytes()));
+            return ok.then(|| self.archive_url(&id));
+        }
+        self.verify_url_any_age(url)
+            .ok()
+            .map(|cdn| self.url_for(&cdn))
+    }
+}
+
+/// The `<exp>`, `<sig>` and last part of a signed path of this kind (`/s/` or `/a/`).
+fn url_parts(url: &str, kind: &str) -> Result<(i64, String, String), SignError> {
+    let path = match Url::parse(url) {
+        Ok(u) => u.path().to_string(),
+        Err(_) => url.split(['?', '#']).next().unwrap_or("").to_string(),
+    };
+    let rest = path
+        .strip_prefix(PREFIX)
+        .and_then(|r| r.strip_prefix(kind))
+        .ok_or(SignError::BadToken)?;
+    let mut parts = rest.split('/');
+    let (Some(exp), Some(sig), Some(last), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Err(SignError::BadToken);
+    };
+    let exp: i64 = exp.parse().map_err(|_| SignError::BadToken)?;
+    Ok((exp, sig.to_string(), last.to_string()))
 }
 
 #[cfg(test)]
@@ -362,6 +397,34 @@ mod tests {
             s.verify_archive(exp, &p[1], &p[2]),
             Err(SignError::BadSignature)
         );
+    }
+
+    #[test]
+    fn only_links_this_service_signed_are_signed_again() {
+        let s = Signer::new(vec![1; 32]);
+        let now = chrono::Utc::now().timestamp();
+        let old = s.url_with_exp(CDN, now - 7 * 24 * 3600);
+        assert_eq!(s.verify_url(&old), Err(SignError::Expired));
+        let fresh = s.resign(&old).unwrap();
+        assert_eq!(s.verify_url(&fresh).as_deref(), Ok(CDN));
+        // Through a full URL as well; an archive link stays an archive link.
+        assert!(s
+            .resign(&format!("https://getsecretary.tech{old}"))
+            .is_some());
+        let a = s.archive_url("itm_1");
+        let again = s.resign(&a).unwrap();
+        assert!(again.starts_with("/v1/instagram/a/") && again.ends_with("/itm_1"));
+        // Another key's link, a forged one, a foreign host, a raw CDN URL: refused.
+        assert_eq!(Signer::new(vec![2; 32]).resign(&old), None);
+        assert_eq!(s.resign(&a.replace("itm_1", "itm_2")), None);
+        let tampered = old.replacen(
+            &(now - 7 * 24 * 3600).to_string(),
+            &(now + 99).to_string(),
+            1,
+        );
+        assert_eq!(s.resign(&tampered), None);
+        assert_eq!(s.resign(&s.url_for("https://evil.test/x.jpg")), None);
+        assert_eq!(s.resign(CDN), None);
     }
 
     #[test]

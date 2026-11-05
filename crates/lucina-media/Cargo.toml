@@ -16,6 +16,8 @@ path = "src/main.rs"
 secretary-media-stream = { path = "../secretary-media-stream" }
 # The photo editor: the edit list and its renderer, the same code the web editor previews with.
 secretary-image = { path = "../secretary-image" }
+# Spreadsheets: view and edit .xlsx without losing parts (`sheet.rs`, docs/xlsx.md).
+secretary-xlsx = { path = "../secretary-xlsx" }
 # Smart search: SigLIP2 image vectors and their index (`smart.rs`).
 lucina-media-ml = { path = "../lucina-media-ml" }
 axum = "0.8"
@@ -50,6 +52,9 @@ thumbhash = "0.1"
 base64 = "0.22"
 # Album share tokens (16 bytes from the OS RNG) and the share page's CSP nonce.
 getrandom = "0.3"
+# Background uploads (`bgupload.rs`): its own HTTP/1.1 listener, which can send a 104 first.
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio", "service"] }
 # The Drive: archive listings, code highlighting, PDF text (pure Rust).
 tar = "0.4"
 flate2 = "1"
@@ -64,6 +69,7 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+secretary-xlsx = { path = "../secretary-xlsx" }
 http-body-util = "0.1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 # Palette PNGs for the archive tests (the image crate cannot write them).

@@ -4,12 +4,16 @@
 //! - `media/<key>.<ext>`: proxied images and videos. The extension encodes the content type, so
 //!   one file per media item is enough.
 //!
-//! The cap (`INSTAGRAM_CACHE_MAX_BYTES`, default 2 GiB) covers both. When a write pushes the
+//! - `profiles/`: the profile store (`store.rs`), never evicted.
+//!
+//! The cap (`INSTAGRAM_CACHE_MAX_BYTES`, default 2 GiB) covers all of it. When a write pushes the
 //! total over the cap, the oldest files (by modification time; a cache hit refreshes it) are
-//! deleted until the total is at 90 % of the cap.
+//! deleted until the total is at 90 % of the cap. Pinned media (watched accounts, saved items) is
+//! never deleted.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
@@ -46,6 +50,10 @@ pub struct DiskCache {
     approx_used: AtomicU64,
     evict_lock: Mutex<()>,
     tmp_counter: AtomicU64,
+    /// Media keys eviction must leave alone.
+    pinned: Mutex<HashSet<String>>,
+    /// Pinned files alone are over the cap: nothing more can be evicted.
+    full: AtomicBool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -89,6 +97,8 @@ impl DiskCache {
             approx_used: AtomicU64::new(0),
             evict_lock: Mutex::new(()),
             tmp_counter: AtomicU64::new(0),
+            pinned: Mutex::new(HashSet::new()),
+            full: AtomicBool::new(false),
         };
         c.sweep_partials();
         c.approx_used.store(c.total_bytes(), Ordering::Relaxed);
@@ -102,6 +112,24 @@ impl DiskCache {
 
     pub fn max_bytes(&self) -> u64 {
         self.max_bytes
+    }
+
+    /// Replace the set of media keys eviction must leave alone.
+    pub fn set_pinned(&self, keys: HashSet<String>) {
+        *self.pinned.lock().unwrap_or_else(|e| e.into_inner()) = keys;
+    }
+
+    /// One more media key eviction must leave alone.
+    pub fn pin(&self, key: &str) {
+        self.pinned
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key.to_string());
+    }
+
+    /// Whether the last eviction could not get under the cap (too much is pinned).
+    pub fn is_full(&self) -> bool {
+        self.full.load(Ordering::Relaxed)
     }
 
     /// Exact size of everything under the root.
@@ -152,6 +180,17 @@ impl DiskCache {
 
     // ---- media ----
 
+    /// Whether a media file is on disk (its age stays).
+    pub fn has_media(&self, key: &str) -> bool {
+        safe_key(key)
+            && MEDIA_TYPES.iter().any(|(ext, _)| {
+                self.root
+                    .join("media")
+                    .join(format!("{key}.{ext}"))
+                    .is_file()
+            })
+    }
+
     /// Path of a cached media file, refreshing its age. `None` when it isn't cached.
     pub fn find_media(&self, key: &str) -> Option<(PathBuf, &'static str)> {
         if !safe_key(key) {
@@ -198,18 +237,31 @@ impl DiskCache {
         walk(&self.root, &mut files);
         let mut total: u64 = files.iter().map(|(_, n, _)| *n).sum();
         if total <= self.max_bytes {
+            self.full.store(false, Ordering::Relaxed);
             self.approx_used.store(total, Ordering::Relaxed);
             return 0;
         }
         let target = self.max_bytes / 10 * 9;
+        let pinned = self
+            .pinned
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let store = self.root.join("profiles");
         files.sort_by_key(|(_, _, m)| *m);
         let mut removed = 0;
         for (p, n, _) in files {
             if total <= target {
                 break;
             }
-            // Never delete a download that is still being written.
-            if p.extension().is_some_and(|e| e == "part") {
+            // Never delete a download that is still being written, the profile store or a file
+            // that must stay.
+            if p.extension().is_some_and(|e| e == "part")
+                || p.starts_with(&store)
+                || p.file_stem()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|s| pinned.contains(s))
+            {
                 continue;
             }
             if std::fs::remove_file(&p).is_ok() {
@@ -217,6 +269,15 @@ impl DiskCache {
                 removed += 1;
             }
         }
+        let full = total > self.max_bytes;
+        if full && !self.full.load(Ordering::Relaxed) {
+            tracing::warn!(
+                total,
+                cap = self.max_bytes,
+                "instagram cache: what must stay is over the cap; downloads pause"
+            );
+        }
+        self.full.store(full, Ordering::Relaxed);
         self.approx_used.store(total, Ordering::Relaxed);
         removed
     }
@@ -303,6 +364,33 @@ mod tests {
         put_media(&c, "new", 1_000);
         assert!(c.find_media("old").is_some());
         assert!(c.find_media("mid").is_none());
+    }
+
+    #[test]
+    fn pinned_media_and_the_profile_store_are_never_evicted() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = DiskCache::new(dir.path(), 3_000).unwrap();
+        std::fs::create_dir_all(dir.path().join("profiles")).unwrap();
+        std::fs::write(dir.path().join("profiles/doc.json"), vec![b'x'; 200]).unwrap();
+        c.set_pinned(HashSet::from(["keep".to_string()]));
+        put_media(&c, "keep", 1_000);
+        std::thread::sleep(Duration::from_millis(20));
+        put_media(&c, "b", 1_000);
+        std::thread::sleep(Duration::from_millis(20));
+        put_media(&c, "c", 1_000);
+        std::thread::sleep(Duration::from_millis(20));
+        put_media(&c, "d", 1_000);
+        assert!(c.has_media("keep"), "the oldest file, but pinned");
+        assert!(!c.has_media("b"));
+        assert!(dir.path().join("profiles/doc.json").exists());
+        assert!(!c.is_full());
+        // Only pinned files left and still over the cap: said, and nothing is deleted.
+        let all = ["keep", "d", "e", "f"];
+        c.set_pinned(all.iter().map(|k| k.to_string()).collect());
+        put_media(&c, "e", 1_000);
+        put_media(&c, "f", 1_000);
+        assert!(all.iter().all(|k| c.has_media(k)));
+        assert!(c.is_full());
     }
 
     #[test]

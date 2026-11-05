@@ -97,6 +97,8 @@ const en = {
   noArchive: "Nothing saved from this account yet.",
   gone: "This account no longer answers: it was renamed, deleted or blocked.",
   alreadySaved: "Saved to Lucina",
+  mediaRetrying: "Can't load. Trying again…",
+  storyExpired: "Expired",
 };
 
 export const instagram: FeatureDictionary<typeof en> = {
@@ -195,6 +197,8 @@ export const instagram: FeatureDictionary<typeof en> = {
     noArchive: "Ancora niente salvato da questo account.",
     gone: "Questo account non risponde più: rinominato, eliminato o bloccato.",
     alreadySaved: "Salvato in Lucina",
+    mediaRetrying: "Impossibile caricare. Riprovo…",
+    storyExpired: "Scaduta",
   },
   da: {
     title: "Instagram",
@@ -290,5 +294,7 @@ export const instagram: FeatureDictionary<typeof en> = {
     noArchive: "Intet gemt fra denne konto endnu.",
     gone: "Kontoen svarer ikke længere: omdøbt, slettet eller blokeret.",
     alreadySaved: "Gemt i Lucina",
+    mediaRetrying: "Kan ikke indlæses. Prøver igen…",
+    storyExpired: "Udløbet",
   },
 };

@@ -107,6 +107,26 @@ impl RecentChat {
         }
     }
 
+    /// Take a secret out of the turns (it was saved in Infisical): how many turns changed.
+    pub fn scrub(&self, needles: &[String], replacement: &str) -> usize {
+        let (n, snapshot) = self.with(|map| {
+            let mut n = 0;
+            for turn in map.values_mut().flatten() {
+                if let Some(new) = crate::scrub::scrub_str(&turn.text, needles, replacement) {
+                    turn.text = new;
+                    n += 1;
+                }
+            }
+            (n, (n > 0).then(|| serde_json::to_string_pretty(map).ok()).flatten())
+        });
+        if let (Some(p), Some(text)) = (&self.path, snapshot) {
+            if let Err(e) = write_atomic(p, format!("{text}\n").as_bytes()) {
+                tracing::warn!(error = %e.kind(), "recent chat persist failed");
+            }
+        }
+        n
+    }
+
     /// Forget the loaded turns: the next use reads the file again (another
     /// writer may have changed it, e.g. Node before a lease handover).
     pub fn reload(&self) {

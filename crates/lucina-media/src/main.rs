@@ -517,6 +517,18 @@ async fn serve(cfg: Config) -> anyhow::Result<()> {
     };
     let public = http::router(lib.clone(), stream);
     let internal = http::internal_router(lib.clone());
+    if let Some(addr) = cfg.bg_listen {
+        let l = lib.clone();
+        tokio::spawn(async move {
+            if let Err(e) = lucina_media::bgupload::serve(l, addr).await {
+                tracing::error!(error = %e, "background upload listener stopped");
+            }
+        });
+        tokio::spawn(lucina_media::bgupload::watchdog(
+            lib.clone(),
+            lucina_media::lab_run::LabConfig::from_env().notify,
+        ));
+    }
     if cfg.listen == cfg.internal_listen {
         let listener = tokio::net::TcpListener::bind(cfg.listen).await?;
         tracing::info!(addr = %cfg.listen, "serving public + internal");

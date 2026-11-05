@@ -222,15 +222,52 @@ enum Cmd {
         #[command(subcommand)]
         cmd: JevCmd,
     },
+    /// The weekly upstream watch (docs/upstream-watch.md): what the originals we ported released
+    /// since our pin, JEV's verdict, and "Port into ours / Later / Ignore" for the owner.
+    Upstream {
+        #[command(subcommand)]
+        cmd: UpstreamCmd,
+    },
     /// Ask Lucina for a go-ahead through the running server (docs/design/decisions-api.md): she
     /// decides, or pushes the question to the owner's phone and answers `pending`. Prints the
     /// decision as JSON. `decide status <id> [--wait N]` and `decide list` read them back.
+    /// Lucina moves a secret into Infisical herself: `save`, `status`, `scan`. A client of the running
+    /// server; prints references, names and outcomes, never a value.
+    SecretKeep {
+        #[command(subcommand)]
+        cmd: KeepCmd,
+    },
     #[command(args_conflicts_with_subcommands = true)]
+    /// One model call through a named provider, on the running server: no turn, no timeline, no tool runs.
+    ModelTry {
+        /// deepseek | mistral.
+        #[arg(long, default_value = "mistral")]
+        provider: String,
+        /// A model id other than the provider's default.
+        #[arg(long)]
+        model: Option<String>,
+        /// Stream, and report the time to the first text.
+        #[arg(long)]
+        stream: bool,
+        /// Offer her real tools (nothing runs; the answer shows what the model called).
+        #[arg(long)]
+        tools: bool,
+        prompt: String,
+    },
     Decide {
         #[command(subcommand)]
         cmd: Option<DecideCmd>,
         #[command(flatten)]
         ask: DecideArgs,
+    },
+    /// The flaw tracker's database, beside the running server: ls, show, report, target,
+    /// duplicate, merged, deployed, matrix.
+    Flaws {
+        #[command(subcommand)]
+        cmd: FlawsCmd,
+        /// The database (default LUCINA_FLAWS_DB, else <LUCINA_DATA_DIR>/flaws/flaws.db).
+        #[arg(long, global = true)]
+        db: Option<PathBuf>,
     },
     /// Lucina's messages to Claude, Grok and Lucina Agents, through the running server:
     /// `reach inbox [--to claude] [--all]`, `reach show <id>`, `reach reply <id> --from <who> <text>`.
@@ -257,6 +294,73 @@ enum Cmd {
 }
 
 #[derive(Subcommand)]
+enum FlawsCmd {
+    /// Flaws, worst first.
+    Ls {
+        #[arg(long)]
+        q: Option<String>,
+        #[arg(long)]
+        state: Option<String>,
+    },
+    /// One flaw: targets and history.
+    Show { id: String },
+    /// Record a flaw, in the words given.
+    Report {
+        words: String,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long)]
+        severity: Option<String>,
+        /// Clients where it was seen (repeat).
+        #[arg(long)]
+        affected: Vec<String>,
+        #[arg(long)]
+        thread: Option<String>,
+        #[arg(long)]
+        discovered_from: Option<String>,
+        /// irreversible, credentials or payment: its fix waits for the owner's go.
+        #[arg(long)]
+        gate: Option<String>,
+        /// Someone already triaged it: no agent will.
+        #[arg(long)]
+        triaged: bool,
+    },
+    /// Change one client's row. verified and not_affected are refused without closing evidence.
+    Target {
+        id: String,
+        platform: String,
+        #[arg(long)]
+        status: Option<String>,
+        #[arg(long)]
+        layer: Option<String>,
+        #[arg(long)]
+        evidence_kind: Option<String>,
+        #[arg(long)]
+        evidence_ref: Option<String>,
+        #[arg(long)]
+        build: Option<String>,
+        #[arg(long)]
+        workspace: Option<String>,
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long)]
+        commit: Option<String>,
+        #[arg(long)]
+        deploy_tag: Option<String>,
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// Mark it a duplicate of another flaw.
+    Duplicate { id: String, of: String },
+    /// agentd: a task's merge landed.
+    Merged { id: String, platform: String, commit: String },
+    /// agentd: a deploy holds this target's fix; kept if the runtime carries it.
+    Deployed { id: String, platform: String, runtime: String, tag: String },
+    /// Every live flaw against every client.
+    Matrix,
+}
+
+#[derive(Subcommand, Debug)]
 enum ReachCmd {
     /// Messages Lucina sent that wait for an answer (newest first).
     Inbox {
@@ -343,6 +447,112 @@ enum JevCmd {
 }
 
 #[derive(Subcommand)]
+enum UpstreamCmd {
+    /// Reconcile, then check every entry: changes, summary, verdict, questions, report, ops record.
+    Check {
+        /// A registry file instead of origin/main:docs/upstreams.toml of LUCINA_UPSTREAM_REPO.
+        #[arg(long)]
+        registry: Option<PathBuf>,
+        /// Only these entries (repeatable).
+        #[arg(long)]
+        only: Vec<String>,
+        /// Ask nothing, store no state, write no ops record (the report goes to runs/<date>-dry-run.md).
+        #[arg(long)]
+        dry_run: bool,
+        /// Store the results but ask the owner nothing.
+        #[arg(long)]
+        no_notify: bool,
+        /// Questions to the owner this run (default: the registry's max_decisions_per_run).
+        #[arg(long)]
+        max_decisions: Option<usize>,
+    },
+    /// Act on the owner's answers: workspace and brief for "Port into ours", draft plans.
+    Reconcile {
+        #[arg(long)]
+        registry: Option<PathBuf>,
+        /// Show what would happen; run and store nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// One line per entry: pin, latest seen, decision, backlog, workspace.
+    Status {
+        #[arg(long)]
+        registry: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Parse and validate the registry; exit 1 on errors.
+    Validate {
+        #[arg(long)]
+        registry: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum KeepCmd {
+    /// Queue a move of a secret to Infisical: from a note or a chat message through the local model,
+    /// from a file or a .env file by plain parsing.
+    Save {
+        /// note:<slug>, chat:<item id>, file:<path> or env:<path>.
+        #[arg(long)]
+        source: String,
+        /// Required, except for env:, where each key keeps its own.
+        #[arg(long, default_value = "")]
+        name: String,
+        /// env: only these keys, comma-separated. Default: the keys that look like secrets.
+        #[arg(long, default_value = "")]
+        keys: String,
+        /// env: what stored names start with. Default with no project: KEEP_<FOLDER>_.
+        #[arg(long, default_value = "")]
+        prefix: String,
+        /// file:, env: clear the source after the read-back, if nothing is seen using it.
+        #[arg(long)]
+        clear: bool,
+        /// Which secret in that text, in words. Never the value.
+        #[arg(long, default_value = "")]
+        what: String,
+        #[arg(long, default_value = "")]
+        project: String,
+        #[arg(long, default_value = "")]
+        environment: String,
+        #[arg(long, default_value = "")]
+        path: String,
+        /// Store the note's whole text as one secret.
+        #[arg(long)]
+        whole: bool,
+        /// The open request (card) this answers.
+        #[arg(long, default_value = "")]
+        request: String,
+        /// Wait this many seconds for the outcome.
+        #[arg(long, default_value_t = 0)]
+        wait: u64,
+    },
+    /// How a job went.
+    Status {
+        job: String,
+        #[arg(long, default_value_t = 0)]
+        wait: u64,
+    },
+    /// Where a secret may be: references only.
+    Scan,
+    /// What a project needs, what is found, what is missing: names and states.
+    Project {
+        dir: String,
+        /// Also move what is found to Infisical. The files stay.
+        #[arg(long)]
+        deposit: bool,
+        #[arg(long, default_value = "")]
+        project: String,
+        #[arg(long, default_value = "")]
+        environment: String,
+        #[arg(long, default_value = "")]
+        path: String,
+        #[arg(long, default_value = "")]
+        prefix: String,
+    },
+}
+
+#[derive(clap::Subcommand)]
 enum DecideCmd {
     /// One decision as JSON (`--wait N`: poll while it is pending).
     Status {
@@ -390,6 +600,47 @@ enum OpsCmd {
     Page { path: String },
     /// Move Syncthing conflict copies to Conflicts/ and put lost entries back.
     Sweep,
+    /// The Obsidian ingest (crate lucina_vault_ingest): records, commits and session
+    /// reports become Zettelkasten notes, written by the local Qwen only while it is free.
+    Ingest {
+        #[command(subcommand)]
+        cmd: IngestCmd,
+        /// queue.jsonl and state.json (default LUCINA_VAULT_INGEST_STATE_DIR, else <state>/ingest).
+        #[arg(long)]
+        ingest_state: Option<PathBuf>,
+        /// Repos followed, `name=path@ref#project;…` (default LUCINA_VAULT_INGEST_GIT).
+        #[arg(long)]
+        git: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum IngestCmd {
+    /// Queue depth, last run, next try, followed repos (JSON).
+    Status,
+    /// Queue what is new in the ops record and the repos (no model).
+    Scan,
+    /// Scan, then ingest now: ignores the backoff, never preempts another Qwen user.
+    Run {
+        /// May load an unloaded model when the GPU is entirely free.
+        #[arg(long)]
+        cold: bool,
+        /// Items for the model this run.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Do not scan the sources first.
+        #[arg(long)]
+        no_scan: bool,
+    },
+    /// Queue a Claude session report from stdin: {id?, title, project, summary, at?, files?}.
+    Session,
+    /// Re-arm items that gave up (all when no key is given).
+    Retry {
+        keys: Vec<String>,
+        /// Also re-ingest done or skipped items.
+        #[arg(long)]
+        any: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -554,9 +805,110 @@ async fn jev_cmd(cmd: JevCmd) -> anyhow::Result<()> {
     }
 }
 
+/// `lucina-rs upstream …` (lucina_server::upstream). The API token comes from the unit's env files
+/// and is never printed.
+async fn upstream_cmd(cmd: UpstreamCmd) -> anyhow::Result<()> {
+    use lucina_server::upstream;
+    match cmd {
+        UpstreamCmd::Check {
+            registry,
+            only,
+            dry_run,
+            no_notify,
+            max_decisions,
+        } => {
+            upstream::check(upstream::CheckArgs {
+                registry,
+                only,
+                dry_run,
+                no_notify,
+                max_decisions,
+            })
+            .await
+        }
+        UpstreamCmd::Reconcile { registry, dry_run } => {
+            upstream::reconcile(registry, dry_run).await
+        }
+        UpstreamCmd::Status { registry, json } => upstream::status(registry, json),
+        UpstreamCmd::Validate { registry } => upstream::validate(registry),
+    }
+}
+
 /// `lucina-rs decide …`: a client of the running server (`/api/secretary/decisions`), so the
 /// decision goes through the same path as `lucina_decide`: evidence, Jev, the owner's push, the
 /// ops record. The API token comes from the unit's env files and is never printed.
+fn flaws_cmd(cmd: FlawsCmd, db: Option<PathBuf>) -> anyhow::Result<()> {
+    use lucina_flaws::{Evidence, EvidenceKind, Gate, Layer, ListQuery, NewFlaw, Platform, Severity, TargetStatus, TargetUpdate};
+    let flaws = lucina_server::flaws::open_cli(db)?;
+    let actor = std::env::var("LAGENT_SESSION")
+        .or_else(|_| std::env::var("LUCINA_FLAWS_ACTOR"))
+        .unwrap_or_else(|_| "lucina-rs-cli".to_owned());
+    let out = match cmd {
+        FlawsCmd::Ls { q, state } => {
+            let state = state.as_deref().map(lucina_flaws::FlawState::parse).transpose()?;
+            serde_json::to_value(flaws.list(&ListQuery { q, state, ..ListQuery::default() })?)?
+        }
+        FlawsCmd::Show { id } => serde_json::to_value(flaws.get(&id)?)?,
+        FlawsCmd::Report { words, title, severity, affected, thread, discovered_from, gate, triaged } => {
+            let new = NewFlaw {
+                words,
+                title,
+                severity: severity.as_deref().map(Severity::parse).transpose()?,
+                affected: affected.iter().map(|p| Platform::parse(p)).collect::<Result<_, _>>()?,
+                thread,
+                discovered_from,
+                gate: gate.as_deref().map(Gate::parse).transpose()?,
+            };
+            let r = flaws.report(new, &actor)?;
+            if triaged {
+                flaws.start_triage(&r.flaw.flaw.id, "manual", true, &actor)?;
+            }
+            serde_json::to_value(r)?
+        }
+        FlawsCmd::Target { id, platform, status, layer, evidence_kind, evidence_ref, build, workspace, session, commit, deploy_tag, note } => {
+            let evidence = match evidence_kind {
+                None => None,
+                Some(k) => Some(Evidence {
+                    kind: EvidenceKind::parse(&k)?,
+                    reference: evidence_ref.unwrap_or_default(),
+                    build: build.clone(),
+                    note: note.clone(),
+                }),
+            };
+            let u = TargetUpdate {
+                status: status.as_deref().map(TargetStatus::parse).transpose()?,
+                layer: layer.as_deref().map(Layer::parse).transpose()?,
+                evidence,
+                workspace,
+                session,
+                commit,
+                deploy_tag,
+                build,
+                note,
+            };
+            serde_json::to_value(flaws.set_target(&id, Platform::parse(&platform)?, u, &actor)?)?
+        }
+        FlawsCmd::Duplicate { id, of } => {
+            let p = lucina_flaws::FlawPatch { duplicate_of: Some(of), ..Default::default() };
+            serde_json::to_value(flaws.patch(&id, p, &actor)?)?
+        }
+        FlawsCmd::Merged { id, platform, commit } => serde_json::to_value(flaws.record_merge(&id, Platform::parse(&platform)?, &commit, "lagent")?)?,
+        FlawsCmd::Deployed { id, platform, runtime, tag } => {
+            let p = Platform::parse(&platform)?;
+            let t = flaws.get(&id)?.targets.into_iter().find(|t| t.platform == p).ok_or(lucina_flaws::FlawError::NotFound)?;
+            let first_for_runtime = !t.deploy_tag.as_deref().is_some_and(|d| d.starts_with(&format!("deploy/{runtime}/")));
+            if lucina_flaws::policy::runtime_serves(p, t.layer, &runtime) && first_for_runtime {
+                serde_json::to_value(flaws.record_deploy(&id, p, &tag, "lagent")?)?
+            } else {
+                serde_json::to_value(t)?
+            }
+        }
+        FlawsCmd::Matrix => flaws.matrix()?,
+    };
+    println!("{}", serde_json::to_string_pretty(&out)?);
+    Ok(())
+}
+
 async fn reach_cmd(cmd: ReachCmd) -> anyhow::Result<()> {
     use lucina_server::reach::cli;
     let out = match cmd {
@@ -572,6 +924,45 @@ async fn reach_cmd(cmd: ReachCmd) -> anyhow::Result<()> {
         ReachCmd::Show { id } => cli::show(&id).await?,
         ReachCmd::Reply { id, from, text } => cli::reply(&id, &from, &text).await?,
     };
+    println!("{}", serde_json::to_string_pretty(&out)?);
+    Ok(())
+}
+
+async fn keep_cmd(cmd: KeepCmd) -> anyhow::Result<()> {
+    use lucina_server::decide::cli;
+    let c = cli::Client::from_env()?;
+    let mut wait_for = 0;
+    let mut out = match cmd {
+        KeepCmd::Save { source, name, keys, prefix, clear, what, project, environment, path, whole, request, wait } => {
+            wait_for = wait;
+            let keys: Vec<&str> = keys.split(',').map(str::trim).filter(|k| !k.is_empty()).collect();
+            c.post(
+                "secrets/keep",
+                &serde_json::json!({"source": source, "name": name, "what": what, "project": project,
+                                    "environment": environment, "path": path, "whole": whole, "request": request,
+                                    "keys": keys, "prefix": prefix, "clear": clear}),
+            )
+            .await?
+        }
+        KeepCmd::Status { job, wait } => {
+            wait_for = wait;
+            c.post("secrets/keep", &serde_json::json!({"job": job})).await?
+        }
+        KeepCmd::Scan => c.post("secrets/scan", &serde_json::json!({})).await?,
+        KeepCmd::Project { dir, deposit, project, environment, path, prefix } => {
+            c.post(
+                "secrets/project",
+                &serde_json::json!({"dir": dir, "deposit": deposit, "project": project, "environment": environment,
+                                    "path": path, "prefix": prefix}),
+            )
+            .await?
+        }
+    };
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(wait_for);
+    while out["state"] == "queued" && std::time::Instant::now() < until {
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        out = c.post("secrets/keep", &serde_json::json!({"job": out["job"]})).await?;
+    }
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
 }
@@ -616,7 +1007,7 @@ async fn ops_cmd(
     tz: Option<String>,
 ) -> anyhow::Result<()> {
     use std::io::Read as _;
-    let ops = lucina_server::ops::open_cli(vault, state, tz)?;
+    let ops = std::sync::Arc::new(lucina_server::ops::open_cli(vault, state, tz)?);
     let stdin = || -> anyhow::Result<String> {
         let mut s = String::new();
         std::io::stdin()
@@ -677,6 +1068,58 @@ async fn ops_cmd(
         OpsCmd::Sweep => {
             let r = ops.sweep_conflicts()?;
             println!("{}", serde_json::to_string(&r)?);
+        }
+        OpsCmd::Ingest {
+            cmd,
+            ingest_state,
+            git,
+        } => {
+            let (state_dir, tz) = (ops.config().state_dir.clone(), ops.config().time_zone);
+            let mut cfg = lucina_vault_ingest::IngestConfig::from_lookup(
+                |k| std::env::var(k).ok(),
+                &state_dir.join("ingest"),
+                tz,
+            )?;
+            if let Some(s) = ingest_state {
+                cfg.state_dir = s;
+            }
+            if let Some(g) = git {
+                cfg.git = lucina_vault_ingest::sources::GitRepo::parse_list(&g)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+            }
+            let ingest = lucina_vault_ingest::Ingest::open(cfg, ops.clone())?;
+            let now = chrono::Utc::now;
+            let out = match cmd {
+                IngestCmd::Status => serde_json::to_value(ingest.status()?)?,
+                IngestCmd::Scan => serde_json::to_value(ingest.scan(now()).await?)?,
+                IngestCmd::Run {
+                    cold,
+                    limit,
+                    no_scan,
+                } => {
+                    let scan = if no_scan {
+                        None
+                    } else {
+                        Some(ingest.scan(now()).await?)
+                    };
+                    let opts = lucina_vault_ingest::RunOpts {
+                        force: true,
+                        cold,
+                        limit,
+                    };
+                    let run = ingest.run(opts, now()).await?;
+                    serde_json::json!({"scan": scan, "run": run})
+                }
+                IngestCmd::Session => {
+                    let v: serde_json::Value = serde_json::from_str(&stdin()?)?;
+                    let (key, added) = ingest.enqueue_session(&v, now())?;
+                    serde_json::json!({"key": key, "queued": added})
+                }
+                IngestCmd::Retry { keys, any } => {
+                    serde_json::json!({"rearmed": ingest.retry(&keys, any, now())?})
+                }
+            };
+            println!("{}", serde_json::to_string_pretty(&out)?);
         }
     }
     Ok(())
@@ -909,10 +1352,10 @@ fn main() -> anyhow::Result<()> {
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default))
     };
     // Logs are a sink: every formatted line goes through the redactor.
-    // `deals`, `decide` and `jev` print their results on stdout, so their logs go to stderr.
+    // `deals`, `decide`, `jev` and `upstream` print their results on stdout, so their logs go to stderr.
     if matches!(
         cmd,
-        Cmd::Deals { .. } | Cmd::Decide { .. } | Cmd::Jev { .. }
+        Cmd::Deals { .. } | Cmd::Decide { .. } | Cmd::Jev { .. } | Cmd::Upstream { .. } | Cmd::SecretKeep { .. } | Cmd::ModelTry { .. }
     ) {
         tracing_subscriber::fmt()
             .with_env_filter(filter("warn"))
@@ -959,8 +1402,22 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
         } => google_auth(&service, code, read_only).await?,
         Cmd::Drive { cmd } => drive_cmd(cmd).await?,
         Cmd::Decide { cmd, ask } => decide_cmd(cmd, ask).await?,
+        Cmd::ModelTry { provider, model, stream, tools, prompt } => {
+            let c = lucina_server::decide::cli::Client::from_env()?;
+            let mut body = serde_json::json!({"provider": provider, "prompt": prompt, "stream": stream});
+            if let Some(m) = model {
+                body["model"] = m.into();
+            }
+            if tools {
+                body["tools"] = "registry".into();
+            }
+            println!("{}", serde_json::to_string_pretty(&c.post("models/try", &body).await?)?);
+        }
+        Cmd::SecretKeep { cmd } => keep_cmd(cmd).await?,
+        Cmd::Flaws { cmd, db } => flaws_cmd(cmd, db)?,
         Cmd::Reach { cmd } => reach_cmd(cmd).await?,
         Cmd::Jev { cmd } => jev_cmd(cmd).await?,
+        Cmd::Upstream { cmd } => upstream_cmd(cmd).await?,
         Cmd::Ops {
             cmd,
             vault,
@@ -969,6 +1426,7 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
         } => ops_cmd(cmd, vault, state, tz).await?,
         Cmd::Serve => {
             let cfg = Config::from_env()?;
+            lucina_server::share::stop_orphans(&cfg.share);
             tracing::info!(config = ?cfg, "lucina starting (shadow mode: scheduler, Telegram and Discord off unless stated)");
             let binds = cfg.binds.clone();
             let state = AppState::build(cfg, None)?;

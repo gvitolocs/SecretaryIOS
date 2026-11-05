@@ -256,7 +256,8 @@ fn replies_are_short_in_his_language() {
     assert_eq!(reply_text("en", true, 0.8, ""), "Yes (80%, likely).");
     assert_eq!(answer_word("it", false), "No");
     assert_eq!(lang_code("Reply language: Danish (the owner's message)."), "da");
-    assert_eq!(lang_code("Reply language: Italian …"), "it");
+    // The turn's line never pins Italian; an old line reads as English.
+    assert_eq!(lang_code("Reply language: Italian …"), "en");
     assert_eq!(lang_code(""), "en");
     assert!(unsure_line("it").starts_with("Non ne sono sicura"));
     assert!(hedge_line("da", "medical").contains("medicinsk"));

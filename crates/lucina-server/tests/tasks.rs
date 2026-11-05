@@ -120,7 +120,7 @@ async fn tasks_turns_like_node() {
     assert_eq!(list.action, "tasks");
     assert_eq!(
         list.reply,
-        "Oggi hai 3 attività:\n- 10 min anki/memrise (in ritardo di 2 g ↻)\n- 15 min shadowing (09:00 ↻)\n- 20min speaking (↻ p1)\nObiettivo: 1/5 fatte."
+        "You have 3 tasks today:\n- 10 min anki/memrise (2d overdue ↻)\n- 15 min shadowing (09:00 ↻)\n- 20min speaking (↻ p1)\nGoal: 1/5 done."
     );
     assert_eq!(list.action_result, "[tasks today: 3]");
     assert_eq!(list.meta.unwrap().kind.as_deref(), Some("tasks"));
@@ -146,7 +146,7 @@ async fn tasks_turns_like_node() {
     assert_eq!(add.action, "tasks_add");
     assert_eq!(
         add.reply,
-        "Aggiunta: «chiamare Marco», per domani alle 9. La trovi anche in Todoist tra poco."
+        "Added \"chiamare Marco\", due domani alle 9. It shows up in Todoist shortly."
     );
     let post = calls
         .lock()
@@ -172,7 +172,7 @@ async fn tasks_turns_like_node() {
     assert_eq!(done.action, "tasks_complete");
     assert_eq!(
         done.reply,
-        "Bravo! Segnato «15 min shadowing» come fatto (2/5 oggi). Torna alla prossima ripetizione."
+        "Nice! Marked \"15 min shadowing\" done (2/5 today). It comes back at its next repeat."
     );
     let last = calls
         .lock()
@@ -209,8 +209,9 @@ async fn tasks_turns_like_node() {
         .await
         .unwrap()
         .unwrap();
-    // Node guessed English here (no Italian marker word); the function-word detector reads Italian.
-    assert!(del.reply.starts_with("Le attività le elimini tu"));
+    // Node guessed English here (no Italian marker word); the function-word detector reads Italian, and
+    // she answers in English (owner rule 2026-11-02).
+    assert!(del.reply.starts_with("You delete tasks yourself"));
     let en = tasks_turn(&s, "delete the task anki", false, TZ, false)
         .await
         .unwrap()

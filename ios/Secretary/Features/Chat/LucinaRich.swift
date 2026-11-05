@@ -5,7 +5,7 @@ import SwiftUI
 // meta), so `RichMessage.parse` validates it again and drops what does not fit.
 
 struct RichAction: Codable, Equatable, Hashable, Sendable, Identifiable {
-    enum Kind: String, Codable, Sendable { case reply, route, confirm, dismiss }
+    enum Kind: String, Codable, Sendable { case reply, route, confirm, dismiss, secret }
     let id: String
     let label: String
     let emoji: String?
@@ -17,6 +17,8 @@ struct RichAction: Codable, Equatable, Hashable, Sendable, Identifiable {
     let path: String?
     /// `confirm`: `yes`, `no` or `edit`.
     let answer: String?
+    /// `secret`: names only, never a value (SecretCard.swift).
+    var secret: SecretAction?
 
     /// Sends a message right away (not a prefill, route or dismiss).
     var sendsMessage: Bool {
@@ -187,6 +189,9 @@ struct RichMessage: Codable, Equatable, Hashable, Sendable {
             return RichAction(id: id, label: label, emoji: emoji(v["emoji"]), kind: kind, text: t, prefill: false, path: nil, answer: answer)
         case .dismiss:
             return RichAction(id: id, label: label, emoji: emoji(v["emoji"]), kind: kind, text: nil, prefill: false, path: nil, answer: nil)
+        case .secret:
+            guard let secret = SecretAction.parse(p) else { return nil }
+            return RichAction(id: id, label: label, emoji: emoji(v["emoji"]), kind: kind, text: nil, prefill: false, path: nil, answer: nil, secret: secret)
         }
     }
 
@@ -255,13 +260,24 @@ enum ChatMarkdown {
 
     static func inline(_ text: String) -> AttributedString {
         if let hit = cache[text] { return hit }
-        let value = NoteText.inline(text)
+        let value = NoteText.inline(listBullets(text))
         cache[text] = value
         order.append(text)
         if order.count > limit {
             cache[order.removeFirst()] = nil
         }
         return value
+    }
+
+    /// Inline markdown keeps line ends but leaves a list's `- ` as typed: draw the bullet the web draws.
+    static func listBullets(_ text: String) -> String {
+        guard text.contains("- ") || text.contains("* ") || text.contains("+ ") else { return text }
+        return text.split(separator: "\n", omittingEmptySubsequences: false).map { line -> String in
+            let indent = line.prefix { $0 == " " || $0 == "\t" }
+            let rest = line.dropFirst(indent.count)
+            guard rest.hasPrefix("- ") || rest.hasPrefix("* ") || rest.hasPrefix("+ ") else { return String(line) }
+            return indent + "• " + rest.dropFirst(2)
+        }.joined(separator: "\n")
     }
 }
 
@@ -280,7 +296,24 @@ struct RichReplyView: View {
 
     private var visible: Int { shown ?? rich.bubbles.count }
 
+    /// A request in the secret queue: its card says it all, and the bubble stays for older clients.
+    private var secretRequest: (id: String, name: String)? {
+        for a in rich.actions {
+            if a.kind == .secret, let id = a.secret?.request { return (id, a.secret?.name ?? a.label) }
+        }
+        return nil
+    }
+
     var body: some View {
+        if let secretRequest {
+            SecretRequestCard(item: item, request: secretRequest.id, fallbackName: secretRequest.name)
+                .frame(maxWidth: 520, alignment: .leading)
+        } else {
+            reply
+        }
+    }
+
+    private var reply: some View {
         VStack(alignment: .leading, spacing: 6) {
             ForEach(Array(rich.bubbles.prefix(visible).enumerated()), id: \.offset) { _, bubble in
                 Text(ChatMarkdown.inline(bubble))
@@ -491,8 +524,15 @@ struct RichActionsView: View {
     let item: TimelineItem
     let actions: [RichAction]
     let inferredChoice: String?
+    @State private var secretSheet: IdentifiedSecretAction?
+
+    private struct IdentifiedSecretAction: Identifiable {
+        let id: String
+        let secret: SecretAction
+    }
 
     private var chosen: String? { store.chosenAction(for: item.id) ?? inferredChoice }
+    private var closed: Bool { chosen != nil || store.cardClosed(item.id) }
 
     var body: some View {
         FlowRow(spacing: 8) {
@@ -513,16 +553,19 @@ struct RichActionsView: View {
                     .overlay(Capsule().strokeBorder(isChosen ? Color.green : Theme.accent.opacity(0.4)))
                 }
                 .buttonStyle(.plain)
-                .disabled(chosen != nil)
-                .opacity(chosen != nil && !isChosen ? 0.45 : 1)
+                .disabled(closed)
+                .opacity(closed && !isChosen ? 0.45 : 1)
                 .accessibilityLabel(isChosen ? Text("\(action.label), chosen") : Text(action.label))
                 .accessibilityIdentifier("richAction-\(action.id)")
             }
         }
+        .sheet(item: $secretSheet) { sheet in
+            SecretActionSheet(action: sheet.secret) { store.choose(sheet.id, for: item.id) }
+        }
     }
 
     private func run(_ action: RichAction) {
-        guard chosen == nil else { return }
+        guard !closed else { return }
         switch action.kind {
         case .reply:
             if action.prefill { store.requestPrefill(action.text ?? "") } else if let t = action.text { Task { await store.send(t) } }
@@ -532,6 +575,10 @@ struct RichActionsView: View {
             app.open(route: action.path ?? "/")
         case .dismiss:
             break
+        case .secret:
+            // Chosen once it is done: cancelling the sheet leaves the button.
+            if let secret = action.secret { secretSheet = IdentifiedSecretAction(id: action.id, secret: secret) }
+            return
         }
         store.choose(action.id, for: item.id)
     }

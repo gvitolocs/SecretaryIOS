@@ -365,7 +365,9 @@ async fn play<S: MediaSource>(
         }));
     }
     let info = app.probe(&item).await?;
-    let plan = playback::plan(&info.probe, req.client);
+    // The size is kept beside the probe in the cache, and files probed before Juno's limit have it only there.
+    let probe = playback::Probe { height: info.height, ..info.probe.clone() };
+    let plan = playback::plan(&probe, req.client);
     let hls_url = if plan.mode == Mode::Direct {
         None
     } else {

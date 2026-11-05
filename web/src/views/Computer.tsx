@@ -1,5 +1,5 @@
 import { A } from "@solidjs/router";
-import { createEffect, createSignal, For, lazy, on, onCleanup, onMount, Show, type JSX } from "solid-js";
+import { createEffect, createMemo, createSignal, For, lazy, on, onCleanup, onMount, Show, type JSX } from "solid-js";
 import { toApiError } from "../api/client";
 import {
   computerApi,
@@ -24,7 +24,12 @@ import { readString, writeString } from "../lib/storage";
 import { deskCapable } from "../lib/deskClient";
 import { downloadFile, sendFiles, tooLarge, watchCopiedFiles } from "../lib/desktopFiles";
 import { createTouchMouse } from "../lib/touch";
+import ChatView from "./Chat";
 import "../styles/computer.css";
+
+const CHAT_PANEL_KEY = "computer.chatPanel";
+/** From this window width the chat opens by itself, beside the desktop (it takes the avatar's place). */
+const CHAT_PANEL_MIN_PX = 1000;
 
 // LucinaDesk (the RustDesk-protocol view of the desktop) in its own chunk: only the owner's live view loads it.
 const LucinaDesk = lazy(() => import("../components/DeskPlayer"));
@@ -291,6 +296,14 @@ export default function ComputerView() {
   const [text, setText] = createSignal("");
   const [clip, setClip] = createSignal("");
   const [full, setFull] = createSignal(false);
+  // The chat beside the desktop: his one conversation with her, open by default where there is room.
+  const [chatChoice, setChatChoice] = createSignal(readString("local", CHAT_PANEL_KEY));
+  const chatOpen = () => (chatChoice() ? chatChoice() === "open" : typeof window !== "undefined" && window.innerWidth >= CHAT_PANEL_MIN_PX);
+  const toggleChat = () => {
+    const next = chatOpen() ? "closed" : "open";
+    setChatChoice(next);
+    writeString("local", CHAT_PANEL_KEY, next);
+  };
   // Cua's viewer is the default (measured 2026-10-27 on the 2-core sandbox: first frame ~240 ms vs
   // LucinaDesk's ~600 ms, 54 vs ~47 fps); LucinaDesk is one remembered click away ("Use LucinaDesk").
   const [classic, setClassic] = createSignal(readString("local", "computer.classic") !== "no");
@@ -795,6 +808,8 @@ export default function ComputerView() {
       if (typeof document === "undefined" || typeof window === "undefined") return;
       if (!on) return;
       const keys = (e: KeyboardEvent) => {
+        // The chat beside the desktop is its own place: no key there reaches the desktop or leaves focus mode.
+        if ((e.target as HTMLElement | null)?.closest?.(".computer-chat")) return;
         if (e.key === "Escape") {
           if (confirming()) {
             setConfirming(null);
@@ -813,7 +828,7 @@ export default function ComputerView() {
         // Watching: the first key press takes over and is typed into the desktop.
         if (mine() || busy() || confirming() || mode() !== "live") return;
         const target = e.target as HTMLElement | null;
-        if (target?.closest?.("input, textarea, select, button, .drivebar")) return;
+        if (target?.closest?.("input, textarea, select, button, .drivebar, .computer-chat")) return;
         const pass = passKey(e);
         if (!pass) return;
         e.preventDefault();
@@ -869,6 +884,7 @@ export default function ComputerView() {
   /** The drive bar's buttons while driving: the keyboard (touch screens) and the viewer's own. */
   const barActions = (): DriveBarAction[] => {
     const out: DriveBarAction[] = [];
+    if (wide()) out.push({ id: "chat", label: t("computer.chatPanel"), icon: barIcons.chat(), pressed: chatOpen(), run: toggleChat });
     if (coarse()) out.push({ id: "keyboard", label: t("computer.keyboard"), icon: barIcons.keyboard(), pressed: keyboard(), run: toggleKeyboard });
     for (const b of viewerButtons()) {
       out.push({ id: b.id, label: b.label, icon: VIEWER_ICONS[b.id]?.(), pressed: b.pressed, run: () => post({ type: "lucina:button", id: b.id }) });
@@ -1055,6 +1071,23 @@ export default function ComputerView() {
     }),
   );
 
+  // One LucinaDesk player for both layouts. In Secretary Code focus mode hides the shell's rail, so the page
+  // crosses its wide breakpoint each time focus mode comes or goes; a player made by each layout was mounted again
+  // there: it reconnected, and the new player asked for focus mode at once, so its ✕ seemed to do nothing. Made here,
+  // the same player moves between the layouts.
+  const deskOn = createMemo(desk);
+  const deskPlayer = createMemo(() =>
+    deskOn() ? (
+      <LucinaDesk
+        sandbox={sandbox()}
+        state={state()}
+        onFallback={deskFallback}
+        onChanged={() => void loadState()}
+        onDriving={setDeskDriving}
+      />
+    ) : null,
+  );
+
   const PhoneHeader = () => <>      <A href="/plugins" class="computer-back">
         <BackIcon /> {t("plugins.title")}
       </A>
@@ -1156,15 +1189,7 @@ export default function ComputerView() {
         <Show when={wide()} fallback={<p class="computer-error" role="alert">{error()}</p>}><ErrorState message={error()!} retryLabel={t("common.tryAgain")} onRetry={() => { void loadState(); void openView(viewMode()); }} /></Show>
       </Show>
 
-      <Show when={desk()}>
-        <LucinaDesk
-          sandbox={sandbox()}
-          state={state()}
-          onFallback={deskFallback}
-          onChanged={() => void loadState()}
-          onDriving={setDeskDriving}
-        />
-      </Show>
+      {deskPlayer()}
 
       <Show when={!desk()}>
         <div
@@ -1378,15 +1403,23 @@ export default function ComputerView() {
       </Show>
 </>;
 
+  const ChatPanel = () => (
+    <Show when={chatOpen()}>
+      <aside class="computer-chat" aria-label={t("computer.chatPanel")}>
+        <ChatView />
+      </aside>
+    </Show>
+  );
+
   return (
-    <section ref={trackSlot} class={wide() ? "computer-desktop" : "computer-page"} aria-label={wide() ? t("computer.title") : undefined} aria-labelledby={wide() ? undefined : "computer-title"} data-full={full() ? "yes" : "no"} onClick={(e) => {
+    <section ref={trackSlot} class={wide() ? "computer-desktop" : "computer-page"} aria-label={wide() ? t("computer.title") : undefined} aria-labelledby={wide() ? undefined : "computer-title"} data-full={full() ? "yes" : "no"} data-chat={chatOpen() ? "yes" : "no"} onClick={(e) => {
       if (!wide()) return;
       const link = (e.target as HTMLElement).closest<HTMLAnchorElement>(".pg-seg a");
       if (!link) return;
       e.preventDefault();
       setSandbox(link.getAttribute("href") === "?sandbox=android" ? "android" : "workspace");
     }}>
-      <Show when={wide()} fallback={<><PhoneHeader /><Content /></>}>
+      <Show when={wide()} fallback={<><PhoneHeader /><Show when={!full()}><button class="btn computer-chat-toggle" type="button" aria-pressed={chatOpen()} onClick={toggleChat}>{t("computer.chatPanel")}</button></Show><Content /><Show when={!full()}><ChatPanel /></Show></>}>
         <Page class="computer-wide">
           <PageHeader title={t("computer.title")} context={<>
             <span role="status">{driverLabel(state(), mine() || (desk() && deskDriving()))}</span>
@@ -1399,9 +1432,11 @@ export default function ComputerView() {
           ]} />} action={<Show when={mine() || (desk() && deskDriving())} fallback={<PrimaryAction disabled={busy() || !state()} onClick={() => void takeOver()}>{t("computer.takeOver")}</PrimaryAction>}>
             <Button disabled={busy()} onClick={() => void giveBack()}>{t("computer.giveBack")}</Button>
           </Show>} />
+          <div class="computer-split">
           <PageGrid layout="full"><Card label={t("computer.viewer")}>
             <div class="computer-bar">
               <A href="/plugins" class="pg-link pg-back"><BackIcon /> {t("plugins.title")}</A>
+              <button class="pg-btn computer-chat-toggle" type="button" aria-pressed={chatOpen()} onClick={toggleChat}>{t("computer.chatPanel")}</button>
               <div class="pg-seg" role="group" aria-label={t("computer.viewMode")}>
                 <button class="pg-seg-item" type="button" aria-pressed={mode() === "live"} onClick={() => setMode("live")}>{t("computer.live")}</button>
                 <button class="pg-seg-item" type="button" aria-pressed={mode() === "simple"} onClick={() => setMode("simple")}>{t("computer.simple")}</button>
@@ -1409,6 +1444,8 @@ export default function ComputerView() {
             </div>
             <Content />
           </Card></PageGrid>
+          <ChatPanel />
+          </div>
         </Page>
       </Show>
     </section>

@@ -1,9 +1,10 @@
-import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, on, onCleanup, Show, untrack } from "solid-js";
 import { Portal } from "solid-js/web";
 import { instagramApi, type IgSaveItem } from "../api/instagram";
 import { ApiError } from "../api/client";
 import { t } from "../i18n";
 import { formatTaken, type Slide } from "../lib/instagram";
+import { freshUrl, isExpired } from "../lib/instagramImages";
 import { CheckIcon, DownloadIcon, ExternalIcon, GridIcon } from "./Icons";
 import { PhotoViewer, type ViewerItem } from "./PhotoViewer";
 
@@ -51,15 +52,28 @@ export default function InstagramViewer(props: {
     const s = slide();
     return s ? props.slides.filter((x) => x.item.id === s.item.id) : [];
   });
+  // Links re-signed since these slides came (a copy from an earlier visit, a page open for over an hour).
+  const [signed, setSigned] = createSignal<Record<string, string>>({});
+  const live = (url: string | null): string | null => (url ? (signed()[url] ?? url) : url);
   const items = createMemo<ViewerItem[]>(() =>
     props.slides.map((s) => ({
-      src: s.url,
+      src: live(s.url),
       kind: s.kind === "video" ? "video" : "photo",
-      poster: s.thumbUrl,
+      poster: live(s.thumbUrl),
       name: `@${props.username}`,
       id: s.key,
     })),
   );
+  // The slide on screen and its neighbours are never shown on an expired link.
+  createEffect(() => {
+    const i = index();
+    for (const s of props.slides.slice(Math.max(0, i - 1), i + 2)) {
+      for (const url of [s.url, s.thumbUrl]) {
+        if (!url || !isExpired(url) || untrack(signed)[url]) continue;
+        void freshUrl(url).then((fresh) => setSigned((m) => ({ ...m, [url]: fresh })));
+      }
+    }
+  });
 
   function say(message: string) {
     setToast(message);

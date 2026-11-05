@@ -35,7 +35,8 @@ struct ApprovalsAPI: Sendable {
 
     private struct DecideAnswer: Decodable { let status: String? }
 
-    /// Approve or deny. A sensitive approve carries `proof` (Face ID or passcode) or the owner's `pin`. Returns the status the server reports.
+    /// Approve or deny. A sensitive approve carries `proof` (the Face ID key's, or the unlock key's) or the owner's
+    /// `pin`. Returns the status the server reports; this device's own answer again is a 200 too (`repeated`).
     @discardableResult
     func decide(_ id: String, decision: ApprovalDecision, payloadHash: String, proof: ApprovalProof? = nil, pin: String? = nil) async throws -> ApprovalStatus? {
         // Never retried on another endpoint after an ambiguous failure: the answer may have arrived.
@@ -113,6 +114,31 @@ struct ApprovalsAPI: Sendable {
 
     func deleteKey() async throws {
         _ = try await client.send("DELETE", "/v1/approvals/keys", body: nil)
+    }
+
+    /// What this device's Face ID key signs to enroll an unlock key: `secretary-unlock-key-v1\n{thisDeviceId}\n{publicKeyB64}`.
+    static func unlockKeyString(deviceId: String, publicKey: String) -> String {
+        "secretary-unlock-key-v1\n\(deviceId)\n\(publicKey)"
+    }
+
+    private struct UnlockKeyBody: Encodable {
+        let publicKey: String
+        let proof: SignatureProof
+    }
+
+    /// Enrolls this device's unlock key (one-tap Approve), proved by the Face ID key's `signature` over
+    /// `unlockKeyString`. Replaces an earlier one. Returns its key id.
+    func registerUnlockKey(publicKey: String, signature: String) async throws -> String {
+        let answer: RegisterAnswer = try await client.send("POST", "/v1/approvals/unlock-key",
+                                                           body: UnlockKeyBody(publicKey: publicKey, proof: SignatureProof(signature: signature)))
+        guard let keyId = answer.keyId, !keyId.isEmpty else {
+            throw APIError.decoding(message: "The server did not return a key id.")
+        }
+        return keyId
+    }
+
+    func deleteUnlockKey() async throws {
+        _ = try await client.send("DELETE", "/v1/approvals/unlock-key", body: nil)
     }
 
     /// A path segment: ids are base64url, but a stray `/` or space must not change the route.

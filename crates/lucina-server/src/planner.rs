@@ -145,9 +145,7 @@ pub fn turn_lang() -> String {
 /// The ack of a page read or web search that runs on her computer, in the turn's language.
 pub fn web_read_ack() -> &'static str {
     let line = turn_lang();
-    if line.starts_with("Reply language: Italian") {
-        "Ok, lo apro nel browser del mio computer e ti dico."
-    } else if line.starts_with("Reply language: Danish") {
+    if line.starts_with("Reply language: Danish") {
         "Okay, jeg åbner det i browseren på min computer og vender tilbage."
     } else {
         "Ok, I'm opening it in my computer's browser and will report back."
@@ -158,9 +156,7 @@ pub fn web_read_ack() -> &'static str {
 /// language (English outside a turn).
 pub fn plan_failed_text() -> &'static str {
     let line = turn_lang();
-    if line.starts_with("Reply language: Italian") {
-        "Scusa, mi sono incartata nel capire come gestire questo messaggio. Me lo rimandi?"
-    } else if line.starts_with("Reply language: Danish") {
+    if line.starts_with("Reply language: Danish") {
         "Undskyld, jeg fik viklet mig ind i, hvordan jeg skulle håndtere den besked. Kan du sende den igen?"
     } else {
         "Sorry, I got tangled up working out how to handle that message. Could you send it again?"
@@ -247,6 +243,23 @@ pub struct TurnInput<'a> {
 }
 
 impl Planner {
+    fn request(
+        system: String,
+        user: String,
+        temperature: f32,
+        purpose: &'static str,
+    ) -> ChatRequest {
+        ChatRequest {
+            messages: vec![
+                Message::system(with_turn_system(system, purpose)),
+                Message::user(user),
+            ],
+            temperature: Some(temperature),
+            purpose,
+            ..ChatRequest::default()
+        }
+    }
+
     async fn complete(
         &self,
         system: String,
@@ -256,15 +269,29 @@ impl Planner {
     ) -> Result<String, LlmError> {
         let r = self
             .model
-            .complete(ChatRequest {
-                messages: vec![
-                    Message::system(with_turn_system(system, purpose)),
-                    Message::user(user),
-                ],
-                temperature: Some(temperature),
-                purpose,
-                ..ChatRequest::default()
-            })
+            .complete(Self::request(system, user, temperature, purpose))
+            .await?;
+        Ok(r.message.text().to_owned())
+    }
+
+    /// [`complete`](Self::complete) for text the owner reads or hears as it is: in a streamed voice turn
+    /// (`crate::voice`) the model's deltas go to the turn's sink as they arrive.
+    async fn complete_reply(
+        &self,
+        system: String,
+        user: String,
+        temperature: f32,
+        purpose: &'static str,
+    ) -> Result<String, LlmError> {
+        if !crate::voice::streaming() {
+            return self.complete(system, user, temperature, purpose).await;
+        }
+        let r = self
+            .model
+            .complete_streaming(
+                Self::request(system, user, temperature, purpose),
+                &mut |d| crate::voice::delta(d),
+            )
             .await?;
         Ok(r.message.text().to_owned())
     }
@@ -287,11 +314,12 @@ impl Planner {
         );
         let user = Prompts::user_block(t.user_label, t.memory, t.user_text);
         let mut text = self
-            .complete(system.clone(), user.clone(), 0.6, purpose)
+            .complete_reply(system.clone(), user.clone(), 0.6, purpose)
             .await?;
         if lucina_llm::has_tool_markup(&text) {
             // The model wrote tool-call markup as its answer (this path has no tools): ask once more for plain
-            // text, then admit the failure rather than show the markup to the owner.
+            // text, then admit the failure rather than show the markup to the owner. The retry is not
+            // streamed: in a voice turn its text goes out in the `reply` event, as a replacement.
             tracing::warn!(purpose, "reply contained tool-call markup; re-asking once");
             text = self
                 .complete(
@@ -494,6 +522,9 @@ impl Planner {
     /// `planResponse` (Lucina): the JSON plan plus Node's post-processing. The request asks for JSON
     /// mode; a reply that still is not JSON gets one repair retry before the caller falls back.
     pub async fn plan_response(&self, t: &TurnInput<'_>) -> Result<Value, LlmError> {
+        // A spoken turn that needs the JSON plan has nothing to say for seconds (docs/lucinavoice-protocol.md
+        // section 6): the caller hears "One moment…" once (the sink ignores it after the first words).
+        crate::voice::ack(crate::voice::ack_text());
         let system = format!(
             "{}\n\n{PLAN_JSON_REMINDER}",
             with_turn_system(
@@ -591,23 +622,23 @@ impl Planner {
         Some(match c.intent.as_str() {
             "list_reminders" => json!({"action": "list_reminders", "scope": c.scope}),
             "schedule_reminder" => {
-                json!({"action": "schedule_reminder", "text": "", "dueDate": "", "ack": "Programmo il promemoria adesso."})
+                json!({"action": "schedule_reminder", "text": "", "dueDate": "", "ack": "I will schedule that reminder now."})
             }
             "calendar_event" => json!({"action": "calendar_event"}),
             "model_status" => {
-                json!({"action": "model_status_task", "ack": "Controllo quale modello è caricato adesso."})
+                json!({"action": "model_status_task", "ack": "Checking which model is loaded now."})
             }
             "revive_qwen" => {
-                json!({"action": "revive_qwen_task", "ack": "Riporto Qwen 3.8 sulla GPU adesso."})
+                json!({"action": "revive_qwen_task", "ack": "Bringing Qwen 3.8 back onto the GPU now."})
             }
             "poko_news_scout_retry" | "social_post" => {
-                json!({"action": "poko_news_scout_retry", "ack": "Avvio il Bot Hospital su Poko (peer1) e riprovo lo scout news adesso."})
+                json!({"action": "poko_news_scout_retry", "ack": "Starting the Bot Hospital on Poko (peer1) and retrying the news scout now."})
             }
             "spreadsheet_update" => {
-                json!({"action": "spreadsheet_update_task", "ack": "Controllo il Google Sheet e provo ad aggiornarlo adesso."})
+                json!({"action": "spreadsheet_update_task", "ack": "Checking the Google Sheet and trying to update it now."})
             }
             "cursor_task" => {
-                json!({"action": "cursor_task", "ack": "Avvio Harness con Qwen locale su nezopt per questo task adesso."})
+                json!({"action": "cursor_task", "ack": "Starting Harness with local Qwen on nezopt for this task now."})
             }
             _ => return None,
         })
@@ -885,7 +916,8 @@ mod tests {
         );
         let texts = recent_owner_texts(&recent, "s");
         assert_eq!(texts, vec!["Ho fatto la lavanderia".to_owned()]);
-        assert!(reply_language_line(&recent, "s", "").contains("Reply language: Italian"));
+        // Detected as Italian, answered in English.
+        assert!(reply_language_line(&recent, "s", "").contains("Reply language: English"));
     }
 
     #[tokio::test]

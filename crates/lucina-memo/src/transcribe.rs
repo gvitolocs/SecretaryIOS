@@ -13,6 +13,7 @@
 //! Audio never leaves this host.
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
@@ -43,6 +44,8 @@ pub struct WhisperConfig {
     pub gpu_lease: PathBuf,
     /// Hard cap on one whisper run.
     pub timeout: Duration,
+    /// Voice Learn words (`LUCINA_VOICE_LEARN_FILE`), re-read when the file changes.
+    pub vocab: Arc<lucina_vocab::Watched>,
 }
 
 impl WhisperConfig {
@@ -93,6 +96,15 @@ impl WhisperConfig {
                     .and_then(|v| v.trim().parse().ok())
                     .unwrap_or(4 * 3600),
             ),
+            vocab: Arc::new(lucina_vocab::Watched::new(lucina_vocab::path_from_lookup(
+                |k| {
+                    if k == "HOME" {
+                        Some(home.clone())
+                    } else {
+                        get(k)
+                    }
+                },
+            ))),
         }
     }
 }
@@ -304,6 +316,10 @@ async fn run(
         return Err(SttError::ModelMissing(cfg.model.clone()));
     }
     let prefix = work.join("whisper");
+    // Voice Learn: the taught words go last in the prompt, the output is corrected below.
+    let vocab = cfg.vocab.get();
+    let merged = crate::vocab::prompt(&vocab, prompt.unwrap_or(""));
+    let prompt = Some(merged.as_str()).filter(|p| !p.is_empty());
     let gpu = run_whisper(cfg, wav, &prefix, &cfg.model, true, gpu_wait, words, prompt).await;
     let (out, engine) = match gpu {
         Ok(o) => (o, format!("whisper.cpp {} (GPU)", model_name(&cfg.model))),
@@ -319,7 +335,9 @@ async fn run(
         }
         Err(e) => return Err(SttError::Whisper(e.to_string())),
     };
-    parse_output(&out, engine, duration_sec)
+    let mut t = parse_output(&out, engine, duration_sec)?;
+    crate::vocab::correct_transcript(&vocab, &mut t);
+    Ok(t)
 }
 
 fn model_name(p: &Path) -> String {
@@ -329,6 +347,9 @@ fn model_name(p: &Path) -> String {
         .trim_start_matches("ggml-")
         .to_owned()
 }
+
+/// Half of Whisper's text context: the most prompt (and context) tokens it takes.
+const MAX_PROMPT_CONTEXT: usize = 224;
 
 #[derive(Debug, thiserror::Error)]
 enum RunError {
@@ -357,12 +378,17 @@ async fn run_whisper(
     }
     cmd.arg("-m").arg(model);
     cmd.arg("-l").arg(cfg.language.as_deref().unwrap_or("auto"));
+    // `-mc 0` turns the text context off so a decoded line never feeds the next (no repetition
+    // loops) - and whisper.cpp then drops `--prompt` too. With a prompt, `--carry-initial-prompt`
+    // puts it in front of every window and `-mc` leaves room for it and little else
+    // (upper bound: one token per byte, at most half the 448-token context).
+    let context = prompt.map_or(0, |p| (p.len() + 2).min(MAX_PROMPT_CONTEXT));
     cmd.args([
         "-t",
         &cfg.threads.to_string(),
         if words { "-ojf" } else { "-oj" },
         "-mc",
-        "0",
+        &context.to_string(),
         "-sns",
     ]);
     if gpu {
@@ -379,7 +405,7 @@ async fn run_whisper(
         cmd.arg("--vad").arg("-vm").arg(vad);
     }
     if let Some(p) = prompt {
-        cmd.arg("--prompt").arg(p);
+        cmd.arg("--carry-initial-prompt").arg("--prompt").arg(p);
     }
     cmd.arg("-of").arg(prefix).arg("-f").arg(wav);
     cmd.stdin(Stdio::null())
@@ -530,6 +556,7 @@ pub fn parse_output(json: &str, engine: String, duration_sec: f64) -> Result<Tra
         segments,
         speakers: false,
         created_at: Utc::now(),
+        corrections: vec![],
     })
 }
 
@@ -689,6 +716,89 @@ mod tests {
         remux_adts(&cfg, &cut, &out).await.unwrap();
         let d = duration(&cfg, &out).await.unwrap();
         assert!(d > 2.0 && d < 4.0, "duration {d}");
+    }
+
+    /// A fake `whisper-cli`: records `--prompt` and answers with a fixed transcript.
+    #[tokio::test]
+    async fn voice_learn_prompt_goes_last_and_the_transcript_is_corrected() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let seen = dir.path().join("prompt.txt");
+        let args = dir.path().join("args.txt");
+        let cli = dir.path().join("whisper-cli");
+        std::fs::write(
+            &cli,
+            format!(
+                "#!/bin/sh\nprintf '%s ' \"$@\" > {args}\nwhile [ $# -gt 0 ]; do case \"$1\" in -of) of=\"$2\"; shift;; --prompt) printf '%s' \"$2\" > {}; shift;; esac; shift; done\n\
+                 cat > \"$of.json\" <<'EOF'\n{{\"result\":{{\"language\":\"it\"}},\"transcription\":[{{\"offsets\":{{\"from\":0,\"to\":4000}},\"text\":\" Torno a skibi gaardsvej con orus.\"}}]}}\nEOF\n",
+                seen.display(),
+                args = args.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let model = dir.path().join("ggml-large-v3.bin");
+        std::fs::write(&model, b"x").unwrap();
+        let vocab_file = dir.path().join("voice-learn.json");
+        let mut cfg = WhisperConfig::from_lookup(|k| match k {
+            "LUCINA_VOICE_LEARN_FILE" => Some(vocab_file.display().to_string()),
+            "LUCINA_MEMO_WHISPER_CLI" => Some(cli.display().to_string()),
+            "LUCINA_MEMO_WHISPER_MODEL" => Some(model.display().to_string()),
+            _ => None,
+        });
+        cfg.vad_model = None;
+        cfg.cpu_model = None;
+        let wav = dir.path().join("a.wav");
+
+        // No vocabulary file: nothing is added and nothing is changed.
+        let t = transcribe(&cfg, &wav, dir.path(), 4.0, Duration::ZERO)
+            .await
+            .unwrap();
+        assert_eq!(t.text(), "Torno a skibi gaardsvej con orus.");
+        assert!(t.corrections.is_empty());
+        assert!(!seen.exists(), "no --prompt without words");
+        let a = std::fs::read_to_string(&args).unwrap();
+        assert!(
+            a.contains(" -mc 0 ") && !a.contains("--carry-initial-prompt"),
+            "{a}"
+        );
+
+        let mut v = lucina_vocab::Vocab::default();
+        for (id, w, at) in [("1", "Skibigårdsvej", "1"), ("2", "Horus", "2")] {
+            let mut e = lucina_vocab::Entry::new(w);
+            e.id = id.into();
+            e.updated_at = at.into();
+            v.add(e).unwrap();
+        }
+        v.save(&vocab_file).unwrap();
+        let t = transcribe_prompted(
+            &cfg,
+            &wav,
+            dir.path(),
+            4.0,
+            Duration::ZERO,
+            "Video su Aarhus",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&seen).unwrap(),
+            "Video su Aarhus, Horus, Skibigårdsvej"
+        );
+        // `-mc 0` would make whisper.cpp drop the prompt: it is carried instead.
+        let a = std::fs::read_to_string(&args).unwrap();
+        assert!(
+            a.contains("--carry-initial-prompt") && !a.contains(" -mc 0 "),
+            "{a}"
+        );
+        assert_eq!(t.text(), "Torno a Skibigårdsvej con Horus.");
+        assert_eq!(
+            t.corrections
+                .iter()
+                .map(|c| (c.from.as_str(), c.to.as_str()))
+                .collect::<Vec<_>>(),
+            [("skibi gaardsvej", "Skibigårdsvej"), ("orus", "Horus")]
+        );
     }
 
     #[test]

@@ -27,6 +27,8 @@ pub struct UpstreamConfig {
     /// Tests only: serve `https://<allowlisted host>/<rest>` from `<override>/<host>/<rest>`.
     pub media_base_override: Option<String>,
     pub timeout: Duration,
+    /// A media download as a whole (a video takes longer than an API answer).
+    pub media_timeout: Duration,
     pub api_interval: Duration,
     pub media_interval: Duration,
     pub media_concurrency: usize,
@@ -47,6 +49,7 @@ impl Default for UpstreamConfig {
             base: instarust_core::BASE_URL.to_string(),
             media_base_override: None,
             timeout: Duration::from_secs(30),
+            media_timeout: Duration::from_secs(300),
             api_interval: Duration::from_millis(1000),
             media_interval: Duration::from_millis(250),
             media_concurrency: 2,
@@ -349,6 +352,7 @@ impl Upstream {
         let mut resp = self
             .http
             .get(&target)
+            .timeout(self.cfg.media_timeout)
             .header(reqwest::header::ACCEPT, "image/*,video/*;q=0.9,*/*;q=0.5")
             .send()
             .await

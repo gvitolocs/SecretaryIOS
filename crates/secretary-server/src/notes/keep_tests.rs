@@ -87,8 +87,10 @@ fn a_note_file_without_the_new_fields_loads() {
         legacy("n_00000000000000000002", "2"),
     )
     .unwrap();
+    // Trashed a day ago: a fixed date here expired after TRASH_DAYS and the purge took the note.
+    let deleted_at = model::rfc3339(time::OffsetDateTime::now_utc() - time::Duration::days(1));
     let trashed = legacy("n_00000000000000000003", "3")
-        .replace("}", r#","deletedAt":"2026-10-01T00:00:00.000Z"}"#);
+        .replace("}", &format!(r#","deletedAt":"{deleted_at}"}}"#));
     std::fs::write(notes.join("trash/n_00000000000000000003.json"), trashed).unwrap();
 
     let s = NoteStore::new(dir.path());

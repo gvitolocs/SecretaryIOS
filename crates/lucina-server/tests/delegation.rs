@@ -118,7 +118,7 @@ async fn delega_a_grok_runs_on_the_json_planner_path_with_a_card() {
     let body: Value = serde_json::from_slice(&reqs[0].body).unwrap();
     let input = body["input"].as_str().unwrap();
     assert!(input.starts_with("[Lucina delegation · job "), "{input}");
-    assert!(input.contains("da Lucina") && input.contains("ultime notizie su Rust"));
+    assert!(input.contains("from Lucina") && input.contains("ultime notizie su Rust"));
     assert!(!input.contains(secret), "{input}");
     assert_eq!(
         body["tools"],
@@ -136,14 +136,14 @@ async fn delega_a_grok_runs_on_the_json_planner_path_with_a_card() {
         c["text"]
             .as_str()
             .unwrap()
-            .starts_with("Ho chiesto a Grok: «le ultime notizie su Rust"),
+            .starts_with("I asked Grok: “le ultime notizie su Rust"),
         "{c}"
     );
-    assert!(c["text"].as_str().unwrap().contains("✅ risposta pronta"));
+    assert!(c["text"].as_str().unwrap().contains("✅ answer ready"));
     assert!(c["text"]
         .as_str()
         .unwrap()
-        .contains("Perché: Chiedo a Grok"));
+        .contains("Why: Chiedo a Grok"));
     assert_eq!(c["meta"]["tool"], "grok");
     assert_eq!(c["meta"]["ok"], true);
     assert!(!c.to_string().contains(secret));
@@ -248,15 +248,15 @@ async fn the_owner_switches_grok_off_and_on() {
     let w = world(vec![]).await;
     let d = w.h.chat("non usare Grok").await;
     assert_eq!(d["action"], "delegation_settings");
-    assert!(d["reply"].as_str().unwrap().contains("non uso più Grok"));
+    assert!(d["reply"].as_str().unwrap().contains("I will not use Grok"));
     let d = w.h.chat("delega a Grok le ultime notizie su Rust").await;
     assert!(
-        d["reply"].as_str().unwrap().contains("non usare Grok"),
+        d["reply"].as_str().unwrap().contains("not to use Grok"),
         "{d}"
     );
     assert!(w.xai.received_requests().await.unwrap().is_empty());
     let d = w.h.chat("puoi usare di nuovo Grok").await;
-    assert!(d["reply"].as_str().unwrap().contains("di nuovo usare Grok"));
+    assert!(d["reply"].as_str().unwrap().contains("I can use Grok again"));
     w.h.chat("delega a Grok le ultime notizie su Rust").await;
     assert_eq!(w.xai.received_requests().await.unwrap().len(), 1);
     // persisted

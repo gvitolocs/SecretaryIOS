@@ -3,9 +3,11 @@
 //! CLI.
 //!
 //! - A reply goes back into the conversation the message came from: the owner's timeline under
-//!   that channel (the self-test timeline for a self-test), the session's recent turns (so her
-//!   next answer knows it), and an app notification. It is shown as information from that
-//!   assistant ("💬 Claude replied …"), never run as an instruction.
+//!   that channel (the self-test timeline for a self-test) and the session's recent turns (so her
+//!   next answer knows it). It is shown as information from that assistant ("💬 Claude replied …"),
+//!   never run as an instruction, and it alerts nobody: the owner's phone rings for messages to
+//!   him, not for her chats with agents (owner, 2026-11-02). An agent that needs him uses
+//!   `lucina_decide`.
 //! - `GET  /api/secretary/reach/threads?to=claude&status=open&limit=20`  the threads, newest first
 //! - `GET  /api/secretary/reach/threads/<id>`                            one thread
 //! - `POST /api/secretary/reach/threads/<id>/reply` `{"from", "text"}`   a reply (≤ 8000 chars)
@@ -30,13 +32,13 @@ pub struct ServerSink {
     pub timeline: Arc<TimelineStore>,
     pub selftest_timeline: Arc<TimelineStore>,
     pub recent: Arc<RecentChat>,
-    pub secretary: crate::bridges::Secretary,
 }
 
 /// What the owner reads for a reply.
 pub fn reply_text(t: &Thread, r: &Reply) -> String {
     let who = match t.to {
         Target::Agents => format!("Lucina Agents ({})", r.from),
+        Target::Mistral => "Mistral".to_owned(),
         _ => r.from.clone(),
     };
     format!(
@@ -59,7 +61,7 @@ impl ReachSink for ServerSink {
         } else {
             &self.timeline
         };
-        let item = timeline.record(NewItem {
+        timeline.record(NewItem {
             channel,
             role: "lucina".into(),
             text: text.clone(),
@@ -70,30 +72,43 @@ impl ReachSink for ServerSink {
             }),
             ..Default::default()
         });
+        if t.to == Target::Mistral {
+            // The exchange has its own conversation in All chats: the agent's words as a caller's turn.
+            timeline.record(NewItem {
+                channel: "other".into(),
+                role: "user".into(),
+                text: r.text.clone(),
+                meta: Some(mistral_meta(t)),
+                ..Default::default()
+            });
+        }
         // Her next turn in that conversation sees the reply as something said to her.
         self.recent
             .append(&t.session, "assistant", &text, chrono::Utc::now());
-        if t.test {
-            return;
+    }
+
+    async fn sent(&self, t: &Thread, text: &str) {
+        if t.to == Target::Mistral {
+            let timeline = if t.test { &self.selftest_timeline } else { &self.timeline };
+            timeline.record(NewItem {
+                channel: "other".into(),
+                role: "lucina".into(),
+                text: text.to_owned(),
+                meta: Some(mistral_meta(t)),
+                ..Default::default()
+            });
         }
-        let mut body = json!({
-            "category": "lucina_message",
-            "title": format!("{} replied", t.to.label()),
-            "body": lucina_delegate::types::clip(&r.text, 480),
-            "route": "/",
-            "dedupKey": format!("reach:{}:{}", t.id, t.replies.len()),
-        });
-        if let Some(item) = item {
-            body["timelineId"] = json!(item.id);
-        }
-        lucina_secrets::redactor().redact_json(&mut body);
-        let secretary = self.secretary.clone();
-        tokio::spawn(async move {
-            let r = crate::bridges::notify(&secretary, &body).await;
-            if !r.ok {
-                tracing::warn!(status = r.status, "reach: reply notification failed");
-            }
-        });
+    }
+}
+
+/// An item of the `agent:mistral` conversation. `via` and the `reach` kind keep it off his phone.
+fn mistral_meta(t: &Thread) -> Meta {
+    Meta {
+        via: Some("mcp".into()),
+        caller: Some("mistral".into()),
+        tool: Some(format!("reach_{}", t.to.as_str())),
+        ok: Some(true),
+        ..Meta::kind("reach")
     }
 }
 
@@ -258,6 +273,65 @@ pub mod cli {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sink(dir: &std::path::Path) -> (ServerSink, Arc<TimelineStore>) {
+        let timeline = Arc::new(TimelineStore::new(dir.join("t.jsonl"), 1 << 20, true));
+        let selftest = Arc::new(TimelineStore::new(dir.join("s.jsonl"), 1 << 20, true));
+        let recent = Arc::new(RecentChat::new(None));
+        (ServerSink { timeline: timeline.clone(), selftest_timeline: selftest, recent }, timeline)
+    }
+
+    fn mistral_thread() -> Thread {
+        Thread {
+            id: "rt-abc".into(),
+            to: Target::Mistral,
+            kind: "message".into(),
+            subject: "a 404".into(),
+            text: "the report".into(),
+            channel: "ios".into(),
+            session: "sess".into(),
+            created: chrono::Utc::now(),
+            status: "sent".into(),
+            route: "mistral-agent".into(),
+            detail: Some("agent-1".into()),
+            replies: vec![],
+            test: false,
+            session_url: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_mistral_exchange_is_one_conversation_in_all_chats_and_stays_quiet() {
+        let dir = tempfile::tempdir().unwrap();
+        let (sink, timeline) = sink(dir.path());
+        let t = mistral_thread();
+        sink.sent(&t, "the report").await;
+        let reply = Reply { from: "mistral-agent".into(), text: "the cause".into(), at: chrono::Utc::now() };
+        sink.deliver(&t, &reply).await;
+
+        let all = timeline.conversations().unwrap();
+        let c = all.iter().find(|c| c.key == "agent:mistral").expect("a Mistral conversation");
+        assert_eq!(c.title, "Mistral");
+        assert_eq!(c.count, 2, "what she sent and what came back");
+        // Her own chat gets the reply too, as a reach item.
+        assert!(all.iter().any(|c| c.key != "agent:mistral"), "{all:?}");
+        // What keeps it off his phone: secretary-server's ingester skips `meta.via` and the `reach` kind.
+        let items = timeline.read_all().unwrap();
+        assert_eq!(items.len(), 3);
+        assert!(items.iter().all(|i| i.raw.contains(r#""kind":"reach""#)), "{:?}", items.iter().map(|i| i.raw.to_string()).collect::<Vec<_>>());
+    }
+
+    #[tokio::test]
+    async fn other_targets_get_no_mistral_conversation() {
+        let dir = tempfile::tempdir().unwrap();
+        let (sink, timeline) = sink(dir.path());
+        let mut t = mistral_thread();
+        t.to = Target::Claude;
+        sink.sent(&t, "x").await;
+        let reply = Reply { from: "c".into(), text: "y".into(), at: chrono::Utc::now() };
+        sink.deliver(&t, &reply).await;
+        assert!(timeline.conversations().unwrap().iter().all(|c| c.key != "agent:mistral"));
+    }
 
     #[test]
     fn replies_read_as_information() {

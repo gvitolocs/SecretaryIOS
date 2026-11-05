@@ -442,6 +442,24 @@ pub fn format_it_medium(dt: DateTime<Utc>, tz: Tz) -> String {
     )
 }
 
+const EN_MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// `21 Oct 2026, 18:30`: the English counterpart of [`format_it_medium`], used for what the owner reads.
+pub fn format_en_medium(dt: DateTime<Utc>, tz: Tz) -> String {
+    use chrono::{Datelike, Timelike};
+    let l = dt.with_timezone(&tz);
+    format!(
+        "{} {} {}, {:02}:{:02}",
+        l.day(),
+        EN_MONTHS[l.month0() as usize],
+        l.year(),
+        l.hour(),
+        l.minute()
+    )
+}
+
 /// "Reminder set for Tuesday 21 October 2026 at 18:30 (Europe/Rome): text"
 pub fn format_confirmation(reminder: &Reminder, tz: Tz) -> String {
     let when = reminder
@@ -456,7 +474,7 @@ pub fn format_confirmation(reminder: &Reminder, tz: Tz) -> String {
     format!("Reminder set for {when} ({}): {}", tz.name(), reminder.text)
 }
 
-/// Node's `formatReminderList` (Italian).
+/// Node's `formatReminderList`, in English (the owner rule of 2026-11-02: never Italian; Node wrote Italian).
 pub fn format_list(
     reminders: &[Reminder],
     tz: Tz,
@@ -468,11 +486,11 @@ pub fn format_list(
     if pending.is_empty() {
         return if today_only {
             format!(
-                "{persona}: non hai promemoria in programma per oggi ({}).",
+                "{persona}: you have no reminders scheduled for today ({}).",
                 tz.name()
             )
         } else {
-            format!("{persona}: non hai promemoria futuri in coda.")
+            format!("{persona}: you have no upcoming reminders queued.")
         };
     }
     pending.sort_by_key(|r| r.due());
@@ -480,13 +498,13 @@ pub fn format_list(
         .iter()
         .enumerate()
         .map(|(i, r)| {
-            let when = r.due().map(|d| format_it_medium(d, tz)).unwrap_or_default();
+            let when = r.due().map(|d| format_en_medium(d, tz)).unwrap_or_default();
             format!("{}. {when} — {}", i + 1, r.text)
         })
         .collect();
     format!(
-        "{persona}: promemoria {} ({}, {}):\n{}",
-        if today_only { "per oggi" } else { "futuri" },
+        "{persona}: reminders {} ({}, {}):\n{}",
+        if today_only { "for today" } else { "upcoming" },
         pending.len(),
         tz.name(),
         lines.join("\n")
@@ -780,12 +798,12 @@ mod tests {
         );
         assert_eq!(
             format_list(std::slice::from_ref(&r), tz, "Lucina", true, now),
-            "Lucina: promemoria per oggi (1, Europe/Rome):\n1. 21 ott 2026, 18:30 — chiamare la mamma"
+            "Lucina: reminders for today (1, Europe/Rome):\n1. 21 Oct 2026, 18:30 — chiamare la mamma"
         );
         r.status = "sent".into();
         assert_eq!(
             format_list(&[r], tz, "Lucina", false, now),
-            "Lucina: non hai promemoria futuri in coda."
+            "Lucina: you have no upcoming reminders queued."
         );
     }
 }

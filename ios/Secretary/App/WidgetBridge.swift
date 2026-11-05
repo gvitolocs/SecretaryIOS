@@ -39,8 +39,15 @@ extension AppModel {
         case "approvals":
             Task { await approvals.poll() }
         case let r where r.hasPrefix("approvals/"):
-            let id = String(r.dropFirst("approvals/".count)).removingPercentEncoding ?? ""
-            Task { await approvals.open(id: id) }
+            switch ApprovalLink.parse(r) {
+            case let .approve(id, payloadHash)?:
+                // The Live Activity's Approve: the card, with Face ID there when it still shows that request.
+                Task { await approvals.openFromActivityLink(id: id, shownHash: payloadHash) }
+            case let .details(id)?:
+                Task { await approvals.open(id: id) }
+            case nil:
+                Task { await approvals.poll() }
+            }
         case "pokemon":
             selectedTab = .plugins
             showPokemon = true

@@ -4,6 +4,7 @@ import type { FeatureDictionary } from "../types";
 
 const en = {
   title: "Lucina's computer",
+  chatPanel: "Chat",
   detail: "Watch her desktop live, take over",
   desktop: "Desktop",
   android: "Android",
@@ -86,6 +87,7 @@ export const computer: FeatureDictionary<typeof en> = {
   en,
   it: {
     title: "Il computer di Lucina",
+    chatPanel: "Chat",
     detail: "Guarda il suo desktop dal vivo, prendi il controllo",
     desktop: "Desktop",
     android: "Android",
@@ -165,6 +167,7 @@ export const computer: FeatureDictionary<typeof en> = {
   },
   da: {
     title: "Lucinas computer",
+    chatPanel: "Chat",
     detail: "Se hendes skrivebord live, tag over",
     desktop: "Skrivebord",
     android: "Android",

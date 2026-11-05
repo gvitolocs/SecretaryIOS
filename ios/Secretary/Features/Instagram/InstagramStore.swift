@@ -155,7 +155,29 @@ final class InstagramStore {
             }
             guard mine == generation, !Task.isCancelled else { return }
             if entry(username) != nil { badges = try await api.opened(username) }
+            if result.refreshing { await settle(username, generation: mine) }
         } catch { if mine == generation { failed(error, key: "profile") } }
+    }
+    /// The server answered from its store and refreshes behind it: what it finds comes in as it lands, with nothing on
+    /// screen saying so. A failure here leaves what is shown.
+    private func settle(_ username: String, generation mine: Int) async {
+        guard let api = api() else { return }
+        for _ in 0..<30 {
+            try? await Task.sleep(for: .seconds(3))
+            guard mine == generation, !Task.isCancelled, let fresh = try? await api.profile(username),
+                  mine == generation, !Task.isCancelled else { return }
+            if fresh.posts.items.map(\.id) != bundle?.posts.items.map(\.id) { pages[IgTab.posts.rawValue] = fresh.posts }
+            bundle = fresh
+            guard fresh.refreshing else { break }
+        }
+        for key in pages.keys where key != IgTab.posts.rawValue {
+            if let tab = IgTab(rawValue: key) { await load(tab, username: username, refresh: true) }
+        }
+    }
+    /// A new link for an expired one; nil when there is none.
+    func resigned(_ path: String) async -> String? {
+        guard let api = api(), path.hasPrefix("/v1/instagram/") else { return nil }
+        return (try? await api.resign(path)) ?? nil
     }
     func load(_ tab: IgTab, username: String, more: Bool = false, refresh: Bool = false, highlight: IgHighlight? = nil) async {
         guard let api = api() else { return }

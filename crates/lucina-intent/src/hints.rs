@@ -36,11 +36,12 @@ pub fn detect_language(value: &str) -> Option<&'static str> {
     }
 }
 
-/// `resolveOutputLanguage(reply, user, "it")`.
+/// `resolveOutputLanguage(reply, user, ...)`, changed on 2026-11-02 (owner rule: English or Danish, never
+/// Italian): the hint block is English whatever the text (only `en` and `it` tables exist; Danish replies
+/// get English hints). [`detect_language`] still reads Italian.
 pub fn output_language(reply: &str, user: &str) -> &'static str {
-    detect_language(reply)
-        .or_else(|| detect_language(user))
-        .unwrap_or("it")
+    let _ = (reply, user);
+    "en"
 }
 
 fn hint(id: &str, lang: &str) -> &'static str {
@@ -169,11 +170,7 @@ pub fn append_capability_hints(reply: &str, user_text: &str, enabled: bool) -> S
     if ids.is_empty() {
         return base.to_owned();
     }
-    let lang = if output_language(base, user_text) == "en" {
-        "en"
-    } else {
-        "it"
-    };
+    let lang = output_language(base, user_text);
     let heading = if lang == "en" {
         "💡 I can also:"
     } else {
@@ -263,8 +260,10 @@ mod tests {
             "puoi aiutarmi a fare un grafico del patrimonio?",
             true,
         );
-        assert!(out.contains("💡 Posso anche:"), "{out}");
-        assert!(out.contains("Grafico da foglio Drive"));
+        // The hint block is English since 2026-11-02 (owner rule), whatever language the text was in.
+        assert!(out.contains("💡 I can also:"), "{out}");
+        assert!(!out.contains("Posso anche"), "{out}");
+        assert!(out.contains("Chart from a Drive sheet"));
         assert_eq!(append_capability_hints("Ok.", "ciao", true), "Ok.");
         assert_eq!(
             append_capability_hints("Ok.", "puoi fare un grafico?", false),
@@ -273,7 +272,7 @@ mod tests {
         let (body, ids, lang) = extract_capability_hints(&out);
         assert_eq!(body, "Certo, posso aiutarti con questo.");
         assert!(ids.contains(&"graph"), "{ids:?}");
-        assert_eq!(lang, Some("it"));
+        assert_eq!(lang, Some("en"));
         let legacy =
             "Ok\n\n—\n💡 Posso anche:\n• Promemoria Telegram — es. «avvisami alle 21:30 di …»";
         assert_eq!(extract_capability_hints(legacy).1, vec!["reminder"]);

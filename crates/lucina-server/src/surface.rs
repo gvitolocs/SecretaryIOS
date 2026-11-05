@@ -41,6 +41,13 @@ pub fn chat_surface(
     channel: &str,
     mcp: Option<&McpTurn>,
 ) -> TurnSurface {
+    // A LucinaVoice speaker is an owner device behind the same bearer as the app: its turns classify like
+    // an iOS turn (the memory surface kernel has no `voice` channel, and the timeline channel stays `voice`).
+    let channel = if channel == crate::chat::VOICE_CHANNEL {
+        "ios"
+    } else {
+        channel
+    };
     let facts = TurnFacts::secretary(channel, bearer.is_some(), mcp.map(|m| m.caller.clone()));
     TurnSurface::classify(&facts, &owner_ids(cfg))
 }

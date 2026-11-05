@@ -11,6 +11,7 @@ pub mod router;
 mod structured;
 pub mod tools;
 pub(crate) mod vision;
+pub use vision::stop_orphans;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -42,6 +43,9 @@ const MAX_PARTS: usize = 32;
 const TURN_TEXT_BUDGET: usize = 30_000;
 /// Characters one part may show the model.
 const PART_TEXT_MAX: usize = 12_000;
+/// Longest read of one file that is not audio or video: above `vision_budget` (360 s by default), so an
+/// image whose vision is slow still comes back with its OCR text.
+const READ_LIMIT_SECS: u64 = 420;
 
 #[derive(Clone, Debug)]
 pub struct ShareConfig {
@@ -53,6 +57,8 @@ pub struct ShareConfig {
     pub vision_mmproj: PathBuf,
     /// An already managed OpenAI-compatible vision endpoint (also useful in tests).
     pub vision_url: Option<String>,
+    /// How long one image may wait for vision (lease, cold load, the answer) before the read goes on with OCR.
+    pub vision_budget: Duration,
     pub whisper: lucina_memo::transcribe::WhisperConfig,
     /// Only compiled into debug/test builds; never populated from the environment.
     #[cfg(debug_assertions)]
@@ -91,6 +97,11 @@ impl ShareConfig {
                 format!("{home}/models/gemma-4-12b-it-qat/mmproj-gemma-4-12b-it-qat-q4_0.gguf"),
             ),
             vision_url: get("LUCINA_VISION_URL"),
+            vision_budget: Duration::from_secs(
+                get("LUCINA_VISION_BUDGET_SECS")
+                    .and_then(|v| v.trim().parse().ok())
+                    .unwrap_or(360),
+            ),
             whisper,
             #[cfg(debug_assertions)]
             test_allow_loopback: false,
@@ -105,6 +116,8 @@ pub struct ShareRuntime {
     worker: Semaphore,
     recovered: AtomicBool,
     vision: Mutex<Option<vision::Server>>,
+    /// One start of the vision server at a time; `vision` itself is only held for a moment.
+    vision_start: Mutex<()>,
     /// What Lucina read from every share (opened on first use).
     pub memory: Arc<memory::Memory>,
 }
@@ -116,6 +129,7 @@ impl ShareRuntime {
             worker: Semaphore::new(1),
             recovered: AtomicBool::new(false),
             vision: Mutex::new(None),
+            vision_start: Mutex::new(()),
             memory: Arc::new(memory::Memory::new(cfg.dir.join("attachments.db"))),
         }
     }
@@ -595,7 +609,7 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
     }
     // An id that names no stored item is ignored (the share is still taken).
     let reply_to = (!reply_to.is_empty()).then_some(reply_to).filter(|id| {
-        match st.timeline.get(id) {
+        match st.timeline_for(&session).get(id) {
             Ok(Some(_)) => true,
             _ => {
                 tracing::debug!(reply_to = %id, "share replyTo names no timeline item; ignored");
@@ -884,16 +898,16 @@ async fn register_in_place(
 }
 
 /// Whether a timeline item exists (in memory; no file read).
-fn has_item(st: &AppState, id: &str) -> bool {
-    st.timeline
+fn has_item(st: &AppState, session: &str, id: &str) -> bool {
+    st.timeline_for(session)
         .read_all()
         .map(|items| items.iter().rev().any(|i| i.id == id))
         .unwrap_or(false)
 }
 fn ensure_user(st: &AppState, job: &Job) -> anyhow::Result<()> {
-    if !has_item(st, &job.user_item.id) {
+    if !has_item(st, &job.session, &job.user_item.id) {
         let item = &job.user_item;
-        st.timeline.append(NewItem {
+        st.timeline_for(&job.session).append(NewItem {
             id: Some(item.id.clone()),
             channel: item.channel.clone(),
             role: "user".into(),
@@ -911,8 +925,8 @@ fn ensure_user(st: &AppState, job: &Job) -> anyhow::Result<()> {
 /// can be far from the end (a "newest N" window answered twice; Stateright
 /// case and Verus `unfixed_window_scan` in docs/verification.md). Items that
 /// don't mention the id are skipped before any JSON parsing.
-fn existing_reply(st: &AppState, user_item: &str) -> Option<(String, String)> {
-    let items = st.timeline.read_all().ok()?;
+fn existing_reply(st: &AppState, session: &str, user_item: &str) -> Option<(String, String)> {
+    let items = st.timeline_for(session).read_all().ok()?;
     items
         .iter()
         .rev()
@@ -996,7 +1010,7 @@ fn spawn(st: AppState, dir: PathBuf, mut job: Job) {
             job.stage = "error".into();
             job.error = Some(e.to_string());
             let reply = format!("I couldn't finish reading this share: {e}");
-            let item = st.timeline.record(NewItem {
+            let item = st.timeline_for(&job.session).record(NewItem {
                 channel: job.user_item.channel.clone(),
                 role: "lucina".into(),
                 text: reply.clone(),
@@ -1113,7 +1127,7 @@ pub(crate) async fn read_local_file(
     let seconds = if ["audio", "video"].contains(&part.attachment.kind.as_str()) {
         1200
     } else {
-        300
+        READ_LIMIT_SECS
     };
     let x = match tokio::time::timeout(
         Duration::from_secs(seconds),
@@ -1157,7 +1171,7 @@ pub(crate) fn turn_message(note: &str, _device_lang: &str, content: &str) -> Str
 
 async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()> {
     ensure_user(st, job)?;
-    if let Some((id, text)) = existing_reply(st, &job.user_item.id) {
+    if let Some((id, text)) = existing_reply(st, &job.session, &job.user_item.id) {
         job.status = "done".into();
         job.stage = "done".into();
         job.reply = Some(text);
@@ -1181,7 +1195,7 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
             if ["audio", "video", "voice"].contains(&job.parts[i].attachment.kind.as_str()) {
                 1200
             } else {
-                300
+                READ_LIMIT_SECS
             };
         job.parts[i].state = "reading".into();
         save(dir, job).await?;
@@ -1295,12 +1309,11 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
             .iter()
             .any(|p| p.attachment.kind == "voice" && p.attachment.transcript.is_none())
     {
-        let reply = match owner_language(st, &job.session, &job.note).code() {
-            "it" => "Non sono riuscita a sentirti. Puoi ripetere?",
+        let reply = match owner_language(st, &job.session, &job.note).reply().code() {
             "da" => "Jeg kunne ikke høre dig. Kan du gentage det?",
             _ => "I couldn't hear you. Could you repeat that?",
         };
-        let item = st.timeline.append(NewItem {
+        let item = st.timeline_for(&job.session).append(NewItem {
             channel: job.user_item.channel.clone(),
             role: "lucina".into(),
             text: reply.into(),
@@ -1326,12 +1339,11 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
                 "content":clip(&format!("{}\n{}", job.note, content), 19_000)
             }), &ctx)).await.context("saving shared note timed out")?.map_err(|e| anyhow::anyhow!(e.to_string()))?;
         }
-        let reply = match owner_language(st, &job.session, &job.note).code() {
-            "it" => "Salvato nella raccolta Shared.",
+        let reply = match owner_language(st, &job.session, &job.note).reply().code() {
             "da" => "Gemt i samlingen Shared.",
             _ => "Saved to the Shared library.",
         };
-        let item = st.timeline.append(NewItem {
+        let item = st.timeline_for(&job.session).append(NewItem {
             channel: job.user_item.channel.clone(),
             role: "lucina".into(),
             text: reply.into(),

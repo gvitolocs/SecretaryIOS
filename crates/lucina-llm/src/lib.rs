@@ -1,4 +1,5 @@
-//! DeepSeek chat client (OpenAI-compatible `/chat/completions`).
+//! Chat client for OpenAI-compatible `/chat/completions`: DeepSeek, the local Qwen gateway and Mistral.
+//! [`Dialect`] holds what Mistral does differently; the type keeps its old name, [`DeepSeek`].
 //!
 //! - Chat completions with **tool/function calling** ([`Tool`], [`ToolCall`]).
 //! - **SSE streaming** ([`DeepSeek::stream`]): content deltas to a callback,
@@ -8,12 +9,13 @@
 //! - **Token usage** logged per call (`tracing` target `lucina_llm::usage`)
 //!   and summed in [`UsageTotals`].
 //! - The API key is read from `DEEPSEEK_KEY_FILE` (re-read every 5 s, so a
-//!   rotation lands without a restart) or `DEEPSEEK_API_KEY`; it is never
-//!   logged or printed (`Debug` redacts it).
+//!   rotation lands without a restart) or `DEEPSEEK_API_KEY` (`MISTRAL_*` for
+//!   Mistral); it is never logged or printed (`Debug` redacts it).
 //!
 //! [`ChatModel`] is the seam the agent loop uses; tests plug in a scripted
 //! model instead of the network.
 
+use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -26,6 +28,8 @@ use serde_json::Value;
 pub const DEFAULT_BASE_URL: &str = "https://api.deepseek.com/v1";
 pub const DEFAULT_MODEL: &str = "deepseek-flash";
 pub const PRO_MODEL: &str = "deepseek-v4-pro";
+pub const MISTRAL_BASE_URL: &str = "https://api.mistral.ai/v1";
+pub const MISTRAL_MODEL: &str = "mistral-small-latest";
 
 // ---------------------------------------------------------------- wire types
 
@@ -61,7 +65,7 @@ fn function_type() -> String {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
     pub role: Role,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "text_or_chunks")]
     pub content: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
@@ -70,6 +74,39 @@ pub struct Message {
     /// DeepSeek thinking models: kept and sent back within a tool loop.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
+}
+
+/// The text of a `content` value: a string, or Mistral's list of chunks, where only `text` chunks are
+/// the answer (a reasoning model also sends `thinking` chunks).
+fn chunk_text(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Array(parts) => {
+            let text: String = parts
+                .iter()
+                .filter(|p| p["type"] == "text")
+                .filter_map(|p| p["text"].as_str())
+                .collect();
+            (!text.is_empty()).then_some(text)
+        }
+        _ => None,
+    }
+}
+
+/// The reasoning in a list of chunks: `{"type": "thinking", "thinking": [{"type": "text", "text": …}]}`.
+fn chunk_thinking(v: &Value) -> String {
+    v.as_array()
+        .into_iter()
+        .flatten()
+        .filter(|p| p["type"] == "thinking")
+        .filter_map(|p| p["thinking"].as_array())
+        .flatten()
+        .filter_map(|t| t["text"].as_str())
+        .collect()
+}
+
+fn text_or_chunks<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(Option::<Value>::deserialize(d)?.and_then(|v| chunk_text(&v)))
 }
 
 impl Message {
@@ -276,15 +313,15 @@ impl ChatResponse {
 
 #[derive(Debug, thiserror::Error)]
 pub enum LlmError {
-    #[error("no DeepSeek API key (DEEPSEEK_KEY_FILE / DEEPSEEK_API_KEY)")]
+    #[error("no model API key (DEEPSEEK_KEY_FILE / DEEPSEEK_API_KEY, MISTRAL_KEY_FILE / MISTRAL_API_KEY)")]
     NoKey,
-    #[error("DeepSeek HTTP {status}: {body}")]
+    #[error("model HTTP {status}: {body}")]
     Status { status: u16, body: String },
-    #[error("DeepSeek request timed out")]
+    #[error("model request timed out")]
     Timeout,
-    #[error("DeepSeek transport: {0}")]
+    #[error("model transport: {0}")]
     Transport(String),
-    #[error("DeepSeek response: {0}")]
+    #[error("model response: {0}")]
     Decode(String),
 }
 
@@ -302,6 +339,24 @@ impl LlmError {
 #[async_trait::async_trait]
 pub trait ChatModel: Send + Sync {
     async fn complete(&self, request: ChatRequest) -> Result<ChatResponse, LlmError>;
+
+    /// Like [`complete`](Self::complete), but `on_delta` gets the reply text as the model writes it, for a
+    /// listener that speaks the first sentence before the rest exists (the voice stream of
+    /// `POST /api/secretary/chat`). The default has nothing to stream: it completes, then hands the whole
+    /// text over as one delta, so scripted and wrapped models keep working. The returned response is the
+    /// same as `complete` would give.
+    async fn complete_streaming(
+        &self,
+        request: ChatRequest,
+        on_delta: &mut (dyn for<'s> FnMut(&'s str) + Send),
+    ) -> Result<ChatResponse, LlmError> {
+        let response = self.complete(request).await?;
+        let text = response.message.text();
+        if !text.is_empty() {
+            on_delta(text);
+        }
+        Ok(response)
+    }
 }
 
 // ---------------------------------------------------------------- client
@@ -324,6 +379,26 @@ impl std::fmt::Debug for KeySource {
     }
 }
 
+/// Which API's rules a request follows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Dialect {
+    /// DeepSeek and the local Qwen gateway.
+    #[default]
+    DeepSeek,
+    /// Mistral has no `stream_options` or `thinking`, takes no `reasoning_content` back, and wants tool
+    /// call ids of exactly 9 letters and digits.
+    Mistral,
+}
+
+impl Dialect {
+    pub fn name(self) -> &'static str {
+        match self {
+            Dialect::DeepSeek => "deepseek",
+            Dialect::Mistral => "mistral",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DeepSeekConfig {
     pub base_url: String,
@@ -333,6 +408,7 @@ pub struct DeepSeekConfig {
     pub max_retries: u32,
     /// First backoff step; doubles per retry (plus jitter), capped at 10 s.
     pub backoff: Duration,
+    pub dialect: Dialect,
 }
 
 impl Default for DeepSeekConfig {
@@ -344,6 +420,7 @@ impl Default for DeepSeekConfig {
             timeout: Duration::from_millis(90_000),
             max_retries: 3,
             backoff: Duration::from_millis(500),
+            dialect: Dialect::DeepSeek,
         }
     }
 }
@@ -353,26 +430,82 @@ impl DeepSeekConfig {
     /// `DEEPSEEK_MAX_RETRIES`, `DEEPSEEK_API_KEY` (wins, as in Node) or
     /// `DEEPSEEK_KEY_FILE`.
     pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Self {
-        let mut cfg = Self::default();
-        if let Some(v) = get("DEEPSEEK_BASE_URL") {
-            cfg.base_url = v.trim().trim_end_matches('/').to_owned();
+        Self::default().with_env("DEEPSEEK", get)
+    }
+
+    /// The same settings under `MISTRAL_*`. Without a key the client exists but every call is [`LlmError::NoKey`].
+    pub fn mistral_from_lookup(get: impl Fn(&str) -> Option<String>) -> Self {
+        Self {
+            base_url: MISTRAL_BASE_URL.into(),
+            model: MISTRAL_MODEL.into(),
+            dialect: Dialect::Mistral,
+            ..Self::default()
         }
-        if let Some(v) = get("DEEPSEEK_MODEL") {
-            cfg.model = v.trim().to_owned();
+        .with_env("MISTRAL", get)
+    }
+
+    fn with_env(mut self, prefix: &str, get: impl Fn(&str) -> Option<String>) -> Self {
+        let var = |name: &str| get(&format!("{prefix}_{name}"));
+        if let Some(v) = var("BASE_URL") {
+            self.base_url = v.trim().trim_end_matches('/').to_owned();
         }
-        if let Some(ms) = get("DEEPSEEK_TIMEOUT_MS").and_then(|v| v.trim().parse::<u64>().ok()) {
-            cfg.timeout = Duration::from_millis(ms.max(1000));
+        if let Some(v) = var("MODEL") {
+            self.model = v.trim().to_owned();
         }
-        if let Some(n) = get("DEEPSEEK_MAX_RETRIES").and_then(|v| v.trim().parse::<u32>().ok()) {
-            cfg.max_retries = n.min(8);
+        if let Some(ms) = var("TIMEOUT_MS").and_then(|v| v.trim().parse::<u64>().ok()) {
+            self.timeout = Duration::from_millis(ms.max(1000));
         }
-        cfg.key = match (get("DEEPSEEK_API_KEY"), get("DEEPSEEK_KEY_FILE")) {
-            (Some(k), _) if !k.trim().is_empty() => KeySource::Inline(k.trim().to_owned()),
+        if let Some(n) = var("MAX_RETRIES").and_then(|v| v.trim().parse::<u32>().ok()) {
+            self.max_retries = n.min(8);
+        }
+        self.key = match (var("API_KEY"), var("KEY_FILE")) {
+            (Some(k), _) if !clean_key(&k).is_empty() => KeySource::Inline(clean_key(&k)),
             (_, Some(f)) if !f.trim().is_empty() => KeySource::File(PathBuf::from(f.trim())),
             _ => KeySource::None,
         };
-        cfg
+        self
     }
+}
+
+/// An API key as a header can carry it. A paste can bring invisible characters along (the Mistral key
+/// saved on 2026-11-02 had four stray bytes, and the API answered 401); no provider's key has any.
+fn clean_key(raw: &str) -> String {
+    raw.chars().filter(char::is_ascii_graphic).collect()
+}
+
+/// A tool call id Mistral accepts: kept when it already is 9 letters and digits, else a hash of it, so a
+/// call and its result still match. Ids from another model or from DSML recovery are the longer ones.
+fn mistral_tool_id(id: &str) -> String {
+    if id.len() == 9 && id.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return id.to_owned();
+    }
+    const ALPHABET: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    let mut h = id.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+    });
+    (0..9)
+        .map(|_| {
+            let c = ALPHABET[(h % 62) as usize] as char;
+            h /= 62;
+            c
+        })
+        .collect()
+}
+
+/// The messages as Mistral takes them back.
+fn mistral_messages(messages: &[Message]) -> Vec<Message> {
+    messages
+        .iter()
+        .cloned()
+        .map(|mut m| {
+            m.reasoning_content = None;
+            m.tool_call_id = m.tool_call_id.as_deref().map(mistral_tool_id);
+            for call in m.tool_calls.iter_mut().flatten() {
+                call.id = mistral_tool_id(&call.id);
+            }
+            m
+        })
+        .collect()
 }
 
 /// Totals since start (exposed on the health route).
@@ -416,7 +549,7 @@ impl std::fmt::Debug for DeepSeek {
 #[derive(Serialize)]
 struct WireRequest<'a> {
     model: &'a str,
-    messages: &'a [Message],
+    messages: Cow<'a, [Message]>,
     #[serde(skip_serializing_if = "<[Tool]>::is_empty")]
     tools: &'a [Tool],
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -495,7 +628,7 @@ impl DeepSeek {
                     .is_none_or(|t| t.elapsed() > Duration::from_secs(5))
                 {
                     cache.value = std::fs::read_to_string(path)
-                        .map(|s| s.trim().to_owned())
+                        .map(|s| clean_key(&s))
                         .unwrap_or_default();
                     cache.checked = Some(Instant::now());
                 }
@@ -505,9 +638,14 @@ impl DeepSeek {
     }
 
     fn body<'a>(&'a self, req: &'a ChatRequest, model: &'a str, stream: bool) -> WireRequest<'a> {
+        let mistral = self.cfg.dialect == Dialect::Mistral;
         WireRequest {
             model,
-            messages: &req.messages,
+            messages: if mistral {
+                Cow::Owned(mistral_messages(&req.messages))
+            } else {
+                Cow::Borrowed(&req.messages)
+            },
             tools: &req.tools,
             tool_choice: if req.tools.is_empty() {
                 None
@@ -517,12 +655,14 @@ impl DeepSeek {
             temperature: req.temperature,
             max_tokens: req.max_tokens,
             stream,
-            stream_options: stream.then(|| serde_json::json!({"include_usage": true})),
+            stream_options: (stream && !mistral)
+                .then(|| serde_json::json!({"include_usage": true})),
             response_format: req
                 .json_object
                 .then(|| serde_json::json!({"type": "json_object"})),
             thinking: req
                 .thinking
+                .filter(|_| !mistral)
                 .map(|on| serde_json::json!({"type": if on { "enabled" } else { "disabled" }})),
         }
     }
@@ -599,7 +739,7 @@ impl DeepSeek {
                     let wait = retry_after.unwrap_or_else(|| {
                         Duration::from_millis((base + jitter(base / 2 + 1)).min(10_000))
                     });
-                    tracing::warn!(model, attempt = attempt + 1, wait_ms = wait.as_millis() as u64, error = %err, "deepseek retry");
+                    tracing::warn!(provider = self.cfg.dialect.name(), model, attempt = attempt + 1, wait_ms = wait.as_millis() as u64, error = %err, "model retry");
                     tokio::time::sleep(wait).await;
                     attempt += 1;
                 }
@@ -618,6 +758,7 @@ impl DeepSeek {
             .fetch_add(u.completion_tokens, Ordering::Relaxed);
         tracing::info!(
             target: "lucina_llm::usage",
+            provider = self.cfg.dialect.name(),
             purpose,
             model,
             prompt_tokens = u.prompt_tokens,
@@ -625,7 +766,7 @@ impl DeepSeek {
             total_tokens = u.total_tokens,
             cache_hit_tokens = u.prompt_cache_hit_tokens,
             ms = started.elapsed().as_millis() as u64,
-            "deepseek usage"
+            "model usage"
         );
     }
 
@@ -663,7 +804,7 @@ impl DeepSeek {
             Ok(r) => self.record(req.purpose, &model, r.usage.as_ref(), started),
             Err(e) => {
                 self.usage.failures.fetch_add(1, Ordering::Relaxed);
-                tracing::warn!(purpose = req.purpose, model = %model, error = %e, "deepseek call failed");
+                tracing::warn!(provider = self.cfg.dialect.name(), purpose = req.purpose, model = %model, error = %e, "model call failed");
             }
         }
         result
@@ -719,6 +860,14 @@ impl ChatModel for DeepSeek {
     async fn complete(&self, request: ChatRequest) -> Result<ChatResponse, LlmError> {
         self.chat(request).await
     }
+
+    async fn complete_streaming(
+        &self,
+        request: ChatRequest,
+        on_delta: &mut (dyn for<'s> FnMut(&'s str) + Send),
+    ) -> Result<ChatResponse, LlmError> {
+        self.stream(request, |d| on_delta(d)).await
+    }
 }
 
 /// Assembles OpenAI-style `chat.completion.chunk` events.
@@ -766,11 +915,12 @@ impl StreamAccumulator {
         let Some(delta) = choice.get("delta") else {
             return Ok(false);
         };
-        if let Some(text) = delta.get("content").and_then(Value::as_str) {
-            if !text.is_empty() {
-                self.content.push_str(text);
-                on_delta(text);
+        if let Some(content) = delta.get("content") {
+            if let Some(text) = chunk_text(content).filter(|t| !t.is_empty()) {
+                self.content.push_str(&text);
+                on_delta(&text);
             }
+            self.reasoning.push_str(&chunk_thinking(content));
         }
         if let Some(text) = delta.get("reasoning_content").and_then(Value::as_str) {
             self.reasoning.push_str(text);

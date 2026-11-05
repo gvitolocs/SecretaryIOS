@@ -234,7 +234,7 @@ mod tests {
         let i = d("Chiedi a Grok le ultime notizie su Rust 1.95");
         assert_eq!(
             (i.to, i.kind, i.lang),
-            (Some(AgentId::Grok), Kind::Research, "it")
+            (Some(AgentId::Grok), Kind::Research, "en")
         );
         assert_eq!(i.task, "le ultime notizie su Rust 1.95");
         let i = d("chiedi a Claude di analizzare i pro e contro di SQLite rispetto a Postgres");
@@ -306,7 +306,7 @@ mod tests {
         assert_eq!(s("usa il latte"), None);
         assert_eq!(
             parse_undo("annulla delega 1a2b3c4d"),
-            Some(("1a2b3c4d".into(), "it"))
+            Some(("1a2b3c4d".into(), "en"))
         );
         assert_eq!(parse_undo("annulla il promemoria"), None);
     }

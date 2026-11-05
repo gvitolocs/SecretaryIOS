@@ -20,6 +20,9 @@ pub enum Target {
     Claude,
     Grok,
     Agents,
+    Mistral,
+    /// A report for "the agent", with nobody named: the report agent gets it.
+    Report,
 }
 
 impl Target {
@@ -28,6 +31,8 @@ impl Target {
             Target::Claude => "claude",
             Target::Grok => "grok",
             Target::Agents => "agents",
+            Target::Mistral => "mistral",
+            Target::Report => "report",
         }
     }
 }
@@ -55,11 +60,13 @@ fn compile(src: &str) -> Regex {
 
 fn mentions(t: &str, target: &str) -> bool {
     static CLAUDE: OnceLock<Vec<Regex>> = OnceLock::new();
+    static MISTRAL: OnceLock<Vec<Regex>> = OnceLock::new();
     static GROK: OnceLock<Vec<Regex>> = OnceLock::new();
     static AGENTS: OnceLock<Vec<Regex>> = OnceLock::new();
     let (cell, who) = match target {
         "claude" => (&CLAUDE, r"claude(?:\s+code)?"),
         "grok" => (&GROK, r"grok(?:\s*bot)?"),
+        "mistral" => (&MISTRAL, r"mistral"),
         _ => (&AGENTS, r"lucina[\s-]*agents?"),
     };
     let checks = cell.get_or_init(|| directed(who).iter().map(|p| compile(p)).collect());
@@ -71,7 +78,9 @@ fn compile_once(target: &str) -> &'static Regex {
     static C: OnceLock<Regex> = OnceLock::new();
     static G: OnceLock<Regex> = OnceLock::new();
     static A: OnceLock<Regex> = OnceLock::new();
+    static M: OnceLock<Regex> = OnceLock::new();
     match target {
+        "mistral" => M.get_or_init(|| compile(r"\bmistral\b")),
         "claude" => C.get_or_init(|| compile(r"\bclaude(?:\s+code)?\b")),
         "grok" => G.get_or_init(|| compile(r"\bgrok(?:\s*bot)?\b")),
         _ => A.get_or_init(|| compile(r"\blucina[\s-]*agents?\b")),
@@ -124,7 +133,21 @@ pub fn target(text: &str) -> Option<Target> {
     if mentions(&t, "grok") {
         return Some(Target::Grok);
     }
+    if mentions(&t, "mistral") {
+        return Some(Target::Mistral);
+    }
+    if report_for_the_agent(&t) {
+        return Some(Target::Report);
+    }
     None
+}
+
+/// "post the report to the agent", "manda la segnalazione all'agente", "send rapporten til agenten".
+fn report_for_the_agent(t: &str) -> bool {
+    static R: OnceLock<Regex> = OnceLock::new();
+    test(R.get_or_init(|| compile(
+        r"(?:^|[\s,.;:!?(])(?:post|send|give|pass|forward|manda|invia|passa|posta|inoltra|giv|skicka|videresend)(?:\s|$)[^.?!\n]{0,80}\b(?:report|bug report|segnalazione|rapporto|rapporten|fejlrapport(?:en)?)\b[^.?!\n]{0,80}\b(?:agent|agente|agenten)\b",
+    )), t)
 }
 
 /// Is this a request to message Claude, Grok or Lucina Agents?
@@ -135,6 +158,26 @@ pub fn is_request(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mistral_and_reports_for_the_agent() {
+        for (text, want) in [
+            ("ask Mistral what this error means", Target::Mistral),
+            ("chiedi a Mistral cosa significa", Target::Mistral),
+            ("spørg Mistral om fejlen", Target::Mistral),
+            ("Post the report to the agent in room …", Target::Report),
+            ("post the report to the agent", Target::Report),
+            ("manda la segnalazione all'agente", Target::Report),
+            ("send rapporten til agenten", Target::Report),
+            // A name wins over the default.
+            ("post the report to the agent: tell Claude", Target::Claude),
+        ] {
+            assert_eq!(target(text), Some(want), "{text}");
+        }
+        for text in ["is Mistral better than Claude?", "tell me about Mistral", "the report is about an agent", "read me the report"] {
+            assert_eq!(target(text), None, "{text}");
+        }
+    }
 
     #[test]
     fn requests_to_pass_on() {

@@ -952,10 +952,12 @@ async fn owner_requests_go_before_the_warmers() {
     let (_, r2) = tokio::join!(low, second);
     assert_eq!(r2.status, StatusCode::OK);
     first.await.unwrap();
+    // Stories only: a refresh behind the owner's answers asks for the rest of each account.
     let order: Vec<String> = requests_to(&e, "/api/")
         .await
         .iter()
         .map(|r| r.url.path().to_string())
+        .filter(|p| p.ends_with("/stories"))
         .collect();
     assert_eq!(
         order,

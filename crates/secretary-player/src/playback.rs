@@ -18,7 +18,17 @@ pub enum Client {
     /// Chrome, Edge and other Chromium browsers (MSE via hls.js for HLS).
     WebChrome,
     WebFirefox,
+    /// Juno (LucinaOS on the Galaxy Book Go): eight CPUs (two fast), decoding in Rust, the GPU showing the picture. What it can
+    /// play in time is measured, in LucinaOS `docs/research/juno-media.md`, and depends on the picture's size.
+    Juno,
 }
+
+/// Juno decodes H.264, VP9 and AV1 up to this height in time, and the server scales anything larger down to it. Measured on all
+/// eight CPUs with 24-frame films and animation: 1080 lines played at 23.9 frames a second with none dropped, VP9 using about two
+/// CPUs. Higher frame rates were not measured.
+pub const JUNO_MAX_HEIGHT: u32 = 1080;
+/// What Juno was given before it had eight CPUs. Variants of this height may still be cached and asked for by name.
+pub const JUNO_OLD_MAX_HEIGHT: u32 = 720;
 
 /// What ffprobe found, normalised to ffprobe's codec names
 /// (`h264`, `hevc`, `vp9`, `av1`, `aac`, `mp3`, `opus`, `ac3`, `eac3`, `flac`, `alac`, `pcm_s16le`...).
@@ -39,6 +49,9 @@ pub struct Probe {
     /// 10-bit or more.
     #[serde(default)]
     pub bit_depth: Option<u8>,
+    /// The picture's height, when known. Only Juno's plan depends on it.
+    #[serde(default)]
+    pub height: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,6 +83,9 @@ pub struct Plan {
     pub hvc1_tag: bool,
     /// Re-encoding HDR to SDR H.264: tone-map.
     pub tonemap: bool,
+    /// Re-encoding for a small CPU: no taller than this, in the H.264 that costs least to decode.
+    #[serde(default)]
+    pub max_height: Option<u32>,
 }
 
 fn direct_container(client: Client, c: &str, is_video: bool) -> bool {
@@ -90,6 +106,8 @@ fn direct_container(client: Client, c: &str, is_video: bool) -> bool {
                 || matches!(c, "webm" | "matroska,webm")
                 || (!is_video && (apple_audio || matches!(c, "ogg")))
         }
+        // Its own demuxer reads MP4, Matroska, WebM and IVF.
+        Client::Juno => apple || matches!(c, "matroska" | "mkv" | "webm" | "matroska,webm" | "ivf"),
     }
 }
 
@@ -99,7 +117,17 @@ fn video_ok(client: Client, codec: &str) -> bool {
         Client::Android => matches!(codec, "h264" | "hevc" | "vp9" | "av1"),
         Client::WebChrome => matches!(codec, "h264" | "vp9" | "av1"),
         Client::WebFirefox => matches!(codec, "h264" | "vp9" | "av1"),
+        Client::Juno => matches!(codec, "h264" | "vp9" | "av1"),
     }
+}
+
+/// Whether this client can decode this size in time. An unknown size counts as too large, since a file sent as it is cannot be undone.
+/// Since eight CPUs, every codec Juno decodes has the same limit; `_codec` stays for the next one that does not.
+fn size_ok(probe: &Probe, client: Client, _codec: &str) -> bool {
+    if client != Client::Juno {
+        return true;
+    }
+    probe.height.is_some_and(|h| h <= JUNO_MAX_HEIGHT) && probe.bit_depth.is_none_or(|b| b <= 8)
 }
 
 fn audio_ok(client: Client, codec: &str) -> bool {
@@ -113,7 +141,7 @@ fn audio_ok(client: Client, codec: &str) -> bool {
         }
         Client::WebSafari => pcm || matches!(codec, "aac" | "mp3" | "alac" | "flac" | "opus"),
         Client::Android => pcm || matches!(codec, "aac" | "mp3" | "flac" | "opus" | "vorbis"),
-        Client::WebChrome | Client::WebFirefox => {
+        Client::WebChrome | Client::WebFirefox | Client::Juno => {
             pcm || matches!(codec, "aac" | "mp3" | "flac" | "opus" | "vorbis")
         }
     }
@@ -134,7 +162,7 @@ fn hls_audio_ok(client: Client, codec: &str) -> bool {
             matches!(codec, "aac" | "mp3" | "ac3" | "eac3" | "alac" | "flac")
         }
         Client::Android => matches!(codec, "aac" | "mp3" | "ac3" | "eac3" | "opus" | "flac"),
-        Client::WebChrome | Client::WebFirefox => matches!(codec, "aac" | "mp3"),
+        Client::WebChrome | Client::WebFirefox | Client::Juno => matches!(codec, "aac" | "mp3"),
     }
 }
 
@@ -151,7 +179,7 @@ pub fn plan(probe: &Probe, client: Client) -> Plan {
 
     let v_direct = video
         .as_deref()
-        .is_none_or(|v| video_ok(client, v) && !hi10);
+        .is_none_or(|v| video_ok(client, v) && !hi10 && size_ok(probe, client, v));
     let a_direct = audio.as_deref().is_none_or(|a| audio_ok(client, a));
     if v_direct
         && a_direct
@@ -171,12 +199,13 @@ pub fn plan(probe: &Probe, client: Client) -> Plan {
             audio: copy(&audio),
             hvc1_tag: false,
             tonemap: false,
+            max_height: None,
         };
     }
 
     let v = match video.as_deref() {
         None => Stream::None,
-        Some(v) if hls_video_ok(client, v) && !hi10 => Stream::Copy,
+        Some(v) if hls_video_ok(client, v) && !hi10 && size_ok(probe, client, v) => Stream::Copy,
         Some(_) => Stream::H264,
     };
     let a = match audio.as_deref() {
@@ -195,6 +224,7 @@ pub fn plan(probe: &Probe, client: Client) -> Plan {
         audio: a,
         hvc1_tag: v == Stream::Copy && video.as_deref() == Some("hevc"),
         tonemap: v == Stream::H264 && probe.hdr,
+        max_height: (v == Stream::H264 && client == Client::Juno).then_some(JUNO_MAX_HEIGHT),
     }
 }
 
@@ -209,6 +239,65 @@ mod tests {
             audio_codec: a.map(Into::into),
             ..Default::default()
         }
+    }
+
+    fn juno(container: &str, v: &str, height: Option<u32>, bits: Option<u8>) -> Plan {
+        let mut probe = p(container, Some(v), Some("aac"));
+        probe.height = height;
+        probe.bit_depth = bits;
+        plan(&probe, Client::Juno)
+    }
+
+    #[test]
+    fn juno_gets_what_it_can_decode_in_time_as_it_is() {
+        for (c, v, h) in [
+            ("mov", "h264", 1080),
+            ("matroska", "h264", 576),
+            ("mov", "av1", 1080),
+            ("webm", "vp9", 1080),
+            ("webm", "vp9", 480),
+            ("ivf", "av1", 480),
+        ] {
+            let plan = juno(c, v, Some(h), Some(8));
+            assert_eq!((plan.mode, plan.video, plan.max_height), (Mode::Direct, Stream::Copy, None), "{c} {v} {h}");
+        }
+    }
+
+    #[test]
+    fn juno_gets_anything_larger_scaled_down_in_cheap_h264() {
+        for (c, v, h, bits) in [
+            ("mov", "h264", Some(1440), Some(8)),
+            ("webm", "vp9", Some(2160), Some(8)),
+            ("mov", "av1", Some(1200), Some(8)),
+            ("matroska", "hevc", Some(720), Some(10)),
+            ("matroska", "mpeg2video", Some(576), Some(8)),
+            ("mov", "h264", Some(720), Some(10)),
+            ("mov", "av1", Some(720), Some(10)),
+            ("mov", "h264", None, Some(8)),
+        ] {
+            let plan = juno(c, v, h, bits);
+            assert_eq!((plan.mode, plan.video, plan.max_height), (Mode::Transcode, Stream::H264, Some(JUNO_MAX_HEIGHT)), "{c} {v} {h:?}");
+        }
+    }
+
+    #[test]
+    fn nobody_else_has_a_size_limit() {
+        let mut probe = p("mov", Some("h264"), Some("aac"));
+        probe.height = Some(2160);
+        for c in [Client::Ios, Client::Macos, Client::Android, Client::WebSafari, Client::WebChrome, Client::WebFirefox] {
+            let plan = plan(&probe, c);
+            assert_eq!((plan.mode, plan.max_height), (Mode::Direct, None), "{c:?}");
+        }
+        let plan = plan(&p("matroska", Some("mpeg2video"), Some("ac3")), Client::WebChrome);
+        assert_eq!((plan.video, plan.max_height), (Stream::H264, None));
+    }
+
+    #[test]
+    fn the_new_fields_read_old_json() {
+        let old: Plan = serde_json::from_str(r#"{"mode":"remux","video":"copy","audio":"aac","hvc1_tag":false,"tonemap":false}"#).unwrap();
+        assert_eq!(old.max_height, None);
+        let client: Client = serde_json::from_str(r#""juno""#).unwrap();
+        assert_eq!(client, Client::Juno);
     }
 
     #[test]

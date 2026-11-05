@@ -65,6 +65,12 @@ export function projectKeys(p: SecretProject): string[] {
   return [...new Set(keys)];
 }
 
+/** A project by id, or by alias, slug or name (any case): what a card's `project` names. */
+export function findProject(ref: string, projects: SecretProject[]): SecretProject | undefined {
+  const key = ref.toLowerCase();
+  return projects.find((p) => p.id === ref) ?? projects.find((p) => projectKeys(p).includes(key));
+}
+
 export interface Target {
   project: SecretProject;
   environment?: string;

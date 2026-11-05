@@ -5,7 +5,7 @@ import UIKit
 // Drive previews (DriveOpen decides which): photos and videos in the Gallery's viewer, audio in the
 // media player, PDFs and Office files in Quick Look (downloaded under their real names; Quick Look
 // renders PDF, docx, xlsx and pptx and has its own Share button), text and code in DriveTextViewer,
-// archives in DriveArchiveViewer, anything else in DriveFileInfo. Every sheet has Share and Download
+// archives in DriveArchiveViewer, .xlsx workbooks in SheetScreen, anything else in DriveFileInfo. Every sheet has Share and Download
 // (a copy to Files) through DriveFileActions.
 
 /// One Drive level's open previews.
@@ -16,6 +16,8 @@ final class DrivePreviewer {
     var text: GalleryItem?
     var archive: GalleryItem?
     var info: GalleryItem?
+    /// An .xlsx in the sheet editor.
+    var sheet: GalleryItem?
     /// A photo or video in the Gallery's viewer, paging through `viewerStore`'s items.
     var viewing: GalleryItem?
     @ObservationIgnored var viewerStore: GalleryStore?
@@ -55,6 +57,8 @@ final class DrivePreviewer {
             archive = item
         case .info:
             info = item
+        case .sheet:
+            sheet = item
         }
     }
 
@@ -104,6 +108,10 @@ private struct DrivePreviewHost: ViewModifier {
                 NavigationStack { DriveArchiveViewer(item: item) }
                     .environment(store)
                     .lucinaSheet()
+            }
+            .fullScreenCover(item: $previewer.sheet) { item in
+                NavigationStack { SheetScreen(item: item) }
+                    .environment(store)
             }
             .sheet(item: $previewer.info) { item in
                 NavigationStack { DriveFileInfo(item: item) }

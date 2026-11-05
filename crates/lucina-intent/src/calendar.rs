@@ -352,17 +352,11 @@ fn is_create(t: &str) -> bool {
     CREATE.iter().any(|src| w(src).test(t))
 }
 
-/// `guessLang`.
+/// `guessLang`, changed on 2026-11-02 (owner rule: English or Danish, never Italian): the language the
+/// answer is written in. An Italian message is read as before but answered in English.
 pub fn guess_lang(text: &str) -> &'static str {
     if re!(r"[æøå]|\b(hvad|jeg|har|kalender|i morgen|i dag)\b", "i").test(text) {
         "da"
-    } else if re!(
-        r"\b(cosa|ho|domani|oggi|calendario|che|aggiungi|metti|impegni|alle)\b",
-        "i"
-    )
-    .test(text)
-    {
-        "it"
     } else {
         "en"
     }
@@ -1121,7 +1115,7 @@ mod tests {
         let q = parse_question("cosa ho in calendario domani?", now(), TZ).unwrap();
         assert_eq!(
             (q.from.as_str(), q.lang, q.week),
-            ("2026-10-23", "it", false)
+            ("2026-10-23", "en", false)
         );
         let q = parse_question("what's on my calendar this week?", now(), TZ).unwrap();
         assert_eq!(
@@ -1134,7 +1128,7 @@ mod tests {
             (q.from.as_str(), q.to.as_str(), q.week),
             ("2026-10-22", "2026-10-28", true)
         );
-        assert_eq!(range_words(&q, now(), TZ), "questa settimana");
+        assert_eq!(range_words(&q, now(), TZ), "this week");
         let q = parse_question("What is on my calendar in the next 10 days?", now(), TZ).unwrap();
         assert_eq!(
             (q.from.as_str(), q.to.as_str()),
@@ -1146,7 +1140,7 @@ mod tests {
             (q.from.as_str(), q.to.as_str()),
             ("2026-10-26", "2026-11-01")
         );
-        assert_eq!(range_words(&q, now(), TZ), "la prossima settimana");
+        assert_eq!(range_words(&q, now(), TZ), "next week");
         let q = parse_question("hvad har jeg i kalenderen de næste 3 dage?", now(), TZ).unwrap();
         assert_eq!((q.to.as_str(), q.lang), ("2026-10-24", "da"));
         assert_eq!(range_words(&q, now(), TZ), "de næste 3 dage");
@@ -1165,12 +1159,12 @@ mod tests {
         let q = parse_question("cosa ho in calendario domani?", now(), TZ).unwrap();
         assert_eq!(
             format_answer(&q, &ev, now(), TZ),
-            "Domani hai: 09:30–10:30 Dentista."
+            "Tomorrow you have: 09:30–10:30 Dentista."
         );
         let q = parse_question("cosa ho in calendario lunedì?", now(), TZ).unwrap();
         assert_eq!(
             format_answer(&q, &[], now(), TZ),
-            "Lunedì 26 ottobre non hai niente in calendario."
+            "On Monday 26 October your calendar is clear."
         );
     }
 
@@ -1187,7 +1181,7 @@ mod tests {
             c.event,
             json!({"title": "Dentista", "start": "2026-10-23T09:30:00+02:00", "end": "2026-10-23T10:30:00+02:00"})
         );
-        assert_eq!(confirm_question(&c, TZ), "Confermi? Aggiungo «Dentista» venerdì 23 ottobre alle 09:30 al tuo calendario. Rispondi sì o no.");
+        assert_eq!(confirm_question(&c, TZ), "Shall I add \"Dentista\" Friday 23 October at 09:30 to your calendar? Reply yes or no.");
         let c = parse_create("add dentist to my calendar on 30/10", now(), TZ)
             .unwrap()
             .unwrap();
@@ -1211,15 +1205,15 @@ mod tests {
         assert_eq!(c.event["start"], "2026-10-27T18:00:00+01:00");
         assert_eq!(
             added_text(&c, TZ, Some("https://calendar.google.com/event?eid=x")),
-            "Aggiunto al calendario: «Palestra», martedì 27 ottobre alle 18:00. [Apri in Google Calendar](https://calendar.google.com/event?eid=x)"
+            "Added to your calendar: \"Palestra\", Tuesday 27 October at 18:00. [Open in Google Calendar](https://calendar.google.com/event?eid=x)"
         );
         assert_eq!(
             added_text(&c, TZ, Some("javascript:alert(1)")),
-            "Aggiunto al calendario: «Palestra», martedì 27 ottobre alle 18:00."
+            "Added to your calendar: \"Palestra\", Tuesday 27 October at 18:00."
         );
         assert_eq!(
-            proposed_text(&c, TZ, Some(&reason_text("it", "google_reconnect_needed"))),
-            "Non sono riuscita ad aggiungerlo direttamente (Google Calendar va ricollegato), quindi l'ho proposto: «Palestra», martedì 27 ottobre alle 18:00. Confermalo in Secretary → Collegamenti."
+            proposed_text(&c, TZ, Some(&reason_text("en", "google_reconnect_needed"))),
+            "I couldn't add it directly (Google Calendar needs reconnecting), so I proposed it instead: \"Palestra\", Tuesday 27 October at 18:00. Confirm it in Secretary → Links."
         );
         let en = parse_create("add Claude Max 5x unlocks to my calendar on 30/10 at 23:00", now(), TZ)
             .unwrap()

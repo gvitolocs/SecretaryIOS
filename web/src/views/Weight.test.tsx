@@ -171,7 +171,7 @@ describe("Weight", () => {
     })();
     await screen.findByLabelText("Current");
     expect(container.querySelector(".chart-line--primary")).not.toBeNull();
-    expect(container.querySelector(".chart-line--secondary")).not.toBeNull();
+    expect(container.querySelector(".chart-line--secondary")).toBeNull();
   });
 });
 

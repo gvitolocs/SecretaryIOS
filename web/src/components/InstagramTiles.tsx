@@ -3,6 +3,7 @@ import { Portal } from "solid-js/web";
 import { locale, t } from "../i18n";
 import type { Slide } from "../lib/instagram";
 import { BackIcon } from "./Icons";
+import { IgImage } from "./IgImage";
 import "../styles/instagram.css";
 
 // A highlight, story or feed as tiles: a dense square grid like Instagram's profile grid (3 across on a phone, up to 6
@@ -159,7 +160,7 @@ export default function InstagramTiles(props: {
             <header class="ig-hl__head">
               <span class="ig-hl__cover" aria-hidden="true">
                 <Show when={props.cover ?? props.slides[0]?.thumbUrl} fallback={<span>{(props.title ?? props.username).slice(0, 1).toUpperCase()}</span>}>
-                  {(url) => <img src={url()} alt="" referrerpolicy="no-referrer" />}
+                  {(url) => <IgImage url={url()} quiet />}
                 </Show>
               </span>
               <div class="ig-hl__text">
@@ -189,16 +190,7 @@ export default function InstagramTiles(props: {
                         onClick={() => props.onOpen(i())}
                       >
                         <Show when={src()} fallback={<span class="ig-tile__blank" />}>
-                          {(url) => (
-                            <img
-                              src={url()}
-                              alt=""
-                              loading="lazy"
-                              decoding="async"
-                              referrerpolicy="no-referrer"
-                              onLoad={(e) => e.currentTarget.classList.add("is-loaded")}
-                            />
-                          )}
+                          {(url) => <IgImage url={url()} lazy />}
                         </Show>
                         <Show when={slide.kind === "video"}>
                           <span class="ig-tile__badge"><PlayBadge /></span>
