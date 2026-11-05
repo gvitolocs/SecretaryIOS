@@ -122,6 +122,114 @@ final class PluginScreensLiveTests: XCTestCase {
         attach(app, "instagram-6-picture")
     }
 
+    /// "5 of 24" → (5, 24); the element's value is the id of the slide on screen.
+    private func position(_ app: XCUIApplication) -> (index: Int, count: Int, id: String) {
+        let counter = element(app, "instagram-viewer-position")
+        let parts = counter.label.components(separatedBy: " of ").map { Int($0.trimmingCharacters(in: .whitespaces)) }
+        guard parts.count == 2, let index = parts[0], let count = parts[1] else {
+            XCTFail("viewer position \"\(counter.label)\"")
+            return (0, 0, "")
+        }
+        return (index, count, (counter.value as? String) ?? "")
+    }
+
+    /// Waits until the slide count grows past `count` and returns the position then, or nil if no page arrived.
+    private func waitForMore(_ app: XCUIApplication, than count: Int, timeout: TimeInterval) -> (index: Int, count: Int, id: String)? {
+        let end = Date().addingTimeInterval(timeout)
+        while Date() < end {
+            let now = position(app)
+            if now.count > count { return now }
+            usleep(500_000)
+        }
+        return nil
+    }
+
+    /// The viewer stays on the slide on screen while the next page of posts arrives (2026-11-01: it slid to another
+    /// item by itself): at the first slide, at the last loaded slide, and while swiping. natgeo's reels, live server.
+    func testInstagramViewerKeepsItsSlideWhenAPageArrives() throws {
+        let app = try launch(route: "/instagram")
+        let search = app.textFields["instagram-search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 15), "instagram shown")
+        search.tap()
+        search.typeText("natgeo")
+        element(app, "instagram-open").tap()
+        XCTAssertTrue(element(app, "instagram-profile-picture").waitForExistence(timeout: 60), "profile loaded")
+        // Reels, not posts: the anonymous source stops posts at the newest twelve, reels page on.
+        app.buttons["Reels"].tap()
+        let tile = element(app, "instagram-tile-0")
+        XCTAssertTrue(tile.waitForExistence(timeout: 60), "reels loaded")
+        sleep(3)
+        tile.tap()
+        XCTAssertTrue(element(app, "instagram-viewer-position").waitForExistence(timeout: 15), "viewer open")
+        let pages = element(app, "instagram-viewer-pages")
+        attach(app, "viewer-paging-1-open")
+
+        // First slide: a swipe back stays on it.
+        let first = position(app)
+        XCTAssertEqual(first.index, 1, "opens on the first slide")
+        XCTAssertFalse(first.id.isEmpty, "the slide id is exposed")
+        pages.swipeRight()
+        sleep(1)
+        XCTAssertEqual(position(app).index, 1, "still the first slide after a swipe back")
+        XCTAssertEqual(position(app).id, first.id, "same first slide")
+
+        // Last loaded slide: walk to it, then let the next page land under it.
+        var grew = false
+        for _ in 0..<(first.count + 5) {
+            let now = position(app)
+            if now.count > first.count { grew = true; break }
+            if now.index == now.count { break }
+            pages.swipeLeft()
+            usleep(400_000)
+        }
+        if !grew {
+            let before = position(app)
+            XCTAssertEqual(before.index, before.count, "on the last loaded slide")
+            attach(app, "viewer-paging-2-last")
+            guard let after = waitForMore(app, than: before.count, timeout: 45) else {
+                XCTFail("no next page arrived at the last slide (\(before.index) of \(before.count))")
+                return
+            }
+            XCTAssertEqual(after.index, before.index, "same place when the page arrived (\(before.count) → \(after.count))")
+            XCTAssertEqual(after.id, before.id, "the viewer stayed on the slide on screen when the page arrived")
+            attach(app, "viewer-paging-3-page-arrived")
+        }
+        XCTContext.runActivity(named: "page arrived before the last slide: \(grew)") { _ in }
+
+        // While swiping: get within 3 of the end (that starts the next load) and keep swiping as it arrives.
+        for _ in 0..<40 {
+            let now = position(app)
+            if now.index >= now.count - 3 { break }
+            pages.swipeLeft()
+            usleep(400_000)
+        }
+        let start = position(app)
+        var seen = [start]
+        var pageArrivedWhileSwiping = false
+        for _ in 0..<4 {
+            pages.swipeLeft()
+            usleep(700_000)
+            let now = position(app)
+            if now.count > seen[seen.count - 1].count { pageArrivedWhileSwiping = true }
+            seen.append(now)
+        }
+        sleep(2)
+        let end = position(app)
+        for (previous, next) in zip(seen, seen.dropFirst()) {
+            XCTAssertGreaterThanOrEqual(next.index, previous.index, "never back while swiping: \(seen.map { "\($0.index)/\($0.count)" })")
+        }
+        XCTAssertGreaterThanOrEqual(end.index, start.index, "not behind where the swipes started")
+        XCTAssertLessThanOrEqual(end.index, start.index + 4, "at most one slide per swipe")
+        XCTAssertEqual(end.id, seen[seen.count - 1].id, "nothing moved after the last swipe")
+        if !pageArrivedWhileSwiping, let after = waitForMore(app, than: end.count, timeout: 45) {
+            XCTAssertEqual(after.index, end.index, "same place when the page arrived after the swipes")
+            XCTAssertEqual(after.id, end.id, "same slide when the page arrived after the swipes")
+        }
+        XCTContext.runActivity(named: "page arrived while swiping: \(pageArrivedWhileSwiping)") { _ in }
+        attach(app, "viewer-paging-4-after-swipes")
+        if element(app, "instagram-viewer-close").exists { element(app, "instagram-viewer-close").tap() }
+    }
+
     // MARK: - Pixiv
 
     func testPixivRankingAndReader() throws {

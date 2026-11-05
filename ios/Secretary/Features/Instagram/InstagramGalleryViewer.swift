@@ -79,6 +79,7 @@ struct InstagramGalleryViewer: View {
                 }
                 Spacer()
                 Text("\(selection + 1) of \(slides.count)").font(.caption).opacity(0.8)
+                    .accessibilityIdentifier("instagram-viewer-position").accessibilityValue(selectedID)
             }
             .padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 28)
             .background(LinearGradient(colors: [.black.opacity(0.65), .clear], startPoint: .top, endPoint: .bottom).ignoresSafeArea())

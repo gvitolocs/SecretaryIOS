@@ -76,6 +76,7 @@ struct InstagramViewer: View {
                 Text(verbatim: "@" + request.username).font(.headline)
                 Spacer()
                 Text("\(min(selection + 1, slides.count)) of \(slides.count)").font(.caption)
+                    .accessibilityIdentifier("instagram-viewer-position").accessibilityValue(selectedID)
             }.padding()
             TabView(selection: $selectedID) {
                 ForEach(slides) { slide in
