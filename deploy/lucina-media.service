@@ -16,7 +16,9 @@ Conflicts=secretary-media-stream.service
 Type=simple
 EnvironmentFile=%h/.config/lucina-media/env
 ExecStart=%h/.local/bin/lucina-media serve
-Restart=on-failure
+# always: earlyoom ends it with SIGTERM, a clean exit that on-failure never restarted (down 1 h 17 min on
+# 2026-11-05, and a PDF shared meanwhile could not be opened).
+Restart=always
 RestartSec=5
 UMask=0077
 Nice=5

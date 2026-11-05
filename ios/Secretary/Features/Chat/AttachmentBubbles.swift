@@ -673,17 +673,28 @@ struct FileCard: View {
     }
 
     private func open() {
+        let kind = entry.attachment.normalizedKind
         if let local = store.localFile(shareId: shareId, fileIndex: entry.fileIndex ?? -1) {
+            DebugEvents.record("chat.file_open", ["kind": kind, "from": "local", "outcome": "opened"])
             preview = local
             return
         }
-        guard let id = entry.attachment.mediaId else { return }
+        // No local copy and no media id (the library was down when it arrived): say so rather than do nothing.
+        guard let id = entry.attachment.mediaId, !id.isEmpty else {
+            DebugEvents.record("chat.file_open", ["kind": kind, "from": "none", "outcome": "no_media_id"])
+            failed = true
+            return
+        }
         loading = true
         failed = false
         Task {
             do {
-                preview = try await ChatMedia.original(id, name: entry.attachment.name, info: nil, client: app.client)
+                let file = try await ChatMedia.original(id, name: entry.attachment.name, info: nil, client: app.client)
+                let bytes = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? Int) ?? 0
+                DebugEvents.record("chat.file_open", ["kind": kind, "from": "media", "outcome": "opened", "bytes": bytes])
+                preview = file
             } catch {
+                DebugEvents.record("chat.file_open", ["kind": kind, "from": "media", "outcome": "failed", "error": error])
                 failed = true
             }
             loading = false

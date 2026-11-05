@@ -110,6 +110,8 @@ impl ShareConfig {
 }
 pub struct ShareRuntime {
     ingest: Mutex<()>,
+    /// [`store_again`] is running.
+    storing_again: AtomicBool,
     /// Shares with a processing task right now (a `processing` share outside
     /// this set has lost its worker and is respawned on the next request).
     live: std::sync::Mutex<std::collections::HashSet<String>>,
@@ -125,6 +127,7 @@ impl ShareRuntime {
     pub fn new(cfg: &ShareConfig) -> Self {
         Self {
             ingest: Mutex::new(()),
+            storing_again: AtomicBool::new(false),
             live: std::sync::Mutex::new(std::collections::HashSet::new()),
             worker: Semaphore::new(1),
             recovered: AtomicBool::new(false),
@@ -895,6 +898,130 @@ async fn register_in_place(
             tracing::warn!(share_id = %id, "share media registration unavailable; keeping original")
         }
     }
+}
+
+/// How often shares whose files missed lucina-media are tried again.
+const STORE_AGAIN_EVERY: Duration = Duration::from_secs(300);
+/// Shares older than this are left alone (their month folder is skipped).
+const STORE_AGAIN_DAYS: i64 = 31;
+
+/// A file that arrived while lucina-media was down stays in the share folder, and its timeline item has no
+/// media id, so no client can open it (an iOS tap on the card did nothing). This stores such files once the
+/// library answers again and rewrites the item with their ids; clients get the item again under its id.
+/// Runs at startup and every [`STORE_AGAIN_EVERY`].
+pub(crate) fn store_again(st: AppState) {
+    if st.share.storing_again.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    tokio::spawn(async move {
+        loop {
+            store_unstored(&st).await;
+            tokio::time::sleep(STORE_AGAIN_EVERY).await;
+        }
+    });
+}
+
+/// One pass over recent shares; how many files it stored.
+async fn store_unstored(st: &AppState) -> usize {
+    let oldest = (Utc::now() - chrono::Duration::days(STORE_AGAIN_DAYS)).format("%Y-%m").to_string();
+    let Ok(mut months) = tokio::fs::read_dir(&st.cfg.share.dir).await else {
+        return 0;
+    };
+    let mut stored = 0;
+    while let Ok(Some(month)) = months.next_entry().await {
+        if month.file_name().to_string_lossy().as_ref() < oldest.as_str() {
+            continue;
+        }
+        let Ok(mut dirs) = tokio::fs::read_dir(month.path()).await else {
+            continue;
+        };
+        while let Ok(Some(entry)) = dirs.next_entry().await {
+            let Ok(bytes) = tokio::fs::read(entry.path().join("status.json")).await else {
+                continue;
+            };
+            let Ok(mut job) = serde_json::from_slice::<Job>(&bytes) else {
+                continue;
+            };
+            // A share still being read stores its own files; this only picks up finished ones.
+            if job.status == "processing" || is_live(st, &job.share_id) || !job.parts.iter().any(unstored) {
+                continue;
+            }
+            stored += store_job_again(st, &entry.path(), &mut job).await;
+        }
+    }
+    stored
+}
+
+/// One [`store_again`] pass now; how many files it stored (tests).
+#[doc(hidden)]
+pub async fn store_again_now(st: &AppState) -> usize {
+    store_unstored(st).await
+}
+
+/// A file part with no media id whose file is still on disk.
+fn unstored(p: &Part) -> bool {
+    p.attachment.media_id.is_none() && p.path.as_ref().is_some_and(|path| path.exists())
+}
+
+/// Whether a part is one of the user item's attachments (short text snippets went into its text instead).
+fn listed(p: &Part) -> bool {
+    p.text.as_ref().is_none_or(|s| s.chars().count() > 500)
+}
+
+async fn store_job_again(st: &AppState, dir: &Path, job: &mut Job) -> usize {
+    let _lock = st.share.ingest.lock().await;
+    let (id, source, note) = (job.share_id.clone(), job.source.clone(), job.note.clone());
+    // (index among the item's attachments, file name, media id)
+    let mut stored: Vec<(usize, Option<String>, String)> = Vec::new();
+    let mut at = 0;
+    for (i, part) in job.parts.iter_mut().enumerate() {
+        let shown = listed(part);
+        if unstored(part) {
+            let taken_at = part
+                .file_index
+                .and_then(|fi| job.meta.files.iter().find(|f| f.index == fi))
+                .and_then(|f| f.taken_at.clone());
+            store_in_library(st, &id, i, &source, &note, part, taken_at).await;
+            if let (true, Some(media)) = (shown, part.attachment.media_id.clone()) {
+                stored.push((at, part.attachment.name.clone(), media));
+            }
+        }
+        if shown {
+            at += 1;
+        }
+    }
+    if stored.is_empty() {
+        return 0;
+    }
+    for (k, _, media) in &stored {
+        if let Some(a) = job.user_item.attachments.as_mut().and_then(|v| v.get_mut(*k)) {
+            a.media_id = Some(media.clone());
+        }
+    }
+    if let Err(e) = save(dir, job).await {
+        tracing::warn!(share_id = %id, error = %e, "share manifest not updated with the stored files");
+    }
+    let edited = st.timeline_for(&job.session).edit(&job.user_item.id, |v| {
+        let mut changed = false;
+        for (k, name, media) in &stored {
+            let Some(a) = v.get_mut("attachments").and_then(|a| a.get_mut(*k)).and_then(Value::as_object_mut) else {
+                continue;
+            };
+            // The same file, not whatever moved into its place.
+            if a.get("name").and_then(Value::as_str) != name.as_deref() || a.contains_key("mediaId") {
+                continue;
+            }
+            a.insert("mediaId".into(), json!(media));
+            changed = true;
+        }
+        changed
+    });
+    match edited {
+        Ok(changed) => tracing::info!(share_id = %id, files = stored.len(), item_updated = changed,
+            "shared files stored in lucina-media after it came back"),
+        Err(e) => tracing::warn!(share_id = %id, error = %e, "shared files stored; timeline item not updated"),
+    }
+    stored.len()
 }
 
 /// Whether a timeline item exists (in memory; no file read).

@@ -1472,6 +1472,67 @@ impl TimelineStore {
         Ok(n)
     }
 
+    /// Rewrites one stored item in place: `edit` gets the item's JSON and returns whether it changed it. Used for
+    /// backfills (a shared file's media id once the library has it). The id, role and ts must stay as they were.
+    /// Like [`Self::scrub`], the line is written back with serde_json's key order, and live clients get the item
+    /// again under the same id. Returns whether the item changed.
+    pub fn edit(&self, id: &str, mut edit: impl FnMut(&mut serde_json::Value) -> bool) -> Result<bool> {
+        let mut inner = self.lock();
+        let _flock = lock_sidecar(&inner.file_path)?;
+        let found = inner.refresh()?;
+        self.publish(found);
+        let mut changed = false;
+        for suffix in (0..=inner.keep_rotated).rev() {
+            let path = inner.path_for_gen(inner.current_gen - suffix);
+            let bytes = match fs::read(&path) {
+                Ok(b) => b,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e.into()),
+            };
+            let text = std::str::from_utf8(&bytes)
+                .map_err(|_| StoreError::Invalid(format!("timeline: {} is not UTF-8", path.display())))?;
+            let mut out = String::with_capacity(text.len());
+            let mut seen = false;
+            for line in text.split_inclusive('\n') {
+                let (body, end) = line.strip_suffix('\n').map_or((line, ""), |b| (b, "\n"));
+                let mut v = match serde_json::from_str::<serde_json::Value>(body) {
+                    Ok(v) if !seen && v["id"].as_str() == Some(id) => v,
+                    _ => {
+                        out.push_str(line);
+                        continue;
+                    }
+                };
+                seen = true;
+                let before = (v["id"].clone(), v["role"].clone(), v["ts"].clone());
+                if !edit(&mut v) {
+                    out.push_str(line);
+                    continue;
+                }
+                if (v["id"].clone(), v["role"].clone(), v["ts"].clone()) != before {
+                    return Err(StoreError::Invalid("timeline: an edit may not change id, role or ts".into()));
+                }
+                out.push_str(&serde_json::to_string(&v).map_err(|e| StoreError::Invalid(format!("timeline: {e}")))?);
+                out.push_str(end);
+                changed = true;
+            }
+            if changed {
+                crate::scrub::replace_file(&path, out.as_bytes())?;
+            }
+            if seen {
+                break;
+            }
+        }
+        if !changed {
+            return Ok(false);
+        }
+        // Offsets moved and the cache holds the old line: read everything again.
+        inner.load_all()?;
+        let entries: Vec<Entry> = inner.entry(id).cloned().into_iter().collect();
+        let items = inner.read_entries(&entries)?;
+        self.publish(items);
+        Ok(true)
+    }
+
     /// Every stored item, oldest first.
     pub fn read_all(&self) -> Result<Vec<StoredItem>> {
         let mut inner = self.lock();
@@ -1973,5 +2034,80 @@ mod tests {
         );
         let bad = RawValue::from_string(r#"{"id":"c","type":"Alarm"}"#.into()).unwrap();
         assert!(normalize_command(&bad).is_none());
+    }
+
+    #[test]
+    fn edit_rewrites_one_item_and_publishes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path(), DEFAULT_MAX_BYTES);
+        let first = s.append(item("first")).unwrap();
+        let middle = s
+            .append(NewItem {
+                attachments: vec![Attachment {
+                    kind: "pdf".into(),
+                    name: Some("a.pdf".into()),
+                    ..Attachment::default()
+                }],
+                ..item("middle")
+            })
+            .unwrap();
+        let last = s.append(item("last")).unwrap();
+        let untouched: Vec<Arc<str>> = [&first, &last].map(|i| s.get(&i.id).unwrap().unwrap().raw).to_vec();
+        let mut rx = s.subscribe();
+        let edited = s
+            .edit(&middle.id, |v| {
+                v["attachments"][0]["mediaId"] = serde_json::json!("itm_x");
+                true
+            })
+            .unwrap();
+        assert!(edited);
+        let media = |s: &TimelineStore, id: &str| -> Option<String> {
+            let v: serde_json::Value = serde_json::from_str(&s.get(id).unwrap().unwrap().raw).unwrap();
+            v["attachments"][0]["mediaId"].as_str().map(str::to_owned)
+        };
+        assert_eq!(media(&s, &middle.id).as_deref(), Some("itm_x"));
+        for (other, raw) in [&first, &last].iter().zip(&untouched) {
+            assert_eq!(&s.get(&other.id).unwrap().unwrap().raw, raw);
+        }
+        let published = rx.try_recv().unwrap();
+        assert_eq!(published.id, middle.id);
+        assert!(published.raw.contains("itm_x"));
+        let reopened = store(dir.path(), DEFAULT_MAX_BYTES);
+        assert_eq!(media(&reopened, &middle.id).as_deref(), Some("itm_x"));
+        assert_eq!(reopened.read_all().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn edit_of_an_unknown_id_or_with_no_change_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path(), DEFAULT_MAX_BYTES);
+        let a = s.append(item("a")).unwrap();
+        let file = dir.path().join("timeline.jsonl");
+        let bytes = fs::read(&file).unwrap();
+        assert!(!s.edit("01NOPE", |_| true).unwrap());
+        assert!(!s.edit(&a.id, |v| {
+            v["text"] = serde_json::json!("changed but not reported");
+            false
+        })
+        .unwrap());
+        assert_eq!(fs::read(&file).unwrap(), bytes);
+    }
+
+    #[test]
+    fn edit_may_not_change_the_id_role_or_ts() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path(), DEFAULT_MAX_BYTES);
+        let a = s.append(item("a")).unwrap();
+        let file = dir.path().join("timeline.jsonl");
+        let bytes = fs::read(&file).unwrap();
+        for field in ["id", "role", "ts"] {
+            let refused = s.edit(&a.id, |v| {
+                v[field] = serde_json::json!("other");
+                true
+            });
+            assert!(refused.is_err(), "{field}");
+        }
+        assert_eq!(fs::read(&file).unwrap(), bytes);
+        assert!(s.get(&a.id).unwrap().is_some());
     }
 }

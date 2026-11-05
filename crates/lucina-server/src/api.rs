@@ -306,6 +306,7 @@ fn is_item_id(s: &str) -> bool {
 
 pub fn router(state: AppState) -> Router {
     crate::share::recover(state.clone());
+    crate::share::store_again(state.clone());
     crate::chat::resume_video_jobs(&state);
     Router::new()
         .merge(crate::share::router())

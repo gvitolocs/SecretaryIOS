@@ -32,7 +32,7 @@ impl Drop for Services {
         self.task.abort();
     }
 }
-async fn services() -> Services {
+fn routes(seen: Arc<Seen>) -> Router {
     async fn media(State(s): State<Arc<Seen>>, Json(v): Json<Value>) -> Json<Value> {
         s.media.lock().unwrap().push(v);
         Json(json!({"item_id":"itm_test", "duplicate":false, "version":1}))
@@ -67,16 +67,21 @@ async fn services() -> Services {
             json!({"choices":[{"message":{"content":"", "reasoning_content":"A bright green square. VISION_EXTRACTED"}}]}),
         )
     }
-    let seen = Arc::new(Seen::default());
-    let router = Router::new()
+    Router::new()
         .route("/page", get(|| async { axum::response::Html("<html><head><title>Test page title</title></head><body><nav>JUNK_NAV</nav><p>URL_EXTRACTED readable article.</p><script>JUNK_SCRIPT</script></body></html>") }))
         .route("/redirect-private", get(|| async { axum::response::Redirect::temporary("http://169.254.169.254/latest/meta-data/") }))
         .route("/v1/chat/completions", post(vision))
         .route("/internal/v1/external/{source}/{id}", put(media))
         .route("/internal/v1/ingest", post(ingest))
         .route("/internal/v1/items/{id}/path", get(item_path))
-        .with_state(seen.clone());
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        .with_state(seen)
+}
+async fn services() -> Services {
+    services_on(tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap()).await
+}
+async fn services_on(listener: tokio::net::TcpListener) -> Services {
+    let seen = Arc::new(Seen::default());
+    let router = routes(seen.clone());
     let base = format!("http://{}", listener.local_addr().unwrap());
     let task = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     Services { base, seen, task }
@@ -1510,4 +1515,71 @@ async fn slow_vision_costs_only_vision() {
     assert_eq!(done["attachments"][0]["state"], "read", "the read went on without vision: {done}");
     let prompts = h.fake.requests().iter().map(|r| r.to_string()).collect::<String>();
     assert!(prompts.contains("vision took too long"), "the model is told: {prompts}");
+}
+
+/// 2026-11-05: earlyoom stopped lucina-media, a PDF shared meanwhile kept no media id and the iPhone could
+/// not open it. Once the library answers again, the next pass stores the file and gives the timeline item its id.
+#[tokio::test]
+async fn a_file_shared_while_the_library_is_down_gets_its_media_id_when_it_is_back() {
+    // A port nothing listens on yet: the library is down.
+    let port = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap().port();
+    let h = harness(script(json!({"default":{"content":"Read it."}})), |c| {
+        c.share.dir = c.data_dir.join("shares");
+        c.share.key_file = Some(c.data_dir.join("share.key"));
+        std::fs::write(c.share.key_file.as_ref().unwrap(), "gateway-test-secret").unwrap();
+        c.share.media_url = format!("http://127.0.0.1:{port}");
+    })
+    .await;
+    let r = submit(
+        &h,
+        Form::new().text("shareId", "pdf-outage-test-1").text("intent", "ask").part(
+            "file",
+            Part::bytes(b"%PDF-1.4 contract".to_vec())
+                .file_name("contract.pdf")
+                .mime_str("application/pdf")
+                .unwrap(),
+        ),
+    )
+    .await;
+    assert_eq!(r.status(), 202);
+    let done = finished(&h, "pdf-outage-test-1").await;
+    assert!(done["attachments"][0].get("mediaId").is_none());
+    let item_id = done["userItemId"].as_str().unwrap().to_owned();
+    let item = |h: &H| -> Value {
+        h.timeline_lines()
+            .into_iter()
+            .find(|l| l["id"] == item_id.as_str())
+            .expect("the share's user item")
+    };
+    let before = item(&h);
+    assert!(before["attachments"][0].get("mediaId").is_none());
+    // Still down: nothing stored, nothing rewritten.
+    assert_eq!(lucina_server::share::store_again_now(&h.state).await, 0);
+
+    // The library is back on the same port.
+    let media = services_on(tokio::net::TcpListener::bind(("127.0.0.1", port)).await.unwrap()).await;
+    assert_eq!(lucina_server::share::store_again_now(&h.state).await, 1);
+    let ingested = media.seen.media.lock().unwrap().clone();
+    assert_eq!(ingested.len(), 1);
+    assert_eq!(ingested[0]["mime"], "application/pdf");
+    assert_eq!(ingested[0]["name"], "contract.pdf");
+    let after = item(&h);
+    assert_eq!(after["attachments"][0]["mediaId"], "itm_test");
+    assert_eq!(after["attachments"][0]["name"], "contract.pdf");
+    // Only the media id changed.
+    assert_eq!((&after["text"], &after["ts"], &after["role"]), (&before["text"], &before["ts"], &before["role"]));
+    let status: Value = h
+        .http
+        .get(format!("{}/v1/share/pdf-outage-test-1", h.base))
+        .header("x-share-gateway", "gateway-test-secret")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(status["attachments"][0]["mediaId"], "itm_test");
+    // Stored once: the next pass has nothing left to do.
+    assert_eq!(lucina_server::share::store_again_now(&h.state).await, 0);
+    assert_eq!(media.seen.media.lock().unwrap().len(), 1);
 }
