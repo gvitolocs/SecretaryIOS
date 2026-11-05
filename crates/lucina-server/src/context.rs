@@ -321,7 +321,10 @@ fn owner_facts_block(st: &AppState) -> String {
         return String::new();
     }
     let text: String = text.chars().take(OWNER_FACTS_MAX).collect();
-    format!("Facts about Giuseppe (durable; connect them to what he says without being asked):\n{text}")
+    format!(
+        "{} (durable; connect them to what he says without being asked):\n{text}",
+        lucina_store::recent::PINNED_MARKER
+    )
 }
 
 const OWNER_FACTS_MAX: usize = 3000;
@@ -492,8 +495,8 @@ pub async fn prepare_keyed(
         attachments,
         tasks,
         shopping,
-        recent,
         reminders,
+        recent,
         honcho,
     ]
     .into_iter()

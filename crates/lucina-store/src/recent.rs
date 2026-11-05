@@ -20,6 +20,10 @@ use crate::timeutil::{clip_utf16, iso_ms, parse_js_date};
 pub const TURNS_LIMIT: usize = 20;
 pub const CHARS_LIMIT: usize = 5000;
 pub const MARKER: &str = "Recent chat turns";
+/// The block [`clip_memory_for_reply`] always keeps, outside its budget: durable facts about the owner.
+pub const PINNED_MARKER: &str = "Facts about Giuseppe";
+/// At most this much of the pinned block.
+pub const PINNED_MAX: usize = 3200;
 pub const IDLE_BOUNDARY_MS: i64 = 90 * 60 * 1000;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -285,6 +289,24 @@ impl RecentChat {
 
 /// `clipMemoryForReply`: keep the newest recent turns when clipping.
 pub fn clip_memory_for_reply(memory: &str, max_chars: usize) -> String {
+    // The facts about the owner are never clipped away: a casual reply needs them most.
+    if let Some(start) = memory.find(PINNED_MARKER) {
+        let end = memory[start..]
+            .find("\n\n")
+            .map_or(memory.len(), |e| start + e);
+        let pinned: String = memory[start..end].chars().take(PINNED_MAX).collect();
+        let rest = format!(
+            "{}{}",
+            &memory[..start],
+            memory[end..].trim_start_matches('\n')
+        );
+        let rest = clip_memory_for_reply(rest.trim(), max_chars);
+        return if rest.is_empty() {
+            pinned
+        } else {
+            format!("{pinned}\n\n{rest}")
+        };
+    }
     let limit = max_chars.max(200);
     let chars: Vec<char> = memory.chars().collect();
     if chars.len() <= limit {
@@ -447,5 +469,21 @@ mod tests {
         assert!(body.contains("m5"));
         assert!(body.contains("s4"));
         assert_eq!(body.lines().count(), TURNS_LIMIT);
+    }
+
+    #[test]
+    fn clipping_keeps_the_facts_about_him() {
+        let facts = format!("{PINNED_MARKER} (durable):\n- SU depends on his job");
+        let recent = format!(
+            "{MARKER} (most recent last):\n{}",
+            "user: hello\n".repeat(300)
+        );
+        let memory = format!("meta line\n\n{facts}\n\nNotes: x\n\n{recent}");
+        let out = clip_memory_for_reply(&memory, 1600);
+        assert!(out.starts_with(&facts), "{}", &out[..200.min(out.len())]);
+        assert!(out.contains(MARKER));
+        assert!(out.chars().count() <= 1600 + facts.chars().count() + 2);
+        // Without the block nothing changes.
+        assert_eq!(clip_memory_for_reply("short", 1600), "short");
     }
 }
