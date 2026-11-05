@@ -544,7 +544,8 @@ pub fn delivered_context(
         })
         .collect();
     format!(
-        "Recently delivered reminders in this chat:\n{}",
+        "Reminders delivered by themselves (last 48 h; automatic, not something he said: a follow-up question is \
+         about his own last topic, not one of these, unless he names it):\n{}",
         lines.join("\n")
     )
 }

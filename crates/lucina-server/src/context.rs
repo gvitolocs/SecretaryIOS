@@ -292,6 +292,39 @@ pub struct Keys<'a> {
     pub voice: bool,
 }
 
+/// How far back the share-sheet session's turns count as this conversation's.
+const SHARED_HOURS: i64 = 3;
+
+/// The app's default session (share sheet, clients without a session id), when this turn is another
+/// app session of the owner's (`secretary_ios-…`, a web session). Not for a device that is a conversation
+/// of its own (Juno), the voice thread, a self-test, or the default session itself.
+fn shared_session<'a>(st: &'a AppState, keys: Keys<'_>) -> Option<&'a str> {
+    let default = st.cfg.default_session.as_str();
+    let key = keys.recent_key;
+    let app = key.starts_with("secretary_") && !key.starts_with("secretary_juno") && !crate::selftest::is_session(key);
+    (std::ptr::eq(keys.recent, &*st.recent) && app && key != default && !keys.voice).then_some(default)
+}
+
+/// Durable facts about the owner that every one of his turns needs (`LUCINA_OWNER_FACTS_FILE`, default
+/// `<data>/owner-facts.md`, mode 0600, not in git): what a job contract means for his student grant, and
+/// such. Read per turn, at most [`OWNER_FACTS_MAX`] characters.
+fn owner_facts_block(st: &AppState) -> String {
+    let path = std::env::var("LUCINA_OWNER_FACTS_FILE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| st.cfg.data_dir.join("owner-facts.md"));
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return String::new();
+    };
+    let text = text.trim();
+    if text.is_empty() {
+        return String::new();
+    }
+    let text: String = text.chars().take(OWNER_FACTS_MAX).collect();
+    format!("Facts about Giuseppe (durable; connect them to what he says without being asked):\n{text}")
+}
+
+const OWNER_FACTS_MAX: usize = 3000;
+
 /// [`prepare_with`] for any channel.
 #[allow(clippy::too_many_arguments)]
 pub async fn prepare_keyed(
@@ -315,7 +348,13 @@ pub async fn prepare_keyed(
         surface.log_denied("read", &Scope::OwnerPersonal, "turn_context");
     }
     let recent_context = if owner {
-        keys.recent.render(keys.recent_key, tz)
+        let shared = shared_session(st, keys);
+        match shared {
+            // A file he shared from the iPhone's share sheet lands in the app's default session: it is the
+            // same conversation, so its last hours count as recent turns of this one.
+            Some(other) => keys.recent.render_with(keys.recent_key, &[other], now - chrono::Duration::hours(SHARED_HOURS), tz),
+            None => keys.recent.render(keys.recent_key, tz),
+        }
     } else {
         String::new()
     };
@@ -342,6 +381,11 @@ pub async fn prepare_keyed(
 
     let presence = if owner {
         presence_block(st, user_text)
+    } else {
+        String::new()
+    };
+    let facts = if owner && policy != Policy::PersonaOnly {
+        owner_facts_block(st)
     } else {
         String::new()
     };
@@ -438,6 +482,7 @@ pub async fn prepare_keyed(
     };
     let memory_context = [
         metadata,
+        facts,
         presence,
         vocabulary,
         other_surface,

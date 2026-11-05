@@ -117,7 +117,12 @@ impl RecentChat {
                     n += 1;
                 }
             }
-            (n, (n > 0).then(|| serde_json::to_string_pretty(map).ok()).flatten())
+            (
+                n,
+                (n > 0)
+                    .then(|| serde_json::to_string_pretty(map).ok())
+                    .flatten(),
+            )
         });
         if let (Some(p), Some(text)) = (&self.path, snapshot) {
             if let Err(e) = write_atomic(p, format!("{text}\n").as_bytes()) {
@@ -139,7 +144,50 @@ impl RecentChat {
 
     /// The "Recent chat turns" block (Node `renderRecentChatContext`).
     pub fn render(&self, chat_id: &str, tz: Tz) -> String {
-        let turns = self.turns(chat_id);
+        self.render_turns(&self.turns(chat_id), tz)
+    }
+
+    /// The "Recent chat turns" block over several buffers: `chat_id`'s own turns plus the turns of `also`
+    /// (another buffer of the same person, e.g. the app's share-sheet session) that are newer than
+    /// `since`, merged by time, the last TURNS_LIMIT kept. Turns without a time from `also` are left out.
+    pub fn render_with(
+        &self,
+        chat_id: &str,
+        also: &[&str],
+        since: DateTime<Utc>,
+        tz: Tz,
+    ) -> String {
+        let mut merged: Vec<(Option<DateTime<Utc>>, Turn)> = self
+            .turns(chat_id)
+            .into_iter()
+            .map(|t| (t.at.as_deref().and_then(parse_js_date), t))
+            .collect();
+        for key in also {
+            if *key == chat_id {
+                continue;
+            }
+            for t in self.turns(key) {
+                if let Some(at) = t.at.as_deref().and_then(parse_js_date) {
+                    if at >= since {
+                        merged.push((Some(at), t));
+                    }
+                }
+            }
+        }
+        // Stable sort: untimed turns of `chat_id` count as the oldest and keep their order.
+        merged.sort_by_key(|(at, _)| at.map(|d| d.timestamp_millis()).unwrap_or(i64::MIN));
+        let turns: Vec<Turn> = merged
+            .into_iter()
+            .rev()
+            .take(TURNS_LIMIT)
+            .rev()
+            .map(|(_, t)| t)
+            .collect();
+        self.render_turns(&turns, tz)
+    }
+
+    /// Render a slice of turns as the "Recent chat turns" block.
+    fn render_turns(&self, turns: &[Turn], tz: Tz) -> String {
         if turns.is_empty() {
             return String::new();
         }
@@ -299,5 +347,105 @@ mod tests {
             r.append("x", "user", &format!("m{i}"), t0);
         }
         assert_eq!(r.turns("x").len(), TURNS_LIMIT);
+    }
+
+    #[test]
+    fn render_with_merges_also_by_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = RecentChat::new(Some(dir.path().join("recent.json")));
+        let tz: Tz = "Europe/Rome".parse().unwrap();
+        let t0 = Utc.with_ymd_and_hms(2026, 10, 21, 15, 0, 0).unwrap();
+        r.append("main", "user", "first", t0);
+        r.append(
+            "main",
+            "assistant",
+            "third",
+            t0 + chrono::Duration::seconds(20),
+        );
+        r.append(
+            "share",
+            "user",
+            "second",
+            t0 + chrono::Duration::seconds(10),
+        );
+        r.append(
+            "share",
+            "user",
+            "too old",
+            t0 - chrono::Duration::seconds(10),
+        );
+        let since = t0;
+        let block = r.render_with("main", &["share"], since, tz);
+        let body = block.lines().skip(3).collect::<Vec<_>>().join("\n");
+        assert_eq!(
+            body,
+            "[21/10 17:00 Europe/Rome] user: first\n[21/10 17:00 Europe/Rome] user: second\n[21/10 17:00 Europe/Rome] assistant: third"
+        );
+    }
+
+    #[test]
+    fn render_with_skips_also_older_than_since() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = RecentChat::new(Some(dir.path().join("recent.json")));
+        let tz: Tz = "Europe/Rome".parse().unwrap();
+        let t0 = Utc.with_ymd_and_hms(2026, 10, 21, 15, 0, 0).unwrap();
+        r.append("main", "user", "mine", t0);
+        r.append("share", "user", "old", t0 - chrono::Duration::seconds(1));
+        let block = r.render_with("main", &["share"], t0, tz);
+        assert!(block.contains("user: mine"));
+        assert!(!block.contains("user: old"));
+    }
+
+    #[test]
+    fn render_with_ignores_chat_id_in_also() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = RecentChat::new(Some(dir.path().join("recent.json")));
+        let tz: Tz = "Europe/Rome".parse().unwrap();
+        let t0 = Utc.with_ymd_and_hms(2026, 10, 21, 15, 0, 0).unwrap();
+        r.append("main", "user", "once", t0);
+        let block = r.render_with("main", &["main"], t0, tz);
+        assert_eq!(block.matches("once").count(), 1);
+    }
+
+    #[test]
+    fn render_with_empty_also_equals_render() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = RecentChat::new(Some(dir.path().join("recent.json")));
+        let tz: Tz = "Europe/Rome".parse().unwrap();
+        let t0 = Utc.with_ymd_and_hms(2026, 10, 21, 15, 0, 0).unwrap();
+        r.append("main", "user", "a", t0);
+        r.append("main", "assistant", "b", t0 + chrono::Duration::seconds(1));
+        assert_eq!(r.render_with("main", &[], t0, tz), r.render("main", tz));
+    }
+
+    #[test]
+    fn render_with_keeps_newest_turns_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = RecentChat::new(Some(dir.path().join("recent.json")));
+        let tz: Tz = "Europe/Rome".parse().unwrap();
+        let t0 = Utc.with_ymd_and_hms(2026, 10, 21, 15, 0, 0).unwrap();
+        for i in 0..TURNS_LIMIT {
+            r.append(
+                "main",
+                "user",
+                &format!("m{i}"),
+                t0 + chrono::Duration::seconds(i as i64),
+            );
+        }
+        for i in 0..5 {
+            r.append(
+                "share",
+                "user",
+                &format!("s{i}"),
+                t0 + chrono::Duration::seconds(100 + i as i64),
+            );
+        }
+        let block = r.render_with("main", &["share"], t0, tz);
+        let body = block.lines().skip(3).collect::<Vec<_>>().join("\n");
+        assert!(!body.contains("m0"));
+        assert!(!body.contains("m4"));
+        assert!(body.contains("m5"));
+        assert!(body.contains("s4"));
+        assert_eq!(body.lines().count(), TURNS_LIMIT);
     }
 }
