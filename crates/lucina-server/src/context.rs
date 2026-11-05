@@ -297,11 +297,12 @@ const SHARED_HOURS: i64 = 3;
 
 /// The app's default session (share sheet, clients without a session id), when this turn is another
 /// app session of the owner's (`secretary_ios-…`, a web session). Not for a device that is a conversation
-/// of its own (Juno), the voice thread, a self-test, or the default session itself.
+/// of its own (Juno), the voice thread, or the default session itself. A self-test reads it too: it replays
+/// his app chat, and writes only its own buffer.
 fn shared_session<'a>(st: &'a AppState, keys: Keys<'_>) -> Option<&'a str> {
     let default = st.cfg.default_session.as_str();
     let key = keys.recent_key;
-    let app = key.starts_with("secretary_") && !key.starts_with("secretary_juno") && !crate::selftest::is_session(key);
+    let app = key.starts_with("secretary_") && !key.starts_with("secretary_juno");
     (std::ptr::eq(keys.recent, &*st.recent) && app && key != default && !keys.voice).then_some(default)
 }
 
