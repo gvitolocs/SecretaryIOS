@@ -3,12 +3,14 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use lucina_llm::{Role, ScriptedModel};
+use lucina_llm::{ChatResponse, FunctionCall, Role, ScriptedModel, ToolCall};
 use lucina_store::reminders::ReminderStore;
 use lucina_tools::agent::{self, AgentConfig, Stop};
 use lucina_tools::pending::{PendingStore, DEFAULT_TTL};
 use lucina_tools::reminder_writer::{LocalWriter, NodeForwarder};
-use lucina_tools::{Ctx, Effect, Endpoints, Registry, ToolEnv, ToolSelection};
+use lucina_tools::{
+    Ctx, Effect, Endpoints, Registry, SideEffect, Tool, ToolEnv, ToolResult, ToolSelection,
+};
 use serde_json::{json, Value};
 use wiremock::matchers::{body_json, header, header_regex, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -379,8 +381,8 @@ async fn agent_stops_after_six_rounds_and_on_deadline() {
     let ctx = Ctx::new(Arc::new(env(dir.path(), None)), "web", "s");
     let r = Registry::builtin(&ToolSelection::All);
     let model = ScriptedModel::new();
-    for _ in 0..6 {
-        model.push_calls(&[("time", json!({}))]);
+    for i in 0..6 {
+        model.push_calls(&[("calculator", json!({"expression": format!("{i}+1")}))]);
     }
     model.push_text("done");
     let pending = PendingStore::memory(DEFAULT_TTL);
@@ -556,11 +558,11 @@ async fn last_round_note_reaches_only_the_last_request() {
     let ctx = Ctx::new(Arc::new(env(dir.path(), None)), "web", "secretary_app");
     let r = Registry::builtin(&ToolSelection::All);
     let model = ScriptedModel::new();
-    for _ in 0..10 {
-        model.push_calls(&[("time", json!({}))]);
+    for i in 0..10 {
+        model.push_calls(&[("calculator", json!({"expression": format!("{i}+1")}))]);
     }
     // The summary request calls a tool anyway, so the plain re-ask runs.
-    model.push_calls(&[("time", json!({}))]);
+    model.push_calls(&[("calculator", json!({"expression": "99+1"}))]);
     model.push_text("summary");
     let pending = PendingStore::memory(DEFAULT_TTL);
     let cfg = AgentConfig {
@@ -761,4 +763,329 @@ async fn missing_required_argument_is_named_with_the_schema() {
     let error = out["error"].as_str().unwrap();
     assert!(error.starts_with("invalid arguments"), "{error}");
     assert!(error.ends_with("The tool was NOT run."), "{error}");
+}
+
+// --- loop guards: output-limit continuation and repeat/cycle guard ---
+
+fn push_cut_text(model: &ScriptedModel, text: &str) {
+    model.push(Ok(ChatResponse {
+        message: lucina_llm::Message::assistant(text),
+        finish_reason: Some("length".into()),
+        usage: None,
+        model: "scripted".into(),
+    }));
+}
+
+fn push_cut_calls(model: &ScriptedModel, calls: &[(&str, Value)]) {
+    let calls: Vec<ToolCall> = calls
+        .iter()
+        .enumerate()
+        .map(|(i, (name, args))| ToolCall {
+            id: format!("cut_{}_{i}", model.request_count()),
+            kind: "function".into(),
+            function: FunctionCall {
+                name: (*name).into(),
+                arguments: args.to_string(),
+            },
+        })
+        .collect();
+    model.push(Ok(ChatResponse {
+        message: lucina_llm::Message {
+            role: Role::Assistant,
+            content: None,
+            tool_calls: Some(calls),
+            tool_call_id: None,
+            reasoning_content: None,
+        },
+        finish_reason: Some("length".into()),
+        usage: None,
+        model: "scripted".into(),
+    }));
+}
+
+fn push_raw_call(model: &ScriptedModel, name: &str, raw_args: &str) {
+    model.push(Ok(ChatResponse {
+        message: lucina_llm::Message {
+            role: Role::Assistant,
+            content: None,
+            tool_calls: Some(vec![ToolCall {
+                id: format!("raw_{}", model.request_count()),
+                kind: "function".into(),
+                function: FunctionCall {
+                    name: name.into(),
+                    arguments: raw_args.into(),
+                },
+            }]),
+            tool_call_id: None,
+            reasoning_content: None,
+        },
+        finish_reason: Some("tool_calls".into()),
+        usage: None,
+        model: "scripted".into(),
+    }));
+}
+
+/// A test tool returning a fixed body.
+struct FixedTool {
+    name: &'static str,
+    body: String,
+}
+
+#[async_trait::async_trait]
+impl Tool for FixedTool {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+    fn description(&self) -> &'static str {
+        "fixed test tool"
+    }
+    fn parameters(&self) -> Value {
+        json!({"type": "object", "properties": {}})
+    }
+    fn side_effect(&self) -> SideEffect {
+        SideEffect::None
+    }
+    async fn call(&self, _args: Value, _ctx: &Ctx) -> ToolResult {
+        Ok(json!({"body": self.body}))
+    }
+}
+
+fn registry_with(tools: &[(&'static str, &str)]) -> Registry {
+    let mut r = Registry::builtin(&ToolSelection::All);
+    for (name, body) in tools {
+        r.register(Arc::new(FixedTool {
+            name,
+            body: (*body).to_owned(),
+        }))
+        .unwrap();
+    }
+    r
+}
+
+async fn run_scripted_reg(
+    model: &ScriptedModel,
+    r: &Registry,
+    cfg: &AgentConfig,
+) -> agent::AgentOutcome {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = Ctx::new(Arc::new(env(dir.path(), None)), "web", "secretary_app");
+    let pending = PendingStore::memory(DEFAULT_TTL);
+    agent::run(
+        model,
+        r,
+        vec![lucina_llm::Message::user("loop")],
+        &ctx,
+        &pending,
+        cfg,
+        &|_| {},
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn cut_text_reply_gets_the_continue_nudge() {
+    let model = ScriptedModel::new();
+    push_cut_text(&model, "partial ans");
+    model.push_text("done");
+    let out = run_scripted(&model, &AgentConfig::default()).await;
+    assert_eq!(out.text, "done");
+    assert_eq!(out.stop, Stop::Answered);
+    let reqs = model.requests.lock().unwrap();
+    assert!(
+        reqs[1]
+            .messages
+            .iter()
+            .any(|m| m.role == Role::User && m.text() == agent::CONTINUE_AFTER_OUTPUT_LIMIT),
+        "request 1 carries the continue nudge"
+    );
+}
+
+#[tokio::test]
+async fn last_call_of_a_cut_reply_is_not_run() {
+    let model = ScriptedModel::new();
+    push_cut_calls(&model, &[("time", json!({})), ("time", json!({}))]);
+    model.push_text("ok");
+    let out = run_scripted(&model, &AgentConfig::default()).await;
+    assert_eq!(out.records.len(), 2);
+    assert!(out.records[0].ok);
+    assert!(!out.records[1].ok);
+    assert_eq!(out.records[1].output["error"], agent::INPUT_CUT_BY_LENGTH);
+    assert_eq!(out.text, "ok");
+}
+
+#[tokio::test]
+async fn three_cut_replies_go_to_the_summary() {
+    let model = ScriptedModel::new();
+    for _ in 0..3 {
+        push_cut_text(&model, "cut");
+    }
+    model.push_text("summary");
+    let cfg = AgentConfig {
+        max_rounds: 6,
+        ..AgentConfig::default()
+    };
+    let out = run_scripted(&model, &cfg).await;
+    assert_eq!(out.text, "summary");
+    assert_eq!(out.stop, Stop::MaxRounds);
+    let reqs = model.requests.lock().unwrap();
+    assert_eq!(reqs.len(), 4, "three rounds plus the summary request");
+    let summary = &reqs[3];
+    assert_eq!(summary.tool_choice.as_deref(), Some("none"));
+    let note = summary.messages.last().unwrap();
+    assert_eq!(
+        (note.role, note.text()),
+        (Role::System, agent::SUMMARY_NOTE)
+    );
+}
+
+#[tokio::test]
+async fn cut_off_arguments_and_non_object_arguments_are_not_run() {
+    let model = ScriptedModel::new();
+    push_raw_call(&model, "calculator", "{\"expression\": \"1+");
+    push_raw_call(&model, "calculator", "{\"a\": 1,}");
+    push_raw_call(&model, "calculator", "[1,2]");
+    model.push_text("ok");
+    let out = run_scripted(&model, &AgentConfig::default()).await;
+    assert_eq!(out.records.len(), 3);
+    for rec in &out.records {
+        assert!(!rec.ok);
+    }
+    assert_eq!(out.records[0].output["error"], agent::INPUT_CUT_BY_LENGTH);
+    let e1 = out.records[1].output["error"].as_str().unwrap();
+    assert!(e1.contains(agent::INPUT_NOT_JSON), "{e1}");
+    let e2 = out.records[2].output["error"].as_str().unwrap();
+    assert!(e2.contains("must be a JSON object"), "{e2}");
+}
+
+#[tokio::test]
+async fn identical_calls_get_stub_and_warning_then_stop() {
+    let model = ScriptedModel::new();
+    for _ in 0..5 {
+        model.push_calls(&[("big_echo", json!({"x": 1}))]);
+    }
+    model.push_text("summary");
+    let r = registry_with(&[("big_echo", &"y".repeat(600))]);
+    let cfg = AgentConfig {
+        max_rounds: 10,
+        ..AgentConfig::default()
+    };
+    let out = run_scripted_reg(&model, &r, &cfg).await;
+    assert_eq!(out.records.len(), 5, "hard stop at the 5th identical call");
+    assert_eq!(out.text, "summary");
+    assert_eq!(out.stop, Stop::MaxRounds);
+    let reqs = model.requests.lock().unwrap();
+    assert_eq!(reqs.len(), 6, "five rounds plus the summary request");
+    assert_eq!(reqs[5].tool_choice.as_deref(), Some("none"));
+    assert_eq!(reqs[5].messages.last().unwrap().text(), agent::SUMMARY_NOTE);
+    let tool_msg = |req: usize| -> String {
+        reqs[req]
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == Role::Tool)
+            .unwrap()
+            .text()
+            .to_owned()
+    };
+    assert!(
+        tool_msg(2).contains("identical to the big_echo result earlier in this turn"),
+        "{}",
+        tool_msg(2)
+    );
+    assert!(
+        tool_msg(3).contains("3rd identical call in a row to big_echo"),
+        "{}",
+        tool_msg(3)
+    );
+    // the ToolRecord keeps the real output
+    assert!(out.records[1].output["body"].as_str().unwrap().len() >= 512);
+}
+
+#[tokio::test]
+async fn alternating_cycle_is_warned_and_stopped() {
+    let model = ScriptedModel::new();
+    for i in 0..10 {
+        let name = if i % 2 == 0 { "cyc_a" } else { "cyc_b" };
+        model.push_calls(&[(name, json!({}))]);
+    }
+    model.push_text("summary");
+    let r = registry_with(&[("cyc_a", "A"), ("cyc_b", "B")]);
+    let cfg = AgentConfig {
+        max_rounds: 12,
+        ..AgentConfig::default()
+    };
+    let out = run_scripted_reg(&model, &r, &cfg).await;
+    assert_eq!(out.records.len(), 10, "hard stop at the 5th cycle lap");
+    assert_eq!(out.text, "summary");
+    assert_eq!(out.stop, Stop::MaxRounds);
+    let reqs = model.requests.lock().unwrap();
+    assert_eq!(reqs.len(), 11);
+    assert_eq!(reqs[10].tool_choice.as_deref(), Some("none"));
+    let warned = reqs[6]
+        .messages
+        .iter()
+        .any(|m| m.role == Role::Tool && m.text().contains("repeated the same cycle of 2"));
+    assert!(warned, "lap 3 carries the cycle warning");
+}
+
+#[tokio::test]
+async fn pollers_are_exempt() {
+    let model = ScriptedModel::new();
+    for _ in 0..6 {
+        model.push_calls(&[("x_poll", json!({"q": 1}))]);
+    }
+    model.push_text("done");
+    let r = registry_with(&[("x_poll", &"z".repeat(600))]);
+    let cfg = AgentConfig {
+        max_rounds: 6,
+        ..AgentConfig::default()
+    };
+    let out = run_scripted_reg(&model, &r, &cfg).await;
+    assert_eq!(out.records.len(), 6, "no hard stop for pollers");
+    assert_eq!(out.stop, Stop::MaxRounds);
+    let reqs = model.requests.lock().unwrap();
+    assert!(
+        !reqs.iter().any(|req| req
+            .messages
+            .iter()
+            .any(|m| m.text().contains("[Tool loop warning"))),
+        "no warnings for pollers"
+    );
+    assert!(
+        reqs[2]
+            .messages
+            .iter()
+            .any(|m| m.role == Role::Tool && m.text().contains("identical to the x_poll result")),
+        "the stub still applies"
+    );
+}
+
+/// A long run keeps the newest calls for cycle detection (a cycle after 64
+/// other calls is still seen).
+#[tokio::test]
+async fn cycle_after_a_long_history_is_still_seen() {
+    let model = ScriptedModel::new();
+    for i in 0..70 {
+        model.push_calls(&[("calculator", json!({"expression": format!("{i}+0")}))]);
+    }
+    for _ in 0..3 {
+        model.push_calls(&[("calculator", json!({"expression": "1+1"}))]);
+        model.push_calls(&[("calculator", json!({"expression": "2+2"}))]);
+    }
+    model.push_text("done");
+    let cfg = AgentConfig {
+        max_rounds: 80,
+        deadline: std::time::Duration::from_secs(60),
+        ..AgentConfig::default()
+    };
+    run_scripted(&model, &cfg).await;
+    let reqs = model.requests.lock().unwrap();
+    assert!(
+        reqs.iter().any(|r| r
+            .messages
+            .iter()
+            .any(|m| m.text().contains("repeated the same cycle of 2"))),
+        "the cycle after 70 other calls is warned"
+    );
 }

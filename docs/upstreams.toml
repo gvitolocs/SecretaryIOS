@@ -155,7 +155,7 @@ licence_ours = "MIT"
 relation = "vendored"
 confidence = "confirmed"
 rely_on = ["computer use", "browser tools", "tool calling", "linux resolver"]
-notes = "Installed unmodified at ~/.local/share/lucina-hermes-agent (bf0203a7) + lucina-cua/hermes-linux-resolver.patch; lucina-tools reimplements selected tools (PORT_PLAN.md section 7). Odd tag v2026.9.24 sorts last: compare by date."
+notes = "Installed unmodified at ~/.local/share/lucina-hermes-agent (bf0203a7) + lucina-cua/hermes-linux-resolver.patch; lucina-tools reimplements selected tools (PORT_PLAN.md section 7). Odd tag v2026.9.24 sorts last: compare by date. Reviewed through v0.22.7 and main ed1afb08 on 2026-11-05 (docs/research/hermes-parity.md, docs/lucina-rust/hermes-sync-2026-11-04.md): loop behaviour ported into lucina-tools; pin moves to v0.22.7 when the computer_task install is upgraded (owner GO dc-d117d55414a3)."
 
 [[upstream]]
 id = "hermes-official-plugins"

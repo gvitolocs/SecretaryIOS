@@ -9,6 +9,10 @@
 //! (MIT, Copyright (c) 2025 Nous Research): `agent/turn_iteration_prep.py`,
 //! `agent/chat_completion_helpers.py`, `agent/agent_runtime_helpers.py`,
 //! `tools/tool_search_validation.py` (docs/lucina-rust/hermes-sync-2026-11-04.md).
+//! Output-limit continuation (the continue nudge, the cut-off-arguments and
+//! non-JSON-input errors) is from LucinaCode (`oc-agent`, our port of
+//! OpenCode, MIT). The repeat/cycle guard is adapted from Hermes
+//! `agent/tool_guardrails.py` (MIT).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,6 +34,29 @@ pub const SUMMARY_NOTE: &str = "The tool rounds of this turn are used up. Answer
 const MAX_SCHEMA_IN_ERROR_CHARS: usize = 4000;
 /// The router may take at most this long before the first model call.
 const ROUTER_TIMEOUT: Duration = Duration::from_secs(4);
+/// Nudge after a reply that was cut by the output token limit (LucinaCode).
+pub const CONTINUE_AFTER_OUTPUT_LIMIT: &str = "Your last response hit the output token limit (stop reason: length). Do not apologize, recap, or repeat yourself. Break the remaining work into smaller pieces.";
+/// The tool input was not valid JSON (LucinaCode).
+pub const INPUT_NOT_JSON: &str = "The tool input could not be parsed as JSON, so the call was not executed. Reissue the call with valid JSON arguments.";
+/// The arguments were cut off by the output token limit (LucinaCode).
+pub const INPUT_CUT_BY_LENGTH: &str = "The tool call was not executed because the output token limit (stop reason: length) was reached before you could complete the arguments. Break large payloads into smaller tool calls and reissue the call with complete arguments.";
+/// The tool input parsed as JSON but is not an object.
+const INPUT_NOT_OBJECT: &str = "The tool input must be a JSON object, so the call was not executed. Reissue the call with an object of named arguments.";
+/// Three cut replies in a row end the tool rounds.
+const MAX_CUT_STREAK: usize = 3;
+/// From the 2nd identical repeat, a long enough result becomes a stub.
+const STUB_MIN_CHARS: usize = 512;
+/// Characters of the canonical arguments kept in the stub.
+const STUB_ARGS_PREVIEW_CHARS: usize = 120;
+/// From the 3rd identical call in a row, a warning is appended.
+const STALL_WARN_AFTER: usize = 3;
+/// A streak or cycle of 5 identical laps stops the tool rounds (Hermes'
+/// unattended-platform default).
+const STALL_HARD_STOP: usize = 5;
+/// Longest cycle period detected (Hermes `_STALL_GUARD_MAX_CYCLE_PERIOD`).
+const MAX_CYCLE_PERIOD: usize = 4;
+/// History window of (signature, result hash) entries (Hermes 64).
+const CYCLE_HISTORY: usize = 64;
 
 /// Guesses the first tool a request needs (the server plugs in TypeSafe Jev).
 /// A guess only adds a hint to the system prompt; every tool stays available.
@@ -132,6 +159,169 @@ fn clip_output(v: &Value, max: usize) -> String {
         let cut: String = s.chars().take(max).collect();
         json!({"truncated": true, "partial": cut}).to_string()
     }
+}
+
+/// Compact JSON with object keys sorted recursively (Hermes `canonical_tool_args`).
+fn canonical_json(v: &Value) -> String {
+    match v {
+        Value::Object(map) => {
+            let mut keys: Vec<&str> = map.keys().map(String::as_str).collect();
+            keys.sort_unstable();
+            let inner: Vec<String> = keys
+                .into_iter()
+                .map(|k| {
+                    format!(
+                        "{}:{}",
+                        serde_json::to_string(k).unwrap(),
+                        canonical_json(&map[k])
+                    )
+                })
+                .collect();
+            format!("{{{}}}", inner.join(","))
+        }
+        Value::Array(a) => format!(
+            "[{}]",
+            a.iter().map(canonical_json).collect::<Vec<_>>().join(",")
+        ),
+        other => serde_json::to_string(other).unwrap(),
+    }
+}
+
+/// `3rd`, `4th`, … `11th`/`12th`/`13th` (Hermes `_ordinal`).
+fn ordinal(n: usize) -> String {
+    let suffix = if (11..=13).contains(&(n % 100)) {
+        "th"
+    } else {
+        match n % 10 {
+            1 => "st",
+            2 => "nd",
+            3 => "rd",
+            _ => "th",
+        }
+    };
+    format!("{n}{suffix}")
+}
+
+fn result_hash(result: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    result.hash(&mut h);
+    h.finish()
+}
+
+/// Pollers are exempt from the warnings and the hard stop, not from the stub
+/// (Hermes `is_stall_guard_repeatable` plus `juno_events`).
+fn is_poller(name: &str) -> bool {
+    name.ends_with("_poll") || name.ends_with("_get_result") || name == "juno_events"
+}
+
+/// Repeat/cycle guard over the executed calls of one `run` (Hermes
+/// `ToolCallGuardrailController.observe_call`).
+#[derive(Default)]
+struct LoopGuard {
+    streak: Option<(String, u64)>,
+    streak_count: usize,
+    streak_first_call_id: String,
+    history: Vec<(String, u64)>,
+}
+
+impl LoopGuard {
+    /// Observe one executed call. Returns the stub replacing the tool message
+    /// content, the warning to append to it, and whether to stop the rounds.
+    fn observe(
+        &mut self,
+        name: &str,
+        args: &Value,
+        result: &str,
+        call_id: &str,
+        ok: bool,
+    ) -> (Option<String>, Option<String>, bool) {
+        let signature = format!("{name}:{}", canonical_json(args));
+        let hash = result_hash(result);
+        if self.streak == Some((signature.clone(), hash)) {
+            self.streak_count += 1;
+        } else {
+            self.streak = Some((signature.clone(), hash));
+            self.streak_count = 1;
+            self.streak_first_call_id = call_id.to_owned();
+        }
+        let count = self.streak_count;
+        let mut warning = None;
+        let mut halt = false;
+        if !is_poller(name) && count >= STALL_WARN_AFTER {
+            warning = Some(format!(
+                "\n\n[Tool loop warning: this is the {} identical call in a row to {name} with the same arguments and the same result. Do not repeat it: change the arguments, use another tool, or go on with what you have.]",
+                ordinal(count)
+            ));
+            if count >= STALL_HARD_STOP {
+                halt = true;
+            }
+        }
+        self.history.push((signature, hash));
+        if self.history.len() > CYCLE_HISTORY {
+            // Keep the newest entries (Hermes: a bounded deque).
+            let drop = self.history.len() - CYCLE_HISTORY;
+            self.history.drain(..drop);
+        }
+        if warning.is_none() {
+            if let Some((period, laps)) = detect_cycle(&self.history) {
+                if !is_poller(name) {
+                    warning = Some(format!(
+                        "\n\n[Tool loop warning: the last {laps} rounds repeated the same cycle of {period} tool calls (ending with {name}) with the same arguments and results. Do not repeat the batch: change the arguments, use another tool, or go on with what you have.]"
+                    ));
+                    if laps >= STALL_HARD_STOP {
+                        halt = true;
+                    }
+                }
+            }
+        }
+        let stub = if count >= 2 && ok && result.chars().count() >= STUB_MIN_CHARS {
+            let mut preview = canonical_json(args);
+            if preview.chars().count() > STUB_ARGS_PREVIEW_CHARS {
+                preview = preview
+                    .chars()
+                    .take(STUB_ARGS_PREVIEW_CHARS)
+                    .collect::<String>()
+                    + "…";
+            }
+            Some(format!(
+                "[This result is identical to the {name} result earlier in this turn (call {}); it has not changed. Arguments: {preview}]",
+                self.streak_first_call_id
+            ))
+        } else {
+            None
+        };
+        (stub, warning, halt)
+    }
+}
+
+/// A period `p` in 2..=4 whose trailing entries are `laps` repeats of the same
+/// `p` entries, `laps >= 3`, not all identical (Hermes `_detect_identical_cycle`).
+fn detect_cycle(history: &[(String, u64)]) -> Option<(usize, usize)> {
+    let mut best: Option<(usize, usize)> = None;
+    for period in 2..=MAX_CYCLE_PERIOD {
+        if history.len() < period * 3 {
+            continue;
+        }
+        let mut laps = 1;
+        loop {
+            let base = history.len().checked_sub(period * (laps + 1));
+            let Some(base) = base else { break };
+            let tail = &history[history.len() - period..];
+            if (0..period).all(|i| history[base + i] == tail[i]) {
+                laps += 1;
+            } else {
+                break;
+            }
+        }
+        if laps >= 3 {
+            let tail = &history[history.len() - period..];
+            if tail.iter().any(|e| *e != tail[0]) && best.is_none_or(|(_, b)| laps > b) {
+                best = Some((period, laps));
+            }
+        }
+    }
+    best
 }
 
 /// Execute one validated call now (no confirmation check): the path for a
@@ -298,19 +488,38 @@ async fn handle_call(
     let args: Value = if raw.is_empty() {
         json!({})
     } else {
-        match serde_json::from_str(raw) {
-            Ok(v) => v,
-            Err(e) => {
+        match serde_json::from_str::<Value>(raw) {
+            Ok(v) if v.is_object() || v.is_null() => v,
+            Ok(_) => {
                 return ToolRecord {
                     call_id: call.id.clone(),
                     name: name.clone(),
                     args: Value::Null,
                     ok: false,
-                    output: json!({"error": format!("arguments are not valid JSON: {e}")}),
+                    output: json!({"error": INPUT_NOT_OBJECT}),
                     summary: name,
                     pending: None,
                     ms: 0,
                 }
+            }
+            Err(e) => {
+                // A cut-off argument list rarely ends in `}` or `]`; routers
+                // can also rewrite the stop reason, so Hermes refuses those too.
+                let error = if raw.ends_with('}') || raw.ends_with(']') {
+                    format!("{INPUT_NOT_JSON} ({e})")
+                } else {
+                    INPUT_CUT_BY_LENGTH.to_owned()
+                };
+                return ToolRecord {
+                    call_id: call.id.clone(),
+                    name: name.clone(),
+                    args: Value::Null,
+                    ok: false,
+                    output: json!({"error": error}),
+                    summary: name,
+                    pending: None,
+                    ms: 0,
+                };
             }
         }
     };
@@ -449,6 +658,9 @@ pub async fn run(
     }
     let max = cfg.max_rounds.max(1);
     let mut budget_noted = false;
+    let mut cut_streak = 0;
+    let mut guard = LoopGuard::default();
+    let mut stop_rounds = false;
     for round in 0..max {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
@@ -483,8 +695,33 @@ pub async fn run(
                 })
             }
         };
+        let cut = response.finish_reason.as_deref() == Some("length");
+        cut_streak = if cut { cut_streak + 1 } else { 0 };
+        if cut_streak >= MAX_CUT_STREAK {
+            tracing::warn!(
+                round,
+                cut_streak,
+                "three cut replies in a row; going to the summary"
+            );
+            // Text only: tool calls without results never go into the history.
+            messages.push(Message {
+                role: Role::Assistant,
+                content: response.message.content.clone(),
+                tool_calls: None,
+                tool_call_id: None,
+                reasoning_content: response.message.reasoning_content.clone(),
+            });
+            break;
+        }
         let calls = response.tool_calls().to_vec();
         if calls.is_empty() {
+            if cut {
+                // A cut reply without tool calls is not an answer: nudge and
+                // use the next round (LucinaCode).
+                messages.push(response.message);
+                messages.push(Message::user(CONTINUE_AFTER_OUTPUT_LIMIT));
+                continue;
+            }
             let mut text = response.message.text().trim().to_owned();
             if lucina_llm::has_tool_markup(&text) {
                 // Raw tool-call markup (DeepSeek DSML …) is never an answer
@@ -512,17 +749,43 @@ pub async fn run(
             tool_call_id: None,
             reasoning_content: response.message.reasoning_content.clone(),
         });
-        for call in &calls {
+        for (i, call) in calls.iter().enumerate() {
             let remaining = deadline.saturating_duration_since(Instant::now());
-            let record = handle_call(registry, call, ctx, pending, remaining).await;
-            if record.executed() {
+            let last_of_cut = cut && i + 1 == calls.len();
+            let record = if last_of_cut {
+                // The output limit cut the arguments of the last call of a
+                // cut reply: it never runs (LucinaCode).
+                ToolRecord {
+                    call_id: call.id.clone(),
+                    name: call.function.name.clone(),
+                    args: Value::Null,
+                    ok: false,
+                    output: json!({"error": INPUT_CUT_BY_LENGTH}),
+                    summary: call.function.name.clone(),
+                    pending: None,
+                    ms: 0,
+                }
+            } else {
+                handle_call(registry, call, ctx, pending, remaining).await
+            };
+            let mut content = clip_output(&record.output, cfg.max_tool_output_chars);
+            if record.executed() && !last_of_cut {
                 on_executed(&record);
+                let (stub, warning, halt) =
+                    guard.observe(&record.name, &record.args, &content, &call.id, record.ok);
+                if let Some(stub) = stub {
+                    content = stub;
+                }
+                if let Some(warning) = warning {
+                    content = format!("{content}{warning}");
+                }
+                if halt {
+                    tracing::warn!(tool = %record.name, "tool loop guard: stopping the tool rounds");
+                    stop_rounds = true;
+                }
             }
             tracing::info!(tool = %record.name, ok = record.ok, deferred = record.pending.is_some(), ms = record.ms, "tool call");
-            messages.push(Message::tool_result(
-                call.id.clone(),
-                clip_output(&record.output, cfg.max_tool_output_chars),
-            ));
+            messages.push(Message::tool_result(call.id.clone(), content));
             records.push(record);
         }
         if !budget_noted {
@@ -532,6 +795,9 @@ pub async fn run(
                     budget_noted = true;
                 }
             }
+        }
+        if stop_rounds {
+            break;
         }
     }
     // Every tool round ended in tool calls: one more request, without tools,
