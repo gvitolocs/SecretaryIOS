@@ -306,28 +306,6 @@ fn shared_session<'a>(st: &'a AppState, keys: Keys<'_>) -> Option<&'a str> {
     (std::ptr::eq(keys.recent, &*st.recent) && app && key != default && !keys.voice).then_some(default)
 }
 
-/// Durable facts about the owner that every one of his turns needs (`LUCINA_OWNER_FACTS_FILE`, default
-/// `<data>/owner-facts.md`, mode 0600, not in git): what a job contract means for his student grant, and
-/// such. Read per turn, at most [`OWNER_FACTS_MAX`] characters.
-fn owner_facts_block(st: &AppState) -> String {
-    let path = std::env::var("LUCINA_OWNER_FACTS_FILE")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| st.cfg.data_dir.join("owner-facts.md"));
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return String::new();
-    };
-    let text = text.trim();
-    if text.is_empty() {
-        return String::new();
-    }
-    let text: String = text.chars().take(OWNER_FACTS_MAX).collect();
-    format!(
-        "{} (durable; connect them to what he says without being asked):\n{text}",
-        lucina_store::recent::PINNED_MARKER
-    )
-}
-
-const OWNER_FACTS_MAX: usize = 3000;
 
 /// [`prepare_with`] for any channel.
 #[allow(clippy::too_many_arguments)]
@@ -385,11 +363,6 @@ pub async fn prepare_keyed(
 
     let presence = if owner {
         presence_block(st, user_text)
-    } else {
-        String::new()
-    };
-    let facts = if owner && policy != Policy::PersonaOnly {
-        owner_facts_block(st)
     } else {
         String::new()
     };
@@ -486,7 +459,6 @@ pub async fn prepare_keyed(
     };
     let memory_context = [
         metadata,
-        facts,
         presence,
         vocabulary,
         other_surface,

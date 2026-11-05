@@ -8,6 +8,20 @@ use std::path::Path;
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 
+/// STOPGAP until the owner-memory work lands (facts about him with time limits, written from chats, mail and
+/// documents, always in context): what a job means for his student grant, which a casual follow-up needs and the
+/// clipped turn memory can't be trusted to carry. Rule checked on su.dk ("You work in Denmark" and its Q&A),
+/// 2026-11-05. Remove it when that memory holds the fact.
+pub const OWNER_SU_STOPGAP: &str = "About Giuseppe and SU (stopgap): \"SU\" is Statens Uddannelsesstøtte, the Danish student grant, never \
+sudo. He is an EU citizen studying in Denmark and gets SU only as an EU worker (ligestilling som arbejdstager), so his job is what gives \
+him SU: a job contract, its start and end dates or a change in hours is first a question of keeping that status, not of an income limit. \
+The rule on su.dk: a real paid job of, as a general rule, at least 10-12 hours in every week (judged per week, never averaged or per \
+month), for at least 10 continuous weeks and throughout the SU period; his approval letter states his hours. Proof goes into minSU \
+(upload.uddannelsesstoette.dk): the contract, then payslips or timesheets. If a job ends or the hours drop, he tells SU at once; SU \
+stops unless he registers at jobnet.dk within 14 days of the end. A new job needs no new application, only the new contract uploaded. \
+So when he shares or mentions a job, connect it to his SU yourself: does it meet the hours, does it last 10 weeks, what must he upload, \
+and what follows when it ends.";
+
 const PERSONA_DEFAULT: &str = include_str!("../assets/lucina-persona.md");
 /// Copies of the Node Lucina's `docs/lucina-recovery-companion.md` and
 /// `docs/lucina-operator-brief.md` (the Node repo is archived, 2026-10-26).
@@ -173,7 +187,7 @@ impl Prompts {
         if (self.persona_name == "Lucina" || self.persona_name == "Hermes")
             && !self.persona_doc.is_empty()
         {
-            format!("Persona background:\n{}", self.persona_doc)
+            format!("Persona background:\n{}\n\n{OWNER_SU_STOPGAP}", self.persona_doc)
         } else {
             String::new()
         }

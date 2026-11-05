@@ -1,5 +1,5 @@
 //! A follow-up in his app chat is about his own last topic: a file he shared from the share sheet
-//! (the app's default session) counts as this conversation, and the facts about him reach the turn.
+//! (the app's default session) counts as this conversation, and the SU rule reaches the turn.
 
 mod common;
 
@@ -9,11 +9,6 @@ use serde_json::json;
 #[tokio::test]
 async fn a_shared_file_and_his_facts_reach_the_follow_up() {
     let h = harness(script(json!({"rules": [{"kind": "any", "content": "{\"action\":\"reply\",\"text\":\"Ok.\"}"}]})), |_| {}).await;
-    std::fs::write(
-        h.state.cfg.data_dir.join("owner-facts.md"),
-        "- He gets SU as an EU worker: a job of 10-12 h every week.\n",
-    )
-    .unwrap();
     let now = chrono::Utc::now();
     let default = h.state.cfg.default_session.clone();
     h.state.recent.append(
@@ -43,8 +38,8 @@ async fn a_shared_file_and_his_facts_reach_the_follow_up() {
         "the shared file is not in the recent turns"
     );
     assert!(!asked.contains("an old shared recipe"));
-    assert!(asked.contains("Facts about Giuseppe"), "no facts block");
-    assert!(asked.contains("10-12 h every week"));
+    // The SU stopgap rides in her system text, which no clip touches.
+    assert!(asked.contains("About Giuseppe and SU (stopgap)"), "no SU rule");
 }
 
 #[tokio::test]
@@ -80,31 +75,4 @@ fn delivered_reminders_say_they_are_not_the_topic() {
     );
     assert!(block.contains("not something he said"), "{block}");
     assert!(block.contains("Workshop link"));
-}
-
-#[tokio::test]
-async fn a_self_test_turn_gets_the_facts_too() {
-    let h = harness(script(json!({"rules": [{"kind": "any", "content": "{\"action\":\"reply\",\"text\":\"Ok.\"}"}]})), |_| {}).await;
-    std::fs::write(
-        h.state.cfg.data_dir.join("owner-facts.md"),
-        "- test marker FACT-MARKER-1\n",
-    )
-    .unwrap();
-    for (session, msg) in [
-        ("selftest-x", "what is the codeword in the facts about me?"),
-        ("ios-t", "Quick check: what does my SU depend on?"),
-    ] {
-        let (s, b) = h
-            .post(
-                "/chat",
-                json!({"message": msg, "sessionId": session, "channel": "ios"}),
-            )
-            .await;
-        assert_eq!(s, 200, "{b}");
-    }
-    let asked: Vec<String> = h.fake.requests().iter().map(|r| r.to_string()).collect();
-    assert!(
-        asked.iter().filter(|r| r.contains("FACT-MARKER-1")).count() >= 2,
-        "facts missing"
-    );
 }
