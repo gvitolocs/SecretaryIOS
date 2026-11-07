@@ -33,6 +33,7 @@
 //!   redacted before anything else sees it ([`agent::execute`]).
 
 pub mod agent;
+pub mod carry;
 pub mod google;
 pub mod pending;
 pub mod reminder_writer;
