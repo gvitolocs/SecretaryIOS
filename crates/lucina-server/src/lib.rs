@@ -456,6 +456,19 @@ impl AppState {
                 .register(Arc::new(lucina_tools::tools::drive::DriveTool))
                 .expect("drive tool registers");
         }
+        // Web search (SearXNG) and page reading in her tool loop (Hermes web tools port).
+        if cfg.tools.allows("web_search") {
+            let base = std::env::var("LUCINA_SEARXNG_URL")
+                .unwrap_or_else(|_| "http://127.0.0.1:8080".to_owned());
+            registry
+                .register(Arc::new(lucina_tools::tools::web::WebSearchTool { base }))
+                .expect("web_search registers");
+        }
+        if cfg.tools.allows("web_extract") {
+            registry
+                .register(Arc::new(lucina_tools::tools::web::WebExtractTool { allow_loopback: false }))
+                .expect("web_extract registers");
+        }
         // Lucina's own computers (LUCINA_COMPUTER_USE_ENABLED=true, crate lucina_computer_use).
         // The Jev engine there words its typing and answers with her text model.
         lucina_computer_use::jev_drive::set_text_model(model.clone());

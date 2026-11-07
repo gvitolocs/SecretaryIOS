@@ -22,6 +22,7 @@ lucina-phone-core = { path = "../lucina-phone-core" }
 futures-util = { workspace = true }
 async-trait = { workspace = true }
 schemars = "1"
+scraper = "0.24"
 jsonschema = { version = "0.59", default-features = false }
 reqwest = { workspace = true }
 serde = { workspace = true }

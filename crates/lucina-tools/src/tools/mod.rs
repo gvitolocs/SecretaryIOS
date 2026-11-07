@@ -33,6 +33,7 @@ pub mod tasks;
 pub mod time;
 pub mod units;
 pub mod weather;
+pub mod web;
 
 use std::sync::Arc;
 

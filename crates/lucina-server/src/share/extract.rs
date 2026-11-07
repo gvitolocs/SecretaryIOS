@@ -1,10 +1,9 @@
 use std::io::Read;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{bail, Context};
-use scraper::{Html, Selector};
 use tokio::process::Command;
 
 use serde_json::Value;
@@ -12,6 +11,9 @@ use serde_json::Value;
 use super::handlers::Extracted;
 use super::{clip, Part};
 use crate::AppState;
+// Moved to lucina-tools so web_extract shares them (Hermes web tools port).
+pub(crate) use lucina_tools::tools::web::html_text;
+pub(super) use lucina_tools::tools::web::public_ip;
 
 /// Characters of text kept from one part (stored; the turn sees less).
 pub(super) const MAX_TEXT: usize = 200_000;
@@ -44,39 +46,6 @@ fn location(s: &str) -> String {
     out
 }
 
-/// Conservatively refuse special-use networks, including IPv4-in-IPv6.
-fn public_v4(ip: Ipv4Addr) -> bool {
-    let [a, b, c, _] = ip.octets();
-    !(a == 0
-        || a == 10
-        || a == 127
-        || (a == 100 && (64..=127).contains(&b))
-        || (a == 169 && b == 254)
-        || (a == 172 && (16..=31).contains(&b))
-        || (a == 192 && b == 168)
-        || (a == 192 && b == 0)
-        || (a == 192 && b == 2)
-        || (a == 198 && (b == 18 || b == 19 || (b == 51 && c == 100)))
-        || (a == 203 && b == 0 && c == 113)
-        || a >= 224)
-}
-pub(super) fn public_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(ip) => public_v4(ip),
-        IpAddr::V6(ip) => {
-            if let Some(v4) = ip.to_ipv4_mapped() {
-                return public_v4(v4);
-            }
-            let oct = ip.octets();
-            // Global unicast only. Exclude documentation, 6to4 and Teredo
-            // transition prefixes which can encode private IPv4 endpoints.
-            (oct[0] & 0xe0) == 0x20
-                && !(oct[0] == 0x20 && oct[1] == 0x02)
-                && !(oct[..4] == [0x20, 0x01, 0, 0])
-                && !(oct[..4] == [0x20, 0x01, 0x0d, 0xb8])
-        }
-    }
-}
 pub(crate) async fn download(st: &AppState, input: &str) -> anyhow::Result<(Vec<u8>, String)> {
     // `st` only carries the test-only loopback override.
     #[cfg(not(debug_assertions))]
@@ -113,52 +82,6 @@ pub(crate) async fn download(st: &AppState, input: &str) -> anyhow::Result<(Vec<
         }
         bail!("too many redirects")
     }).await.context("page fetch timed out")?
-}
-
-pub(crate) fn html_text(input: &str) -> (String, String) {
-    let html = Html::parse_document(input);
-    let title = html
-        .select(&Selector::parse("title").expect("static selector"))
-        .next()
-        .map(|e| e.text().collect::<String>())
-        .unwrap_or_default()
-        .trim()
-        .to_owned();
-    let mut out = String::new();
-    for meta in html.select(&Selector::parse("meta").expect("static selector")) {
-        if meta.value().attr("name") == Some("description")
-            || meta
-                .value()
-                .attr("property")
-                .is_some_and(|p| p.starts_with("og:"))
-        {
-            if let Some(content) = meta.value().attr("content") {
-                out.push_str(content);
-                out.push('\n');
-            }
-        }
-    }
-    for node in html.tree.nodes() {
-        if let scraper::node::Node::Text(text) = node.value() {
-            let blocked = node.ancestors().any(|a| {
-                a.value().as_element().is_some_and(|e| {
-                    [
-                        "script", "style", "nav", "footer", "head", "noscript", "svg",
-                    ]
-                    .contains(&e.name())
-                })
-            });
-            if !blocked {
-                out.push_str(text);
-                out.push(' ');
-            }
-        }
-        if out.len() > 100_000 {
-            break;
-        }
-    }
-    let out = out.split_whitespace().collect::<Vec<_>>().join(" ");
-    (title, out)
 }
 
 /// Office/ODF text with structure: headings and slide titles on their own
