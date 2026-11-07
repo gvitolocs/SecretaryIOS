@@ -714,6 +714,21 @@ rely_on = ["crates/discord-gateway", "crates/discord-api", "crates/client-core f
 notes = "Local fork only (nezopt ~/Projects/Lucina/Serein, upstream push disabled; a public fork needs the owner's OK). Audited 2026-11-04: no telemetry; updater, extension catalog, Spotify poller and child programs cut on Juno (nezopt ~/scratch/serein-audit/AUDIT.md). Rust conversion: the JS login web view replaced by native QR sign-in (crates/discord-remote-auth); hCaptcha JS and the updater shell helper rejected; packaging scripts kept as reference. Verus on the pure rules (verification/serein, 50 verified, 25 planted bugs refused). Per-part adopt/adapt/reference/reject: LucinaOS docs/research/juno-serein.md. Uses Discord's user API outside OAuth, against Discord's terms (upstream's own warning). Re-audit at each move: AGENTS.md tells agents to push upstream."
 
 [[upstream]]
+id = "discord-phoenix"
+name = "Discord's native Rust desktop client (Phoenix, GPUI)"
+url = "https://discord.com/download"
+source = "manual"
+check_hint = "Discord's Rust/GPUI rebuild of its desktop client ('Phoenix', CTO Stanislav Vishnevskiy, reported 2026-11-04/05). Look for: a public build (which platforms; an aarch64 or Linux build at all), any source release or licence, and whether its GPUI fork is published. Until one exists, Juno keeps Serein (id serein). What it would mean for Juno: LucinaOS docs/research/juno-serein.md, section 'Discord's own Rust client (Phoenix)'."
+ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "serein", base = "main" }]
+pin_date = "2026-11-07"
+notify = "auto"
+licence_upstream = "unknown"
+licence_ours = "MIT OR Apache-2.0"
+relation = "reference"
+confidence = "unconfirmed"
+notes = "Not released: no date, no platform list, nothing said about source (press of 2026-11-04/05: Windows Latest, Windows Report, WindowsForum). An early Windows 11 build was shown at about 290 MB with two accounts. A closed glibc desktop binary cannot run on Juno as it is (static musl on /dev/fb0, no Wayland/X11, Vulkan or D-Bus); source would allow a port onto LucinaOffice's software GPUI backends. An official client would remove Serein's terms risk."
+
+[[upstream]]
 id = "swgl"
 name = "swgl, WebRender's software GL"
 url = "https://crates.io/crates/swgl"
