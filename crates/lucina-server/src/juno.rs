@@ -32,7 +32,7 @@
 //! "Go" for the same hash.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use axum::body::Body;
@@ -140,8 +140,8 @@ struct State {
 #[derive(Default)]
 pub struct JunoBridge {
     state: Mutex<State>,
-    /// The server, for decisions (set once it is built).
-    app: OnceLock<Weak<crate::Inner>>,
+    /// The server, for decisions (set once it is built, and again when a test builder rebuilds it).
+    app: Mutex<Weak<crate::Inner>>,
 }
 
 /// 16 random letters and digits.
@@ -179,13 +179,14 @@ impl JunoBridge {
 
     /// Give the bridge the server it files decisions with.
     pub fn attach(&self, app: Weak<crate::Inner>) {
-        let _ = self.app.set(app);
+        *self.app.lock().unwrap_or_else(|p| p.into_inner()) = app;
     }
 
     fn app(&self) -> Result<crate::AppState, String> {
         self.app
-            .get()
-            .and_then(Weak::upgrade)
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .upgrade()
             .map(crate::AppState)
             .ok_or_else(|| "decisions are not available on this server".to_owned())
     }

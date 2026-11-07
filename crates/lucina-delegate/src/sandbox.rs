@@ -68,6 +68,7 @@ async fn git(args: &[&str], cwd: &Path) -> Result<String, String> {
         .current_dir(cwd)
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::null())
+        .kill_on_drop(true)
         .output()
         .await
         .map_err(|e| format!("git: {e}"))?;
@@ -299,8 +300,25 @@ async fn read_all<R: tokio::io::AsyncRead + Unpin>(pipe: Option<R>) -> String {
     String::from_utf8_lossy(&buf).into_owned()
 }
 
+/// The job's task was aborted mid-run: kill the agent and everything it started (its process group).
+struct GroupKill(Option<u32>);
+
+impl Drop for GroupKill {
+    fn drop(&mut self) {
+        if let Some(pid) = self.0.take() {
+            let _ = std::process::Command::new("kill")
+                .args(["-KILL", "--", &format!("-{pid}")])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn();
+        }
+    }
+}
+
 /// Run `program args` (under bubblewrap unless isolation is off), feeding
-/// `stdin`, with a hard timeout that kills the whole process group.
+/// `stdin`, with a hard timeout that kills the whole process group. Dropping
+/// the future (a cancelled job) kills the group too.
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     isolation: Isolation,
@@ -339,6 +357,7 @@ pub async fn run(
         .spawn()
         .map_err(|e| format!("{}: {e}", program.display()))?;
     let pid = child.id();
+    let mut group = GroupKill(pid);
     if let Some(mut si) = child.stdin.take() {
         let input = stdin.to_owned();
         tokio::spawn(async move {
@@ -351,13 +370,18 @@ pub async fn run(
     let out_task = tokio::spawn(read_all(so));
     let err_task = tokio::spawn(read_all(se));
     let (status, timed_out) = match tokio::time::timeout(timeout, child.wait()).await {
-        Ok(Ok(s)) => (s.code(), false),
+        Ok(Ok(s)) => {
+            // Ended on its own: never signal a pid that may be reused.
+            group.0 = None;
+            (s.code(), false)
+        }
         Ok(Err(e)) => return Err(format!("wait: {e}")),
         Err(_) => {
-            if let Some(pid) = pid {
+            if let Some(pid) = group.0.take() {
                 // The whole group (bwrap or the agent and its children).
                 let _ = tokio::process::Command::new("kill")
                     .args(["-KILL", "--", &format!("-{pid}")])
+                    .kill_on_drop(true)
                     .status()
                     .await;
             }
@@ -391,6 +415,7 @@ mod tests {
         let ok = tokio::process::Command::new("sh")
             .args(["-c", cmd])
             .current_dir(cwd)
+            .kill_on_drop(true)
             .status()
             .await
             .unwrap()
@@ -498,6 +523,44 @@ mod tests {
         .await
         .unwrap();
         assert!(out.timed_out);
+    }
+
+    #[tokio::test]
+    async fn a_dropped_run_kills_the_whole_group() {
+        let t = tempfile::tempdir().unwrap();
+        let pid_file = t.path().join("pid");
+        let args = [
+            "-c".to_owned(),
+            format!("sleep 30 & echo $! > {}; wait", pid_file.display()),
+        ];
+        let mounts = Mounts::default();
+        let run = run(
+            Isolation::None,
+            Path::new("sh"),
+            &args,
+            t.path(),
+            t.path(),
+            &mounts,
+            &[],
+            "",
+            Duration::from_secs(60),
+        );
+        // Dropped mid-run, as an aborted job's task is.
+        assert!(tokio::time::timeout(Duration::from_millis(500), run)
+            .await
+            .is_err());
+        let pid = std::fs::read_to_string(&pid_file).unwrap();
+        let proc_dir = Path::new("/proc").join(pid.trim());
+        for _ in 0..40 {
+            let zombie_or_gone = std::fs::read_to_string(proc_dir.join("stat"))
+                .map(|s| s.split_whitespace().nth(2) == Some("Z"))
+                .unwrap_or(true);
+            if zombie_or_gone {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("the grandchild {} survived", pid.trim());
     }
 
     /// The real fence (skipped where bubblewrap is not installed).

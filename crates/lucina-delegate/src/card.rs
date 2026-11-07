@@ -6,7 +6,7 @@
 use lucina_store::rich::{self, RichMessage};
 use serde_json::{json, Value};
 
-use crate::types::{clip, clip_sentences, JobRecord, JobStatus, Risk};
+use crate::types::{clip, clip_sentences, AgentId, Fallback, JobRecord, JobStatus, Risk};
 
 /// Formats a duration the owner reads.
 pub fn duration(ms: u64) -> String {
@@ -116,18 +116,42 @@ pub fn why_line(job: &JobRecord) -> Option<String> {
     Some(s)
 }
 
+/// "ChatGPT was out of credits (codex-cli), so Mistral answered".
+pub fn fallback_sentence(f: &Fallback, answered: AgentId, lang: &str) -> String {
+    let backend = if f.from_backend.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", f.from_backend)
+    };
+    let (from, by, reason) = (f.from.label(), answered.label(), f.reason.as_str());
+    match lang {
+        "it" => format!("{from} non era disponibile: {reason}{backend}, quindi ha risposto {by}"),
+        "da" => format!("{from} var {reason}{backend}, så {by} svarede"),
+        _ => format!("{from} was {reason}{backend}, so {by} answered"),
+    }
+}
+
 /// The card as plain text (timeline fallback, MCP readers) and as v1.
 pub fn render(job: &JobRecord) -> (String, Option<RichMessage>) {
     let l = job.lang.as_str();
     let head = title(job);
     let status = status_line(job);
     let why = why_line(job);
-    let body = match job.status {
-        JobStatus::Done => job
+    let instead = job
+        .fallback
+        .as_ref()
+        .map(|f| fallback_sentence(f, job.answered_by(), l));
+    let body = match (job.status, &instead) {
+        (JobStatus::Done, _) => job
             .summary
             .clone()
             .or_else(|| job.result.clone())
-            .map(|b| clip_sentences(&b, 600)),
+            .map(|b| clip_sentences(&b, 600))
+            .map(|b| match &instead {
+                Some(i) => format!("{i}: {b}"),
+                None => b,
+            }),
+        (_, Some(i)) => Some(format!("{i}.")),
         _ => None,
     };
     let undo = job.undo.as_ref().map(|u| {
@@ -226,6 +250,8 @@ mod tests {
         JobRecord {
             id: "1a2b3c4d-0000".into(),
             agent: AgentId::Grok,
+            answered_by: None,
+            fallback: None,
             backend: "xai-api".into(),
             kind: Kind::Research,
             origin: Origin::Owner,
@@ -308,5 +334,30 @@ mod tests {
         j.status = JobStatus::Skipped;
         assert!(title(&j).starts_with("I decided not to ask Claude"));
         assert_eq!(duration(185_000), "3 min 5 s");
+    }
+
+    #[test]
+    fn a_stand_in_is_said_plainly() {
+        let mut j = job();
+        j.lang = "en".into();
+        j.agent = AgentId::Chatgpt;
+        j.answered_by = Some(AgentId::Mistral);
+        j.backend = "mistral-api".into();
+        j.fallback = Some(Fallback {
+            from: AgentId::Chatgpt,
+            from_backend: "codex-cli".into(),
+            reason: "out of credits".into(),
+        });
+        let (plain, _) = render(&j);
+        assert!(plain.starts_with("I asked ChatGPT:"), "{plain}");
+        assert!(
+            plain
+                .contains("ChatGPT was out of credits (codex-cli), so Mistral answered: Rust 1.95"),
+            "{plain}"
+        );
+        j.lang = "da".into();
+        assert!(render(&j)
+            .0
+            .contains("ChatGPT var out of credits (codex-cli), så Mistral svarede: "));
     }
 }

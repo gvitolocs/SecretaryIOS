@@ -434,6 +434,8 @@ impl AppState {
             env_http.clone(),
             secret_store.clone(),
             timeline.clone(),
+            selftest_timeline.clone(),
+            named_models.mistral.clone(),
         );
         env.delegator = delegator.clone();
         let mut registry = Registry::builtin(&cfg.tools);
@@ -680,12 +682,17 @@ impl AppState {
     }
 
     /// Replace the deals engine (tests: fixtures and a fixed clock). Only
-    /// before the state is shared.
-    pub fn with_deals(mut self, engine: Option<Arc<lucina_deals::DealsEngine>>) -> Self {
-        Arc::get_mut(&mut self.0)
-            .expect("with_deals before the state is shared")
-            .deals = engine;
-        self
+    /// before the state is shared. Juno holds a `Weak` to the state from construction on, which
+    /// `Arc::get_mut` refuses (every deals test failed since 4 Nov 2026): the state is taken out
+    /// whole and Juno attached again.
+    pub fn with_deals(self, engine: Option<Arc<lucina_deals::DealsEngine>>) -> Self {
+        let Ok(mut inner) = Arc::try_unwrap(self.0) else {
+            panic!("with_deals before the state is shared");
+        };
+        inner.deals = engine;
+        let app = Self(Arc::new(inner));
+        app.juno.attach(Arc::downgrade(&app.0));
+        app
     }
 
     /// `LUCINA_TELEGRAM_ENABLED=true` and a Lucina bot token.

@@ -288,6 +288,11 @@ fn budget() -> Budget {
             wall_minutes_per_day: 3,
             turns_per_day: 0,
         },
+        mistral: AgentBudget {
+            calls_per_day: 2,
+            wall_minutes_per_day: 3,
+            turns_per_day: 0,
+        },
     }
 }
 

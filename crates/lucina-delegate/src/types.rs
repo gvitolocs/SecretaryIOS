@@ -9,16 +9,24 @@ pub enum AgentId {
     Claude,
     Grok,
     Chatgpt,
+    /// Lucina's own Mistral API model: never picked first, the fallback for non-code work.
+    Mistral,
 }
 
 impl AgentId {
-    pub const ALL: [AgentId; 3] = [AgentId::Claude, AgentId::Grok, AgentId::Chatgpt];
+    pub const ALL: [AgentId; 4] = [
+        AgentId::Claude,
+        AgentId::Grok,
+        AgentId::Chatgpt,
+        AgentId::Mistral,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
             AgentId::Claude => "claude",
             AgentId::Grok => "grok",
             AgentId::Chatgpt => "chatgpt",
+            AgentId::Mistral => "mistral",
         }
     }
 
@@ -28,10 +36,11 @@ impl AgentId {
             AgentId::Claude => "Claude",
             AgentId::Grok => "Grok",
             AgentId::Chatgpt => "ChatGPT",
+            AgentId::Mistral => "Mistral",
         }
     }
 
-    /// `claude`, `claude code`, `grok`, `xai`, `chatgpt`, `gpt`, `openai`, `codex`.
+    /// `claude`, `claude code`, `grok`, `xai`, `chatgpt`, `gpt`, `openai`, `codex`, `mistral`.
     pub fn parse(s: &str) -> Option<Self> {
         let t = s.trim().to_lowercase();
         let t = t.trim_matches(|c: char| !c.is_alphanumeric() && c != ' ');
@@ -43,6 +52,7 @@ impl AgentId {
             "chatgpt" | "chat gpt" | "gpt" | "openai" | "codex" | "chat-gpt" => {
                 Some(AgentId::Chatgpt)
             }
+            "mistral" | "mistral ai" | "le chat" => Some(AgentId::Mistral),
             _ => None,
         }
     }
@@ -53,6 +63,9 @@ impl AgentId {
             AgentId::Claude => "code and long, careful analysis",
             AgentId::Grok => "live web and X (Twitter) research and news",
             AgentId::Chatgpt => "general questions and second opinions",
+            AgentId::Mistral => {
+                "careful questions, research and analysis without live web (the fallback)"
+            }
         }
     }
 }
@@ -240,13 +253,32 @@ impl JobStatus {
     }
 }
 
+/// Another agent answered for the one asked (it was out of credits, signed out, unreachable or busy).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Fallback {
+    /// The agent asked for.
+    pub from: AgentId,
+    /// Its backend (`codex-cli`, `gbot`, ...); empty when it had none.
+    pub from_backend: String,
+    /// What it was, as the card says it: "out of credits", "busy with another job", ...
+    pub reason: String,
+}
+
 /// A delegation job (persisted, redacted; no prompt contents beyond a short
 /// redacted task line).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JobRecord {
     pub id: String,
+    /// The agent asked for (named, or Lucina's first choice).
     pub agent: AgentId,
+    /// The agent that answered when it is not `agent` (read with [`JobRecord::answered_by`]); older
+    /// records have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered_by: Option<AgentId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<Fallback>,
     /// `claude-cli`, `gbot`, `xai-api`, `codex-cli`, `openai-api`, `mock`.
     pub backend: String,
     pub kind: Kind,
@@ -299,6 +331,11 @@ pub struct JobRecord {
 impl JobRecord {
     pub fn short_id(&self) -> &str {
         &self.id[..self.id.len().min(8)]
+    }
+
+    /// The agent that answered: `agent` unless another one stood in.
+    pub fn answered_by(&self) -> AgentId {
+        self.answered_by.unwrap_or(self.agent)
     }
 }
 
@@ -383,6 +420,7 @@ mod tests {
         assert_eq!(AgentId::parse("xAI"), Some(AgentId::Grok));
         assert_eq!(AgentId::parse("Codex"), Some(AgentId::Chatgpt));
         assert_eq!(AgentId::parse("gemini"), None);
+        assert_eq!(AgentId::parse("Mistral"), Some(AgentId::Mistral));
         assert_eq!(Kind::parse("Ricerca"), Some(Kind::Research));
         assert!(!Kind::Code.read_only());
         // Italian tasks are understood, and the answer comes back in English.

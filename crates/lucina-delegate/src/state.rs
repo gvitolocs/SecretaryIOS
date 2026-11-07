@@ -4,13 +4,17 @@
 //! Budgets are a silent runaway guard: a call that fits is never asked
 //! about; the call that hits a cap pauses delegation (that agent, or all of
 //! it) until the day changes, and the caller tells the owner once.
+//!
+//! A backend that answered "out of credits", "not logged in" or "rate limit" is remembered as down
+//! ([`Down`]) for a few hours, across restarts, so the next request does not burn the same minutes.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use chrono_tz::Tz;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -44,6 +48,44 @@ struct StateFile {
     /// `agent` or `all` -> why (cleared when the day changes).
     #[serde(default)]
     paused: BTreeMap<String, String>,
+    /// `agent` -> its backend that is out of credits, signed out or rate-limited (kept across days).
+    #[serde(default)]
+    down: BTreeMap<String, Down>,
+}
+
+/// A backend that said it cannot work (out of credits, signed out, rate-limited).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Down {
+    pub backend: String,
+    pub since: DateTime<Utc>,
+    pub until: DateTime<Utc>,
+    /// `out of credits`, `signed out` or `rate-limited`.
+    pub state: String,
+    /// The error it gave, clipped.
+    pub reason: String,
+}
+
+/// What a failed run's error says about its backend: the state word and how long to leave it alone.
+pub fn outage(error: &str) -> Option<(&'static str, Duration)> {
+    static RES: OnceLock<[Regex; 3]> = OnceLock::new();
+    let [credits, auth, rate] = RES.get_or_init(|| {
+        let re = |p: &str| Regex::new(p).expect("outage regex");
+        [
+            re(r"(?i)out of credits|insufficient credits|credit balance|usage limit|quota|billing|payment required|\b402\b"),
+            re(r"(?i)not logged in|login|unauthorized|\b401\b|expired"),
+            re(r"(?i)rate limit|\b429\b|too many requests"),
+        ]
+    });
+    if credits.is_match(error) {
+        Some(("out of credits", Duration::hours(6)))
+    } else if auth.is_match(error) {
+        Some(("signed out", Duration::hours(6)))
+    } else if rate.is_match(error) {
+        Some(("rate-limited", Duration::minutes(30)))
+    } else {
+        None
+    }
 }
 
 /// A cap was just hit (tell the owner once).
@@ -228,6 +270,28 @@ impl StateStore {
         })
     }
 
+    /// Remember that `agent`'s backend is down until `down.until`.
+    pub fn mark_down(&self, agent: AgentId, down: Down, now: DateTime<Utc>) {
+        self.with(now, |s| {
+            s.down.insert(agent.as_str().to_owned(), down);
+        });
+    }
+
+    /// A job of `agent` succeeded: it works again.
+    pub fn clear_down(&self, agent: AgentId, now: DateTime<Utc>) {
+        self.with(now, |s| {
+            s.down.remove(agent.as_str());
+        });
+    }
+
+    /// `agent`'s outage, while it lasts (any backend). An expired one is forgotten.
+    pub fn down(&self, agent: AgentId, now: DateTime<Utc>) -> Option<Down> {
+        self.with(now, |s| {
+            s.down.retain(|_, d| d.until > now);
+            s.down.get(agent.as_str()).cloned()
+        })
+    }
+
     /// The owner's switch. `None`: all delegation.
     pub fn set_enabled(&self, agent: Option<AgentId>, on: bool, now: DateTime<Utc>) {
         self.with(now, |s| match agent {
@@ -244,15 +308,27 @@ impl StateStore {
     }
 
     pub fn snapshot(&self, budget: &Budget, now: DateTime<Utc>) -> Value {
+        let tz = self.tz;
         self.with(now, |s| {
             let agents: serde_json::Map<String, Value> = AgentId::ALL
                 .iter()
                 .map(|a| {
                     let u = s.usage.get(a.as_str()).copied().unwrap_or_default();
                     let b = budget.of(*a);
+                    let health = match s.down.get(a.as_str()).filter(|d| d.until > now) {
+                        Some(d) => format!(
+                            "down until {}: {} {} ({})",
+                            d.until.with_timezone(&tz).format("%H:%M"),
+                            d.backend,
+                            d.state,
+                            d.reason
+                        ),
+                        None => "ok".to_owned(),
+                    };
                     (
                         a.as_str().to_owned(),
                         json!({
+                            "health": health,
                             "enabled": !s.disabled.contains(a.as_str()),
                             "paused": s.paused.get(a.as_str()),
                             "calls": u.calls, "callsCap": b.calls_per_day,
@@ -293,6 +369,7 @@ mod tests {
                 turns_per_day: 0,
             },
             chatgpt: AgentBudget::default(),
+            mistral: AgentBudget::default(),
         }
     }
 
@@ -364,5 +441,68 @@ mod tests {
         assert!(s.check(AgentId::Grok, now).is_ok());
         let snap = s.snapshot(&budget(), now);
         assert_eq!(snap["agents"]["grok"]["enabled"], true);
+        assert_eq!(snap["agents"]["mistral"]["health"], "ok");
+    }
+
+    #[test]
+    fn outages_are_classified_remembered_and_expire() {
+        assert_eq!(
+            outage("ERROR: Your workspace is out of credits").map(|o| o.0),
+            Some("out of credits")
+        );
+        assert_eq!(
+            outage("HTTP 402 Payment Required").unwrap().1,
+            Duration::hours(6)
+        );
+        assert_eq!(
+            outage("codex: Not logged in").map(|o| o.0),
+            Some("signed out")
+        );
+        assert_eq!(outage("token EXPIRED").map(|o| o.0), Some("signed out"));
+        assert_eq!(
+            outage("429 Too Many Requests"),
+            Some(("rate-limited", Duration::minutes(30)))
+        );
+        assert_eq!(
+            outage("insufficient_quota (429)").map(|o| o.0),
+            Some("out of credits")
+        );
+        assert_eq!(outage("claude timed out after 900 s"), None);
+        assert_eq!(outage("exit 14012"), None);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.json");
+        let s = StateStore::new(Some(path.clone()), chrono_tz::Europe::Rome);
+        let now = Utc::now();
+        s.mark_down(
+            AgentId::Chatgpt,
+            Down {
+                backend: "codex-cli".into(),
+                since: now,
+                until: now + Duration::hours(6),
+                state: "out of credits".into(),
+                reason: "Your workspace is out of credits".into(),
+            },
+            now,
+        );
+        // kept across a restart and a day change
+        let again = StateStore::new(Some(path), chrono_tz::Europe::Rome);
+        assert!(again
+            .down(AgentId::Chatgpt, now + Duration::hours(5))
+            .is_some());
+        let snap = again.snapshot(&budget(), now);
+        assert!(snap["agents"]["chatgpt"]["health"]
+            .as_str()
+            .unwrap()
+            .starts_with("down until "));
+        assert!(again
+            .down(AgentId::Chatgpt, now + Duration::hours(7))
+            .is_none());
+        assert!(
+            again.down(AgentId::Chatgpt, now).is_none(),
+            "an expired outage is forgotten"
+        );
+        s.clear_down(AgentId::Chatgpt, now);
+        assert!(s.down(AgentId::Chatgpt, now).is_none());
     }
 }

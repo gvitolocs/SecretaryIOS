@@ -4,6 +4,7 @@
 //! hard limits hold (no secrets out, no money, depth 1, never from Lucina
 //! MCP, code only in a sandbox). The tool waits a few seconds for a quick
 //! answer; otherwise the answer arrives as a timeline card.
+//! `delegation_jobs` lists the recent jobs; `delegation_cancel` stops a running one ("stop them").
 
 use lucina_delegate::engine::chat_result;
 use lucina_delegate::{AgentId, Kind, Origin, Request, StartOutcome};
@@ -14,7 +15,14 @@ use serde_json::{json, Value};
 use crate::{schema_for, Ctx, SideEffect, Tool, ToolError, ToolResult};
 
 /// The delegation tools (never offered on Lucina MCP turns).
-pub const DELEGATION_TOOLS: &[&str] = &["ask_claude", "ask_grok", "ask_chatgpt", "delegate"];
+pub const DELEGATION_TOOLS: &[&str] = &[
+    "ask_claude",
+    "ask_grok",
+    "ask_chatgpt",
+    "delegate",
+    "delegation_jobs",
+    "delegation_cancel",
+];
 
 #[derive(Deserialize, JsonSchema, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
@@ -122,7 +130,9 @@ async fn run(
         StartOutcome::Started(mut s) => match s.wait(wait).await {
             Some(job) => {
                 let mut v = chat_result(&job);
-                v["instruction"] = json!(if job.note_slug.is_some() {
+                v["instruction"] = json!(if job.fallback.is_some() {
+                    "Relay the answer and say plainly which agent answered and why the one asked did not (see fallback)."
+                } else if job.note_slug.is_some() {
                     "Relay the answer briefly, say which agent gave it, and that the full answer is in Notes."
                 } else {
                     "Relay the answer, saying which agent gave it."
@@ -242,6 +252,129 @@ impl Tool for DelegateTool {
     }
 }
 
+fn delegator(ctx: &Ctx) -> Result<std::sync::Arc<lucina_delegate::Delegator>, ToolError> {
+    if ctx.origin == crate::Origin::Mcp {
+        return Err(ToolError::new(
+            "refused: requests that come through Lucina MCP cannot see or stop delegations",
+        ));
+    }
+    ctx.env
+        .delegator
+        .clone()
+        .ok_or_else(|| ToolError::new("delegation is not enabled on this host (LUCINA_DELEGATE)"))
+}
+
+/// `HH:MM` in the owner's time zone from an RFC 3339 time.
+fn local_time(ctx: &Ctx, iso: Option<&str>) -> Option<String> {
+    let t = chrono::DateTime::parse_from_rfc3339(iso?).ok()?;
+    Some(
+        t.with_timezone(&ctx.env.time_zone)
+            .format("%Y-%m-%d %H:%M")
+            .to_string(),
+    )
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct JobsArgs {}
+
+pub struct DelegationJobsTool;
+
+#[async_trait::async_trait]
+impl Tool for DelegationJobsTool {
+    fn name(&self) -> &'static str {
+        "delegation_jobs"
+    }
+    fn description(&self) -> &'static str {
+        "The 10 most recent delegations to other agents (Claude, Grok, ChatGPT, Mistral): short id, agent asked, agent that answered, backend, status, start and end time, duration, error, why another agent stood in, and the answer's start. Use it before delegation_cancel, or when the owner asks what the agents are doing."
+    }
+    fn parameters(&self) -> Value {
+        schema_for::<JobsArgs>()
+    }
+    fn side_effect(&self) -> SideEffect {
+        SideEffect::Delegate
+    }
+    fn summarize(&self, _: &Value) -> String {
+        "delegation_jobs".into()
+    }
+    async fn call(&self, _args: Value, ctx: &Ctx) -> ToolResult {
+        let d = delegator(ctx)?;
+        let jobs: Vec<Value> = d
+            .recent(10)
+            .iter()
+            .map(|j| {
+                json!({
+                    "id": j.short_id(),
+                    "asked": j.agent.label(),
+                    "answeredBy": j.answered_by().label(),
+                    "backend": j.backend,
+                    "kind": j.kind.as_str(),
+                    "status": j.status.as_str(),
+                    "started": local_time(ctx, Some(&j.created_at)),
+                    "finished": local_time(ctx, j.finished_at.as_deref()),
+                    "durationSec": j.duration_ms / 1000,
+                    "error": j.error,
+                    "fallback": j.fallback.as_ref().map(|f| {
+                        lucina_delegate::card::fallback_sentence(f, j.answered_by(), "en")
+                    }),
+                    "task": j.task,
+                    "answer": j.summary.clone().or_else(|| {
+                        j.result.as_deref().map(|r| r.chars().take(300).collect::<String>())
+                    }),
+                })
+            })
+            .collect();
+        Ok(json!({"jobs": jobs}))
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct CancelArgs {
+    /// The job id, or its first 6+ characters (from delegation_jobs).
+    job: String,
+}
+
+pub struct DelegationCancelTool;
+
+#[async_trait::async_trait]
+impl Tool for DelegationCancelTool {
+    fn name(&self) -> &'static str {
+        "delegation_cancel"
+    }
+    fn description(&self) -> &'static str {
+        "Stop a running delegation (the owner said \"stop it\", \"stop them\"): the agent's process is killed and the job is marked cancelled. Find the id with delegation_jobs; call it once per running job."
+    }
+    fn parameters(&self) -> Value {
+        schema_for::<CancelArgs>()
+    }
+    fn side_effect(&self) -> SideEffect {
+        SideEffect::Delegate
+    }
+    fn summarize(&self, args: &Value) -> String {
+        format!("delegation_cancel {}", args["job"].as_str().unwrap_or(""))
+    }
+    async fn call(&self, args: Value, ctx: &Ctx) -> ToolResult {
+        let a: CancelArgs = super::args(args)?;
+        let d = delegator(ctx)?;
+        let id = a.job.trim();
+        Ok(match d.cancel(id, "en").await {
+            Ok(job) => json!({
+                "status": "cancelled",
+                "jobId": job.id,
+                "result": format!(
+                    "I stopped {}'s job {} after {} s.",
+                    job.answered_by().label(),
+                    job.short_id(),
+                    job.duration_ms / 1000
+                ),
+            }),
+            Err(why) => json!({
+                "status": "not_cancelled",
+                "result": format!("Delegation {id} was not stopped: {why}."),
+            }),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
@@ -337,6 +470,25 @@ mod tests {
             .unwrap();
         assert_eq!(out["status"], "refused");
         assert_eq!(out["code"], "money");
+
+        let jobs = DelegationJobsTool.call(json!({}), &c).await.unwrap();
+        let first = &jobs["jobs"][0];
+        assert_eq!(first["asked"], "Grok");
+        assert_eq!(first["answeredBy"], "Grok");
+        assert_eq!(first["status"], "done");
+        assert_eq!(first["answer"], "Rust 1.95 è uscito.");
+        let id = first["id"].as_str().unwrap().to_owned();
+        let out = DelegationCancelTool
+            .call(json!({"job": id}), &c)
+            .await
+            .unwrap();
+        assert_eq!(out["status"], "not_cancelled");
+        assert!(out["result"].as_str().unwrap().contains("already done at"));
+        let out = DelegationCancelTool
+            .call(json!({"job": "zzzzzz"}), &c)
+            .await
+            .unwrap();
+        assert!(out["result"].as_str().unwrap().contains("no such job"));
     }
 
     #[tokio::test]
@@ -348,6 +500,10 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.0.contains("Lucina MCP"));
+        assert!(DelegationCancelTool
+            .call(json!({"job": "abcdef"}), &c)
+            .await
+            .is_err());
         assert!(seen.lock().unwrap().is_empty());
         let mcp = Registry::builtin(&ToolSelection::All).without(NO_MCP_TOOLS);
         for name in DELEGATION_TOOLS {

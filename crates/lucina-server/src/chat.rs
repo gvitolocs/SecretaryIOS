@@ -1137,6 +1137,8 @@ async fn run_turn_scoped(
                     recent_key: t.recent_key(),
                     peer: t.peer(),
                     voice: t.channel == VOICE_CHANNEL,
+                    // A share's intent is his note, never the shared content's words.
+                    intent_text: t.share.then_some(t.share_note.as_str()),
                 },
                 &t.message,
                 &t.user_label,
@@ -3409,6 +3411,7 @@ async fn tools_turn(
                 recent_key: &session,
                 peer: &st.cfg.owner_peer_id,
                 voice: channel == VOICE_CHANNEL,
+                intent_text: None,
             },
             &message,
             USER_LABEL,
