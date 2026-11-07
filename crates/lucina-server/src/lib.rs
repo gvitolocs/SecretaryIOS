@@ -46,6 +46,7 @@ pub mod flaws;
 pub mod ops;
 pub mod otp;
 pub mod owner_secrets;
+pub mod about;
 pub mod secret_keep;
 pub mod secret_requests;
 pub mod parity;
@@ -142,6 +143,8 @@ pub struct Inner {
     pub secret_keep: Arc<secret_keep::Keeper>,
     /// The owner's own Add secret cards (`secret_tile`), his queue and a self-test one.
     pub secret_cards: Arc<secret_requests::OwnerCards>,
+    /// What she knows about him (crate::about).
+    pub about: Arc<about::AboutYou>,
     pub briefings: tokio::sync::Mutex<HashMap<String, api::Briefing>>,
     pub streams: AtomicUsize,
     pub started: Instant,
@@ -506,6 +509,7 @@ impl AppState {
                 token_file: cfg.secretary_service_token_file.clone(),
             },
         ));
+        let about = Arc::new(about::AboutYou::new(&cfg.data_dir, cfg.about.clone()));
         let secret_cards = Arc::new(secret_requests::OwnerCards {
             owner: secret_requests.clone(),
             selftest: Arc::new(secret_requests::SecretRequests::new(
@@ -532,6 +536,11 @@ impl AppState {
                     asker: secret_requests.clone(),
                 }))
                 .expect("secret_request registers");
+        }
+        if cfg.about.enabled && cfg.tools.allows("about_me") {
+            registry
+                .register(Arc::new(lucina_tools::tools::about_me::AboutMeTool { memory: about.clone() }))
+                .expect("about_me registers");
         }
         if cfg.tools.allows("secret_tile") {
             registry
@@ -626,6 +635,7 @@ impl AppState {
             held_secrets: owner_secrets::HeldSecrets::default(),
             secret_requests,
             secret_cards,
+            about,
             secret_keep,
             briefings: tokio::sync::Mutex::new(HashMap::new()),
             streams: AtomicUsize::new(0),
@@ -795,6 +805,9 @@ impl AppState {
         }
         if let Some(h) = flaws::spawn(self) {
             self.supervisor.watch("flaw tracker", h);
+        }
+        if let Some(h) = about::spawn(self) {
+            self.supervisor.watch("about you", h);
         }
         if let Some(h) = secret_keep::spawn(self) {
             self.supervisor.watch("secret keep", h);

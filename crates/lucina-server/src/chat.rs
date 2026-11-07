@@ -52,6 +52,7 @@ mod flaw_turn;
 mod ops_turn;
 pub mod plugin_turn;
 mod reach_turn;
+mod about_turn;
 mod secret_turn;
 pub mod reply;
 mod share_turn;
@@ -340,6 +341,9 @@ async fn handle_chat_turn(
     let offer_lang = crate::owner_secrets::lang_of(&text);
     let cmid = (!client_message_id.is_empty()).then_some(client_message_id);
     let (keep_st, keep_session) = (st.clone(), session.clone());
+    if mcp_turn.is_none() {
+        crate::about::observe(&st, &session, "chat", &cmid.clone().unwrap_or_default(), &text);
+    }
     let Some(cmid_value) = cmid.clone() else {
         let out = run_turn(
             st,
@@ -530,6 +534,9 @@ pub async fn channel_turn(
     }
     let keep_context = if held.is_empty() { String::new() } else { message.clone() };
     let keep_session = session.clone();
+    if origin.owner {
+        crate::about::observe(&st, &session, "chat", &channel, &message);
+    }
     let out = run_turn_inner(
         st.clone(),
         message,
@@ -1933,6 +1940,11 @@ async fn json_turn(
 
     // "Salvami la password del Wi-Fi": a card in his chat, by name (crate::secret_requests).
     if let Some(f) = secret_turn::try_turn(t, memory).await {
+        return f;
+    }
+
+    // "That's wrong, …", "remember that I …": the memory about him, now (crate::about).
+    if let Some(f) = about_turn::try_turn(t, memory).await {
         return f;
     }
 

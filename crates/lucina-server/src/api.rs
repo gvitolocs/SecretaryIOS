@@ -460,6 +460,13 @@ async fn route(
     if resource == Some("voice-learn") && parts.len() <= 2 {
         return crate::voice_learn::route(st, method, uri, &parts[1..], body).await;
     }
+    // About you (crate::about): what she knows about him; secretary-server forwards the app's page here.
+    if resource == Some("about") && parts.len() <= 3 {
+        let rest: Vec<&str> = parts[1..].iter().map(String::as_str).collect();
+        let m = method.as_str().to_owned();
+        let body = if matches!(m.as_str(), "POST" | "PATCH") { Some(read_json(body, 16 * 1024).await?) } else { None };
+        return Ok(ok(crate::about::route(st, &m, &rest, body).await?));
+    }
     // Lucina Notebooks (crate::notebooks): the lucina-notebooks router.
     if resource == Some("notebooks") {
         return Ok(crate::notebooks::route(st, method, uri, headers, body).await);
@@ -617,6 +624,12 @@ async fn route(
             only(&["POST"])?;
             let body = read_json(body, 16 * 1024).await?;
             Ok(ok(crate::owner_secrets::request(st, &body).await?))
+        }
+        (Some("selftest"), Some("reset")) => {
+            // A self-test starts clean: its recent turns and its own about-you facts go.
+            only(&["POST"])?;
+            st.recent.clear(crate::selftest::SESSION);
+            Ok(ok(json!({"ok": true})))
         }
         (Some("secrets"), Some("keep")) => {
             // Local only: secretary-server forwards no such route. References and names, never a value.

@@ -1503,6 +1503,7 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
         } else {
             job.note.clone()
         };
+        crate::about::observe(st, &job.session, "document", &job.share_id, &format!("{}\n{content}", job.note.trim()));
         let out = crate::chat::share_turn(
             st.clone(),
             message,

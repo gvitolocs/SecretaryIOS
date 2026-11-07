@@ -301,12 +301,11 @@ const SHARED_HOURS: i64 = 3;
 
 /// The app's default session (share sheet, clients without a session id), when this turn is another
 /// app session of the owner's (`secretary_ios-…`, a web session). Not for a device that is a conversation
-/// of its own (Juno), the voice thread, or the default session itself. A self-test reads it too: it replays
-/// his app chat, and writes only its own buffer.
+/// of its own (Juno), the voice thread, a self-test (it starts from what it is given), or the default session itself.
 fn shared_session<'a>(st: &'a AppState, keys: Keys<'_>) -> Option<&'a str> {
     let default = st.cfg.default_session.as_str();
     let key = keys.recent_key;
-    let app = key.starts_with("secretary_") && !key.starts_with("secretary_juno");
+    let app = key.starts_with("secretary_") && !key.starts_with("secretary_juno") && !crate::selftest::is_session(key);
     (std::ptr::eq(keys.recent, &*st.recent) && app && key != default && !keys.voice).then_some(default)
 }
 
@@ -452,6 +451,8 @@ pub async fn prepare_keyed(
     } else {
         String::new()
     };
+    // What she knows about him: every owner turn, whatever the policy (crate::about).
+    let about = if owner && st.about.cfg.enabled { crate::about::context_block(st, session) } else { String::new() };
     // The other side of the Lucina Voice thread: the speaker's latest lines for an app turn, the app's for
     // a spoken one (the timeline is the record both read, whatever session each used).
     let other_surface = if owner && policy != Policy::PersonaOnly {
@@ -552,6 +553,7 @@ pub async fn prepare_keyed(
     };
     let memory_context = [
         metadata,
+        about,
         presence,
         vocabulary,
         other_surface,

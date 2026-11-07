@@ -3038,3 +3038,21 @@ for request and response fields and the go-ahead policy.
 Pending decisions mean do not act yet. Agents request a go-ahead with
 `lucina_decide` and follow it with `lucina_decision_status`; `ask_lucina` is
 answers-only for agent clients unless its one-message `allow` opts into a request kind.
+
+### About me: `GET /v1/about`, `POST /v1/about`, `PATCH /v1/about/{id}`, `POST /v1/about/{id}/end`, `POST /v1/about/{id}/retract`
+
+Device-token routes forwarded to Lucina's `/api/secretary/about…` with the
+server's Lucina credential: what Lucina knows about the owner, and the owner's
+corrections of it.
+
+- GET returns `{"facts": [...], "history": [...]}`: active facts, and
+  expired/retracted ones newest first.
+- POST adds a fact (`{text, category, validUntil?, validUntilCondition?}`) and
+  returns the created fact (source `owner-edit`).
+- PATCH by id changes any of `{text, category, validUntil, validUntilCondition}`
+  (`""` clears the validity part) and returns the fact.
+- POST `…/end` (`{reason?}`) marks the fact `expired`; POST `…/retract`
+  (`{reason?}`) marks it `retracted`; both return the fact.
+- Ids must match `af-` followed by exactly 16 lowercase hexadecimal digits,
+  else 400; bodies must be JSON objects up to 4 KB, else 400. Lucina's
+  `400 bad_request` / `secret_refused` and `404 not_found` pass through.

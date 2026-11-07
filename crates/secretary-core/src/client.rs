@@ -733,6 +733,39 @@ impl Call {
         Ok(call)
     }
 
+    /// `GET /about`: what Lucina knows about the owner (`{facts, history}`).
+    pub fn about() -> Self {
+        Self::new(Method::GET, &["about"])
+    }
+
+    /// `POST /about {text, category, validUntil?, validUntilCondition?}`: the
+    /// owner adds a fact. A JSON object up to 4 KiB.
+    pub fn about_add(body: Value) -> Result<Self> {
+        about_body(&body)?;
+        Ok(Self::new(Method::POST, &["about"]).with_body(body))
+    }
+
+    /// `PATCH /about/{id}`: change a fact's fields (`""` clears a validity part).
+    pub fn about_update(id: &str, body: Value) -> Result<Self> {
+        about_id(id)?;
+        about_body(&body)?;
+        Ok(Self::new(Method::PATCH, &["about", id]).with_body(body))
+    }
+
+    /// `POST /about/{id}/end {reason?}`: the fact is no longer true.
+    pub fn about_end(id: &str, body: Value) -> Result<Self> {
+        about_id(id)?;
+        about_body(&body)?;
+        Ok(Self::new(Method::POST, &["about", id, "end"]).with_body(body))
+    }
+
+    /// `POST /about/{id}/retract {reason?}`: the fact was wrong.
+    pub fn about_retract(id: &str, body: Value) -> Result<Self> {
+        about_id(id)?;
+        about_body(&body)?;
+        Ok(Self::new(Method::POST, &["about", id, "retract"]).with_body(body))
+    }
+
     /// `GET /reach/threads?to=&status=&limit=`: Lucina's messages to Claude, Grok and
     /// Lucina Agents (the mailbox). `to` is claude|grok|agents, `status` open|all|answered|
     /// failed|queued|sent, `limit` 1..=100. Blank parameters are left out.
@@ -1267,6 +1300,33 @@ fn decision_id(id: &str) -> Result<()> {
         return Err(Error::Invalid {
             field: "id",
             message: "must be dc- followed by 12 lowercase hex digits".into(),
+        });
+    }
+    Ok(())
+}
+
+/// An about-fact id: `af-` and 16 lowercase hex digits.
+fn about_id(id: &str) -> Result<()> {
+    if id.len() != 19
+        || !id.starts_with("af-")
+        || !id.as_bytes()[3..]
+            .iter()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b))
+    {
+        return Err(Error::Invalid {
+            field: "id",
+            message: "must be af- followed by 16 lowercase hex digits".into(),
+        });
+    }
+    Ok(())
+}
+
+/// An about-fact body: a JSON object up to 4 KiB.
+fn about_body(body: &Value) -> Result<()> {
+    if !body.is_object() || body.to_string().len() > 4 * 1024 {
+        return Err(Error::Invalid {
+            field: "body",
+            message: "must be a JSON object up to 4 KB".into(),
         });
     }
     Ok(())
@@ -1825,6 +1885,36 @@ mod tests {
         assert!(Call::withdraw_decision("dc-012345abcdef", Some(&"é".repeat(500))).is_ok());
         assert!(Call::withdraw_decision("dc-012345abcdef", Some(&"é".repeat(501))).is_err());
         assert!(Call::withdraw_decision("dc-012345ABCDEF", None).is_err());
+    }
+
+    #[test]
+    fn about_calls() {
+        let c = client("http://h:1");
+        let id = "af-0123456789abcdef";
+        assert_eq!(c.url(&Call::about()).as_str(), "http://h:1/api/secretary/about");
+        let add = Call::about_add(json!({"text": "Lives in Aarhus", "category": "home"})).unwrap();
+        assert_eq!(add.method(), &Method::POST);
+        assert_eq!(c.url(&add).as_str(), "http://h:1/api/secretary/about");
+        assert_eq!(add.body().unwrap()["category"], "home");
+        let upd = Call::about_update(id, json!({"validUntil": ""})).unwrap();
+        assert_eq!(upd.method(), &Method::PATCH);
+        assert_eq!(c.url(&upd).as_str(), format!("http://h:1/api/secretary/about/{id}"));
+        for (call, tail) in [
+            (Call::about_end(id, json!({"reason": "moved"})).unwrap(), "end"),
+            (Call::about_retract(id, json!({})).unwrap(), "retract"),
+        ] {
+            assert_eq!(call.method(), &Method::POST);
+            assert_eq!(c.url(&call).as_str(), format!("http://h:1/api/secretary/about/{id}/{tail}"));
+        }
+        for bad in ["af-0123456789ABCDEF", "af-0123456789abcde", "dc-012345abcdef", "../../x", ""] {
+            assert!(Call::about_update(bad, json!({})).is_err(), "{bad}");
+            assert!(Call::about_end(bad, json!({})).is_err(), "{bad}");
+            assert!(Call::about_retract(bad, json!({})).is_err(), "{bad}");
+        }
+        assert!(Call::about_add(json!([1, 2])).is_err());
+        assert!(Call::about_add(json!({"text": "x".repeat(4097)})).is_err());
+        assert!(Call::about_add(json!({"text": "x".repeat(4000)})).is_ok());
+        assert!(Call::about_update(id, json!("nope")).is_err());
     }
 
     #[test]
