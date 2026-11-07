@@ -2,6 +2,7 @@
 // others (English first, then `it` and `da` with the same keys) and list it here.
 
 import { decisions } from "./dict/decisions";
+import { about } from "./dict/about";
 import { approvals } from "./dict/approvals";
 import { share } from "./dict/share";
 import { chats } from "./dict/chats";
@@ -56,6 +57,6 @@ import { notebooks } from "./dict/notebooks";
 import { voice } from "./dict/voice";
 import { voiceLearn } from "./dict/voiceLearn";
 
-export const dictionaries = { decisions, approvals, calendar, chats, library, common, computer, desk, shell, share, chat, login, weight, gym, wardrobe, notify, links, maps, notes, keep, tasks, studio, models, memos, media, films, drive, sheet, plugins, serverHealth, viewer, secrets, gallery, galleryInfo, nclient, pixiv, instagram, agents, prompter, notebooks, editor, browse, galleryShare, galleryCompare, lab, galleryAlbums, galleryLive, gallerySmart, galleryPeople, galleryPets, galleryDedup, galleryCategories, voice, voiceLearn };
+export const dictionaries = { decisions, about, approvals, calendar, chats, library, common, computer, desk, shell, share, chat, login, weight, gym, wardrobe, notify, links, maps, notes, keep, tasks, studio, models, memos, media, films, drive, sheet, plugins, serverHealth, viewer, secrets, gallery, galleryInfo, nclient, pixiv, instagram, agents, prompter, notebooks, editor, browse, galleryShare, galleryCompare, lab, galleryAlbums, galleryLive, gallerySmart, galleryPeople, galleryPets, galleryDedup, galleryCategories, voice, voiceLearn };
 
 export type Dictionaries = typeof dictionaries;

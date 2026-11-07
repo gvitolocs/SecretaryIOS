@@ -9,6 +9,20 @@ use serde_json::json;
 #[tokio::test]
 async fn a_shared_file_and_his_facts_reach_the_follow_up() {
     let h = harness(script(json!({"rules": [{"kind": "any", "content": "{\"action\":\"reply\",\"text\":\"Ok.\"}"}]})), |_| {}).await;
+    h.state
+        .about
+        .owner
+        .add(
+            &lucina_store::about::Draft {
+                text: Some("He gets SU as an EU worker, which needs 10-12 hours every week.".into()),
+                category: Some("money".into()),
+                ..Default::default()
+            },
+            lucina_store::about::Source { kind: "seed".into(), reference: String::new() },
+            "seed",
+            chrono::Utc::now(),
+        )
+        .unwrap();
     let now = chrono::Utc::now();
     let default = h.state.cfg.default_session.clone();
     h.state.recent.append(
@@ -38,8 +52,9 @@ async fn a_shared_file_and_his_facts_reach_the_follow_up() {
         "the shared file is not in the recent turns"
     );
     assert!(!asked.contains("an old shared recipe"));
-    // The SU stopgap rides in her system text, which no clip touches.
-    assert!(asked.contains("About Giuseppe and SU (stopgap)"), "no SU rule");
+    // What she knows about him rides in every turn (crate::about).
+    assert!(asked.contains("About Giuseppe"), "no About you block");
+    assert!(asked.contains("10-12 hours every week"));
 }
 
 #[tokio::test]

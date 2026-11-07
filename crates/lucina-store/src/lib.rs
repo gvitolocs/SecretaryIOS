@@ -12,6 +12,7 @@
 //! JSON stores are written atomically (temp file + rename) with mode 0600.
 //! Never log item or reminder text: it is the owner's private conversation.
 
+pub mod about;
 pub mod atomic;
 pub mod device;
 pub mod jobs;

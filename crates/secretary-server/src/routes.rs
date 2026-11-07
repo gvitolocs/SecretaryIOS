@@ -146,6 +146,38 @@ async fn decisions(
     .await
 }
 
+async fn about(State(st): State<AppState>) -> ApiResult {
+    forward(&st, Call::about()).await
+}
+
+async fn about_add(State(st): State<AppState>, JsonBody(body): JsonBody<Value>) -> ApiResult {
+    forward(&st, Call::about_add(body)?).await
+}
+
+async fn about_update(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    JsonBody(body): JsonBody<Value>,
+) -> ApiResult {
+    forward(&st, Call::about_update(&id, body)?).await
+}
+
+async fn about_end(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    JsonBody(body): JsonBody<Value>,
+) -> ApiResult {
+    forward(&st, Call::about_end(&id, body)?).await
+}
+
+async fn about_retract(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    JsonBody(body): JsonBody<Value>,
+) -> ApiResult {
+    forward(&st, Call::about_retract(&id, body)?).await
+}
+
 async fn reminders(
     State(st): State<AppState>,
     QueryArgs(q): QueryArgs<ReminderQuery>,
@@ -288,6 +320,10 @@ pub fn protected() -> Router<AppState> {
             "/v1/decisions/{id}",
             get(decision).delete(withdraw_decision),
         )
+        .route("/v1/about", get(about).post(about_add))
+        .route("/v1/about/{id}", patch(about_update))
+        .route("/v1/about/{id}/end", post(about_end))
+        .route("/v1/about/{id}/retract", post(about_retract))
         .route(
             "/v1/secrets/request",
             axum::routing::post(secret_request).layer(DefaultBodyLimit::max(8 * 1024)),

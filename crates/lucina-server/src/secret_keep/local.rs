@@ -150,6 +150,12 @@ fn object(text: &str) -> Result<Value, LocalError> {
     serde_json::from_str(&t[start..=end]).map_err(|_| LocalError::Unparsable)
 }
 
+/// One local call that answers with a JSON object (the about-you extractor). The answer is never logged.
+pub async fn chat_json(http: &reqwest::Client, cfg: &LocalConfig, system: &str, user: &str) -> Result<Value, LocalError> {
+    let content = ask(http, cfg, system, Zeroizing::new(user.to_owned())).await?;
+    object(&content)
+}
+
 /// The value of `name` in `text`. The caller checks it stands there verbatim.
 pub async fn extract(
     http: &reqwest::Client,

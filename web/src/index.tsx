@@ -72,6 +72,7 @@ const ViewerView = lazy(() => import("./views/Viewer"));
 const ApproveView = lazy(() => import("./views/Approve"));
 const ScanQrView = lazy(() => import("./views/ScanQr"));
 const DecisionsView = lazy(() => import("./views/Decisions"));
+const AboutView = lazy(() => import("./views/About"));
 const DecisionDetailView = lazy(() => import("./views/DecisionDetail"));
 const ApprovalsView = lazy(() => import("./views/Approvals"));
 const ApprovalDetailView = lazy(() => import("./views/ApprovalDetail"));
@@ -156,6 +157,7 @@ render(
       <Route path="/approve" component={ApproveView} />
       <Route path="/scan" component={ScanQrView} />
       <Route path="/decisions" component={DecisionsView} />
+      <Route path="/about" component={AboutView} />
       <Route path="/decisions/:id" component={DecisionDetailView} />
       <Route path="/approvals" component={ApprovalsView} />
       <Route path="/approvals/:id" component={ApprovalDetailView} />

@@ -742,7 +742,7 @@ mod tests {
             .unwrap_err()
             .contains("no money movement"));
         let all = Registry::builtin(&ToolSelection::All);
-        assert_eq!(all.names().len(), 40);
+        assert_eq!(all.names().len(), 41);
         assert_eq!(all.without(OWNER_ONLY_TOOLS).names().len(), 24);
         let mcp = all.without(NO_MCP_TOOLS);
         assert_eq!(mcp.names().len(), 20);
