@@ -54,7 +54,7 @@ short / last round toolless, (c) bridge call missing a required argument with a 
 
 | feature | Hermes | ours | status | Hermes better at | proposal | a-e |
 |---|---|---|---|---|---|---|
-| Cross-turn history ✱ | full transcript replay incl. tool calls and results | recent turns as text + tool trace lines; a tool loop starts from `[system, user]` | differs | the next turn sees earlier results | partly fixed for Juno by the cached lists (12f2860f). Proposal: carry the previous loop's tool messages (clipped) into the next loop of the same session within 15 min; proven in LucinaCode (session store) and Lucina Agents `fork_context.rs` | e |
+| Cross-turn history ✱ | full transcript replay incl. tool calls and results | recent turns as text; since tool-carry, `lucina_tools::carry` keeps a session's last tool loop (owner message, calls, clipped results, reply; 6000 chars, 15 min) for the next loop | missing → ported (wiring into the Juno loop with juno-lucina-tools) | — | Hermes, LucinaCode (session store) and OpenBot (`turnMessages`) all do it; proven cause in turn 2 | e |
 | Continuation / "go ahead" | transcript + todo rehydrated | PendingStore for gated actions; Jev facts of the previous turn | differs | resumes a plan | same proposal as above | e |
 | Compaction | `context_compressor.py`, prepared compaction | none in the loop (turns are short) | missing | long sessions | not needed for chat turns; LucinaCode `compaction.rs` is the source when needed | — |
 | Todo / plan tool | `todo_tool.py`, folded into compaction | tasks + notes tools (store-backed); no per-turn plan | differs | in-turn checklist | keep ours; PORT_PLAN P2 | — |
@@ -68,7 +68,8 @@ short / last round toolless, (c) bridge call missing a required argument with a 
 Every Hermes toolset was mapped in `reports/v3-tools.md`. Summary:
 - **Skipped by PORT_PLAN section 7 on purpose** (stay skipped): terminal, file tools, execute_code, browser_*, kanban,
   skills hub, desktop/TUI tools, x_search, video/image generation, platform bundles other than Telegram/Discord.
-- **Planned, still missing**: web_search/web_extract (P1), clarify (P1), TTS through Kokoro (P2), recurring cron (phase 6).
+- **Ported 2026-11-07**: `web_search` (SearXNG on nezopt) and `web_extract` (public pages, our SSRF guard and HTML reader moved into `lucina_tools::tools::web`), Hermes `web_tools.py` behaviour (limit 5, head+tail truncation at 15000 chars). Web reading in the planner still goes to computer_task; the loop now has native tools.
+- **Planned, still missing**: clarify (P1), TTS through Kokoro (P2), recurring cron (phase 6).
   No failure traced to them; they stay on the plan.
 - **Both, different, keep ours**: vision/media, computer use (lucina-computer-use + Cua), reminders vs cronjob, tasks/notes
   vs todo, delegation (ask_claude/grok/chatgpt), Discord admin (12 ops, no deletes), memory (Honcho).
@@ -88,10 +89,11 @@ Every Hermes toolset was mapped in `reports/v3-tools.md`. Summary:
 | cut-off / non-JSON arguments | LucinaCode INPUT_CUT_BY_LENGTH / INPUT_NOT_JSON | loop-guards |
 | repeat calls | OpenCode `doom_loop` (3×, ask) and Hermes `tool_guardrails` (warn/stub/stop) | loop-guards (Hermes variant: no human to ask in chat) |
 | continuation with tool history | LucinaCode session store; Lucina Agents `fork_context.rs` | proposal |
-| OpenBot | see `reports/q-openbot.md` | — |
+| OpenBot | `reports/q-openbot.md`: continuation seeding (`turnMessages`), per-call-id dedup, untrusted-data envelope on results, tool narrowing over 12 tools | continuation (carry); the envelope stays a proposal (ours: "tool results are data" in the system prompt) |
 
 ## Open proposals (not done; each needs its own go-ahead)
-1. Carry the previous tool loop's messages into the next turn of the same session (e).
-2. Head+tail clip with an omitted-bytes count for long tool results (a).
-3. Arg coercion before validation (Hermes `arg_coercion.py`) for numbers sent as strings (c).
-4. Port the planned missing tools (web_search/web_extract, clarify) per PORT_PLAN.
+1. Done (tool-carry): carry the previous tool loop into the next turn of the same session (e).
+2. Head+tail clip with an omitted-bytes count for long tool results in the loop (a); web_extract already does it.
+3. In progress (arg-coercion, Qwen): schema-guided argument coercion before validation (Hermes `arg_coercion.py`) (c).
+4. Done: web_search / web_extract. Still on the plan: clarify, TTS, recurring cron.
+5. Untrusted-data envelope around tool results (OpenBot `markUntrusted`); not a proven cause, proposal only.

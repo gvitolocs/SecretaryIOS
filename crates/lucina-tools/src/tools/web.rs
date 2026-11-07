@@ -543,7 +543,7 @@ mod tests {
             .unwrap();
         let results = out["results"].as_array().unwrap();
         assert_eq!(results[0]["error"], "unsupported content type image/png");
-        assert!(results[1]["error"].as_str().unwrap().len() > 0);
+        assert!(!results[1]["error"].as_str().unwrap().is_empty());
 
         let strict = WebExtractTool {
             allow_loopback: false,
