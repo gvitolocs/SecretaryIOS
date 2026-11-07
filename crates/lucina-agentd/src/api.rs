@@ -115,6 +115,7 @@ impl From<ManagerError> for ApiError {
             ManagerError::RewindTargetNotFound(_) => StatusCode::NOT_FOUND,
             ManagerError::RewindForbidden(_) => StatusCode::FORBIDDEN,
             ManagerError::ForkBoundary(_) | ManagerError::Busy(_) => StatusCode::CONFLICT,
+            ManagerError::CodexNotAllowed(_) => StatusCode::FORBIDDEN,
         };
         ApiError(status, e.code().to_string(), e.to_string())
     }

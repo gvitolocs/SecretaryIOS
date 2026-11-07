@@ -24,6 +24,11 @@ those sessions.
 - Bodies, query strings and status codes pass through unchanged. Errors are always
   `{"error": {"code", "message"}}`, with the codes agentd uses (`AGENT_NOT_FOUND`, `PERMISSION_FORBIDDEN`,
   `WORKSPACE_GUARD`, …).
+- `CODEX_NOT_ALLOWED` (403): the owner's rule, Codex is not used on Lucina projects. Any agent with provider `codex`
+  whose directory is a Lucina project (a checkout under `~/Projects/Lucina/`, a worktree of one under
+  `~/Projects/.worktrees/<Repo>/`, or a repo listed in `LUCINA_AGENTD_CODEX_DENY_REPOS`) is refused, whoever asks; a
+  chain on such a project skips its Codex lanes. Message: "Codex is not used on Lucina projects (owner rule). Pick
+  Claude, Mistral or Qwen for <Repo>." CodeCor on Juno shows it as is.
 - JSON is camelCase. The shapes are Paseo 0.13.2's (`AgentSnapshot`, `AgentListItem`, `TimelineRow`,
   `PermissionRequest`), plus Lucina's fields: `gate`, `workspaceId`, and the permission book's `PermissionView`.
 

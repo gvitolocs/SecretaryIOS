@@ -60,6 +60,9 @@ pub struct Config {
     /// (`LUCINA_AGENTD_CODEX_REPOS`, comma-separated basenames; default `SecretaryIOS`).
     pub codex_repos: Vec<String>,
     pub codex_base: String,
+    /// More repo basenames where Codex is refused outright, beside every Lucina project (the owner's rule;
+    /// `LUCINA_AGENTD_CODEX_DENY_REPOS`, comma-separated). See [`lucina_repo_name`].
+    pub codex_deny_repos: Vec<String>,
     /// The merge sweep leaves a worktree git touched more recently than this
     /// (`LUCINA_AGENTD_SWEEP_IDLE_SECS`, default 30 minutes).
     pub sweep_idle_secs: u64,
@@ -77,9 +80,84 @@ impl Config {
         let codex_repos = std::env::var("LUCINA_AGENTD_CODEX_REPOS")
             .map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect())
             .unwrap_or_else(|_| vec!["SecretaryIOS".to_string()]);
+        let codex_deny_repos = std::env::var("LUCINA_AGENTD_CODEX_DENY_REPOS")
+            .map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect())
+            .unwrap_or_default();
         let sweep_idle_secs = std::env::var("LUCINA_AGENTD_SWEEP_IDLE_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(1800);
-        Config { wt, wt_root, projects_root, codex_repos, codex_base: "lucina-rs".into(), sweep_idle_secs }
+        Config { wt, wt_root, projects_root, codex_repos, codex_base: "lucina-rs".into(), codex_deny_repos, sweep_idle_secs }
     }
+}
+
+/// The immediate child of `base` that `path` sits in, when `path` is under it. A path equal to `base` is not under it.
+fn child_of(path: &Path, base: &Path) -> Option<PathBuf> {
+    let rel = path.strip_prefix(base).ok()?;
+    let first = rel.components().next()?;
+    Some(base.join(first))
+}
+
+/// The repository a git common dir names: the parent of a `.git` directory, or the dir itself (a bare repo).
+fn repo_of_common_dir(common: &Path) -> PathBuf {
+    if common.file_name().is_some_and(|n| n == ".git") {
+        common.parent().map(Path::to_path_buf).unwrap_or_else(|| common.to_path_buf())
+    } else {
+        common.to_path_buf()
+    }
+}
+
+/// `git -C dir rev-parse --path-format=absolute --git-common-dir`, trimmed; `None` when it fails (not a repo, no git).
+/// Synchronous, like this module's `canon`.
+fn git_common_dir(dir: &Path) -> Option<PathBuf> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["-c", "core.quotePath=false", "rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!s.is_empty()).then(|| PathBuf::from(s))
+}
+
+/// The Lucina project's directory name when `cwd` is one, else `None`. The owner's rule: Codex is not used on Lucina
+/// projects. A Lucina project is a checkout under `<projects_root>/Lucina/`, a worktree under `<wt_root>/<Repo>/` where
+/// `<projects_root>/Lucina/<Repo>` exists, or any checkout whose repo is under `<projects_root>/Lucina/`; plus the
+/// basenames in `codex_deny_repos` (a worktree under `<wt_root>/<name>/`, or a repo named `<name>`).
+pub fn lucina_repo_name(cfg: &Config, cwd: &Path) -> Option<String> {
+    let name_of = |p: &Path| p.file_name().map(|n| n.to_string_lossy().to_string());
+    let cwd = git::canon(cwd);
+    let lucina = git::canon(&git::canon(&cfg.projects_root).join("Lucina"));
+    let wt_child = child_of(&cwd, &git::canon(&cfg.wt_root)).and_then(|r| name_of(&r));
+    if let Some(repo) = child_of(&cwd, &lucina) {
+        return name_of(&repo);
+    }
+    if let Some(name) = &wt_child {
+        if lucina.join(name).is_dir() {
+            return Some(name.clone());
+        }
+    }
+    if let Some(common) = git_common_dir(&cwd) {
+        let repo = repo_of_common_dir(&common);
+        if let Some(under) = child_of(&repo, &lucina) {
+            return name_of(&under);
+        }
+        if let Some(name) = name_of(&repo).filter(|n| cfg.codex_deny_repos.contains(n)) {
+            return Some(name);
+        }
+    }
+    wt_child.filter(|n| cfg.codex_deny_repos.contains(n))
+}
+
+/// Whether `cwd` is a Lucina project (see [`lucina_repo_name`]).
+pub fn is_lucina_project(cfg: &Config, cwd: &Path) -> bool {
+    lucina_repo_name(cfg, cwd).is_some()
 }
 
 /// What a worktree's checkout and processes show, for the merge sweep.
@@ -915,9 +993,76 @@ mod tests {
             projects_root: root.join("proj"),
             codex_repos: vec!["SecretaryIOS".into()],
             codex_base: "lucina-rs".into(),
+            codex_deny_repos: vec![],
             sweep_idle_secs: 0,
         };
         Registry::open(store, config, Arc::new(|_: &WorkspaceRecord| {})).unwrap()
+    }
+
+    fn lucina_config(root: &Path, deny: Vec<String>) -> Config {
+        Config {
+            wt: None,
+            wt_root: root.join("wt"),
+            projects_root: root.join("proj"),
+            codex_repos: vec![],
+            codex_base: "lucina-rs".into(),
+            codex_deny_repos: deny,
+            sweep_idle_secs: 0,
+        }
+    }
+
+    #[test]
+    fn lucina_projects_are_found_by_path_worktree_and_repo() {
+        let t = tempfile::tempdir().unwrap();
+        let cfg = lucina_config(t.path(), vec![]);
+        let (proj, wt) = (t.path().join("proj"), t.path().join("wt"));
+        let lucina = proj.join("Lucina");
+        // A checkout under <projects_root>/Lucina/, and a folder inside it.
+        let sios = lucina.join("SecretaryIOS");
+        repo(&sios);
+        assert_eq!(lucina_repo_name(&cfg, &sios), Some("SecretaryIOS".into()));
+        assert!(is_lucina_project(&cfg, &sios.join("crates")));
+        // A worktree under <wt_root>/<Repo>/ of a Lucina repo; one of another repo is not.
+        let wt_sios = wt.join("SecretaryIOS").join("feature-x");
+        repo(&wt_sios);
+        assert_eq!(lucina_repo_name(&cfg, &wt_sios), Some("SecretaryIOS".into()));
+        let wt_other = wt.join("Other").join("feature-x");
+        repo(&wt_other);
+        assert_eq!(lucina_repo_name(&cfg, &wt_other), None);
+        // A nested path of a repo under Lucina.
+        let deep = lucina.join("Nested").join("a").join("b");
+        repo(&lucina.join("Nested"));
+        std::fs::create_dir_all(&deep).unwrap();
+        assert_eq!(lucina_repo_name(&cfg, &deep), Some("Nested".into()));
+        // Another project under projects_root, and a repo outside it.
+        repo(&proj.join("Other"));
+        assert_eq!(lucina_repo_name(&cfg, &proj.join("Other")), None);
+        repo(&t.path().join("elsewhere"));
+        assert_eq!(lucina_repo_name(&cfg, &t.path().join("elsewhere")), None);
+    }
+
+    #[test]
+    fn a_symlink_into_lucina_is_lucina() {
+        let t = tempfile::tempdir().unwrap();
+        let cfg = lucina_config(t.path(), vec![]);
+        let sios = t.path().join("proj/Lucina/SecretaryIOS");
+        repo(&sios);
+        let link = t.path().join("link");
+        std::os::unix::fs::symlink(&sios, &link).unwrap();
+        assert_eq!(lucina_repo_name(&cfg, &link), Some("SecretaryIOS".into()));
+    }
+
+    #[test]
+    fn the_extra_deny_list_counts_worktrees_and_repos_by_name() {
+        let t = tempfile::tempdir().unwrap();
+        let cfg = lucina_config(t.path(), vec!["MyRepo".into()]);
+        let wt_repo = t.path().join("wt/MyRepo/branch-a");
+        repo(&wt_repo);
+        assert_eq!(lucina_repo_name(&cfg, &wt_repo), Some("MyRepo".into()));
+        let standalone = t.path().join("somewhere/MyRepo");
+        repo(&standalone);
+        assert_eq!(lucina_repo_name(&cfg, &standalone), Some("MyRepo".into()));
+        assert_eq!(lucina_repo_name(&lucina_config(t.path(), vec![]), &standalone), None);
     }
 
     fn repo(dir: &Path) {

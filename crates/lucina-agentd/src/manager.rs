@@ -162,6 +162,9 @@ pub enum ManagerError {
     /// A rewind or a lane run holds the agent right now.
     #[error("{0}")]
     Busy(String),
+    /// The owner's rule: Codex is not used on Lucina projects.
+    #[error("{0}")]
+    CodexNotAllowed(String),
 }
 
 impl ManagerError {
@@ -198,6 +201,7 @@ impl ManagerError {
             ManagerError::RewindForbidden(_) => "REWIND_FORBIDDEN",
             ManagerError::ForkBoundary(_) => "FORK_BOUNDARY_UNAVAILABLE",
             ManagerError::Busy(_) => "AGENT_BUSY",
+            ManagerError::CodexNotAllowed(_) => "CODEX_NOT_ALLOWED",
         }
     }
 }
@@ -990,13 +994,29 @@ impl Manager {
             }
         }
         if let Some(category) = req.chain.clone() {
-            let lanes: Vec<(String, &'static str, Lane)> = self
+            let mut lanes: Vec<(String, &'static str, Lane)> = self
                 .inner
                 .lanes
                 .chain(&category)
                 .into_iter()
                 .filter(|(_, p, _)| self.inner.providers.contains_key(*p))
                 .collect();
+            let chain_cwd = if req.cwd.trim().is_empty() {
+                req.workspace_id
+                    .as_deref()
+                    .and_then(|wid| self.inner.workspaces.get(wid))
+                    .filter(|w| w.archived_at.is_none())
+                    .map(|w| w.cwd.clone())
+                    .unwrap_or_default()
+            } else {
+                req.cwd.clone()
+            };
+            if crate::workspaces::is_lucina_project(
+                &self.inner.options.workspaces,
+                std::path::Path::new(&chain_cwd),
+            ) {
+                lanes.retain(|(_, p, _)| *p != "codex");
+            }
             let Some((first_name, first_provider, first_lane)) = lanes.first().cloned() else {
                 return Err(ManagerError::Invalid(format!("no lane of chain \"{category}\" can run here")));
             };
@@ -1024,12 +1044,6 @@ impl Manager {
         if !req.claude_session && (req.external || provider_id == ext::PROVIDER || ext::is_session(&provider_id)) {
             Self::check_external(&mut req, &provider_id)?;
         }
-        let provider = self
-            .inner
-            .providers
-            .get(&provider_id)
-            .cloned()
-            .ok_or_else(|| ManagerError::UnknownProvider(provider_id.clone()))?;
         let workspace = match &req.workspace_id {
             Some(wid) => Some(
                 self.inner
@@ -1046,6 +1060,22 @@ impl Manager {
                 None => return Err(ManagerError::Invalid("cwd is required".into())),
             }
         }
+        if provider_id == "codex" {
+            if let Some(repo) = crate::workspaces::lucina_repo_name(
+                &self.inner.options.workspaces,
+                std::path::Path::new(&req.cwd),
+            ) {
+                return Err(ManagerError::CodexNotAllowed(format!(
+                    "Codex is not used on Lucina projects (owner rule). Pick Claude, Mistral or Qwen for {repo}."
+                )));
+            }
+        }
+        let provider = self
+            .inner
+            .providers
+            .get(&provider_id)
+            .cloned()
+            .ok_or_else(|| ManagerError::UnknownProvider(provider_id.clone()))?;
         let info = provider.info();
         if !req.internal && !req.external {
             let mode = req.mode_id.clone().or_else(|| info.default_mode_id.clone());
@@ -1593,7 +1623,14 @@ impl Manager {
         use lucina_agents::timeline::NotificationLevel::{Info, Warning};
         let cwd = self.lock().get(&id).map(|a| a.record.cwd.clone()).unwrap_or_default();
         let baseline = Self::worktree_status(&cwd).await;
+        let lucina = crate::workspaces::is_lucina_project(
+            &self.inner.options.workspaces,
+            std::path::Path::new(&cwd),
+        );
         for (i, (name, provider, lane)) in lanes.iter().enumerate() {
+            if *provider == "codex" && lucina {
+                continue;
+            }
             if i > 0 {
                 if let Err(e) = self.guard_start(&cwd, provider, None, false).await {
                     self.note(&id, Warning, format!("lane {name}: {e}; skipped"));
