@@ -49,6 +49,12 @@ command is one argv element after `--`, so no `-o` value can be injected by it; 
    `$LUCINA_AGENT_ID`) under a 330 s limit; the command runs only if it exits 0 with first stdout line `approve`,
    otherwise its message is the refusal. Without the hook the call goes on (the card already gated it) and the
    audit records `decide: not configured`.
+   The hook is `deploy/lucina-agentd/juno-decide.sh` (installed on nezopt since 2026-11-07:
+   `install -m 0755 deploy/lucina-agentd/juno-decide.sh ~/.config/lucina-agentd/juno-decide`). It asks
+   `lucina-rs decide` "Run it" / "Don't run it" (impact medium, not reversible, topic `codecor-juno-bash`) and
+   waits up to 300 s. Lucina passes such a question to the owner's phone, so a call needs both his card on Juno
+   and his answer there. Only "Run it" approves; a question still pending at 300 s is withdrawn and the call
+   refused, and so is any failure of `lucina-rs`.
 4. **Output redaction** (before clipping): `sec_[A-Za-z0-9_-]{16,}`, `sk-[A-Za-z0-9]{20,}` and
    `-----BEGIN … PRIVATE KEY-----` … `-----END … KEY-----` blocks become `[redacted]`.
 
