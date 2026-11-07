@@ -49,6 +49,8 @@ pub(super) struct Server {
     process_group: Option<i32>,
     url: String,
     last_use: Instant,
+    /// The server's (and gpu-lease's) output of this start: why it exited, when it does.
+    log: std::path::PathBuf,
 }
 impl Drop for Server {
     fn drop(&mut self) {
@@ -123,6 +125,13 @@ async fn start(st: &AppState, gpu: bool) -> anyhow::Result<Server> {
         Command::new(&cfg.vision_bin)
     };
     cmd.process_group(0);
+    // Its output goes to a file, rewritten at each start: a deny from gpu-lease ("budget: held 21500 …") or a
+    // crash used to be invisible ("exited before becoming ready", 5 Nov 2026).
+    let log = st.cfg.data_dir.join("vision-server.log");
+    let out = {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&log)?
+    };
     let child = cmd
         .arg("-m")
         .arg(&cfg.vision_model)
@@ -145,8 +154,8 @@ async fn start(st: &AppState, gpu: bool) -> anyhow::Result<Server> {
             "4096",
         ])
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(out.try_clone()?)
+        .stderr(out)
         .kill_on_drop(true)
         .spawn()?;
     Ok(Server {
@@ -154,14 +163,18 @@ async fn start(st: &AppState, gpu: bool) -> anyhow::Result<Server> {
         child,
         url: format!("http://127.0.0.1:{port}"),
         last_use: Instant::now(),
+        log,
     })
 }
 async fn ready(server: &mut Server, seconds: u64) -> anyhow::Result<()> {
     let http = reqwest::Client::new();
     let deadline = Instant::now() + Duration::from_secs(seconds);
     while Instant::now() < deadline {
-        if server.child.try_wait()?.is_some() {
-            bail!("vision process exited before becoming ready");
+        if let Some(status) = server.child.try_wait()? {
+            bail!(
+                "vision process exited before becoming ready ({status}): {}",
+                last_lines(&server.log, 3)
+            );
         }
         if http
             .get(format!("{}/health", server.url))
@@ -176,6 +189,13 @@ async fn ready(server: &mut Server, seconds: u64) -> anyhow::Result<()> {
     }
     bail!("vision startup timeout")
 }
+/// The last `n` non-empty lines of a log file, on one line (empty when there is none).
+fn last_lines(path: &Path, n: usize) -> String {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    lines[lines.len().saturating_sub(n)..].join(" | ").chars().take(400).collect()
+}
+
 async fn completion(url: &str, path: &Path, prompt: &str) -> anyhow::Result<String> {
     let bytes = tokio::fs::read(path).await?;
     let data = base64::engine::general_purpose::STANDARD.encode(bytes);

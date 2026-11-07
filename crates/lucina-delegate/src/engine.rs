@@ -1,12 +1,16 @@
 //! The delegation engine: hard limits → agent choice → budget → Lucina's
 //! self-review → sandbox → the job in the background → card, note,
 //! notification, audit.
+//!
+//! A backend that fails with "out of credits", "not logged in" or a rate limit is remembered as down
+//! ([`crate::state::Down`]); while it is, the job goes to Mistral (Lucina's own model) for non-code
+//! work, and the card says so. A running job can be cancelled ([`Delegator::cancel`]).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use lucina_llm::{ChatModel, ChatRequest, Message};
 use lucina_store::rich::RichMessage;
@@ -21,14 +25,19 @@ use crate::intent::{Switch, SwitchIntent};
 use crate::judge;
 use crate::policy::{self, Refusal};
 use crate::sandbox::{self, Workspace};
-use crate::state::{PauseNotice, StateStore};
+use crate::state::{outage, Down, PauseNotice, StateStore};
 use crate::types::{
-    clip, clip_sentences, guess_lang, now_iso, AgentId, Decision, JobRecord, JobStatus, Judgement,
-    Kind, Request,
+    answer_lang, clip, clip_sentences, guess_lang, now_iso, AgentId, Decision, Fallback, JobRecord,
+    JobStatus, Judgement, Kind, Request,
 };
 
 const KEEP_JOBS: usize = 100;
 const RESULT_CHARS: usize = 8000;
+/// The error of a job the owner stopped.
+pub const CANCELLED: &str = "cancelled by Giuseppe";
+
+/// The clock the engine reads (tests move it forward).
+pub type Clock = Arc<dyn Fn() -> DateTime<Utc> + Send + Sync>;
 
 /// A rendered card for the timeline.
 #[derive(Debug, Clone)]
@@ -50,6 +59,10 @@ pub trait Sink: Send + Sync {
     ) -> Result<String, String>;
     /// An app notification to the owner.
     async fn notify(&self, title: &str, body: &str);
+    /// A session whose jobs never alert the owner (a self-test): its cards stay in its own chat.
+    fn quiet(&self, _session: &str) -> bool {
+        false
+    }
     /// A delegation card on the timeline (the job's channel).
     fn card(&self, card: &Card);
     /// A plain Lucina message on the timeline.
@@ -98,6 +111,28 @@ struct Claim {
     agent: AgentId,
 }
 
+fn claim(running: &Arc<Mutex<HashSet<AgentId>>>, agent: AgentId) -> Option<Claim> {
+    running
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(agent)
+        .then(|| Claim {
+            running: running.clone(),
+            agent,
+        })
+}
+
+/// A job in the background. `cancel` aborts it and waits for the task to be gone: its claim is
+/// dropped and its processes (`kill_on_drop`, the sandbox's process-group guard) are killed.
+struct RunningTask {
+    handle: tokio::task::JoinHandle<()>,
+    /// The agent doing the work (Mistral when it stands in).
+    runner: AgentId,
+    started: Instant,
+    sandbox: std::path::PathBuf,
+    tx: Arc<watch::Sender<Option<JobRecord>>>,
+}
+
 impl Drop for Claim {
     fn drop(&mut self) {
         self.running
@@ -115,7 +150,10 @@ pub struct Delegator {
     sink: Arc<dyn Sink>,
     running: Arc<Mutex<HashSet<AgentId>>>,
     jobs: Mutex<Vec<JobRecord>>,
+    tasks: Mutex<HashMap<String, RunningTask>>,
     audit: AuditLog,
+    tz: Tz,
+    clock: Clock,
 }
 
 fn redacted(s: &str) -> String {
@@ -153,7 +191,25 @@ impl Delegator {
             sink,
             running: Arc::new(Mutex::new(HashSet::new())),
             jobs: Mutex::new(jobs),
+            tasks: Mutex::new(HashMap::new()),
+            tz,
+            clock: Arc::new(Utc::now),
         }
+    }
+
+    /// Another clock (tests and replays: an outage that has run out).
+    pub fn with_clock(mut self, clock: Clock) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    fn now(&self) -> DateTime<Utc> {
+        (self.clock)()
+    }
+
+    /// `HH:MM` in the owner's time zone.
+    fn hhmm(&self, t: DateTime<Utc>) -> String {
+        t.with_timezone(&self.tz).format("%H:%M").to_string()
     }
 
     pub fn config(&self) -> &DelegateConfig {
@@ -215,7 +271,7 @@ impl Delegator {
     }
 
     fn audit(&self, job: &JobRecord, outcome: &str) {
-        let (usage, total) = self.state.usage(job.agent, Utc::now());
+        let (usage, total) = self.state.usage(job.answered_by(), self.now());
         self.audit
             .write(AuditLog::entry(job, outcome, usage, total));
     }
@@ -243,10 +299,93 @@ impl Delegator {
 
     // ------------------------------------------------------------ choice
 
-    async fn choose(&self, req: &Request) -> Result<Arc<dyn Agent>, Refusal> {
-        let now = Utc::now();
+    /// Whether `agent` can take a `kind` job now: its backend, or why not.
+    async fn usable(
+        &self,
+        agent: &Arc<dyn Agent>,
+        kind: Kind,
+        now: DateTime<Utc>,
+    ) -> Result<String, Refusal> {
+        let id = agent.id();
+        if !agent.supports(kind) {
+            return Err(Refusal::Unsupported(id, kind));
+        }
+        self.state.check(id, now)?;
+        if self
+            .running
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&id)
+        {
+            return Err(Refusal::Busy(id));
+        }
+        let backend = agent
+            .backend()
+            .await
+            .map_err(|why| Refusal::Unavailable(id, why))?;
+        if let Some(d) = self.state.down(id, now).filter(|d| d.backend == backend) {
+            return Err(Refusal::Unavailable(
+                id,
+                format!(
+                    "{} {} since {} ({})",
+                    d.backend,
+                    d.state,
+                    self.hhmm(d.since),
+                    d.reason
+                ),
+            ));
+        }
+        Ok(backend)
+    }
+
+    fn agent(&self, id: AgentId) -> Option<&Arc<dyn Agent>> {
+        self.agents.iter().find(|a| a.id() == id)
+    }
+
+    /// Mistral, when it may stand in for `from` on a non-code job.
+    async fn stand_in(
+        &self,
+        req: &Request,
+        from: AgentId,
+        why: &Refusal,
+        now: DateTime<Utc>,
+    ) -> Option<(Arc<dyn Agent>, Fallback)> {
+        if req.kind == Kind::Code
+            || from == AgentId::Mistral
+            || policy::is_caller(req, AgentId::Mistral)
+        {
+            return None;
+        }
+        let m = self.agent(AgentId::Mistral)?;
+        self.usable(m, req.kind, now).await.ok()?;
+        let down = self.state.down(from, now);
+        let reason = match (why, &down) {
+            (Refusal::Busy(_), _) => "busy with another job".to_owned(),
+            (_, Some(d)) => format!("{} since {}", d.state, self.hhmm(d.since)),
+            (Refusal::Unavailable(_, w), None) => format!("unavailable ({})", clip(w, 120)),
+            _ => "unavailable".to_owned(),
+        };
+        let from_backend = match (down, self.agent(from)) {
+            (Some(d), _) => d.backend,
+            (None, Some(a)) => a.backend().await.unwrap_or_default(),
+            (None, None) => String::new(),
+        };
+        Some((
+            m.clone(),
+            Fallback {
+                from,
+                from_backend,
+                reason,
+            },
+        ))
+    }
+
+    /// The agent to run, and the fallback when Mistral stands in for the one asked: the named agent,
+    /// or every preferred one, was unreachable or busy on a non-code job.
+    async fn choose(&self, req: &Request) -> Result<(Arc<dyn Agent>, Option<Fallback>), Refusal> {
+        let now = self.now();
         // Auto choice never picks the agent that is calling Lucina (`hard_limits` refuses a named one).
-        let order = match req.to {
+        let order: Vec<AgentId> = match req.to {
             Some(a) => vec![a],
             None => policy::preference(req.kind, &req.task)
                 .into_iter()
@@ -254,39 +393,48 @@ impl Delegator {
                 .collect(),
         };
         self.state.check_global(now)?;
-        let mut errs: Vec<Refusal> = Vec::new();
-        for id in order {
-            let Some(agent) = self.agents.iter().find(|a| a.id() == id) else {
+        let stands_in = |e: &Refusal| matches!(e, Refusal::Unavailable(..) | Refusal::Busy(_));
+        let mut errs: Vec<(AgentId, Refusal)> = Vec::new();
+        for &id in &order {
+            let Some(agent) = self.agent(id) else {
                 if req.to.is_some() {
-                    return Err(Refusal::Unavailable(id, "not configured".into()));
+                    errs.push((id, Refusal::Unavailable(id, "not configured".into())));
                 }
                 continue;
             };
-            let check = async {
-                if !agent.supports(req.kind) {
-                    return Err(Refusal::Unsupported(id, req.kind));
-                }
-                self.state.check(id, now)?;
-                if self
-                    .running
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .contains(&id)
-                {
-                    return Err(Refusal::Busy(id));
-                }
-                agent
-                    .backend()
-                    .await
-                    .map_err(|why| Refusal::Unavailable(id, why))?;
-                Ok(())
-            }
-            .await;
-            match check {
-                Ok(()) => return Ok(agent.clone()),
+            match self.usable(agent, req.kind, now).await {
+                Ok(_) => return Ok((agent.clone(), None)),
                 Err(Refusal::Stopped) => return Err(Refusal::Stopped),
-                Err(e) if req.to.is_some() => return Err(e),
-                Err(e) => errs.push(e),
+                Err(e) => {
+                    let named = req.to.is_some();
+                    errs.push((id, e));
+                    if named {
+                        break;
+                    }
+                }
+            }
+        }
+        // Mistral stands in only when nothing else could run because of outages or busy agents.
+        let all_out = !errs.is_empty()
+            && errs.iter().any(|(_, e)| stands_in(e))
+            && errs.iter().all(|(_, e)| {
+                stands_in(e) || matches!(e, Refusal::AgentOff(_) | Refusal::Unsupported(..))
+            });
+        if all_out {
+            let (from, why) = errs
+                .iter()
+                .find(|(_, e)| stands_in(e))
+                .map(|(a, e)| (*a, e.clone()))
+                .expect("one stands in");
+            if let Some((m, fb)) = self.stand_in(req, from, &why, now).await {
+                tracing::info!(from = from.as_str(), reason = %fb.reason, "delegation: Mistral stands in");
+                return Ok((m, Some(fb)));
+            }
+        }
+        let mut errs: Vec<Refusal> = errs.into_iter().map(|(_, e)| e).collect();
+        if req.to.is_some() {
+            if let Some(e) = errs.pop() {
+                return Err(e);
             }
         }
         match errs.len() {
@@ -336,14 +484,14 @@ impl Delegator {
             return Err(Refusal::Disabled);
         }
         policy::hard_limits(req, None, self.cfg.max_depth)?;
-        let agent = self.choose(req).await?;
+        if let Some(t) = req.to {
+            policy::hard_limits(req, Some(t), self.cfg.max_depth)?;
+        }
+        let (agent, _) = self.choose(req).await?;
         policy::hard_limits(req, Some(agent.id()), self.cfg.max_depth)?;
-        let lang = crate::types::answer_lang(
-            req.lang
-                .as_deref()
-                .unwrap_or_else(|| guess_lang(&req.task)),
-        )
-        .to_owned();
+        let lang =
+            crate::types::answer_lang(req.lang.as_deref().unwrap_or_else(|| guess_lang(&req.task)))
+                .to_owned();
         Ok((agent.id(), self.self_review(req, agent.id(), &lang).await))
     }
 
@@ -352,12 +500,9 @@ impl Delegator {
     /// Start a delegation. Never asks the owner: hard limits, budget and
     /// Lucina's own judgement decide.
     pub async fn start(self: &Arc<Self>, req: Request) -> StartOutcome {
-        let lang = crate::types::answer_lang(
-            req.lang
-                .as_deref()
-                .unwrap_or_else(|| guess_lang(&req.task)),
-        )
-        .to_owned();
+        let lang =
+            crate::types::answer_lang(req.lang.as_deref().unwrap_or_else(|| guess_lang(&req.task)))
+                .to_owned();
         let refuse = |agent: Option<AgentId>, r: Refusal| {
             tracing::info!(
                 agent = agent.map(AgentId::as_str),
@@ -394,27 +539,26 @@ impl Delegator {
             }
             _ => None,
         };
-        let agent = match self.choose(&req).await {
+        if let Some(t) = req.to {
+            if let Err(r) = policy::hard_limits(&req, Some(t), self.cfg.max_depth) {
+                return refuse(Some(t), r);
+            }
+        }
+        let (agent, fallback) = match self.choose(&req).await {
             Ok(a) => a,
             Err(r) => return refuse(req.to, r),
         };
+        // `id` does the work; the job keeps the agent asked for when Mistral stands in.
         let id = agent.id();
+        let asked = fallback.as_ref().map_or(id, |f| f.from);
         if let Err(r) = policy::hard_limits(&req, Some(id), self.cfg.max_depth) {
             return refuse(Some(id), r);
         }
         // One job per agent: claim it now (released when the job ends).
-        let claim = {
-            let mut run = self.running.lock().unwrap_or_else(|e| e.into_inner());
-            if !run.insert(id) {
-                drop(run);
-                return refuse(Some(id), Refusal::Busy(id));
-            }
-            Claim {
-                running: self.running.clone(),
-                agent: id,
-            }
+        let Some(claim) = claim(&self.running, id) else {
+            return refuse(Some(id), Refusal::Busy(id));
         };
-        let now = Utc::now();
+        let now = self.now();
         if let Err((r, notice)) = self.state.reserve(id, &self.cfg.budget, now) {
             if let Some(n) = notice {
                 self.announce_pause(&n, &lang, &req.channel).await;
@@ -428,7 +572,9 @@ impl Delegator {
         let mut task = req.task.clone();
         let mut job = JobRecord {
             id: job_id.clone(),
-            agent: id,
+            agent: asked,
+            answered_by: Some(id),
+            fallback,
             backend: agent.backend().await.unwrap_or_default(),
             kind: req.kind,
             origin: req.origin,
@@ -454,7 +600,7 @@ impl Delegator {
             undo: None,
         };
         let skip = |mut job: JobRecord, extra: Option<&str>| {
-            self.state.release(id, Utc::now());
+            self.state.release(id, self.now());
             job.status = JobStatus::Skipped;
             job.finished_at = Some(now_iso());
             if let (Some(e), Some(j)) = (extra, job.judgement.as_mut()) {
@@ -487,7 +633,7 @@ impl Delegator {
         let ws = match sandbox::prepare(&self.cfg, &job_id, repo.as_deref()).await {
             Ok(ws) => ws,
             Err(e) => {
-                self.state.release(id, Utc::now());
+                self.state.release(id, self.now());
                 job.status = JobStatus::Error;
                 job.error = Some(e.clone());
                 job.finished_at = Some(now_iso());
@@ -517,7 +663,7 @@ impl Delegator {
             .resume_job
             .as_deref()
             .and_then(|j| self.job(j))
-            .filter(|j| j.agent == id)
+            .filter(|j| j.answered_by() == id)
             .and_then(|j| j.session);
         let ajob = AgentJob {
             job_id: job_id.clone(),
@@ -539,13 +685,33 @@ impl Delegator {
         tracing::info!(job = %job.id, agent = id.as_str(), backend = %job.backend, kind = req.kind.as_str(), decision = judgement.decision.as_str(), risk = judgement.risk.as_str(), "delegation started");
 
         let (tx, rx) = watch::channel(None);
+        let tx = Arc::new(tx);
         let me = Arc::clone(self);
         let started_job = job.clone();
-        tokio::spawn(async move {
+        let sandbox_dir = ws.dir.clone();
+        let task_tx = tx.clone();
+        // Registered under the lock the task takes to leave the map: it cannot leave before it is in.
+        let mut tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
+        let handle = tokio::spawn(async move {
             let _claim = claim;
             let done = me.run_job(agent, ajob, ws, job).await;
-            let _ = tx.send(Some(done));
+            me.tasks
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&done.id);
+            let _ = task_tx.send(Some(done));
         });
+        tasks.insert(
+            job_id,
+            RunningTask {
+                handle,
+                runner: id,
+                started: Instant::now(),
+                sandbox: sandbox_dir,
+                tx,
+            },
+        );
+        drop(tasks);
         StartOutcome::Started(Started {
             job: started_job,
             rx,
@@ -573,12 +739,29 @@ impl Delegator {
                 }
             }
         };
-        job.duration_ms = t0.elapsed().as_millis() as u64;
+        let runner = agent.id();
+        let ms = t0.elapsed().as_millis() as u64;
         let turns = result.as_ref().map(|r| r.turns).unwrap_or(0);
-        self.state
-            .record(job.agent, job.duration_ms, turns, Utc::now());
-        job.turns = turns;
+        let now = self.now();
+        self.state.record(runner, ms, turns, now);
+        let result = match result {
+            Ok(reply) => {
+                self.state.clear_down(runner, now);
+                Ok(reply)
+            }
+            Err(e) => match self.note_outage(runner, &job.backend, &e) {
+                // It never answered: Mistral answers instead (never for code).
+                Some(state) => match self.fallback_run(&ajob, &mut job, runner, state).await {
+                    Some(r) => r,
+                    None => Err(e),
+                },
+                None => Err(e),
+            },
+        };
+        job.duration_ms = t0.elapsed().as_millis() as u64;
+        job.turns = result.as_ref().map(|r| r.turns).unwrap_or(turns);
         let lang = job.lang.clone();
+        let answered = job.answered_by();
         match result {
             Ok(reply) => {
                 let text = redacted(&reply.text);
@@ -603,11 +786,12 @@ impl Delegator {
                     let _ = std::fs::remove_dir_all(&ws.dir);
                 }
                 let long = text.chars().count() > self.cfg.note_threshold_chars;
-                if long || job.kind == Kind::Code {
-                    let title = format!("{}: {}", job.agent.label(), clip(&job.task, 60));
+                // A self-test leaves nothing in his notes.
+                if (long || job.kind == Kind::Code) && !self.sink.quiet(&job.session_id) {
+                    let title = format!("{}: {}", answered.label(), clip(&job.task, 60));
                     let head = format!(
                         "> {} · {} · {} · {}\n> {}\n\n",
-                        job.agent.label(),
+                        answered.label(),
                         job.backend,
                         job.kind.as_str(),
                         card::duration(job.duration_ms),
@@ -616,7 +800,7 @@ impl Delegator {
                     let tags = vec![
                         "lucina".to_owned(),
                         "delegation".to_owned(),
-                        job.agent.as_str().to_owned(),
+                        answered.as_str().to_owned(),
                     ];
                     match self
                         .sink
@@ -630,7 +814,7 @@ impl Delegator {
                     }
                 }
                 if long {
-                    job.summary = self.summarize(&text, job.agent, &lang).await;
+                    job.summary = self.summarize(&text, answered, &lang).await;
                 }
                 job.result = Some(clip(&text, RESULT_CHARS));
                 job.status = JobStatus::Done;
@@ -648,11 +832,16 @@ impl Delegator {
         job.finished_at = Some(now_iso());
         self.store(&job);
         self.post(&job);
-        if job.caller.is_none() && job.duration_ms > inline.as_millis() as u64 {
+        if job.caller.is_none() && !self.sink.quiet(&job.session_id) && job.duration_ms > inline.as_millis() as u64 {
+            let instead = job
+                .fallback
+                .as_ref()
+                .map(|f| format!(" ({} was {})", f.from.label(), f.reason))
+                .unwrap_or_default();
             let body = match job.status {
                 JobStatus::Done => format!(
-                    "{} {}: {}",
-                    job.agent.label(),
+                    "{}{instead} {}: {}",
+                    answered.label(),
                     if lang == "it" {
                         "ha risposto"
                     } else {
@@ -667,8 +856,8 @@ impl Delegator {
                     )
                 ),
                 _ => format!(
-                    "{} {}: {}",
-                    job.agent.label(),
+                    "{}{instead} {}: {}",
+                    answered.label(),
                     if lang == "it" {
                         "non è riuscito"
                     } else {
@@ -680,8 +869,80 @@ impl Delegator {
             self.sink.notify("Lucina", &body).await;
         }
         self.audit(&job, job.status.as_str());
-        tracing::info!(job = %job.id, agent = job.agent.as_str(), status = job.status.as_str(), ms = job.duration_ms, turns = job.turns, "delegation finished");
+        tracing::info!(job = %job.id, agent = job.agent.as_str(), answered_by = answered.as_str(), status = job.status.as_str(), ms = job.duration_ms, turns = job.turns, "delegation finished");
         job
+    }
+
+    /// A run failed with an out-of-credits, signed-out or rate-limit error: remember the backend as
+    /// down (the state word), so the next request does not try it again until then.
+    fn note_outage(&self, agent: AgentId, backend: &str, error: &str) -> Option<&'static str> {
+        let (state, hold) = outage(error)?;
+        let now = self.now();
+        let down = Down {
+            backend: backend.to_owned(),
+            since: now,
+            until: now + hold,
+            state: state.to_owned(),
+            reason: clip(&redacted(error), 160),
+        };
+        tracing::warn!(agent = agent.as_str(), backend, state, until = %down.until, "delegate: backend down");
+        self.state.mark_down(agent, down, now);
+        Some(state)
+    }
+
+    /// The same job once on Mistral, when it may stand in (not code, not Mistral itself, free, in
+    /// budget). `None`: no stand-in; the original error stays.
+    async fn fallback_run(
+        &self,
+        ajob: &AgentJob,
+        job: &mut JobRecord,
+        from: AgentId,
+        state: &str,
+    ) -> Option<Result<crate::agents::AgentReply, String>> {
+        if job.kind == Kind::Code || from == AgentId::Mistral || job.fallback.is_some() {
+            return None;
+        }
+        let m = self.agent(AgentId::Mistral)?.clone();
+        let now = self.now();
+        self.usable(&m, job.kind, now).await.ok()?;
+        let _claim = claim(&self.running, AgentId::Mistral)?;
+        if let Err((r, notice)) = self.state.reserve(AgentId::Mistral, &self.cfg.budget, now) {
+            if let Some(n) = notice {
+                self.announce_pause(&n, &job.lang, &job.channel).await;
+            }
+            tracing::info!(code = r.code(), "delegate: Mistral cannot stand in");
+            return None;
+        }
+        let mut mjob = ajob.clone();
+        mjob.timeout = self.cfg.timeout(AgentId::Mistral, job.kind);
+        let t0 = Instant::now();
+        let r = m.run(&mjob).await;
+        let now = self.now();
+        self.state.record(
+            AgentId::Mistral,
+            t0.elapsed().as_millis() as u64,
+            r.as_ref().map_or(0, |r| r.turns),
+            now,
+        );
+        match r {
+            Ok(reply) => {
+                self.state.clear_down(AgentId::Mistral, now);
+                job.fallback = Some(Fallback {
+                    from,
+                    from_backend: job.backend.clone(),
+                    reason: state.to_owned(),
+                });
+                job.answered_by = Some(AgentId::Mistral);
+                tracing::info!(job = %job.id, from = from.as_str(), state, "delegation: Mistral answered instead");
+                Some(Ok(reply))
+            }
+            Err(e) => {
+                let backend = m.backend().await.unwrap_or_default();
+                self.note_outage(AgentId::Mistral, &backend, &e);
+                tracing::warn!(job = %job.id, error = %clip(&redacted(&e), 200), "delegate: Mistral could not stand in");
+                None
+            }
+        }
     }
 
     async fn summarize(&self, text: &str, agent: AgentId, lang: &str) -> Option<String> {
@@ -720,7 +981,7 @@ impl Delegator {
 
     /// The owner's switches: the reply text.
     pub fn switch(&self, s: &SwitchIntent) -> String {
-        let now = Utc::now();
+        let now = self.now();
         // Never Italian (owner rule 2026-11-02): an Italian intent is answered in English.
         let l = crate::types::answer_lang(s.lang);
         let pick = |it: String, en: String| if l == "it" { it } else { en };
@@ -763,17 +1024,28 @@ impl Delegator {
             }
             Switch::Status => {
                 let snap = self.state.snapshot(&self.cfg.budget, now);
-                let line = |a: AgentId| {
+                let line = |a: &AgentId| {
                     let v = &snap["agents"][a.as_str()];
+                    let health = v["health"].as_str().filter(|h| *h != "ok");
                     format!(
-                        "{} {}: {}/{}",
-                        if v["enabled"] == true { "✅" } else { "⛔" },
+                        "{} {}: {}/{}{}",
+                        if v["enabled"] == true && health.is_none() {
+                            "✅"
+                        } else {
+                            "⛔"
+                        },
                         a.label(),
                         v["calls"],
-                        v["callsCap"]
+                        v["callsCap"],
+                        health.map(|h| format!(" ({h})")).unwrap_or_default()
                     )
                 };
-                let agents = AgentId::ALL.map(line).join(" · ");
+                let agents = AgentId::ALL
+                    .iter()
+                    .filter(|a| self.agent(**a).is_some())
+                    .map(line)
+                    .collect::<Vec<_>>()
+                    .join(" · ");
                 let stopped = snap["stopped"] == true;
                 pick(
                     format!(
@@ -847,15 +1119,77 @@ impl Delegator {
         }
     }
 
+    /// "stop it": abort a running job (its processes die with it), record it as cancelled, free the
+    /// agent. `Err` says why not: unknown job, or already finished.
+    pub async fn cancel(&self, id_or_prefix: &str, lang: &str) -> Result<JobRecord, String> {
+        let da = answer_lang(lang) == "da";
+        let Some(job) = self.job(id_or_prefix) else {
+            return Err(if da {
+                "ingen sådan opgave".into()
+            } else {
+                "no such job".into()
+            });
+        };
+        let task = self
+            .tasks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&job.id);
+        let Some(task) = task else {
+            return Err(self.already(&job, da));
+        };
+        task.handle.abort();
+        // Wait until the task is gone: its claim is released and its child processes are killed.
+        let ended_on_its_own = task.handle.await.is_ok();
+        let current = self.job(&job.id).unwrap_or(job);
+        if ended_on_its_own || current.status != JobStatus::Running {
+            return Err(self.already(&current, da));
+        }
+        let mut job = current;
+        let now = self.now();
+        job.status = JobStatus::Error;
+        job.error = Some(CANCELLED.into());
+        job.finished_at = Some(now_iso());
+        job.duration_ms = task.started.elapsed().as_millis() as u64;
+        self.state.record(task.runner, job.duration_ms, 0, now);
+        if job.kind == Kind::Code {
+            job.undo = Some(format!("rm -rf {}", task.sandbox.display()));
+        } else {
+            let _ = std::fs::remove_dir_all(&task.sandbox);
+        }
+        self.store(&job);
+        self.post(&job);
+        self.audit(&job, "cancelled");
+        let _ = task.tx.send(Some(job.clone()));
+        tracing::info!(job = %job.id, agent = job.agent.as_str(), ms = job.duration_ms, "delegation cancelled");
+        Ok(job)
+    }
+
+    /// "already done at 14:02".
+    fn already(&self, job: &JobRecord, da: bool) -> String {
+        let at = job.finished_at.as_deref().unwrap_or(&job.created_at);
+        let at = DateTime::parse_from_rfc3339(at)
+            .map(|t| self.hhmm(t.with_timezone(&Utc)))
+            .unwrap_or_else(|_| "?".into());
+        if da {
+            format!("allerede {} kl. {at}", job.status.as_str())
+        } else {
+            format!("already {} at {at}", job.status.as_str())
+        }
+    }
+
     /// `/api/secretary/delegations`: switches, budget, agents, recent jobs.
     pub async fn status(&self) -> Value {
+        let now = self.now();
+        let budget = self.state.snapshot(&self.cfg.budget, now);
         let mut agents = serde_json::Map::new();
         for a in &self.agents {
+            let health = budget["agents"][a.id().as_str()]["health"].clone();
             agents.insert(
                 a.id().as_str().into(),
                 match a.backend().await {
-                    Ok(b) => json!({"backend": b, "ready": true}),
-                    Err(e) => json!({"backend": null, "ready": false, "why": e}),
+                    Ok(b) => json!({"backend": b, "ready": health == "ok", "health": health}),
+                    Err(e) => json!({"backend": null, "ready": false, "why": e, "health": health}),
                 },
             );
         }
@@ -863,7 +1197,7 @@ impl Delegator {
             "enabled": self.cfg.enabled,
             "maxDepth": self.cfg.max_depth.min(1),
             "isolation": match self.cfg.isolation { Isolation::Bwrap => "bwrap", Isolation::None => "none" },
-            "budget": self.state.snapshot(&self.cfg.budget, Utc::now()),
+            "budget": budget,
             "agents": agents,
             "jobs": self.recent(10),
         })
@@ -876,6 +1210,8 @@ pub fn chat_result(job: &JobRecord) -> Value {
         "status": job.status.as_str(),
         "jobId": job.id,
         "agent": job.agent.label(),
+        "answeredBy": job.answered_by().label(),
+        "fallback": job.fallback.as_ref().map(|f| card::fallback_sentence(f, job.answered_by(), "en")),
         "backend": job.backend,
         "kind": job.kind.as_str(),
         "durationSec": job.duration_ms / 1000,

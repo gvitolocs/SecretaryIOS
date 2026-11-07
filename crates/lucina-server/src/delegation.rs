@@ -30,7 +30,18 @@ fn channel_of(c: &str) -> String {
 /// Timeline, notes (`/v1/notes`) and notifications (`/v1/notify`).
 pub struct ServerSink {
     pub timeline: Arc<TimelineStore>,
+    /// The self-test conversation's timeline: a self-test's jobs post there, never in his chat.
+    pub selftest: Arc<TimelineStore>,
     pub secretary: Secretary,
+}
+impl ServerSink {
+    fn timeline_of(&self, session: &str) -> &TimelineStore {
+        if crate::selftest::is_session(session) {
+            &self.selftest
+        } else {
+            &self.timeline
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -77,6 +88,10 @@ impl Sink for ServerSink {
         crate::bridges::notify(&self.secretary, &payload).await;
     }
 
+    fn quiet(&self, session: &str) -> bool {
+        crate::selftest::is_session(session)
+    }
+
     fn card(&self, card: &Card) {
         let j = &card.job;
         let meta = Meta {
@@ -95,7 +110,7 @@ impl Sink for ServerSink {
         };
         let mut text = card.plain.clone();
         lucina_secrets::redactor().redact_string(&mut text);
-        self.timeline.record(NewItem {
+        self.timeline_of(&j.session_id).record(NewItem {
             channel: channel_of(&j.channel),
             role: "lucina".into(),
             text,
@@ -123,6 +138,8 @@ pub fn build(
     http: reqwest::Client,
     secrets: Option<Arc<lucina_secrets::SecretStore>>,
     timeline: Arc<TimelineStore>,
+    selftest: Arc<TimelineStore>,
+    mistral: Option<Arc<dyn lucina_llm::ChatModel>>,
 ) -> Option<Arc<Delegator>> {
     if !cfg.delegate_enabled {
         return None;
@@ -148,9 +165,12 @@ pub fn build(
         .connect_timeout(Duration::from_secs(10))
         .build()
         .unwrap_or(http.clone());
-    let agents = lucina_delegate::agents::real(&dc, agent_http, secrets);
+    // Lucina's Mistral model (redacting, only with a key) stands in for non-code work.
+    let fallback = mistral.is_some();
+    let agents = lucina_delegate::agents::real(&dc, agent_http, secrets, mistral);
     let sink = Arc::new(ServerSink {
         timeline,
+        selftest,
         secretary: Secretary {
             http,
             url: cfg.secretary_url.clone(),
@@ -160,6 +180,7 @@ pub fn build(
     tracing::info!(
         sandbox = %dc.sandbox_root.display(),
         total_cap = dc.budget.total_calls_per_day,
+        mistral_fallback = fallback,
         "delegation enabled (self-judged, hard limits on)"
     );
     Some(Arc::new(Delegator::new(
@@ -261,7 +282,13 @@ pub fn plain_reply(r: &Ran) -> String {
         }
         (JobStatus::Done, true) => {
             let answer = answer_text(j);
-            format!("{a} says: {answer}")
+            match &j.fallback {
+                Some(f) => format!(
+                    "{}: {answer}",
+                    lucina_delegate::card::fallback_sentence(f, j.answered_by(), "en")
+                ),
+                None => format!("{a} says: {answer}"),
+            }
         }
         (JobStatus::Error, true) => {
             let e = j.error.clone().unwrap_or_default();
@@ -379,6 +406,8 @@ mod tests {
         JobRecord {
             id: "1a2b3c4d-x".into(),
             agent: AgentId::Grok,
+            answered_by: None,
+            fallback: None,
             backend: "mock".into(),
             kind: Kind::Research,
             origin: Origin::Owner,
@@ -429,9 +458,8 @@ mod tests {
             plain_reply(&r(JobStatus::Running, false)),
             "I asked Grok: I will post the answer here as soon as it replies."
         );
-        assert!(
-            plain_reply(&r(JobStatus::Skipped, true)).contains("decided not to ask Grok: non serve.")
-        );
+        assert!(plain_reply(&r(JobStatus::Skipped, true))
+            .contains("decided not to ask Grok: non serve."));
         assert!(plain_reply(&r(JobStatus::Error, true)).contains("(timeout)"));
         assert_eq!(
             action_result(&r(JobStatus::Running, false)),

@@ -3,6 +3,7 @@
 pub mod chatgpt;
 pub mod claude;
 pub mod grok;
+pub mod mistral;
 pub mod responses;
 
 use std::path::PathBuf;
@@ -37,7 +38,7 @@ pub struct AgentReply {
     pub text: String,
     pub session: Option<String>,
     pub turns: u32,
-    /// The path used: `claude-cli`, `gbot`, `xai-api`, `codex-cli`, `openai-api`.
+    /// The path used: `claude-cli`, `gbot`, `xai-api`, `codex-cli`, `openai-api`, `mistral-api`.
     pub backend: String,
 }
 
@@ -50,13 +51,15 @@ pub trait Agent: Send + Sync {
     async fn run(&self, job: &AgentJob) -> Result<AgentReply, String>;
 }
 
-/// The real agents from the config.
+/// The real agents from the config. `mistral`: Lucina's own Mistral model (only when it has a key);
+/// without it there is no Mistral fallback.
 pub fn real(
     cfg: &DelegateConfig,
     http: reqwest::Client,
     secrets: Option<Arc<lucina_secrets::store::SecretStore>>,
+    mistral: Option<Arc<dyn lucina_llm::ChatModel>>,
 ) -> Vec<Arc<dyn Agent>> {
-    vec![
+    let mut agents: Vec<Arc<dyn Agent>> = vec![
         Arc::new(claude::ClaudeCli::new(cfg.claude.clone())),
         Arc::new(grok::Grok::new(
             cfg.grok.clone(),
@@ -64,7 +67,11 @@ pub fn real(
             secrets.clone(),
         )),
         Arc::new(chatgpt::Chatgpt::new(cfg.chatgpt.clone(), http, secrets)),
-    ]
+    ];
+    if let Some(m) = mistral {
+        agents.push(Arc::new(mistral::Mistral::new(m, cfg.mistral.max_tokens)));
+    }
+    agents
 }
 
 /// A key from the secrets skill (setting name) or a key file.

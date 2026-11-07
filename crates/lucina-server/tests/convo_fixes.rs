@@ -178,7 +178,11 @@ async fn a_plain_event_message_lands_in_the_calendar() {
         },
     )
     .await;
-    let v = h.chat("Mentor session 6 november at 12:30").await;
+    // A date ahead of today: the fixed "6 november" turned into a past date on 7 Nov 2026 and the test failed.
+    let day = chrono::Utc::now().date_naive() + chrono::Duration::days(30);
+    let v = h
+        .chat(&format!("Mentor session {} {} at 12:30", day.format("%-d"), day.format("%B").to_string().to_lowercase()))
+        .await;
     let reply = v["reply"].as_str().unwrap().to_owned();
     assert!(!reply.contains("could not work out"), "{reply}");
     let reqs = secretary.received_requests().await.unwrap();

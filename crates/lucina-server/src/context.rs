@@ -272,6 +272,7 @@ pub async fn prepare_with(
         recent_key: session,
         peer: &st.cfg.owner_peer_id,
         voice: false,
+        intent_text: None,
     };
     prepare_keyed(
         st, surface, session, keys, user_text, user_label, platform, tools_mode,
@@ -290,6 +291,9 @@ pub struct Keys<'a> {
     /// A turn of the Lucina Voice thread: it also reads the app's latest lines (`voice_thread`); an app turn
     /// reads the speaker's.
     pub voice: bool,
+    /// The owner's own words when the turn's text holds more (a share: his note, not the shared content). Intent
+    /// rules read only these: a screenshot's "O(m log n)" once made a share a log inspection (5 Nov 2026).
+    pub intent_text: Option<&'a str>,
 }
 
 /// How far back the share-sheet session's turns count as this conversation's.
@@ -306,6 +310,87 @@ fn shared_session<'a>(st: &'a AppState, keys: Keys<'_>) -> Option<&'a str> {
     (std::ptr::eq(keys.recent, &*st.recent) && app && key != default && !keys.voice).then_some(default)
 }
 
+
+/// How far back the agents' jobs count as his recent requests.
+const DELEGATION_HOURS: i64 = 12;
+
+/// The owner's delegated jobs of the last [`DELEGATION_HOURS`], newest first: who was asked, who answered, the
+/// state now and the answer's gist. Empty when there are none (or delegation is off).
+fn delegation_block(st: &AppState, session: &str, now: chrono::DateTime<Utc>) -> String {
+    let Some(d) = st.delegator.as_ref() else {
+        return String::new();
+    };
+    let tz = st.cfg.time_zone;
+    let since = now - chrono::Duration::hours(DELEGATION_HOURS);
+    let local = |v: &serde_json::Value| {
+        v.as_str()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|t| t.with_timezone(&tz).format("%H:%M").to_string())
+    };
+    let mut lines = Vec::new();
+    for job in d.recent(10) {
+        // His own requests only: a job an agent or an MCP caller started is theirs, and a self-test's jobs
+        // belong to the self-test conversation.
+        if job.caller.is_some()
+            || crate::selftest::is_session(&job.session_id) != crate::selftest::is_session(session)
+        {
+            continue;
+        }
+        let Ok(v) = serde_json::to_value(&job) else {
+            continue;
+        };
+        let started = v["createdAt"]
+            .as_str()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok());
+        if started.is_none_or(|t| t.with_timezone(&Utc) < since) {
+            continue;
+        }
+        let asked = v["agent"].as_str().unwrap_or("agent");
+        let answered = v["answeredBy"].as_str().filter(|a| *a != asked);
+        let backend = v["backend"].as_str().unwrap_or("");
+        let id: String = job.id.chars().take(8).collect();
+        let head = match answered {
+            Some(a) => format!("{asked} (answered by {a}, {backend})"),
+            None => format!("{asked} ({backend})"),
+        };
+        let state = match v["status"].as_str().unwrap_or("") {
+            "running" => format!("RUNNING since {} (cancel: delegation_cancel {id})", local(&v["createdAt"]).unwrap_or_default()),
+            "done" => format!("DONE at {}, answer already posted in the chat", local(&v["finishedAt"]).unwrap_or_default()),
+            "error" => format!(
+                "FAILED at {}: {}",
+                local(&v["finishedAt"]).unwrap_or_default(),
+                v["error"].as_str().unwrap_or("no answer").chars().take(200).collect::<String>()
+            ),
+            other => format!("{} at {}", other.to_uppercase(), local(&v["finishedAt"]).unwrap_or_default()),
+        };
+        let fallback = v["fallback"]["reason"]
+            .as_str()
+            .map(|r| format!(" Fallback: {r}."))
+            .unwrap_or_default();
+        let gist: String = v["summary"]
+            .as_str()
+            .or_else(|| v["result"].as_str())
+            .unwrap_or("")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(240)
+            .collect();
+        let gist = if gist.is_empty() { String::new() } else { format!(" Gist: {gist}") };
+        lines.push(format!("- [{id}] {head}: {state}.{fallback} Task: {}.{gist}", job.task.chars().take(120).collect::<String>()));
+    }
+    if lines.is_empty() {
+        return String::new();
+    }
+    format!(
+        "AGENT JOBS you started for him (live state now; it overrides anything said earlier in the chat):\n{}\n\
+Never say a job is still running, pending or about to land unless it is RUNNING here. A finished job's answer is \
+already in the chat: say so, and say which agent actually answered. To stop a RUNNING job use delegation_cancel; a job \
+that is not RUNNING cannot be stopped because it has already ended.",
+        lines.join("\n")
+    )
+}
 
 /// [`prepare_with`] for any channel.
 #[allow(clippy::too_many_arguments)]
@@ -340,14 +425,15 @@ pub async fn prepare_keyed(
     } else {
         String::new()
     };
+    let intent_text = keys.intent_text.unwrap_or(user_text);
     let (classification, policy, reason) = if tools_mode {
-        let c = tier0::classify_tier0(user_text, &recent_context, &st.cfg.intent)
+        let c = tier0::classify_tier0(intent_text, &recent_context, &st.cfg.intent)
             .unwrap_or_else(Classification::fallback);
         (c, Policy::ProjectContext, "tools_mode".to_owned())
     } else {
         let c = classify(
             st,
-            user_text,
+            intent_text,
             &recent_context,
             user_label,
             platform,
@@ -424,6 +510,13 @@ pub async fn prepare_keyed(
     } else {
         clip_recent(&recent_context, budgets.recent_turns)
     };
+    // The agents she asked for him: live state on every owner turn, whatever the policy, so a casual "thanks"
+    // never gets "I'll post them when they land" about jobs that already answered (5 Nov 2026).
+    let delegations = if owner {
+        delegation_block(st, session, now)
+    } else {
+        String::new()
+    };
     let reminders = match (&st.cfg.owner_chat_id, policy) {
         (Some(chat), p) if owner && p != Policy::PersonaOnly && st.cfg.reminders_enabled => {
             let owner = crate::api::owner_reminders(st).unwrap_or_default();
@@ -468,6 +561,7 @@ pub async fn prepare_keyed(
         tasks,
         shopping,
         reminders,
+        delegations,
         recent,
         honcho,
     ]

@@ -66,6 +66,8 @@ pub fn builtin() -> Vec<Arc<dyn Tool>> {
         Arc::new(delegate::AskGrokTool),
         Arc::new(delegate::AskChatgptTool),
         Arc::new(delegate::DelegateTool),
+        Arc::new(delegate::DelegationJobsTool),
+        Arc::new(delegate::DelegationCancelTool),
         Arc::new(plugins::InstagramProfileTool),
         Arc::new(plugins::InstagramStoriesTool),
         Arc::new(plugins::InstagramWatchlistTool),

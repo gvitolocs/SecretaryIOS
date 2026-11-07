@@ -59,6 +59,8 @@ pub struct Budget {
     pub claude: AgentBudget,
     pub grok: AgentBudget,
     pub chatgpt: AgentBudget,
+    /// The Mistral fallback.
+    pub mistral: AgentBudget,
 }
 
 impl Default for Budget {
@@ -68,6 +70,7 @@ impl Default for Budget {
             claude: AgentBudget::new(80, 480, 1500),
             grok: AgentBudget::new(80, 240, 0),
             chatgpt: AgentBudget::new(80, 240, 0),
+            mistral: AgentBudget::new(80, 240, 0),
         }
     }
 }
@@ -78,6 +81,7 @@ impl Budget {
             AgentId::Claude => &self.claude,
             AgentId::Grok => &self.grok,
             AgentId::Chatgpt => &self.chatgpt,
+            AgentId::Mistral => &self.mistral,
         }
     }
 }
@@ -178,6 +182,23 @@ impl Default for ChatgptConfig {
     }
 }
 
+/// The Mistral fallback (Lucina's own Mistral model, present only when it has a key).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MistralConfig {
+    pub max_tokens: u32,
+    pub timeout_secs: u64,
+}
+
+impl Default for MistralConfig {
+    fn default() -> Self {
+        Self {
+            max_tokens: 4000,
+            timeout_secs: 180,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct DelegateConfig {
@@ -203,6 +224,7 @@ pub struct DelegateConfig {
     pub claude: ClaudeConfig,
     pub grok: GrokConfig,
     pub chatgpt: ChatgptConfig,
+    pub mistral: MistralConfig,
 }
 
 impl Default for DelegateConfig {
@@ -224,6 +246,7 @@ impl Default for DelegateConfig {
             claude: ClaudeConfig::default(),
             grok: GrokConfig::default(),
             chatgpt: ChatgptConfig::default(),
+            mistral: MistralConfig::default(),
         }
     }
 }
@@ -257,6 +280,7 @@ impl DelegateConfig {
             AgentId::Claude => self.claude.timeout_secs,
             AgentId::Grok => self.grok.timeout_secs,
             AgentId::Chatgpt => self.chatgpt.timeout_secs,
+            AgentId::Mistral => self.mistral.timeout_secs,
         })
     }
 }
@@ -287,6 +311,19 @@ mod tests {
         assert_eq!(c.budget.total_calls_per_day, 7);
         assert_eq!(c.budget.claude.turns_per_day, 1500);
         assert_eq!(c.grok.bot, "Researcher");
+        assert_eq!(
+            c.budget.mistral.calls_per_day, 80,
+            "old files keep the Mistral defaults"
+        );
+        assert_eq!(c.mistral.timeout_secs, 180);
+        std::fs::write(
+            &p,
+            "[budget.mistral]\ncalls_per_day = 9\n[mistral]\nmax_tokens = 2000\n",
+        )
+        .unwrap();
+        let c = DelegateConfig::load(Some(&p), dir.path()).unwrap();
+        assert_eq!(c.budget.mistral.calls_per_day, 9);
+        assert_eq!(c.mistral.max_tokens, 2000);
         std::fs::write(&p, "nope = 1\n").unwrap();
         assert!(DelegateConfig::load(Some(&p), dir.path()).is_err());
     }

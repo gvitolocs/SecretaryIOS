@@ -17,7 +17,8 @@
 //!   University, through the local af-server; [`tools::au`]), `caller_screen`
 //!   (unknown callers judged by Jev; [`tools::callers`]), `notes`, `reminders`, `calendar`, `tasks`, `memos` (voice memos), `shopping`, `presence`, `avatar_outfit`, `notify`,
 //!   the owner-only `secrets_status` / `secrets_audit` ([`OWNER_ONLY_TOOLS`]),
-//!   the delegation tools `ask_claude`, `ask_grok`, `ask_chatgpt`, `delegate`
+//!   the delegation tools `ask_claude`, `ask_grok`, `ask_chatgpt`, `delegate`,
+//!   `delegation_jobs`, `delegation_cancel`
 //!   ([`SideEffect::Delegate`]: Lucina's own decision, no confirmation); none of
 //!   these is offered on Lucina MCP turns ([`NO_MCP_TOOLS`]); `meshy` (3D
 //!   models, registered by the server when `LUCINA_MESHY=true`); the owner-only plugin tools `instagram_profile`,
@@ -565,6 +566,8 @@ pub const NO_MCP_TOOLS: &[&str] = &[
     "ask_grok",
     "ask_chatgpt",
     "delegate",
+    "delegation_jobs",
+    "delegation_cancel",
     "message_claude",
     "message_grok",
     "message_mistral",
@@ -742,8 +745,8 @@ mod tests {
             .unwrap_err()
             .contains("no money movement"));
         let all = Registry::builtin(&ToolSelection::All);
-        assert_eq!(all.names().len(), 40);
-        assert_eq!(all.without(OWNER_ONLY_TOOLS).names().len(), 24);
+        assert_eq!(all.names().len(), 43);
+        assert_eq!(all.without(OWNER_ONLY_TOOLS).names().len(), 26);
         let mcp = all.without(NO_MCP_TOOLS);
         assert_eq!(mcp.names().len(), 20);
         for n in tools::reach::REACH_TOOLS {
