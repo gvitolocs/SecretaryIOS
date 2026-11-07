@@ -104,7 +104,7 @@ pub enum Command {
     /// Tasks: one workspace from main per piece of work (Lucina only)
     #[command(subcommand)]
     Task(pipe::TaskCommand),
-    /// Put a workspace's commits on main: queued, rebased, gated, pushed, archived (Lucina only)
+    /// Put a workspace's commits on main: queued, merged with a merge commit, gated, pushed, archived (Lucina only)
     Merge(pipe::MergeArgs),
     /// Deploy a runtime from main's tip through deploy-guard (Lucina only)
     Deploy(pipe::DeployArgs),

@@ -104,12 +104,15 @@ async fn an_adopted_worktree_merges_through_the_queue_and_is_archived() {
     let outcome = done.outcome.clone().unwrap();
     assert_eq!(done.state, JobState::Succeeded, "{outcome:?}\n{}", m.job_log(&job.job_id, 0).unwrap().1);
     assert_eq!(outcome.code, "MERGED");
-    // A rebase of one commit onto an unchanged main is that commit.
-    assert_eq!(git(&origin, &["rev-parse", "main"]), head);
+    // Always a merge commit, also onto an unchanged main: the branch's commit is its second parent.
+    let landed = git(&origin, &["rev-parse", "main"]);
+    assert_ne!(landed, head);
+    assert_eq!(git(&origin, &["rev-parse", "main^2"]), head);
+    assert_eq!(outcome.method.as_deref(), Some("merge"));
     assert_eq!(done.after.as_deref(), Some("archived: worktree and branch removed"));
     assert!(!wt.exists(), "the worktree is gone");
     assert!(git(&repo, &["branch", "--list", "topic"]).is_empty(), "the branch is gone");
-    assert_eq!(m.pipeline().task(&w.workspace_id).unwrap().merged_sha.as_deref(), Some(head.as_str()));
+    assert_eq!(m.pipeline().task(&w.workspace_id).unwrap().merged_sha.as_deref(), Some(landed.as_str()));
     let log = m.job_log(&job.job_id, 0).unwrap().1;
     assert!(log.contains("MERGED"), "{log}");
 

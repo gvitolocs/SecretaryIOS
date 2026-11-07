@@ -49,7 +49,8 @@ a coordinator that sequences merges (a merge queue), a FIFO queue for shared res
 - The executor, in the repo's **landing worktree** (`~/Projects/.worktrees/<Repo>/.landing`, detached; the session's
   worktree is never touched):
   1. fetch; if the commit is already on the trunk: `NOTHING_TO_MERGE`;
-  2. rebase the commit onto the trunk; if that conflicts, merge it (`Merge <branch>: <title>`); if that conflicts
+  2. merge the commit into the trunk with a merge commit (`Merge <branch>: <title>`, `--no-ff`; never a rebase: the
+     owner's rule, for every session since 2026-11-07); if that conflicts
      too: `CONFLICT` with the files, and the session merges `origin/main` into its branch and tries again;
   3. the gates, from `.lucina/pipeline.toml` **on the trunk** (a branch can't loosen its own gates):
      `cargo test -p` for each touched workspace crate, `cargo check --workspace`, `cargo test --manifest-path` for each

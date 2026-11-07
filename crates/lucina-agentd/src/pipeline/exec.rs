@@ -3,8 +3,8 @@
 //! Plain blocking code: it is one process doing one job.
 //!
 //! **Merge**: fetch the trunk; in the repo's landing worktree (`<work root>/.landing`,
-//! detached) rebase the queued commit onto the trunk, or merge it when the rebase
-//! conflicts; run the gates ([`super::repo::plan`]); push the result to the trunk (a
+//! detached) merge the queued commit into the trunk with a merge commit (`--no-ff`, never a
+//! rebase: the owner's rule, for every session since 2026-11-07); run the gates ([`super::repo::plan`]); push the result to the trunk (a
 //! fast-forward; when the trunk moved meanwhile, start over, at most three times).
 //! The session's own worktree is never touched here.
 //!
@@ -293,14 +293,10 @@ impl Exec {
                 Ok(d) => d,
                 Err(e) => return fail("LANDING_FAILED", e),
             };
-            // Rebase first (a straight line on main); a branch whose own merges resolved
-            // conflicts often only goes in as a merge.
-            let mut method = "rebase";
-            let rebased = self.git(&dir, &["checkout", "-q", "--detach", &head]).is_ok() && self.git_logged(&dir, &["rebase", "-q", &base]).is_ok();
-            if !rebased {
-                let _ = self.git(&dir, &["rebase", "--abort"]);
-                method = "merge";
-                self.say("the rebase conflicts; trying a merge");
+            // Always a merge commit (the owner, 2026-11-07: "merge for everyone"; merge, don't
+            // rebase): the branch's commits land as they were made, the merge names the branch.
+            let method = "merge";
+            {
                 let msg = format!("Merge {branch}: {title}");
                 let _ = self.git(&dir, &["checkout", "-q", "-f", "--detach", &base]);
                 if self.git_logged(&dir, &["merge", "-q", "--no-ff", "-m", &msg, &head]).is_err() {
@@ -547,7 +543,7 @@ mod tests {
     }
 
     #[test]
-    fn merges_rebase_first_then_reports_conflicts() {
+    fn merges_with_a_merge_commit_then_reports_conflicts() {
         let root = tempfile::tempdir().unwrap();
         let root = root.path();
         let (origin, repo) = setup(root);
@@ -556,19 +552,23 @@ mod tests {
         git(&repo, &["add", "-A"]);
         git(&repo, &["commit", "-q", "-m", "rules"]);
         git(&repo, &["push", "-q", "origin", "main"]);
-        // Topic branch, then main moves on (another file): a clean rebase.
+        // Topic branch, then main moves on (another file): a merge commit, never a rebase.
         git(&repo, &["checkout", "-q", "-b", "topic"]);
         let head = commit(&repo, "b.txt", "b\n", "add b");
         git(&repo, &["checkout", "-q", "main"]);
-        commit(&repo, "c.txt", "c\n", "add c");
+        let main_tip = commit(&repo, "c.txt", "c\n", "add c");
         git(&repo, &["push", "-q", "origin", "main"]);
         let out = exec(root, spec(root, &repo, "topic", &head));
         assert!(out.ok, "{out:?}");
-        assert_eq!((out.code.as_str(), out.method.as_deref()), ("MERGED", Some("rebase")));
+        assert_eq!((out.code.as_str(), out.method.as_deref()), ("MERGED", Some("merge")));
         assert_eq!(out.gates.len(), 1);
         let landed = out.landed.unwrap();
         assert_eq!(git(&origin, &["rev-parse", "main"]), landed);
-        assert_eq!(git(&origin, &["log", "--format=%s", "-3", "main"]), "add b\nadd c\nrules");
+        // The branch's own commit landed unchanged as the merge's second parent, main's tip as its first.
+        assert_eq!(git(&origin, &["rev-parse", &format!("{landed}^1")]), main_tip);
+        assert_eq!(git(&origin, &["rev-parse", &format!("{landed}^2")]), head);
+        assert!(git(&origin, &["log", "--format=%s", "-1", "main"]).starts_with("Merge topic"));
+        assert_eq!(git(&origin, &["log", "--first-parent", "--format=%s", "-3", "main"]).lines().skip(1).collect::<Vec<_>>(), vec!["add c", "rules"]);
         // Merged again: nothing to do.
         let again = exec(root, spec(root, &repo, "topic", &head));
         assert_eq!(again.code, "NOTHING_TO_MERGE");
@@ -722,7 +722,10 @@ mod tests {
         std::fs::write(repo.join("notes.txt"), "mine\n").unwrap();
         let out = exec(root, s.clone());
         assert!(out.ok, "{out:?}");
-        assert_eq!(git(&repo, &["rev-parse", "main"]), head);
+        // A merge commit, the branch's commit as its second parent.
+        let landed = git(&repo, &["rev-parse", "main"]);
+        assert_eq!(out.landed.as_deref(), Some(landed.as_str()));
+        assert_eq!(git(&repo, &["rev-parse", "main^2"]), head);
         assert!(repo.join("b.txt").exists(), "the main checkout fast-forwarded");
         assert_eq!(std::fs::read_to_string(repo.join("notes.txt")).unwrap(), "mine\n");
         // Uncommitted changes to a file the merge changes: blocked, said why, main unchanged.
@@ -731,6 +734,6 @@ mod tests {
         let out = exec(root, Spec { head: Some(head2), ..s });
         assert_eq!(out.code, "TRUNK_CHECKOUT_BLOCKED", "{out:?}");
         assert_eq!(out.conflicts, vec!["c.txt".to_string()]);
-        assert_eq!(git(&repo, &["rev-parse", "main"]), head);
+        assert_eq!(git(&repo, &["rev-parse", "main"]), landed);
     }
 }

@@ -205,7 +205,7 @@ fn started(v: Value) -> Output {
     let w = &v["workspace"];
     let cwd = s(&w["cwd"]);
     let text = format!(
-        "Task {} on branch {} (from {}).\n  workspace  {}\n  nezopt     {}\n  mac        {}\nWork and commit there; then `lagent merge {}` puts it on {} (rebase, gates, push, archive).",
+        "Task {} on branch {} (from {}).\n  workspace  {}\n  nezopt     {}\n  mac        {}\nWork and commit there; then `lagent merge {}` puts it on {} (merge commit, gates, push, archive).",
         s(&v["task"]["title"]),
         s(&v["task"]["branch"]),
         s(&v["task"]["trunk"]),

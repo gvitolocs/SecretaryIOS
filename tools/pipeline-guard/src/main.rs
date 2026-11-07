@@ -93,7 +93,7 @@ pub fn verdict(command: &str, cwd: &str) -> Option<String> {
         if to_main.is_match(args) && !args.contains("--dry-run") {
             return Some(
                 "Lucina repos: main moves only through the merge queue. Commit in your workspace, then run \
-                 `lagent merge <workspace id | path>`: it rebases on origin/main, runs the repo's gates (cargo test of \
+                 `lagent merge <workspace id | path>`: it merges into origin/main with a merge commit, runs the repo's gates (cargo test of \
                  the touched crates, diffgate, ...), pushes and archives the workspace, one merge at a time. \
                  Deploys: `lagent deploy <runtime>`."
                     .into(),

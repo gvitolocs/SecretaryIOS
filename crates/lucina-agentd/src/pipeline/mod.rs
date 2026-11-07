@@ -170,7 +170,7 @@ pub struct Outcome {
     /// Merge: the commit the trunk now points at. Deploy: the commit deployed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub landed: Option<String>,
-    /// `rebase`, `merge` or `already`.
+    /// `merge` or `already` (`rebase` in jobs from before 2026-11-07).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub method: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

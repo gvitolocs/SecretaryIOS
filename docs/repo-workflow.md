@@ -13,7 +13,7 @@ forwards to nezopt and passes your session id; on nezopt it is `~/.local/bin/lag
 lagent task start "Instagram gallery paging" [--repo ~/Projects/Lucina/LucinaOS] [--branch ig-gallery-paging]
 #   -> a fresh worktree from origin/main in ~/Projects/.worktrees/<Repo>/<branch>, registered with your session
 cd <the printed path>; …work…; git commit …           # commit everything that belongs to the task
-lagent merge <workspace id | path | branch>          # queued per repo; Lucina rebases on origin/main, runs the gates
+lagent merge <workspace id | path | branch>          # queued per repo; Lucina merges into origin/main (merge commit), runs the gates
                                                      # (.lucina/pipeline.toml), pushes main, archives the workspace
 lagent deploy lucina-agentd --note "what it brings"  # from main's tip: deploy-guard plan/check, install, record
 lagent board                                         # every workspace's state, the queue, leases, recent deploys
@@ -74,7 +74,7 @@ specified with one `main`. The lines were a drift away from the verified design.
 1. **Work on a topic branch from `origin/main`**: `lagent task start "<title>"` on nezopt (it runs `wt add <topic>
    origin/main` for you and registers the task). Never branch from, or merge, another deploy target's tree. There is
    only `main`.
-2. **Land on `main`** through the merge queue: `lagent merge <workspace>` (rebase or merge onto `origin/main`, the
+2. **Land on `main`** through the merge queue: `lagent merge <workspace>` (a merge commit into `origin/main`, never a rebase, the
    gates, a fast-forward push, under `/tmp/lucina-merge.lock` for this repo). A GitHub PR merged on GitHub is fine too; the
    merge sweep then archives the workspace. Never force-push `main`.
 3. **Shared code changes once.** A change to `secretary-core`, `lucina-store` or `web/src/lib` lands once on `main`.
