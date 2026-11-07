@@ -97,6 +97,8 @@ fn remember(session: &str, turn: Option<Previous>, now: DateTime<Utc>) {
         }
         None => {
             map.remove(session);
+            // The carried loop never outlives this record (juno-lucina-tools' rule).
+            carry::forget(session);
         }
     }
 }
@@ -390,7 +392,10 @@ pub(super) async fn try_turn(t: &Turn<'_>, memory: &str) -> Option<Finish> {
 /// way), then the owner's message.
 fn loop_messages(session: &str, system: String, user: String) -> Vec<Message> {
     let mut msgs = vec![Message::system(system)];
-    msgs.extend(carry::previous(session));
+    // Only while the previous-turn record ([`PREVIOUS_WINDOW`]) still holds that turn.
+    if previous(session, Utc::now()).is_some() {
+        msgs.extend(carry::previous(session));
+    }
     msgs.push(Message::user(user));
     msgs
 }
@@ -806,6 +811,7 @@ mod tests {
         let opening = msgs.len();
         let run = agent::run(&model, &reg, msgs, &ctx, &pending, &cfg, &|_| {}).await;
         assert_eq!(run.as_ref().unwrap().stop, agent::Stop::MaxRounds);
+        remember(session, Some(capped(Utc::now())), Utc::now());
         keep_loop(session, "make a note", opening, &run);
 
         let next = loop_messages(session, "sys".into(), "go ahead".into());
@@ -839,5 +845,80 @@ mod tests {
         // A failed loop leaves nothing to carry.
         keep_loop(session, "x", 2, &Err(lucina_llm::LlmError::Timeout));
         assert_eq!(loop_messages(session, "sys".into(), "go".into()).len(), 2);
+    }
+
+    /// The laptop's stand-in for one intent: a note made, with its undo id.
+    struct MadeNote;
+
+    #[async_trait::async_trait]
+    impl lucina_tools::tools::juno::JunoLink for MadeNote {
+        async fn call(
+            &self,
+            _: Option<String>,
+            tool: &str,
+            _: Value,
+            _: Duration,
+            _: &lucina_tools::tools::juno::CallOpts,
+        ) -> Result<Value, String> {
+            Ok(match tool {
+                "intent" => json!({"text": "Note made.", "action": "act_42", "undoable": true}),
+                _ => json!({"text": "ok"}),
+            })
+        }
+        fn status(&self) -> Value {
+            json!({"devices": []})
+        }
+        async fn ask(&self, _: lucina_tools::tools::juno::Ask) -> Result<String, String> {
+            Err("no decisions here".into())
+        }
+        fn decided(&self, _: &str, _: &str) -> Result<(), String> {
+            Err("no decisions here".into())
+        }
+        fn events(&self, _: Option<&str>, _: &lucina_tools::tools::juno::EventQuery) -> Value {
+            json!({"events": []})
+        }
+    }
+
+    #[tokio::test]
+    async fn go_ahead_sees_the_previous_intents_action_id_only_while_the_record_holds() {
+        let session = "secretary_juno-dev_carry_action";
+        let mut env =
+            lucina_tools::ToolEnv::new(std::env::temp_dir(), chrono_tz::Europe::Copenhagen);
+        env.juno = Some(Arc::new(MadeNote));
+        let ctx = Ctx::new(Arc::new(env), "ios", session).with_origin(Origin::Owner);
+        let mut reg = Registry::new();
+        reg.register(Arc::new(lucina_tools::tools::juno::JunoCallTool))
+            .unwrap();
+        let model = lucina_llm::ScriptedModel::new();
+        model.push_calls(&[(
+            "juno_call",
+            json!({"tool": "intent", "arguments": {"name": "notes.create", "args": {"title": "Juno test", "body": "hi"}}}),
+        )]);
+        model.push_text("Made the note; the rounds ran out before the undo.");
+        let cfg = AgentConfig {
+            max_rounds: 1,
+            ..AgentConfig::default()
+        };
+        let pending =
+            lucina_tools::pending::PendingStore::memory(lucina_tools::pending::DEFAULT_TTL);
+        let msgs = loop_messages(session, "sys".into(), "make a note, then undo it".into());
+        let opening = msgs.len();
+        let run = agent::run(&model, &reg, msgs, &ctx, &pending, &cfg, &|_| {}).await;
+        assert_eq!(run.as_ref().unwrap().stop, agent::Stop::MaxRounds);
+        remember(session, Some(capped(Utc::now())), Utc::now());
+        keep_loop(session, "make a note, then undo it", opening, &run);
+
+        let next = loop_messages(session, "sys".into(), "go ahead".into());
+        assert!(
+            next.iter()
+                .any(|m| m.role == lucina_llm::Role::Tool && m.text().contains("act_42")),
+            "the undo id reaches the go-ahead turn: {next:?}"
+        );
+        // The record cleared (a turn without a loop): nothing is carried.
+        remember(session, None, Utc::now());
+        assert_eq!(
+            loop_messages(session, "sys".into(), "go ahead".into()).len(),
+            2
+        );
     }
 }

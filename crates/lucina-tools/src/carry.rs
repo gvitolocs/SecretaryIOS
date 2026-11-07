@@ -53,6 +53,15 @@ fn size(m: &Message) -> usize {
     content + args
 }
 
+/// A tool result without the loop's "[Round budget]" line (`agent::budget_note`):
+/// it counted that turn's rounds and would be stale in the next one.
+fn without_budget_note(content: &str) -> &str {
+    match content.find("\n\n[Round budget] ") {
+        Some(i) => &content[..i],
+        None => content,
+    }
+}
+
 /// One assistant message with its tool calls, and their results.
 fn groups(loop_messages: &[Message]) -> (Vec<Vec<Message>>, Option<Message>) {
     let mut groups: Vec<Vec<Message>> = Vec::new();
@@ -73,7 +82,10 @@ fn groups(loop_messages: &[Message]) -> (Vec<Vec<Message>>, Option<Message>) {
             Role::Tool => {
                 if let Some(g) = groups.last_mut() {
                     let mut t = m.clone();
-                    t.content = t.content.as_deref().map(|c| clip(c, PART_CHARS));
+                    t.content = t
+                        .content
+                        .as_deref()
+                        .map(|c| clip(without_budget_note(c), PART_CHARS));
                     g.push(t);
                 }
             }
@@ -275,5 +287,20 @@ mod tests {
         assert!(args.contains("_clipped"));
         forget(s);
         assert!(previous(s).is_empty());
+    }
+
+    #[test]
+    fn a_stale_round_budget_note_is_not_carried() {
+        let s = "carry-5";
+        let l = vec![
+            assistant_calls(vec![call("c1", "t", "{}")]),
+            Message::tool_result(
+                "c1",
+                "result\n\n[Round budget] 8 of 16 tool rounds of this turn are used; 8 left, then the turn must end.",
+            ),
+        ];
+        remember(s, "u", &l);
+        let p = previous(s);
+        assert_eq!(p[2].text(), "result");
     }
 }
