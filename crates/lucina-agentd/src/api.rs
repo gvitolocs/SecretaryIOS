@@ -116,6 +116,7 @@ impl From<ManagerError> for ApiError {
             ManagerError::RewindForbidden(_) => StatusCode::FORBIDDEN,
             ManagerError::ForkBoundary(_) | ManagerError::Busy(_) => StatusCode::CONFLICT,
             ManagerError::CodexNotAllowed(_) => StatusCode::FORBIDDEN,
+            ManagerError::JunoToolRefused(_) => StatusCode::FORBIDDEN,
         };
         ApiError(status, e.code().to_string(), e.to_string())
     }

@@ -16,7 +16,7 @@
 //!   child gets a timeline of its own ([`super::claude_subagents`]).
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -69,6 +69,18 @@ fn cli_mode(mode: &str) -> Option<&'static str> {
     })
 }
 
+/// The `--mcp-config` JSON: the agents' own server (`lucina-agents`), plus the Juno shell tool's (`juno`) for a
+/// `codecor.juno=bash` agent. `None` when there is no `lagent` beside this binary (or `LUCINA_AGENTD_MCP=0`).
+fn mcp_config(lagent: Option<&Path>, juno_tool: bool) -> Option<Value> {
+    let p = lagent?;
+    let mut servers = Map::new();
+    servers.insert(crate::mcp::SERVER.to_string(), crate::mcp::attach_with(p));
+    if juno_tool {
+        servers.insert(crate::juno_mcp::SERVER.to_string(), crate::juno_mcp::attach_with(p));
+    }
+    Some(json!({"mcpServers": servers}))
+}
+
 impl ClaudeProvider {
     async fn start(&self, config: SessionConfig, events: EventSink, resume: Option<&str>) -> Result<Arc<dyn Session>, ProviderError> {
         let mode = config.mode_id.clone().unwrap_or_else(|| DEFAULT_MODE.into());
@@ -92,10 +104,11 @@ impl ClaudeProvider {
         if let Some(r) = resume {
             args.extend(["--resume".into(), r.to_string()]);
         }
-        // The agents' own tools (subagents, heartbeats, search): `lagent mcp`.
+        // The agents' own tools (subagents, heartbeats, search): `lagent mcp`. A
+        // `codecor.juno=bash` agent also gets the Juno shell tool: `lagent juno-mcp`.
         if config.agent_id.is_some() {
-            if let Some(server) = crate::mcp::attach() {
-                args.extend(["--mcp-config".into(), serde_json::json!({"mcpServers": {crate::mcp::SERVER: server}}).to_string()]);
+            if let Some(cfg) = mcp_config(crate::mcp::lagent_path().as_deref(), config.juno_tool) {
+                args.extend(["--mcp-config".into(), cfg.to_string()]);
             }
         }
         let spec = Spec { program: self.bin.clone(), args, cwd: config.cwd.clone(), env: config.env.clone(), env_remove: Vec::new() };
@@ -184,9 +197,15 @@ struct State {
     /// The `Task` subagents, each with a timeline of its own (see [`super::claude_subagents`]).
     subs: Subagents,
     closing: bool,
-    /// Our permission id -> the CLI's control request id.
-    permissions: HashMap<String, String>,
+    /// Our permission id -> the CLI's control request id and the tool's name.
+    permissions: HashMap<String, Perm>,
     request_seq: u64,
+}
+
+/// One pending permission request: the CLI's control request id and the tool name.
+struct Perm {
+    cli_id: String,
+    name: String,
 }
 
 pub struct ClaudeSession {
@@ -258,6 +277,24 @@ pub(super) fn tool_result_text(v: &Value) -> String {
         Value::Array(blocks) => blocks.iter().filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("\n"),
         other => other.to_string(),
     }
+}
+
+/// The `allow` control response for a tool request. A juno tool (`mcp__juno__*`) never
+/// gets `updatedPermissions`: "allow always" can never add a rule, so every call asks
+/// the owner again.
+fn allow_body(
+    name: &str,
+    updated_input: &Option<Map<String, Value>>,
+    updated_permissions: &Option<Vec<Map<String, Value>>>,
+) -> Value {
+    let mut r = json!({"behavior": "allow", "updatedInput": updated_input.clone().map(Value::Object).unwrap_or(json!({}))});
+    if let Some(p) = updated_permissions
+        .as_ref()
+        .filter(|_| !crate::juno_mcp::is_juno_tool(name))
+    {
+        r["updatedPermissions"] = json!(p);
+    }
+    r
 }
 
 /// The `Task` call a frame belongs to, when it comes from inside a subagent. Claude Code's liveness
@@ -530,7 +567,13 @@ impl ClaudeSession {
             let mut st = self.lock();
             st.request_seq += 1;
             let id = format!("claude-perm-{}", st.request_seq);
-            st.permissions.insert(id.clone(), cli_id);
+            st.permissions.insert(
+                id.clone(),
+                Perm {
+                    cli_id,
+                    name: name.clone(),
+                },
+            );
             id
         };
         let request = PermissionRequest {
@@ -612,20 +655,14 @@ impl Session for ClaudeSession {
     }
 
     async fn respond_permission(&self, request_id: &str, response: PermissionResponse) -> Result<(), ProviderError> {
-        let Some(cli_id) = self.lock().permissions.remove(request_id) else { return Ok(()) };
+        let Some(perm) = self.lock().permissions.remove(request_id) else { return Ok(()) };
         let body = match &response {
-            PermissionResponse::Allow { updated_input, updated_permissions, .. } => {
-                let mut r = json!({"behavior": "allow", "updatedInput": updated_input.clone().map(Value::Object).unwrap_or(json!({}))});
-                if let Some(p) = updated_permissions {
-                    r["updatedPermissions"] = json!(p);
-                }
-                r
-            }
+            PermissionResponse::Allow { updated_input, updated_permissions, .. } => allow_body(&perm.name, updated_input, updated_permissions),
             PermissionResponse::Deny { message, interrupt, .. } => {
                 json!({"behavior": "deny", "message": message.clone().unwrap_or_else(|| "Denied by the owner".into()), "interrupt": interrupt.unwrap_or(false)})
             }
         };
-        self.write(json!({"type": "control_response", "response": {"subtype": "success", "request_id": cli_id, "response": body}})).await?;
+        self.write(json!({"type": "control_response", "response": {"subtype": "success", "request_id": perm.cli_id, "response": body}})).await?;
         self.emit(StreamEvent::PermissionResolved { provider: ID.into(), request_id: request_id.into(), resolution: response });
         Ok(())
     }
@@ -680,5 +717,55 @@ mod tests {
         assert!(todo_items(&json!({"todos": [{"content":"a","status":"completed","activeForm":"Doing a"}]}))[0].completed);
         assert_eq!(cli_mode("default"), Some("manual"));
         assert_eq!(cli_mode("nope"), None);
+    }
+
+    #[test]
+    fn mcp_config_attaches_juno_only_when_opted_in() {
+        let lagent = Path::new("/opt/bin/lagent");
+        // Without the label: only the agents' own server, exactly as before.
+        let c = mcp_config(Some(lagent), false).unwrap();
+        let servers = c["mcpServers"].as_object().unwrap();
+        assert_eq!(servers.len(), 1);
+        assert!(servers.contains_key(crate::mcp::SERVER));
+        assert_eq!(servers[crate::mcp::SERVER]["args"], json!(["mcp"]));
+        // With `codecor.juno=bash`: the juno server sits next to it.
+        let c = mcp_config(Some(lagent), true).unwrap();
+        let servers = c["mcpServers"].as_object().unwrap();
+        assert_eq!(servers.len(), 2);
+        let juno = &servers[crate::juno_mcp::SERVER];
+        assert_eq!(juno["type"], "stdio");
+        assert_eq!(juno["command"], "/opt/bin/lagent");
+        assert_eq!(juno["args"], json!(["juno-mcp"]));
+        // No `lagent` beside the binary: no `--mcp-config` at all.
+        assert!(mcp_config(None, true).is_none());
+        assert!(mcp_config(None, false).is_none());
+    }
+
+    #[test]
+    fn juno_tools_never_get_updated_permissions() {
+        let perms: Vec<Map<String, Value>> = vec![Map::from_iter([
+            ("type".to_string(), json!("addRules")),
+            (
+                "rules".to_string(),
+                json!([{"toolName": "mcp__juno__juno_bash"}]),
+            ),
+        ])];
+        let perms_v = json!(perms);
+        let input = Some(Map::from_iter([("command".to_string(), json!("ls"))]));
+        // A juno tool: "allow always" is dropped, every call asks again.
+        let b = allow_body("mcp__juno__juno_bash", &input, &Some(perms.clone()));
+        assert_eq!(b["behavior"], "allow");
+        assert_eq!(b["updatedInput"], json!({"command": "ls"}));
+        assert!(b.get("updatedPermissions").is_none(), "{b}");
+        // Any other tool keeps them.
+        let b = allow_body("Bash", &input, &Some(perms.clone()));
+        assert_eq!(b["updatedPermissions"], perms_v);
+        let b = allow_body(
+            "mcp__lucina-agents__list_agents",
+            &None,
+            &Some(perms.clone()),
+        );
+        assert_eq!(b["updatedPermissions"], perms_v);
+        assert_eq!(b["updatedInput"], json!({}));
     }
 }

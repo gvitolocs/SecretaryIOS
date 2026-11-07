@@ -50,7 +50,12 @@ fn socket() -> String {
 /// The server as a Claude `mcpServers` entry.
 pub fn attach() -> Option<Value> {
     let p = lagent_path()?;
-    Some(json!({"type": "stdio", "command": p.display().to_string(), "args": ["mcp"], "env": {crate::config::SOCKET_ENV: socket()}}))
+    Some(attach_with(&p))
+}
+
+/// The server entry for a given `lagent` path.
+pub fn attach_with(lagent: &Path) -> Value {
+    json!({"type": "stdio", "command": lagent.display().to_string(), "args": ["mcp"], "env": {crate::config::SOCKET_ENV: socket()}})
 }
 
 /// ACP `session/new` `mcpServers` (stdio servers, which every ACP agent supports).
@@ -368,7 +373,7 @@ pub fn urlencode(s: &str) -> String {
 }
 
 /// One JSON-RPC message in, at most one out.
-pub async fn handle(client: &Client, me: Option<&str>, msg: &Value) -> Option<Value> {
+pub async fn handle(client: &Client, me: Option<&str>, msg: Value) -> Option<Value> {
     let id = msg.get("id").cloned()?;
     let method = msg["method"].as_str().unwrap_or("");
     let result = match method {
@@ -400,6 +405,22 @@ pub async fn handle(client: &Client, me: Option<&str>, msg: &Value) -> Option<Va
 /// Serve stdio until EOF.
 pub async fn serve(client: Client) -> std::io::Result<()> {
     let me = std::env::var("LUCINA_AGENT_ID").ok().filter(|s| !s.is_empty());
+    let client = std::sync::Arc::new(client);
+    serve_stdio(move |msg| {
+        let client = client.clone();
+        let me = me.clone();
+        async move { handle(&client, me.as_deref(), msg).await }
+    })
+    .await
+}
+
+/// Serve stdio until EOF: one JSON-RPC message per line in, at most one reply out.
+/// Shared by `lagent mcp` and `lagent juno-mcp` (same protocol version).
+pub async fn serve_stdio<F, Fut>(handler: F) -> std::io::Result<()>
+where
+    F: Fn(Value) -> Fut,
+    Fut: std::future::Future<Output = Option<Value>>,
+{
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     let mut out = tokio::io::stdout();
     while let Some(line) = lines.next_line().await? {
@@ -407,7 +428,7 @@ pub async fn serve(client: Client) -> std::io::Result<()> {
             continue;
         }
         let reply = match serde_json::from_str::<Value>(&line) {
-            Ok(msg) => handle(&client, me.as_deref(), &msg).await,
+            Ok(msg) => handler(msg).await,
             Err(e) => Some(json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": e.to_string()}})),
         };
         if let Some(r) = reply {

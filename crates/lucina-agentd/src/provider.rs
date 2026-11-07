@@ -37,6 +37,9 @@ pub struct SessionConfig {
     pub agent_id: Option<String>,
     /// An external agent's owner device.
     pub owner_device_id: Option<String>,
+    /// The agent opted into the Juno shell tool (`codecor.juno=bash`): the provider
+    /// attaches `lagent juno-mcp` (`juno_bash`) beside its own MCP server.
+    pub juno_tool: bool,
 }
 
 /// What a rewind asks of a session (Paseo `revertConversation` / `revertFiles` /

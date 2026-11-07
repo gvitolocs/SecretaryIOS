@@ -143,6 +143,14 @@ pub(super) fn agent_key(agent_id: &str, request_id: &str) -> String {
     format!("{agent_id}/{request_id}")
 }
 
+/// Whether a tool request named `name` is preapproved by the agent's tool policy or
+/// is one of agentd's own MCP tools. A Juno shell tool (`mcp__juno__*`) is never
+/// preapproved: every call shows the owner an Allow/Deny card.
+fn preapproved_by_policy(policy: &ToolPolicy, name: &str) -> bool {
+    !crate::juno_mcp::is_juno_tool(name)
+        && (policy.preapproves(name) || crate::mcp::is_own_tool(name))
+}
+
 /// The book's key: agent requests by agent and request id, external ones by their id.
 fn book_key(agent_id: Option<&str>, id: &str) -> String {
     agent_id.map_or_else(|| id.to_string(), |a| agent_key(a, id))
@@ -225,9 +233,10 @@ impl Manager {
             .clone()
             .and_then(|v| serde_json::from_value(v).ok())
             .unwrap_or_default();
-        // agentd's own MCP tools (`lagent mcp`) enforce their limits themselves.
+        // agentd's own MCP tools (`lagent mcp`) enforce their limits themselves — but
+        // never the Juno shell tool: every `mcp__juno__*` call asks the owner again.
         let preapproved = request.kind == lucina_agents::permission::PermissionKind::Tool
-            && (policy.preapproves(&request.name) || crate::mcp::is_own_tool(&request.name));
+            && preapproved_by_policy(&policy, &request.name);
         let mut resolved_at_ms = None;
         if preapproved {
             let step = pg::answer(&gate, Origin::Policy, Verdict::Allow, now);
@@ -670,5 +679,44 @@ impl Manager {
             _ => format!("agent:{id}:{}", agent.record.attention_timestamp.clone().unwrap_or_else(now_iso)),
         };
         n.send(Push { category: "agent", title: None, body: body.to_string(), route: format!("/agents/{id}"), dedup_key: dedup, data });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lucina_agents::permission_gate::Grant;
+
+    #[test]
+    fn juno_tools_are_never_preapproved() {
+        // Even a tool policy that names the juno server exactly.
+        let policy = ToolPolicy {
+            preapproved: vec![
+                Grant {
+                    kind: "mcp".into(),
+                    server: "juno".into(),
+                    tool: "juno_bash".into(),
+                },
+                Grant {
+                    kind: "mcp".into(),
+                    server: "lucina".into(),
+                    tool: "notes_search".into(),
+                },
+            ],
+        };
+        assert!(!preapproved_by_policy(&policy, "mcp__juno__juno_bash"));
+        assert!(!preapproved_by_policy(&policy, "mcp__juno__anything"));
+        assert!(!preapproved_by_policy(
+            &ToolPolicy::default(),
+            "mcp__juno__juno_bash"
+        ));
+        // agentd's own tools and other preapproved tools still are.
+        assert!(preapproved_by_policy(
+            &policy,
+            "mcp__lucina-agents__list_agents"
+        ));
+        assert!(preapproved_by_policy(&policy, "mcp__lucina__notes_search"));
+        assert!(!preapproved_by_policy(&policy, "mcp__lucina__note_save"));
+        assert!(!preapproved_by_policy(&policy, "Bash"));
     }
 }

@@ -101,6 +101,9 @@ pub enum Command {
     Fork(rewind::ForkArgs),
     /// Serve the agents' MCP tools on stdio (agentd attaches this to its agents)
     Mcp,
+    /// Serve the Juno shell tool (`juno_bash`) on stdio, for CodeCor's Claude agents
+    /// labelled `codecor.juno=bash` (every call asks the owner; see `juno_mcp`)
+    JunoMcp,
     /// Tasks: one workspace from main per piece of work (Lucina only)
     #[command(subcommand)]
     Task(pipe::TaskCommand),
@@ -1174,6 +1177,10 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
         Command::Fork(a) => rewind::fork(&client, a).await,
         Command::Mcp => {
             crate::mcp::serve(client).await.map_err(|e| CmdError::new("MCP_FAILED", e.to_string()))?;
+            Ok(Output { json: None, text: String::new() })
+        }
+        Command::JunoMcp => {
+            crate::juno_mcp::serve().await.map_err(|e| CmdError::new("MCP_FAILED", e.to_string()))?;
             Ok(Output { json: None, text: String::new() })
         }
         Command::Task(cmd) => pipe::task(&client, cmd).await,

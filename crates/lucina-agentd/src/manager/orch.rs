@@ -248,6 +248,8 @@ impl Manager {
             req.env.clear();
             req.labels.retain(|k, _| !k.starts_with("lucina.") && !k.starts_with("paseo."));
         }
+        // Only the owner opts an agent into the Juno shell tool; an agent or an MCP token can't hand it on.
+        req.labels.remove(super::JUNO_LABEL);
         let mut mode = req.mode_id.take();
         self.supervise(&req.provider, &mut mode)?;
         req.mode_id = mode;
