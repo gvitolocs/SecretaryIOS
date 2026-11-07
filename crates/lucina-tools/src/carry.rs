@@ -57,12 +57,8 @@ fn size(m: &Message) -> usize {
 fn groups(loop_messages: &[Message]) -> (Vec<Vec<Message>>, Option<Message>) {
     let mut groups: Vec<Vec<Message>> = Vec::new();
     let mut last_reply = None;
-    // Skip the loop's own system and user messages: only what the loop added.
-    let start = loop_messages
-        .iter()
-        .position(|m| m.role == Role::User)
-        .map_or(0, |i| i + 1);
-    for m in &loop_messages[start..] {
+    // System and user messages (the loop's opening, a continue nudge) are not kept.
+    for m in loop_messages {
         match m.role {
             Role::Assistant if m.tool_calls.as_ref().is_some_and(|c| !c.is_empty()) => {
                 let mut a = m.clone();
@@ -93,7 +89,8 @@ fn groups(loop_messages: &[Message]) -> (Vec<Vec<Message>>, Option<Message>) {
     (groups, last_reply)
 }
 
-/// Keep this loop for the session's next one: the owner's `user_text`, the
+/// Keep this loop for the session's next one. `loop_messages` are the messages
+/// the loop added (after its opening ones). Kept: the owner's `user_text`, the
 /// tool calls with their results (oldest dropped first, whole, to fit
 /// [`BUDGET_CHARS`]) and the final reply. A loop without tool calls clears
 /// what was kept.

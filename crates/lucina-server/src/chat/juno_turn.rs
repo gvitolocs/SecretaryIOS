@@ -29,7 +29,8 @@ use serde_json::{json, Value};
 
 use lucina_llm::Message;
 use lucina_store::timeline::NewItem;
-use lucina_tools::agent::{self, AgentConfig, ToolRecord};
+use lucina_tools::agent::{self, AgentConfig, AgentOutcome, ToolRecord};
+use lucina_tools::carry;
 use lucina_tools::pending::{classify_reply, Reply};
 use lucina_tools::tools::juno::{device_of_session, fetch_lists, known_lists, NAMES};
 use lucina_tools::{Ctx, Origin, Registry};
@@ -345,10 +346,12 @@ pub(super) async fn try_turn(t: &Turn<'_>, memory: &str) -> Option<Finish> {
         now,
         st.cfg.time_zone,
     );
-    let msgs = vec![
-        Message::system(system),
-        Message::user(Prompts::user_block(&t.user_label, memory, &t.message)),
-    ];
+    let msgs = loop_messages(
+        &t.session,
+        system,
+        Prompts::user_block(&t.user_label, memory, &t.message),
+    );
+    let opening = msgs.len();
     let cfg = loop_config(st.cfg.turn_deadline);
     let calls = Mutex::new(Vec::new());
     let on_tool = |r: &ToolRecord| {
@@ -374,9 +377,39 @@ pub(super) async fn try_turn(t: &Turn<'_>, memory: &str) -> Option<Finish> {
         ended: run.as_ref().map_or("failed", |out| ended(out.stop)),
     };
     remember(&t.session, Some(turn), now);
+    keep_loop(&t.session, &t.message, opening, &run);
     match run {
         Ok(out) if !out.text.is_empty() => Some(effects_to_finish(&ctx.effects(), out.text)),
         _ => None,
+    }
+}
+
+/// The loop's opening messages: the system text, then this session's previous
+/// Juno loop when it ended within [`carry::TTL`] (its calls and results as the
+/// model saw them; Hermes, LucinaCode and OpenBot replay a turn's tools the same
+/// way), then the owner's message.
+fn loop_messages(session: &str, system: String, user: String) -> Vec<Message> {
+    let mut msgs = vec![Message::system(system)];
+    msgs.extend(carry::previous(session));
+    msgs.push(Message::user(user));
+    msgs
+}
+
+/// Keep what this loop added (after its `opening` messages) for the session's
+/// next Juno loop; a failed loop leaves nothing to carry.
+fn keep_loop(
+    session: &str,
+    message: &str,
+    opening: usize,
+    run: &Result<AgentOutcome, lucina_llm::LlmError>,
+) {
+    match run {
+        Ok(out) => carry::remember(
+            session,
+            message,
+            out.messages.get(opening..).unwrap_or_default(),
+        ),
+        Err(_) => carry::forget(session),
     }
 }
 
@@ -747,5 +780,64 @@ mod tests {
         assert!(JUNO_SYSTEM
             .contains("You act on the laptop only through juno_* tool calls made in this turn."));
         assert!(JUNO_SYSTEM.contains("unless a juno_* call in this turn did it"));
+    }
+
+    #[tokio::test]
+    async fn go_ahead_after_a_capped_turn_sees_the_previous_call_and_result() {
+        use lucina_llm::Role;
+        let session = "secretary_juno-dev_carry_test";
+        let mut env =
+            lucina_tools::ToolEnv::new(std::env::temp_dir(), chrono_tz::Europe::Copenhagen);
+        env.juno = Some(Arc::new(Lists));
+        let ctx = Ctx::new(Arc::new(env), "ios", session).with_origin(Origin::Owner);
+        let mut reg = Registry::new();
+        reg.register(Arc::new(lucina_tools::tools::juno::JunoCallTool))
+            .unwrap();
+        let model = lucina_llm::ScriptedModel::new();
+        model.push_calls(&[("juno_call", json!({"tool": "intents"}))]);
+        model.push_text("The rounds ran out: nothing was made yet.");
+        let cfg = AgentConfig {
+            max_rounds: 1,
+            ..AgentConfig::default()
+        };
+        let pending =
+            lucina_tools::pending::PendingStore::memory(lucina_tools::pending::DEFAULT_TTL);
+        let msgs = loop_messages(session, "sys".into(), "make a note".into());
+        let opening = msgs.len();
+        let run = agent::run(&model, &reg, msgs, &ctx, &pending, &cfg, &|_| {}).await;
+        assert_eq!(run.as_ref().unwrap().stop, agent::Stop::MaxRounds);
+        keep_loop(session, "make a note", opening, &run);
+
+        let next = loop_messages(session, "sys".into(), "go ahead".into());
+        assert_eq!(next[0].role, Role::System);
+        assert_eq!(next.last().unwrap().text(), "go ahead");
+        assert_eq!(
+            next[1].text(),
+            "make a note",
+            "the earlier request comes first"
+        );
+        let call = next
+            .iter()
+            .position(|m| {
+                m.tool_calls
+                    .iter()
+                    .flatten()
+                    .any(|c| c.function.name == "juno_call")
+            })
+            .expect("the previous juno_call is carried");
+        assert!(
+            next[call + 1].role == Role::Tool && next[call + 1].text().contains("0 intents"),
+            "{:?}",
+            next[call + 1]
+        );
+        assert!(next.iter().any(|m| m.text().contains("The rounds ran out")));
+        // Only this session's loop: another session starts clean.
+        assert_eq!(
+            loop_messages("secretary_juno-dev_other", "sys".into(), "go".into()).len(),
+            2
+        );
+        // A failed loop leaves nothing to carry.
+        keep_loop(session, "x", 2, &Err(lucina_llm::LlmError::Timeout));
+        assert_eq!(loop_messages(session, "sys".into(), "go".into()).len(), 2);
     }
 }
