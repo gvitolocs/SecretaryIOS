@@ -523,6 +523,16 @@ async fn handle_call(
             }
         }
     };
+    let args = match registry.get(&name) {
+        Some(tool) => {
+            let coerced = crate::coerce::coerce_args(&tool.parameters(), args.clone());
+            if coerced != args {
+                tracing::info!(tool = %name, "coerced tool arguments");
+            }
+            coerced
+        }
+        None => args,
+    };
     let gate = call_gate(registry, &name, &args, ctx.origin);
     if gate == CallGate::RefuseMcp {
         let summary = registry

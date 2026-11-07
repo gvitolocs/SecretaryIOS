@@ -34,6 +34,7 @@
 
 pub mod agent;
 pub mod carry;
+pub mod coerce;
 pub mod google;
 pub mod pending;
 pub mod reminder_writer;

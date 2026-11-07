@@ -1089,3 +1089,57 @@ async fn cycle_after_a_long_history_is_still_seen() {
         "the cycle after 70 other calls is warned"
     );
 }
+
+/// A tool that records the arguments it was called with.
+struct EchoArgsTool {
+    seen: Mutex<Option<Value>>,
+}
+
+#[async_trait::async_trait]
+impl Tool for EchoArgsTool {
+    fn name(&self) -> &'static str {
+        "echo_args"
+    }
+    fn description(&self) -> &'static str {
+        "echo test tool"
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "count": {"type": "integer"},
+                "flag": {"type": "boolean"},
+                "items": {"type": "array", "items": {"type": "string"}}
+            },
+            "required": ["count", "flag", "items"]
+        })
+    }
+    fn side_effect(&self) -> SideEffect {
+        SideEffect::None
+    }
+    async fn call(&self, args: Value, _ctx: &Ctx) -> ToolResult {
+        *self.seen.lock().unwrap() = Some(args.clone());
+        Ok(args)
+    }
+}
+
+#[tokio::test]
+async fn string_arguments_are_coerced_against_the_tool_schema() {
+    let echo = Arc::new(EchoArgsTool {
+        seen: Mutex::new(None),
+    });
+    let mut r = Registry::new();
+    r.register(echo.clone()).unwrap();
+    let model = ScriptedModel::new();
+    model.push_calls(&[(
+        "echo_args",
+        json!({"count": "3", "flag": "true", "items": "x"}),
+    )]);
+    model.push_text("done");
+    let out = run_scripted_reg(&model, &r, &AgentConfig::default()).await;
+    assert_eq!(out.records.len(), 1);
+    assert!(out.records[0].ok, "{:?}", out.records[0].output);
+    let expected = json!({"count": 3, "flag": true, "items": ["x"]});
+    assert_eq!(out.records[0].args, expected);
+    assert_eq!(echo.seen.lock().unwrap().clone().unwrap(), expected);
+}
