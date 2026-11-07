@@ -16,13 +16,17 @@
 //!   child gets a timeline of its own ([`super::claude_subagents`]).
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use lucina_agents::permission::{ActionVariant, Behavior, PermissionAction, PermissionKind, PermissionRequest};
-use lucina_agents::timeline::{SearchDetail, SearchToolName, TodoEntry, TodoStatus, ToolCall, ToolCallDetail, ToolCallStatus};
+use lucina_agents::permission::{
+    ActionVariant, Behavior, PermissionAction, PermissionKind, PermissionRequest,
+};
+use lucina_agents::timeline::{
+    SearchDetail, SearchToolName, TodoEntry, TodoStatus, ToolCall, ToolCallDetail, ToolCallStatus,
+};
 use lucina_agents::types::{AgentMode, Capabilities, PersistenceHandle, RuntimeInfo};
 use lucina_agents::{PermissionResponse, StreamEvent, TimelineItem, Usage};
 use serde_json::{json, Map, Value};
@@ -31,7 +35,9 @@ use tokio::process::{ChildStdin, ChildStdout};
 
 use super::claude_subagents::{Ended, Subagents};
 use crate::process::{Proc, Registry, Spec};
-use crate::provider::{EventSink, ModelInfo, Provider, ProviderError, ProviderInfo, Session, SessionConfig};
+use crate::provider::{
+    EventSink, ModelInfo, Provider, ProviderError, ProviderInfo, Session, SessionConfig,
+};
 
 pub const ID: &str = "claude";
 const DEFAULT_MODE: &str = "default";
@@ -44,16 +50,52 @@ pub struct ClaudeProvider {
 }
 
 fn mode(id: &str, label: &str, description: &str, icon: &str, tier: &str) -> AgentMode {
-    AgentMode { id: id.into(), label: label.into(), description: Some(description.into()), icon: Some(icon.into()), color_tier: Some(tier.into()) }
+    AgentMode {
+        id: id.into(),
+        label: label.into(),
+        description: Some(description.into()),
+        icon: Some(icon.into()),
+        color_tier: Some(tier.into()),
+    }
 }
 
 pub fn modes() -> Vec<AgentMode> {
     vec![
-        mode("plan", "Plan Mode", "Plan first; nothing changes until the plan is approved.", "ClipboardList", "safe"),
-        mode("default", "Always Ask", "Ask before every tool that changes something.", "Shield", "safe"),
-        mode("acceptEdits", "Accept File Edits", "Edit files without asking; ask for commands.", "ShieldCheck", "moderate"),
-        mode("auto", "Auto mode", "Claude decides which actions need approval.", "ShieldCheck", "moderate"),
-        mode("bypassPermissions", "Bypass", "Never ask.", "ShieldOff", "dangerous"),
+        mode(
+            "plan",
+            "Plan Mode",
+            "Plan first; nothing changes until the plan is approved.",
+            "ClipboardList",
+            "safe",
+        ),
+        mode(
+            "default",
+            "Always Ask",
+            "Ask before every tool that changes something.",
+            "Shield",
+            "safe",
+        ),
+        mode(
+            "acceptEdits",
+            "Accept File Edits",
+            "Edit files without asking; ask for commands.",
+            "ShieldCheck",
+            "moderate",
+        ),
+        mode(
+            "auto",
+            "Auto mode",
+            "Claude decides which actions need approval.",
+            "ShieldCheck",
+            "moderate",
+        ),
+        mode(
+            "bypassPermissions",
+            "Bypass",
+            "Never ask.",
+            "ShieldOff",
+            "dangerous",
+        ),
     ]
 }
 
@@ -69,16 +111,54 @@ fn cli_mode(mode: &str) -> Option<&'static str> {
     })
 }
 
+/// The `--mcp-config` JSON: the agents' own server (`lucina-agents`), plus the Juno
+/// shell tool's (`juno`) for a `codecor.juno=bash` agent. `None` when there is no
+/// `lagent` beside this binary (or `LUCINA_AGENTD_MCP=0`).
+fn mcp_config(lagent: Option<&Path>, juno_tool: bool) -> Option<Value> {
+    let p = lagent?;
+    let mut servers = Map::new();
+    servers.insert(crate::mcp::SERVER.to_string(), crate::mcp::attach_with(p));
+    if juno_tool {
+        servers.insert(
+            crate::juno_mcp::SERVER.to_string(),
+            crate::juno_mcp::attach_with(p),
+        );
+    }
+    Some(json!({"mcpServers": servers}))
+}
+
 impl ClaudeProvider {
-    async fn start(&self, config: SessionConfig, events: EventSink, resume: Option<&str>) -> Result<Arc<dyn Session>, ProviderError> {
-        let mode = config.mode_id.clone().unwrap_or_else(|| DEFAULT_MODE.into());
-        let cli = cli_mode(&mode).ok_or_else(|| ProviderError::new(format!("Invalid Claude mode \"{mode}\"")))?;
+    async fn start(
+        &self,
+        config: SessionConfig,
+        events: EventSink,
+        resume: Option<&str>,
+    ) -> Result<Arc<dyn Session>, ProviderError> {
+        let mode = config
+            .mode_id
+            .clone()
+            .unwrap_or_else(|| DEFAULT_MODE.into());
+        let cli = cli_mode(&mode)
+            .ok_or_else(|| ProviderError::new(format!("Invalid Claude mode \"{mode}\"")))?;
         let model = config.model.clone().or_else(|| self.default_model.clone());
-        let effort = config.thinking_option_id.clone().or_else(|| self.default_effort.clone());
+        let effort = config
+            .thinking_option_id
+            .clone()
+            .or_else(|| self.default_effort.clone());
         let mut args: Vec<String> = [
-            "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
-            "--include-partial-messages", "--permission-prompts", "host", "--permission-prompt-tool", "stdio",
-            "--permission-mode", cli,
+            "-p",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--include-partial-messages",
+            "--permission-prompts",
+            "host",
+            "--permission-prompt-tool",
+            "stdio",
+            "--permission-mode",
+            cli,
         ]
         .iter()
         .map(|s| s.to_string())
@@ -92,14 +172,22 @@ impl ClaudeProvider {
         if let Some(r) = resume {
             args.extend(["--resume".into(), r.to_string()]);
         }
-        // The agents' own tools (subagents, heartbeats, search): `lagent mcp`.
+        // The agents' own tools (subagents, heartbeats, search): `lagent mcp`. A
+        // `codecor.juno=bash` agent also gets the Juno shell tool: `lagent juno-mcp`.
         if config.agent_id.is_some() {
-            if let Some(server) = crate::mcp::attach() {
-                args.extend(["--mcp-config".into(), serde_json::json!({"mcpServers": {crate::mcp::SERVER: server}}).to_string()]);
+            if let Some(cfg) = mcp_config(crate::mcp::lagent_path().as_deref(), config.juno_tool) {
+                args.extend(["--mcp-config".into(), cfg.to_string()]);
             }
         }
-        let spec = Spec { program: self.bin.clone(), args, cwd: config.cwd.clone(), env: config.env.clone(), env_remove: Vec::new() };
-        let (proc_, stdin, stdout) = Proc::spawn(&spec, self.registry.as_ref()).map_err(|e| ProviderError::new(format!("cannot start claude: {e}")))?;
+        let spec = Spec {
+            program: self.bin.clone(),
+            args,
+            cwd: config.cwd.clone(),
+            env: config.env.clone(),
+            env_remove: Vec::new(),
+        };
+        let (proc_, stdin, stdout) = Proc::spawn(&spec, self.registry.as_ref())
+            .map_err(|e| ProviderError::new(format!("cannot start claude: {e}")))?;
         let session = Arc::new(ClaudeSession {
             stdin: tokio::sync::Mutex::new(stdin),
             proc_: Arc::new(tokio::sync::Mutex::new(proc_)),
@@ -136,7 +224,14 @@ impl Provider for ClaudeProvider {
             models: self
                 .default_model
                 .iter()
-                .map(|m| ModelInfo { id: m.clone(), label: m.clone(), description: None, is_default: true, is_selectable: true, default_thinking_option_id: self.default_effort.clone() })
+                .map(|m| ModelInfo {
+                    id: m.clone(),
+                    label: m.clone(),
+                    description: None,
+                    is_default: true,
+                    is_selectable: true,
+                    default_thinking_option_id: self.default_effort.clone(),
+                })
                 .collect(),
             capabilities: Capabilities {
                 supports_streaming: true,
@@ -155,11 +250,20 @@ impl Provider for ClaudeProvider {
         }
     }
 
-    async fn create_session(&self, config: SessionConfig, events: EventSink) -> Result<Arc<dyn Session>, ProviderError> {
+    async fn create_session(
+        &self,
+        config: SessionConfig,
+        events: EventSink,
+    ) -> Result<Arc<dyn Session>, ProviderError> {
         self.start(config, events, None).await
     }
 
-    async fn resume_session(&self, handle: &PersistenceHandle, config: SessionConfig, events: EventSink) -> Result<Arc<dyn Session>, ProviderError> {
+    async fn resume_session(
+        &self,
+        handle: &PersistenceHandle,
+        config: SessionConfig,
+        events: EventSink,
+    ) -> Result<Arc<dyn Session>, ProviderError> {
         self.start(config, events, Some(&handle.session_id)).await
     }
 }
@@ -184,9 +288,15 @@ struct State {
     /// The `Task` subagents, each with a timeline of its own (see [`super::claude_subagents`]).
     subs: Subagents,
     closing: bool,
-    /// Our permission id -> the CLI's control request id.
-    permissions: HashMap<String, String>,
+    /// Our permission id -> the CLI's control request id and the tool's name.
+    permissions: HashMap<String, Perm>,
     request_seq: u64,
+}
+
+/// One pending permission request: the CLI's control request id and the tool name.
+struct Perm {
+    cli_id: String,
+    name: String,
 }
 
 pub struct ClaudeSession {
@@ -222,7 +332,12 @@ fn search(query: Option<String>, tool: SearchToolName) -> ToolCallDetail {
 pub fn detail_for(name: &str, input: &Value, output: Option<&Value>) -> ToolCallDetail {
     let text_output = output.map(tool_result_text);
     match name {
-        "Bash" => ToolCallDetail::Shell { command: s(&input["command"]).unwrap_or_default(), cwd: None, output: text_output, exit_code: None },
+        "Bash" => ToolCallDetail::Shell {
+            command: s(&input["command"]).unwrap_or_default(),
+            cwd: None,
+            output: text_output,
+            exit_code: None,
+        },
         "Read" => ToolCallDetail::Read {
             file_path: s(&input["file_path"]).unwrap_or_default(),
             content: text_output,
@@ -235,11 +350,22 @@ pub fn detail_for(name: &str, input: &Value, output: Option<&Value>) -> ToolCall
             new_string: s(&input["new_string"]),
             unified_diff: None,
         },
-        "Write" => ToolCallDetail::Write { file_path: s(&input["file_path"]).unwrap_or_default(), content: s(&input["content"]) },
+        "Write" => ToolCallDetail::Write {
+            file_path: s(&input["file_path"]).unwrap_or_default(),
+            content: s(&input["content"]),
+        },
         "Grep" => search(s(&input["pattern"]), SearchToolName::Grep),
         "Glob" => search(s(&input["pattern"]), SearchToolName::Glob),
         "WebSearch" => search(s(&input["query"]), SearchToolName::WebSearch),
-        "WebFetch" => ToolCallDetail::Fetch { url: s(&input["url"]).unwrap_or_default(), prompt: s(&input["prompt"]), result: text_output, code: None, code_text: None, bytes: None, duration_ms: None },
+        "WebFetch" => ToolCallDetail::Fetch {
+            url: s(&input["url"]).unwrap_or_default(),
+            prompt: s(&input["prompt"]),
+            result: text_output,
+            code: None,
+            code_text: None,
+            bytes: None,
+            duration_ms: None,
+        },
         "Task" | "Agent" => ToolCallDetail::SubAgent {
             sub_agent_type: s(&input["subagent_type"]),
             description: s(&input["description"]),
@@ -247,27 +373,60 @@ pub fn detail_for(name: &str, input: &Value, output: Option<&Value>) -> ToolCall
             log: text_output.unwrap_or_default(),
             actions: Some(Vec::new()),
         },
-        "ExitPlanMode" => ToolCallDetail::Plan { text: s(&input["plan"]).unwrap_or_default() },
-        _ => ToolCallDetail::Unknown { input: input.clone(), output: output.cloned().unwrap_or(Value::Null) },
+        "ExitPlanMode" => ToolCallDetail::Plan {
+            text: s(&input["plan"]).unwrap_or_default(),
+        },
+        _ => ToolCallDetail::Unknown {
+            input: input.clone(),
+            output: output.cloned().unwrap_or(Value::Null),
+        },
     }
 }
 
 pub(super) fn tool_result_text(v: &Value) -> String {
     match v {
         Value::String(t) => t.clone(),
-        Value::Array(blocks) => blocks.iter().filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("\n"),
+        Value::Array(blocks) => blocks
+            .iter()
+            .filter_map(|b| b["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
         other => other.to_string(),
     }
+}
+
+/// The `allow` control response for a tool request. A juno tool (`mcp__juno__*`) never
+/// gets `updatedPermissions`: "allow always" can never add a rule, so every call asks
+/// the owner again.
+fn allow_body(
+    name: &str,
+    updated_input: &Option<Map<String, Value>>,
+    updated_permissions: &Option<Vec<Map<String, Value>>>,
+) -> Value {
+    let mut r = json!({"behavior": "allow", "updatedInput": updated_input.clone().map(Value::Object).unwrap_or(json!({}))});
+    if let Some(p) = updated_permissions
+        .as_ref()
+        .filter(|_| !crate::juno_mcp::is_juno_tool(name))
+    {
+        r["updatedPermissions"] = json!(p);
+    }
+    r
 }
 
 /// The `Task` call a frame belongs to, when it comes from inside a subagent. Claude Code's liveness
 /// tick for a long-running tool also names that tool as its parent, but it is not a frame of a
 /// conversation, and nothing but `assistant` and `user` frames (and their deltas) is routed.
 pub(super) fn sidechain_parent(msg: &Value) -> Option<String> {
-    if !matches!(msg["type"].as_str(), Some("assistant" | "user" | "stream_event")) {
+    if !matches!(
+        msg["type"].as_str(),
+        Some("assistant" | "user" | "stream_event")
+    ) {
         return None;
     }
-    msg["parent_tool_use_id"].as_str().filter(|p| !p.is_empty()).map(str::to_string)
+    msg["parent_tool_use_id"]
+        .as_str()
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
 }
 
 pub(super) fn todo_items(input: &Value) -> Vec<TodoEntry> {
@@ -295,8 +454,22 @@ pub(super) fn todo_items(input: &Value) -> Vec<TodoEntry> {
         .unwrap_or_default()
 }
 
-pub(super) fn tool_item(call_id: &str, name: &str, detail: ToolCallDetail, status: ToolCallStatus, error: Value) -> TimelineItem {
-    TimelineItem::ToolCall(Box::new(ToolCall { agent_message: None, call_id: call_id.into(), name: name.into(), detail, metadata: None, status, error }))
+pub(super) fn tool_item(
+    call_id: &str,
+    name: &str,
+    detail: ToolCallDetail,
+    status: ToolCallStatus,
+    error: Value,
+) -> TimelineItem {
+    TimelineItem::ToolCall(Box::new(ToolCall {
+        agent_message: None,
+        call_id: call_id.into(),
+        name: name.into(),
+        detail,
+        metadata: None,
+        status,
+        error,
+    }))
 }
 
 impl ClaudeSession {
@@ -310,14 +483,26 @@ impl ClaudeSession {
 
     fn timeline(&self, item: TimelineItem) {
         let turn = self.lock().turn_id.clone();
-        self.emit(StreamEvent::Timeline { provider: ID.into(), item, turn_id: turn });
+        self.emit(StreamEvent::Timeline {
+            provider: ID.into(),
+            item,
+            turn_id: turn,
+        });
     }
 
     /// Events from the subagent tracker; its parent-timeline items belong to `turn`.
     fn emit_all(&self, events: Vec<StreamEvent>, turn: Option<String>) {
         for ev in events {
             self.emit(match ev {
-                StreamEvent::Timeline { provider, item, turn_id: None } => StreamEvent::Timeline { provider, item, turn_id: turn.clone() },
+                StreamEvent::Timeline {
+                    provider,
+                    item,
+                    turn_id: None,
+                } => StreamEvent::Timeline {
+                    provider,
+                    item,
+                    turn_id: turn.clone(),
+                },
                 other => other,
             });
         }
@@ -327,19 +512,29 @@ impl ClaudeSession {
         let mut line = msg.to_string();
         line.push('\n');
         let mut w = self.stdin.lock().await;
-        w.write_all(line.as_bytes()).await.map_err(|e| ProviderError::new(format!("claude stdin: {e}")))?;
-        w.flush().await.map_err(|e| ProviderError::new(format!("claude stdin: {e}")))
+        w.write_all(line.as_bytes())
+            .await
+            .map_err(|e| ProviderError::new(format!("claude stdin: {e}")))?;
+        w.flush()
+            .await
+            .map_err(|e| ProviderError::new(format!("claude stdin: {e}")))
     }
 
     fn spawn_reader(self: Arc<Self>, stdout: ChildStdout) {
         tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                let Ok(msg) = serde_json::from_str::<Value>(line.trim()) else { continue };
+                let Ok(msg) = serde_json::from_str::<Value>(line.trim()) else {
+                    continue;
+                };
                 self.on_message(&msg).await;
             }
             // Closed on purpose (archive, shutdown): the manager cancels what was running.
-            let lost = if self.lock().closing { Vec::new() } else { self.lock().subs.lost() };
+            let lost = if self.lock().closing {
+                Vec::new()
+            } else {
+                self.lock().subs.lost()
+            };
             self.emit_all(lost, None);
             let turn = self.lock().turn_id.take();
             if let Some(turn) = turn {
@@ -361,7 +556,10 @@ impl ClaudeSession {
             let (events, turn) = {
                 let mut st = self.lock();
                 let st = &mut *st;
-                (st.subs.sidechain(msg, &parent, &st.tools), st.turn_id.clone())
+                (
+                    st.subs.sidechain(msg, &parent, &st.tools),
+                    st.turn_id.clone(),
+                )
             };
             self.emit_all(events, turn);
             return;
@@ -377,7 +575,10 @@ impl ClaudeSession {
                 }
                 let id = st.session_id.clone();
                 drop(st);
-                self.emit(StreamEvent::ThreadStarted { session_id: id, provider: ID.into() });
+                self.emit(StreamEvent::ThreadStarted {
+                    session_id: id,
+                    provider: ID.into(),
+                });
             }
             Some("system") => {
                 let (events, turn) = {
@@ -409,8 +610,13 @@ impl ClaudeSession {
                     self.lock().streamed_messages.insert(id.clone());
                 }
                 match delta["type"].as_str() {
-                    Some("text_delta") => self.timeline(TimelineItem::AssistantMessage { text: s(&delta["text"]).unwrap_or_default(), message_id }),
-                    Some("thinking_delta") => self.timeline(TimelineItem::Reasoning { text: s(&delta["thinking"]).unwrap_or_default() }),
+                    Some("text_delta") => self.timeline(TimelineItem::AssistantMessage {
+                        text: s(&delta["text"]).unwrap_or_default(),
+                        message_id,
+                    }),
+                    Some("thinking_delta") => self.timeline(TimelineItem::Reasoning {
+                        text: s(&delta["thinking"]).unwrap_or_default(),
+                    }),
                     _ => {}
                 }
             }
@@ -420,19 +626,34 @@ impl ClaudeSession {
 
     fn on_assistant(&self, message: &Value) {
         let id = s(&message["id"]);
-        let streamed = id.as_ref().is_some_and(|i| self.lock().streamed_messages.contains(i));
+        let streamed = id
+            .as_ref()
+            .is_some_and(|i| self.lock().streamed_messages.contains(i));
         for block in message["content"].as_array().into_iter().flatten() {
             match block["type"].as_str() {
-                Some("text") if !streamed => self.timeline(TimelineItem::AssistantMessage { text: s(&block["text"]).unwrap_or_default(), message_id: id.clone() }),
-                Some("thinking") if !streamed => self.timeline(TimelineItem::Reasoning { text: s(&block["thinking"]).unwrap_or_default() }),
+                Some("text") if !streamed => self.timeline(TimelineItem::AssistantMessage {
+                    text: s(&block["text"]).unwrap_or_default(),
+                    message_id: id.clone(),
+                }),
+                Some("thinking") if !streamed => self.timeline(TimelineItem::Reasoning {
+                    text: s(&block["thinking"]).unwrap_or_default(),
+                }),
                 Some("tool_use") => {
                     let call_id = s(&block["id"]).unwrap_or_default();
                     let name = s(&block["name"]).unwrap_or_default();
                     let input = block["input"].clone();
                     if name == "TodoWrite" {
-                        self.timeline(TimelineItem::Todo { items: todo_items(&input) });
+                        self.timeline(TimelineItem::Todo {
+                            items: todo_items(&input),
+                        });
                     }
-                    self.timeline(tool_item(&call_id, &name, detail_for(&name, &input, None), ToolCallStatus::Running, Value::Null));
+                    self.timeline(tool_item(
+                        &call_id,
+                        &name,
+                        detail_for(&name, &input, None),
+                        ToolCallStatus::Running,
+                        Value::Null,
+                    ));
                     self.lock().tools.insert(call_id, ToolUse { name, input });
                 }
                 _ => {}
@@ -446,18 +667,33 @@ impl ClaudeSession {
                 continue;
             }
             let call_id = s(&block["tool_use_id"]).unwrap_or_default();
-            let Some(tool) = self.lock().tools.remove(&call_id) else { continue };
+            let Some(tool) = self.lock().tools.remove(&call_id) else {
+                continue;
+            };
             let failed = block["is_error"] == true;
             let output = &block["content"];
-            let (status, error) = if failed { (ToolCallStatus::Failed, json!(tool_result_text(output))) } else { (ToolCallStatus::Completed, Value::Null) };
+            let (status, error) = if failed {
+                (ToolCallStatus::Failed, json!(tool_result_text(output)))
+            } else {
+                (ToolCallStatus::Completed, Value::Null)
+            };
             // A `Task` call that started a subagent: its card carries what the child did.
-            let card = self.lock().subs.settle(&call_id, status, &error, Some(output));
+            let card = self
+                .lock()
+                .subs
+                .settle(&call_id, status, &error, Some(output));
             match card {
                 Some(events) => {
                     let turn = self.lock().turn_id.clone();
                     self.emit_all(events, turn);
                 }
-                None => self.timeline(tool_item(&call_id, &tool.name, detail_for(&tool.name, &tool.input, Some(output)), status, error)),
+                None => self.timeline(tool_item(
+                    &call_id,
+                    &tool.name,
+                    detail_for(&tool.name, &tool.input, Some(output)),
+                    status,
+                    error,
+                )),
             }
         }
     }
@@ -474,39 +710,84 @@ impl ClaudeSession {
             input_tokens: u["input_tokens"].as_u64().map(Into::into),
             cached_input_tokens: u["cache_read_input_tokens"].as_u64().map(Into::into),
             output_tokens: u["output_tokens"].as_u64().map(Into::into),
-            total_cost_usd: msg["total_cost_usd"].as_f64().and_then(serde_json::Number::from_f64),
+            total_cost_usd: msg["total_cost_usd"]
+                .as_f64()
+                .and_then(serde_json::Number::from_f64),
             context_window_max_tokens: None,
             context_window_used_tokens: None,
         };
         // Tools still open when the turn ends never got a result.
         let open: Vec<(String, ToolUse)> = self.lock().tools.drain().collect();
         for (call_id, tool) in open {
-            let status = if interrupted { ToolCallStatus::Canceled } else { ToolCallStatus::Completed };
-            let card = self.lock().subs.settle(&call_id, status, &Value::Null, None);
+            let status = if interrupted {
+                ToolCallStatus::Canceled
+            } else {
+                ToolCallStatus::Completed
+            };
+            let card = self
+                .lock()
+                .subs
+                .settle(&call_id, status, &Value::Null, None);
             match card {
                 Some(events) => self.emit_all(events, turn.clone()),
                 None => self.emit(StreamEvent::Timeline {
                     provider: ID.into(),
-                    item: tool_item(&call_id, &tool.name, detail_for(&tool.name, &tool.input, None), status, Value::Null),
+                    item: tool_item(
+                        &call_id,
+                        &tool.name,
+                        detail_for(&tool.name, &tool.input, None),
+                        status,
+                        Value::Null,
+                    ),
                     turn_id: turn.clone(),
                 }),
             }
         }
-        let failed = msg["is_error"] == true || msg["subtype"].as_str().is_some_and(|st| st.starts_with("error"));
-        let ended = if interrupted { Ended::Canceled } else if failed { Ended::Failed } else { Ended::Completed };
+        let failed = msg["is_error"] == true
+            || msg["subtype"]
+                .as_str()
+                .is_some_and(|st| st.starts_with("error"));
+        let ended = if interrupted {
+            Ended::Canceled
+        } else if failed {
+            Ended::Failed
+        } else {
+            Ended::Completed
+        };
         let events = self.lock().subs.turn_ended(ended);
         self.emit_all(events, turn.clone());
         if interrupted {
-            self.emit(StreamEvent::TurnCanceled { provider: ID.into(), turn_id: turn, reason: "Interrupted".into() });
+            self.emit(StreamEvent::TurnCanceled {
+                provider: ID.into(),
+                turn_id: turn,
+                reason: "Interrupted".into(),
+            });
         } else if failed {
-            let error = s(&msg["result"]).filter(|r| !r.is_empty()).or_else(|| s(&msg["subtype"])).unwrap_or_else(|| "Claude turn failed".into());
+            let error = s(&msg["result"])
+                .filter(|r| !r.is_empty())
+                .or_else(|| s(&msg["subtype"]))
+                .unwrap_or_else(|| "Claude turn failed".into());
             // `api_error` (e.g. usage_limit_reached) or the terminal reason; the
             // subtype says "success" even for API errors.
-            let code = s(&msg["api_error"]).or_else(|| s(&msg["terminal_reason"])).or_else(|| s(&msg["subtype"]));
-            let diagnostic = msg["api_error_status"].as_u64().map(|st| format!("HTTP {st}"));
-            self.emit(StreamEvent::TurnFailed { provider: ID.into(), turn_id: turn, error, code, diagnostic });
+            let code = s(&msg["api_error"])
+                .or_else(|| s(&msg["terminal_reason"]))
+                .or_else(|| s(&msg["subtype"]));
+            let diagnostic = msg["api_error_status"]
+                .as_u64()
+                .map(|st| format!("HTTP {st}"));
+            self.emit(StreamEvent::TurnFailed {
+                provider: ID.into(),
+                turn_id: turn,
+                error,
+                code,
+                diagnostic,
+            });
         } else {
-            self.emit(StreamEvent::TurnCompleted { provider: ID.into(), turn_id: turn, usage: Some(usage) });
+            self.emit(StreamEvent::TurnCompleted {
+                provider: ID.into(),
+                turn_id: turn,
+                usage: Some(usage),
+            });
         }
     }
 
@@ -530,7 +811,13 @@ impl ClaudeSession {
             let mut st = self.lock();
             st.request_seq += 1;
             let id = format!("claude-perm-{}", st.request_seq);
-            st.permissions.insert(id.clone(), cli_id);
+            st.permissions.insert(
+                id.clone(),
+                Perm {
+                    cli_id,
+                    name: name.clone(),
+                },
+            );
             id
         };
         let request = PermissionRequest {
@@ -542,16 +829,33 @@ impl ClaudeSession {
             description: s(&request["decision_reason"]),
             input: input.as_object().cloned(),
             detail: Some(detail_for(&name, &input, None)),
-            suggestions: request["permission_suggestions"].as_array().map(|a| a.iter().filter_map(|v| v.as_object().cloned()).collect()),
+            suggestions: request["permission_suggestions"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_object().cloned()).collect()),
             actions: (kind != PermissionKind::Question).then(|| {
                 vec![
-                    PermissionAction { id: "allow".into(), label: "Allow".into(), behavior: Behavior::Allow, variant: Some(ActionVariant::Primary), intent: None },
-                    PermissionAction { id: "deny".into(), label: "Deny".into(), behavior: Behavior::Deny, variant: Some(ActionVariant::Danger), intent: None },
+                    PermissionAction {
+                        id: "allow".into(),
+                        label: "Allow".into(),
+                        behavior: Behavior::Allow,
+                        variant: Some(ActionVariant::Primary),
+                        intent: None,
+                    },
+                    PermissionAction {
+                        id: "deny".into(),
+                        label: "Deny".into(),
+                        behavior: Behavior::Deny,
+                        variant: Some(ActionVariant::Danger),
+                        intent: None,
+                    },
                 ]
             }),
             metadata: None,
         };
-        self.emit(StreamEvent::PermissionRequested { provider: ID.into(), request: Box::new(request) });
+        self.emit(StreamEvent::PermissionRequested {
+            provider: ID.into(),
+            request: Box::new(request),
+        });
     }
 }
 
@@ -561,7 +865,11 @@ impl Session for ClaudeSession {
         self.lock().session_id.clone()
     }
 
-    async fn start_turn(&self, prompt: &str, _client_message_id: Option<String>) -> Result<String, ProviderError> {
+    async fn start_turn(
+        &self,
+        prompt: &str,
+        _client_message_id: Option<String>,
+    ) -> Result<String, ProviderError> {
         let turn = uuid::Uuid::new_v4().to_string();
         {
             let mut st = self.lock();
@@ -578,7 +886,10 @@ impl Session for ClaudeSession {
             "session_id": session_id,
         }))
         .await?;
-        self.emit(StreamEvent::TurnStarted { provider: ID.into(), turn_id: Some(turn.clone()) });
+        self.emit(StreamEvent::TurnStarted {
+            provider: ID.into(),
+            turn_id: Some(turn.clone()),
+        });
         Ok(turn)
     }
 
@@ -611,29 +922,43 @@ impl Session for ClaudeSession {
         self.write(json!({"type": "control_request", "request_id": id, "request": {"subtype": "interrupt"}})).await
     }
 
-    async fn respond_permission(&self, request_id: &str, response: PermissionResponse) -> Result<(), ProviderError> {
-        let Some(cli_id) = self.lock().permissions.remove(request_id) else { return Ok(()) };
+    async fn respond_permission(
+        &self,
+        request_id: &str,
+        response: PermissionResponse,
+    ) -> Result<(), ProviderError> {
+        let Some(perm) = self.lock().permissions.remove(request_id) else {
+            return Ok(());
+        };
         let body = match &response {
-            PermissionResponse::Allow { updated_input, updated_permissions, .. } => {
-                let mut r = json!({"behavior": "allow", "updatedInput": updated_input.clone().map(Value::Object).unwrap_or(json!({}))});
-                if let Some(p) = updated_permissions {
-                    r["updatedPermissions"] = json!(p);
-                }
-                r
-            }
-            PermissionResponse::Deny { message, interrupt, .. } => {
+            PermissionResponse::Allow {
+                updated_input,
+                updated_permissions,
+                ..
+            } => allow_body(&perm.name, updated_input, updated_permissions),
+            PermissionResponse::Deny {
+                message, interrupt, ..
+            } => {
                 json!({"behavior": "deny", "message": message.clone().unwrap_or_else(|| "Denied by the owner".into()), "interrupt": interrupt.unwrap_or(false)})
             }
         };
-        self.write(json!({"type": "control_response", "response": {"subtype": "success", "request_id": cli_id, "response": body}})).await?;
-        self.emit(StreamEvent::PermissionResolved { provider: ID.into(), request_id: request_id.into(), resolution: response });
+        self.write(json!({"type": "control_response", "response": {"subtype": "success", "request_id": perm.cli_id, "response": body}})).await?;
+        self.emit(StreamEvent::PermissionResolved {
+            provider: ID.into(),
+            request_id: request_id.into(),
+            resolution: response,
+        });
         Ok(())
     }
 
     async fn close(&self) {
         self.lock().closing = true;
         let _ = self.interrupt().await;
-        self.proc_.lock().await.shutdown(Duration::from_secs(3)).await;
+        self.proc_
+            .lock()
+            .await
+            .shutdown(Duration::from_secs(3))
+            .await;
     }
 
     fn runtime_info(&self) -> RuntimeInfo {
@@ -655,7 +980,12 @@ impl Session for ClaudeSession {
             meta.insert("model".into(), json!(m));
         }
         meta.insert("modeId".into(), json!(st.mode));
-        PersistenceHandle { provider: ID.into(), session_id: st.session_id.clone(), native_handle: None, metadata: Some(meta) }
+        PersistenceHandle {
+            provider: ID.into(),
+            session_id: st.session_id.clone(),
+            native_handle: None,
+            metadata: Some(meta),
+        }
     }
 
     fn current_mode(&self) -> Option<String> {
@@ -670,15 +1000,76 @@ mod tests {
     #[test]
     fn tool_details() {
         let d = detail_for("Bash", &json!({"command": "ls -la"}), Some(&json!("a\nb")));
-        assert_eq!(serde_json::to_value(d).unwrap(), json!({"type":"shell","command":"ls -la","output":"a\nb"}));
+        assert_eq!(
+            serde_json::to_value(d).unwrap(),
+            json!({"type":"shell","command":"ls -la","output":"a\nb"})
+        );
         let d = detail_for("Read", &json!({"file_path": "/w/a.rs", "offset": 3}), None);
-        assert_eq!(serde_json::to_value(d).unwrap(), json!({"type":"read","filePath":"/w/a.rs","offset":3}));
+        assert_eq!(
+            serde_json::to_value(d).unwrap(),
+            json!({"type":"read","filePath":"/w/a.rs","offset":3})
+        );
         let d = detail_for("Grep", &json!({"pattern": "TODO"}), None);
         assert_eq!(d.kind(), "search");
         let d = detail_for("mcp__x__y", &json!({"a": 1}), None);
         assert_eq!(d.kind(), "unknown");
-        assert!(todo_items(&json!({"todos": [{"content":"a","status":"completed","activeForm":"Doing a"}]}))[0].completed);
+        assert!(
+            todo_items(
+                &json!({"todos": [{"content":"a","status":"completed","activeForm":"Doing a"}]})
+            )[0]
+            .completed
+        );
         assert_eq!(cli_mode("default"), Some("manual"));
         assert_eq!(cli_mode("nope"), None);
+    }
+
+    #[test]
+    fn mcp_config_attaches_juno_only_when_opted_in() {
+        let lagent = Path::new("/opt/bin/lagent");
+        // Without the label: only the agents' own server, exactly as before.
+        let c = mcp_config(Some(lagent), false).unwrap();
+        let servers = c["mcpServers"].as_object().unwrap();
+        assert_eq!(servers.len(), 1);
+        assert!(servers.contains_key(crate::mcp::SERVER));
+        assert_eq!(servers[crate::mcp::SERVER]["args"], json!(["mcp"]));
+        // With `codecor.juno=bash`: the juno server sits next to it.
+        let c = mcp_config(Some(lagent), true).unwrap();
+        let servers = c["mcpServers"].as_object().unwrap();
+        assert_eq!(servers.len(), 2);
+        let juno = &servers[crate::juno_mcp::SERVER];
+        assert_eq!(juno["type"], "stdio");
+        assert_eq!(juno["command"], "/opt/bin/lagent");
+        assert_eq!(juno["args"], json!(["juno-mcp"]));
+        // No `lagent` beside the binary: no `--mcp-config` at all.
+        assert!(mcp_config(None, true).is_none());
+        assert!(mcp_config(None, false).is_none());
+    }
+
+    #[test]
+    fn juno_tools_never_get_updated_permissions() {
+        let perms: Vec<Map<String, Value>> = vec![Map::from_iter([
+            ("type".to_string(), json!("addRules")),
+            (
+                "rules".to_string(),
+                json!([{"toolName": "mcp__juno__juno_bash"}]),
+            ),
+        ])];
+        let perms_v = json!(perms);
+        let input = Some(Map::from_iter([("command".to_string(), json!("ls"))]));
+        // A juno tool: "allow always" is dropped, every call asks again.
+        let b = allow_body("mcp__juno__juno_bash", &input, &Some(perms.clone()));
+        assert_eq!(b["behavior"], "allow");
+        assert_eq!(b["updatedInput"], json!({"command": "ls"}));
+        assert!(b.get("updatedPermissions").is_none(), "{b}");
+        // Any other tool keeps them.
+        let b = allow_body("Bash", &input, &Some(perms.clone()));
+        assert_eq!(b["updatedPermissions"], perms_v);
+        let b = allow_body(
+            "mcp__lucina-agents__list_agents",
+            &None,
+            &Some(perms.clone()),
+        );
+        assert_eq!(b["updatedPermissions"], perms_v);
+        assert_eq!(b["updatedInput"], json!({}));
     }
 }

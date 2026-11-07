@@ -29,6 +29,11 @@ those sessions.
   `~/Projects/.worktrees/<Repo>/`, or a repo listed in `LUCINA_AGENTD_CODEX_DENY_REPOS`) is refused, whoever asks; a
   chain on such a project skips its Codex lanes. Message: "Codex is not used on Lucina projects (owner rule). Pick
   Claude, Mistral or Qwen for <Repo>." CodeCor on Juno shows it as is.
+- `JUNO_TOOL_REFUSED` (403): the Juno shell tool (label `codecor.juno=bash`, see `docs/design/juno-bash-tool.md`)
+  needs a Claude agent in a mode that asks before each call. Creating (or forking) such an agent with another
+  provider, a mode outside `default`/`plan`/`acceptEdits` (`bypassPermissions`, `dontAsk`, …), or a `toolPolicy`
+  that preapproves any `mcp__juno__*` tool is refused; changing such an agent's mode to a forbidden one is refused
+  the same way. Message: "The Juno shell tool needs a Claude agent in a mode that asks before each call (…)".
 - JSON is camelCase. The shapes are Paseo 0.13.2's (`AgentSnapshot`, `AgentListItem`, `TimelineRow`,
   `PermissionRequest`), plus Lucina's fields: `gate`, `workspaceId`, and the permission book's `PermissionView`.
 
@@ -239,6 +244,11 @@ terminal output is SSE and input is a POST. A WebSocket would need upgrade suppo
   `detach_agent`, `create_heartbeat`, `create_schedule`, `list_schedules`, `delete_schedule`, `delete_heartbeat`,
   `search_agents`) to Claude (`--mcp-config`) and ACP agents (`mcpServers`), and preapproves them: the daemon
   enforces the rules above. Codex isn't attached yet. `LUCINA_AGENTD_MCP=0` turns it off.
+- **Juno shell tool:** an agent labelled `codecor.juno=bash` (a Claude agent in a mode that asks before each call)
+  also gets `lagent juno-mcp` (server `juno`, one tool `juno_bash`) in its `--mcp-config`, next to `lucina-agents`.
+  Its tools are **never preapproved**: no tool policy and no "allow always" (`updatedPermissions` is dropped for
+  `mcp__juno__*` requests) — every call shows the owner an Allow/Deny card and runs only after Allow. See
+  `docs/design/juno-bash-tool.md`.
 - **Search:** Paseo's typo-tolerant ranking over title, workspace, branch and project, plus SQLite FTS5 over prompts,
   answers and agent messages (indexed when an agent is idle).
 

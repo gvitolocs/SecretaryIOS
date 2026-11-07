@@ -40,6 +40,7 @@ pub mod devices;
 pub mod external;
 pub mod journal;
 pub mod jsonrpc;
+pub mod juno_mcp;
 pub mod lane;
 pub mod manager;
 pub mod mcp;

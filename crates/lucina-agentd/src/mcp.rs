@@ -29,7 +29,9 @@ const MAX_TEXT: usize = 12_000;
 
 /// Whether a permission request is for one of these tools (preapproved).
 pub fn is_own_tool(name: &str) -> bool {
-    name.strip_prefix("mcp__").and_then(|r| r.strip_prefix(SERVER)).is_some_and(|t| t.starts_with("__") && t.len() > 2)
+    name.strip_prefix("mcp__")
+        .and_then(|r| r.strip_prefix(SERVER))
+        .is_some_and(|t| t.starts_with("__") && t.len() > 2)
 }
 
 /// `lagent` next to the running daemon binary, when attaching is on.
@@ -50,13 +52,20 @@ fn socket() -> String {
 /// The server as a Claude `mcpServers` entry.
 pub fn attach() -> Option<Value> {
     let p = lagent_path()?;
-    Some(json!({"type": "stdio", "command": p.display().to_string(), "args": ["mcp"], "env": {crate::config::SOCKET_ENV: socket()}}))
+    Some(attach_with(&p))
+}
+
+/// The server entry for a given `lagent` path.
+pub fn attach_with(lagent: &Path) -> Value {
+    json!({"type": "stdio", "command": lagent.display().to_string(), "args": ["mcp"], "env": {crate::config::SOCKET_ENV: socket()}})
 }
 
 /// ACP `session/new` `mcpServers` (stdio servers, which every ACP agent supports).
 pub fn acp_servers(for_agent: bool) -> Value {
     match lagent_path().filter(|_| for_agent) {
-        Some(p) => json!([{"name": SERVER, "command": p.display().to_string(), "args": ["mcp"], "env": [{"name": crate::config::SOCKET_ENV, "value": socket()}]}]),
+        Some(p) => {
+            json!([{"name": SERVER, "command": p.display().to_string(), "args": ["mcp"], "env": [{"name": crate::config::SOCKET_ENV, "value": socket()}]}])
+        }
         None => json!([]),
     }
 }
@@ -77,8 +86,14 @@ pub fn codex_config_for_tests(lagent: &str, socket: &str, agent_id: &str) -> Val
 }
 
 fn codex_config_for(lagent: &Path, socket: &str, agent_id: &str) -> Value {
-    let names: Vec<String> = tools().iter().filter_map(|t| t["name"].as_str().map(str::to_string)).collect();
-    let approvals: serde_json::Map<String, Value> = names.iter().map(|n| (n.clone(), json!({"approval_mode": "approve"}))).collect();
+    let names: Vec<String> = tools()
+        .iter()
+        .filter_map(|t| t["name"].as_str().map(str::to_string))
+        .collect();
+    let approvals: serde_json::Map<String, Value> = names
+        .iter()
+        .map(|n| (n.clone(), json!({"approval_mode": "approve"})))
+        .collect();
     json!({"mcp_servers": {SERVER: {
         "command": lagent.display().to_string(),
         "args": ["mcp"],
@@ -173,8 +188,14 @@ fn duration_ms(s: &str) -> Option<u64> {
 }
 
 fn seg(v: &Value, k: &str) -> Result<String, String> {
-    let s = v[k].as_str().map(str::trim).filter(|s| !s.is_empty()).ok_or(format!("`{k}` is required"))?;
-    if s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+    let s = v[k]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or(format!("`{k}` is required"))?;
+    if s.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
         Ok(s.to_string())
     } else {
         Err(format!("`{k}` is not an id"))
@@ -212,7 +233,11 @@ async fn call(client: &Client, me: Option<&str>, name: &str, a: &Value) -> Resul
     match name {
         "create_agent" => {
             let mut body = json!({"provider": a["provider"], "prompt": a["initialPrompt"], "cwd": a["cwd"].as_str().unwrap_or("")});
-            for (from, to) in [("title", "title"), ("mode", "modeId"), ("notifyOnFinish", "notifyOnFinish")] {
+            for (from, to) in [
+                ("title", "title"),
+                ("mode", "modeId"),
+                ("notifyOnFinish", "notifyOnFinish"),
+            ] {
                 if !a[from].is_null() {
                     body[to] = a[from].clone();
                 }
@@ -232,36 +257,76 @@ async fn call(client: &Client, me: Option<&str>, name: &str, a: &Value) -> Resul
             if !a["notifyOnFinish"].is_null() {
                 body["notifyOnFinish"] = a["notifyOnFinish"].clone();
             }
-            let v = client.post(&format!("/agents/{id}/send"), &body).await.map_err(e)?;
-            Ok(format!("Queued message {} for {id}; it is delivered after 2 quiet seconds.", v["messageId"].as_str().unwrap_or("")))
+            let v = client
+                .post(&format!("/agents/{id}/send"), &body)
+                .await
+                .map_err(e)?;
+            Ok(format!(
+                "Queued message {} for {id}; it is delivered after 2 quiet seconds.",
+                v["messageId"].as_str().unwrap_or("")
+            ))
         }
         "list_agents" => {
             let v = client.get("/agents/items").await.map_err(e)?;
             let items = v["agents"].as_array().cloned().unwrap_or_default();
-            Ok(clip(format!("{} agent(s):\n{}", items.len(), items.iter().map(|i| agent_line(i, me)).collect::<Vec<_>>().join("\n"))))
+            Ok(clip(format!(
+                "{} agent(s):\n{}",
+                items.len(),
+                items
+                    .iter()
+                    .map(|i| agent_line(i, me))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )))
         }
         "get_agent_status" => {
             let id = seg(a, "agentId")?;
             let v = client.get(&format!("/agents/{id}")).await.map_err(e)?;
-            let pending = v["pendingPermissions"].as_array().map(|p| p.len()).unwrap_or(0);
-            Ok(format!("{}\npending permission requests: {pending} (the owner answers them)", agent_line(&v, me)))
+            let pending = v["pendingPermissions"]
+                .as_array()
+                .map(|p| p.len())
+                .unwrap_or(0);
+            Ok(format!(
+                "{}\npending permission requests: {pending} (the owner answers them)",
+                agent_line(&v, me)
+            ))
         }
         "get_agent_activity" => {
             let id = seg(a, "agentId")?;
             let path = match a["subagentId"].as_str().filter(|s| !s.is_empty()) {
-                Some(_) => format!("/agents/{id}/provider-subagents/{}/timeline", seg(a, "subagentId")?),
+                Some(_) => format!(
+                    "/agents/{id}/provider-subagents/{}/timeline",
+                    seg(a, "subagentId")?
+                ),
                 None => format!("/agents/{id}/timeline"),
             };
             let v = client.get(&path).await.map_err(e)?;
-            let rows: Vec<TimelineRow> = serde_json::from_value(v["rows"].clone()).unwrap_or_default();
-            let items: Vec<TimelineItem> = project_rows(&rows).into_iter().map(|e| e.item).collect();
+            let rows: Vec<TimelineRow> =
+                serde_json::from_value(v["rows"].clone()).unwrap_or_default();
+            let items: Vec<TimelineItem> =
+                project_rows(&rows).into_iter().map(|e| e.item).collect();
             let limit = a["limit"].as_u64().unwrap_or(30) as usize;
-            Ok(clip(curate_activity(&items, &CurateOptions { max_items: limit, ..CurateOptions::default() })))
+            Ok(clip(curate_activity(
+                &items,
+                &CurateOptions {
+                    max_items: limit,
+                    ..CurateOptions::default()
+                },
+            )))
         }
         "wait_for_agent" => {
             let id = seg(a, "agentId")?;
-            let secs = a["timeoutSeconds"].as_u64().unwrap_or(MAX_WAIT_SECS).clamp(1, MAX_WAIT_SECS);
-            let v = client.post(&format!("/agents/{id}/wait?timeoutMs={}", secs * 1000), &json!({})).await.map_err(e)?;
+            let secs = a["timeoutSeconds"]
+                .as_u64()
+                .unwrap_or(MAX_WAIT_SECS)
+                .clamp(1, MAX_WAIT_SECS);
+            let v = client
+                .post(
+                    &format!("/agents/{id}/wait?timeoutMs={}", secs * 1000),
+                    &json!({}),
+                )
+                .await
+                .map_err(e)?;
             let mut out = format!("status: {}", v["status"].as_str().unwrap_or(""));
             if let Some(m) = v["lastMessage"].as_str() {
                 out.push_str(&format!("\nlast message:\n{m}"));
@@ -275,7 +340,10 @@ async fn call(client: &Client, me: Option<&str>, name: &str, a: &Value) -> Resul
                 "archive_agent" => "archive",
                 _ => "detach",
             };
-            client.post(&format!("/agents/{id}/{action}"), &json!({})).await.map_err(e)?;
+            client
+                .post(&format!("/agents/{id}/{action}"), &json!({}))
+                .await
+                .map_err(e)?;
             Ok(format!("{action}: done for {id}."))
         }
         "create_heartbeat" | "create_schedule" => {
@@ -304,11 +372,18 @@ async fn call(client: &Client, me: Option<&str>, name: &str, a: &Value) -> Resul
                 });
                 body["provider"] = json!(provider.ok_or("`provider` is required")?);
                 if body["cwd"].is_null() {
-                    body["cwd"] = mine.as_ref().map(|m| m["cwd"].clone()).unwrap_or(Value::Null);
+                    body["cwd"] = mine
+                        .as_ref()
+                        .map(|m| m["cwd"].clone())
+                        .unwrap_or(Value::Null);
                 }
             }
             let v = client.post("/schedules", &body).await.map_err(e)?;
-            Ok(format!("Schedule {} is set; next run {}.", v["id"].as_str().unwrap_or(""), v["nextRunAt"].as_str().unwrap_or("-")))
+            Ok(format!(
+                "Schedule {} is set; next run {}.",
+                v["id"].as_str().unwrap_or(""),
+                v["nextRunAt"].as_str().unwrap_or("-")
+            ))
         }
         "list_schedules" => {
             let v = client.get("/schedules").await.map_err(e)?;
@@ -317,35 +392,71 @@ async fn call(client: &Client, me: Option<&str>, name: &str, a: &Value) -> Resul
             let lines: Vec<String> = list
                 .iter()
                 .map(|s| {
-                    let cadence = s["cadence"]["expression"].as_str().map(str::to_string).unwrap_or_else(|| format!("every {} ms", s["cadence"]["everyMs"]));
+                    let cadence = s["cadence"]["expression"]
+                        .as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| format!("every {} ms", s["cadence"]["everyMs"]));
                     format!(
                         "- {} · {} · {} · next {} · {}{}",
                         s["id"].as_str().unwrap_or(""),
-                        if s["target"]["type"] == "agent" { "heartbeat" } else { "new agent" },
+                        if s["target"]["type"] == "agent" {
+                            "heartbeat"
+                        } else {
+                            "new agent"
+                        },
                         cadence,
                         s["nextRunAt"].as_str().unwrap_or("-"),
-                        s["name"].as_str().or_else(|| s["prompt"].as_str()).unwrap_or("").chars().take(100).collect::<String>(),
-                        if mine.as_deref() == s["createdBy"].as_str() { " (yours)" } else { "" }
+                        s["name"]
+                            .as_str()
+                            .or_else(|| s["prompt"].as_str())
+                            .unwrap_or("")
+                            .chars()
+                            .take(100)
+                            .collect::<String>(),
+                        if mine.as_deref() == s["createdBy"].as_str() {
+                            " (yours)"
+                        } else {
+                            ""
+                        }
                     )
                 })
                 .collect();
-            Ok(clip(format!("{} schedule(s):\n{}", list.len(), lines.join("\n"))))
+            Ok(clip(format!(
+                "{} schedule(s):\n{}",
+                list.len(),
+                lines.join("\n")
+            )))
         }
         "delete_schedule" | "delete_heartbeat" => {
             let id = seg(a, "id")?;
-            client.request("DELETE", &format!("/schedules/{id}"), None).await.map_err(e)?;
+            client
+                .request("DELETE", &format!("/schedules/{id}"), None)
+                .await
+                .map_err(e)?;
             Ok(format!("Deleted schedule {id}."))
         }
         "search_agents" => {
             let q = a["query"].as_str().unwrap_or("");
             let limit = a["limit"].as_u64().unwrap_or(10).clamp(1, 50);
-            let v = client.get(&format!("/agents/search?q={}&limit={limit}", urlencode(q))).await.map_err(e)?;
+            let v = client
+                .get(&format!("/agents/search?q={}&limit={limit}", urlencode(q)))
+                .await
+                .map_err(e)?;
             let results = v["results"].as_array().cloned().unwrap_or_default();
             let mut out = format!("{} match(es):\n", results.len());
             for r in &results {
-                out.push_str(&format!("- {} · {} · {}\n", r["agentId"].as_str().unwrap_or(""), r["status"].as_str().unwrap_or(""), r["title"].as_str().unwrap_or("")));
+                out.push_str(&format!(
+                    "- {} · {} · {}\n",
+                    r["agentId"].as_str().unwrap_or(""),
+                    r["status"].as_str().unwrap_or(""),
+                    r["title"].as_str().unwrap_or("")
+                ));
                 for m in r["matches"].as_array().into_iter().flatten().take(3) {
-                    out.push_str(&format!("    {}: {}\n", m["field"].as_str().unwrap_or(""), m["snippet"].as_str().unwrap_or("")));
+                    out.push_str(&format!(
+                        "    {}: {}\n",
+                        m["field"].as_str().unwrap_or(""),
+                        m["snippet"].as_str().unwrap_or("")
+                    ));
                 }
             }
             Ok(clip(out))
@@ -368,7 +479,7 @@ pub fn urlencode(s: &str) -> String {
 }
 
 /// One JSON-RPC message in, at most one out.
-pub async fn handle(client: &Client, me: Option<&str>, msg: &Value) -> Option<Value> {
+pub async fn handle(client: &Client, me: Option<&str>, msg: Value) -> Option<Value> {
     let id = msg.get("id").cloned()?;
     let method = msg["method"].as_str().unwrap_or("");
     let result = match method {
@@ -399,7 +510,25 @@ pub async fn handle(client: &Client, me: Option<&str>, msg: &Value) -> Option<Va
 
 /// Serve stdio until EOF.
 pub async fn serve(client: Client) -> std::io::Result<()> {
-    let me = std::env::var("LUCINA_AGENT_ID").ok().filter(|s| !s.is_empty());
+    let me = std::env::var("LUCINA_AGENT_ID")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let client = std::sync::Arc::new(client);
+    serve_stdio(move |msg| {
+        let client = client.clone();
+        let me = me.clone();
+        async move { handle(&client, me.as_deref(), msg).await }
+    })
+    .await
+}
+
+/// Serve stdio until EOF: one JSON-RPC message per line in, at most one reply out.
+/// Shared by `lagent mcp` and `lagent juno-mcp` (same protocol version).
+pub async fn serve_stdio<F, Fut>(handler: F) -> std::io::Result<()>
+where
+    F: Fn(Value) -> Fut,
+    Fut: std::future::Future<Output = Option<Value>>,
+{
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     let mut out = tokio::io::stdout();
     while let Some(line) = lines.next_line().await? {
@@ -407,8 +536,10 @@ pub async fn serve(client: Client) -> std::io::Result<()> {
             continue;
         }
         let reply = match serde_json::from_str::<Value>(&line) {
-            Ok(msg) => handle(&client, me.as_deref(), &msg).await,
-            Err(e) => Some(json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": e.to_string()}})),
+            Ok(msg) => handler(msg).await,
+            Err(e) => Some(
+                json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": e.to_string()}}),
+            ),
         };
         if let Some(r) = reply {
             out.write_all(format!("{r}\n").as_bytes()).await?;
@@ -441,14 +572,24 @@ mod tests {
         let s = &c["mcp_servers"][SERVER];
         assert_eq!(s["command"], "/opt/bin/lagent");
         assert_eq!(s["args"], json!(["mcp"]));
-        assert_eq!(s["env"], json!({crate::config::SOCKET_ENV: "/run/agentd.sock", "LUCINA_AGENT_ID": "agent-1"}));
+        assert_eq!(
+            s["env"],
+            json!({crate::config::SOCKET_ENV: "/run/agentd.sock", "LUCINA_AGENT_ID": "agent-1"})
+        );
         assert_eq!(s["default_tools_approval_mode"], "prompt");
-        let names: Vec<&str> = s["enabled_tools"].as_array().unwrap().iter().map(|n| n.as_str().unwrap()).collect();
+        let names: Vec<&str> = s["enabled_tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n.as_str().unwrap())
+            .collect();
         assert_eq!(names.len(), 15);
         assert!(names.contains(&"create_agent") && names.contains(&"search_agents"));
         let approvals = s["tools"].as_object().unwrap();
         assert_eq!(approvals.len(), 15);
-        assert!(names.iter().all(|n| approvals[*n] == json!({"approval_mode": "approve"})));
+        assert!(names
+            .iter()
+            .all(|n| approvals[*n] == json!({"approval_mode": "approve"})));
         assert!(codex_config(None).is_none());
     }
 }
