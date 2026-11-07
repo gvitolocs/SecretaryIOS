@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use lucina_agents::bucket::{state_bucket, BucketInput};
-use lucina_agents::events::{format_turn_failed, system_error_item};
 use lucina_agents::external::{self as ext, CommandBody};
+use lucina_agents::events::{format_turn_failed, system_error_item};
 use lucina_agents::lifecycle::{self, AgentState, Effect, Event, LifecycleError};
 use lucina_agents::title::resolve_titles;
 use lucina_agents::types::{ActiveTurn, AgentConfig, AgentMode, Capabilities};
@@ -25,7 +25,7 @@ use tokio::sync::{mpsc, watch};
 
 use crate::external::{Commands, ExternalProvider};
 use crate::journal::Journal;
-use crate::lane::{Lane, LaneConfig, Outcome};
+use crate::lane::{LaneConfig, Lane, Outcome};
 use crate::notify::Notifier;
 use crate::now_iso;
 use crate::process::Registry;
@@ -46,16 +46,12 @@ mod workspaces;
 
 pub use gate::{GateConfig, GateRequest, CONFIG_FILE};
 pub use orch::{Caller, DEPTH_LABEL, MAX_DEPTH, MCP_TOKEN_LABEL, ORIGIN_LABEL};
-pub use permissions::{
-    ApprovalCandidate, ExternalRequest, PermissionView, Resolution, EXPIRED_MESSAGE,
-};
-pub use pipeline::{
-    AdoptTask, DeployRequest, LeaseRequest, MergeRequest, ReleaseRequest, StartTask, STALE_DAYS,
-};
-pub use provider_subagents::{Direction as SubagentDirection, SubagentTimeline};
-pub use rewind::{ForkOutcome, ForkRequest, RewindOutcome, RewindRequest};
 pub use schedules::{owner_timezone, ScheduleInput, RUN_LABEL, SCHEDULE_LABEL};
+pub use rewind::{ForkOutcome, ForkRequest, RewindOutcome, RewindRequest};
 pub use search::{PromptEntry, SearchMatch, SearchResult};
+pub use provider_subagents::{Direction as SubagentDirection, SubagentTimeline};
+pub use permissions::{ApprovalCandidate, ExternalRequest, PermissionView, Resolution, EXPIRED_MESSAGE};
+pub use pipeline::{AdoptTask, DeployRequest, LeaseRequest, MergeRequest, ReleaseRequest, StartTask, STALE_DAYS};
 pub use workspaces::{metadata_provider, SWEEP_EVERY};
 
 use crate::workspaces::{Registry as Workspaces, WsError};
@@ -85,9 +81,7 @@ impl Default for Options {
             gate: GateConfig::default(),
             workspaces: crate::workspaces::Config::from_env(),
             terminals: crate::terminals::Config::default(),
-            pipeline: crate::pipeline::Config::from_env(
-                &std::env::temp_dir().join("lucina-agentd"),
-            ),
+            pipeline: crate::pipeline::Config::from_env(&std::env::temp_dir().join("lucina-agentd")),
             devices: crate::devices::Config::default(),
         }
     }
@@ -270,11 +264,7 @@ impl ManagerError {
 
 /// One message on the event bus (Paseo `agent_stream` / `agent_state`).
 #[derive(Debug, Clone, Serialize)]
-#[serde(
-    tag = "type",
-    rename_all = "snake_case",
-    rename_all_fields = "camelCase"
-)]
+#[serde(tag = "type", rename_all = "snake_case", rename_all_fields = "camelCase")]
 pub enum BusEvent {
     AgentStream {
         agent_id: String,
@@ -536,34 +526,19 @@ fn session_config(record: &AgentRecord, env: Vec<(String, String)>) -> SessionCo
 impl Manager {
     /// Open the store and bring every stored agent back as `closed` (Paseo's
     /// loader; lifecycle `RestartRepair`).
-    pub fn open(
-        store: Store,
-        providers: Vec<Arc<dyn Provider>>,
-        lanes: LaneConfig,
-    ) -> Result<Self, ManagerError> {
+    pub fn open(store: Store, providers: Vec<Arc<dyn Provider>>, lanes: LaneConfig) -> Result<Self, ManagerError> {
         Self::open_with(store, providers, lanes, Options::default())
     }
 
-    pub fn open_with(
-        store: Store,
-        providers: Vec<Arc<dyn Provider>>,
-        lanes: LaneConfig,
-        options: Options,
-    ) -> Result<Self, ManagerError> {
+    pub fn open_with(store: Store, providers: Vec<Arc<dyn Provider>>, lanes: LaneConfig, options: Options) -> Result<Self, ManagerError> {
         let mut providers: HashMap<String, Arc<dyn Provider>> =
             providers.into_iter().map(|p| (p.info().id, p)).collect();
         let bus = Journal::new();
         let (generation, _) = watch::channel(0);
         let store = Arc::new(store);
         let commands = Arc::new(Commands::new(store.clone(), bus.clone()));
-        providers.insert(
-            ext::PROVIDER.to_string(),
-            Arc::new(ExternalProvider::new(commands.clone())),
-        );
-        providers.insert(
-            ext::SESSION_PROVIDER.to_string(),
-            Arc::new(ExternalProvider::claude_sessions(commands.clone())),
-        );
+        providers.insert(ext::PROVIDER.to_string(), Arc::new(ExternalProvider::new(commands.clone())));
+        providers.insert(ext::SESSION_PROVIDER.to_string(), Arc::new(ExternalProvider::claude_sessions(commands.clone())));
         let term_bus = bus.clone();
         let terminals = crate::terminals::Hub::new(
             options.terminals.clone(),
@@ -572,33 +547,9 @@ impl Manager {
                 use crate::terminals::HubEvent;
                 let _ = term_bus.send(match e {
                     HubEvent::Terminal(terminal) => BusEvent::Terminal { terminal },
-                    HubEvent::Removed {
-                        terminal_id,
-                        workspace_id,
-                    } => BusEvent::TerminalRemoved {
-                        terminal_id,
-                        workspace_id,
-                    },
-                    HubEvent::Scripts {
-                        workspace_id,
-                        scripts,
-                    } => BusEvent::ScriptStatus {
-                        workspace_id,
-                        scripts,
-                    },
-                    HubEvent::Attention {
-                        terminal_id,
-                        workspace_id,
-                        reason,
-                        title,
-                        body,
-                    } => BusEvent::TerminalAttention {
-                        terminal_id,
-                        workspace_id,
-                        reason,
-                        title,
-                        body,
-                    },
+                    HubEvent::Removed { terminal_id, workspace_id } => BusEvent::TerminalRemoved { terminal_id, workspace_id },
+                    HubEvent::Scripts { workspace_id, scripts } => BusEvent::ScriptStatus { workspace_id, scripts },
+                    HubEvent::Attention { terminal_id, workspace_id, reason, title, body } => BusEvent::TerminalAttention { terminal_id, workspace_id, reason, title, body },
                 });
             }),
         );
@@ -606,16 +557,11 @@ impl Manager {
         let auto_terms = terminals.clone();
         let setup_seen: Mutex<HashMap<String, Option<String>>> = Mutex::new(HashMap::new());
         let publish: crate::workspaces::Publish = Arc::new(move |w: &WorkspaceRecord| {
-            let _ = ws_bus.send(BusEvent::Workspace {
-                workspace: Box::new(w.clone()),
-            });
+            let _ = ws_bus.send(BusEvent::Workspace { workspace: Box::new(w.clone()) });
             // paseo.json `worktree.terminals` open once setup ends in this run (not on
             // later updates, nor for workspaces loaded at start).
             let now = w.setup.as_ref().map(|x| x.status.clone());
-            let before = setup_seen
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .insert(w.workspace_id.clone(), now.clone());
+            let before = setup_seen.lock().unwrap_or_else(|p| p.into_inner()).insert(w.workspace_id.clone(), now.clone());
             let finished = matches!(now.as_deref(), Some("completed" | "none"));
             let was_pending = match &before {
                 Some(None) => true,
@@ -662,8 +608,7 @@ impl Manager {
             };
             let t = lifecycle::step(&k, Event::RestartRepair)?;
             let mut rows = manager.inner.store.load_rows(&record.id)?;
-            if t.effects.contains(&Effect::RecordInterrupted) && !ext::is_session(&record.provider)
-            {
+            if t.effects.contains(&Effect::RecordInterrupted) && !ext::is_session(&record.provider) {
                 let row = TimelineRow {
                     seq: rows.last().map(|r| r.seq + 1).unwrap_or(1),
                     timestamp: now_iso(),
@@ -678,11 +623,7 @@ impl Manager {
             }
             record.last_status = t.next.status;
             manager.inner.store.save(&record)?;
-            let info = manager
-                .inner
-                .providers
-                .get(&record.provider)
-                .map(|p| p.info());
+            let info = manager.inner.providers.get(&record.provider).map(|p| p.info());
             let agent = Agent {
                 subagents: manager.load_subagents(&record.id),
                 capabilities: Capabilities::stored(),
@@ -727,13 +668,7 @@ impl Manager {
 
     pub fn providers(&self) -> Vec<ProviderInfo> {
         // Nobody can start a Claude session from here.
-        let mut v: Vec<ProviderInfo> = self
-            .inner
-            .providers
-            .values()
-            .map(|p| p.info())
-            .filter(|i| !ext::is_session(&i.id))
-            .collect();
+        let mut v: Vec<ProviderInfo> = self.inner.providers.values().map(|p| p.info()).filter(|i| !ext::is_session(&i.id)).collect();
         v.sort_by(|a, b| a.id.cmp(&b.id));
         v
     }
@@ -748,10 +683,7 @@ impl Manager {
         if agents.contains_key(id_or_prefix) {
             return Ok(id_or_prefix.to_string());
         }
-        let matches: Vec<&String> = agents
-            .keys()
-            .filter(|k| k.starts_with(id_or_prefix))
-            .collect();
+        let matches: Vec<&String> = agents.keys().filter(|k| k.starts_with(id_or_prefix)).collect();
         match matches.len() {
             0 => Err(ManagerError::NotFound(id_or_prefix.to_string())),
             1 => Ok(matches[0].clone()),
@@ -764,16 +696,8 @@ impl Manager {
 
     fn snapshot_of(agent: &Agent) -> AgentSnapshot {
         let r = &agent.record;
-        let runtime = agent
-            .session
-            .as_ref()
-            .map(|s| s.runtime_info())
-            .or_else(|| r.runtime_info.clone());
-        let current_mode = agent
-            .session
-            .as_ref()
-            .and_then(|s| s.current_mode())
-            .or_else(|| r.last_mode_id.clone());
+        let runtime = agent.session.as_ref().map(|s| s.runtime_info()).or_else(|| r.runtime_info.clone());
+        let current_mode = agent.session.as_ref().and_then(|s| s.current_mode()).or_else(|| r.last_mode_id.clone());
         AgentSnapshot {
             id: r.id.clone(),
             provider: r.provider.clone(),
@@ -782,11 +706,11 @@ impl Manager {
             model: r.config.model.clone(),
             features: None,
             thinking_option_id: r.config.thinking_option_id.clone(),
-            effective_thinking_option_id: r.config.thinking_option_id.clone().or_else(|| {
-                runtime
-                    .as_ref()
-                    .and_then(|ri| ri.thinking_option_id.clone())
-            }),
+            effective_thinking_option_id: r
+                .config
+                .thinking_option_id
+                .clone()
+                .or_else(|| runtime.as_ref().and_then(|ri| ri.thinking_option_id.clone())),
             created_at: r.created_at.clone(),
             updated_at: r.updated_at.clone(),
             last_user_message_at: r.last_user_message_at.clone(),
@@ -796,11 +720,7 @@ impl Manager {
             current_mode_id: current_mode,
             available_modes: agent.modes.clone(),
             pending_permissions: agent.pending.clone(),
-            persistence: agent
-                .session
-                .as_ref()
-                .map(|s| s.persistence())
-                .or_else(|| r.persistence.clone()),
+            persistence: agent.session.as_ref().map(|s| s.persistence()).or_else(|| r.persistence.clone()),
             runtime_info: runtime,
             last_usage: r.last_usage.clone(),
             last_error: r.last_error.clone(),
@@ -853,10 +773,7 @@ impl Manager {
 
     pub fn snapshot(&self, id: &str) -> Result<AgentSnapshot, ManagerError> {
         let agents = self.lock();
-        agents
-            .get(id)
-            .map(Self::snapshot_of)
-            .ok_or_else(|| ManagerError::NotFound(id.to_string()))
+        agents.get(id).map(Self::snapshot_of).ok_or_else(|| ManagerError::NotFound(id.to_string()))
     }
 
     /// All agents as snapshots (archived ones only when asked).
@@ -884,16 +801,9 @@ impl Manager {
         v
     }
 
-    pub fn timeline(
-        &self,
-        id: &str,
-        after_seq: u64,
-        limit: usize,
-    ) -> Result<(String, Vec<TimelineRow>), ManagerError> {
+    pub fn timeline(&self, id: &str, after_seq: u64, limit: usize) -> Result<(String, Vec<TimelineRow>), ManagerError> {
         let agents = self.lock();
-        let a = agents
-            .get(id)
-            .ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
+        let a = agents.get(id).ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
         let rows: Vec<TimelineRow> = a
             .rows
             .iter()
@@ -908,9 +818,7 @@ impl Manager {
     // State changes (all under the lock, no awaits)
 
     fn publish_state(&self, agent: &Agent) {
-        let _ = self.inner.bus.send(BusEvent::AgentState {
-            agent: Box::new(Self::snapshot_of(agent)),
-        });
+        let _ = self.inner.bus.send(BusEvent::AgentState { agent: Box::new(Self::snapshot_of(agent)) });
     }
 
     fn persist(&self, agent: &mut Agent) {
@@ -947,23 +855,12 @@ impl Manager {
         // Every user message has an id, so a rewind can name it (a provider that echoes
         // the message brings its own).
         let item = match item {
-            TimelineItem::UserMessage {
-                text,
-                message_id: None,
-                client_message_id,
-            } => TimelineItem::UserMessage {
-                text,
-                message_id: Some(uuid::Uuid::new_v4().to_string()),
-                client_message_id,
-            },
+            TimelineItem::UserMessage { text, message_id: None, client_message_id } => {
+                TimelineItem::UserMessage { text, message_id: Some(uuid::Uuid::new_v4().to_string()), client_message_id }
+            }
             other => other,
         };
-        let row = TimelineRow {
-            seq: agent.next_seq(),
-            timestamp: now_iso(),
-            item,
-            turn_id,
-        };
+        let row = TimelineRow { seq: agent.next_seq(), timestamp: now_iso(), item, turn_id };
         if let Err(e) = self.inner.store.append_row(&agent.record.id, &row) {
             tracing::error!(agent = %agent.record.id, error = %e, "failed to append timeline row");
         }
@@ -997,12 +894,7 @@ impl Manager {
 
     /// Run the kernel and apply the effects that need no provider call. Returns
     /// the effects for the caller to finish (Interrupt, CloseRuntime, ...).
-    fn transition(
-        &self,
-        agent: &mut Agent,
-        event: Event,
-        error: Option<&str>,
-    ) -> Result<Vec<Effect>, LifecycleError> {
+    fn transition(&self, agent: &mut Agent, event: Event, error: Option<&str>) -> Result<Vec<Effect>, LifecycleError> {
         let t = lifecycle::step(&agent.k, event)?;
         agent.k = t.next;
         for effect in &t.effects {
@@ -1010,20 +902,14 @@ impl Manager {
                 Effect::ClearLastError => agent.record.last_error = None,
                 Effect::SetLastError => agent.record.last_error = error.map(str::to_string),
                 Effect::AppendSystemError => {
-                    if let Some(item) =
-                        system_error_item(error.unwrap_or(""), agent.rows.last().map(|r| &r.item))
-                    {
+                    if let Some(item) = system_error_item(error.unwrap_or(""), agent.rows.last().map(|r| &r.item)) {
                         let turn = agent.active_turn.as_ref().map(|t| t.turn_id.clone());
                         self.append(agent, item, turn);
                     }
                 }
                 Effect::AutoDenyPending(message) => {
                     for request in std::mem::take(&mut agent.pending) {
-                        self.withdraw_agent_request(
-                            &agent.record.id,
-                            &request.id,
-                            &PermissionResponse::auto_deny(message),
-                        );
+                        self.withdraw_agent_request(&agent.record.id, &request.id, &PermissionResponse::auto_deny(message));
                         self.forward(
                             agent,
                             StreamEvent::PermissionResolved {
@@ -1040,21 +926,13 @@ impl Manager {
                         agent.record.attention_timestamp = Some(timestamp.clone());
                     }
                     let event = attention_event(agent, *reason, timestamp);
-                    if let StreamEvent::AttentionRequired {
-                        should_notify: true,
-                        notification: Some(n),
-                        ..
-                    } = &event
-                    {
+                    if let StreamEvent::AttentionRequired { should_notify: true, notification: Some(n), .. } = &event {
                         self.push_attention(agent, *reason, &n.body);
                     }
                     self.forward(agent, event);
                 }
                 Effect::RecordInterrupted => {}
-                Effect::Interrupt
-                | Effect::CloseRuntime
-                | Effect::CascadeArchiveChildren
-                | Effect::RemoveRecord => {}
+                Effect::Interrupt | Effect::CloseRuntime | Effect::CascadeArchiveChildren | Effect::RemoveRecord => {}
             }
         }
         Ok(t.effects)
@@ -1063,18 +941,13 @@ impl Manager {
     /// Apply one provider event (called by the session pump, in order).
     fn on_event(&self, agent_id: &str, event: StreamEvent) {
         let mut agents = self.lock();
-        let Some(agent) = agents.get_mut(agent_id) else {
-            return;
-        };
+        let Some(agent) = agents.get_mut(agent_id) else { return };
         let result = match event {
             StreamEvent::ThreadStarted { .. } => Ok(()),
             StreamEvent::TurnStarted { turn_id, .. } => {
                 let r = self.transition(agent, Event::TurnStarted, None).map(|_| ());
                 if agent.active_turn.is_none() {
-                    agent.active_turn = turn_id.map(|t| ActiveTurn {
-                        turn_id: t,
-                        started_at: Some(now_iso()),
-                    });
+                    agent.active_turn = turn_id.map(|t| ActiveTurn { turn_id: t, started_at: Some(now_iso()) });
                 }
                 r
             }
@@ -1083,55 +956,30 @@ impl Manager {
                 Ok(())
             }
             StreamEvent::UsageUpdated { usage, .. } => {
-                agent.record.last_usage = Some(
-                    agent
-                        .record
-                        .last_usage
-                        .clone()
-                        .unwrap_or_default()
-                        .merged(&usage),
-                );
+                agent.record.last_usage = Some(agent.record.last_usage.clone().unwrap_or_default().merged(&usage));
                 Ok(())
             }
             StreamEvent::TurnCompleted { usage, .. } => {
                 if let Some(usage) = usage {
-                    agent.record.last_usage = Some(
-                        agent
-                            .record
-                            .last_usage
-                            .clone()
-                            .unwrap_or_default()
-                            .merged(&usage),
-                    );
+                    agent.record.last_usage = Some(agent.record.last_usage.clone().unwrap_or_default().merged(&usage));
                 }
-                let r = self
-                    .transition(agent, Event::TurnCompleted, None)
-                    .map(|_| ());
+                let r = self.transition(agent, Event::TurnCompleted, None).map(|_| ());
                 agent.active_turn = None;
                 if r.is_ok() && agent.turn_base.is_some() && !agent.record.internal {
                     self.gate_turn_completed(agent);
                 }
                 r
             }
-            StreamEvent::TurnFailed {
-                error,
-                code,
-                diagnostic,
-                ..
-            } => {
+            StreamEvent::TurnFailed { error, code, diagnostic, .. } => {
                 let message = format_turn_failed(&error, code.as_deref(), diagnostic.as_deref());
-                let r = self
-                    .transition(agent, Event::TurnFailed, Some(&message))
-                    .map(|_| ());
+                let r = self.transition(agent, Event::TurnFailed, Some(&message)).map(|_| ());
                 agent.record.last_error = Some(error);
                 agent.active_turn = None;
                 Self::gate_turn_ended(agent);
                 r
             }
             StreamEvent::TurnCanceled { .. } => {
-                let r = self
-                    .transition(agent, Event::TurnCanceled, None)
-                    .map(|_| ());
+                let r = self.transition(agent, Event::TurnCanceled, None).map(|_| ());
                 agent.active_turn = None;
                 Self::gate_turn_ended(agent);
                 r
@@ -1144,48 +992,28 @@ impl Manager {
                 } else {
                     // Pending first, so the attention notification can preview it.
                     agent.pending.push((*request).clone());
-                    let r = self
-                        .transition(agent, Event::PermissionRequested, None)
-                        .map(|_| ());
+                    let r = self.transition(agent, Event::PermissionRequested, None).map(|_| ());
                     if r.is_ok() {
-                        self.forward(
-                            agent,
-                            StreamEvent::PermissionRequested { provider, request },
-                        );
+                        self.forward(agent, StreamEvent::PermissionRequested { provider, request });
                     } else {
                         agent.pending.pop();
-                        self.withdraw_agent_request(
-                            agent_id,
-                            &request.id,
-                            &PermissionResponse::auto_deny("Not accepted in this state"),
-                        );
+                        self.withdraw_agent_request(agent_id, &request.id, &PermissionResponse::auto_deny("Not accepted in this state"));
                     }
                     r
                 }
             }
-            StreamEvent::PermissionResolved {
-                request_id,
-                resolution,
-                provider,
-            } => match agent.pending.iter().position(|p| p.id == request_id) {
-                Some(i) => {
-                    agent.pending.remove(i);
-                    self.withdraw_agent_request(agent_id, &request_id, &resolution);
-                    let r = self
-                        .transition(agent, Event::PermissionResolved, None)
-                        .map(|_| ());
-                    self.forward(
-                        agent,
-                        StreamEvent::PermissionResolved {
-                            provider,
-                            request_id,
-                            resolution,
-                        },
-                    );
-                    r
+            StreamEvent::PermissionResolved { request_id, resolution, provider } => {
+                match agent.pending.iter().position(|p| p.id == request_id) {
+                    Some(i) => {
+                        agent.pending.remove(i);
+                        self.withdraw_agent_request(agent_id, &request_id, &resolution);
+                        let r = self.transition(agent, Event::PermissionResolved, None).map(|_| ());
+                        self.forward(agent, StreamEvent::PermissionResolved { provider, request_id, resolution });
+                        r
+                    }
+                    None => Ok(()),
                 }
-                None => Ok(()),
-            },
+            }
             StreamEvent::ProviderSubagent { provider, event } => {
                 self.apply_subagent(agent, &provider, event);
                 Ok(())
@@ -1247,9 +1075,7 @@ impl Manager {
                 lanes.retain(|(_, p, _)| *p != "codex");
             }
             let Some((first_name, first_provider, first_lane)) = lanes.first().cloned() else {
-                return Err(ManagerError::Invalid(format!(
-                    "no lane of chain \"{category}\" can run here"
-                )));
+                return Err(ManagerError::Invalid(format!("no lane of chain \"{category}\" can run here")));
             };
             req.provider = first_provider.to_string();
             req.model = first_lane.model.clone();
@@ -1272,9 +1098,7 @@ impl Manager {
             return self.snapshot(&snap.id);
         }
         let (provider_id, model) = split_provider(&req.provider, req.model.clone());
-        if !req.claude_session
-            && (req.external || provider_id == ext::PROVIDER || ext::is_session(&provider_id))
-        {
+        if !req.claude_session && (req.external || provider_id == ext::PROVIDER || ext::is_session(&provider_id)) {
             Self::check_external(&mut req, &provider_id)?;
         }
         let workspace = match &req.workspace_id {
@@ -1318,23 +1142,12 @@ impl Manager {
         }
         if !req.internal && !req.external {
             let mode = req.mode_id.clone().or_else(|| info.default_mode_id.clone());
-            self.guard_start(
-                &req.cwd,
-                &provider_id,
-                mode.as_deref(),
-                req.allow_main_checkout,
-            )
-            .await?;
+            self.guard_start(&req.cwd, &provider_id, mode.as_deref(), req.allow_main_checkout).await?;
         }
         let workspace_id = match req.external && !req.claude_session {
             // Its cwd is a path on another host.
             true => None,
-            false => workspace.map(|w| w.workspace_id).or_else(|| {
-                self.inner
-                    .workspaces
-                    .find_by_cwd(&req.cwd)
-                    .map(|w| w.workspace_id)
-            }),
+            false => workspace.map(|w| w.workspace_id).or_else(|| self.inner.workspaces.find_by_cwd(&req.cwd).map(|w| w.workspace_id)),
         };
         let (_, provisional) = resolve_titles(req.title.as_deref(), req.prompt.as_deref());
         let now = now_iso();
@@ -1355,8 +1168,7 @@ impl Manager {
                 mode_id: req.mode_id.clone(),
                 model,
                 thinking_option_id: req.thinking_option_id.clone(),
-                feature_values: (!req.feature_values.is_empty())
-                    .then(|| req.feature_values.clone()),
+                feature_values: (!req.feature_values.is_empty()).then(|| req.feature_values.clone()),
                 tool_policy: req.tool_policy.clone(),
                 ..AgentConfig::default()
             },
@@ -1391,23 +1203,12 @@ impl Manager {
             env.push(("LUCINA_WORKSPACE_ID".into(), w.clone()));
             // Worktrees of a Rust repo share one target dir (one `target/` per worktree
             // filled nezopt's disk before).
-            if let Some(root) = self
-                .inner
-                .workspaces
-                .get(w)
-                .and_then(|ws| ws.main_repo_root)
-            {
+            if let Some(root) = self.inner.workspaces.get(w).and_then(|ws| ws.main_repo_root) {
                 let root = std::path::Path::new(&root);
                 if root.join("Cargo.toml").is_file() && !req.env.contains_key("CARGO_TARGET_DIR") {
-                    let name = root
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_lowercase())
-                        .unwrap_or_default();
+                    let name = root.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
                     let home = std::env::var("HOME").unwrap_or_default();
-                    env.push((
-                        "CARGO_TARGET_DIR".into(),
-                        format!("{home}/.cache/cargo-target/{name}"),
-                    ));
+                    env.push(("CARGO_TARGET_DIR".into(), format!("{home}/.cache/cargo-target/{name}")));
                 }
             }
         }
@@ -1493,9 +1294,7 @@ impl Manager {
     async fn ensure_loaded(&self, id: &str) -> Result<Arc<dyn Session>, ManagerError> {
         let (record, needs_resume) = {
             let mut agents = self.lock();
-            let agent = agents
-                .get_mut(id)
-                .ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
+            let agent = agents.get_mut(id).ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
             if let Some(s) = &agent.session {
                 return Ok(s.clone());
             }
@@ -1517,9 +1316,7 @@ impl Manager {
             None => provider.create_session(config, tx).await,
         };
         let mut agents = self.lock();
-        let agent = agents
-            .get_mut(id)
-            .ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
+        let agent = agents.get_mut(id).ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
         match result {
             Ok(session) => {
                 agent.session = Some(session.clone());
@@ -1549,20 +1346,10 @@ impl Manager {
         // the prompt as typed (a provider that echoes it shows what it was sent).
         let (sent, seed) = {
             let mut agents = self.lock();
-            let agent = agents
-                .get_mut(id)
-                .ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
+            let agent = agents.get_mut(id).ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
             self.transition(agent, Event::TurnStarted, None)?;
             if !agent.echoes_user_message {
-                self.append(
-                    agent,
-                    TimelineItem::UserMessage {
-                        text: prompt.to_string(),
-                        message_id: None,
-                        client_message_id: None,
-                    },
-                    None,
-                );
+                self.append(agent, TimelineItem::UserMessage { text: prompt.to_string(), message_id: None, client_message_id: None }, None);
             }
             agent.record.last_user_message_at = Some(now_iso());
             let seed = agent.record.seed_context.take();
@@ -1580,10 +1367,7 @@ impl Manager {
                 let mut agents = self.lock();
                 if let Some(agent) = agents.get_mut(id) {
                     if agent.active_turn.is_none() && agent.k.status == AgentStatus::Running {
-                        agent.active_turn = Some(ActiveTurn {
-                            turn_id,
-                            started_at: Some(now_iso()),
-                        });
+                        agent.active_turn = Some(ActiveTurn { turn_id, started_at: Some(now_iso()) });
                     }
                 }
                 Ok(())
@@ -1606,12 +1390,7 @@ impl Manager {
         }
     }
 
-    pub async fn send(
-        &self,
-        id: &str,
-        prompt: &str,
-        behavior: ActiveTurnBehavior,
-    ) -> Result<Disposition, ManagerError> {
+    pub async fn send(&self, id: &str, prompt: &str, behavior: ActiveTurnBehavior) -> Result<Disposition, ManagerError> {
         if prompt.trim().is_empty() {
             return Err(ManagerError::Invalid("A prompt is required".into()));
         }
@@ -1621,9 +1400,7 @@ impl Manager {
             let bodies = match (running, behavior) {
                 _ if self.is_claude_session(id) => vec![CommandBody::Send { prompt }],
                 (true, ActiveTurnBehavior::Steer) => vec![CommandBody::Steer { prompt }],
-                (true, ActiveTurnBehavior::Interrupt) => {
-                    vec![CommandBody::Stop {}, CommandBody::Send { prompt }]
-                }
+                (true, ActiveTurnBehavior::Interrupt) => vec![CommandBody::Stop {}, CommandBody::Send { prompt }],
                 (false, _) => vec![CommandBody::Send { prompt }],
             };
             for body in bodies {
@@ -1632,9 +1409,7 @@ impl Manager {
             return Ok(Disposition::Queued);
         }
         if self.lock().get(id).is_some_and(|a| a.rewinding) {
-            return Err(ManagerError::Busy(
-                "The agent is being rewound; send again when it is done".into(),
-            ));
+            return Err(ManagerError::Busy("The agent is being rewound; send again when it is done".into()));
         }
         let session = self.ensure_loaded(id).await?;
         if let Some(events) = session.out_of_band(prompt) {
@@ -1645,43 +1420,23 @@ impl Manager {
         }
         let (running, turn) = {
             let agents = self.lock();
-            let a = agents
-                .get(id)
-                .ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
-            (
-                a.k.status == AgentStatus::Running,
-                a.active_turn.as_ref().map(|t| t.turn_id.clone()),
-            )
+            let a = agents.get(id).ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
+            (a.k.status == AgentStatus::Running, a.active_turn.as_ref().map(|t| t.turn_id.clone()))
         };
         if running {
             if behavior == ActiveTurnBehavior::Steer {
                 if let Some(turn) = &turn {
-                    if session
-                        .steer(prompt, turn)
-                        .await
-                        .map_err(|e| ManagerError::Provider(e.0))?
-                    {
+                    if session.steer(prompt, turn).await.map_err(|e| ManagerError::Provider(e.0))? {
                         let mut agents = self.lock();
                         if let Some(agent) = agents.get_mut(id) {
-                            self.append(
-                                agent,
-                                TimelineItem::UserMessage {
-                                    text: prompt.to_string(),
-                                    message_id: None,
-                                    client_message_id: None,
-                                },
-                                Some(turn.clone()),
-                            );
+                            self.append(agent, TimelineItem::UserMessage { text: prompt.to_string(), message_id: None, client_message_id: None }, Some(turn.clone()));
                             self.persist(agent);
                         }
                         return Ok(Disposition::Steered);
                     }
                 }
             }
-            session
-                .interrupt()
-                .await
-                .map_err(|e| ManagerError::Provider(e.0))?;
+            session.interrupt().await.map_err(|e| ManagerError::Provider(e.0))?;
             self.wait_not_running(id, Duration::from_secs(10)).await;
         }
         self.start_turn(id, prompt).await?;
@@ -1692,17 +1447,11 @@ impl Manager {
         let mut rx = self.inner.generation.subscribe();
         let deadline = tokio::time::Instant::now() + limit;
         loop {
-            let running = self
-                .lock()
-                .get(id)
-                .is_some_and(|a| a.k.status == AgentStatus::Running);
+            let running = self.lock().get(id).is_some_and(|a| a.k.status == AgentStatus::Running);
             if !running {
                 return;
             }
-            if tokio::time::timeout_at(deadline, rx.changed())
-                .await
-                .is_err()
-            {
+            if tokio::time::timeout_at(deadline, rx.changed()).await.is_err() {
                 return;
             }
         }
@@ -1720,27 +1469,20 @@ impl Manager {
         self.refuse_for_session(id, "stopped")?;
         if let Some((owner, running)) = self.external_of(id)? {
             if running {
-                self.inner
-                    .commands
-                    .enqueue(id, &owner, CommandBody::Stop {})?;
+                self.inner.commands.enqueue(id, &owner, CommandBody::Stop {})?;
             }
             return Ok(running);
         }
         let session = {
             let agents = self.lock();
-            let a = agents
-                .get(id)
-                .ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
+            let a = agents.get(id).ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
             if a.k.status != AgentStatus::Running {
                 return Ok(false);
             }
             a.session.clone()
         };
         match session {
-            Some(s) => s
-                .interrupt()
-                .await
-                .map_err(|e| ManagerError::Provider(e.0))?,
+            Some(s) => s.interrupt().await.map_err(|e| ManagerError::Provider(e.0))?,
             None => {
                 let mut agents = self.lock();
                 if let Some(agent) = agents.get_mut(id) {
@@ -1756,11 +1498,7 @@ impl Manager {
 
     /// The agent's terminals and scripts go when it stops, is archived or deleted.
     async fn kill_agent_terminals(&self, id: &str) {
-        let n = self
-            .inner
-            .terminals
-            .kill_where(|t| t.agent_id.as_deref() == Some(id))
-            .await;
+        let n = self.inner.terminals.kill_where(|t| t.agent_id.as_deref() == Some(id)).await;
         if n > 0 {
             tracing::info!(agent = %id, terminals = n, "killed the agent's terminals");
         }
@@ -1789,18 +1527,12 @@ impl Manager {
         self.refuse_for_live_session(id, "archived")?;
         let (effects, session, children, archived_at) = {
             let mut agents = self.lock();
-            let agent = agents
-                .get_mut(id)
-                .ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
+            let agent = agents.get_mut(id).ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
             let effects = self.transition(agent, Event::Archive, None)?;
             let archived_at = now_iso();
             agent.record.archived_at = Some(archived_at.clone());
             agent.active_turn = None;
-            let session = if effects.contains(&Effect::CloseRuntime) {
-                agent.session.take()
-            } else {
-                None
-            };
+            let session = if effects.contains(&Effect::CloseRuntime) { agent.session.take() } else { None };
             if session.is_some() {
                 self.cancel_running_subagents(agent);
             }
@@ -1808,10 +1540,7 @@ impl Manager {
             self.publish_state(agent);
             let children: Vec<String> = agents
                 .values()
-                .filter(|a| {
-                    a.record.archived_at.is_none()
-                        && a.record.labels.get(PARENT_LABEL).map(String::as_str) == Some(id)
-                })
+                .filter(|a| a.record.archived_at.is_none() && a.record.labels.get(PARENT_LABEL).map(String::as_str) == Some(id))
                 .map(|a| a.record.id.clone())
                 .collect();
             (effects, session, children, archived_at)
@@ -1831,9 +1560,7 @@ impl Manager {
 
     pub fn unarchive(&self, id: &str) -> Result<AgentSnapshot, ManagerError> {
         let mut agents = self.lock();
-        let agent = agents
-            .get_mut(id)
-            .ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
+        let agent = agents.get_mut(id).ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
         self.transition(agent, Event::Unarchive, None)?;
         agent.record.archived_at = None;
         self.persist(agent);
@@ -1849,9 +1576,7 @@ impl Manager {
         self.forget_session_of(id);
         let (effects, session) = {
             let mut agents = self.lock();
-            let agent = agents
-                .get_mut(id)
-                .ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
+            let agent = agents.get_mut(id).ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
             let effects = self.transition(agent, Event::Delete, None)?;
             let session = agent.session.take();
             self.remove_subagents(agent);
@@ -1861,9 +1586,7 @@ impl Manager {
         self.finish_effects(&effects, session).await;
         self.kill_agent_terminals(id).await;
         self.inner.store.delete(id)?;
-        let _ = self.inner.bus.send(BusEvent::AgentDeleted {
-            agent_id: id.to_string(),
-        });
+        let _ = self.inner.bus.send(BusEvent::AgentDeleted { agent_id: id.to_string() });
         self.bump();
         Ok(())
     }
@@ -1871,20 +1594,13 @@ impl Manager {
     /// Paseo `waitForFinish`: until the agent stops running, needs permission,
     /// or `timeout` passes (`None` = no limit). With `gate`, also until the
     /// finished-run gate has checked the run (and any auto-fix rounds are done).
-    pub async fn wait(
-        &self,
-        id: &str,
-        timeout: Option<Duration>,
-        gate: bool,
-    ) -> Result<WaitResult, ManagerError> {
+    pub async fn wait(&self, id: &str, timeout: Option<Duration>, gate: bool) -> Result<WaitResult, ManagerError> {
         let mut rx = self.inner.generation.subscribe();
         let deadline = timeout.map(|t| tokio::time::Instant::now() + t);
         loop {
             {
                 let agents = self.lock();
-                let a = agents
-                    .get(id)
-                    .ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
+                let a = agents.get(id).ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
                 let gating = gate && a.pending.is_empty() && a.gate_pending;
                 let status = if gating || (a.chain_active && a.pending.is_empty()) {
                     None
@@ -1900,9 +1616,7 @@ impl Manager {
                 if let Some(status) = status {
                     return Ok(WaitResult {
                         status,
-                        error: (status == "error")
-                            .then(|| a.record.last_error.clone())
-                            .flatten(),
+                        error: (status == "error").then(|| a.record.last_error.clone()).flatten(),
                         last_message: last_assistant_text(&a.rows),
                         final_snapshot: Self::snapshot_of(a),
                     });
@@ -1913,9 +1627,7 @@ impl Manager {
                 Some(d) => {
                     if tokio::time::timeout_at(d, changed).await.is_err() {
                         let agents = self.lock();
-                        let a = agents
-                            .get(id)
-                            .ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
+                        let a = agents.get(id).ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
                         return Ok(WaitResult {
                             status: "timeout",
                             error: None,
@@ -1943,24 +1655,11 @@ impl Manager {
     }
 
     /// Close the session and continue on another lane's provider (same agent).
-    async fn switch_lane(
-        &self,
-        id: &str,
-        lane_name: &str,
-        provider: &str,
-        lane: &Lane,
-    ) -> Result<(), ManagerError> {
-        let info = self
-            .inner
-            .providers
-            .get(provider)
-            .map(|p| p.info())
-            .ok_or_else(|| ManagerError::UnknownProvider(provider.into()))?;
+    async fn switch_lane(&self, id: &str, lane_name: &str, provider: &str, lane: &Lane) -> Result<(), ManagerError> {
+        let info = self.inner.providers.get(provider).map(|p| p.info()).ok_or_else(|| ManagerError::UnknownProvider(provider.into()))?;
         let session = {
             let mut agents = self.lock();
-            let agent = agents
-                .get_mut(id)
-                .ok_or_else(|| ManagerError::NotFound(id.into()))?;
+            let agent = agents.get_mut(id).ok_or_else(|| ManagerError::NotFound(id.into()))?;
             if agent.k.status != AgentStatus::Closed {
                 self.transition(agent, Event::Close, None)?;
             }
@@ -1970,19 +1669,14 @@ impl Manager {
             s.close().await;
         }
         let mut agents = self.lock();
-        let agent = agents
-            .get_mut(id)
-            .ok_or_else(|| ManagerError::NotFound(id.into()))?;
+        let agent = agents.get_mut(id).ok_or_else(|| ManagerError::NotFound(id.into()))?;
         agent.record.provider = provider.to_string();
         agent.record.config.model = lane.model.clone();
         agent.record.config.thinking_option_id = lane.effort.clone();
         agent.record.config.mode_id = None;
         agent.record.persistence = None;
         agent.record.runtime_info = None;
-        agent
-            .record
-            .labels
-            .insert("lucina.lane".into(), lane_name.to_string());
+        agent.record.labels.insert("lucina.lane".into(), lane_name.to_string());
         agent.capabilities = info.capabilities.clone();
         agent.modes = info.modes.clone();
         agent.echoes_user_message = info.echoes_user_message;
@@ -1995,49 +1689,24 @@ impl Manager {
     /// error item (which carries the provider's code, e.g. `code: quota`).
     fn failure_text(&self, id: &str) -> String {
         let agents = self.lock();
-        let Some(a) = agents.get(id) else {
-            return String::new();
-        };
+        let Some(a) = agents.get(id) else { return String::new() };
         let last_system = a.rows.iter().rev().find_map(|r| match &r.item {
-            TimelineItem::AssistantMessage { text, .. }
-                if text.starts_with(lucina_agents::events::SYSTEM_ERROR_PREFIX) =>
-            {
-                Some(text.clone())
-            }
+            TimelineItem::AssistantMessage { text, .. } if text.starts_with(lucina_agents::events::SYSTEM_ERROR_PREFIX) => Some(text.clone()),
             _ => None,
         });
-        format!(
-            "{}\n{}",
-            a.record.last_error.clone().unwrap_or_default(),
-            last_system.unwrap_or_default()
-        )
+        format!("{}\n{}", a.record.last_error.clone().unwrap_or_default(), last_system.unwrap_or_default())
     }
 
     async fn worktree_status(cwd: &str) -> Option<String> {
-        let out = tokio::process::Command::new("git")
-            .args(["-C", cwd, "status", "--porcelain"])
-            .output()
-            .await
-            .ok()?;
-        out.status
-            .success()
-            .then(|| String::from_utf8_lossy(&out.stdout).to_string())
+        let out = tokio::process::Command::new("git").args(["-C", cwd, "status", "--porcelain"]).output().await.ok()?;
+        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).to_string())
     }
 
     /// lane's rules: try each lane in order; fall through only on quota or
     /// unavailable, and never when the failed attempt left changes in the workspace.
-    async fn run_chain(
-        &self,
-        id: String,
-        prompt: String,
-        lanes: Vec<(String, &'static str, Lane)>,
-    ) {
+    async fn run_chain(&self, id: String, prompt: String, lanes: Vec<(String, &'static str, Lane)>) {
         use lucina_agents::timeline::NotificationLevel::{Info, Warning};
-        let cwd = self
-            .lock()
-            .get(&id)
-            .map(|a| a.record.cwd.clone())
-            .unwrap_or_default();
+        let cwd = self.lock().get(&id).map(|a| a.record.cwd.clone()).unwrap_or_default();
         let baseline = Self::worktree_status(&cwd).await;
         let lucina = crate::workspaces::is_lucina_project(
             &self.inner.options.workspaces,
@@ -2053,11 +1722,7 @@ impl Manager {
                     continue;
                 }
                 if let Err(e) = self.switch_lane(&id, name, provider, lane).await {
-                    self.note(
-                        &id,
-                        Warning,
-                        format!("lane {name}: cannot switch ({e}); the chain stops"),
-                    );
+                    self.note(&id, Warning, format!("lane {name}: cannot switch ({e}); the chain stops"));
                     break;
                 }
             }
@@ -2066,11 +1731,7 @@ impl Manager {
                 let mut rx = self.inner.generation.subscribe();
                 loop {
                     let busy = self.lock().get(&id).is_some_and(|a| {
-                        a.pending.is_empty()
-                            && matches!(
-                                a.k.status,
-                                AgentStatus::Running | AgentStatus::Initializing
-                            )
+                        a.pending.is_empty() && matches!(a.k.status, AgentStatus::Running | AgentStatus::Initializing)
                     });
                     if !busy || rx.changed().await.is_err() {
                         break;
@@ -2097,11 +1758,7 @@ impl Manager {
                 Outcome::Quota(d) => ("quota", d.clone()),
                 Outcome::Unavailable(d) => ("unavailable", d.clone()),
                 Outcome::Failed => {
-                    self.note(
-                        &id,
-                        Warning,
-                        format!("lane {name}: failed; the chain stops"),
-                    );
+                    self.note(&id, Warning, format!("lane {name}: failed; the chain stops"));
                     break;
                 }
             };
@@ -2110,16 +1767,8 @@ impl Manager {
                 break;
             }
             match lanes.get(i + 1) {
-                Some((next, _, _)) => self.note(
-                    &id,
-                    Info,
-                    format!("lane {name}: {what} ({detector}); trying lane {next}"),
-                ),
-                None => self.note(
-                    &id,
-                    Warning,
-                    format!("lane {name}: {what} ({detector}); no lanes left"),
-                ),
+                Some((next, _, _)) => self.note(&id, Info, format!("lane {name}: {what} ({detector}); trying lane {next}")),
+                None => self.note(&id, Warning, format!("lane {name}: {what} ({detector}); no lanes left")),
             }
         }
         if let Some(a) = self.lock().get_mut(&id) {
@@ -2130,11 +1779,7 @@ impl Manager {
 
     /// Stop every running turn and close every session, all at once (shutdown).
     pub async fn shutdown(&self) {
-        let sessions: Vec<Arc<dyn Session>> = self
-            .lock()
-            .values_mut()
-            .filter_map(|a| a.session.take())
-            .collect();
+        let sessions: Vec<Arc<dyn Session>> = self.lock().values_mut().filter_map(|a| a.session.take()).collect();
         let mut set = tokio::task::JoinSet::new();
         for s in sessions {
             set.spawn(async move { s.close().await });
@@ -2169,8 +1814,7 @@ fn attention_event(agent: &Agent, reason: AttentionReason, timestamp: String) ->
         }
         _ => None,
     };
-    let body =
-        lucina_agents::notification::body(reason, assistant.as_deref(), agent.pending.last());
+    let body = lucina_agents::notification::body(reason, assistant.as_deref(), agent.pending.last());
     StreamEvent::AttentionRequired {
         provider: agent.record.provider.clone(),
         reason,

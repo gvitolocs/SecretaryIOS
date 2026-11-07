@@ -85,11 +85,7 @@ pub struct ProviderInfo {
 #[async_trait]
 pub trait Provider: Send + Sync {
     fn info(&self) -> ProviderInfo;
-    async fn create_session(
-        &self,
-        config: SessionConfig,
-        events: EventSink,
-    ) -> Result<Arc<dyn Session>, ProviderError>;
+    async fn create_session(&self, config: SessionConfig, events: EventSink) -> Result<Arc<dyn Session>, ProviderError>;
     async fn resume_session(
         &self,
         handle: &PersistenceHandle,
@@ -102,20 +98,12 @@ pub trait Provider: Send + Sync {
 pub trait Session: Send + Sync {
     fn session_id(&self) -> String;
     /// Start a turn; returns its id. Events follow on the sink.
-    async fn start_turn(
-        &self,
-        prompt: &str,
-        client_message_id: Option<String>,
-    ) -> Result<String, ProviderError>;
+    async fn start_turn(&self, prompt: &str, client_message_id: Option<String>) -> Result<String, ProviderError>;
     /// Steer the running turn; `false` when there's no such turn.
     async fn steer(&self, prompt: &str, expected_turn_id: &str) -> Result<bool, ProviderError>;
     /// Cancel the running turn (emits `turn_canceled`); a no-op when idle.
     async fn interrupt(&self) -> Result<(), ProviderError>;
-    async fn respond_permission(
-        &self,
-        request_id: &str,
-        response: PermissionResponse,
-    ) -> Result<(), ProviderError>;
+    async fn respond_permission(&self, request_id: &str, response: PermissionResponse) -> Result<(), ProviderError>;
     /// A prompt the provider answers without a turn (Paseo `tryHandleOutOfBand`).
     fn out_of_band(&self, _prompt: &str) -> Option<Vec<StreamEvent>> {
         None
