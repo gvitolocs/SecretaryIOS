@@ -187,6 +187,8 @@ struct SttCall {
     content_type: String,
     query: Option<String>,
     len: usize,
+    /// The largest absolute sample of the body (a WAV header counts as samples too: only compare like with like).
+    peak: i32,
 }
 
 async fn local_stt(
@@ -204,6 +206,13 @@ async fn local_stt(
         content_type: content_type.clone(),
         query: uri.query().map(str::to_owned),
         len: body.len(),
+        peak: body
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| i32::from(i16::from_le_bytes(*b)).abs())
+            .max()
+            .unwrap_or(0),
     });
     let at = if content_type.starts_with("audio/wav") {
         44
@@ -380,12 +389,30 @@ async fn harness_with(local: Local) -> H {
     }
 }
 
-/// `seconds` of 16 kHz mono 16-bit audio: samples alternate `script`, `nonce`.
+/// `seconds` of 16 kHz mono 16-bit audio at a normal speech level (no lift, not silent): the first two samples are `script`,
+/// `nonce`, the rest alternates +-8000 (the mock speech-to-text reads the script from the first sample).
 fn pcm(seconds: f64, script: i16, nonce: i16) -> Vec<u8> {
-    let n = (seconds * 16_000.0) as usize / 2;
-    [script.to_le_bytes(), nonce.to_le_bytes()]
-        .concat()
-        .repeat(n)
+    let n = (seconds * 16_000.0) as usize;
+    let mut out = Vec::with_capacity(n * 2);
+    for i in 0..n {
+        let v = match i {
+            0 => script,
+            1 => nonce,
+            _ if i % 2 == 0 => 8000,
+            _ => -8000,
+        };
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    out
+}
+
+/// `seconds` of a 440 Hz tone of amplitude `amp` (quiet speech stand-in), or of digital silence with `amp` 0.
+fn tone(seconds: f64, amp: f32) -> Vec<u8> {
+    (0..(seconds * 16_000.0) as usize)
+        .flat_map(|i| {
+            ((amp * (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 16_000.0).sin()) as i16).to_le_bytes()
+        })
+        .collect()
 }
 
 /// The same audio as a WAV file with the canonical 44-byte header.
@@ -1001,4 +1028,76 @@ async fn an_empty_local_transcript_is_no_speech_without_a_gemini_retry() {
     assert_eq!(h.mock.stt_calls.lock().unwrap().len(), 1);
     assert!(h.gemini.calls(HELLO, h.nonce).is_empty());
     assert!(h.mock.chats.lock().unwrap().is_empty());
+}
+
+// -- level (protocol section 10.7) -------------------------------------------------
+
+#[tokio::test]
+async fn quiet_speech_is_lifted_for_the_stt_only() {
+    let h = harness_with(Local::Mock).await;
+    let r = h.chunked("", tone(1.5, 600.0)).send().await.unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    r.bytes().await.unwrap();
+    let calls = h.mock.stt_calls.lock().unwrap().clone();
+    assert_eq!(calls.len(), 1);
+    // The speech-to-text got a louder copy (600 is -34.8 dBFS: up to +30 dB, capped at -1 dBFS).
+    assert!(calls[0].peak > 600 * 4, "{}", calls[0].peak);
+    assert!(calls[0].peak <= 29_300, "{}", calls[0].peak);
+    assert_eq!(calls[0].len, tone(1.5, 600.0).len());
+    assert_eq!(h.mock.chats.lock().unwrap().len(), 1);
+    // The same through a WAV file: the copy is a WAV again.
+    let r = h
+        .req("", "audio/wav", reqwest::Body::from(wav(&tone(1.5, 600.0))))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    r.bytes().await.unwrap();
+    let calls = h.mock.stt_calls.lock().unwrap().clone();
+    assert_eq!(calls[1].content_type, "audio/wav");
+    assert!(calls[1].peak > 600 * 4, "{}", calls[1].peak);
+}
+
+#[tokio::test]
+async fn normal_speech_goes_to_the_stt_unchanged() {
+    let h = harness_with(Local::Mock).await;
+    let audio = pcm(1.0, HELLO, h.nonce);
+    let r = h.chunked("", audio.clone()).send().await.unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    r.bytes().await.unwrap();
+    let calls = h.mock.stt_calls.lock().unwrap().clone();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].len, audio.len());
+    assert_eq!(calls[0].peak, 8000);
+}
+
+#[tokio::test]
+async fn a_silent_recording_is_422_silent_with_no_stt_and_no_chat() {
+    let h = harness_with(Local::Mock).await;
+    // Digital silence, and a hiss of +-5 (about -76 dBFS), as raw PCM and as a WAV file.
+    for audio in [tone(1.0, 0.0), tone(1.0, 5.0)] {
+        for wav_body in [false, true] {
+            let r = if wav_body {
+                h.req("", "audio/wav", reqwest::Body::from(wav(&audio)))
+            } else {
+                h.req("", RAW, reqwest::Body::from(audio.clone()))
+            }
+            .send()
+            .await
+            .unwrap();
+            assert_eq!(r.status(), StatusCode::UNPROCESSABLE_ENTITY);
+            let v: Value = r.json().await.unwrap();
+            assert_eq!(v["error"]["code"], "silent");
+            assert_eq!(
+                v["error"]["message"],
+                "The recording was silent: check the microphone."
+            );
+        }
+    }
+    assert!(h.mock.stt_calls.lock().unwrap().is_empty());
+    assert!(h.mock.chats.lock().unwrap().is_empty());
+    assert!(h.mock.speech.lock().unwrap().is_empty());
+    // The device is free again (the silent turns did not keep it busy).
+    let r = h.say("", HELLO).await;
+    assert_eq!(r.status(), StatusCode::OK);
 }

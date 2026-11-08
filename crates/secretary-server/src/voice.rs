@@ -19,7 +19,11 @@
 //!
 //! **Steps.**
 //! 1. Under [`MIN_SECONDS`] of audio, or a transcript that is empty:
-//!    `422 no_speech`. Transcription goes **local first**: the audio is
+//!    `422 no_speech`. **Level** (protocol section 10.7, the same rules as the socket, [`crate::voice_telemetry::assess`]):
+//!    the recording is measured first. A silent one (peak under about -60 dBFS) is `422 silent` with
+//!    [`crate::voice_ws::SILENT_MESSAGE`], with no speech-to-text and no chat; quiet speech is lifted towards -20 dBFS on the copy
+//!    sent to the speech-to-text only. The levels (dBFS numbers, never audio) go on the turn's log line and into its record.
+//!    Then transcription goes **local first**: the audio is
 //!    posted to `SECRETARY_VOICE_STT_URL` (default [`DEFAULT_STT_URL`], Caddy's
 //!    loopback site on p1, which checks the device token and proxies to
 //!    lucina-memo's whisper.cpp on nezopt), with the caller's own
@@ -68,6 +72,7 @@
 //! | 413 | `payload_too_large` | over 1 MiB |
 //! | 415 | `unsupported_media_type` | not `audio/wav` or `audio/x-s16le;rate=16000` |
 //! | 422 | `no_speech` | too short, or nothing was said |
+//! | 422 | `silent` | the recording is silent: check the microphone |
 //! | 429 | `rate_limited`, `voice_busy`, `transcription_provider_refused` | |
 //! | 502/504 | `transcription_failed`, `lucina_*`, `tts_unavailable` | an upstream failed |
 //! | 503 | `transcription_unavailable`, `lucina_not_configured` | not configured |
@@ -89,6 +94,7 @@ use tokio::sync::mpsc;
 use crate::auth::Identity;
 use crate::error::ApiError;
 use crate::tts;
+use crate::voice_level;
 use crate::voice_pipe::{self, Shared, Spec};
 use crate::voice_telemetry::{self, TurnInfo};
 use crate::AppState;
@@ -685,6 +691,38 @@ pub(crate) fn audio_of(kind: Input, body: Bytes) -> Result<(Audio, f64), ApiErro
     }
 }
 
+/// A measured recording: its level, and whether it is silent.
+#[derive(Clone, Copy)]
+struct Measured {
+    level: voice_telemetry::InputLevel,
+    silent: bool,
+}
+
+/// Measure the recording with the same rules as the socket ([`voice_telemetry::assess`]). Returns the audio for the speech-to-text
+/// (quiet speech lifted) and the level, or the audio unchanged and no level when a WAV cannot be read as 16-bit mono.
+fn assess_audio(audio: Audio) -> (Audio, Option<Measured>) {
+    let (samples, rate) = match &audio {
+        Audio::Pcm(b) => (voice_level::samples_of(b), INPUT_RATE),
+        Audio::Wav(b) => match voice_level::wav_samples(b) {
+            Some(x) => x,
+            None => return (audio, None),
+        },
+    };
+    let a = voice_telemetry::assess(&samples);
+    let audio = match (a.lifted, &audio) {
+        (Some(v), Audio::Pcm(_)) => Audio::Pcm(Bytes::from(voice_level::pcm_of(&v))),
+        (Some(v), Audio::Wav(_)) => Audio::Wav(Bytes::from(voice_level::wav_of(&v, rate))),
+        (None, _) => audio,
+    };
+    (
+        audio,
+        Some(Measured {
+            level: a.level,
+            silent: a.silent,
+        }),
+    )
+}
+
 async fn voice(
     State(st): State<AppState>,
     Extension(ident): Extension<Identity>,
@@ -719,6 +757,28 @@ async fn voice(
         return Err(no_speech());
     }
 
+    // The level of the recording (protocol section 10.7), as on the socket: a silent one stops here with no speech-to-text, quiet
+    // speech is lifted on the copy that goes to the speech-to-text (a WAV that is not 16-bit mono goes unmeasured and unchanged).
+    let (audio, level) = assess_audio(audio);
+    if let Some(level) = level.filter(|l| l.silent) {
+        let level = level.level;
+        tracing::info!(
+            device = %ident.device_id,
+            in_peak_dbfs = level.in_peak_dbfs,
+            in_rms_dbfs = level.in_rms_dbfs,
+            speech_rms_dbfs = level.speech_rms_dbfs,
+            gain_db = level.gain_db,
+            "voice turn: silent recording"
+        );
+        voice_telemetry::record_silent(&st, &ident, up_bytes, level);
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "silent",
+            crate::voice_ws::SILENT_MESSAGE,
+        ));
+    }
+    let level = level.map(|l| l.level);
+
     // End of speech is now: the spans below count from here.
     let shared = Arc::new(Shared::new(Instant::now()));
     let mut info = TurnInfo {
@@ -726,6 +786,7 @@ async fn voice(
         transcript_chars: 0,
         speech_ms: (seconds * 1000.0) as u64,
         up_bytes,
+        level,
         ..TurnInfo::default()
     };
     let Heard { text: heard, facts } =
@@ -756,6 +817,23 @@ async fn voice(
         async move {
             let _turn = turn; // the device is busy until its audio is made
             let r = voice_pipe::speak_turn(st.clone(), spec, shared.clone(), out_tx).await;
+            if !matches!(r, Err(voice_pipe::PipeError::Closed)) {
+                let l = info.level.unwrap_or_default();
+                tracing::info!(
+                    device = %ident.device_id,
+                    stt_ms = ?shared.stt(),
+                    lucina_first_ms = ?shared.lucina_first(),
+                    tts_first_ms = ?shared.tts_first(),
+                    first_audio_ms = ?shared.first_audio(),
+                    total_ms = shared.elapsed_ms(),
+                    ok = r.is_ok(),
+                    in_peak_dbfs = l.in_peak_dbfs,
+                    in_rms_dbfs = l.in_rms_dbfs,
+                    speech_rms_dbfs = l.speech_rms_dbfs,
+                    gain_db = l.gain_db,
+                    "voice turn (http)"
+                );
+            }
             match &r {
                 Err(voice_pipe::PipeError::Closed) => {} // the client went away
                 Err(e) => info.err = Some(e.code().into()),

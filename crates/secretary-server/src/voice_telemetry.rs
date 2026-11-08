@@ -370,6 +370,26 @@ impl InputLevel {
     }
 }
 
+/// A recording, measured (protocol section 10.7): its level, whether it is silent, and the lifted copy for the speech-to-text.
+/// Shared by the socket and `POST /v1/voice`, so both apply the same rules.
+pub struct Assessed {
+    pub level: InputLevel,
+    /// Nothing to hear: the turn stops before any speech-to-text.
+    pub silent: bool,
+    /// The recording with its speech lifted, or `None` when it needs no gain. For the speech-to-text only, never the stored file.
+    pub lifted: Option<Vec<i16>>,
+}
+
+/// Measure `samples` (mono 16-bit) with the voice-level rules.
+pub fn assess(samples: &[i16]) -> Assessed {
+    let analysis = crate::voice_level::analyse(samples);
+    Assessed {
+        level: InputLevel::of(&analysis.level),
+        silent: analysis.level.silent,
+        lifted: analysis.normalised(samples),
+    }
+}
+
 fn is_zero(n: &u32) -> bool {
     *n == 0
 }
