@@ -769,11 +769,11 @@ async fn the_shopping_list_is_read_and_changed_through_the_grocery_path() {
             say("grocery.shopping_list.query", 0.97),
         )
         .on(
-            "aggiungi latte alla lista della spesa",
+            "aggiungi latte e uova alla lista della spesa",
             say("grocery.shopping_list.add", 0.96),
         )
         .on(
-            "togli il latte dalla lista della spesa",
+            "togli il latte e le uova dalla lista della spesa",
             say("grocery.shopping_list.remove", 0.95),
         );
     let server = fake_jev(&jev).await;
@@ -784,28 +784,27 @@ async fn the_shopping_list_is_read_and_changed_through_the_grocery_path() {
     })
     .await;
 
+    // Replies are English or Danish, never Italian (owner rule 2026-11-02); item names stay
+    // in the message's language.
     let (s, _) = stream(&h, chat_body("cosa c'è nella lista della spesa?")).await;
     assert_eq!(s.names(), ["route", "reply", "done"]);
-    assert_eq!(
-        s.find("reply").data["text"],
-        "La lista della spesa è vuota."
-    );
-    let (s, _) = stream(&h, chat_body("aggiungi latte alla lista della spesa")).await;
+    assert_eq!(s.find("reply").data["text"], "Your shopping list is empty.");
+    // Two items, never one item made of the sentence (docs/design/shopping-labels.md).
+    let (s, _) = stream(&h, chat_body("aggiungi latte e uova alla lista della spesa")).await;
     assert_eq!(s.names(), ["route", "reply", "done"]);
     assert_eq!(s.find("route").data["fast"], true);
     assert_eq!(
         s.find("reply").data["text"],
-        "Ho aggiunto Latte alla lista della spesa."
+        "Added Latte and Uova to your shopping list."
     );
     let (s, _) = stream(&h, chat_body("cosa c'è nella lista della spesa?")).await;
+    assert_eq!(s.find("reply").data["text"], "Shopping list: Latte, Uova.");
+    let (s, _) = stream(&h, chat_body("togli il latte e le uova dalla lista della spesa")).await;
     assert_eq!(
         s.find("reply").data["text"],
-        "Nella lista della spesa hai Latte."
+        "Removed Latte and Uova from your shopping list."
     );
-    let (s, _) = stream(&h, chat_body("togli il latte dalla lista della spesa")).await;
-    assert_eq!(
-        s.find("reply").data["text"],
-        "Ho tolto Latte dalla lista della spesa."
-    );
+    let (s, _) = stream(&h, chat_body("cosa c'è nella lista della spesa?")).await;
+    assert_eq!(s.find("reply").data["text"], "Your shopping list is empty.");
     assert_eq!(model_calls(&h), 0);
 }
