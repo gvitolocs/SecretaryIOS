@@ -1,0 +1,1027 @@
+{
+  "formatted": [
+    {
+      "message": {
+        "id": "m1",
+        "source": null,
+        "text": "hello"
+      },
+      "text": "<paseo-system version=\"1\" kind=\"user-message\" message-id=\"m1\">\nhello\n</paseo-system>"
+    },
+    {
+      "message": {
+        "id": "m2",
+        "source": {
+          "kind": "agent-message",
+          "agentId": "a1"
+        },
+        "text": "please check <this> & that"
+      },
+      "text": "<paseo-system version=\"1\" kind=\"agent-message\" source-agent-id=\"a1\" message-id=\"m2\">\nplease check &lt;this&gt; &amp; that\n</paseo-system>"
+    },
+    {
+      "message": {
+        "id": "m\"3",
+        "source": {
+          "kind": "agent-message",
+          "agentId": "a'2",
+          "serverId": "nezopt",
+          "title": "Fix \"it\""
+        },
+        "text": ""
+      },
+      "text": "<paseo-system version=\"1\" kind=\"agent-message\" source-agent-id=\"a&apos;2\" message-id=\"m&quot;3\" source-server-id=\"nezopt\" source-agent-title=\"Fix &quot;it&quot;\">\n\n</paseo-system>"
+    },
+    {
+      "message": {
+        "id": "m4",
+        "source": {
+          "kind": "agent-notification",
+          "agentId": "c1",
+          "title": "Child",
+          "event": "finished"
+        },
+        "text": "Agent c1 (Child) finished."
+      },
+      "text": "<paseo-system version=\"1\" kind=\"agent-notification\" source-agent-id=\"c1\" message-id=\"m4\" source-agent-title=\"Child\" event=\"finished\">\nAgent c1 (Child) finished.\n</paseo-system>"
+    },
+    {
+      "message": {
+        "id": "m5",
+        "source": {
+          "kind": "agent-notification",
+          "agentId": "c1",
+          "event": "permission-required"
+        },
+        "text": "line1\nline2"
+      },
+      "text": "<paseo-system version=\"1\" kind=\"agent-notification\" source-agent-id=\"c1\" message-id=\"m5\" event=\"permission-required\">\nline1\nline2\n</paseo-system>"
+    },
+    {
+      "message": {
+        "id": "m6",
+        "source": {
+          "kind": "agent-notification",
+          "agentId": "c1",
+          "event": "errored"
+        },
+        "text": "x"
+      },
+      "text": "<paseo-system version=\"1\" kind=\"agent-notification\" source-agent-id=\"c1\" message-id=\"m6\" event=\"errored\">\nx\n</paseo-system>"
+    },
+    {
+      "message": {
+        "id": "m7",
+        "source": {
+          "kind": "agent-notification",
+          "agentId": "c1",
+          "event": "closed"
+        },
+        "text": "y"
+      },
+      "text": "<paseo-system version=\"1\" kind=\"agent-notification\" source-agent-id=\"c1\" message-id=\"m7\" event=\"closed\">\ny\n</paseo-system>"
+    }
+  ],
+  "parsed": [
+    {
+      "text": "<paseo-system version=\"1\" kind=\"user-message\" message-id=\"m1\">\nhello\n</paseo-system>",
+      "messages": [
+        {
+          "id": "m1",
+          "source": null,
+          "text": "hello"
+        }
+      ],
+      "systemInjected": false,
+      "projected": [
+        {
+          "type": "user_message",
+          "text": "hello",
+          "clientMessageId": "m1"
+        }
+      ]
+    },
+    {
+      "text": "<paseo-system version=\"1\" kind=\"agent-message\" source-agent-id=\"a1\" message-id=\"m2\">\nplease check &lt;this&gt; &amp; that\n</paseo-system>",
+      "messages": [
+        {
+          "id": "m2",
+          "source": {
+            "kind": "agent-message",
+            "agentId": "a1"
+          },
+          "text": "please check <this> & that"
+        }
+      ],
+      "systemInjected": false,
+      "projected": [
+        {
+          "type": "tool_call",
+          "callId": "paseo-agent-message:m2",
+          "agentMessage": {
+            "event": "message",
+            "sender": {
+              "id": "a1"
+            },
+            "text": "please check <this> & that"
+          },
+          "name": "agent_message",
+          "status": "completed",
+          "error": null,
+          "detail": {
+            "type": "plain_text",
+            "text": "please check <this> & that",
+            "icon": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "text": "<paseo-system version=\"1\" kind=\"agent-message\" source-agent-id=\"a&apos;2\" message-id=\"m&quot;3\" source-server-id=\"nezopt\" source-agent-title=\"Fix &quot;it&quot;\">\n\n</paseo-system>",
+      "messages": [
+        {
+          "id": "m\"3",
+          "source": {
+            "kind": "agent-message",
+            "agentId": "a'2",
+            "serverId": "nezopt",
+            "title": "Fix \"it\""
+          },
+          "text": ""
+        }
+      ],
+      "systemInjected": false,
+      "projected": [
+        {
+          "type": "tool_call",
+          "callId": "paseo-agent-message:m\"3",
+          "agentMessage": {
+            "event": "message",
+            "sender": {
+              "id": "a'2",
+              "serverId": "nezopt",
+              "title": "Fix \"it\""
+            },
+            "text": ""
+          },
+          "name": "agent_message",
+          "status": "completed",
+          "error": null,
+          "detail": {
+            "type": "plain_text",
+            "text": "",
+            "icon": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "text": "<paseo-system version=\"1\" kind=\"agent-notification\" source-agent-id=\"c1\" message-id=\"m4\" source-agent-title=\"Child\" event=\"finished\">\nAgent c1 (Child) finished.\n</paseo-system>",
+      "messages": [
+        {
+          "id": "m4",
+          "source": {
+            "kind": "agent-notification",
+            "agentId": "c1",
+            "title": "Child",
+            "event": "finished"
+          },
+          "text": "Agent c1 (Child) finished."
+        }
+      ],
+      "systemInjected": false,
+      "projected": [
+        {
+          "type": "tool_call",
+          "callId": "paseo-agent-message:m4",
+          "agentMessage": {
+            "event": "finished",
+            "sender": {
+              "id": "c1",
+              "title": "Child"
+            },
+            "text": "Agent c1 (Child) finished."
+          },
+          "name": "agent_message",
+          "status": "completed",
+          "error": null,
+          "detail": {
+            "type": "plain_text",
+            "text": "Agent c1 (Child) finished.",
+            "icon": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "text": "<paseo-system version=\"1\" kind=\"agent-notification\" source-agent-id=\"c1\" message-id=\"m5\" event=\"permission-required\">\nline1\nline2\n</paseo-system>",
+      "messages": [
+        {
+          "id": "m5",
+          "source": {
+            "kind": "agent-notification",
+            "agentId": "c1",
+            "event": "permission-required"
+          },
+          "text": "line1\nline2"
+        }
+      ],
+      "systemInjected": false,
+      "projected": [
+        {
+          "type": "tool_call",
+          "callId": "paseo-agent-message:m5",
+          "agentMessage": {
+            "event": "permission-required",
+            "sender": {
+              "id": "c1"
+            },
+            "text": "line1\nline2"
+          },
+          "name": "agent_message",
+          "status": "completed",
+          "error": null,
+          "detail": {
+            "type": "plain_text",
+            "text": "line1\nline2",
+            "icon": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "text": "<paseo-system version=\"1\" kind=\"agent-notification\" source-agent-id=\"c1\" message-id=\"m6\" event=\"errored\">\nx\n</paseo-system>",
+      "messages": [
+        {
+          "id": "m6",
+          "source": {
+            "kind": "agent-notification",
+            "agentId": "c1",
+            "event": "errored"
+          },
+          "text": "x"
+        }
+      ],
+      "systemInjected": false,
+      "projected": [
+        {
+          "type": "tool_call",
+          "callId": "paseo-agent-message:m6",
+          "agentMessage": {
+            "event": "errored",
+            "sender": {
+              "id": "c1"
+            },
+            "text": "x"
+          },
+          "name": "agent_message",
+          "status": "completed",
+          "error": null,
+          "detail": {
+            "type": "plain_text",
+            "text": "x",
+            "icon": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "text": "<paseo-system version=\"1\" kind=\"agent-notification\" source-agent-id=\"c1\" message-id=\"m7\" event=\"closed\">\ny\n</paseo-system>",
+      "messages": [
+        {
+          "id": "m7",
+          "source": {
+            "kind": "agent-notification",
+            "agentId": "c1",
+            "event": "closed"
+          },
+          "text": "y"
+        }
+      ],
+      "systemInjected": false,
+      "projected": [
+        {
+          "type": "tool_call",
+          "callId": "paseo-agent-message:m7",
+          "agentMessage": {
+            "event": "closed",
+            "sender": {
+              "id": "c1"
+            },
+            "text": "y"
+          },
+          "name": "agent_message",
+          "status": "completed",
+          "error": null,
+          "detail": {
+            "type": "plain_text",
+            "text": "y",
+            "icon": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "text": "<paseo-system version=\"1\" kind=\"user-message\" message-id=\"m1\">\nhello\n</paseo-system>\n\n<paseo-system version=\"1\" kind=\"agent-message\" source-agent-id=\"a1\" message-id=\"m2\">\nplease check &lt;this&gt; &amp; that\n</paseo-system>",
+      "messages": [
+        {
+          "id": "m1",
+          "source": null,
+          "text": "hello"
+        },
+        {
+          "id": "m2",
+          "source": {
+            "kind": "agent-message",
+            "agentId": "a1"
+          },
+          "text": "please check <this> & that"
+        }
+      ],
+      "systemInjected": false,
+      "projected": [
+        {
+          "type": "user_message",
+          "text": "hello",
+          "clientMessageId": "m1"
+        },
+        {
+          "type": "tool_call",
+          "callId": "paseo-agent-message:m2",
+          "agentMessage": {
+            "event": "message",
+            "sender": {
+              "id": "a1"
+            },
+            "text": "please check <this> & that"
+          },
+          "name": "agent_message",
+          "status": "completed",
+          "error": null,
+          "detail": {
+            "type": "plain_text",
+            "text": "please check <this> & that",
+            "icon": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "text": "<paseo-system version=\"1\" kind=\"user-message\" message-id=\"m1\">\nhello\n</paseo-system>\n<paseo-system version=\"1\" kind=\"agent-notification\" source-agent-id=\"c1\" message-id=\"m4\" source-agent-title=\"Child\" event=\"finished\">\nAgent c1 (Child) finished.\n</paseo-system>\n\n\n<paseo-system version=\"1\" kind=\"agent-notification\" source-agent-id=\"c1\" message-id=\"m5\" event=\"permission-required\">\nline1\nline2\n</paseo-system>",
+      "messages": [
+        {
+          "id": "m1",
+          "source": null,
+          "text": "hello"
+        },
+        {
+          "id": "m4",
+          "source": {
+            "kind": "agent-notification",
+            "agentId": "c1",
+            "title": "Child",
+            "event": "finished"
+          },
+          "text": "Agent c1 (Child) finished."
+        },
+        {
+          "id": "m5",
+          "source": {
+            "kind": "agent-notification",
+            "agentId": "c1",
+            "event": "permission-required"
+          },
+          "text": "line1\nline2"
+        }
+      ],
+      "systemInjected": false,
+      "projected": [
+        {
+          "type": "user_message",
+          "text": "hello",
+          "clientMessageId": "m1"
+        },
+        {
+          "type": "tool_call",
+          "callId": "paseo-agent-message:m4",
+          "agentMessage": {
+            "event": "finished",
+            "sender": {
+              "id": "c1",
+              "title": "Child"
+            },
+            "text": "Agent c1 (Child) finished."
+          },
+          "name": "agent_message",
+          "status": "completed",
+          "error": null,
+          "detail": {
+            "type": "plain_text",
+            "text": "Agent c1 (Child) finished.",
+            "icon": "bot"
+          }
+        },
+        {
+          "type": "tool_call",
+          "callId": "paseo-agent-message:m5",
+          "agentMessage": {
+            "event": "permission-required",
+            "sender": {
+              "id": "c1"
+            },
+            "text": "line1\nline2"
+          },
+          "name": "agent_message",
+          "status": "completed",
+          "error": null,
+          "detail": {
+            "type": "plain_text",
+            "text": "line1\nline2",
+            "icon": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "text": "<paseo-system version=\"1\" kind=\"user-message\" message-id=\"m1\">\nhello\n</paseo-system> trailing",
+      "messages": null,
+      "systemInjected": false,
+      "projected": [
+        {
+          "type": "user_message",
+          "text": "<paseo-system version=\"1\" kind=\"user-message\" message-id=\"m1\">\nhello\n</paseo-system> trailing"
+        }
+      ]
+    },
+    {
+      "text": "prefix <paseo-system version=\"1\" kind=\"user-message\" message-id=\"m1\">\nhello\n</paseo-system>",
+      "messages": null,
+      "systemInjected": false,
+      "projected": [
+        {
+          "type": "user_message",
+          "text": "prefix <paseo-system version=\"1\" kind=\"user-message\" message-id=\"m1\">\nhello\n</paseo-system>"
+        }
+      ]
+    },
+    {
+      "text": "plain prompt",
+      "messages": null,
+      "systemInjected": false,
+      "projected": [
+        {
+          "type": "user_message",
+          "text": "plain prompt"
+        }
+      ]
+    },
+    {
+      "text": "<paseo-system version=\"2\" kind=\"user-message\" message-id=\"x\">\nhi\n</paseo-system>",
+      "messages": null,
+      "systemInjected": false,
+      "projected": [
+        {
+          "type": "user_message",
+          "text": "<paseo-system version=\"2\" kind=\"user-message\" message-id=\"x\">\nhi\n</paseo-system>"
+        }
+      ]
+    },
+    {
+      "text": "<paseo-system version=\"1\" kind=\"user-message\" message-id=\"x\" source-agent-id=\"a\">\nhi\n</paseo-system>",
+      "messages": null,
+      "systemInjected": false,
+      "projected": [
+        {
+          "type": "user_message",
+          "text": "<paseo-system version=\"1\" kind=\"user-message\" message-id=\"x\" source-agent-id=\"a\">\nhi\n</paseo-system>"
+        }
+      ]
+    },
+    {
+      "text": "<paseo-system version=\"1\" kind=\"agent-message\" message-id=\"x\">\nhi\n</paseo-system>",
+      "messages": null,
+      "systemInjected": false,
+      "projected": [
+        {
+          "type": "user_message",
+          "text": "<paseo-system version=\"1\" kind=\"agent-message\" message-id=\"x\">\nhi\n</paseo-system>"
+        }
+      ]
+    },
+    {
+      "text": "<paseo-system version=\"1\" kind=\"agent-message\" source-agent-id=\"\" message-id=\"x\">\nhi\n</paseo-system>",
+      "messages": null,
+      "systemInjected": false,
+      "projected": [
+        {
+          "type": "user_message",
+          "text": "<paseo-system version=\"1\" kind=\"agent-message\" source-agent-id=\"\" message-id=\"x\">\nhi\n</paseo-system>"
+        }
+      ]
+    },
+    {
+      "text": "<paseo-system version=\"1\" kind=\"agent-message\" source-agent-id=\"a\" message-id=\"x\" source-server-id=\"\">\nhi\n</paseo-system>",
+      "messages": null,
+      "systemInjected": false,
+      "projected": [
+        {
+          "type": "user_message",
+          "text": "<paseo-system version=\"1\" kind=\"agent-message\" source-agent-id=\"a\" message-id=\"x\" source-server-id=\"\">\nhi\n</paseo-system>"
+        }
+      ]
+    },
+    {
+      "text": "<paseo-system version=\"1\" kind=\"agent-notification\" source-agent-id=\"a\" message-id=\"x\" event=\"bogus\">\nhi\n</paseo-system>",
+      "messages": null,
+      "systemInjected": false,
+      "projected": [
+        {
+          "type": "user_message",
+          "text": "<paseo-system version=\"1\" kind=\"agent-notification\" source-agent-id=\"a\" message-id=\"x\" event=\"bogus\">\nhi\n</paseo-system>"
+        }
+      ]
+    },
+    {
+      "text": "<paseo-system version=\"1\" kind=\"user-message\" message-id=\"x\" message-id=\"y\">\nhi\n</paseo-system>",
+      "messages": null,
+      "systemInjected": false,
+      "projected": [
+        {
+          "type": "user_message",
+          "text": "<paseo-system version=\"1\" kind=\"user-message\" message-id=\"x\" message-id=\"y\">\nhi\n</paseo-system>"
+        }
+      ]
+    },
+    {
+      "text": "<paseo-system version=\"1\" kind=\"user-message\" message-id=\"x\">\na <b> c\n</paseo-system>",
+      "messages": null,
+      "systemInjected": false,
+      "projected": [
+        {
+          "type": "user_message",
+          "text": "<paseo-system version=\"1\" kind=\"user-message\" message-id=\"x\">\na <b> c\n</paseo-system>"
+        }
+      ]
+    },
+    {
+      "text": "<paseo-system version=\"1\" kind=\"user-message\" message-id=\"x\">\na & c\n</paseo-system>",
+      "messages": null,
+      "systemInjected": false,
+      "projected": [
+        {
+          "type": "user_message",
+          "text": "<paseo-system version=\"1\" kind=\"user-message\" message-id=\"x\">\na & c\n</paseo-system>"
+        }
+      ]
+    },
+    {
+      "text": "<paseo-system version=\"1\" kind=\"user-message\" message-id=\"\">\nhi\n</paseo-system>",
+      "messages": null,
+      "systemInjected": false,
+      "projected": [
+        {
+          "type": "user_message",
+          "text": "<paseo-system version=\"1\" kind=\"user-message\" message-id=\"\">\nhi\n</paseo-system>"
+        }
+      ]
+    },
+    {
+      "text": "<paseo-system version=\"1\"kind=\"user-message\" message-id=\"x\">\nhi\n</paseo-system>",
+      "messages": null,
+      "systemInjected": false,
+      "projected": [
+        {
+          "type": "user_message",
+          "text": "<paseo-system version=\"1\"kind=\"user-message\" message-id=\"x\">\nhi\n</paseo-system>"
+        }
+      ]
+    },
+    {
+      "text": "<paseo-system version=\"1\" kind=\"user-message\" message-id=\"x\">\n\n</paseo-system>",
+      "messages": [
+        {
+          "id": "x",
+          "source": null,
+          "text": ""
+        }
+      ],
+      "systemInjected": false,
+      "projected": [
+        {
+          "type": "user_message",
+          "text": "",
+          "clientMessageId": "x"
+        }
+      ]
+    },
+    {
+      "text": "<paseo-system version=\"1\" kind=\"user-message\" message-id=\"x\">hi</paseo-system>",
+      "messages": null,
+      "systemInjected": false,
+      "projected": [
+        {
+          "type": "user_message",
+          "text": "<paseo-system version=\"1\" kind=\"user-message\" message-id=\"x\">hi</paseo-system>"
+        }
+      ]
+    },
+    {
+      "text": "<paseo-system>\nSchedule fired.\n</paseo-system>",
+      "messages": null,
+      "systemInjected": true,
+      "projected": []
+    },
+    {
+      "text": "<paseo-system>\n\n</paseo-system>",
+      "messages": null,
+      "systemInjected": true,
+      "projected": []
+    },
+    {
+      "text": "<paseo-system>\n</paseo-system>",
+      "messages": null,
+      "systemInjected": false,
+      "projected": [
+        {
+          "type": "user_message",
+          "text": "<paseo-system>\n</paseo-system>"
+        }
+      ]
+    }
+  ],
+  "finish": [
+    {
+      "params": {
+        "childAgentId": "c-1",
+        "title": "Child task",
+        "reason": "finished",
+        "lastAssistantMessage": null
+      },
+      "event": "finished",
+      "body": "Agent c-1 (Child task) finished."
+    },
+    {
+      "params": {
+        "childAgentId": "c-1",
+        "title": "Child task",
+        "reason": "finished",
+        "lastAssistantMessage": "  All tests pass.\n",
+        "permissionRequest": {
+          "id": "perm-1",
+          "provider": "claude",
+          "name": "Bash",
+          "kind": "tool",
+          "title": "Run tests",
+          "input": {
+            "command": "cargo test"
+          }
+        }
+      },
+      "event": "finished",
+      "body": "Agent c-1 (Child task) finished.\n\n<agent-response>\nAll tests pass.\n</agent-response>"
+    },
+    {
+      "params": {
+        "childAgentId": "c-1",
+        "serverId": "nezopt",
+        "title": "Child task",
+        "reason": "finished",
+        "lastAssistantMessage": "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "permissionRequest": {
+          "id": "perm-1",
+          "provider": "claude",
+          "name": "Bash",
+          "kind": "tool",
+          "title": "Run tests",
+          "input": {
+            "command": "cargo test"
+          }
+        }
+      },
+      "event": "finished",
+      "body": "Agent c-1 (Child task) finished.\n\nServer: nezopt\n\n<agent-response>\nééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééxxxxxxxxxx\n[truncated 20 chars; use get_agent_activity for the full response]\n</agent-response>"
+    },
+    {
+      "params": {
+        "childAgentId": "c-1",
+        "serverId": "nezopt",
+        "title": "Child task",
+        "reason": "finished",
+        "lastAssistantMessage": ""
+      },
+      "event": "finished",
+      "body": "Agent c-1 (Child task) finished.\n\nServer: nezopt"
+    },
+    {
+      "params": {
+        "childAgentId": "c-1",
+        "title": "Child task",
+        "reason": "errored",
+        "lastAssistantMessage": null
+      },
+      "event": "errored",
+      "body": "Agent c-1 (Child task) errored."
+    },
+    {
+      "params": {
+        "childAgentId": "c-1",
+        "title": "Child task",
+        "reason": "errored",
+        "lastAssistantMessage": "  All tests pass.\n",
+        "permissionRequest": {
+          "id": "perm-1",
+          "provider": "claude",
+          "name": "Bash",
+          "kind": "tool",
+          "title": "Run tests",
+          "input": {
+            "command": "cargo test"
+          }
+        }
+      },
+      "event": "errored",
+      "body": "Agent c-1 (Child task) errored.\n\n<agent-response>\nAll tests pass.\n</agent-response>"
+    },
+    {
+      "params": {
+        "childAgentId": "c-1",
+        "serverId": "nezopt",
+        "title": "Child task",
+        "reason": "errored",
+        "lastAssistantMessage": "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "permissionRequest": {
+          "id": "perm-1",
+          "provider": "claude",
+          "name": "Bash",
+          "kind": "tool",
+          "title": "Run tests",
+          "input": {
+            "command": "cargo test"
+          }
+        }
+      },
+      "event": "errored",
+      "body": "Agent c-1 (Child task) errored.\n\nServer: nezopt\n\n<agent-response>\nééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééxxxxxxxxxx\n[truncated 20 chars; use get_agent_activity for the full response]\n</agent-response>"
+    },
+    {
+      "params": {
+        "childAgentId": "c-1",
+        "serverId": "nezopt",
+        "title": "Child task",
+        "reason": "errored",
+        "lastAssistantMessage": ""
+      },
+      "event": "errored",
+      "body": "Agent c-1 (Child task) errored.\n\nServer: nezopt"
+    },
+    {
+      "params": {
+        "childAgentId": "c-1",
+        "title": "Child task",
+        "reason": "needs permission",
+        "lastAssistantMessage": null
+      },
+      "event": "permission-required",
+      "body": "Agent c-1 (Child task) needs permission."
+    },
+    {
+      "params": {
+        "childAgentId": "c-1",
+        "title": "Child task",
+        "reason": "needs permission",
+        "lastAssistantMessage": "  All tests pass.\n",
+        "permissionRequest": {
+          "id": "perm-1",
+          "provider": "claude",
+          "name": "Bash",
+          "kind": "tool",
+          "title": "Run tests",
+          "input": {
+            "command": "cargo test"
+          }
+        }
+      },
+      "event": "permission-required",
+      "body": "Agent c-1 (Child task) needs permission.\n\nRespond with `respond_to_permission` using the `agentId` and `requestId` below.\n\n<permission-request>\n{\n  \"agentId\": \"c-1\",\n  \"requestId\": \"perm-1\",\n  \"request\": {\n    \"id\": \"perm-1\",\n    \"provider\": \"claude\",\n    \"name\": \"Bash\",\n    \"kind\": \"tool\",\n    \"title\": \"Run tests\",\n    \"input\": {\n      \"command\": \"cargo test\"\n    }\n  }\n}\n</permission-request>\n\n<agent-response>\nAll tests pass.\n</agent-response>"
+    },
+    {
+      "params": {
+        "childAgentId": "c-1",
+        "serverId": "nezopt",
+        "title": "Child task",
+        "reason": "needs permission",
+        "lastAssistantMessage": "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "permissionRequest": {
+          "id": "perm-1",
+          "provider": "claude",
+          "name": "Bash",
+          "kind": "tool",
+          "title": "Run tests",
+          "input": {
+            "command": "cargo test"
+          }
+        }
+      },
+      "event": "permission-required",
+      "body": "Agent c-1 (Child task) needs permission.\n\nServer: nezopt\n\nRespond with `respond_to_permission` using the `agentId` and `requestId` below.\n\n<permission-request>\n{\n  \"agentId\": \"c-1\",\n  \"serverId\": \"nezopt\",\n  \"requestId\": \"perm-1\",\n  \"request\": {\n    \"id\": \"perm-1\",\n    \"provider\": \"claude\",\n    \"name\": \"Bash\",\n    \"kind\": \"tool\",\n    \"title\": \"Run tests\",\n    \"input\": {\n      \"command\": \"cargo test\"\n    }\n  }\n}\n</permission-request>\n\n<agent-response>\nééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééxxxxxxxxxx\n[truncated 20 chars; use get_agent_activity for the full response]\n</agent-response>"
+    },
+    {
+      "params": {
+        "childAgentId": "c-1",
+        "serverId": "nezopt",
+        "title": "Child task",
+        "reason": "needs permission",
+        "lastAssistantMessage": ""
+      },
+      "event": "permission-required",
+      "body": "Agent c-1 (Child task) needs permission.\n\nServer: nezopt"
+    },
+    {
+      "params": {
+        "childAgentId": "c-1",
+        "title": "Child task",
+        "reason": "was closed",
+        "lastAssistantMessage": null
+      },
+      "event": "closed",
+      "body": "Agent c-1 (Child task) was closed."
+    },
+    {
+      "params": {
+        "childAgentId": "c-1",
+        "title": "Child task",
+        "reason": "was closed",
+        "lastAssistantMessage": "  All tests pass.\n",
+        "permissionRequest": {
+          "id": "perm-1",
+          "provider": "claude",
+          "name": "Bash",
+          "kind": "tool",
+          "title": "Run tests",
+          "input": {
+            "command": "cargo test"
+          }
+        }
+      },
+      "event": "closed",
+      "body": "Agent c-1 (Child task) was closed.\n\n<agent-response>\nAll tests pass.\n</agent-response>"
+    },
+    {
+      "params": {
+        "childAgentId": "c-1",
+        "serverId": "nezopt",
+        "title": "Child task",
+        "reason": "was closed",
+        "lastAssistantMessage": "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "permissionRequest": {
+          "id": "perm-1",
+          "provider": "claude",
+          "name": "Bash",
+          "kind": "tool",
+          "title": "Run tests",
+          "input": {
+            "command": "cargo test"
+          }
+        }
+      },
+      "event": "closed",
+      "body": "Agent c-1 (Child task) was closed.\n\nServer: nezopt\n\n<agent-response>\nééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééxxxxxxxxxx\n[truncated 20 chars; use get_agent_activity for the full response]\n</agent-response>"
+    },
+    {
+      "params": {
+        "childAgentId": "c-1",
+        "serverId": "nezopt",
+        "title": "Child task",
+        "reason": "was closed",
+        "lastAssistantMessage": ""
+      },
+      "event": "closed",
+      "body": "Agent c-1 (Child task) was closed.\n\nServer: nezopt"
+    },
+    {
+      "params": {
+        "childAgentId": "c-1",
+        "title": "Child task",
+        "reason": "is unavailable",
+        "lastAssistantMessage": null
+      },
+      "event": "closed",
+      "body": "Agent c-1 (Child task) is unavailable."
+    },
+    {
+      "params": {
+        "childAgentId": "c-1",
+        "title": "Child task",
+        "reason": "is unavailable",
+        "lastAssistantMessage": "  All tests pass.\n",
+        "permissionRequest": {
+          "id": "perm-1",
+          "provider": "claude",
+          "name": "Bash",
+          "kind": "tool",
+          "title": "Run tests",
+          "input": {
+            "command": "cargo test"
+          }
+        }
+      },
+      "event": "closed",
+      "body": "Agent c-1 (Child task) is unavailable.\n\n<agent-response>\nAll tests pass.\n</agent-response>"
+    },
+    {
+      "params": {
+        "childAgentId": "c-1",
+        "serverId": "nezopt",
+        "title": "Child task",
+        "reason": "is unavailable",
+        "lastAssistantMessage": "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "permissionRequest": {
+          "id": "perm-1",
+          "provider": "claude",
+          "name": "Bash",
+          "kind": "tool",
+          "title": "Run tests",
+          "input": {
+            "command": "cargo test"
+          }
+        }
+      },
+      "event": "closed",
+      "body": "Agent c-1 (Child task) is unavailable.\n\nServer: nezopt\n\n<agent-response>\nééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééxxxxxxxxxx\n[truncated 20 chars; use get_agent_activity for the full response]\n</agent-response>"
+    },
+    {
+      "params": {
+        "childAgentId": "c-1",
+        "serverId": "nezopt",
+        "title": "Child task",
+        "reason": "is unavailable",
+        "lastAssistantMessage": ""
+      },
+      "event": "closed",
+      "body": "Agent c-1 (Child task) is unavailable.\n\nServer: nezopt"
+    },
+    {
+      "params": {
+        "childAgentId": "c-1",
+        "title": "Child task",
+        "reason": "was canceled",
+        "lastAssistantMessage": null
+      },
+      "event": "errored",
+      "body": "Agent c-1 (Child task) was canceled."
+    },
+    {
+      "params": {
+        "childAgentId": "c-1",
+        "title": "Child task",
+        "reason": "was canceled",
+        "lastAssistantMessage": "  All tests pass.\n",
+        "permissionRequest": {
+          "id": "perm-1",
+          "provider": "claude",
+          "name": "Bash",
+          "kind": "tool",
+          "title": "Run tests",
+          "input": {
+            "command": "cargo test"
+          }
+        }
+      },
+      "event": "errored",
+      "body": "Agent c-1 (Child task) was canceled.\n\n<agent-response>\nAll tests pass.\n</agent-response>"
+    },
+    {
+      "params": {
+        "childAgentId": "c-1",
+        "serverId": "nezopt",
+        "title": "Child task",
+        "reason": "was canceled",
+        "lastAssistantMessage": "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "permissionRequest": {
+          "id": "perm-1",
+          "provider": "claude",
+          "name": "Bash",
+          "kind": "tool",
+          "title": "Run tests",
+          "input": {
+            "command": "cargo test"
+          }
+        }
+      },
+      "event": "errored",
+      "body": "Agent c-1 (Child task) was canceled.\n\nServer: nezopt\n\n<agent-response>\nééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééxxxxxxxxxx\n[truncated 20 chars; use get_agent_activity for the full response]\n</agent-response>"
+    },
+    {
+      "params": {
+        "childAgentId": "c-1",
+        "serverId": "nezopt",
+        "title": "Child task",
+        "reason": "was canceled",
+        "lastAssistantMessage": ""
+      },
+      "event": "errored",
+      "body": "Agent c-1 (Child task) was canceled.\n\nServer: nezopt"
+    }
+  ],
+  "systemNotification": "<paseo-system>\nSchedule \"x\" fired (id=ab, run=r1).\nCheck CI\n</paseo-system>"
+}

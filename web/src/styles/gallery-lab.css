@@ -1,0 +1,325 @@
+/* The AI Lab (views/GalleryLab.tsx, components/gallery/lab/*): the "Edit with Lucina…" sheet and the job cards.
+   It borrows the Gallery's shell (.gallery, .g-top, .g-bar) and the viewer's dialog (.gv-dialog), on the Lucina tokens. */
+
+/* ---- the sheet ---- */
+
+.lab-form { display: flex; flex-direction: column; }
+
+.lab-label {
+  margin: 14px 0 6px;
+  font-weight: 600;
+  font-size: var(--lu-type-subheadline, 14px);
+}
+
+.lab-prompt { width: 100%; }
+
+.lab-count {
+  margin: 4px 0 0;
+  text-align: right;
+  color: var(--lu-text-secondary, rgb(255 255 255 / 60%));
+  font-size: 12px;
+}
+
+.lab-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.lab-chip {
+  min-height: 36px;
+  padding: 6px 12px;
+  border: 1px solid var(--lu-separator, rgb(255 255 255 / 18%));
+  border-radius: 999px;
+  background: var(--lu-field, rgb(255 255 255 / 8%));
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.lab-chip:hover:not(:disabled) { background: rgb(255 255 255 / 16%); }
+.lab-chip:disabled { opacity: 0.5; cursor: default; }
+.lab-chip:focus-visible,
+.lab-picker-tile:focus-visible { outline: 2px solid var(--lu-accent, #7f8fe0); outline-offset: 2px; }
+
+.lab-ref {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.lab-ref-thumb {
+  width: 64px;
+  height: 64px;
+  border-radius: 10px;
+  object-fit: cover;
+  background: rgb(255 255 255 / 8%);
+}
+
+.lab-ref-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.lab-hint {
+  flex: 1 1 200px;
+  color: var(--lu-text-secondary, rgb(255 255 255 / 60%));
+  font-size: 13px;
+}
+
+/* the reference picker */
+
+.lab-picker-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.lab-picker-title { margin: 0; font-size: var(--lu-type-title-3, 18px); font-weight: 600; }
+
+.lab-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.lab-picker-tile {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  overflow: hidden;
+  background: rgb(255 255 255 / 8%);
+  cursor: pointer;
+}
+
+.lab-picker-tile img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.lab-picker-more { margin-top: 12px; }
+
+/* ---- the view ---- */
+
+.lab-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 12px max(24px, env(safe-area-inset-bottom));
+}
+
+.lab-warn {
+  margin: 8px 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgb(255 190 80 / 14%);
+  font-size: 14px;
+}
+
+.lab-error { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
+.lab-empty { margin-top: 24px; text-align: center; }
+
+.lab-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr));
+  gap: 16px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.lab-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--lu-separator, rgb(255 255 255 / 14%));
+  border-radius: 16px;
+  background: var(--lu-card, rgb(255 255 255 / 5%));
+}
+
+.lab-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+
+.lab-badge {
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 12%);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.lab-badge--running { background: rgb(79 140 255 / 30%); }
+.lab-badge--done { background: rgb(60 190 120 / 28%); }
+.lab-badge--failed { background: rgb(255 90 90 / 28%); }
+.lab-badge--accepted { background: rgb(150 120 255 / 28%); }
+
+.lab-when { color: var(--lu-text-secondary, rgb(255 255 255 / 60%)); font-size: 12px; }
+
+.lab-media { min-width: 0; }
+
+.lab-single {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border-radius: 12px;
+}
+
+.lab-pending {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 12px;
+  background-color: rgb(255 255 255 / 8%);
+  background-size: cover;
+}
+
+.lab-pending .lab-single { position: absolute; inset: 0; }
+.lab-dim { opacity: 0.55; }
+
+.lab-progress {
+  position: absolute;
+  inset: auto 0 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: linear-gradient(transparent, rgb(0 0 0 / 70%));
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.lab-bar {
+  width: 100%;
+  height: 6px;
+  appearance: none;
+  border: 0;
+  border-radius: 3px;
+  overflow: hidden;
+  background: rgb(255 255 255 / 25%);
+}
+
+.lab-bar::-webkit-progress-bar { background: rgb(255 255 255 / 25%); }
+.lab-bar::-webkit-progress-value { background: var(--lu-accent, #7f8fe0); border-radius: 3px; }
+.lab-bar::-moz-progress-bar { background: var(--lu-accent, #7f8fe0); border-radius: 3px; }
+
+.lab-gone {
+  margin: 0;
+  padding: 24px 12px;
+  text-align: center;
+  color: var(--lu-text-secondary, rgb(255 255 255 / 60%));
+  background: rgb(255 255 255 / 6%);
+  border-radius: 12px;
+}
+
+.lab-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.lab-body p { margin: 0; }
+.lab-prompt-heading { color: var(--lu-text-secondary, rgb(255 255 255 / 60%)); font-size: 12px; font-weight: 600; }
+.lab-prompt-text { overflow-wrap: anywhere; line-height: 1.4; }
+.lab-note { color: var(--lu-text-secondary, rgb(255 255 255 / 60%)); font-size: 13px; }
+
+.lab-ref-line { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--lu-text-secondary, rgb(255 255 255 / 60%)); }
+.lab-ref-mini { width: 28px; height: 28px; border-radius: 6px; object-fit: cover; }
+
+.lab-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.lab-actions:empty { display: none; }
+
+/* ---- before / after ---- */
+
+.lab-compare {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 12px;
+  background: rgb(255 255 255 / 8%);
+  touch-action: pan-y;
+  cursor: ew-resize;
+  user-select: none;
+}
+
+.lab-compare-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+.lab-tag {
+  position: absolute;
+  top: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgb(0 0 0 / 55%);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+.lab-tag--before { left: 8px; }
+.lab-tag--after { right: 8px; }
+
+.lab-split-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: #fff;
+  box-shadow: 0 0 6px rgb(0 0 0 / 50%);
+  pointer-events: none;
+}
+
+.lab-split-knob {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 28px;
+  height: 28px;
+  margin: -14px 0 0 -14px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 6px rgb(0 0 0 / 50%);
+}
+
+/* the real control: invisible, but it takes the keyboard and shows a ring on the knob when focused */
+.lab-split-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: ew-resize;
+  pointer-events: none;
+}
+
+.lab-compare:has(.lab-split-input:focus-visible) .lab-split-knob { outline: 3px solid var(--lu-accent, #7f8fe0); outline-offset: 2px; }
+
+@media (max-width: 480px) {
+  .lab-list { grid-template-columns: 1fr; }
+  .lab-actions .btn { flex: 1; }
+}
+
+/* The sheet is taller than a phone: its buttons stay in view while the form scrolls. */
+.lab-form .gv-dialog-actions {
+  position: sticky;
+  bottom: -18px;
+  margin: 14px -22px -18px;
+  padding: 12px 22px 18px;
+  background: var(--lu-card, #1c1c1e);
+}
+
+.lab-actions a.btn,
+.lab-form a.btn,
+.gv-dialog-actions a.btn { text-decoration: none; }

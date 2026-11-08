@@ -1,0 +1,15 @@
+{
+  "id": 12345, "title": "Summer & sky", "type": "manga",
+  "image_urls": {"square_medium":"https://i.pximg.net/c/360x360_70/img-master/img/2026/10/01/00/00/00/12345_p0_square1200.jpg", "medium":"https://i.pximg.net/c/540x540_70/img-master/img/2026/10/01/00/00/00/12345_p0_master1200.jpg", "large":"https://i.pximg.net/img-master/img/2026/10/01/00/00/00/12345_p0_master1200.jpg"},
+  "caption":"<p>Hello &amp; welcome<br />Sky &#9733;</p>",
+  "restrict":0,"user":{"id":77,"name":"Artist","account":"artist","is_followed":false},
+  "tags":[{"name":"空","translated_name":"sky"},{"name":"R-18","translated_name":null}],
+  "tools":["CLIP STUDIO PAINT"], "create_date":"2026-10-01T00:00:00+09:00",
+  "page_count":2,"width":1200,"height":1600,"sanity_level":6,"x_restrict":1,
+  "meta_single_page":{},
+  "meta_pages":[
+    {"image_urls":{"square_medium":"https://i.pximg.net/p0_thumb.jpg","medium":"https://i.pximg.net/p0_medium.jpg","large":"https://i.pximg.net/p0_large.jpg","original":"https://i.pximg.net/img-original/12345_p0.png"}},
+    {"image_urls":{"square_medium":"https://i.pximg.net/p1_thumb.jpg","medium":"https://i.pximg.net/p1_medium.jpg","large":"https://i.pximg.net/p1_large.jpg","original":"https://i.pximg.net/img-original/12345_p1.png"}}
+  ],
+  "total_view":4567,"total_bookmarks":890,"is_bookmarked":false,"visible":true,"is_muted":false,"total_comments":2
+}

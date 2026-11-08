@@ -4,7 +4,8 @@
 //! - SPA fallback: a GET/HEAD for a missing path outside `/v1` and
 //!   `/assets/` whose last segment has no `.` gets `index.html`, so client
 //!   routes like `/agenda` work on reload. Missing files (`/assets/x.js`,
-//!   `/logo.png`) stay 404.
+//!   `/logo.png`) stay 404. `/instagram/<username>` always gets it: Instagram
+//!   names may contain dots (`/instagram/_ter.restre`).
 //! - `/assets/*` (content-hashed build output) is
 //!   `Cache-Control: public, max-age=31536000, immutable`; everything else,
 //!   `index.html` included, is `no-cache`.
@@ -32,6 +33,9 @@ fn is_api(path: &str) -> bool {
 }
 
 fn spa_route(path: &str) -> bool {
+    if path.starts_with("/instagram/") {
+        return true;
+    }
     !path.starts_with("/assets/") && !path.rsplit('/').next().unwrap_or("").contains('.')
 }
 
@@ -98,5 +102,7 @@ mod tests {
         assert!(is_api("/v1") && is_api("/v1/chat") && !is_api("/v10"));
         assert!(spa_route("/agenda") && spa_route("/reminders/r1") && spa_route("/"));
         assert!(!spa_route("/assets/app.js") && !spa_route("/favicon.ico"));
+        assert!(spa_route("/instagram/_ter.restre") && spa_route("/instagram/a.b.c"));
+        assert!(!spa_route("/instagram.js") && !spa_route("/notes/a.b"));
     }
 }

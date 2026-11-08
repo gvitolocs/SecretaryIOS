@@ -1,0 +1,464 @@
+/*
+ * The Voice device page (views/Voice.tsx, components/voice/*), on the page system (styles/page.css).
+ * Status is never colour alone: a word always goes with a dot, a badge or a signal level, and the
+ * timing bars have a legend with the stage names and milliseconds under them.
+ */
+
+.vd-page {
+  --vd-ok: color-mix(in srgb, var(--pg-success) 78%, var(--pg-text));
+  --vd-warn: color-mix(in srgb, var(--pg-warning) 78%, var(--pg-text));
+  --vd-crit: color-mix(in srgb, var(--pg-danger) 85%, var(--pg-text));
+  --vd-idle: var(--pg-muted);
+  /* The bar stages: four colours for the four stages, a neutral for the rest of the reply. */
+  --vd-stt: var(--pg-data);
+  --vd-lucina: var(--pg-accent);
+  --vd-tts: var(--vd-warn);
+  --vd-audio: var(--vd-ok);
+  --vd-rest: color-mix(in srgb, var(--pg-text) 22%, transparent);
+  --pg-muted: color-mix(in srgb, var(--text-muted) 70%, var(--pg-text));
+}
+
+/* ---------- Dot, state word, badge, signal ---------- */
+
+.vd-dot {
+  display: inline-block;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--vd-idle);
+  vertical-align: 1px;
+}
+
+.vd-dot[data-state="ok"] {
+  background: var(--vd-ok);
+}
+
+.vd-dot[data-state="idle"] {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--vd-idle);
+}
+
+.vd-state {
+  font-weight: 600;
+}
+
+.vd-state[data-state="ok"] {
+  color: var(--vd-ok);
+}
+
+.vd-state[data-state="idle"] {
+  color: var(--pg-muted);
+}
+
+.vd-since {
+  color: var(--pg-muted);
+  font-weight: 400;
+}
+
+.vd-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--pg-fill);
+  color: var(--pg-muted);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.vd-badge[data-kind="measured"],
+.vd-badge[data-kind="ok"] {
+  background: color-mix(in srgb, var(--vd-ok) 16%, transparent);
+  color: var(--vd-ok);
+}
+
+.vd-badge[data-kind="error"] {
+  background: color-mix(in srgb, var(--vd-crit) 16%, transparent);
+  color: var(--vd-crit);
+}
+
+.vd-badge[data-kind="fast"] {
+  background: color-mix(in srgb, var(--vd-audio) 18%, transparent);
+  color: var(--vd-audio);
+}
+
+.vd-intent {
+  font-size: 13px;
+  color: var(--pg-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.vd-signal[data-level="excellent"],
+.vd-signal[data-level="good"] {
+  color: var(--vd-ok);
+}
+
+.vd-signal[data-level="fair"] {
+  color: var(--vd-warn);
+}
+
+.vd-signal[data-level="weak"] {
+  color: var(--vd-crit);
+}
+
+/* ---------- Layout ---------- */
+
+.vd-grid {
+  display: grid;
+  gap: var(--pg-gap);
+  grid-template-columns: minmax(0, 1fr);
+  margin-bottom: var(--pg-gap);
+}
+
+@container pg (min-width: 880px) {
+  .vd-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.vd-note {
+  margin-top: 12px;
+  font-size: 13px;
+}
+
+.vd-banner {
+  margin: 0 0 16px;
+  padding: 10px 14px;
+  border: 1px solid var(--pg-border);
+  border-radius: var(--pg-radius-control);
+  background: var(--pg-fill);
+}
+
+.vd-banner[role="alert"] {
+  border-color: color-mix(in srgb, var(--vd-crit) 50%, var(--pg-border));
+}
+
+.vd-refresh--busy svg {
+  animation: vd-spin 1s linear infinite;
+}
+
+@keyframes vd-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vd-refresh--busy svg {
+    animation: none;
+  }
+}
+
+/* A long value wraps instead of cutting the row on a phone. */
+.vd-page .pg-stat dd {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* ---------- Last turns ---------- */
+
+.vd-turn-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.vd-turn {
+  padding: 14px 0;
+  border-top: 1px solid var(--pg-hair);
+}
+
+.vd-turn:first-child {
+  border-top: 0;
+}
+
+.vd-turn-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin-bottom: 8px;
+}
+
+.vd-turn-time {
+  font-weight: 600;
+}
+
+.vd-turn-ago {
+  flex: 1 1 auto;
+  font-size: 13px;
+}
+
+.vd-bar-wrap {
+  position: relative;
+}
+
+/* Where the filler phrase went out, from the end of speech (same scale as the bar). */
+.vd-ack-mark {
+  position: absolute;
+  top: -3px;
+  width: 2px;
+  height: 20px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--pg-text, currentColor);
+}
+
+.vd-bar {
+  display: flex;
+  width: 100%;
+  height: 14px;
+  overflow: hidden;
+  border-radius: 7px;
+  background: var(--pg-fill);
+}
+
+.vd-seg {
+  flex: none;
+  height: 100%;
+  min-width: 0;
+  box-shadow: inset -1px 0 0 var(--pg-surface-raised, transparent);
+}
+
+.vd-seg[data-stage="stt"],
+.vd-swatch[data-stage="stt"] {
+  background: var(--vd-stt);
+}
+
+.vd-seg[data-stage="lucina"],
+.vd-swatch[data-stage="lucina"] {
+  background: var(--vd-lucina);
+}
+
+.vd-seg[data-stage="tts"],
+.vd-swatch[data-stage="tts"] {
+  background: var(--vd-tts);
+}
+
+.vd-seg[data-stage="audio"],
+.vd-swatch[data-stage="audio"] {
+  background: var(--vd-audio);
+}
+
+.vd-seg[data-stage="rest"],
+.vd-swatch[data-stage="rest"] {
+  background: var(--vd-rest);
+}
+
+.vd-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+}
+
+.vd-leg {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.vd-swatch {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+}
+
+.vd-leg-name {
+  color: var(--pg-muted);
+}
+
+.vd-leg-ms {
+  font-weight: 600;
+}
+
+.vd-turn-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+  margin-top: 8px;
+  color: var(--pg-muted);
+  font-size: 13px;
+}
+
+.vd-turn-meta .vd-first,
+.vd-turn-meta .vd-total {
+  color: var(--pg-text);
+  font-weight: 600;
+}
+
+.vd-notimings {
+  font-size: 13px;
+}
+
+/* ---------- Events ---------- */
+
+.vd-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.vd-chip {
+  min-height: 36px;
+  padding: 4px 14px;
+  border: 1px solid var(--pg-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--pg-text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.vd-chip:hover {
+  background: var(--pg-fill-hover);
+}
+
+.vd-chip[aria-pressed="true"] {
+  border-color: var(--pg-data);
+  background: color-mix(in srgb, var(--pg-data) 18%, transparent);
+  color: var(--pg-data);
+  font-weight: 600;
+}
+
+.vd-event-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.vd-event {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 2px 12px;
+  padding: 8px 0;
+  border-top: 1px solid var(--pg-hair);
+  font-size: 13px;
+}
+
+.vd-event:first-child {
+  border-top: 0;
+}
+
+.vd-event-time {
+  color: var(--pg-muted);
+  white-space: nowrap;
+}
+
+.vd-kind {
+  min-width: 52px;
+  font-weight: 600;
+}
+
+.vd-kind[data-kind="error"] {
+  color: var(--vd-crit);
+}
+
+.vd-event[data-ok="false"] .vd-event-text {
+  color: var(--vd-crit);
+}
+
+.vd-event-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+@container pg (max-width: 560px) {
+  .vd-event-text {
+    grid-column: 1 / -1;
+  }
+}
+
+.vd-more {
+  display: flex;
+  justify-content: center;
+  margin-top: 12px;
+}
+
+/* ---------- Jev layer chips (device page and the Lucina Voice chat) ---------- */
+
+.vd-layers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.vd-layer {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  max-width: 100%;
+  padding: 1px 8px;
+  border: 1px solid color-mix(in srgb, var(--lu-accent) 45%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--lu-accent) 14%, transparent);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.vd-layer[data-used="false"] {
+  border-style: dashed;
+  border-color: var(--border);
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.vd-layer-name {
+  font-weight: 600;
+}
+
+.vd-layer-verdict {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vd-layer-verdict::before {
+  content: "· ";
+}
+
+.vd-stt-facts {
+  color: var(--pg-muted, var(--text-muted));
+  font-size: 12px;
+}
+
+/* ---------- The Voice Learn link in the device list header ---------- */
+
+.vd-learn-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 0 12px;
+  border-radius: var(--pg-radius-control, 10px);
+  background: var(--pg-fill, color-mix(in srgb, var(--text) 6%, transparent));
+  color: var(--pg-text, var(--text));
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.vd-learn-link:hover {
+  background: var(--pg-fill-hover, color-mix(in srgb, var(--text) 10%, transparent));
+}
+
+.vd-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}

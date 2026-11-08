@@ -646,3 +646,43 @@
 .md .md-right {
   text-align: right;
 }
+
+/* A [note:<slug>] citation in Lucina's text, and the "Open note" link under a note message. */
+.md a.md-note-link,
+.msg-note-link {
+  font-weight: 600;
+}
+
+.msg-note-link {
+  display: inline-block;
+  align-self: flex-start;
+  margin: 4px 4px 0;
+  font-size: var(--fs-sm);
+}
+
+/* ---------- Desktop page system (views/Notes.tsx) ---------- */
+
+.notes-desk .note-back {
+  display: none;
+}
+
+.notes-desk-list-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.notes-desk-group-label {
+  margin: 8px 0 0;
+  padding: 8px 24px 4px;
+  color: var(--pg-muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.pg .pg-row.notes-desk-row--active {
+  background: var(--pg-fill-hover);
+}

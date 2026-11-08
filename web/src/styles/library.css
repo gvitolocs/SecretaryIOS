@@ -1,0 +1,129 @@
+/* Library uses the same glass, typography and controls as Notes. */
+.library {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.library-inner {
+  width: 100%;
+  max-width: 900px;
+  min-width: 0;
+  margin: 0 auto;
+  padding: 14px var(--pad-right) 28px var(--pad-left);
+  overflow-wrap: anywhere;
+}
+.library-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+.library-card,
+.library-highlight {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--glass);
+}
+.library-card h2 {
+  font-size: var(--fs-md);
+  margin: 0;
+}
+.library-card p {
+  margin: 6px 0 12px;
+}
+.library-book-link {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+}
+.library-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+}
+.library-snippet {
+  display: block;
+  margin-top: 12px;
+}
+.library-section {
+  margin-top: 24px;
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+}
+.library-section h2 {
+  font-size: var(--fs-lg);
+}
+.library-section h3 {
+  font-size: var(--fs-md);
+}
+.library-section .library-highlight {
+  margin-top: 12px;
+}
+.library-text {
+  white-space: pre-wrap;
+  margin: 0 0 12px;
+}
+.library-command {
+  display: block;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: var(--fs-sm);
+  margin-top: 16px;
+}
+.library-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.library-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+}
+.library-counts dd {
+  margin: 4px 0 0;
+}
+.library-metadata {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px 16px;
+}
+.library-metadata dd {
+  margin: 0;
+}
+.library-controls label {
+  display: block;
+  margin: 12px 0 8px;
+}
+.library-controls .text-input {
+  width: 100%;
+  min-width: 0;
+}
+.library-controls .btn {
+  margin-top: 10px;
+}
+
+/* Desktop book detail follows the shared sub-page heading. */
+.pg .library-detail-title { font-size: 20px; font-weight: 600; margin-bottom: 16px; }
+.pg .library-meta { gap: 8px 16px; }
+.pg .library-command { font-size: 13px; }
+.pg .pg-row-name:has([id^="highlight-"]) { white-space: pre-wrap; }
+
+.pg .library-filter-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.pg .library-filter-row [aria-pressed="true"] { background: var(--pg-fill-hover); border-color: var(--pg-border-strong); }
+.pg .library-cover { display: grid; place-items: center; flex: none; width: 40px; height: 56px; background: var(--pg-fill); border-radius: var(--pg-radius-control); color: var(--pg-muted); }
+.pg .library-highlight-row .pg-row-sub, .pg .library-book-row .pg-row-sub { white-space: pre-wrap; }
+
+.pg.library-desk .pg-card:has(#library-status) { display: flex; flex-direction: column; gap: 12px; }
+.pg.library-desk .pg-card:has(#library-status) form { display: flex; flex-direction: column; gap: 8px; }
+
+/* Desktop: the search field reads by its placeholder; the label icon sat on a line of its own above it. */
+.pg.library-desk .pg-field > .icon {
+  display: none;
+}

@@ -1,3 +1,4 @@
+/// <reference types="node" />
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -43,6 +44,17 @@ describe("itemVisual", () => {
     expect(art({ icon: null, catalogId: "yogurt", name: "Yogurt" })).toMatch(/^yogurt/);
   });
 
+  it("draws catalog art over a stored emoji that differs, unless the owner picked it", () => {
+    // The 🍖 a row stored can differ from this client's catalog emoji (another catalog version).
+    const cat = index.byId.get("prosciutto");
+    expect(cat).toBeTruthy();
+    expect(art({ icon: "🍗", catalogId: "prosciutto", name: "Prosciutto crudo" })).toMatch(/^prosciutto/);
+    expect(art({ icon: "🍗", catalogId: "prosciutto", name: "Prosciutto crudo", iconPicked: false })).toMatch(/^prosciutto/);
+    expect(art({ icon: "🍖", catalogId: "ham", name: "Prosciutto cotto", iconPicked: false })).toMatch(/^ham/);
+    // A hand-picked emoji wins.
+    expect(art({ icon: "🐷", catalogId: "prosciutto", name: "Prosciutto crudo", iconPicked: true })).toEqual({ kind: "emoji", emoji: "🐷" });
+  });
+
   it("finds art for free text and custom items by their name", () => {
     expect(art({ icon: null, name: "Zucchine" })).toMatch(/^zucchini/);
     expect(art({ icon: "🍞", name: "Pane di segale danese", section: "bakery" })).toMatch(/^rye-bread/);
@@ -58,7 +70,9 @@ describe("itemVisual", () => {
   });
 
   it("keeps an emoji the owner picked for a catalog row", () => {
-    expect(v({ icon: "🍒", catalogId: "banana", name: "Banane" })).toEqual({ kind: "emoji", emoji: "🍒" });
+    expect(v({ icon: "🍒", catalogId: "banana", name: "Banane", iconPicked: true })).toEqual({ kind: "emoji", emoji: "🍒" });
+    // Not hand-picked (no flag from the server): the catalog art wins over the stored emoji.
+    expect(art({ icon: "🍒", catalogId: "banana", name: "Banane" })).toMatch(/^banana/);
   });
 
   it("falls back to a specific emoji, then section art, then the first letter", () => {
@@ -68,6 +82,14 @@ describe("itemVisual", () => {
     expect(art({ icon: "🛒", name: "Qualcosa", section: "pets" })).toMatch(/^pets/);
     expect(v({ icon: null, name: "qwerty", section: "other" })).toEqual({ kind: "initial", letter: "Q" });
     expect(v({ icon: "🛒", name: "ünbekannt" })).toEqual({ kind: "initial", letter: "Ü" });
+  });
+
+  it("draws the Casa list's needed rows (2026-10-28) with art", () => {
+    // As the server sends them: catalog rows with the catalog's emoji, a custom item with its own.
+    expect(art({ icon: "🥚", catalogId: "eggs", name: "Uova", section: "dairy-eggs", iconPicked: false })).toMatch(/^eggs/);
+    expect(art({ icon: "🍖", catalogId: "prosciutto", name: "Prosciutto crudo", section: "deli", iconPicked: false })).toMatch(/^prosciutto/);
+    expect(art({ icon: "🍖", catalogId: "ham", name: "Prosciutto cotto", section: "deli", iconPicked: false })).toMatch(/^ham/);
+    expect(art({ icon: "🧽", catalogId: null, name: "Lavatrici", section: "household", iconPicked: false })).toMatch(/^household/);
   });
 
   it("works before the catalog has loaded", () => {

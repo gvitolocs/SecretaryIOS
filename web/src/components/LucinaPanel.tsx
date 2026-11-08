@@ -148,6 +148,9 @@ export function LucinaPanel(props: {
       }
       stage = s;
       setStageRef(s);
+      // Keep Lucina’s original procedural stage and authentic model/poses.
+      // Restore the owner’s saved Studio choices below.
+      s.setBackground("default");
       restoreStudio(s);
       s.setMuted(muted());
       s.onStateChange((next) => setLucinaActivity(next));

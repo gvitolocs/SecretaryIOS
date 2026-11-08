@@ -1,0 +1,12 @@
+[package]
+name = "vault-oracle"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Asks a running Obsidian, over its debugging port, how it reads a vault. Output is the golden file lucina-vault is tested against."
+
+[workspace]
+
+[dependencies]
+serde_json = "1"
+tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }

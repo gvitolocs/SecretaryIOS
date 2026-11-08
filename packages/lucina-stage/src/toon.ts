@@ -677,13 +677,39 @@ export function toonHandleFor(model: Object3D): ToonHandle | undefined {
   return bindings.get(model)?.handle;
 }
 
-/** Hair's natural tint is restored on null; toon shaders need no standard-map injection. */
+/** Rec. 601 luma, as the toon shader's `lum`. */
+const luma = (c: Color): number => c.r * 0.299 + c.g * 0.587 + c.b * 0.114;
+
+/** The hue and saturation of `hue` at the luma of `like` (channels capped at 1). */
+function rehue(hue: Color, like: Color): Color {
+  const k = luma(like) / Math.max(luma(hue), 1e-4);
+  return new Color(Math.min(1, hue.r * k), Math.min(1, hue.g * k), Math.min(1, hue.b * k));
+}
+
+/**
+ * Hair's natural tint is restored on null; toon shaders need no standard-map injection. The hair's
+ * own glow (emission), angel ring and outline are blue for her natural colour: they take the new
+ * hue (the glow dimmed with a darker colour), or brown reads mauve and black reads navy.
+ */
 export function tintToonMaterial(material: Material, hex: string | null): boolean {
   const m = material as ShaderMaterial;
   const tint = m.userData.engageToon && m.uniforms.tint?.value;
   if (!(tint instanceof Color)) return false;
   const base = (m.userData.toonBaseTint ??= tint.clone()) as Color;
+  const keys = ['emission', 'ringColor', 'outlineColor'] as const;
+  const bases = (m.userData.toonBaseHairColors ??= Object.fromEntries(
+    keys.flatMap((k) => (m.uniforms[k]?.value instanceof Color ? [[k, (m.uniforms[k]!.value as Color).clone()]] : [])),
+  )) as Partial<Record<(typeof keys)[number], Color>>;
   if (hex) tint.set(hex);
   else tint.copy(base);
+  // A darker colour glows less (else black hair turns grey); a lighter one keeps the original glow.
+  const dim = Math.min(1, luma(tint) / Math.max(luma(base), 1e-4));
+  for (const k of keys) {
+    const orig = bases[k];
+    if (!orig) continue;
+    const v = m.uniforms[k]!.value as Color;
+    v.copy(hex ? rehue(tint, orig) : orig);
+    if (hex && k === 'emission') v.multiplyScalar(dim);
+  }
   return true;
 }

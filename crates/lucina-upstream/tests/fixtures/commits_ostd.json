@@ -1,0 +1,4 @@
+[
+  {"sha": "3333333ccccccccccccccccccccccccccccccccc", "commit": {"message": "fix(mm): frame leak", "committer": {"date": "2026-10-15T10:00:00Z"}}, "parents": [{"sha": "2222222bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]},
+  {"sha": "base000000000000000000000000000000000000", "commit": {"message": "the merge base", "committer": {"date": "2026-10-12T21:18:07Z"}}, "parents": [{"sha": "0000000000000000000000000000000000000000"}]}
+]

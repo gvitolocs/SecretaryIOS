@@ -1,0 +1,2863 @@
+{
+  "config": {
+    "attachmentFolderPath": "Evidence",
+    "newFileFolderPath": "Project/Events",
+    "newFileLocation": "folder"
+  },
+  "files": [
+    "00 Home.md",
+    "Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/Five.md",
+    "Alpha.md",
+    "B/C/D/Six.md",
+    "B/C/Five.md",
+    "B/C/Src2.md",
+    "B/Src.md",
+    "BOM.md",
+    "Bad yaml 2.md",
+    "Bad yaml 3.md",
+    "Bad yaml 4.md",
+    "Bad yaml 5.md",
+    "Bad yaml.md",
+    "Beta.md",
+    "CRLF.md",
+    "Café.md",
+    "Dup.md",
+    "Edge cases.md",
+    "Empty.md",
+    "Evidence/notes.txt",
+    "Evidence/pic.png",
+    "Evidence/report.pdf",
+    "Folder A/Dup.md",
+    "Folder A/Inner/Twin.md",
+    "Folder A/Twin.md",
+    "Folder B/Dup.md",
+    "Folder B/Sub/Deep.md",
+    "Folder B/Twin.md",
+    "Good yaml.md",
+    "Long folder name here/Tri.md",
+    "No close.md",
+    "Project/00 Project hub.md",
+    "Project/Events/2026-11-02 Event.md",
+    "Project/MOC/MOC map.md",
+    "Project/Permanent/A claim stated as a full sentence..md",
+    "Project/Permanent/Another claim, with a comma and (brackets).md",
+    "Project/board.canvas",
+    "Spaces  twice.md",
+    "Tables.md",
+    "Tag values.md",
+    "Templates/Day.md",
+    "Upper.MD",
+    "Y/Six.md",
+    "Zz/Tri.md",
+    "note.with.dots.md"
+  ],
+  "notes": {
+    "00 Home.md": {
+      "blocks": [
+        "local"
+      ],
+      "embeds": [
+        {
+          "dest": "Evidence/pic.png",
+          "display": "pic.png",
+          "line": 16,
+          "link": "pic.png",
+          "original": "![[pic.png]]"
+        },
+        {
+          "dest": "Evidence/pic.png",
+          "display": "200",
+          "line": 16,
+          "link": "pic.png",
+          "original": "![[pic.png|200]]"
+        },
+        {
+          "dest": "Alpha.md",
+          "display": "Alpha",
+          "line": 16,
+          "link": "Alpha",
+          "original": "![[Alpha]]"
+        },
+        {
+          "dest": "Alpha.md",
+          "display": "Alpha > Section One",
+          "line": 16,
+          "link": "Alpha#Section One",
+          "original": "![[Alpha#Section One]]"
+        },
+        {
+          "dest": "Evidence/pic.png",
+          "display": "Evidence/pic.png",
+          "line": 16,
+          "link": "Evidence/pic.png",
+          "original": "![[Evidence/pic.png]]"
+        },
+        {
+          "dest": "Evidence/pic.png",
+          "display": "img",
+          "line": 18,
+          "link": "Evidence/pic.png",
+          "original": "![img](Evidence/pic.png)"
+        }
+      ],
+      "frontmatter": {
+        "aliases": [
+          "Start",
+          "Home page"
+        ],
+        "cssclasses": "wide",
+        "related": [
+          "[[Beta]]",
+          "plain"
+        ],
+        "tags": [
+          "hub",
+          "Method/Zettel"
+        ],
+        "up": "[[Alpha]]"
+      },
+      "frontmatterLinks": [
+        {
+          "dest": "Alpha.md",
+          "key": "up",
+          "link": "Alpha",
+          "original": "[[Alpha]]"
+        },
+        {
+          "dest": "Beta.md",
+          "key": "related.0",
+          "link": "Beta",
+          "original": "[[Beta]]"
+        }
+      ],
+      "headings": [
+        {
+          "heading": "The home title",
+          "level": 1,
+          "line": 9
+        }
+      ],
+      "links": [
+        {
+          "dest": "Alpha.md",
+          "display": "Alpha",
+          "line": 11,
+          "link": "Alpha",
+          "original": "[[Alpha]]"
+        },
+        {
+          "dest": "Alpha.md",
+          "display": "alpha > Section One",
+          "line": 11,
+          "link": "alpha#Section One",
+          "original": "[[alpha#Section One]]"
+        },
+        {
+          "dest": "Alpha.md",
+          "display": "shown",
+          "line": 11,
+          "link": "Alpha",
+          "original": "[[Alpha|shown]]"
+        },
+        {
+          "dest": "Alpha.md",
+          "display": "block",
+          "line": 11,
+          "link": "Alpha#^block-1",
+          "original": "[[Alpha#^block-1|block]]"
+        },
+        {
+          "dest": null,
+          "display": "Start",
+          "line": 12,
+          "link": "Start",
+          "original": "[[Start]]"
+        },
+        {
+          "dest": null,
+          "display": "Beta Alias",
+          "line": 12,
+          "link": "Beta Alias",
+          "original": "[[Beta Alias]]"
+        },
+        {
+          "dest": null,
+          "display": "Missing note",
+          "line": 12,
+          "link": "Missing note",
+          "original": "[[Missing note]]"
+        },
+        {
+          "dest": null,
+          "display": "Missing/Deep note",
+          "line": 12,
+          "link": "Missing/Deep note",
+          "original": "[[Missing/Deep note]]"
+        },
+        {
+          "dest": "Folder A/Dup.md",
+          "display": "Folder A/Dup",
+          "line": 13,
+          "link": "Folder A/Dup",
+          "original": "[[Folder A/Dup]]"
+        },
+        {
+          "dest": "Dup.md",
+          "display": "Dup",
+          "line": 13,
+          "link": "Dup",
+          "original": "[[Dup]]"
+        },
+        {
+          "dest": "Folder B/Sub/Deep.md",
+          "display": "Folder B/Sub/Deep",
+          "line": 13,
+          "link": "Folder B/Sub/Deep",
+          "original": "[[Folder B/Sub/Deep]]"
+        },
+        {
+          "dest": "Folder B/Sub/Deep.md",
+          "display": "Sub/Deep",
+          "line": 13,
+          "link": "Sub/Deep",
+          "original": "[[Sub/Deep]]"
+        },
+        {
+          "dest": "Folder B/Sub/Deep.md",
+          "display": "Deep.md",
+          "line": 13,
+          "link": "Deep.md",
+          "original": "[[Deep.md]]"
+        },
+        {
+          "dest": "Folder B/Sub/Deep.md",
+          "display": "deep.MD",
+          "line": 13,
+          "link": "deep.MD",
+          "original": "[[deep.MD]]"
+        },
+        {
+          "dest": "Folder A/Twin.md",
+          "display": "Twin",
+          "line": 14,
+          "link": "Twin",
+          "original": "[[Twin]]"
+        },
+        {
+          "dest": "Folder A/Inner/Twin.md",
+          "display": "Inner/Twin",
+          "line": 14,
+          "link": "Inner/Twin",
+          "original": "[[Inner/Twin]]"
+        },
+        {
+          "dest": "Folder B/Twin.md",
+          "display": "Folder B/Twin",
+          "line": 14,
+          "link": "Folder B/Twin",
+          "original": "[[Folder B/Twin]]"
+        },
+        {
+          "dest": "Alpha.md",
+          "display": "../Alpha",
+          "line": 15,
+          "link": "../Alpha",
+          "original": "[[../Alpha]]"
+        },
+        {
+          "dest": "Alpha.md",
+          "display": "./Alpha",
+          "line": 15,
+          "link": "./Alpha",
+          "original": "[[./Alpha]]"
+        },
+        {
+          "dest": "Alpha.md",
+          "display": "/Alpha",
+          "line": 15,
+          "link": "/Alpha",
+          "original": "[[/Alpha]]"
+        },
+        {
+          "dest": null,
+          "display": "Folder A/",
+          "line": 15,
+          "link": "Folder A/",
+          "original": "[[Folder A/]]"
+        },
+        {
+          "dest": "Alpha.md",
+          "display": "Alpha.md",
+          "line": 15,
+          "link": "Alpha.md",
+          "original": "[[Alpha.md]]"
+        },
+        {
+          "dest": "note.with.dots.md",
+          "display": "note.with.dots",
+          "line": 15,
+          "link": "note.with.dots",
+          "original": "[[note.with.dots]]"
+        },
+        {
+          "dest": "Café.md",
+          "display": "Café",
+          "line": 15,
+          "link": "Café",
+          "original": "[[Café]]"
+        },
+        {
+          "dest": "Spaces  twice.md",
+          "display": "Spaces  twice",
+          "line": 15,
+          "link": "Spaces  twice",
+          "original": "[[Spaces  twice]]"
+        },
+        {
+          "dest": null,
+          "display": "pic",
+          "line": 16,
+          "link": "pic",
+          "original": "[[pic]]"
+        },
+        {
+          "dest": "Evidence/pic.png",
+          "display": "pic.png",
+          "line": 16,
+          "link": "pic.png",
+          "original": "[[pic.png]]"
+        },
+        {
+          "dest": "Evidence/report.pdf",
+          "display": "report.pdf > page=3",
+          "line": 16,
+          "link": "report.pdf#page=3",
+          "original": "[[report.pdf#page=3]]"
+        },
+        {
+          "dest": "00 Home.md",
+          "display": "The home title",
+          "line": 17,
+          "link": "#The home title",
+          "original": "[[#The home title]]"
+        },
+        {
+          "dest": "00 Home.md",
+          "display": "^local",
+          "line": 17,
+          "link": "#^local",
+          "original": "[[#^local]]"
+        },
+        {
+          "dest": "00 Home.md",
+          "display": "",
+          "line": 17,
+          "link": "",
+          "original": "[[ ]]"
+        },
+        {
+          "dest": null,
+          "display": "b|c",
+          "line": 17,
+          "link": "a",
+          "original": "[[a|b|c]]"
+        },
+        {
+          "dest": "Beta.md",
+          "display": "Beta",
+          "line": 17,
+          "link": "Beta",
+          "original": "[[Beta]]"
+        },
+        {
+          "dest": "Alpha.md",
+          "display": "Alpha > Section One > Sub",
+          "line": 17,
+          "link": "Alpha#Section One#Sub",
+          "original": "[[Alpha#Section One#Sub]]"
+        },
+        {
+          "dest": "Alpha.md",
+          "display": "md",
+          "line": 18,
+          "link": "Alpha.md",
+          "original": "[md](Alpha.md)"
+        },
+        {
+          "dest": "Folder A/Dup.md",
+          "display": "md2",
+          "line": 18,
+          "link": "Folder A/Dup.md",
+          "original": "[md2](Folder%20A/Dup.md)"
+        },
+        {
+          "dest": "Folder A/Dup.md",
+          "display": "md3",
+          "line": 18,
+          "link": "Folder A/Dup.md",
+          "original": "[md3](<Folder A/Dup.md>)"
+        },
+        {
+          "dest": "Alpha.md",
+          "display": "md4",
+          "line": 18,
+          "link": "Alpha",
+          "original": "[md4](Alpha)"
+        },
+        {
+          "dest": "Alpha.md",
+          "display": "md5",
+          "line": 18,
+          "link": "../Alpha.md",
+          "original": "[md5](../Alpha.md)"
+        },
+        {
+          "dest": "Beta.md",
+          "display": "md6",
+          "line": 18,
+          "link": "Beta.md#Heading",
+          "original": "[md6](Beta.md#Heading)"
+        },
+        {
+          "dest": null,
+          "display": "https://example.com",
+          "line": 18,
+          "link": "https://example.com",
+          "original": "[[https://example.com]]"
+        },
+        {
+          "dest": null,
+          "display": "Hidden",
+          "line": 20,
+          "link": "Hidden",
+          "original": "[[Hidden]]"
+        },
+        {
+          "dest": "Alpha.md",
+          "display": "tbl",
+          "line": 24,
+          "link": "Alpha",
+          "original": "[[Alpha\\|tbl]]"
+        },
+        {
+          "dest": "Beta.md",
+          "display": "Beta",
+          "line": 24,
+          "link": "Beta",
+          "original": "[[Beta]]"
+        },
+        {
+          "dest": "Beta.md",
+          "display": "Beta",
+          "line": 26,
+          "link": "Beta",
+          "original": "[[Beta]]"
+        },
+        {
+          "dest": "Alpha.md",
+          "display": "Alpha",
+          "line": 29,
+          "link": "Alpha",
+          "original": "[[Alpha]]"
+        },
+        {
+          "dest": null,
+          "display": "HiddenLine",
+          "line": 43,
+          "link": "HiddenLine",
+          "original": "[[HiddenLine]]"
+        }
+      ],
+      "listItems": [
+        {
+          "line": 26,
+          "task": " "
+        },
+        {
+          "line": 27,
+          "task": "x"
+        }
+      ],
+      "sections": [
+        {
+          "end": 8,
+          "start": 0,
+          "type": "yaml"
+        },
+        {
+          "end": 9,
+          "start": 9,
+          "type": "heading"
+        },
+        {
+          "end": 20,
+          "start": 11,
+          "type": "paragraph"
+        },
+        {
+          "end": 24,
+          "start": 22,
+          "type": "table"
+        },
+        {
+          "end": 27,
+          "start": 26,
+          "type": "list"
+        },
+        {
+          "end": 30,
+          "start": 29,
+          "type": "callout"
+        },
+        {
+          "end": 34,
+          "start": 32,
+          "type": "code"
+        },
+        {
+          "end": 38,
+          "start": 36,
+          "type": "code"
+        },
+        {
+          "end": 40,
+          "start": 40,
+          "type": "code"
+        },
+        {
+          "end": 43,
+          "start": 42,
+          "type": "paragraph"
+        },
+        {
+          "end": 47,
+          "start": 44,
+          "type": "comment"
+        }
+      ],
+      "tags": [
+        {
+          "line": 20,
+          "tag": "#hidden"
+        },
+        {
+          "line": 24,
+          "tag": "#intable"
+        },
+        {
+          "line": 27,
+          "tag": "#tasktag"
+        },
+        {
+          "line": 30,
+          "tag": "#incallout"
+        },
+        {
+          "line": 46,
+          "tag": "#tag"
+        },
+        {
+          "line": 46,
+          "tag": "#Tag/Sub"
+        },
+        {
+          "line": 46,
+          "tag": "#a1"
+        },
+        {
+          "line": 46,
+          "tag": "#-dash"
+        },
+        {
+          "line": 46,
+          "tag": "#under_score"
+        },
+        {
+          "line": 46,
+          "tag": "#comma"
+        },
+        {
+          "line": 46,
+          "tag": "#dot"
+        },
+        {
+          "line": 46,
+          "tag": "#ünï"
+        },
+        {
+          "line": 46,
+          "tag": "#tag/"
+        },
+        {
+          "line": 46,
+          "tag": "#/lead"
+        },
+        {
+          "line": 46,
+          "tag": "#a/b/c"
+        },
+        {
+          "line": 46,
+          "tag": "#emoji😀"
+        },
+        {
+          "line": 46,
+          "tag": "#q"
+        },
+        {
+          "line": 46,
+          "tag": "#end"
+        }
+      ]
+    },
+    "Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/Five.md": {
+      "blocks": [],
+      "embeds": [],
+      "frontmatter": null,
+      "frontmatterLinks": [],
+      "headings": [],
+      "links": [],
+      "listItems": [],
+      "sections": [
+        {
+          "end": 0,
+          "start": 0,
+          "type": "paragraph"
+        }
+      ],
+      "tags": []
+    },
+    "Alpha.md": {
+      "blocks": [
+        "block-1"
+      ],
+      "embeds": [],
+      "frontmatter": null,
+      "frontmatterLinks": [],
+      "headings": [
+        {
+          "heading": "Section One",
+          "level": 1,
+          "line": 2
+        },
+        {
+          "heading": "Sub",
+          "level": 2,
+          "line": 6
+        },
+        {
+          "heading": "Section One",
+          "level": 1,
+          "line": 12
+        }
+      ],
+      "links": [
+        {
+          "dest": "00 Home.md",
+          "display": "00 Home",
+          "line": 8,
+          "link": "00 Home",
+          "original": "[[00 Home]]"
+        },
+        {
+          "dest": null,
+          "display": "Home page",
+          "line": 8,
+          "link": "Home page",
+          "original": "[[Home page]]"
+        },
+        {
+          "dest": null,
+          "display": "start alias",
+          "line": 8,
+          "link": "Start",
+          "original": "[[Start|start alias]]"
+        }
+      ],
+      "listItems": [],
+      "sections": [
+        {
+          "end": 0,
+          "start": 0,
+          "type": "paragraph"
+        },
+        {
+          "end": 2,
+          "start": 2,
+          "type": "heading"
+        },
+        {
+          "end": 4,
+          "start": 4,
+          "type": "paragraph"
+        },
+        {
+          "end": 6,
+          "start": 6,
+          "type": "heading"
+        },
+        {
+          "end": 8,
+          "start": 8,
+          "type": "paragraph"
+        },
+        {
+          "end": 10,
+          "start": 10,
+          "type": "paragraph"
+        },
+        {
+          "end": 12,
+          "start": 12,
+          "type": "heading"
+        }
+      ],
+      "tags": [
+        {
+          "line": 0,
+          "tag": "#Alpha-tag"
+        }
+      ]
+    },
+    "B/C/D/Six.md": {
+      "blocks": [],
+      "embeds": [],
+      "frontmatter": null,
+      "frontmatterLinks": [],
+      "headings": [],
+      "links": [],
+      "listItems": [],
+      "sections": [
+        {
+          "end": 0,
+          "start": 0,
+          "type": "paragraph"
+        }
+      ],
+      "tags": []
+    },
+    "B/C/Five.md": {
+      "blocks": [],
+      "embeds": [],
+      "frontmatter": null,
+      "frontmatterLinks": [],
+      "headings": [],
+      "links": [],
+      "listItems": [],
+      "sections": [
+        {
+          "end": 0,
+          "start": 0,
+          "type": "paragraph"
+        }
+      ],
+      "tags": []
+    },
+    "B/C/Src2.md": {
+      "blocks": [],
+      "embeds": [],
+      "frontmatter": null,
+      "frontmatterLinks": [],
+      "headings": [],
+      "links": [
+        {
+          "dest": "B/C/D/Six.md",
+          "display": "Six",
+          "line": 0,
+          "link": "Six",
+          "original": "[[Six]]"
+        },
+        {
+          "dest": "B/C/Five.md",
+          "display": "Five",
+          "line": 0,
+          "link": "Five",
+          "original": "[[Five]]"
+        },
+        {
+          "dest": "Dup.md",
+          "display": "Dup",
+          "line": 0,
+          "link": "Dup",
+          "original": "[[Dup]]"
+        }
+      ],
+      "listItems": [],
+      "sections": [
+        {
+          "end": 0,
+          "start": 0,
+          "type": "paragraph"
+        }
+      ],
+      "tags": []
+    },
+    "B/Src.md": {
+      "blocks": [],
+      "embeds": [],
+      "frontmatter": null,
+      "frontmatterLinks": [],
+      "headings": [],
+      "links": [
+        {
+          "dest": "B/C/Five.md",
+          "display": "Five",
+          "line": 0,
+          "link": "Five",
+          "original": "[[Five]]"
+        },
+        {
+          "dest": "Zz/Tri.md",
+          "display": "Tri",
+          "line": 0,
+          "link": "Tri",
+          "original": "[[Tri]]"
+        },
+        {
+          "dest": "B/C/D/Six.md",
+          "display": "Six",
+          "line": 0,
+          "link": "Six",
+          "original": "[[Six]]"
+        },
+        {
+          "dest": "Folder A/Twin.md",
+          "display": "Twin",
+          "line": 0,
+          "link": "Twin",
+          "original": "[[Twin]]"
+        }
+      ],
+      "listItems": [],
+      "sections": [
+        {
+          "end": 0,
+          "start": 0,
+          "type": "paragraph"
+        }
+      ],
+      "tags": []
+    },
+    "BOM.md": {
+      "blocks": [],
+      "embeds": [],
+      "frontmatter": {
+        "tags": "bom"
+      },
+      "frontmatterLinks": [],
+      "headings": [],
+      "links": [],
+      "listItems": [],
+      "sections": [
+        {
+          "end": 2,
+          "start": 0,
+          "type": "yaml"
+        },
+        {
+          "end": 3,
+          "start": 3,
+          "type": "paragraph"
+        }
+      ],
+      "tags": [
+        {
+          "line": 3,
+          "tag": "#bombody"
+        }
+      ]
+    },
+    "Bad yaml 2.md": {
+      "blocks": [],
+      "embeds": [],
+      "frontmatter": null,
+      "frontmatterLinks": [],
+      "headings": [],
+      "links": [
+        {
+          "dest": "Alpha.md",
+          "display": "Alpha",
+          "line": 4,
+          "link": "Alpha",
+          "original": "[[Alpha]]"
+        }
+      ],
+      "listItems": [],
+      "sections": [
+        {
+          "end": 3,
+          "start": 0,
+          "type": "yaml"
+        },
+        {
+          "end": 4,
+          "start": 4,
+          "type": "paragraph"
+        }
+      ],
+      "tags": []
+    },
+    "Bad yaml 3.md": {
+      "blocks": [],
+      "embeds": [],
+      "frontmatter": null,
+      "frontmatterLinks": [],
+      "headings": [],
+      "links": [],
+      "listItems": [],
+      "sections": [
+        {
+          "end": 3,
+          "start": 0,
+          "type": "yaml"
+        },
+        {
+          "end": 4,
+          "start": 4,
+          "type": "paragraph"
+        }
+      ],
+      "tags": []
+    },
+    "Bad yaml 4.md": {
+      "blocks": [],
+      "embeds": [],
+      "frontmatter": null,
+      "frontmatterLinks": [],
+      "headings": [],
+      "links": [],
+      "listItems": [],
+      "sections": [
+        {
+          "end": 3,
+          "start": 0,
+          "type": "yaml"
+        },
+        {
+          "end": 4,
+          "start": 4,
+          "type": "paragraph"
+        }
+      ],
+      "tags": []
+    },
+    "Bad yaml 5.md": {
+      "blocks": [],
+      "embeds": [],
+      "frontmatter": null,
+      "frontmatterLinks": [],
+      "headings": [],
+      "links": [],
+      "listItems": [],
+      "sections": [
+        {
+          "end": 3,
+          "start": 0,
+          "type": "yaml"
+        },
+        {
+          "end": 4,
+          "start": 4,
+          "type": "paragraph"
+        }
+      ],
+      "tags": []
+    },
+    "Bad yaml.md": {
+      "blocks": [],
+      "embeds": [],
+      "frontmatter": null,
+      "frontmatterLinks": [],
+      "headings": [],
+      "links": [
+        {
+          "dest": "Alpha.md",
+          "display": "Alpha",
+          "line": 3,
+          "link": "Alpha",
+          "original": "[[Alpha]]"
+        }
+      ],
+      "listItems": [],
+      "sections": [
+        {
+          "end": 2,
+          "start": 0,
+          "type": "yaml"
+        },
+        {
+          "end": 3,
+          "start": 3,
+          "type": "paragraph"
+        }
+      ],
+      "tags": [
+        {
+          "line": 3,
+          "tag": "#afterbad"
+        }
+      ]
+    },
+    "Beta.md": {
+      "blocks": [],
+      "embeds": [],
+      "frontmatter": {
+        "aliases": [
+          "Beta Alias",
+          "beta two"
+        ],
+        "tag": "single",
+        "tags": [
+          "x",
+          "#y",
+          "Z/Nested"
+        ]
+      },
+      "frontmatterLinks": [],
+      "headings": [
+        {
+          "heading": "Heading",
+          "level": 2,
+          "line": 10
+        }
+      ],
+      "links": [
+        {
+          "dest": "Alpha.md",
+          "display": "Alpha",
+          "line": 12,
+          "link": "Alpha",
+          "original": "[[Alpha]]"
+        },
+        {
+          "dest": "Alpha.md",
+          "display": "Alpha",
+          "line": 12,
+          "link": "Alpha",
+          "original": "[[Alpha]]"
+        },
+        {
+          "dest": "Alpha.md",
+          "display": "Alpha",
+          "line": 12,
+          "link": "Alpha",
+          "original": "[[Alpha]]"
+        }
+      ],
+      "listItems": [],
+      "sections": [
+        {
+          "end": 9,
+          "start": 0,
+          "type": "yaml"
+        },
+        {
+          "end": 10,
+          "start": 10,
+          "type": "heading"
+        },
+        {
+          "end": 12,
+          "start": 12,
+          "type": "paragraph"
+        }
+      ],
+      "tags": []
+    },
+    "CRLF.md": {
+      "blocks": [],
+      "embeds": [],
+      "frontmatter": null,
+      "frontmatterLinks": [],
+      "headings": [],
+      "links": [
+        {
+          "dest": "Alpha.md",
+          "display": "Alpha",
+          "line": 2,
+          "link": "Alpha",
+          "original": "[[Alpha]]"
+        }
+      ],
+      "listItems": [],
+      "sections": [
+        {
+          "end": 0,
+          "start": 0,
+          "type": "paragraph"
+        },
+        {
+          "end": 2,
+          "start": 2,
+          "type": "paragraph"
+        }
+      ],
+      "tags": [
+        {
+          "line": 2,
+          "tag": "#crlf"
+        }
+      ]
+    },
+    "Café.md": {
+      "blocks": [],
+      "embeds": [],
+      "frontmatter": null,
+      "frontmatterLinks": [],
+      "headings": [],
+      "links": [],
+      "listItems": [],
+      "sections": [
+        {
+          "end": 0,
+          "start": 0,
+          "type": "paragraph"
+        }
+      ],
+      "tags": []
+    },
+    "Dup.md": {
+      "blocks": [],
+      "embeds": [],
+      "frontmatter": null,
+      "frontmatterLinks": [],
+      "headings": [],
+      "links": [
+        {
+          "dest": "Dup.md",
+          "display": "Dup",
+          "line": 0,
+          "link": "Dup",
+          "original": "[[Dup]]"
+        },
+        {
+          "dest": "Folder A/Twin.md",
+          "display": "Twin",
+          "line": 0,
+          "link": "Twin",
+          "original": "[[Twin]]"
+        }
+      ],
+      "listItems": [],
+      "sections": [
+        {
+          "end": 0,
+          "start": 0,
+          "type": "paragraph"
+        }
+      ],
+      "tags": []
+    },
+    "Edge cases.md": {
+      "blocks": [
+        "solo-id"
+      ],
+      "embeds": [
+        {
+          "dest": "Evidence/pic.png",
+          "display": "pic.png",
+          "line": 69,
+          "link": "pic.png",
+          "original": "![[ pic.png ]]"
+        }
+      ],
+      "frontmatter": null,
+      "frontmatterLinks": [],
+      "headings": [
+        {
+          "heading": "Heading with [[InHeading]] #inheading",
+          "level": 1,
+          "line": 26
+        },
+        {
+          "heading": "Closed heading",
+          "level": 2,
+          "line": 27
+        },
+        {
+          "heading": "Setext [[InSetext]]",
+          "level": 1,
+          "line": 28
+        }
+      ],
+      "links": [
+        {
+          "dest": null,
+          "display": "InFootnote",
+          "line": 14,
+          "link": "InFootnote",
+          "original": "[[InFootnote]]"
+        },
+        {
+          "dest": "Alpha.md",
+          "display": "#intext",
+          "line": 16,
+          "link": "Alpha.md",
+          "original": "[#intext](Alpha.md)"
+        },
+        {
+          "dest": null,
+          "display": "[Alpha",
+          "line": 16,
+          "link": "[Alpha",
+          "original": "[[[Alpha]]"
+        },
+        {
+          "dest": "Alpha.md",
+          "display": "a Beta b",
+          "line": 16,
+          "link": "Alpha.md",
+          "original": "[a [[Beta]] b](Alpha.md)"
+        },
+        {
+          "dest": "Beta.md",
+          "display": "Beta",
+          "line": 16,
+          "link": "Beta",
+          "original": "[[Beta]]"
+        },
+        {
+          "dest": "Edge cases.md",
+          "display": "y",
+          "line": 18,
+          "link": "#Heading",
+          "original": "[y](#Heading)"
+        },
+        {
+          "dest": "Alpha.md",
+          "display": "z",
+          "line": 18,
+          "link": "Alpha.md",
+          "original": "[z](Alpha.md \"A title\")"
+        },
+        {
+          "dest": "Alpha.md",
+          "display": "w",
+          "line": 18,
+          "link": "Alpha.md",
+          "original": "[w](Alpha.md 'T')"
+        },
+        {
+          "dest": "Project/Permanent/Another claim, with a comma and (brackets).md",
+          "display": "paren",
+          "line": 18,
+          "link": "Project/Permanent/Another claim, with a comma and (brackets).md",
+          "original": "[paren](Project/Permanent/Another%20claim,%20with%20a%20comma%20and%20(brackets).md)"
+        },
+        {
+          "dest": null,
+          "display": "q",
+          "line": 18,
+          "link": "Alpha.md?x=1",
+          "original": "[q](Alpha.md?x=1)"
+        },
+        {
+          "dest": "Evidence/report.pdf",
+          "display": "pdf",
+          "line": 18,
+          "link": "Evidence/report.pdf",
+          "original": "[pdf](Evidence/report.pdf)"
+        },
+        {
+          "dest": null,
+          "display": "nolink",
+          "line": 18,
+          "link": "missing.md",
+          "original": "[nolink](missing.md)"
+        },
+        {
+          "dest": null,
+          "display": "InHeading",
+          "line": 26,
+          "link": "InHeading",
+          "original": "[[InHeading]]"
+        },
+        {
+          "dest": null,
+          "display": "InSetext",
+          "line": 28,
+          "link": "InSetext",
+          "original": "[[InSetext]]"
+        },
+        {
+          "dest": null,
+          "display": "InBold",
+          "line": 30,
+          "link": "InBold",
+          "original": "[[InBold]]"
+        },
+        {
+          "dest": null,
+          "display": "InItalic",
+          "line": 30,
+          "link": "InItalic",
+          "original": "[[InItalic]]"
+        },
+        {
+          "dest": null,
+          "display": "InStrike",
+          "line": 30,
+          "link": "InStrike",
+          "original": "[[InStrike]]"
+        },
+        {
+          "dest": null,
+          "display": "InMark",
+          "line": 30,
+          "link": "InMark",
+          "original": "[[InMark]]"
+        },
+        {
+          "dest": null,
+          "display": "InQuote",
+          "line": 31,
+          "link": "InQuote",
+          "original": "[[InQuote]]"
+        },
+        {
+          "dest": null,
+          "display": "InList",
+          "line": 33,
+          "link": "InList",
+          "original": "[[InList]]"
+        },
+        {
+          "dest": null,
+          "display": "InNested",
+          "line": 34,
+          "link": "InNested",
+          "original": "[[InNested]]"
+        },
+        {
+          "dest": null,
+          "display": "InListIndent",
+          "line": 36,
+          "link": "InListIndent",
+          "original": "[[InListIndent]]"
+        },
+        {
+          "dest": null,
+          "display": "InOrdered",
+          "line": 37,
+          "link": "InOrdered",
+          "original": "[[InOrdered]]"
+        },
+        {
+          "dest": null,
+          "display": "LazyIndent",
+          "line": 40,
+          "link": "LazyIndent",
+          "original": "[[LazyIndent]]"
+        },
+        {
+          "dest": null,
+          "display": "AfterTick",
+          "line": 58,
+          "link": "AfterTick",
+          "original": "[[AfterTick]]"
+        },
+        {
+          "dest": "Alpha.md",
+          "display": "ALPHA",
+          "line": 67,
+          "link": "ALPHA",
+          "original": "[[ALPHA]]"
+        },
+        {
+          "dest": "Alpha.md",
+          "display": "alpha.MD",
+          "line": 67,
+          "link": "alpha.MD",
+          "original": "[[alpha.MD]]"
+        },
+        {
+          "dest": "Café.md",
+          "display": "Café",
+          "line": 67,
+          "link": "Café",
+          "original": "[[Café]]"
+        },
+        {
+          "dest": "Alpha.md",
+          "display": "spaced alias",
+          "line": 68,
+          "link": "Alpha",
+          "original": "[[Alpha | spaced alias]]"
+        },
+        {
+          "dest": "Alpha.md",
+          "display": "Alpha",
+          "line": 68,
+          "link": "Alpha",
+          "original": "[[ Alpha ]]"
+        },
+        {
+          "dest": null,
+          "display": "Alpha  > Section One",
+          "line": 68,
+          "link": "Alpha #Section One",
+          "original": "[[Alpha #Section One]]"
+        },
+        {
+          "dest": "Alpha.md",
+          "display": "Alpha >  Section One",
+          "line": 68,
+          "link": "Alpha# Section One",
+          "original": "[[Alpha# Section One]]"
+        },
+        {
+          "dest": "Beta.md",
+          "display": "Beta",
+          "line": 69,
+          "link": "Beta",
+          "original": "[[Beta]]"
+        },
+        {
+          "dest": "Beta.md",
+          "display": "Beta",
+          "line": 69,
+          "link": "Beta",
+          "original": "[[Beta]]"
+        },
+        {
+          "dest": "Zz/Tri.md",
+          "display": "Tri",
+          "line": 70,
+          "link": "Tri",
+          "original": "[[Tri]]"
+        },
+        {
+          "dest": "B/C/Five.md",
+          "display": "Five",
+          "line": 70,
+          "link": "Five",
+          "original": "[[Five]]"
+        },
+        {
+          "dest": "Y/Six.md",
+          "display": "Six",
+          "line": 70,
+          "link": "Six",
+          "original": "[[Six]]"
+        },
+        {
+          "dest": null,
+          "display": "InInlineNote",
+          "line": 12,
+          "link": "InInlineNote",
+          "original": "[[InInlineNote]]"
+        }
+      ],
+      "listItems": [
+        {
+          "line": 33,
+          "task": null
+        },
+        {
+          "line": 34,
+          "task": null
+        },
+        {
+          "line": 37,
+          "task": null
+        },
+        {
+          "line": 54,
+          "task": null
+        }
+      ],
+      "sections": [
+        {
+          "end": 0,
+          "start": 0,
+          "type": "paragraph"
+        },
+        {
+          "end": 4,
+          "start": 2,
+          "type": "math"
+        },
+        {
+          "end": 6,
+          "start": 6,
+          "type": "html"
+        },
+        {
+          "end": 10,
+          "start": 8,
+          "type": "html"
+        },
+        {
+          "end": 12,
+          "start": 12,
+          "type": "paragraph"
+        },
+        {
+          "end": 14,
+          "start": 14,
+          "type": "footnoteDefinition"
+        },
+        {
+          "end": 19,
+          "start": 16,
+          "type": "paragraph"
+        },
+        {
+          "end": 21,
+          "start": 21,
+          "type": "definition"
+        },
+        {
+          "end": 22,
+          "start": 22,
+          "type": "definition"
+        },
+        {
+          "end": 25,
+          "start": 24,
+          "type": "paragraph"
+        },
+        {
+          "end": 26,
+          "start": 26,
+          "type": "heading"
+        },
+        {
+          "end": 27,
+          "start": 27,
+          "type": "heading"
+        },
+        {
+          "end": 29,
+          "start": 28,
+          "type": "heading"
+        },
+        {
+          "end": 30,
+          "start": 30,
+          "type": "paragraph"
+        },
+        {
+          "end": 31,
+          "start": 31,
+          "type": "blockquote"
+        },
+        {
+          "end": 36,
+          "start": 33,
+          "type": "list"
+        },
+        {
+          "end": 37,
+          "start": 37,
+          "type": "list"
+        },
+        {
+          "end": 40,
+          "start": 39,
+          "type": "paragraph"
+        },
+        {
+          "end": 42,
+          "start": 42,
+          "type": "code"
+        },
+        {
+          "end": 48,
+          "start": 44,
+          "type": "code"
+        },
+        {
+          "end": 52,
+          "start": 50,
+          "type": "code"
+        },
+        {
+          "end": 56,
+          "start": 54,
+          "type": "list"
+        },
+        {
+          "end": 59,
+          "start": 58,
+          "type": "paragraph"
+        },
+        {
+          "end": 63,
+          "start": 63,
+          "type": "paragraph"
+        },
+        {
+          "end": 65,
+          "start": 65,
+          "type": "thematicBreak"
+        },
+        {
+          "end": 66,
+          "start": 66,
+          "type": "thematicBreak"
+        },
+        {
+          "end": 70,
+          "start": 67,
+          "type": "paragraph"
+        },
+        {
+          "end": 71,
+          "start": 71,
+          "type": "text"
+        },
+        {
+          "end": 71,
+          "start": 71,
+          "type": "element"
+        }
+      ],
+      "tags": [
+        {
+          "line": 14,
+          "tag": "#infootnote"
+        },
+        {
+          "line": 16,
+          "tag": "#intext"
+        },
+        {
+          "line": 24,
+          "tag": "#afterspace"
+        },
+        {
+          "line": 24,
+          "tag": "#bracket"
+        },
+        {
+          "line": 24,
+          "tag": "#star"
+        },
+        {
+          "line": 24,
+          "tag": "#bold"
+        },
+        {
+          "line": 24,
+          "tag": "#under"
+        },
+        {
+          "line": 24,
+          "tag": "#mark"
+        },
+        {
+          "line": 25,
+          "tag": "#1a"
+        },
+        {
+          "line": 25,
+          "tag": "#1/2"
+        },
+        {
+          "line": 25,
+          "tag": "#2026-11"
+        },
+        {
+          "line": 25,
+          "tag": "#a"
+        },
+        {
+          "line": 25,
+          "tag": "#a_b-c"
+        },
+        {
+          "line": 25,
+          "tag": "#中文"
+        },
+        {
+          "line": 25,
+          "tag": "#ÆØÅ"
+        },
+        {
+          "line": 25,
+          "tag": "#a"
+        },
+        {
+          "line": 25,
+          "tag": "#a"
+        },
+        {
+          "line": 25,
+          "tag": "#a"
+        },
+        {
+          "line": 25,
+          "tag": "#a"
+        },
+        {
+          "line": 25,
+          "tag": "#a"
+        },
+        {
+          "line": 26,
+          "tag": "#inheading"
+        },
+        {
+          "line": 40,
+          "tag": "#lazyindent"
+        }
+      ]
+    },
+    "Empty.md": {
+      "blocks": [],
+      "embeds": [],
+      "frontmatter": null,
+      "frontmatterLinks": [],
+      "headings": [],
+      "links": [],
+      "listItems": [],
+      "sections": [],
+      "tags": []
+    },
+    "Folder A/Dup.md": {
+      "blocks": [],
+      "embeds": [],
+      "frontmatter": null,
+      "frontmatterLinks": [],
+      "headings": [],
+      "links": [
+        {
+          "dest": "Dup.md",
+          "display": "Dup",
+          "line": 0,
+          "link": "Dup",
+          "original": "[[Dup]]"
+        },
+        {
+          "dest": "Folder A/Twin.md",
+          "display": "Twin",
+          "line": 0,
+          "link": "Twin",
+          "original": "[[Twin]]"
+        },
+        {
+          "dest": "Folder B/Sub/Deep.md",
+          "display": "Deep",
+          "line": 0,
+          "link": "Deep",
+          "original": "[[Deep]]"
+        }
+      ],
+      "listItems": [],
+      "sections": [
+        {
+          "end": 0,
+          "start": 0,
+          "type": "paragraph"
+        }
+      ],
+      "tags": []
+    },
+    "Folder A/Inner/Twin.md": {
+      "blocks": [],
+      "embeds": [],
+      "frontmatter": {
+        "tags": "space separated words"
+      },
+      "frontmatterLinks": [],
+      "headings": [],
+      "links": [
+        {
+          "dest": "Folder A/Inner/Twin.md",
+          "display": "Twin",
+          "line": 3,
+          "link": "Twin",
+          "original": "[[Twin]]"
+        },
+        {
+          "dest": "Folder A/Dup.md",
+          "display": "../Dup",
+          "line": 3,
+          "link": "../Dup",
+          "original": "[[../Dup]]"
+        },
+        {
+          "dest": "Folder A/Dup.md",
+          "display": "rel",
+          "line": 3,
+          "link": "../Dup.md",
+          "original": "[rel](../Dup.md)"
+        },
+        {
+          "dest": "Dup.md",
+          "display": "root",
+          "line": 3,
+          "link": "/Dup.md",
+          "original": "[root](/Dup.md)"
+        }
+      ],
+      "listItems": [],
+      "sections": [
+        {
+          "end": 2,
+          "start": 0,
+          "type": "yaml"
+        },
+        {
+          "end": 3,
+          "start": 3,
+          "type": "paragraph"
+        }
+      ],
+      "tags": []
+    },
+    "Folder A/Twin.md": {
+      "blocks": [],
+      "embeds": [],
+      "frontmatter": {
+        "tags": "a, b"
+      },
+      "frontmatterLinks": [],
+      "headings": [],
+      "links": [
+        {
+          "dest": "Folder A/Twin.md",
+          "display": "Twin",
+          "line": 3,
+          "link": "Twin",
+          "original": "[[Twin]]"
+        }
+      ],
+      "listItems": [],
+      "sections": [
+        {
+          "end": 2,
+          "start": 0,
+          "type": "yaml"
+        },
+        {
+          "end": 3,
+          "start": 3,
+          "type": "paragraph"
+        }
+      ],
+      "tags": []
+    },
+    "Folder B/Dup.md": {
+      "blocks": [],
+      "embeds": [],
+      "frontmatter": null,
+      "frontmatterLinks": [],
+      "headings": [],
+      "links": [
+        {
+          "dest": "Dup.md",
+          "display": "Dup",
+          "line": 0,
+          "link": "Dup",
+          "original": "[[Dup]]"
+        },
+        {
+          "dest": "Folder B/Twin.md",
+          "display": "Twin",
+          "line": 0,
+          "link": "Twin",
+          "original": "[[Twin]]"
+        }
+      ],
+      "listItems": [],
+      "sections": [
+        {
+          "end": 0,
+          "start": 0,
+          "type": "paragraph"
+        }
+      ],
+      "tags": []
+    },
+    "Folder B/Sub/Deep.md": {
+      "blocks": [],
+      "embeds": [
+        {
+          "dest": "Evidence/pic.png",
+          "display": "p",
+          "line": 0,
+          "link": "pic.png",
+          "original": "![p](pic.png)"
+        },
+        {
+          "dest": "Evidence/pic.png",
+          "display": "pic.png",
+          "line": 0,
+          "link": "pic.png",
+          "original": "![[pic.png]]"
+        }
+      ],
+      "frontmatter": null,
+      "frontmatterLinks": [],
+      "headings": [],
+      "links": [
+        {
+          "dest": "Dup.md",
+          "display": "Dup",
+          "line": 0,
+          "link": "Dup",
+          "original": "[[Dup]]"
+        },
+        {
+          "dest": "Folder A/Twin.md",
+          "display": "Twin",
+          "line": 0,
+          "link": "Twin",
+          "original": "[[Twin]]"
+        },
+        {
+          "dest": "Folder B/Dup.md",
+          "display": "up",
+          "line": 0,
+          "link": "../Dup.md",
+          "original": "[up](../Dup.md)"
+        },
+        {
+          "dest": "Folder B/Sub/Deep.md",
+          "display": "sib",
+          "line": 0,
+          "link": "Deep.md",
+          "original": "[sib](Deep.md)"
+        }
+      ],
+      "listItems": [],
+      "sections": [
+        {
+          "end": 0,
+          "start": 0,
+          "type": "paragraph"
+        }
+      ],
+      "tags": []
+    },
+    "Folder B/Twin.md": {
+      "blocks": [],
+      "embeds": [],
+      "frontmatter": {
+        "tag": [
+          "solo",
+          "two words"
+        ]
+      },
+      "frontmatterLinks": [],
+      "headings": [],
+      "links": [
+        {
+          "dest": "Folder B/Twin.md",
+          "display": "Twin",
+          "line": 3,
+          "link": "Twin",
+          "original": "[[Twin]]"
+        }
+      ],
+      "listItems": [],
+      "sections": [
+        {
+          "end": 2,
+          "start": 0,
+          "type": "yaml"
+        },
+        {
+          "end": 3,
+          "start": 3,
+          "type": "paragraph"
+        }
+      ],
+      "tags": []
+    },
+    "Good yaml.md": {
+      "blocks": [],
+      "embeds": [],
+      "frontmatter": {
+        "list": [
+          "[[Beta]]",
+          "plain"
+        ],
+        "long": "folded: text [here\n",
+        "nested": {
+          "a": 1,
+          "b": [
+            "x",
+            "y"
+          ]
+        },
+        "source": [
+          [
+            "Alpha"
+          ]
+        ],
+        "tags": [
+          "goodsix"
+        ],
+        "time": "12:30",
+        "url": "http://a.b/c#d"
+      },
+      "frontmatterLinks": [
+        {
+          "dest": "Beta.md",
+          "key": "list.0",
+          "link": "Beta",
+          "original": "[[Beta]]"
+        }
+      ],
+      "headings": [],
+      "links": [],
+      "listItems": [],
+      "sections": [
+        {
+          "end": 11,
+          "start": 0,
+          "type": "yaml"
+        },
+        {
+          "end": 12,
+          "start": 12,
+          "type": "paragraph"
+        }
+      ],
+      "tags": []
+    },
+    "Long folder name here/Tri.md": {
+      "blocks": [],
+      "embeds": [],
+      "frontmatter": null,
+      "frontmatterLinks": [],
+      "headings": [],
+      "links": [],
+      "listItems": [],
+      "sections": [
+        {
+          "end": 0,
+          "start": 0,
+          "type": "paragraph"
+        }
+      ],
+      "tags": []
+    },
+    "No close.md": {
+      "blocks": [],
+      "embeds": [],
+      "frontmatter": null,
+      "frontmatterLinks": [],
+      "headings": [],
+      "links": [
+        {
+          "dest": "Alpha.md",
+          "display": "Alpha",
+          "line": 1,
+          "link": "Alpha",
+          "original": "[[Alpha]]"
+        }
+      ],
+      "listItems": [],
+      "sections": [
+        {
+          "end": 0,
+          "start": 0,
+          "type": "thematicBreak"
+        },
+        {
+          "end": 1,
+          "start": 1,
+          "type": "paragraph"
+        },
+        {
+          "end": 3,
+          "start": 3,
+          "type": "paragraph"
+        }
+      ],
+      "tags": [
+        {
+          "line": 1,
+          "tag": "#tagnot"
+        },
+        {
+          "line": 3,
+          "tag": "#stillbody"
+        }
+      ]
+    },
+    "Project/00 Project hub.md": {
+      "blocks": [],
+      "embeds": [],
+      "frontmatter": {
+        "tags": [
+          "hub"
+        ]
+      },
+      "frontmatterLinks": [],
+      "headings": [
+        {
+          "heading": "Project hub",
+          "level": 1,
+          "line": 3
+        }
+      ],
+      "links": [
+        {
+          "dest": "Project/Permanent/A claim stated as a full sentence..md",
+          "display": "Project/Permanent/A claim stated as a full sentence.",
+          "line": 5,
+          "link": "Project/Permanent/A claim stated as a full sentence.",
+          "original": "[[Project/Permanent/A claim stated as a full sentence.]]"
+        },
+        {
+          "dest": "Project/MOC/MOC map.md",
+          "display": "MOC map",
+          "line": 5,
+          "link": "MOC map",
+          "original": "[[MOC map]]"
+        },
+        {
+          "dest": "Project/Events/2026-11-02 Event.md",
+          "display": "2026-11-02 Event",
+          "line": 5,
+          "link": "2026-11-02 Event",
+          "original": "[[2026-11-02 Event]]"
+        }
+      ],
+      "listItems": [],
+      "sections": [
+        {
+          "end": 2,
+          "start": 0,
+          "type": "yaml"
+        },
+        {
+          "end": 3,
+          "start": 3,
+          "type": "heading"
+        },
+        {
+          "end": 5,
+          "start": 5,
+          "type": "paragraph"
+        }
+      ],
+      "tags": []
+    },
+    "Project/Events/2026-11-02 Event.md": {
+      "blocks": [],
+      "embeds": [
+        {
+          "dest": "Evidence/pic.png",
+          "display": "pic.png",
+          "line": 3,
+          "link": "pic.png",
+          "original": "![[pic.png]]"
+        }
+      ],
+      "frontmatter": {
+        "date": "2026-11-02"
+      },
+      "frontmatterLinks": [],
+      "headings": [],
+      "links": [
+        {
+          "dest": "Project/00 Project hub.md",
+          "display": "00 Project hub",
+          "line": 3,
+          "link": "00 Project hub",
+          "original": "[[00 Project hub]]"
+        }
+      ],
+      "listItems": [],
+      "sections": [
+        {
+          "end": 2,
+          "start": 0,
+          "type": "yaml"
+        },
+        {
+          "end": 3,
+          "start": 3,
+          "type": "paragraph"
+        }
+      ],
+      "tags": []
+    },
+    "Project/MOC/MOC map.md": {
+      "blocks": [],
+      "embeds": [],
+      "frontmatter": null,
+      "frontmatterLinks": [],
+      "headings": [],
+      "links": [
+        {
+          "dest": "Project/Permanent/A claim stated as a full sentence..md",
+          "display": "A claim stated as a full sentence.",
+          "line": 0,
+          "link": "A claim stated as a full sentence.",
+          "original": "[[A claim stated as a full sentence.]]"
+        },
+        {
+          "dest": "Project/Permanent/Another claim, with a comma and (brackets).md",
+          "display": "Another claim, with a comma and (brackets)",
+          "line": 1,
+          "link": "Another claim, with a comma and (brackets)",
+          "original": "[[Another claim, with a comma and (brackets)]]"
+        }
+      ],
+      "listItems": [],
+      "sections": [
+        {
+          "end": 1,
+          "start": 0,
+          "type": "paragraph"
+        }
+      ],
+      "tags": []
+    },
+    "Project/Permanent/A claim stated as a full sentence..md": {
+      "blocks": [],
+      "embeds": [],
+      "frontmatter": null,
+      "frontmatterLinks": [],
+      "headings": [
+        {
+          "heading": "Project files",
+          "level": 2,
+          "line": 0
+        },
+        {
+          "heading": "Connects to",
+          "level": 2,
+          "line": 3
+        },
+        {
+          "heading": "Enables",
+          "level": 2,
+          "line": 6
+        },
+        {
+          "heading": "Index",
+          "level": 2,
+          "line": 9
+        }
+      ],
+      "links": [
+        {
+          "dest": "Project/Permanent/Another claim, with a comma and (brackets).md",
+          "display": "Another claim, with a comma and (brackets)",
+          "line": 4,
+          "link": "Another claim, with a comma and (brackets)",
+          "original": "[[Another claim, with a comma and (brackets)]]"
+        },
+        {
+          "dest": "Project/00 Project hub.md",
+          "display": "00 Project hub",
+          "line": 7,
+          "link": "00 Project hub",
+          "original": "[[00 Project hub]]"
+        },
+        {
+          "dest": "Project/MOC/MOC map.md",
+          "display": "MOC map",
+          "line": 10,
+          "link": "MOC map",
+          "original": "[[MOC map]]"
+        }
+      ],
+      "listItems": [
+        {
+          "line": 4,
+          "task": null
+        },
+        {
+          "line": 7,
+          "task": null
+        },
+        {
+          "line": 10,
+          "task": null
+        }
+      ],
+      "sections": [
+        {
+          "end": 0,
+          "start": 0,
+          "type": "heading"
+        },
+        {
+          "end": 1,
+          "start": 1,
+          "type": "paragraph"
+        },
+        {
+          "end": 3,
+          "start": 3,
+          "type": "heading"
+        },
+        {
+          "end": 4,
+          "start": 4,
+          "type": "list"
+        },
+        {
+          "end": 6,
+          "start": 6,
+          "type": "heading"
+        },
+        {
+          "end": 7,
+          "start": 7,
+          "type": "list"
+        },
+        {
+          "end": 9,
+          "start": 9,
+          "type": "heading"
+        },
+        {
+          "end": 10,
+          "start": 10,
+          "type": "list"
+        }
+      ],
+      "tags": []
+    },
+    "Project/Permanent/Another claim, with a comma and (brackets).md": {
+      "blocks": [],
+      "embeds": [],
+      "frontmatter": null,
+      "frontmatterLinks": [],
+      "headings": [],
+      "links": [
+        {
+          "dest": "Project/Permanent/A claim stated as a full sentence..md",
+          "display": "A claim stated as a full sentence.",
+          "line": 0,
+          "link": "A claim stated as a full sentence.",
+          "original": "[[A claim stated as a full sentence.]]"
+        }
+      ],
+      "listItems": [],
+      "sections": [
+        {
+          "end": 0,
+          "start": 0,
+          "type": "paragraph"
+        }
+      ],
+      "tags": [
+        {
+          "line": 0,
+          "tag": "#claim"
+        }
+      ]
+    },
+    "Spaces  twice.md": {
+      "blocks": [],
+      "embeds": [],
+      "frontmatter": null,
+      "frontmatterLinks": [],
+      "headings": [],
+      "links": [],
+      "listItems": [],
+      "sections": [
+        {
+          "end": 0,
+          "start": 0,
+          "type": "paragraph"
+        }
+      ],
+      "tags": []
+    },
+    "Tables.md": {
+      "blocks": [],
+      "embeds": [],
+      "frontmatter": null,
+      "frontmatterLinks": [],
+      "headings": [],
+      "links": [
+        {
+          "dest": "Beta.md",
+          "display": "fine",
+          "line": 2,
+          "link": "Beta",
+          "original": "[[Beta\\|fine]]"
+        },
+        {
+          "dest": "Alpha.md",
+          "display": "x",
+          "line": 3,
+          "link": "Alpha.md",
+          "original": "[x](Alpha.md)"
+        },
+        {
+          "dest": "Beta.md",
+          "display": "Beta",
+          "line": 4,
+          "link": "Beta",
+          "original": "[[Beta]]"
+        },
+        {
+          "dest": "Alpha.md",
+          "display": "whole",
+          "line": 10,
+          "link": "Alpha",
+          "original": "[[Alpha|whole]]"
+        }
+      ],
+      "listItems": [],
+      "sections": [
+        {
+          "end": 3,
+          "start": 0,
+          "type": "table"
+        },
+        {
+          "end": 4,
+          "start": 4,
+          "type": "paragraph"
+        },
+        {
+          "end": 8,
+          "start": 6,
+          "type": "table"
+        },
+        {
+          "end": 10,
+          "start": 10,
+          "type": "paragraph"
+        }
+      ],
+      "tags": [
+        {
+          "line": 3,
+          "tag": "#celltag"
+        }
+      ]
+    },
+    "Tag values.md": {
+      "blocks": [],
+      "embeds": [],
+      "frontmatter": {
+        "tags": [
+          2026,
+          "a.b",
+          "ok1",
+          "two words",
+          "#hash",
+          "ok/nested",
+          "ok-dash"
+        ]
+      },
+      "frontmatterLinks": [],
+      "headings": [],
+      "links": [],
+      "listItems": [],
+      "sections": [
+        {
+          "end": 2,
+          "start": 0,
+          "type": "yaml"
+        },
+        {
+          "end": 3,
+          "start": 3,
+          "type": "paragraph"
+        }
+      ],
+      "tags": []
+    },
+    "Templates/Day.md": {
+      "blocks": [],
+      "embeds": [],
+      "frontmatter": {
+        "tags": "template"
+      },
+      "frontmatterLinks": [],
+      "headings": [],
+      "links": [
+        {
+          "dest": null,
+          "display": "Should still count",
+          "line": 3,
+          "link": "Should still count",
+          "original": "[[Should still count]]"
+        }
+      ],
+      "listItems": [],
+      "sections": [
+        {
+          "end": 2,
+          "start": 0,
+          "type": "yaml"
+        },
+        {
+          "end": 3,
+          "start": 3,
+          "type": "paragraph"
+        }
+      ],
+      "tags": []
+    },
+    "Upper.MD": {
+      "blocks": [],
+      "embeds": [],
+      "frontmatter": null,
+      "frontmatterLinks": [],
+      "headings": [],
+      "links": [
+        {
+          "dest": "Alpha.md",
+          "display": "Alpha",
+          "line": 0,
+          "link": "Alpha",
+          "original": "[[Alpha]]"
+        }
+      ],
+      "listItems": [],
+      "sections": [
+        {
+          "end": 0,
+          "start": 0,
+          "type": "paragraph"
+        }
+      ],
+      "tags": []
+    },
+    "Y/Six.md": {
+      "blocks": [],
+      "embeds": [],
+      "frontmatter": null,
+      "frontmatterLinks": [],
+      "headings": [],
+      "links": [],
+      "listItems": [],
+      "sections": [
+        {
+          "end": 0,
+          "start": 0,
+          "type": "paragraph"
+        }
+      ],
+      "tags": []
+    },
+    "Zz/Tri.md": {
+      "blocks": [],
+      "embeds": [],
+      "frontmatter": null,
+      "frontmatterLinks": [],
+      "headings": [],
+      "links": [],
+      "listItems": [],
+      "sections": [
+        {
+          "end": 0,
+          "start": 0,
+          "type": "paragraph"
+        }
+      ],
+      "tags": []
+    },
+    "note.with.dots.md": {
+      "blocks": [],
+      "embeds": [],
+      "frontmatter": null,
+      "frontmatterLinks": [],
+      "headings": [],
+      "links": [
+        {
+          "dest": "Alpha.md",
+          "display": "Alpha",
+          "line": 0,
+          "link": "Alpha",
+          "original": "[[Alpha]]"
+        }
+      ],
+      "listItems": [],
+      "sections": [
+        {
+          "end": 0,
+          "start": 0,
+          "type": "paragraph"
+        }
+      ],
+      "tags": []
+    }
+  },
+  "obsidian": "1.15.0",
+  "resolved": {
+    "00 Home.md": {
+      "00 Home.md": 3,
+      "Alpha.md": 17,
+      "Beta.md": 5,
+      "Café.md": 1,
+      "Dup.md": 1,
+      "Evidence/pic.png": 5,
+      "Evidence/report.pdf": 1,
+      "Folder A/Dup.md": 3,
+      "Folder A/Inner/Twin.md": 1,
+      "Folder A/Twin.md": 1,
+      "Folder B/Sub/Deep.md": 4,
+      "Folder B/Twin.md": 1,
+      "Spaces  twice.md": 1,
+      "note.with.dots.md": 1
+    },
+    "Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/Five.md": {},
+    "Alpha.md": {
+      "00 Home.md": 1
+    },
+    "B/C/D/Six.md": {},
+    "B/C/Five.md": {},
+    "B/C/Src2.md": {
+      "B/C/D/Six.md": 1,
+      "B/C/Five.md": 1,
+      "Dup.md": 1
+    },
+    "B/Src.md": {
+      "B/C/D/Six.md": 1,
+      "B/C/Five.md": 1,
+      "Folder A/Twin.md": 1,
+      "Zz/Tri.md": 1
+    },
+    "BOM.md": {},
+    "Bad yaml 2.md": {
+      "Alpha.md": 1
+    },
+    "Bad yaml 3.md": {},
+    "Bad yaml 4.md": {},
+    "Bad yaml 5.md": {},
+    "Bad yaml.md": {
+      "Alpha.md": 1
+    },
+    "Beta.md": {
+      "Alpha.md": 3
+    },
+    "CRLF.md": {
+      "Alpha.md": 1
+    },
+    "Café.md": {},
+    "Dup.md": {
+      "Dup.md": 1,
+      "Folder A/Twin.md": 1
+    },
+    "Edge cases.md": {
+      "Alpha.md": 9,
+      "B/C/Five.md": 1,
+      "Beta.md": 3,
+      "Café.md": 1,
+      "Edge cases.md": 1,
+      "Evidence/pic.png": 1,
+      "Evidence/report.pdf": 1,
+      "Project/Permanent/Another claim, with a comma and (brackets).md": 1,
+      "Y/Six.md": 1,
+      "Zz/Tri.md": 1
+    },
+    "Empty.md": {},
+    "Folder A/Dup.md": {
+      "Dup.md": 1,
+      "Folder A/Twin.md": 1,
+      "Folder B/Sub/Deep.md": 1
+    },
+    "Folder A/Inner/Twin.md": {
+      "Dup.md": 1,
+      "Folder A/Dup.md": 2,
+      "Folder A/Inner/Twin.md": 1
+    },
+    "Folder A/Twin.md": {
+      "Folder A/Twin.md": 1
+    },
+    "Folder B/Dup.md": {
+      "Dup.md": 1,
+      "Folder B/Twin.md": 1
+    },
+    "Folder B/Sub/Deep.md": {
+      "Dup.md": 1,
+      "Evidence/pic.png": 2,
+      "Folder A/Twin.md": 1,
+      "Folder B/Dup.md": 1,
+      "Folder B/Sub/Deep.md": 1
+    },
+    "Folder B/Twin.md": {
+      "Folder B/Twin.md": 1
+    },
+    "Good yaml.md": {
+      "Beta.md": 1
+    },
+    "Long folder name here/Tri.md": {},
+    "No close.md": {
+      "Alpha.md": 1
+    },
+    "Project/00 Project hub.md": {
+      "Project/Events/2026-11-02 Event.md": 1,
+      "Project/MOC/MOC map.md": 1,
+      "Project/Permanent/A claim stated as a full sentence..md": 1
+    },
+    "Project/Events/2026-11-02 Event.md": {
+      "Evidence/pic.png": 1,
+      "Project/00 Project hub.md": 1
+    },
+    "Project/MOC/MOC map.md": {
+      "Project/Permanent/A claim stated as a full sentence..md": 1,
+      "Project/Permanent/Another claim, with a comma and (brackets).md": 1
+    },
+    "Project/Permanent/A claim stated as a full sentence..md": {
+      "Project/00 Project hub.md": 1,
+      "Project/MOC/MOC map.md": 1,
+      "Project/Permanent/Another claim, with a comma and (brackets).md": 1
+    },
+    "Project/Permanent/Another claim, with a comma and (brackets).md": {
+      "Project/Permanent/A claim stated as a full sentence..md": 1
+    },
+    "Spaces  twice.md": {},
+    "Tables.md": {
+      "Alpha.md": 2,
+      "Beta.md": 2
+    },
+    "Tag values.md": {},
+    "Templates/Day.md": {},
+    "Upper.MD": {
+      "Alpha.md": 1
+    },
+    "Y/Six.md": {},
+    "Zz/Tri.md": {},
+    "note.with.dots.md": {
+      "Alpha.md": 1
+    }
+  },
+  "tags": {
+    "#-dash": 1,
+    "#/lead": 1,
+    "#1/2": 1,
+    "#1a": 1,
+    "#2026-11": 1,
+    "#Alpha-tag": 1,
+    "#Method": 1,
+    "#Method/Zettel": 1,
+    "#Tag/Sub": 1,
+    "#Z": 1,
+    "#Z/Nested": 1,
+    "#a": 7,
+    "#a/b": 1,
+    "#a/b/c": 1,
+    "#a1": 1,
+    "#a_b-c": 1,
+    "#afterbad": 1,
+    "#afterspace": 1,
+    "#bold": 1,
+    "#bom": 1,
+    "#bombody": 1,
+    "#bracket": 1,
+    "#celltag": 1,
+    "#claim": 1,
+    "#comma": 1,
+    "#crlf": 1,
+    "#dot": 1,
+    "#emoji😀": 1,
+    "#end": 1,
+    "#goodsix": 1,
+    "#hash": 1,
+    "#hidden": 1,
+    "#hub": 2,
+    "#incallout": 1,
+    "#infootnote": 1,
+    "#inheading": 1,
+    "#intable": 1,
+    "#intext": 1,
+    "#lazyindent": 1,
+    "#mark": 1,
+    "#ok": 1,
+    "#ok-dash": 1,
+    "#ok/nested": 1,
+    "#ok1": 1,
+    "#q": 1,
+    "#star": 1,
+    "#stillbody": 1,
+    "#tag": 3,
+    "#tagnot": 1,
+    "#tasktag": 1,
+    "#template": 1,
+    "#under": 1,
+    "#under_score": 1,
+    "#x": 1,
+    "#y": 1,
+    "#ÆØÅ": 1,
+    "#ünï": 1,
+    "#中文": 1
+  },
+  "unresolved": {
+    "00 Home.md": {
+      "Beta Alias": 1,
+      "Folder A/": 1,
+      "Hidden": 1,
+      "HiddenLine": 1,
+      "Missing note": 1,
+      "Missing/Deep note": 1,
+      "Start": 1,
+      "a": 1,
+      "https://example.com": 1,
+      "pic": 1
+    },
+    "Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/Five.md": {},
+    "Alpha.md": {
+      "Home page": 1,
+      "Start": 1
+    },
+    "B/C/D/Six.md": {},
+    "B/C/Five.md": {},
+    "B/C/Src2.md": {},
+    "B/Src.md": {},
+    "BOM.md": {},
+    "Bad yaml 2.md": {},
+    "Bad yaml 3.md": {},
+    "Bad yaml 4.md": {},
+    "Bad yaml 5.md": {},
+    "Bad yaml.md": {},
+    "Beta.md": {},
+    "CRLF.md": {},
+    "Café.md": {},
+    "Dup.md": {},
+    "Edge cases.md": {
+      "AfterTick": 1,
+      "Alpha ": 1,
+      "Alpha.md?x=1": 1,
+      "InBold": 1,
+      "InFootnote": 1,
+      "InHeading": 1,
+      "InInlineNote": 1,
+      "InItalic": 1,
+      "InList": 1,
+      "InListIndent": 1,
+      "InMark": 1,
+      "InNested": 1,
+      "InOrdered": 1,
+      "InQuote": 1,
+      "InSetext": 1,
+      "InStrike": 1,
+      "LazyIndent": 1,
+      "[Alpha": 1,
+      "missing": 1
+    },
+    "Empty.md": {},
+    "Folder A/Dup.md": {},
+    "Folder A/Inner/Twin.md": {},
+    "Folder A/Twin.md": {},
+    "Folder B/Dup.md": {},
+    "Folder B/Sub/Deep.md": {},
+    "Folder B/Twin.md": {},
+    "Good yaml.md": {},
+    "Long folder name here/Tri.md": {},
+    "No close.md": {},
+    "Project/00 Project hub.md": {},
+    "Project/Events/2026-11-02 Event.md": {},
+    "Project/MOC/MOC map.md": {},
+    "Project/Permanent/A claim stated as a full sentence..md": {},
+    "Project/Permanent/Another claim, with a comma and (brackets).md": {},
+    "Spaces  twice.md": {},
+    "Tables.md": {},
+    "Tag values.md": {},
+    "Templates/Day.md": {
+      "Should still count": 1
+    },
+    "Upper.MD": {},
+    "Y/Six.md": {},
+    "Zz/Tri.md": {},
+    "note.with.dots.md": {}
+  }
+}

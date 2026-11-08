@@ -70,6 +70,8 @@ export interface VisualRow {
   name: string;
   /** The row's own section (a custom item's, or a section override). */
   section?: string | null | undefined;
+  /** `icon` was hand-picked by the owner (server `iconPicked`); only then does it beat the catalog art. */
+  iconPicked?: boolean | undefined;
 }
 
 function initialOf(name: string): string {
@@ -80,7 +82,8 @@ function initialOf(name: string): string {
  * The picture of a row, most specific first, so a list never mixes illustrations with stray
  * platform emoji when art exists:
  * 1. an explicit `svg:<key>` icon;
- * 2. the art of its catalog item, unless the owner gave the row an emoji of its own;
+ * 2. the art of its catalog item, unless the owner hand-picked the row's emoji (`iconPicked`):
+ *    a catalog-bound row's stored emoji is the catalog's, possibly from another catalog version;
  * 3. no catalog id (free text, a custom object): the art of the catalog item its name names
  *    (guessByName), when that item belongs to the row's section, if the row has one;
  * 4. a specific emoji of the row (not the cart and not just its section's emoji);
@@ -95,7 +98,7 @@ export function itemVisual(row: VisualRow, index: SearchIndex | null, sections: 
   if (row.catalogId) {
     item = index?.byId.get(row.catalogId) ?? null;
     const url = ITEM_ART.get(row.catalogId);
-    if (url && (!icon || !item || icon === item.icon)) return { kind: "art", url };
+    if (url && !(row.iconPicked === true && icon && icon !== item?.icon)) return { kind: "art", url };
   } else if (index) {
     const guess = guessByName(index, row.name);
     const fits = !row.section || row.section === OTHER_SECTION || !guess?.section || guess.section === row.section;

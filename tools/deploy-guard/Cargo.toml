@@ -1,0 +1,9 @@
+[package]
+name = "deploy-guard"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Refuses a deploy that would roll production back (docs/verification.md, protocol 7)."
+
+# Standalone: not a member of the Rust workspace, so it builds without the workspace's deps.
+[workspace]

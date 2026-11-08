@@ -48,12 +48,6 @@ samp {
   font-family: var(--lu-font-mono);
 }
 
-/* Cards: flat dark grey, no borders or glass. */
-.glass {
-  border-color: transparent;
-  box-shadow: none;
-}
-
 /* The floating tab bar: a glass capsule, the active tab in the accent on a soft pill. */
 .tabbar {
   border-radius: var(--lu-radius-pill);
@@ -100,12 +94,12 @@ samp {
   }
 }
 
-/* ---------- Shopping: accent tiles to buy, card tiles for the rest (as on iOS) ---------- */
+/* ---------- Shopping: accent tiles to buy, muted cards for the rest ---------- */
 
 :root .bring {
   --b-red: var(--lu-accent-fill);
-  --b-red-hi: var(--lu-accent-fill);
-  --b-red-lo: var(--lu-accent-fill);
+  --b-red-hi: color-mix(in srgb, var(--lu-accent) 78%, var(--lu-accent-fill));
+  --b-red-lo: color-mix(in srgb, var(--lu-accent-fill) 82%, #000000);
   --b-teal: var(--lu-accent);
   --b-teal-hi: var(--lu-accent);
   --b-teal-lo: var(--lu-accent);
@@ -114,37 +108,20 @@ samp {
   --b-slate-lo: var(--lu-card-raised);
   --b-green-700: var(--lu-accent);
   --b-red-600: var(--lu-negative);
-  --b-section: var(--lu-card);
+  --b-section: var(--lu-card-raised);
+  --b-recent: var(--lu-card);
   --b-action: var(--lu-card);
   --b-field: var(--lu-card);
   --b-sheet: var(--lu-bg);
   --b-popup: var(--lu-card-raised);
   --b-snackbar: var(--lu-card-raised);
+  --b-text-2: var(--lu-text-secondary);
+  --b-hint: var(--lu-text-tertiary);
   --b-gap: 4px;
-}
-
-:root .bring .tile-main {
-  --b-tile-text: var(--lu-text);
-  border-radius: var(--lu-radius-tile);
-  background: var(--lu-card);
-  box-shadow: none;
-  text-shadow: none;
-  color: var(--lu-text);
 }
 
 :root .bring .tile--need .tile-main {
   --b-tile-text: var(--lu-on-accent);
-  background: var(--lu-accent-fill);
-  color: var(--lu-on-accent);
-}
-
-:root .bring .tile--custom .tile-main {
-  background: var(--lu-card-raised);
-}
-
-:root .bring .tile--need .tile-main::before,
-:root .bring .bring-appbar::before {
-  display: none;
 }
 
 :root .bring .bring-chip--on {
@@ -224,6 +201,16 @@ samp {
   outline-offset: 2px;
 }
 
+.plugins-adult {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 20px;
+  font-size: 14px;
+  color: var(--lu-text-secondary, var(--lu-text));
+}
+
+
 .plugin-icon {
   display: grid;
   place-items: center;
@@ -251,9 +238,52 @@ samp {
   flex-direction: column;
 }
 
+/* On /weight the weight view scrolls itself (styles.css .weight); on /training it is one block of a longer page
+   that scrolls as a whole, so it takes its full height instead of a clipped scroll box of its own. */
+.training-page > .weight {
+  flex: none;
+  min-height: auto;
+  overflow: visible;
+}
+
 .weight-all-link {
   align-self: flex-start;
   color: var(--lu-accent);
   font-weight: 600;
   text-decoration: none;
 }
+
+/* A count on a plugin card (Instagram: new stories and posts of watched accounts). */
+.plugin-card { position: relative; }
+.plugin-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  box-sizing: border-box;
+  border-radius: 999px;
+  background: #ff3b30;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 20px;
+  text-align: center;
+}
+
+/* Desktop Plugins: page-system surfaces; phone tiles above stay unchanged. */
+.pg .plugins-desk-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px; }
+.pg .plugins-desk-tile { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 12px; color: var(--pg-text); font: inherit; text-align: left; cursor: pointer; }
+.pg .plugins-desk-tile:hover { background: var(--pg-fill-hover); }
+.pg .plugins-desk-tile:focus-visible { outline: 2px solid var(--pg-data); outline-offset: 4px; }
+.pg .plugins-desk-tile .plugin-icon { background: var(--pg-fill); color: var(--pg-data); border-radius: var(--pg-radius-control); }
+.pg .plugins-desk-tile .plugin-title { font-size: 15px; font-weight: 600; }
+.pg .plugins-desk-tile .plugin-detail { font-size: 13px; color: var(--pg-muted); }
+.pg .plugins-desk-tile .plugin-badge { background: var(--pg-danger); color: var(--pg-text); font-size: 12px; font-weight: 600; }
+.pg .plugins-desk-adult { display: flex; align-items: center; gap: 8px; color: var(--pg-muted); font-size: 13px; }
+
+/* Device visibility and the account's plugin options share one quiet settings row. */
+.plugins-adult-settings { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-top: 20px; }
+.plugins-adult-settings .plugins-adult { margin-top: 0; }
+.pg .plugins-adult-settings { margin-top: 0; }

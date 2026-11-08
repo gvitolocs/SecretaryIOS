@@ -1,5 +1,6 @@
 //! Command line: `serve` (default), `token issue|list|revoke` and
-//! `user set|show`, `service-token generate` and `notes import|list`.
+//! `user set|show`, `service-token generate` and
+//! `notes import|import-keep|list`.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -45,6 +46,13 @@ pub enum Command {
         #[command(subcommand)]
         action: ServiceTokenAction,
     },
+    /// Print the public key of the "Add secret" grant key (made on first use)
+    /// for the broker's `[owner_grants] public_key`.
+    SecretGrantKey {
+        /// Overrides SECRETARY_DATA_DIR.
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+    },
     /// Notes in $SECRETARY_DATA_DIR/notes (import seed files, list).
     Notes {
         /// Overrides SECRETARY_DATA_DIR.
@@ -69,6 +77,22 @@ pub enum NotesAction {
     },
     /// List notes (slug, size, source, title); never prints content.
     List,
+    /// Import Google Takeout Keep zips (all parts: `takeout-…-001.zip`, …).
+    /// Idempotent: a re-import skips what is there, updates notes not edited
+    /// here, and never brings back what was deleted here.
+    ImportKeep {
+        #[arg(required = true)]
+        zips: Vec<PathBuf>,
+        /// Count what would happen; write nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Print the report as JSON.
+        #[arg(long)]
+        json: bool,
+        /// Add this label to every imported note (e.g. the source account).
+        #[arg(long)]
+        label: Option<String>,
+    },
 }
 
 fn seed_files(paths: &[PathBuf]) -> anyhow::Result<Vec<PathBuf>> {
@@ -117,6 +141,26 @@ pub fn run_notes(
                     }
                     None => writeln!(out, "kept {slug} (exists; --replace to overwrite)")?,
                 }
+            }
+        }
+        NotesAction::ImportKeep {
+            zips,
+            dry_run,
+            json,
+            label,
+        } => {
+            let report = crate::keep_import::import_takeout_labelled(
+                &store,
+                &zips,
+                dry_run,
+                crate::notes::Caller("owner"),
+                label.as_deref(),
+            )
+            .map_err(|e| anyhow::anyhow!(e))?;
+            if json {
+                writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
+            } else {
+                write!(out, "{}", report.render_text())?;
             }
         }
         NotesAction::List => {
@@ -328,6 +372,11 @@ pub fn main_with(cli: Cli) -> anyhow::Result<()> {
         }
         Command::Notes { data_dir, action } => {
             run_notes(data_dir, action, &mut std::io::stdout().lock())
+        }
+        Command::SecretGrantKey { data_dir: d } => {
+            let key = crate::owner_secrets::GrantSigner::new(&data_dir(d)).public_key()?;
+            writeln!(std::io::stdout().lock(), "{key}")?;
+            Ok(())
         }
     }
 }

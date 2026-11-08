@@ -4,6 +4,7 @@ import { MEASUREMENT_KINDS, type ExerciseKind, type GymMeasurementKind, type Gym
 import { formatDate, formatDistance, formatDuration } from "../../lib/units";
 import { runGym } from "../../state/gym";
 import { BarChart } from "./BarChart";
+import { ProgressDesk } from "./DeskViews";
 import { ArrowUpRightIcon, PlusCircleIcon, TrophyIcon } from "./icons";
 import { ConfirmButton, EmptyCard, exerciseById, Eyebrow, GymPage, Metric } from "./shared";
 import { gt } from "./strings";
@@ -252,6 +253,15 @@ function ProgressBody(props: { view: GymView }) {
   );
 }
 
+/** On a desktop-wide page: DeskViews.tsx `ProgressDesk`, under the Gym header row. */
 export default function ProgressView() {
-  return <GymPage>{(view) => <ProgressBody view={view()} />}</GymPage>;
+  return (
+    <GymPage>
+      {(view, wide) => (
+        <Show when={wide()} fallback={<ProgressBody view={view()} />}>
+          <ProgressDesk view={view()} />
+        </Show>
+      )}
+    </GymPage>
+  );
 }

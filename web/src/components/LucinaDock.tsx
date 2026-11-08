@@ -3,6 +3,7 @@ import { createEffect, createMemo, createSignal, on, onCleanup, Show } from "sol
 import { t } from "../i18n";
 import { createMediaQuery, WIDE_QUERY } from "../lib/media";
 import { onLucinaReply, sending, sendMessage } from "../state/chat";
+import { embedded } from "../lib/desktopShell";
 import { setStageHidden, stageHidden } from "../state/stage";
 import { wardrobeOpen } from "../state/wardrobe";
 import { LucinaPanel } from "./LucinaPanel";
@@ -37,6 +38,18 @@ export function LucinaDock() {
   const navigate = useNavigate();
   const wide = createMediaQuery(WIDE_QUERY);
   const onChat = createMemo(() => location.pathname === "/");
+  // Inside Secretary Code she is on stage only in the chat (and All chats); plugin pages get the whole window.
+  // Hidden, not unmounted: the stage and its WebGL context survive, like the float layout.
+  const inShell = embedded();
+  // Keep (/keep) is a full-width page everywhere: its grid wants the whole window, like Google Keep.
+  // Agents (/agents) is a list beside a chat, diffs and terminals: it wants the width too.
+  const offstage = createMemo(
+    () =>
+      !wardrobeOpen() &&
+      (location.pathname === "/keep" || location.pathname.startsWith("/keep/") ||
+        location.pathname === "/agents" || location.pathname.startsWith("/agents/") ||
+        (inShell && location.pathname !== "/" && !location.pathname.startsWith("/chats"))),
+  );
   const layout = createMemo<DockLayout>(() => (wide() ? "side" : onChat() ? "strip" : "float"));
   const [expanded, setExpanded] = createSignal(false);
   const [bubble, setBubble] = createSignal<string | null>(null);
@@ -53,7 +66,7 @@ export function LucinaDock() {
   // Away from Chat, her reply appears next to her (it is in the timeline too).
   onCleanup(
     onLucinaReply((text) => {
-      if (onChat() || stageHidden()) return;
+      if (onChat() || stageHidden() || offstage()) return;
       clearTimeout(bubbleTimer);
       setBubble(clip(text));
       bubbleTimer = setTimeout(() => setBubble(null), bubbleDuration(text));
@@ -85,7 +98,9 @@ export function LucinaDock() {
           "dock--float": layout() === "float",
           "dock--open": layout() === "float" && expanded(),
           "dock--wardrobe": wardrobeOpen(),
+          "dock--offstage": offstage(),
         }}
+        hidden={offstage()}
         data-layout={layout()}
         aria-label={t("shell.lucina")}
       >

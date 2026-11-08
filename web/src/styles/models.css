@@ -104,6 +104,14 @@
   max-width: 960px;
   margin: 0 auto;
 }
+.models--wide {
+  max-width: none;
+  padding: 0;
+  margin: 0;
+}
+.pg.models-desk .models-desk-surface {
+  padding: var(--pg-pad, 24px);
+}
 .models-grid {
   list-style: none;
   padding: 0;

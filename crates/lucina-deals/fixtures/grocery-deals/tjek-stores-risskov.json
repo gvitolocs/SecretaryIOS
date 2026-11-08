@@ -1,0 +1,1154 @@
+[
+  {
+    "id": "6fq9Sthn",
+    "dealer_id": "lyaY84",
+    "branding": {
+      "name": "OK"
+    },
+    "dealer": {
+      "name": "OK"
+    },
+    "street": "Skejbygårdsvej 45",
+    "city": "Aarhus N",
+    "zip_code": "8200",
+    "latitude": 56.194731,
+    "longitude": 10.195133,
+    "distance": null
+  },
+  {
+    "id": "4FwHEJQZ",
+    "dealer_id": "88ddE",
+    "branding": {
+      "name": "SPAR"
+    },
+    "dealer": {
+      "name": "SPAR"
+    },
+    "street": "Kamma Klitgårds Gade 47",
+    "city": "Risskov",
+    "zip_code": "8240",
+    "latitude": 56.19566,
+    "longitude": 10.2077,
+    "distance": null
+  },
+  {
+    "id": "cf5cw5y",
+    "dealer_id": "a5aaT",
+    "branding": {
+      "name": "Matas"
+    },
+    "dealer": {
+      "name": "Matas"
+    },
+    "street": "Skelagervej 5-11",
+    "city": "Aarhus N",
+    "zip_code": "8200",
+    "latitude": 56.19403139137677,
+    "longitude": 10.193715022615038,
+    "distance": null
+  },
+  {
+    "id": "bff6Vum",
+    "dealer_id": "bdf5A",
+    "branding": {
+      "name": "føtex"
+    },
+    "dealer": {
+      "name": "føtex"
+    },
+    "street": "Skelagervej 1-9",
+    "city": "Århus N",
+    "zip_code": "8200",
+    "latitude": 56.193657,
+    "longitude": 10.193406,
+    "distance": null
+  },
+  {
+    "id": "kHgM0F5M5TnFl3IGZIt29",
+    "dealer_id": "11deC",
+    "branding": {
+      "name": "REMA 1000"
+    },
+    "dealer": {
+      "name": "REMA 1000"
+    },
+    "street": "Smedegade 12",
+    "city": "Risskov",
+    "zip_code": "8240",
+    "latitude": 56.195805,
+    "longitude": 10.216423,
+    "distance": null
+  },
+  {
+    "id": "OPw4L2xW7ZDoaYWDEgcYk",
+    "dealer_id": "3d667",
+    "branding": {
+      "name": "STARK"
+    },
+    "dealer": {
+      "name": "STARK"
+    },
+    "street": "P. O. Pedersens Vej 5",
+    "city": "Aarhus N",
+    "zip_code": "8200",
+    "latitude": 56.20242529999999,
+    "longitude": 10.1884021,
+    "distance": null
+  },
+  {
+    "id": "6ilVaInUVfk-dD28vm8JL",
+    "dealer_id": "88ddE",
+    "branding": {
+      "name": "SPAR"
+    },
+    "dealer": {
+      "name": "SPAR"
+    },
+    "street": "Tornebakken 1",
+    "city": "Risskov",
+    "zip_code": "8240",
+    "latitude": 56.20308,
+    "longitude": 10.212512,
+    "distance": null
+  },
+  {
+    "id": "b787pmJ",
+    "dealer_id": "155btg",
+    "branding": {
+      "name": "KONTUR"
+    },
+    "dealer": {
+      "name": "KONTUR"
+    },
+    "street": "Frijsenborgvej 5",
+    "city": "Risskov",
+    "zip_code": "8240",
+    "latitude": 56.18974,
+    "longitude": 10.21496,
+    "distance": null
+  },
+  {
+    "id": "UBcP3aLu",
+    "dealer_id": "pZEC1r",
+    "branding": {
+      "name": "Normal"
+    },
+    "dealer": {
+      "name": "Normal"
+    },
+    "street": "Frijsenborgvej 5",
+    "city": "Risskov",
+    "zip_code": "8240",
+    "latitude": 56.189252,
+    "longitude": 10.21473,
+    "distance": null
+  },
+  {
+    "id": "bcecnZL",
+    "dealer_id": "a5aaT",
+    "branding": {
+      "name": "Matas"
+    },
+    "dealer": {
+      "name": "Matas"
+    },
+    "street": "Veri Center, Frijsenborgvej 5",
+    "city": "Risskov",
+    "zip_code": "8240",
+    "latitude": 56.18930022211555,
+    "longitude": 10.215036212303175,
+    "distance": null
+  },
+  {
+    "id": "yvnLw8qlRLuTVbrfhyKIo",
+    "dealer_id": "LwUwz2",
+    "branding": {
+      "name": "Scrouples"
+    },
+    "dealer": {
+      "name": "Scrouples"
+    },
+    "street": "Frijsenborgvej 5",
+    "city": "Risskov",
+    "zip_code": "8240",
+    "latitude": 56.189145,
+    "longitude": 10.214827,
+    "distance": null
+  },
+  {
+    "id": "8a18mgu",
+    "dealer_id": "c1edq",
+    "branding": {
+      "name": "Kvickly"
+    },
+    "dealer": {
+      "name": "Kvickly"
+    },
+    "street": "Frijsenborgvej 5",
+    "city": "Risskov",
+    "zip_code": "8240",
+    "latitude": 56.1891441,
+    "longitude": 10.2148266,
+    "distance": null
+  },
+  {
+    "id": "tZmYfR-T7qwDk25dFE3Sx",
+    "dealer_id": "0b80b",
+    "branding": {
+      "name": "SPORTMASTER"
+    },
+    "dealer": {
+      "name": "SPORTMASTER"
+    },
+    "street": "Frisenborgvej 5B",
+    "city": "Risskov",
+    "zip_code": "8240",
+    "latitude": 56.18912,
+    "longitude": 10.21497,
+    "distance": null
+  },
+  {
+    "id": "LGPoPYOqJ32eUe4YXd_Ip",
+    "dealer_id": "71db3m",
+    "branding": {
+      "name": "Louis Nielsen"
+    },
+    "dealer": {
+      "name": "Louis Nielsen"
+    },
+    "street": "Frijsenborgvej 5",
+    "city": "Risskov",
+    "zip_code": "8240",
+    "latitude": 56.18896,
+    "longitude": 10.214713,
+    "distance": null
+  },
+  {
+    "id": "CbnrB7fzcXeeuxbgJgqSA",
+    "dealer_id": "3d4bF",
+    "branding": {
+      "name": "Imerco"
+    },
+    "dealer": {
+      "name": "Imerco"
+    },
+    "street": "Frijsenborgvej 5B, st., 028",
+    "city": "Risskov",
+    "zip_code": "8240",
+    "latitude": 56.18873,
+    "longitude": 10.21527,
+    "distance": null
+  },
+  {
+    "id": "bdafaem",
+    "dealer_id": "9ba51",
+    "branding": {
+      "name": "Netto"
+    },
+    "dealer": {
+      "name": "Netto"
+    },
+    "street": "Frijsenborgvej 5",
+    "city": "Risskov",
+    "zip_code": "8240",
+    "latitude": 56.1890331,
+    "longitude": 10.2158636,
+    "distance": null
+  },
+  {
+    "id": "44f4Doq",
+    "dealer_id": "71c90",
+    "branding": {
+      "name": "Lidl"
+    },
+    "dealer": {
+      "name": "Lidl"
+    },
+    "street": "Skejbyvej 501",
+    "city": "Aarhus N",
+    "zip_code": "8200",
+    "latitude": 56.19966,
+    "longitude": 10.18269,
+    "distance": null
+  },
+  {
+    "id": "i4-sXYP_50X3c4lv1b04v",
+    "dealer_id": "71c90",
+    "branding": {
+      "name": "Lidl"
+    },
+    "dealer": {
+      "name": "Lidl"
+    },
+    "street": "Frijsenborgvej 5",
+    "city": "Risskov",
+    "zip_code": "8240",
+    "latitude": 56.18825,
+    "longitude": 10.21492,
+    "distance": null
+  },
+  {
+    "id": "rqQnh1AX0D7dpiEBi5f6w",
+    "dealer_id": "11deC",
+    "branding": {
+      "name": "REMA 1000"
+    },
+    "dealer": {
+      "name": "REMA 1000"
+    },
+    "street": "Frijsenborgvej 3B st",
+    "city": "Risskov",
+    "zip_code": "8240",
+    "latitude": 56.18870183706,
+    "longitude": 10.215923881478,
+    "distance": null
+  },
+  {
+    "id": "48d2Cvu",
+    "dealer_id": "267e1m",
+    "branding": {
+      "name": "MENY"
+    },
+    "dealer": {
+      "name": "MENY"
+    },
+    "street": "Vindrosen 37, st.",
+    "city": "Risskov",
+    "zip_code": "8240",
+    "latitude": 56.18734783,
+    "longitude": 10.21448135,
+    "distance": null
+  },
+  {
+    "id": "e18fYAu",
+    "dealer_id": "9ba51",
+    "branding": {
+      "name": "Netto"
+    },
+    "dealer": {
+      "name": "Netto"
+    },
+    "street": "Vindrosen 39, ST",
+    "city": "Risskov",
+    "zip_code": "8240",
+    "latitude": 56.1871459,
+    "longitude": 10.2144566,
+    "distance": null
+  },
+  {
+    "id": "f02eCv",
+    "dealer_id": "598dY",
+    "branding": {
+      "name": "Silvan"
+    },
+    "dealer": {
+      "name": "Silvan"
+    },
+    "street": "Graham Bells Vej 7",
+    "city": "Århus N",
+    "zip_code": "8200",
+    "latitude": 56.2025695,
+    "longitude": 10.1831803,
+    "distance": null
+  },
+  {
+    "id": "7DTqt2mC6Yul4KnkHmIKb",
+    "dealer_id": "96a4W",
+    "branding": {
+      "name": "Maxi Zoo"
+    },
+    "dealer": {
+      "name": "Maxi Zoo"
+    },
+    "street": "Graham Bells Vej 3",
+    "city": "Århus N",
+    "zip_code": "8200",
+    "latitude": 56.20279379,
+    "longitude": 10.18124688,
+    "distance": null
+  },
+  {
+    "id": "6d04QJm",
+    "dealer_id": "9ba51",
+    "branding": {
+      "name": "Netto"
+    },
+    "dealer": {
+      "name": "Netto"
+    },
+    "street": "Korshøjen 1",
+    "city": "Risskov",
+    "zip_code": "8240",
+    "latitude": 56.2001849,
+    "longitude": 10.2234844,
+    "distance": null
+  },
+  {
+    "id": "LznFKOYMtVXHSUXUAbWmP",
+    "dealer_id": "2e12t",
+    "branding": {
+      "name": "IKEA"
+    },
+    "dealer": {
+      "name": "IKEA"
+    },
+    "street": "Graham Bells Vej 7-11",
+    "city": "Aarhus N",
+    "zip_code": "8200",
+    "latitude": 56.20312412319454,
+    "longitude": 10.1810210406561,
+    "distance": null
+  },
+  {
+    "id": "KdovIzCwp6chniA6edJWp",
+    "dealer_id": "03b2o",
+    "branding": {
+      "name": "ILVA"
+    },
+    "dealer": {
+      "name": "ILVA"
+    },
+    "street": "Graham Bells Vej 13 C",
+    "city": "Aarhus N",
+    "zip_code": "8200",
+    "latitude": 56.20500320000001,
+    "longitude": 10.180511,
+    "distance": null
+  },
+  {
+    "id": "ovgUalvQ",
+    "dealer_id": "71c90",
+    "branding": {
+      "name": "Lidl"
+    },
+    "dealer": {
+      "name": "Lidl"
+    },
+    "street": "Randersvej 164",
+    "city": "Aarhus N",
+    "zip_code": "8200",
+    "latitude": 56.1802,
+    "longitude": 10.19968,
+    "distance": null
+  },
+  {
+    "id": "d8e1LDL",
+    "dealer_id": "1f5fZg",
+    "branding": {
+      "name": "VVS Comfort"
+    },
+    "dealer": {
+      "name": "VVS Comfort"
+    },
+    "street": "Sindalsvej 15",
+    "city": "Risskov",
+    "zip_code": "8240",
+    "latitude": 56.209071,
+    "longitude": 10.219713,
+    "distance": null
+  },
+  {
+    "id": "dc5bTfu",
+    "dealer_id": "11deC",
+    "branding": {
+      "name": "REMA 1000"
+    },
+    "dealer": {
+      "name": "REMA 1000"
+    },
+    "street": "Randersvej 142",
+    "city": "Aarhus N",
+    "zip_code": "8200",
+    "latitude": 56.1789032,
+    "longitude": 10.20049499,
+    "distance": null
+  },
+  {
+    "id": "MjZ785I7B_b2o29Og71eO",
+    "dealer_id": "ff1dRg",
+    "branding": {
+      "name": "Flügger"
+    },
+    "dealer": {
+      "name": "Flügger"
+    },
+    "street": "Randersvej 138",
+    "city": "Aarhus N",
+    "zip_code": "8200",
+    "latitude": 56.1787645,
+    "longitude": 10.2009894,
+    "distance": null
+  },
+  {
+    "id": "97f0jhL",
+    "dealer_id": "9ba51",
+    "branding": {
+      "name": "Netto"
+    },
+    "dealer": {
+      "name": "Netto"
+    },
+    "street": "Randersvej 116-118",
+    "city": "Århus N",
+    "zip_code": "8200",
+    "latitude": 56.1780264,
+    "longitude": 10.2013412,
+    "distance": null
+  },
+  {
+    "id": "HMLrygku",
+    "dealer_id": "5f760L",
+    "branding": {
+      "name": "Sport 24"
+    },
+    "dealer": {
+      "name": "Sport 24"
+    },
+    "street": "Karl Krøyers Vej 6",
+    "city": "Aarhus N",
+    "zip_code": "8200",
+    "latitude": 56.207275,
+    "longitude": 10.175382,
+    "distance": null
+  },
+  {
+    "id": "6CNszSZN9N6NJzYIcc1TX",
+    "dealer_id": "e9e45",
+    "branding": {
+      "name": "JYSK"
+    },
+    "dealer": {
+      "name": "JYSK"
+    },
+    "street": "Karl Krøyers Vej 10",
+    "city": "Aarhus N",
+    "zip_code": "8200",
+    "latitude": 56.2069712,
+    "longitude": 10.1746573,
+    "distance": null
+  },
+  {
+    "id": "asd9ABReu1qUHTkalj49c",
+    "dealer_id": "c35es",
+    "branding": {
+      "name": "Elgiganten"
+    },
+    "dealer": {
+      "name": "Elgiganten"
+    },
+    "street": "Karl Krøyers Vej 25",
+    "city": "Aarhus N",
+    "zip_code": "8200",
+    "latitude": 56.20672254080278,
+    "longitude": 10.1732885128975,
+    "distance": null
+  },
+  {
+    "id": "PZd-j8a-CDSAmARjEQe-t",
+    "dealer_id": "DWZE1w",
+    "branding": {
+      "name": "365discount"
+    },
+    "dealer": {
+      "name": "365discount"
+    },
+    "street": "Norges Alle 1 - 5",
+    "city": "Aarhus N",
+    "zip_code": "8200",
+    "latitude": 56.176754,
+    "longitude": 10.200017,
+    "distance": null
+  },
+  {
+    "id": "G-dGdWrs0p-nk6hcCvd6x",
+    "dealer_id": "11deC",
+    "branding": {
+      "name": "REMA 1000"
+    },
+    "dealer": {
+      "name": "REMA 1000"
+    },
+    "street": "Brassøvej  1",
+    "city": "Risskov",
+    "zip_code": "8240",
+    "latitude": 56.203814,
+    "longitude": 10.23589,
+    "distance": null
+  },
+  {
+    "id": "0Gw28nMe46Q4BjND2Vb-l",
+    "dealer_id": "a4004g",
+    "branding": {
+      "name": "Tøjeksperten"
+    },
+    "dealer": {
+      "name": "Tøjeksperten"
+    },
+    "street": "Finlandsgade 17",
+    "city": "Århus N",
+    "zip_code": "8200",
+    "latitude": 56.174454,
+    "longitude": 10.188027,
+    "distance": null
+  },
+  {
+    "id": "crqW2Oow",
+    "dealer_id": "lyaY84",
+    "branding": {
+      "name": "OK"
+    },
+    "dealer": {
+      "name": "OK"
+    },
+    "street": "Lystrupvej 62",
+    "city": "Risskov",
+    "zip_code": "8240",
+    "latitude": 56.208142,
+    "longitude": 10.235775,
+    "distance": null
+  },
+  {
+    "id": "5XO-dWY-L1T2kKnKplSxn",
+    "dealer_id": "DWZE1w",
+    "branding": {
+      "name": "365discount"
+    },
+    "dealer": {
+      "name": "365discount"
+    },
+    "street": "Nordre Strandvej 19",
+    "city": "Risskov",
+    "zip_code": "8240",
+    "latitude": 56.1926842,
+    "longitude": 10.2423649,
+    "distance": null
+  },
+  {
+    "id": "bzaCtSqY",
+    "dealer_id": "1f8aEL",
+    "branding": {
+      "name": "Fri BikeShop"
+    },
+    "dealer": {
+      "name": "Fri BikeShop"
+    },
+    "street": "Aldersrovej 33",
+    "city": "Aarhus N",
+    "zip_code": "8200",
+    "latitude": 56.1730293,
+    "longitude": 10.2106288,
+    "distance": null
+  },
+  {
+    "id": "d531znL",
+    "dealer_id": "3d667",
+    "branding": {
+      "name": "STARK"
+    },
+    "dealer": {
+      "name": "STARK"
+    },
+    "street": "Mosevej 1",
+    "city": "Risskov",
+    "zip_code": "8240",
+    "latitude": 56.2093675,
+    "longitude": 10.2364211,
+    "distance": null
+  },
+  {
+    "id": "CRfeCGIgSM8Hoty_XNFKV",
+    "dealer_id": "DWZE1w",
+    "branding": {
+      "name": "365discount"
+    },
+    "dealer": {
+      "name": "365discount"
+    },
+    "street": "Tordenskjoldsgade 75",
+    "city": "Aarhus N",
+    "zip_code": "8200",
+    "latitude": 56.1732521,
+    "longitude": 10.2164555,
+    "distance": null
+  },
+  {
+    "id": "edfe0LL",
+    "dealer_id": "65caN",
+    "branding": {
+      "name": "Løvbjerg"
+    },
+    "dealer": {
+      "name": "Løvbjerg"
+    },
+    "street": "Trøjborg Center \r\nOtte Ruds Gade 98-100",
+    "city": "Århus N",
+    "zip_code": "8200",
+    "latitude": 56.17233,
+    "longitude": 10.21194,
+    "distance": null
+  },
+  {
+    "id": "dfffFYy",
+    "dealer_id": "a5aaT",
+    "branding": {
+      "name": "Matas"
+    },
+    "dealer": {
+      "name": "Matas"
+    },
+    "street": "Trøjborg Centret Otte Ruds Gade 98-100",
+    "city": "Aarhus N",
+    "zip_code": "8200",
+    "latitude": 56.172324785100784,
+    "longitude": 10.21239683032036,
+    "distance": null
+  },
+  {
+    "id": "CYQ06UkN",
+    "dealer_id": "96a4W",
+    "branding": {
+      "name": "Maxi Zoo"
+    },
+    "dealer": {
+      "name": "Maxi Zoo"
+    },
+    "street": "Ravnsøvej 50",
+    "city": "Risskov",
+    "zip_code": "8240",
+    "latitude": 56.20135921,
+    "longitude": 10.24401168,
+    "distance": null
+  },
+  {
+    "id": "NqirdDtSvExiUlxGDoRhH",
+    "dealer_id": "xpoJWH",
+    "branding": {
+      "name": "Design Cykler"
+    },
+    "dealer": {
+      "name": "Design Cykler"
+    },
+    "street": "Ravnsøvej 54",
+    "city": "Risskov",
+    "zip_code": "8240",
+    "latitude": 56.201500549103216,
+    "longitude": 10.244341460580701,
+    "distance": null
+  },
+  {
+    "id": "F0rzp-9y2SPGF8R3Tf2Yr",
+    "dealer_id": "DWZE1w",
+    "branding": {
+      "name": "365discount"
+    },
+    "dealer": {
+      "name": "365discount"
+    },
+    "street": "Kappelvænget 8 A",
+    "city": "Aarhus V",
+    "zip_code": "8210",
+    "latitude": 56.1798553,
+    "longitude": 10.1666651,
+    "distance": null
+  },
+  {
+    "id": "14aa1oq",
+    "dealer_id": "71c90",
+    "branding": {
+      "name": "Lidl"
+    },
+    "dealer": {
+      "name": "Lidl"
+    },
+    "street": "Ravnsøvej 60",
+    "city": "Risskov",
+    "zip_code": "8240",
+    "latitude": 56.20188,
+    "longitude": 10.24533,
+    "distance": null
+  },
+  {
+    "id": "ir0px6SFpereCsTpdvGuv",
+    "dealer_id": "pZEC1r",
+    "branding": {
+      "name": "Normal"
+    },
+    "dealer": {
+      "name": "Normal"
+    },
+    "street": "Tordenskjoldsgade 55",
+    "city": "Aarhus N",
+    "zip_code": "8200",
+    "latitude": 56.172076,
+    "longitude": 10.216152,
+    "distance": null
+  },
+  {
+    "id": "374fUbm",
+    "dealer_id": "5a9eAg",
+    "branding": {
+      "name": "Skousen"
+    },
+    "dealer": {
+      "name": "Skousen"
+    },
+    "street": "Ravnsøvej 56",
+    "city": "Risskov",
+    "zip_code": "8240",
+    "latitude": 56.201819827889885,
+    "longitude": 10.246047685124152,
+    "distance": null
+  },
+  {
+    "id": "aa5b0RT",
+    "dealer_id": "f874R",
+    "branding": {
+      "name": "Imerco Home"
+    },
+    "dealer": {
+      "name": "Imerco Home"
+    },
+    "street": "Finlandsgade 17, st.",
+    "city": "Århus N",
+    "zip_code": "8200",
+    "latitude": 56.17108,
+    "longitude": 10.18944,
+    "distance": null
+  },
+  {
+    "id": "fc352bq",
+    "dealer_id": "bdf5A",
+    "branding": {
+      "name": "føtex"
+    },
+    "dealer": {
+      "name": "føtex"
+    },
+    "street": "Finlandsgade 17-19",
+    "city": "Århus N",
+    "zip_code": "8200",
+    "latitude": 56.171089,
+    "longitude": 10.189372,
+    "distance": null
+  },
+  {
+    "id": "b35LOJoSmgd5hS38vesX3",
+    "dealer_id": "0b80b",
+    "branding": {
+      "name": "SPORTMASTER"
+    },
+    "dealer": {
+      "name": "SPORTMASTER"
+    },
+    "street": "Finlandsgade 17",
+    "city": "Aarhus N",
+    "zip_code": "8200",
+    "latitude": 56.17106,
+    "longitude": 10.18928,
+    "distance": null
+  },
+  {
+    "id": "cbfaWgy",
+    "dealer_id": "8b6bsL",
+    "branding": {
+      "name": "Farveland"
+    },
+    "dealer": {
+      "name": "Farveland"
+    },
+    "street": "Tordenskjoldsgade 37",
+    "city": "Århus N",
+    "zip_code": "8200",
+    "latitude": 56.1715542,
+    "longitude": 10.2159787,
+    "distance": null
+  },
+  {
+    "id": "oVdjHYhM",
+    "dealer_id": "5c80zL",
+    "branding": {
+      "name": "Skoringen"
+    },
+    "dealer": {
+      "name": "Skoringen"
+    },
+    "street": "Finlandsgade 17",
+    "city": "Aarhus N",
+    "zip_code": "8200",
+    "latitude": 56.170974,
+    "longitude": 10.18819,
+    "distance": null
+  },
+  {
+    "id": "RvfIMrtMOaIrC9YZ6JWdb",
+    "dealer_id": "PaiMX1",
+    "branding": {
+      "name": "Synoptik"
+    },
+    "dealer": {
+      "name": "Synoptik"
+    },
+    "street": "Finlandsgade 17",
+    "city": "Aarhus",
+    "zip_code": "8200",
+    "latitude": 56.17080624,
+    "longitude": 10.18910195,
+    "distance": null
+  },
+  {
+    "id": "BQ4I3QBt3dbQIIoBUwDM0",
+    "dealer_id": "jH70PJ",
+    "branding": {
+      "name": "Flying Tiger Copenhagen"
+    },
+    "dealer": {
+      "name": "Flying Tiger Copenhagen"
+    },
+    "street": "Finlandsgade 17",
+    "city": "Aarhus",
+    "zip_code": "8200",
+    "latitude": 56.17085441,
+    "longitude": 10.18844187,
+    "distance": null
+  },
+  {
+    "id": "SLlTLkK9CHqAfZp33ggom",
+    "dealer_id": "155btg",
+    "branding": {
+      "name": "KONTUR"
+    },
+    "dealer": {
+      "name": "KONTUR"
+    },
+    "street": "Finlandsgade 17",
+    "city": "Aarhus N",
+    "zip_code": "8200",
+    "latitude": 56.1708783,
+    "longitude": 10.1882111,
+    "distance": null
+  },
+  {
+    "id": "9711mLm",
+    "dealer_id": "c97b5g",
+    "branding": {
+      "name": "Wagner"
+    },
+    "dealer": {
+      "name": "Wagner"
+    },
+    "street": "Finlandsgade 17",
+    "city": "Århus N",
+    "zip_code": "8200",
+    "latitude": 56.1708783,
+    "longitude": 10.1882111,
+    "distance": null
+  },
+  {
+    "id": "xqu2LGvnBUzuHv-I9YtND",
+    "dealer_id": "9e2f7L",
+    "branding": {
+      "name": "Søstrene Grene"
+    },
+    "dealer": {
+      "name": "Søstrene Grene"
+    },
+    "street": "Storcenter Nord",
+    "city": "17",
+    "zip_code": "Finlandsgade",
+    "latitude": 56.1708783,
+    "longitude": 10.1882111,
+    "distance": null
+  },
+  {
+    "id": "Uz3rdArpvl5los_v5xB8Y",
+    "dealer_id": "CVxoVj",
+    "branding": {
+      "name": "Vibholm"
+    },
+    "dealer": {
+      "name": "Vibholm"
+    },
+    "street": "Finlandsgade 17",
+    "city": "Aarhus N",
+    "zip_code": "8200",
+    "latitude": 56.1708783,
+    "longitude": 10.1882111,
+    "distance": null
+  },
+  {
+    "id": "k3OW01Fxsx9g4s-PGcnqq",
+    "dealer_id": "i7NdvM",
+    "branding": {
+      "name": "Wolt Market"
+    },
+    "dealer": {
+      "name": "Wolt Market"
+    },
+    "street": "Willemoesgade 15",
+    "city": "Aarhus",
+    "zip_code": "8200",
+    "latitude": 56.17064224,
+    "longitude": 10.21298336,
+    "distance": null
+  },
+  {
+    "id": "yDK4I5dVWe7CmfG3fJtMZ",
+    "dealer_id": "5e64h",
+    "branding": {
+      "name": "BR"
+    },
+    "dealer": {
+      "name": "BR"
+    },
+    "street": "Finlandsgade 17",
+    "city": "Aarhus N",
+    "zip_code": "8200",
+    "latitude": 56.170834968807,
+    "longitude": 10.187708746203,
+    "distance": null
+  },
+  {
+    "id": "7787mrA",
+    "dealer_id": "970epD",
+    "branding": {
+      "name": "CHANGE Lingerie"
+    },
+    "dealer": {
+      "name": "CHANGE Lingerie"
+    },
+    "street": "Storcenter Nord, Finlandsgade 17, st 109",
+    "city": "Århus N",
+    "zip_code": "8200",
+    "latitude": 56.170627,
+    "longitude": 10.188495,
+    "distance": null
+  },
+  {
+    "id": "UpzVovUXHu1eBeEhOzv6T",
+    "dealer_id": "iKfVai",
+    "branding": {
+      "name": "Zizzi"
+    },
+    "dealer": {
+      "name": "Zizzi"
+    },
+    "street": "st. 141",
+    "city": "Aarhus N",
+    "zip_code": "8200",
+    "latitude": 56.17061,
+    "longitude": 10.188489,
+    "distance": null
+  },
+  {
+    "id": "583ebSA",
+    "dealer_id": "9ba51",
+    "branding": {
+      "name": "Netto"
+    },
+    "dealer": {
+      "name": "Netto"
+    },
+    "street": "Finlandsgade 15",
+    "city": "Århus N",
+    "zip_code": "8200",
+    "latitude": 56.1704378,
+    "longitude": 10.1891918,
+    "distance": null
+  },
+  {
+    "id": "oYJKNapSexHgaPSKcFpjZ",
+    "dealer_id": "9ba51",
+    "branding": {
+      "name": "Netto"
+    },
+    "dealer": {
+      "name": "Netto"
+    },
+    "street": "Ravnsøvej 15b",
+    "city": "Risskov",
+    "zip_code": "8240",
+    "latitude": 56.202563,
+    "longitude": 10.247062,
+    "distance": null
+  },
+  {
+    "id": "V8oxaRBaNr1XwHc1es5qn",
+    "dealer_id": "12b3yC",
+    "branding": {
+      "name": "youSee"
+    },
+    "dealer": {
+      "name": "youSee"
+    },
+    "street": "Finlandsgade 17",
+    "city": "Århus N",
+    "zip_code": "8200",
+    "latitude": 56.1704616,
+    "longitude": 10.1885809,
+    "distance": null
+  },
+  {
+    "id": "dc18F5y",
+    "dealer_id": "a5aaT",
+    "branding": {
+      "name": "Matas"
+    },
+    "dealer": {
+      "name": "Matas"
+    },
+    "street": "Finlandsgade 17",
+    "city": "Aarhus N",
+    "zip_code": "8200",
+    "latitude": 56.17033059471268,
+    "longitude": 10.188660621643068,
+    "distance": null
+  },
+  {
+    "id": "e6gp5oA_o31vKT_WhWqJK",
+    "dealer_id": "deeenL",
+    "branding": {
+      "name": "NEYE"
+    },
+    "dealer": {
+      "name": "NEYE"
+    },
+    "street": "Finlandsgade 17",
+    "city": "Århus",
+    "zip_code": "8200",
+    "latitude": 56.1703280394016,
+    "longitude": 10.1882165644184,
+    "distance": null
+  },
+  {
+    "id": "ddpkXUNORuGLyxEv8Abtv",
+    "dealer_id": "pZEC1r",
+    "branding": {
+      "name": "Normal"
+    },
+    "dealer": {
+      "name": "Normal"
+    },
+    "street": "Finlandsgade 17",
+    "city": "Aarhus N",
+    "zip_code": "8200",
+    "latitude": 56.170614,
+    "longitude": 10.185477,
+    "distance": null
+  },
+  {
+    "id": "PgC9cEZW",
+    "dealer_id": "bdf5A",
+    "branding": {
+      "name": "føtex"
+    },
+    "dealer": {
+      "name": "føtex"
+    },
+    "street": "Tordenskjoldsgade 21 St",
+    "city": "Aarhus N",
+    "zip_code": "8200",
+    "latitude": 56.170414391742,
+    "longitude": 10.215826057732,
+    "distance": null
+  }
+]

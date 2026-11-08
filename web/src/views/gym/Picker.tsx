@@ -8,9 +8,15 @@ function distinctSorted(values: string[]): string[] {
   return [...new Set(values)].sort((a, b) => a.localeCompare(b));
 }
 
-function Chips(props: { label: string; values: string[]; selected: string | null; onSelect: (v: string | null) => void }) {
+function Chips(props: {
+  label: string;
+  values: string[];
+  selected: string | null;
+  onSelect: (v: string | null) => void;
+  class?: string;
+}) {
   return (
-    <div class="chip-group" role="group" aria-label={props.label}>
+    <div class={`chip-group ${props.class ?? ""}`} role="group" aria-label={props.label}>
       <For each={props.values}>
         {(value) => (
           <button
@@ -183,8 +189,10 @@ export default function ExercisePicker(props: {
   return (
     <Show when={props.open}>
       <div class="picker-overlay" onClick={(e) => e.target === e.currentTarget && props.onClose()}>
+        {/* The sheet is the frame (radius, border, clip); on a wide window only .picker-body
+            scrolls (styles/gym-desk.css). On a phone the wrappers are display: contents. */}
         <div
-          class="picker-sheet"
+          class="picker-sheet gym-picker"
           role="dialog"
           aria-modal="true"
           aria-labelledby="picker-title"
@@ -206,68 +214,83 @@ export default function ExercisePicker(props: {
           <Show
             when={!creating()}
             fallback={
-              <CreateExerciseForm
-                muscles={muscles()}
-                equipment={equipments()}
-                onDone={(name) => {
-                  setCreating(false);
-                  if (name) {
-                    setMuscle(null);
-                    setEquipment(null);
-                    setQuery(name);
-                  }
-                  queueMicrotask(() => searchInput?.focus());
-                }}
-              />
+              <div class="picker-body">
+                <CreateExerciseForm
+                  muscles={muscles()}
+                  equipment={equipments()}
+                  onDone={(name) => {
+                    setCreating(false);
+                    if (name) {
+                      setMuscle(null);
+                      setEquipment(null);
+                      setQuery(name);
+                    }
+                    queueMicrotask(() => searchInput?.focus());
+                  }}
+                />
+              </div>
             }
           >
-            <label class="sr-only" for="picker-search">
-              {gt("searchExercises")}
-            </label>
-            <input
-              id="picker-search"
-              ref={searchInput}
-              class="text-input"
-              type="search"
-              placeholder={gt("searchPlaceholder")}
-              autocomplete="off"
-              value={query()}
-              onInput={(e) => setQuery(e.currentTarget.value)}
-            />
-            <Chips label={gt("muscle")} values={muscles()} selected={muscle()} onSelect={setMuscle} />
-            <Chips label={gt("equipment")} values={equipments()} selected={equipment()} onSelect={setEquipment} />
-            <Show
-              when={results().length > 0}
-              fallback={<p class="muted center small">{gt("noMatches")}</p>}
-            >
-              <ul class="picker-list" aria-label={gt("exercises")}>
-                <For each={results()}>
-                  {(exercise) => (
-                    <li>
-                      <button
-                        type="button"
-                        class="picker-item"
-                        disabled={added().has(exercise.id) || adding() !== null}
-                        onClick={() => void choose(exercise)}
-                      >
-                        <span class="picker-item-main">
-                          <span class="picker-item-name">{exercise.name}</span>
-                          <span class="muted small">
-                            {exercise.muscle} · {exercise.equipment} · {kindLabel(exercise.kind)}
+            <div class="picker-tools">
+              <label class="sr-only" for="picker-search">
+                {gt("searchExercises")}
+              </label>
+              <input
+                id="picker-search"
+                ref={searchInput}
+                class="text-input"
+                type="search"
+                placeholder={gt("searchPlaceholder")}
+                autocomplete="off"
+                value={query()}
+                onInput={(e) => setQuery(e.currentTarget.value)}
+              />
+              <Chips label={gt("muscle")} values={muscles()} selected={muscle()} onSelect={setMuscle} />
+              <Chips
+                label={gt("equipment")}
+                values={equipments()}
+                selected={equipment()}
+                onSelect={setEquipment}
+                class="picker-chips--equipment"
+              />
+            </div>
+            <div class="picker-body">
+              <Show
+                when={results().length > 0}
+                fallback={<p class="muted center small">{gt("noMatches")}</p>}
+              >
+                <ul class="picker-list" aria-label={gt("exercises")}>
+                  <For each={results()}>
+                    {(exercise) => (
+                      <li>
+                        <button
+                          type="button"
+                          class="picker-item"
+                          disabled={added().has(exercise.id) || adding() !== null}
+                          onClick={() => void choose(exercise)}
+                        >
+                          <span class="picker-item-main">
+                            <span class="picker-item-name">{exercise.name}</span>
+                            <span class="muted small picker-item-meta">
+                              {exercise.muscle} · {exercise.equipment}
+                              <span class="picker-item-kind"> · {kindLabel(exercise.kind)}</span>
+                            </span>
                           </span>
-                        </span>
-                        <Show when={added().has(exercise.id)}>
-                          <span class="badge">{gt("added")}</span>
-                        </Show>
-                      </button>
-                    </li>
-                  )}
-                </For>
-              </ul>
-            </Show>
-            <button type="button" class="btn btn--block" onClick={() => setCreating(true)}>
-              {gt("createExercise")}
-            </button>
+                          <Show when={added().has(exercise.id)}>
+                            <span class="badge">{gt("added")}</span>
+                          </Show>
+                        </button>
+                      </li>
+                    )}
+                  </For>
+                </ul>
+              </Show>
+            </div>
+            <div class="picker-foot">
+              <button type="button" class="btn btn--block" onClick={() => setCreating(true)}>
+                {gt("createExercise")}
+              </button>
+            </div>
           </Show>
         </div>
       </div>

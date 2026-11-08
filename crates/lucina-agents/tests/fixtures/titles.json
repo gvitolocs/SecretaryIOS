@@ -1,0 +1,82 @@
+[
+ {
+  "configTitle": null,
+  "initialPrompt": "Fix the bug",
+  "expected": {
+   "explicitTitle": null,
+   "provisionalTitle": "Fix the bug"
+  }
+ },
+ {
+  "configTitle": null,
+  "initialPrompt": "\n\n   \r\n  first line here  \nsecond",
+  "expected": {
+   "explicitTitle": null,
+   "provisionalTitle": "first line here"
+  }
+ },
+ {
+  "configTitle": null,
+  "initialPrompt": "   ",
+  "expected": {
+   "explicitTitle": null,
+   "provisionalTitle": null
+  }
+ },
+ {
+  "configTitle": null,
+  "initialPrompt": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+  "expected": {
+   "explicitTitle": null,
+   "provisionalTitle": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  }
+ },
+ {
+  "configTitle": null,
+  "initialPrompt": "a  \t b　c",
+  "expected": {
+   "explicitTitle": null,
+   "provisionalTitle": "a b c"
+  }
+ },
+ {
+  "configTitle": "  Explicit title  ",
+  "initialPrompt": "prompt",
+  "expected": {
+   "explicitTitle": "Explicit title",
+   "provisionalTitle": "Explicit title"
+  }
+ },
+ {
+  "configTitle": "   ",
+  "initialPrompt": "fallback prompt",
+  "expected": {
+   "explicitTitle": null,
+   "provisionalTitle": "fallback prompt"
+  }
+ },
+ {
+  "configTitle": null,
+  "initialPrompt": null,
+  "expected": {
+   "explicitTitle": null,
+   "provisionalTitle": null
+  }
+ },
+ {
+  "configTitle": null,
+  "initialPrompt": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv 😀😀",
+  "expected": {
+   "explicitTitle": null,
+   "provisionalTitle": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv �"
+  }
+ },
+ {
+  "configTitle": null,
+  "initialPrompt": "ends with spaces at the cut                                        tail",
+  "expected": {
+   "explicitTitle": null,
+   "provisionalTitle": "ends with spaces at the cut tail"
+  }
+ }
+]

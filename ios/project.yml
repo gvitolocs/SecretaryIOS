@@ -1,0 +1,444 @@
+name: Secretary
+options:
+  bundleIdPrefix: tech.getsecretary
+  deploymentTarget:
+    iOS: "17.0"
+  developmentLanguage: en
+  createIntermediateGroups: true
+packages:
+  # The deals map (Features/Shopping/DealsMapView.swift). Exact tag: bump on purpose.
+  GoogleMaps:
+    url: https://github.com/googlemaps/ios-maps-sdk
+    exactVersion: 11.2.0
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: YES
+    LOCALIZATION_PREFERS_STRING_CATALOGS: YES
+targets:
+  Secretary:
+    type: application
+    platform: iOS
+    sources:
+      - path: Secretary
+        excludes:
+          - "Info.plist"
+      - path: Extensions/ShareShared
+      # The widgets' views and buttons, for the in-app widget gallery (App/WidgetGallery.swift).
+      - path: Extensions/SecretaryWidgets
+        excludes: ["Info.plist", "*.entitlements", "SecretaryWidgetsBundle.swift", "SecretaryControls.swift", "MemoRecordControl.swift", "MemoRecordingLiveActivity.swift"]
+    info:
+      path: Secretary/Info.plist
+      properties:
+        CFBundleDisplayName: Secretary
+        # Siri and App Shortcuts also take "Lucina" for the app name ("Registra memo con Lucina").
+        INAlternativeAppNames:
+          - INAlternativeAppName: Lucina
+        NSUserActivityTypes: [INSendMessageIntent]
+        # "Open in Google Maps" (Features/Places/ExternalMaps.swift) checks for the Google Maps app
+        LSApplicationQueriesSchemes: [comgooglemaps]
+        CFBundleDevelopmentRegion: en
+        CFBundleLocalizations: [en, it, da]
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        UILaunchScreen:
+          UIColorName: AccentColor
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        # Landscape is allowed for full-screen video only: AppDelegate returns OrientationLock.mask.
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        ITSAppUsesNonExemptEncryption: false
+        # Only plain-HTTP to local hosts (the dev mock); everything else must be HTTPS.
+        NSHealthShareUsageDescription: "Lucina reads your weight, workouts, steps and sleep so the Weight tab stays complete and she knows how you are doing."
+        NSHealthUpdateUsageDescription: "Your weigh-ins and gym workouts are saved to Apple Health."
+        NSLocationWhenInUseUsageDescription: "Lucina learns which places you visit, so she can remind you of things where they matter."
+        NSLocationAlwaysAndWhenInUseUsageDescription: "To notice when you arrive at or leave a place, even when Secretary is closed."
+        NSCalendarsFullAccessUsageDescription: "Lucina sees your upcoming events and adds or removes them when you ask."
+        NSRemindersFullAccessUsageDescription: "Lucina adds, completes and reads your reminders when you ask."
+        # Face ID unlocks the key that signs sensitive approvals (Features/Approvals); English only.
+        NSFaceIDUsageDescription: "Secretary asks for Face ID before it approves a sensitive request for you, like revealing a secret or running a command as root."
+        NSAlarmKitUsageDescription: "Lucina sets alarms and timers for you when you ask."
+        NSSupportsLiveActivities: true
+        SecretaryKeychainGroup: "$(AppIdentifierPrefix)tech.getsecretary.shared"
+        NSPhotoLibraryAddUsageDescription: "Photos Lucina's chat shows you are saved to your library when you tap Save."
+        NSPhotoLibraryUsageDescription: "Secretary backs up your photos and videos to your own server and shows them in the Gallery. Nothing is deleted from this iPhone."
+        NSMicrophoneUsageDescription: "Lucina listens when you tap the microphone, so you can talk to her instead of typing, and records your voice memos."
+        NSSpeechRecognitionUsageDescription: "Your words are turned into text so Lucina can answer them."
+        # Face tracking (Lucina mirrors your face), AR (Lucina in your room) and the chat's camera; localized in
+        # Secretary/Resources/InfoPlist.xcstrings.
+        NSCameraUsageDescription: "Lucina mirrors your face or appears in your room when you turn it on, you can take photos and videos to send her in the chat, and you can scan a QR code to sign in another device. Nothing leaves this iPhone unless you send it."
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        # secretary://open/<route>: the widgets' and controls' links into the app (Shared/Widgets/WidgetRoutes.swift).
+        CFBundleURLTypes:
+          - CFBundleURLName: tech.getsecretary.app.widgets
+            CFBundleURLSchemes: [secretary]
+        # Notifications (docs/notifications.md): background refresh syncs the inbox and the
+        # local schedules; `audio` keeps the media player (and Picture in Picture) playing and voice
+        # memos recording with the screen locked. APNs is on (paid team; aps-environment in
+        # Secretary.entitlements); `remote-notification` lets an approval push refresh the approvals and the widget.
+        # `processing`: the photo backup pass (Features/Gallery/PhotoBackup.swift).
+        UIBackgroundModes: [fetch, audio, processing, remote-notification]
+        BGTaskSchedulerPermittedIdentifiers: [tech.getsecretary.app.refresh, tech.getsecretary.app.photobackup]
+        SecretaryAPNsEnabled: true
+        # The git commit of this build, for the debug event log (Core/DebugEvents.swift); the "Stamp build
+        # commit" phase below replaces it. Extensions read the app's.
+        SecretaryBuildCommit: unknown
+    dependencies:
+      - sdk: libsqlite3.tbd
+      # Built by scripts/build-ios-core.sh (gitignored): the Rust gym/body engines.
+      - framework: Frameworks/SecretaryCore.xcframework
+        embed: false
+      - target: SecretaryShare
+      - target: SecretaryPhotoUpload
+      - sdk: Intents.framework
+      - target: SecretarySafari
+      - target: SecretaryScreenTimeReport
+      - target: SecretaryScreenTimeMonitor
+      - target: SecretaryWidgets
+      - target: SecretaryCallerDirectory
+      - sdk: Security.framework
+      - package: GoogleMaps
+        product: GoogleMaps
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: tech.getsecretary.app
+        PRODUCT_NAME: Secretary
+        CODE_SIGN_ENTITLEMENTS: Secretary/Secretary.entitlements
+        TARGETED_DEVICE_FAMILY: "1,2"
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        SWIFT_EMIT_LOC_STRINGS: YES
+        # The build-commit stamp runs git on the checkout, which the script sandbox does not allow.
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+    postBuildScripts:
+      # docs/debug-events.md: every debug event carries the commit it was built from. SECRETARY_BUILD_COMMIT
+      # overrides git (e.g. from ios-install); "-dirty" marks uncommitted changes. Runs before code signing.
+      - name: Stamp build commit
+        basedOnDependencyAnalysis: false
+        script: |
+          commit="${SECRETARY_BUILD_COMMIT:-}"
+          if [ -z "$commit" ]; then
+            commit="$(git -C "$SRCROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+            if [ "$commit" != unknown ] && ! git -C "$SRCROOT" diff --quiet HEAD -- 2>/dev/null; then commit="$commit-dirty"; fi
+          fi
+          plist="$TARGET_BUILD_DIR/$INFOPLIST_PATH"
+          /usr/libexec/PlistBuddy -c "Set :SecretaryBuildCommit $commit" "$plist" 2>/dev/null \
+            || /usr/libexec/PlistBuddy -c "Add :SecretaryBuildCommit string $commit" "$plist"
+  SecretaryShare:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Extensions/SecretaryShare
+        excludes: ["Info.plist"]
+      - path: Extensions/ShareShared
+      - path: Secretary/Core/Keychain.swift
+      - path: Secretary/Core/DebugEvents.swift
+      - path: Secretary/Shared/LucinaTokens.swift
+      - path: Secretary/Features/Share/LucinaDonations.swift
+      - path: Secretary/Features/Share/ShareUploads.swift
+      - path: Secretary/Resources/Localizable.xcstrings
+    dependencies:
+      - sdk: Intents.framework
+      - sdk: QuickLookThumbnailing.framework
+      - sdk: LinkPresentation.framework
+      - sdk: ImageIO.framework
+      - sdk: QuickLook.framework
+      - sdk: PhotosUI.framework
+      - sdk: AVFoundation.framework
+    info:
+      path: Extensions/SecretaryShare/Info.plist
+      properties:
+        CFBundleDisplayName: Lucina
+        CFBundleLocalizations: [en, it, da]
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        SecretaryKeychainGroup: "$(AppIdentifierPrefix)tech.getsecretary.shared"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).ShareViewController"
+          NSExtensionAttributes:
+            IntentsSupported: [INSendMessageIntent]
+            NSExtensionActivationRule: 'SUBQUERY(extensionItems, $extensionItem, SUBQUERY($extensionItem.attachments, $attachment, ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.item" || ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.content" || ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.data" || ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.url" || ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.plain-text").@count >= 1).@count >= 1'
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: tech.getsecretary.app.share
+        PRODUCT_NAME: SecretaryShare
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        CODE_SIGN_ENTITLEMENTS: Extensions/SecretaryShare/SecretaryShare.entitlements
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SWIFT_EMIT_LOC_STRINGS: YES
+  # Photo backup while Secretary is closed (iOS 27): iOS uploads new photos itself
+  # (Extensions/SecretaryPhotoUpload, crates/lucina-media/src/bgupload.rs). An ExtensionKit extension.
+  SecretaryPhotoUpload:
+    type: extensionkit-extension
+    platform: iOS
+    deploymentTarget: "27.0"
+    sources:
+      - path: Extensions/SecretaryPhotoUpload
+        excludes: ["Info.plist", "*.entitlements"]
+      - path: Secretary/Core/Keychain.swift
+      - path: Secretary/Core/DebugEvents.swift
+      - path: Secretary/Features/Gallery/BackgroundUploadShared.swift
+    info:
+      path: Extensions/SecretaryPhotoUpload/Info.plist
+      properties:
+        CFBundleDisplayName: Secretary Photo Backup
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        SecretaryKeychainGroup: "$(AppIdentifierPrefix)tech.getsecretary.shared"
+        # The server iOS sends the uploads to (ServerConfig.production).
+        BackgroundUploadURLBase: https://getsecretary.tech
+        EXAppExtensionAttributes:
+          EXExtensionPointIdentifier: com.apple.photos.background-upload
+          BackgroundUploadURLBase: https://getsecretary.tech
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: tech.getsecretary.app.photoupload
+        PRODUCT_NAME: SecretaryPhotoUpload
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        CODE_SIGN_ENTITLEMENTS: Extensions/SecretaryPhotoUpload/SecretaryPhotoUpload.entitlements
+        APPLICATION_EXTENSION_API_ONLY: YES
+  SecretarySafari:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Extensions/SecretarySafari
+        excludes: ["WebExtension/**", "Info.plist"]
+      # The web extension's files sit at the appex root (no top-level "Resources" folder:
+      # iOS bundles are flat); _locales and images keep their structure.
+      - path: Extensions/SecretarySafari/WebExtension/manifest.json
+        buildPhase: resources
+      - path: Extensions/SecretarySafari/WebExtension/background.js
+        buildPhase: resources
+      - path: Extensions/SecretarySafari/WebExtension/content.js
+        buildPhase: resources
+      - path: Extensions/SecretarySafari/WebExtension/_locales
+        type: folder
+      - path: Extensions/SecretarySafari/WebExtension/images
+        type: folder
+      - path: Extensions/Shared
+      - path: Secretary/Core/Keychain.swift
+    info:
+      path: Extensions/SecretarySafari/Info.plist
+      properties:
+        CFBundleDisplayName: Secretary
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        SecretaryKeychainGroup: "$(AppIdentifierPrefix)tech.getsecretary.shared"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.Safari.web-extension
+          NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).SafariWebExtensionHandler"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: tech.getsecretary.app.safari
+        PRODUCT_NAME: SecretarySafari
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        CODE_SIGN_ENTITLEMENTS: Extensions/SecretarySafari/SecretarySafari.entitlements
+  SecretaryScreenTimeReport:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Extensions/SecretaryScreenTimeReport
+        excludes: ["Info.plist"]
+    dependencies:
+      - sdk: DeviceActivity.framework
+    info:
+      path: Extensions/SecretaryScreenTimeReport/Info.plist
+      properties:
+        CFBundleDisplayName: Secretary Screen Time
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.deviceactivityui.report-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: tech.getsecretary.app.screentime-report
+        PRODUCT_NAME: SecretaryScreenTimeReport
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        CODE_SIGN_ENTITLEMENTS: Extensions/SecretaryScreenTimeReport/SecretaryScreenTimeReport.entitlements
+  SecretaryScreenTimeMonitor:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Extensions/SecretaryScreenTimeMonitor
+        excludes: ["Info.plist"]
+      - path: Extensions/Shared
+      - path: Secretary/Core/Keychain.swift
+    dependencies:
+      - sdk: DeviceActivity.framework
+    info:
+      path: Extensions/SecretaryScreenTimeMonitor/Info.plist
+      properties:
+        CFBundleDisplayName: Secretary Screen Time Monitor
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        SecretaryKeychainGroup: "$(AppIdentifierPrefix)tech.getsecretary.shared"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.deviceactivity.monitor-extension
+          NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).SecretaryScreenTimeMonitor"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: tech.getsecretary.app.screentime-monitor
+        PRODUCT_NAME: SecretaryScreenTimeMonitor
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        CODE_SIGN_ENTITLEMENTS: Extensions/SecretaryScreenTimeMonitor/SecretaryScreenTimeMonitor.entitlements
+  # The voice-memo recording Live Activity (Lock Screen, Dynamic Island) with pause/stop buttons.
+  SecretaryWidgets:
+    type: app-extension
+    platform: iOS
+    # Controls (ControlWidget) need iOS 18; the app itself still runs on 17.
+    deploymentTarget: "18.0"
+    sources:
+      - path: Extensions/SecretaryWidgets
+        excludes: ["Info.plist", "*.entitlements"]
+      - path: Secretary/Shared/MemoRecordingActivity.swift
+      - path: Secretary/Shared/ApprovalActivity.swift
+      - path: Secretary/Shared/LucinaTokens.swift
+      # Home Screen / Lock Screen widgets: sections, store, fetcher, routes, and the API client they use.
+      - path: Secretary/Shared/Widgets
+      # Item illustrations, so the shopping widget draws the same art as the app.
+      - path: Secretary/Resources/ItemIcons.xcassets
+      - path: Secretary/Core/APIClient.swift
+      - path: Secretary/Core/APIError.swift
+      - path: Secretary/Core/JSONValue.swift
+      - path: Secretary/Core/Keychain.swift
+      - path: Secretary/Core/DebugEvents.swift
+      - path: Secretary/Resources/Localizable.xcstrings
+    dependencies:
+      - sdk: WidgetKit.framework
+      - sdk: SwiftUI.framework
+      - sdk: ActivityKit.framework
+      - sdk: AppIntents.framework
+    info:
+      path: Extensions/SecretaryWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: Secretary
+        CFBundleLocalizations: [en, it, da]
+        SecretaryKeychainGroup: "$(AppIdentifierPrefix)tech.getsecretary.shared"
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: tech.getsecretary.app.widgets
+        PRODUCT_NAME: SecretaryWidgets
+        CODE_SIGN_ENTITLEMENTS: Extensions/SecretaryWidgets/SecretaryWidgets.entitlements
+        APPLICATION_EXTENSION_API_ONLY: YES
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_EMIT_LOC_STRINGS: YES
+  # Labels on the incoming-call screen for numbers Lucina has screened (Settings > Phone > Call Blocking & Identification).
+  # The app saves the list (Secretary/Shared/Callers) and calls CXCallDirectoryManager.reloadExtension.
+  SecretaryCallerDirectory:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Extensions/CallerDirectory
+        excludes: ["Info.plist", "*.entitlements"]
+      - path: Secretary/Shared/Callers
+      - path: Secretary/Core/Keychain.swift
+    dependencies:
+      - sdk: CallKit.framework
+    info:
+      path: Extensions/CallerDirectory/Info.plist
+      properties:
+        CFBundleDisplayName: Secretary Caller Labels
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        SecretaryKeychainGroup: "$(AppIdentifierPrefix)tech.getsecretary.shared"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.callkit.call-directory
+          NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).CallDirectoryHandler"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: tech.getsecretary.app.calldirectory
+        PRODUCT_NAME: SecretaryCallerDirectory
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        CODE_SIGN_ENTITLEMENTS: Extensions/CallerDirectory/CallerDirectory.entitlements
+        APPLICATION_EXTENSION_API_ONLY: YES
+  SecretaryTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - SecretaryTests
+      # The shared vectors, as a folder resource (RichMessageTests.testConformanceVectors).
+      - path: ../tests/conformance/rich
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - target: Secretary
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: tech.getsecretary.app.tests
+  SecretaryUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [SecretaryUITests]
+    dependencies:
+      - target: Secretary
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: tech.getsecretary.app.uitests
+        TEST_TARGET_NAME: Secretary
+schemes:
+  Secretary:
+    build:
+      targets:
+        Secretary: all
+        SecretaryTests: [test]
+        SecretaryUITests: [test]
+    run:
+      config: Debug
+      commandLineArguments:
+        "-SecretaryBaseURL http://localhost:8791": false
+    test:
+      config: Debug
+      gatherCoverageData: false
+      targets:
+        - SecretaryTests
+        - SecretaryUITests
+  SecretaryUnit:
+    build:
+      targets:
+        Secretary: all
+        SecretaryTests: [test]
+    test:
+      config: Debug
+      targets:
+        - SecretaryTests
+  # UI tests against the Release build (what the owner runs), e.g. scripts/chat-scroll-perf.sh.
+  SecretaryReleaseUI:
+    build:
+      targets:
+        Secretary: all
+        SecretaryUITests: [test]
+    test:
+      config: Release
+      gatherCoverageData: false
+      targets:
+        - SecretaryUITests

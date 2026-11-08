@@ -1,0 +1,110 @@
+/* Spreadsheets (views/Sheet.tsx): the grid and the AU timesheet form. */
+.sheet {
+  --sheet-border: var(--lu-separator, rgba(84, 84, 88, 0.5));
+  --sheet-input: var(--lu-accent-soft, rgba(127, 143, 224, 0.18));
+  --sheet-accent: var(--lu-accent, #7f8fe0);
+  --sheet-bad: var(--lu-negative, #ff453a);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+  min-height: 0;
+  padding: 12px var(--lu-space-gutter, 16px);
+  box-sizing: border-box;
+  overflow: auto;
+  container: sheet / inline-size;
+}
+
+.sheet > * { flex-shrink: 0; }
+.sheet > .sheet-gridwrap { flex-shrink: 1; }
+
+.sheet-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.sheet-bar__title { display: grid; gap: 2px; flex: 1 1 200px; min-width: 0; }
+.sheet-bar__name { font-weight: 600; overflow-wrap: anywhere; }
+.sheet-bar__meta { color: var(--lu-text-secondary, #8e8e93); font-size: var(--lu-type-caption-2, 0.78rem); }
+.sheet-bar__actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.sheet-save { background: var(--lu-accent-fill, #5e6ad2); color: var(--lu-on-accent, #fff); }
+.sheet button:disabled { opacity: 0.5; cursor: default; }
+
+.sheet-status { display: grid; gap: 4px; }
+.sheet-status:empty { display: none; }
+.sheet-msg { margin: 0; padding: 6px 10px; border-radius: 10px; background: var(--lu-field, rgba(118, 118, 128, 0.24)); font-size: var(--lu-type-footnote, 0.85rem); }
+.sheet-msg--ok { color: var(--lu-positive, #30d158); }
+.sheet-msg--warn { color: var(--lu-warning, #ff9f0a); }
+.sheet-msg--bad { color: var(--sheet-bad); }
+
+.sheet-versions { padding: 10px 14px; border-radius: var(--lu-radius-card, 18px); background: var(--lu-card, #1c1c1e); }
+.sheet-versions h2 { margin: 0 0 8px; font-size: var(--lu-type-subheadline, 0.95rem); }
+.sheet-versions ul { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.sheet-versions li { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+
+/* The grid. */
+.sheet-gridwrap { display: flex; flex-direction: column; gap: 8px; flex: 1 1 auto; min-height: 320px; }
+.sheet-infobar { display: flex; align-items: center; gap: 10px; min-height: 26px; font-size: var(--lu-type-footnote, 0.85rem); overflow: hidden; }
+.sheet-infobar code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sheet-legend { display: inline-flex; align-items: center; gap: 6px; color: var(--lu-text-secondary, #8e8e93); }
+.sheet-swatch { display: inline-block; width: 14px; height: 14px; border-radius: 3px; }
+.sheet-swatch--input { background: var(--sheet-input); outline: 1px dashed var(--sheet-accent); outline-offset: -1px; }
+.sheet-swatch--pending { background: var(--sheet-accent); margin-left: 8px; }
+.sheet-scroll { flex: 1 1 auto; min-height: 300px; max-height: 75vh; overflow: auto; border-radius: 10px; border: 1px solid var(--sheet-border); background: var(--lu-card, #1c1c1e); }
+.sheet-table { table-layout: fixed; border-collapse: collapse; font-size: 12px; }
+.sheet-table thead th { position: sticky; top: 0; z-index: 3; }
+.sheet-corner, .sheet-colname, .sheet-rowno { background: var(--lu-card-raised, #2c2c2e); color: var(--lu-text-secondary, #8e8e93); font-weight: 500; font-size: 11px; text-align: center; }
+.sheet-corner { position: sticky; left: 0; z-index: 4 !important; height: 22px; }
+.sheet-rowno { position: sticky; left: 0; z-index: 2; }
+.sheet-cell { position: relative; padding: 1px 3px; overflow: hidden; text-overflow: ellipsis; white-space: pre; box-shadow: inset -1px -1px 0 rgba(128, 128, 128, 0.14); vertical-align: bottom; }
+.sheet-cell--input { background-color: var(--sheet-input); outline: 1px dashed var(--sheet-accent); outline-offset: -1px; cursor: text; }
+.sheet-cell--pending { background-color: var(--sheet-accent) !important; color: var(--lu-on-accent, #fff) !important; }
+.sheet-cell--bad { outline: 2px solid var(--sheet-bad) !important; outline-offset: -2px; }
+.sheet-cell--selected { outline: 2px solid var(--sheet-accent); outline-offset: -2px; }
+.sheet-editor { position: absolute; inset: 0; width: 100%; height: 100%; min-height: 22px; box-sizing: border-box; border: 0; padding: 0 3px; font: inherit; color: var(--lu-text, inherit); background: var(--lu-card, #1c1c1e); outline: 2px solid var(--sheet-accent); }
+
+/* The form. */
+.ts { display: flex; flex-direction: column; gap: 10px; }
+.ts-card { padding: 10px 14px; border-radius: var(--lu-radius-card, 18px); background: var(--lu-card, #1c1c1e); }
+.ts-card summary { cursor: pointer; font-weight: 600; }
+.ts-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px 16px; margin-top: 8px; }
+section.ts-card .ts-fields { margin-top: 0; }
+.ts-field { display: grid; gap: 4px; font-size: var(--lu-type-footnote, 0.85rem); }
+.ts-field__label { color: var(--lu-text-secondary, #8e8e93); }
+.ts input[type="text"], .ts input[type="date"], .ts select { box-sizing: border-box; width: 100%; height: 34px; padding: 0 8px; border: 1px solid transparent; border-radius: 8px; background: var(--lu-field, rgba(118, 118, 128, 0.24)); color: inherit; font: inherit; font-size: 16px; }
+.ts input[type="checkbox"] { width: 22px; height: 22px; }
+.ts input:disabled { opacity: 0.6; }
+.ts-time { font-variant-numeric: tabular-nums; }
+.ts .ts-edited, .ts .ts-edited input { border-color: var(--sheet-accent); }
+.ts .ts-bad, .ts .ts-bad input { border-color: var(--sheet-bad); }
+
+.ts-days { display: grid; gap: 8px; }
+.ts-day { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px 8px; padding: 10px 12px; border-radius: 14px; background: var(--lu-card, #1c1c1e); }
+.ts-day--head { display: none; }
+.ts-day--off { background: var(--lu-card-raised, #2c2c2e); opacity: 0.9; }
+.ts-day--off .ts-day__date { color: var(--lu-text-secondary, #8e8e93); }
+.ts-day--out { opacity: 0.6; }
+.ts-day__date { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; font-weight: 600; }
+.ts-day__holiday { color: var(--lu-warning, #ff9f0a); font-size: var(--lu-type-caption-2, 0.78rem); font-weight: 500; }
+.ts-day__remarks { grid-column: 1 / -1; }
+.ts-day--plain .ts-day__entry { display: none; }
+.ts-day > [data-label]::before { content: attr(data-label); display: block; color: var(--lu-text-secondary, #8e8e93); font-size: var(--lu-type-caption-2, 0.78rem); margin-bottom: 2px; }
+.ts-num { font-variant-numeric: tabular-nums; }
+.ts-neg { color: var(--sheet-bad); }
+
+/* By the view's own width: Lucina's panel may take half the window. */
+@container sheet (min-width: 900px) {
+  .ts-days { gap: 2px; }
+  .ts-day { grid-template-columns: 11rem 4.5rem 5rem 5rem 5rem minmax(10rem, 1fr) 4rem 4rem 4rem; align-items: center; padding: 3px 10px; border-radius: 8px; }
+  .ts-day--head { display: grid; background: transparent; color: var(--lu-text-secondary, #8e8e93); font-size: var(--lu-type-caption-2, 0.78rem); }
+  .ts-day__date { grid-column: auto; font-weight: 500; }
+  .ts-day__remarks { grid-column: auto; }
+  .ts-day--plain .ts-day__entry { display: block; }
+  .ts-day > [data-label]::before { display: none; }
+  .ts input[type="text"], .ts input[type="date"], .ts select { height: 28px; font-size: 13px; }
+  .ts-num { text-align: right; }
+}
+
+.ts-totals dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin: 0; }
+.ts-totals dt { color: var(--lu-text-secondary, #8e8e93); font-size: var(--lu-type-caption-2, 0.78rem); }
+.ts-totals dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
+.ts-note { margin: 8px 0 0; color: var(--lu-text-secondary, #8e8e93); font-size: var(--lu-type-caption-2, 0.78rem); }
+
+/* All twelve months in view: the current one is never scrolled off. */
+.drive-chips.ts-months { flex-wrap: wrap; overflow: visible; }

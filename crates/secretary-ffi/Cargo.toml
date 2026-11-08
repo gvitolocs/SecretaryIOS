@@ -11,7 +11,14 @@ crate-type = ["staticlib", "rlib"]
 [dependencies]
 secretary-gym = { path = "../secretary-gym" }
 secretary-body = { path = "../secretary-body" }
+secretary-player = { path = "../secretary-player" }
+secretary-image = { path = "../secretary-image" }
+secretary-chat = { path = "../secretary-chat" }
+lucina-vault = { path = "../lucina-vault" }
 serde_json.workspace = true
+serde.workspace = true
 
 [dev-dependencies]
+thumbhash = "0.1"
+image = { version = "0.25", default-features = false, features = ["png"] }
 tempfile = "3"

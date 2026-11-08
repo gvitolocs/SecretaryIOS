@@ -88,14 +88,6 @@
   inset: 0;
 }
 
-.deals-map-fallback {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
 .deals-side {
   grid-area: side;
   min-height: 0;
@@ -418,4 +410,66 @@
     max-height: 75vh;
     overflow-y: auto;
   }
+}
+
+/* ---------- Desktop: the page system frame (components/page), shown from 880 px wide ---------- */
+
+.deals-scroll {
+  padding-bottom: 0;
+}
+
+.deals-wide .pg-back {
+  margin-bottom: 0;
+}
+
+.deals-wide .deals-filters--wide {
+  padding: 0;
+  margin-bottom: 16px;
+}
+
+.deals-wide .deals-filters--wide .pg-btn[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--pg-data) 60%, transparent);
+  background: color-mix(in srgb, var(--pg-data) 16%, transparent);
+  color: var(--pg-text);
+}
+
+/* The map card: the map runs edge to edge; without tiles the empty state sits in the card. */
+.deals-wide .pg-card.deals-map-card {
+  overflow: hidden;
+  padding: 0;
+}
+
+.deals-wide .pg-card--list > :is(.deals-map, .deals-stores-wrap) {
+  padding-inline: 0;
+}
+
+.deals-wide .deals-map-card .deals-map {
+  min-height: 480px;
+  border: 0;
+  border-radius: 0;
+}
+
+.deals-wide .deals-map-card .pg-empty {
+  padding: 48px 24px;
+}
+
+.deals-wide .deals-row--on {
+  background: var(--pg-fill);
+}
+
+.deals-wide .pg-row-name[aria-current="true"] {
+  color: var(--pg-data);
+}
+
+.deals-wide .pg-row-meta {
+  display: flex;
+  gap: 6px;
+}
+
+.deals-wide .deals-wide-sub {
+  margin: -8px 0 12px;
+}
+
+.deals-wide .deals-directions-wide {
+  margin-bottom: 8px;
 }

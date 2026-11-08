@@ -1,6 +1,8 @@
 import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
 import { GYM_MAX_INPUT_BYTES, REST_PRESETS, type GymView } from "../../api/gym";
+import { Card, PageGrid } from "../../components/page";
 import { dismissGymError, gym, runGym } from "../../state/gym";
+import "../../styles/gym-desk.css";
 import { GymPage } from "./shared";
 import { gt } from "./strings";
 
@@ -45,7 +47,7 @@ function envelopeBytes(text: string): number {
 
 type Status = { kind: "ok" | "error"; text: string } | null;
 
-function Preferences(props: { view: GymView }) {
+function Preferences(props: { view: GymView; desk?: boolean }) {
   const [unit, setUnit] = createSignal("kg");
   const [rest, setRest] = createSignal(90);
   const [goal, setGoal] = createSignal(3);
@@ -80,8 +82,8 @@ function Preferences(props: { view: GymView }) {
   }
 
   return (
-    <form class="card gym-settings-card" onSubmit={save} aria-labelledby="gym-prefs-title">
-      <h2 id="gym-prefs-title" class="gym-eyebrow">
+    <form class={props.desk ? "pg-card trd-settings" : "card gym-settings-card"} onSubmit={save} aria-labelledby="gym-prefs-title">
+      <h2 id="gym-prefs-title" class={props.desk ? "pg-card-title" : "gym-eyebrow"}>
         {gt("trainingPreferences")}
       </h2>
       <fieldset class="segmented-field">
@@ -147,11 +149,11 @@ function Preferences(props: { view: GymView }) {
           +
         </button>
       </div>
-      <button type="submit" class="btn btn--primary btn--block gym-primary" disabled={saving()}>
+      <button type="submit" class={props.desk ? "pg-btn trd-settings-save" : "btn btn--primary btn--block gym-primary"} disabled={saving()}>
         {gt("savePreferences")}
       </button>
       <Show when={saved()}>
-        <p class="muted small" role="status">
+        <p class={props.desk ? "pg-muted" : "muted small"} role="status">
           {gt("preferencesSaved")}
         </p>
       </Show>
@@ -159,7 +161,7 @@ function Preferences(props: { view: GymView }) {
   );
 }
 
-function YourData() {
+function YourData(props: { desk?: boolean } = {}) {
   const [exporting, setExporting] = createSignal<"json" | "csv" | null>(null);
   const [pending, setPending] = createSignal<{ name: string; text: string } | null>(null);
   const [restoring, setRestoring] = createSignal(false);
@@ -235,20 +237,20 @@ function YourData() {
   }
 
   return (
-    <section class="card gym-settings-card" aria-labelledby="gym-data-title">
-      <h2 id="gym-data-title" class="gym-eyebrow">
+    <section class={props.desk ? "pg-card trd-settings" : "card gym-settings-card"} aria-labelledby="gym-data-title">
+      <h2 id="gym-data-title" class={props.desk ? "pg-card-title" : "gym-eyebrow"}>
         {gt("yourData")}
       </h2>
       <div class="data-actions">
-        <button type="button" class="btn btn--block" disabled={exporting() !== null} onClick={() => void exportAs("json")}>
+        <button type="button" class={props.desk ? "pg-btn" : "btn btn--block"} disabled={exporting() !== null} onClick={() => void exportAs("json")}>
           {gt("exportJson")}
         </button>
-        <button type="button" class="btn btn--block" disabled={exporting() !== null} onClick={() => void exportAs("csv")}>
+        <button type="button" class={props.desk ? "pg-btn" : "btn btn--block"} disabled={exporting() !== null} onClick={() => void exportAs("csv")}>
           {gt("exportCsv")}
         </button>
         <button
           type="button"
-          class="btn btn--block"
+          class={props.desk ? "pg-btn" : "btn btn--block"}
           ref={restoreButton}
           disabled={restoring()}
           onClick={() => fileInput?.click()}
@@ -280,10 +282,10 @@ function YourData() {
               {gt("restoreDetail", { file: backup().name })}
             </p>
             <div class="confirm-pair">
-              <button type="button" class="btn btn--small btn--danger" disabled={restoring()} onClick={() => void restore()}>
+              <button type="button" class={props.desk ? "pg-btn pg-btn--danger" : "btn btn--small btn--danger"} disabled={restoring()} onClick={() => void restore()}>
                 {gt("restoreBackup")}
               </button>
-              <button type="button" class="btn btn--small" disabled={restoring()} onClick={() => setPending(null)}>
+              <button type="button" class={props.desk ? "pg-btn pg-btn--ghost" : "btn btn--small"} disabled={restoring()} onClick={() => setPending(null)}>
                 {gt("cancel")}
               </button>
             </div>
@@ -312,6 +314,25 @@ export function SettingsBody(props: { view: GymView }) {
         <p class="muted small">{gt("aboutText")}</p>
       </section>
     </>
+  );
+}
+
+/**
+ * The desktop Settings section, under the Gym header row: preferences and
+ * your data in the main column, About in the rail.
+ */
+export function SettingsDesk(props: { view: GymView }) {
+  return (
+    <PageGrid
+      rail={
+        <Card title={gt("aboutTitle")}>
+          <p class="pg-muted">{gt("aboutText")}</p>
+        </Card>
+      }
+    >
+      <Preferences view={props.view} desk />
+      <YourData desk />
+    </PageGrid>
   );
 }
 

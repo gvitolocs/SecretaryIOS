@@ -1,0 +1,28 @@
+[package]
+name = "lucina-delegate"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Lucina delegates on her own: Claude, Grok and ChatGPT as agents, self-judgement before each call, hard limits, budgets, sandbox, jobs and audit"
+
+[dependencies]
+lucina-secrets = { path = "../lucina-secrets" }
+lucina-llm = { path = "../lucina-llm" }
+lucina-store = { path = "../lucina-store" }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
+regex = "1"
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+toml = "=1.1.6"
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+wiremock = "0.6"
+# Stateright model of the daily budget (tests/budget_model.rs), checked by `cargo test`.
+stateright = { version = "=0.31.0", default-features = false }

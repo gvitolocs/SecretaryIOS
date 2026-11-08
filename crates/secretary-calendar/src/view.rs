@@ -118,8 +118,14 @@ impl Ctx<'_> {
                 ))
             ),
             Source::Iphone => format!("iphone:{}", item.uid),
+            Source::Lucina if override_id || !recurring => format!("lucina:{}", item.uid),
+            Source::Lucina => format!(
+                "lucina:{}",
+                google::instance_id(&item.uid, id_moment, self.tz)
+            ),
         };
         Some(Event {
+            attendees: item.attendees.iter().take(30).cloned().collect(),
             id,
             source: self.src.source,
             source_id: item.instance_of.clone().unwrap_or_else(|| item.uid.clone()),
@@ -140,8 +146,20 @@ impl Ctx<'_> {
             location: item.location.clone(),
             description: item.description.clone(),
             url: item.url.clone(),
+            conference_url: item.conference_url.clone().or_else(|| {
+                [&item.location, &item.description, &item.url]
+                    .into_iter()
+                    .flatten()
+                    .find_map(|t| meeting_url(t))
+            }),
+            added_by: item.added_by.clone(),
+            alarms: item.alarms.clone(),
+            alarms_default: item.alarms_default,
+            free: item.free,
+            travel_min: item.travel_min,
+            leave_alert: item.leave_alert,
             recurring,
-            editable: self.src.source == Source::Google,
+            editable: matches!(self.src.source, Source::Google | Source::Lucina),
         })
     }
 }
@@ -231,6 +249,55 @@ pub fn window(sources: &[SourceItems<'_>], w: Window, tz: Tz) -> Vec<Event> {
     out.dedup_by(|a, b| a.id == b.id);
     out.truncate(MAX_INSTANCES);
     out
+}
+
+/// Hosts of video-call links.
+const MEETING_HOSTS: [&str; 6] = [
+    "meet.google.com",
+    "zoom.us",
+    "teams.microsoft.com",
+    "teams.live.com",
+    "webex.com",
+    "whereby.com",
+];
+
+/// The first video-call link (Meet, Zoom, Teams, Webex, Whereby) in `text`.
+pub fn meeting_url(text: &str) -> Option<String> {
+    text.split(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"' | '\'' | '(' | ')'))
+        .filter_map(|w| w.find("https://").map(|i| &w[i..]))
+        .map(|w| w.trim_end_matches(['.', ',', ';', ':', '!', '?', ']']))
+        .find(|w| {
+            let host = w["https://".len()..]
+                .split(['/', '?', '#'])
+                .next()
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            w.len() <= 500
+                && MEETING_HOSTS
+                    .iter()
+                    .any(|h| host == *h || host.ends_with(&format!(".{h}")))
+        })
+        .map(str::to_owned)
+}
+
+/// Drop the iPhone's copies of Google events: once Google is connected the
+/// phone's calendar mirrors the same events, with EventKit ids that contain
+/// `<google id>@google.com`.
+pub fn drop_mirrored(events: &mut Vec<Event>) {
+    let google: Vec<(String, i64)> = events
+        .iter()
+        .filter(|e| e.source == Source::Google)
+        .map(|e| (format!(":{}@google.com", e.source_id), e.start_ms))
+        .collect();
+    if google.is_empty() {
+        return;
+    }
+    events.retain(|e| {
+        e.source != Source::Iphone
+            || !google
+                .iter()
+                .any(|(needle, start)| *start == e.start_ms && e.id.contains(needle.as_str()))
+    });
 }
 
 /// What [`free_slots`] looks for.
@@ -479,5 +546,113 @@ mod tests {
         );
         // 4-hour slot: none that day
         assert!(free_slots(&ev, &SlotQuery { minutes: 240, ..q }, ROME).is_empty());
+    }
+
+    #[test]
+    fn meeting_links_are_found() {
+        assert_eq!(
+            meeting_url("Join: https://meet.google.com/abc-defg-hij.").as_deref(),
+            Some("https://meet.google.com/abc-defg-hij")
+        );
+        assert_eq!(
+            meeting_url("Zoom (https://us02web.zoom.us/j/123?pwd=x)").as_deref(),
+            Some("https://us02web.zoom.us/j/123?pwd=x")
+        );
+        assert_eq!(
+            meeting_url("<a href=\"https://teams.microsoft.com/l/meetup-join/1\">Teams</a>").as_deref(),
+            Some("https://teams.microsoft.com/l/meetup-join/1")
+        );
+        assert_eq!(meeting_url("https://example.com/zoom.us and http://meet.google.com/x"), None);
+        assert_eq!(meeting_url("https://notzoom.us/j/1"), None);
+    }
+
+    fn ev(id: &str, source: Source, source_id: &str, start_ms: i64) -> Event {
+        Event {
+            attendees: vec![],
+            id: id.into(),
+            source,
+            source_id: source_id.into(),
+            calendar: None,
+            title: "x".into(),
+            start: String::new(),
+            end: String::new(),
+            all_day: false,
+            start_ms,
+            end_ms: start_ms + 1,
+            location: None,
+            description: None,
+            url: None,
+            conference_url: None,
+            added_by: None,
+            alarms: vec![],
+            alarms_default: false,
+            free: false,
+            travel_min: None,
+            leave_alert: false,
+            recurring: false,
+            editable: false,
+        }
+    }
+
+    #[test]
+    fn iphone_copies_of_google_events_are_dropped() {
+        let mut v = vec![
+            ev("google:abc", Source::Google, "abc", 1000),
+            ev("iphone:CAL:abc@google.com@1000", Source::Iphone, "CAL:abc@google.com@1000", 1000),
+            // Another instance of the same series (different start) stays.
+            ev("iphone:CAL:abc@google.com@2000", Source::Iphone, "CAL:abc@google.com@2000", 2000),
+            // A holiday calendar the server does not sync stays.
+            ev("iphone:HOL:hol1@google.com@1000", Source::Iphone, "HOL:hol1@google.com@1000", 1000),
+            ev("iphone:CAL:local@1000", Source::Iphone, "CAL:local@1000", 1000),
+            ev("lucina:ev_1", Source::Lucina, "ev_1", 1000),
+        ];
+        drop_mirrored(&mut v);
+        let ids: Vec<&str> = v.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "google:abc",
+                "iphone:CAL:abc@google.com@2000",
+                "iphone:HOL:hol1@google.com@1000",
+                "iphone:CAL:local@1000",
+                "lucina:ev_1"
+            ]
+        );
+    }
+
+    #[test]
+    fn lucina_events_are_editable_and_keep_their_fields() {
+        let items = vec![Item {
+            uid: "ev_1".into(),
+            title: "Call".into(),
+            start: Some(Moment::Utc(utc("2026-10-30T10:00:00Z"))),
+            end: Some(Moment::Utc(utc("2026-10-30T11:00:00Z"))),
+            description: Some("link https://meet.google.com/aaa-bbbb-ccc".into()),
+            added_by: Some("Lucina".into()),
+            ..Item::default()
+        }];
+        let w = Window {
+            from: utc("2026-10-30T00:00:00Z"),
+            to: utc("2026-10-31T00:00:00Z"),
+        };
+        let out = window(
+            &[SourceItems {
+                source: Source::Lucina,
+                key: "",
+                label: Some("Lucina"),
+                items: &items,
+            }],
+            w,
+            chrono_tz::Europe::Copenhagen,
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "lucina:ev_1");
+        assert!(out[0].editable);
+        assert_eq!(out[0].calendar.as_deref(), Some("Lucina"));
+        assert_eq!(out[0].added_by.as_deref(), Some("Lucina"));
+        assert_eq!(
+            out[0].conference_url.as_deref(),
+            Some("https://meet.google.com/aaa-bbbb-ccc")
+        );
     }
 }

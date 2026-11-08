@@ -1,0 +1,4 @@
+# Kindle Paperwhite 3 (ARMv7 hard-float). Static musl avoids the Kindle's old glibc; the binary is linked
+# with the rust-lld that ships with rustup, so no cross gcc/sysroot is needed (self-contained musl CRT).
+[target.armv7-unknown-linux-musleabihf]
+linker = "rust-lld"

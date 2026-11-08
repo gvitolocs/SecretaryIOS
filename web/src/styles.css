@@ -7,8 +7,10 @@
 @import "./styles/wardrobe.css";
 @import "./styles/notifications.css";
 @import "./styles/notes.css";
+@import "./styles/library.css";
 @import "./styles/rich.css";
 @import "./styles/models.css";
+@import "./styles/secrets.css";
 
 /* ---------- Shopping ---------- */
 
@@ -339,10 +341,36 @@ section + .settings-block {
   filter: drop-shadow(0 0 5px color-mix(in srgb, var(--accent) 70%, transparent));
 }
 
-.chart-line--secondary {
-  stroke: var(--text-muted);
-  stroke-dasharray: 5 4;
-  opacity: 0.85;
+
+.chart-marks {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 42px;
+  pointer-events: none;
+}
+
+.chart-mark {
+  position: absolute;
+  font-size: 0.625rem;
+  line-height: 1;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  transform: translate(-50%, calc(-100% - 6px));
+}
+
+.chart-mark--below {
+  transform: translate(-50%, 6px);
+}
+
+.chart-mark--start {
+  transform: translate(0, calc(-100% - 6px));
+}
+
+.chart-mark--end {
+  transform: translate(-100%, calc(-100% - 6px));
 }
 
 .chart-y {
@@ -1470,3 +1498,10 @@ section + .settings-block {
 .picker-head .icon-btn {
   font-size: 1.4rem;
 }
+
+/* Weight's desktop page-system frame. Phone weight rules stay above. */
+.pg.weight-desk .weight-desk-log-row, .pg.weight-desk .weight-desk-units { display: flex; align-items: center; gap: 8px; }
+.pg.weight-desk .weight-desk-log-row > .pg-input { min-width: 0; }
+.pg.weight-desk [aria-pressed="true"] { background: var(--pg-fill-hover); border-color: var(--pg-border-strong); }
+.pg.weight-desk .chart-line--primary { stroke: var(--pg-data); filter: none; }
+.pg.weight-desk :is(.chart-x, .chart-y) { color: var(--pg-muted); font-size: 12px; }

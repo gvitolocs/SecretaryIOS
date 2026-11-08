@@ -1,0 +1,18 @@
+[package]
+name = "lucina-vault"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "An Obsidian vault as plain files: links, tags, backlinks, search, graph, Markdown blocks and careful writes, read the way real Obsidian reads them"
+
+[dependencies]
+ink-obsidian = { path = "../ink-obsidian", default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+# Never with ENABLE_WIKILINKS: RUSTSEC-2026-0414. Wikilinks are ours (`scan`, `markdown`).
+pulldown-cmark = { version = "0.13", default-features = false }
+
+[dev-dependencies]
+tempfile = "3"

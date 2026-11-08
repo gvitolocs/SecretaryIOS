@@ -227,6 +227,26 @@ impl OAuth {
         self.file.read(Clone::clone)
     }
 
+    /// Add `add` to active grants (by grant id or client id) and to their live
+    /// access and refresh tokens, so the next refresh keeps them. Returns how many grants.
+    pub fn add_scopes(&self, target: &str, add: &Scopes) -> std::io::Result<usize> {
+        self.file.update(|d| {
+            let mut ids = Vec::new();
+            for g in d.grants.iter_mut() {
+                if !g.revoked && (g.id == target || g.client_id == target) {
+                    g.scopes = Scopes::of(g.scopes.iter().chain(add.iter()));
+                    ids.push(g.id.clone());
+                }
+            }
+            for t in d.tokens.iter_mut() {
+                if ids.contains(&t.grant_id) {
+                    t.scopes = Scopes::of(t.scopes.iter().chain(add.iter()));
+                }
+            }
+            (!ids.is_empty(), ids.len())
+        })
+    }
+
     /// Revoke grants by grant id, client id, or `all`. Returns how many.
     pub fn revoke(&self, target: &str) -> std::io::Result<usize> {
         self.file.update(|d| {
@@ -272,6 +292,7 @@ impl OAuth {
                 kind: CallerKind::OAuth,
                 scopes: t.scopes.clone(),
                 id: g.id.clone(),
+                depth: 0,
             })
         })
     }
@@ -584,6 +605,9 @@ pub fn caller_for_host(host: &str) -> String {
     if is("cursor.com") || is("cursor.sh") {
         return "cursor".into();
     }
+    if is("mistral.ai") {
+        return "mistral".into();
+    }
     let label: String = h
         .split('.')
         .next()
@@ -729,7 +753,9 @@ pub async fn register(
         .iter()
         .find(|u| !redirect_allowed(u, &st.cfg.redirect_allow))
     {
-        tracing::warn!(target: "secretary_mcp::audit", event = "oauth_register_refused", "redirect_uri not allowed");
+        // The address only, without its query, cut short: it comes from an unauthenticated client.
+        let refused: String = bad.split('?').next().unwrap_or_default().chars().take(200).collect();
+        tracing::warn!(target: "secretary_mcp::audit", event = "oauth_register_refused", redirect = ?refused, "redirect_uri not allowed");
         return Err(OAuthError::bad(
             "invalid_redirect_uri",
             format!("redirect_uri not allowed (https and an allowed callback only): {bad}"),
@@ -968,10 +994,10 @@ pub async fn authorize_get(
     }
     let mut scopes = match q.scope.as_deref() {
         Some(s) => Scopes::parse_lenient(s),
-        None => Scopes::all(),
+        None => Scopes::default_grant(),
     };
     if scopes.is_empty() {
-        scopes = Scopes::all();
+        scopes = Scopes::default_grant();
     }
     let request_id = match random_secret() {
         Ok(id) => id,
@@ -1028,6 +1054,14 @@ pub struct AuthorizeForm {
     scope_chat: Option<String>,
     #[serde(default)]
     scope_write: Option<String>,
+    #[serde(default)]
+    scope_computer: Option<String>,
+    #[serde(default)]
+    scope_agents: Option<String>,
+    #[serde(default)]
+    scope_notebooks: Option<String>,
+    #[serde(default)]
+    scope_photos: Option<String>,
 }
 
 pub async fn authorize_post(
@@ -1082,6 +1116,10 @@ pub async fn authorize_post(
             (Scope::Read, &f.scope_read),
             (Scope::Chat, &f.scope_chat),
             (Scope::Write, &f.scope_write),
+            (Scope::Computer, &f.scope_computer),
+            (Scope::Agents, &f.scope_agents),
+            (Scope::Notebooks, &f.scope_notebooks),
+            (Scope::Photos, &f.scope_photos),
         ]
         .into_iter()
         .filter(|(_, v)| v.is_some())
@@ -1548,6 +1586,23 @@ mod tests {
         assert_eq!(caller_for_host("example.org"), "example");
         assert_eq!(caller_for_host("www.cursor.com"), "cursor");
         assert_eq!(caller_for_host("cursor.sh"), "cursor");
+        assert_eq!(caller_for_host("callback.mistral.ai"), "mistral");
+        assert_eq!(caller_for_host("chat.mistral.ai"), "mistral");
+    }
+
+    /// The owner decides a connector's reach on the consent page: "Keep full access", 2026-11-02.
+    #[test]
+    fn a_mistral_token_holds_what_the_owner_granted() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cfg, o) = oauth_in(dir.path());
+        pending_code(&o, "code-hash");
+        let mut g = grant("grant_a");
+        g.caller = "mistral".into();
+        let scopes = Scopes::of([Scope::Read, Scope::Chat, Scope::Write, Scope::Computer]);
+        let pair = o.redeem_code(&cfg, "code-hash", g, &scopes).expect("tokens");
+        let caller = o.authenticate(&pair.access, "res").unwrap().expect("a caller");
+        assert_eq!(caller.name, "mistral");
+        assert_eq!(caller.scopes, scopes);
     }
 
     // -- token endpoint races (docs/verification.md, bugs O1 and O2) ---------

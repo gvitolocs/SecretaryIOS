@@ -239,6 +239,30 @@ fn swift(t: &Tokens) -> String {
             _ => {}
         }
     }
+    s.push_str("    }\n\n    /// The floating glass tab bar (the system TabView draws the glass; these are its colours).\n    enum TabBar {\n");
+    for (k, v) in &t.tab_bar {
+        if k.starts_with('$') {
+            continue;
+        }
+        match v {
+            Value::String(material) if k == "material" => {
+                let _ = writeln!(s, "        static let {k} = \"{material}\"");
+            }
+            Value::String(name) => {
+                let _ = writeln!(s, "        static let {k} = Colors.{name}");
+            }
+            Value::Number(n) => {
+                let _ = writeln!(s, "        static let {k}: CGFloat = {}", num(n.as_f64().unwrap_or_default()));
+            }
+            Value::Object(pair) => {
+                let hex = |key: &str| pair.get(key).and_then(Value::as_str).and_then(|h| Rgba::parse(h).ok());
+                if let (Some(dark), Some(light)) = (hex("dark"), hex("light")) {
+                    let _ = writeln!(s, "        static let {k} = Color(lucinaDark: 0x{:08X}, light: 0x{:08X})", dark.0, light.0);
+                }
+            }
+            _ => {}
+        }
+    }
     s.push_str("    }\n}\n\n");
     s.push_str(SWIFT_SUPPORT);
     s

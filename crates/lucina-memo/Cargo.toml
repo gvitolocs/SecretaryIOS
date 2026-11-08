@@ -1,0 +1,51 @@
+[package]
+name = "lucina-memo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Lucina voice memos and meetings: resumable uploads, local Whisper transcription, speaker diarization, Lucina's summary and brief, PDF, Obsidian note, notification"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "lucina-memo"
+path = "src/main.rs"
+
+[dependencies]
+fs4 = { workspace = true }
+lucina-llm = { path = "../lucina-llm" }
+lucina-prompter = { path = "../lucina-prompter" }
+lucina-vocab = { path = "../lucina-vocab" }
+axum = { version = "0.8", features = ["ws"] }
+tokio = { workspace = true }
+tokio-util = { version = "0.7", features = ["io"] }
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
+sha2 = { workspace = true }
+reqwest = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+subtle = "2"
+getrandom = "0.3"
+lucina-memory = { path = "../lucina-memory" }
+# Speaker diarization on the CPU (src/diarize): ONNX Runtime loaded at run time from
+# LUCINA_DIARIZE_ORT_LIB (no download or linking at build time).
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["load-dynamic", "std"] }
+realfft = "3.5"
+async-trait = "0.1"
+# Lucina Prompter replay client (src/prompter/replay.rs).
+tokio-tungstenite = "0.29"
+
+[dev-dependencies]
+# The upload protocol model (tests/upload_model.rs).
+stateright = "0.30"
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
