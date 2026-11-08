@@ -14,8 +14,8 @@
 //! | `SECRETARY_MCP_AGENTS_RUNS_PER_HOUR` | `30` | `agent_run` calls per token per hour |
 //! | `SECRETARY_MCP_TIMEZONE` | `Europe/Rome` | for gym/body summaries and timeline times |
 //! | `SECRETARY_MCP_TRUST_PROXY` | `0` | `1`: client IP from the right-most `X-Forwarded-For` |
-//! | `SECRETARY_MCP_OAUTH_REDIRECTS` | ChatGPT's two | allowed `redirect_uri`s: exact URLs, or prefixes ending in `/` |
-//! | `SECRETARY_MCP_OAUTH_CIMD` | `https://chatgpt.com/oauth/` | allowed client-id metadata document URL prefixes (empty: CIMD off) |
+//! | `SECRETARY_MCP_OAUTH_REDIRECTS` | ChatGPT's two, Mistral's and Claude.ai's callbacks | allowed `redirect_uri`s: exact URLs, or prefixes ending in `/` |
+//! | `SECRETARY_MCP_OAUTH_CIMD` | `https://chatgpt.com/oauth/`, `https://claude.ai/oauth/` | allowed client-id metadata document URL prefixes (empty: CIMD off) |
 //! | `SECRETARY_MCP_ALLOWED_HOSTS` | public host, `localhost`, `127.0.0.1` | inbound `Host` check of `/mcp` |
 //! | `SECRETARY_MCP_ALLOWED_ORIGINS` | public origin, `https://chatgpt.com`, `https://claude.ai` | `Origin` check of `/mcp` (requests without `Origin` pass) |
 //! | `SECRETARY_MCP_ACCESS_TTL_SECS` | `3600` | OAuth access token lifetime |
@@ -45,6 +45,12 @@ pub const CHATGPT_CIMD_PREFIX: &str = "https://chatgpt.com/oauth/";
 
 /// Mistral's custom connector callback, read from its registration on 2026-11-02.
 pub const MISTRAL_REDIRECT: &str = "https://callback.mistral.ai/v1/integrations_auth/oauth2_callback";
+
+/// Claude.ai custom connector CIMD (`https://claude.ai/oauth/mcp-oauth-client-metadata`).
+pub const CLAUDE_CIMD_PREFIX: &str = "https://claude.ai/oauth/";
+
+/// Hosted Claude apps OAuth callback.
+pub const CLAUDE_REDIRECT: &str = "https://claude.ai/api/mcp/auth_callback";
 
 #[derive(Clone)]
 pub struct Config {
@@ -141,10 +147,10 @@ impl Config {
             trust_proxy: false,
             redirect_allow: CHATGPT_REDIRECTS
                 .iter()
-                .chain([&MISTRAL_REDIRECT])
+                .chain([&MISTRAL_REDIRECT, &CLAUDE_REDIRECT])
                 .map(|s| (*s).to_owned())
                 .collect(),
-            cimd_prefixes: vec![CHATGPT_CIMD_PREFIX.to_owned()],
+            cimd_prefixes: vec![CHATGPT_CIMD_PREFIX.to_owned(), CLAUDE_CIMD_PREFIX.to_owned()],
             allowed_origins,
             allowed_hosts: vec![host, "localhost".into(), "127.0.0.1".into(), "::1".into()],
             access_ttl: Duration::from_secs(3600),
