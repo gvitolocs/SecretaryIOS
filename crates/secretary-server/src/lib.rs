@@ -61,6 +61,9 @@ pub mod voice_frames;
 pub mod voice_note;
 pub mod voice_learn;
 pub mod voice_pipe;
+// Plain `if` chains and guarded divisions stay as they are: the proofs read them.
+#[allow(clippy::manual_clamp, clippy::implicit_saturating_sub, clippy::len_zero, clippy::manual_checked_ops)]
+pub mod voice_rules;
 pub mod voice_split;
 pub mod voice_telemetry;
 pub mod voice_vad;
