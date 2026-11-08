@@ -59,9 +59,14 @@
 //!    Every chat turn is sent as channel `voice` (the "Lucina Voice" thread,
 //!    protocol section 7; `thread: "main"` the `/v1/chat` channel instead) with
 //!    `voiceMeta` (turn id, STT ms, Voice Learn facts).
+//!    **Level** (protocol section 10.7): the recording is measured first ([`crate::voice_level`], rules in
+//!    [`crate::voice_rules`]). A silent one is `error silent` and runs nothing; quiet speech is lifted on the copy the
+//!    speech-to-text gets (a note's file stays as recorded). The four dBFS numbers are on the turn's log line and in its record.
+//!    **Test devices** (section 10.8): a device in `SECRETARY_VOICE_TEST_DEVICES` sends its chat flagged `test` (session `voice-test`) and
+//!    its notes with `test=1`, so Lucina keeps them silent and out of the owner's chat and memory.
 //! 4. A turn that ends without complete audio sends `error` instead of `done`:
 //!    `no_speech` (under 0.3 s of audio, no speech in `vad` mode, or an empty
-//!    transcript), `stt_unavailable`, `lucina_unavailable`, `tts_failed`, and
+//!    transcript), `silent` (no signal), `stt_unavailable`, `lucina_unavailable`, `tts_failed`, and
 //!    for a note `note_failed` (the share was refused or unreachable). The
 //!    connection stays open. `busy`, `bad_request` and `rate_limited` answer a
 //!    bad or refused `start` (or a message that is not JSON of the contract).
@@ -92,9 +97,10 @@ use crate::error::ApiError;
 use crate::tts;
 use crate::voice::{self, Audio, Turn, MAX_BODY};
 use crate::voice_frames::{self as frames, Action, AdpcmDecoder, Event, Resampler, StartOpts, StartRaw};
+use crate::voice_level;
 use crate::voice_note;
 use crate::voice_pipe::{self, Shared, Spec};
-use crate::voice_telemetry::{self, ConnGuard, TurnInfo};
+use crate::voice_telemetry::{self, ConnGuard, InputLevel, TurnInfo};
 use crate::voice_vad::Vad;
 use crate::AppState;
 
@@ -106,6 +112,8 @@ pub const IDLE: Duration = Duration::from_secs(50);
 const MAX_MESSAGE: usize = 64 * 1024;
 /// Messages queued for the writer before senders wait.
 const OUTBOX: usize = 64;
+/// The `silent` error's message (protocol section 10.7).
+pub const SILENT_MESSAGE: &str = "The recording was silent: check the microphone.";
 /// Less audio than this (after trimming) is not speech: [`MIN_SECONDS`] of 16 kHz s16le.
 const MIN_BYTES: usize = 9_600;
 
@@ -692,11 +700,37 @@ impl Conn {
         if !opts.note {
             pcm.truncate(vad.trim_len(pcm.len()) & !1);
         }
-        if pcm.len() < MIN_BYTES || (opts.vad && !vad.heard_speech()) {
+        if pcm.len() < MIN_BYTES {
             self.send_error("no_speech", "no speech was heard");
             voice_telemetry::record_no_speech(&self.st, &self.ident, up_bytes);
             return; // `turn` is dropped: the device is free again
         }
+        // The level of the recording (protocol section 10.7), before any speech-to-text: a silent one stops here, quiet speech is
+        // lifted on the copy that goes to the speech-to-text (the note's file stays as recorded).
+        let samples = voice_level::samples_of(&pcm);
+        let analysis = voice_level::analyse(&samples);
+        let level = InputLevel::of(&analysis.level);
+        if analysis.level.silent {
+            tracing::info!(
+                device = %self.ident.device_id,
+                in_peak_dbfs = level.in_peak_dbfs,
+                in_rms_dbfs = level.in_rms_dbfs,
+                speech_rms_dbfs = level.speech_rms_dbfs,
+                gain_db = level.gain_db,
+                "voice turn: silent recording"
+            );
+            self.send_error("silent", SILENT_MESSAGE);
+            voice_telemetry::record_silent(&self.st, &self.ident, up_bytes, level);
+            return;
+        }
+        if opts.vad && !vad.heard_speech() {
+            self.send_error("no_speech", "no speech was heard");
+            voice_telemetry::record_no_speech(&self.st, &self.ident, up_bytes);
+            return;
+        }
+        let stt_pcm = analysis.normalised(&samples).map_or_else(|| Bytes::from(pcm.clone()), |v| Bytes::from(voice_level::pcm_of(&v)));
+        drop(samples);
+        let test = self.st.voice.is_test_device(&self.ident.device_id);
         let task = if opts.note {
             tokio::spawn(run_note(NoteRun {
                 st: self.st.clone(),
@@ -706,6 +740,9 @@ impl Conn {
                 ctl: self.ctl.clone(),
                 id: id.clone(),
                 pcm: Bytes::from(pcm),
+                stt_pcm,
+                level,
+                test,
                 raw,
                 opts,
                 channel,
@@ -720,6 +757,9 @@ impl Conn {
                 creds: self.creds.clone(),
                 tx: self.tx.clone(),
                 pcm: Bytes::from(pcm),
+                stt_pcm,
+                level,
+                test,
                 lang,
                 t0,
                 up_bytes,
@@ -790,6 +830,11 @@ struct Run {
     creds: HeaderMap,
     tx: mpsc::Sender<Message>,
     pcm: Bytes,
+    /// The recording as the speech-to-text gets it: quiet speech lifted (protocol section 10.7).
+    stt_pcm: Bytes,
+    level: InputLevel,
+    /// A test device's turn (protocol section 10.8).
+    test: bool,
     lang: Option<String>,
     t0: Instant,
     up_bytes: u64,
@@ -809,6 +854,7 @@ async fn run_turn(run: Run) {
         transcript_chars: 0,
         speech_ms: run.pcm.len() as u64 / 32,
         up_bytes: run.up_bytes,
+        level: Some(run.level),
         ..TurnInfo::default()
     };
     let (st, ident) = (run.st.clone(), run.ident.clone());
@@ -824,7 +870,9 @@ async fn turn_steps(run: Run, shared: &std::sync::Arc<Shared>, info: &mut TurnIn
         ident,
         creds,
         tx,
-        pcm,
+        stt_pcm,
+        level,
+        test,
         lang,
         channel,
         session_id,
@@ -839,7 +887,7 @@ async fn turn_steps(run: Run, shared: &std::sync::Arc<Shared>, info: &mut TurnIn
     };
     let device = ident.device_id.clone();
 
-    let voice::Heard { text: heard, facts } = match voice::transcribe(st, creds, &Audio::Pcm(pcm), lang.as_deref()).await {
+    let voice::Heard { text: heard, facts } = match voice::transcribe(st, creds, &Audio::Pcm(stt_pcm), lang.as_deref()).await {
         Ok(h) => h,
         Err(e) => {
             tracing::warn!(device = %device, code = %e.code, "voice turn: speech-to-text failed");
@@ -875,6 +923,7 @@ async fn turn_steps(run: Run, shared: &std::sync::Arc<Shared>, info: &mut TurnIn
             session_id,
             speak,
             text_out: text_out.then(|| tx.clone()),
+            test,
         },
         shared.clone(),
         out_tx,
@@ -909,6 +958,10 @@ async fn turn_steps(run: Run, shared: &std::sync::Arc<Shared>, info: &mut TurnIn
                 ack_ms = ?shared.ack_ms(),
                 total_ms = total,
                 speak,
+                in_peak_dbfs = level.in_peak_dbfs,
+                in_rms_dbfs = level.in_rms_dbfs,
+                speech_rms_dbfs = level.speech_rms_dbfs,
+                gain_db = level.gain_db,
                 "voice turn"
             );
             send(json!({"type": "reply", "text": spoken})).await;
@@ -960,8 +1013,13 @@ struct NoteRun {
     tx: mpsc::Sender<Message>,
     ctl: mpsc::UnboundedSender<Ctl>,
     id: String,
-    /// The decoded 16 kHz recording.
+    /// The decoded 16 kHz recording (the file keeps it as recorded).
     pcm: Bytes,
+    /// The recording as the speech-to-text gets it: quiet speech lifted (protocol section 10.7).
+    stt_pcm: Bytes,
+    level: InputLevel,
+    /// A test device's note (protocol section 10.8).
+    test: bool,
     /// `ima-adpcm`: the client's blocks.
     raw: Vec<u8>,
     opts: StartOpts,
@@ -1003,6 +1061,7 @@ async fn run_note(n: NoteRun) {
         transcript_chars: 0,
         speech_ms: n.pcm.len() as u64 / 32,
         up_bytes: n.up_bytes,
+        level: Some(n.level),
         ..TurnInfo::default()
     };
     let (st, ident) = (n.st.clone(), n.ident.clone());
@@ -1036,7 +1095,7 @@ async fn note_steps(
     let mut transcript: Option<String> = None;
     let mut stt_ms = None;
     if n.pcm.len() <= frames::NOTE_STT_MAX {
-        match voice::transcribe(&n.st, &n.creds, &Audio::Pcm(n.pcm.clone()), n.lang.as_deref()).await {
+        match voice::transcribe(&n.st, &n.creds, &Audio::Pcm(n.stt_pcm.clone()), n.lang.as_deref()).await {
             Ok(h) if !h.text.is_empty() => {
                 let ms = shared.elapsed_ms();
                 shared.set_stt(ms);
@@ -1072,6 +1131,7 @@ async fn note_steps(
             transcript: transcript.as_deref(),
             file_name: &name,
             wav: &wav,
+            test: n.test,
         },
     );
     match voice_note::post_share(&n.st, &n.creds, content_type, body).await {
@@ -1084,6 +1144,10 @@ async fn note_steps(
                 file_bytes = wav.len(),
                 stt_ms = ?stt_ms,
                 note_ms,
+                in_peak_dbfs = n.level.in_peak_dbfs,
+                in_rms_dbfs = n.level.in_rms_dbfs,
+                speech_rms_dbfs = n.level.speech_rms_dbfs,
+                gain_db = n.level.gain_db,
                 "voice note posted"
             );
             Some((a.user_item_id, stt_ms, note_ms))

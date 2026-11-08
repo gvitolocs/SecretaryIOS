@@ -129,5 +129,39 @@ try "(Phase::Idle, Event::Cancel) => Step {
             act: Action::Ignore," "(Phase::Idle, Event::Cancel) => Step {
             next: Phase::Idle,
             act: Action::Abort,"
+# The level of a recording (quiet input): the gain cap one step over, no gain for zero energy lost, speech just within 3 dB of the
+# target still lifted, a gain under 1.0, a search that does not shrink, the limiter's ceiling one step high or its choice backwards
+# or its zero-peak case wrong, a sample scale that doubles, a frame or the tail left unlimited, the silent peak one too low, a division
+# by a frame count of zero, a floor search past its range, a sum of squares that overflows its bound, a frame energy off by one in
+# the divisor, a peak that keeps the smaller value, a gate over its cap, a count that counts twice.
+try "pub const MAX_GAIN_Q8: u32 = 8094;" "pub const MAX_GAIN_Q8: u32 = 8095;"
+try "if speech_ms == 0 || speech_ms >= NO_GAIN_MS {" "if speech_ms >= NO_GAIN_MS {"
+try "if speech_ms == 0 || speech_ms >= NO_GAIN_MS {" "if speech_ms == 0 || speech_ms > NO_GAIN_MS {"
+try "let mut lo: u32 = UNITY_Q8;" "let mut lo: u32 = 255;"
+try "let mid = lo + (hi - lo + 1) / 2;" "let mid = lo + (hi - lo) / 2;"
+try "let cap = (29205u32 * 256) / frame_peak;" "let cap = (29206u32 * 256) / frame_peak;"
+try "    if g < cap {" "    if g > cap {"
+try "    if frame_peak == 0 {
+        return g;" "    if frame_peak == 1 {
+        return g;"
+try "(prod / 256) as i16" "(prod / 128) as i16"
+try "let g = limit_gain_q8(UNITY_Q8, peak);" "let g = UNITY_Q8;"
+try "let g = limit_gain_q8(want, peak);" "let g = want;"
+try "if ms.len() == 0 || peak < SILENT_PEAK {" "if ms.len() == 0 || peak < 32 {"
+try "    if cnt == 0 {" "    if cnt == 1 {"
+try "while p < 4294967296" "while p < 8589934593"
+try "acc += (v * v) as u64;" "acc += (v * v) as u64 + 1;"
+try "out.push(sq / 320);" "out.push(sq / 319);"
+try "        if a > p {" "        if a < p {"
+try "let gate = if low > GATE_MAX_MS { GATE_MAX_MS } else { low };" "let gate = low;"
+try "            c += 1;
+        }
+        i += 1;
+    }
+    c" "            c += 2;
+        }
+        i += 1;
+    }
+    c"
 echo "$refused of $total mutants refused"
 exit "$fail"

@@ -79,6 +79,8 @@ async fn chat(
     req.channel = Some(chat_channel(&headers, req.channel.as_deref())?);
     req.device = Some(ident.device_id);
     req.device_name = Some(ident.device_name);
+    // Only the voice socket's own pipeline marks a turn as a test device's; a client cannot.
+    req.test = None;
     forward(&st, Call::chat(&req)?).await
 }
 

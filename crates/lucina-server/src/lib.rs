@@ -63,10 +63,20 @@ pub mod share;
 pub mod shopping_mcp_gate;
 pub mod surface;
 pub mod telegram;
+pub mod test_turn;
 pub mod upstream;
 pub mod video;
 pub mod voice;
 pub mod voice_learn;
+/// The level rules of a recording, the very file secretary-server ships and Verus checks (one source of truth,
+/// `crates/secretary-server/src/voice_rules.rs`); lucina-server uses only the level part.
+#[path = "../../secretary-server/src/voice_rules.rs"]
+// The same allows as secretary-server's own `pub mod voice_rules`: the proofs read plain `if` chains and guarded divisions.
+#[allow(dead_code, clippy::manual_clamp, clippy::implicit_saturating_sub, clippy::len_zero, clippy::manual_checked_ops)]
+pub mod voice_rules;
+/// The glue around them (measure, lift, dBFS numbers), also secretary-server's own file.
+#[path = "../../secretary-server/src/voice_level.rs"]
+pub mod voice_level;
 pub mod vault_sync;
 pub mod voice_thread;
 

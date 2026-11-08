@@ -338,6 +338,10 @@ mod tests {
         assert!(quiet(json!({"via": "mcp", "caller": "some-new-provider", "conversation": "report"})));
         assert!(quiet(json!({"via": "mcp"})));
         assert!(quiet(json!({"via": "another-link", "caller": "x"})));
+        // A voice test device's turn (docs/lucinavoice-protocol.md section 10.8): the user item, Lucina's answer, a tool line.
+        assert!(quiet(json!({"via": "test", "conversation": "voice-test"})));
+        assert!(quiet(json!({"via": "test", "conversation": "voice-test", "voiceReply": true, "transcript": "ciao"})));
+        assert!(quiet(json!({"kind": "tool", "tool": "media", "ok": true, "via": "test", "conversation": "voice-test"})));
         assert!(quiet(json!({"kind": "tool", "via": "mcp", "caller": "claude"})));
         assert!(quiet(json!({"kind": "reach", "tool": "reach_agents", "ok": true})));
         // A tool-trace line never notifies, marked or not (the 2026-11-03 photo-search burst had no via).

@@ -1583,3 +1583,218 @@ async fn a_file_shared_while_the_library_is_down_gets_its_media_id_when_it_is_ba
     assert_eq!(lucina_server::share::store_again_now(&h.state).await, 0);
     assert_eq!(media.seen.media.lock().unwrap().len(), 1);
 }
+
+// -- voice notes: no file-name label, quiet input, silent input, test devices, no memo -------------------------------------
+
+/// A 2 s m4a made by ffmpeg: a sine at `volume` of full scale ("sine" is 0.125 by itself), or digital silence (`None`).
+async fn quiet_voice_bytes(h: &H, volume: Option<f64>) -> Vec<u8> {
+    let path = h.dir.path().join(format!("quiet-{}.m4a", volume.map_or("none".into(), |v| v.to_string())));
+    let mut cmd = tokio::process::Command::new("ffmpeg");
+    cmd.args(["-nostdin", "-loglevel", "error", "-f", "lavfi", "-i"]);
+    match volume {
+        Some(v) => cmd.args(["sine=frequency=440:duration=2", "-af", &format!("volume={v}")]),
+        None => cmd.arg("anullsrc=r=16000:cl=mono").args(["-t", "2"]),
+    };
+    assert!(cmd.args(["-c:a", "aac"]).arg(&path).status().await.unwrap().success());
+    std::fs::read(path).unwrap()
+}
+
+fn share_work_wav(h: &H, id: &str) -> std::path::PathBuf {
+    let dir = h.state.cfg.share.dir.join(chrono::Utc::now().format("%Y-%m").to_string()).join(id);
+    std::fs::read_dir(dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .find(|p| p.to_string_lossy().ends_with(".share.wav"))
+        .expect("the 16 kHz work file")
+}
+
+fn wav_peak(path: &std::path::Path) -> i32 {
+    let (samples, rate) = lucina_server::voice_level::wav_samples(&std::fs::read(path).unwrap()).expect("a 16-bit mono wav");
+    assert_eq!(rate, 16_000);
+    samples.iter().map(|s| i32::from(*s).abs()).max().unwrap_or(0)
+}
+
+#[tokio::test]
+async fn a_voice_note_shows_only_the_voice_note_never_its_file_name() {
+    for on_device in [true, false] {
+        let services = services().await;
+        let h = voice_setup(&services, false, VOICE_TEXT).await;
+        let bytes = voice_bytes(&h).await;
+        let id = "voice-label-0001";
+        let ack = submit(&h, voice_form(id, bytes, on_device.then_some(VOICE_TEXT), "")).await;
+        assert_eq!(ack.status(), 202);
+        let done = finished(&h, id).await;
+        assert_eq!(done["status"], "done", "{done}");
+        let lines = h.timeline_lines();
+        // Empty text: the client draws the play control, the duration and the waveform.
+        assert_eq!(lines[0]["text"], "", "{}", lines[0]);
+        assert_eq!(lines[0]["attachments"][0]["kind"], "voice");
+        // The name stays on the stored attachment (and in the share's status) as data.
+        assert_eq!(lines[0]["attachments"][0]["name"], "note.m4a");
+        assert_eq!(done["attachments"][0]["name"], "note.m4a");
+        // Nowhere does the name come back as text: not the user item, not Lucina's reply, not its meta.
+        for l in &lines {
+            assert!(!l["text"].as_str().unwrap().contains("note.m4a"), "{l}");
+            assert!(!l["text"].as_str().unwrap().contains('📎'), "{l}");
+            assert!(!l["meta"].to_string().contains("note.m4a"), "{l}");
+        }
+        assert!(!done["reply"].as_str().unwrap_or("").contains("note.m4a"));
+    }
+}
+
+#[tokio::test]
+async fn other_files_keep_their_label_and_a_voice_part_never_adds_its_name() {
+    let services = services().await;
+    let h = setup(&services).await;
+    let form = voice_form("voice-label-0002", b"audio".to_vec(), Some(VOICE_TEXT), "").part(
+        "file",
+        Part::bytes(b"%PDF-1.4 not really".to_vec()).file_name("contract.pdf").mime_str("application/pdf").unwrap(),
+    );
+    // The second file part has no `meta.files` entry (index 1): it is a plain file.
+    assert_eq!(submit(&h, form).await.status(), 202);
+    let done = finished(&h, "voice-label-0002").await;
+    assert_eq!(done["status"], "done", "{done}");
+    let lines = h.timeline_lines();
+    assert_eq!(lines[0]["text"], "📎 contract.pdf", "{}", lines[0]);
+    let kinds: Vec<_> = lines[0]["attachments"].as_array().unwrap().iter().map(|a| a["kind"].as_str().unwrap().to_owned()).collect();
+    assert!(kinds.contains(&"voice".to_owned()), "{kinds:?}");
+}
+
+#[tokio::test]
+async fn a_silent_voice_note_gets_the_silent_reply_not_i_couldnt_hear_you() {
+    let services = services().await;
+    let h = voice_setup(&services, false, VOICE_TEXT).await;
+    let bytes = quiet_voice_bytes(&h, None).await;
+    assert_eq!(submit(&h, voice_form("voice-silent-001", bytes, None, "")).await.status(), 202);
+    let done = finished(&h, "voice-silent-001").await;
+    assert_eq!(done["status"], "done", "{done}");
+    assert_eq!(done["attachments"][0]["state"], "failed");
+    let lines = h.timeline_lines();
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[1]["text"], "The recording was silent: check the microphone.");
+    assert_eq!(lines[1]["meta"]["voiceReply"], true);
+    assert_eq!(done["reply"], "The recording was silent: check the microphone.");
+    // Whisper was not asked, and neither was the model.
+    assert!(!h.dir.path().join("whisper-test.calls").exists());
+    assert!(h.fake.requests().is_empty());
+}
+
+#[tokio::test]
+async fn the_silent_reply_follows_the_language_of_his_caption_danish() {
+    let services = services().await;
+    let h = voice_setup(&services, false, VOICE_TEXT).await;
+    let bytes = quiet_voice_bytes(&h, None).await;
+    let caption = "Hvad er det, jeg har sagt i den her optagelse? Jeg kan ikke huske det, og det er ikke til at høre.";
+    assert_eq!(submit(&h, voice_form("voice-silent-da1", bytes, None, caption)).await.status(), 202);
+    let done = finished(&h, "voice-silent-da1").await;
+    assert_eq!(done["status"], "done", "{done}");
+    assert_eq!(h.timeline_lines()[1]["text"], "Optagelsen var tavs: tjek mikrofonen.");
+}
+
+#[tokio::test]
+async fn a_quiet_voice_note_is_lifted_before_whisper_and_the_original_stays() {
+    let services = services().await;
+    let h = voice_setup(&services, false, VOICE_TEXT).await;
+    // 0.15 of the sine's own 0.125: about -34 dBFS peak, the DSi's note a little louder.
+    let bytes = quiet_voice_bytes(&h, Some(0.15)).await;
+    // What the recording is, decoded the way the share decodes it.
+    let reference = h.dir.path().join("reference.wav");
+    let src = h.dir.path().join("reference.m4a");
+    std::fs::write(&src, &bytes).unwrap();
+    assert!(tokio::process::Command::new("ffmpeg")
+        .args(["-nostdin", "-loglevel", "error", "-y", "-i"])
+        .arg(&src)
+        .args(["-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le"])
+        .arg(&reference)
+        .status()
+        .await
+        .unwrap()
+        .success());
+    let before = wav_peak(&reference);
+    assert!(before < 1500, "{before}");
+    assert_eq!(submit(&h, voice_form("voice-quiet-001", bytes.clone(), None, "")).await.status(), 202);
+    let done = finished(&h, "voice-quiet-001").await;
+    assert_eq!(done["status"], "done", "{done}");
+    assert_eq!(done["attachments"][0]["transcript"], VOICE_TEXT);
+    // Whisper read the lifted work file: more than 3x the peak, never past -1 dBFS.
+    let after = wav_peak(&share_work_wav(&h, "voice-quiet-001"));
+    assert!(after > 3 * before, "{after} vs {before}");
+    assert!(after <= 29_205, "{after}");
+    // The stored note is the recording as it was recorded (the library got it untouched).
+    let stored = services.seen.stored.lock().unwrap().clone().expect("stored in the library");
+    assert_eq!(std::fs::read(stored).unwrap(), bytes);
+}
+
+#[tokio::test]
+async fn loud_voice_notes_are_not_touched() {
+    let services = services().await;
+    let h = voice_setup(&services, false, VOICE_TEXT).await;
+    let bytes = voice_bytes(&h).await; // the sine at 0.125: -18 dBFS peak, above the target
+    assert_eq!(submit(&h, voice_form("voice-loud-0001", bytes, None, "")).await.status(), 202);
+    assert_eq!(finished(&h, "voice-loud-0001").await["status"], "done");
+    let after = wav_peak(&share_work_wav(&h, "voice-loud-0001"));
+    // 0.125 * 32768 = 4096, give or take the codec.
+    assert!((3800..=4400).contains(&after), "{after}");
+}
+
+#[tokio::test]
+async fn a_test_devices_note_is_silent_out_of_the_conversation_and_not_remembered() {
+    let services = services().await;
+    let h = voice_setup(&services, false, VOICE_TEXT).await;
+    let bytes = voice_bytes(&h).await;
+    let form = voice_form("voice-test-0001", bytes, None, "").text("test", "1").text("sessionId", "ios_chat1");
+    assert_eq!(submit(&h, form).await.status(), 202);
+    let done = finished(&h, "voice-test-0001").await;
+    assert_eq!(done["status"], "done", "{done}");
+    let lines = h.timeline_lines();
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    for l in &lines {
+        // `via` keeps it off his phone (secretary-server makes no notification for any `via`); the conversation keeps it out of
+        // his chat and out of the Lucina Voice thread.
+        assert_eq!(l["meta"]["via"], "test", "{l}");
+        assert_eq!(l["meta"]["conversation"], "voice-test", "{l}");
+    }
+    assert_eq!(lines[1]["meta"]["voiceReply"], true);
+    assert_eq!(lines[0]["text"], "");
+    let keys: Vec<_> = h.state.timeline.conversations().unwrap().into_iter().map(|c| c.key).collect();
+    assert_eq!(keys, ["test:voice-test"]);
+    // Not remembered: no attachment memory, nothing in his library, no About-you observation.
+    assert!(h.state.share.memory.recent(0, 10).unwrap().is_empty());
+    assert!(services.seen.media.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn an_ordinary_voice_note_has_no_test_marks() {
+    let services = services().await;
+    let h = voice_setup(&services, false, VOICE_TEXT).await;
+    let bytes = voice_bytes(&h).await;
+    assert_eq!(submit(&h, voice_form("voice-plain-001", bytes, None, "")).await.status(), 202);
+    assert_eq!(finished(&h, "voice-plain-001").await["status"], "done");
+    for l in h.timeline_lines() {
+        assert!(l["meta"].get("via").is_none() && l["meta"].get("conversation").is_none(), "{l}");
+    }
+    let keys: Vec<_> = h.state.timeline.conversations().unwrap().into_iter().map(|c| c.key).collect();
+    assert!(!keys.contains(&"test:voice-test".to_owned()), "{keys:?}");
+}
+
+/// Chat voice is never a memo (owner rule, 2026-11-08): a voice share is transcribed (lucina-memo's `transcribe` library, in
+/// process) and answered as a chat turn. Nothing in the share path calls the memo API (`/v1/memos`): the only HTTP it makes is
+/// the media library and vision, which the mock records; and no source of the share path names that API.
+#[tokio::test]
+async fn a_voice_share_creates_no_memo() {
+    let services = services().await;
+    let h = voice_setup(&services, false, VOICE_TEXT).await;
+    let bytes = voice_bytes(&h).await;
+    assert_eq!(submit(&h, voice_form("voice-share-0003", bytes, None, "")).await.status(), 202);
+    assert_eq!(finished(&h, "voice-share-0003").await["status"], "done");
+    for v in services.seen.media.lock().unwrap().iter() {
+        assert!(!v.to_string().contains("v1/memos"), "{v}");
+    }
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    for file in ["share/mod.rs", "share/extract.rs", "share/memory.rs", "share/library.rs", "share/tools.rs", "test_turn.rs"] {
+        let text = std::fs::read_to_string(src.join(file)).unwrap();
+        assert!(!text.contains("v1/memos"), "{file} names the memo API");
+        assert!(!text.contains("MemosTool"), "{file} uses the memos tool");
+    }
+}

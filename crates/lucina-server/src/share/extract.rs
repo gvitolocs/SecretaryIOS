@@ -497,7 +497,49 @@ pub(crate) async fn pdf(st: &AppState, path: &Path) -> anyhow::Result<Extracted>
     }
     Ok(x)
 }
-/// 16 kHz mono WAV of the first ten minutes for voice notes, otherwise 30, then Whisper.
+/// The recording of a voice note is silent: its peak is under -60 dBFS, or no 20 ms frame is above the noise gate
+/// (docs/share.md "Quiet voice notes"). There is nothing to transcribe, so Whisper is not asked.
+#[derive(Debug)]
+pub(super) struct Silent;
+impl std::fmt::Display for Silent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the recording was silent")
+    }
+}
+impl std::error::Error for Silent {}
+
+/// Measure the 16 kHz WAV of a voice note and lift quiet speech in place (the speech-to-text copy only: this is the work file, the
+/// stored original is untouched). `Err(Silent)` for a silent recording. The same rules as the voice socket
+/// (`crate::voice_rules`, Verus-checked). Numbers only in the log, never audio or text.
+async fn level_wav(wav: &Path) -> anyhow::Result<()> {
+    let bytes = tokio::fs::read(wav).await?;
+    let outcome = tokio::task::spawn_blocking(move || {
+        let (samples, rate) = crate::voice_level::wav_samples(&bytes)?;
+        if rate != 16_000 {
+            return None;
+        }
+        let analysis = crate::voice_level::analyse(&samples);
+        let lifted = analysis.normalised(&samples).map(|v| crate::voice_level::wav_of(&v, rate));
+        Some((analysis.level, lifted))
+    })
+    .await?;
+    let Some((level, lifted)) = outcome else {
+        return Ok(());
+    };
+    let (peak, rms, speech, gain) = level.rounded();
+    tracing::info!(target: "lucina_server::share", event = "share_level", in_peak_dbfs = peak, in_rms_dbfs = rms,
+        speech_rms_dbfs = speech, gain_db = gain, silent = level.silent, "voice note level");
+    if level.silent {
+        return Err(Silent.into());
+    }
+    if let Some(wav_bytes) = lifted {
+        tokio::fs::write(wav, wav_bytes).await?;
+    }
+    Ok(())
+}
+
+/// 16 kHz mono WAV of the first ten minutes for voice notes, otherwise 30, then Whisper. A voice note is measured first: silent ->
+/// `Err(Silent)`, quiet -> lifted towards -20 dBFS before Whisper.
 pub(super) async fn transcribe(
     st: &AppState,
     path: &Path,
@@ -524,6 +566,9 @@ pub(super) async fn transcribe(
         ],
     )
     .await?;
+    if voice {
+        level_wav(&wav).await?;
+    }
     let share = &st.cfg.share;
     let duration = lucina_memo::transcribe::duration(&share.whisper, &wav).await?;
     // A short clip (a voice note, chat voice) takes the small, quick Whisper when one is set up: it must not
@@ -548,6 +593,7 @@ async fn audio(
     voice: bool,
 ) -> anyhow::Result<Extracted> {
     let mut x = Extracted::new("audio");
+    let mut silent = false;
     let (transcript, source) = match on_device.filter(|t| !t.trim().is_empty()) {
         // The phone's own transcript gets the Voice Learn vocabulary like Whisper's does (lucina-memo).
         Some(t) => (
@@ -557,6 +603,7 @@ async fn audio(
         None => match transcribe(st, path, voice).await {
             Ok((t, _)) => (t, "whisper"),
             Err(e) => {
+                silent = e.downcast_ref::<Silent>().is_some();
                 x.warnings.push(format!("transcription failed: {e}"));
                 (String::new(), "none")
             }
@@ -566,6 +613,10 @@ async fn audio(
         .await
         .ok();
     x.structured = serde_json::json!({ "duration_s": duration, "transcript_source": source });
+    if silent {
+        // The share reply says so ("The recording was silent: check the microphone."), not "I couldn't hear you".
+        x.structured["silent"] = serde_json::json!(true);
+    }
     if voice {
         x.subtype = Some("voice".into());
         x.text = transcript.trim().to_owned();

@@ -41,6 +41,7 @@ async fn secretary_core_client_decodes_every_route() {
                 device: None,
                 device_name: None,
                 voice_meta: None,
+                test: None,
             })
             .unwrap(),
         )

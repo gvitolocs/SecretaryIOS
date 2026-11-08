@@ -18,6 +18,7 @@
 //! | `SECRETARY_GEMINI_KEY_FILE` | — | file with the Gemini API key; enables `POST /v1/calls/transcribe` and `POST /v1/voice` |
 //! | `SECRETARY_VOICE_STT_URL` | `http://127.0.0.1:8801/v1/memos/stt` | local speech-to-text tried first by `POST /v1/voice` and `GET /v1/voice/ws`, and warmed by the latter (Caddy's loopback site on p1 → lucina-memo's whisper.cpp); `off` = Gemini only |
 //! | `SECRETARY_VOICE_SHARE_URL` | `http://127.0.0.1:8801/v1/share` | where `GET /v1/voice/ws` posts voice notes (`purpose: "note"`, protocol section 10.4) and reads their status (`<url>/<shareId>`): Caddy's loopback site on p1 → lucina-rs, with the caller's own credentials; `off` = notes refused |
+//! | `SECRETARY_VOICE_TEST_DEVICES` | — (none) | comma-separated device ids whose voice-socket turns are tests (protocol section 10.8): sent to Lucina flagged `test`, so that they are silent (no push) and out of the owner's chat and memory. For agents' measurements with a real device token |
 //! | `SECRETARY_TRANSCRIPTION_MODEL` | `gemini-3.5-transcribe` | the transcription model (`gemini-…`) |
 //! | `SECRETARY_TRANSCRIPTION_URL` | `https://generativelanguage.googleapis.com` | transcription API origin (tests point it at a mock) |
 //! | `SECRETARY_CATALOG_DIR` | `/var/lib/secretary/catalog` | `catalog.{it,en,da}.json` for `GET /v1/shopping/catalog` |
@@ -117,6 +118,8 @@ pub struct Config {
     pub voice_stt_url: Option<String>,
     /// Where the socket posts voice notes (`None` = notes are off).
     pub voice_share_url: Option<String>,
+    /// Device ids whose voice-socket turns are tests (`SECRETARY_VOICE_TEST_DEVICES`).
+    pub voice_test_devices: Vec<String>,
     pub tts_voices: Vec<String>,
     pub tts_timeout: Duration,
     pub timeouts: Timeouts,
@@ -193,6 +196,7 @@ impl Config {
             tts_url: crate::tts::DEFAULT_URL.into(),
             voice_stt_url: Some(crate::voice::DEFAULT_STT_URL.into()),
             voice_share_url: Some(crate::voice_note::DEFAULT_SHARE_URL.into()),
+            voice_test_devices: Vec::new(),
             tts_voices: crate::tts::DEFAULT_VOICES
                 .split(',')
                 .map(str::to_owned)
@@ -262,6 +266,13 @@ impl Config {
         if let Some(u) = get("SECRETARY_VOICE_SHARE_URL") {
             let u = u.trim();
             cfg.voice_share_url = (!u.is_empty() && u != "off").then(|| u.to_owned());
+        }
+        if let Some(v) = get("SECRETARY_VOICE_TEST_DEVICES") {
+            cfg.voice_test_devices = v
+                .split(',')
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+                .collect();
         }
         if let Some(v) = get("SECRETARY_TTS_VOICES") {
             cfg.tts_voices = v
@@ -503,6 +514,11 @@ mod tests {
             "the Maps key never reaches Debug"
         );
         assert!(!format!("{:?}", Config::new("x", Some("abc".into()))).contains("abc"));
+        // Voice test devices: none by default; a comma list, trimmed, empty entries dropped.
+        assert!(cfg.voice_test_devices.is_empty());
+        let env: HashMap<&str, String> = [("SECRETARY_VOICE_TEST_DEVICES", " dev_a, ,dev_b ,".to_owned())].into_iter().collect();
+        let cfg = Config::from_lookup(|k| env.get(k).cloned()).unwrap();
+        assert_eq!(cfg.voice_test_devices, ["dev_a", "dev_b"]);
 
         let none = Config::from_lookup(|_| None).unwrap();
         assert!(none.lucina_token.is_none() && none.upstream.is_none());

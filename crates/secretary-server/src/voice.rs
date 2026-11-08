@@ -142,6 +142,8 @@ pub struct Voice {
     share_url: Option<String>,
     share: reqwest::Client,
     warm: Mutex<Warm>,
+    /// Devices whose socket turns are tests (`SECRETARY_VOICE_TEST_DEVICES`, protocol section 10.8).
+    test_devices: HashSet<String>,
 }
 
 /// When the local engine last answered, and whether a warm-up is under way.
@@ -157,6 +159,7 @@ impl Voice {
             limiter: crate::ratelimit::RateLimiter::new(PER_MINUTE),
             busy: Mutex::new(HashSet::new()),
             warm: Mutex::new(Warm::default()),
+            test_devices: HashSet::new(),
             stt_url,
             stt: reqwest::Client::builder()
                 .timeout(STT_TIMEOUT)
@@ -170,6 +173,18 @@ impl Voice {
                 .redirect(reqwest::redirect::Policy::none())
                 .build()?,
         })
+    }
+
+    /// These device ids' socket turns are tests: Lucina runs them silently, out of the owner's chat and memory.
+    #[must_use]
+    pub fn with_test_devices(mut self, devices: &[String]) -> Self {
+        self.test_devices = devices.iter().cloned().collect();
+        self
+    }
+
+    /// Whether `device`'s socket turns are tests.
+    pub fn is_test_device(&self, device: &str) -> bool {
+        self.test_devices.contains(device)
     }
 
     /// The share endpoint voice notes are posted to; `None` = notes are off.

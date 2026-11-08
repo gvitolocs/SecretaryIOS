@@ -2169,6 +2169,7 @@ mod tests {
             device_name: None,
             reply_to: None,
             voice_meta: None,
+            test: None,
         })
         .is_err());
         assert!(Call::agenda(&AgendaQuery {
@@ -2192,6 +2193,7 @@ mod tests {
                 device_name: None,
                 reply_to: None,
                 voice_meta: None,
+                test: None,
             })
         };
         assert!(chat("ios").is_ok());
@@ -2206,6 +2208,7 @@ mod tests {
                 device_name: None,
                 reply_to: Some(id.into()),
                 voice_meta: None,
+                test: None,
             })
         };
         assert_eq!(
@@ -2235,6 +2238,7 @@ mod tests {
                 device_name: None,
                 reply_to: None,
                 voice_meta: None,
+                test: None,
             })
             .unwrap()
             .timeout_class(),

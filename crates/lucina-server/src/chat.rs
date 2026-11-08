@@ -205,12 +205,17 @@ async fn handle_chat_turn(
     let reply_to = (!reply_to.is_empty()).then_some(reply_to);
     // Self-tests and diagnostics run in their own conversation, out of the owner's chat.
     let selftest = crate::selftest::requested(&body, &requested, &message);
+    let mcp_turn = mcp::turn_info(&requested, &message);
+    // A voice test device's turn (docs/lucinavoice-protocol.md section 10.8): secretary-server flags it with `"test": true`. It
+    // is the owner's own turn in a session of its own, with every item marked `via: "test"`; never an agent's or a self-test's.
+    let test = body["test"] == true && !selftest && mcp_turn.is_none();
     let session = if selftest {
         crate::selftest::SESSION.to_owned()
+    } else if test {
+        crate::test_turn::SESSION.to_owned()
     } else {
         secretary_session_id(&requested, &st.cfg.default_session)
     };
-    let mcp_turn = mcp::turn_info(&requested, &message);
     let text = mcp_turn
         .as_ref()
         .map(|m| m.text.clone())
@@ -246,7 +251,7 @@ async fn handle_chat_turn(
     // message are masked before the turn and offered for saving after it.
     // "Add secret" and Infisical project offers are the owner's own: an MCP caller's prose never
     // makes a card in his chat (2026-10-28: an agent's decision question became a project offer).
-    if mcp_turn.is_none() && crate::owner_secrets::is_secret_command(&text) {
+    if mcp_turn.is_none() && !test && crate::owner_secrets::is_secret_command(&text) {
         let (reply, lucina_item_id) =
             crate::owner_secrets::answer_secret_command(&st, &text, &st.timeline_for(&session));
         return Ok(json!({
@@ -264,7 +269,7 @@ async fn handle_chat_turn(
     let keep_context = if held.is_empty() { String::new() } else { text.clone() };
     // "Salva un segreto": before the model. His words are recorded unless they look like they hold
     // the value (`NAME value`, not token-shaped so not masked above): those go nowhere at all.
-    if let Some(words) = (held.is_empty() && mcp_turn.is_none() && !crate::selftest::is_session(&session))
+    if let Some(words) = (held.is_empty() && mcp_turn.is_none() && !test && !crate::selftest::is_session(&session))
         .then(|| crate::owner_secrets::secret_words(&text))
         .flatten()
     {
@@ -303,7 +308,7 @@ async fn handle_chat_turn(
     } else {
         text
     };
-    if let Some(name) = (held.is_empty() && mcp_turn.is_none())
+    if let Some(name) = (held.is_empty() && mcp_turn.is_none() && !test)
         .then(|| crate::owner_secrets::project_request(&text))
         .flatten()
     {
@@ -336,12 +341,13 @@ async fn handle_chat_turn(
         device_name: body["deviceName"].as_str().map(str::to_owned),
         voice: voice_base(&body).filter(|_| channel == VOICE_CHANNEL),
         ..Meta::default()
-    };
+    }
+    .merge(if test { crate::test_turn::meta() } else { Meta::default() });
     let offer_timeline = st.timeline_for(&session);
     let offer_lang = crate::owner_secrets::lang_of(&text);
     let cmid = (!client_message_id.is_empty()).then_some(client_message_id);
     let (keep_st, keep_session) = (st.clone(), session.clone());
-    if mcp_turn.is_none() {
+    if mcp_turn.is_none() && !test {
         crate::about::observe(&st, &session, "chat", &cmid.clone().unwrap_or_default(), &text);
     }
     let Some(cmid_value) = cmid.clone() else {
@@ -720,6 +726,8 @@ fn resolve_reminder(message: &str, plan: &Value, o: &ParseOptions) -> Option<(St
 
 /// Everything a turn needs once it is past validation.
 struct Turn<'a> {
+    /// A voice test device's turn (`crate::test_turn`): its items carry `via: "test"`.
+    test: bool,
     st: &'a AppState,
     message: String,
     session: String,
@@ -746,6 +754,9 @@ struct Turn<'a> {
 impl Turn<'_> {
     /// The meta that marks this turn's items as an agent's (none for the owner's own turn).
     fn agent_mark(&self) -> Meta {
+        if self.test {
+            return crate::test_turn::meta();
+        }
         self.mcp.as_ref().map_or_else(Meta::default, |m| Meta {
             via: Some("mcp".into()),
             caller: Some(m.caller.clone()),
@@ -861,6 +872,8 @@ pub(crate) struct ShareTurn {
     /// What the owner wrote or said (the caption, or a voice note's transcript). The secrets
     /// pre-check reads only this: shared content (OCR of a screenshot, a page) is not the owner asking.
     pub owner_text: String,
+    /// A voice test device's note (`crate::test_turn`): the turn's items carry `via: "test"`.
+    pub test: bool,
 }
 
 /// Share ingestion has already written the owner's timeline item (with its
@@ -875,6 +888,7 @@ pub(crate) async fn share_turn(
     let surface =
         crate::surface::chat_surface(&st.cfg, Some(BearerVerified::checked()), &channel, None);
     let reply_to = input.item.reply_to.clone();
+    let test = input.test;
     run_turn_inner(
         st,
         message,
@@ -886,7 +900,7 @@ pub(crate) async fn share_turn(
         Some(input),
         None,
         reply_to,
-        Meta::default(),
+        if test { crate::test_turn::meta() } else { Meta::default() },
     )
     .await
 }
@@ -1090,6 +1104,7 @@ async fn run_turn_scoped(
     let guarded = (mcp_turn.is_some() && (!st.cfg.mcp_trusted || consult))
         || origin.as_ref().is_some_and(|o| !o.owner);
     let t = Turn {
+        test: crate::test_turn::is_session(&session),
         st: &st,
         message,
         session,
@@ -1536,7 +1551,8 @@ pub(crate) const PRIVATE_ACTION: &str = "re_plugins";
 
 /// Honcho `remember` (`readwrite` only), Node's `rememberSecretaryTurn`.
 fn remember_turn(st: &AppState, t: &Turn<'_>, action: &str, reply: &str, action_result: &str) {
-    if st.memory.mode() != MemoryMode::ReadWrite || crate::selftest::is_session(&t.session) {
+    // A self-test and a voice test device's turn are never remembered.
+    if st.memory.mode() != MemoryMode::ReadWrite || crate::selftest::is_session(&t.session) || t.test {
         return;
     }
     if action == PRIVATE_ACTION {
@@ -2780,7 +2796,7 @@ async fn delegated_finish(
 
 /// Honcho: a saved note's summary (`rememberNote`).
 fn remember_note(st: &AppState, surface: &TurnSurface, session: &str, note: &Value, source: &str) {
-    if st.memory.mode() != MemoryMode::ReadWrite {
+    if st.memory.mode() != MemoryMode::ReadWrite || crate::test_turn::is_session(session) {
         return;
     }
     let user = format!(
@@ -3106,7 +3122,7 @@ fn remember_job(
     reply: &str,
     action_result: &str,
 ) {
-    if st.memory.mode() != MemoryMode::ReadWrite {
+    if st.memory.mode() != MemoryMode::ReadWrite || crate::test_turn::is_session(who.session) {
         return;
     }
     let message = who.message;
@@ -3658,6 +3674,7 @@ async fn tools_turn(
         message: message.clone(),
         session: session.clone(),
         channel: channel.clone(),
+        test: crate::test_turn::is_session(&session),
         mcp: surface.caller().map(|caller| McpTurn {
             caller: caller.to_owned(),
             text: message.clone(),

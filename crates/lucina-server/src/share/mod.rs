@@ -46,6 +46,10 @@ const PART_TEXT_MAX: usize = 12_000;
 /// Longest read of one file that is not audio or video: above `vision_budget` (360 s by default), so an
 /// image whose vision is slow still comes back with its OCR text.
 const READ_LIMIT_SECS: u64 = 420;
+/// Lucina's reply to a voice note whose recording was silent (peak under -60 dBFS, or no frame above the noise gate), English
+/// and Danish; never Italian. The same text as the voice socket's `silent` error.
+pub const SILENT_REPLY: &str = "The recording was silent: check the microphone.";
+pub const SILENT_REPLY_DA: &str = "Optagelsen var tavs: tjek mikrofonen.";
 
 #[derive(Clone, Debug)]
 pub struct ShareConfig {
@@ -313,6 +317,10 @@ struct Job {
     lucina_item_id: Option<String>,
     reply: Option<String>,
     error: Option<String>,
+    /// A voice test device's note (form field `test=1`; docs/lucinavoice-protocol.md section 10.8): its items are written silent
+    /// (`meta.via = "test"`, conversation `voice-test`), the turn is not remembered, and the file is not put in the library.
+    #[serde(default)]
+    test: bool,
 }
 impl Job {
     fn public(&self, duplicate: bool) -> Value {
@@ -526,6 +534,7 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
                 "url",
                 "meta",
                 "replyTo",
+                "test",
             ]
             .contains(&name.as_str())
             {
@@ -634,6 +643,13 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
     if !valid_session(&session) {
         return Err(bad("invalid sessionId"));
     }
+    // A voice test device's note: its own session, whatever the sender said.
+    let test = matches!(field("test", "").as_str(), "1" | "true");
+    let session = if test {
+        crate::test_turn::REQUESTED.to_owned()
+    } else {
+        session
+    };
     // Swipe to reply: the earlier timeline item this share answers.
     let reply_to = field("replyTo", "").trim().to_owned();
     if !reply_to.is_empty() && !crate::chat::reply::valid_id(&reply_to) {
@@ -738,7 +754,9 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
                 .file_index
                 .and_then(|fi| meta.files.iter().find(|f| f.index == fi))
                 .and_then(|f| f.taken_at.clone());
-            store_in_library(&st, &id, i, &source, &note, part, taken_at).await;
+            if !test {
+                store_in_library(&st, &id, i, &source, &note, part, taken_at).await;
+            }
         } else if part.attachment.kind == "link" {
             let host = host_of(part.attachment.url.as_deref().unwrap_or(""));
             part.attachment.name = Some(if title.trim().is_empty() {
@@ -753,7 +771,8 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
             "📎 {}",
             parts
                 .iter()
-                .filter(|p| p.text.is_none())
+                // A voice note shows only the voice note (play control, duration, waveform), never its file name.
+                .filter(|p| p.text.is_none() && p.attachment.kind != "voice")
                 .map(|p| p.attachment.name.as_deref().unwrap_or("file"))
                 .collect::<Vec<_>>()
                 .join(", ")
@@ -786,11 +805,14 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
             text,
             reply_to,
             attachments,
-            meta: Some(Meta {
-                share_id: Some(id.clone()),
-                intent: Some(action.clone()),
-                ..Meta::kind("share")
-            }),
+            meta: Some(
+                Meta {
+                    share_id: Some(id.clone()),
+                    intent: Some(action.clone()),
+                    ..Meta::kind("share")
+                }
+                .merge(if test { crate::test_turn::meta() } else { Meta::default() }),
+            ),
             ..NewItem::default()
         },
         Utc::now().timestamp_millis(),
@@ -811,6 +833,7 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
         lucina_item_id: None,
         reply: None,
         error: None,
+        test,
     };
     save(&dir, &job).await?;
     // status.json says processing now: the share must be processed even if
@@ -998,6 +1021,10 @@ fn listed(p: &Part) -> bool {
 }
 
 async fn store_job_again(st: &AppState, dir: &Path, job: &mut Job) -> usize {
+    // A test device's note never goes to the owner's library.
+    if job.test {
+        return 0;
+    }
     let _lock = st.share.ingest.lock().await;
     let (id, source, note) = (job.share_id.clone(), job.source.clone(), job.note.clone());
     // (index among the item's attachments, file name, media id)
@@ -1338,6 +1365,8 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
     save(dir, job).await?;
     let mut content = String::new();
     let mut voice_transcripts = Vec::new();
+    // A voice note whose recording was silent (peak under -60 dBFS): it gets its own reply, not "I couldn't hear you".
+    let mut silent_voice = false;
     let mut budget = TURN_TEXT_BUDGET;
     let has_voice = job.parts.iter().any(|p| p.attachment.kind == "voice");
     let voice_only = job.parts.len() == 1 && has_voice && job.note.trim().is_empty();
@@ -1407,6 +1436,7 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
             }
             if part.attachment.transcript.is_none() {
                 part.state = "failed".into();
+                silent_voice |= x.structured["silent"] == true;
             }
         }
         part.handler = Some(x.kind.into());
@@ -1414,7 +1444,7 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
             .summary
             .clone()
             .or_else(|| (!x.text.trim().is_empty()).then(|| clip(x.text.trim(), 300)));
-        if part.state == "read" && extract_files {
+        if part.state == "read" && extract_files && !job.test {
             let record = memory::Record {
                 id: format!("{}-{i}", job.share_id),
                 share_id: job.share_id.clone(),
@@ -1458,15 +1488,19 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
             .map(|s| clip(&s, 4000)),
         voice_reply: has_voice.then_some(true),
         ..Meta::default()
-    };
+    }
+    .merge(if job.test { crate::test_turn::meta() } else { Meta::default() });
     if has_voice
         && job
             .parts
             .iter()
             .any(|p| p.attachment.kind == "voice" && p.attachment.transcript.is_none())
     {
-        let reply = match owner_language(st, &job.session, &job.note).reply().code() {
-            "da" => "Jeg kunne ikke høre dig. Kan du gentage det?",
+        let silent = silent_voice && voice_transcripts.is_empty();
+        let reply = match (owner_language(st, &job.session, &job.note).reply().code(), silent) {
+            ("da", true) => SILENT_REPLY_DA,
+            (_, true) => SILENT_REPLY,
+            ("da", false) => "Jeg kunne ikke høre dig. Kan du gentage det?",
             _ => "I couldn't hear you. Could you repeat that?",
         };
         let item = st.timeline_for(&job.session).append(NewItem {
@@ -1532,7 +1566,9 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
         } else {
             job.note.clone()
         };
-        crate::about::observe(st, &job.session, "document", &job.share_id, &format!("{}\n{content}", job.note.trim()));
+        if !job.test {
+            crate::about::observe(st, &job.session, "document", &job.share_id, &format!("{}\n{content}", job.note.trim()));
+        }
         let out = crate::chat::share_turn(
             st.clone(),
             message,
@@ -1543,6 +1579,7 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
                 voice_only,
                 reply_meta: voice_meta,
                 owner_text,
+                test: job.test,
             },
         )
         .await

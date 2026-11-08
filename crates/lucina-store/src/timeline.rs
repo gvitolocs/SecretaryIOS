@@ -281,6 +281,19 @@ pub fn conversation_key(channel: &str, meta: Option<&Meta>) -> String {
             .collect();
         return format!("agent:{}", if caller.is_empty() { "mcp" } else { &caller });
     }
+    // A voice test device's turn (`via: "test"`, docs/lucinavoice-protocol.md section 10.8): a conversation of its own, never the
+    // owner's main conversation or the shared Lucina Voice thread.
+    if let Some(m) = meta.filter(|m| m.via.as_deref() == Some("test")) {
+        let name: String = m
+            .conversation
+            .as_deref()
+            .unwrap_or("")
+            .to_lowercase()
+            .chars()
+            .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '_' || *c == '-')
+            .collect();
+        return format!("test:{}", if name.is_empty() { "test" } else { &name });
+    }
     match channel {
         "web" | "ios" => match meta
             .and_then(|m| m.device.as_deref())
@@ -805,6 +818,7 @@ impl Inner {
             "discord" => "Discord".into(),
             "alexa" => "Alexa".into(),
             "voice" => "Lucina Voice".into(),
+            "test" => "Voice test".into(),
             _ => "Lucina".into(),
         };
         let index = *self.keys.entry(key.clone()).or_insert_with(|| {
@@ -1697,6 +1711,30 @@ mod tests {
             text: text.into(),
             ..NewItem::default()
         }
+    }
+
+    #[test]
+    fn a_voice_test_turn_is_a_conversation_of_its_own() {
+        let test = Meta {
+            via: Some("test".into()),
+            conversation: Some("voice-test".into()),
+            device: Some("dev_1".into()),
+            ..Meta::default()
+        };
+        // Whatever the channel (voice thread, app chat) and the device: never the main conversation or the voice thread.
+        for channel in ["voice", "ios", "web"] {
+            assert_eq!(conversation_key(channel, Some(&test)), "test:voice-test");
+        }
+        assert_eq!(conversation_key("voice", None), "voice");
+        let bare = Meta { via: Some("test".into()), ..Meta::default() };
+        assert_eq!(conversation_key("voice", Some(&bare)), "test:test");
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path(), DEFAULT_MAX_BYTES);
+        s.append(NewItem { channel: "voice".into(), role: "user".into(), text: "a".into(), meta: Some(test.clone()), ..NewItem::default() }).unwrap();
+        s.append(NewItem { channel: "voice".into(), role: "user".into(), text: "b".into(), ..NewItem::default() }).unwrap();
+        let all = s.conversations().unwrap();
+        assert!(all.iter().any(|c| c.key == "test:voice-test" && c.title == "Voice test" && c.count == 1), "{all:?}");
+        assert!(all.iter().any(|c| c.key == "voice" && c.count == 1), "{all:?}");
     }
 
     #[test]

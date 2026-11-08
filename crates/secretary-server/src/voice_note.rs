@@ -136,6 +136,9 @@ pub struct NoteForm<'a> {
     pub file_name: &'a str,
     /// The whole WAV file.
     pub wav: &'a [u8],
+    /// A test device's note (protocol section 10.8): the form says `test=1`, and lucina-rs writes the share's items silent and
+    /// out of the owner's chat.
+    pub test: bool,
 }
 
 /// The `meta` field: `{"files":[{"index":0,"voice":true,"durationMs":…,"transcript"?:…}]}`.
@@ -164,6 +167,9 @@ pub fn share_body(boundary: String, f: &NoteForm) -> (String, Vec<u8>) {
         m.text("replyTo", r);
     }
     m.text("meta", &meta_json(f.duration_ms, f.transcript));
+    if f.test {
+        m.text("test", "1");
+    }
     m.file("file", f.file_name, "audio/wav", f.wav);
     m.finish()
 }
@@ -511,6 +517,7 @@ mod tests {
             transcript: Some("ciao"),
             file_name: "voice-x.wav",
             wav: &[1, 2, 3, 0xff],
+            test: false,
         };
         let (ct, body) = share_body("BND".into(), &f);
         assert_eq!(ct, "multipart/form-data; boundary=BND");
@@ -521,6 +528,10 @@ mod tests {
         assert!(text.contains("name=\"intent\"\r\n\r\nask\r\n"));
         assert!(text.contains("name=\"lang\"\r\n\r\nit\r\n"));
         assert!(!text.contains("sessionId"));
+        assert!(!text.contains("name=\"test\""));
+        let f = NoteForm { test: true, ..f };
+        let (_, tested) = share_body("BND".into(), &f);
+        assert!(String::from_utf8_lossy(&tested).contains("name=\"test\"\r\n\r\n1\r\n"));
         assert!(text.contains("name=\"replyTo\"\r\n\r\nitm_1\r\n"));
         assert!(text.contains(
             "name=\"file\"; filename=\"voice-x.wav\"\r\nContent-Type: audio/wav\r\n\r\n"
