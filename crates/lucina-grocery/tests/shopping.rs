@@ -672,7 +672,7 @@ async fn item_objects() {
             "default",
             &json!([
                 op("add", json!({"text": "LATTE"})),
-                op("add", json!({"text": "the milk"})),
+                op("add", json!({"text": "Milk"})),
                 op("add", json!({"itemId": "milk"}))
             ]),
             None,
@@ -685,6 +685,13 @@ async fn item_objects() {
     assert_eq!(again.merged.len(), 3);
     assert_eq!(again.items[0]["name"], "Milk");
     assert_eq!(again.lang, "en");
+    // No article stripping (docs/design/shopping-labels.md): "the milk" is its own label.
+    let the = r
+        .apply_ops(&u, "default", &json!([op("add", json!({"text": "the milk"}))]), None, "web")
+        .await
+        .unwrap();
+    let row = the.items.iter().find(|i| i["typedName"] == "the milk").unwrap();
+    assert_eq!((row["catalogId"].clone(), row["section"].clone()), (Value::Null, json!("other")));
     // an old web outbox: its own row UUID in itemId next to catalogId
     let legacy = r
         .apply_ops(&u, "default", &json!([op("add", json!({"itemId": Uuid::new_v4().to_string(), "catalogId": "banana", "name": "Banane"}))]), None, "web")
@@ -733,8 +740,9 @@ async fn item_objects() {
     assert_eq!(soap["item"]["needsTranslation"], true);
     assert_eq!(soap["section"], "other");
     let customs = r.custom_items(&u).await.unwrap();
-    assert_eq!(customs.len(), 1);
-    assert_eq!(customs[0]["aliases"], json!(["Detersivo piatti"]));
+    assert_eq!(customs.len(), 2, "the milk and the dish soap");
+    let soap_obj = customs.iter().find(|c| c["id"] == json!(soap_id)).unwrap();
+    assert_eq!(soap_obj["aliases"], json!(["Detersivo piatti"]));
 
     // edit_item: names, icon; catalog objects and taken names are refused
     let out = r
@@ -819,7 +827,9 @@ async fn new_items_are_named_by_one_model_call() {
         .unwrap();
     assert_eq!(out.items.len(), 1);
     assert_eq!(out.items[0]["name"], "Svampe");
-    assert_eq!(out.items[0]["icon"], "🧽");
+    // The model names the item; its section and emoji are ignored (docs/design/shopping-labels.md).
+    assert_eq!(out.items[0]["icon"], Value::Null);
+    assert_eq!(out.items[0]["section"], "other");
     assert_eq!(out.items[0]["item"]["needsTranslation"], false);
     let again = r
         .apply_ops(
@@ -990,4 +1000,36 @@ async fn ops_on_the_clients_optimistic_row_land() {
         .await
         .unwrap_err();
     assert_eq!(code(err), "revision_conflict");
+}
+
+/// docs/design/shopping-labels.md: only an exact catalog term links; anything
+/// else is a label in `other` with no icon, whatever words it contains.
+#[tokio::test]
+async fn free_text_is_a_plain_label() {
+    let Some(r) = repo().await else { return };
+    let u = user();
+    let out = r
+        .apply_ops(
+            &u,
+            "default",
+            &json!([
+                op("add", json!({"text": "latte di avena fatto in casa"})),
+                op("add", json!({"text": "bananas split"})),
+                op("add", json!({"text": "BANANE"})),
+            ]),
+            None,
+            "web",
+        )
+        .await
+        .unwrap();
+    let by = |t: &str| out.items.iter().find(|i| i["typedName"] == t).unwrap().clone();
+    for t in ["latte di avena fatto in casa", "bananas split"] {
+        let i = by(t);
+        assert_eq!(i["catalogId"], Value::Null, "{t}");
+        assert_eq!((i["section"].clone(), i["icon"].clone()), (json!("other"), Value::Null), "{t}");
+    }
+    assert_eq!(by("BANANE")["catalogId"], "banana");
+    // A label never merges into the catalog item it starts with.
+    let (n, _, _) = r.remove_items_named_in(&u, "latte", "web", None).await.unwrap();
+    assert_eq!(n, 0);
 }

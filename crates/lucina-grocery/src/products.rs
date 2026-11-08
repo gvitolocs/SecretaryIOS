@@ -77,6 +77,8 @@ fn product(entry: &(&str, &str, &str, &[&str]), confidence: f64) -> Product {
     }
 }
 
+/// The product of a pantry, price or purchase text: an exact alias, else an
+/// alias that starts a word of it ("latte intero" is milk), else its own.
 pub fn resolve_canonical_product(raw: &str) -> Product {
     let query = normalize_product_name(raw);
     if let Some(e) = PRODUCT_ALIASES
@@ -93,6 +95,24 @@ pub fn resolve_canonical_product(raw: &str) -> Product {
     }) {
         return product(e, 0.86);
     }
+    text_product(raw, &query)
+}
+
+/// The product of a shopping-list label: an exact alias only, else its own
+/// (docs/design/shopping-labels.md). A row's product decides which rows count
+/// as the same item, so "latte di avena" never merges into "latte".
+pub fn exact_canonical_product(raw: &str) -> Product {
+    let query = normalize_product_name(raw);
+    match PRODUCT_ALIASES
+        .iter()
+        .find(|e| e.3.iter().any(|a| normalize_product_name(a) == query))
+    {
+        Some(e) => product(e, 1.0),
+        None => text_product(raw, &query),
+    }
+}
+
+fn text_product(raw: &str, query: &str) -> Product {
     let id: String = query
         .split_whitespace()
         .collect::<Vec<_>>()
@@ -137,5 +157,13 @@ mod tests {
         );
         assert_eq!(resolve_canonical_product("ñoño").id, "oo");
         assert_eq!(resolve_canonical_product("!!!").id, "unknown_product");
+    }
+
+    #[test]
+    fn shopping_labels_match_exactly() {
+        assert_eq!(exact_canonical_product("Latte").id, "milk");
+        assert_eq!(exact_canonical_product("latte intero").id, "latte_intero");
+        assert_eq!(exact_canonical_product("latte di avena").category, "other");
+        assert_eq!(exact_canonical_product("!!!").id, "unknown_product");
     }
 }

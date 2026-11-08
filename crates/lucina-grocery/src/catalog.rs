@@ -252,15 +252,14 @@ impl CatalogIndex {
             .map(|i| (i, "alias"))
     }
 
-    /// Exact folded match of an id, name, translation or alias (a trailing
-    /// `s` is also tried). `None` when unknown.
+    /// Exact folded match of an id, name, translation or alias. `None` when
+    /// unknown: no plural or prefix guessing (docs/design/shopping-labels.md).
     pub fn find(&self, text: &str) -> Option<&CatalogItem> {
         let key = fold(text);
         if key.is_empty() {
             return None;
         }
-        let term = |k: &str| self.by_name.get(k).or_else(|| self.by_alias.get(k));
-        let id = term(&key).or_else(|| key.strip_suffix('s').and_then(term))?;
+        let id = self.by_name.get(&key).or_else(|| self.by_alias.get(&key))?;
         self.items.get(id)
     }
 
@@ -392,7 +391,8 @@ mod tests {
         ]}));
         assert_eq!(idx.find("MELA").unwrap().id, "apple");
         assert_eq!(idx.find("æbler").unwrap().id, "apple");
-        assert_eq!(idx.find("bananas").unwrap().id, "banana");
+        assert!(idx.find("bananas").is_none(), "no plural guessing");
+        assert!(idx.find("mela rossa").is_none(), "no word-prefix guessing");
         assert_eq!(
             idx.find("apple").unwrap().display_name().as_deref(),
             Some("Mele")

@@ -32,7 +32,15 @@ pub use catalog::{Catalog, CatalogIndex};
 pub use items::{message_language, ItemObject, Namer};
 use items::{ItemEdit, ItemError, ItemNamer, Translation};
 pub use ledger::{Price, StoreRow, Summary};
-pub use products::{resolve_canonical_product, Product};
+pub use products::{exact_canonical_product, resolve_canonical_product, Product};
+pub use shopping_text::{self, ItemPart};
+
+/// The items of a free text (docs/design/shopping-labels.md): command words
+/// dropped, split on commas, semicolons, line breaks and conjunctions, a
+/// leading quantity read. A text that is exactly a catalog term stays whole.
+pub fn split_text_items(idx: &CatalogIndex, text: &str) -> Vec<ItemPart> {
+    shopping_text::split_items(text, |s| idx.find(s).is_some())
+}
 
 pub const THEMES: [&str; 8] = [
     "home", "grocery", "work", "holiday", "garden", "hardware", "baby", "other",
@@ -1378,7 +1386,7 @@ impl GroceryRepo {
                     }
                     return Ok(Some(existing.id));
                 }
-                let product = resolve_canonical_product(&typed);
+                let product = products::exact_canonical_product(&typed);
                 sqlx::query(
                     "INSERT INTO grocery.canonical_products (id, display_name, category, aliases) VALUES ($1, $2, $3, $4::jsonb) ON CONFLICT (id) DO NOTHING",
                 )
@@ -1933,7 +1941,8 @@ impl GroceryRepo {
             .await
     }
 
-    /// [`Self::add_item_in`] with extra `add` op fields (`catalogId`, `section`, `icon`).
+    /// [`Self::add_item_in`] with extra `add` op fields (`catalogId`, `section`,
+    /// `icon`, `spec`, `unit`; `quantity` as a number).
     pub async fn add_item_with(
         &self,
         user_id: &str,
@@ -1950,10 +1959,13 @@ impl GroceryRepo {
             raw_name.to_owned()
         };
         let mut op = json!({"opId": op_id, "type": "add", "text": name});
-        for k in ["catalogId", "section", "icon"] {
+        for k in ["catalogId", "section", "icon", "spec", "unit"] {
             if let Some(v) = extra.get(k).filter(|v| v.is_string()) {
                 op[k] = v.clone();
             }
+        }
+        if let Some(q) = extra.get("quantity").filter(|v| v.is_number()) {
+            op["quantity"] = q.clone();
         }
         let out = self
             .apply_ops_in(user_id, "default", &json!([op]), None, modified_by, lang)
@@ -2021,7 +2033,7 @@ impl GroceryRepo {
         let object_id = items::resolve_item_text(&mut conn, &idx, user_id, raw_name)
             .await?
             .and_then(|(o, _)| o.id);
-        let product_id = resolve_canonical_product(raw_name).id;
+        let product_id = products::exact_canonical_product(raw_name).id;
         let rows = sqlx::query_as::<_, ItemRow>(&format!(
             "SELECT {ITEM_COLUMNS} FROM grocery.shopping_list_items i WHERE i.list_id = $1 AND i.status <> 'removed' \
                AND (i.name_key = {k} OR ($3::text IS NOT NULL AND COALESCE(i.item_id, i.catalog_item_id) = $3) \

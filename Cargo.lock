@@ -3450,6 +3450,7 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "shopping-text",
  "sqlx",
  "thiserror 2.0.21",
  "tokio",
