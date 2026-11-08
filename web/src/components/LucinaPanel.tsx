@@ -1,4 +1,4 @@
-import type { Framing, Voice, WardrobeStage } from "@secretary/lucina-stage";
+import type { Framing, StudioExtras, Voice, WardrobeStage } from "@secretary/lucina-stage";
 import { createEffect, createSignal, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
 import { speechLang, t } from "../i18n";
 import { readString, writeString } from "../lib/storage";
@@ -26,6 +26,7 @@ import {
 } from "../state/wardrobe";
 import { CloseIcon, CollapseIcon, EditIcon, HangerIcon, MicIcon, SparkleIcon, VolumeIcon, VolumeOffIcon } from "./Icons";
 import { LucinaStudio, restoreStudio, savePhoto } from "./LucinaStudio";
+import { decoratorLabels, flickLabels } from "./LucinaStudioExtras";
 
 /** Same key the stage persists its mute preference under (MUTE_STORAGE_KEY). */
 export const MUTE_KEY = "lucina-stage:muted";
@@ -38,6 +39,8 @@ export const MANIFEST_URL = "/v1/assets/manifest.json";
 export const CLIPS_URL = "/v1/assets/lucina-anims.glb";
 export const CLIPS_META_URL = "/v1/assets/clips.json";
 export const TTS_URL = "/v1/tts";
+/** The studio's starter props (original art, public): web/public/studio/. */
+export const PROPS_URL = "/studio/lucina-props.glb";
 const AUTH: RequestInit = { credentials: "include", headers: { "X-Secretary-CSRF": "1" } };
 
 /** Where the editor's props and parts load from, and the catalogue it may use. */
@@ -111,6 +114,7 @@ export function LucinaPanel(props: {
   /** Face tracking (F1): off, asking for the camera / loading the model, or mirroring. */
   const [face, setFace] = createSignal<"off" | "starting" | "on">("off");
   let tracker: FaceTracker | null = null;
+  const [extrasRef, setExtrasRef] = createSignal<StudioExtras | null>(null);
   let canvas: HTMLCanvasElement | undefined;
   let mod: StageModule | null = null;
   let stage: WardrobeStage | null = null;
@@ -164,10 +168,12 @@ export function LucinaPanel(props: {
       }
       stage = s;
       setStageRef(s);
-      // Keep Lucina’s original procedural stage and authentic model/poses.
-      // Restore the owner’s saved Studio choices below.
+      // Keep Lucina's original procedural stage and model; the studio extras (hands, poses, props,
+      // camera roll and filters, flick ring: packages/lucina-stage/src/studio2) sit on top of it.
       s.setBackground("default");
-      restoreStudio(s);
+      const ex = mod.attachStudioExtras?.(s, { propsUrl: PROPS_URL, flickLabels: flickLabels() }) ?? null;
+      setExtrasRef(ex);
+      restoreStudio(s, ex);
       s.setMuted(muted());
       s.onStateChange((next) => setLucinaActivity(next));
       s.onChanging(setOutfitChanging);
@@ -194,6 +200,8 @@ export function LucinaPanel(props: {
     clearTimeout(hintTimer);
     listenCtrl?.abort();
     ttsCtrl?.abort();
+    extrasRef()?.dispose();
+    setExtrasRef(null);
     stage?.dispose();
     stage = null;
     setStageRef(null);
@@ -313,11 +321,19 @@ export function LucinaPanel(props: {
     }
   }
 
-  async function takePhoto() {
+  /** The frame as a PNG, with the camera filter when the extras are on. */
+  async function shoot(): Promise<Blob | null> {
     const s = stage;
-    if (!s) return;
+    if (!s) return null;
+    const ex = extrasRef();
+    return ex ? ex.snapshot() : s.snapshot();
+  }
+
+  async function takePhoto() {
     try {
-      const result = await savePhoto(await s.snapshot());
+      const shot = await shoot();
+      if (!shot) return;
+      const result = await savePhoto(shot);
       if (result !== "cancelled") setNote(t("studio.photoSaved"));
     } catch {
       // The frame could not be read back: nothing to save.
@@ -373,6 +389,22 @@ export function LucinaPanel(props: {
     tracker = null;
     setFace("off");
     stage?.setFaceDrive(null);
+  }
+
+  /** Photo, then frames, stamps, text and paint (studio P4), then save or share. */
+  async function decoratePhoto() {
+    const ex = extrasRef();
+    if (!ex) return;
+    try {
+      const shot = await shoot();
+      if (!shot) return;
+      const done = await ex.decorate(shot, { labels: decoratorLabels() });
+      if (!done) return;
+      const result = await savePhoto(done);
+      if (result !== "cancelled") setNote(t("studio.photoSaved"));
+    } catch {
+      // Nothing to save.
+    }
   }
 
   async function talk() {
@@ -529,6 +561,7 @@ export function LucinaPanel(props: {
       <Show when={studioOpen() && mode() === "ready" && !photo()}>
         <LucinaStudio
           stage={stageRef}
+          extras={extrasRef}
           muted={muted}
           fetchInit={AUTH}
           onClose={() => setStudioOpen(false)}
@@ -555,6 +588,11 @@ export function LucinaPanel(props: {
             {t("studio.photoDone")}
           </button>
           <button type="button" class="stage-shutter" onClick={() => void takePhoto()} aria-label={t("studio.photoTake")} title={t("studio.photoTake")} />
+          <Show when={extrasRef()}>
+            <button type="button" class="studio-action" onClick={() => void decoratePhoto()}>
+              {t("studio2.decorate")}
+            </button>
+          </Show>
         </div>
       </Show>
       <Show when={activity() === "listening"}>

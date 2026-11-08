@@ -625,17 +625,22 @@ take as long as an LLM turn (server timeout 15 s → `504 lucina_timeout`).
 
 ## Shopping
 
-Item object:
+Item (legacy shape):
 
 ```json
-{ "id": "3d0b8a52-…", "product": "milk", "rawName": "latte", "category": "dairy",
-  "status": "needed", "createdAt": "…", "updatedAt": "…" }
+{ "id": "3d0b8a52-…", "product": "Latte", "name": "Latte", "rawName": "latte", "itemId": "milk",
+  "item": { "id": "milk", "kind": "catalog", "names": {"it": "Latte", "en": "Milk", "da": "Mælk"}, … },
+  "category": "dairy", "status": "needed", "createdAt": "…", "updatedAt": "…" }
 ```
 
-### `GET /v1/shopping`
+`product` and `name` are the item object's name in `?lang=` (below); `rawName`
+is the text as typed.
+
+### `GET /v1/shopping?lang=it|en|da`
 
 `200`: a JSON **array** of items (Lucina's `{items}` is unwrapped), `needed`
-first, then `purchased`.
+first, then `purchased`. `lang` is optional (Lucina's default: the owner's
+language); anything else is `400 bad_request`.
 
 ### `POST /v1/shopping`
 
@@ -675,13 +680,36 @@ public, max-age=3600`, `Vary: Authorization, Cookie`. Send the tag back in
 `If-None-Match` and an unchanged file answers `304` with no body (the same
 `ETag` and `Cache-Control`). The tag changes whenever the file does.
 
+#### Item objects and `lang`
+
+Every list row points to an **item object** (see `shopping-v2.md`): a catalog
+item (`kind: "catalog"`, id = catalog id) or a custom object of the owner
+(`kind: "custom"`, id `u_<ULID>`), with names in `it`, `en` and `da`. Rows
+carry `itemId`, `item` and `typedName`; `name` is the object's name in the
+request's language. `GET /v1/shopping/lists/{id}` and the ops route take
+`?lang=it|en|da` (the ops body may carry `lang` instead; the body wins). The
+server validates it and passes it to Lucina; without it Lucina uses the
+owner's language.
+
+#### `GET /v1/shopping/items`
+
+`200`: a JSON **array** of the owner's custom item objects (Lucina's `{items}`
+unwrapped), oldest first, for search next to the catalog:
+
+```json
+[ { "id": "u_01JB8Z6Q3W4E5R6T7Y8U9I0P1A", "kind": "custom",
+    "names": {"it": "Detersivo piatti", "en": "Dishwashing detergent", "da": "Opvaskemiddel"},
+    "aliases": ["detersivo piatti"], "section": "household", "icon": "🧼", "needsTranslation": false,
+    "createdBy": "telegram", "createdAt": "…", "updatedAt": "…" } ]
+```
+
 #### Lists
 
 | Route | Body | `2xx` |
 |---|---|---|
 | `GET /v1/shopping/lists` | | Array of `{id, name, theme, needed, recent, updatedAt}` (Lucina's `{lists}` is unwrapped if present). |
 | `POST /v1/shopping/lists` | `{name, theme?}` | `201` the list (Lucina's `{list}` unwrapped if present). |
-| `GET /v1/shopping/lists/{id}` | | `{list, revision, items}` (below). |
+| `GET /v1/shopping/lists/{id}?lang=` | | `{list, revision, lang, items}` (below). |
 | `PATCH /v1/shopping/lists/{id}` | `{name?, theme?}`, at least one | The list. |
 | `DELETE /v1/shopping/lists/{id}` | | Lucina's answer as is (the default list can't be deleted). |
 
@@ -692,8 +720,12 @@ use the id charset `[A-Za-z0-9_.:-]{1,128}` (`default` is the default list).
 List state:
 
 ```json
-{ "list": {"id": "default", "name": "Casa", "theme": "home"}, "revision": 42,
-  "items": [ { "id": "…", "catalogId": "banana", "name": "Banane", "spec": "6, mature",
+{ "list": {"id": "default", "name": "Casa", "theme": "home"}, "revision": 42, "lang": "it",
+  "items": [ { "id": "…", "itemId": "banana", "catalogId": "banana",
+               "item": { "id": "banana", "kind": "catalog",
+                         "names": {"it": "Banane", "en": "Bananas", "da": "Bananer"},
+                         "section": "produce", "icon": "🍌" },
+               "name": "Banane", "typedName": "banana", "spec": "6, mature",
                "quantity": null, "unit": null, "section": "produce", "icon": "🍌",
                "status": "needed", "position": 3, "updatedAt": "…", "updatedBy": "telegram" } ] }
 ```
@@ -704,28 +736,30 @@ treat unknown statuses like `removed`). Unknown fields pass through.
 #### `POST /v1/shopping/lists/{id}/ops`
 
 ```json
-{ "expectedRevision": 42,
-  "ops": [ { "opId": "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b", "type": "add", "catalogId": "banana", "name": "Banane", "spec": "6" },
+{ "expectedRevision": 42, "lang": "it",
+  "ops": [ { "opId": "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b", "type": "add", "itemId": "banana", "spec": "6" },
            { "opId": "7f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b", "type": "purchase", "itemId": "…" } ] }
 ```
 
-`200`: `{revision, applied: [opId], duplicates: [opId], items: [...full state...]}`.
+`200`: `{revision, applied: [opId], duplicates: [opId], rejected: [{opId, error}], merged: [opId], lang, items: [...full state...]}`.
 
 Validation (all before Lucina; any failure is `400 bad_request` naming
 `ops: [i].<field>`):
 
 - 1–200 ops per batch; every `opId` a canonical UUID (`8-4-4-4-12`), distinct
   within the batch. `expectedRevision` (optional) a non-negative integer.
+  `lang` (optional) `it`, `en` or `da`.
 - Op types and their fields (other fields are dropped):
 
 | `type` | Fields |
 |---|---|
-| `add` | `catalogId?` (id), `name?` (1–200), at least one of the two; `spec?` (≤200), `quantity?` (number > 0, ≤ 100000), `unit?` (≤32), `section?` (id) |
+| `add` | `itemId?` (id), `text?` (1–200), at least one of the two (legacy aliases `catalogId?`, `name?`); `spec?` (≤200), `quantity?` (number > 0, ≤ 100000), `unit?` (≤32), `section?` (id) |
+| `edit_item` | `itemId` (a custom object id), at least one of `names?` (`{it?, en?, da?}`, each 1–100), `section?` (id), `icon?` (one emoji, ≤16 characters; `""` clears) |
 | `need`, `purchase`, `remove` | `itemId` |
 | `set_spec` | `itemId`, `spec` (≤200; `null` or `""` clears) |
 | `set_quantity` | `itemId`, `quantity` (as above; `null` clears), `unit?` |
 | `set_section` | `itemId`, `section` |
-| `rename` | `itemId`, `name` (1–200) |
+| `rename` | `itemId`, `name` (1–200): a custom object's name in `lang`, or the row moves to the object that name belongs to |
 | `move` | `itemId`, `toListId` |
 | `clear_recent` | none |
 | `reorder` | `itemId`, `position` (integer 0–100000) |

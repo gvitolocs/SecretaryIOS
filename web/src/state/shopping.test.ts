@@ -6,6 +6,7 @@ import { stubFetch } from "../test/fetch";
 import { fakeShoppingServer, testItem, type FakeServer } from "../views/shopping/fakeServer";
 import {
   addText,
+  catalogIndex,
   editItem,
   enqueue,
   flushOutbox,
@@ -27,7 +28,7 @@ function setup(): void {
       name: "Casa",
       theme: "home",
       items: [
-        testItem({ id: "milk-row", name: "Latte", catalogId: "milk", section: "dairy" }),
+        testItem({ id: "milk-row", name: "Latte", catalogId: "milk", section: "dairy", names: { it: "Latte", en: "Milk", da: "Mælk" } }),
         testItem({ id: "bread-row", name: "Pane", status: "recent" }),
       ],
     },
@@ -173,6 +174,49 @@ describe("shopping state", () => {
     expect(last.expectedRevision).toBe(2);
     expect(status("milk-row")).toBe("recent");
     expect(shop.items.find((i) => i.id === "bread-row")).toBeUndefined();
+  });
+
+  it("shows each row's object in the UI language and asks the server for that language", async () => {
+    await booted();
+    expect(shop.items.find((i) => i.id === "milk-row")?.name).toBe("Latte");
+    setLocale("en");
+    await waitFor(() => expect(shop.items.find((i) => i.id === "milk-row")?.name).toBe("Milk"));
+    await waitFor(() => expect(srv.calls.some((c) => c.method === "GET" && c.url.includes("/lists/default?lang=en"))).toBe(true));
+    setLocale("da");
+    await waitFor(() => expect(shop.items.find((i) => i.id === "milk-row")?.name).toBe("Mælk"));
+  });
+
+  it("custom objects: new text becomes one, search finds it, its names are edited with edit_item", async () => {
+    await booted();
+    await waitFor(() => expect(shop.catalog.items.length).toBeGreaterThan(0));
+    const rowId = addText("Candele")!;
+    await waitFor(() => expect(shop.pending).toBe(0));
+    const added = srv.opsPosts().flatMap((p) => p.ops).find((o) => o.type === "add")!;
+    expect(added).toMatchObject({ type: "add", text: "Candele" });
+    const row = () => shop.items.find((i) => i.name === "Candele" || i.names.en === "Candles");
+    await waitFor(() => expect(row()?.kind).toBe("custom"));
+    const objectId = row()!.objectId!;
+    expect(objectId).toMatch(/^u_/);
+    expect(catalogIndex().byId.get(objectId)?.custom).toBe(true);
+    expect(addText("candele")).toBe(row()!.id);
+
+    editItem(row()!.id, { names: { it: "Candele", en: "Candles", da: "Stearinlys" }, icon: "🕯️" });
+    await waitFor(() => expect(shop.pending).toBe(0));
+    const edit = srv.opsPosts().flatMap((p) => p.ops).find((o) => o.type === "edit_item");
+    expect(edit).toMatchObject({ type: "edit_item", itemId: objectId, names: { en: "Candles", da: "Stearinlys" }, icon: "🕯️" });
+    setLocale("en");
+    await waitFor(() => expect(row()?.name).toBe("Candles"));
+    expect(rowId).toBeTruthy();
+  });
+
+  it("an existing object added by id sends itemId plus the legacy fields", async () => {
+    await booted();
+    await waitFor(() => expect(shop.catalog.items.length).toBeGreaterThan(0));
+    addText("bananas");
+    await waitFor(() => expect(shop.pending).toBe(0));
+    const add = srv.opsPosts().flatMap((p) => p.ops).find((o) => o.type === "add")!;
+    expect(add).toMatchObject({ type: "add", itemId: "banana", catalogId: "banana", name: "Banane" });
+    expect(shop.items.filter((i) => i.objectId === "banana")).toHaveLength(1);
   });
 });
 

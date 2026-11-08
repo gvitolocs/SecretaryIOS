@@ -1,7 +1,11 @@
 // Shopping v2 items and ops (docs/shopping-v2.md). `applyOps` is the client's
 // copy of the server semantics, used for optimistic UI and for rebasing the
-// outbox: op-id dedup, one active row per (list, catalogId-or-folded-name),
-// `add` revives a recent row, and a removed row never comes back.
+// outbox: op-id dedup, one active row per (list, item object), `add` revives a
+// recent row, and a removed row never comes back.
+//
+// Every row points to an item object (a catalog item or a custom object, with
+// names in it/en/da). A row added offline whose text matched nothing locally
+// has no object id until the server answers; it is matched by its names.
 
 import { fold } from "./shoppingCatalog";
 
@@ -23,10 +27,21 @@ export const THEME_ICON: Record<ListTheme, string> = {
 
 export const DEFAULT_LIST_ID = "default";
 
+export type ObjectKind = "catalog" | "custom";
+
 export interface ShopItem {
   id: string;
+  /** The item object's id (`item.id`): a catalog id or `u_<ULID>`; null until the server named it. */
+  objectId: string | null;
+  kind: ObjectKind | null;
+  /** The object's names by language (it, en, da). */
+  names: Partial<Record<string, string>>;
   catalogId: string | null;
+  /** The server's name (in the language it was asked for); the views show `displayName`. */
   name: string;
+  /** The text as typed. */
+  typedName: string;
+  needsTranslation: boolean;
   spec: string;
   quantity: number | null;
   unit: string | null;
@@ -53,6 +68,8 @@ export interface ListState {
   list: { id: string; name: string; theme: ListTheme };
   revision: number;
   items: ShopItem[];
+  /** Custom item objects seen on the rows (not cached). */
+  objects?: CustomObject[];
 }
 
 interface OpBase {
@@ -60,17 +77,34 @@ interface OpBase {
 }
 export type AddOp = OpBase & {
   type: "add";
-  /** Client-chosen id for a new row (contract extension; see the report). */
+  /** The item object to add (catalog id or custom id). Outboxes from before item
+   * objects used it for a client row id (a UUID); see `addRowId`. */
   itemId?: string;
+  /** Client-chosen id for the optimistic row (local only; the server picks its own). */
+  rowId?: string;
+  /** Typed text, resolved by the server in any language. */
+  text?: string;
+  /** Legacy: the catalog id. */
   catalogId?: string;
-  name: string;
+  /** Legacy: the typed text. */
+  name?: string;
   spec?: string;
   quantity?: number | null;
   unit?: string | null;
   section?: string | null;
 };
+export type EditItemOp = OpBase & {
+  type: "edit_item";
+  /** The custom object's id. */
+  itemId: string;
+  names?: Partial<Record<string, string>>;
+  section?: string;
+  /** One emoji; "" clears it. */
+  icon?: string;
+};
 export type Op =
   | AddOp
+  | EditItemOp
   | (OpBase & { type: "need" | "purchase" | "remove"; itemId: string })
   | (OpBase & { type: "set_spec"; itemId: string; spec: string })
   | (OpBase & { type: "set_quantity"; itemId: string; quantity: number | null; unit?: string | null })
@@ -96,10 +130,40 @@ export const OP_TYPES = new Set<Op["type"]>([
   "move",
   "clear_recent",
   "reorder",
+  "edit_item",
 ]);
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** The optimistic row id of an add (old outboxes kept it in `itemId`). */
+export function addRowId(op: AddOp): string | undefined {
+  return op.rowId ?? (op.itemId && UUID_RE.test(op.itemId) ? op.itemId : undefined);
+}
+
+/** The object id an add names: `itemId` (when not a row UUID), else the legacy `catalogId`. */
+export function addObjectId(op: AddOp): string | undefined {
+  return (op.itemId && !UUID_RE.test(op.itemId) ? op.itemId : undefined) ?? op.catalogId;
+}
+
+/** The typed text of an add. */
+export function addText(op: AddOp): string {
+  return (op.text ?? op.name ?? "").trim();
+}
+
+/** The identity of a row's object: its object id, else its catalog id. */
+export function rowObjectId(item: Pick<ShopItem, "objectId" | "catalogId">): string | null {
+  return item.objectId ?? item.catalogId;
+}
+
+/** The name to show: the object's name in `lang`, else the server's name. */
+export function displayName(item: Pick<ShopItem, "names" | "name">, lang: string): string {
+  return item.names[lang] ?? item.name;
+}
 
 export interface CatalogHint {
   name: string;
+  names?: Partial<Record<string, string>>;
+  kind?: ObjectKind;
   section: string | null;
   icon: string;
 }
@@ -111,7 +175,12 @@ export interface ApplyContext {
   newId: () => string;
   /** Op ids already applied (mutated: applied ids are added). */
   seen?: Set<string>;
-  catalog?: (catalogId: string) => CatalogHint | undefined;
+  /** The object behind an id (catalog items and known custom objects). */
+  catalog?: (objectId: string) => CatalogHint | undefined;
+  /** Typed text to a known object id (any language), when it matches one. */
+  resolve?: (text: string) => string | undefined;
+  /** The UI language (a custom rename edits this language's name). */
+  lang?: string;
 }
 
 export interface ApplyResult {
@@ -134,14 +203,21 @@ export function isActive(item: ShopItem): boolean {
   return item.status !== "removed";
 }
 
+type RowKeyFields = Pick<ShopItem, "objectId" | "catalogId" | "name"> & Partial<Pick<ShopItem, "names" | "typedName">>;
+
 /**
- * One active row per (list, catalogId-or-folded-name): a row matches when the
- * catalog ids agree, or when the folded names do ("pane" finds the catalog "Pane").
+ * One active row per (list, item object): a row matches when the object ids
+ * agree; a row or text with no object yet matches by folded name in any
+ * language ("latte" finds the row named "Milk" once its names are known).
  */
-export function sameRow(item: Pick<ShopItem, "catalogId" | "name">, catalogId: string | null | undefined, name: string): boolean {
-  if (catalogId && item.catalogId === catalogId) return true;
-  if (catalogId && item.catalogId && item.catalogId !== catalogId) return false;
-  return name !== "" && fold(item.name) === fold(name);
+export function sameRow(item: RowKeyFields, objectId: string | null | undefined, name: string): boolean {
+  const own = rowObjectId(item);
+  if (objectId && own === objectId) return true;
+  if (objectId && own) return false;
+  const q = fold(name);
+  if (!q) return false;
+  const names = [item.name, item.typedName ?? "", ...Object.values(item.names ?? {})];
+  return names.some((n) => typeof n === "string" && n !== "" && fold(n) === q);
 }
 
 function nextPosition(items: ShopItem[]): number {
@@ -160,11 +236,14 @@ function applyOne(items: ShopItem[], op: Op, ctx: ApplyContext): boolean {
 
   switch (op.type) {
     case "add": {
-      const hint = op.catalogId ? ctx.catalog?.(op.catalogId) : undefined;
-      const name = clip(op.name || hint?.name || "");
-      if (!name && !op.catalogId) return false;
+      const text = clip(addText(op));
+      const objectId = addObjectId(op) ?? (text ? ctx.resolve?.(text) : undefined);
+      const hint = objectId ? ctx.catalog?.(objectId) : undefined;
+      const name = hint?.name ?? text;
+      if (!name && !objectId) return false;
+      const rowId = addRowId(op);
       const existing =
-        (op.itemId ? active(op.itemId) : undefined) ?? items.find((i) => isActive(i) && sameRow(i, op.catalogId, name));
+        (rowId ? active(rowId) : undefined) ?? items.find((i) => isActive(i) && sameRow(i, objectId, text || name));
       if (existing) {
         if (existing.status === "recent") {
           existing.position = nextPosition(items);
@@ -178,11 +257,17 @@ function applyOne(items: ShopItem[], op: Op, ctx: ApplyContext): boolean {
         return true;
       }
       // A removed row keeps its id forever, so a reused id gets a fresh one.
-      const id = op.itemId && !items.some((i) => i.id === op.itemId) ? op.itemId : ctx.newId();
+      const id = rowId && !items.some((i) => i.id === rowId) ? rowId : ctx.newId();
+      const kind = hint?.kind ?? (objectId && !objectId.startsWith("u_") ? "catalog" : objectId ? "custom" : null);
       items.push({
         id,
-        catalogId: op.catalogId ?? null,
-        name: name || op.catalogId || "",
+        objectId: objectId ?? null,
+        kind,
+        names: hint?.names ? { ...hint.names } : {},
+        catalogId: kind === "catalog" ? (objectId ?? null) : null,
+        name: name || objectId || "",
+        typedName: text || name,
+        needsTranslation: false,
         spec: op.spec ? clip(op.spec) : "",
         quantity: validQuantity(op.quantity),
         unit: op.unit ? clip(op.unit) : null,
@@ -194,6 +279,24 @@ function applyOne(items: ShopItem[], op: Op, ctx: ApplyContext): boolean {
         updatedBy: ctx.by,
       });
       return true;
+    }
+    case "edit_item": {
+      let changed = false;
+      for (const item of items) {
+        if (!isActive(item) || rowObjectId(item) !== op.itemId) continue;
+        if (op.names) {
+          const names: Partial<Record<string, string>> = { ...item.names };
+          for (const [lang, value] of Object.entries(op.names)) if (value?.trim()) names[lang] = clip(value);
+          item.names = names;
+          if (ctx.lang && names[ctx.lang]) item.name = names[ctx.lang]!;
+          item.needsTranslation = false;
+        }
+        if (op.section !== undefined) item.section = op.section;
+        if (op.icon !== undefined) item.icon = op.icon || null;
+        touch(item);
+        changed = true;
+      }
+      return changed;
     }
     case "need": {
       const item = active(op.itemId);
@@ -245,7 +348,29 @@ function applyOne(items: ShopItem[], op: Op, ctx: ApplyContext): boolean {
       const item = active(op.itemId);
       const name = clip(op.name);
       if (!item || !name) return false;
-      item.name = name;
+      const target = ctx.resolve?.(name);
+      if (target && target !== rowObjectId(item)) {
+        // Another object's name: the row now shows that object.
+        const hint = ctx.catalog?.(target);
+        item.objectId = target;
+        item.kind = hint?.kind ?? null;
+        item.catalogId = hint?.kind === "catalog" ? target : null;
+        item.names = hint?.names ? { ...hint.names } : {};
+        item.name = hint?.name ?? name;
+        item.typedName = name;
+        if (hint) item.icon = hint.icon;
+      } else if (item.kind === "custom" && ctx.lang) {
+        item.names = { ...item.names, [ctx.lang]: name };
+        item.name = name;
+      } else if (!target) {
+        // A catalog row renamed to new text becomes a new custom object (named by the server).
+        item.objectId = null;
+        item.kind = null;
+        item.catalogId = null;
+        item.names = {};
+        item.name = name;
+        item.typedName = name;
+      }
       touch(item);
       return true;
     }
@@ -289,8 +414,8 @@ export function applyOps(items: readonly ShopItem[], ops: readonly Op[], ctx: Ap
 
 /** The item id an op targets, if it targets one. */
 export function opTarget(op: Op): string | null {
-  if (op.type === "clear_recent") return null;
-  if (op.type === "add") return op.itemId ?? null;
+  if (op.type === "clear_recent" || op.type === "edit_item") return null;
+  if (op.type === "add") return addRowId(op) ?? null;
   return op.itemId;
 }
 
@@ -331,16 +456,37 @@ export function parseTheme(v: unknown): ListTheme {
   return (LIST_THEMES as readonly string[]).includes(v as string) ? (v as ListTheme) : "other";
 }
 
+function parseNames(v: unknown): Partial<Record<string, string>> {
+  const out: Partial<Record<string, string>> = {};
+  if (!isRecord(v)) return out;
+  for (const [lang, name] of Object.entries(v)) {
+    const s = str(name);
+    if (s) out[lang] = s;
+  }
+  return out;
+}
+
+/** A row from the server (`item` object, `itemId`) or from the local cache (`objectId`, `names`). */
 export function parseItem(raw: unknown, index = 0): ShopItem | null {
   if (!isRecord(raw)) return null;
   const id = str(raw.id) ?? (typeof raw.id === "number" ? String(raw.id) : null);
-  const name = str(raw.name);
+  const object = isRecord(raw.item) ? raw.item : null;
+  const names = parseNames(raw.names ?? object?.names);
+  const name = str(raw.name) ?? Object.values(names)[0] ?? null;
   if (!id || !name) return null;
   const status: ItemStatus = raw.status === "recent" || raw.status === "removed" ? raw.status : "needed";
+  const kindRaw = raw.kind ?? object?.kind;
+  const catalogId = str(raw.catalogId);
+  const objectId = str(raw.objectId) ?? str(raw.itemId) ?? str(object?.id) ?? catalogId;
   return {
     id,
-    catalogId: str(raw.catalogId),
+    objectId,
+    kind: kindRaw === "catalog" || kindRaw === "custom" ? kindRaw : catalogId ? "catalog" : null,
+    names,
+    catalogId,
     name,
+    typedName: str(raw.typedName) ?? name,
+    needsTranslation: (raw.needsTranslation ?? object?.needsTranslation) === true,
     spec: typeof raw.spec === "string" ? raw.spec : "",
     quantity: validQuantity(raw.quantity),
     unit: str(raw.unit),
@@ -391,6 +537,7 @@ export function parseListState(raw: unknown, fallbackId: string): ListState {
     list: { id: list.id, name: list.name, theme: list.theme },
     revision: typeof r.revision === "number" && Number.isFinite(r.revision) ? r.revision : 0,
     items: parseItems(r.items),
+    objects: objectsOfRows(r.items),
   };
 }
 
@@ -398,16 +545,60 @@ export interface OpsResponse {
   revision: number;
   applied: string[];
   duplicates: string[];
+  rejected: Array<{ opId: string; error: string }>;
   items: ShopItem[] | null;
+  /** Custom item objects seen on the returned rows. */
+  objects: CustomObject[];
+}
+
+/** A custom item object (`GET /v1/shopping/items`, or a row's `item`). */
+export interface CustomObject {
+  id: string;
+  names: Partial<Record<string, string>>;
+  aliases: string[];
+  section: string | null;
+  icon: string | null;
+  needsTranslation: boolean;
+}
+
+export function parseCustomObject(raw: unknown): CustomObject | null {
+  if (!isRecord(raw) || raw.kind !== "custom") return null;
+  const id = str(raw.id);
+  const names = parseNames(raw.names);
+  if (!id || Object.keys(names).length === 0) return null;
+  return {
+    id,
+    names,
+    aliases: Array.isArray(raw.aliases) ? raw.aliases.map(str).filter((a): a is string => a !== null) : [],
+    section: str(raw.section),
+    icon: str(raw.icon),
+    needsTranslation: raw.needsTranslation === true,
+  };
+}
+
+export function parseCustomObjects(raw: unknown): CustomObject[] {
+  const arr = Array.isArray(raw) ? raw : isRecord(raw) && Array.isArray(raw.items) ? raw.items : [];
+  return arr.map(parseCustomObject).filter((o): o is CustomObject => o !== null);
+}
+
+/** Custom objects carried by raw server rows (`item` with kind custom). */
+export function objectsOfRows(raw: unknown): CustomObject[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((r) => (isRecord(r) ? parseCustomObject(r.item) : null)).filter((o): o is CustomObject => o !== null);
 }
 
 export function parseOpsResponse(raw: unknown): OpsResponse {
   const r = isRecord(raw) ? raw : {};
   const ids = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+  const rejected = Array.isArray(r.rejected)
+    ? r.rejected.filter(isRecord).map((x) => ({ opId: str(x.opId) ?? "", error: str(x.error) ?? "" }))
+    : [];
   return {
     revision: typeof r.revision === "number" && Number.isFinite(r.revision) ? r.revision : 0,
     applied: ids(r.applied),
     duplicates: ids(r.duplicates),
+    rejected,
     items: Array.isArray(r.items) ? parseItems(r.items) : null,
+    objects: objectsOfRows(r.items),
   };
 }

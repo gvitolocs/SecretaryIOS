@@ -8,6 +8,10 @@
 //! - Lists and ops are validated by `secretary-core` (`Call::shopping_*`),
 //!   forwarded with the server's Lucina token and decoded into typed models
 //!   that keep unknown fields.
+//! - `?lang=it|en|da` on the list state, the ops and the legacy list is
+//!   passed through (the ops route also takes a body `lang`): item names come
+//!   back in that language; without it Lucina uses the owner's.
+//! - `GET /v1/shopping/items`: the owner's custom item objects.
 //! - Lucina `409` on the ops route becomes `409 revision_conflict`; other
 //!   Lucina 4xx codes (`list_not_found`, `item_not_found`, 422 ...) pass
 //!   through as usual (see [`crate::error`]).
@@ -21,8 +25,8 @@ use axum::{Json, Router};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use secretary_core::models::{
-    CreateList, ListState, OpsBatch, OpsResult, ShoppingList, ShoppingListData, ShoppingListsData,
-    UpdateList,
+    CreateList, ItemObject, ListState, OpsBatch, OpsResult, ShoppingList, ShoppingListData,
+    ShoppingListsData, UpdateList,
 };
 use secretary_core::Call;
 use serde::Deserialize;
@@ -41,6 +45,12 @@ pub const CATALOG_CACHE_CONTROL: &str = "public, max-age=3600";
 #[derive(Deserialize)]
 struct CatalogQuery {
     lang: Option<String>,
+}
+
+/// `?lang=` of the list routes (validated by `Call::with_lang`).
+#[derive(Deserialize)]
+pub(crate) struct LangQuery {
+    pub(crate) lang: Option<String>,
 }
 
 /// Strong ETag: `"<base64url(sha256)>"`.
@@ -137,8 +147,18 @@ async fn create_list(
     Ok((s, Json(d.into_list())))
 }
 
-async fn list(State(st): State<AppState>, Path(id): Path<String>) -> Typed<ListState> {
-    let (s, d) = send::<ListState>(&st, &Call::shopping_list(&id)?).await?;
+async fn list(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    QueryArgs(q): QueryArgs<LangQuery>,
+) -> Typed<ListState> {
+    let call = Call::shopping_list(&id)?.with_lang(q.lang.as_deref())?;
+    let (s, d) = send::<ListState>(&st, &call).await?;
+    Ok((s, Json(d)))
+}
+
+async fn items(State(st): State<AppState>) -> Typed<Vec<ItemObject>> {
+    let (s, d) = send::<Vec<ItemObject>>(&st, &Call::shopping_items()).await?;
     Ok((s, Json(d)))
 }
 
@@ -159,8 +179,12 @@ async fn delete_list(State(st): State<AppState>, Path(id): Path<String>) -> Type
 async fn ops(
     State(st): State<AppState>,
     Path(id): Path<String>,
-    JsonBody(batch): JsonBody<OpsBatch>,
+    QueryArgs(q): QueryArgs<LangQuery>,
+    JsonBody(mut batch): JsonBody<OpsBatch>,
 ) -> Typed<OpsResult> {
+    if batch.lang.is_none() {
+        batch.lang = q.lang;
+    }
     let call = Call::shopping_ops(&id, &batch)?;
     let (status, data) = match st.lucina()?.call_with_status::<OpsResult>(&call).await {
         Ok(v) => v,
@@ -189,6 +213,7 @@ async fn ops(
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/v1/shopping/catalog", get(catalog))
+        .route("/v1/shopping/items", get(items))
         .route("/v1/shopping/lists", get(lists).post(create_list))
         .route(
             "/v1/shopping/lists/{id}",

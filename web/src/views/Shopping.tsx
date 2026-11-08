@@ -19,6 +19,7 @@ import {
   refreshing,
   refreshShopping,
   removeItems,
+  rowKeyId,
   setGrouped,
   setItemLang,
   setLang,
@@ -198,7 +199,7 @@ export default function ShoppingView() {
       .filter((s) => bySection.has(s.id))
       .map((s) => ({ ...s, items: bySection.get(s.id) ?? [] }));
   });
-  const rowByKey = createMemo(() => new Map(shop.items.map((i) => [itemKey(i.catalogId, i.name), i])));
+  const rowByKey = createMemo(() => new Map(shop.items.map((i) => [itemKey(rowKeyId(i), i.name), i])));
   /** How many to-buy tiles each catalog section has (shown on its header). */
   const neededBySection = createMemo(() => {
     const m = new Map<string, number>();

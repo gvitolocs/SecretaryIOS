@@ -315,15 +315,63 @@ impl ShoppingListData {
     }
 }
 
+/// An item object (`docs/shopping-v2.md`, "Item objects"): a catalog item
+/// (`kind: "catalog"`, id = catalog id) or a custom object of the owner
+/// (`kind: "custom"`, id `u_<ULID>`), with names in `it`, `en` and `da`.
+/// Custom objects also carry `aliases`, `needsTranslation`, `createdBy`,
+/// `createdAt`, `updatedAt` (kept in `extra`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemObject {
+    /// Null only for a row Lucina could not give an object yet.
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub names: std::collections::BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub section: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// `GET /shopping/items` data: `{items}` or the bare array.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub enum ItemObjectsData {
+    Wrapped { items: Vec<ItemObject> },
+    Bare(Vec<ItemObject>),
+}
+
+impl ItemObjectsData {
+    pub fn into_items(self) -> Vec<ItemObject> {
+        match self {
+            ItemObjectsData::Wrapped { items } | ItemObjectsData::Bare(items) => items,
+        }
+    }
+}
+
 /// An item of a v2 list. Unknown statuses survive as [`ListItemStatus::Unknown`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListItem {
     pub id: String,
+    /// The item object's id (`item.id`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catalog_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item: Option<ItemObject>,
+    /// The object's name in the requested language.
     #[serde(default)]
     pub name: String,
+    /// The text as typed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub typed_name: Option<String>,
     #[serde(default)]
     pub spec: Option<String>,
     /// A number or `null`; opaque here.
@@ -437,6 +485,9 @@ pub struct OpsBatch {
     /// The revision the client's view is based on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_revision: Option<u64>,
+    /// Language of item names in the answer and of `rename` (`it|en|da`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lang: Option<String>,
     /// Who sent the batch; `mcp` = an MCP client: Lucina checks its
     /// free-text adds with Jev. Absent = the app.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -449,10 +500,15 @@ pub struct OpsBatch {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ShoppingOp {
-    /// Create, or move a `recent` item back to `needed`. Needs `catalogId` or `name`.
+    /// Create, or move a `recent` item back to `needed`. Needs an object id
+    /// (`itemId`, legacy `catalogId`) or typed text (`text`, legacy `name`).
     #[serde(rename_all = "camelCase")]
     Add {
         op_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        item_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         catalog_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -510,6 +566,20 @@ pub enum ShoppingOp {
     },
     #[serde(rename_all = "camelCase")]
     ClearRecent { op_id: String },
+    /// Edit a custom item object everywhere: names (any of `it`, `en`,
+    /// `da`), section, icon (`""` clears it). `itemId` is the object id (a
+    /// row id of the list works too).
+    #[serde(rename_all = "camelCase")]
+    EditItem {
+        op_id: String,
+        item_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        names: Option<std::collections::BTreeMap<String, String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        section: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        icon: Option<String>,
+    },
     #[serde(rename_all = "camelCase")]
     Reorder {
         op_id: String,
@@ -531,6 +601,7 @@ impl ShoppingOp {
             | ShoppingOp::Rename { op_id, .. }
             | ShoppingOp::Move { op_id, .. }
             | ShoppingOp::ClearRecent { op_id }
+            | ShoppingOp::EditItem { op_id, .. }
             | ShoppingOp::Reorder { op_id, .. } => op_id,
         }
     }

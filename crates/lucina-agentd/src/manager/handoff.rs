@@ -270,6 +270,15 @@ impl Manager {
                 Ok(snap) => {
                     let short: String = snap.id.chars().take(8).collect();
                     let from_short: String = id.chars().take(8).collect();
+                    self.note(&snap.id, Info, format!("Continued from agent {from_short} ({from_label} stopped on {why})"));
+                    let prompt = continuation_prompt(&from_label, &why, &task, status.as_deref());
+                    // The link goes on the old run only once the new one is running (or has failed
+                    // and is handing on itself): a follower that moved to an idle, not yet started
+                    // continuation would take it for finished. A failure here hands on again from
+                    // the new agent (start_turn's own check).
+                    if let Err(e) = self.start_turn(&snap.id, &prompt).await {
+                        tracing::info!(agent = %snap.id, error = %e, "continuation's first turn failed");
+                    }
                     self.set_handoff_result(
                         &id,
                         &[
@@ -279,12 +288,6 @@ impl Manager {
                         ],
                         Some((Info, format!("{from_label} stopped on {why}; continued on {to_label} as agent {short}"))),
                     );
-                    self.note(&snap.id, Info, format!("Continued from agent {from_short} ({from_label} stopped on {why})"));
-                    let prompt = continuation_prompt(&from_label, &why, &task, status.as_deref());
-                    // A turn that fails here hands on again from this agent (start_turn's own check).
-                    if let Err(e) = self.start_turn(&snap.id, &prompt).await {
-                        tracing::info!(agent = %snap.id, error = %e, "continuation's first turn failed");
-                    }
                     return;
                 }
                 Err(e) => {

@@ -25,6 +25,7 @@ import { applyToonHairPart, toonFallbackFor } from './toon';
 import { playOutfitEffect, type SubjectRect } from './outfitEffect';
 import type { StageQualitySetting, StageTheme } from './scene/quality';
 import { createLucinaStage, type LucinaStage, type LucinaStageOptions, type TapEvent, type TouchEvent } from './stage';
+import { createStageHooks } from './studio2/hooks';
 import type { Expression, Framing, StageState } from './types';
 
 /** One outfit, as listed by `GET /v1/avatar/wardrobe`. */
@@ -230,6 +231,8 @@ export async function createWardrobeStage(
   let wardrobe: WardrobeEntry[] = parseWardrobe(options.wardrobe ?? []);
   const startEntry = options.outfit ? wardrobe.find((e) => e.id === options.outfit) : undefined;
   const base: LucinaStageOptions = { ...options };
+  // One hooks object for every stage this wardrobe makes: the studio extras survive swaps.
+  const hooks = (base.hooks ??= createStageHooks());
   for (const k of ['wardrobe', 'assetBase', 'outfit', 'changeEffect', 'maxSpeakWait', 'hairstyles', 'hairColors', 'hair', 'hairColor', 'hairLoader'] as const) delete (base as Record<string, unknown>)[k];
   const startUrls = startEntry ? outfitUrls(startEntry, assetBase, options.manifestUrl) : null;
 
@@ -663,6 +666,8 @@ export async function createWardrobeStage(
     get physics() {
       return cur.physics ?? null;
     },
+    // Test factories may build stages without hooks: the shared object is the source of truth.
+    hooks,
     onTouch(cb) {
       touchCbs.add(cb);
       return () => touchCbs.delete(cb);
