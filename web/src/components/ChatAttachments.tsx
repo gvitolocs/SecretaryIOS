@@ -34,6 +34,12 @@ function labelFor(a: Attachment): string {
   return key === "image" ? t("chat.photo") : key === "voice" ? t("chat.voice") : t(`share.${key}`);
 }
 
+/** A voice note is never named: "Voice message" and its length. */
+function voiceLabel(a: Attachment): string {
+  const length = formatDuration(a.durationMs);
+  return length ? `${t("chat.voice")} ${length}` : t("chat.voice");
+}
+
 function kindLabel(a: Attachment): string {
   const key = LABELS[a.kind];
   return key === "image" ? t("chat.photo")
@@ -213,10 +219,11 @@ function AudioCard(props: { item: Attachment }) {
     else audio?.pause();
   }
   const progress = () => (duration() > 0 ? Math.min(1, current() / duration()) : 0);
+  const isVoice = () => props.item.kind === "voice";
   return (
     <li class="attachment attachment--audio">
       <div class="audio-player">
-        <button type="button" class="audio-toggle" disabled={busy()} aria-label={playing() ? t("share.pause") : t("share.play")} onClick={() => void toggle()}>
+        <button type="button" class="audio-toggle" disabled={busy()} aria-label={isVoice() ? `${playing() ? t("share.pause") : t("share.play")}, ${voiceLabel(props.item)}` : playing() ? t("share.pause") : t("share.play")} onClick={() => void toggle()}>
           {playing() ? "❚❚" : "▶"}
         </button>
         <span class="audio-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round(progress() * 100)}>
@@ -240,10 +247,12 @@ function AudioCard(props: { item: Attachment }) {
           )}
         </Show>
       </div>
-      <span class="attachment-caption">
-        <span aria-hidden="true">{trayIcon("audio")} </span>
-        {labelFor(props.item)}
-      </span>
+      <Show when={!isVoice()}>
+        <span class="attachment-caption">
+          <span aria-hidden="true">{trayIcon("audio")} </span>
+          {labelFor(props.item)}
+        </span>
+      </Show>
     </li>
   );
 }

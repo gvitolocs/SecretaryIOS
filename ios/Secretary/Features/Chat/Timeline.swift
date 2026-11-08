@@ -388,7 +388,23 @@ extension TimelineItem {
         return MessageSource(label: label, symbol: channel.symbol)
     }
 
-    var displayText: String { legacyMcp?.text ?? text }
+    var displayText: String {
+        let shown = legacyMcp?.text ?? text
+        return Self.hidesVoiceCaption(shown, attachments: attachments) ? "" : shown
+    }
+
+    /// True for the caption the share router used to write for voice notes ("📎 voice-note.wav"): the item has a
+    /// voice attachment and every name after the clip is a voice attachment's name. A real caption stays.
+    static func hidesVoiceCaption(_ text: String, attachments: [TimelineAttachment]) -> Bool {
+        let names = Set(attachments.filter(\.isVoice).compactMap { $0.name?.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
+        guard attachments.contains(where: \.isVoice) else { return false }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefix = "\u{1F4CE} "
+        guard trimmed.hasPrefix(prefix) else { return false }
+        let listed = trimmed.dropFirst(prefix.count).split(separator: ",", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        return !listed.isEmpty && listed.allSatisfy { !$0.isEmpty && names.contains($0) }
+    }
 
     private var legacyMcp: (caller: String, text: String)? {
         let prefix = "[via Lucina MCP, from "

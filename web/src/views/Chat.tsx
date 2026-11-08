@@ -55,6 +55,7 @@ import {
   releaseDraft,
   type DraftAttachment,
   type ShareLocation,
+  visibleText,
 } from "../lib/attachments";
 import { takeHandOff } from "../lib/chatHandoff";
 import { LinkifiedText } from "../components/LinkifiedText";
@@ -442,7 +443,11 @@ export function MessageItem(props: { message: ChatMessage; focused?: boolean; in
     props.message.role === "lucina" && props.message.meta?.kind === "proactive" ? props.message.meta.proactive : undefined;
   // Lucina message format v1: bubbles, widgets and buttons (not for reminders or proactive cards).
   const rich = () => (!isUser() && !isReminder() && !proactive() ? richOf(props.message) : undefined);
-  const text = () => mcpSource(props.message.role, props.message.text, props.message.meta)?.text ?? props.message.text;
+  const text = () =>
+    visibleText(
+      mcpSource(props.message.role, props.message.text, props.message.meta)?.text ?? props.message.text,
+      props.message.attachments,
+    );
   const hasBody = () => !rich() && (!!text() || !!props.message.attachments?.length);
   // A photo album's caption sits under it, Telegram-style.
   const captionUnder = () => isUser() && !!props.message.attachments?.some((a) => a.kind === "image");

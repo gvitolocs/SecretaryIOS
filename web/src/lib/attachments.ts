@@ -293,3 +293,25 @@ export function formatDuration(ms: number | undefined): string {
   if (hours > 0) return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
+
+/**
+ * The auto caption the share router used to write for voice parts ("📎 voice-note.wav"): true when the
+ * attachments include a voice note and every name after the clip is a voice attachment's name.
+ */
+export function isVoiceAutoCaption(
+  text: string,
+  attachments: ReadonlyArray<{ kind: string; name?: string }> | undefined,
+): boolean {
+  const voices = (attachments ?? []).filter((a) => a.kind === "voice");
+  if (voices.length === 0) return false;
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("\u{1F4CE} ")) return false;
+  const names = new Set(voices.map((a) => a.name?.trim()).filter((n): n is string => !!n));
+  const listed = trimmed.slice("\u{1F4CE} ".length).split(",").map((n) => n.trim());
+  return listed.length > 0 && listed.every((n) => n !== "" && names.has(n));
+}
+
+/** The text a bubble shows: empty for a voice note's legacy auto caption, the text otherwise. */
+export function visibleText(text: string, attachments: ReadonlyArray<{ kind: string; name?: string }> | undefined): string {
+  return isVoiceAutoCaption(text, attachments) ? "" : text;
+}
