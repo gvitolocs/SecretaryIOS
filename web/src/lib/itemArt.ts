@@ -9,7 +9,7 @@
 
 import {
   DEFAULT_ICON,
-  guessByName,
+  resolveByName,
   OTHER_SECTION,
   type CatalogItem,
   type CatalogSection,
@@ -85,7 +85,8 @@ function initialOf(name: string): string {
  * 2. the art of its catalog item, unless the owner hand-picked the row's emoji (`iconPicked`):
  *    a catalog-bound row's stored emoji is the catalog's, possibly from another catalog version;
  * 3. no catalog id (free text, a custom object): the art of the catalog item its name names
- *    (guessByName), when that item belongs to the row's section, if the row has one;
+ *    exactly (resolveByName: a name or alias, never a part of the text), when that item
+ *    belongs to the row's section, if the row has one (docs/design/shopping-labels.md);
  * 4. a specific emoji of the row (not the cart and not just its section's emoji);
  * 5. the art of its section ("other" excluded);
  * 6. any remaining emoji other than the cart, else the first letter of the name.
@@ -100,7 +101,7 @@ export function itemVisual(row: VisualRow, index: SearchIndex | null, sections: 
     const url = ITEM_ART.get(row.catalogId);
     if (url && !(row.iconPicked === true && icon && icon !== item?.icon)) return { kind: "art", url };
   } else if (index) {
-    const guess = guessByName(index, row.name);
+    const guess = resolveByName(index, row.name)?.item ?? null;
     const fits = !row.section || row.section === OTHER_SECTION || !guess?.section || guess.section === row.section;
     const url = guess && fits ? ITEM_ART.get(guess.id) : undefined;
     if (url) return { kind: "art", url };

@@ -3,7 +3,7 @@ import { catalogName, exactMatch, fold, itemKey, searchCatalog, type CatalogItem
 import { SPEC_CHIPS } from "../../lib/shoppingI18n";
 import type { ShopItem } from "../../lib/shoppingOps";
 import { joinSpec, parseQuery } from "../../lib/shoppingQuery";
-import { addCatalogItem, addText, catalogIndex, itemIcon, itemLang, shop, t, tapItem } from "../../state/shopping";
+import { addCatalogItem, addText, catalogIndex, itemIcon, itemLang, shop, t, tapItem, textParts } from "../../state/shopping";
 import { Tile } from "./Tile";
 
 /** The search field's state, shared by the field (in the header) and the suggestion grid (in the board). */
@@ -69,6 +69,13 @@ export function SearchField(props: { search: ShopSearch; act: (fn: () => void) =
   function addTyped() {
     const text = s.text();
     if (!text) {
+      s.focus();
+      return;
+    }
+    // Several items in one text ("latte, uova e 4 baguettes") are added one by one.
+    if (textParts(text).length > 1) {
+      s.clear();
+      props.act(() => void addText(text));
       s.focus();
       return;
     }
@@ -203,7 +210,11 @@ export function SearchResults(props: { search: ShopSearch; act: (fn: () => void)
             icon={null}
             name={s.text()}
             spec={s.spec()}
-            label={t("addCustom", { name: s.spec() ? `${s.text()} (${s.spec()})` : s.text() })}
+            label={
+              textParts(s.text()).length > 1
+                ? t("addMany", { n: textParts(s.text()).length })
+                : t("addCustom", { name: s.spec() ? `${s.text()} (${s.spec()})` : s.text() })
+            }
             onTap={() => done((text, spec) => void addText(text, spec))}
           />
         </Show>
