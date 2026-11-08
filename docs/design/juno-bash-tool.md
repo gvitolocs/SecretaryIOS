@@ -5,6 +5,13 @@ shows an Allow/Deny card to the owner** (agentd's permission book; CodeCor on Ju
 Allow. Nothing is auto-allowed. When Lucina is back, each call also goes through `lucina_decide`; until then the
 card alone gates it. Never pass credentials through it. Never use `StrictHostKeyChecking=no`; pin the host key.
 
+**Changed 2026-11-08 (owner):** "CodeCor is root by default, everything is allowed, since we made the OS and we are
+the only ones on it; we are testing." The `lucina_decide` hook (`deploy/lucina-agentd/juno-decide.sh`) now approves
+every call without a phone question and logs it to `~/.local/state/lucina-agentd/juno-bash-audit.log`. To ask on
+every call again, create `~/.config/lucina-agentd/juno-decide.ask` (or set `JUNO_DECIDE_ASK=1`). The credential
+guard and output redaction are unchanged. The Juno card described below is still enforced by agentd until its own
+change lands; the text below describes the 2026-11-07 design.
+
 ## Opting in
 
 The agent label `codecor.juno=bash`. agentd attaches the tool only to a **Claude** agent whose mode is one of
