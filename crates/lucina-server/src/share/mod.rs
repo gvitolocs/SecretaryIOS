@@ -308,6 +308,9 @@ struct Job {
     lang: String,
     session: String,
     source: String,
+    /// The device that posted it (gateway header); kept out of the public status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    from_device: Option<String>,
     #[serde(default)]
     meta: ShareMeta,
     lucina_item_id: Option<String>,
@@ -455,6 +458,20 @@ fn host_of(url: &str) -> String {
 
 async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, Error> {
     authenticate(&st, req.headers()).await?;
+    // From the gateway (Caddy copies them from secretary-server's device check): who asked, and
+    // whether that device is a test client. `authenticate` proved the request came through it.
+    let from_device = req
+        .headers()
+        .get("x-secretary-device")
+        .and_then(|h| h.to_str().ok())
+        .map(str::trim)
+        .filter(|d| lucina_store::timeline::valid_device(d))
+        .map(str::to_owned);
+    let test_device = req
+        .headers()
+        .get("x-secretary-test")
+        .and_then(|h| h.to_str().ok())
+        .is_some_and(|v| v.trim() == "1");
     if req
         .headers()
         .get("content-length")
@@ -526,6 +543,7 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
                 "url",
                 "meta",
                 "replyTo",
+                "conversation",
             ]
             .contains(&name.as_str())
             {
@@ -634,6 +652,19 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
     if !valid_session(&session) {
         return Err(bad("invalid sessionId"));
     }
+    // Test traffic (a test device, `conversation=selftest`, a `probe…`/`test…` source) runs in the
+    // self-test conversation: never the owner's chat, never a push (docs/share.md).
+    let selftest = test_device
+        || crate::selftest::requested(
+            &json!({"conversation": field("conversation", ""), "source": field("source", "")}),
+            &session,
+            "",
+        );
+    let session = if selftest {
+        crate::selftest::SESSION.to_owned()
+    } else {
+        session
+    };
     // Swipe to reply: the earlier timeline item this share answers.
     let reply_to = field("replyTo", "").trim().to_owned();
     if !reply_to.is_empty() && !crate::chat::reply::valid_id(&reply_to) {
@@ -789,6 +820,8 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
             meta: Some(Meta {
                 share_id: Some(id.clone()),
                 intent: Some(action.clone()),
+                source: Some(source.clone()),
+                from_device: from_device.clone(),
                 ..Meta::kind("share")
             }),
             ..NewItem::default()
@@ -806,7 +839,12 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
         note,
         lang: field("lang", "en"),
         source,
-        session: lucina_memory::secretary_session_id(&session, &st.cfg.default_session),
+        from_device,
+        session: if selftest {
+            session
+        } else {
+            lucina_memory::secretary_session_id(&session, &st.cfg.default_session)
+        },
         meta,
         lucina_item_id: None,
         reply: None,
@@ -1171,6 +1209,11 @@ fn spawn(st: AppState, dir: PathBuf, mut job: Job) {
                 role: "lucina".into(),
                 text: reply.clone(),
                 reply_to: Some(job.user_item.id.clone()),
+                meta: Some(Meta {
+                    source: Some(job.source.clone()),
+                    from_device: job.from_device.clone(),
+                    ..Meta::default()
+                }),
                 ..NewItem::default()
             });
             job.lucina_item_id = item.map(|i| i.id);
@@ -1457,6 +1500,9 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
             .filter(|s| !s.is_empty())
             .map(|s| clip(&s, 4000)),
         voice_reply: has_voice.then_some(true),
+        // Who asked, on Lucina's items of this turn (the notifier routes the reply by it).
+        source: Some(job.source.clone()),
+        from_device: job.from_device.clone(),
         ..Meta::default()
     };
     if has_voice

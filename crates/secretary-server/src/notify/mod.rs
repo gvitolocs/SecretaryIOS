@@ -16,12 +16,18 @@
 //! messages are dropped while the owner has the app in front), quiet
 //! hours / DND (stored, pushed later as one digest), then the inbox and
 //! the push targets each device allows.
+//!
+//! Before that, a timeline item passes [`reply_route`]: a reply goes where he
+//! asked (silent when the device he asked on shows it, held [`reply_route::GRACE`]
+//! for a client that gets no pushes, pushed if that client is gone by then), test
+//! and agent traffic never pushes, Lucina on her own pushes by category.
 
 pub mod apns;
 pub mod ingest;
 pub mod live;
 pub mod model;
 pub mod push;
+pub mod reply_route;
 pub mod routes;
 pub mod settings;
 pub mod store;
@@ -58,6 +64,8 @@ pub struct NotifyConfig {
     pub offline_after: Duration,
     /// Unread Lucina messages within this window are counted in the push title.
     pub burst_window: Duration,
+    /// How long a reply to a client without pushes waits for that client ([`reply_route::GRACE`]).
+    pub reply_grace: Duration,
 }
 
 impl Default for NotifyConfig {
@@ -70,6 +78,7 @@ impl Default for NotifyConfig {
             presence_ttl: Duration::from_secs(90),
             offline_after: Duration::from_secs(300),
             burst_window: Duration::from_secs(1800),
+            reply_grace: reply_route::GRACE,
         }
     }
 }
@@ -115,7 +124,42 @@ pub struct Notifier {
     seen: SeenIds,
     admit_lock: Mutex<()>,
     link: Mutex<Link>,
+    /// Epoch ms of each device's latest request (its start and its end).
+    activity: Mutex<HashMap<String, i64>>,
+    /// Open timeline streams and voice sockets per device.
+    links: Arc<Mutex<HashMap<String, usize>>>,
 }
+
+/// A device's open timeline stream or voice socket; closes on drop.
+pub struct DeviceLink {
+    device: String,
+    links: Arc<Mutex<HashMap<String, usize>>>,
+}
+
+impl Drop for DeviceLink {
+    fn drop(&mut self) {
+        let mut l = self.links.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(n) = l.get_mut(&self.device) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                l.remove(&self.device);
+            }
+        }
+    }
+}
+
+/// The notification kind [`reply_route`] decides on.
+fn route_kind(c: Category) -> reply_route::Kind {
+    match c {
+        Category::Reminder => reply_route::Kind::Reminder,
+        Category::DeviceConfirm => reply_route::Kind::DeviceConfirm,
+        Category::Shopping => reply_route::Kind::Shopping,
+        _ => reply_route::Kind::Message,
+    }
+}
+
+/// A reply's own clock may run a little ahead of ours: requests up to this much before it count.
+const CLOCK_SLACK_MS: i64 = 1000;
 
 fn ms(d: Duration) -> i64 {
     i64::try_from(d.as_millis()).unwrap_or(i64::MAX)
@@ -231,8 +275,52 @@ impl Notifier {
             seen: SeenIds::new(4096),
             admit_lock: Mutex::default(),
             link: Mutex::default(),
+            activity: Mutex::default(),
+            links: Arc::default(),
             cfg,
         })
+    }
+
+    // -- the asking device ---------------------------------------------------
+
+    /// `device` made a request (called at its start and at its end).
+    pub fn saw(&self, device: &str) {
+        let mut a = self.activity.lock().unwrap_or_else(|e| e.into_inner());
+        a.insert(device.to_owned(), model::now_ms());
+    }
+
+    /// Whether `device` made a request at or after `since` (epoch ms).
+    pub fn active_since(&self, device: &str, since: i64) -> bool {
+        let a = self.activity.lock().unwrap_or_else(|e| e.into_inner());
+        a.get(device).is_some_and(|at| *at >= since)
+    }
+
+    /// `device` opened a timeline stream or voice socket; it counts until the guard drops.
+    pub fn link(&self, device: &str) -> DeviceLink {
+        let mut l = self.links.lock().unwrap_or_else(|e| e.into_inner());
+        *l.entry(device.to_owned()).or_insert(0) += 1;
+        DeviceLink {
+            device: device.to_owned(),
+            links: self.links.clone(),
+        }
+    }
+
+    /// Whether `device` holds an open timeline stream or voice socket.
+    pub fn connected(&self, device: &str) -> bool {
+        let l = self.links.lock().unwrap_or_else(|e| e.into_inner());
+        l.get(device).is_some_and(|n| *n > 0)
+    }
+
+    /// Whether `device` holds a push subscription itself (the iPhone app).
+    pub fn push_device(&self, device: &str) -> bool {
+        self.pusher.list().iter().any(|s| s.device_id == device)
+    }
+
+    /// Whether the app on `device` reported itself in front within the TTL.
+    pub fn present_on(&self, device: &str) -> bool {
+        let ttl = self.cfg.presence_ttl;
+        let p = self.presence.lock().unwrap_or_else(|e| e.into_inner());
+        p.get(device).is_some_and(|at| at.elapsed() < ttl)
     }
 
     // -- presence ------------------------------------------------------------
@@ -462,11 +550,49 @@ impl Notifier {
     }
 
     /// A timeline item from the ingester; remembers its id as the resume point.
-    pub async fn ingest(self: &Arc<Self>, item: &TimelineItem, sse_id: Option<String>) {
+    /// `test_device`: the device is flagged `test` in the registry.
+    pub async fn ingest(
+        self: &Arc<Self>,
+        item: &TimelineItem,
+        sse_id: Option<String>,
+        test_device: &(dyn Fn(&str) -> bool + Sync),
+    ) {
         let now = model::now_ms();
         if let Some(n) = ingest::classify(item, now, ms(self.cfg.stale)) {
-            if let Err(e) = self.publish(n).await {
-                tracing::warn!(error = %e, "could not store a notification");
+            let meta = item.meta.clone().unwrap_or(Value::Null);
+            let channel = String::from(item.channel.clone());
+            let turn = reply_route::Turn::of(&channel, item.reply_to.is_some(), &meta);
+            let origin = turn.origin(test_device, |d| self.push_device(d), |d| self.present_on(d));
+            let kind = route_kind(n.category.unwrap_or(Category::LucinaMessage));
+            let id = item.id.to_text();
+            match reply_route::route(kind, origin) {
+                reply_route::Route::Silent => {
+                    tracing::info!(timeline_id = %id, ?origin, ?kind, "no push: the device he asked on shows it, or test/agent traffic");
+                }
+                reply_route::Route::Now => {
+                    if let Err(e) = self.publish(n).await {
+                        tracing::warn!(error = %e, "could not store a notification");
+                    }
+                }
+                reply_route::Route::Grace => {
+                    let device = turn.device.clone().unwrap_or_default();
+                    let written = ingest::ts_ms(&item.ts).unwrap_or(now).min(now) - CLOCK_SLACK_MS;
+                    tracing::info!(timeline_id = %id, %device, "reply held for the asking client");
+                    let me = self.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(me.cfg.reply_grace).await;
+                        let connected = me.connected(&device);
+                        let active = me.active_since(&device, written);
+                        if reply_route::grace_push(connected, active) {
+                            tracing::info!(timeline_id = %id, %device, "asking client gone: pushing the reply");
+                            if let Err(e) = me.publish(n).await {
+                                tracing::warn!(error = %e, "could not store a notification");
+                            }
+                        } else {
+                            tracing::info!(timeline_id = %id, %device, connected, active, "asking client has the reply: no push");
+                        }
+                    });
+                }
             }
         }
         let id = sse_id.unwrap_or_else(|| item.id.to_text());
@@ -935,6 +1061,160 @@ mod tests {
         assert_eq!(text::agent_title(None, "en"), "Agent finished");
         n.settings.update(|s| s.categories.agent = false).unwrap();
         assert_eq!(n.publish(NewNotification::new(Category::Agent, "done")).await.unwrap(), Outcome::Disabled);
+    }
+
+    // -- a reply goes where he asked (reply_route; docs/notifications.md) ------
+
+    const IPHONE: &str = "dev_iphone";
+    const DSI: &str = "dev_dsi";
+    const JUNO: &str = "dev_juno";
+    const PROBE: &str = "dev_probe";
+    const GRACE: Duration = Duration::from_millis(150);
+
+    fn routed(dir: &Path) -> Arc<Notifier> {
+        let cfg = NotifyConfig {
+            reply_grace: GRACE,
+            ..NotifyConfig::default()
+        };
+        let n = Arc::new(Notifier::open(dir, cfg).unwrap());
+        n.pusher
+            .upsert(Subscription {
+                id: "ps_iphone".into(),
+                kind: push::Kind::Apns,
+                device_id: IPHONE.into(),
+                device_name: "iPhone".into(),
+                label: "iPhone (app)".into(),
+                endpoint: "00".repeat(32),
+                p256dh: String::new(),
+                auth: String::new(),
+                lang: Some("en".into()),
+                created_at: 0,
+                last_success_at: None,
+                failures: 0,
+                last_error: None,
+            })
+            .unwrap();
+        n
+    }
+
+    fn reply(id: &str, channel: &str, meta: Value) -> TimelineItem {
+        let ts = time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap();
+        serde_json::from_value(json!({"id": id, "ts": ts, "channel": channel, "role": "lucina",
+            "text": "Here you go", "replyTo": "01USER", "meta": meta}))
+        .unwrap()
+    }
+
+    async fn ingest(n: &Arc<Notifier>, item: &TimelineItem) {
+        n.ingest(item, None, &|d: &str| d == PROBE).await;
+    }
+
+    fn inbox_has(n: &Notifier, id: &str) -> bool {
+        n.inbox
+            .page(None, 50, false)
+            .items
+            .iter()
+            .any(|x| x.timeline_id.as_deref() == Some(id))
+    }
+
+    async fn after_grace() {
+        tokio::time::sleep(GRACE * 3).await;
+    }
+
+    #[tokio::test]
+    async fn dsi_turn_stays_on_the_dsi_while_it_is_connected() {
+        let dir = tempfile::tempdir().unwrap();
+        let n = routed(dir.path());
+        let _socket = n.link(DSI);
+        ingest(&n, &reply("01DSI", "web", json!({"source": "fortuna-chat", "fromDevice": DSI}))).await;
+        assert!(!inbox_has(&n, "01DSI"), "held, not pushed at once");
+        after_grace().await;
+        assert!(!inbox_has(&n, "01DSI"), "the DSi had it: the iPhone stays silent");
+    }
+
+    #[tokio::test]
+    async fn juno_turn_stays_on_juno_when_it_polled_after_the_reply() {
+        let dir = tempfile::tempdir().unwrap();
+        let n = routed(dir.path());
+        ingest(&n, &reply("01JUNO", "web", json!({"source": "juno-chat", "device": JUNO}))).await;
+        n.saw(JUNO);
+        after_grace().await;
+        assert!(!inbox_has(&n, "01JUNO"));
+    }
+
+    #[tokio::test]
+    async fn asking_client_gone_gets_the_push_after_the_grace() {
+        let dir = tempfile::tempdir().unwrap();
+        let n = routed(dir.path());
+        {
+            // The DSi had a socket, then went away before the reply.
+            let _gone = n.link(DSI);
+        }
+        ingest(&n, &reply("01GONE", "web", json!({"source": "fortuna-chat", "fromDevice": DSI}))).await;
+        assert!(!inbox_has(&n, "01GONE"));
+        after_grace().await;
+        assert!(inbox_has(&n, "01GONE"), "the reply must not be lost");
+    }
+
+    #[tokio::test]
+    async fn iphone_turn_in_front_is_silent_and_in_background_pushes() {
+        let dir = tempfile::tempdir().unwrap();
+        let n = routed(dir.path());
+        n.set_presence(IPHONE, true);
+        ingest(&n, &reply("01FRONT", "ios", json!({"source": "ios-chat", "device": IPHONE}))).await;
+        assert!(!inbox_has(&n, "01FRONT"));
+        n.set_presence(IPHONE, false);
+        ingest(&n, &reply("01AWAY", "ios", json!({"source": "ios-chat", "device": IPHONE}))).await;
+        assert!(inbox_has(&n, "01AWAY"), "app in the background: pushed at once");
+    }
+
+    #[tokio::test]
+    async fn probe_test_and_agent_traffic_never_notifies() {
+        let dir = tempfile::tempdir().unwrap();
+        let n = routed(dir.path());
+        ingest(&n, &reply("01P1", "web", json!({"source": "probe"}))).await;
+        ingest(&n, &reply("01P2", "ios", json!({"device": PROBE, "deviceName": "Voice probe"}))).await;
+        ingest(&n, &reply("01P3", "web", json!({"source": "test-dsi", "fromDevice": DSI}))).await;
+        ingest(&n, &reply("01AG", "web", json!({"via": "mcp", "caller": "claude"}))).await;
+        let mut r = reply("01PR", "web", json!({"kind": "reminder", "source": "probe"}));
+        r.reply_to = None;
+        ingest(&n, &r).await;
+        after_grace().await;
+        assert_eq!(n.inbox.page(None, 50, false).items.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn reminders_and_proactive_messages_still_push() {
+        let dir = tempfile::tempdir().unwrap();
+        let n = routed(dir.path());
+        let mut r = reply("01REM", "telegram", json!({"kind": "reminder", "isDm": true}));
+        r.reply_to = None;
+        ingest(&n, &r).await;
+        assert!(inbox_has(&n, "01REM"));
+        let mut p = reply("01PRO", "other", json!({"kind": "proactive"}));
+        p.reply_to = None;
+        ingest(&n, &p).await;
+        assert!(inbox_has(&n, "01PRO"));
+        // A reminder made in a DSi turn pushes at once too.
+        let _socket = n.link(DSI);
+        ingest(&n, &reply("01DREM", "web", json!({"kind": "reminder", "fromDevice": DSI}))).await;
+        assert!(inbox_has(&n, "01DREM"));
+        // His settings still apply.
+        n.settings.update(|s| s.categories.reminder = false).unwrap();
+        let mut off = reply("01OFF", "web", json!({"kind": "reminder"}));
+        off.reply_to = None;
+        ingest(&n, &off).await;
+        assert!(!inbox_has(&n, "01OFF"));
+    }
+
+    #[tokio::test]
+    async fn telegram_replies_stay_on_telegram() {
+        let dir = tempfile::tempdir().unwrap();
+        let n = routed(dir.path());
+        ingest(&n, &reply("01TG", "telegram", json!(null))).await;
+        after_grace().await;
+        assert!(!inbox_has(&n, "01TG"));
     }
 
     #[tokio::test]

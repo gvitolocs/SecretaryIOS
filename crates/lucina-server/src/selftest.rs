@@ -2,7 +2,8 @@
 //!
 //! A chat turn is a self-test when the request says so: `"conversation": "selftest"` (or
 //! `"diagnostic"`), a `sessionId` starting with `selftest` or `diag`, or a message starting with
-//! `[selftest]` / `[diag]`. It then runs in its own conversation:
+//! `[selftest]` / `[diag]`, `"test": true`, or a test `source` (`probe…`, `test…`: agents' probes and
+//! test runs on his devices; [`is_test_source`]). It then runs in its own conversation:
 //!
 //! - session [`SESSION`] (its own recent turns and pending confirmations);
 //! - timeline `selftest-timeline.jsonl` next to the owner's: never `timeline.jsonl`, so never
@@ -26,11 +27,19 @@ fn diagnostic_name(s: &str) -> bool {
     s.starts_with("selftest") || s.starts_with("self-test") || s.starts_with("diag")
 }
 
+/// A client `source` that is test traffic, never the owner speaking.
+pub fn is_test_source(source: &str) -> bool {
+    let s = source.trim().to_ascii_lowercase();
+    s.starts_with("probe") || s.starts_with("test")
+}
+
 /// The request asks for a self-test or diagnostic turn.
 pub fn requested(body: &Value, session: &str, message: &str) -> bool {
     let conversation = body["conversation"].as_str().unwrap_or("");
     let lead = message.trim_start().to_ascii_lowercase();
-    diagnostic_name(conversation)
+    body["test"] == Value::Bool(true)
+        || body["source"].as_str().is_some_and(is_test_source)
+        || diagnostic_name(conversation)
         || diagnostic_name(session)
         || lead.starts_with("[selftest]")
         || lead.starts_with("[self-test]")
@@ -71,6 +80,11 @@ mod tests {
             "ios-1",
             "ciao"
         ));
+        assert!(requested(&json!({"source": "probe"}), "", "ciao"));
+        assert!(requested(&json!({"source": "test-juno"}), "", "ciao"));
+        assert!(requested(&json!({"test": true}), "", "ciao"));
+        assert!(!requested(&json!({"source": "fortuna-chat"}), "", "ciao"));
+        assert!(!requested(&json!({"test": false}), "", "ciao"));
         assert!(is_session(SESSION));
         assert!(!is_session("secretary_app"));
     }

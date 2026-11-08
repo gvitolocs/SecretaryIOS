@@ -130,6 +130,8 @@ pub struct NoteForm<'a> {
     pub session_id: Option<&'a str>,
     pub channel: &'a str,
     pub source: &'a str,
+    /// `selftest` for a test note: Lucina keeps it out of the owner's chat.
+    pub conversation: Option<&'a str>,
     pub reply_to: Option<&'a str>,
     pub duration_ms: u64,
     pub transcript: Option<&'a str>,
@@ -160,6 +162,9 @@ pub fn share_body(boundary: String, f: &NoteForm) -> (String, Vec<u8>) {
     }
     m.text("channel", f.channel);
     m.text("source", f.source);
+    if let Some(c) = f.conversation {
+        m.text("conversation", c);
+    }
     if let Some(r) = f.reply_to {
         m.text("replyTo", r);
     }
@@ -506,6 +511,7 @@ mod tests {
             session_id: None,
             channel: "ios",
             source: "ios-chat",
+            conversation: None,
             reply_to: Some("itm_1"),
             duration_ms: 1500,
             transcript: Some("ciao"),

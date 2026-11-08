@@ -99,7 +99,11 @@ pub fn context_block(st: &crate::AppState, session: &str) -> String {
 /// or an MCP caller's text (the callers check), never a secret (masked first).
 pub fn observe(st: &crate::AppState, session: &str, kind: &str, reference: &str, text: &str) {
     // Juno's chat is also where agents test by typing as him (evdev): not his words for certain.
-    if !st.about.cfg.enabled || text.trim().is_empty() || session.starts_with("secretary_juno") {
+    if !st.about.cfg.enabled
+        || text.trim().is_empty()
+        || session.starts_with("secretary_juno")
+        || crate::selftest::is_session(session)
+    {
         return;
     }
     let masked = lucina_secrets::labelled::mask(text);

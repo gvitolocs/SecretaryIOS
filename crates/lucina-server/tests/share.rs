@@ -1583,3 +1583,68 @@ async fn a_file_shared_while_the_library_is_down_gets_its_media_id_when_it_is_ba
     assert_eq!(lucina_server::share::store_again_now(&h.state).await, 0);
     assert_eq!(media.seen.media.lock().unwrap().len(), 1);
 }
+
+/// docs/share.md "Who asked": the gateway passes the device, the form the source; both ride on every item
+/// of the turn so secretary-server sends the reply where he asked. Test traffic goes to the self-test timeline.
+#[tokio::test]
+async fn shares_carry_who_asked_and_test_shares_stay_out_of_his_chat() {
+    let services = services().await;
+    let h = setup(&services).await;
+    let post = |id: &str, source: &str, extra: &[(&str, &str)], headers: &[(&str, &str)]| {
+        let mut form = Form::new()
+            .text("shareId", id.to_owned())
+            .text("text", "a note for Lucina")
+            .text("source", source.to_owned());
+        for (k, v) in extra {
+            form = form.text(k.to_string(), v.to_string());
+        }
+        let mut rb = h
+            .http
+            .post(format!("{}/v1/share", h.base))
+            .header("x-share-gateway", "gateway-test-secret");
+        for (k, v) in headers {
+            rb = rb.header(*k, *v);
+        }
+        rb.multipart(form).send()
+    };
+    let r = post(
+        "share-who-asked-1",
+        "fortuna-chat",
+        &[],
+        &[("x-secretary-device", "dev_test1"), ("x-secretary-test", "0")],
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.status(), 202);
+    assert_eq!(finished(&h, "share-who-asked-1").await["status"], "done");
+    let lines = h.timeline_lines();
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    for item in &lines {
+        assert_eq!(item["meta"]["source"], "fortuna-chat", "{item}");
+        assert_eq!(item["meta"]["fromDevice"], "dev_test1", "{item}");
+        assert!(item["meta"]["device"].is_null(), "a share stays out of the device's conversation");
+    }
+    assert_eq!(lines[1]["role"], "lucina");
+    assert_eq!(lines[1]["replyTo"], lines[0]["id"]);
+
+    let selftest_lines = || -> Vec<Value> {
+        std::fs::read_to_string(h.dir.path().join("selftest-timeline.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    };
+    type Case<'a> = (&'a str, &'a str, &'a [(&'a str, &'a str)], &'a [(&'a str, &'a str)]);
+    let cases: [Case; 3] = [
+        ("share-probe-1", "probe", &[], &[]),
+        ("share-testdev-1", "fortuna-chat", &[], &[("x-secretary-test", "1")]),
+        ("share-conv-1", "juno-chat", &[("conversation", "selftest")], &[]),
+    ];
+    for (i, (id, source, extra, headers)) in cases.iter().enumerate() {
+        let r = post(id, source, extra, headers).await.unwrap();
+        assert_eq!(r.status(), 202, "{id}");
+        finished(&h, id).await;
+        assert_eq!(h.timeline_lines().len(), 2, "{id} stayed out of his chat");
+        assert!(selftest_lines().len() > 2 * i, "{id} is in the self-test timeline");
+    }
+}

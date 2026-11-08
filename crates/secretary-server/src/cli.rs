@@ -280,6 +280,9 @@ pub enum TokenAction {
     /// Revoke a device by id and end its browser sessions; takes effect on
     /// the running server immediately.
     Revoke { id: String },
+    /// Mark a device as a test client (`on`) or not (`off`): its turns go to Lucina's
+    /// self-test conversation and never notify. Takes effect on the running server at once.
+    Test { id: String, state: String },
 }
 
 fn data_dir(flag: Option<PathBuf>) -> PathBuf {
@@ -314,13 +317,25 @@ pub fn run_token(
             for d in devices {
                 writeln!(
                     out,
-                    "{}\t{}\t{}\tcreated {}\tlast seen {}",
+                    "{}\t{}{}\t{}\tcreated {}\tlast seen {}",
                     d.id,
                     if d.revoked { "revoked" } else { "active" },
+                    if d.test { " test" } else { "" },
                     d.name,
                     d.created_at,
                     d.last_seen_at.as_deref().unwrap_or("never"),
                 )?;
+            }
+        }
+        TokenAction::Test { id, state } => {
+            let on = match state.as_str() {
+                "on" => true,
+                "off" => false,
+                _ => anyhow::bail!("state: on or off"),
+            };
+            match store.set_test(&id, on)? {
+                Some(d) => writeln!(out, "{} ({}): test {}", d.id, d.name, if on { "on" } else { "off" })?,
+                None => anyhow::bail!("no device {id}"),
             }
         }
         TokenAction::Revoke { id } => match crate::sessions::revoke_device(store.dir(), &id)? {
