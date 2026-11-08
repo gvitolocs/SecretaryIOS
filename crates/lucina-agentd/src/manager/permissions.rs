@@ -145,10 +145,18 @@ pub(super) fn agent_key(agent_id: &str, request_id: &str) -> String {
 
 /// Whether a tool request named `name` is preapproved by the agent's tool policy or
 /// is one of agentd's own MCP tools. A Juno shell tool (`mcp__juno__*`) is never
-/// preapproved: every call shows the owner an Allow/Deny card.
+/// preapproved in ask mode (`crate::juno_mcp::juno_ask_mode`, the 2026-11-07
+/// behaviour): every call shows the owner an Allow/Deny card. By default (owner
+/// decision 2026-11-08) it is preapproved like agentd's own tools.
 fn preapproved_by_policy(policy: &ToolPolicy, name: &str) -> bool {
-    !crate::juno_mcp::is_juno_tool(name)
-        && (policy.preapproves(name) || crate::mcp::is_own_tool(name))
+    preapproved_by_policy_with(policy, name, crate::juno_mcp::juno_ask_mode())
+}
+
+fn preapproved_by_policy_with(policy: &ToolPolicy, name: &str, ask_mode: bool) -> bool {
+    if crate::juno_mcp::is_juno_tool(name) {
+        return !ask_mode;
+    }
+    policy.preapproves(name) || crate::mcp::is_own_tool(name)
 }
 
 /// The book's key: agent requests by agent and request id, external ones by their id.
@@ -233,8 +241,10 @@ impl Manager {
             .clone()
             .and_then(|v| serde_json::from_value(v).ok())
             .unwrap_or_default();
-        // agentd's own MCP tools (`lagent mcp`) enforce their limits themselves — but
-        // never the Juno shell tool: every `mcp__juno__*` call asks the owner again.
+        // agentd's own MCP tools (`lagent mcp`) enforce their limits themselves. The
+        // Juno shell tool follows the `juno-decide.ask` switch: by default (owner
+        // decision 2026-11-08) it is preapproved like them; in ask mode every
+        // `mcp__juno__*` call asks the owner again.
         let preapproved = request.kind == lucina_agents::permission::PermissionKind::Tool
             && preapproved_by_policy(&policy, &request.name);
         let mut resolved_at_ms = None;
@@ -689,7 +699,8 @@ mod tests {
 
     #[test]
     fn juno_tools_are_never_preapproved() {
-        // Even a tool policy that names the juno server exactly.
+        // Ask mode (2026-11-07 behaviour): even a tool policy that names the juno
+        // server exactly never preapproves a juno tool.
         let policy = ToolPolicy {
             preapproved: vec![
                 Grant {
@@ -704,19 +715,44 @@ mod tests {
                 },
             ],
         };
-        assert!(!preapproved_by_policy(&policy, "mcp__juno__juno_bash"));
-        assert!(!preapproved_by_policy(&policy, "mcp__juno__anything"));
-        assert!(!preapproved_by_policy(
+        assert!(!preapproved_by_policy_with(&policy, "mcp__juno__juno_bash", true));
+        assert!(!preapproved_by_policy_with(&policy, "mcp__juno__anything", true));
+        assert!(!preapproved_by_policy_with(
             &ToolPolicy::default(),
-            "mcp__juno__juno_bash"
+            "mcp__juno__juno_bash",
+            true
         ));
         // agentd's own tools and other preapproved tools still are.
-        assert!(preapproved_by_policy(
+        assert!(preapproved_by_policy_with(
             &policy,
-            "mcp__lucina-agents__list_agents"
+            "mcp__lucina-agents__list_agents",
+            true
         ));
-        assert!(preapproved_by_policy(&policy, "mcp__lucina__notes_search"));
-        assert!(!preapproved_by_policy(&policy, "mcp__lucina__note_save"));
-        assert!(!preapproved_by_policy(&policy, "Bash"));
+        assert!(preapproved_by_policy_with(&policy, "mcp__lucina__notes_search", true));
+        assert!(!preapproved_by_policy_with(&policy, "mcp__lucina__note_save", true));
+        assert!(!preapproved_by_policy_with(&policy, "Bash", true));
+    }
+
+    #[test]
+    fn juno_tools_are_preapproved_without_ask_mode() {
+        // Ask mode off (owner decision 2026-11-08): a juno tool is preapproved even
+        // with an empty policy, like agentd's own tools.
+        assert!(preapproved_by_policy_with(
+            &ToolPolicy::default(),
+            "mcp__juno__juno_bash",
+            false
+        ));
+        assert!(preapproved_by_policy_with(
+            &ToolPolicy::default(),
+            "mcp__juno__anything",
+            false
+        ));
+        // It is not a juno tool, and an empty policy preapproves nothing else.
+        assert!(!preapproved_by_policy_with(
+            &ToolPolicy::default(),
+            "mcp__juno-evil__juno_bash",
+            false
+        ));
+        assert!(!preapproved_by_policy_with(&ToolPolicy::default(), "Bash", false));
     }
 }

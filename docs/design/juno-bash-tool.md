@@ -9,8 +9,9 @@ card alone gates it. Never pass credentials through it. Never use `StrictHostKey
 the only ones on it; we are testing." The `lucina_decide` hook (`deploy/lucina-agentd/juno-decide.sh`) now approves
 every call without a phone question and logs it to `~/.local/state/lucina-agentd/juno-bash-audit.log`. To ask on
 every call again, create `~/.config/lucina-agentd/juno-decide.ask` (or set `JUNO_DECIDE_ASK=1`). The credential
-guard and output redaction are unchanged. The Juno card described below is still enforced by agentd until its own
-change lands; the text below describes the 2026-11-07 design.
+guard and output redaction are unchanged. The Juno card is also off by default: agentd treats juno tools like its
+own tools (preapproved, and "allow always" may add a rule), and the card comes back with the same `juno-decide.ask`
+switch (or `JUNO_DECIDE_ASK=1`).
 
 ## Opting in
 

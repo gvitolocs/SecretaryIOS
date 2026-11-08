@@ -279,18 +279,28 @@ pub(super) fn tool_result_text(v: &Value) -> String {
     }
 }
 
-/// The `allow` control response for a tool request. A juno tool (`mcp__juno__*`) never
-/// gets `updatedPermissions`: "allow always" can never add a rule, so every call asks
-/// the owner again.
+/// The `allow` control response for a tool request. In ask mode a juno tool
+/// (`mcp__juno__*`) never gets `updatedPermissions`: "allow always" can never add a
+/// rule, so every call asks the owner again. By default (owner decision 2026-11-08) a
+/// juno tool keeps `updatedPermissions` like any other tool.
 fn allow_body(
     name: &str,
     updated_input: &Option<Map<String, Value>>,
     updated_permissions: &Option<Vec<Map<String, Value>>>,
 ) -> Value {
+    allow_body_with(name, updated_input, updated_permissions, crate::juno_mcp::juno_ask_mode())
+}
+
+fn allow_body_with(
+    name: &str,
+    updated_input: &Option<Map<String, Value>>,
+    updated_permissions: &Option<Vec<Map<String, Value>>>,
+    ask_mode: bool,
+) -> Value {
     let mut r = json!({"behavior": "allow", "updatedInput": updated_input.clone().map(Value::Object).unwrap_or(json!({}))});
     if let Some(p) = updated_permissions
         .as_ref()
-        .filter(|_| !crate::juno_mcp::is_juno_tool(name))
+        .filter(|_| !(ask_mode && crate::juno_mcp::is_juno_tool(name)))
     {
         r["updatedPermissions"] = json!(p);
     }
@@ -743,6 +753,7 @@ mod tests {
 
     #[test]
     fn juno_tools_never_get_updated_permissions() {
+        // Ask mode (2026-11-07 behaviour).
         let perms: Vec<Map<String, Value>> = vec![Map::from_iter([
             ("type".to_string(), json!("addRules")),
             (
@@ -753,19 +764,42 @@ mod tests {
         let perms_v = json!(perms);
         let input = Some(Map::from_iter([("command".to_string(), json!("ls"))]));
         // A juno tool: "allow always" is dropped, every call asks again.
-        let b = allow_body("mcp__juno__juno_bash", &input, &Some(perms.clone()));
+        let b = allow_body_with("mcp__juno__juno_bash", &input, &Some(perms.clone()), true);
         assert_eq!(b["behavior"], "allow");
         assert_eq!(b["updatedInput"], json!({"command": "ls"}));
         assert!(b.get("updatedPermissions").is_none(), "{b}");
         // Any other tool keeps them.
-        let b = allow_body("Bash", &input, &Some(perms.clone()));
+        let b = allow_body_with("Bash", &input, &Some(perms.clone()), true);
         assert_eq!(b["updatedPermissions"], perms_v);
-        let b = allow_body(
+        let b = allow_body_with(
             "mcp__lucina-agents__list_agents",
             &None,
             &Some(perms.clone()),
+            true,
         );
         assert_eq!(b["updatedPermissions"], perms_v);
         assert_eq!(b["updatedInput"], json!({}));
+    }
+
+    #[test]
+    fn juno_tools_get_updated_permissions_without_ask_mode() {
+        // Ask mode off (owner decision 2026-11-08): a juno tool keeps `updatedPermissions`
+        // like any other tool.
+        let perms: Vec<Map<String, Value>> = vec![Map::from_iter([
+            ("type".to_string(), json!("addRules")),
+            (
+                "rules".to_string(),
+                json!([{"toolName": "mcp__juno__juno_bash"}]),
+            ),
+        ])];
+        let perms_v = json!(perms);
+        let input = Some(Map::from_iter([("command".to_string(), json!("ls"))]));
+        let b = allow_body_with("mcp__juno__juno_bash", &input, &Some(perms.clone()), false);
+        assert_eq!(b["behavior"], "allow");
+        assert_eq!(b["updatedInput"], json!({"command": "ls"}));
+        assert_eq!(b["updatedPermissions"], perms_v);
+        // No `updatedPermissions` at all: nothing to keep.
+        let b = allow_body_with("mcp__juno__juno_bash", &input, &None, false);
+        assert!(b.get("updatedPermissions").is_none(), "{b}");
     }
 }

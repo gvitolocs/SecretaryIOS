@@ -94,9 +94,11 @@ pub const PARENT_LABEL: &str = "lucina.parent-agent-id";
 pub const STARTED_ON_DEVICE_LABEL: &str = "lucina.started-on-device";
 
 /// The agent label that opts into the Juno shell tool: `codecor.juno=bash` gives a
-/// Claude agent in a mode that asks before each call the `juno_bash` tool (server
-/// `juno`, `lagent juno-mcp`; see [`crate::juno_mcp`]). Every call still shows the
-/// owner an Allow/Deny card; nothing is auto-allowed.
+/// Claude agent the `juno_bash` tool (server `juno`, `lagent juno-mcp`; see
+/// [`crate::juno_mcp`]). By default (owner decision 2026-11-08) juno tools are
+/// allowed; in ask mode (`juno-decide.ask`, [`crate::juno_mcp::juno_ask_mode`]) the
+/// agent must be in a mode that asks before each call, and every call shows the
+/// owner an Allow/Deny card.
 pub const JUNO_LABEL: &str = "codecor.juno";
 pub const JUNO_LABEL_VALUE: &str = "bash";
 /// The modes where Claude asks before an MCP tool call.
@@ -109,36 +111,50 @@ pub fn juno_tool(labels: &std::collections::BTreeMap<String, String>) -> bool {
         .is_some_and(|v| v == JUNO_LABEL_VALUE)
 }
 
-/// Refuse the Juno shell tool unless the agent is a Claude agent in a mode that asks
-/// before each call and its tool policy preapproves no `mcp__juno__*` tool.
+/// Refuse the Juno shell tool unless the agent is a Claude agent; in ask mode
+/// (the 2026-11-07 behaviour, on via `juno-decide.ask` / `JUNO_DECIDE_ASK=1`) it
+/// must also be in a mode that asks before each call and its tool policy must
+/// preapprove no `mcp__juno__*` tool. Allowed by default (owner decision 2026-11-08):
+/// only the provider is checked.
 pub fn check_juno_tool(
     provider_id: &str,
     mode: Option<&str>,
     tool_policy: Option<&Value>,
+) -> Result<(), ManagerError> {
+    check_juno_tool_with(provider_id, mode, tool_policy, crate::juno_mcp::juno_ask_mode())
+}
+
+fn check_juno_tool_with(
+    provider_id: &str,
+    mode: Option<&str>,
+    tool_policy: Option<&Value>,
+    ask_mode: bool,
 ) -> Result<(), ManagerError> {
     if provider_id != crate::providers::claude::ID {
         return Err(ManagerError::JunoToolRefused(format!(
             "provider {provider_id:?} is not claude"
         )));
     }
-    let mode = mode.unwrap_or("default");
-    if !JUNO_SAFE_MODES.contains(&mode) {
-        return Err(ManagerError::JunoToolRefused(format!(
-            "mode {mode:?} does not ask before each call"
-        )));
-    }
-    if let Some(tp) = tool_policy {
-        let policy: lucina_agents::permission_gate::ToolPolicy =
-            serde_json::from_value(tp.clone()).unwrap_or_default();
-        let pre = policy.preapproved.iter().any(|g| {
-            // `ToolPolicy` matches exact `mcp__<server>__<tool>` names, no wildcards.
-            let name = format!("mcp__{}__{}", g.server, g.tool);
-            name.starts_with("mcp__juno__") && policy.preapproves(&name)
-        });
-        if pre {
-            return Err(ManagerError::JunoToolRefused(
-                "the tool policy preapproves a juno tool".into(),
-            ));
+    if ask_mode {
+        let mode = mode.unwrap_or("default");
+        if !JUNO_SAFE_MODES.contains(&mode) {
+            return Err(ManagerError::JunoToolRefused(format!(
+                "mode {mode:?} does not ask before each call"
+            )));
+        }
+        if let Some(tp) = tool_policy {
+            let policy: lucina_agents::permission_gate::ToolPolicy =
+                serde_json::from_value(tp.clone()).unwrap_or_default();
+            let pre = policy.preapproved.iter().any(|g| {
+                // `ToolPolicy` matches exact `mcp__<server>__<tool>` names, no wildcards.
+                let name = format!("mcp__{}__{}", g.server, g.tool);
+                name.starts_with("mcp__juno__") && policy.preapproves(&name)
+            });
+            if pre {
+                return Err(ManagerError::JunoToolRefused(
+                    "the tool policy preapproves a juno tool".into(),
+                ));
+            }
         }
     }
     Ok(())
@@ -1855,11 +1871,11 @@ mod tests {
 
     #[test]
     fn juno_tool_create_refusals() {
-        // Only a Claude agent.
+        // Ask mode (2026-11-07 behaviour). Only a Claude agent.
         for p in ["mock", "codex", "secretary-code"] {
             assert!(
                 matches!(
-                    check_juno_tool(p, Some("default"), None),
+                    check_juno_tool_with(p, Some("default"), None, true),
                     Err(ManagerError::JunoToolRefused(_))
                 ),
                 "{p}"
@@ -1867,12 +1883,12 @@ mod tests {
         }
         // Only modes that ask before each call (None = the provider default, claude's `default`).
         for m in [Some("default"), Some("plan"), Some("acceptEdits"), None] {
-            assert!(check_juno_tool("claude", m, None).is_ok(), "{m:?}");
+            assert!(check_juno_tool_with("claude", m, None, true).is_ok(), "{m:?}");
         }
         for m in ["bypassPermissions", "dontAsk", "auto", "whatever"] {
             assert!(
                 matches!(
-                    check_juno_tool("claude", Some(m), None),
+                    check_juno_tool_with("claude", Some(m), None, true),
                     Err(ManagerError::JunoToolRefused(_))
                 ),
                 "{m}"
@@ -1881,18 +1897,18 @@ mod tests {
         // A tool policy that preapproves a `mcp__juno__*` tool is refused.
         let tp = json!({"preapproved": [{"kind": "mcp", "server": "juno", "tool": "juno_bash"}]});
         assert!(matches!(
-            check_juno_tool("claude", Some("default"), Some(&tp)),
+            check_juno_tool_with("claude", Some("default"), Some(&tp), true),
             Err(ManagerError::JunoToolRefused(_))
         ));
         let tp = json!({"preapproved": [{"kind": "mcp", "server": "juno", "tool": "anything"}]});
         assert!(matches!(
-            check_juno_tool("claude", None, Some(&tp)),
+            check_juno_tool_with("claude", None, Some(&tp), true),
             Err(ManagerError::JunoToolRefused(_))
         ));
         // Other preapprovals are fine.
         let tp = json!({"preapproved": [{"kind": "mcp", "server": "lucina-agents", "tool": "list_agents"}]});
-        assert!(check_juno_tool("claude", Some("plan"), Some(&tp)).is_ok());
-        assert!(check_juno_tool("claude", Some("default"), None).is_ok());
+        assert!(check_juno_tool_with("claude", Some("plan"), Some(&tp), true).is_ok());
+        assert!(check_juno_tool_with("claude", Some("default"), None, true).is_ok());
         // The error's code and message.
         let e = ManagerError::JunoToolRefused(
             "mode \"bypassPermissions\" does not ask before each call".into(),
@@ -1904,13 +1920,49 @@ mod tests {
     }
 
     #[test]
+    fn juno_tool_allowed_without_ask_mode() {
+        // Ask mode off (owner decision 2026-11-08): only the provider is checked.
+        for m in [
+            Some("default"),
+            Some("plan"),
+            Some("acceptEdits"),
+            Some("bypassPermissions"),
+            Some("dontAsk"),
+            Some("whatever"),
+            None,
+        ] {
+            assert!(check_juno_tool_with("claude", m, None, false).is_ok(), "{m:?}");
+        }
+        // A tool policy that preapproves a `mcp__juno__*` tool is fine.
+        let tp = json!({"preapproved": [{"kind": "mcp", "server": "juno", "tool": "juno_bash"}]});
+        assert!(check_juno_tool_with("claude", Some("default"), Some(&tp), false).is_ok());
+        // A non-claude provider is refused in both modes.
+        for p in ["mock", "codex", "secretary-code"] {
+            assert!(
+                matches!(
+                    check_juno_tool_with(p, Some("default"), None, false),
+                    Err(ManagerError::JunoToolRefused(_))
+                ),
+                "{p}"
+            );
+            assert!(
+                matches!(
+                    check_juno_tool_with(p, Some("default"), None, true),
+                    Err(ManagerError::JunoToolRefused(_))
+                ),
+                "{p}"
+            );
+        }
+    }
+
+    #[test]
     fn juno_tool_mode_change_refusal() {
-        // The same check `set_mode` applies to a later mode change.
+        // The same check `set_mode` applies to a later mode change (ask mode).
         assert!(matches!(
-            check_juno_tool("claude", Some("bypassPermissions"), None),
+            check_juno_tool_with("claude", Some("bypassPermissions"), None, true),
             Err(ManagerError::JunoToolRefused(_))
         ));
-        assert!(check_juno_tool("claude", Some("acceptEdits"), None).is_ok());
-        assert!(check_juno_tool("claude", None, None).is_ok());
+        assert!(check_juno_tool_with("claude", Some("acceptEdits"), None, true).is_ok());
+        assert!(check_juno_tool_with("claude", None, None, true).is_ok());
     }
 }
