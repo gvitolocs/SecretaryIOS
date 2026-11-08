@@ -90,6 +90,26 @@ pub(crate) fn shopping_parts(
     parts
 }
 
+/// The items of a chat message's product text: [`shopping_parts`], each cleaned the way the
+/// intent parser cleans a single product (`clean_product_text`: a leading article, "at Netto",
+/// "today"), so "togli il latte e le uova" names "latte" and "uova". Grammar only: the names
+/// are still matched exactly.
+pub(crate) fn chat_parts(
+    idx: &lucina_grocery::CatalogIndex,
+    typed: &str,
+) -> Vec<lucina_grocery::ItemPart> {
+    shopping_parts(idx, typed)
+        .into_iter()
+        .map(|mut p| {
+            let clean = lucina_intent::grocery::clean_product_text(&p.name);
+            if !clean.is_empty() {
+                p.name = clean;
+            }
+            p
+        })
+        .collect()
+}
+
 /// "4 Baguette", "500 g Burro", "Ricotta".
 fn part_label(p: &lucina_grocery::ItemPart, name: &str) -> String {
     match (p.quantity, &p.unit) {
@@ -131,6 +151,30 @@ pub(crate) fn add_reply(
         }),
     }
     out.extend(questions.iter().cloned());
+    out.join(" ")
+}
+
+fn names_push(names: &mut Vec<String>, name: String) {
+    if !names.contains(&name) {
+        names.push(name);
+    }
+}
+
+/// The reply to a remove of one or more items: what was removed, then what was not on the list.
+pub(crate) fn remove_reply(lang: &str, removed: &[String], missing: &[String]) -> String {
+    let mut out: Vec<String> = Vec::new();
+    if !removed.is_empty() {
+        out.push(shopping_reply(lang, "removed", &join_names(lang, removed)));
+    }
+    match missing {
+        [] => {}
+        [one] => out.push(shopping_reply(lang, "not_found", one)),
+        many => out.push(if lang == "da" {
+            format!("{} står ikke på indkøbslisten.", join_names(lang, many))
+        } else {
+            format!("{} are not on your shopping list.", join_names(lang, many))
+        }),
+    }
     out.join(" ")
 }
 
@@ -298,7 +342,7 @@ pub async fn process(
             // One item per part: "Add to shopping list a, b e 4 c" is three items, never
             // one item made of the sentence (docs/design/shopping-labels.md).
             let idx = repo.catalog_index();
-            let parts = shopping_parts(&idx, &typed);
+            let parts = chat_parts(&idx, &typed);
             let (mut added, mut already, mut questions) = (Vec::new(), Vec::new(), Vec::new());
             let mut list_id = None;
             for p in &parts {
@@ -344,29 +388,40 @@ pub async fn process(
         }
         "grocery.shopping_list.remove" => {
             let product = product.expect("remove has a product");
-            let name = if parsed.raw_product.is_empty() {
+            let typed = if parsed.raw_product.is_empty() {
                 product.name.clone()
             } else {
                 parsed.raw_product.clone()
             };
             let lang = lucina_grocery::message_language(text, None);
-            let (removed, list_id, names) = repo
-                .remove_items_named_in(user_id, &name, modified_by, Some(lang))
-                .await?;
-            let reply = if removed > 0 {
-                let shown = if names.is_empty() {
-                    product.name.clone()
-                } else {
-                    names.join(", ")
-                };
-                shopping_reply(lang, "removed", &shown)
-            } else {
-                shopping_reply(lang, "not_found", &name)
-            };
+            // One name per item, like the add: "togli latte e uova" removes two items, and
+            // each is matched exactly (docs/design/shopping-labels.md).
+            let parts = chat_parts(&repo.catalog_index(), &typed);
+            let (mut removed, mut missing) = (Vec::new(), Vec::new());
+            let mut list_id = None;
+            for p in &parts {
+                let (n, list, names) = repo
+                    .remove_items_named_in(user_id, &p.name, modified_by, Some(lang))
+                    .await?;
+                if n == 0 {
+                    missing.push(p.name.clone());
+                    continue;
+                }
+                list_id.get_or_insert(list);
+                if names.is_empty() {
+                    names_push(&mut removed, p.name.clone());
+                }
+                for name in names {
+                    names_push(&mut removed, name);
+                }
+            }
+            if parts.is_empty() {
+                missing.push(typed);
+            }
             Ok(Some(Handled {
                 intent: intent.into(),
-                reply,
-                list_id: (removed > 0).then_some(list_id),
+                reply: remove_reply(lang, &removed, &missing),
+                list_id,
             }))
         }
         "grocery.shopping_list.query" => {
@@ -478,7 +533,7 @@ mod tests {
         let parsed = lucina_intent::grocery::parse_grocery_intent(text).expect("grocery intent");
         assert_eq!(parsed.intent, "grocery.shopping_list.add");
         let idx = catalog();
-        let parts = shopping_parts(&idx, &parsed.raw_product);
+        let parts = chat_parts(&idx, &parsed.raw_product);
         let got: Vec<(String, Option<u32>, Option<String>)> = parts
             .iter()
             .map(|p| (p.name.clone(), p.quantity, idx.find(&p.name).map(|i| i.id.clone())))
@@ -501,9 +556,46 @@ mod tests {
         let idx = catalog();
         for (text, name) in [("add milk to my shopping list", "milk"), ("aggiungi Pane di segale tostato alla lista", "Pane di segale tostato")] {
             let parsed = lucina_intent::grocery::parse_grocery_intent(text).expect(text);
-            let parts = shopping_parts(&idx, &parsed.raw_product);
+            let parts = chat_parts(&idx, &parsed.raw_product);
             assert_eq!(parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), [name], "{text}");
         }
+    }
+
+    /// A remove is split like an add: one exact name per item, never the sentence.
+    #[test]
+    fn a_remove_names_each_item() {
+        let idx = catalog();
+        for (text, want) in [
+            ("togli latte e uova dalla lista della spesa", vec!["latte", "uova"]),
+            ("togli il latte e le uova dalla lista della spesa", vec!["latte", "uova"]),
+            ("remove milk, eggs and 2 baguettes from my shopping list", vec!["milk", "eggs", "baguettes"]),
+            ("remove Red Bull from the list", vec!["Red Bull"]),
+        ] {
+            let parsed = lucina_intent::grocery::parse_grocery_intent(text).expect(text);
+            assert_eq!(parsed.intent, "grocery.shopping_list.remove", "{text}");
+            let parts = chat_parts(&idx, &parsed.raw_product);
+            assert_eq!(parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), want, "{text}");
+        }
+        // A Danish remove reaches this arm through Jev; its text splits the same way.
+        let parts = chat_parts(&idx, "mælk og æg");
+        assert_eq!(parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["mælk", "æg"]);
+    }
+
+    #[test]
+    fn remove_replies_name_what_went_and_what_was_missing() {
+        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            remove_reply("it", &names(&["Latte", "Uova"]), &[]),
+            "Removed Latte and Uova from your shopping list."
+        );
+        assert_eq!(
+            remove_reply("en", &names(&["Milk"]), &names(&["kiwi", "lime"])),
+            "Removed Milk from your shopping list. kiwi and lime are not on your shopping list."
+        );
+        assert_eq!(
+            remove_reply("da", &[], &names(&["kiwi"])),
+            "kiwi står ikke på indkøbslisten."
+        );
     }
 
     #[test]

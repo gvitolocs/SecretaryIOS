@@ -414,21 +414,6 @@ struct Words {
 
 fn words(lang: &str) -> Words {
     match lang {
-        "it" => Words {
-            found_n: "persone in AU Find corrispondono a",
-            top3: "Le prime 3",
-            more: "altre",
-            which: "Quale intendi?",
-            not_found: "Non trovato in AU Find",
-            tried: "Ho provato",
-            offer: "Posso cercare su au.dk con il mio browser.",
-            down: "AU Find non è raggiungibile in questo momento, quindi non posso verificarlo (e non tiro a indovinare).",
-            room: "Stanza",
-            source: "Fonte",
-            profile: "profilo",
-            building: "Edificio",
-            buildings: "edifici in AU Find corrispondono a",
-        },
         "da" => Words {
             found_n: "personer i AU Find matcher",
             top3: "De første 3",
@@ -581,20 +566,13 @@ pub fn render_buildings(r: &AuBuildings, lang: &str) -> String {
 }
 
 /// The text of the "Search au.dk" button: a browser task for her computer.
-pub fn browser_request(query: &str, lang: &str) -> String {
+pub fn browser_request(query: &str, _lang: &str) -> String {
     let q: String = query.replace('"', "").chars().take(80).collect();
-    match lang {
-        "it" => format!("Usa il tuo browser su www.au.dk per cercare \"{q}\" (solo pagine del personale; cita il testo della pagina e il suo URL; fermati a qualsiasi login)."),
-        _ => format!("Use your browser on www.au.dk to find \"{q}\" (staff pages only; quote the page text and its URL; stop at any login)."),
-    }
+    format!("Use your browser on www.au.dk to find \"{q}\" (staff pages only; quote the page text and its URL; stop at any login).")
 }
 
 fn search_button(query: &str, lang: &str) -> Value {
-    let label = if lang == "it" {
-        "Cerca su au.dk"
-    } else {
-        "Search au.dk"
-    };
+    let label = if lang == "da" { "Søg på au.dk" } else { "Search au.dk" };
     json!({"id": "au-search", "label": label, "emoji": "🔎", "kind": "reply",
         "payload": {"text": browser_request(query, lang)}})
 }
@@ -674,7 +652,8 @@ pub(super) async fn try_turn(t: &Turn<'_>, memory: &str) -> Option<Finish> {
         Some(a) => a,
         None => model_extract(t, memory).await?,
     };
-    let lang = crate::rich::guess_language(text, "");
+    // English, or Danish when he writes Danish; never Italian (owner rule 2026-11-02).
+    let lang = if crate::rich::guess_language(text, "") == "da" { "da" } else { "en" };
     let client = AuClient::new(&st.tool_env.http, &st.cfg.au_url);
     match ask.kind {
         Kind::Person => {
@@ -764,7 +743,6 @@ pub(super) async fn try_turn(t: &Turn<'_>, memory: &str) -> Option<Finish> {
             let w = words(lang);
             if ask.query.is_empty() {
                 let reply = match lang {
-                    "it" => "Ecco la mappa del campus dell'Università di Aarhus. Fonte: AU Find (© OpenStreetMap contributors).",
                     "da" => "Her er kortet over Aarhus Universitets campus. Kilde: AU Find (© OpenStreetMap contributors).",
                     _ => "Here is the map of the Aarhus University campus. Source: AU Find (© OpenStreetMap contributors).",
                 };
@@ -945,8 +923,8 @@ mod tests {
                 total: 0,
             },
         ];
-        let t = render_people(&nf, "it");
-        assert!(t.starts_with("Non trovato in AU Find"), "{t}");
+        let t = render_people(&nf, "da");
+        assert!(t.starts_with("Ikke fundet i AU Find"), "{t}");
         assert!(t.contains("\"Anna Zzz Bjerg\" (0), \"Bjerg\" (0)"));
         assert!(render_people(&people(Status::Unavailable, 0, 0), "en")
             .starts_with("AU Find is unreachable right now"));
@@ -959,7 +937,7 @@ mod tests {
 
     #[test]
     fn the_search_button_goes_to_her_computer() {
-        for lang in ["en", "it"] {
+        for lang in ["en", "da"] {
             let b = search_button("Dennis \"Zzz\" Vittrup", lang);
             let text = b["payload"]["text"].as_str().unwrap();
             let plan = lucina_intent::computer_route::plan(text)
@@ -968,7 +946,8 @@ mod tests {
             assert!(plan["task"].as_str().unwrap().contains("www.au.dk"));
             assert!(lucina_store::rich::normalize_action(&b, 0).is_some(), "{b}");
         }
-        assert_eq!(search_button("x", "it")["label"], "Cerca su au.dk");
+        assert_eq!(search_button("x", "da")["label"], "Søg på au.dk");
+        assert_eq!(search_button("x", "it")["label"], "Search au.dk", "never Italian");
     }
 
     #[test]

@@ -328,3 +328,24 @@ final class ChatShareReconcileTests: XCTestCase {
         XCTAssertEqual(TimelineAttachment(kind: "location", url: "geo:55.5,12.25;u=10").coordinate?.lat, 55.5)
     }
 }
+
+final class VoiceCaptionTests: XCTestCase {
+    private func voice(_ name: String) -> TimelineAttachment { TimelineAttachment(kind: "voice", name: name) }
+
+    func testLegacyAutoCaptionIsHidden() {
+        XCTAssertTrue(TimelineItem.hidesVoiceCaption("\u{1F4CE} voice-note.wav", attachments: [voice("voice-note.wav")]))
+        XCTAssertTrue(TimelineItem.hidesVoiceCaption("  \u{1F4CE} note.m4a ", attachments: [voice("note.m4a")]))
+        XCTAssertTrue(TimelineItem.hidesVoiceCaption("\u{1F4CE} a.wav, b.wav", attachments: [voice("a.wav"), voice("b.wav")]))
+    }
+
+    func testRealCaptionStays() {
+        XCTAssertFalse(TimelineItem.hidesVoiceCaption("Listen to this", attachments: [voice("voice-note.wav")]))
+        XCTAssertFalse(TimelineItem.hidesVoiceCaption("\u{1F4CE} voice-note.wav and more", attachments: [voice("voice-note.wav")]))
+    }
+
+    func testNonVoiceNamesStay() {
+        let pdf = TimelineAttachment(kind: "pdf", name: "report.pdf")
+        XCTAssertFalse(TimelineItem.hidesVoiceCaption("\u{1F4CE} report.pdf", attachments: [pdf]))
+        XCTAssertFalse(TimelineItem.hidesVoiceCaption("\u{1F4CE} report.pdf, note.m4a", attachments: [pdf, voice("note.m4a")]))
+    }
+}

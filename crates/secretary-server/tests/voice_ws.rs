@@ -120,8 +120,6 @@ struct ShareCall {
     auth: Option<String>,
     cookie: Option<String>,
     csrf: Option<String>,
-    /// `X-Voice-Test`, the proof of a test device's note.
-    voice_test: Option<String>,
     content_type: String,
     fields: Vec<(String, String)>,
     file_name: String,
@@ -183,7 +181,6 @@ async fn share(
             auth: hdr("authorization"),
             cookie: hdr("cookie"),
             csrf: hdr("x-secretary-csrf"),
-            voice_test: hdr("x-voice-test"),
             content_type: hdr("content-type").unwrap_or_default(),
             ..ShareCall::default()
         };
@@ -652,7 +649,7 @@ async fn harness_with(tweak: impl FnOnce(&mut Config)) -> H {
     harness_inner(tweak, false).await
 }
 
-/// The speaker's device is listed in `SECRETARY_VOICE_TEST_DEVICES`.
+/// The speaker's device is flagged `test` in devices.json (`secretary-server token test <id> on`).
 async fn harness_test_device() -> H {
     harness_inner(|_| {}, true).await
 }
@@ -678,7 +675,7 @@ async fn harness_inner(tweak: impl FnOnce(&mut Config), test_device: bool) -> H 
     tweak(&mut cfg);
     let (dev, token) = DeviceStore::new(&cfg.data_dir).issue("Speaker").unwrap();
     if test_device {
-        cfg.voice_test_devices = vec!["dev_somebody_else".into(), dev.id.clone()];
+        DeviceStore::new(&cfg.data_dir).set_test(&dev.id, true).unwrap().unwrap();
     }
     let st = AppState::new(&cfg).unwrap();
     let addr = spawn(app(st.clone())).await;
@@ -3187,21 +3184,17 @@ async fn command_and_note_turns_make_no_memo_request_but_the_stt() {
     assert_eq!(h.mock.shares.lock().unwrap().len(), 1);
 }
 
-// -- test devices (protocol section 10.8) ----------------------------------------------------------------------------------
+// -- test devices (protocol section 10.8): main's path, the devices.json `test` flag ---------------------------------------
 
 #[tokio::test]
-async fn a_command_turn_of_a_test_device_is_flagged_and_in_the_test_session() {
+async fn a_command_turn_of_a_test_device_runs_in_the_self_test_conversation() {
     let h = harness_test_device().await;
     h.mock.say(TWO);
     let mut ws = h.connect().await;
     let out = say_ptt(&mut ws, 800).await;
     assert_eq!(json_of(&out, "done")["type"], "done", "{out:?}");
-    // With thread "main" and a session of its own, the test session still wins: the owner's session is never used.
-    send(
-        &mut ws,
-        json!({"type": "start", "mode": "ptt", "thread": "main", "channel": "ios", "sessionId": "ios_chat1", "speak": false}),
-    )
-    .await;
+    // The text-only pipeline too (`speak: false`).
+    send(&mut ws, json!({"type": "start", "mode": "ptt", "speak": false})).await;
     expect_listening(&mut ws).await;
     stream_audio(&mut ws, &tone(800)).await;
     send(&mut ws, json!({"type": "end"})).await;
@@ -3209,75 +3202,35 @@ async fn a_command_turn_of_a_test_device_is_flagged_and_in_the_test_session() {
     let chats = h.mock.chats.lock().unwrap().clone();
     assert_eq!(chats.len(), 2);
     for (body, _) in &chats {
-        assert_eq!(body["test"], true, "{body}");
-        assert_eq!(body["sessionId"], "voice-test", "{body}");
+        assert_eq!(body["conversation"], "selftest", "{body}");
     }
-    assert_eq!(chats[0].0["channel"], "voice");
-    assert_eq!(chats[1].0["channel"], "ios");
 }
 
 #[tokio::test]
-async fn a_command_turn_of_any_other_device_is_not_flagged() {
+async fn a_command_turn_of_an_ordinary_device_is_not_a_self_test() {
     let h = harness().await;
     h.mock.say(TWO);
     let mut ws = h.connect().await;
     say_ptt(&mut ws, 800).await;
     let chats = h.mock.chats.lock().unwrap().clone();
-    assert!(chats[0].0.get("test").is_none(), "{}", chats[0].0);
+    assert!(chats[0].0.get("conversation").is_none(), "{}", chats[0].0);
     assert_eq!(chats[0].0["sessionId"], "lucinavoice");
 }
 
 #[tokio::test]
-async fn a_note_of_a_test_device_posts_the_share_with_test_1() {
-    let h = harness_test_device().await;
-    h.mock.share.lock().unwrap().processing = 1000;
-    h.mock.say("Una nota");
-    let mut ws = h.connect().await;
-    send(&mut ws, json!({"type": "start", "purpose": "note", "sessionId": "ios_chat1"})).await;
-    expect_listening(&mut ws).await;
-    stream_audio(&mut ws, &tone(1000)).await;
-    send(&mut ws, json!({"type": "end"})).await;
-    assert_eq!(recv_json(&mut ws).await["type"], "transcript");
-    assert_eq!(recv_json(&mut ws).await["type"], "note");
-    let c = &shares(&h, 1).await[0];
-    assert_eq!(c.field("test"), Some("1"));
-    // The proof for this very share, under the Lucina token; the token itself is not in any header.
-    let marker = c.voice_test.as_deref().expect("X-Voice-Test on a test device's note");
-    let turn = c.field("shareId").unwrap();
-    assert!(secretary_server::voice_marker::verify(LUCINA_TOKEN.as_bytes(), turn, marker), "{marker}");
-    assert!(!secretary_server::voice_marker::verify(LUCINA_TOKEN.as_bytes(), "another-share-id", marker));
-    assert!(!marker.contains(LUCINA_TOKEN));
-
-    // Another device's note has no such field.
-    let h = harness().await;
-    h.mock.share.lock().unwrap().processing = 1000;
-    h.mock.say("Una nota");
-    let mut ws = h.connect().await;
-    send(&mut ws, json!({"type": "start", "purpose": "note"})).await;
-    expect_listening(&mut ws).await;
-    stream_audio(&mut ws, &tone(1000)).await;
-    send(&mut ws, json!({"type": "end"})).await;
-    assert_eq!(recv_json(&mut ws).await["type"], "transcript");
-    assert_eq!(recv_json(&mut ws).await["type"], "note");
-    let c = &shares(&h, 1).await[0];
-    assert_eq!(c.field("test"), None);
-    assert!(c.voice_test.is_none());
-}
-
-#[tokio::test]
-async fn a_client_chat_cannot_flag_itself_as_a_test() {
-    // `/v1/chat` clears the field: only the voice socket's own pipeline sets it.
-    let h = harness().await;
-    let r = h
-        .http
-        .post(format!("http://{}/v1/chat", h.addr))
-        .bearer_auth(&h.token)
-        .json(&json!({"message": "ciao", "test": true, "sessionId": "voice-test"}))
-        .send()
-        .await
-        .unwrap();
-    assert!(r.status().is_success() || r.status().is_server_error(), "{}", r.status());
-    let chats = h.mock.chats.lock().unwrap().clone();
-    assert_eq!(chats.len(), 1);
-    assert!(chats[0].0.get("test").is_none(), "{}", chats[0].0);
+async fn notes_of_a_test_device_post_conversation_selftest_and_others_do_not() {
+    for test in [true, false] {
+        let h = if test { harness_test_device().await } else { harness().await };
+        h.mock.share.lock().unwrap().processing = 1000;
+        h.mock.say("Una nota");
+        let mut ws = h.connect().await;
+        send(&mut ws, json!({"type": "start", "purpose": "note", "source": "ios-chat"})).await;
+        expect_listening(&mut ws).await;
+        stream_audio(&mut ws, &tone(1000)).await;
+        send(&mut ws, json!({"type": "end"})).await;
+        assert_eq!(recv_json(&mut ws).await["type"], "transcript");
+        assert_eq!(recv_json(&mut ws).await["type"], "note");
+        let c = &shares(&h, 1).await[0];
+        assert_eq!(c.field("conversation"), test.then_some("selftest"), "{:?}", c.fields);
+    }
 }

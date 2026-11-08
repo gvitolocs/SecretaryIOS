@@ -465,83 +465,6 @@ async fn a_voice_turn_goes_to_honcho_like_a_web_turn() {
         .starts_with("[LucinaVoice speaker] ciao come stai?"));
 }
 
-// ------------------------------------------------------------------------------------- test devices (protocol section 10.8)
-
-#[tokio::test]
-async fn a_test_devices_turn_is_silent_out_of_the_conversations_and_not_remembered() {
-    let hon = honcho().await;
-    let jev = Fake::new()
-        .intent("che ore sono?", "temporal_query", 0.97)
-        .intent("ciao come stai?", "chat", 0.95);
-    let server = fake_jev(&jev).await;
-    let uri = hon.uri();
-    let h = harness(chat_script(), |c| {
-        with_jev(&server)(c);
-        c.memory_mode = MemoryMode::ReadWrite;
-        c.honcho.base_url = uri;
-    })
-    .await;
-    // A fast-path turn (Jev's route, no model) and a model turn, both flagged as a test device's, the way secretary-server sends them.
-    let mut fast = voice_body("che ore sono?");
-    fast["test"] = json!(true);
-    fast["sessionId"] = json!("voice-test");
-    let s = stream(&h, fast).await;
-    // Unguarded, routed, the fast path allowed: a route and Jev's answer, not a refusal.
-    assert_eq!(s.find("route")["intent"], "temporal_query");
-    assert_eq!(s.find("route")["fast"], true);
-    assert!(s.find("reply")["text"].as_str().unwrap().starts_with("It's "));
-    let mut slow = voice_body("ciao come stai?");
-    slow["test"] = json!(true);
-    slow["sessionId"] = json!("voice-test");
-    let s = stream(&h, slow).await;
-    assert_eq!(s.find("reply")["text"], REPLY);
-    tokio::time::sleep(Duration::from_millis(500)).await; // Honcho writes are spawned
-
-    // Every item of both turns: the owner's words and Lucina's answers, marked silent and in a conversation of their own.
-    let tl = items(&h);
-    assert_eq!(tl.len(), 4, "{tl:?}");
-    for i in &tl {
-        assert_eq!(i["meta"]["via"], "test", "{i}");
-        assert_eq!(i["meta"]["conversation"], "voice-test", "{i}");
-    }
-    let (_, list) = h.get("/timeline/conversations").await;
-    let keys: Vec<&str> = list["data"]["items"].as_array().unwrap().iter().map(|c| c["key"].as_str().unwrap()).collect();
-    assert_eq!(keys, ["test:voice-test"], "never the main conversation or the Lucina Voice thread");
-    let (_, page) = h.get("/timeline?conversation=voice&limit=50").await;
-    assert!(page["data"]["items"].as_array().unwrap().is_empty());
-    let (_, page) = h.get("/timeline?conversation=test:voice-test&limit=50").await;
-    assert_eq!(page["data"]["items"].as_array().unwrap().len(), 4);
-    // Not remembered: Honcho was not written to.
-    let reqs = hon.received_requests().await.unwrap();
-    assert!(
-        !reqs.iter().any(|r| r.method.as_str() == "POST" && r.url.path().ends_with("/messages")),
-        "{:?}",
-        reqs.iter().map(|r| r.url.to_string()).collect::<Vec<_>>()
-    );
-    // And the owner's real voice thread does not hear it in its recent context.
-    let before = h.fake.requests().len();
-    stream(&h, voice_body("ciao come stai?")).await;
-    let after: String = h.fake.requests()[before..].iter().map(|r| format!("{r:?}")).collect();
-    assert!(!after.contains("che ore sono"), "the test turn leaked into the thread's context: {after}");
-}
-
-#[tokio::test]
-async fn a_chat_without_the_flag_or_an_agent_cannot_be_a_test_turn() {
-    let h = harness(chat_script(), |_| {}).await;
-    // No flag: an ordinary voice turn, in the shared thread, unmarked.
-    let (status, _) = h.post("/chat", voice_body("ciao")).await;
-    assert_eq!(status, 200);
-    // `test: false` is no flag either.
-    let mut body = voice_body("ciao");
-    body["test"] = json!(false);
-    let (status, _) = h.post("/chat", body).await;
-    assert_eq!(status, 200);
-    for i in items(&h) {
-        assert!(i["meta"].get("via").is_none() && i["meta"].get("conversation").is_none(), "{i}");
-        assert_eq!(i["channel"], "voice");
-    }
-}
-
 // ------------------------------------------------------------------------------------- the layers (c)
 
 #[tokio::test]
@@ -927,14 +850,17 @@ async fn a_shopping_sentence_with_several_products_is_split_by_the_slots_layer()
         (slots["verdict"].as_str(), slots["used"].clone()),
         (Some("several"), json!(true))
     );
-    assert_eq!(reply, "Ho aggiunto latte e uova alla lista della spesa.");
+    // English or Danish, never Italian (owner rule 2026-11-02).
+    assert_eq!(reply, "Added latte and uova to your shopping list.");
     assert!(
         listed.contains("Latte") && listed.contains("Uova"),
         "{listed}"
     );
-    // One product with an "e" in its name: the sentence goes through as before.
+    // Jev reads one product: the slots layer stays out, and the grocery path still splits a text that
+    // is not exactly a catalog term (docs/design/shopping-labels.md: never one item made of a sentence).
     let (route, _, listed, _) = run(("one", 0.95)).await;
     assert_eq!(route["fast"], true);
     assert_eq!(layer(&route["layers"], "slots").unwrap()["used"], false);
-    assert!(listed.to_lowercase().contains("latte e uova"), "{listed}");
+    assert!(!listed.to_lowercase().contains("latte e uova"), "{listed}");
+    assert!(listed.contains("Latte") && listed.contains("Uova"), "{listed}");
 }

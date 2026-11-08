@@ -38,7 +38,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
 sha2 = { workspace = true }
-hmac = "0.12"
 subtle = "2"
 argon2 = "0.5"
 mime = "0.3"

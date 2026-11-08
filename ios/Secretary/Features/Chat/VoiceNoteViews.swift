@@ -52,7 +52,7 @@ struct VoiceNoteBubble: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(!playable)
-                .accessibilityLabel(Text(playing ? "Pause" : "Play"))
+                .accessibilityLabel(Text("\(playing ? String(localized: "Pause") : String(localized: "Play")), \(String(localized: "Voice message")) \(timeText)"))
                 .accessibilityIdentifier("voiceNotePlay")
                 VStack(alignment: .leading, spacing: 4) {
                     VoiceWaveformBars(samples: samples, progress: progress, played: tint, pending: foreground.opacity(0.35))

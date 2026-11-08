@@ -586,10 +586,6 @@ fn risk_kind(intent: &str, message: &str) -> Option<&'static str> {
 
 fn confirm_question(kind: &str, lang: &str) -> String {
     let what = match (kind, lang) {
-        ("message", "it") => "inoltrare un messaggio a un altro assistente",
-        ("post", "it") => "pubblicare un post",
-        ("purchase", "it") => "fare un acquisto o un ordine",
-        (_, "it") => "cancellare qualcosa",
         ("message", "da") => "sende en besked videre til en anden assistent",
         ("post", "da") => "udgive et opslag",
         ("purchase", "da") => "foretage et køb eller en bestilling",
@@ -600,7 +596,6 @@ fn confirm_question(kind: &str, lang: &str) -> String {
         _ => "delete something",
     };
     match lang {
-        "it" => format!("Sei sicuro? Sto per {what}. Dimmi sì per confermare."),
         "da" => format!("Er du sikker? Jeg er ved at {what}. Sig ja for at bekræfte."),
         _ => format!("Are you sure? I'm about to {what}. Say yes to confirm."),
     }
@@ -608,7 +603,6 @@ fn confirm_question(kind: &str, lang: &str) -> String {
 
 fn cancel_text(lang: &str) -> &'static str {
     match lang {
-        "it" => "Va bene, non lo faccio.",
         "da" => "Okay, det gør jeg ikke.",
         _ => "OK, I won't do it.",
     }
@@ -759,11 +753,11 @@ fn decide(t: &Turn<'_>, outcome: &Outcome) -> (RouteInfo, Option<Plan>) {
 /// The turn's reply language when a template exists for it (`planner::TURN_LANG`, the same detection as
 /// every other reply).
 fn template_lang() -> Option<&'static str> {
-    // Owner rule (2026-11-02): never Italian. The `it` templates below stay for direct callers and tests
-    // but a turn never reaches them (the turn's line never pins Italian).
+    // Owner rule (2026-11-02, confirmed for spoken replies 2026-11-08): English, or Danish when he
+    // writes Danish; never Italian. Every template below has both.
     match crate::jev_yesno::turn_lang_code() {
-        "en" => Some("en"),
-        _ => None,
+        "da" => Some("da"),
+        _ => Some("en"),
     }
 }
 
@@ -958,11 +952,8 @@ async fn shopping_pieces(t: &Turn<'_>, pieces: &[(String, String)]) -> Finish {
         return Finish::reply("I could not do that just now.", "grocery");
     }
     let lang = lucina_grocery::message_language(&t.message, None);
-    let joiner = match lang {
-        "it" => " e ",
-        "da" => " og ",
-        _ => " and ",
-    };
+    // The reply is English or Danish (shopping_reply), so is the word that joins the names.
+    let joiner = if lang == "da" { " og " } else { " and " };
     let kind = if intent.ends_with(".remove") { "removed" } else { "added" };
     let reply = crate::grocery_turn::shopping_reply(lang, kind, &names.join(joiner));
     let meta = list_id.map(|id| Meta {
@@ -1094,88 +1085,8 @@ fn clock_question(msg: &str) -> Option<Clock> {
     }
 }
 
-const UNITS: [&str; 20] = [
-    "zero",
-    "uno",
-    "due",
-    "tre",
-    "quattro",
-    "cinque",
-    "sei",
-    "sette",
-    "otto",
-    "nove",
-    "dieci",
-    "undici",
-    "dodici",
-    "tredici",
-    "quattordici",
-    "quindici",
-    "sedici",
-    "diciassette",
-    "diciotto",
-    "diciannove",
-];
-
-/// 0..=59 (and more, for counts) in Italian words: "ventuno", "trentatré".
-fn it_num(n: u32) -> String {
-    if n < 20 {
-        return UNITS[n as usize].to_owned();
-    }
-    if n >= 100 {
-        return n.to_string();
-    }
-    let tens = [
-        "",
-        "",
-        "venti",
-        "trenta",
-        "quaranta",
-        "cinquanta",
-        "sessanta",
-        "settanta",
-        "ottanta",
-        "novanta",
-    ][(n / 10) as usize];
-    match n % 10 {
-        0 => tens.to_owned(),
-        3 => format!("{tens}tré"),
-        u @ (1 | 8) => format!("{}{}", &tens[..tens.len() - 1], UNITS[u as usize]),
-        u => format!("{tens}{}", UNITS[u as usize]),
-    }
-}
-
-/// "le quattordici e cinque", "l'una", "mezzogiorno": the clock the way Italians say it.
-fn it_clock(h: u32, m: u32) -> (&'static str, String) {
-    // (verb, phrase)
-    let (verb, base) = match h {
-        0 => ("È", "mezzanotte".to_owned()),
-        12 => ("È", "mezzogiorno".to_owned()),
-        1 => ("È", "l'una".to_owned()),
-        h => ("Sono", format!("le {}", it_num(h))),
-    };
-    let phrase = match (m, h) {
-        (0, 0 | 12) => base,
-        (0, _) => format!("{base} in punto"),
-        (m, _) => format!("{base} e {}", it_num(m)),
-    };
-    (verb, phrase)
-}
-
-/// "alle quattordici e cinque", "all'una", "a mezzogiorno".
-fn it_at(h: u32, m: u32) -> String {
-    let minutes = if m == 0 {
-        String::new()
-    } else {
-        format!(" e {}", it_num(m))
-    };
-    match h {
-        0 => format!("a mezzanotte{minutes}"),
-        12 => format!("a mezzogiorno{minutes}"),
-        1 => format!("all'una{minutes}"),
-        h => format!("alle {}{minutes}", it_num(h)),
-    }
-}
+// Spoken replies are English, or Danish when the turn is Danish; never Italian (owner rule
+// 2026-11-02, confirmed for these replies 2026-11-08).
 
 fn en_clock(h: u32, m: u32) -> String {
     if m == 0 && h == 0 {
@@ -1197,28 +1108,25 @@ fn en_clock(h: u32, m: u32) -> String {
     }
 }
 
-const IT_DAYS: [&str; 7] = [
-    "lunedì",
-    "martedì",
-    "mercoledì",
-    "giovedì",
-    "venerdì",
-    "sabato",
-    "domenica",
-];
-const IT_MONTHS: [&str; 12] = [
-    "gennaio",
-    "febbraio",
-    "marzo",
-    "aprile",
-    "maggio",
-    "giugno",
-    "luglio",
-    "agosto",
-    "settembre",
-    "ottobre",
-    "novembre",
-    "dicembre",
+/// "14.05", "9.00": the 24-hour clock as Danish writes and says it.
+fn da_clock(h: u32, m: u32) -> String {
+    format!("{h}.{m:02}")
+}
+
+const DA_DAYS: [&str; 7] = ["mandag", "tirsdag", "onsdag", "torsdag", "fredag", "lørdag", "søndag"];
+const DA_MONTHS: [&str; 12] = [
+    "januar",
+    "februar",
+    "marts",
+    "april",
+    "maj",
+    "juni",
+    "juli",
+    "august",
+    "september",
+    "oktober",
+    "november",
+    "december",
 ];
 const EN_DAYS: [&str; 7] = [
     "Monday",
@@ -1259,16 +1167,13 @@ fn clock_reply(kind: Clock, lang: &str, now: DateTime<Tz>) -> String {
     let (h, m) = (now.hour(), now.minute());
     let wd = now.weekday().num_days_from_monday() as usize;
     match (kind, lang) {
-        (Clock::Time, "it") => {
-            let (verb, phrase) = it_clock(h, m);
-            format!("{verb} {phrase}.")
-        }
+        (Clock::Time, "da") => format!("Klokken er {}.", da_clock(h, m)),
         (Clock::Time, _) => format!("It's {}.", en_clock(h, m)),
-        (Clock::Date, "it") => format!(
-            "Oggi è {} {} {} {}.",
-            IT_DAYS[wd],
+        (Clock::Date, "da") => format!(
+            "I dag er det {} den {}. {} {}.",
+            DA_DAYS[wd],
             now.day(),
-            IT_MONTHS[now.month0() as usize],
+            DA_MONTHS[now.month0() as usize],
             now.year()
         ),
         (Clock::Date, _) => format!(
@@ -1283,7 +1188,7 @@ fn clock_reply(kind: Clock, lang: &str, now: DateTime<Tz>) -> String {
 
 // ------------------------------------------------------------------------------------ the reminders
 
-/// "oggi alle quindici", "domani alle nove", "il 3 novembre alle nove" / "today at 3 PM", "on November 3 at 9 AM".
+/// "today at 3 PM", "on November 3rd at 9 AM" / "i dag kl. 15.00", "den 3. november kl. 9.00".
 fn when_phrase(
     due: DateTime<Utc>,
     now: DateTime<Utc>,
@@ -1295,18 +1200,18 @@ fn when_phrase(
     let today = now.with_timezone(&tz).date_naive();
     let days = (local.date_naive() - today).num_days();
     let (h, m) = (local.hour(), local.minute());
-    if lang == "it" {
-        let at = it_at(h, m);
+    if lang == "da" {
+        let at = format!("kl. {}", da_clock(h, m));
         if !with_day {
             return at;
         }
         match days {
-            0 => format!("oggi {at}"),
-            1 => format!("domani {at}"),
+            0 => format!("i dag {at}"),
+            1 => format!("i morgen {at}"),
             _ => format!(
-                "il {} {} {at}",
+                "den {}. {} {at}",
                 local.day(),
-                IT_MONTHS[local.month0() as usize]
+                DA_MONTHS[local.month0() as usize]
             ),
         }
     } else {
@@ -1339,34 +1244,25 @@ fn reminder_reply(
     tz: Tz,
     now: DateTime<Utc>,
 ) -> String {
+    let da = lang == "da";
     let Some(due) = r.due() else {
-        return if lang == "it" {
-            "Fatto.".into()
-        } else {
-            "Done.".into()
-        };
+        return if da { "Klaret.".into() } else { "Done.".into() };
     };
     let text = spoken_text(&r.text);
     let minutes = ((due - now).num_seconds() + 30) / 60;
-    let it = lang == "it";
     let when = if relative && (1..120).contains(&minutes) {
-        if it {
-            match minutes {
-                1 => "tra un minuto".to_owned(),
-                m => format!("tra {} minuti", it_num(m as u32)),
-            }
-        } else {
-            match minutes {
-                1 => "in one minute".to_owned(),
-                m => format!("in {m} minutes"),
-            }
+        match (minutes, da) {
+            (1, true) => "om et minut".to_owned(),
+            (m, true) => format!("om {m} minutter"),
+            (1, false) => "in one minute".to_owned(),
+            (m, false) => format!("in {m} minutes"),
         }
     } else {
         when_phrase(due, now, tz, lang, true)
     };
-    match (it, created) {
-        (true, true) => format!("Fatto, ti ricordo {when}: {text}."),
-        (true, false) => format!("C'era già un promemoria {when}: {text}."),
+    match (da, created) {
+        (true, true) => format!("Okay, jeg minder dig om det {when}: {text}."),
+        (true, false) => format!("Den påmindelse findes allerede {when}: {text}."),
         (false, true) => format!("Okay, I'll remind you {when}: {text}."),
         (false, false) => format!("That reminder was already set {when}: {text}."),
     }
@@ -1375,14 +1271,6 @@ fn reminder_reply(
 /// At most this many reminders are read out.
 const SPOKEN_ITEMS: usize = 3;
 
-fn count_it(n: usize, one: &str, many: &str) -> String {
-    if n == 1 {
-        format!("un {one}")
-    } else {
-        format!("{} {many}", it_num(n as u32))
-    }
-}
-
 fn reminders_reply(
     pending: &[Reminder],
     today: bool,
@@ -1390,11 +1278,11 @@ fn reminders_reply(
     tz: Tz,
     now: DateTime<Utc>,
 ) -> String {
-    let it = lang == "it";
+    let da = lang == "da";
     if pending.is_empty() {
-        return match (it, today) {
-            (true, true) => "Non hai promemoria per oggi.".into(),
-            (true, false) => "Non hai promemoria in programma.".into(),
+        return match (da, today) {
+            (true, true) => "Du har ingen påmindelser i dag.".into(),
+            (true, false) => "Du har ingen kommende påmindelser.".into(),
             (false, true) => "You have no reminders for today.".into(),
             (false, false) => "You have no upcoming reminders.".into(),
         };
@@ -1413,32 +1301,21 @@ fn reminders_reply(
         .collect();
     let more = pending.len().saturating_sub(SPOKEN_ITEMS);
     let n = pending.len();
-    let head = match (it, today) {
-        (true, true) => format!("Hai {} oggi", count_it(n, "promemoria", "promemoria")),
-        (true, false) => format!(
-            "Hai {} in programma",
-            count_it(n, "promemoria", "promemoria")
-        ),
-        (false, true) => format!(
-            "You have {} today",
-            if n == 1 {
-                "one reminder".to_owned()
-            } else {
-                format!("{n} reminders")
-            }
-        ),
-        (false, false) => format!(
-            "You have {} coming up",
-            if n == 1 {
-                "one reminder".to_owned()
-            } else {
-                format!("{n} reminders")
-            }
-        ),
+    let count = match (da, n) {
+        (true, 1) => "én påmindelse".to_owned(),
+        (true, n) => format!("{n} påmindelser"),
+        (false, 1) => "one reminder".to_owned(),
+        (false, n) => format!("{n} reminders"),
     };
-    let tail = match (more, it) {
+    let head = match (da, today) {
+        (true, true) => format!("Du har {count} i dag"),
+        (true, false) => format!("Du har {count} forude"),
+        (false, true) => format!("You have {count} today"),
+        (false, false) => format!("You have {count} coming up"),
+    };
+    let tail = match (more, da) {
         (0, _) => String::new(),
-        (k, true) => format!("; e altri {}", it_num(k as u32)),
+        (k, true) => format!("; og {k} mere"),
         (k, false) => format!("; and {k} more"),
     };
     format!("{head}: {}{tail}.", items.join("; "))
@@ -1463,19 +1340,9 @@ fn shopping_list_reply(names: &[String], lang: &str) -> String {
     }
     let shown = &names[..names.len().min(SPOKEN_ITEMS_LIST)];
     let more = names.len() - shown.len();
+    // English or Danish, never Italian (owner rule 2026-11-02, as `shopping_reply`); the item
+    // names stay in the message's language.
     match lang {
-        "it" => {
-            let list = join_names(shown, "e");
-            if more == 0 {
-                format!("Nella lista della spesa hai {list}.")
-            } else {
-                format!(
-                    "Nella lista della spesa hai {} e altre {} cose.",
-                    shown.join(", "),
-                    it_num(more as u32)
-                )
-            }
-        }
         "da" => {
             if more == 0 {
                 format!("Du har {} på indkøbslisten.", join_names(shown, "og"))
@@ -1548,7 +1415,7 @@ mod tests {
 
     #[test]
     fn the_confirmation_is_said_in_the_turns_language() {
-        assert!(confirm_question("message", "it").starts_with("Sei sicuro?"));
+        assert!(confirm_question("message", "it").starts_with("Are you sure?"), "never Italian");
         assert!(confirm_question("purchase", "en").starts_with("Are you sure?"));
         assert!(confirm_question("delete", "da").starts_with("Er du sikker?"));
         assert!(!confirm_question("message", "it").contains("Claude"), "no transcript in the question");
@@ -1605,49 +1472,32 @@ mod tests {
     }
 
     #[test]
-    fn italian_numbers_and_times_are_said_the_italian_way() {
-        assert_eq!(it_num(0), "zero");
-        assert_eq!(it_num(21), "ventuno");
-        assert_eq!(it_num(28), "ventotto");
-        assert_eq!(it_num(33), "trentatré");
-        assert_eq!(it_num(45), "quarantacinque");
-        assert_eq!(it_num(59), "cinquantanove");
-        let say = |h, m| {
-            let (v, p) = it_clock(h, m);
-            format!("{v} {p}")
-        };
-        assert_eq!(say(14, 5), "Sono le quattordici e cinque");
-        assert_eq!(say(14, 0), "Sono le quattordici in punto");
-        assert_eq!(say(1, 20), "È l'una e venti");
-        assert_eq!(say(12, 0), "È mezzogiorno");
-        assert_eq!(say(0, 0), "È mezzanotte");
-        assert_eq!(say(0, 15), "È mezzanotte e quindici");
-        assert_eq!(it_at(9, 0), "alle nove");
-        assert_eq!(it_at(1, 5), "all'una e cinque");
-        assert_eq!(it_at(12, 30), "a mezzogiorno e trenta");
+    fn clocks_are_said_in_english_and_danish() {
         assert_eq!(en_clock(14, 5), "2:05 PM");
         assert_eq!(en_clock(9, 0), "9 AM");
         assert_eq!(en_clock(0, 0), "midnight");
         assert_eq!(en_clock(0, 7), "12:07 AM");
         assert_eq!(en_clock(12, 0), "noon");
+        assert_eq!(da_clock(14, 5), "14.05");
+        assert_eq!(da_clock(9, 0), "9.00");
+        assert_eq!(da_clock(0, 0), "0.00");
     }
 
     #[test]
     fn the_clock_replies_name_the_day_and_the_time() {
         let sunday = at(2026, 11, 1, 14, 5);
-        assert_eq!(
-            clock_reply(Clock::Time, "it", sunday),
-            "Sono le quattordici e cinque."
-        );
         assert_eq!(clock_reply(Clock::Time, "en", sunday), "It's 2:05 PM.");
-        assert_eq!(
-            clock_reply(Clock::Date, "it", sunday),
-            "Oggi è domenica 1 novembre 2026."
-        );
+        assert_eq!(clock_reply(Clock::Time, "da", sunday), "Klokken er 14.05.");
         assert_eq!(
             clock_reply(Clock::Date, "en", sunday),
             "Today is Sunday, November 1st, 2026."
         );
+        assert_eq!(
+            clock_reply(Clock::Date, "da", sunday),
+            "I dag er det søndag den 1. november 2026."
+        );
+        // An Italian turn is answered in English (owner rule 2026-11-02): no Italian template.
+        assert_eq!(clock_reply(Clock::Time, "it", sunday), "It's 2:05 PM.");
         assert_eq!(en_ordinal(2), "2nd");
         assert_eq!(en_ordinal(11), "11th");
         assert_eq!(en_ordinal(23), "23rd");
@@ -1662,33 +1512,45 @@ mod tests {
     }
 
     #[test]
-    fn reminders_are_read_out_briefly_in_the_turn_language() {
+    fn reminders_are_read_out_briefly_in_english_or_danish() {
         let tz = chrono_tz::Europe::Rome;
         let now = at(2026, 11, 1, 10, 0).with_timezone(&Utc);
         assert_eq!(
-            reminders_reply(&[], true, "it", tz, now),
-            "Non hai promemoria per oggi."
+            reminders_reply(&[], true, "en", tz, now),
+            "You have no reminders for today."
         );
         assert_eq!(
             reminders_reply(&[], false, "en", tz, now),
             "You have no upcoming reminders."
         );
-        let one = [reminder("chiamare Anna", at(2026, 11, 1, 15, 30))];
         assert_eq!(
-            reminders_reply(&one, true, "it", tz, now),
-            "Hai un promemoria oggi: alle quindici e trenta, chiamare Anna."
+            reminders_reply(&[], true, "da", tz, now),
+            "Du har ingen påmindelser i dag."
         );
+        assert_eq!(
+            reminders_reply(&[], true, "it", tz, now),
+            "You have no reminders for today.",
+            "an Italian turn gets English"
+        );
+        let one = [reminder("chiamare Anna", at(2026, 11, 1, 15, 30))];
         assert_eq!(
             reminders_reply(&one, true, "en", tz, now),
             "You have one reminder today: at 3:30 PM, chiamare Anna."
         );
-        let many: Vec<Reminder> = (0..5)
-            .map(|i| reminder(&format!("cosa {i}"), at(2026, 11, 2 + i, 9, 0)))
-            .collect();
-        let said = reminders_reply(&many, false, "it", tz, now);
         assert_eq!(
-            said,
-            "Hai cinque promemoria in programma: domani alle nove, cosa 0; il 3 novembre alle nove, cosa 1; il 4 novembre alle nove, cosa 2; e altri due."
+            reminders_reply(&one, true, "da", tz, now),
+            "Du har én påmindelse i dag: kl. 15.30, chiamare Anna."
+        );
+        let many: Vec<Reminder> = (0..5)
+            .map(|i| reminder(&format!("ting {i}"), at(2026, 11, 2 + i, 9, 0)))
+            .collect();
+        assert_eq!(
+            reminders_reply(&many, false, "en", tz, now),
+            "You have 5 reminders coming up: tomorrow at 9 AM, ting 0; on November 3rd at 9 AM, ting 1; on November 4th at 9 AM, ting 2; and 2 more."
+        );
+        assert_eq!(
+            reminders_reply(&many, false, "da", tz, now),
+            "Du har 5 påmindelser forude: i morgen kl. 9.00, ting 0; den 3. november kl. 9.00, ting 1; den 4. november kl. 9.00, ting 2; og 2 mere."
         );
     }
 
@@ -1698,21 +1560,26 @@ mod tests {
         let now = at(2026, 11, 1, 10, 0).with_timezone(&Utc);
         let r = reminder("spegnere il forno", at(2026, 11, 1, 10, 20));
         assert_eq!(
-            reminder_reply(&r, true, true, "it", tz, now),
-            "Fatto, ti ricordo tra venti minuti: spegnere il forno."
-        );
-        assert_eq!(
             reminder_reply(&r, true, true, "en", tz, now),
             "Okay, I'll remind you in 20 minutes: spegnere il forno."
         );
-        let r = reminder("pagare l'affitto", at(2026, 11, 2, 9, 0));
         assert_eq!(
-            reminder_reply(&r, true, false, "it", tz, now),
-            "Fatto, ti ricordo domani alle nove: pagare l'affitto."
+            reminder_reply(&r, true, true, "da", tz, now),
+            "Okay, jeg minder dig om det om 20 minutter: spegnere il forno."
         );
+        assert_eq!(
+            reminder_reply(&r, true, true, "it", tz, now),
+            "Okay, I'll remind you in 20 minutes: spegnere il forno.",
+            "an Italian turn gets English"
+        );
+        let r = reminder("pagare l'affitto", at(2026, 11, 2, 9, 0));
         assert_eq!(
             reminder_reply(&r, false, false, "en", tz, now),
             "That reminder was already set tomorrow at 9 AM: pagare l'affitto."
+        );
+        assert_eq!(
+            reminder_reply(&r, false, false, "da", tz, now),
+            "Den påmindelse findes allerede i morgen kl. 9.00: pagare l'affitto."
         );
     }
 
@@ -1721,7 +1588,8 @@ mod tests {
         let names: Vec<String> = ["latte", "uova", "pane"].map(String::from).to_vec();
         assert_eq!(
             shopping_list_reply(&names, "it"),
-            "Nella lista della spesa hai latte, uova e pane."
+            "You have latte, uova and pane on your shopping list.",
+            "Italian messages get an English reply (owner rule 2026-11-02)"
         );
         assert_eq!(
             shopping_list_reply(&names, "en"),
@@ -1734,7 +1602,7 @@ mod tests {
         let many: Vec<String> = (0..11).map(|i| format!("x{i}")).collect();
         assert_eq!(
             shopping_list_reply(&many, "it"),
-            "Nella lista della spesa hai x0, x1, x2, x3, x4, x5, x6, x7 e altre tre cose."
+            "You have x0, x1, x2, x3, x4, x5, x6, x7 and 3 more things on your shopping list."
         );
     }
 

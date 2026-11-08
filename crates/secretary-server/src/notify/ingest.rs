@@ -11,6 +11,12 @@
 //! | `role: lucina`, agent chat ([`agent_chat`]) | none: it stays readable in the chat, the owner gets no alert |
 //! | any other `role: lucina` item | `lucina_message` |
 //!
+//! Whether that notification is made, now or after a grace period, then
+//! depends on the turn the item belongs to ([`super::reply_route`]: the
+//! asking device from `meta.fromDevice`/`meta.device`, `meta.source`, the
+//! top-level `replyTo`, the channel). A reply to his DSi, Juno, Mac or web
+//! turn waits for that client; test and agent traffic never notifies.
+//!
 //! Owner items, backfilled history and items older than
 //! [`super::NotifyConfig::stale`] are skipped. The last handled id is saved
 //! (`notify-state.json`) and sent as `Last-Event-ID` on reconnect, so a
@@ -250,7 +256,11 @@ pub async fn run(st: AppState) {
                             continue;
                         }
                         match serde_json::from_str::<TimelineItem>(&ev.data) {
-                            Ok(item) => notifier.ingest(&item, ev.id).await,
+                            Ok(item) => {
+                                let devices = &st.devices;
+                                let test = |d: &str| devices.is_test(d);
+                                notifier.ingest(&item, ev.id, &test).await
+                            }
                             Err(e) => {
                                 tracing::warn!(error = %e, "unreadable timeline item; skipped")
                             }
@@ -338,10 +348,6 @@ mod tests {
         assert!(quiet(json!({"via": "mcp", "caller": "some-new-provider", "conversation": "report"})));
         assert!(quiet(json!({"via": "mcp"})));
         assert!(quiet(json!({"via": "another-link", "caller": "x"})));
-        // A voice test device's turn (docs/lucinavoice-protocol.md section 10.8): the user item, Lucina's answer, a tool line.
-        assert!(quiet(json!({"via": "test", "conversation": "voice-test"})));
-        assert!(quiet(json!({"via": "test", "conversation": "voice-test", "voiceReply": true, "transcript": "ciao"})));
-        assert!(quiet(json!({"kind": "tool", "tool": "media", "ok": true, "via": "test", "conversation": "voice-test"})));
         assert!(quiet(json!({"kind": "tool", "via": "mcp", "caller": "claude"})));
         assert!(quiet(json!({"kind": "reach", "tool": "reach_agents", "ok": true})));
         // A tool-trace line never notifies, marked or not (the 2026-11-03 photo-search burst had no via).

@@ -197,6 +197,8 @@ async fn stream(
         .try_acquire(&ident.device_id)
         .ok_or_else(too_many_streams)?;
     let upstream = lucina.timeline_stream(last.as_deref()).await?;
+    // While it is open the device counts as connected for the notifier (a reply it asked for is shown here).
+    let link = st.notify.link(&ident.device_id);
 
     let mut shutdown = st.shutdown.subscribe();
     let body = upstream
@@ -220,7 +222,7 @@ async fn stream(
         })
         // The slot lives as long as the body.
         .map(move |chunk| {
-            let _held = &slot;
+            let _held = (&slot, &link);
             chunk
         });
 

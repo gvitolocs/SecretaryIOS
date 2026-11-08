@@ -481,17 +481,15 @@ same code runs in lucina-rs for `/v1/share` voice notes, docs/share.md):
 ### 10.8 Test devices (2026-11-08)
 
 Agents measure the voice pipeline with a real device token, and their turns must reach neither the owner's chat nor his phone nor
-his memory. `SECRETARY_VOICE_TEST_DEVICES` (comma-separated device ids; default none) lists such devices. For them:
+his memory. This is main's test path (docs/notifications.md), nothing extra for voice: mark the device with
+`secretary-server token test <id> on` (the `test` flag in devices.json). Then:
 
-- **Command turns** go to Lucina flagged `"test": true` (a body field of `/v1/chat`; only this pipeline sets it, `/v1/chat` clears it from a
-  client's body) with the session `voice-test`, whatever session the `start` named. Lucina runs it as the owner's own turn (not guarded, routed, the
-  Jev fast path allowed) and writes every item with `meta.via = "test"` and `meta.conversation = "voice-test"`: `via` makes no
-  push (`notify::ingest::agent_chat`: any `via` is silent), and the store files the items under the conversation `test:voice-test`,
-  neither the main conversation nor the Lucina Voice thread. The turn is not remembered (no Honcho write, no About-you observation).
-- **Note turns** post the share with the form field `test=1` and the header `X-Voice-Test: <shareId>.<hex HMAC-SHA256(key, "voice-test:" + shareId)>`, the key being the Lucina API token (`SECRETARY_LUCINA_TOKEN_FILE`; the token itself is never sent, Caddy logs custom headers). Shares reach lucina-rs from any device, so lucina-rs believes `test=1` only with that proof, checked in constant time and for that very share; otherwise `400 bad test marker`. A marker without `test=1` is ignored (docs/share.md, "Test devices"); lucina-rs marks the share's items the same way, runs the
-  turn in `voice-test`, remembers nothing and does not put the audio in the library. The note path is the real one (level rules, Whisper,
-  the chat turn), so a measurement is of what a note really does.
-- The socket's own messages (`transcript`, `reply`, `done`, …) are unchanged: the agent sees the same as any device.
+- **Command turns** from that device go to Lucina with `conversation: "selftest"` (`voice_pipe`, both the spoken and the text-only
+  pipeline), so they run in Lucina's self-test conversation: its own session, timeline (`selftest-timeline.jsonl`) and no memory write.
+- **Note turns** post the share with the form field `conversation=selftest`, and the gateway adds `X-Secretary-Device` and
+  `X-Secretary-Test: 1` for the flagged device, so lucina-rs runs the share in the self-test conversation. A `probe…`/`test…` `source` does the same. The
+  note's answer is not on the owner's timeline stream, so the watcher follows it by status reads.
+- Nothing of this changes the level rules (10.7) or the messages the agent sees.
 
 Chat voice is never a memo: a voice message on this socket (command or note) is ordinary talk. The server calls lucina-memo only to
 transcribe (`/v1/memos/stt`); nothing here, and nothing in lucina-rs's share path, makes a memo, a summary, an Obsidian note or a brief.

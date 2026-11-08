@@ -46,6 +46,10 @@ pub struct Device {
     /// hang off (named "web"; its token is never shown to anyone).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub web_login: bool,
+    /// A test client (an agent's probe, a test rig): its turns go to Lucina's self-test
+    /// conversation, never the owner's chat, and never notify (docs/notifications.md).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub test: bool,
 }
 
 pub fn now_rfc3339() -> String {
@@ -203,6 +207,7 @@ impl DeviceStore {
             last_seen_at: None,
             revoked: false,
             web_login: false,
+            test: false,
         };
         devices.push(device.clone());
         self.save(&devices)?;
@@ -225,6 +230,7 @@ impl DeviceStore {
             last_seen_at: None,
             revoked: false,
             web_login: true,
+            test: false,
         };
         devices.push(device.clone());
         self.save(&devices)?;
@@ -243,6 +249,19 @@ impl DeviceStore {
             return Ok(None);
         };
         d.revoked = true;
+        let out = d.clone();
+        self.save(&devices)?;
+        Ok(Some(out))
+    }
+
+    /// Mark `id` a test device (or not). `Ok(None)` if there is no such device.
+    pub fn set_test(&self, id: &str, test: bool) -> io::Result<Option<Device>> {
+        let _lock = self.lock()?;
+        let mut devices = self.load()?;
+        let Some(d) = devices.iter_mut().find(|d| d.id == id) else {
+            return Ok(None);
+        };
+        d.test = test;
         let out = d.clone();
         self.save(&devices)?;
         Ok(Some(out))
@@ -323,6 +342,13 @@ impl DeviceAuth {
             self.mark_seen(&mut cache, id);
         }
         Ok(found)
+    }
+
+    /// Whether `id` is flagged `test` (an unreadable registry counts as not).
+    pub fn is_test(&self, id: &str) -> bool {
+        self.refreshed()
+            .map(|c| c.devices.iter().any(|d| d.id == id && d.test))
+            .unwrap_or(false)
     }
 
     fn mark_seen(&self, cache: &mut Cache, device_id: &str) {

@@ -62,8 +62,8 @@
 //!    **Level** (protocol section 10.7): the recording is measured first ([`crate::voice_level`], rules in
 //!    [`crate::voice_rules`]). A silent one is `error silent` and runs nothing; quiet speech is lifted on the copy the
 //!    speech-to-text gets (a note's file stays as recorded). The four dBFS numbers are on the turn's log line and in its record.
-//!    **Test devices** (section 10.8): a device in `SECRETARY_VOICE_TEST_DEVICES` sends its chat flagged `test` (session `voice-test`) and
-//!    its notes with `test=1`, so Lucina keeps them silent and out of the owner's chat and memory.
+//!    **Test devices** (section 10.8): a device flagged `test` in devices.json (`secretary-server token test <id> on`) runs in
+//!    Lucina's self-test conversation, for chat turns and notes alike ([`crate::voice_pipe`], [`note_is_test`]).
 //! 4. A turn that ends without complete audio sends `error` instead of `done`:
 //!    `no_speech` (under 0.3 s of audio, no speech in `vad` mode, or an empty
 //!    transcript), `silent` (no signal), `stt_unavailable`, `lucina_unavailable`, `tts_failed`, and
@@ -344,6 +344,8 @@ enum Ctl {
         stt_ms: Option<u64>,
         note_ms: u64,
         t0: Instant,
+        /// A test note: it went to Lucina's self-test conversation, so its answer is followed by status reads.
+        test: bool,
     },
 }
 
@@ -381,6 +383,8 @@ async fn connection(
     });
     let device = ident.device_id.clone();
     let _online = ConnGuard::open(&st, &ident);
+    // The notifier's "connected" (notify::reply_route): a reply to this device's turn reaches it here.
+    let _link = st.notify.link(&ident.device_id);
     let mut shutdown = st.shutdown.subscribe();
     let (ctl, mut ctl_rx) = mpsc::unbounded_channel::<Ctl>();
     let mut conn = Conn {
@@ -730,7 +734,6 @@ impl Conn {
         }
         let stt_pcm = analysis.normalised(&samples).map_or_else(|| Bytes::from(pcm.clone()), |v| Bytes::from(voice_level::pcm_of(&v)));
         drop(samples);
-        let test = self.st.voice.is_test_device(&self.ident.device_id);
         let task = if opts.note {
             tokio::spawn(run_note(NoteRun {
                 st: self.st.clone(),
@@ -742,7 +745,6 @@ impl Conn {
                 pcm: Bytes::from(pcm),
                 stt_pcm,
                 level,
-                test,
                 raw,
                 opts,
                 channel,
@@ -759,7 +761,6 @@ impl Conn {
                 pcm: Bytes::from(pcm),
                 stt_pcm,
                 level,
-                test,
                 lang,
                 t0,
                 up_bytes,
@@ -789,6 +790,7 @@ impl Conn {
                 stt_ms,
                 note_ms,
                 t0,
+                test,
             } => {
                 // The device is free now (if the phase still is that note's turn).
                 if matches!(&self.phase, Phase::Processing { id: p, .. } if *p == id)
@@ -807,7 +809,9 @@ impl Conn {
                     self.creds.clone(),
                     self.tx.clone(),
                     id,
-                    user_item_id,
+                    // A test note's answer is not on the owner's timeline stream: an empty id makes the
+                    // watcher read the share's status instead.
+                    if test { String::new() } else { user_item_id },
                     t0,
                     stt_ms,
                     note_ms,
@@ -833,8 +837,6 @@ struct Run {
     /// The recording as the speech-to-text gets it: quiet speech lifted (protocol section 10.7).
     stt_pcm: Bytes,
     level: InputLevel,
-    /// A test device's turn (protocol section 10.8).
-    test: bool,
     lang: Option<String>,
     t0: Instant,
     up_bytes: u64,
@@ -872,7 +874,6 @@ async fn turn_steps(run: Run, shared: &std::sync::Arc<Shared>, info: &mut TurnIn
         tx,
         stt_pcm,
         level,
-        test,
         lang,
         channel,
         session_id,
@@ -923,7 +924,6 @@ async fn turn_steps(run: Run, shared: &std::sync::Arc<Shared>, info: &mut TurnIn
             session_id,
             speak,
             text_out: text_out.then(|| tx.clone()),
-            test,
         },
         shared.clone(),
         out_tx,
@@ -1018,8 +1018,6 @@ struct NoteRun {
     /// The recording as the speech-to-text gets it: quiet speech lifted (protocol section 10.7).
     stt_pcm: Bytes,
     level: InputLevel,
-    /// A test device's note (protocol section 10.8).
-    test: bool,
     /// `ima-adpcm`: the client's blocks.
     raw: Vec<u8>,
     opts: StartOpts,
@@ -1077,8 +1075,15 @@ async fn run_note(n: NoteRun) {
             stt_ms,
             note_ms,
             t0: n.t0,
+            test: note_is_test(&n.st, &n.ident.device_id, &n.opts.source),
         });
     }
+}
+
+/// A test note (a test device, or a `probe…`/`test…` source): it goes to Lucina's self-test
+/// conversation, never the owner's chat, and never notifies (docs/notifications.md).
+fn note_is_test(st: &AppState, device: &str, source: &str) -> bool {
+    st.devices.is_test(device) || crate::notify::reply_route::is_test_source(source)
 }
 
 /// Transcribe (up to 120 s), post the share. `Some((userItemId, stt ms, note ms))` once posted.
@@ -1126,22 +1131,15 @@ async fn note_steps(
             session_id: n.opts.session_id.as_deref(),
             channel: &n.channel,
             source: &n.opts.source,
+            conversation: note_is_test(&n.st, &n.ident.device_id, &n.opts.source).then_some("selftest"),
             reply_to: n.opts.reply_to.as_deref(),
             duration_ms: n.pcm.len() as u64 / 32,
             transcript: transcript.as_deref(),
             file_name: &name,
             wav: &wav,
-            test: n.test,
         },
     );
-    let marker = if n.test { n.st.voice.test_marker(&n.id) } else { None };
-    if n.test && marker.is_none() {
-        tracing::warn!(device = %device, "voice note: no Lucina token to sign the test marker");
-        info.err = Some("note_failed".into());
-        send(error_msg("note_failed", "the test note could not be signed")).await;
-        return None;
-    }
-    match voice_note::post_share(&n.st, &n.creds, content_type, body, marker.as_deref()).await {
+    match voice_note::post_share(&n.st, &n.creds, content_type, body).await {
         Ok(a) => {
             let note_ms = shared.elapsed_ms();
             tracing::info!(

@@ -130,15 +130,14 @@ pub struct NoteForm<'a> {
     pub session_id: Option<&'a str>,
     pub channel: &'a str,
     pub source: &'a str,
+    /// `selftest` for a test note: Lucina keeps it out of the owner's chat.
+    pub conversation: Option<&'a str>,
     pub reply_to: Option<&'a str>,
     pub duration_ms: u64,
     pub transcript: Option<&'a str>,
     pub file_name: &'a str,
     /// The whole WAV file.
     pub wav: &'a [u8],
-    /// A test device's note (protocol section 10.8): the form says `test=1`, and lucina-rs writes the share's items silent and
-    /// out of the owner's chat.
-    pub test: bool,
 }
 
 /// The `meta` field: `{"files":[{"index":0,"voice":true,"durationMs":…,"transcript"?:…}]}`.
@@ -163,13 +162,13 @@ pub fn share_body(boundary: String, f: &NoteForm) -> (String, Vec<u8>) {
     }
     m.text("channel", f.channel);
     m.text("source", f.source);
+    if let Some(c) = f.conversation {
+        m.text("conversation", c);
+    }
     if let Some(r) = f.reply_to {
         m.text("replyTo", r);
     }
     m.text("meta", &meta_json(f.duration_ms, f.transcript));
-    if f.test {
-        m.text("test", "1");
-    }
     m.file("file", f.file_name, "audio/wav", f.wav);
     m.finish()
 }
@@ -215,7 +214,6 @@ pub async fn post_share(
     creds: &HeaderMap,
     content_type: String,
     body: Vec<u8>,
-    test_marker: Option<&str>,
 ) -> Result<Accepted, NoteError> {
     let Some(url) = st.voice.share_url() else {
         return Err(NoteError::Unreachable("voice notes are off"));
@@ -226,11 +224,6 @@ pub async fn post_share(
         .post(url)
         .header(header::CONTENT_TYPE, content_type)
         .body(body);
-    // A test device's note proves it to lucina-rs (the field `test=1` alone is not believed).
-    let req = match test_marker {
-        Some(m) => req.header(crate::voice_marker::HEADER, m),
-        None => req,
-    };
     let resp = crate::voice::with_creds(req, creds)
         .send()
         .await
@@ -518,12 +511,12 @@ mod tests {
             session_id: None,
             channel: "ios",
             source: "ios-chat",
+            conversation: None,
             reply_to: Some("itm_1"),
             duration_ms: 1500,
             transcript: Some("ciao"),
             file_name: "voice-x.wav",
             wav: &[1, 2, 3, 0xff],
-            test: false,
         };
         let (ct, body) = share_body("BND".into(), &f);
         assert_eq!(ct, "multipart/form-data; boundary=BND");
@@ -534,10 +527,6 @@ mod tests {
         assert!(text.contains("name=\"intent\"\r\n\r\nask\r\n"));
         assert!(text.contains("name=\"lang\"\r\n\r\nit\r\n"));
         assert!(!text.contains("sessionId"));
-        assert!(!text.contains("name=\"test\""));
-        let f = NoteForm { test: true, ..f };
-        let (_, tested) = share_body("BND".into(), &f);
-        assert!(String::from_utf8_lossy(&tested).contains("name=\"test\"\r\n\r\n1\r\n"));
         assert!(text.contains("name=\"replyTo\"\r\n\r\nitm_1\r\n"));
         assert!(text.contains(
             "name=\"file\"; filename=\"voice-x.wav\"\r\nContent-Type: audio/wav\r\n\r\n"

@@ -1479,8 +1479,8 @@ section 10.1, unknown `type`, not JSON), `note_failed` (a voice note's share was
 refused or unreachable), `silent` (the recording had no signal: peak under -60 dBFS or no
 frame above the noise gate; "The recording was silent: check the microphone."; nothing
 ran, no note was posted). Quiet speech is lifted towards -20 dBFS before speech-to-text
-(at most +30 dB; protocol section 10.7), and devices in `SECRETARY_VOICE_TEST_DEVICES` are
-test devices whose turns are silent and out of the owner's chat (section 10.8).
+(at most +30 dB; protocol section 10.7), and a device flagged `test` (`secretary-server token test <id> on`)
+runs its turns in Lucina's self-test conversation, out of the owner's chat (section 10.8).
 
 Pipeline per turn:
 

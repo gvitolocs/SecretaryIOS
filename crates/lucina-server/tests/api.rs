@@ -1027,7 +1027,7 @@ async fn device_chat_and_conversation_sync_contract() {
         };
         let h = harness(fake, |c| c.planner = planner).await;
         let (status, _, _) = h.call(Method::POST, "/chat", Some(json!({
-            "message": "hi", "device": "phone-A", "deviceName": " My phone ", "channel": "ios"
+            "message": "hi", "device": "phone-A", "deviceName": " My phone ", "channel": "ios", "source": "ios-chat"
         }))).await;
         assert_eq!(status, 200);
         let lines = h.timeline_lines();
@@ -1035,7 +1035,11 @@ async fn device_chat_and_conversation_sync_contract() {
         for item in &lines {
             assert_eq!(item["meta"]["device"], "phone-A");
             assert_eq!(item["meta"]["deviceName"], "My phone");
+            // Who asked, on his item and her reply (secretary-server's notifier routes by it).
+            assert_eq!(item["meta"]["source"], "ios-chat");
+            assert_eq!(item["meta"]["fromDevice"], "phone-A");
         }
+        assert_eq!(lines[1]["replyTo"], lines[0]["id"]);
         let (status, b) = h
             .post(
                 "/chat",

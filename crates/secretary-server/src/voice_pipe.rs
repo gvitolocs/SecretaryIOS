@@ -124,13 +124,7 @@ pub struct Spec {
     /// Also send Lucina's `delta`s and settled reply as `{"type":"delta"}` / `{"type":"answer"}`
     /// messages (protocol section 10.3).
     pub text_out: Option<TextSink>,
-    /// A test device's turn (`SECRETARY_VOICE_TEST_DEVICES`): Lucina is told with `"test": true` and the session
-    /// [`TEST_SESSION_ID`]; her items for it are silent and out of the owner's chat.
-    pub test: bool,
 }
-
-/// The chat session of a test device's turn (Lucina writes its items to the conversation `voice-test`).
-pub const TEST_SESSION_ID: &str = "voice-test";
 
 impl Spec {
     /// Today's turn: the "Lucina Voice" thread, spoken, no text messages.
@@ -149,7 +143,6 @@ impl Spec {
             session_id: Some(SESSION_ID.into()),
             speak: true,
             text_out: None,
-            test: false,
         }
     }
 }
@@ -653,13 +646,12 @@ async fn speak_inner(
         channel,
         session_id,
         text_out,
-        test,
         ..
     } = spec;
     let turn_id = crate::voice::client_message_id().map_err(PipeError::Lucina)?;
     let chat = ChatRequest {
         message: heard.clone(),
-        session_id: if test { Some(TEST_SESSION_ID.to_owned()) } else { session_id },
+        session_id,
         client_message_id: Some(turn_id.clone()),
         // The shared "Lucina Voice" thread (protocol section 7), or the main chat (section 10.1).
         channel: Some(channel),
@@ -667,7 +659,9 @@ async fn speak_inner(
         device_name: Some(ident.device_name.clone()),
         reply_to: None,
         voice_meta: Some(voice_meta(&turn_id, shared.stt(), &facts)),
-        test: test.then_some(true),
+        source: None,
+        // A test device's turns run in Lucina's self-test conversation (never his chat, never a push).
+        conversation: st.devices.is_test(&ident.device_id).then(|| "selftest".to_owned()),
     };
     let lucina = st.lucina().map_err(PipeError::Lucina)?;
     let mut events = lucina
@@ -912,20 +906,21 @@ async fn text_inner(
         channel,
         session_id,
         text_out,
-        test,
         ..
     } = spec;
     let turn_id = crate::voice::client_message_id().map_err(PipeError::Lucina)?;
     let chat = ChatRequest {
         message: heard,
-        session_id: if test { Some(TEST_SESSION_ID.to_owned()) } else { session_id },
+        session_id,
         client_message_id: Some(turn_id.clone()),
         channel: Some(channel),
         device: Some(ident.device_id.clone()),
         device_name: Some(ident.device_name.clone()),
         reply_to: None,
         voice_meta: Some(voice_meta(&turn_id, shared.stt(), &facts)),
-        test: test.then_some(true),
+        source: None,
+        // A test device's turns run in Lucina's self-test conversation (never his chat, never a push).
+        conversation: st.devices.is_test(&ident.device_id).then(|| "selftest".to_owned()),
     };
     let lucina = st.lucina().map_err(PipeError::Lucina)?;
     let mut events = lucina

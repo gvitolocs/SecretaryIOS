@@ -13,6 +13,13 @@ path = "src/bin/lucina-agentd.rs"
 name = "lagent"
 path = "src/bin/lagent.rs"
 
+# Test support only (tests/acp_watch.rs): a fake ACP agent. Never installed.
+[[bin]]
+name = "lucina-fake-acp"
+path = "tests/support/fake_acp.rs"
+test = false
+doc = false
+
 [dependencies]
 lucina-agents = { path = "../lucina-agents" }
 lucina-approvals = { path = "../lucina-approvals" }

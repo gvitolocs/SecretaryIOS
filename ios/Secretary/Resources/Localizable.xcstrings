@@ -16826,6 +16826,22 @@
         }
       }
     },
+    "Voice message" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Talebesked"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Messaggio vocale"
+          }
+        }
+      }
+    },
     "Playback speed" : {
       "localizations" : {
         "da" : {

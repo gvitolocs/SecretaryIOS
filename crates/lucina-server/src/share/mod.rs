@@ -312,15 +312,14 @@ struct Job {
     lang: String,
     session: String,
     source: String,
+    /// The device that posted it (gateway header); kept out of the public status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    from_device: Option<String>,
     #[serde(default)]
     meta: ShareMeta,
     lucina_item_id: Option<String>,
     reply: Option<String>,
     error: Option<String>,
-    /// A voice test device's note (form field `test=1`; docs/lucinavoice-protocol.md section 10.8): its items are written silent
-    /// (`meta.via = "test"`, conversation `voice-test`), the turn is not remembered, and the file is not put in the library.
-    #[serde(default)]
-    test: bool,
 }
 impl Job {
     fn public(&self, duplicate: bool) -> Value {
@@ -463,12 +462,20 @@ fn host_of(url: &str) -> String {
 
 async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, Error> {
     authenticate(&st, req.headers()).await?;
-    // Only secretary-server, for a test device, may make a test share: its proof (`X-Voice-Test`, an HMAC under the API token).
-    let marker = req
+    // From the gateway (Caddy copies them from secretary-server's device check): who asked, and
+    // whether that device is a test client. `authenticate` proved the request came through it.
+    let from_device = req
         .headers()
-        .get(crate::voice_marker::HEADER)
-        .and_then(|v| v.to_str().ok())
+        .get("x-secretary-device")
+        .and_then(|h| h.to_str().ok())
+        .map(str::trim)
+        .filter(|d| lucina_store::timeline::valid_device(d))
         .map(str::to_owned);
+    let test_device = req
+        .headers()
+        .get("x-secretary-test")
+        .and_then(|h| h.to_str().ok())
+        .is_some_and(|v| v.trim() == "1");
     if req
         .headers()
         .get("content-length")
@@ -540,7 +547,7 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
                 "url",
                 "meta",
                 "replyTo",
-                "test",
+                "conversation",
             ]
             .contains(&name.as_str())
             {
@@ -649,20 +656,16 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
     if !valid_session(&session) {
         return Err(bad("invalid sessionId"));
     }
-    // A voice test device's note: its own session, whatever the sender said.
-    // `test=1` without a valid marker for this very share is refused; a marker without `test=1` is ignored.
-    let test = matches!(field("test", "").as_str(), "1" | "true");
-    if test {
-        let ok = match (st.cfg.token.as_deref(), marker.as_deref()) {
-            (Some(key), Some(m)) => crate::voice_marker::verify(key.as_bytes(), &id, m),
-            _ => false,
-        };
-        if !ok {
-            return Err(bad("bad test marker"));
-        }
-    }
-    let session = if test {
-        crate::test_turn::REQUESTED.to_owned()
+    // Test traffic (a test device, `conversation=selftest`, a `probe…`/`test…` source) runs in the
+    // self-test conversation: never the owner's chat, never a push (docs/share.md).
+    let selftest = test_device
+        || crate::selftest::requested(
+            &json!({"conversation": field("conversation", ""), "source": field("source", "")}),
+            &session,
+            "",
+        );
+    let session = if selftest {
+        crate::selftest::SESSION.to_owned()
     } else {
         session
     };
@@ -770,9 +773,7 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
                 .file_index
                 .and_then(|fi| meta.files.iter().find(|f| f.index == fi))
                 .and_then(|f| f.taken_at.clone());
-            if !test {
-                store_in_library(&st, &id, i, &source, &note, part, taken_at).await;
-            }
+            store_in_library(&st, &id, i, &source, &note, part, taken_at).await;
         } else if part.attachment.kind == "link" {
             let host = host_of(part.attachment.url.as_deref().unwrap_or(""));
             part.attachment.name = Some(if title.trim().is_empty() {
@@ -821,14 +822,13 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
             text,
             reply_to,
             attachments,
-            meta: Some(
-                Meta {
-                    share_id: Some(id.clone()),
-                    intent: Some(action.clone()),
-                    ..Meta::kind("share")
-                }
-                .merge(if test { crate::test_turn::meta() } else { Meta::default() }),
-            ),
+            meta: Some(Meta {
+                share_id: Some(id.clone()),
+                intent: Some(action.clone()),
+                source: Some(source.clone()),
+                from_device: from_device.clone(),
+                ..Meta::kind("share")
+            }),
             ..NewItem::default()
         },
         Utc::now().timestamp_millis(),
@@ -844,12 +844,16 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
         note,
         lang: field("lang", "en"),
         source,
-        session: lucina_memory::secretary_session_id(&session, &st.cfg.default_session),
+        from_device,
+        session: if selftest {
+            session
+        } else {
+            lucina_memory::secretary_session_id(&session, &st.cfg.default_session)
+        },
         meta,
         lucina_item_id: None,
         reply: None,
         error: None,
-        test,
     };
     save(&dir, &job).await?;
     // status.json says processing now: the share must be processed even if
@@ -1037,10 +1041,6 @@ fn listed(p: &Part) -> bool {
 }
 
 async fn store_job_again(st: &AppState, dir: &Path, job: &mut Job) -> usize {
-    // A test device's note never goes to the owner's library.
-    if job.test {
-        return 0;
-    }
     let _lock = st.share.ingest.lock().await;
     let (id, source, note) = (job.share_id.clone(), job.source.clone(), job.note.clone());
     // (index among the item's attachments, file name, media id)
@@ -1214,6 +1214,11 @@ fn spawn(st: AppState, dir: PathBuf, mut job: Job) {
                 role: "lucina".into(),
                 text: reply.clone(),
                 reply_to: Some(job.user_item.id.clone()),
+                meta: Some(Meta {
+                    source: Some(job.source.clone()),
+                    from_device: job.from_device.clone(),
+                    ..Meta::default()
+                }),
                 ..NewItem::default()
             });
             job.lucina_item_id = item.map(|i| i.id);
@@ -1460,7 +1465,7 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
             .summary
             .clone()
             .or_else(|| (!x.text.trim().is_empty()).then(|| clip(x.text.trim(), 300)));
-        if part.state == "read" && extract_files && !job.test {
+        if part.state == "read" && extract_files {
             let record = memory::Record {
                 id: format!("{}-{i}", job.share_id),
                 share_id: job.share_id.clone(),
@@ -1503,9 +1508,11 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
             .filter(|s| !s.is_empty())
             .map(|s| clip(&s, 4000)),
         voice_reply: has_voice.then_some(true),
+        // Who asked, on Lucina's items of this turn (the notifier routes the reply by it).
+        source: Some(job.source.clone()),
+        from_device: job.from_device.clone(),
         ..Meta::default()
-    }
-    .merge(if job.test { crate::test_turn::meta() } else { Meta::default() });
+    };
     if has_voice
         && job
             .parts
@@ -1582,9 +1589,7 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
         } else {
             job.note.clone()
         };
-        if !job.test {
-            crate::about::observe(st, &job.session, "document", &job.share_id, &format!("{}\n{content}", job.note.trim()));
-        }
+        crate::about::observe(st, &job.session, "document", &job.share_id, &format!("{}\n{content}", job.note.trim()));
         let out = crate::chat::share_turn(
             st.clone(),
             message,
@@ -1595,7 +1600,6 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
                 voice_only,
                 reply_meta: voice_meta,
                 owner_text,
-                test: job.test,
             },
         )
         .await

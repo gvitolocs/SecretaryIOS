@@ -217,7 +217,7 @@ async fn multipart_share_reads_everything_and_deduplicates_across_restart() {
     assert_eq!(lines[0]["channel"], "ios");
     assert_eq!(
         lines[0]["meta"],
-        json!({"kind":"share", "shareId":"share-integration-123", "intent":"ask"})
+        json!({"kind":"share", "shareId":"share-integration-123", "intent":"ask", "source":"ios-share"})
     );
     assert!(lines[0]["text"]
         .as_str()
@@ -1584,6 +1584,71 @@ async fn a_file_shared_while_the_library_is_down_gets_its_media_id_when_it_is_ba
     assert_eq!(media.seen.media.lock().unwrap().len(), 1);
 }
 
+/// docs/share.md "Who asked": the gateway passes the device, the form the source; both ride on every item
+/// of the turn so secretary-server sends the reply where he asked. Test traffic goes to the self-test timeline.
+#[tokio::test]
+async fn shares_carry_who_asked_and_test_shares_stay_out_of_his_chat() {
+    let services = services().await;
+    let h = setup(&services).await;
+    let post = |id: &str, source: &str, extra: &[(&str, &str)], headers: &[(&str, &str)]| {
+        let mut form = Form::new()
+            .text("shareId", id.to_owned())
+            .text("text", "a note for Lucina")
+            .text("source", source.to_owned());
+        for (k, v) in extra {
+            form = form.text(k.to_string(), v.to_string());
+        }
+        let mut rb = h
+            .http
+            .post(format!("{}/v1/share", h.base))
+            .header("x-share-gateway", "gateway-test-secret");
+        for (k, v) in headers {
+            rb = rb.header(*k, *v);
+        }
+        rb.multipart(form).send()
+    };
+    let r = post(
+        "share-who-asked-1",
+        "fortuna-chat",
+        &[],
+        &[("x-secretary-device", "dev_test1"), ("x-secretary-test", "0")],
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.status(), 202);
+    assert_eq!(finished(&h, "share-who-asked-1").await["status"], "done");
+    let lines = h.timeline_lines();
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    for item in &lines {
+        assert_eq!(item["meta"]["source"], "fortuna-chat", "{item}");
+        assert_eq!(item["meta"]["fromDevice"], "dev_test1", "{item}");
+        assert!(item["meta"]["device"].is_null(), "a share stays out of the device's conversation");
+    }
+    assert_eq!(lines[1]["role"], "lucina");
+    assert_eq!(lines[1]["replyTo"], lines[0]["id"]);
+
+    let selftest_lines = || -> Vec<Value> {
+        std::fs::read_to_string(h.dir.path().join("selftest-timeline.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    };
+    type Case<'a> = (&'a str, &'a str, &'a [(&'a str, &'a str)], &'a [(&'a str, &'a str)]);
+    let cases: [Case; 3] = [
+        ("share-probe-1", "probe", &[], &[]),
+        ("share-testdev-1", "fortuna-chat", &[], &[("x-secretary-test", "1")]),
+        ("share-conv-1", "juno-chat", &[("conversation", "selftest")], &[]),
+    ];
+    for (i, (id, source, extra, headers)) in cases.iter().enumerate() {
+        let r = post(id, source, extra, headers).await.unwrap();
+        assert_eq!(r.status(), 202, "{id}");
+        finished(&h, id).await;
+        assert_eq!(h.timeline_lines().len(), 2, "{id} stayed out of his chat");
+        assert!(selftest_lines().len() > 2 * i, "{id} is in the self-test timeline");
+    }
+}
+
 // -- voice notes: no file-name label, quiet input, silent input, test devices, no memo -------------------------------------
 
 /// A 2 s m4a made by ffmpeg: a sine at `volume` of full scale ("sine" is 0.125 by itself), or digital silence (`None`).
@@ -1738,90 +1803,6 @@ async fn loud_voice_notes_are_not_touched() {
     assert!((3800..=4400).contains(&after), "{after}");
 }
 
-async fn submit_marked(h: &H, form: Form, marker: Option<String>) -> reqwest::Response {
-    let mut r = h.http.post(format!("{}/v1/share", h.base)).multipart(form);
-    r = r.header("x-share-gateway", "gateway-test-secret");
-    if let Some(m) = marker {
-        r = r.header("x-voice-test", m);
-    }
-    r.send().await.unwrap()
-}
-
-#[tokio::test]
-async fn test_1_needs_secretary_servers_marker_for_that_very_share() {
-    let services = services().await;
-    let h = voice_setup(&services, false, VOICE_TEXT).await;
-    let bytes = voice_bytes(&h).await;
-    let key = common::TOKEN.as_bytes();
-    let id = "voice-test-0002";
-    let form = || voice_form(id, bytes.clone(), None, "").text("test", "1");
-    let valid = lucina_server::voice_marker::sign(key, id).unwrap();
-    let other_share = lucina_server::voice_marker::sign(key, "voice-test-0003").unwrap();
-    let wrong_key = lucina_server::voice_marker::sign(b"not-the-token", id).unwrap();
-    for (what, marker) in [("no header", None), ("wrong hmac", Some(wrong_key)), ("another share", Some(other_share)), ("garbage", Some("x".to_owned()))] {
-        let r = submit_marked(&h, form(), marker).await;
-        assert_eq!(r.status(), 400, "{what}");
-        let body: Value = r.json().await.unwrap();
-        assert_eq!(body["error"], "bad test marker", "{what}: {body}");
-    }
-    // Nothing was taken: no item, no share.
-    assert!(h.timeline_lines().is_empty());
-    // A valid marker makes a test share.
-    assert_eq!(submit_marked(&h, form(), Some(valid.clone())).await.status(), 202);
-    assert_eq!(finished(&h, id).await["status"], "done");
-    for l in h.timeline_lines() {
-        assert_eq!(l["meta"]["via"], "test", "{l}");
-    }
-    // A valid marker without test=1 is ignored: an ordinary share.
-    let id2 = "voice-test-0004";
-    let marker = lucina_server::voice_marker::sign(key, id2).unwrap();
-    assert_eq!(submit_marked(&h, voice_form(id2, bytes, None, ""), Some(marker)).await.status(), 202);
-    assert_eq!(finished(&h, id2).await["status"], "done");
-    let lines = h.timeline_lines();
-    assert!(lines.iter().filter(|l| l["meta"]["shareId"] == id2).all(|l| l["meta"].get("via").is_none()), "{lines:?}");
-}
-
-#[tokio::test]
-async fn a_test_devices_note_is_silent_out_of_the_conversation_and_not_remembered() {
-    let services = services().await;
-    let h = voice_setup(&services, false, VOICE_TEXT).await;
-    let bytes = voice_bytes(&h).await;
-    let form = voice_form("voice-test-0001", bytes, None, "").text("test", "1").text("sessionId", "ios_chat1");
-    let marker = lucina_server::voice_marker::sign(common::TOKEN.as_bytes(), "voice-test-0001");
-    assert_eq!(submit_marked(&h, form, marker).await.status(), 202);
-    let done = finished(&h, "voice-test-0001").await;
-    assert_eq!(done["status"], "done", "{done}");
-    let lines = h.timeline_lines();
-    assert_eq!(lines.len(), 2, "{lines:?}");
-    for l in &lines {
-        // `via` keeps it off his phone (secretary-server makes no notification for any `via`); the conversation keeps it out of
-        // his chat and out of the Lucina Voice thread.
-        assert_eq!(l["meta"]["via"], "test", "{l}");
-        assert_eq!(l["meta"]["conversation"], "voice-test", "{l}");
-    }
-    assert_eq!(lines[1]["meta"]["voiceReply"], true);
-    assert_eq!(lines[0]["text"], "");
-    let keys: Vec<_> = h.state.timeline.conversations().unwrap().into_iter().map(|c| c.key).collect();
-    assert_eq!(keys, ["test:voice-test"]);
-    // Not remembered: no attachment memory, nothing in his library, no About-you observation.
-    assert!(h.state.share.memory.recent(0, 10).unwrap().is_empty());
-    assert!(services.seen.media.lock().unwrap().is_empty());
-}
-
-#[tokio::test]
-async fn an_ordinary_voice_note_has_no_test_marks() {
-    let services = services().await;
-    let h = voice_setup(&services, false, VOICE_TEXT).await;
-    let bytes = voice_bytes(&h).await;
-    assert_eq!(submit(&h, voice_form("voice-plain-001", bytes, None, "")).await.status(), 202);
-    assert_eq!(finished(&h, "voice-plain-001").await["status"], "done");
-    for l in h.timeline_lines() {
-        assert!(l["meta"].get("via").is_none() && l["meta"].get("conversation").is_none(), "{l}");
-    }
-    let keys: Vec<_> = h.state.timeline.conversations().unwrap().into_iter().map(|c| c.key).collect();
-    assert!(!keys.contains(&"test:voice-test".to_owned()), "{keys:?}");
-}
-
 /// Chat voice is never a memo (owner rule, 2026-11-08): a voice share is transcribed (lucina-memo's `transcribe` library, in
 /// process) and answered as a chat turn. Nothing in the share path calls the memo API (`/v1/memos`): the only HTTP it makes is
 /// the media library and vision, which the mock records; and no source of the share path names that API.
@@ -1836,7 +1817,7 @@ async fn a_voice_share_creates_no_memo() {
         assert!(!v.to_string().contains("v1/memos"), "{v}");
     }
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    for file in ["share/mod.rs", "share/extract.rs", "share/memory.rs", "share/library.rs", "share/tools.rs", "test_turn.rs"] {
+    for file in ["share/mod.rs", "share/extract.rs", "share/memory.rs", "share/library.rs", "share/tools.rs"] {
         let text = std::fs::read_to_string(src.join(file)).unwrap();
         assert!(!text.contains("v1/memos"), "{file} names the memo API");
         assert!(!text.contains("MemosTool"), "{file} uses the memos tool");

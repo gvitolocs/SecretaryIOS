@@ -9,6 +9,8 @@ import {
   formatCoordinate,
   formatDuration,
   hasFileTransfer,
+  isVoiceAutoCaption,
+  visibleText,
   locationAttachment,
   prepareDraftFiles,
   releaseDraft,
@@ -139,5 +141,23 @@ describe("formatting and preparing", () => {
     const drafts = await prepareDraftFiles(files, { convert: false, probe: false });
     expect(drafts.map((d) => d.kind)).toEqual(["file", "pdf"]);
     expect(drafts.map((d) => d.name)).toEqual(["a.txt", "b.pdf"]);
+  });
+});
+
+describe("voice note auto caption", () => {
+  const voice = (name: string) => ({ kind: "voice", name });
+  it("hides the legacy caption of voice notes", () => {
+    expect(visibleText("\u{1F4CE} voice-note.wav", [voice("voice-note.wav")])).toBe("");
+    expect(visibleText("  \u{1F4CE} note.m4a ", [voice("note.m4a")])).toBe("");
+    expect(visibleText("\u{1F4CE} voice-1.wav, voice-2.wav", [voice("voice-1.wav"), voice("voice-2.wav")])).toBe("");
+  });
+  it("keeps a real caption", () => {
+    expect(visibleText("Listen to this", [voice("voice-note.wav")])).toBe("Listen to this");
+    expect(visibleText("\u{1F4CE} voice-note.wav and more", [voice("voice-note.wav")])).toBe("\u{1F4CE} voice-note.wav and more");
+  });
+  it("keeps names of non-voice attachments", () => {
+    expect(visibleText("\u{1F4CE} report.pdf", [{ kind: "pdf", name: "report.pdf" }])).toBe("\u{1F4CE} report.pdf");
+    expect(isVoiceAutoCaption("\u{1F4CE} report.pdf, note.m4a", [{ kind: "pdf", name: "report.pdf" }, voice("note.m4a")])).toBe(false);
+    expect(isVoiceAutoCaption("\u{1F4CE} x.wav", undefined)).toBe(false);
   });
 });

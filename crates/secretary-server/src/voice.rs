@@ -142,10 +142,6 @@ pub struct Voice {
     share_url: Option<String>,
     share: reqwest::Client,
     warm: Mutex<Warm>,
-    /// Devices whose socket turns are tests (`SECRETARY_VOICE_TEST_DEVICES`, protocol section 10.8).
-    test_devices: HashSet<String>,
-    /// The Lucina API token: the key of a test share's marker ([`crate::voice_marker`]).
-    test_key: Option<Vec<u8>>,
 }
 
 /// When the local engine last answered, and whether a warm-up is under way.
@@ -161,8 +157,6 @@ impl Voice {
             limiter: crate::ratelimit::RateLimiter::new(PER_MINUTE),
             busy: Mutex::new(HashSet::new()),
             warm: Mutex::new(Warm::default()),
-            test_devices: HashSet::new(),
-            test_key: None,
             stt_url,
             stt: reqwest::Client::builder()
                 .timeout(STT_TIMEOUT)
@@ -176,24 +170,6 @@ impl Voice {
                 .redirect(reqwest::redirect::Policy::none())
                 .build()?,
         })
-    }
-
-    /// These device ids' socket turns are tests: Lucina runs them silently, out of the owner's chat and memory.
-    #[must_use]
-    pub fn with_test_devices(mut self, devices: &[String], key: Option<&str>) -> Self {
-        self.test_devices = devices.iter().cloned().collect();
-        self.test_key = key.map(|k| k.as_bytes().to_vec());
-        self
-    }
-
-    /// The `X-Voice-Test` value for a test share `share_id` (`None` without the Lucina token to sign with).
-    pub fn test_marker(&self, share_id: &str) -> Option<String> {
-        crate::voice_marker::sign(self.test_key.as_deref()?, share_id)
-    }
-
-    /// Whether `device`'s socket turns are tests.
-    pub fn is_test_device(&self, device: &str) -> bool {
-        self.test_devices.contains(device)
     }
 
     /// The share endpoint voice notes are posted to; `None` = notes are off.

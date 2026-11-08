@@ -63,7 +63,6 @@ clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 async-trait = { workspace = true }
 sha2 = { workspace = true }
-hmac = "0.12"
 regex = "1"
 reqwest = { workspace = true, features = ["stream"] }
 http-body-util = "0.1"

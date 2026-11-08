@@ -68,11 +68,14 @@ pub struct ChatRequest {
     /// audio. A Lucina that does not know the field ignores it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voice_meta: Option<Value>,
-    /// A voice test device's turn (secretary-server sets it for the ids of `SECRETARY_VOICE_TEST_DEVICES`): Lucina runs
-    /// it as the owner's own turn but writes its items as `meta.via = "test"` in the conversation `voice-test`, which
-    /// is silent (no push) and out of his chat and memory. A client's own `/v1/chat` never carries it (the route clears it).
+    /// The client that sent the turn (`ios-chat`, `fortuna-chat`, `juno-chat`, …; `[A-Za-z0-9_-]{1,64}`).
+    /// Lucina writes it on the turn's items (`meta.source`); `probe…`/`test…` make it a self-test turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub test: Option<bool>,
+    pub source: Option<String>,
+    /// `selftest` (or `diagnostic`): the turn runs in Lucina's self-test conversation, out of the
+    /// owner's chat, and never notifies. secretary-server sets it for test devices.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
