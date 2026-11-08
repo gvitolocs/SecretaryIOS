@@ -13,8 +13,8 @@
 //!    it ([`gate`]): busy, switching, leased or unloaded means "wait and keep
 //!    queueing", never a preemption and never another model.
 //! 2. **Deliver** (needs the vault): the draft becomes notes in the project's
-//!    folder of the canonical vault, `/home/nes/Obsidian` on the Raspberry Pi
-//!    (owner's rule: never nezopt, never a git repo), over SSH with
+//!    folder of the canonical vault, `/home/nez/mnt/mybook/Obsidian` on nezopt (moved from
+//!    the Pi on 2026-11-08; never a git repo), as a local folder or over SSH with
 //!    compare-and-swap writes ([`store`], [`notes`]). While the Pi is offline
 //!    the drafts stay queued and delivery retries; nothing is lost.
 //!
@@ -58,8 +58,8 @@ pub const DEFAULT_MODEL: &str = "qwen3.8:27b-q4-72k";
 pub const DEFAULT_GIT: &str =
     "lucina-rs=/home/nez/Projects/Lucina/SecretaryIOS@origin/main#lucina;\
 lucinaos=/home/nez/Projects/Lucina/LucinaOS@main#lucinaos";
-/// The canonical vault: the Pi, reached as `pi-cursor` (user `nes`).
-pub const DEFAULT_TARGET: &str = "ssh:pi-cursor:/home/nes/Obsidian";
+/// The canonical vault on nezopt's MyBook disk (moved from the Pi on 2026-11-08).
+pub const DEFAULT_TARGET: &str = "dir:/home/nez/mnt/mybook/Obsidian";
 /// Project slug → vault folder, first match wins (`x*` matches a prefix,
 /// `slug=-` means "no folder"). A project with no folder is skipped.
 pub const DEFAULT_FOLDERS: &str = "lucinaos=LucinaOS;lucina-ink=LucinaOS;lucinadsi=-;\

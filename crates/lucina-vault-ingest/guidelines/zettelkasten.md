@@ -5,8 +5,9 @@ files, links and sources.
 These rules come from the owner's own vault guidelines: `Templates/AI project vault notes.md`
 (2026-09-22), `Pokoin/Permanent/Pokoin Obsidian vault uses one claim per permanent note.md`, the
 Pokoin zettel and event templates, the playbook `cardvault/memory/obsidian-documentation.md`, and
-the Honcho rule `obsidian-pi-rule-20260828`: "Obsidian always refers to the Raspberry Pi. Canonical
-vault is /home/nes/Obsidian on pi-home. Never write Obsidian notes on nezopt or inside a git repo."
+the Honcho rule `obsidian-pi-rule-20260828` as updated on 2026-11-08: "Canonical vault is
+/home/nez/mnt/mybook/Obsidian on nezopt (moved from the Pi on 2026-11-08; the Pi copy is a read-only backup). Never write
+Obsidian notes anywhere else on nezopt or inside a git repo."
 Lucina delivers your notes there, into the project's own folder (`LucinaOS/`, `Pokoin/`, `Infra/`,
 ...), next to its `00 <Project> hub`, `Permanent/`, `Events/` and `MOC/`. The vault is the knowledge
 graph; Honcho is not fed from it (no Obsidian→Honcho ingest).

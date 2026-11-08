@@ -14,7 +14,7 @@ Inspected on 2026-10-24 from the real repositories and hosts. This file names no
 | Lucina (Node, `lucina-nez`) | `nezopt` | `~/Projects/Lucina` | Still runs Telegram, Discord and the reminder scheduler |
 | Hermes | `nezopt` | `~/Projects/Hermes`, profiles in `Lucina/data/hermes-*-profile` | Agent runtime with bundled prompt skills |
 | Honcho memory | `nezopt` 127.0.0.1:8000 | `/home/nez/services/honcho` | Workspace `hermes-peer1` |
-| Obsidian vault | `pi-home` | `/home/nes/Obsidian` | See below |
+| Obsidian vault | `nezopt` | `/home/nez/mnt/mybook/Obsidian` (moved from pi-home `/home/nes/Obsidian` on 2026-11-08; the Pi copy is a read-only backup) | See below |
 
 ## Lucina's tool and memory design (what Lucina Ink reuses)
 
@@ -41,7 +41,7 @@ Inspected on 2026-10-24 from the real repositories and hosts. This file names no
 **Status: partially implemented. A prompt skill is installed but not wired to the vault; there is no code
 integration.**
 
-- The vault exists on `pi-home` at `/home/nes/Obsidian`: 1,324 Markdown files, about 253 MB, project folders using
+- The vault exists on nezopt at `/home/nez/mnt/mybook/Obsidian` (on `pi-home` at `/home/nes/Obsidian` until 2026-11-08). When this inventory was made it held 1,324 Markdown files, about 253 MB, project folders using
   a `Permanent/`, `Events/`, `MOC/`, `Sources/`, `Templates/` layout. It has **no community plugins**
   (`.obsidian/` holds only core config) and no Obsidian app on the Mac (`obsidian.json` has no vaults).
 - Hermes ships the generic `note-taking/obsidian` prompt skill in each profile. It expects `OBSIDIAN_VAULT_PATH`,
