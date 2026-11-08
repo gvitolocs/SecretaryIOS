@@ -1,0 +1,32 @@
+[Unit]
+Description=Lucina (Rust): Secretary API, Telegram, Discord, reminders, Bot Hospital (the only Lucina since the Node one was retired)
+Documentation=file:///home/nez/Projects/.worktrees/SecretaryIOS/lucina/docs/lucina-rust/RETIREMENT.md
+After=network-online.target
+Wants=network-online.target
+# Binding the Tailscale address fails until tailscale0 is up: retry, but not forever.
+StartLimitIntervalSec=600
+StartLimitBurst=10
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+# Lucina's settings (lucina.env: frozen from the retired Node Lucina's env on
+# 2026-10-26, see docs/lucina-rust/RETIREMENT.md; now the canonical config, 0600), then
+# mode.env (feature switches), which wins.
+EnvironmentFile=%h/.config/lucina-rs/lucina.env
+EnvironmentFile=%h/.config/lucina-rs/mode.env
+Environment=RUST_LOG=info
+ExecStart=%h/.local/bin/lucina-rs serve
+# Health gate: the unit is only "started" once /health answers.
+ExecStartPost=/bin/sh -c 'for i in $(seq 1 40); do curl -fsS -m 3 -o /dev/null http://127.0.0.1:8790/health && exit 0; sleep 0.5; done; echo "lucina-rs: /health did not answer" >&2; exit 1'
+Restart=on-failure
+RestartSec=10
+KillSignal=SIGTERM
+TimeoutStopSec=15
+UMask=0077
+MemoryHigh=384M
+MemoryMax=768M
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

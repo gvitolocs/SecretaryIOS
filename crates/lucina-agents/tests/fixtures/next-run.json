@@ -1,0 +1,1377 @@
+[
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 7 * * 1-5"
+    },
+    "after": "2026-10-28T10:43:12.345Z",
+    "next": "2026-10-29T07:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 7 * * 1-5"
+    },
+    "after": "2026-03-29T00:59:59.999Z",
+    "next": "2026-03-30T07:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 7 * * 1-5"
+    },
+    "after": "2026-03-29T01:30:00.000Z",
+    "next": "2026-03-30T07:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 7 * * 1-5"
+    },
+    "after": "2026-10-25T00:30:00.000Z",
+    "next": "2026-10-26T07:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 7 * * 1-5"
+    },
+    "after": "2026-10-25T01:00:00.000Z",
+    "next": "2026-10-26T07:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 7 * * 1-5"
+    },
+    "after": "2026-11-01T05:30:00.000Z",
+    "next": "2026-11-02T07:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 7 * * 1-5"
+    },
+    "after": "2026-03-08T06:59:00.000Z",
+    "next": "2026-03-09T07:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 7 * * 1-5"
+    },
+    "after": "2026-12-31T23:59:30.000Z",
+    "next": "2027-01-01T07:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 7 * * 1-5"
+    },
+    "after": "2027-04-04T14:00:00.000Z",
+    "next": "2027-04-05T07:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 7 * * 1-5"
+    },
+    "after": "2026-10-03T15:00:00.000Z",
+    "next": "2026-10-05T07:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 7 * * 1-5"
+    },
+    "after": "2026-02-28T12:00:00.000Z",
+    "next": "2026-03-02T07:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 7 * * 1-5",
+      "timezone": "Europe/Rome"
+    },
+    "after": "2026-10-28T10:43:12.345Z",
+    "next": "2026-10-29T06:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 7 * * 1-5",
+      "timezone": "Europe/Rome"
+    },
+    "after": "2026-03-29T00:59:59.999Z",
+    "next": "2026-03-30T05:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 7 * * 1-5",
+      "timezone": "Europe/Rome"
+    },
+    "after": "2026-03-29T01:30:00.000Z",
+    "next": "2026-03-30T05:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 7 * * 1-5",
+      "timezone": "Europe/Rome"
+    },
+    "after": "2026-10-25T00:30:00.000Z",
+    "next": "2026-10-26T06:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 7 * * 1-5",
+      "timezone": "Europe/Rome"
+    },
+    "after": "2026-10-25T01:00:00.000Z",
+    "next": "2026-10-26T06:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 7 * * 1-5",
+      "timezone": "Europe/Rome"
+    },
+    "after": "2026-11-01T05:30:00.000Z",
+    "next": "2026-11-02T06:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 7 * * 1-5",
+      "timezone": "Europe/Rome"
+    },
+    "after": "2026-03-08T06:59:00.000Z",
+    "next": "2026-03-09T06:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 7 * * 1-5",
+      "timezone": "Europe/Rome"
+    },
+    "after": "2026-12-31T23:59:30.000Z",
+    "next": "2027-01-01T06:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 7 * * 1-5",
+      "timezone": "Europe/Rome"
+    },
+    "after": "2027-04-04T14:00:00.000Z",
+    "next": "2027-04-05T05:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 7 * * 1-5",
+      "timezone": "Europe/Rome"
+    },
+    "after": "2026-10-03T15:00:00.000Z",
+    "next": "2026-10-05T05:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 7 * * 1-5",
+      "timezone": "Europe/Rome"
+    },
+    "after": "2026-02-28T12:00:00.000Z",
+    "next": "2026-03-02T06:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "30 2 * * *",
+      "timezone": "Europe/Rome"
+    },
+    "after": "2026-10-28T10:43:12.345Z",
+    "next": "2026-10-29T01:30:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "30 2 * * *",
+      "timezone": "Europe/Rome"
+    },
+    "after": "2026-03-29T00:59:59.999Z",
+    "next": "2026-03-30T00:30:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "30 2 * * *",
+      "timezone": "Europe/Rome"
+    },
+    "after": "2026-03-29T01:30:00.000Z",
+    "next": "2026-03-30T00:30:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "30 2 * * *",
+      "timezone": "Europe/Rome"
+    },
+    "after": "2026-10-25T00:30:00.000Z",
+    "next": "2026-10-25T01:30:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "30 2 * * *",
+      "timezone": "Europe/Rome"
+    },
+    "after": "2026-10-25T01:00:00.000Z",
+    "next": "2026-10-25T01:30:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "30 2 * * *",
+      "timezone": "Europe/Rome"
+    },
+    "after": "2026-11-01T05:30:00.000Z",
+    "next": "2026-11-02T01:30:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "30 2 * * *",
+      "timezone": "Europe/Rome"
+    },
+    "after": "2026-03-08T06:59:00.000Z",
+    "next": "2026-03-09T01:30:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "30 2 * * *",
+      "timezone": "Europe/Rome"
+    },
+    "after": "2026-12-31T23:59:30.000Z",
+    "next": "2027-01-01T01:30:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "30 2 * * *",
+      "timezone": "Europe/Rome"
+    },
+    "after": "2027-04-04T14:00:00.000Z",
+    "next": "2027-04-05T00:30:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "30 2 * * *",
+      "timezone": "Europe/Rome"
+    },
+    "after": "2026-10-03T15:00:00.000Z",
+    "next": "2026-10-04T00:30:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "30 2 * * *",
+      "timezone": "Europe/Rome"
+    },
+    "after": "2026-02-28T12:00:00.000Z",
+    "next": "2026-03-01T01:30:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 3 * * *",
+      "timezone": "Europe/Rome"
+    },
+    "after": "2026-10-28T10:43:12.345Z",
+    "next": "2026-10-29T02:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 3 * * *",
+      "timezone": "Europe/Rome"
+    },
+    "after": "2026-03-29T00:59:59.999Z",
+    "next": "2026-03-29T01:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 3 * * *",
+      "timezone": "Europe/Rome"
+    },
+    "after": "2026-03-29T01:30:00.000Z",
+    "next": "2026-03-30T01:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 3 * * *",
+      "timezone": "Europe/Rome"
+    },
+    "after": "2026-10-25T00:30:00.000Z",
+    "next": "2026-10-25T02:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 3 * * *",
+      "timezone": "Europe/Rome"
+    },
+    "after": "2026-10-25T01:00:00.000Z",
+    "next": "2026-10-25T02:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 3 * * *",
+      "timezone": "Europe/Rome"
+    },
+    "after": "2026-11-01T05:30:00.000Z",
+    "next": "2026-11-02T02:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 3 * * *",
+      "timezone": "Europe/Rome"
+    },
+    "after": "2026-03-08T06:59:00.000Z",
+    "next": "2026-03-09T02:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 3 * * *",
+      "timezone": "Europe/Rome"
+    },
+    "after": "2026-12-31T23:59:30.000Z",
+    "next": "2027-01-01T02:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 3 * * *",
+      "timezone": "Europe/Rome"
+    },
+    "after": "2027-04-04T14:00:00.000Z",
+    "next": "2027-04-05T01:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 3 * * *",
+      "timezone": "Europe/Rome"
+    },
+    "after": "2026-10-03T15:00:00.000Z",
+    "next": "2026-10-04T01:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 3 * * *",
+      "timezone": "Europe/Rome"
+    },
+    "after": "2026-02-28T12:00:00.000Z",
+    "next": "2026-03-01T02:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "*/20 * * * *",
+      "timezone": "America/New_York"
+    },
+    "after": "2026-10-28T10:43:12.345Z",
+    "next": "2026-10-28T11:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "*/20 * * * *",
+      "timezone": "America/New_York"
+    },
+    "after": "2026-03-29T00:59:59.999Z",
+    "next": "2026-03-29T01:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "*/20 * * * *",
+      "timezone": "America/New_York"
+    },
+    "after": "2026-03-29T01:30:00.000Z",
+    "next": "2026-03-29T01:40:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "*/20 * * * *",
+      "timezone": "America/New_York"
+    },
+    "after": "2026-10-25T00:30:00.000Z",
+    "next": "2026-10-25T00:40:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "*/20 * * * *",
+      "timezone": "America/New_York"
+    },
+    "after": "2026-10-25T01:00:00.000Z",
+    "next": "2026-10-25T01:20:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "*/20 * * * *",
+      "timezone": "America/New_York"
+    },
+    "after": "2026-11-01T05:30:00.000Z",
+    "next": "2026-11-01T05:40:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "*/20 * * * *",
+      "timezone": "America/New_York"
+    },
+    "after": "2026-03-08T06:59:00.000Z",
+    "next": "2026-03-08T07:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "*/20 * * * *",
+      "timezone": "America/New_York"
+    },
+    "after": "2026-12-31T23:59:30.000Z",
+    "next": "2027-01-01T00:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "*/20 * * * *",
+      "timezone": "America/New_York"
+    },
+    "after": "2027-04-04T14:00:00.000Z",
+    "next": "2027-04-04T14:20:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "*/20 * * * *",
+      "timezone": "America/New_York"
+    },
+    "after": "2026-10-03T15:00:00.000Z",
+    "next": "2026-10-03T15:20:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "*/20 * * * *",
+      "timezone": "America/New_York"
+    },
+    "after": "2026-02-28T12:00:00.000Z",
+    "next": "2026-02-28T12:20:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 1 * * *",
+      "timezone": "America/New_York"
+    },
+    "after": "2026-10-28T10:43:12.345Z",
+    "next": "2026-10-29T05:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 1 * * *",
+      "timezone": "America/New_York"
+    },
+    "after": "2026-03-29T00:59:59.999Z",
+    "next": "2026-03-29T05:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 1 * * *",
+      "timezone": "America/New_York"
+    },
+    "after": "2026-03-29T01:30:00.000Z",
+    "next": "2026-03-29T05:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 1 * * *",
+      "timezone": "America/New_York"
+    },
+    "after": "2026-10-25T00:30:00.000Z",
+    "next": "2026-10-25T05:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 1 * * *",
+      "timezone": "America/New_York"
+    },
+    "after": "2026-10-25T01:00:00.000Z",
+    "next": "2026-10-25T05:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 1 * * *",
+      "timezone": "America/New_York"
+    },
+    "after": "2026-11-01T05:30:00.000Z",
+    "next": "2026-11-01T06:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 1 * * *",
+      "timezone": "America/New_York"
+    },
+    "after": "2026-03-08T06:59:00.000Z",
+    "next": "2026-03-09T05:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 1 * * *",
+      "timezone": "America/New_York"
+    },
+    "after": "2026-12-31T23:59:30.000Z",
+    "next": "2027-01-01T06:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 1 * * *",
+      "timezone": "America/New_York"
+    },
+    "after": "2027-04-04T14:00:00.000Z",
+    "next": "2027-04-05T05:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 1 * * *",
+      "timezone": "America/New_York"
+    },
+    "after": "2026-10-03T15:00:00.000Z",
+    "next": "2026-10-04T05:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 1 * * *",
+      "timezone": "America/New_York"
+    },
+    "after": "2026-02-28T12:00:00.000Z",
+    "next": "2026-03-01T06:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "15 9 1 * *",
+      "timezone": "Asia/Kolkata"
+    },
+    "after": "2026-10-28T10:43:12.345Z",
+    "next": "2026-11-01T03:45:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "15 9 1 * *",
+      "timezone": "Asia/Kolkata"
+    },
+    "after": "2026-03-29T00:59:59.999Z",
+    "next": "2026-04-01T03:45:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "15 9 1 * *",
+      "timezone": "Asia/Kolkata"
+    },
+    "after": "2026-03-29T01:30:00.000Z",
+    "next": "2026-04-01T03:45:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "15 9 1 * *",
+      "timezone": "Asia/Kolkata"
+    },
+    "after": "2026-10-25T00:30:00.000Z",
+    "next": "2026-11-01T03:45:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "15 9 1 * *",
+      "timezone": "Asia/Kolkata"
+    },
+    "after": "2026-10-25T01:00:00.000Z",
+    "next": "2026-11-01T03:45:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "15 9 1 * *",
+      "timezone": "Asia/Kolkata"
+    },
+    "after": "2026-11-01T05:30:00.000Z",
+    "next": "2026-12-01T03:45:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "15 9 1 * *",
+      "timezone": "Asia/Kolkata"
+    },
+    "after": "2026-03-08T06:59:00.000Z",
+    "next": "2026-04-01T03:45:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "15 9 1 * *",
+      "timezone": "Asia/Kolkata"
+    },
+    "after": "2026-12-31T23:59:30.000Z",
+    "next": "2027-01-01T03:45:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "15 9 1 * *",
+      "timezone": "Asia/Kolkata"
+    },
+    "after": "2027-04-04T14:00:00.000Z",
+    "next": "2027-05-01T03:45:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "15 9 1 * *",
+      "timezone": "Asia/Kolkata"
+    },
+    "after": "2026-10-03T15:00:00.000Z",
+    "next": "2026-11-01T03:45:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "15 9 1 * *",
+      "timezone": "Asia/Kolkata"
+    },
+    "after": "2026-02-28T12:00:00.000Z",
+    "next": "2026-03-01T03:45:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 2 * * 0",
+      "timezone": "Australia/Lord_Howe"
+    },
+    "after": "2026-10-28T10:43:12.345Z",
+    "next": "2026-10-31T15:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 2 * * 0",
+      "timezone": "Australia/Lord_Howe"
+    },
+    "after": "2026-03-29T00:59:59.999Z",
+    "next": "2026-04-04T15:30:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 2 * * 0",
+      "timezone": "Australia/Lord_Howe"
+    },
+    "after": "2026-03-29T01:30:00.000Z",
+    "next": "2026-04-04T15:30:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 2 * * 0",
+      "timezone": "Australia/Lord_Howe"
+    },
+    "after": "2026-10-25T00:30:00.000Z",
+    "next": "2026-10-31T15:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 2 * * 0",
+      "timezone": "Australia/Lord_Howe"
+    },
+    "after": "2026-10-25T01:00:00.000Z",
+    "next": "2026-10-31T15:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 2 * * 0",
+      "timezone": "Australia/Lord_Howe"
+    },
+    "after": "2026-11-01T05:30:00.000Z",
+    "next": "2026-11-07T15:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 2 * * 0",
+      "timezone": "Australia/Lord_Howe"
+    },
+    "after": "2026-03-08T06:59:00.000Z",
+    "next": "2026-03-14T15:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 2 * * 0",
+      "timezone": "Australia/Lord_Howe"
+    },
+    "after": "2026-12-31T23:59:30.000Z",
+    "next": "2027-01-02T15:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 2 * * 0",
+      "timezone": "Australia/Lord_Howe"
+    },
+    "after": "2027-04-04T14:00:00.000Z",
+    "next": "2027-04-10T15:30:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 2 * * 0",
+      "timezone": "Australia/Lord_Howe"
+    },
+    "after": "2026-10-03T15:00:00.000Z",
+    "next": "2026-10-10T15:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 2 * * 0",
+      "timezone": "Australia/Lord_Howe"
+    },
+    "after": "2026-02-28T12:00:00.000Z",
+    "next": "2026-02-28T15:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 0 29 2 *"
+    },
+    "after": "2026-10-28T10:43:12.345Z",
+    "next": null,
+    "error": "Unable to compute next run time for cron expression: 0 0 29 2 *"
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 0 29 2 *"
+    },
+    "after": "2026-03-29T00:59:59.999Z",
+    "next": null,
+    "error": "Unable to compute next run time for cron expression: 0 0 29 2 *"
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 0 29 2 *"
+    },
+    "after": "2026-03-29T01:30:00.000Z",
+    "next": null,
+    "error": "Unable to compute next run time for cron expression: 0 0 29 2 *"
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 0 29 2 *"
+    },
+    "after": "2026-10-25T00:30:00.000Z",
+    "next": null,
+    "error": "Unable to compute next run time for cron expression: 0 0 29 2 *"
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 0 29 2 *"
+    },
+    "after": "2026-10-25T01:00:00.000Z",
+    "next": null,
+    "error": "Unable to compute next run time for cron expression: 0 0 29 2 *"
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 0 29 2 *"
+    },
+    "after": "2026-11-01T05:30:00.000Z",
+    "next": null,
+    "error": "Unable to compute next run time for cron expression: 0 0 29 2 *"
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 0 29 2 *"
+    },
+    "after": "2026-03-08T06:59:00.000Z",
+    "next": null,
+    "error": "Unable to compute next run time for cron expression: 0 0 29 2 *"
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 0 29 2 *"
+    },
+    "after": "2026-12-31T23:59:30.000Z",
+    "next": null,
+    "error": "Unable to compute next run time for cron expression: 0 0 29 2 *"
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 0 29 2 *"
+    },
+    "after": "2027-04-04T14:00:00.000Z",
+    "next": "2028-02-29T00:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 0 29 2 *"
+    },
+    "after": "2026-10-03T15:00:00.000Z",
+    "next": null,
+    "error": "Unable to compute next run time for cron expression: 0 0 29 2 *"
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "0 0 29 2 *"
+    },
+    "after": "2026-02-28T12:00:00.000Z",
+    "next": null,
+    "error": "Unable to compute next run time for cron expression: 0 0 29 2 *"
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "59 23 31 12 *",
+      "timezone": "Pacific/Kiritimati"
+    },
+    "after": "2026-10-28T10:43:12.345Z",
+    "next": "2026-12-31T09:59:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "59 23 31 12 *",
+      "timezone": "Pacific/Kiritimati"
+    },
+    "after": "2026-03-29T00:59:59.999Z",
+    "next": "2026-12-31T09:59:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "59 23 31 12 *",
+      "timezone": "Pacific/Kiritimati"
+    },
+    "after": "2026-03-29T01:30:00.000Z",
+    "next": "2026-12-31T09:59:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "59 23 31 12 *",
+      "timezone": "Pacific/Kiritimati"
+    },
+    "after": "2026-10-25T00:30:00.000Z",
+    "next": "2026-12-31T09:59:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "59 23 31 12 *",
+      "timezone": "Pacific/Kiritimati"
+    },
+    "after": "2026-10-25T01:00:00.000Z",
+    "next": "2026-12-31T09:59:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "59 23 31 12 *",
+      "timezone": "Pacific/Kiritimati"
+    },
+    "after": "2026-11-01T05:30:00.000Z",
+    "next": "2026-12-31T09:59:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "59 23 31 12 *",
+      "timezone": "Pacific/Kiritimati"
+    },
+    "after": "2026-03-08T06:59:00.000Z",
+    "next": "2026-12-31T09:59:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "59 23 31 12 *",
+      "timezone": "Pacific/Kiritimati"
+    },
+    "after": "2026-12-31T23:59:30.000Z",
+    "next": "2027-12-31T09:59:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "59 23 31 12 *",
+      "timezone": "Pacific/Kiritimati"
+    },
+    "after": "2027-04-04T14:00:00.000Z",
+    "next": "2027-12-31T09:59:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "59 23 31 12 *",
+      "timezone": "Pacific/Kiritimati"
+    },
+    "after": "2026-10-03T15:00:00.000Z",
+    "next": "2026-12-31T09:59:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "59 23 31 12 *",
+      "timezone": "Pacific/Kiritimati"
+    },
+    "after": "2026-02-28T12:00:00.000Z",
+    "next": "2026-12-31T09:59:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "* * * * *"
+    },
+    "after": "2026-10-28T10:43:12.345Z",
+    "next": "2026-10-28T10:44:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "* * * * *"
+    },
+    "after": "2026-03-29T00:59:59.999Z",
+    "next": "2026-03-29T01:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "* * * * *"
+    },
+    "after": "2026-03-29T01:30:00.000Z",
+    "next": "2026-03-29T01:31:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "* * * * *"
+    },
+    "after": "2026-10-25T00:30:00.000Z",
+    "next": "2026-10-25T00:31:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "* * * * *"
+    },
+    "after": "2026-10-25T01:00:00.000Z",
+    "next": "2026-10-25T01:01:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "* * * * *"
+    },
+    "after": "2026-11-01T05:30:00.000Z",
+    "next": "2026-11-01T05:31:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "* * * * *"
+    },
+    "after": "2026-03-08T06:59:00.000Z",
+    "next": "2026-03-08T07:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "* * * * *"
+    },
+    "after": "2026-12-31T23:59:30.000Z",
+    "next": "2027-01-01T00:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "* * * * *"
+    },
+    "after": "2027-04-04T14:00:00.000Z",
+    "next": "2027-04-04T14:01:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "* * * * *"
+    },
+    "after": "2026-10-03T15:00:00.000Z",
+    "next": "2026-10-03T15:01:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "cron",
+      "expression": "* * * * *"
+    },
+    "after": "2026-02-28T12:00:00.000Z",
+    "next": "2026-02-28T12:01:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "every",
+      "everyMs": 300000
+    },
+    "after": "2026-10-28T10:43:12.345Z",
+    "next": "2026-10-28T10:48:12.345Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "every",
+      "everyMs": 300000
+    },
+    "after": "2026-03-29T00:59:59.999Z",
+    "next": "2026-03-29T01:04:59.999Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "every",
+      "everyMs": 300000
+    },
+    "after": "2026-03-29T01:30:00.000Z",
+    "next": "2026-03-29T01:35:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "every",
+      "everyMs": 300000
+    },
+    "after": "2026-10-25T00:30:00.000Z",
+    "next": "2026-10-25T00:35:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "every",
+      "everyMs": 300000
+    },
+    "after": "2026-10-25T01:00:00.000Z",
+    "next": "2026-10-25T01:05:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "every",
+      "everyMs": 300000
+    },
+    "after": "2026-11-01T05:30:00.000Z",
+    "next": "2026-11-01T05:35:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "every",
+      "everyMs": 300000
+    },
+    "after": "2026-03-08T06:59:00.000Z",
+    "next": "2026-03-08T07:04:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "every",
+      "everyMs": 300000
+    },
+    "after": "2026-12-31T23:59:30.000Z",
+    "next": "2027-01-01T00:04:30.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "every",
+      "everyMs": 300000
+    },
+    "after": "2027-04-04T14:00:00.000Z",
+    "next": "2027-04-04T14:05:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "every",
+      "everyMs": 300000
+    },
+    "after": "2026-10-03T15:00:00.000Z",
+    "next": "2026-10-03T15:05:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "every",
+      "everyMs": 300000
+    },
+    "after": "2026-02-28T12:00:00.000Z",
+    "next": "2026-02-28T12:05:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "every",
+      "everyMs": 3600000
+    },
+    "after": "2026-10-28T10:43:12.345Z",
+    "next": "2026-10-28T11:43:12.345Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "every",
+      "everyMs": 3600000
+    },
+    "after": "2026-03-29T00:59:59.999Z",
+    "next": "2026-03-29T01:59:59.999Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "every",
+      "everyMs": 3600000
+    },
+    "after": "2026-03-29T01:30:00.000Z",
+    "next": "2026-03-29T02:30:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "every",
+      "everyMs": 3600000
+    },
+    "after": "2026-10-25T00:30:00.000Z",
+    "next": "2026-10-25T01:30:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "every",
+      "everyMs": 3600000
+    },
+    "after": "2026-10-25T01:00:00.000Z",
+    "next": "2026-10-25T02:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "every",
+      "everyMs": 3600000
+    },
+    "after": "2026-11-01T05:30:00.000Z",
+    "next": "2026-11-01T06:30:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "every",
+      "everyMs": 3600000
+    },
+    "after": "2026-03-08T06:59:00.000Z",
+    "next": "2026-03-08T07:59:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "every",
+      "everyMs": 3600000
+    },
+    "after": "2026-12-31T23:59:30.000Z",
+    "next": "2027-01-01T00:59:30.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "every",
+      "everyMs": 3600000
+    },
+    "after": "2027-04-04T14:00:00.000Z",
+    "next": "2027-04-04T15:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "every",
+      "everyMs": 3600000
+    },
+    "after": "2026-10-03T15:00:00.000Z",
+    "next": "2026-10-03T16:00:00.000Z",
+    "error": null
+  },
+  {
+    "cadence": {
+      "type": "every",
+      "everyMs": 3600000
+    },
+    "after": "2026-02-28T12:00:00.000Z",
+    "next": "2026-02-28T13:00:00.000Z",
+    "error": null
+  }
+]

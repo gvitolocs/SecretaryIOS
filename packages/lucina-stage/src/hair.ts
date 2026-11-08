@@ -237,11 +237,19 @@ export class HairRig {
     return head.matrixWorld.clone().invert().multiply(this.model.matrixWorld);
   }
 
+  /**
+   * The model's joints by name. A node no skin of this model uses loads as a plain Object3D, not a
+   * Bone (a hairstyle's own bones, grafted into every outfit so the part can be re-bound and its
+   * spring chain can run); it drives a part's skin just as well. Bones win a name clash.
+   */
   private bonesByName(): Map<string, Bone> {
     const out = new Map<string, Bone>();
+    const nodes = new Map<string, Object3D>();
     this.model.traverse((o) => {
       if ((o as Bone).isBone) out.set(o.name, o as Bone);
+      else if (o.name && !(o as Mesh).isMesh && o.children.every((c) => !(c as Mesh).isMesh)) nodes.set(o.name, o);
     });
+    for (const [name, o] of nodes) if (!out.has(name)) out.set(name, o as Bone);
     return out;
   }
 

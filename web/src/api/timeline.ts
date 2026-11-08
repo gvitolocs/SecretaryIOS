@@ -4,23 +4,47 @@
 // Items from the network are untrusted: `parseItem` validates each one and
 // drops anything malformed instead of throwing.
 
-import { parseRich, type RichMessage } from "../lib/rich";
+import type { PlaceInfo } from "../lib/mapKit";
+import { parsePlace, parseRich, type RichMessage } from "../lib/rich";
 import { type Model3dBlock, parseModel3dBlocks } from "../lib/model3d";
 
-export const CHANNELS = ["telegram", "discord", "web", "ios", "alexa", "other"] as const;
+export const CHANNELS = ["telegram", "discord", "web", "ios", "alexa", "voice", "other"] as const;
 export type Channel = (typeof CHANNELS)[number];
 
 export interface Attachment {
-  kind: "image" | "voice" | "file";
+  kind: "image" | "voice" | "file" | "video" | "audio" | "pdf" | "document" | "link" | "text" | "contact" | "location";
   name?: string;
+  mime?: string;
+  mediaId?: string;
+  url?: string;
+  bytes?: number;
+  /** 0-based position in the original share's `file` parts. */
+  index?: number;
+  /** base64 ThumbHash placeholder, when lucina-media knows one. */
+  thumbhash?: string;
+  width?: number;
+  height?: number;
+  durationMs?: number;
+  /** Location attachments. */
+  lat?: number;
+  lon?: number;
+  /** This tab only: object URL of a just-picked file, before the server item arrives. */
+  previewUrl?: string;
 }
 
 export interface ItemMeta {
+  device?: string;
+  deviceName?: string;
+  via?: string;
+  caller?: string;
   chatTitle?: string;
   guildName?: string;
   channelName?: string;
   isDm?: boolean;
-  kind?: "reminder" | "avatar_outfit" | "avatar_look" | "note" | "notes" | "proactive";
+  kind?: "reminder" | "avatar_outfit" | "avatar_look" | "note" | "notes" | "proactive" | "share" | "tool";
+  /** With kind "tool": the tool Lucina called for this step, and whether it succeeded. */
+  tool?: string;
+  ok?: boolean;
   /** With kind "avatar_outfit": what Lucina put on (neither: back to automatic). */
   outfit?: string;
   hair?: string;
@@ -30,8 +54,139 @@ export interface ItemMeta {
   rich?: RichMessage;
   /** With kind "proactive": Lucina reached out on her own. */
   proactive?: ProactiveMeta;
+  /** With kind "proactive": the place of the event it is about (calendar reminders). */
+  place?: PlaceInfo;
   /** Message format v1 `model3d` blocks (3D models from the gallery). */
   blocks?: Model3dBlock[];
+  /** With kind "share": the POST /v1/share idempotency key and the quick action. */
+  shareId?: string;
+  intent?: string;
+  /** A reply Jev decided (Lucina's yes/no answers): the bubble shows a badge with the latency. */
+  jev?: JevBadge;
+  /** Channel "voice" (the Lucina Voice thread): how the turn went, for the timing line. */
+  voice?: VoiceMeta;
+}
+
+/** One Jev layer of a voice turn (docs/lucinavoice-protocol.md section 9). */
+export interface VoiceLayer {
+  /** "intent" | "slots" | "confirm" | "vocab". */
+  layer: string;
+  verdict?: string;
+  /** 0..1. */
+  confidence?: number;
+  ms?: number;
+  /** The verdict was acted on. */
+  used?: boolean;
+}
+
+/** The stages of a voice turn, in milliseconds from the end of speech (`done.ms`). */
+export const VOICE_MS_KEYS = ["stt", "lucina_first", "tts_first", "first_audio", "total", "route", "ack"] as const;
+export type VoiceMsKey = (typeof VOICE_MS_KEYS)[number];
+
+/** `meta.voice` of a voice thread item (protocol section 7): {turnId, ms, route, layers, ...}. All optional. */
+export interface VoiceMeta {
+  turnId?: string;
+  ms?: Partial<Record<VoiceMsKey, number>>;
+  /** The speech-to-text time, when the server only knew that (the other stages follow the reply). */
+  sttMs?: number;
+  route?: { intent?: string; fast?: boolean; source?: string; confidence?: number; jev_ms?: number };
+  layers?: VoiceLayer[];
+  /** Words Voice Learn replaced in the transcript. */
+  corrections?: { from: string; to: string }[];
+  ambiguous?: number;
+}
+
+const ms = (x: unknown) => (typeof x === "number" && Number.isFinite(x) && x >= 0 && x < 3_600_000 ? Math.round(x) : undefined);
+
+export function parseVoiceLayers(v: unknown): VoiceLayer[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const out: VoiceLayer[] = [];
+  for (const l of v.slice(0, 8)) {
+    if (!l || typeof l !== "object") continue;
+    const r = l as Record<string, unknown>;
+    if (typeof r.layer !== "string" || !/^[a-z0-9_.-]{1,32}$/i.test(r.layer)) continue;
+    const layer: VoiceLayer = { layer: r.layer };
+    const verdict = str(typeof r.verdict === "number" || typeof r.verdict === "boolean" ? String(r.verdict) : r.verdict, 64);
+    if (verdict) layer.verdict = verdict;
+    if (typeof r.confidence === "number" && r.confidence >= 0 && r.confidence <= 1) layer.confidence = r.confidence;
+    const m = ms(r.ms);
+    if (m !== undefined) layer.ms = m;
+    if (typeof r.used === "boolean") layer.used = r.used;
+    out.push(layer);
+  }
+  return out.length ? out : undefined;
+}
+
+export function parseVoiceMeta(v: unknown): VoiceMeta | undefined {
+  if (!v || typeof v !== "object") return undefined;
+  const m = v as Record<string, unknown>;
+  const out: VoiceMeta = {};
+  const turnId = str(m.turnId, 80);
+  if (turnId) out.turnId = turnId;
+  if (m.ms && typeof m.ms === "object") {
+    const stages: Partial<Record<VoiceMsKey, number>> = {};
+    for (const k of VOICE_MS_KEYS) {
+      const value = ms((m.ms as Record<string, unknown>)[k]);
+      if (value !== undefined) stages[k] = value;
+    }
+    if (Object.keys(stages).length) out.ms = stages;
+  }
+  const sttMs = ms(m.sttMs);
+  if (sttMs !== undefined) out.sttMs = sttMs;
+  const route = m.route && typeof m.route === "object" ? (m.route as Record<string, unknown>) : undefined;
+  if (route) {
+    const r: NonNullable<VoiceMeta["route"]> = {};
+    const intent = str(route.intent, 64);
+    if (intent) r.intent = intent;
+    if (typeof route.fast === "boolean") r.fast = route.fast;
+    const source = str(route.source, 32);
+    if (source) r.source = source;
+    if (typeof route.confidence === "number" && route.confidence >= 0 && route.confidence <= 1) r.confidence = route.confidence;
+    // Lucina stores the route camelCase (jevMs); the device API says jev_ms.
+    const jev = ms(route.jevMs ?? route.jev_ms);
+    if (jev !== undefined) r.jev_ms = jev;
+    if (Object.keys(r).length) out.route = r;
+  }
+  // The layers ride in route.layers (the route event) or voice.layers (the finished turn).
+  const layers = parseVoiceLayers(m.layers) ?? parseVoiceLayers(route?.layers);
+  if (layers) out.layers = layers;
+  if (Array.isArray(m.corrections)) {
+    const corrections: { from: string; to: string }[] = [];
+    for (const c of m.corrections.slice(0, 16)) {
+      const r = (c && typeof c === "object" ? c : {}) as Record<string, unknown>;
+      const from = str(r.from, 100);
+      const to = str(r.to, 100);
+      if (from && to) corrections.push({ from, to });
+    }
+    if (corrections.length) out.corrections = corrections;
+  }
+  if (typeof m.ambiguous === "number" && Number.isFinite(m.ambiguous) && m.ambiguous > 0) out.ambiguous = Math.min(1000, Math.round(m.ambiguous));
+  return Object.keys(out).length ? out : undefined;
+}
+
+export interface JevBadge {
+  /** "yesno". */
+  feature: string;
+  /** "yes" | "no" | "unsure" | "hedge". */
+  answer?: string;
+  /** Certainty of the answer, 0..1. */
+  p?: number;
+  /** Jev's own milliseconds. */
+  ms?: number;
+}
+
+export function parseJevBadge(v: unknown): JevBadge | undefined {
+  if (!v || typeof v !== "object") return undefined;
+  const m = v as Record<string, unknown>;
+  const word = (x: unknown) => (typeof x === "string" && /^[a-z0-9_.-]{1,32}$/i.test(x) ? x : undefined);
+  const feature = word(m.feature);
+  if (!feature) return undefined;
+  const out: JevBadge = { feature };
+  const answer = word(m.answer);
+  if (answer) out.answer = answer;
+  if (typeof m.p === "number" && m.p >= 0 && m.p <= 1) out.p = m.p;
+  if (typeof m.ms === "number" && Number.isFinite(m.ms) && m.ms >= 0 && m.ms < 600_000) out.ms = Math.round(m.ms);
+  return out;
 }
 
 export type ProactivePriority = "low" | "normal" | "high";
@@ -112,6 +267,8 @@ export interface TimelineItem {
 
 export interface TimelinePage {
   items: unknown;
+  cursor?: string | null;
+  hasMore?: boolean;
   nextBefore?: string | number | null;
 }
 
@@ -140,6 +297,10 @@ function parseMeta(v: unknown): ItemMeta | undefined {
   if (!v || typeof v !== "object") return undefined;
   const m = v as Record<string, unknown>;
   const out: ItemMeta = {};
+  if (typeof m.device === "string") out.device = m.device;
+  if (typeof m.deviceName === "string") out.deviceName = m.deviceName;
+  if (typeof m.via === "string") out.via = m.via;
+  if (typeof m.caller === "string") out.caller = m.caller;
   const chatTitle = str(m.chatTitle);
   const guildName = str(m.guildName);
   const channelName = str(m.channelName);
@@ -156,6 +317,11 @@ function parseMeta(v: unknown): ItemMeta | undefined {
   // Lucina put on a saved look (the character editor's presets).
   if (m.kind === "avatar_look") out.kind = "avatar_look";
   if (m.kind === "notes") out.kind = "notes";
+  if (m.kind === "tool") {
+    out.kind = "tool";
+    if (typeof m.tool === "string" && /^[A-Za-z][\w.-]{0,63}$/.test(m.tool)) out.tool = m.tool;
+    if (typeof m.ok === "boolean") out.ok = m.ok;
+  }
   const rich = parseRich(m);
   if (rich) out.rich = rich;
   if (m.kind === "proactive") {
@@ -163,12 +329,23 @@ function parseMeta(v: unknown): ItemMeta | undefined {
     if (p) {
       out.kind = "proactive";
       out.proactive = p;
+      const place = parsePlace(m.place);
+      if (place) out.place = place;
     }
   }
   if (m.kind === "note") {
     out.kind = "note";
     if (typeof m.slug === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(m.slug)) out.slug = m.slug;
   }
+  if (m.kind === "share") {
+    out.kind = "share";
+    if (typeof m.shareId === "string" && /^[A-Za-z0-9-]{8,64}$/.test(m.shareId)) out.shareId = m.shareId;
+    if (typeof m.intent === "string" && /^[a-z]{1,16}$/.test(m.intent)) out.intent = m.intent;
+  }
+  const jev = parseJevBadge(m.jev);
+  if (jev) out.jev = jev;
+  const voice = parseVoiceMeta(m.voice);
+  if (voice) out.voice = voice;
   if (m.format === "v1") {
     const blocks = parseModel3dBlocks(m.blocks);
     if (blocks.length) out.blocks = blocks;
@@ -182,9 +359,24 @@ function parseAttachments(v: unknown): Attachment[] | undefined {
   for (const a of v) {
     if (!a || typeof a !== "object") continue;
     const kind = (a as { kind?: unknown }).kind;
-    if (kind !== "image" && kind !== "voice" && kind !== "file") continue;
-    const name = str((a as { name?: unknown }).name);
-    out.push(name ? { kind, name } : { kind });
+    if (typeof kind !== "string" || !["image", "voice", "file", "video", "audio", "pdf", "document", "link", "text", "contact", "location"].includes(kind)) continue;
+    const raw = a as Record<string, unknown>;
+    const attachment: Attachment = { kind: kind as Attachment["kind"] };
+    for (const key of ["name", "mime", "mediaId", "url", "thumbhash"] as const) {
+      const value = str(raw[key], key === "thumbhash" ? 400 : 200);
+      if (value) attachment[key] = value;
+    }
+    if (typeof raw.bytes === "number" && Number.isFinite(raw.bytes) && raw.bytes >= 0) attachment.bytes = raw.bytes;
+    if (typeof raw.index === "number" && Number.isInteger(raw.index) && raw.index >= 0) attachment.index = raw.index;
+    for (const key of ["width", "height", "durationMs"] as const) {
+      const value = raw[key];
+      if (typeof value === "number" && Number.isFinite(value) && value >= 0) attachment[key] = value;
+    }
+    for (const key of ["lat", "lon"] as const) {
+      const value = raw[key];
+      if (typeof value === "number" && Number.isFinite(value)) attachment[key] = value;
+    }
+    out.push(attachment);
   }
   return out.length ? out : undefined;
 }
@@ -241,6 +433,8 @@ export interface StreamHandlers {
   onStatus: (status: StreamStatus) => void;
   /** A brand-new connection opened after the previous one was closed for good: fill the gap. */
   onResync: () => void;
+  /** `event: cards`: which buttons are closed changed; read them again. */
+  onCards?: () => void;
 }
 
 /**
@@ -330,6 +524,9 @@ export class TimelineStream {
         this.handlers.onStatus("reconnecting");
       }
     };
+    es.addEventListener("cards", () => {
+      if (this.es === es) this.handlers.onCards?.();
+    });
     es.addEventListener("item", (ev) => {
       if (this.es !== es) return;
       this.sawItem = true;

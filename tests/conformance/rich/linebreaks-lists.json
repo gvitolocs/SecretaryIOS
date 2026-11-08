@@ -1,0 +1,19 @@
+{
+  "name": "linebreaks-lists",
+  "about": "Line breaks and list lines survive parsing in every client (flaw: line breaks and lists lost in rich text). Speech is the one place they collapse.",
+  "input": {
+    "format": "v1",
+    "lang": "en",
+    "bubbles": ["Two things:\n- the first\n- the second\n\nThat is all."],
+    "blocks": [
+      { "type": "list", "title": "Later", "items": [{ "text": "one" }, { "text": "two" }] },
+      { "type": "card", "title": "Note", "body": "line one\nline two", "tone": "info" }
+    ]
+  },
+  "expect": {
+    "bubbles": ["Two things:\n- the first\n- the second\n\nThat is all."],
+    "blocks": ["list", "card"],
+    "actions": [],
+    "speech": "Two things: the first the second That is all."
+  }
+}

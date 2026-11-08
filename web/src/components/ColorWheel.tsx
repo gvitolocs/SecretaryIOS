@@ -118,7 +118,7 @@ export function ColorWheel(props: {
                 props.onChange();
               }}
             >
-              {t("editor.natural")}
+              {t("avatarEditor.natural")}
             </button>
           </Show>
           <For each={props.swatches ?? []}>
@@ -141,7 +141,7 @@ export function ColorWheel(props: {
       </div>
       <div class="cwheel-sliders">
         <label>
-          <span>{t("editor.hue")}</span>
+          <span>{t("avatarEditor.hue")}</span>
           <input
             type="range"
             min="0"
@@ -152,7 +152,7 @@ export function ColorWheel(props: {
           />
         </label>
         <label>
-          <span>{t("editor.saturation")}</span>
+          <span>{t("avatarEditor.saturation")}</span>
           <input
             type="range"
             min="0"
@@ -163,7 +163,7 @@ export function ColorWheel(props: {
           />
         </label>
         <label>
-          <span>{t("editor.brightness")}</span>
+          <span>{t("avatarEditor.brightness")}</span>
           <input
             type="range"
             min="0"

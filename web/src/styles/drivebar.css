@@ -1,0 +1,83 @@
+/* DriveBar (components/DriveBar.tsx): the one toolbar over a remote desktop in focus mode. It hangs
+   from the top edge (or sits on the bottom one), can be dragged along it, and folds into a tab a few
+   pixels tall. */
+.drivebar {
+  position: fixed;
+  z-index: 1010;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: calc(100vw - 16px);
+  padding: 4px 6px;
+  color: var(--text);
+  background: rgba(22, 25, 30, 0.94);
+  border: 1px solid var(--border);
+  box-shadow: 0 8px 28px rgb(0 0 0 / 45%);
+  backdrop-filter: blur(12px);
+  font-size: 13px;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.drivebar[data-edge="top"] { top: 0; border-top: 0; border-radius: 0 0 12px 12px; }
+.drivebar[data-edge="bottom"] { bottom: calc(env(safe-area-inset-bottom)); border-bottom: 0; border-radius: 12px 12px 0 0; }
+.drivebar[data-dragging="yes"] { bottom: auto; transform: translate(-50%, -50%); border: 1px solid var(--border); border-radius: 12px; cursor: grabbing; opacity: 0.9; }
+
+/* Folded: only the tab, a few pixels of her screen. */
+.drivebar[data-open="no"] { padding: 0; background: none; border: 0; box-shadow: none; backdrop-filter: none; }
+.drivebar-tab {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 6px;
+  padding: 0;
+  border: 0;
+  border-radius: 0 0 6px 6px;
+  background: rgba(22, 25, 30, 0.85);
+  cursor: pointer;
+  transition: height 0.15s;
+}
+.drivebar[data-edge="bottom"] .drivebar-tab { border-radius: 6px 6px 0 0; }
+.drivebar-tab:hover,
+.drivebar-tab:focus-visible { height: 12px; }
+.drivebar-tab .computer-dot { width: 4px; height: 4px; }
+
+.drivebar-grip { padding: 0 4px; color: var(--text-muted); cursor: grab; touch-action: none; letter-spacing: -2px; }
+.drivebar-state { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; margin-right: 4px; }
+.drivebar[data-mine="yes"] .computer-dot { background: #ff9f1a; }
+.drivebar-btn {
+  flex: none;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.drivebar-btn--icon { min-width: 30px; padding: 0 6px; }
+.drivebar-btn:hover { background: rgb(255 255 255 / 10%); }
+.drivebar-btn--primary { background: rgb(79 140 255 / 30%); color: #e6eeff; }
+.drivebar-btn[aria-pressed="true"] { background: rgb(79 140 255 / 22%); color: #cfe0ff; }
+.drivebar-btn:disabled { opacity: 0.4; }
+.drivebar-pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(420px, calc(100vw - 24px));
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  background: rgba(22, 25, 30, 0.97);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 10px 30px rgb(0 0 0 / 50%);
+}
+.drivebar[data-edge="bottom"] .drivebar-pop { top: auto; bottom: calc(100% + 8px); }
+@media (max-width: 520px) {
+  .drivebar-state { display: none; }
+}

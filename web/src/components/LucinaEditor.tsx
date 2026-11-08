@@ -50,41 +50,41 @@ import { CLIPS_META_URL, CLIPS_URL, MANIFEST_URL, MODEL_URL } from "./LucinaPane
 const AUTH: RequestInit = { credentials: "include", headers: { "X-Secretary-CSRF": "1" } };
 
 const CATS: { id: Category; label: MessageKey; icon: () => JSX.Element }[] = [
-  { id: "looks", label: "editor.catLooks", icon: SparkleIcon },
-  { id: "body", label: "editor.catBody", icon: BodyIcon },
-  { id: "face", label: "editor.catFace", icon: FaceIcon },
-  { id: "eyes", label: "editor.catEyes", icon: EyeIcon },
-  { id: "skin", label: "editor.catSkin", icon: LipsIcon },
-  { id: "hair", label: "editor.catHair", icon: HairIcon },
-  { id: "accessories", label: "editor.catAccessories", icon: GemIcon },
-  { id: "outfit", label: "editor.catOutfit", icon: HangerIcon },
+  { id: "looks", label: "avatarEditor.catLooks", icon: SparkleIcon },
+  { id: "body", label: "avatarEditor.catBody", icon: BodyIcon },
+  { id: "face", label: "avatarEditor.catFace", icon: FaceIcon },
+  { id: "eyes", label: "avatarEditor.catEyes", icon: EyeIcon },
+  { id: "skin", label: "avatarEditor.catSkin", icon: LipsIcon },
+  { id: "hair", label: "avatarEditor.catHair", icon: HairIcon },
+  { id: "accessories", label: "avatarEditor.catAccessories", icon: GemIcon },
+  { id: "outfit", label: "avatarEditor.catOutfit", icon: HangerIcon },
 ];
 
 const SLOT_LABELS: Record<AccessorySlot, MessageKey> = {
-  head: "editor.slotHead",
-  hair: "editor.slotHair",
-  ears: "editor.slotEars",
-  eyes: "editor.slotEyes",
-  neck: "editor.slotNeck",
-  back: "editor.slotBack",
-  wristL: "editor.slotWristL",
-  wristR: "editor.slotWristR",
+  head: "avatarEditor.slotHead",
+  hair: "avatarEditor.slotHair",
+  ears: "avatarEditor.slotEars",
+  eyes: "avatarEditor.slotEyes",
+  neck: "avatarEditor.slotNeck",
+  back: "avatarEditor.slotBack",
+  wristL: "avatarEditor.slotWristL",
+  wristR: "avatarEditor.slotWristR",
 };
 
 const PART_LABELS: Record<PartSlot, MessageKey> = {
-  top: "editor.slotTop",
-  bottom: "editor.slotBottom",
-  onepiece: "editor.slotOnepiece",
-  legwear: "editor.slotLegwear",
-  shoes: "editor.slotShoes",
-  gloves: "editor.slotGloves",
+  top: "avatarEditor.slotTop",
+  bottom: "avatarEditor.slotBottom",
+  onepiece: "avatarEditor.slotOnepiece",
+  legwear: "avatarEditor.slotLegwear",
+  shoes: "avatarEditor.slotShoes",
+  gloves: "avatarEditor.slotGloves",
 };
 
 const MAKEUP_LABELS: Record<MakeupLayer, MessageKey> = {
-  lipstick: "editor.lipstick",
-  eyeliner: "editor.eyeliner",
-  eyeshadow: "editor.eyeshadow",
-  blush: "editor.blush",
+  lipstick: "avatarEditor.lipstick",
+  eyeliner: "avatarEditor.eyeliner",
+  eyeshadow: "avatarEditor.eyeshadow",
+  blush: "avatarEditor.blush",
 };
 
 const RANDOM_CATS: Category[] = ["body", "face", "eyes", "skin", "hair", "accessories"];
@@ -110,7 +110,7 @@ function Sliders(props: { defs: readonly SliderDef[]; values: Record<string, num
           const value = () => props.values[def.id] ?? 50;
           return (
             <label class="ed-slider">
-              <span class="ed-slider-name" onDblClick={() => (props.onInput(def.id, 50), props.onCommit())} title={t("editor.reset")}>
+              <span class="ed-slider-name" onDblClick={() => (props.onInput(def.id, 50), props.onCommit())} title={t("avatarEditor.reset")}>
                 {label(def)}
               </span>
               <input
@@ -267,8 +267,8 @@ export default function LucinaEditor() {
     if (saved) {
       setEditingId(saved);
       setBaseline(JSON.stringify(l));
-      setNote(t("editor.saved"));
-    } else setNote(t("editor.saveFailed"));
+      setNote(t("avatarEditor.saved"));
+    } else setNote(t("avatarEditor.saveFailed"));
   }
 
   function saveCurrent() {
@@ -293,25 +293,25 @@ export default function LucinaEditor() {
   const swatches = () => mod()?.SWATCHES;
 
   return (
-    <div class="editor" role="dialog" aria-modal="true" aria-label={t("editor.title")}>
+    <div class="editor" role="dialog" aria-modal="true" aria-label={t("avatarEditor.title")}>
       <header class="editor-top">
-        <button type="button" class="icon-btn" onClick={close} aria-label={t("editor.close")} title={t("editor.close")}>
+        <button type="button" class="icon-btn" onClick={close} aria-label={t("avatarEditor.close")} title={t("avatarEditor.close")}>
           <CloseIcon />
         </button>
         <div class="editor-title">
-          <h2>{t("editor.title")}</h2>
+          <h2>{t("avatarEditor.title")}</h2>
           <span class="editor-sub">
-            {editingLook()?.name ?? t("editor.lookDefault")}
+            {editingLook()?.name ?? t("avatarEditor.lookDefault")}
             <Show when={dirty()}>
-              <span class="editor-dirty"> · {t("editor.unsaved")}</span>
+              <span class="editor-dirty"> · {t("avatarEditor.unsaved")}</span>
             </Show>
           </span>
         </div>
         <div class="editor-actions">
-          <button type="button" class="icon-btn" disabled={!history().undo} onClick={() => (editor?.undo(), sync())} aria-label={t("editor.undo")} title={t("editor.undo")}>
+          <button type="button" class="icon-btn" disabled={!history().undo} onClick={() => (editor?.undo(), sync())} aria-label={t("avatarEditor.undo")} title={t("avatarEditor.undo")}>
             <UndoIcon />
           </button>
-          <button type="button" class="icon-btn" disabled={!history().redo} onClick={() => (editor?.redo(), sync())} aria-label={t("editor.redo")} title={t("editor.redo")}>
+          <button type="button" class="icon-btn" disabled={!history().redo} onClick={() => (editor?.redo(), sync())} aria-label={t("avatarEditor.redo")} title={t("avatarEditor.redo")}>
             <RedoIcon />
           </button>
           <button
@@ -319,19 +319,19 @@ export default function LucinaEditor() {
             class="icon-btn"
             disabled={mode() !== "ready"}
             onClick={() => (editor?.randomize({ categories: randomCats() }), sync())}
-            aria-label={t("editor.random")}
-            title={t("editor.random")}
+            aria-label={t("avatarEditor.random")}
+            title={t("avatarEditor.random")}
           >
             <DiceIcon />
           </button>
           <button type="button" class="btn btn--primary editor-save" disabled={mode() !== "ready" || avatarSaving()} onClick={saveCurrent}>
-            {t("editor.save")}
+            {t("avatarEditor.save")}
           </button>
         </div>
       </header>
 
       <div class="editor-body">
-        <nav class="editor-rail" role="tablist" aria-label={t("editor.title")}>
+        <nav class="editor-rail" role="tablist" aria-label={t("avatarEditor.title")}>
           <For each={CATS}>
             {(c) => (
               <button
@@ -350,13 +350,13 @@ export default function LucinaEditor() {
         </nav>
 
         <div class="editor-stage">
-          <Show when={mode() !== "fallback"} fallback={<p class="editor-nostage">{t("editor.noStage")}</p>}>
+          <Show when={mode() !== "fallback"} fallback={<p class="editor-nostage">{t("avatarEditor.noStage")}</p>}>
             <canvas ref={canvas} class="stage-canvas" role="img" aria-label={t("shell.lucinaCanvas")} />
           </Show>
           <Show when={mode() === "loading"}>
             <div class="stage-loading" role="status">
               <span class="holo-loader" aria-hidden="true" />
-              <span>{t("editor.loading")}</span>
+              <span>{t("avatarEditor.loading")}</span>
             </div>
           </Show>
           <Show when={note()}>
@@ -369,19 +369,19 @@ export default function LucinaEditor() {
         </div>
 
         <section class="editor-panel" role="tabpanel">
-          <Show when={look()} fallback={<p class="editor-hint">{t("editor.loading")}</p>}>
+          <Show when={look()} fallback={<p class="editor-hint">{t("avatarEditor.loading")}</p>}>
             {(l) => (
               <Switch>
                 <Match when={cat() === "looks"}>
                   <div class="ed-head">
-                    <h3>{t("editor.catLooks")}</h3>
-                    <span class="ed-count">{t("editor.looksCount", { count: avatarSettings().looks.length })}</span>
+                    <h3>{t("avatarEditor.catLooks")}</h3>
+                    <span class="ed-count">{t("avatarEditor.looksCount", { count: avatarSettings().looks.length })}</span>
                   </div>
                   <div class="ed-looks">
                     <button type="button" class="ed-look" classList={{ "is-on": editingId() === null }} onClick={() => loadLook(null)}>
-                      <span class="ed-look-name">{t("editor.lookDefault")}</span>
+                      <span class="ed-look-name">{t("avatarEditor.lookDefault")}</span>
                       <Show when={avatarSettings().current === null}>
-                        <span class="ed-badge">{t("editor.wearing")}</span>
+                        <span class="ed-badge">{t("avatarEditor.wearing")}</span>
                       </Show>
                     </button>
                     <For each={avatarSettings().looks}>
@@ -390,19 +390,19 @@ export default function LucinaEditor() {
                           <button type="button" class="ed-look-main" onClick={() => loadLook(saved)}>
                             <span class="ed-look-name">{saved.name}</span>
                             <Show when={avatarSettings().current === saved.id}>
-                              <span class="ed-badge">{t("editor.wearing")}</span>
+                              <span class="ed-badge">{t("avatarEditor.wearing")}</span>
                             </Show>
                           </button>
                           <div class="ed-look-actions">
                             <Show when={avatarSettings().current !== saved.id}>
                               <button type="button" class="wchip" onClick={() => void wearLook(saved.id)}>
-                                {t("editor.wear")}
+                                {t("avatarEditor.wear")}
                               </button>
                             </Show>
                             <button type="button" class="wchip" onClick={() => setNaming({ mode: "rename", id: saved.id, value: saved.name })}>
-                              {t("editor.rename")}
+                              {t("avatarEditor.rename")}
                             </button>
-                            <button type="button" class="icon-btn icon-btn--sm" aria-label={t("editor.delete")} title={t("editor.delete")} onClick={() => setConfirmDelete(saved)}>
+                            <button type="button" class="icon-btn icon-btn--sm" aria-label={t("avatarEditor.delete")} title={t("avatarEditor.delete")} onClick={() => setConfirmDelete(saved)}>
                               <TrashIcon />
                             </button>
                           </div>
@@ -411,18 +411,18 @@ export default function LucinaEditor() {
                     </For>
                   </div>
                   <Show when={!avatarSettings().looks.length}>
-                    <p class="editor-hint">{t("editor.noLooks")}</p>
+                    <p class="editor-hint">{t("avatarEditor.noLooks")}</p>
                   </Show>
                   <div class="ed-row">
                     <button type="button" class="btn" disabled={avatarSettings().looks.length >= 20} onClick={() => setNaming({ mode: "new", value: "" })}>
-                      {t("editor.saveAsNew")}
+                      {t("avatarEditor.saveAsNew")}
                     </button>
                     <button type="button" class="btn" onClick={() => (editor?.reset(), sync())}>
-                      <RefreshIcon /> {t("editor.resetAll")}
+                      <RefreshIcon /> {t("avatarEditor.resetAll")}
                     </button>
                   </div>
                   <fieldset class="ed-random">
-                    <legend>{t("editor.randomWhat")}</legend>
+                    <legend>{t("avatarEditor.randomWhat")}</legend>
                     <div class="ed-chips">
                       <For each={RANDOM_CATS}>
                         {(c) => (
@@ -439,16 +439,16 @@ export default function LucinaEditor() {
                       </For>
                     </div>
                     <button type="button" class="btn btn--primary" disabled={!randomCats().length} onClick={() => (editor?.randomize({ categories: randomCats() }), sync())}>
-                      <DiceIcon /> {t("editor.random")}
+                      <DiceIcon /> {t("avatarEditor.random")}
                     </button>
                   </fieldset>
                 </Match>
 
                 <Match when={cat() === "body"}>
                   <div class="ed-head">
-                    <h3>{t("editor.catBody")}</h3>
+                    <h3>{t("avatarEditor.catBody")}</h3>
                     <button type="button" class="wchip" onClick={() => (editor?.reset("body"), sync())}>
-                      {t("editor.reset")}
+                      {t("avatarEditor.reset")}
                     </button>
                   </div>
                   <Sliders defs={mod()!.BODY_SLIDERS} values={l().body} onInput={(id, v) => update((x) => (x.body[id] = v))} onCommit={commit} />
@@ -456,9 +456,9 @@ export default function LucinaEditor() {
 
                 <Match when={cat() === "face"}>
                   <div class="ed-head">
-                    <h3>{t("editor.catFace")}</h3>
+                    <h3>{t("avatarEditor.catFace")}</h3>
                     <button type="button" class="wchip" onClick={() => (editor?.reset("face"), sync())}>
-                      {t("editor.reset")}
+                      {t("avatarEditor.reset")}
                     </button>
                   </div>
                   <Sliders defs={mod()!.FACE_SLIDERS} values={l().face} onInput={(id, v) => update((x) => (x.face[id] = v))} onCommit={commit} />
@@ -466,13 +466,13 @@ export default function LucinaEditor() {
 
                 <Match when={cat() === "eyes"}>
                   <div class="ed-head">
-                    <h3>{t("editor.catEyes")}</h3>
+                    <h3>{t("avatarEditor.catEyes")}</h3>
                     <button type="button" class="wchip" onClick={() => (editor?.reset("eyes"), sync())}>
-                      {t("editor.reset")}
+                      {t("avatarEditor.reset")}
                     </button>
                   </div>
                   <ColorWheel
-                    label={t("editor.iris")}
+                    label={t("avatarEditor.iris")}
                     value={l().eyes.iris}
                     fallback="#3d6fd1"
                     natural
@@ -482,20 +482,20 @@ export default function LucinaEditor() {
                   />
                   <label class="ed-switch">
                     <input type="checkbox" checked={l().eyes.highlight} onChange={(e) => (update((x) => (x.eyes.highlight = e.currentTarget.checked)), commit())} />
-                    <span>{t("editor.highlight")}</span>
+                    <span>{t("avatarEditor.highlight")}</span>
                   </label>
                 </Match>
 
                 <Match when={cat() === "skin"}>
                   <div class="ed-head">
-                    <h3>{t("editor.catSkin")}</h3>
+                    <h3>{t("avatarEditor.catSkin")}</h3>
                     <button type="button" class="wchip" onClick={() => (editor?.reset("skin"), sync())}>
-                      {t("editor.reset")}
+                      {t("avatarEditor.reset")}
                     </button>
                   </div>
-                  <h4 class="ed-sub">{t("editor.skinTone")}</h4>
+                  <h4 class="ed-sub">{t("avatarEditor.skinTone")}</h4>
                   <ColorWheel
-                    label={t("editor.skinTone")}
+                    label={t("avatarEditor.skinTone")}
                     value={l().skin.tone}
                     fallback="#f6dccb"
                     natural
@@ -512,7 +512,7 @@ export default function LucinaEditor() {
                           <span class="ed-slider-value">{l().makeup[layer].amount}</span>
                         </summary>
                         <label class="ed-slider">
-                          <span class="ed-slider-name">{t("editor.strength")}</span>
+                          <span class="ed-slider-name">{t("avatarEditor.strength")}</span>
                           <input
                             type="range"
                             min="0"
@@ -542,9 +542,9 @@ export default function LucinaEditor() {
 
                 <Match when={cat() === "hair"}>
                   <div class="ed-head">
-                    <h3>{t("editor.hairstyle")}</h3>
+                    <h3>{t("avatarEditor.hairstyle")}</h3>
                     <button type="button" class="wchip" onClick={() => (editor?.reset("hair"), sync())}>
-                      {t("editor.reset")}
+                      {t("avatarEditor.reset")}
                     </button>
                   </div>
                   <div class="wardrobe-grid ed-grid">
@@ -560,9 +560,9 @@ export default function LucinaEditor() {
                       )}
                     </For>
                   </div>
-                  <h4 class="ed-sub">{t("editor.hairColor")}</h4>
+                  <h4 class="ed-sub">{t("avatarEditor.hairColor")}</h4>
                   <ColorWheel
-                    label={t("editor.hairColor")}
+                    label={t("avatarEditor.hairColor")}
                     value={l().hair.color}
                     fallback="#2b3a67"
                     natural
@@ -570,9 +570,9 @@ export default function LucinaEditor() {
                     onInput={(hex) => update((x) => (x.hair.color = hex))}
                     onChange={commit}
                   />
-                  <h4 class="ed-sub">{t("editor.hairHighlight")}</h4>
+                  <h4 class="ed-sub">{t("avatarEditor.hairHighlight")}</h4>
                   <ColorWheel
-                    label={t("editor.hairHighlight")}
+                    label={t("avatarEditor.hairHighlight")}
                     value={l().hair.highlight}
                     fallback="#9fb0e0"
                     natural
@@ -584,9 +584,9 @@ export default function LucinaEditor() {
 
                 <Match when={cat() === "accessories"}>
                   <div class="ed-head">
-                    <h3>{t("editor.catAccessories")}</h3>
+                    <h3>{t("avatarEditor.catAccessories")}</h3>
                     <button type="button" class="wchip" onClick={() => (editor?.reset("accessories"), sync())}>
-                      {t("editor.reset")}
+                      {t("avatarEditor.reset")}
                     </button>
                   </div>
                   <div class="ed-chips" role="tablist">
@@ -606,7 +606,7 @@ export default function LucinaEditor() {
                     </For>
                   </div>
                   <div class="wardrobe-grid ed-grid">
-                    <Tile name={t("editor.none")} on={!l().accessories[slot()]} glyph={CloseIcon} onClick={() => (update((x) => delete x.accessories[slot()]), commit())} />
+                    <Tile name={t("avatarEditor.none")} on={!l().accessories[slot()]} glyph={CloseIcon} onClick={() => (update((x) => delete x.accessories[slot()]), commit())} />
                     <For each={accessories().filter((a) => a.slot === slot())}>
                       {(a) => (
                         <Tile
@@ -621,20 +621,20 @@ export default function LucinaEditor() {
                   </div>
                   <label class="ed-switch">
                     <input type="checkbox" checked={l().tiara} onChange={(e) => (update((x) => (x.tiara = e.currentTarget.checked)), commit())} />
-                    <span>{t("editor.tiara")}</span>
+                    <span>{t("avatarEditor.tiara")}</span>
                   </label>
                 </Match>
 
                 <Match when={cat() === "outfit"}>
                   <div class="ed-head">
-                    <h3>{t("editor.outfitWhole")}</h3>
+                    <h3>{t("avatarEditor.outfitWhole")}</h3>
                     <button type="button" class="wchip" onClick={() => (editor?.reset("outfit"), sync())}>
-                      {t("editor.reset")}
+                      {t("avatarEditor.reset")}
                     </button>
                   </div>
                   <div class="wardrobe-grid ed-grid">
                     <Tile
-                      name={t("editor.outfitFromWardrobe")}
+                      name={t("avatarEditor.outfitFromWardrobe")}
                       on={!l().outfit.id && !Object.keys(l().outfit.parts).length}
                       glyph={DropIcon}
                       onClick={() => (update((x) => (x.outfit = { id: null, parts: {} })), commit())}
@@ -651,8 +651,8 @@ export default function LucinaEditor() {
                       )}
                     </For>
                   </div>
-                  <h4 class="ed-sub">{t("editor.outfitParts")}</h4>
-                  <Show when={parts().length && wardrobeOutfits().some((o) => o.id === "base")} fallback={<p class="editor-hint">{t("editor.partsSoon")}</p>}>
+                  <h4 class="ed-sub">{t("avatarEditor.outfitParts")}</h4>
+                  <Show when={parts().length && wardrobeOutfits().some((o) => o.id === "base")} fallback={<p class="editor-hint">{t("avatarEditor.partsSoon")}</p>}>
                     <div class="ed-chips" role="tablist">
                       <For each={mod()!.PART_SLOTS as readonly PartSlot[]}>
                         {(s) => (
@@ -671,7 +671,7 @@ export default function LucinaEditor() {
                     </div>
                     <div class="wardrobe-grid ed-grid">
                       <Tile
-                        name={t("editor.none")}
+                        name={t("avatarEditor.none")}
                         on={!l().outfit.parts[partSlot()]}
                         glyph={CloseIcon}
                         onClick={() => (update((x) => delete x.outfit.parts[partSlot()]), commit())}
@@ -704,7 +704,7 @@ export default function LucinaEditor() {
 
       <Show when={naming()}>
         {(n) => (
-          <div class="editor-modal" role="dialog" aria-modal="true" aria-label={t("editor.nameLabel")}>
+          <div class="editor-modal" role="dialog" aria-modal="true" aria-label={t("avatarEditor.nameLabel")}>
             <form
               class="editor-modal-card"
               onSubmit={(e) => {
@@ -720,22 +720,22 @@ export default function LucinaEditor() {
               }}
             >
               <label>
-                <span>{t("editor.nameLabel")}</span>
+                <span>{t("avatarEditor.nameLabel")}</span>
                 <input
                   type="text"
                   maxLength={40}
                   autofocus
-                  placeholder={t("editor.namePlaceholder")}
+                  placeholder={t("avatarEditor.namePlaceholder")}
                   value={n().value}
                   onInput={(e) => setNaming({ ...n(), value: e.currentTarget.value })}
                 />
               </label>
               <div class="ed-row">
                 <button type="button" class="btn" onClick={() => setNaming(null)}>
-                  {t("editor.keepEditing")}
+                  {t("avatarEditor.keepEditing")}
                 </button>
                 <button type="submit" class="btn btn--primary" disabled={!n().value.trim()}>
-                  {n().mode === "rename" ? t("editor.rename") : t("editor.save")}
+                  {n().mode === "rename" ? t("avatarEditor.rename") : t("avatarEditor.save")}
                 </button>
               </div>
             </form>
@@ -744,15 +744,15 @@ export default function LucinaEditor() {
       </Show>
 
       <Show when={confirmClose()}>
-        <div class="editor-modal" role="alertdialog" aria-modal="true" aria-label={t("editor.discardTitle")}>
+        <div class="editor-modal" role="alertdialog" aria-modal="true" aria-label={t("avatarEditor.discardTitle")}>
           <div class="editor-modal-card">
-            <p>{t("editor.discardTitle")}</p>
+            <p>{t("avatarEditor.discardTitle")}</p>
             <div class="ed-row">
               <button type="button" class="btn" onClick={() => setConfirmClose(false)}>
-                {t("editor.keepEditing")}
+                {t("avatarEditor.keepEditing")}
               </button>
               <button type="button" class="btn btn--danger" onClick={() => closeEditor()}>
-                {t("editor.discard")}
+                {t("avatarEditor.discard")}
               </button>
             </div>
           </div>
@@ -761,12 +761,12 @@ export default function LucinaEditor() {
 
       <Show when={confirmDelete()}>
         {(d) => (
-          <div class="editor-modal" role="alertdialog" aria-modal="true" aria-label={t("editor.delete")}>
+          <div class="editor-modal" role="alertdialog" aria-modal="true" aria-label={t("avatarEditor.delete")}>
             <div class="editor-modal-card">
-              <p>{t("editor.deleteConfirm", { name: d().name })}</p>
+              <p>{t("avatarEditor.deleteConfirm", { name: d().name })}</p>
               <div class="ed-row">
                 <button type="button" class="btn" onClick={() => setConfirmDelete(null)}>
-                  {t("editor.keepEditing")}
+                  {t("avatarEditor.keepEditing")}
                 </button>
                 <button
                   type="button"
@@ -778,7 +778,7 @@ export default function LucinaEditor() {
                     void deleteLook(id);
                   }}
                 >
-                  {t("editor.delete")}
+                  {t("avatarEditor.delete")}
                 </button>
               </div>
             </div>

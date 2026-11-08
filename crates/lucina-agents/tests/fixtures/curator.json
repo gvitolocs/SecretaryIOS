@@ -1,0 +1,4058 @@
+[
+ {
+  "name": "empty",
+  "limit": null,
+  "items": [],
+  "expected": {
+   "updateCount": 0,
+   "content": "Showing all 0 activities\n\nNo activity to display."
+  }
+ },
+ {
+  "name": "empty",
+  "limit": 0,
+  "items": [],
+  "expected": {
+   "updateCount": 0,
+   "content": "Showing all 0 activities\n\nNo activity to display."
+  }
+ },
+ {
+  "name": "empty",
+  "limit": 1,
+  "items": [],
+  "expected": {
+   "updateCount": 0,
+   "content": "Showing all 0 activities\n\nNo activity to display."
+  }
+ },
+ {
+  "name": "empty",
+  "limit": 2,
+  "items": [],
+  "expected": {
+   "updateCount": 0,
+   "content": "Showing all 0 activities\n\nNo activity to display."
+  }
+ },
+ {
+  "name": "empty",
+  "limit": 5,
+  "items": [],
+  "expected": {
+   "updateCount": 0,
+   "content": "Showing all 0 activities\n\nNo activity to display."
+  }
+ },
+ {
+  "name": "empty/curate-labelled",
+  "limit": null,
+  "items": [],
+  "options": {
+   "labelAssistantMessages": true,
+   "includeKinds": [
+    "user_message",
+    "assistant_message",
+    "tool_call"
+   ],
+   "includeExternalToolInput": false,
+   "maxItems": 3
+  },
+  "expectedCurate": "No activity to display."
+ },
+ {
+  "name": "chat",
+  "limit": null,
+  "items": [
+   {
+    "type": "user_message",
+    "text": "  Fix the scroll anchor  "
+   },
+   {
+    "type": "assistant_message",
+    "text": "Looking"
+   },
+   {
+    "type": "assistant_message",
+    "text": " at it."
+   }
+  ],
+  "expected": {
+   "updateCount": 3,
+   "content": "Showing all 2 activities\n\n[User] Fix the scroll anchor\nLooking at it."
+  }
+ },
+ {
+  "name": "chat",
+  "limit": 0,
+  "items": [
+   {
+    "type": "user_message",
+    "text": "  Fix the scroll anchor  "
+   },
+   {
+    "type": "assistant_message",
+    "text": "Looking"
+   },
+   {
+    "type": "assistant_message",
+    "text": " at it."
+   }
+  ],
+  "expected": {
+   "updateCount": 3,
+   "content": "Showing all 2 activities\n\n[User] Fix the scroll anchor\nLooking at it."
+  }
+ },
+ {
+  "name": "chat",
+  "limit": 1,
+  "items": [
+   {
+    "type": "user_message",
+    "text": "  Fix the scroll anchor  "
+   },
+   {
+    "type": "assistant_message",
+    "text": "Looking"
+   },
+   {
+    "type": "assistant_message",
+    "text": " at it."
+   }
+  ],
+  "expected": {
+   "updateCount": 3,
+   "content": "Showing 1 of 2 activities (limited to 1)\n\nLooking at it."
+  }
+ },
+ {
+  "name": "chat",
+  "limit": 2,
+  "items": [
+   {
+    "type": "user_message",
+    "text": "  Fix the scroll anchor  "
+   },
+   {
+    "type": "assistant_message",
+    "text": "Looking"
+   },
+   {
+    "type": "assistant_message",
+    "text": " at it."
+   }
+  ],
+  "expected": {
+   "updateCount": 3,
+   "content": "Showing all 2 activities\n\n[User] Fix the scroll anchor\nLooking at it."
+  }
+ },
+ {
+  "name": "chat",
+  "limit": 5,
+  "items": [
+   {
+    "type": "user_message",
+    "text": "  Fix the scroll anchor  "
+   },
+   {
+    "type": "assistant_message",
+    "text": "Looking"
+   },
+   {
+    "type": "assistant_message",
+    "text": " at it."
+   }
+  ],
+  "expected": {
+   "updateCount": 3,
+   "content": "Showing all 2 activities\n\n[User] Fix the scroll anchor\nLooking at it."
+  }
+ },
+ {
+  "name": "chat/curate-labelled",
+  "limit": null,
+  "items": [
+   {
+    "type": "user_message",
+    "text": "  Fix the scroll anchor  "
+   },
+   {
+    "type": "assistant_message",
+    "text": "Looking"
+   },
+   {
+    "type": "assistant_message",
+    "text": " at it."
+   }
+  ],
+  "options": {
+   "labelAssistantMessages": true,
+   "includeKinds": [
+    "user_message",
+    "assistant_message",
+    "tool_call"
+   ],
+   "includeExternalToolInput": false,
+   "maxItems": 3
+  },
+  "expectedCurate": "[User] Fix the scroll anchor\n[Assistant] Looking at it."
+ },
+ {
+  "name": "reasoning_chunks",
+  "limit": null,
+  "items": [
+   {
+    "type": "reasoning",
+    "text": "First "
+   },
+   {
+    "type": "reasoning",
+    "text": "thought"
+   },
+   {
+    "type": "assistant_message",
+    "text": "Done."
+   }
+  ],
+  "expected": {
+   "updateCount": 3,
+   "content": "Showing all 2 activities\n\n[Thought] First thought\nDone."
+  }
+ },
+ {
+  "name": "reasoning_chunks",
+  "limit": 0,
+  "items": [
+   {
+    "type": "reasoning",
+    "text": "First "
+   },
+   {
+    "type": "reasoning",
+    "text": "thought"
+   },
+   {
+    "type": "assistant_message",
+    "text": "Done."
+   }
+  ],
+  "expected": {
+   "updateCount": 3,
+   "content": "Showing all 2 activities\n\n[Thought] First thought\nDone."
+  }
+ },
+ {
+  "name": "reasoning_chunks",
+  "limit": 1,
+  "items": [
+   {
+    "type": "reasoning",
+    "text": "First "
+   },
+   {
+    "type": "reasoning",
+    "text": "thought"
+   },
+   {
+    "type": "assistant_message",
+    "text": "Done."
+   }
+  ],
+  "expected": {
+   "updateCount": 3,
+   "content": "Showing 1 of 2 activities (limited to 1)\n\nDone."
+  }
+ },
+ {
+  "name": "reasoning_chunks",
+  "limit": 2,
+  "items": [
+   {
+    "type": "reasoning",
+    "text": "First "
+   },
+   {
+    "type": "reasoning",
+    "text": "thought"
+   },
+   {
+    "type": "assistant_message",
+    "text": "Done."
+   }
+  ],
+  "expected": {
+   "updateCount": 3,
+   "content": "Showing all 2 activities\n\n[Thought] First thought\nDone."
+  }
+ },
+ {
+  "name": "reasoning_chunks",
+  "limit": 5,
+  "items": [
+   {
+    "type": "reasoning",
+    "text": "First "
+   },
+   {
+    "type": "reasoning",
+    "text": "thought"
+   },
+   {
+    "type": "assistant_message",
+    "text": "Done."
+   }
+  ],
+  "expected": {
+   "updateCount": 3,
+   "content": "Showing all 2 activities\n\n[Thought] First thought\nDone."
+  }
+ },
+ {
+  "name": "reasoning_chunks/curate-labelled",
+  "limit": null,
+  "items": [
+   {
+    "type": "reasoning",
+    "text": "First "
+   },
+   {
+    "type": "reasoning",
+    "text": "thought"
+   },
+   {
+    "type": "assistant_message",
+    "text": "Done."
+   }
+  ],
+  "options": {
+   "labelAssistantMessages": true,
+   "includeKinds": [
+    "user_message",
+    "assistant_message",
+    "tool_call"
+   ],
+   "includeExternalToolInput": false,
+   "maxItems": 3
+  },
+  "expectedCurate": "[Assistant] Done."
+ },
+ {
+  "name": "tools_canonical",
+  "limit": null,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "c1",
+    "name": "Bash",
+    "detail": {
+     "type": "shell",
+     "command": "cargo test\n  -p foo",
+     "exitCode": 0
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c2",
+    "name": "Read",
+    "detail": {
+     "type": "read",
+     "filePath": "/w/src/lib.rs"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c3",
+    "name": "Edit",
+    "detail": {
+     "type": "edit",
+     "filePath": "/w/src/lib.rs",
+     "oldString": "a",
+     "newString": "b"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c4",
+    "name": "Write",
+    "detail": {
+     "type": "write",
+     "filePath": "/w/new.rs"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c5",
+    "name": "Grep",
+    "detail": {
+     "type": "search",
+     "query": "TODO",
+     "toolName": "grep"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c6",
+    "name": "WebFetch",
+    "detail": {
+     "type": "fetch",
+     "url": "https://example.com"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c7",
+    "name": "setup",
+    "detail": {
+     "type": "worktree_setup",
+     "worktreePath": "/w",
+     "branchName": "agent/x",
+     "log": "",
+     "commands": []
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c8",
+    "name": "Task",
+    "detail": {
+     "type": "sub_agent",
+     "subAgentType": "Explore",
+     "description": "find the bug",
+     "log": "  found it  "
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c9",
+    "name": "terminal",
+    "detail": {
+     "type": "plain_text",
+     "label": "npm run dev"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c10",
+    "name": "ExitPlanMode",
+    "detail": {
+     "type": "plan",
+     "text": "1. do it"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c11",
+    "name": "some_custom-tool",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "a": 1
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c12",
+    "name": "Task",
+    "detail": {
+     "type": "unknown",
+     "input": {},
+     "output": null
+    },
+    "status": "running",
+    "error": null,
+    "metadata": {
+     "subAgentActivity": "reading files"
+    }
+   },
+   {
+    "type": "tool_call",
+    "callId": "c13",
+    "name": "Thinking",
+    "detail": {
+     "type": "unknown",
+     "input": null,
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c14",
+    "name": "Bash",
+    "detail": {
+     "type": "shell",
+     "command": "rm -rf /"
+    },
+    "status": "failed",
+    "error": "denied"
+   }
+  ],
+  "expected": {
+   "updateCount": 14,
+   "content": "Showing all 14 activities\n\n[Shell] cargo test -p foo\n[Read] /w/src/lib.rs\n[Edit] /w/src/lib.rs\n[Write] /w/new.rs\n[Search] TODO\n[Fetch] https://example.com\n[Worktree setup] agent/x\n[Explore] find the bug\nfound it\n[Terminal] npm run dev\n[Plan]\n[Some custom tool]\n[Task] reading files\n[Thinking]\n[Shell] rm -rf /"
+  }
+ },
+ {
+  "name": "tools_canonical",
+  "limit": 0,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "c1",
+    "name": "Bash",
+    "detail": {
+     "type": "shell",
+     "command": "cargo test\n  -p foo",
+     "exitCode": 0
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c2",
+    "name": "Read",
+    "detail": {
+     "type": "read",
+     "filePath": "/w/src/lib.rs"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c3",
+    "name": "Edit",
+    "detail": {
+     "type": "edit",
+     "filePath": "/w/src/lib.rs",
+     "oldString": "a",
+     "newString": "b"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c4",
+    "name": "Write",
+    "detail": {
+     "type": "write",
+     "filePath": "/w/new.rs"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c5",
+    "name": "Grep",
+    "detail": {
+     "type": "search",
+     "query": "TODO",
+     "toolName": "grep"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c6",
+    "name": "WebFetch",
+    "detail": {
+     "type": "fetch",
+     "url": "https://example.com"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c7",
+    "name": "setup",
+    "detail": {
+     "type": "worktree_setup",
+     "worktreePath": "/w",
+     "branchName": "agent/x",
+     "log": "",
+     "commands": []
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c8",
+    "name": "Task",
+    "detail": {
+     "type": "sub_agent",
+     "subAgentType": "Explore",
+     "description": "find the bug",
+     "log": "  found it  "
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c9",
+    "name": "terminal",
+    "detail": {
+     "type": "plain_text",
+     "label": "npm run dev"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c10",
+    "name": "ExitPlanMode",
+    "detail": {
+     "type": "plan",
+     "text": "1. do it"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c11",
+    "name": "some_custom-tool",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "a": 1
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c12",
+    "name": "Task",
+    "detail": {
+     "type": "unknown",
+     "input": {},
+     "output": null
+    },
+    "status": "running",
+    "error": null,
+    "metadata": {
+     "subAgentActivity": "reading files"
+    }
+   },
+   {
+    "type": "tool_call",
+    "callId": "c13",
+    "name": "Thinking",
+    "detail": {
+     "type": "unknown",
+     "input": null,
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c14",
+    "name": "Bash",
+    "detail": {
+     "type": "shell",
+     "command": "rm -rf /"
+    },
+    "status": "failed",
+    "error": "denied"
+   }
+  ],
+  "expected": {
+   "updateCount": 14,
+   "content": "Showing all 14 activities\n\n[Shell] cargo test -p foo\n[Read] /w/src/lib.rs\n[Edit] /w/src/lib.rs\n[Write] /w/new.rs\n[Search] TODO\n[Fetch] https://example.com\n[Worktree setup] agent/x\n[Explore] find the bug\nfound it\n[Terminal] npm run dev\n[Plan]\n[Some custom tool]\n[Task] reading files\n[Thinking]\n[Shell] rm -rf /"
+  }
+ },
+ {
+  "name": "tools_canonical",
+  "limit": 1,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "c1",
+    "name": "Bash",
+    "detail": {
+     "type": "shell",
+     "command": "cargo test\n  -p foo",
+     "exitCode": 0
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c2",
+    "name": "Read",
+    "detail": {
+     "type": "read",
+     "filePath": "/w/src/lib.rs"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c3",
+    "name": "Edit",
+    "detail": {
+     "type": "edit",
+     "filePath": "/w/src/lib.rs",
+     "oldString": "a",
+     "newString": "b"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c4",
+    "name": "Write",
+    "detail": {
+     "type": "write",
+     "filePath": "/w/new.rs"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c5",
+    "name": "Grep",
+    "detail": {
+     "type": "search",
+     "query": "TODO",
+     "toolName": "grep"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c6",
+    "name": "WebFetch",
+    "detail": {
+     "type": "fetch",
+     "url": "https://example.com"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c7",
+    "name": "setup",
+    "detail": {
+     "type": "worktree_setup",
+     "worktreePath": "/w",
+     "branchName": "agent/x",
+     "log": "",
+     "commands": []
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c8",
+    "name": "Task",
+    "detail": {
+     "type": "sub_agent",
+     "subAgentType": "Explore",
+     "description": "find the bug",
+     "log": "  found it  "
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c9",
+    "name": "terminal",
+    "detail": {
+     "type": "plain_text",
+     "label": "npm run dev"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c10",
+    "name": "ExitPlanMode",
+    "detail": {
+     "type": "plan",
+     "text": "1. do it"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c11",
+    "name": "some_custom-tool",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "a": 1
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c12",
+    "name": "Task",
+    "detail": {
+     "type": "unknown",
+     "input": {},
+     "output": null
+    },
+    "status": "running",
+    "error": null,
+    "metadata": {
+     "subAgentActivity": "reading files"
+    }
+   },
+   {
+    "type": "tool_call",
+    "callId": "c13",
+    "name": "Thinking",
+    "detail": {
+     "type": "unknown",
+     "input": null,
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c14",
+    "name": "Bash",
+    "detail": {
+     "type": "shell",
+     "command": "rm -rf /"
+    },
+    "status": "failed",
+    "error": "denied"
+   }
+  ],
+  "expected": {
+   "updateCount": 14,
+   "content": "Showing 1 of 14 activities (limited to 1)\n\n[Shell] rm -rf /"
+  }
+ },
+ {
+  "name": "tools_canonical",
+  "limit": 2,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "c1",
+    "name": "Bash",
+    "detail": {
+     "type": "shell",
+     "command": "cargo test\n  -p foo",
+     "exitCode": 0
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c2",
+    "name": "Read",
+    "detail": {
+     "type": "read",
+     "filePath": "/w/src/lib.rs"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c3",
+    "name": "Edit",
+    "detail": {
+     "type": "edit",
+     "filePath": "/w/src/lib.rs",
+     "oldString": "a",
+     "newString": "b"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c4",
+    "name": "Write",
+    "detail": {
+     "type": "write",
+     "filePath": "/w/new.rs"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c5",
+    "name": "Grep",
+    "detail": {
+     "type": "search",
+     "query": "TODO",
+     "toolName": "grep"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c6",
+    "name": "WebFetch",
+    "detail": {
+     "type": "fetch",
+     "url": "https://example.com"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c7",
+    "name": "setup",
+    "detail": {
+     "type": "worktree_setup",
+     "worktreePath": "/w",
+     "branchName": "agent/x",
+     "log": "",
+     "commands": []
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c8",
+    "name": "Task",
+    "detail": {
+     "type": "sub_agent",
+     "subAgentType": "Explore",
+     "description": "find the bug",
+     "log": "  found it  "
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c9",
+    "name": "terminal",
+    "detail": {
+     "type": "plain_text",
+     "label": "npm run dev"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c10",
+    "name": "ExitPlanMode",
+    "detail": {
+     "type": "plan",
+     "text": "1. do it"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c11",
+    "name": "some_custom-tool",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "a": 1
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c12",
+    "name": "Task",
+    "detail": {
+     "type": "unknown",
+     "input": {},
+     "output": null
+    },
+    "status": "running",
+    "error": null,
+    "metadata": {
+     "subAgentActivity": "reading files"
+    }
+   },
+   {
+    "type": "tool_call",
+    "callId": "c13",
+    "name": "Thinking",
+    "detail": {
+     "type": "unknown",
+     "input": null,
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c14",
+    "name": "Bash",
+    "detail": {
+     "type": "shell",
+     "command": "rm -rf /"
+    },
+    "status": "failed",
+    "error": "denied"
+   }
+  ],
+  "expected": {
+   "updateCount": 14,
+   "content": "Showing 2 of 14 activities (limited to 2)\n\n[Thinking]\n[Shell] rm -rf /"
+  }
+ },
+ {
+  "name": "tools_canonical",
+  "limit": 5,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "c1",
+    "name": "Bash",
+    "detail": {
+     "type": "shell",
+     "command": "cargo test\n  -p foo",
+     "exitCode": 0
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c2",
+    "name": "Read",
+    "detail": {
+     "type": "read",
+     "filePath": "/w/src/lib.rs"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c3",
+    "name": "Edit",
+    "detail": {
+     "type": "edit",
+     "filePath": "/w/src/lib.rs",
+     "oldString": "a",
+     "newString": "b"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c4",
+    "name": "Write",
+    "detail": {
+     "type": "write",
+     "filePath": "/w/new.rs"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c5",
+    "name": "Grep",
+    "detail": {
+     "type": "search",
+     "query": "TODO",
+     "toolName": "grep"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c6",
+    "name": "WebFetch",
+    "detail": {
+     "type": "fetch",
+     "url": "https://example.com"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c7",
+    "name": "setup",
+    "detail": {
+     "type": "worktree_setup",
+     "worktreePath": "/w",
+     "branchName": "agent/x",
+     "log": "",
+     "commands": []
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c8",
+    "name": "Task",
+    "detail": {
+     "type": "sub_agent",
+     "subAgentType": "Explore",
+     "description": "find the bug",
+     "log": "  found it  "
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c9",
+    "name": "terminal",
+    "detail": {
+     "type": "plain_text",
+     "label": "npm run dev"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c10",
+    "name": "ExitPlanMode",
+    "detail": {
+     "type": "plan",
+     "text": "1. do it"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c11",
+    "name": "some_custom-tool",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "a": 1
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c12",
+    "name": "Task",
+    "detail": {
+     "type": "unknown",
+     "input": {},
+     "output": null
+    },
+    "status": "running",
+    "error": null,
+    "metadata": {
+     "subAgentActivity": "reading files"
+    }
+   },
+   {
+    "type": "tool_call",
+    "callId": "c13",
+    "name": "Thinking",
+    "detail": {
+     "type": "unknown",
+     "input": null,
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c14",
+    "name": "Bash",
+    "detail": {
+     "type": "shell",
+     "command": "rm -rf /"
+    },
+    "status": "failed",
+    "error": "denied"
+   }
+  ],
+  "expected": {
+   "updateCount": 14,
+   "content": "Showing 5 of 14 activities (limited to 5)\n\n[Plan]\n[Some custom tool]\n[Task] reading files\n[Thinking]\n[Shell] rm -rf /"
+  }
+ },
+ {
+  "name": "tools_canonical/curate-labelled",
+  "limit": null,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "c1",
+    "name": "Bash",
+    "detail": {
+     "type": "shell",
+     "command": "cargo test\n  -p foo",
+     "exitCode": 0
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c2",
+    "name": "Read",
+    "detail": {
+     "type": "read",
+     "filePath": "/w/src/lib.rs"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c3",
+    "name": "Edit",
+    "detail": {
+     "type": "edit",
+     "filePath": "/w/src/lib.rs",
+     "oldString": "a",
+     "newString": "b"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c4",
+    "name": "Write",
+    "detail": {
+     "type": "write",
+     "filePath": "/w/new.rs"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c5",
+    "name": "Grep",
+    "detail": {
+     "type": "search",
+     "query": "TODO",
+     "toolName": "grep"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c6",
+    "name": "WebFetch",
+    "detail": {
+     "type": "fetch",
+     "url": "https://example.com"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c7",
+    "name": "setup",
+    "detail": {
+     "type": "worktree_setup",
+     "worktreePath": "/w",
+     "branchName": "agent/x",
+     "log": "",
+     "commands": []
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c8",
+    "name": "Task",
+    "detail": {
+     "type": "sub_agent",
+     "subAgentType": "Explore",
+     "description": "find the bug",
+     "log": "  found it  "
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c9",
+    "name": "terminal",
+    "detail": {
+     "type": "plain_text",
+     "label": "npm run dev"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c10",
+    "name": "ExitPlanMode",
+    "detail": {
+     "type": "plan",
+     "text": "1. do it"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c11",
+    "name": "some_custom-tool",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "a": 1
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c12",
+    "name": "Task",
+    "detail": {
+     "type": "unknown",
+     "input": {},
+     "output": null
+    },
+    "status": "running",
+    "error": null,
+    "metadata": {
+     "subAgentActivity": "reading files"
+    }
+   },
+   {
+    "type": "tool_call",
+    "callId": "c13",
+    "name": "Thinking",
+    "detail": {
+     "type": "unknown",
+     "input": null,
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "c14",
+    "name": "Bash",
+    "detail": {
+     "type": "shell",
+     "command": "rm -rf /"
+    },
+    "status": "failed",
+    "error": "denied"
+   }
+  ],
+  "options": {
+   "labelAssistantMessages": true,
+   "includeKinds": [
+    "user_message",
+    "assistant_message",
+    "tool_call"
+   ],
+   "includeExternalToolInput": false,
+   "maxItems": 3
+  },
+  "expectedCurate": "[Task] reading files\n[Thinking]\n[Shell] rm -rf /"
+ },
+ {
+  "name": "tool_lifecycle",
+  "limit": null,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "t1",
+    "name": "Bash",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "command": "ls"
+     },
+     "output": null
+    },
+    "status": "running",
+    "error": null
+   },
+   {
+    "type": "assistant_message",
+    "text": "while it runs"
+   },
+   {
+    "type": "tool_call",
+    "callId": "t1",
+    "name": "Bash",
+    "detail": {
+     "type": "shell",
+     "command": "ls",
+     "output": "a"
+    },
+    "status": "completed",
+    "error": null
+   }
+  ],
+  "expected": {
+   "updateCount": 3,
+   "content": "Showing all 2 activities\n\n[Shell] ls\nwhile it runs"
+  }
+ },
+ {
+  "name": "tool_lifecycle",
+  "limit": 0,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "t1",
+    "name": "Bash",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "command": "ls"
+     },
+     "output": null
+    },
+    "status": "running",
+    "error": null
+   },
+   {
+    "type": "assistant_message",
+    "text": "while it runs"
+   },
+   {
+    "type": "tool_call",
+    "callId": "t1",
+    "name": "Bash",
+    "detail": {
+     "type": "shell",
+     "command": "ls",
+     "output": "a"
+    },
+    "status": "completed",
+    "error": null
+   }
+  ],
+  "expected": {
+   "updateCount": 3,
+   "content": "Showing all 2 activities\n\n[Shell] ls\nwhile it runs"
+  }
+ },
+ {
+  "name": "tool_lifecycle",
+  "limit": 1,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "t1",
+    "name": "Bash",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "command": "ls"
+     },
+     "output": null
+    },
+    "status": "running",
+    "error": null
+   },
+   {
+    "type": "assistant_message",
+    "text": "while it runs"
+   },
+   {
+    "type": "tool_call",
+    "callId": "t1",
+    "name": "Bash",
+    "detail": {
+     "type": "shell",
+     "command": "ls",
+     "output": "a"
+    },
+    "status": "completed",
+    "error": null
+   }
+  ],
+  "expected": {
+   "updateCount": 3,
+   "content": "Showing all 2 activities\n\n[Shell] ls\nwhile it runs"
+  }
+ },
+ {
+  "name": "tool_lifecycle",
+  "limit": 2,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "t1",
+    "name": "Bash",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "command": "ls"
+     },
+     "output": null
+    },
+    "status": "running",
+    "error": null
+   },
+   {
+    "type": "assistant_message",
+    "text": "while it runs"
+   },
+   {
+    "type": "tool_call",
+    "callId": "t1",
+    "name": "Bash",
+    "detail": {
+     "type": "shell",
+     "command": "ls",
+     "output": "a"
+    },
+    "status": "completed",
+    "error": null
+   }
+  ],
+  "expected": {
+   "updateCount": 3,
+   "content": "Showing all 2 activities\n\n[Shell] ls\nwhile it runs"
+  }
+ },
+ {
+  "name": "tool_lifecycle",
+  "limit": 5,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "t1",
+    "name": "Bash",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "command": "ls"
+     },
+     "output": null
+    },
+    "status": "running",
+    "error": null
+   },
+   {
+    "type": "assistant_message",
+    "text": "while it runs"
+   },
+   {
+    "type": "tool_call",
+    "callId": "t1",
+    "name": "Bash",
+    "detail": {
+     "type": "shell",
+     "command": "ls",
+     "output": "a"
+    },
+    "status": "completed",
+    "error": null
+   }
+  ],
+  "expected": {
+   "updateCount": 3,
+   "content": "Showing all 2 activities\n\n[Shell] ls\nwhile it runs"
+  }
+ },
+ {
+  "name": "tool_lifecycle/curate-labelled",
+  "limit": null,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "t1",
+    "name": "Bash",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "command": "ls"
+     },
+     "output": null
+    },
+    "status": "running",
+    "error": null
+   },
+   {
+    "type": "assistant_message",
+    "text": "while it runs"
+   },
+   {
+    "type": "tool_call",
+    "callId": "t1",
+    "name": "Bash",
+    "detail": {
+     "type": "shell",
+     "command": "ls",
+     "output": "a"
+    },
+    "status": "completed",
+    "error": null
+   }
+  ],
+  "options": {
+   "labelAssistantMessages": true,
+   "includeKinds": [
+    "user_message",
+    "assistant_message",
+    "tool_call"
+   ],
+   "includeExternalToolInput": false,
+   "maxItems": 3
+  },
+  "expectedCurate": "[Shell] ls\n[Assistant] while it runs"
+ },
+ {
+  "name": "external_tools",
+  "limit": null,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "e1",
+    "name": "mcp__github__create_issue",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "body": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "title": "bug"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "e2",
+    "name": "mcp__lucina__shopping_add",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "name": "milk"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "e3",
+    "name": "speak",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "text": "hello"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "e4",
+    "name": "mcp__github__get_me",
+    "detail": {
+     "type": "plan",
+     "text": "x"
+    },
+    "status": "completed",
+    "error": null
+   }
+  ],
+  "expected": {
+   "updateCount": 4,
+   "content": "Showing all 4 activities\n\n[mcp__github__create_issue] {\"body\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...\n[mcp__lucina__shopping_add] {\"name\":\"milk\"}\n[Speak] {\"text\":\"hello\"}\n[Plan] null"
+  }
+ },
+ {
+  "name": "external_tools",
+  "limit": 0,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "e1",
+    "name": "mcp__github__create_issue",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "body": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "title": "bug"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "e2",
+    "name": "mcp__lucina__shopping_add",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "name": "milk"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "e3",
+    "name": "speak",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "text": "hello"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "e4",
+    "name": "mcp__github__get_me",
+    "detail": {
+     "type": "plan",
+     "text": "x"
+    },
+    "status": "completed",
+    "error": null
+   }
+  ],
+  "expected": {
+   "updateCount": 4,
+   "content": "Showing all 4 activities\n\n[mcp__github__create_issue] {\"body\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...\n[mcp__lucina__shopping_add] {\"name\":\"milk\"}\n[Speak] {\"text\":\"hello\"}\n[Plan] null"
+  }
+ },
+ {
+  "name": "external_tools",
+  "limit": 1,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "e1",
+    "name": "mcp__github__create_issue",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "body": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "title": "bug"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "e2",
+    "name": "mcp__lucina__shopping_add",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "name": "milk"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "e3",
+    "name": "speak",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "text": "hello"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "e4",
+    "name": "mcp__github__get_me",
+    "detail": {
+     "type": "plan",
+     "text": "x"
+    },
+    "status": "completed",
+    "error": null
+   }
+  ],
+  "expected": {
+   "updateCount": 4,
+   "content": "Showing 1 of 4 activities (limited to 1)\n\n[Plan] null"
+  }
+ },
+ {
+  "name": "external_tools",
+  "limit": 2,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "e1",
+    "name": "mcp__github__create_issue",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "body": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "title": "bug"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "e2",
+    "name": "mcp__lucina__shopping_add",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "name": "milk"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "e3",
+    "name": "speak",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "text": "hello"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "e4",
+    "name": "mcp__github__get_me",
+    "detail": {
+     "type": "plan",
+     "text": "x"
+    },
+    "status": "completed",
+    "error": null
+   }
+  ],
+  "expected": {
+   "updateCount": 4,
+   "content": "Showing 2 of 4 activities (limited to 2)\n\n[Speak] {\"text\":\"hello\"}\n[Plan] null"
+  }
+ },
+ {
+  "name": "external_tools",
+  "limit": 5,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "e1",
+    "name": "mcp__github__create_issue",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "body": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "title": "bug"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "e2",
+    "name": "mcp__lucina__shopping_add",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "name": "milk"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "e3",
+    "name": "speak",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "text": "hello"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "e4",
+    "name": "mcp__github__get_me",
+    "detail": {
+     "type": "plan",
+     "text": "x"
+    },
+    "status": "completed",
+    "error": null
+   }
+  ],
+  "expected": {
+   "updateCount": 4,
+   "content": "Showing all 4 activities\n\n[mcp__github__create_issue] {\"body\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...\n[mcp__lucina__shopping_add] {\"name\":\"milk\"}\n[Speak] {\"text\":\"hello\"}\n[Plan] null"
+  }
+ },
+ {
+  "name": "external_tools/curate-labelled",
+  "limit": null,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "e1",
+    "name": "mcp__github__create_issue",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "body": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "title": "bug"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "e2",
+    "name": "mcp__lucina__shopping_add",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "name": "milk"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "e3",
+    "name": "speak",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "text": "hello"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "e4",
+    "name": "mcp__github__get_me",
+    "detail": {
+     "type": "plan",
+     "text": "x"
+    },
+    "status": "completed",
+    "error": null
+   }
+  ],
+  "options": {
+   "labelAssistantMessages": true,
+   "includeKinds": [
+    "user_message",
+    "assistant_message",
+    "tool_call"
+   ],
+   "includeExternalToolInput": false,
+   "maxItems": 3
+  },
+  "expectedCurate": "[mcp__lucina__shopping_add]\n[Speak]\n[Plan]"
+ },
+ {
+  "name": "paseo_tools",
+  "limit": null,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "p1",
+    "name": "mcp__paseo__create_agent",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "initialPrompt": "Refactor the parser\nand add tests",
+      "title": ""
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p2",
+    "name": "mcp__paseo__send_agent_prompt",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "agentId": "a1",
+      "prompt": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p3",
+    "name": "mcp__paseo__get_agent_status",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "agentId": "abc123"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p4",
+    "name": "paseo.list_agents",
+    "detail": {
+     "type": "unknown",
+     "input": {},
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p5",
+    "name": "mcp__paseo__create_workspace",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "path": "/home/nez/Projects/x/"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p6",
+    "name": "mcp__paseo__browser_resize",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "height": 600,
+      "width": 800
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p7",
+    "name": "mcp__paseo__browser_upload",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "filePaths": [
+       "a.png",
+       "b.png",
+       "c.png"
+      ]
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p8",
+    "name": "mcp__paseo__future_tool_name",
+    "detail": {
+     "type": "unknown",
+     "input": {},
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   }
+  ],
+  "expected": {
+   "updateCount": 8,
+   "content": "Showing all 8 activities\n\n[Create agent] {\"initialPrompt\":\"Refactor the parser\\nand add tests\",\"title\":\"\"}\n[Send message] {\"agentId\":\"a1\",\"prompt\":\"yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\"}\n[Check agent] {\"agentId\":\"abc123\"}\n[List agents] {}\n[Create workspace] {\"path\":\"/home/nez/Projects/x/\"}\n[Resize browser] {\"height\":600,\"width\":800}\n[Upload files] {\"filePaths\":[\"a.png\",\"b.png\",\"c.png\"]}\n[Future tool name] {}"
+  }
+ },
+ {
+  "name": "paseo_tools",
+  "limit": 0,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "p1",
+    "name": "mcp__paseo__create_agent",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "initialPrompt": "Refactor the parser\nand add tests",
+      "title": ""
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p2",
+    "name": "mcp__paseo__send_agent_prompt",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "agentId": "a1",
+      "prompt": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p3",
+    "name": "mcp__paseo__get_agent_status",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "agentId": "abc123"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p4",
+    "name": "paseo.list_agents",
+    "detail": {
+     "type": "unknown",
+     "input": {},
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p5",
+    "name": "mcp__paseo__create_workspace",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "path": "/home/nez/Projects/x/"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p6",
+    "name": "mcp__paseo__browser_resize",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "height": 600,
+      "width": 800
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p7",
+    "name": "mcp__paseo__browser_upload",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "filePaths": [
+       "a.png",
+       "b.png",
+       "c.png"
+      ]
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p8",
+    "name": "mcp__paseo__future_tool_name",
+    "detail": {
+     "type": "unknown",
+     "input": {},
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   }
+  ],
+  "expected": {
+   "updateCount": 8,
+   "content": "Showing all 8 activities\n\n[Create agent] {\"initialPrompt\":\"Refactor the parser\\nand add tests\",\"title\":\"\"}\n[Send message] {\"agentId\":\"a1\",\"prompt\":\"yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\"}\n[Check agent] {\"agentId\":\"abc123\"}\n[List agents] {}\n[Create workspace] {\"path\":\"/home/nez/Projects/x/\"}\n[Resize browser] {\"height\":600,\"width\":800}\n[Upload files] {\"filePaths\":[\"a.png\",\"b.png\",\"c.png\"]}\n[Future tool name] {}"
+  }
+ },
+ {
+  "name": "paseo_tools",
+  "limit": 1,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "p1",
+    "name": "mcp__paseo__create_agent",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "initialPrompt": "Refactor the parser\nand add tests",
+      "title": ""
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p2",
+    "name": "mcp__paseo__send_agent_prompt",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "agentId": "a1",
+      "prompt": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p3",
+    "name": "mcp__paseo__get_agent_status",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "agentId": "abc123"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p4",
+    "name": "paseo.list_agents",
+    "detail": {
+     "type": "unknown",
+     "input": {},
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p5",
+    "name": "mcp__paseo__create_workspace",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "path": "/home/nez/Projects/x/"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p6",
+    "name": "mcp__paseo__browser_resize",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "height": 600,
+      "width": 800
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p7",
+    "name": "mcp__paseo__browser_upload",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "filePaths": [
+       "a.png",
+       "b.png",
+       "c.png"
+      ]
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p8",
+    "name": "mcp__paseo__future_tool_name",
+    "detail": {
+     "type": "unknown",
+     "input": {},
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   }
+  ],
+  "expected": {
+   "updateCount": 8,
+   "content": "Showing 1 of 8 activities (limited to 1)\n\n[Future tool name] {}"
+  }
+ },
+ {
+  "name": "paseo_tools",
+  "limit": 2,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "p1",
+    "name": "mcp__paseo__create_agent",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "initialPrompt": "Refactor the parser\nand add tests",
+      "title": ""
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p2",
+    "name": "mcp__paseo__send_agent_prompt",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "agentId": "a1",
+      "prompt": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p3",
+    "name": "mcp__paseo__get_agent_status",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "agentId": "abc123"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p4",
+    "name": "paseo.list_agents",
+    "detail": {
+     "type": "unknown",
+     "input": {},
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p5",
+    "name": "mcp__paseo__create_workspace",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "path": "/home/nez/Projects/x/"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p6",
+    "name": "mcp__paseo__browser_resize",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "height": 600,
+      "width": 800
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p7",
+    "name": "mcp__paseo__browser_upload",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "filePaths": [
+       "a.png",
+       "b.png",
+       "c.png"
+      ]
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p8",
+    "name": "mcp__paseo__future_tool_name",
+    "detail": {
+     "type": "unknown",
+     "input": {},
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   }
+  ],
+  "expected": {
+   "updateCount": 8,
+   "content": "Showing 2 of 8 activities (limited to 2)\n\n[Upload files] {\"filePaths\":[\"a.png\",\"b.png\",\"c.png\"]}\n[Future tool name] {}"
+  }
+ },
+ {
+  "name": "paseo_tools",
+  "limit": 5,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "p1",
+    "name": "mcp__paseo__create_agent",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "initialPrompt": "Refactor the parser\nand add tests",
+      "title": ""
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p2",
+    "name": "mcp__paseo__send_agent_prompt",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "agentId": "a1",
+      "prompt": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p3",
+    "name": "mcp__paseo__get_agent_status",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "agentId": "abc123"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p4",
+    "name": "paseo.list_agents",
+    "detail": {
+     "type": "unknown",
+     "input": {},
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p5",
+    "name": "mcp__paseo__create_workspace",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "path": "/home/nez/Projects/x/"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p6",
+    "name": "mcp__paseo__browser_resize",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "height": 600,
+      "width": 800
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p7",
+    "name": "mcp__paseo__browser_upload",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "filePaths": [
+       "a.png",
+       "b.png",
+       "c.png"
+      ]
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p8",
+    "name": "mcp__paseo__future_tool_name",
+    "detail": {
+     "type": "unknown",
+     "input": {},
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   }
+  ],
+  "expected": {
+   "updateCount": 8,
+   "content": "Showing 5 of 8 activities (limited to 5)\n\n[List agents] {}\n[Create workspace] {\"path\":\"/home/nez/Projects/x/\"}\n[Resize browser] {\"height\":600,\"width\":800}\n[Upload files] {\"filePaths\":[\"a.png\",\"b.png\",\"c.png\"]}\n[Future tool name] {}"
+  }
+ },
+ {
+  "name": "paseo_tools/curate-labelled",
+  "limit": null,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "p1",
+    "name": "mcp__paseo__create_agent",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "initialPrompt": "Refactor the parser\nand add tests",
+      "title": ""
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p2",
+    "name": "mcp__paseo__send_agent_prompt",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "agentId": "a1",
+      "prompt": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p3",
+    "name": "mcp__paseo__get_agent_status",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "agentId": "abc123"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p4",
+    "name": "paseo.list_agents",
+    "detail": {
+     "type": "unknown",
+     "input": {},
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p5",
+    "name": "mcp__paseo__create_workspace",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "path": "/home/nez/Projects/x/"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p6",
+    "name": "mcp__paseo__browser_resize",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "height": 600,
+      "width": 800
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p7",
+    "name": "mcp__paseo__browser_upload",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "filePaths": [
+       "a.png",
+       "b.png",
+       "c.png"
+      ]
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "p8",
+    "name": "mcp__paseo__future_tool_name",
+    "detail": {
+     "type": "unknown",
+     "input": {},
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   }
+  ],
+  "options": {
+   "labelAssistantMessages": true,
+   "includeKinds": [
+    "user_message",
+    "assistant_message",
+    "tool_call"
+   ],
+   "includeExternalToolInput": false,
+   "maxItems": 3
+  },
+  "expectedCurate": "[Resize browser] 800×600\n[Upload files] a.png +2\n[Future tool name]"
+ },
+ {
+  "name": "agent_messages",
+  "limit": null,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "m1",
+    "name": "notify",
+    "detail": {
+     "type": "unknown",
+     "input": {},
+     "output": null
+    },
+    "status": "completed",
+    "error": null,
+    "agentMessage": {
+     "event": "finished",
+     "sender": {
+      "id": "child-1",
+      "title": "Child agent"
+     },
+     "text": "  All done.  "
+    }
+   },
+   {
+    "type": "tool_call",
+    "callId": "m2",
+    "name": "notify",
+    "detail": {
+     "type": "unknown",
+     "input": {},
+     "output": null
+    },
+    "status": "completed",
+    "error": null,
+    "agentMessage": {
+     "event": "permission-required",
+     "sender": {
+      "id": "child-2"
+     },
+     "text": ""
+    }
+   }
+  ],
+  "expected": {
+   "updateCount": 2,
+   "content": "Showing all 2 activities\n\n[Agent finished] Child agent\nAll done.\n[Agent needs permission] child-2"
+  }
+ },
+ {
+  "name": "agent_messages",
+  "limit": 0,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "m1",
+    "name": "notify",
+    "detail": {
+     "type": "unknown",
+     "input": {},
+     "output": null
+    },
+    "status": "completed",
+    "error": null,
+    "agentMessage": {
+     "event": "finished",
+     "sender": {
+      "id": "child-1",
+      "title": "Child agent"
+     },
+     "text": "  All done.  "
+    }
+   },
+   {
+    "type": "tool_call",
+    "callId": "m2",
+    "name": "notify",
+    "detail": {
+     "type": "unknown",
+     "input": {},
+     "output": null
+    },
+    "status": "completed",
+    "error": null,
+    "agentMessage": {
+     "event": "permission-required",
+     "sender": {
+      "id": "child-2"
+     },
+     "text": ""
+    }
+   }
+  ],
+  "expected": {
+   "updateCount": 2,
+   "content": "Showing all 2 activities\n\n[Agent finished] Child agent\nAll done.\n[Agent needs permission] child-2"
+  }
+ },
+ {
+  "name": "agent_messages",
+  "limit": 1,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "m1",
+    "name": "notify",
+    "detail": {
+     "type": "unknown",
+     "input": {},
+     "output": null
+    },
+    "status": "completed",
+    "error": null,
+    "agentMessage": {
+     "event": "finished",
+     "sender": {
+      "id": "child-1",
+      "title": "Child agent"
+     },
+     "text": "  All done.  "
+    }
+   },
+   {
+    "type": "tool_call",
+    "callId": "m2",
+    "name": "notify",
+    "detail": {
+     "type": "unknown",
+     "input": {},
+     "output": null
+    },
+    "status": "completed",
+    "error": null,
+    "agentMessage": {
+     "event": "permission-required",
+     "sender": {
+      "id": "child-2"
+     },
+     "text": ""
+    }
+   }
+  ],
+  "expected": {
+   "updateCount": 2,
+   "content": "Showing 1 of 2 activities (limited to 1)\n\n[Agent needs permission] child-2"
+  }
+ },
+ {
+  "name": "agent_messages",
+  "limit": 2,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "m1",
+    "name": "notify",
+    "detail": {
+     "type": "unknown",
+     "input": {},
+     "output": null
+    },
+    "status": "completed",
+    "error": null,
+    "agentMessage": {
+     "event": "finished",
+     "sender": {
+      "id": "child-1",
+      "title": "Child agent"
+     },
+     "text": "  All done.  "
+    }
+   },
+   {
+    "type": "tool_call",
+    "callId": "m2",
+    "name": "notify",
+    "detail": {
+     "type": "unknown",
+     "input": {},
+     "output": null
+    },
+    "status": "completed",
+    "error": null,
+    "agentMessage": {
+     "event": "permission-required",
+     "sender": {
+      "id": "child-2"
+     },
+     "text": ""
+    }
+   }
+  ],
+  "expected": {
+   "updateCount": 2,
+   "content": "Showing all 2 activities\n\n[Agent finished] Child agent\nAll done.\n[Agent needs permission] child-2"
+  }
+ },
+ {
+  "name": "agent_messages",
+  "limit": 5,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "m1",
+    "name": "notify",
+    "detail": {
+     "type": "unknown",
+     "input": {},
+     "output": null
+    },
+    "status": "completed",
+    "error": null,
+    "agentMessage": {
+     "event": "finished",
+     "sender": {
+      "id": "child-1",
+      "title": "Child agent"
+     },
+     "text": "  All done.  "
+    }
+   },
+   {
+    "type": "tool_call",
+    "callId": "m2",
+    "name": "notify",
+    "detail": {
+     "type": "unknown",
+     "input": {},
+     "output": null
+    },
+    "status": "completed",
+    "error": null,
+    "agentMessage": {
+     "event": "permission-required",
+     "sender": {
+      "id": "child-2"
+     },
+     "text": ""
+    }
+   }
+  ],
+  "expected": {
+   "updateCount": 2,
+   "content": "Showing all 2 activities\n\n[Agent finished] Child agent\nAll done.\n[Agent needs permission] child-2"
+  }
+ },
+ {
+  "name": "agent_messages/curate-labelled",
+  "limit": null,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "m1",
+    "name": "notify",
+    "detail": {
+     "type": "unknown",
+     "input": {},
+     "output": null
+    },
+    "status": "completed",
+    "error": null,
+    "agentMessage": {
+     "event": "finished",
+     "sender": {
+      "id": "child-1",
+      "title": "Child agent"
+     },
+     "text": "  All done.  "
+    }
+   },
+   {
+    "type": "tool_call",
+    "callId": "m2",
+    "name": "notify",
+    "detail": {
+     "type": "unknown",
+     "input": {},
+     "output": null
+    },
+    "status": "completed",
+    "error": null,
+    "agentMessage": {
+     "event": "permission-required",
+     "sender": {
+      "id": "child-2"
+     },
+     "text": ""
+    }
+   }
+  ],
+  "options": {
+   "labelAssistantMessages": true,
+   "includeKinds": [
+    "user_message",
+    "assistant_message",
+    "tool_call"
+   ],
+   "includeExternalToolInput": false,
+   "maxItems": 3
+  },
+  "expectedCurate": "[Agent finished] Child agent\nAll done.\n[Agent needs permission] child-2"
+ },
+ {
+  "name": "misc",
+  "limit": null,
+  "items": [
+   {
+    "type": "todo",
+    "items": [
+     {
+      "text": "write tests",
+      "completed": true
+     },
+     {
+      "text": "ship",
+      "completed": false
+     }
+    ]
+   },
+   {
+    "type": "error",
+    "message": "rate limited"
+   },
+   {
+    "type": "compaction",
+    "status": "completed",
+    "trigger": "auto"
+   },
+   {
+    "type": "notification",
+    "level": "info",
+    "message": "ignored by the curator"
+   },
+   {
+    "type": "user_message",
+    "text": ""
+   },
+   {
+    "type": "assistant_message",
+    "text": "   "
+   }
+  ],
+  "expected": {
+   "updateCount": 6,
+   "content": "Showing all 6 activities\n\n[Tasks]\n- [x] write tests\n- [ ] ship\n[Error] rate limited\n[Compacted]\n[User] "
+  }
+ },
+ {
+  "name": "misc",
+  "limit": 0,
+  "items": [
+   {
+    "type": "todo",
+    "items": [
+     {
+      "text": "write tests",
+      "completed": true
+     },
+     {
+      "text": "ship",
+      "completed": false
+     }
+    ]
+   },
+   {
+    "type": "error",
+    "message": "rate limited"
+   },
+   {
+    "type": "compaction",
+    "status": "completed",
+    "trigger": "auto"
+   },
+   {
+    "type": "notification",
+    "level": "info",
+    "message": "ignored by the curator"
+   },
+   {
+    "type": "user_message",
+    "text": ""
+   },
+   {
+    "type": "assistant_message",
+    "text": "   "
+   }
+  ],
+  "expected": {
+   "updateCount": 6,
+   "content": "Showing all 6 activities\n\n[Tasks]\n- [x] write tests\n- [ ] ship\n[Error] rate limited\n[Compacted]\n[User] "
+  }
+ },
+ {
+  "name": "misc",
+  "limit": 1,
+  "items": [
+   {
+    "type": "todo",
+    "items": [
+     {
+      "text": "write tests",
+      "completed": true
+     },
+     {
+      "text": "ship",
+      "completed": false
+     }
+    ]
+   },
+   {
+    "type": "error",
+    "message": "rate limited"
+   },
+   {
+    "type": "compaction",
+    "status": "completed",
+    "trigger": "auto"
+   },
+   {
+    "type": "notification",
+    "level": "info",
+    "message": "ignored by the curator"
+   },
+   {
+    "type": "user_message",
+    "text": ""
+   },
+   {
+    "type": "assistant_message",
+    "text": "   "
+   }
+  ],
+  "expected": {
+   "updateCount": 6,
+   "content": "Showing 1 of 6 activities (limited to 1)\n\nNo activity to display."
+  }
+ },
+ {
+  "name": "misc",
+  "limit": 2,
+  "items": [
+   {
+    "type": "todo",
+    "items": [
+     {
+      "text": "write tests",
+      "completed": true
+     },
+     {
+      "text": "ship",
+      "completed": false
+     }
+    ]
+   },
+   {
+    "type": "error",
+    "message": "rate limited"
+   },
+   {
+    "type": "compaction",
+    "status": "completed",
+    "trigger": "auto"
+   },
+   {
+    "type": "notification",
+    "level": "info",
+    "message": "ignored by the curator"
+   },
+   {
+    "type": "user_message",
+    "text": ""
+   },
+   {
+    "type": "assistant_message",
+    "text": "   "
+   }
+  ],
+  "expected": {
+   "updateCount": 6,
+   "content": "Showing 2 of 6 activities (limited to 2)\n\n[User] "
+  }
+ },
+ {
+  "name": "misc",
+  "limit": 5,
+  "items": [
+   {
+    "type": "todo",
+    "items": [
+     {
+      "text": "write tests",
+      "completed": true
+     },
+     {
+      "text": "ship",
+      "completed": false
+     }
+    ]
+   },
+   {
+    "type": "error",
+    "message": "rate limited"
+   },
+   {
+    "type": "compaction",
+    "status": "completed",
+    "trigger": "auto"
+   },
+   {
+    "type": "notification",
+    "level": "info",
+    "message": "ignored by the curator"
+   },
+   {
+    "type": "user_message",
+    "text": ""
+   },
+   {
+    "type": "assistant_message",
+    "text": "   "
+   }
+  ],
+  "expected": {
+   "updateCount": 6,
+   "content": "Showing 5 of 6 activities (limited to 5)\n\n[Error] rate limited\n[Compacted]\n[User] "
+  }
+ },
+ {
+  "name": "misc/curate-labelled",
+  "limit": null,
+  "items": [
+   {
+    "type": "todo",
+    "items": [
+     {
+      "text": "write tests",
+      "completed": true
+     },
+     {
+      "text": "ship",
+      "completed": false
+     }
+    ]
+   },
+   {
+    "type": "error",
+    "message": "rate limited"
+   },
+   {
+    "type": "compaction",
+    "status": "completed",
+    "trigger": "auto"
+   },
+   {
+    "type": "notification",
+    "level": "info",
+    "message": "ignored by the curator"
+   },
+   {
+    "type": "user_message",
+    "text": ""
+   },
+   {
+    "type": "assistant_message",
+    "text": "   "
+   }
+  ],
+  "options": {
+   "labelAssistantMessages": true,
+   "includeKinds": [
+    "user_message",
+    "assistant_message",
+    "tool_call"
+   ],
+   "includeExternalToolInput": false,
+   "maxItems": 3
+  },
+  "expectedCurate": "[User] "
+ },
+ {
+  "name": "long_summary",
+  "limit": null,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "l1",
+    "name": "Bash",
+    "detail": {
+     "type": "shell",
+     "command": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "l2",
+    "name": "Bash",
+    "detail": {
+     "type": "shell",
+     "command": "a  b﻿c"
+    },
+    "status": "completed",
+    "error": null
+   }
+  ],
+  "expected": {
+   "updateCount": 2,
+   "content": "Showing all 2 activities\n\n[Shell] zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz...\n[Shell] a b c"
+  }
+ },
+ {
+  "name": "long_summary",
+  "limit": 0,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "l1",
+    "name": "Bash",
+    "detail": {
+     "type": "shell",
+     "command": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "l2",
+    "name": "Bash",
+    "detail": {
+     "type": "shell",
+     "command": "a  b﻿c"
+    },
+    "status": "completed",
+    "error": null
+   }
+  ],
+  "expected": {
+   "updateCount": 2,
+   "content": "Showing all 2 activities\n\n[Shell] zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz...\n[Shell] a b c"
+  }
+ },
+ {
+  "name": "long_summary",
+  "limit": 1,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "l1",
+    "name": "Bash",
+    "detail": {
+     "type": "shell",
+     "command": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "l2",
+    "name": "Bash",
+    "detail": {
+     "type": "shell",
+     "command": "a  b﻿c"
+    },
+    "status": "completed",
+    "error": null
+   }
+  ],
+  "expected": {
+   "updateCount": 2,
+   "content": "Showing 1 of 2 activities (limited to 1)\n\n[Shell] a b c"
+  }
+ },
+ {
+  "name": "long_summary",
+  "limit": 2,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "l1",
+    "name": "Bash",
+    "detail": {
+     "type": "shell",
+     "command": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "l2",
+    "name": "Bash",
+    "detail": {
+     "type": "shell",
+     "command": "a  b﻿c"
+    },
+    "status": "completed",
+    "error": null
+   }
+  ],
+  "expected": {
+   "updateCount": 2,
+   "content": "Showing all 2 activities\n\n[Shell] zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz...\n[Shell] a b c"
+  }
+ },
+ {
+  "name": "long_summary",
+  "limit": 5,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "l1",
+    "name": "Bash",
+    "detail": {
+     "type": "shell",
+     "command": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "l2",
+    "name": "Bash",
+    "detail": {
+     "type": "shell",
+     "command": "a  b﻿c"
+    },
+    "status": "completed",
+    "error": null
+   }
+  ],
+  "expected": {
+   "updateCount": 2,
+   "content": "Showing all 2 activities\n\n[Shell] zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz...\n[Shell] a b c"
+  }
+ },
+ {
+  "name": "long_summary/curate-labelled",
+  "limit": null,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "l1",
+    "name": "Bash",
+    "detail": {
+     "type": "shell",
+     "command": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "l2",
+    "name": "Bash",
+    "detail": {
+     "type": "shell",
+     "command": "a  b﻿c"
+    },
+    "status": "completed",
+    "error": null
+   }
+  ],
+  "options": {
+   "labelAssistantMessages": true,
+   "includeKinds": [
+    "user_message",
+    "assistant_message",
+    "tool_call"
+   ],
+   "includeExternalToolInput": false,
+   "maxItems": 3
+  },
+  "expectedCurate": "[Shell] zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz...\n[Shell] a b c"
+ },
+ {
+  "name": "unicode_cut",
+  "limit": null,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "u1",
+    "name": "mcp__x__y",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "s": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx😀😀😀😀😀😀"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "u2",
+    "name": "Bash",
+    "detail": {
+     "type": "shell",
+     "command": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx😀😀😀"
+    },
+    "status": "completed",
+    "error": null
+   }
+  ],
+  "expected": {
+   "updateCount": 2,
+   "content": "Showing all 2 activities\n\n[mcp__x__y] {\"s\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx😀😀...\n[Shell] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx�..."
+  }
+ },
+ {
+  "name": "unicode_cut",
+  "limit": 0,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "u1",
+    "name": "mcp__x__y",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "s": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx😀😀😀😀😀😀"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "u2",
+    "name": "Bash",
+    "detail": {
+     "type": "shell",
+     "command": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx😀😀😀"
+    },
+    "status": "completed",
+    "error": null
+   }
+  ],
+  "expected": {
+   "updateCount": 2,
+   "content": "Showing all 2 activities\n\n[mcp__x__y] {\"s\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx😀😀...\n[Shell] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx�..."
+  }
+ },
+ {
+  "name": "unicode_cut",
+  "limit": 1,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "u1",
+    "name": "mcp__x__y",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "s": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx😀😀😀😀😀😀"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "u2",
+    "name": "Bash",
+    "detail": {
+     "type": "shell",
+     "command": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx😀😀😀"
+    },
+    "status": "completed",
+    "error": null
+   }
+  ],
+  "expected": {
+   "updateCount": 2,
+   "content": "Showing 1 of 2 activities (limited to 1)\n\n[Shell] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx�..."
+  }
+ },
+ {
+  "name": "unicode_cut",
+  "limit": 2,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "u1",
+    "name": "mcp__x__y",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "s": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx😀😀😀😀😀😀"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "u2",
+    "name": "Bash",
+    "detail": {
+     "type": "shell",
+     "command": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx😀😀😀"
+    },
+    "status": "completed",
+    "error": null
+   }
+  ],
+  "expected": {
+   "updateCount": 2,
+   "content": "Showing all 2 activities\n\n[mcp__x__y] {\"s\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx😀😀...\n[Shell] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx�..."
+  }
+ },
+ {
+  "name": "unicode_cut",
+  "limit": 5,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "u1",
+    "name": "mcp__x__y",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "s": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx😀😀😀😀😀😀"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "u2",
+    "name": "Bash",
+    "detail": {
+     "type": "shell",
+     "command": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx😀😀😀"
+    },
+    "status": "completed",
+    "error": null
+   }
+  ],
+  "expected": {
+   "updateCount": 2,
+   "content": "Showing all 2 activities\n\n[mcp__x__y] {\"s\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx😀😀...\n[Shell] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx�..."
+  }
+ },
+ {
+  "name": "unicode_cut/curate-labelled",
+  "limit": null,
+  "items": [
+   {
+    "type": "tool_call",
+    "callId": "u1",
+    "name": "mcp__x__y",
+    "detail": {
+     "type": "unknown",
+     "input": {
+      "s": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx😀😀😀😀😀😀"
+     },
+     "output": null
+    },
+    "status": "completed",
+    "error": null
+   },
+   {
+    "type": "tool_call",
+    "callId": "u2",
+    "name": "Bash",
+    "detail": {
+     "type": "shell",
+     "command": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx😀😀😀"
+    },
+    "status": "completed",
+    "error": null
+   }
+  ],
+  "options": {
+   "labelAssistantMessages": true,
+   "includeKinds": [
+    "user_message",
+    "assistant_message",
+    "tool_call"
+   ],
+   "includeExternalToolInput": false,
+   "maxItems": 3
+  },
+  "expectedCurate": "[mcp__x__y]\n[Shell] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx�..."
+ },
+ {
+  "name": "many",
+  "limit": null,
+  "items": [
+   {
+    "type": "user_message",
+    "text": "prompt 0"
+   },
+   {
+    "type": "user_message",
+    "text": "prompt 1"
+   },
+   {
+    "type": "user_message",
+    "text": "prompt 2"
+   },
+   {
+    "type": "user_message",
+    "text": "prompt 3"
+   },
+   {
+    "type": "user_message",
+    "text": "prompt 4"
+   },
+   {
+    "type": "user_message",
+    "text": "prompt 5"
+   },
+   {
+    "type": "user_message",
+    "text": "prompt 6"
+   }
+  ],
+  "expected": {
+   "updateCount": 7,
+   "content": "Showing all 7 activities\n\n[User] prompt 0\n[User] prompt 1\n[User] prompt 2\n[User] prompt 3\n[User] prompt 4\n[User] prompt 5\n[User] prompt 6"
+  }
+ },
+ {
+  "name": "many",
+  "limit": 0,
+  "items": [
+   {
+    "type": "user_message",
+    "text": "prompt 0"
+   },
+   {
+    "type": "user_message",
+    "text": "prompt 1"
+   },
+   {
+    "type": "user_message",
+    "text": "prompt 2"
+   },
+   {
+    "type": "user_message",
+    "text": "prompt 3"
+   },
+   {
+    "type": "user_message",
+    "text": "prompt 4"
+   },
+   {
+    "type": "user_message",
+    "text": "prompt 5"
+   },
+   {
+    "type": "user_message",
+    "text": "prompt 6"
+   }
+  ],
+  "expected": {
+   "updateCount": 7,
+   "content": "Showing all 7 activities\n\n[User] prompt 0\n[User] prompt 1\n[User] prompt 2\n[User] prompt 3\n[User] prompt 4\n[User] prompt 5\n[User] prompt 6"
+  }
+ },
+ {
+  "name": "many",
+  "limit": 1,
+  "items": [
+   {
+    "type": "user_message",
+    "text": "prompt 0"
+   },
+   {
+    "type": "user_message",
+    "text": "prompt 1"
+   },
+   {
+    "type": "user_message",
+    "text": "prompt 2"
+   },
+   {
+    "type": "user_message",
+    "text": "prompt 3"
+   },
+   {
+    "type": "user_message",
+    "text": "prompt 4"
+   },
+   {
+    "type": "user_message",
+    "text": "prompt 5"
+   },
+   {
+    "type": "user_message",
+    "text": "prompt 6"
+   }
+  ],
+  "expected": {
+   "updateCount": 7,
+   "content": "Showing 1 of 7 activities (limited to 1)\n\n[User] prompt 6"
+  }
+ },
+ {
+  "name": "many",
+  "limit": 2,
+  "items": [
+   {
+    "type": "user_message",
+    "text": "prompt 0"
+   },
+   {
+    "type": "user_message",
+    "text": "prompt 1"
+   },
+   {
+    "type": "user_message",
+    "text": "prompt 2"
+   },
+   {
+    "type": "user_message",
+    "text": "prompt 3"
+   },
+   {
+    "type": "user_message",
+    "text": "prompt 4"
+   },
+   {
+    "type": "user_message",
+    "text": "prompt 5"
+   },
+   {
+    "type": "user_message",
+    "text": "prompt 6"
+   }
+  ],
+  "expected": {
+   "updateCount": 7,
+   "content": "Showing 2 of 7 activities (limited to 2)\n\n[User] prompt 5\n[User] prompt 6"
+  }
+ },
+ {
+  "name": "many",
+  "limit": 5,
+  "items": [
+   {
+    "type": "user_message",
+    "text": "prompt 0"
+   },
+   {
+    "type": "user_message",
+    "text": "prompt 1"
+   },
+   {
+    "type": "user_message",
+    "text": "prompt 2"
+   },
+   {
+    "type": "user_message",
+    "text": "prompt 3"
+   },
+   {
+    "type": "user_message",
+    "text": "prompt 4"
+   },
+   {
+    "type": "user_message",
+    "text": "prompt 5"
+   },
+   {
+    "type": "user_message",
+    "text": "prompt 6"
+   }
+  ],
+  "expected": {
+   "updateCount": 7,
+   "content": "Showing 5 of 7 activities (limited to 5)\n\n[User] prompt 2\n[User] prompt 3\n[User] prompt 4\n[User] prompt 5\n[User] prompt 6"
+  }
+ },
+ {
+  "name": "many/curate-labelled",
+  "limit": null,
+  "items": [
+   {
+    "type": "user_message",
+    "text": "prompt 0"
+   },
+   {
+    "type": "user_message",
+    "text": "prompt 1"
+   },
+   {
+    "type": "user_message",
+    "text": "prompt 2"
+   },
+   {
+    "type": "user_message",
+    "text": "prompt 3"
+   },
+   {
+    "type": "user_message",
+    "text": "prompt 4"
+   },
+   {
+    "type": "user_message",
+    "text": "prompt 5"
+   },
+   {
+    "type": "user_message",
+    "text": "prompt 6"
+   }
+  ],
+  "options": {
+   "labelAssistantMessages": true,
+   "includeKinds": [
+    "user_message",
+    "assistant_message",
+    "tool_call"
+   ],
+   "includeExternalToolInput": false,
+   "maxItems": 3
+  },
+  "expectedCurate": "[User] prompt 4\n[User] prompt 5\n[User] prompt 6"
+ }
+]

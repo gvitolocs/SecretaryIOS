@@ -12,11 +12,11 @@ export const TEST_CATALOG = {
     { id: "pantry", name: "Dispensa", icon: "🥫", order: 3 },
   ],
   items: [
-    { id: "banana", name: "Banane", names: { en: "Bananas", da: "Bananer" }, aliases: ["banana"], section: "produce", icon: "🍌" },
-    { id: "milk", name: "Latte", names: { en: "Milk", da: "Mælk" }, aliases: [], section: "dairy", icon: "🥛" },
-    { id: "oat-milk", name: "Latte d'avena", names: { en: "Oat milk" }, aliases: ["avena"], section: "dairy", icon: "🥛" },
-    { id: "coffee", name: "Caffè", names: { en: "Coffee" }, aliases: ["espresso"], section: "pantry", icon: "☕" },
-    { id: "pasta", name: "Pasta", names: { en: "Pasta" }, aliases: ["spaghetti"], section: "pantry", icon: "🍝" },
+    { id: "banana", name: "Banane", names: { it: "Banane", en: "Bananas", da: "Bananer" }, aliases: ["banana"], section: "produce", icon: "🍌" },
+    { id: "milk", name: "Latte", names: { it: "Latte", en: "Milk", da: "Mælk" }, aliases: [], section: "dairy", icon: "🥛" },
+    { id: "oat-milk", name: "Latte d'avena", names: { it: "Latte d'avena", en: "Oat milk" }, aliases: ["avena"], section: "dairy", icon: "🥛" },
+    { id: "coffee", name: "Caffè", names: { it: "Caffè", en: "Coffee" }, aliases: ["espresso"], section: "pantry", icon: "☕" },
+    { id: "pasta", name: "Pasta", names: { it: "Pasta", en: "Pasta" }, aliases: ["spaghetti"], section: "pantry", icon: "🍝" },
   ],
 };
 

@@ -164,6 +164,9 @@ export function LucinaPanel(props: {
       }
       stage = s;
       setStageRef(s);
+      // Keep Lucina’s original procedural stage and authentic model/poses.
+      // Restore the owner’s saved Studio choices below.
+      s.setBackground("default");
       restoreStudio(s);
       s.setMuted(muted());
       s.onStateChange((next) => setLucinaActivity(next));
@@ -480,7 +483,7 @@ export function LucinaPanel(props: {
           </button>
         </Show>
         <Show when={mode() === "ready"}>
-          <button type="button" class="icon-btn stage-btn" onClick={openEditor} aria-label={t("editor.open")} title={t("editor.open")}>
+          <button type="button" class="icon-btn stage-btn" onClick={openEditor} aria-label={t("avatarEditor.open")} title={t("avatarEditor.open")}>
             <EditIcon />
           </button>
         </Show>

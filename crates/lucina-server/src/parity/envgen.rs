@@ -1,0 +1,275 @@
+//! `lucina env-from-node`: the live Node Lucina's effective environment
+//! (`docker inspect`) as an env file, so the Rust Lucina (systemd unit) or a
+//! Node reference container (parity runs) uses exactly the same settings.
+//! Values are never printed; files are written 0600.
+//!
+//! - `--format systemd`: only the names the Rust Lucina reads; paths inside
+//!   the container are mapped to host paths through the container's mounts
+//!   (`/app/data/…` → `/home/nez/Projects/Lucina/data/…`,
+//!   `/run/secrets/deepseek.key` → its source file, …).
+//! - `--format shell`: as `systemd`, single-quoted for `set -a; . file` in bash.
+//! - `--format docker`: every variable, unchanged (for `docker run --env-file`).
+//! - `--token-out`: the Node `SECRETARY_API_TOKEN` alone (the Rust reminder
+//!   forwarder's `LUCINA_NODE_TOKEN_FILE`).
+//! - `systemd`/`shell` also get `LUCINA_SYSTEM_TELEGRAM` / `LUCINA_SYSTEM_DISCORD`
+//!   (`true` when the Node container has a Lucina bot token; the tokens stay out):
+//!   the capability self-description describes the whole system.
+
+use std::io::Write;
+use std::path::Path;
+use std::process::Command;
+
+use serde_json::Value;
+
+/// Name prefixes and names the Rust Lucina reads (INVENTORY §7 subset).
+const RUST_PREFIXES: &[&str] = &[
+    "LUCINA_",
+    "SECRETARY_",
+    "HONCHO_",
+    "DEEPSEEK_",
+    "DSH_REMOTE_",
+    "GROCERY_DEALS_",
+];
+const RUST_NAMES: &[&str] = &[
+    "ALEXA_LUCINA_ENABLED",
+    "HERMES_HARNESS_ENABLED",
+    "GROCERY_DATABASE_URL",
+    // Grocery deals (crate::deals). GROCERY_OFFER_WATCH_ENABLED is not copied:
+    // the Rust deal watch has its own switch in mode.env.
+    "GROCERY_HOME_LAT",
+    "GROCERY_HOME_LNG",
+    "GROCERY_HOME_LABEL",
+    "GROCERY_NEARBY_RADIUS_M",
+    "GROCERY_REQUEST_TIMEOUT_MS",
+    "SALLING_API_KEY",
+    "SALLING_API_BASE_URL",
+    "MEMORY_PROVIDER",
+    "TELEGRAM_ALLOWED_CHAT_IDS",
+    "HERMES_HARNESS_WORKSPACE",
+    "IMAGE_PROVIDER",
+    "COMFYUI_BASE_URL",
+];
+/// Rust-only switches the generated file must never carry over.
+const NEVER: &[&str] = &[
+    "LUCINA_BIND",
+    "LUCINA_DATA_DIR",
+    "LUCINA_TIMELINE_PATH",
+    "LUCINA_MEMORY_MODE",
+    "LUCINA_REMINDERS_WRITER",
+    "LUCINA_SCHEDULER",
+    "LUCINA_SHADOW",
+    "LUCINA_JOBS",
+    "LUCINA_NODE_URL",
+    "LUCINA_NODE_TOKEN_FILE",
+    "LUCINA_TELEGRAM_ENABLED",
+    "LUCINA_DISCORD_ENABLED",
+    "SECRETARY_API_TOKEN_FILE",
+];
+
+fn inspect(container: &str, field: &str) -> anyhow::Result<Value> {
+    let out = Command::new("docker")
+        .args([
+            "inspect",
+            container,
+            "--format",
+            &format!("{{{{json {field}}}}}"),
+        ])
+        .output()?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "docker inspect {container} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(serde_json::from_slice(&out.stdout)?)
+}
+
+/// `(destination, source)` bind mounts, longest destination first.
+fn mounts(container: &str) -> anyhow::Result<Vec<(String, String)>> {
+    let v = inspect(container, ".Mounts")?;
+    let mut m: Vec<(String, String)> = v
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter(|x| x["Type"] == "bind")
+                .filter_map(|x| {
+                    Some((
+                        x["Destination"].as_str()?.to_owned(),
+                        x["Source"].as_str()?.to_owned(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    m.sort_by_key(|(d, _)| std::cmp::Reverse(d.len()));
+    Ok(m)
+}
+
+/// The repo the `lucina:nez` image is built from: `/app/…` paths that no
+/// mount covers (e.g. `/app/docs/…`) live there on the host.
+pub const APP_ROOT: &str = "/home/nez/Projects/Lucina";
+
+fn map_path(value: &str, mounts: &[(String, String)]) -> String {
+    for (dest, src) in mounts {
+        if value == dest {
+            return src.clone();
+        }
+        if let Some(rest) = value.strip_prefix(&format!("{dest}/")) {
+            return format!("{src}/{rest}");
+        }
+    }
+    match value.strip_prefix("/app/") {
+        Some(rest) if !mounts.is_empty() => format!("{APP_ROOT}/{rest}"),
+        _ => value.to_owned(),
+    }
+}
+
+/// Single quotes for `bash` (`set -a; . file`): nothing inside is expanded.
+fn shell_quote(v: &str) -> String {
+    format!("'{}'", v.replace('\'', "'\\''"))
+}
+
+fn systemd_quote(v: &str) -> String {
+    format!("\"{}\"", v.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+fn write_private(path: &Path, text: &str) -> anyhow::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).write(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut f = opts.open(path)?;
+    f.write_all(text.as_bytes())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+/// Write the env file; returns the variable names written (no values).
+pub fn run(
+    container: &str,
+    out: &Path,
+    format: &str,
+    token_out: Option<&Path>,
+) -> anyhow::Result<Vec<String>> {
+    let env = inspect(container, ".Config.Env")?;
+    let mounts = if format == "docker" {
+        Vec::new()
+    } else {
+        mounts(container)?
+    };
+    let mut names = Vec::new();
+    let mut text = String::from("# Generated by `lucina env-from-node` from the running Node Lucina. Do not edit; regenerate.\n");
+    for entry in env
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        let Some((k, v)) = entry.split_once('=') else {
+            continue;
+        };
+        if v.contains('\n') {
+            continue;
+        }
+        if let (Some(path), "SECRETARY_API_TOKEN") = (token_out, k) {
+            write_private(path, &format!("{v}\n"))?;
+        }
+        match format {
+            "docker" => text.push_str(&format!("{k}={v}\n")),
+            _ => {
+                let wanted = (RUST_PREFIXES.iter().any(|p| k.starts_with(p))
+                    || RUST_NAMES.contains(&k))
+                    && !NEVER.contains(&k);
+                if !wanted {
+                    continue;
+                }
+                text.push_str(&format!(
+                    "{k}={}\n",
+                    if format == "shell" {
+                        shell_quote(&map_path(v, &mounts))
+                    } else {
+                        systemd_quote(&map_path(v, &mounts))
+                    }
+                ));
+            }
+        }
+        names.push(k.to_owned());
+    }
+    if format != "docker" {
+        // Which Lucina bots the Node process runs (Node's `config.telegram.token`
+        // and `config.discord.token`), without the tokens.
+        let has = |keys: &[&str]| {
+            env.as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .any(|e| {
+                    e.split_once('=')
+                        .is_some_and(|(k, v)| keys.contains(&k) && !v.trim().is_empty())
+                })
+        };
+        for (name, keys) in [
+            (
+                "LUCINA_SYSTEM_TELEGRAM",
+                &["TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_TOKEN_LUCINA"][..],
+            ),
+            (
+                "LUCINA_SYSTEM_DISCORD",
+                &["DISCORD_BOT_TOKEN", "DISCORD_BOT_TOKEN_LUCINA"][..],
+            ),
+        ] {
+            text.push_str(&format!(
+                "{name}={}\n",
+                if has(keys) { "true" } else { "false" }
+            ));
+            names.push(name.to_owned());
+        }
+    }
+    write_private(out, &text)?;
+    Ok(names)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_paths_and_quotes() {
+        let m = vec![
+            (
+                "/app/data".to_owned(),
+                "/home/nez/Projects/Lucina/data".to_owned(),
+            ),
+            ("/app".to_owned(), "/home/nez/Projects/Lucina".to_owned()),
+            (
+                "/run/secrets/deepseek.key".to_owned(),
+                "/home/nez/secrets/env/deepseek.key".to_owned(),
+            ),
+        ];
+        assert_eq!(
+            map_path("/app/data/presence", &m),
+            "/home/nez/Projects/Lucina/data/presence"
+        );
+        assert_eq!(
+            map_path("/run/secrets/deepseek.key", &m),
+            "/home/nez/secrets/env/deepseek.key"
+        );
+        assert_eq!(map_path("/application", &m), "/application");
+        assert_eq!(
+            map_path("/app/docs/lucina-persona.md", &m[2..]),
+            "/home/nez/Projects/Lucina/docs/lucina-persona.md"
+        );
+        assert_eq!(systemd_quote(r#"a"b\c"#), r#""a\"b\\c""#);
+        assert_eq!(shell_quote("a'b$c"), r#"'a'\''b$c'"#);
+    }
+}

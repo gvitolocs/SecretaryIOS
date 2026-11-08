@@ -13,6 +13,7 @@ import {
   type OpsResponse,
   type ShopList,
 } from "../lib/shoppingOps";
+import { parseDealsMap, type DealsMapData } from "../lib/dealsMap";
 import { ApiError, request } from "./client";
 
 const CLIENT = { "X-Secretary-Client": "web" };
@@ -42,5 +43,13 @@ export const shoppingApi = {
         body: { expectedRevision, ops },
         headers: CLIENT,
       }),
+    ),
+  /** Deals map around home (Lucina's deal engine), radius 500..=15000 m. */
+  dealsMap: async (radiusM?: number): Promise<DealsMapData> =>
+    parseDealsMap(
+      await request<unknown>(
+        "GET",
+        `/v1/grocery/deals/map${radiusM !== undefined ? `?radiusM=${enc(String(radiusM))}` : ""}`,
+      ),
     ),
 };

@@ -1,0 +1,8 @@
+Code checkpoint: 308dea21cdc40210f70bd6c42e99d24c4ba3c2c1
+Branch: codex/lucina-gravity
+Worktree: /home/nez/Projects/.worktrees/SecretaryIOS/wip-com3d2-20261026
+Validation: 56 tests passed; Clippy -D warnings; native and wasm32 release builds passed.
+Focused import: 15 pieces and 14 presets passed conversion/composition.
+Private runtime: 127.0.0.1:28983; lucina-native-avatar-preview.service, release executable in this worktree.
+Private evidence: /home/nez/.local/state/lucina-nte-preview/wardrobe-native-v3/final-build-sha256-20261028.txt
+Scope: native avatar compatibility foundation; full engine port and all garment fits are not complete.

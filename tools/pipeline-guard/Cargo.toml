@@ -1,0 +1,13 @@
+[package]
+name = "pipeline-guard"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Claude Code PreToolUse hook: Lucina repo work goes through lagent task start / lagent merge (docs/repo-workflow.md)."
+
+# Standalone: not a member of the Rust workspace; built on the Mac and on nezopt.
+[workspace]
+
+[dependencies]
+regex = "1"
+serde_json = "1"

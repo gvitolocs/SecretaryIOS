@@ -1,0 +1,22 @@
+[package]
+name = "secretary-maps"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Self-hosted maps for the Secretary apps: PMTiles with HTTP range, map fonts and sprites, Google Places geocoding and Routes routing"
+
+[dependencies]
+axum = "0.8"
+tokio = { workspace = true }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["fs"] }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+time = { workspace = true }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile = "3"
+http-body-util = "0.1"

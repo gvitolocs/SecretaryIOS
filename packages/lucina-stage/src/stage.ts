@@ -325,6 +325,24 @@ const DEG = Math.PI / 180;
  * Lowers A/T-pose arms. Uses the manifest's recommended idle rotation when it names the upper-arm
  * node, otherwise the measured rest direction of each upper arm, aiming `down` degrees below horizontal.
  */
+/** Holds both arms `deg` further out from the body on top of every clip (manifest `pose.armSpreadDeg`). */
+function spreadArms(rig: Rig, deg: number): void {
+  for (const [upper, lower] of [
+    ['upper_arm_l', 'lower_arm_l'],
+    ['upper_arm_r', 'lower_arm_r'],
+  ] as const) {
+    const a = rig.bonePosition(upper);
+    const b = rig.bonePosition(lower);
+    if (!a || !b || !deg) {
+      rig.setLayerOffset(upper, null);
+      continue;
+    }
+    // Rotating about +Z by a positive angle swings a +X arm up and out (relaxArms uses the negative to lower it).
+    const side = Math.sign(b.sub(a).x) || 1;
+    rig.setLayerOffset(upper, { x: 0, y: 0, z: side * deg * DEG });
+  }
+}
+
 function relaxArms(rig: Rig, cfg: { down?: number; forward?: number; elbow?: number }, manifest: NormalizedManifest): void {
   const target = (cfg.down ?? 80) * DEG;
   const forward = (cfg.forward ?? 6) * DEG;
@@ -506,6 +524,7 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
   }
   rig.setFixedMorphs({ ...DEFAULT_FIXED_MORPHS, ...manifest.idle.morphs, ...options.fixedMorphs });
   if (options.armPose !== false) relaxArms(rig, options.armPose ?? {}, manifest);
+  spreadArms(rig, manifest.pose.armSpreadDeg);
   let player: ClipPlayer | null = null;
   if (clipLib && !placeholder) {
     player = new ClipPlayer(model, clipLib, { stateClips: { ...manifest.stateClips, ...options.stateClips } });

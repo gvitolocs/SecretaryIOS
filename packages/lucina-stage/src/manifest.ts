@@ -28,6 +28,8 @@ export interface NormalizedManifest {
   hideMaterials: string[];
   /** Recommended idle pose: per-node world-space rotations (axis, degrees) and fixed morph weights. */
   idle: { rotations: Record<string, { axis: Vec3; angleDeg: number }>; morphs: Record<string, number> };
+  /** Pose corrections on top of every clip: `armSpreadDeg` holds the arms out (degrees) so the hands clear a skirt. */
+  pose: { armSpreadDeg: number };
   /** Direction the character faces in the model's space. Auto-detected when absent. */
   facing?: '+z' | '-z';
   /** The raw `physics` block (secondary motion; validated by physics/config.ts). */
@@ -164,6 +166,7 @@ export function normalizeManifest(raw: unknown): NormalizedManifest {
     hide: [],
     hideMaterials: [],
     idle: { rotations: {}, morphs: {} },
+    pose: { armSpreadDeg: 0 },
     stateClips: {},
   };
   if (!raw || typeof raw !== 'object') return out;
@@ -239,6 +242,10 @@ export function normalizeManifest(raw: unknown): NormalizedManifest {
       for (const [k, v] of Object.entries(morphs)) if (typeof v === 'number' && Number.isFinite(v)) out.idle.morphs[k] = v;
     }
   }
+
+  const pose = m.pose as Record<string, unknown> | undefined;
+  const spread = pose && typeof pose === 'object' ? pose.armSpreadDeg : undefined;
+  if (typeof spread === 'number' && Number.isFinite(spread)) out.pose.armSpreadDeg = Math.max(-10, Math.min(25, spread));
 
   const pools = m.state_clips ?? m.stateClips;
   if (pools && typeof pools === 'object' && !Array.isArray(pools)) {

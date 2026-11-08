@@ -1,0 +1,693 @@
+/*
+ * Notebooks (views/Notebooks.tsx, views/Notebook.tsx, views/notebooks/): the page system's parts
+ * (styles/page.css) plus the three columns, the chat, citation chips and the reader.
+ * Based on Open Notebook by Luis Novo (MIT).
+ */
+
+.nb-slot {
+  display: flex;
+  min-width: 0;
+}
+
+.pg .nb-credit {
+  margin-top: 24px;
+  color: var(--pg-muted);
+  font-size: 12px;
+}
+
+.nb-credit a {
+  color: inherit;
+  text-underline-offset: 3px;
+}
+
+.nb-hint {
+  font-size: 12px;
+}
+
+.nb-fieldgroup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* ---------- Forms in sheets ---------- */
+
+/* The sheets are portalled out of .pg, so they do not get its reset. */
+/* (:where keeps the reset weaker than the classes below.) */
+:where(.nb-sheet) :is(p, h3, ul, ol, dl) {
+  margin: 0;
+}
+
+.nb-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.nb-form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 96px;
+  gap: 12px;
+}
+
+@media (max-width: 640px) {
+  .nb-form-row {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .nb-minutes {
+    grid-column: 1 / -1;
+  }
+}
+
+.nb-textarea {
+  min-height: 72px;
+  padding: 10px 12px;
+  line-height: 1.45;
+  resize: vertical;
+}
+
+.nb-file {
+  padding: 6px 12px;
+}
+
+.nb-sheet .pg-sheet-tools .pg-seg {
+  align-self: flex-start;
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+/* ---------- The columns ---------- */
+
+.nb-cols {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.nb-cols--wide {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.3fr);
+  align-items: stretch;
+}
+
+.nb-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.nb-cols--wide .nb-card {
+  height: clamp(480px, calc(100dvh - 250px), 820px);
+  overflow: hidden;
+}
+
+/* The rows scroll inside the card; its title stays. */
+.nb-card > .pg-rows,
+.nb-card > .pg-empty {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.nb-card > .pg-empty {
+  padding-top: 8px;
+}
+
+/* ---------- Source and note rows ---------- */
+
+.nb-card .pg-row {
+  gap: 12px;
+  padding: 10px 8px 10px 16px;
+}
+
+.nb-src {
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+
+/* The title shrinks and truncates instead of dropping onto its own line. */
+.nb-src .pg-row-main {
+  flex: 1 1 0;
+}
+
+.nb-kind {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin-top: 2px;
+  border-radius: 8px;
+  background: var(--pg-fill);
+  color: var(--pg-muted);
+}
+
+.nb-open {
+  max-width: 100%;
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.nb-open:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.nb-row-actions {
+  display: flex;
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-left: 40px;
+}
+
+.nb-row-actions .nb-error {
+  flex: 1 1 100%;
+}
+
+.nb-ctx {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-right: auto;
+}
+
+.nb-ctx-label {
+  color: var(--pg-muted);
+  font-size: 12px;
+}
+
+.nb-ctx select {
+  min-height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.nb-status {
+  font-weight: 600;
+}
+
+.nb-status[data-tone="ok"] {
+  color: var(--pg-success);
+}
+
+.nb-status[data-tone="bad"] {
+  color: var(--pg-danger);
+}
+
+.nb-status[data-tone="work"] {
+  color: var(--pg-data);
+}
+
+.nb-status[data-busy]::after {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: nb-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes nb-pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+.nb-error {
+  margin: 0;
+  color: var(--pg-danger);
+  font-size: 13px;
+}
+
+.nb-note .pg-row-sub {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  white-space: normal;
+}
+
+/* ---------- Note picker ---------- */
+
+.nb-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.nb-picker-list {
+  max-height: 280px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.nb-picker-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.nb-picker-row:hover,
+.nb-picker-row[data-selected] {
+  background: var(--pg-fill);
+}
+
+.nb-picker-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.nb-picker-title {
+  font-weight: 600;
+}
+
+.nb-picker-sub {
+  overflow: hidden;
+  color: var(--pg-muted);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- Chat ---------- */
+
+.nb-chat-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.nb-chat-bar select {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 32px;
+}
+
+.nb-log {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 160px;
+  margin: 12px 0 0;
+  padding: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  list-style: none;
+}
+
+.nb-detail .nb-cols:not(.nb-cols--wide) .nb-log {
+  max-height: 60dvh;
+}
+
+.nb-log-empty .pg-empty {
+  padding: 8px 0;
+}
+
+.nb-msg {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.nb-msg[data-role="user"] {
+  align-self: flex-end;
+  max-width: 90%;
+  padding: 8px 12px;
+  border-radius: 14px 14px 4px 14px;
+  background: color-mix(in srgb, var(--pg-data) 18%, transparent);
+}
+
+.nb-msg-text {
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.nb-msg .md.nb-msg-text,
+.nb-insight .md {
+  font-size: 14px;
+  line-height: 1.55;
+  white-space: normal;
+}
+
+.nb-msg-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+}
+
+.nb-cites {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 8px 0 0;
+  border-top: 1px solid var(--pg-hair);
+  list-style: none;
+}
+
+.nb-cite-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 3px 0;
+  border: 0;
+  background: none;
+  color: var(--pg-muted);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.nb-cite-row:hover {
+  color: var(--pg-text);
+}
+
+.nb-cite-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nb-cite-page {
+  flex: none;
+  font-size: 12px;
+}
+
+/* A citation chip: [source:…] and [insight:…] in an answer. */
+.md-cite {
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  margin: 0 2px;
+  padding: 0 5px;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--lu-accent, #7f8fe0) 22%, transparent);
+  color: var(--lu-accent, #7f8fe0);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  vertical-align: 1px;
+  cursor: pointer;
+}
+
+button.md-cite:hover {
+  background: color-mix(in srgb, var(--lu-accent, #7f8fe0) 38%, transparent);
+}
+
+.md-cite[data-kind="insight"] {
+  border-radius: 5px;
+}
+
+.md-cite:focus-visible {
+  outline: 2px solid var(--lu-accent, #7f8fe0);
+  outline-offset: 2px;
+}
+
+.nb-chat-error {
+  margin: 8px 0 0;
+}
+
+.nb-composer {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--pg-hair);
+}
+
+.nb-compose-text {
+  min-height: 56px;
+  padding: 8px 12px;
+  line-height: 1.4;
+  resize: none;
+}
+
+.nb-compose-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.nb-model {
+  min-height: 32px;
+  font-size: 13px;
+}
+
+/* ---------- Reader ---------- */
+
+.nb-reader-meta {
+  margin-bottom: 8px;
+}
+
+.nb-reader-section {
+  margin-top: 24px;
+}
+
+.nb-reader-h {
+  margin-bottom: 12px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.nb-run {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.nb-run-pick {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.nb-insights,
+.nb-chunks,
+.nb-episodes,
+.nb-hits {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.nb-insights,
+.nb-episodes {
+  gap: 12px;
+}
+
+.nb-insight,
+.nb-episode {
+  padding: 12px 16px;
+  border: 1px solid var(--pg-border);
+  border-radius: 12px;
+}
+
+.nb-insight-head,
+.nb-episode-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.nb-insight-actions,
+.nb-episode-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.nb-chunk {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 10px;
+}
+
+.nb-chunk + .nb-chunk {
+  margin-top: 2px;
+}
+
+.nb-chunk[data-current] {
+  background: color-mix(in srgb, var(--pg-data) 14%, transparent);
+  box-shadow: inset 3px 0 0 var(--pg-data);
+}
+
+.nb-chunk p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.nb-chunk-ref {
+  color: var(--pg-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* ---------- Podcast ---------- */
+
+.nb-episodes-h {
+  margin-top: 24px;
+}
+
+.nb-episode-sub {
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.nb-episode audio {
+  width: 100%;
+  height: 36px;
+}
+
+.nb-transcript {
+  margin-top: 8px;
+}
+
+.nb-transcript ul {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* ---------- Search ---------- */
+
+.nb-search-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--pg-muted);
+}
+
+.nb-search-field .pg-input {
+  flex: 1 1 auto;
+}
+
+.nb-hits {
+  gap: 4px;
+}
+
+.nb-hit-main {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 12px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.nb-hit-main:hover {
+  background: var(--pg-fill);
+}
+
+.nb-hit-title {
+  font-weight: 600;
+}
+
+.nb-hit-kind {
+  color: var(--pg-muted);
+  font-size: 12px;
+}
+
+.nb-hit-excerpt {
+  grid-column: 1 / -1;
+  color: var(--pg-muted);
+  font-size: 13px;
+}
+
+/* ---------- Settings ---------- */
+
+.nb-danger-zone {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--pg-hair);
+}
+
+.nb-danger-zone .nb-reader-h {
+  margin-bottom: 0;
+}
+
+.nb-radios {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 0;
+  border: 0;
+}
+
+.nb-radios label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* The header's quiet buttons wrap with the accent action on a phone. */
+.nb-detail .pg-head-actions {
+  flex-wrap: wrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nb-status[data-busy]::after {
+    animation: none;
+  }
+}

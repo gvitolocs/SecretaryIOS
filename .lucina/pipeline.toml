@@ -1,0 +1,52 @@
+# SecretaryIOS pipeline rules (lucina-agentd reads this from main, never from the branch being merged).
+# Format and defaults: crates/lucina-agentd/src/pipeline/repo.rs; workflow: docs/repo-workflow.md.
+trunk = "main"
+
+[merge]
+# Fast gates (owner, 2026-11-01): diffgate, then `cargo check --workspace` and the touched standalone
+# crates. The session runs the tests in its workspace before merging; `lagent merge --full` runs them here,
+# and cargo = "touched" makes that the default again.
+diffgate = true
+cargo = "check"
+timeout_min = 45
+# Standalone crates (tools/*, crates/secretary-{instagram,pixiv}, firmware/lucinavoice-core, ...) are
+# built through --manifest-path when touched. These use other toolchains and are left alone:
+skip = ["firmware/lucinavoice"]
+
+# `lagent deploy <runtime>`: from main's tip, inside the merge lock, between deploy-guard check and record.
+# Runtimes without a recipe still deploy by hand (docs/repo-workflow.md, "Deploying").
+[deploy.lucina-agentd]
+# A restart interrupts running agents: refuse while any runs (--force overrides).
+build = "bash deploy/lucina-agentd/no-running-agents.sh"
+install = "deploy/lucina-agentd/install.sh"
+timeout_min = 30
+
+[deploy.lucina-rs]
+# install.sh builds lucina-server, installs it, restarts lucina-rs and checks /health.
+install = "deploy/lucina-rs/install.sh"
+timeout_min = 40
+
+[deploy.lucina-memo]
+# install.sh builds lucina-memo, installs it and restarts the unit.
+install = "deploy/lucina-memo/install.sh"
+timeout_min = 30
+
+[deploy.secretary-server]
+build = "CC_x86_64_unknown_linux_musl=gcc cargo build --release --target x86_64-unknown-linux-musl -p secretary-server"
+install = "bash deploy/p1/install-binary.sh secretary-server"
+timeout_min = 30
+
+[deploy.secretary-mcp]
+build = "CC_x86_64_unknown_linux_musl=gcc cargo build --release --target x86_64-unknown-linux-musl -p secretary-mcp"
+install = "bash deploy/p1/install-binary.sh secretary-mcp"
+timeout_min = 30
+
+[deploy.web]
+build = "(cd packages/lucina-stage && npm ci --no-audit --no-fund && npm run -s build) && (cd web && npm ci --no-audit --no-fund && npm run -s build)"
+install = "bash deploy/p1/install-web.sh"
+timeout_min = 30
+
+[deploy.lucina-media]
+# install.sh builds lucina-media, installs it, restarts the unit and checks /healthz.
+install = "deploy/lucina-media/install.sh"
+timeout_min = 30

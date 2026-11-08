@@ -39,6 +39,7 @@
 //   POST /v1/_mock/timeline {channel, role, text, meta?} -> injects an item (CSRF header needed)
 //   POST /v1/proactive/outreach/{po_id}/feedback {action} -> 201 {feedback} (logged, not stored)
 //   MOCK_FAKE_TRAFFIC=1 posts a fake Telegram message (and Lucina's answer) every ~20 s.
+//   MOCK_CHAT_HISTORY=<n> seeds n items of this browser's chat with photos and links (seedChatHistory).
 // Lucina stage (session needed, like the real server):
 //   GET  /v1/assets/<file> -> files from MOCK_ASSETS_DIR (default ~/scratch/lucina-avatar/out).
 //                            The model is private: never copy it into the repo.
@@ -49,15 +50,30 @@
 //   missing there fall back to lucina.glb (hairstyle parts are 404: she keeps her own hair).
 //   Chat "mettiti la divisa", "put on your gym clothes", "fatti la coda", "put your hair in a
 //   bun", "torna automatica" make Lucina change (an avatar_outfit timeline item, like the real one).
+// Gallery (mock/gallery.mjs): /v1/media/* over synthetic items unless MOCK_MEDIA_URL proxies a real library;
+//   MOCK_GALLERY_ITEMS sets how many items (default 6000).
+// Pixiv (mock/pixiv.mjs): /v1/pixiv/* over generated works (SVG pictures); R-18 needs adult=1 like the real service.
+// Maps (mock/maps.mjs): /v1/maps/config (tiles null unless MOCK_MAPS_TILES=<file.pmtiles>, then
+//   served with Range; MOCK_MAPS_ASSETS=<dir> serves fonts/ and sprites/), /v1/maps/geocode (a
+//   fixed table: "Folkehuset Møllestien", "Skejbygårdsvej 3"), and /v1/maps/routes (four modes).
+// Lucina Agents (mock/agents.mjs): /v1/agents/* with a shared SSE stream, permissions, diffs, files, terminals, schedules.
+// Instagram (mock/instagram.mjs): /v1/instagram/* over synthetic profiles (natgeo, nasa, private; "slow" is a 429).
 // Tasks: /v1/tasks/* is proxied to a real secretary-server (MOCK_TASKS_URL + MOCK_TASKS_TOKEN);
 //   Links shows a Todoist card (paste any 20+ character token; "bad…" is refused).
+// NClient (docs/nclient.md; mock/nclient.mjs): /v1/nclient/* over neutral placeholder galleries and generated SVG images;
+//   POST /v1/_mock/nclient {enabled, media:"down", slow} switches the plugin off or fails/slows its saves.
+// Notebooks (docs/design/notebooks-api.md; mock/notebooks.mjs): /v1/notebooks, in memory, with a
+//   cited chat that streams, sources and podcasts that move through their states by the clock.
 // Notes (docs/server-api.md, "Notes"; mock/notes.mjs): /v1/notes, /v1/notes/{id|slug},
 //   /append, /trash, /trash/{id}/restore. Seeded from deploy/seed/notes plus samples.
 // MOCK_STRICT=1 emulates the older lucina-gym-core view (no estimated_1rm, exercise_charts,
 // active_elapsed_seconds or volume_grams; repeat_workout and parse_weight fail) to check
 // that the UI degrades gracefully.
+// MOCK_GYM_EMPTY=1 starts the gym with no routines or workouts, MOCK_BODY_EMPTY=1 the body
+// log with no weigh-ins (the first-run empty states).
 
 import http from "node:http";
+import { handleMaps } from "./maps.mjs";
 import { addNotification, handleNotifications } from "./notifications.mjs";
 import { INVENTARIO_BEFORE, INVENTARIO_QUESTION, richMeta, richReply } from "./rich.mjs";
 import { randomUUID } from "node:crypto";
@@ -192,6 +208,8 @@ function lucinaReply(message) {
 // lucina-gym-core view (see the header).
 
 const MOCK_STRICT = process.env.MOCK_STRICT === "1";
+const MOCK_GYM_EMPTY = process.env.MOCK_GYM_EMPTY === "1";
+const MOCK_BODY_EMPTY = process.env.MOCK_BODY_EMPTY === "1";
 const DAY_MS = 86_400_000;
 let mockServerDown = false;
 
@@ -345,6 +363,16 @@ function makeGymState() {
         weight_grams: 0,
       })),
     },
+    {
+      id: "pull",
+      name: "Pull",
+      exercises: ["deadlift", "pull-up", "cable-row", "biceps-curl"].map((exercise_id) => ({
+        exercise_id,
+        sets: 3,
+        reps: 8,
+        weight_grams: 0,
+      })),
+    },
   ];
   const state = {
     schema_version: 1,
@@ -358,16 +386,21 @@ function makeGymState() {
     rest: null,
     receipts: new Map(),
   };
+  // MOCK_GYM_EMPTY=1: a first-run account (no routines, no workouts) for the empty states.
+  if (MOCK_GYM_EMPTY) {
+    state.routines = [];
+    return state;
+  }
   seedGymWorkout(state, 12, "Lower body", [
     ["squat", [[80000, 5, 0, 0], [80000, 5, 0, 0], [80000, 5, 0, 0]]],
     ["cable-row", [[55000, 10, 0, 0], [55000, 10, 0, 0], [55000, 10, 0, 0]]],
   ]);
-  seedGymWorkout(state, 7, "Push day", [
+  seedGymWorkout(state, 7, "Push", [
     ["bench-press", [[60000, 8, 0, 0], [60000, 8, 0, 0], [60000, 8, 0, 0]]],
     ["overhead-press", [[35000, 8, 0, 0], [35000, 8, 0, 0]]],
     ["plank", [[0, 0, 60, 0], [0, 0, 60, 0]]],
   ]);
-  seedGymWorkout(state, 2, "Heavy pulls", [
+  seedGymWorkout(state, 2, "Pull", [
     ["deadlift", [[100000, 5, 0, 0], [100000, 5, 0, 0], [100000, 5, 0, 0]]],
     ["pull-up", [[0, 8, 0, 0], [0, 8, 0, 0], [0, 8, 0, 0]]],
     ["run", [[0, 0, 900, 3000]]],
@@ -574,6 +607,19 @@ function gymApply(state, command, now) {
         exercises = ids.map((exercise_id) => ({ exercise_id, sets: 3, reps: 8, weight_grams: 0 }));
       }
       state.routines.push({ id: randomUUID(), name, exercises });
+      return;
+    }
+    case "update_routine": {
+      const routine = state.routines.find((r) => r.id === command.routine_id);
+      if (!routine) throw new Error("Routine not found");
+      if (command.name === undefined && command.exercise_ids === undefined) throw new Error("Nothing to change");
+      if (command.name !== undefined) routine.name = gymName(command.name);
+      if (Array.isArray(command.exercise_ids)) {
+        const old = routine.exercises;
+        routine.exercises = command.exercise_ids.map(
+          (exercise_id) => old.find((e) => e.exercise_id === exercise_id) ?? { exercise_id, sets: 3, reps: 8, weight_grams: 0 },
+        );
+      }
       return;
     }
     case "delete_routine": {
@@ -1130,7 +1176,8 @@ const BODY_MAX_NOTE = 1_000;
 function makeBodyState() {
   const now = Date.now();
   const entries = [];
-  for (let i = 0; i < 40; i++) {
+  // MOCK_BODY_EMPTY=1: no weigh-ins yet.
+  for (let i = 0; i < (MOCK_BODY_EMPTY ? 0 : 40); i++) {
     const measured = now - i * DAY_MS - (i % 5) * 3_600_000;
     entries.push({
       id: randomUUID(),
@@ -1347,9 +1394,10 @@ async function handleBodyCommand(req, res) {
 
 // ---------- Timeline ----------
 
-const TIMELINE_CHANNELS = ["telegram", "discord", "web", "ios", "alexa", "other"];
+const TIMELINE_CHANNELS = ["telegram", "discord", "web", "ios", "alexa", "voice", "other"];
 const TIMELINE_MAX_LIMIT = 100;
 const SSE_PING_MS = 15_000;
+const MOCK_DEVICE = "mock-web";
 let timelineSeq = 1000;
 /** @type {object[]} oldest first; ids are increasing integers (as strings) */
 const timeline = [];
@@ -1373,9 +1421,93 @@ function addItem(fields, ts = Date.now()) {
   return item;
 }
 
+/**
+ * MOCK_CHAT_HISTORY=<n>: n items of this browser's own chat shaped like the owner's real one (days of
+ * history, long replies, links, photos from the synthetic Gallery). Older photos carry no size, so the
+ * bubble only learns its shape from the media item, as on the real server; newer ones carry size and
+ * ThumbHash. For the scroll-position checks (Chat lands on the newest message).
+ */
+function seedChatHistory(n, now) {
+  const own = { channel: "web", meta: { device: MOCK_DEVICE, deviceName: "This browser" } };
+  const long = "Here is what I found. ".repeat(6) + "\n\n- first point with some detail\n- second point\n- third point that wraps onto a second line on a phone";
+  for (let i = 0; i < n; i++) {
+    const at = now - (n - i) * 17 * 60_000;
+    const role = i % 2 ? "lucina" : "user";
+    const fields = { ...own, role, text: role === "user" ? `Question ${i + 1}: what about this?` : `Answer ${i + 1}. ${i % 5 === 1 ? long : "Done."}` };
+    if (i % 6 === 0) {
+      const media = Array.from({ length: 1 + (i % 4 === 0 ? 2 : 0) }, (_, k) => {
+        const index = (i * 3 + k) % 5000;
+        const sized = i > n - 40;
+        return { kind: "image", name: `photo-${i}-${k}.jpg`, mediaId: `itm_${index.toString(16).padStart(6, "0")}`, ...(sized ? { width: 3024, height: 4032 } : {}) };
+      });
+      fields.attachments = media;
+    } else if (i % 9 === 3) {
+      fields.text += " https://example.com/article-" + i;
+      fields.attachments = [{ kind: "link", url: `https://example.com/article-${i}`, name: `Article ${i}` }];
+    }
+    addItem(fields, at);
+  }
+}
+
+function voiceSeed() {
+  const who = { device: "lucinavoice-dab8", deviceName: "Kitchen speaker" };
+  const turn = (ago, said, replied, voice) => [
+    [ago + 4_000, { channel: "voice", role: "user", text: said, meta: { ...who, voice: { turnId: voice.turnId, ms: { stt: voice.ms.stt } } } }],
+    [ago, { channel: "voice", role: "lucina", text: replied, meta: { ...who, voice } }],
+  ];
+  return [
+    ...turn(2 * 3_600_000, "Che ore sono?", "Sono le dieci e dieci.", {
+      turnId: "voice-2h-a1",
+      // As lucina-server stores it today: the speech-to-text time, then the route (camelCase) and its layers.
+      ms: { stt: 380 },
+      route: { intent: "temporal_query", fast: true, source: "jev", confidence: 0.96, jevMs: 190 },
+      layers: [{ layer: "intent", verdict: "temporal_query", confidence: 0.96, ms: 190, used: true }],
+    }),
+    ...turn(90 * 60_000, "Come si dice la mia via, Skibi gard vai?", "Si dice Skibigårdsvej: «skibi-gor-vai».", {
+      turnId: "voice-90m-a1",
+      ms: { stt: 410, route: 300, ack: 320, lucina_first: 2400, tts_first: 2800, first_audio: 330, total: 5200 },
+      route: { intent: "chat", fast: false, source: "jev", confidence: 0.88, jevMs: 214 },
+      layers: [
+        { layer: "intent", verdict: "chat", confidence: 0.88, ms: 214, used: true },
+        { layer: "vocab", verdict: "Skibigårdsvej", confidence: 0.71, ms: 132, used: true },
+      ],
+      corrections: [{ from: "skibi gard", to: "Skibigårdsvej" }],
+    }),
+    ...turn(30 * 60_000, "Ricordami di chiamare Mikkel domani alle nove", "Va bene, ti ricordo di chiamare Mikkel domani alle nove.", {
+      turnId: "voice-30m-a1",
+      ms: { stt: 350, lucina_first: 1800, tts_first: 2100, first_audio: 2150, total: 4100 },
+      route: { intent: "schedule_reminder", fast: false, source: "jev", confidence: 0.9, jevMs: 201 },
+      layers: [
+        { layer: "intent", verdict: "schedule_reminder", confidence: 0.9, ms: 201, used: true },
+        { layer: "slots", verdict: "unsure", confidence: 0.55, ms: 150, used: false },
+      ],
+    }),
+  ];
+}
+
 function seedTimeline() {
   const now = Date.now();
   const H = 3_600_000;
+  const variants = [
+    { channel: "web", meta: { device: MOCK_DEVICE, deviceName: "This browser" } },
+    { channel: "web", meta: { device: "other-web", deviceName: "Other browser" } },
+    { channel: "ios" },
+    { channel: "web", meta: { via: "mcp", caller: "chatgpt" } },
+    { channel: "web", meta: { via: "mcp", caller: "claude-code" } },
+    { channel: "telegram", meta: { chatTitle: "Family" } },
+  ];
+  const requested = process.env.MOCK_TIMELINE_ITEMS;
+  if (requested !== undefined) {
+    const n = Math.max(0, Number(requested) || 0);
+    for (let i = 0; i < n; i++) addItem({ ...variants[i % variants.length], role: i % 2 ? "lucina" : "user", text: `Seed message ${i + 1}` }, now - (n - i) * 60000);
+    return;
+  }
+  const history = process.env.MOCK_CHAT_HISTORY;
+  if (history !== undefined) {
+    seedChatHistory(Math.max(0, Number(history) || 0), now);
+    return;
+  }
+  for (const [i, variant] of variants.entries()) addItem({ ...variant, role: "user", text: `Hello from conversation ${i + 1}` }, now - DAY_MS * 30 + i * 1000);
   const rows = [];
   const tg = { chatTitle: "Family" };
   const dc = { guildName: "Lucina HQ", channelName: "general" };
@@ -1400,6 +1532,8 @@ function seedTimeline() {
     [5 * H, { channel: "other", role: "lucina", text: "Water the plants.", meta: { kind: "reminder" } }],
     [3 * H, { channel: "telegram", role: "user", text: "", attachments: [{ kind: "voice" }], meta: tg }],
     [3 * H - 20_000, { channel: "telegram", role: "lucina", text: "I listened to your voice note: bread and eggs, added.", meta: tg }],
+    // The LucinaVoice thread: one shared conversation, each turn's timing and Jev layers in meta.voice.
+    ...voiceSeed(),
     [H, { channel: "web", role: "user", text: "Hello Lucina, any news?" }],
     [H - 30_000, { channel: "web", role: "lucina", text: "All quiet. Details: https://example.com/status" }],
   ];
@@ -1417,15 +1551,39 @@ function seedTimeline() {
 }
 seedTimeline();
 
+function conversationKey(it) {
+  if (it.meta?.via === "mcp") return `agent:${(it.meta.caller ?? "").toLowerCase().replace(/[^a-z0-9_-]/g, "") || "mcp"}`;
+  if (it.channel === "voice") return "voice";
+  if (["web", "ios"].includes(it.channel)) return it.meta?.device ? `device:${it.meta.device}` : `legacy:${it.channel}`;
+  return ["telegram", "discord", "alexa"].includes(it.channel) ? it.channel : "lucina";
+}
+function handleConversations(res) {
+  const groups = new Map();
+  for (const it of timeline) {
+    const key = conversationKey(it), previous = groups.get(key);
+    const kind = key.includes(":") ? key.split(":")[0] : key;
+    groups.set(key, { key, kind, title: key === "voice" ? "Lucina Voice" : (it.meta?.deviceName ?? it.meta?.caller ?? it.meta?.chatTitle ?? key),
+      channel: it.channel, device: it.meta?.device, deviceName: it.meta?.deviceName, caller: it.meta?.caller,
+      count: (previous?.count ?? 0) + 1, lastId: it.id, lastTs: it.ts, lastRole: it.role, lastText: it.text });
+  }
+  send(res, 200, { items: [...groups.values()].sort((a, b) => Number(b.lastId) - Number(a.lastId)) });
+}
 function handleTimelinePage(res, url) {
-  const before = url.searchParams.get("before");
-  const limitRaw = Number(url.searchParams.get("limit") ?? 50);
-  const limit = Number.isInteger(limitRaw) && limitRaw >= 1 ? Math.min(limitRaw, TIMELINE_MAX_LIMIT) : 50;
-  if (before !== null && !/^\d+$/.test(before)) return fail(res, 400, "bad_request", "before must be an item id");
-  const older = before === null ? timeline : timeline.filter((it) => Number(it.id) < Number(before));
-  const items = older.slice(-limit).reverse();
-  const nextBefore = older.length > limit && items.length ? items[items.length - 1].id : null;
-  return send(res, 200, { items, nextBefore });
+  const before = url.searchParams.get("before"), after = url.searchParams.get("after");
+  const limit = Math.max(1, Math.min(Number(url.searchParams.get("limit")) || 50, 200));
+  if (after && !timeline.some(it => it.id === after)) return fail(res, 410, "cursor_expired", "Unknown cursor");
+  const conversation = url.searchParams.get("conversation");
+  const filtered = timeline.filter(it => {
+    const key = conversationKey(it);
+    return (!conversation || key === conversation) && (url.searchParams.get("scope") !== "mine" || [`device:${MOCK_DEVICE}`, "legacy:web", "lucina"].includes(key));
+  });
+  const matching = filtered.filter(it => (!before || Number(it.id) < Number(before)) && (!after || Number(it.id) > Number(after)));
+  const batch = after ? matching.slice(0, limit) : matching.slice(-limit);
+  const items = [...batch].reverse();
+  const hasMore = matching.length > limit;
+  const cursor = after && hasMore ? batch.at(-1)?.id ?? after : timeline.at(-1)?.id ?? null;
+  const nextBefore = !after && hasMore ? items.at(-1)?.id ?? null : null;
+  return send(res, 200, { items, nextBefore, cursor, hasMore });
 }
 
 function handleTimelineStream(req, res) {
@@ -1690,7 +1848,7 @@ async function handleChat(req, res) {
   const channel = clientChannel(req);
   let userItemId = key ? userItems.get(key) : undefined;
   if (!userItemId) {
-    userItemId = addItem({ channel, role: "user", text: message, ...(clientMessageId ? { clientMessageId } : {}) }).id;
+    userItemId = addItem({ channel, role: "user", text: message, replyTo: body.replyTo, meta: { device: MOCK_DEVICE, deviceName: "This browser" }, ...(clientMessageId ? { clientMessageId } : {}) }).id;
     if (key) userItems.set(key, userItemId);
   }
 
@@ -1748,7 +1906,7 @@ async function handleChat(req, res) {
     text: reply.reply,
     replyTo: userItemId,
     ...(clientMessageId ? { clientMessageId } : {}),
-    ...(meta ? { meta } : {}),
+    meta: { ...meta, device: MOCK_DEVICE, deviceName: "This browser" },
   });
   reply = { ...reply, userItemId, lucinaItemId: lucinaItem.id };
   if (reply.reminder) {
@@ -1800,7 +1958,7 @@ async function handleLogin(req, res) {
   const sid = randomUUID();
   const ua = String(req.headers["user-agent"] ?? "");
   sessions.set(sid, { deviceName: /iPhone/.test(ua) ? "iPhone" : "Browser" });
-  send(res, 200, { authenticated: true, deviceName: sessions.get(sid).deviceName }, {
+  send(res, 200, { authenticated: true, deviceId: MOCK_DEVICE, deviceName: sessions.get(sid).deviceName }, {
     "Set-Cookie": `${COOKIE}=${sid}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000`,
   });
 }
@@ -1835,6 +1993,7 @@ async function route(req, res) {
   const url = new URL(req.url ?? "/", "http://mock.local");
   const path = url.pathname.replace(/\/+$/, "") || "/";
   const method = req.method ?? "GET";
+  if (path.startsWith("/v1/")) await sleep(Math.max(0, Number(process.env.MOCK_LATENCY_MS) || 0));
 
   if (!path.startsWith("/v1/")) return fail(res, 404, "not_found", "Not found.");
   const writes = ["POST", "PUT", "PATCH", "DELETE"].includes(method);
@@ -1842,7 +2001,11 @@ async function route(req, res) {
   if (writes && !(method === "POST" && path === "/v1/session") && req.headers["x-secretary-csrf"] !== "1") {
     return fail(res, 403, "csrf", "missing X-Secretary-CSRF header");
   }
-  if (["POST", "PUT", "PATCH"].includes(method) && !String(req.headers["content-type"] ?? "").startsWith("application/json")) {
+  // Keep's raw bodies (an attachment, the Takeout zip) are not JSON.
+  const rawNotesBody =
+    method === "POST" &&
+    (/^\/v1\/notes\/[^/]+\/attachments$/.test(path) || path === "/v1/notes/import/google-keep" || /^\/v1\/notebooks\/[^/]+\/sources\/upload$/.test(path));
+  if (["POST", "PUT", "PATCH"].includes(method) && !rawNotesBody && !String(req.headers["content-type"] ?? "").startsWith("application/json")) {
     return fail(res, 415, "unsupported_media_type", "Content-Type must be application/json");
   }
 
@@ -1864,7 +2027,7 @@ async function route(req, res) {
   if (path === "/v1/session") {
     if (method === "GET") {
       const s = currentSession(req);
-      return send(res, 200, { authenticated: !!s, deviceName: s?.deviceName ?? null });
+      return send(res, 200, { authenticated: !!s, deviceName: s?.deviceName ?? null, deviceId: s ? MOCK_DEVICE : null });
     }
     if (method === "POST") return handleLogin(req, res);
     if (method === "DELETE") {
@@ -1919,14 +2082,41 @@ async function route(req, res) {
     return send(res, 200, { down: mockServerDown });
   }
 
+  // Pixiv images are signed URLs (no session needed, like on p1); the rest of /v1/pixiv needs the session.
+  if (path.startsWith("/v1/pixiv/s/") && (await (await import("./pixiv.mjs")).handlePixiv(req, res, { path, method, url, send, fail, readJson }))) return;
+  // Play URLs carry their own token (on p1 they skip the gateway's auth too).
+  if (path.startsWith("/v1/media/s/")) {
+    // The synthetic Gallery serves its videos itself (mock/gallery.mjs, MOCK_GALLERY_VIDEO).
+    if (!process.env.MOCK_MEDIA_URL && (await (await import("./gallery.mjs")).handleGallery(req, res, { path, method, url, send, fail, readJson }))) return;
+    return (await import("./media.mjs")).proxyMedia(req, res, url, fail);
+  }
+  // NClient's signed image URLs likewise carry their own HMAC (mock/nclient.mjs).
+  if (path.startsWith("/v1/nclient/s/")) return (await import("./nclient.mjs")).serveImage(req, res, path);
+  // Instagram media URLs are signed too and need no session (mock/instagram.mjs).
+  if ((await import("./instagram.mjs")).instagramMedia(req, res, path)) return;
   if (!currentSession(req)) {
     return fail(res, 401, "unauthorized", "session expired or invalid", { "WWW-Authenticate": "Bearer" });
   }
+  if (path.startsWith("/v1/media")) {
+    // A real library when MOCK_MEDIA_URL is set, else the synthetic Gallery (mock/gallery.mjs).
+    if (!process.env.MOCK_MEDIA_URL && (await (await import("./galleryParity.mjs")).handleGalleryParity(req, res, { path, method, url, send, fail, readJson }))) return;
+    if (!process.env.MOCK_MEDIA_URL && (await (await import("./gallery.mjs")).handleGallery(req, res, { path, method, url, send, fail, readJson }))) return;
+    return (await import("./media.mjs")).proxyMedia(req, res, url, fail);
+  }
+  if (path.startsWith("/v1/pixiv/") && (await (await import("./pixiv.mjs")).handlePixiv(req, res, { path, method, url, send, fail, readJson }))) return;
+  if (handleMaps(req, res, url, path)) return;
   if (await (await import("./shopping-v2.mjs")).handleShoppingV2(req, res, { path, method, url, send, fail, readJson })) return;
   if (await handleNotifications(req, res, { path, method, url, send, fail, readJson })) return;
   if (path.startsWith("/v1/tasks")) return proxyTasks(req, res, url);
   if (await (await import("./links.mjs")).handleLinks(req, res, { path, method, url, send, fail, readJson })) return;
   if (await (await import("./notes.mjs")).handleNotes(req, res, { path, method, url, send, fail, readJson })) return;
+  if (await (await import("./notebooks.mjs")).handleNotebooks(req, res, { path, method, url, send, fail, readJson })) return;
+  if (await (await import("./nclient.mjs")).handleNClient(req, res, { path, method, url, send, fail, readJson })) return;
+  if (await (await import("./instagram.mjs")).handleInstagram(req, res, { path, method, url, send, fail, readJson })) return;
+  if (await (await import("./agents.mjs")).handleAgents(req, res, { path, method, url, send, fail, readJson })) return;
+  if (await (await import("./systemHealth.mjs")).handleSystemHealth(req, res, { path, method, send })) return;
+  if (await (await import("./systemOverview.mjs")).handleSystemOverview(req, res, { path, method, send })) return;
+  if (await (await import("./voice.mjs")).handleVoice(req, res, { path, method, url, send, fail, readJson })) return;
 
   if (mockServerDown && (path.startsWith("/v1/gym/") || path.startsWith("/v1/body/"))) {
     res.writeHead(502, { "Cache-Control": "no-store" });
@@ -1951,6 +2141,17 @@ async function route(req, res) {
   if (path === "/v1/body/command" && method === "POST") return handleBodyCommand(req, res);
 
   if (path === "/v1/chat" && method === "POST") return handleChat(req, res);
+  // Lucina's computer: nobody drives, and a blank page stands in for the live view.
+  if (path === "/v1/computer/control") {
+    return send(res, 200, {
+      state: { sandbox: "workspace", driver: "none", epoch: 0, owner: null, task: null, lastAgent: null, leaseSecs: 45 },
+      recent: [],
+      viewer: { assets: "0123456789abcdef" },
+    });
+  }
+  if (path === "/v1/computer/view" && method === "POST") {
+    return send(res, 200, { viewId: "mockview", viewUrl: "about:blank#ticket=mock", sandbox: "workspace", mode: "watch", ttlSecs: 600, lan: null });
+  }
 
   if (path === "/v1/tts" && method === "POST") return handleTts(req, res);
   if (path === "/v1/avatar/wardrobe" && method === "GET") return send(res, 200, wardrobeFile());
@@ -1972,6 +2173,7 @@ async function route(req, res) {
     return handleAsset(res, rel);
   }
 
+  if (path === "/v1/timeline/conversations" && method === "GET") return handleConversations(res);
   if (path === "/v1/timeline" && method === "GET") return handleTimelinePage(res, url);
   if (path === "/v1/timeline/stream" && method === "GET") return handleTimelineStream(req, res);
 

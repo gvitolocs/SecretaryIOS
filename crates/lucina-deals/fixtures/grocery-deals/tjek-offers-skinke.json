@@ -1,0 +1,1552 @@
+[
+  {
+    "id": "LiHZSI-yrDthPTEiwgXAC",
+    "heading": "Ribbenssteg eller hel skinke",
+    "description": "Skær dine egne schnitzler Pr. 1/2 kg Spot¹ Pr. kg 58,00",
+    "pricing": {
+      "price": 29,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "kg",
+      "size": {
+        "from": 0.5,
+        "to": 0.5
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-28T23:00:00+0000",
+    "run_till": "2026-10-31T22:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "KkADGeK8CWylmu7ONnSTX",
+    "heading": "Protein Lab pizza",
+    "description": "175 g. Pepperoni eller skinke. Pr. kg 114,29",
+    "pricing": {
+      "price": 20,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 175,
+        "to": 175
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "bdf5A",
+    "dealer": {
+      "id": "bdf5A",
+      "name": "føtex"
+    },
+    "store_id": null
+  },
+  {
+    "id": "NheLN0L1rEAofo6EBFRRJ",
+    "heading": "Skinkeschnitzler",
+    "description": "500 g. Pr. kg 70,-",
+    "pricing": {
+      "price": 35,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 500,
+        "to": 500
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "bdf5A",
+    "dealer": {
+      "id": "bdf5A",
+      "name": "føtex"
+    },
+    "store_id": null
+  },
+  {
+    "id": "HAZpfz5F31sTdoB3BYql1",
+    "heading": "RØGET HAMBURGERRYG AF DANSK GRIS",
+    "description": "Max. kg pris 77,72.",
+    "pricing": {
+      "price": 69.95,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 900,
+        "to": 1200
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "267e1m",
+    "dealer": {
+      "id": "267e1m",
+      "name": "MENY"
+    },
+    "store_id": null
+  },
+  {
+    "id": "E-jjLDEZBGocsegp7sV8b",
+    "heading": "REMA 1000 salami, leverpostej eller Taga serrano",
+    "description": "60-500 g\nMax. 166.67 pr. kg",
+    "pricing": {
+      "price": 10,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 60,
+        "to": 500
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-17T22:00:00+0000",
+    "run_till": "2026-10-24T21:59:59+0000",
+    "dealer_id": "11deC",
+    "dealer": {
+      "id": "11deC",
+      "name": "REMA 1000"
+    },
+    "store_id": null
+  },
+  {
+    "id": "Cilqf4xk7H2-BSd_qp2kf",
+    "heading": "ANTIPASTI PARTY",
+    "description": "340 g. Kg pris 293,97.",
+    "pricing": {
+      "price": 99.95,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 340,
+        "to": 340
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "267e1m",
+    "dealer": {
+      "id": "267e1m",
+      "name": "MENY"
+    },
+    "store_id": null
+  },
+  {
+    "id": "3a8c9_kTJBeHV2SNpRYAF",
+    "heading": "GESTUS PÅLÆG",
+    "description": "Flere varianter. 60-110 g. Max. kg pris 250,00.",
+    "pricing": {
+      "price": 15,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 60,
+        "to": 110
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "267e1m",
+    "dealer": {
+      "id": "267e1m",
+      "name": "MENY"
+    },
+    "store_id": null
+  },
+  {
+    "id": "TG2OYVRw6kwdekoRY_vEq",
+    "heading": "PÅLÆKKER Rullepølse eller hamburgerryg",
+    "description": "90 g / pk. Pr. kg 143,89 Fast lav pris",
+    "pricing": {
+      "price": 12.95,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 90,
+        "to": 90
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-05-02T22:00:00+0000",
+    "run_till": "2026-12-31T22:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "xuL4j_wCpPI3Tht6ZY-cb",
+    "heading": "Serranoskinke",
+    "description": "DULANO SELECTION\n100 g.\nPr. kg 199,50\nFast lav pris",
+    "pricing": {
+      "price": 19.95,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 100,
+        "to": 100
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-09-12T22:00:00+0000",
+    "run_till": "2026-12-31T22:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "LZttfwqGZ5oyFv-ihNCeY",
+    "heading": "Mørbrad med svampesauce",
+    "description": "Du kan sætte dit personlige præg på julebordet og tilvælge dine helt egne favoritter som supplement til vores julemenuer. Tilvalgene kan ikke bestilles særskilt. Minimumsbestilling på 6 kuverter.",
+    "pricing": {
+      "price": 35,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "pcs",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": 6,
+        "max": null
+      }
+    },
+    "run_from": "2026-09-08T22:00:00+0000",
+    "run_till": "2026-12-31T22:59:59+0000",
+    "dealer_id": "bdf5A",
+    "dealer": {
+      "id": "bdf5A",
+      "name": "føtex"
+    },
+    "store_id": null
+  },
+  {
+    "id": "err7kvOmH6lsd549OKknC",
+    "heading": "DULANO Parmaskinke",
+    "description": "70 g. Pr. kg 285,71\n-25%",
+    "pricing": {
+      "price": 20,
+      "pre_price": 26.95,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 70,
+        "to": 70
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-21T22:00:00+0000",
+    "run_till": "2026-10-24T21:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "faUiNQq-QV44qCuuHQ6rg",
+    "heading": "SOL&MAR Serranoskinke",
+    "description": "240 g. Pr. kg 145,83",
+    "pricing": {
+      "price": 35,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 240,
+        "to": 240
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-17T22:00:00+0000",
+    "run_till": "2026-10-24T21:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "GjVgj8-qUMcNTu0DB6iPU",
+    "heading": "Pålækker pålæg",
+    "description": "Flere varianter",
+    "pricing": {
+      "price": 14.99,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 60,
+        "to": 400
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "65caN",
+    "dealer": {
+      "id": "65caN",
+      "name": "Løvbjerg"
+    },
+    "store_id": null
+  },
+  {
+    "id": "hD1xNaHLoPjqYDX-6g7nU",
+    "heading": "FRIKADELLER ELLER SKINKE MED FLØDEKARTOFLER",
+    "description": "PR. PAKKE\nTilbered retten på ca. 4 -5 minutter\nLAVET AF OS NYDES AF DIG",
+    "pricing": {
+      "price": 54.95,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "pcs",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "267e1m",
+    "dealer": {
+      "id": "267e1m",
+      "name": "MENY"
+    },
+    "store_id": null
+  },
+  {
+    "id": "FKdbRE3GrKVWOp15Js-Ab",
+    "heading": "DELUXE Jamón Ibérico",
+    "description": "80 g. Pr. kg 437,50\n-22%",
+    "pricing": {
+      "price": 35,
+      "pre_price": 44.95,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 80,
+        "to": 80
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-21T22:00:00+0000",
+    "run_till": "2026-10-24T21:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "u-puEunPdLd9KgPdWwmbg",
+    "heading": "Tarteletter med høns i asparges",
+    "description": "Du kan sætte dit personlige præg på julebordet og tilvælge dine helt egne favoritter som supplement til vores julemenuer. Tilvalgene kan ikke bestilles særskilt. Minimumsbestilling på 6 kuverter.",
+    "pricing": {
+      "price": 35,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "pcs",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": 6,
+        "max": null
+      }
+    },
+    "run_from": "2026-09-08T22:00:00+0000",
+    "run_till": "2026-12-31T22:59:59+0000",
+    "dealer_id": "bdf5A",
+    "dealer": {
+      "id": "bdf5A",
+      "name": "føtex"
+    },
+    "store_id": null
+  },
+  {
+    "id": "ICVbEIj5Au3opO0YWFvUd",
+    "heading": "FROKOST FAVORIT",
+    "description": "Pålæg\n70-100 g.\nPr. kg maks. 142,86",
+    "pricing": {
+      "price": 10,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 70,
+        "to": 100
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-24T22:00:00+0000",
+    "run_till": "2026-10-31T22:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "DD2QU51LSGUl0MD1MpGOK",
+    "heading": "REMA 1000 Tysk landskinke eller peberskinke",
+    "description": "100 g\n100.00 pr. kg",
+    "pricing": {
+      "price": 10,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 100,
+        "to": 100
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-24T22:00:00+0000",
+    "run_till": "2026-10-31T22:59:59+0000",
+    "dealer_id": "11deC",
+    "dealer": {
+      "id": "11deC",
+      "name": "REMA 1000"
+    },
+    "store_id": null
+  },
+  {
+    "id": "N_h2pZVF8YxxhkgaicdCi",
+    "heading": "Citterio Italiensk Charcuteri",
+    "description": "Mortadella bologna, Il Salame di Milano eller Il Prosciutto Crudo. 70 g. Kg pris 285,71.\nSKARP PRIS\nPR. PAKKE",
+    "pricing": {
+      "price": 20,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 70,
+        "to": 70
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "88ddE",
+    "dealer": {
+      "id": "88ddE",
+      "name": "SPAR"
+    },
+    "store_id": null
+  },
+  {
+    "id": "LXHPvJy0Wws7-lZBd4B3Q",
+    "heading": "Røget Hamburgerryg af Dansk Gris",
+    "description": "900-1200 g. Max. kg pris 76,67. Pr. pakke",
+    "pricing": {
+      "price": 69,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 900,
+        "to": 1200
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "88ddE",
+    "dealer": {
+      "id": "88ddE",
+      "name": "SPAR"
+    },
+    "store_id": null
+  },
+  {
+    "id": "VJRXxn_z3_uWKiAs3i2wG",
+    "heading": "Glaseret skinke med grønlangkål",
+    "description": "Du kan sætte dit personlige præg på julebordet og tilvælge dine helt egne favoritter som supplement til vores julemenuer. Tilvalgene kan ikke bestilles særskilt. Minimumsbestilling på 6 kuverter.",
+    "pricing": {
+      "price": 35,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "pcs",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": 6,
+        "max": null
+      }
+    },
+    "run_from": "2026-09-08T22:00:00+0000",
+    "run_till": "2026-12-31T22:59:59+0000",
+    "dealer_id": "bdf5A",
+    "dealer": {
+      "id": "bdf5A",
+      "name": "føtex"
+    },
+    "store_id": null
+  },
+  {
+    "id": "vJOmkR6DoH-xDPNMxRViW",
+    "heading": "DULANO Pålæg i skiver",
+    "description": "400 g. Pr. kg 97,50",
+    "pricing": {
+      "price": 39,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 400,
+        "to": 400
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-24T22:00:00+0000",
+    "run_till": "2026-10-31T22:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "zXbmETsc88UQMiq2sdYht",
+    "heading": "DULANO Hamburgerryg",
+    "description": "150 g / pk. Pr. kg 146,33 Fast lav pris",
+    "pricing": {
+      "price": 21.95,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 150,
+        "to": 150
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-05-02T22:00:00+0000",
+    "run_till": "2026-12-31T22:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "1C7sJBTE-d6xM9pRNkJlh",
+    "heading": "OLE’S GÅRD ØKOLOGISK PIZZA",
+    "description": "Skinke, Kartoffel eller Pepperoni. 440 g. Kg pris 147,73. Frost Tag en bid af Oles økologiske pizzaer, som er valgt som Dansk Madskat for de gode, danske råvarer og den passionerede, innovative tilgang til smagfuld mad af høj kvalitet",
+    "pricing": {
+      "price": 65,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 440,
+        "to": 440
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "267e1m",
+    "dealer": {
+      "id": "267e1m",
+      "name": "MENY"
+    },
+    "store_id": null
+  },
+  {
+    "id": "9DPoJYvRFgGlVQpCieVUt",
+    "heading": "Familien Jacobsen pålæg",
+    "description": "100 g. Kylling, hamburgerryg eller skinke. Pr. kg 80,Pris ugens øvrige dage 11,-",
+    "pricing": {
+      "price": 8,
+      "pre_price": 11,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 100,
+        "to": 100
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-24T22:00:00+0000",
+    "run_till": "2026-10-25T22:59:59+0000",
+    "dealer_id": "bdf5A",
+    "dealer": {
+      "id": "bdf5A",
+      "name": "føtex"
+    },
+    "store_id": null
+  },
+  {
+    "id": "6Ewrd_-1TPSjZYvn9lJVu",
+    "heading": "Laks med røræg og asparges",
+    "description": "Du kan sætte dit personlige præg på julebordet og tilvælge dine helt egne favoritter som supplement til vores julemenuer. Tilvalgene kan ikke bestilles særskilt. Minimumsbestilling på 6 kuverter.",
+    "pricing": {
+      "price": 35,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "pcs",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": 6,
+        "max": null
+      }
+    },
+    "run_from": "2026-09-08T22:00:00+0000",
+    "run_till": "2026-12-31T22:59:59+0000",
+    "dealer_id": "bdf5A",
+    "dealer": {
+      "id": "bdf5A",
+      "name": "føtex"
+    },
+    "store_id": null
+  },
+  {
+    "id": "DqY7GYTkaGEKaieU-FxdR",
+    "heading": "Frikadeller med rødkål",
+    "description": "Du kan sætte dit personlige præg på julebordet og tilvælge dine helt egne favoritter som supplement til vores julemenuer. Tilvalgene kan ikke bestilles særskilt. Minimumsbestilling på 6 kuverter.",
+    "pricing": {
+      "price": 35,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "pcs",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": 6,
+        "max": null
+      }
+    },
+    "run_from": "2026-09-08T22:00:00+0000",
+    "run_till": "2026-12-31T22:59:59+0000",
+    "dealer_id": "bdf5A",
+    "dealer": {
+      "id": "bdf5A",
+      "name": "føtex"
+    },
+    "store_id": null
+  },
+  {
+    "id": "qgR0xXOekvK7meTETKVBm",
+    "heading": "Panini med skinke og ost",
+    "description": "160 g. Pr. kg 62,50\nNormalpris 12,00 pr. stk.",
+    "pricing": {
+      "price": 20,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 160,
+        "to": 160
+      },
+      "pieces": {
+        "from": 2,
+        "to": 2,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-24T22:00:00+0000",
+    "run_till": "2026-10-31T22:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "gQI3p_jNwjiDpktcrOvVv",
+    "heading": "Kyllingebryst i skiver klassisk, Silkeskåret skinke eller Vegetariske m. peberfrugt",
+    "description": "80 g",
+    "pricing": {
+      "price": 12,
+      "pre_price": 20.95,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 80,
+        "to": 100
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-19T22:00:00+0000",
+    "run_till": "2026-10-26T22:59:59+0000",
+    "dealer_id": "i7NdvM",
+    "dealer": {
+      "id": "i7NdvM",
+      "name": "Wolt Market"
+    },
+    "store_id": null
+  },
+  {
+    "id": "r00stfbY7o_fJfaj2KguR",
+    "heading": "SYDEUROPÆISK CHARCUTERI ELLER GESTUS PIZZABUNDE",
+    "description": "Flere varianter. 65-400 g. Max. kg pris 384,62.",
+    "pricing": {
+      "price": 25,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 65,
+        "to": 400
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "267e1m",
+    "dealer": {
+      "id": "267e1m",
+      "name": "MENY"
+    },
+    "store_id": null
+  },
+  {
+    "id": "u4RTsTXK3HLB0TYZ86aBe",
+    "heading": "Andoni pizza",
+    "description": "330-390 g. Pr. kg max. 54,55",
+    "pricing": {
+      "price": 18,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 330,
+        "to": 390
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-23T22:00:00+0000",
+    "run_till": "2026-10-30T22:59:59+0000",
+    "dealer_id": "9ba51",
+    "dealer": {
+      "id": "9ba51",
+      "name": "Netto"
+    },
+    "store_id": null
+  },
+  {
+    "id": "qieniYKBC0yIfxBYHQ6Y3",
+    "heading": "REMA 1000 Frilandsgris",
+    "description": "250-400 g\nMax. 116.00 pr. kg",
+    "pricing": {
+      "price": 29,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 250,
+        "to": 400
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-24T22:00:00+0000",
+    "run_till": "2026-10-31T22:59:59+0000",
+    "dealer_id": "11deC",
+    "dealer": {
+      "id": "11deC",
+      "name": "REMA 1000"
+    },
+    "store_id": null
+  },
+  {
+    "id": "afAXjWc8b9XE-iG3SaQCV",
+    "heading": "Gestus Pizza",
+    "description": "Flere varianter. 340-355 g. Max. kg pris 58,82. Frost.\nSKARP PRIS\nPR. STK.",
+    "pricing": {
+      "price": 20,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 340,
+        "to": 355
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "88ddE",
+    "dealer": {
+      "id": "88ddE",
+      "name": "SPAR"
+    },
+    "store_id": null
+  },
+  {
+    "id": "IwGm4k4FWXFdm0rZOwkyZ",
+    "heading": "Pålækker Klassiker Pålæg eller Tulip Leverpostej",
+    "description": "Flere varianter. 50-200 g. Max. kg pris 259,00. Pr. stk.",
+    "pricing": {
+      "price": 12.95,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 50,
+        "to": 200
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "88ddE",
+    "dealer": {
+      "id": "88ddE",
+      "name": "SPAR"
+    },
+    "store_id": null
+  },
+  {
+    "id": "wVjuVGqjClj34Ojg5yj4V",
+    "heading": "BUKO Skinke- eller rejeost",
+    "description": "Fast lav pris 200 g. Pr. kg 74,75",
+    "pricing": {
+      "price": 14.95,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 200,
+        "to": 200
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-17T22:00:00+0000",
+    "run_till": "2026-10-24T21:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "aM3urV82Yuwdl_AgNqCNq",
+    "heading": "HAVBLÅ Hel laksefilet med skind",
+    "description": "Pr. 1/2 kg\nPr. kg 149,90\nFast lav pris",
+    "pricing": {
+      "price": 74.95,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "kg",
+      "size": {
+        "from": 0.5,
+        "to": 0.5
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-09-29T22:00:00+0000",
+    "run_till": "2026-12-31T22:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "AESprsXhuqxiAmeSnBo20",
+    "heading": "Hakket dansk kyllingekød 7-10% eller kyllingelårfilet",
+    "description": "400 g.\nPr. kg 62,50",
+    "pricing": {
+      "price": 25,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 400,
+        "to": 400
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-23T22:00:00+0000",
+    "run_till": "2026-10-30T22:59:59+0000",
+    "dealer_id": "9ba51",
+    "dealer": {
+      "id": "9ba51",
+      "name": "Netto"
+    },
+    "store_id": null
+  },
+  {
+    "id": "XhRqWzkvvlQVJJIv1l1zu",
+    "heading": "HAVBLÅ Hel laksefilet med skind",
+    "description": "Pr. 600 g. Pr. kg 166,58\nFast lav pris",
+    "pricing": {
+      "price": 99.95,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 600,
+        "to": 600
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-09-29T22:00:00+0000",
+    "run_till": "2026-12-31T22:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "cZEMu1t28lqZ1wist_Noj",
+    "heading": "HAVBLÅ Laksefilet med skind",
+    "description": "300 g / pk. Pr. kg 183,17\nFast lav pris",
+    "pricing": {
+      "price": 54.95,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 300,
+        "to": 300
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-09-29T22:00:00+0000",
+    "run_till": "2026-12-31T22:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "PXd2keEGIncvNVImsZNXp",
+    "heading": "HOLMENS BRÆNDTE MANDLER ELLER PEZ DISPENSER",
+    "description": "Flere varianter. 25,5-100 g. Max. kg pris 980,39. BEGRÆNSET PARTI",
+    "pricing": {
+      "price": 25,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 25.5,
+        "to": 100
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "267e1m",
+    "dealer": {
+      "id": "267e1m",
+      "name": "MENY"
+    },
+    "store_id": null
+  },
+  {
+    "id": "cWlLkIK4g45fonKLAMtgg",
+    "heading": "Coop kyllingelårfilet, -inderfilet, -overlår eller -underlår",
+    "description": "300-800 g. Kg-pris maks. 116,67. 1 pakke",
+    "pricing": {
+      "price": 35,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 300,
+        "to": 800
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "c1edq",
+    "dealer": {
+      "id": "c1edq",
+      "name": "Kvickly"
+    },
+    "store_id": null
+  },
+  {
+    "id": "EBwQhA9RvftVUh-pZGdzD",
+    "heading": "Sanex shower",
+    "description": "400-600 ml. Flere varianter. Pr. liter max. 62,50",
+    "pricing": {
+      "price": 25,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "ml",
+      "size": {
+        "from": 400,
+        "to": 600
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "bdf5A",
+    "dealer": {
+      "id": "bdf5A",
+      "name": "føtex"
+    },
+    "store_id": null
+  },
+  {
+    "id": "pk7TYkAZ087cZA5ap1tvz",
+    "heading": "OCEAN SEA Laksefileter med skind",
+    "description": "4 x 125 g. Pr. kg 159,90",
+    "pricing": {
+      "price": 79.95,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 125,
+        "to": 125
+      },
+      "pieces": {
+        "from": 4,
+        "to": 4,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-09-12T22:00:00+0000",
+    "run_till": "2026-12-31T22:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "wVt2L-VfAiPa-lA1AGNUr",
+    "heading": "Glyngøre fersk laksefilet",
+    "description": "400 g. Kg-pris 172,50. 1 pakke",
+    "pricing": {
+      "price": 69,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 400,
+        "to": 400
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-10-29T22:59:59+0000",
+    "dealer_id": "c1edq",
+    "dealer": {
+      "id": "c1edq",
+      "name": "Kvickly"
+    },
+    "store_id": null
+  },
+  {
+    "id": "vbdDfnW15lQukourR3pIa",
+    "heading": "DYVIG skænk",
+    "description": "Kunstfiner og stål. Med jalousilåger. B140 x H80 x D40 cm** 30 dages laveste pris: 1299,- (-27%) Normalpris: 1299,- 3610208",
+    "pricing": {
+      "price": 950,
+      "pre_price": 1299,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "pcs",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-22T22:00:00+0000",
+    "run_till": "2026-11-05T22:59:59+0000",
+    "dealer_id": "e9e45",
+    "dealer": {
+      "id": "e9e45",
+      "name": "JYSK"
+    },
+    "store_id": null
+  },
+  {
+    "id": "5vcAZWirwPDNZ2b7WlnRN",
+    "heading": "OCEAN SEA Laksefilet uden skind",
+    "description": "250 g. Pr. kg 179,80",
+    "pricing": {
+      "price": 44.95,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "g",
+      "size": {
+        "from": 250,
+        "to": 250
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-09-12T22:00:00+0000",
+    "run_till": "2026-12-31T22:59:59+0000",
+    "dealer_id": "71c90",
+    "dealer": {
+      "id": "71c90",
+      "name": "Lidl"
+    },
+    "store_id": null
+  },
+  {
+    "id": "zG1lNVaOYbLnigDoYk4Bh",
+    "heading": "Elizabeth Arden Eight Hour Skin Protectant og Hand Treatment",
+    "description": "Fast lav pris | Fra | 50-75 ml max. 3.199,00/l",
+    "pricing": {
+      "price": 114.95,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "pcs",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-14T22:00:00+0000",
+    "run_till": "2026-10-28T22:59:59+0000",
+    "dealer_id": "a5aaT",
+    "dealer": {
+      "id": "a5aaT",
+      "name": "Matas"
+    },
+    "store_id": null
+  },
+  {
+    "id": "EQ4Mi3T15tsS-5o2JMIXZ",
+    "heading": "Udvalgt Beauté Pacifique",
+    "description": "Fra 239,95 | Fra | Fx La Forte som indeholder zink og vitamin A, som bidrager til at vedligeholde en normal hud. 60 tabl. 5,33/stk. 120 ml 1.599,58/l | Spar 20%",
+    "pricing": {
+      "price": 191.95,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "pcs",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-14T22:00:00+0000",
+    "run_till": "2026-10-28T22:59:59+0000",
+    "dealer_id": "a5aaT",
+    "dealer": {
+      "id": "a5aaT",
+      "name": "Matas"
+    },
+    "store_id": null
+  },
+  {
+    "id": "SXitRdAh_Im4Mq3RNl16x",
+    "heading": "Udvalgt New Nordic",
+    "description": "Fra 169,95 | Fra | 60-300 stk. max. 3,87/stk.",
+    "pricing": {
+      "price": 135.95,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "pcs",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-14T22:00:00+0000",
+    "run_till": "2026-10-28T22:59:59+0000",
+    "dealer_id": "a5aaT",
+    "dealer": {
+      "id": "a5aaT",
+      "name": "Matas"
+    },
+    "store_id": null
+  },
+  {
+    "id": "t78qwYwfhX_2bI5dNaIFi",
+    "heading": "Miild Skin Love Body Lotion og Hand Cream (MIILD)",
+    "description": "Fra 199,95 | Fra | 50-400 ml max. 2.799,00/l | Spar 30%",
+    "pricing": {
+      "price": 139.95,
+      "pre_price": null,
+      "currency": "DKK"
+    },
+    "quantity": {
+      "unit": "pcs",
+      "size": {
+        "from": 1,
+        "to": 1
+      },
+      "pieces": {
+        "from": 1,
+        "to": 1,
+        "min": null,
+        "max": null
+      }
+    },
+    "run_from": "2026-10-14T22:00:00+0000",
+    "run_till": "2026-10-28T22:59:59+0000",
+    "dealer_id": "a5aaT",
+    "dealer": {
+      "id": "a5aaT",
+      "name": "Matas"
+    },
+    "store_id": null
+  }
+]

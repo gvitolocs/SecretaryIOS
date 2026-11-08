@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Secretary · Lucina 0.7.1: Kotlin shell (src/*.kt) over liblucina_calls.so (crates/lucina-android-calls). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="tech.getsecretary.secretary"
+    android:versionCode="12" android:versionName="0.7.3">
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.CALL_PHONE"/>
+    <uses-permission android:name="android.permission.READ_PHONE_STATE"/>
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT"/>
+    <!-- Optional, asked in "Caller screening": leaves the owner's own contacts out of screening. -->
+    <uses-permission android:name="android.permission.READ_CONTACTS"/>
+    <!-- The phone role grants these; the call log screen and the missed-call clean-up use them. -->
+    <uses-permission android:name="android.permission.READ_CALL_LOG"/>
+    <uses-permission android:name="android.permission.WRITE_CALL_LOG"/>
+    <!-- Proximity wake lock during a call at the ear. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <!-- Lucina Maps requests this to tell the phone a navigation link arrived (auto-reject raises its bar for 45 minutes); install Secretary first. -->
+    <permission android:name="tech.getsecretary.secretary.permission.ORDER_SIGNAL" android:protectionLevel="normal"/>
+    <uses-feature android:name="android.hardware.location" android:required="false"/>
+    <uses-feature android:name="android.hardware.location.gps" android:required="false"/>
+    <queries>
+        <intent><action android:name="android.speech.RecognitionService"/></intent>
+        <intent><action android:name="android.media.action.IMAGE_CAPTURE"/></intent>
+        <intent><action android:name="android.media.action.VIDEO_CAPTURE"/></intent>
+        <!-- "Use Samsung Phone again" -->
+        <package android:name="com.samsung.android.dialer"/>
+        <package android:name="com.google.android.dialer"/>
+    </queries>
+    <application android:label="Secretary · Lucina" android:allowBackup="false" android:usesCleartextTraffic="false"
+        android:extractNativeLibs="false" android:theme="@android:style/Theme.DeviceDefault.NoActionBar" android:icon="@drawable/lucina">
+        <activity android:name=".MainActivity" android:exported="true">
+            <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts"/>
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+        <activity android:name=".ShareActivity" android:exported="true" android:label="Lucina"
+            android:icon="@drawable/lucina" android:theme="@android:style/Theme.DeviceDefault.Dialog.NoActionBar"
+            android:excludeFromRecents="true" android:taskAffinity="" android:configChanges="orientation|screenSize|keyboardHidden">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND"/>
+                <action android:name="android.intent.action.SEND_MULTIPLE"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="*/*"/>
+                <data android:mimeType="text/plain"/>
+            </intent-filter>
+        </activity>
+        <service android:name=".ShareJobService" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="true"/>
+        <activity android:name=".CallsActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.DIAL"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.DIAL"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:scheme="tel"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="tel"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.CALL_BUTTON"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+            </intent-filter>
+        </activity>
+        <activity android:name=".CallLogActivity" android:exported="false"/>
+        <activity android:name=".ContactsActivity" android:exported="false"/>
+        <activity android:name=".InCallActivity" android:exported="false" android:showWhenLocked="true" android:turnScreenOn="true"
+            android:launchMode="singleTop" android:excludeFromRecents="true" android:configChanges="orientation|screenSize|keyboardHidden"/>
+        <activity android:name=".VoiceActivity" android:exported="false"/>
+        <activity android:name=".TranscriptActivity" android:exported="false"/>
+        <service android:name=".LucinaCallService" android:permission="android.permission.BIND_INCALL_SERVICE" android:exported="true">
+            <meta-data android:name="android.telecom.IN_CALL_SERVICE_UI" android:value="true"/>
+            <meta-data android:name="android.telecom.IN_CALL_SERVICE_RINGING" android:value="false"/>
+            <intent-filter><action android:name="android.telecom.InCallService"/></intent-filter>
+        </service>
+        <activity android:name=".CallerScreenActivity" android:exported="false"/>
+        <activity android:name=".VaultActivity" android:exported="false"/>
+        <!-- Lucina Maps: an orderAtMs (Long) extra on each navigation link; senders must hold the ORDER_SIGNAL permission. Used only by the auto-reject guard. -->
+        <receiver android:name=".OrderSignalReceiver" android:exported="true"
+            android:permission="tech.getsecretary.secretary.permission.ORDER_SIGNAL">
+            <intent-filter><action android:name="tech.getsecretary.secretary.action.ORDER_SIGNAL"/></intent-filter>
+        </receiver>
+        <!-- "Allow" and "Allow & call back" on the note after a rejection: this app's own PendingIntents only. -->
+        <receiver android:name=".RejectActionReceiver" android:exported="false"/>
+        <!-- The notification buttons (Answer, Decline, Hang up): this app's own PendingIntents only. -->
+        <receiver android:name=".CallActionReceiver" android:exported="false"/>
+        <!-- The system tells the phone app to show missed calls and voicemail; only senders holding READ_PHONE_STATE (the system) reach it. -->
+        <receiver android:name=".PhoneEventsReceiver" android:exported="true" android:permission="android.permission.READ_PHONE_STATE">
+            <intent-filter><action android:name="android.telecom.action.SHOW_MISSED_CALLS_NOTIFICATION"/></intent-filter>
+            <intent-filter><action android:name="android.telephony.action.SHOW_VOICEMAIL_NOTIFICATION"/></intent-filter>
+        </receiver>
+        <!-- Screens incoming calls with Jev. Held through ROLE_CALL_SCREENING; allows every call unless the owner's switches say otherwise. -->
+        <service android:name=".CallerScreenService" android:permission="android.permission.BIND_SCREENING_SERVICE" android:exported="true">
+            <intent-filter><action android:name="android.telecom.CallScreeningService"/></intent-filter>
+        </service>
+        <!-- Lucina's phone MCP: content call - -uri content://tech.getsecretary.secretary.calls - -method call|check -->
+        <provider android:name=".CallProvider" android:authorities="tech.getsecretary.secretary.calls" android:exported="true"
+            android:permission="android.permission.DUMP"/>
+    </application>
+</manifest>

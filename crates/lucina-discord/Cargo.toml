@@ -1,0 +1,31 @@
+[package]
+name = "lucina-discord"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Lucina on Discord: the owner presence watcher (separate GUILDS | GUILD_PRESENCES gateway session) and its stores"
+
+[features]
+default = []
+# The gateway client (twilight). Readers of the presence files (server, tools) do not need it.
+gateway = ["dep:tokio", "dep:twilight-gateway", "dep:twilight-http", "dep:twilight-model", "dep:tokio-websockets", "dep:futures-util"]
+
+[dependencies]
+lucina-store = { path = "../lucina-store" }
+serde = { workspace = true }
+serde_json = { workspace = true, features = ["raw_value"] }
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
+tokio = { workspace = true, optional = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+fs4 = { workspace = true }
+twilight-gateway = { version = "=0.17.1", default-features = false, features = ["rustls-webpki-roots"], optional = true }
+twilight-http = { version = "=0.17.1", default-features = false, features = ["rustls-webpki-roots"], optional = true }
+twilight-model = { version = "=0.17.1", optional = true }
+# Pick ring as the rustls crypto provider (same as reqwest in this workspace).
+tokio-websockets = { version = "0.13", default-features = false, features = ["ring"], optional = true }
+futures-util = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3"

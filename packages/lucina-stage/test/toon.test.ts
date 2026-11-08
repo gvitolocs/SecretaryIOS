@@ -197,6 +197,34 @@ describe('outfit and part toon materials', () => {
     handle!.dispose();
   });
 
+  it('gives the hair glow, angel ring and outline the new hue, dims the glow for dark colours, and restores them', async () => {
+    const { root, mesh } = model();
+    const handle = await applyToon(root, {
+      default: { color: [0.29, 0.34, 0.48], emission: [0.25, 0.25, 0.47], emissionAmount: 0.85, angelRing: [0.58, 0.63, 0.82], outline: { color: [0.65, 0.65, 0.93] } },
+    });
+    const m = mesh.material as unknown as ShaderMaterial;
+    const col = (k: string) => m.uniforms[k]!.value as Color;
+    const lum = (c: Color) => c.r * 0.299 + c.g * 0.587 + c.b * 0.114;
+    const natural = { emission: col('emission').clone(), ring: col('ringColor').clone(), outline: col('outlineColor').clone() };
+
+    tintMaterial(m, '#7a4e33'); // brown: warm hue, as light as her natural blue, so the same glow
+    expect(col('emission').r).toBeGreaterThan(col('emission').b);
+    expect(col('ringColor').r).toBeGreaterThan(col('ringColor').b);
+    expect(col('outlineColor').r).toBeGreaterThan(col('outlineColor').b);
+    expect(lum(col('ringColor'))).toBeCloseTo(lum(natural.ring), 3);
+    expect(lum(col('emission'))).toBeCloseTo(lum(natural.emission), 3);
+
+    tintMaterial(m, '#2a2a33'); // black: darker than her natural blue, so less glow
+    expect(lum(col('emission'))).toBeLessThan(lum(natural.emission) * 0.5);
+    expect(lum(col('ringColor'))).toBeCloseTo(lum(natural.ring), 3);
+
+    tintMaterial(m, null);
+    expect(col('emission').equals(natural.emission)).toBe(true);
+    expect(col('ringColor').equals(natural.ring)).toBe(true);
+    expect(col('outlineColor').equals(natural.outline)).toBe(true);
+    handle!.dispose();
+  });
+
   it('prepares part materials and keeps hull skeletons shared after HairRig rebinds them', async () => {
     const { root } = model();
     const bone = new Bone();

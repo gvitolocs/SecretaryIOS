@@ -1,0 +1,12 @@
+[Unit]
+Description=Verified memo archive and daily hard-link snapshot
+OnFailure=pokoin-notify@%n.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/.config/lucina-rs/lucina.env
+EnvironmentFile=%h/.config/lucina-memo/memo.env
+ExecStart=%h/.local/bin/lucina-memo-backup
+Nice=10
+IOSchedulingClass=idle
+UMask=0077

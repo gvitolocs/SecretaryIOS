@@ -1,0 +1,37 @@
+# p1 (getsecretary.tech), inside the site block, BEFORE the catch-all `handle`.
+# Signed media URLs (/s/ = Instagram pictures, /a/ = saved items from the Gallery) carry their own HMAC and skip
+# forward_auth (like /v1/nclient/s/* and /v1/media/s/*).
+# GET/HEAD only, so the signed route can never write anything.
+@instagram_media {
+	path /v1/instagram/s/* /v1/instagram/a/*
+	method GET HEAD
+}
+handle @instagram_media {
+	reverse_proxy NEZOPT_TAILNET_IP:8871 {
+		header_up -Authorization
+		header_up -Cookie
+	}
+}
+@instagram path /v1/instagram /v1/instagram/*
+handle @instagram {
+	route {
+		# Cookie-authenticated writes must carry the CSRF header (a Bearer device token is exempt).
+		@instagram_csrf {
+			not method GET HEAD
+			not header Authorization *
+			not header X-Secretary-CSRF 1
+		}
+		respond @instagram_csrf `{"ok":false,"error":"csrf"}` 403
+		# Owner only: 204 for a device session, 403 owner_only for Lucina's service token.
+		forward_auth 127.0.0.1:8800 {
+			uri /v1/auth/owner
+		}
+		reverse_proxy NEZOPT_TAILNET_IP:8871 {
+			# /etc/caddy/instagram-gateway.key = the contents of ~/.config/secretary-instagram/gateway.secret
+			# on nezopt (0640 root:caddy, never in git).
+			header_up X-Lucina-Gateway {file./etc/caddy/instagram-gateway.key}
+			header_up -Authorization
+			header_up -Cookie
+		}
+	}
+}

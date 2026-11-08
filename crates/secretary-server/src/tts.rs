@@ -5,21 +5,27 @@
 //! - Voice: an explicit `voice` (from the `SECRETARY_TTS_VOICES` whitelist)
 //!   wins; else `lang` (`it` → `if_sara`, `en` → `af_heart`); else a language
 //!   score (Italian stopwords + accented letters vs English stopwords; a tie
-//!   or no signal is Italian, Lucina mostly speaks Italian). The voice is
-//!   always sent: Kokoro would otherwise pick its own default.
+//!   or no signal is English: Lucina speaks English or Danish to the owner,
+//!   never Italian, since 2026-11-02). The Italian voice stays for reading
+//!   Italian text aloud. The voice is always sent: Kokoro would otherwise
+//!   pick its own default.
 //! - Texts over [`CHUNK_CHARS`] are split on sentence boundaries and
 //!   synthesized one chunk after the other into the same MP3 stream (MP3
 //!   frames concatenate), so playback starts after the first sentence.
+//! - [`Tts::synthesize`] is the same pipeline for `POST /v1/voice`
+//!   ([`crate::voice`]), which asks Kokoro for raw PCM ([`Format::Pcm`]:
+//!   signed 16-bit little-endian mono at [`PCM_RATE`] Hz, checked against
+//!   Kokoro-FastAPI v0.9.0) instead of MP3; raw samples concatenate too.
 
 use std::time::Duration;
 
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::extract::State;
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Extension, Router};
-use futures_util::stream::{self, StreamExt};
+use futures_util::stream::{self, BoxStream, StreamExt};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -36,6 +42,8 @@ pub const MAX_CHARS: usize = 1200;
 pub const CHUNK_CHARS: usize = 300;
 pub const PER_MINUTE: u32 = 30;
 pub const TIMEOUT: Duration = Duration::from_secs(30);
+/// Sample rate of Kokoro's `pcm` output (mono, signed 16-bit little-endian).
+pub const PCM_RATE: u32 = 24_000;
 
 const ITALIAN_STOPWORDS: &[&str] = &[
     "che", "non", "per", "sono", "ciao", "il", "la", "è", "un", "una", "di", "ti", "mi", "come",
@@ -48,8 +56,8 @@ const ENGLISH_STOPWORDS: &[&str] = &[
     "it", "in", "on", "for", "do", "was", "will", "not", "can",
 ];
 
-/// Italian unless English clearly scores higher. Score: Italian stopwords +
-/// accented letters vs English stopwords; a tie or no signal is Italian.
+/// Italian only when Italian clearly scores higher. Score: Italian stopwords +
+/// accented letters vs English stopwords; a tie or no signal is English.
 pub fn looks_italian(text: &str) -> bool {
     let lower = text.to_lowercase();
     let words: Vec<&str> = lower
@@ -66,7 +74,7 @@ pub fn looks_italian(text: &str) -> bool {
         .iter()
         .filter(|w| ENGLISH_STOPWORDS.contains(w))
         .count();
-    it >= en
+    it > en
 }
 
 /// The voice for a request, or a `bad_request` message.
@@ -152,6 +160,23 @@ struct TtsRequest {
     speed: Option<f64>,
 }
 
+/// What Kokoro is asked to produce.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    Mp3,
+    /// Raw signed 16-bit little-endian mono samples at [`PCM_RATE`] Hz.
+    Pcm,
+}
+
+impl Format {
+    fn response_format(self) -> &'static str {
+        match self {
+            Self::Mp3 => "mp3",
+            Self::Pcm => "pcm",
+        }
+    }
+}
+
 fn bad(message: impl Into<String>) -> ApiError {
     ApiError::new(StatusCode::BAD_REQUEST, "bad_request", message)
 }
@@ -188,6 +213,7 @@ struct Upstream {
     url: String,
     voice: String,
     speed: f64,
+    format: Format,
 }
 
 impl Upstream {
@@ -196,11 +222,55 @@ impl Upstream {
             .post(format!("{}/v1/audio/speech", self.url))
             .json(
                 &json!({"model": "kokoro", "input": input, "voice": self.voice,
-                          "response_format": "mp3", "speed": self.speed}),
+                          "response_format": self.format.response_format(),
+                          "speed": self.speed}),
             )
             .send()
             .await?
             .error_for_status()
+    }
+}
+
+impl Tts {
+    /// Synthesize `text` with `voice`, chunk by chunk, into one byte stream.
+    /// The first chunk decides the result (so an unreachable Kokoro is a
+    /// 502/504 here); later chunk failures end the stream with an error.
+    pub(crate) async fn synthesize(
+        &self,
+        text: &str,
+        voice: &str,
+        speed: f64,
+        format: Format,
+    ) -> Result<BoxStream<'static, reqwest::Result<Bytes>>, ApiError> {
+        let upstream = Upstream {
+            client: self.client.clone(),
+            url: self.url.clone(),
+            voice: voice.to_owned(),
+            speed,
+            format,
+        };
+        let mut parts = chunks(text, CHUNK_CHARS).into_iter();
+        let first_text = parts.next().unwrap_or_else(|| text.to_owned());
+        let first = upstream.clone().speech(first_text).await.map_err(|e| {
+            if e.is_timeout() {
+                unavailable(StatusCode::GATEWAY_TIMEOUT, "the speech service timed out")
+            } else {
+                if let Some(status) = e.status() {
+                    tracing::warn!(status = status.as_u16(), "tts upstream error");
+                }
+                unavailable(StatusCode::BAD_GATEWAY, "the speech service failed")
+            }
+        })?;
+        let rest = stream::iter(parts.collect::<Vec<_>>())
+            .then(move |chunk| upstream.clone().speech(chunk))
+            .flat_map(|r| match r {
+                Ok(resp) => resp.bytes_stream().boxed(),
+                Err(e) => {
+                    tracing::warn!(error = %e, "tts upstream failed mid-stream");
+                    stream::once(async move { Err(e) }).boxed()
+                }
+            });
+        Ok(first.bytes_stream().chain(rest).boxed())
     }
 }
 
@@ -223,35 +293,8 @@ async fn speak(
     if let Err(wait) = tts.limiter.check(&ident.device_id) {
         return Err(ApiError::rate_limited(wait));
     }
-    let upstream = Upstream {
-        client: tts.client.clone(),
-        url: tts.url.clone(),
-        voice: voice.clone(),
-        speed,
-    };
-    let mut parts = chunks(text, CHUNK_CHARS).into_iter();
-    let first_text = parts.next().unwrap_or_else(|| text.to_owned());
-    // The first chunk decides the status; later chunk failures end the stream.
-    let first = upstream.clone().speech(first_text).await.map_err(|e| {
-        if e.is_timeout() {
-            unavailable(StatusCode::GATEWAY_TIMEOUT, "the speech service timed out")
-        } else {
-            if let Some(status) = e.status() {
-                tracing::warn!(status = status.as_u16(), "tts upstream error");
-            }
-            unavailable(StatusCode::BAD_GATEWAY, "the speech service failed")
-        }
-    })?;
-    let rest = stream::iter(parts.collect::<Vec<_>>())
-        .then(move |chunk| upstream.clone().speech(chunk))
-        .flat_map(|r| match r {
-            Ok(resp) => resp.bytes_stream().boxed(),
-            Err(e) => {
-                tracing::warn!(error = %e, "tts upstream failed mid-stream");
-                stream::once(async move { Err(e) }).boxed()
-            }
-        });
-    let mut resp = Body::from_stream(first.bytes_stream().chain(rest)).into_response();
+    let stream = tts.synthesize(text, &voice, speed, Format::Mp3).await?;
+    let mut resp = Body::from_stream(stream).into_response();
     resp.headers_mut()
         .insert(header::CONTENT_TYPE, HeaderValue::from_static("audio/mpeg"));
     if let Ok(v) = HeaderValue::from_str(&voice) {
@@ -274,13 +317,15 @@ mod tests {
     }
 
     #[test]
-    fn language_score_ties_go_to_italian() {
+    fn language_score_ties_go_to_english() {
+        // Italian text is still recognised (to read it aloud with the Italian voice)...
         assert!(looks_italian("Ciao Giuseppe, come stai oggi?"));
         assert!(looks_italian("Non è vero"));
         assert!(looks_italian("Perché?"));
         assert!(looks_italian("Ho comprato il latte e la frutta"));
-        assert!(looks_italian("Giuseppe"));
-        assert!(looks_italian(""));
+        // ...but a tie or no signal is English: she never defaults to Italian (owner rule 2026-11-02).
+        assert!(!looks_italian("Giuseppe"));
+        assert!(!looks_italian(""));
         assert!(!looks_italian("Hello, how are you today?"));
         assert!(!looks_italian("Come here and see the new workout plan"));
         assert!(!looks_italian("I'm fine, thanks"));
