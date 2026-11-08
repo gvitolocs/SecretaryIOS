@@ -393,7 +393,7 @@ licence_ours = "unknown"
 relation = "reference"
 confidence = "confirmed"
 rely_on = ["exact TLC state counts", "invariants", "temporal properties", "TLC-format counterexamples", "-workers"]
-notes = "LucinaOS's primary TLA+ checker since 2026-11-08 (LucinaOS docs/research/tla-checkers.md): TLC's exact distinct-state counts on every config it runs (JunoIdleWake 3 CPUs: 53,613,540 in 192 s on the Mac), 6-8x faster than TLC. Gap: refuses P => <>[]Q temporal formulas (exit 2); run-lucina-checks falls back to tla-checker there. Installed with cargo install tla-mc --version 0.3.0 --locked on nezopt and the Mac. A new release: re-run userspace/formal/run-lucina-checks and the Juno models, compare counts before re-pinning."
+notes = "LucinaOS's primary TLA+ checker since 2026-11-08 (LucinaOS docs/research/tla-checkers.md): TLC's exact distinct-state counts on every config it runs (JunoIdleWake 3 CPUs: 53,613,540 in 192 s on the Mac), 6-8x faster than TLC. Gap: refuses P => <>[]Q temporal formulas (exit 2); run-lucina-checks falls back to tla-checker there. Installed with cargo install tla-mc --version 0.3.0 --locked on nezopt and the Mac. A new release: re-run userspace/formal/run-lucina-checks and the Juno models, compare counts before re-pinning. Seen on userspace/formal/juno (juno-concurrency, 2026-11-08): it refuses UNCHANGED vars inside a \\A quantifier's body (\"read before the action assigns it\"); parenthesize the quantifier."
 
 [[upstream]]
 id = "tla-checker"
@@ -410,7 +410,7 @@ licence_ours = "unknown"
 relation = "reference"
 confidence = "confirmed"
 rely_on = ["--config TLC cfg", "--check-liveness", "--json status", "max-states/max-depth limits"]
-notes = "LucinaOS's second TLA+ checker (crate tla-checker, binary tla): for the temporal formulas tla-mc refuses. Known bugs at v0.24.11: an IF ... ELSE followed by an aligned /\\ line takes that conjunct into the ELSE (JunoIdleWake SoftIpi: type error); a continued infix \\/ is refused. Defaults stop at 1e6 states / depth 100 and a hit limit exits 1 like a violation; our scripts raise both and treat it as INCOMPLETE. About 450x slower than tla-mc on JunoIdleWake. Upstream reports for the two parser bugs: candidates, draft only."
+notes = "LucinaOS's second TLA+ checker (crate tla-checker, binary tla): for the temporal formulas tla-mc refuses. Known bugs at v0.24.11: an IF ... ELSE followed by an aligned /\\ line takes that conjunct into the ELSE (JunoIdleWake SoftIpi: type error); a continued infix \\/ is refused. Defaults stop at 1e6 states / depth 100 and a hit limit exits 1 like a violation; our scripts raise both and treat it as INCOMPLETE. About 450x slower than tla-mc on JunoIdleWake. Upstream reports for the two parser bugs: candidates, draft only. Seen on userspace/formal/juno (juno-concurrency, 2026-11-08): it accepted an equality between an integer and a string that TLC stops on, so a spec it passes is not type-checked; keep the TLC parity run."
 
 [[upstream]]
 id = "tlaplusplus"
@@ -465,42 +465,6 @@ relation = "reference"
 confidence = "confirmed"
 rely_on = ["Model trait", "BFS checker", "Property::always/sometimes", "discovery paths"]
 notes = "Rust model checker for LucinaOS's layer (c)/(d) models (docs/design/lucinaos-correctness.md). Its eventually() misses cycles, so time bounds are always() properties over an explicit clock."
-[[upstream]]
-id = "tla-mc"
-name = "tla-mc (TLA+ model checker compiled to native, parallel)"
-url = "https://github.com/ddalton/tla-mc"
-source = "github"
-repo = "ddalton/tla-mc"
-branch = "main"
-track = "releases"
-pin = "v0.3.0"
-notify = "report"
-ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "userspace/formal", base = "main" }]
-licence_upstream = "MIT"
-licence_ours = "MPL-2.0"
-relation = "reference"
-confidence = "confirmed"
-rely_on = ["TLC-compatible .cfg", "exact TLC distinct-state counts", "-workers N", "TLC-format violation reports and traces"]
-notes = "Adopted unchanged as the first TLA+ checker (owner, 2026-11-08: TLA+ is in Rust; lucinaos-correctness benchmark, LucinaOS docs/research/tla-checkers.md); crate tla-mc 0.3.0 = tag v0.3.0 (c8fce234), cargo install --locked on nezopt and the Mac. On LucinaOS userspace/formal/juno it gives TLC's exact counts on all 31 configurations in seconds (JunoIdleWake3: 53,613,540 states in 192 s on the Mac, TLC 23 min). Gap: refuses temporal formulas shaped P => <>[]Q (exit 2, unsupported); tla-checker takes those. Java TLC stays the parity cross-check only."
-
-[[upstream]]
-id = "tla-checker"
-name = "tla-checker (tla-rs, TLA+ model checker in Rust)"
-url = "https://github.com/fabracht/tla-rs"
-source = "github"
-repo = "fabracht/tla-rs"
-branch = "main"
-track = "releases"
-pin = "v0.24.11"
-notify = "report"
-ours = [{ repo = "/home/nez/Projects/Lucina/LucinaOS", path = "userspace/formal", base = "main" }]
-licence_upstream = "MIT OR Apache-2.0"
-licence_ours = "MPL-2.0"
-relation = "reference"
-confidence = "confirmed"
-rely_on = ["TLC-compatible .cfg (CONSTANTS, INVARIANTS, PROPERTIES)", "--check-liveness with WF/SF fairness", "--allow-deadlock", "--max-states/--max-depth limits", "counterexample traces"]
-notes = "Adopted unchanged as the fallback TLA+ checker, for configurations tla-mc refuses as unsupported (P => <>[]Q); crate tla-checker 0.24.11 = tag v0.24.11 (9438572f), binary `tla`. One thread (about 1,900 states/s on nezopt), so not for large graphs. Known gap: an IF ... THEN ... ELSE used as a value in a /\\ list nested in an outer IF branch absorbs the next aligned conjunct into its ELSE (TLC and tla-mc do not); our specs parenthesize such IFs. Minimal repro drafted for upstream, not sent without the owner's OK."
-
 [[upstream]]
 id = "uefi-rs"
 name = "uefi-rs"
