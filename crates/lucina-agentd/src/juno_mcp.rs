@@ -1,9 +1,11 @@
 //! `lagent juno-mcp`: the Juno shell tool (`juno_bash`) for CodeCor's Claude agents,
 //! over stdio. agentd attaches it (server name `juno`) to a Claude agent whose labels
-//! carry `codecor.juno=bash` and whose mode asks before each call, so every call shows
-//! the owner an Allow/Deny card in agentd's permission book and runs only after Allow.
-//! Nothing here is ever preapproved (see `manager/permissions.rs` and
-//! `providers/claude.rs`).
+//! carry `codecor.juno=bash`. By default (owner decision 2026-11-08) juno tools are
+//! allowed: no card, preapproved like agentd's own tools. In ask mode
+//! (`juno-decide.ask`, see `juno_ask_mode`) the mode must ask before each call, and
+//! nothing here is ever preapproved — every call shows the owner an Allow/Deny card in
+//! agentd's permission book and runs only after Allow (see `manager/permissions.rs`
+//! and `providers/claude.rs`).
 //!
 //! The command runs on the Juno laptop as root over SSH, with the host key pinned
 //! (`StrictHostKeyChecking=yes`, `HostKeyAlias=juno`, a dedicated key and known_hosts
@@ -36,10 +38,29 @@ const DECIDE_LIMIT_SECS: u64 = 330;
 const TARGET_ENV: &str = "LUCINA_JUNO_TARGET";
 const DEFAULT_TARGET: &str = "root@192.168.178.47";
 
-/// Whether a permission request is for one of these tools. These are never
-/// preapproved: every call asks the owner again.
+/// Whether a permission request is for one of these tools. In ask mode (see
+/// [`juno_ask_mode`]) they are never preapproved: every call asks the owner again.
 pub fn is_juno_tool(name: &str) -> bool {
     name.starts_with("mcp__juno__")
+}
+
+/// Owner decision 2026-11-08: juno tools are allowed by default. Ask mode (the 2026-11-07
+/// behaviour: a card on every call, never preapproved) is on when
+/// `$HOME/.config/lucina-agentd/juno-decide.ask` exists or `JUNO_DECIDE_ASK=1`.
+pub fn juno_ask_mode() -> bool {
+    let file = home().join(".config/lucina-agentd/juno-decide.ask").exists();
+    ask_mode_from(
+        std::env::var_os("JUNO_DECIDE_ASK")
+            .as_deref()
+            .and_then(|s| s.to_str()),
+        file,
+    )
+}
+
+/// The pure switch behind [`juno_ask_mode`]: on iff the env var is exactly `1` or the
+/// switch file exists.
+fn ask_mode_from(env_value: Option<&str>, ask_file_exists: bool) -> bool {
+    env_value == Some("1") || ask_file_exists
 }
 
 fn home() -> PathBuf {
@@ -497,6 +518,16 @@ pub async fn serve() -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ask_mode_switch() {
+        assert!(!ask_mode_from(None, false));
+        assert!(ask_mode_from(Some("1"), false));
+        assert!(!ask_mode_from(Some("0"), false));
+        assert!(!ask_mode_from(Some("true"), false), "only exactly `1`");
+        assert!(ask_mode_from(None, true), "the switch file alone turns ask mode on");
+        assert!(ask_mode_from(Some("0"), true), "the switch file wins over `JUNO_DECIDE_ASK=0`");
+    }
 
     #[test]
     fn juno_tool_names() {
