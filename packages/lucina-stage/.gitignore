@@ -4,3 +4,5 @@ dist/
 *.glb
 *.gltf
 *.pmx
+# Exception: the studio props are original art (tools/props/make_props.py), safe to commit.
+!assets/props/lucina-props.glb

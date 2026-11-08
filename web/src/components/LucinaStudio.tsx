@@ -1,7 +1,9 @@
-import type { WardrobeStage } from "@secretary/lucina-stage";
+import type { StudioExtras, WardrobeStage } from "@secretary/lucina-stage";
 import { createSignal, For, onCleanup, Show } from "solid-js";
 import { t } from "../i18n";
 import { readString, writeString } from "../lib/storage";
+import { loadBackgroundImage } from "../lib/studioImage";
+import { BackgroundImageChips, CameraPanel, FaceSliders, FunPanel, HandsPanel, PosePanel, PropsPanel } from "./LucinaStudioExtras";
 
 /** Clips that look wrong on the live model (broken hands): never offered as poses. */
 const BLOCKED_POSES = new Set(["idle_maid", "bow", "shy", "sit_idle", "think_chin"]);
@@ -13,7 +15,9 @@ const LIGHT_KEY = "secretary.studio.lighting";
 /** Optional owner-provided dance track (served behind the session); otherwise the built-in beat. */
 const DANCE_TRACK = "/v1/assets/dance.mp3";
 
-type Tab = "view" | "poses" | "face" | "background" | "light";
+type Tab = "view" | "poses" | "face" | "background" | "light" | "hands" | "pose" | "props" | "camera" | "fun";
+/** Tabs with sliders get a taller sheet. */
+const TALL: ReadonlySet<Tab> = new Set(["face", "hands", "pose", "props", "camera", "fun"]);
 
 type Key = Parameters<typeof t>[0];
 const BG_LABEL: Record<string, Key> = {
@@ -41,11 +45,16 @@ const EXPR_LABEL: Record<string, Key> = {
   angry: "studio.exprAngry",
 };
 
-/** Applies the remembered background and light to a new stage. */
-export function restoreStudio(stage: WardrobeStage): void {
+/** Applies the remembered background and light to a new stage (and the owner's image, with the extras). */
+export function restoreStudio(stage: WardrobeStage, extras?: StudioExtras | null): void {
   try {
     const bg = readString("local", BG_KEY);
-    if (bg && bg !== "default") stage.setBackground(bg);
+    if (bg === "image") {
+      if (extras)
+        void loadBackgroundImage()
+          .then((b) => (b ? extras.setBackgroundImage(b) : undefined))
+          .catch(() => {});
+    } else if (bg && bg !== "default") stage.setBackground(bg);
     const light = readString("local", LIGHT_KEY);
     if (light && light !== "default") stage.setLighting(light as never);
   } catch {
@@ -64,6 +73,8 @@ function poseLabel(name: string): string {
  */
 export function LucinaStudio(props: {
   stage: () => WardrobeStage | null;
+  /** Studio extras (hands, poses, props, camera, fun); their tabs show only with them. */
+  extras?: () => StudioExtras | null;
   muted: () => boolean;
   fetchInit: RequestInit;
   onClose: () => void;
@@ -74,7 +85,8 @@ export function LucinaStudio(props: {
 }) {
   const [tab, setTab] = createSignal<Tab>("view");
   const [expr, setExpr] = createSignal<string | null>(null);
-  const [bg, setBg] = createSignal<string>(props.stage()?.background ?? "default");
+  const [bg, setBg] = createSignal<string>(props.extras?.()?.backgroundImage ? "image" : (props.stage()?.background ?? "default"));
+  const extras = () => props.extras?.() ?? null;
   const [light, setLight] = createSignal<string>(props.stage()?.lighting ?? "default");
   const [dancing, setDancing] = createSignal(props.stage()?.dancing ?? false);
   const [gyro, setGyro] = createSignal(props.stage()?.gyro ?? false);
@@ -103,6 +115,8 @@ export function LucinaStudio(props: {
   }
 
   function chooseBg(id: string) {
+    // Another background replaces the owner's image on stage (it stays stored on the device).
+    if (bg() === "image") void extras()?.setBackgroundImage(null);
     setBg(id);
     props.stage()?.setBackground(id);
     writeString("local", BG_KEY, id);
@@ -162,6 +176,14 @@ export function LucinaStudio(props: {
     { id: "background", label: "studio.tabBackground" },
     { id: "light", label: "studio.tabLight" },
   ];
+  if (props.extras)
+    tabs.push(
+      { id: "hands", label: "studio2.tabHands" },
+      { id: "pose", label: "studio2.tabPose" },
+      { id: "props", label: "studio2.tabProps" },
+      { id: "camera", label: "studio2.tabCamera" },
+      { id: "fun", label: "studio2.tabFun" },
+    );
 
   return (
     <div class="stage-studio" role="dialog" aria-label={t("studio.title")}>
@@ -177,7 +199,7 @@ export function LucinaStudio(props: {
           ×
         </button>
       </div>
-      <div class="stage-studio-chips">
+      <div class="stage-studio-chips" classList={{ "stage-studio-chips--tall": TALL.has(tab()) && !!extras() }}>
         <Show when={tab() === "view"}>
           <button type="button" class="studio-chip" onClick={() => props.stage()?.cameraPreset("face")}>{t("shell.viewFace")}</button>
           <button type="button" class="studio-chip" onClick={() => props.stage()?.cameraPreset("bust")}>{t("shell.viewBust")}</button>
@@ -204,6 +226,9 @@ export function LucinaStudio(props: {
               </button>
             )}
           </For>
+          <Show when={extras()}>
+            <FaceSliders extras={extras} stage={props.stage} />
+          </Show>
         </Show>
         <Show when={tab() === "background"}>
           <For each={BACKGROUNDS}>
@@ -216,6 +241,35 @@ export function LucinaStudio(props: {
               </button>
             )}
           </For>
+          <Show when={extras()}>
+            <BackgroundImageChips
+              extras={extras}
+              selected={bg() === "image"}
+              onChosen={() => {
+                setBg("image");
+                writeString("local", BG_KEY, "image");
+              }}
+              onRemoved={() => {
+                setBg("default");
+                writeString("local", BG_KEY, "default");
+              }}
+            />
+          </Show>
+        </Show>
+        <Show when={extras() && tab() === "hands"}>
+          <HandsPanel extras={extras} />
+        </Show>
+        <Show when={extras() && tab() === "pose"}>
+          <PosePanel extras={extras} />
+        </Show>
+        <Show when={extras() && tab() === "props"}>
+          <PropsPanel extras={extras} stage={props.stage} />
+        </Show>
+        <Show when={extras() && tab() === "camera"}>
+          <CameraPanel extras={extras} stage={props.stage} />
+        </Show>
+        <Show when={extras() && tab() === "fun"}>
+          <FunPanel extras={extras} />
         </Show>
         <Show when={tab() === "light"}>
           <For each={LIGHTS}>

@@ -56,6 +56,7 @@ import { GyroParallax } from './interact/gyro';
 import { FaceDriver, type FaceDrive } from './facedrive';
 import { playBeat, playTrack, type MusicHandle } from './interact/music';
 import { PhysicsRig, type PhysicsHandle, type PhysicsVariantSelection } from './physics/rig';
+import { createStageHooks, type FrameContext, type StageHooks } from './studio2/hooks';
 
 export interface LucinaStageOptions {
   /** GLB URL. Production: `/v1/assets/lucina.glb`. Omit to use the procedural placeholder. */
@@ -128,6 +129,8 @@ export interface LucinaStageOptions {
    * manifest's per-outfit and per-hairstyle overrides; `quality` is the tier without an environment.
    */
   physics?: boolean | (PhysicsVariantSelection & { quality?: StageQualitySetting });
+  /** Studio-extras hooks (src/studio2/); the wardrobe shares one object across its stages. */
+  hooks?: StageHooks;
   /**
    * Called with every loaded model (not the placeholder) after its materials are set up and before
    * her first frame, in the rest pose: the character editor puts the current look on here
@@ -271,6 +274,8 @@ export interface LucinaStage {
   setFaceDrive(drive: FaceDrive | null): void;
   /** Face samples are arriving. */
   readonly faceDriven: boolean;
+  /** Frame and gaze hooks for the studio extras (src/studio2/). */
+  readonly hooks: StageHooks;
   /** Re-measures her and re-frames the camera after the editor changed her proportions. */
   refit(): void;
   /** Escape hatches for debugging. */
@@ -596,6 +601,7 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
   const face = new FaceDriver();
   let music: MusicHandle | null = null;
   let dancing = false;
+  const hooks = options.hooks ?? createStageHooks();
 
   function manifestFraming(f: Framing): CameraFraming | undefined {
     const c = manifest.camera[f];
@@ -1079,6 +1085,10 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
       pointerReleaseAt = 0;
     }
     // A finger (or pressed mouse) on an interactive stage wins over hover-following.
+    if (hooks.gaze) {
+      animator.setPointer(hooks.gaze);
+      return;
+    }
     const g = interaction?.gaze;
     const ndc = g ? toNdc(g.x, g.y, _gaze) : lookEnabled ? pointerNdc : null;
     if (!ndc || w < 0.2) {
@@ -1149,6 +1159,7 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
       rig.captureClipPose(player.drivenNodes);
       rig.apply(f, { driven: player.drivenNodes });
     } else rig.apply(f);
+    runHooks(dt, hooks.pose);
     if (physics) {
       // A camera orbit (last frame's) swings her hair a little, as if she had turned (orbitInertia).
       const az = Math.atan2(camNow.pos.x - metrics.centerX, camNow.pos.z - metrics.centerZ);
@@ -1166,8 +1177,39 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
     if (env) {
       env.update(dt, machine.state, lip.open);
       env.driftCamera(camera, camNow.target);
-      env.render(dt);
-    } else renderer.render(scene, camera);
+    }
+    runHooks(dt, hooks.frame);
+    if (env) env.render(dt);
+    else renderer.render(scene, camera);
+  }
+
+  let hookCtx: FrameContext | null = null;
+  function runHooks(dt: number, set: Set<(ctx: FrameContext) => void>): void {
+    if (!set.size) return;
+    const c = (hookCtx ??= {
+      dt,
+      scene,
+      camera,
+      model,
+      renderer,
+      canvas,
+      bones: rig.report.bones,
+      height,
+      floorY: bbox.min.y,
+      reducedMotion,
+      dancing,
+      placeholder,
+    });
+    c.dt = dt;
+    c.reducedMotion = reducedMotion;
+    c.dancing = dancing;
+    for (const f of set) {
+      try {
+        f(c);
+      } catch (e) {
+        console.warn('[lucina-stage] studio hook failed:', e);
+      }
+    }
   }
 
   function renderOnce(): void {
@@ -1379,6 +1421,7 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
     dispose,
     stats,
     physics,
+    hooks,
     info: { placeholder, clips: player?.list() ?? [], extensions, rig: rig.report, hidden },
     three: { renderer, scene, camera, model },
     onTouch(cb) {
