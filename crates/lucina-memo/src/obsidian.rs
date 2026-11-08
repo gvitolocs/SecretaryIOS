@@ -1,5 +1,5 @@
-//! The memo's note in the owner's Obsidian vault (canonical copy on the
-//! Raspberry Pi, `/home/nes/Obsidian`, reached from nezopt as `pi-cursor`).
+//! The memo's note in the owner's Obsidian vault (canonical copy on nezopt's
+//! MyBook disk, `/home/nez/mnt/mybook/Obsidian`, a local folder here; moved from the Pi on 2026-11-08).
 //!
 //! Layout under `<folder>` (default `Voice Memos/Lucina`, next to the older
 //! Lectern imports in `Voice Memos/`):
@@ -34,7 +34,7 @@ pub struct VaultTarget {
 impl VaultTarget {
     pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Option<Self> {
         let vault = get("LUCINA_MEMO_OBSIDIAN_VAULT")
-            .unwrap_or_else(|| "pi-cursor:/home/nes/Obsidian".into());
+            .unwrap_or_else(|| "/home/nez/mnt/mybook/Obsidian".into());
         let vault = vault.trim().trim_end_matches('/').to_owned();
         if vault.is_empty() || vault == "off" {
             return None;

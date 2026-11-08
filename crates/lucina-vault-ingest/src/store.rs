@@ -1,7 +1,7 @@
-//! Where the notes go: the owner's canonical vault, `/home/nes/Obsidian` on
-//! the Raspberry Pi (`pi-cursor`), never nezopt and never a git repo (the
-//! owner's rule, Honcho `obsidian-pi-rule-20260828`). The Mac copy follows
-//! through the owner's own `pi-obsidian-sync`.
+//! Where the notes go: the owner's canonical vault, `/home/nez/mnt/mybook/Obsidian` on
+//! nezopt (a local `dir:` store; moved from the Pi on 2026-11-08), never a git
+//! repo (Honcho `obsidian-pi-rule-20260828`, updated that day). The `ssh:` store
+//! stays for a remote vault.
 //!
 //! - [`SshStore`]: the Pi over SSH. Each operation is one `ssh <host> python3 -`
 //!   call (a shared control connection keeps it cheap) running a small helper
@@ -278,7 +278,7 @@ except Exception as e:
 print(json.dumps(out))
 "#;
 
-/// The Pi vault over SSH.
+/// A remote vault over SSH (the Pi until 2026-11-08).
 #[derive(Debug, Clone)]
 pub struct SshStore {
     /// Tried in order while the connection fails (`pi-cursor`, then a tunnel alias).

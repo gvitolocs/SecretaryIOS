@@ -7,13 +7,14 @@ idle. No paid model is ever used.
 
 ## Where notes go
 
-The canonical vault is `/home/nes/Obsidian` on the Pi `pi-home` (192.168.178.46). Writes go as user `nes`
-through the SSH alias `pi-cursor`, the same channel every agent uses. This is the owner's rule, Honcho
-session `obsidian-pi-rule-20260828`: "Obsidian always refers to the Raspberry Pi … Never write Obsidian
-notes on nezopt or inside a git repo."
+The canonical vault is `/home/nez/mnt/mybook/Obsidian` on nezopt's MyBook disk, written as a local folder (`dir:` store).
+It moved there from the Pi (`/home/nes/Obsidian` on `pi-home`, reached as `pi-cursor`) on 2026-11-08 at the
+owner's request; the Pi copy is a read-only backup, and the owner keeps no Obsidian copy on the Mac. Honcho session
+`obsidian-pi-rule-20260828` was updated that day (new session `obsidian-nezopt-move-20261108`): never write
+Obsidian notes anywhere else on nezopt or inside a git repo. The `ssh:` store below is kept for a remote vault.
 
-The Mac copy `~/Documents/Obsidian` follows through the owner's own `~/bin/pi-obsidian-sync`
-(bidirectional rsync, newer wins, no daemon). The nezopt folder `/home/nez/data/lucina-vault/Lucina` is
+Until 2026-11-08 a Mac copy followed by `~/bin/pi-obsidian-sync` (rsync, newer wins); that script is retired and
+the owner removed the Mac copy. The nezopt folder `/home/nez/data/lucina-vault/Lucina` is
 something else: Lucina's ops record (Log, Projects, Incidents, Map), synced to the Mac's `Lucina/` folder by
 Syncthing. The ingest never writes there, and no folder it writes is called `Lucina`. A Pi `Lucina/`
 would mix with that Syncthing folder through `pi-obsidian-sync`.
@@ -152,7 +153,7 @@ journal compacts itself past 4 MiB.
 | Variable | Default |
 | --- | --- |
 | `LUCINA_VAULT_INGEST` | off; `on` starts the loop (needs the ops record on) |
-| `LUCINA_VAULT_INGEST_TARGET` | `ssh:pi-cursor:/home/nes/Obsidian` (`ssh:<host>[,<host>]:<root>` or `dir:<path>`; a dir inside a git repo is refused) |
+| `LUCINA_VAULT_INGEST_TARGET` | `dir:/home/nez/mnt/mybook/Obsidian` (`ssh:<host>[,<host>]:<root>` or `dir:<path>`; a dir inside a git repo is refused) |
 | `LUCINA_VAULT_INGEST_FOLDERS` | the table above, as `slug=Folder;prefix*=Folder;…` |
 | `LUCINA_VAULT_INGEST_STATE_DIR` | `<ops state>/ingest` (queue, state, staging; the SSH control socket is in `$XDG_RUNTIME_DIR`) |
 | `LUCINA_VAULT_INGEST_QWEN_URL` | `http://127.0.0.1:11436` (loopback only; anything else is refused) |

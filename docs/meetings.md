@@ -88,8 +88,8 @@ Statuses `uploading → queued → transcribing → diarizing → analyzing → 
 4. **Brief**: JSON (about, key points by speaker, questions and answers, decisions, action items with owner and due
    date, follow-ups, tags), validated (speaker ids, times, lengths), else a deterministic brief from the kinds. Long
    meetings are noted in parts first. The model unreachable on the last attempt also gives the deterministic versions.
-5. **Publishing**: the folder files; the Obsidian note `Meetings/<folder name>.md` (vault rules of the memos: rsync to
-   `pi-cursor:/home/nes/Obsidian`, frontmatter, the brief, the transcript with block ids, index
+5. **Publishing**: the folder files; the Obsidian note `Meetings/<folder name>.md` (vault rules of the memos: written to
+   `/home/nez/mnt/mybook/Obsidian` on nezopt (the Pi until 2026-11-08), frontmatter, the brief, the transcript with block ids, index
    `00 Lucina meetings.md`; the path recorded before the push); Lucina's memory (Honcho, session
    `secretary_meetings`, as the owner's own turn; only with `readwrite`; marker before the write, at most once per
    revision); the notification (app inbox `/meetings/<id>`, dedup `meeting:<id>:<rev>`, and Telegram, marker first);

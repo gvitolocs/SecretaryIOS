@@ -149,7 +149,7 @@ One memo at a time, oldest first; each step writes its output before recording i
    a **meeting**: minutes, decisions, action items with owners. The event (title, time, place, attendees) is context
    in the prompt.
 3. **PDF**: HTML printed by headless Chrome (summary page, then the timed transcript).
-4. **Obsidian**: the canonical vault on the Raspberry Pi (`pi-cursor:/home/nes/Obsidian`), folder
+4. **Obsidian**: the canonical vault on nezopt (`/home/nez/mnt/mybook/Obsidian`, a local folder; the Pi until 2026-11-08), folder
    `Voice Memos/Lucina/`: `<YYYY-MM-DD HHmm> <title>.md` (frontmatter in the vault's Voice Memos style, embedded
    audio, summary callout, action items as checkboxes linking to transcript block ids `^sNNN`), attachments in
    `Attachments/`, index `00 Lucina memos.md`. A note keeps its file name after the first publish. Linked memos go

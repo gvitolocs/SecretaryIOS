@@ -1046,6 +1046,113 @@ confidence = "confirmed"
 notes = "Tauri with a JavaScript UI. Facts only, because of the GPL. Not audited beyond a scan, as no code is used."
 
 [[upstream]]
+id = "silica"
+name = "Silica (GPUI Obsidian-like app)"
+url = "https://github.com/lw-xiong/Silica"
+source = "github"
+repo = "lw-xiong/Silica"
+track = "commits"
+pin = "8c6a23f00ddb36deb57aae14e95754e71dd306bd"
+pin_date = "2026-11-08"
+notify = "report"
+ours = [{ repo = "/home/nez/Projects/Lucina/SecretaryIOS", path = "crates/lucina-vault", base = "origin/main" }]
+licence_upstream = "MIT"
+licence_ours = "workspace"
+relation = "reference"
+confidence = "confirmed"
+notes = "Most complete Rust vault app seen on 2026-11-08 (wikilinks, backlinks, graph, embeds incl. PDF, .canvas view, templates), but created 2026-10-31, one author, GPUI pinned to a Zed git commit, own link rules not held against Obsidian. Reference for canvas and embed views; adapt pieces later with the MIT notice. Not built or run. Decision: LucinaOS docs/research/obsidian-rust-client.md."
+
+[[upstream]]
+id = "obsidian-rs-iced"
+name = "obsidian-rs (iced)"
+url = "https://github.com/j0ltdevv/obsidian-rs"
+source = "github"
+repo = "j0ltdevv/obsidian-rs"
+branch = "master"
+track = "commits"
+pin = "5adbda0ddd854170e61b82c903b949e9f635a694"
+pin_date = "2026-11-05"
+notify = "report"
+ours = [{ repo = "/home/nez/Projects/Lucina/SecretaryIOS", path = "crates/lucina-vault", base = "origin/main" }]
+licence_upstream = "unknown"
+licence_ours = "workspace"
+relation = "reference"
+confidence = "unconfirmed"
+notes = "iced vault app with daily notes and templates and macOS binaries. README says MIT but the repo has no LICENSE file (GitHub API 404 on 2026-11-08): facts only until one appears."
+
+[[upstream]]
+id = "basalt"
+name = "Basalt (basalt-core)"
+url = "https://github.com/erikjuhani/basalt"
+source = "github"
+repo = "erikjuhani/basalt"
+track = "commits"
+pin = "38705a126d043bccb7d37509258f961ec073d8cf"
+pin_date = "2026-11-07"
+paths = ["basalt-core"]
+notify = "report"
+ours = [{ repo = "/home/nez/Projects/Lucina/SecretaryIOS", path = "crates/lucina-vault", base = "origin/main" }]
+licence_upstream = "Apache-2.0"
+licence_ours = "workspace"
+relation = "reference"
+confidence = "confirmed"
+notes = "basalt-core (Apache-2.0) is a vault/note model with no UI; basalt-tui is GPL-3.0-or-later and is not used. Reference only."
+
+[[upstream]]
+id = "markdown-oxide"
+name = "markdown-oxide"
+url = "https://github.com/Feel-ix-343/markdown-oxide"
+source = "github"
+repo = "Feel-ix-343/markdown-oxide"
+track = "releases"
+pin = "v0.25.12"
+pin_date = "2026-06-29"
+notify = "report"
+ours = [{ repo = "/home/nez/Projects/Lucina/SecretaryIOS", path = "crates/lucina-vault", base = "origin/main" }]
+licence_upstream = "Apache-2.0"
+licence_ours = "workspace"
+relation = "reference"
+confidence = "confirmed"
+rely_on = ["block references", "daily notes"]
+notes = "Obsidian-flavoured Markdown LSP in Rust. Reference for block references (^id), heading/block backlinks and daily notes, which lucina-vault does not do yet; behaviour is still held against real Obsidian, not this."
+
+[[upstream]]
+id = "iwe"
+name = "IWE (liwe)"
+url = "https://github.com/iwe-org/iwe"
+source = "github"
+repo = "iwe-org/iwe"
+branch = "master"
+track = "commits"
+pin = "930c184b7cc8508d207e6ca7999ca6e415bc02ac"
+pin_date = "2026-11-07"
+notify = "report"
+ours = [{ repo = "/home/nez/Projects/Lucina/SecretaryIOS", path = "crates/lucina-vault", base = "origin/main" }]
+licence_upstream = "Apache-2.0"
+licence_ours = "workspace"
+relation = "reference"
+confidence = "confirmed"
+notes = "Markdown knowledge graph (LSP, CLI, MCP). Reference for graph queries. Not built or run."
+
+[[upstream]]
+id = "turbovault"
+name = "TurboVault (turbovault-parser)"
+url = "https://github.com/Epistates/turbovault"
+source = "github"
+repo = "Epistates/turbovault"
+track = "commits"
+pin = "1257390869529afff5013109c5c2a75c2a87e051"
+pin_date = "2026-10-16"
+notify = "report"
+ours = [{ repo = "/home/nez/Projects/Lucina/SecretaryIOS", path = "crates/lucina-vault", base = "origin/main" }]
+licence_upstream = "MIT"
+licence_ours = "workspace"
+relation = "reference"
+confidence = "confirmed"
+rely_on = ["JSON Canvas parsing"]
+notes = "Only crate seen with Obsidian-flavoured Markdown and JSON Canvas together. Reference for canvas; our canvas types come from the open JSON Canvas 1.0 spec. Dependencies not checked."
+
+[[upstream]]
 id = "linux-qdsp6-audio"
 name = "Linux Qualcomm QDSP6 audio (sc7180)"
 url = "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git"
