@@ -59,6 +59,7 @@ pub mod voice;
 pub mod voice_filler;
 pub mod voice_frames;
 pub mod voice_level;
+pub mod voice_marker;
 pub mod voice_note;
 pub mod voice_learn;
 pub mod voice_pipe;
@@ -260,7 +261,7 @@ impl AppState {
             maps: cfg.maps.clone(),
             tts: tts::Tts::new(&cfg.tts_url, cfg.tts_voices.clone(), cfg.tts_timeout)?,
             voice: voice::Voice::new(cfg.voice_stt_url.clone(), cfg.voice_share_url.clone())?
-                .with_test_devices(&cfg.voice_test_devices),
+                .with_test_devices(&cfg.voice_test_devices, cfg.lucina_token.as_deref()),
             fillers: voice_filler::Fillers::new(),
             voice_vocab: voice_learn::VocabCache::new(),
             voice_log: voice_telemetry::Store::new(&cfg.data_dir, cfg.timezone),

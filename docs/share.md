@@ -30,7 +30,7 @@ Form fields (all optional, but at least one `text`, `url` or `file` part is requ
 | `url` | yes | a link |
 | `file` | yes | a file part; `filename` and `Content-Type` from the client (`application/octet-stream` if unknown) |
 | `replyTo` | no | the timeline id of the earlier message this share replies to, `[A-Za-z0-9_-]{1,64}` (see "Replies") |
-| `test` | no | `1`: a voice test device's note (sent only by secretary-server's voice socket for the ids of `SECRETARY_VOICE_TEST_DEVICES`; see "Test devices"). Anything else is a normal share |
+| `test` | no | `1`: a voice test device's note (sent only by secretary-server's voice socket for the ids of `SECRETARY_VOICE_TEST_DEVICES`) and only believed with the header `X-Voice-Test`; without a valid one the share is `400 bad test marker`. See "Test devices" |
 
 Limits: 32 parts, 2 GB total. Clients convert HEIC/HEIF images to JPEG before upload.
 
@@ -182,8 +182,10 @@ or model turn, just as for other shares.
 ## Test devices
 
 Agents measure the voice pipeline with a real device token that secretary-server lists in `SECRETARY_VOICE_TEST_DEVICES`. Its
-notes post with the form field `test=1` (only the voice socket sends it; the field is read behind the gateway key, like every
-field). Such a share runs as the owner's own turn in the session `voice-test` and:
+notes post with the form field `test=1` and the header `X-Voice-Test: <shareId>.<hex HMAC-SHA256(key, "voice-test:" + shareId)>`,
+the key being lucina-rs's own API token (the one secretary-server calls it with; the token itself is never sent, Caddy logs custom
+headers). Shares reach lucina-rs from any device, so `test=1` is honoured only when that header verifies (constant time, for this
+share's `shareId`); otherwise `400 bad test marker`. A header without `test=1` is ignored. Such a share runs as the owner's own turn in the session `voice-test` and:
 
 - writes every item (the user item, Lucina's reply, tool lines) with `meta.via = "test"` and `meta.conversation = "voice-test"`: no
   push (`via` is silent), and the store files them under the conversation `test:voice-test`, never the main conversation or the

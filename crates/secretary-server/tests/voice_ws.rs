@@ -120,6 +120,8 @@ struct ShareCall {
     auth: Option<String>,
     cookie: Option<String>,
     csrf: Option<String>,
+    /// `X-Voice-Test`, the proof of a test device's note.
+    voice_test: Option<String>,
     content_type: String,
     fields: Vec<(String, String)>,
     file_name: String,
@@ -181,6 +183,7 @@ async fn share(
             auth: hdr("authorization"),
             cookie: hdr("cookie"),
             csrf: hdr("x-secretary-csrf"),
+            voice_test: hdr("x-voice-test"),
             content_type: hdr("content-type").unwrap_or_default(),
             ..ShareCall::default()
         };
@@ -3238,6 +3241,12 @@ async fn a_note_of_a_test_device_posts_the_share_with_test_1() {
     assert_eq!(recv_json(&mut ws).await["type"], "note");
     let c = &shares(&h, 1).await[0];
     assert_eq!(c.field("test"), Some("1"));
+    // The proof for this very share, under the Lucina token; the token itself is not in any header.
+    let marker = c.voice_test.as_deref().expect("X-Voice-Test on a test device's note");
+    let turn = c.field("shareId").unwrap();
+    assert!(secretary_server::voice_marker::verify(LUCINA_TOKEN.as_bytes(), turn, marker), "{marker}");
+    assert!(!secretary_server::voice_marker::verify(LUCINA_TOKEN.as_bytes(), "another-share-id", marker));
+    assert!(!marker.contains(LUCINA_TOKEN));
 
     // Another device's note has no such field.
     let h = harness().await;
@@ -3252,6 +3261,7 @@ async fn a_note_of_a_test_device_posts_the_share_with_test_1() {
     assert_eq!(recv_json(&mut ws).await["type"], "note");
     let c = &shares(&h, 1).await[0];
     assert_eq!(c.field("test"), None);
+    assert!(c.voice_test.is_none());
 }
 
 #[tokio::test]

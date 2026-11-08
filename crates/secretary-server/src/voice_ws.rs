@@ -1134,7 +1134,14 @@ async fn note_steps(
             test: n.test,
         },
     );
-    match voice_note::post_share(&n.st, &n.creds, content_type, body).await {
+    let marker = if n.test { n.st.voice.test_marker(&n.id) } else { None };
+    if n.test && marker.is_none() {
+        tracing::warn!(device = %device, "voice note: no Lucina token to sign the test marker");
+        info.err = Some("note_failed".into());
+        send(error_msg("note_failed", "the test note could not be signed")).await;
+        return None;
+    }
+    match voice_note::post_share(&n.st, &n.creds, content_type, body, marker.as_deref()).await {
         Ok(a) => {
             let note_ms = shared.elapsed_ms();
             tracing::info!(

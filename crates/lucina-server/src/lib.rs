@@ -74,6 +74,9 @@ pub mod voice_learn;
 // The same allows as secretary-server's own `pub mod voice_rules`: the proofs read plain `if` chains and guarded divisions.
 #[allow(dead_code, clippy::manual_clamp, clippy::implicit_saturating_sub, clippy::len_zero, clippy::manual_checked_ops)]
 pub mod voice_rules;
+/// The proof that a test share comes from secretary-server (HMAC under the API token), also its own file.
+#[path = "../../secretary-server/src/voice_marker.rs"]
+pub mod voice_marker;
 /// The glue around them (measure, lift, dBFS numbers), also secretary-server's own file.
 #[path = "../../secretary-server/src/voice_level.rs"]
 pub mod voice_level;

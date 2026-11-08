@@ -1738,13 +1738,57 @@ async fn loud_voice_notes_are_not_touched() {
     assert!((3800..=4400).contains(&after), "{after}");
 }
 
+async fn submit_marked(h: &H, form: Form, marker: Option<String>) -> reqwest::Response {
+    let mut r = h.http.post(format!("{}/v1/share", h.base)).multipart(form);
+    r = r.header("x-share-gateway", "gateway-test-secret");
+    if let Some(m) = marker {
+        r = r.header("x-voice-test", m);
+    }
+    r.send().await.unwrap()
+}
+
+#[tokio::test]
+async fn test_1_needs_secretary_servers_marker_for_that_very_share() {
+    let services = services().await;
+    let h = voice_setup(&services, false, VOICE_TEXT).await;
+    let bytes = voice_bytes(&h).await;
+    let key = common::TOKEN.as_bytes();
+    let id = "voice-test-0002";
+    let form = || voice_form(id, bytes.clone(), None, "").text("test", "1");
+    let valid = lucina_server::voice_marker::sign(key, id).unwrap();
+    let other_share = lucina_server::voice_marker::sign(key, "voice-test-0003").unwrap();
+    let wrong_key = lucina_server::voice_marker::sign(b"not-the-token", id).unwrap();
+    for (what, marker) in [("no header", None), ("wrong hmac", Some(wrong_key)), ("another share", Some(other_share)), ("garbage", Some("x".to_owned()))] {
+        let r = submit_marked(&h, form(), marker).await;
+        assert_eq!(r.status(), 400, "{what}");
+        let body: Value = r.json().await.unwrap();
+        assert_eq!(body["error"], "bad test marker", "{what}: {body}");
+    }
+    // Nothing was taken: no item, no share.
+    assert!(h.timeline_lines().is_empty());
+    // A valid marker makes a test share.
+    assert_eq!(submit_marked(&h, form(), Some(valid.clone())).await.status(), 202);
+    assert_eq!(finished(&h, id).await["status"], "done");
+    for l in h.timeline_lines() {
+        assert_eq!(l["meta"]["via"], "test", "{l}");
+    }
+    // A valid marker without test=1 is ignored: an ordinary share.
+    let id2 = "voice-test-0004";
+    let marker = lucina_server::voice_marker::sign(key, id2).unwrap();
+    assert_eq!(submit_marked(&h, voice_form(id2, bytes, None, ""), Some(marker)).await.status(), 202);
+    assert_eq!(finished(&h, id2).await["status"], "done");
+    let lines = h.timeline_lines();
+    assert!(lines.iter().filter(|l| l["meta"]["shareId"] == id2).all(|l| l["meta"].get("via").is_none()), "{lines:?}");
+}
+
 #[tokio::test]
 async fn a_test_devices_note_is_silent_out_of_the_conversation_and_not_remembered() {
     let services = services().await;
     let h = voice_setup(&services, false, VOICE_TEXT).await;
     let bytes = voice_bytes(&h).await;
     let form = voice_form("voice-test-0001", bytes, None, "").text("test", "1").text("sessionId", "ios_chat1");
-    assert_eq!(submit(&h, form).await.status(), 202);
+    let marker = lucina_server::voice_marker::sign(common::TOKEN.as_bytes(), "voice-test-0001");
+    assert_eq!(submit_marked(&h, form, marker).await.status(), 202);
     let done = finished(&h, "voice-test-0001").await;
     assert_eq!(done["status"], "done", "{done}");
     let lines = h.timeline_lines();

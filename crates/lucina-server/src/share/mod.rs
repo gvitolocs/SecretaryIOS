@@ -463,6 +463,12 @@ fn host_of(url: &str) -> String {
 
 async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, Error> {
     authenticate(&st, req.headers()).await?;
+    // Only secretary-server, for a test device, may make a test share: its proof (`X-Voice-Test`, an HMAC under the API token).
+    let marker = req
+        .headers()
+        .get(crate::voice_marker::HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
     if req
         .headers()
         .get("content-length")
@@ -644,7 +650,17 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
         return Err(bad("invalid sessionId"));
     }
     // A voice test device's note: its own session, whatever the sender said.
+    // `test=1` without a valid marker for this very share is refused; a marker without `test=1` is ignored.
     let test = matches!(field("test", "").as_str(), "1" | "true");
+    if test {
+        let ok = match (st.cfg.token.as_deref(), marker.as_deref()) {
+            (Some(key), Some(m)) => crate::voice_marker::verify(key.as_bytes(), &id, m),
+            _ => false,
+        };
+        if !ok {
+            return Err(bad("bad test marker"));
+        }
+    }
     let session = if test {
         crate::test_turn::REQUESTED.to_owned()
     } else {

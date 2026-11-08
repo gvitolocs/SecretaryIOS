@@ -488,7 +488,7 @@ his memory. `SECRETARY_VOICE_TEST_DEVICES` (comma-separated device ids; default 
   Jev fast path allowed) and writes every item with `meta.via = "test"` and `meta.conversation = "voice-test"`: `via` makes no
   push (`notify::ingest::agent_chat`: any `via` is silent), and the store files the items under the conversation `test:voice-test`,
   neither the main conversation nor the Lucina Voice thread. The turn is not remembered (no Honcho write, no About-you observation).
-- **Note turns** post the share with the form field `test=1` (docs/share.md, "Test devices"); lucina-rs marks the share's items the same way, runs the
+- **Note turns** post the share with the form field `test=1` and the header `X-Voice-Test: <shareId>.<hex HMAC-SHA256(key, "voice-test:" + shareId)>`, the key being the Lucina API token (`SECRETARY_LUCINA_TOKEN_FILE`; the token itself is never sent, Caddy logs custom headers). Shares reach lucina-rs from any device, so lucina-rs believes `test=1` only with that proof, checked in constant time and for that very share; otherwise `400 bad test marker`. A marker without `test=1` is ignored (docs/share.md, "Test devices"); lucina-rs marks the share's items the same way, runs the
   turn in `voice-test`, remembers nothing and does not put the audio in the library. The note path is the real one (level rules, Whisper,
   the chat turn), so a measurement is of what a note really does.
 - The socket's own messages (`transcript`, `reply`, `done`, …) are unchanged: the agent sees the same as any device.

@@ -215,6 +215,7 @@ pub async fn post_share(
     creds: &HeaderMap,
     content_type: String,
     body: Vec<u8>,
+    test_marker: Option<&str>,
 ) -> Result<Accepted, NoteError> {
     let Some(url) = st.voice.share_url() else {
         return Err(NoteError::Unreachable("voice notes are off"));
@@ -225,6 +226,11 @@ pub async fn post_share(
         .post(url)
         .header(header::CONTENT_TYPE, content_type)
         .body(body);
+    // A test device's note proves it to lucina-rs (the field `test=1` alone is not believed).
+    let req = match test_marker {
+        Some(m) => req.header(crate::voice_marker::HEADER, m),
+        None => req,
+    };
     let resp = crate::voice::with_creds(req, creds)
         .send()
         .await
