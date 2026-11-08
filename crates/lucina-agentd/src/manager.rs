@@ -34,6 +34,7 @@ use crate::store::{Store, StoreError};
 
 mod external_agents;
 mod gate;
+mod handoff;
 mod orch;
 mod permissions;
 mod pipeline;
@@ -45,6 +46,7 @@ mod sessions;
 mod workspaces;
 
 pub use gate::{GateConfig, GateRequest, CONFIG_FILE};
+pub use handoff::{CONTINUED_FROM_LABEL, CONTINUED_ON_LABEL, CONTINUED_PROVIDER_LABEL, HANDOFF_LABEL};
 pub use orch::{Caller, DEPTH_LABEL, MAX_DEPTH, MCP_TOKEN_LABEL, ORIGIN_LABEL};
 pub use schedules::{owner_timezone, ScheduleInput, RUN_LABEL, SCHEDULE_LABEL};
 pub use rewind::{ForkOutcome, ForkRequest, RewindOutcome, RewindRequest};
@@ -775,12 +777,17 @@ impl Manager {
             attention_timestamp: r.attention_timestamp.clone(),
             labels: r.labels.clone(),
             provider_unavailable: None,
-            bucket: state_bucket(BucketInput {
-                status: agent.k.status,
-                pending_permission_count: agent.pending.len(),
-                requires_attention: agent.k.requires_attention,
-                attention_reason: agent.k.attention_reason,
-            }),
+            bucket: match (r.labels.contains_key(CONTINUED_ON_LABEL), r.labels.get(HANDOFF_LABEL).map(String::as_str)) {
+                // Handed on: another agent carries the run (manager/handoff.rs).
+                (true, _) if agent.k.status == AgentStatus::Error => lucina_agents::bucket::Bucket::Done,
+                (_, Some("pending")) if agent.k.status == AgentStatus::Error => lucina_agents::bucket::Bucket::Running,
+                _ => state_bucket(BucketInput {
+                    status: agent.k.status,
+                    pending_permission_count: agent.pending.len(),
+                    requires_attention: agent.k.requires_attention,
+                    attention_reason: agent.k.attention_reason,
+                }),
+            },
             external: r.external.then_some(true),
             owner_device_id: r.owner_device_id.clone(),
             host: r.host.clone(),
@@ -992,6 +999,11 @@ impl Manager {
                 agent.record.last_error = Some(error);
                 agent.active_turn = None;
                 Self::gate_turn_ended(agent);
+                if r.is_ok() {
+                    if let Some((class, detector)) = self.handoff_check(agent) {
+                        self.spawn_handoff(agent_id.to_string(), class, detector);
+                    }
+                }
                 r
             }
             StreamEvent::TurnCanceled { .. } => {
@@ -1392,10 +1404,13 @@ impl Manager {
                 let message = format_turn_failed(&e.0, None, None);
                 let mut agents = self.lock();
                 if let Some(agent) = agents.get_mut(id) {
-                    let _ = self.transition(agent, Event::TurnFailed, Some(&message));
+                    let failed = self.transition(agent, Event::TurnFailed, Some(&message)).is_ok();
                     agent.record.last_error = Some(e.0.clone());
                     // The history wasn't delivered: the next prompt carries it.
                     agent.record.seed_context = seed;
+                    if let Some((class, detector)) = failed.then(|| self.handoff_check(agent)).flatten() {
+                        self.spawn_handoff(id.to_string(), class, detector);
+                    }
                     self.persist(agent);
                     self.publish_state(agent);
                 }
@@ -1610,15 +1625,24 @@ impl Manager {
     /// Paseo `waitForFinish`: until the agent stops running, needs permission,
     /// or `timeout` passes (`None` = no limit). With `gate`, also until the
     /// finished-run gate has checked the run (and any auto-fix rounds are done).
+    /// A run handed on to another agent (manager/handoff.rs) is followed to that agent.
     pub async fn wait(&self, id: &str, timeout: Option<Duration>, gate: bool) -> Result<WaitResult, ManagerError> {
         let mut rx = self.inner.generation.subscribe();
         let deadline = timeout.map(|t| tokio::time::Instant::now() + t);
+        let mut id = id.to_string();
         loop {
             {
                 let agents = self.lock();
-                let a = agents.get(id).ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
+                let a = agents.get(&id).ok_or_else(|| ManagerError::NotFound(id.clone()))?;
+                let handing_off = a.k.status == AgentStatus::Error && a.record.labels.get(HANDOFF_LABEL).is_some_and(|v| v == "pending");
+                if a.k.status == AgentStatus::Error {
+                    if let Some(next) = a.record.labels.get(CONTINUED_ON_LABEL).filter(|n| agents.contains_key(n.as_str())) {
+                        id = next.clone();
+                        continue;
+                    }
+                }
                 let gating = gate && a.pending.is_empty() && a.gate_pending;
-                let status = if gating || (a.chain_active && a.pending.is_empty()) {
+                let status = if gating || handing_off || (a.chain_active && a.pending.is_empty()) {
                     None
                 } else if !a.pending.is_empty() {
                     Some("permission")
@@ -1643,7 +1667,7 @@ impl Manager {
                 Some(d) => {
                     if tokio::time::timeout_at(d, changed).await.is_err() {
                         let agents = self.lock();
-                        let a = agents.get(id).ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
+                        let a = agents.get(&id).ok_or_else(|| ManagerError::NotFound(id.clone()))?;
                         return Ok(WaitResult {
                             status: "timeout",
                             error: None,

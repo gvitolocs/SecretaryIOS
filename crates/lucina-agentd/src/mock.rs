@@ -45,6 +45,8 @@ use crate::workspaces::files::resolve;
 
 pub const MOCK_ID: &str = "mock";
 pub const MOCK_SLOW_ID: &str = "mock-slow";
+/// A second working mock (the quota hand-off's tests need two providers).
+pub const MOCK_ALT_ID: &str = "mock-alt";
 pub const DEFAULT_MODEL: &str = "five-minute-stream";
 const DEFAULT_MODE: &str = "load-test";
 const DEFAULT_DURATION_MS: u64 = 5 * 60 * 1000;
@@ -293,6 +295,12 @@ fn has_phrase(prompt: &str, phrase_variants: &[&str]) -> bool {
     phrase_variants.iter().any(|p| w.contains(p))
 }
 
+/// A prompt that starts with "emit synthetic quota failure" (only at the start, so a
+/// continuation that quotes the task doesn't fail again).
+fn quota_failure(prompt: &str) -> bool {
+    prompt.trim_start().to_lowercase().starts_with("emit synthetic quota failure")
+}
+
 fn turn_failure(prompt: &str) -> bool {
     has_phrase(prompt, &["emit synthetic turn failure", "emit a synthetic turn failure"])
 }
@@ -528,6 +536,24 @@ impl Provider for MockProvider {
     }
 }
 
+/// `mock-alt`: the mock under another id (dev only).
+pub struct MockAltProvider;
+
+#[async_trait]
+impl Provider for MockAltProvider {
+    fn info(&self) -> ProviderInfo {
+        ProviderInfo { id: MOCK_ALT_ID.into(), label: "Mock Alt".into(), ..MockProvider.info() }
+    }
+
+    async fn create_session(&self, config: SessionConfig, events: EventSink) -> Result<Arc<dyn Session>, ProviderError> {
+        MockProvider.create_session(config, events).await
+    }
+
+    async fn resume_session(&self, handle: &PersistenceHandle, config: SessionConfig, events: EventSink) -> Result<Arc<dyn Session>, ProviderError> {
+        MockProvider.resume_session(handle, config, events).await
+    }
+}
+
 /// `mock-slow`: its catalog never loads and it can't start sessions.
 pub struct MockSlowProvider;
 
@@ -654,6 +680,8 @@ impl MockSession {
 /// What one turn does once it is accepted (Paseo `scheduleTurn`'s order).
 enum Script {
     Failure,
+    /// Claude's weekly-limit stop, word for word (agent 16d5ad63, 2026-11-02).
+    QuotaFailure,
     Streaming(String, u64),
     Settled(String),
     PlanApproval,
@@ -779,6 +807,22 @@ async fn run_script(ctx: TurnCtx, script: Script) {
                     error: "Requested mock provider failure".into(),
                     code: None,
                     diagnostic: None,
+                })
+            });
+        }
+        Script::QuotaFailure => {
+            if !ctx.active() {
+                return;
+            }
+            ctx.started();
+            ctx.assistant("You've hit your weekly limit · resets Nov 4, 12pm (UTC)".into());
+            ctx.end(|c| {
+                c.emit(StreamEvent::TurnFailed {
+                    provider: MOCK_ID.into(),
+                    turn_id: Some(c.turn_id.clone()),
+                    error: "You've hit your weekly limit · resets Nov 4, 12pm (UTC)".into(),
+                    code: Some("usage_limit_reached".into()),
+                    diagnostic: Some("HTTP 429".into()),
                 })
             });
         }
@@ -973,7 +1017,9 @@ impl Session for MockSession {
                 return Err(ProviderError::new("Mock load-test provider already has an active turn"));
             }
             g.turn = Some(Turn { id: turn_id.clone(), task: None, started: false, cycle: 0, emitted_tokens: 0 });
-            if turn_failure(prompt) {
+            if quota_failure(prompt) {
+                Script::QuotaFailure
+            } else if turn_failure(prompt) {
                 Script::Failure
             } else if let Some(text) = g.streaming_response.clone() {
                 Script::Streaming(text, g.streaming_interval_ms)
