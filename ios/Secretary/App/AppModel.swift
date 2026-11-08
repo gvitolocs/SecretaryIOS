@@ -193,6 +193,8 @@ final class AppModel {
         // store reads its files off the main thread or when its screen first needs them.
         let chat = PerfLog.measure("chat") { ChatStore(api: { SecretaryAPI(client: client) }) }
         self.chat = chat
+        // The streaming voice socket: opened by the chat screen and the Lucina tab, shared by both.
+        chat.voiceSocket = VoiceSocket(client: client)
         shopping = PerfLog.measure("shopping") { ShoppingStore(api: { SecretaryAPI(client: client) }) }
         shoppingV2 = PerfLog.measure("shoppingV2") { ShoppingV2Store(api: { ShoppingV2Client(client: client) }, restoresInBackground: true) }
         let location = GymLocation(rawValue: defaults.string(forKey: GymLocation.key) ?? "") ?? .device

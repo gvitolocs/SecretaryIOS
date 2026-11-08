@@ -77,6 +77,10 @@ final class ChatStore {
     /// The mic button's recorder: voice notes go to Caches/ChatNotes, without a Live Activity. Separate from
     /// the memos' recorder; only one of the two may hold the microphone.
     let noteRecorder = MemoRecorder(directory: VoiceNoteFiles.directory, liveActivity: false)
+    /// The streaming microphone for voice notes (used while the voice socket is open), and the socket itself
+    /// (set by AppModel; nil in tests).
+    let noteCapture = VoiceCapture()
+    @ObservationIgnored var voiceSocket: VoiceSocket?
     /// Lucina's spoken answers to voice notes (`meta.voiceReply`).
     let voiceReplies: LucinaVoiceReplies
     /// "Read aloud" on a message (swipe right, the menu).
@@ -143,9 +147,9 @@ final class ChatStore {
         ChatAudio.shared.register(voiceReplies) { [weak voiceReplies] in voiceReplies?.stop() }
         ChatAudio.shared.register(readAloud) { [weak readAloud] in readAloud?.stop() }
         // Read aloud refuses while the memo recorder or this chat's voice-note recorder has the microphone.
-        readAloud.refusal = { [noteRecorder] in
+        readAloud.refusal = { [noteRecorder, noteCapture] in
             if let notice = ChatAudio.recordingNotice { return notice }
-            return noteRecorder.isActive ? String(localized: "Finish the recording first.") : nil
+            return noteRecorder.isActive || noteCapture.isActive ? String(localized: "Finish the recording first.") : nil
         }
         hydrationTask = Task { [weak self] in
             guard let self else { return }
@@ -792,6 +796,7 @@ final class ChatStore {
         setDeviceId(nil)
         messageSource = "cache"
         if noteRecorder.isActive { noteRecorder.discard() }
+        if noteCapture.isActive { noteCapture.discard() }
         voiceReplies.stop()
         readAloud.stop()
         replyingTo = nil
@@ -887,7 +892,7 @@ extension ChatStore: ShareUploadObserver {
         guard size > 0 else { return false }
         let url = note.url
         let levels = note.levels.isEmpty ? await Task.detached(priority: .userInitiated) { VoiceWaveform.levels(from: url) }.value : note.levels
-        let attachment = PendingAttachment(url: note.url, name: VoiceNoteFiles.fileName(for: note.recordedAt), mime: "audio/aac", kind: .audio,
+        let attachment = PendingAttachment(url: note.url, name: VoiceNoteFiles.fileName(for: note.recordedAt, ext: note.fileExtension), mime: note.mime, kind: .audio,
                                            size: size, durationMs: Int((note.duration * 1000).rounded()), voice: true,
                                            waveform: VoiceWaveform.base64(levels))
         guard var share = stageShare(caption: "", attachments: [attachment], replyTo: replyTo) else { return false }
@@ -914,6 +919,56 @@ extension ChatStore: ShareUploadObserver {
         return true
     }
 
+    // MARK: Streamed voice notes (the voice socket, protocol section 10)
+
+    /// The pending bubble of a note whose audio went out over the voice socket. It is staged like any share, with the
+    /// socket turn's id as its `shareId` (the server posts the share under that id), but not uploaded: the server has
+    /// it, or `uploadStagedNote` sends the kept file when the socket let us down. Nil when nothing could be staged.
+    func stageStreamedNote(_ note: VoiceNote, shareId: String?, replyTo: String?) -> String? {
+        let size = Int64((try? note.url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+        guard size > 0 else { return nil }
+        let attachment = PendingAttachment(url: note.url, name: VoiceNoteFiles.fileName(for: note.recordedAt, ext: note.fileExtension),
+                                           mime: note.mime, kind: .audio, size: size, durationMs: Int((note.duration * 1000).rounded()),
+                                           voice: true, waveform: VoiceWaveform.base64(note.levels))
+        guard let share = stageShare(caption: "", attachments: [attachment], replyTo: replyTo,
+                                     shareId: VoiceStart.isSafeId(shareId) ? shareId! : UUID().uuidString) else { return nil }
+        try? FileManager.default.removeItem(at: note.url)
+        // Counts as on its way, so the foreground check does not call it "Not sent" while the server takes it.
+        shareProgress[share.shareId] = 0
+        return share.shareId
+    }
+
+    /// The fallback: send the kept file through the ordinary share path.
+    func uploadStagedNote(_ shareId: String) {
+        guard let share = outgoing[shareId], share.acceptedAt == nil else { return }
+        upload(share, retry: false)
+    }
+
+    /// The server's `note` message: it has the note. The bubble becomes the server's user item.
+    func streamedNoteAccepted(shareId: String, userItemId: String?) {
+        guard outgoing[shareId] != nil else { return }
+        var object: [String: Any] = ["shareId": shareId]
+        if let userItemId { object["userItemId"] = userItemId }
+        let body = try? JSONSerialization.data(withJSONObject: object)
+        applyShareResult(shareId: shareId, success: true, status: 202, body: body)
+    }
+
+    /// The server's transcript, shown under the pending bubble until the timeline's own item arrives.
+    func streamedNoteTranscript(shareId: String, text: String) {
+        guard let index = items.firstIndex(where: { $0.id == TimelineItem.localPrefix + shareId }),
+              let voice = items[index].attachments.firstIndex(where: \.isVoice) else { return }
+        items[index].attachments[voice].transcript = text
+    }
+
+    /// Drops a staged note (nothing was heard, or the owner cancelled).
+    func discardStagedNote(_ shareId: String) {
+        guard outgoing[shareId]?.acceptedAt == nil else { return }
+        outgoing[shareId] = nil
+        ChatShareOutbox.remove(shareId)
+        items.removeAll { $0.id == TimelineItem.localPrefix + shareId }
+        persist()
+    }
+
     /// The words of a voice note: its own `transcript` (on-device, known at once), else what Lucina heard
     /// (`meta.transcript` on her reply), else the share status's attachment while it is being read.
     func voiceTranscript(for item: TimelineItem, attachment: TimelineAttachment, fileIndex: Int?) -> String? {
@@ -933,10 +988,9 @@ extension ChatStore: ShareUploadObserver {
 
     /// Writes the share's folder and record and shows the optimistic bubble; the caller starts the upload.
     private func stageShare(caption: String, attachments: [PendingAttachment], urls: [String] = [],
-                            location: ShareMeta.Location? = nil, replyTo: String? = nil) -> OutgoingShare? {
+                            location: ShareMeta.Location? = nil, replyTo: String? = nil, shareId: String = UUID().uuidString) -> OutgoingShare? {
         let text = Self.clean(caption)
         guard !attachments.isEmpty || !urls.isEmpty || location != nil, text.count <= Self.maxCharacters else { return nil }
-        let shareId = UUID().uuidString
         let files: [OutgoingShare.File]
         do {
             let folder = try ChatShareOutbox.directory(shareId)

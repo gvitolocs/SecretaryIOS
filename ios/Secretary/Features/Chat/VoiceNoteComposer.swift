@@ -46,8 +46,14 @@ final class VoiceNoteController {
     @ObservationIgnored private var watchdog: Task<Void, Never>?
     @ObservationIgnored private var tipTask: Task<Void, Never>?
 
+    /// This recording streams over the voice socket (a WAV is kept beside it); false: the AAC recorder.
+    private(set) var streaming = false
+    @ObservationIgnored private var streamSession: StreamedNoteSession?
+
     var isRecording: Bool { phase != .idle }
     var recorder: MemoRecorder? { store?.noteRecorder }
+    /// What the recording bar reads.
+    var meter: (any VoiceMeter)? { streaming ? store?.noteCapture : store?.noteRecorder }
 
     func attach(_ store: ChatStore) {
         self.store = store
@@ -145,15 +151,14 @@ final class VoiceNoteController {
         lockWhenStarted = locked
         Haptics.light()
         Task {
-            await recorder.start()
+            let started = await startRecording(recorder)
             guard phase == .starting else {
                 // Discarded (signed out) while starting.
-                if recorder.isActive { recorder.discard() }
+                if started { discardActive() }
                 return
             }
-            guard recorder.isActive else {
+            guard started else {
                 phase = .idle
-                error = recorder.error
                 return
             }
             phase = .holding
@@ -178,6 +183,42 @@ final class VoiceNoteController {
         }
     }
 
+    /// Streams when the voice socket is open (and the server understands it, see `StreamedNoteSession`), else records AAC.
+    private func startRecording(_ recorder: MemoRecorder) async -> Bool {
+        if let store, let socket = store.voiceSocket {
+            let session = StreamedNoteSession(store: store, socket: socket)
+            session.onProblem = { [weak self] in self?.error = $0 }
+            session.onStageFailed = { [weak self] in self?.error = String(localized: "Couldn't send this. Try again.") }
+            let target = store.replyingTo.flatMap { $0.isLocal ? nil : $0.id }
+            if session.begin(replyTo: target) {
+                streaming = true
+                streamSession = session
+                let pipe = socket.pipe
+                if await store.noteCapture.start(category: .record, onFrame: { pipe.send($0) }) { return true }
+                error = store.noteCapture.error
+                session.abort()
+                streamSession = nil
+                streaming = false
+                return false
+            }
+        }
+        streaming = false
+        await recorder.start()
+        error = recorder.isActive ? nil : recorder.error
+        return recorder.isActive
+    }
+
+    private func discardActive() {
+        if streaming {
+            store?.noteCapture.discard()
+            streamSession?.abort()
+        } else {
+            recorder?.discard()
+        }
+        streamSession = nil
+        streaming = false
+    }
+
     private func lock() {
         guard phase == .holding else { return }
         phase = .locked
@@ -189,6 +230,10 @@ final class VoiceNoteController {
     /// Stops and sends; a note under half a second is dropped with the tip.
     func send() {
         guard phase == .holding || phase == .locked, let store, let recorder = recorder else { return }
+        if streaming {
+            sendStreamed(store)
+            return
+        }
         let levels = recorder.levelHistory
         let finished = recorder.stop()
         reset()
@@ -209,15 +254,39 @@ final class VoiceNoteController {
         }
     }
 
+    /// Streamed: the last frames go out, `end` follows, and the WAV becomes the pending bubble.
+    private func sendStreamed(_ store: ChatStore) {
+        let levels = store.noteCapture.levelHistory
+        let finished = store.noteCapture.stop()
+        let session = streamSession
+        reset()
+        guard let finished, let session else {
+            session?.abort()
+            showTip()
+            return
+        }
+        Haptics.light()
+        let note = VoiceNote(url: finished.url, duration: finished.duration, levels: levels, recordedAt: finished.startedAt, mime: "audio/wav")
+        // A reply when the quote bar is up (swipe left before recording).
+        let reply = store.takeReply()
+        session.onStageFailed = { [weak self] in
+            if let reply { store.beginReply(reply) }
+            self?.error = String(localized: "Couldn't send this. Try again.")
+        }
+        session.release(note: note, replyTo: reply?.id)
+    }
+
     /// Throws the recording away (slide left, or the trash when locked).
     func cancel() {
         guard phase != .idle else { return }
-        if phase != .starting { recorder?.discard() }
+        if phase != .starting { discardActive() }
         reset()
         Haptics.light()
     }
 
     private func reset() {
+        streamSession = nil
+        streaming = false
         phase = .idle
         translation = .zero
         releasedWhileStarting = nil
@@ -241,9 +310,10 @@ final class VoiceNoteController {
         watchdog = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(250))
-                guard let self, !Task.isCancelled, let recorder = self.recorder else { return }
+                guard let self, !Task.isCancelled, let recorder = self.meter else { return }
                 if !recorder.isActive, self.phase == .holding || self.phase == .locked {
                     self.error = recorder.error
+                    self.streamSession?.abort()
                     self.reset()
                     return
                 }
@@ -348,7 +418,7 @@ struct VoiceMicButton: View {
 /// the time, the live waveform, and "‹ slide to cancel" (holding) or the trash (locked).
 struct VoiceRecordingBar: View {
     @Bindable var voice: VoiceNoteController
-    let recorder: MemoRecorder
+    let recorder: any VoiceMeter
 
     var body: some View {
         HStack(spacing: 10) {
