@@ -169,7 +169,7 @@ struct ChatComposer: View {
                     .allowsHitTesting(!voice.isRecording)
                     .accessibilityHidden(voice.isRecording)
                     if voice.isRecording {
-                        VoiceRecordingBar(voice: voice, recorder: store.noteRecorder)
+                        VoiceRecordingBar(voice: voice, recorder: voice.meter ?? store.noteRecorder)
                             .transition(.opacity)
                     }
                 }
@@ -201,7 +201,11 @@ struct ChatComposer: View {
                     .offset(y: -14)
             }
         }
-        .onAppear { voice.attach(store) }
+        .onAppear {
+            voice.attach(store)
+            store.voiceSocket?.retain("chat")
+        }
+        .onDisappear { store.voiceSocket?.release("chat") }
         .onChange(of: store.prefill) { _, request in
             // A button asked for text in the composer: the owner finishes and sends it.
             guard let request else { return }

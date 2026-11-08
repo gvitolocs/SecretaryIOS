@@ -8,11 +8,13 @@
 # Run through verify-gate on nezopt (verify-gate -- scripts/verify-shipped.sh), or on nespc:
 #   verus-remote . env VERUS=verus scripts/verify-shipped.sh
 # Mutants that must fail: verification/*/mutants.sh.
+# Run one file only: FILES=crates/secretary-server/src/voice_rules.rs scripts/verify-shipped.sh
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 verus=${VERUS:-/home/nez/tools/verus/verus-x86-linux/verus}
-files=(crates/lucina-vault/src/sync_rules.rs)
+files=(crates/lucina-vault/src/sync_rules.rs crates/secretary-server/src/voice_rules.rs)
+if [ -n "${FILES:-}" ]; then read -r -a files <<< "$FILES"; fi
 work=$(mktemp -d "${TMPDIR:-/tmp}/verify-shipped.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 status=0

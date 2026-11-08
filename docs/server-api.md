@@ -1446,6 +1446,13 @@ Client → server:
 | text `{"type":"end"}` | The button was released (`ptt`), or the device gives up. |
 | text `{"type":"cancel"}` | Drop the turn at any stage; speech-to-text, chat and speech are aborted at once and the device is free. |
 
+`start` also takes the optional keys of streaming input (`purpose` command/note, `codec` pcm16/ima-adpcm with `rate` and
+`block`, `thread` voice/main with `channel` and `sessionId`, `replyTo`, `source`, `text`, `speak`): a note is
+transcribed, posted as `POST /v1/share` (`SECRETARY_VOICE_SHARE_URL`, default `http://127.0.0.1:8801/v1/share`, `off`
+refuses notes) and answered by `note`, then `reply` and `done` with its `shareId`; a command can send its reply as
+`delta`/`answer` text and skip the speech. All of it is in
+[lucinavoice-protocol.md](lucinavoice-protocol.md) section 10; a `start` without those keys is the turn described here.
+
 With no turn running, binary frames, `end` and `cancel` are ignored (they may be late). The device's
 `hello` and `telemetry` text frames (protocol section 4) are accepted at any time, stored and never
 answered (see [LucinaVoice device telemetry](#lucinavoice-device-telemetry)).
@@ -1454,7 +1461,7 @@ Server → client:
 
 | Message | |
 |---|---|
-| `{"type":"listening"}` | Answer to a good `start`. |
+| `{"type":"listening","purpose","codec","rate","turn"}` | Answer to a good `start`: what the server understood of it (`command`/`note`, `pcm16`/`ima-adpcm`, the client's rate, the turn id, a UUID v4). |
 | `{"type":"endpoint"}` | The server stopped listening: the VAD found the end of speech (`vad` mode), or the size cap was hit (either mode). The device stops sending. |
 | `{"type":"transcript","text":"…"}` | What was heard. |
 | `{"type":"audio","rate":24000}` | Once per turn, before the first binary audio frame. |
@@ -1467,8 +1474,9 @@ Error codes: `no_speech` (under 0.3 s of audio after trimming, no speech in
 `vad` mode, or an empty transcript), `stt_unavailable` (local engine and
 Gemini both failed), `lucina_unavailable` (including an SSE `error` event),
 `tts_failed`, `busy` (a turn is already running on this connection or for
-this device), `rate_limited`, `bad_request` (bad `mode`/`lang`, unknown
-`type`, not JSON).
+this device), `rate_limited`, `bad_request` (bad `mode`/`lang` or a bad key of
+section 10.1, unknown `type`, not JSON), `note_failed` (a voice note's share was
+refused or unreachable).
 
 Pipeline per turn:
 

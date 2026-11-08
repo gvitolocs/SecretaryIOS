@@ -17,6 +17,7 @@
 //! | `SECRETARY_TTS_URL` | `http://100.107.164.33:8880` | Kokoro (OpenAI-compatible) for `POST /v1/tts` (MP3) and `POST /v1/voice` (raw PCM, 24 kHz) |
 //! | `SECRETARY_GEMINI_KEY_FILE` | — | file with the Gemini API key; enables `POST /v1/calls/transcribe` and `POST /v1/voice` |
 //! | `SECRETARY_VOICE_STT_URL` | `http://127.0.0.1:8801/v1/memos/stt` | local speech-to-text tried first by `POST /v1/voice` and `GET /v1/voice/ws`, and warmed by the latter (Caddy's loopback site on p1 → lucina-memo's whisper.cpp); `off` = Gemini only |
+//! | `SECRETARY_VOICE_SHARE_URL` | `http://127.0.0.1:8801/v1/share` | where `GET /v1/voice/ws` posts voice notes (`purpose: "note"`, protocol section 10.4) and reads their status (`<url>/<shareId>`): Caddy's loopback site on p1 → lucina-rs, with the caller's own credentials; `off` = notes refused |
 //! | `SECRETARY_TRANSCRIPTION_MODEL` | `gemini-3.5-transcribe` | the transcription model (`gemini-…`) |
 //! | `SECRETARY_TRANSCRIPTION_URL` | `https://generativelanguage.googleapis.com` | transcription API origin (tests point it at a mock) |
 //! | `SECRETARY_CATALOG_DIR` | `/var/lib/secretary/catalog` | `catalog.{it,en,da}.json` for `GET /v1/shopping/catalog` |
@@ -114,6 +115,8 @@ pub struct Config {
     pub tts_url: String,
     /// Local speech-to-text for `POST /v1/voice` (`None` = Gemini only).
     pub voice_stt_url: Option<String>,
+    /// Where the socket posts voice notes (`None` = notes are off).
+    pub voice_share_url: Option<String>,
     pub tts_voices: Vec<String>,
     pub tts_timeout: Duration,
     pub timeouts: Timeouts,
@@ -189,6 +192,7 @@ impl Config {
             catalog_dir: PathBuf::from(DEFAULT_CATALOG_DIR),
             tts_url: crate::tts::DEFAULT_URL.into(),
             voice_stt_url: Some(crate::voice::DEFAULT_STT_URL.into()),
+            voice_share_url: Some(crate::voice_note::DEFAULT_SHARE_URL.into()),
             tts_voices: crate::tts::DEFAULT_VOICES
                 .split(',')
                 .map(str::to_owned)
@@ -254,6 +258,10 @@ impl Config {
         if let Some(u) = get("SECRETARY_VOICE_STT_URL") {
             let u = u.trim();
             cfg.voice_stt_url = (!u.is_empty() && u != "off").then(|| u.to_owned());
+        }
+        if let Some(u) = get("SECRETARY_VOICE_SHARE_URL") {
+            let u = u.trim();
+            cfg.voice_share_url = (!u.is_empty() && u != "off").then(|| u.to_owned());
         }
         if let Some(v) = get("SECRETARY_TTS_VOICES") {
             cfg.tts_voices = v

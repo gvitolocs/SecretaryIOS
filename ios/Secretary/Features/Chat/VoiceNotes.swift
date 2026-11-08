@@ -14,6 +14,9 @@ struct VoiceNote: Sendable {
     /// Loudness 0...1, about 20 per second (the recorder's meter); empty: read from the file.
     var levels: [Float] = []
     var recordedAt = Date()
+    /// `audio/aac` from the recorder; `audio/wav` for a note captured for the voice socket (the server accepts both).
+    var mime = "audio/aac"
+    var fileExtension: String { mime == "audio/wav" ? "wav" : "aac" }
 
     /// Notes up to this long would be transcribed on the iPhone before they are sent; longer ones go to Whisper.
     /// 0: every note goes to Whisper on nezopt. The on-device recognizer listens in the phone's language and
@@ -36,12 +39,12 @@ enum VoiceNoteFiles {
     }
 
     /// `voice-20261026-143012.aac`: the part's filename on the wire.
-    static func fileName(for date: Date) -> String {
+    static func fileName(for date: Date, ext: String = "aac") -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = .current
         formatter.dateFormat = "yyyyMMdd-HHmmss"
-        return "voice-\(formatter.string(from: date)).aac"
+        return "voice-\(formatter.string(from: date)).\(ext)"
     }
 
     /// Leftovers of notes that never left (the app was killed while recording or before sending).

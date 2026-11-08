@@ -237,6 +237,8 @@ final class LucinaStageController {
     private(set) var listening = false
     private(set) var thinking = false
     private(set) var transcript = ""
+    /// The reply as it is written while a streamed turn runs (it clears a few seconds after the turn ends).
+    private(set) var replyText = ""
     /// The stage is loading or playing an outfit change.
     private(set) var changingOutfit = false
     var message: String?
@@ -282,6 +284,11 @@ final class LucinaStageController {
         voiceStorage = voice
         return voice
     }
+    /// The streamed turn (voice socket) in progress, with its microphone and player (made on the first one).
+    @ObservationIgnored private var streamedTurn: StreamedCommand?
+    @ObservationIgnored private var commandCapture: VoiceCapture?
+    @ObservationIgnored private var commandPlayer: PCMStreamPlayer?
+    @ObservationIgnored private var replyClear: Task<Void, Never>?
     @ObservationIgnored let client: APIClient
     /// While set (the AR view is open), her speech goes here instead of the web stage.
     @ObservationIgnored var speechSink: ((Data) -> Void)?
@@ -305,6 +312,10 @@ final class LucinaStageController {
     /// changed meanwhile is applied when she is on screen again.
     func setVisible(_ visible: Bool) {
         self.visible = visible
+        if visible { chat.voiceSocket?.retain("lucina") } else {
+            chat.voiceSocket?.release("lucina")
+            streamedTurn?.cancel()
+        }
         guard visible else { return stopStudio() }
         if enabled { awake = true }
         if lookPending {
@@ -318,6 +329,7 @@ final class LucinaStageController {
     func releaseStage() {
         guard let view = webViewStorage else { return }
         stopStudio()
+        streamedTurn?.cancel()
         voiceStorage?.stop(deliver: false)
         listening = false
         thinking = false
@@ -515,10 +527,21 @@ final class LucinaStageController {
     // MARK: - Voice turn
 
     func toggleListening() async {
+        if let streamedTurn {
+            // A press while listening ends the turn; while she answers it stops her.
+            if listening { streamedTurn.endNow() } else { streamedTurn.cancel() }
+            return
+        }
         if listening {
             voice.stop(deliver: true)
             return
         }
+        if let socket = chat.voiceSocket, socket.isReady, await startStreamedTurn() { return }
+        await startLegacyListening()
+    }
+
+    /// The old path: SFSpeech ends the turn after a silence, the text goes to `/v1/chat`, her answer is fetched as MP3.
+    private func startLegacyListening() async {
         guard await VoiceInput.authorize() else {
             message = VoiceInput.VoiceError.notAuthorized.errorDescription
             return
@@ -538,6 +561,69 @@ final class LucinaStageController {
             run("lucina.setState('listening')")
         } catch {
             message = error.localizedDescription
+        }
+    }
+
+    /// The voice socket path. False when the socket is busy or the microphone would not start (the old path runs).
+    private func startStreamedTurn() async -> Bool {
+        guard let socket = chat.voiceSocket else { return false }
+        let capture = commandCapture ?? VoiceCapture()
+        let player = commandPlayer ?? PCMStreamPlayer()
+        commandCapture = capture
+        commandPlayer = player
+        run("lucina.stop()")
+        transcript = ""
+        replyText = ""
+        replyClear?.cancel()
+        message = nil
+        let turn = StreamedCommand(socket: socket, capture: capture, player: player, sessionId: chat.sessionId, speak: !muted)
+        turn.onTranscript = { [weak self] in self?.transcript = $0 }
+        turn.onReply = { [weak self] in self?.replyText = $0 }
+        turn.onPhase = { [weak self, weak turn] phase in
+            guard let self, let turn, self.streamedTurn === turn else { return }
+            self.streamedPhase(phase)
+        }
+        streamedTurn = turn
+        guard await turn.start() else {
+            if streamedTurn === turn { streamedTurn = nil }
+            return false
+        }
+        return true
+    }
+
+    private func streamedPhase(_ phase: StreamedCommand.Phase) {
+        switch phase {
+        case .listening:
+            listening = true
+            thinking = false
+            run("lucina.setState('listening')")
+        case .thinking:
+            listening = false
+            thinking = true
+            run("lucina.setState('thinking')")
+        case .speaking:
+            listening = false
+            thinking = false
+            // The stage takes a URL for lip sync; the streamed audio plays natively, so only her state follows.
+            run("lucina.setState('speaking')")
+        case let .finished(problem):
+            streamedTurn = nil
+            listening = false
+            thinking = false
+            if let problem { message = problem }
+            run("lucina.setState('idle')")
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            replyClear?.cancel()
+            replyClear = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(8))
+                if !Task.isCancelled { self?.replyText = "" }
+            }
+        case .oldServer:
+            streamedTurn = nil
+            listening = false
+            thinking = false
+            // A server from before streaming: the old path takes over from the same press.
+            Task { await startLegacyListening() }
         }
     }
 
@@ -587,6 +673,7 @@ final class LucinaStageController {
     }
 
     func stopEverything() {
+        streamedTurn?.cancel()
         voiceStorage?.stop(deliver: false)
         listening = false
         run("lucina.stop(); lucina.setState('idle')")
@@ -663,6 +750,10 @@ struct LucinaControls: View {
             } else if controller.listening {
                 Text(controller.transcript.isEmpty ? "Listening…" : controller.transcript)
                     .font(.subheadline).multilineTextAlignment(.center).lineLimit(3)
+            } else if !controller.replyText.isEmpty {
+                Text(controller.replyText)
+                    .font(.subheadline).multilineTextAlignment(.center).lineLimit(6)
+                    .accessibilityIdentifier("lucinaReplyText")
             } else if controller.thinking {
                 Text("Lucina is thinking…").font(.subheadline).foregroundStyle(.secondary)
             } else if controller.changingOutfit {

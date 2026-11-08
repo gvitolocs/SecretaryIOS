@@ -1,0 +1,133 @@
+/* Streaming voice input: the composer's voice-note button and its recording bar. */
+
+.voice-note {
+  position: relative;
+  flex: none;
+  align-self: flex-end;
+}
+
+.voice-note-btn {
+  display: grid;
+  place-items: center;
+  min-width: 44px;
+  min-height: 50px;
+  border: 0;
+  border-radius: 22px;
+  background: transparent;
+  color: var(--lu-accent);
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.voice-note-btn:hover {
+  background: var(--lu-accent-soft);
+}
+
+.voice-note-btn--off {
+  opacity: 0.5;
+}
+
+.voice-note-btn--rec {
+  background: var(--lu-negative);
+  color: var(--lu-on-accent);
+}
+
+.voice-bar {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 240px;
+  padding: 8px 12px;
+  border: 1px solid var(--lu-separator);
+  border-radius: var(--lu-radius-card);
+  background: var(--lu-card-raised);
+  color: var(--lu-text);
+  box-shadow: 0 18px 48px var(--lu-scrim);
+}
+
+.voice-bar-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--lu-negative);
+  animation: voice-bar-pulse 1.2s ease-in-out infinite;
+}
+
+.voice-bar-time {
+  font-variant-numeric: tabular-nums;
+  color: var(--lu-text-secondary);
+}
+
+.voice-bar-meter {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--lu-field);
+  overflow: hidden;
+}
+
+.voice-bar-meter > span {
+  display: block;
+  height: 100%;
+  background: var(--lu-positive);
+  transition: width 60ms linear;
+}
+
+.voice-bar-cancel {
+  min-width: 36px;
+  min-height: 36px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--lu-text-secondary);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.voice-toast {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 30;
+  width: max-content;
+  max-width: min(320px, 80vw);
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--lu-separator);
+  border-radius: var(--lu-radius-card);
+  background: var(--lu-card-raised);
+  color: var(--lu-text);
+  font-size: 0.9em;
+  box-shadow: 0 18px 48px var(--lu-scrim);
+}
+
+.bubble--pending-note {
+  opacity: 0.75;
+}
+
+@keyframes voice-bar-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .voice-bar-dot {
+    animation: none;
+  }
+}
+
+/* The stage: her reply as it is written. */
+.stage-pill--live {
+  max-width: min(92%, 420px);
+  white-space: normal;
+  text-align: left;
+}

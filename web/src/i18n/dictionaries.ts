@@ -57,8 +57,9 @@ import { agents } from "./dict/agents";
 import { prompter } from "./dict/prompter";
 import { notebooks } from "./dict/notebooks";
 import { voice } from "./dict/voice";
+import { voiceIn } from "./dict/voiceIn";
 import { voiceLearn } from "./dict/voiceLearn";
 
-export const dictionaries = { decisions, about, approvals, calendar, chats, library, common, computer, desk, shell, share, chat, login, weight, gym, wardrobe, notify, links, maps, notes, keep, tasks, studio, models, memos, media, films, drive, sheet, plugins, serverHealth, viewer, secrets, gallery, galleryInfo, nclient, pixiv, instagram, agents, prompter, notebooks, editor, browse, galleryShare, galleryCompare, lab, galleryAlbums, galleryLive, gallerySmart, galleryPeople, galleryPets, galleryDedup, galleryCategories, voice, voiceLearn, avatarEditor, studio2 };
+export const dictionaries = { decisions, about, approvals, calendar, chats, library, common, computer, desk, shell, share, chat, login, weight, gym, wardrobe, notify, links, maps, notes, keep, tasks, studio, models, memos, media, films, drive, sheet, plugins, serverHealth, viewer, secrets, gallery, galleryInfo, nclient, pixiv, instagram, agents, prompter, notebooks, editor, browse, galleryShare, galleryCompare, lab, galleryAlbums, galleryLive, gallerySmart, galleryPeople, galleryPets, galleryDedup, galleryCategories, voice, voiceIn, voiceLearn, avatarEditor, studio2 };
 
 export type Dictionaries = typeof dictionaries;
