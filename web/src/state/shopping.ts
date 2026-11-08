@@ -30,6 +30,7 @@ import {
   type Lang,
 } from "../lib/shoppingCatalog";
 import { translate } from "../lib/shoppingI18n";
+import { splitItems, type ItemPart } from "../lib/shoppingText";
 import {
   addObjectId,
   addRowId,
@@ -709,48 +710,117 @@ export function tapItem(id: string): void {
   }
 }
 
+/** A quantity read from typed text ("4 baguettes", "500 g burro"). */
+interface Amount {
+  quantity: number | null;
+  unit: string | null;
+}
+
+function amountFields(amount?: Amount): { quantity?: number; unit?: string } {
+  if (!amount || amount.quantity === null) return {};
+  return { quantity: amount.quantity, ...(amount.unit ? { unit: amount.unit } : {}) };
+}
+
 /** Tap on a catalog (or custom object) search result. Returns the row id it ended up on. */
-export function addCatalogItem(cat: CatalogItem, spec?: string): string {
+export function addCatalogItem(cat: CatalogItem, spec?: string, amount?: Amount): string {
   const name = catalogName(cat, itemLang());
+  const qty = amountFields(amount);
   const existing = findActive(cat.id, name);
   if (existing) {
-    if (existing.status === "needed" && spec === undefined) return existing.id;
+    if (existing.status === "needed" && spec === undefined && qty.quantity === undefined) return existing.id;
     const wasRecent = existing.status === "recent";
-    enqueue(shop.currentListId, [{ ...addOpFor(cat, name, existing.id), ...(spec !== undefined ? { spec } : {}) } as OpInput]);
+    enqueue(shop.currentListId, [
+      { ...addOpFor(cat, name, existing.id), ...(spec !== undefined ? { spec } : {}), ...qty } as OpInput,
+    ]);
     if (wasRecent) offerUndo(t("addedToast", { name }), [{ type: "purchase", itemId: existing.id }]);
     return existing.id;
   }
   const rowId = uuid();
   enqueue(shop.currentListId, [
-    { ...addOpFor(cat, name, rowId), section: cat.section, ...(spec ? { spec } : {}) } as OpInput,
+    { ...addOpFor(cat, name, rowId), section: cat.section, ...(spec ? { spec } : {}), ...qty } as OpInput,
   ]);
   offerUndo(t("addedToast", { name }), [{ type: "remove", itemId: rowId }]);
   return rowId;
 }
 
+/** The items a typed text adds (docs/design/shopping-labels.md): never one item made of a sentence. */
+export function textParts(text: string): ItemPart[] {
+  const index = catalogIndex();
+  return splitItems(text.slice(0, 4000), (s) => exactMatch(index, s) !== null).map((p) => ({ ...p, name: p.name.slice(0, 200) }));
+}
+
 /**
- * Free text from the search bar: a known object (catalog or custom, any
- * language) when it matches exactly, else new text the server turns into a
- * custom object with names in every language.
+ * One typed item: a known object (catalog or custom, any language) when its text is exactly
+ * one of its names or aliases, else new text the server turns into a label (a custom object
+ * with no section or icon of its own).
  */
-export function addText(text: string, spec?: string): string | null {
-  const name = text.trim().slice(0, 200);
-  if (!name) return null;
+function addOne(part: ItemPart, spec?: string): string {
+  const name = part.name;
   const cat = exactMatch(catalogIndex(), name);
-  if (cat) return addCatalogItem(cat, spec);
+  if (cat) return addCatalogItem(cat, spec, part);
+  const qty = amountFields(part);
   const existing = findActive(null, name);
   if (existing) {
-    if (spec !== undefined) {
+    if (spec !== undefined || qty.quantity !== undefined) {
       const wasRecent = existing.status === "recent";
-      enqueue(shop.currentListId, [{ type: "add", itemId: existing.id, name: existing.name, spec }]);
+      enqueue(shop.currentListId, [
+        { type: "add", itemId: existing.id, name: existing.name, ...(spec !== undefined ? { spec } : {}), ...qty },
+      ]);
       if (wasRecent) offerUndo(t("addedToast", { name: existing.name }), [{ type: "purchase", itemId: existing.id }]);
     } else if (existing.status === "recent") tapItem(existing.id);
     return existing.id;
   }
   const rowId = uuid();
-  enqueue(shop.currentListId, [{ type: "add", rowId, text: name, name, ...(spec ? { spec } : {}) }]);
+  enqueue(shop.currentListId, [{ type: "add", rowId, text: name, name, ...(spec ? { spec } : {}), ...qty }]);
   offerUndo(t("addedToast", { name }), [{ type: "remove", itemId: rowId }]);
   return rowId;
+}
+
+/**
+ * Free text from the search bar, split into its items ("patatine fritte, ricotta e 4
+ * baguettes" is three). Each is a known object when it matches exactly, else a label. Several
+ * items go in one batch with one undo; `spec` applies only to a single item. Returns the first
+ * row id.
+ */
+export function addText(text: string, spec?: string): string | null {
+  const parts = textParts(text);
+  if (parts.length === 0) return null;
+  if (parts.length === 1) return addOne(parts[0]!, spec);
+  const index = catalogIndex();
+  const ops: OpInput[] = [];
+  const inverse: OpInput[] = [];
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const part of parts) {
+    const cat = exactMatch(index, part.name);
+    const name = cat ? catalogName(cat, itemLang()) : part.name;
+    const key = cat ? `c:${cat.id}` : `n:${fold(name)}`;
+    const qty = amountFields(part);
+    const existing = findActive(cat?.id ?? null, name);
+    if (existing) {
+      ids.push(existing.id);
+      if (existing.status === "recent") {
+        ops.push({ type: "need", itemId: existing.id });
+        inverse.push({ type: "purchase", itemId: existing.id });
+      } else if (qty.quantity !== undefined) {
+        ops.push(cat ? ({ ...addOpFor(cat, name, existing.id), ...qty } as OpInput) : { type: "add", itemId: existing.id, name, ...qty });
+      }
+      continue;
+    }
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const rowId = uuid();
+    ids.push(rowId);
+    ops.push(
+      cat
+        ? ({ ...addOpFor(cat, name, rowId), section: cat.section, ...qty } as OpInput)
+        : { type: "add", rowId, text: name, name, ...qty },
+    );
+    inverse.push({ type: "remove", itemId: rowId });
+  }
+  if (ops.length > 0) enqueue(shop.currentListId, ops);
+  if (inverse.length > 0) offerUndo(t("addedManyToast", { n: inverse.length }), inverse);
+  return ids[0] ?? null;
 }
 
 export interface ItemPatch {

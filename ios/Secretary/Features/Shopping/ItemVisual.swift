@@ -20,7 +20,8 @@ enum ItemVisual: Equatable, Sendable {
     /// 2. the art of its catalog item, unless the owner hand-picked the row's emoji (`iconPicked`):
     ///    a catalog-bound row's stored emoji is the catalog's, possibly from another catalog version;
     /// 3. no catalog id (free text, a custom object): the art of the catalog item its name
-    ///    names (`CatalogSearch.guess`), when that item belongs to the row's section, if any;
+    ///    names exactly (`CatalogSearch.pictureItem`, never a part of the name), when that item
+    ///    belongs to the row's section, if any (docs/design/shopping-labels.md);
     /// 4. a specific emoji of the row (not the cart and not just its section's emoji);
     /// 5. the art of its section ("other" excluded);
     /// 6. any remaining emoji other than the cart, else the first letter of the name.
@@ -41,7 +42,7 @@ enum ItemVisual: Equatable, Sendable {
             item = catalog.item(catalogId)
             let asset = itemAsset(catalogId)
             if hasArt(asset), !(iconPicked && icon != nil && icon != item?.icon) { return .art(asset) }
-        } else if let guess = search?.guess(name) {
+        } else if let guess = search?.pictureItem(name) {
             let fits = rowSection == nil || rowSection == ShoppingCatalog.otherSection || guess.section == nil || guess.section == rowSection
             if fits, hasArt(itemAsset(guess.id)) { return .art(itemAsset(guess.id)) }
         }

@@ -978,6 +978,15 @@ async fn shopping_routes() {
         .call(Method::DELETE, "/shopping/lists/default", None)
         .await;
     assert_eq!(b["error"], "default_list");
+    // A sentence is one row per item, never one row (docs/design/shopping-labels.md).
+    let (s, many) = h
+        .post("/shopping", json!({"rawName": "aggiungi alla lista uova e 2 kg di farina", "channel": "ios"}))
+        .await;
+    assert_eq!(s, 201, "{many}");
+    let rows = many["data"]["items"].as_array().unwrap();
+    let typed: Vec<&str> = rows.iter().map(|r| r["rawName"].as_str().unwrap_or("")).collect();
+    assert_eq!(typed, ["uova", "farina"], "{many}");
+    assert_eq!(many["data"]["item"]["id"], rows[0]["id"]);
 }
 
 #[tokio::test]

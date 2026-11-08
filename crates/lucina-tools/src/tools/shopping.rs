@@ -18,13 +18,105 @@ enum Action {
     Remove,
 }
 
+/// One item: a plain name, or a name with its amount and details.
+#[derive(Deserialize, JsonSchema, Clone, Debug, PartialEq)]
+#[serde(untagged)]
+enum ItemArg {
+    /// The item's name, e.g. "latte" or "pane integrale". Several items in one
+    /// string ("latte, uova e 2 kg di farina") are split into separate items.
+    Name(String),
+    Detailed {
+        /// The item's name, in the singular catalog name when known ("baguette").
+        name: String,
+        /// Amount (> 0).
+        quantity: Option<f64>,
+        /// Unit for the amount: "kg", "g", "l", "pz".
+        unit: Option<String>,
+        /// Free-text detail, e.g. "senza lattosio".
+        spec: Option<String>,
+    },
+}
+
 #[derive(Deserialize, JsonSchema)]
 struct Args {
     action: Action,
-    /// Item names (add, purchase = mark as bought, remove).
-    items: Option<Vec<String>>,
+    /// The items, one entry per item, never command words ("add", "to the
+    /// shopping list"). add: names or {name, quantity, unit, spec}; purchase
+    /// (mark as bought) and remove: names.
+    items: Option<Vec<ItemArg>>,
     /// List name or id; default: the default list ("Casa").
     list: Option<String>,
+}
+
+/// One item to add, after splitting.
+#[derive(Debug, Clone, PartialEq)]
+struct Planned {
+    name: String,
+    quantity: Option<f64>,
+    unit: Option<String>,
+    spec: Option<String>,
+}
+
+impl Planned {
+    /// The grocery `add` op for this item (before the gate adds a catalog link).
+    fn op(&self) -> Value {
+        let mut op = json!({"opId": uuid::Uuid::new_v4().to_string(), "type": "add", "text": self.name});
+        if let Some(q) = self.quantity.filter(|q| q.is_finite() && *q > 0.0) {
+            op["quantity"] = json!(q);
+        }
+        if let Some(u) = self.unit.as_deref().filter(|u| !u.trim().is_empty()) {
+            op["unit"] = json!(u.trim());
+        }
+        if let Some(s) = self.spec.as_deref().filter(|s| !s.trim().is_empty()) {
+            op["spec"] = json!(s.trim());
+        }
+        op
+    }
+}
+
+/// Items as the add action puts them on the list: each string split into its
+/// items (docs/design/shopping-labels.md: never one item made of a sentence),
+/// detailed items as given. At most 50.
+fn plan_items(idx: &lucina_grocery::CatalogIndex, items: &[ItemArg]) -> Vec<Planned> {
+    let mut out = Vec::new();
+    for item in items {
+        match item {
+            ItemArg::Name(text) => {
+                for p in lucina_grocery::split_text_items(idx, text) {
+                    out.push(Planned {
+                        name: p.name,
+                        quantity: p.quantity.map(f64::from),
+                        unit: p.unit,
+                        spec: None,
+                    });
+                }
+            }
+            ItemArg::Detailed {
+                name,
+                quantity,
+                unit,
+                spec,
+            } => {
+                let name = name.trim();
+                if !name.is_empty() {
+                    out.push(Planned {
+                        name: name.to_owned(),
+                        quantity: *quantity,
+                        unit: unit.clone(),
+                        spec: spec.clone(),
+                    });
+                }
+            }
+        }
+    }
+    out.truncate(50);
+    out
+}
+
+fn item_name(item: &ItemArg) -> &str {
+    match item {
+        ItemArg::Name(n) | ItemArg::Detailed { name: n, .. } => n,
+    }
 }
 
 pub struct ShoppingTool;
@@ -65,7 +157,10 @@ impl Tool for ShoppingTool {
         "shopping"
     }
     fn description(&self) -> &'static str {
-        "The owner's shopping list: list items, add items, mark items as bought (purchase: bookkeeping only, never buys anything), remove items."
+        "The owner's shopping list: list items, add items, mark items as bought (purchase: bookkeeping only, never buys anything), remove items. \
+         Give each item separately, with its quantity, in the singular catalog name when you know it, and never command words: \
+         'add patatine fritte, ricotta e 4 baguettes to the list' -> items [\"patatine fritte\", \"ricotta\", {\"name\": \"baguette\", \"quantity\": 4}]. \
+         Items are labels: only an exact catalog name gets a catalog picture and section; anything else stays as the owner wrote it."
     }
     fn parameters(&self) -> Value {
         schema_for::<Args>()
@@ -88,11 +183,10 @@ impl Tool for ShoppingTool {
         } else {
             "lucina"
         };
-        let items: Vec<String> = a
-            .items
-            .unwrap_or_default()
-            .into_iter()
-            .map(|s| s.trim().to_owned())
+        let args_items = a.items.unwrap_or_default();
+        let items: Vec<String> = args_items
+            .iter()
+            .map(|s| item_name(s).trim().to_owned())
             .filter(|s| !s.is_empty())
             .take(50)
             .collect();
@@ -110,15 +204,13 @@ impl Tool for ShoppingTool {
                 let idx = repo.catalog_index();
                 let lang = lucina_grocery::message_language(&items.join(", "), None);
                 let mut ops = Vec::new();
-                for n in &items {
-                    let g = crate::shopping_gate::check(lucina_jev::shared(), &idx, n, lang).await;
-                    match g.add_op(n) {
-                        Some(op) => ops.push(op),
-                        None => {
-                            if let crate::shopping_gate::Gate::Ask { question, suggestion } = g {
-                                asks.push(json!({"item": n, "question": question, "suggestion": suggestion}));
-                            }
-                        }
+                for p in plan_items(&idx, &args_items) {
+                    let g = crate::shopping_gate::check(lucina_jev::shared(), &idx, &p.name, lang).await;
+                    let mut op = p.op();
+                    if g.apply_to(&mut op) {
+                        ops.push(op);
+                    } else if let crate::shopping_gate::Gate::Ask { question, suggestion } = g {
+                        asks.push(json!({"item": p.name, "question": question, "suggestion": suggestion}));
                     }
                 }
                 if ops.is_empty() {
@@ -180,5 +272,78 @@ impl Tool for ShoppingTool {
             "rejected": state.get("rejected").cloned().unwrap_or(json!([])),
             "needsConfirmation": asks,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lucina_grocery::CatalogIndex;
+
+    fn catalog() -> CatalogIndex {
+        let raw = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/catalog/catalog.v1.json"))
+            .expect("catalog");
+        CatalogIndex::build(&serde_json::from_str(&raw).expect("catalog json"))
+    }
+
+    fn args(v: Value) -> Vec<ItemArg> {
+        serde_json::from_value(v).expect("items")
+    }
+
+    #[test]
+    fn a_sentence_becomes_separate_items_with_quantities() {
+        let idx = catalog();
+        let plan = plan_items(
+            &idx,
+            &args(json!(["Add to shopping list patatine fritte, ricotta, redbull, mortadella e 4 baguettes."])),
+        );
+        let got: Vec<(&str, Option<f64>, Option<&str>)> = plan
+            .iter()
+            .map(|p| (p.name.as_str(), p.quantity, idx.find(&p.name).map(|i| i.id.as_str())))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("patatine fritte", None, Some("french-fries")),
+                ("ricotta", None, Some("ricotta")),
+                ("redbull", None, Some("energy-drink")),
+                ("mortadella", None, Some("mortadella")),
+                ("baguettes", Some(4.0), Some("baguette")),
+            ]
+        );
+        for p in &plan {
+            assert!(!fold(&p.name).contains("shopping list"), "{p:?}");
+        }
+    }
+
+    #[test]
+    fn detailed_items_are_taken_as_given() {
+        let idx = catalog();
+        let plan = plan_items(
+            &idx,
+            &args(json!([{"name": "baguette", "quantity": 4}, {"name": "latte, uova", "spec": "bio"}, "  "])),
+        );
+        assert_eq!(plan.len(), 2);
+        let op = plan[0].op();
+        assert_eq!((op["text"].clone(), op["quantity"].clone()), (json!("baguette"), json!(4.0)));
+        assert_eq!(plan[1].name, "latte, uova", "a detailed name is the owner's own label");
+        assert_eq!(plan[1].op()["spec"], "bio");
+    }
+
+    #[test]
+    fn units_reach_the_op() {
+        let idx = catalog();
+        let plan = plan_items(&idx, &args(json!(["500 g burro"])));
+        let op = plan[0].op();
+        assert_eq!((op["text"].clone(), op["quantity"].clone(), op["unit"].clone()), (json!("burro"), json!(500.0), json!("g")));
+    }
+
+    #[test]
+    fn no_partial_catalog_links() {
+        let idx = catalog();
+        for t in ["Redbul", "Pane di segale tostato", "organic milk"] {
+            assert!(idx.find(t).is_none(), "{t}");
+        }
+        assert_eq!(idx.find("Red Bull").map(|i| i.id.as_str()), Some("energy-drink"));
     }
 }

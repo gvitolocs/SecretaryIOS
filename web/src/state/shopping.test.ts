@@ -219,3 +219,45 @@ describe("shopping state", () => {
     expect(shop.items.filter((i) => i.objectId === "banana")).toHaveLength(1);
   });
 });
+
+describe("typed text is split into labels (docs/design/shopping-labels.md)", () => {
+  beforeEach(() => {
+    setLocale("it");
+    resetShopping();
+    setup();
+  });
+
+  it("adds each item of a sentence, with its quantity, under one undo", async () => {
+    await booted();
+    await waitFor(() => expect(shop.catalog.items.length).toBeGreaterThan(0));
+    const first = addText("aggiungi alla lista della spesa caffe, banane, latte e 4 spaghetti, Candele profumate");
+    const byCatalog = (id: string) => shop.items.find((i) => i.catalogId === id);
+    expect(byCatalog("coffee")?.id).toBe(first);
+    expect(byCatalog("banana")).toBeTruthy();
+    expect(byCatalog("pasta")).toMatchObject({ quantity: 4 });
+    // "Latte" was already needed: no second row.
+    expect(shop.items.filter((i) => i.catalogId === "milk")).toHaveLength(1);
+    // Free text is a label: no catalog id, no guessed section.
+    const candles = shop.items.find((i) => i.name === "Candele profumate");
+    expect(candles?.catalogId).toBeNull();
+    expect(itemSection(candles!)).toBe("other");
+    // Never the sentence, never the command words.
+    expect(shop.items.some((i) => /lista|spesa|aggiungi|,/i.test(i.name))).toBe(false);
+    expect(shop.items).toHaveLength(6);
+    expect(shop.undo?.message).toBe("4 articoli aggiunti");
+    undoLast();
+    expect(shop.items.filter((i) => i.status === "needed").map((i) => i.id)).toEqual(["milk-row"]);
+    await waitFor(() => expect(shop.pending).toBe(0));
+  });
+
+  it("keeps one item whole and never links part of a name", async () => {
+    await booted();
+    await waitFor(() => expect(shop.catalog.items.length).toBeGreaterThan(0));
+    addText("Latte d'avena");
+    addText("Caffè del Brasile");
+    expect(shop.items.find((i) => i.catalogId === "oat-milk")).toBeTruthy();
+    const brazil = shop.items.find((i) => i.name === "Caffè del Brasile");
+    expect(brazil?.catalogId).toBeNull();
+    expect(itemIcon(brazil!)).toBeNull();
+  });
+});

@@ -15,6 +15,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 unicode-normalization = "0.1"
+shopping-text = { path = "../shopping-text" }
 
 [dev-dependencies]
 proptest = "1"

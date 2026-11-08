@@ -55,12 +55,21 @@ describe("itemVisual", () => {
     expect(art({ icon: "🐷", catalogId: "prosciutto", name: "Prosciutto crudo", iconPicked: true })).toEqual({ kind: "emoji", emoji: "🐷" });
   });
 
-  it("finds art for free text and custom items by their name", () => {
+  it("finds art for free text and custom items only by an exact catalog name or alias", () => {
     expect(art({ icon: null, name: "Zucchine" })).toMatch(/^zucchini/);
+    expect(art({ icon: null, name: "Patatine fritte" })).toMatch(/^french-fries/);
+    // "pane di segale danese" is itself an alias of rye bread.
     expect(art({ icon: "🍞", name: "Pane di segale danese", section: "bakery" })).toMatch(/^rye-bread/);
-    expect(art({ icon: null, name: "Prosciutto crudo di Parma" })).toMatch(/^prosciutto/);
-    expect(art({ icon: "🕯️", name: "Candele profumate", section: "household" })).toMatch(/^candles/);
-    expect(art({ icon: null, name: "Organic milk" })).toMatch(/^milk/);
+    expect(art({ icon: null, name: "Red Bull" })).toMatch(/^energy-drink/);
+  });
+
+  it("never borrows art from a part of the name (docs/design/shopping-labels.md)", () => {
+    expect(v({ icon: null, name: "Prosciutto crudo di Parma" })).toEqual({ kind: "initial", letter: "P" });
+    expect(v({ icon: null, name: "Organic milk" })).toEqual({ kind: "initial", letter: "O" });
+    expect(v({ icon: "🕯️", name: "Candele profumate", section: "household" })).toEqual({ kind: "emoji", emoji: "🕯️" });
+    expect(v({ icon: null, name: "Redbul" })).toEqual({ kind: "initial", letter: "R" });
+    const sentence = "to shopping list patatine fritte, ricotta, redbull, mortadella e 4 baguettes";
+    expect(v({ icon: null, name: sentence, section: "other" })).toEqual({ kind: "initial", letter: "T" });
   });
 
   it("does not borrow art from an item of another section", () => {

@@ -74,6 +74,66 @@ pub(crate) fn shopping_reply(lang: &str, kind: &str, name: &str) -> String {
     }
 }
 
+/// The items of an add's text; the text itself when nothing is left after splitting.
+pub(crate) fn shopping_parts(
+    idx: &lucina_grocery::CatalogIndex,
+    typed: &str,
+) -> Vec<lucina_grocery::ItemPart> {
+    let parts = lucina_grocery::split_text_items(idx, typed);
+    if parts.is_empty() && !typed.trim().is_empty() {
+        return vec![lucina_grocery::ItemPart {
+            name: typed.trim().to_owned(),
+            quantity: None,
+            unit: None,
+        }];
+    }
+    parts
+}
+
+/// "4 Baguette", "500 g Burro", "Ricotta".
+fn part_label(p: &lucina_grocery::ItemPart, name: &str) -> String {
+    match (p.quantity, &p.unit) {
+        (Some(q), Some(u)) => format!("{q} {u} {name}"),
+        (Some(q), None) => format!("{q} {name}"),
+        _ => name.to_owned(),
+    }
+}
+
+/// "a", "a and b", "a, b and c" (Danish "og").
+fn join_names(lang: &str, names: &[String]) -> String {
+    let and = if lang == "da" { "og" } else { "and" };
+    match names {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} {and} {last}", rest.join(", ")),
+    }
+}
+
+/// The reply to an add of several items: what was added, what was already
+/// there, then any question about an item that was not added.
+pub(crate) fn add_reply(
+    lang: &str,
+    added: &[String],
+    already: &[String],
+    questions: &[String],
+) -> String {
+    let mut out: Vec<String> = Vec::new();
+    if !added.is_empty() {
+        out.push(shopping_reply(lang, "added", &join_names(lang, added)));
+    }
+    match already {
+        [] => {}
+        [one] => out.push(shopping_reply(lang, "already", one)),
+        many => out.push(if lang == "da" {
+            format!("{} står allerede på indkøbslisten.", join_names(lang, many))
+        } else {
+            format!("{} are already on your shopping list.", join_names(lang, many))
+        }),
+    }
+    out.extend(questions.iter().cloned());
+    out.join(" ")
+}
+
 fn dkk(v: f64) -> String {
     format!("{v:.2} DKK")
 }
@@ -235,37 +295,51 @@ pub async fn process(
             } else {
                 parsed.raw_product.clone()
             };
-            let gate = lucina_tools::shopping_gate::check(
-                lucina_jev::shared(),
-                &repo.catalog_index(),
-                &typed,
-                lang,
-            )
-            .await;
-            if let lucina_tools::shopping_gate::Gate::Ask { question, .. } = &gate {
-                return Ok(handled(intent, question.clone()));
+            // One item per part: "Add to shopping list a, b e 4 c" is three items, never
+            // one item made of the sentence (docs/design/shopping-labels.md).
+            let idx = repo.catalog_index();
+            let parts = shopping_parts(&idx, &typed);
+            let (mut added, mut already, mut questions) = (Vec::new(), Vec::new(), Vec::new());
+            let mut list_id = None;
+            for p in &parts {
+                let gate =
+                    lucina_tools::shopping_gate::check(lucina_jev::shared(), &idx, &p.name, lang)
+                        .await;
+                if let lucina_tools::shopping_gate::Gate::Ask { question, .. } = &gate {
+                    questions.push(question.clone());
+                    continue;
+                }
+                let mut extra = gate.add_op(&p.name).unwrap_or_default();
+                if let Some(q) = p.quantity {
+                    extra["quantity"] = json!(q);
+                }
+                if let Some(u) = &p.unit {
+                    extra["unit"] = json!(u);
+                }
+                let row = repo
+                    .add_item_with(
+                        user_id,
+                        &lucina_grocery::exact_canonical_product(&p.name),
+                        &p.name,
+                        modified_by,
+                        Some(lang),
+                        &extra,
+                    )
+                    .await?;
+                let label = part_label(p, row["name"].as_str().unwrap_or(&p.name));
+                if row["merged"] == json!(true) {
+                    already.push(label);
+                } else {
+                    added.push(label);
+                }
+                if list_id.is_none() {
+                    list_id = row["listId"].as_str().map(str::to_owned);
+                }
             }
-            let extra = gate.add_op(&typed).unwrap_or_default();
-            let added = repo
-                .add_item_with(
-                    user_id,
-                    &product,
-                    &parsed.raw_product,
-                    modified_by,
-                    Some(lang),
-                    &extra,
-                )
-                .await?;
-            let name = added["name"].as_str().unwrap_or(&product.name).to_owned();
-            let kind = if added["merged"] == json!(true) {
-                "already"
-            } else {
-                "added"
-            };
             Ok(Some(Handled {
                 intent: intent.into(),
-                reply: shopping_reply(lang, kind, &name),
-                list_id: added["listId"].as_str().map(str::to_owned),
+                reply: add_reply(lang, &added, &already, &questions),
+                list_id,
             }))
         }
         "grocery.shopping_list.remove" => {
@@ -384,5 +458,66 @@ fn js_num(v: f64) -> String {
         format!("{}", v as i64)
     } else {
         format!("{v}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn catalog() -> lucina_grocery::CatalogIndex {
+        let raw = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/catalog/catalog.v1.json"))
+            .expect("catalog");
+        lucina_grocery::CatalogIndex::build(&serde_json::from_str(&raw).expect("catalog json"))
+    }
+
+    /// The message that made one item of a sentence on 2026-11-03.
+    #[test]
+    fn the_owners_message_adds_five_items() {
+        let text = "Add to shopping list patatine fritte, ricotta, redbull, mortadella e 4 baguettes.";
+        let parsed = lucina_intent::grocery::parse_grocery_intent(text).expect("grocery intent");
+        assert_eq!(parsed.intent, "grocery.shopping_list.add");
+        let idx = catalog();
+        let parts = shopping_parts(&idx, &parsed.raw_product);
+        let got: Vec<(String, Option<u32>, Option<String>)> = parts
+            .iter()
+            .map(|p| (p.name.clone(), p.quantity, idx.find(&p.name).map(|i| i.id.clone())))
+            .collect();
+        let want: Vec<(String, Option<u32>, Option<String>)> = [
+            ("patatine fritte", None, "french-fries"),
+            ("ricotta", None, "ricotta"),
+            ("redbull", None, "energy-drink"),
+            ("mortadella", None, "mortadella"),
+            ("baguettes", Some(4), "baguette"),
+        ]
+        .iter()
+        .map(|(n, q, id)| (n.to_string(), *q, Some(id.to_string())))
+        .collect();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn one_item_stays_one_item() {
+        let idx = catalog();
+        for (text, name) in [("add milk to my shopping list", "milk"), ("aggiungi Pane di segale tostato alla lista", "Pane di segale tostato")] {
+            let parsed = lucina_intent::grocery::parse_grocery_intent(text).expect(text);
+            let parts = shopping_parts(&idx, &parsed.raw_product);
+            assert_eq!(parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), [name], "{text}");
+        }
+    }
+
+    #[test]
+    fn replies_name_every_item() {
+        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            add_reply("it", &names(&["Patatine fritte", "Ricotta", "4 Baguette"]), &names(&["Mortadella"]), &[]),
+            "Added Patatine fritte, Ricotta and 4 Baguette to your shopping list. Mortadella is already on your shopping list."
+        );
+        assert_eq!(
+            add_reply("da", &names(&["Mælk", "6 Æg"]), &names(&["Kaffe", "Te"]), &names(&["Hvad mente du?"])),
+            "Jeg har tilføjet Mælk og 6 Æg til indkøbslisten. Kaffe og Te står allerede på indkøbslisten. Hvad mente du?"
+        );
+        let p = lucina_grocery::ItemPart { name: "burro".into(), quantity: Some(500), unit: Some("g".into()) };
+        assert_eq!(part_label(&p, "Burro"), "500 g Burro");
     }
 }

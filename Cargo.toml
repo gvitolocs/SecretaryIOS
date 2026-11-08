@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/shopping-text",
     "crates/ink-library",
     "crates/ink-sync",
     "crates/ink-cli",

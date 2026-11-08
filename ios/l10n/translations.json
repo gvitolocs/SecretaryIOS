@@ -212,6 +212,8 @@
   "Added %@": ["Aggiunto: %@", "Tilføjet: %@"],
   "Added %@ back": ["%@ di nuovo in lista", "%@ er tilbage på listen"],
   "Added %@ to the list.": ["%@ aggiunto alla lista.", "%@ er føjet til listen."],
+  "Added %lld items": ["Aggiunti %lld articoli", "Tilføjet %lld varer"],
+  "Add %lld items": ["Aggiungi %lld articoli", "Tilføj %lld varer"],
   "Address": ["Indirizzo", "Adresse"],
   "Adds an item to the current shopping list.": ["Aggiunge un articolo alla lista della spesa attuale.", "Føjer en vare til den aktuelle indkøbsliste."],
   "Adds it to the workout": ["Lo aggiunge all'allenamento", "Føjer den til træningen"],

@@ -112,36 +112,15 @@ fn clip(s: &str, max: usize) -> String {
     out
 }
 
-const ARTICLES: [&str; 25] = [
-    "the", "a", "an", "some", "il", "lo", "la", "l", "i", "gli", "le", "un", "uno", "una", "del",
-    "dello", "della", "dei", "degli", "delle", "dell", "di", "en", "et", "nogle",
-];
-
-/// Folded lookup keys, best first: the text, the text without a leading
-/// article ("the milk", "l'olio"), and each without a plural `s`.
+/// The folded lookup key of a typed text, or none for an empty one. Exact only
+/// (docs/design/shopping-labels.md): no article stripping, no plural `s`; a
+/// form that should match is a catalog alias ("baguettes").
 pub fn lookup_keys(text: &str) -> Vec<String> {
     let folded = fold(text);
     if folded.is_empty() {
         return Vec::new();
     }
-    let mut keys = vec![folded.clone()];
-    if let Some((first, rest)) = folded.split_once(' ') {
-        if (ARTICLES.contains(&first) || first == "noget") && !rest.is_empty() {
-            keys.push(rest.to_owned());
-        }
-    }
-    for k in keys.clone() {
-        if k.chars().count() > 3 && k.ends_with('s') {
-            keys.push(k[..k.len() - 1].to_owned());
-        }
-    }
-    let mut seen = Vec::new();
-    for k in keys {
-        if !seen.contains(&k) {
-            seen.push(k);
-        }
-    }
-    seen
+    vec![folded]
 }
 
 /// Every folded term of a custom object: its names and aliases.
@@ -439,34 +418,10 @@ pub async fn resolve_item_text(
 
 // ---------------------------------------------------------------- names for new objects
 
-/// Section and icon from the words of the text (a pair of words or a word
-/// that is a catalog term lends its section and icon); else `other`.
-pub fn guess_section_and_icon(idx: &CatalogIndex, text: &str) -> (String, Option<String>) {
-    let folded = fold(text);
-    let words: Vec<&str> = folded.split(' ').filter(|w| !w.is_empty()).collect();
-    let mut candidates: Vec<String> = words.windows(2).map(|w| w.join(" ")).collect();
-    candidates.extend(words.iter().map(|w| (*w).to_owned()));
-    for k in candidates {
-        let hit = idx.lookup(&k).or_else(|| {
-            (k.chars().count() > 3 && k.ends_with('s'))
-                .then(|| idx.lookup(&k[..k.len() - 1]))
-                .flatten()
-        });
-        if let Some((e, _)) = hit {
-            if let Some(section) = &e.section {
-                let icon = e
-                    .icon
-                    .clone()
-                    .or_else(|| idx.section(section).and_then(|s| s.icon.clone()));
-                return (section.clone(), icon);
-            }
-        }
-    }
-    (
-        "other".into(),
-        idx.section("other").and_then(|s| s.icon.clone()),
-    )
-}
+/// The section of every new custom object: an unrecognized item is a plain
+/// label (docs/design/shopping-labels.md). No section or icon is guessed from
+/// its words or by a model; the owner sets them himself (Change section).
+pub const NEW_ITEM_SECTION: &str = "other";
 
 fn valid_icon(v: Option<&Value>) -> Option<String> {
     let s = v?.as_str()?.trim();
@@ -493,7 +448,8 @@ fn valid_section(idx: &CatalogIndex, v: Option<&Value>) -> Option<String> {
     }
 }
 
-/// Names, section and icon for a new custom object.
+/// Names for a new custom object. Its section is always [`NEW_ITEM_SECTION`]
+/// and it has no icon: a model never picks either.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Translation {
     pub names: BTreeMap<String, String>,
@@ -503,8 +459,9 @@ pub struct Translation {
     pub partial: bool,
 }
 
-/// Check a model's answer; `None` when it has no usable name.
-pub fn normalize_translation(idx: &CatalogIndex, raw: &Value, text: &str) -> Option<Translation> {
+/// Check a model's answer; `None` when it has no usable name. Only its names
+/// are used; a `section` or `icon` in the answer is ignored.
+pub fn normalize_translation(_idx: &CatalogIndex, raw: &Value, text: &str) -> Option<Translation> {
     if !raw.is_object() {
         return None;
     }
@@ -528,44 +485,16 @@ pub fn normalize_translation(idx: &CatalogIndex, raw: &Value, text: &str) -> Opt
     if missing == LANGS.len() {
         return None;
     }
-    let (guess_section, guess_icon) = guess_section_and_icon(idx, text);
-    let section = valid_section(idx, raw.get("section")).unwrap_or_else(|| guess_section.clone());
-    let icon = valid_icon(raw.get("icon")).or_else(|| {
-        if section == guess_section {
-            guess_icon.clone()
-        } else {
-            idx.section(&section)
-                .and_then(|s| s.icon.clone())
-                .or(guess_icon.clone())
-        }
-    });
     Some(Translation {
         names,
-        section,
-        icon,
+        section: NEW_ITEM_SECTION.into(),
+        icon: None,
         partial: missing > 0,
     })
 }
 
 /// The `(system, user)` prompt of the naming call.
-pub fn translation_prompt(idx: &CatalogIndex, text: &str) -> (String, String) {
-    let sections = idx
-        .sections()
-        .iter()
-        .map(|s| {
-            format!(
-                "{} {} ({})",
-                s.id,
-                s.icon.clone().unwrap_or_default(),
-                s.names
-                    .get("en")
-                    .cloned()
-                    .or_else(|| s.name.clone())
-                    .unwrap_or_else(|| s.id.clone())
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+pub fn translation_prompt(_idx: &CatalogIndex, text: &str) -> (String, String) {
     let system = "You name items on a household shopping list (groceries and household goods) in Italian, English and Danish. Reply with JSON only.".to_owned();
     let user = [
         format!(
@@ -575,10 +504,7 @@ pub fn translation_prompt(idx: &CatalogIndex, text: &str) -> (String, String) {
         "Give its name as a shopping list would show it in each language: capitalised first letter, plural for countable things".into(),
         "(\"Mele\", \"Apples\", \"Æbler\"), a mass noun otherwise (\"Latte\", \"Milk\", \"Mælk\"). Keep brand names as they are. If it is".into(),
         "already a name in one of the languages, keep that wording for that language.".into(),
-        "Pick the section id from this list and ONE emoji for the item (Unicode Emoji 15.0 or older; a specific food or object".into(),
-        "emoji when one fits, else the section emoji):".into(),
-        sections,
-        "JSON shape: {\"names\":{\"it\":\"…\",\"en\":\"…\",\"da\":\"…\"},\"section\":\"<section id>\",\"icon\":\"<emoji>\"}".into(),
+        "JSON shape: {\"names\":{\"it\":\"…\",\"en\":\"…\",\"da\":\"…\"}}".into(),
     ]
     .join("\n");
     (system, user)
@@ -706,13 +632,12 @@ pub async fn resolve_or_create_item(
 
 pub async fn create_custom_item(
     conn: &mut PgConnection,
-    idx: &CatalogIndex,
+    _idx: &CatalogIndex,
     user_id: &str,
     typed: &str,
     translation: Option<&Translation>,
     created_by: Option<&str>,
 ) -> Result<ItemObject, sqlx::Error> {
-    let (guess_section, guess_icon) = guess_section_and_icon(idx, typed);
     let names = translation
         .map(|t| t.names.clone())
         .unwrap_or_else(|| same_names(typed));
@@ -727,8 +652,8 @@ pub async fn create_custom_item(
     .bind(serde_json::to_string(&names).unwrap_or_else(|_| "{}".into()))
     .bind(serde_json::to_string(&aliases).unwrap_or_else(|_| "[]".into()))
     .bind(custom_terms(&names, &aliases))
-    .bind(translation.map(|t| t.section.clone()).unwrap_or(guess_section))
-    .bind(translation.map(|t| t.icon.clone()).unwrap_or(guess_icon))
+    .bind(NEW_ITEM_SECTION)
+    .bind(None::<String>)
     .bind(translation.is_none_or(|t| t.partial))
     .bind(created_by)
     .fetch_one(&mut *conn)
@@ -984,11 +909,10 @@ mod tests {
         let id = new_custom_item_id();
         assert!(is_custom_item_id(&id), "{id}");
         assert!(!is_custom_item_id("milk"));
-        assert_eq!(lookup_keys("L'olio"), vec!["l olio", "olio"]);
-        assert_eq!(
-            lookup_keys("the apples"),
-            vec!["the apples", "apples", "the apple", "apple"]
-        );
+        // Exact keys only: no article stripping, no plural guess.
+        assert_eq!(lookup_keys("L'olio"), vec!["l olio"]);
+        assert_eq!(lookup_keys("the apples"), vec!["the apples"]);
+        assert!(lookup_keys(" ,. ").is_empty());
         assert_eq!(message_language("aggiungi latte alla lista", None), "it");
         assert_eq!(message_language("add milk to my shopping list", None), "en");
         assert_eq!(
@@ -1007,10 +931,19 @@ mod tests {
                          {"id": "household", "names": {"en": "Household"}, "icon": "🧽", "order": 2}],
             "items": [{"id": "milk", "names": {"it": "Latte", "en": "Milk", "da": "Mælk"}, "section": "dairy-eggs", "icon": "🥛"}]
         }));
-        assert_eq!(
-            guess_section_and_icon(&idx, "latte di avena"),
-            ("dairy-eggs".into(), Some("🥛".into()))
-        );
+        // A word that is a catalog term lends nothing: "latte di avena" is not "latte".
+        assert!(resolve_catalog_text(&idx, "latte di avena").is_none());
+        assert_eq!(resolve_catalog_text(&idx, "LATTE").map(|(o, v)| (o.id, v)), Some((Some("milk".into()), "name")));
+        // A model answer with a real section and an emoji still makes an unsorted label.
+        let t = normalize_translation(
+            &idx,
+            &json!({"names": {"it": "Latte di avena", "en": "Oat milk", "da": "Havremælk"}, "section": "dairy-eggs", "icon": "🥛"}),
+            "latte di avena",
+        )
+        .unwrap();
+        assert_eq!((t.section.as_str(), t.icon.as_deref(), t.partial), ("other", None, false));
+        let (_, prompt) = translation_prompt(&idx, "latte di avena");
+        assert!(!prompt.contains("section") && !prompt.contains("emoji"), "{prompt}");
         assert!(normalize_translation(&idx, &json!({"names": {}}), "x").is_none());
         let t = normalize_translation(
             &idx,
