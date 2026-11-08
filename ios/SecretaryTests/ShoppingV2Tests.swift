@@ -338,6 +338,35 @@ final class ShoppingV2StoreTests: XCTestCase {
         XCTAssertNil(store.undo)
     }
 
+    /// docs/design/shopping-labels.md: the owner's sentence of 2026-11-03 is five items, never one.
+    func testASentenceAddsEachItemWithOneUndo() async throws {
+        StubURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/v1/shopping/catalog":
+                return .init(body: #"{"version":1,"lang":"it","sections":[{"id":"frozen","name":"Surgelati","icon":"🧊","order":1},{"id":"drinks","name":"Bevande","icon":"🥤","order":2},{"id":"deli","name":"Salumi","icon":"🥪","order":3},{"id":"bakery","name":"Pane","icon":"🥖","order":4},{"id":"dairy-eggs","name":"Latticini","icon":"🧀","order":5}],"items":[{"id":"french-fries","name":"Patatine fritte","names":{"en":"French fries"},"aliases":["fries"],"section":"frozen","icon":"🍟"},{"id":"ricotta","name":"Ricotta","names":{},"aliases":[],"section":"dairy-eggs","icon":"🧀"},{"id":"energy-drink","name":"Energy drink","names":{},"aliases":["red bull","redbull"],"section":"drinks","icon":"⚡"},{"id":"mortadella","name":"Mortadella","names":{},"aliases":[],"section":"deli","icon":"🥪"},{"id":"baguette","name":"Baguette","names":{},"aliases":["baguettes"],"section":"bakery","icon":"🥖"}]}"#)
+            case "/v1/shopping/lists": return .init(body: #"[{"id":"default","name":"Casa","theme":"home"}]"#)
+            case "/v1/shopping/lists/default": return .init(body: #"{"list":{"id":"default","name":"Casa","theme":"home"},"revision":1,"items":[]}"#)
+            default: return .init(error: URLError(.notConnectedToInternet))
+            }
+        }
+        let store = makeStore()
+        await store.load(lang: "it")
+        store.add("to shopping list patatine fritte, ricotta, redbull, mortadella e 4 baguettes")
+        XCTAssertEqual(Set(store.needed.compactMap(\.catalogId)), ["french-fries", "ricotta", "energy-drink", "mortadella", "baguette"])
+        XCTAssertEqual(store.needed.count, 5)
+        XCTAssertEqual(store.needed.first { $0.catalogId == "baguette" }?.quantity, 4)
+        XCTAssertFalse(store.needed.contains { $0.name.contains("shopping list") || $0.name.contains(",") })
+        XCTAssertEqual(store.undo?.message, "Added 5 items")
+        store.applyUndo()
+        XCTAssertTrue(store.needed.isEmpty)
+
+        // A free-text label stays as typed: no catalog id, no picture from a part of its name.
+        store.add("Patatine fritte della nonna")
+        let label = try XCTUnwrap(store.needed.first)
+        XCTAssertNil(label.catalogId)
+        XCTAssertEqual(label.name, "Patatine fritte della nonna")
+    }
+
     func testRowsWithoutCatalogIdGetTheirIconAndSectionByName() async {
         StubURLProtocol.handler = { request in
             switch request.url?.path {

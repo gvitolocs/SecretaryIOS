@@ -44,13 +44,21 @@ final class ItemVisualTests: XCTestCase {
         XCTAssertEqual(visual("🍗", "prosciutto", "Prosciutto crudo"), .art("item-prosciutto"))
     }
 
-    func testFreeTextAndCustomItemsFindArtByName() {
+    func testFreeTextAndCustomItemsFindArtOnlyByAnExactName() {
         XCTAssertEqual(visual(nil, nil, "Latte"), .art("item-milk"), "exact name")
-        XCTAssertEqual(visual("🍞", nil, "Pane di segale danese", section: "bakery"), .art("item-rye-bread"), "leading words")
-        XCTAssertEqual(visual(nil, nil, "Prosciutto crudo di Parma"), .art("item-prosciutto"))
-        XCTAssertEqual(visual("🕯️", nil, "Candele profumate", section: "household"), .art("item-candles"))
-        XCTAssertEqual(visual(nil, nil, "Organic milk"), .art("item-milk"), "trailing English name")
-        XCTAssertEqual(visual(nil, nil, "Øko mælk"), .art("item-milk"), "trailing Danish name")
+        XCTAssertEqual(visual(nil, nil, "MÆLK"), .art("item-milk"), "a name in another language")
+        XCTAssertEqual(visual(nil, nil, "Latte intero"), .art("item-milk"), "an alias")
+    }
+
+    /// docs/design/shopping-labels.md: items are labels; a part of a name never lends its art.
+    func testNoArtFromAPartOfTheName() {
+        XCTAssertEqual(visual("🍞", nil, "Pane di segale danese", section: "bakery"), .emoji("🍞"))
+        XCTAssertEqual(visual(nil, nil, "Prosciutto crudo di Parma"), .initial("P"))
+        XCTAssertEqual(visual("🕯️", nil, "Candele profumate", section: "household"), .emoji("🕯️"))
+        XCTAssertEqual(visual(nil, nil, "Organic milk"), .initial("O"))
+        XCTAssertEqual(visual(nil, nil, "Øko mælk"), .initial("Ø"))
+        XCTAssertEqual(visual(nil, nil, "to shopping list patatine fritte, ricotta, redbull, mortadella e 4 baguettes",
+                              section: "other"), .initial("T"))
     }
 
     func testNoArtBorrowedFromAnotherSectionOrTooShortAWord() {

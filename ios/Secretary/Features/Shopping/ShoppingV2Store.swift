@@ -338,10 +338,30 @@ final class ShoppingV2Store {
         scheduleFlush()
     }
 
-    /// Adds a catalog item or custom object, or free text (matched to a known object when the
-    /// text is one of its names or aliases in any language; else the server creates a custom
-    /// object named in every language).
+    /// The items a typed text adds (docs/design/shopping-labels.md): command words dropped, split
+    /// on commas, conjunctions and line breaks, quantities read. Never one item made of a sentence.
+    func textParts(_ text: String) -> [ItemPart] {
+        ShoppingText.splitItems(String(text.prefix(4000))) { search.exactMatch($0) != nil }
+            .map { ItemPart(name: String($0.name.prefix(200)), quantity: $0.quantity, unit: $0.unit) }
+    }
+
+    /// Adds a catalog item or custom object, or free text: each item of the text is matched to a
+    /// known object only when it is exactly one of its names or aliases in any language; else it
+    /// is a label (the server creates a custom object with no section or icon of its own).
     func add(_ text: String, catalogItem: CatalogItem? = nil) {
+        guard catalogItem == nil else {
+            addOne(text, catalogItem: catalogItem, quantity: nil, unit: nil)
+            return
+        }
+        let parts = textParts(text)
+        if parts.count > 1 {
+            addMany(parts)
+        } else if let only = parts.first {
+            addOne(only.name, catalogItem: nil, quantity: only.quantity, unit: only.unit)
+        }
+    }
+
+    private func addOne(_ text: String, catalogItem: CatalogItem?, quantity: Int?, unit: String?) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let item = catalogItem ?? search.exactMatch(trimmed)
         let name = item.map { $0.displayName(search.lang) } ?? trimmed
@@ -349,7 +369,11 @@ final class ShoppingV2Store {
         let rowId = UUID().uuidString.lowercased()
         let existing = current?.items.first { $0.isActive && ShopOps.sameRow($0, objectId: item?.id, name: item == nil ? trimmed : name) }
         let target = existing?.id ?? rowId
-        let op = item.map { ShopOp.add(object: $0, rowId: target, name: name) } ?? ShopOp.add(text: trimmed, rowId: target)
+        var op = item.map { ShopOp.add(object: $0, rowId: target, name: name) } ?? ShopOp.add(text: trimmed, rowId: target)
+        if let quantity {
+            op.quantity = Double(quantity)
+            op.unit = unit
+        }
         var undo: Undo?
         if existing == nil {
             undo = Undo(message: String(localized: "Added \(name)"), listId: currentListId, ops: [ShopOp(kind: .remove, itemId: rowId)])
@@ -357,6 +381,39 @@ final class ShoppingV2Store {
             undo = Undo(message: String(localized: "Added \(name) back"), listId: currentListId, ops: [ShopOp(kind: .purchase, itemId: id)])
         }
         perform([op], undo: undo)
+    }
+
+    /// Several items from one text, in one batch with one undo that takes them all back.
+    private func addMany(_ parts: [ItemPart]) {
+        var ops: [ShopOp] = []
+        var inverse: [ShopOp] = []
+        var seen = Set<String>()
+        for part in parts {
+            let item = search.exactMatch(part.name)
+            let name = item.map { $0.displayName(search.lang) } ?? part.name
+            let quantity = part.quantity.map(Double.init)
+            if let existing = current?.items.first(where: { $0.isActive && ShopOps.sameRow($0, objectId: item?.id, name: item == nil ? part.name : name) }) {
+                if existing.status == .recent {
+                    ops.append(ShopOp(kind: .need, itemId: existing.id))
+                    inverse.append(ShopOp(kind: .purchase, itemId: existing.id))
+                } else if let quantity {
+                    ops.append(ShopOp(kind: .setQuantity, itemId: existing.id, quantity: quantity, unit: part.unit))
+                }
+                continue
+            }
+            let key = item.map { "c:\($0.id)" } ?? "n:\(TextFold.fold(part.name))"
+            guard seen.insert(key).inserted else { continue }
+            let rowId = UUID().uuidString.lowercased()
+            var op = item.map { ShopOp.add(object: $0, rowId: rowId, name: name) } ?? ShopOp.add(text: part.name, rowId: rowId)
+            if let quantity {
+                op.quantity = quantity
+                op.unit = part.unit
+            }
+            ops.append(op)
+            inverse.append(ShopOp(kind: .remove, itemId: rowId))
+        }
+        let undo = inverse.isEmpty ? nil : Undo(message: String(localized: "Added \(inverse.count) items"), listId: currentListId, ops: inverse)
+        perform(ops, undo: undo)
     }
 
     /// Tap: buy a needed item, or put a recent one back on the list.

@@ -397,10 +397,13 @@ private struct SearchSheet: View {
                     let needed = Set(store.needed.compactMap(\.objectKey))
                     LazyVGrid(columns: Bring.columns, spacing: Bring.gap) {
                         if !trimmed.isEmpty, store.search.exactMatch(trimmed) == nil {
-                            BringTile(visual: .emoji("✏️"), name: trimmed, detail: "Add", tone: .other)
+                            // A text with several items ("latte, uova e 4 baguettes") adds each of them.
+                            let count = store.textParts(trimmed).count
+                            BringTile(visual: .emoji("✏️"), name: count > 1 ? String(localized: "Add \(count) items") : trimmed,
+                                      detail: "Add", tone: .other)
                                 .onTapGesture { add(trimmed, nil) }
                                 .accessibilityElement(children: .ignore)
-                                .accessibilityLabel("Add \(trimmed)")
+                                .accessibilityLabel(count > 1 ? String(localized: "Add \(count) items") : String(localized: "Add \(trimmed)"))
                                 .accessibilityAddTraits(.isButton)
                                 .accessibilityIdentifier("suggestion-free")
                         }
